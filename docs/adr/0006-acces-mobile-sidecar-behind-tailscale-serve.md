@@ -14,8 +14,13 @@ main** that owns everything network-facing (HTTP, the token, the
 `Tailscale-User-Login` identity check, static files) and talks to main only
 through the existing `0600` Unix-socket hooks server. **Main opens no port.**
 Delivery stays in main because a keeper accepts one client at a time and main
-is that client. The process listens on `127.0.0.1` only; the human configures
-`tailscale serve` once by hand — Orchestra never touches the Tailscale config.
+is that client. The process listens on a **0600 Unix socket in a 0700 directory —
+no TCP port at all** (`tailscale serve … unix:<path>`; tailscaled runs as root):
+a free loopback port can be taken by any local process, which then receives the
+phone's bearer token (found by the independent review of #334). The process is
+exec'd after closing every inherited fd, so it holds nothing of main's (it had
+inherited main's DevTools LISTEN socket). The human configures `tailscale serve`
+once by hand — Orchestra never touches the Tailscale config.
 Decided with the user on 2026-10-11 (grilling session).
 
 ## Considered options
@@ -25,6 +30,8 @@ Decided with the user on 2026-10-11 (grilling session).
 - **Independent daemon (systemd unit) surviving app quit** — rejected: it could
   not deliver without main (keeper slot is exclusive), so it would only add an
   "Orchestra closed" page the PWA can render itself.
+- **TCP on 127.0.0.1 behind serve** — the first cut; rejected at review: port
+  squatting while the app is off or restarting harvests the token.
 - **Bind on the Tailscale IP with a token only** — rejected: reachable by every
   device on the company tailnet; `serve` adds HTTPS (required by iOS PWAs) and
   an identity header tailnet clients cannot forge.

@@ -16,7 +16,6 @@ const POLL_MS = 2000;
 export function AccesMobileSettings({ onClose }: Props) {
   const [view, setView] = useState<AccesMobileView | null>(null);
   const [login, setLogin] = useState<string | null>(null);
-  const [port, setPort] = useState<string | null>(null);
   const [servePort, setServePort] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,7 +42,6 @@ export function AccesMobileSettings({ onClose }: Props) {
       setError(res.ok ? null : res.error);
       if (res.ok) {
         setLogin(null);
-        setPort(null);
         setServePort(null);
       }
     } catch (e) {
@@ -53,7 +51,6 @@ export function AccesMobileSettings({ onClose }: Props) {
   const draftPatch = (): Partial<Settings> => {
     const p: Partial<Settings> = {};
     if (login !== null) p.allowedLogin = login;
-    if (port !== null) p.port = Number(port);
     if (servePort !== null) p.servePort = Number(servePort);
     return p;
   };
@@ -72,7 +69,7 @@ export function AccesMobileSettings({ onClose }: Props) {
       : h.state === 'starting'
         ? 'Starting…'
         : h.state === 'listening'
-          ? `Listening on 127.0.0.1:${h.port} only.`
+          ? 'Listening on a private local socket only (no network port).'
           : `Failed: ${h.error}${h.retryInMs != null ? ` — retrying in ${Math.round(h.retryInMs / 1000)} s` : ''}`;
 
   return createPortal(
@@ -86,7 +83,7 @@ export function AccesMobileSettings({ onClose }: Props) {
         <h2>Accès mobile</h2>
         <div className="sound-hint">
           Talk to your workspaces from your phone, through <code>tailscale serve</code> only. Every request needs your Tailscale login{' '}
-          <strong>and</strong> the token below. Off by default.
+          <strong>and</strong> the pairing token. Off by default.
         </div>
 
         <div className="field">
@@ -111,12 +108,10 @@ export function AccesMobileSettings({ onClose }: Props) {
 
         <div className="field">
           <div className="field-head">
-            <span className="field-label">Ports</span>
-            <span className="field-hint">Local port (127.0.0.1 only) and the HTTPS port tailscale serve exposes on the tailnet.</span>
+            <span className="field-label">Tailnet port</span>
+            <span className="field-hint">The HTTPS port tailscale serve exposes on your tailnet.</span>
           </div>
           <div className="mg-input-row">
-            <input className="mg-input" data-am-port aria-label="Local port" inputMode="numeric" value={port ?? String(s?.port ?? '')} disabled={!s} onChange={(e) => setPort(e.target.value)} onBlur={commit} onKeyDown={onKey} />
-            <span className="mg-unit">local</span>
             <input className="mg-input" data-am-serve-port aria-label="Tailnet port" inputMode="numeric" value={servePort ?? String(s?.servePort ?? '')} disabled={!s} onChange={(e) => setServePort(e.target.value)} onBlur={commit} onKeyDown={onKey} />
             <span className="mg-unit">tailnet</span>
           </div>
@@ -142,7 +137,7 @@ export function AccesMobileSettings({ onClose }: Props) {
           <div className="field">
             <div className="field-head">
               <span className="field-label">Once, in a terminal</span>
-              <span className="field-hint">Orchestra never changes your Tailscale config.</span>
+              <span className="field-hint">Orchestra never changes your Tailscale config. The target is a Unix socket only you can open.</span>
             </div>
             <code className="am-cmd" data-am-serve-cmd>
               {view.serveCommand}

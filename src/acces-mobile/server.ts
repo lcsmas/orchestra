@@ -1,5 +1,5 @@
 // Accès mobile server (#334, ADR 0006): the ONLY network-facing code of the feature. Plain Node (no Electron) so node --test drives
-// it with a stub upstream. Binds 127.0.0.1 only; HTTPS + tailnet exposure come from `tailscale serve`, which sets
+// it with a stub upstream. Listens on a 0600 Unix socket only (index.ts); HTTPS + tailnet exposure come from `tailscale serve`, which sets
 // `Tailscale-User-Login` and strips any client-sent copy (tailscale.com/kb/1312/serve). Every request needs that identity;
 // every /api/* request ALSO needs the current token. Main is reached only through `upstream` (the 0600 hooks socket).
 
@@ -16,8 +16,37 @@ export interface AccesMobileServerOptions {
   /** The single allowed Tailscale login. '' ⇒ every request is refused. */
   allowedLogin: string;
   upstream: Upstream;
-  /** One line per refusal — reason + method + path, never a header value. */
+  /** One line per refusal — reason + method + path, never a header value. Rate-limited (see REFUSAL_LOG_BURST). */
   log?: (line: string) => void;
+  /** Clock for the refusal-log window (tests). */
+  now?: () => number;
+}
+
+/** A colleague on the tailnet can make the server refuse requests as fast as serve forwards them; each refusal used to be one line
+ *  in main's synchronous log (#334 review: 190k lines / 5 s evicted orchestra.log). At most this many lines per window, then ONE
+ *  summary line when the window rolls over. */
+export const REFUSAL_LOG_BURST = 20;
+export const REFUSAL_LOG_WINDOW_MS = 60_000;
+
+function rateLimitedLog(log: (l: string) => void, now: () => number): (l: string) => void {
+  let windowStart = now();
+  let count = 0;
+  let suppressed = 0;
+  return (line) => {
+    const t = now();
+    if (t - windowStart >= REFUSAL_LOG_WINDOW_MS) {
+      if (suppressed > 0) log(`refusals: ${suppressed} more suppressed in the last ${Math.round((t - windowStart) / 1000)} s`);
+      windowStart = t;
+      count = 0;
+      suppressed = 0;
+    }
+    if (count < REFUSAL_LOG_BURST) {
+      count++;
+      log(line);
+    } else {
+      suppressed++;
+    }
+  };
 }
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -50,7 +79,7 @@ function bearer(req: http.IncomingMessage): string {
 }
 
 export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Server {
-  const log = opts.log ?? (() => {});
+  const log = rateLimitedLog(opts.log ?? (() => {}), opts.now ?? Date.now);
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});

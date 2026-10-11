@@ -52,11 +52,41 @@ const freePort = () => new Promise((res, rej) => { const s = net.createServer();
 const sh = (cmd, args, opt = {}) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt });
 const git = (cwd, args, home) => sh('git', ['-c', 'user.name=rig', '-c', 'user.email=rig@example.invalid', ...args], { cwd, env: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' } });
 const connects = (host, port) => new Promise((resolve) => { const s = net.connect({ host, port }); s.setTimeout(1500, () => { s.destroy(); resolve(false); }); s.on('connect', () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false)); });
-function req(port, p, headers = {}) {
+function req(socketPath, p, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ socketPath, path: p, headers }, (res) => { let body = ''; res.on('data', (c) => (body += c)); res.on('end', () => resolve({ status: res.statusCode, body })); });
+    r.on('error', reject); r.end();
+  });
+}
+const sockConnects = (socketPath) => new Promise((resolve) => { const s = net.connect({ path: socketPath }); s.setTimeout(1500, () => { s.destroy(); resolve(false); }); s.on('connect', () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false)); });
+/** A stand-in for `tailscale serve … unix:<sock>`: TCP on loopback for the browser, strips every client-sent Tailscale-User-*
+ *  header and sets the tailnet identity of the device it represents (kb/1312/serve) — 502 when the socket is not there. */
+function serveProxy(getSock, login) {
+  const srv = http.createServer((inReq, inRes) => {
+    const headers = Object.fromEntries(Object.entries(inReq.headers).filter(([k]) => !k.toLowerCase().startsWith('tailscale-user-')));
+    if (login) headers['tailscale-user-login'] = login;
+    const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); });
+    out.on('error', () => { inRes.writeHead(502); inRes.end(); });
+    inReq.pipe(out);
+  });
+  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port })));
+}
+function proxyGet(port, p, headers = {}) {
   return new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port, path: p, headers }, (res) => { let body = ''; res.on('data', (c) => (body += c)); res.on('end', () => resolve({ status: res.statusCode, body })); });
     r.on('error', reject); r.end();
   });
+}
+/** TCP listening sockets owned by pid (its fd table vs /proc/net/tcp{,6}). */
+function tcpListenersOf(pid) {
+  const inodes = new Map();
+  for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) { try { const m = /^socket:\[(\d+)\]$/.exec(fs.readlinkSync(`/proc/${pid}/fd/${fd}`)); if (m) inodes.set(m[1], fd); } catch {} }
+  const out = [];
+  for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) for (const line of fs.readFileSync(f, 'utf8').split('\n').slice(1)) {
+    const c = line.trim().split(/\s+/);
+    if (c[3] === '0A' && inodes.has(c[9])) out.push(`fd${inodes.get(c[9])}=${c[1]}(port ${parseInt(c[1].split(':')[1], 16)})`);
+  }
+  return out;
 }
 
 class Cdp {
@@ -107,10 +137,9 @@ const world = (() => {
   return { d, fakeHome, ohome, accounts, workspaces, repos: [{ path: repoA, name: 'orchestra-rig', defaultBranch: 'main', accountId: 'acc-mc' }, { path: repoB, name: 'perso-rig', defaultBranch: 'main', accountId: 'acc-perso' }] };
 })();
 
-const AM_PORT = await freePort();
-const SERVE_PORT = AM_PORT === 8445 ? 8446 : 8445;
+const SERVE_PORT = 8445;
 const storeDir = path.join(world.ohome, 'userData', 'orchestra'); fs.mkdirSync(storeDir, { recursive: true });
-fs.writeFileSync(path.join(storeDir, 'store.json'), JSON.stringify({ repos: world.repos, workspaces: world.workspaces, accounts: world.accounts, selfTuneRuns: [], accesMobile: { enabled: true, port: AM_PORT, servePort: SERVE_PORT, allowedLogin: LOGIN } }, null, 2));
+fs.writeFileSync(path.join(storeDir, 'store.json'), JSON.stringify({ repos: world.repos, workspaces: world.workspaces, accounts: world.accounts, selfTuneRuns: [], accesMobile: { enabled: true, port: 47823 /* a pre-review store: must be ignored */, servePort: SERVE_PORT, allowedLogin: LOGIN } }, null, 2));
 const stubDir = path.join(world.d, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
 fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho AM-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
 const TOKEN_FILE = path.join(world.ohome, 'acces-mobile', 'token');
@@ -125,7 +154,11 @@ for (const k of ['HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`
 sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
 const logFile = path.join(world.d, 'app.log'); const fd = fs.openSync(logFile, 'w');
 const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
-console.log(`app pid ${app.pid}, cdp ${cdpPort}, acces-mobile port ${AM_PORT}, log ${logFile}`);
+console.log(`app pid ${app.pid}, cdp ${cdpPort}, log ${logFile}`);
+let SOCK = null;
+const ownerProxy = await serveProxy(() => SOCK, LOGIN);
+const colleagueProxy = await serveProxy(() => SOCK, 'colleague@example.invalid');
+const taggedProxy = await serveProxy(() => SOCK, null); // a tagged device: serve sets no identity
 let cdp, chrome, phone, exitCode = 1;
 try {
   const target = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${cdpPort}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'app page target');
@@ -146,17 +179,22 @@ try {
 
   // server process + token file
   const pids = await waitFor(() => { const p = serverPids(TOKEN_FILE); return p.length ? p : null; }, 30000, 'the Accès mobile server process');
-  await waitFor(() => connects('127.0.0.1', AM_PORT), 30000, 'the server port');
+  const view = await cdp.eval(`window.orchestra.accesMobile()`);
+  SOCK = view.socketPath;
+  await waitFor(() => sockConnects(SOCK), 30000, 'the server socket');
+  const sst = fs.statSync(SOCK);
+  clause('ctl/socket-0600', sst.isSocket() && (sst.mode & 0o777) === 0o600 && (fs.statSync(path.dirname(SOCK)).mode & 0o077) === 0, `${SOCK} mode ${(sst.mode & 0o777).toString(8)}, dir ${(fs.statSync(path.dirname(SOCK)).mode & 0o777).toString(8)}`);
+  clause('ctl/settings-port-ignored', !('port' in view.settings) && view.serveCommand === `tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}`, `settings ${JSON.stringify(view.settings)}; "${view.serveCommand}"`);
   const srvEnv = environOf(pids[0]).map((e) => e.split('=')[0]).sort();
   clause('ctl/server-one-process', pids.length === 1, `pids ${pids.join(',')} argv ${cmdlineOf(pids[0]).join(' ')}`);
-  clause('ctl/server-env-allowlisted', !srvEnv.includes('SECRET_CANARY_FROM_MAIN') && !srvEnv.includes('HOME') && !srvEnv.includes('CLAUDE_CONFIG_DIR') && srvEnv.includes('ACCES_MOBILE_PORT'), `server environ keys: ${srvEnv.join(' ')}`);
+  clause('ctl/server-env-allowlisted', !srvEnv.includes('SECRET_CANARY_FROM_MAIN') && !srvEnv.includes('HOME') && !srvEnv.includes('CLAUDE_CONFIG_DIR') && srvEnv.includes('ACCES_MOBILE_SOCKET') && !srvEnv.includes('ACCES_MOBILE_PORT'), `server environ keys: ${srvEnv.join(' ')}`);
   const tokStat = fs.statSync(TOKEN_FILE), dirStat = fs.statSync(path.dirname(TOKEN_FILE));
   clause('ctl/token-file-mode', (tokStat.mode & 0o777) === 0o600 && (dirStat.mode & 0o777) === 0o700, `token ${(tokStat.mode & 0o777).toString(8)}, dir ${(dirStat.mode & 0o777).toString(8)}`);
   const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
   const ID = { 'Tailscale-User-Login': LOGIN }, AUTH = { ...ID, Authorization: `Bearer ${TOKEN}` };
 
   // security arms against the live port
-  const ctl = await req(AM_PORT, '/api/workspaces', AUTH);
+  const ctl = await req(SOCK, '/api/workspaces', AUTH);
   const rows = ctl.status === 200 ? JSON.parse(ctl.body).workspaces : [];
   clause('sec/control-200', ctl.status === 200 && rows.length === 3, `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
   // A seeded `waiting` is resolved to idle + non lu at store load (store.ts: no live process can still be asking), so a real
@@ -164,19 +202,24 @@ try {
   const rank = (r) => (r.status === 'waiting' ? 0 : r.unread ? 1 : 2);
   const sorted = rows.every((r, i) => i === 0 || rank(rows[i - 1]) <= rank(r));
   clause('phone-api/order-and-accounts', sorted && rows.filter((r) => r.unread).length === 2 && rank(rows[2]) === 2 && rows.some((r) => r.account === 'mc') && rows.some((r) => r.account === 'perso') && !rows.some((r) => r.name === 'am-archived'), `ranks ${rows.map(rank).join(',')}; non lu first; both accounts; archived dropped`);
-  for (const [name, p, h, want] of [
-    ['sec/no-identity', '/api/workspaces', { Authorization: `Bearer ${TOKEN}` }, 403],
-    ['sec/colleague-identity', '/api/workspaces', { 'Tailscale-User-Login': 'colleague@example.invalid', Authorization: `Bearer ${TOKEN}` }, 403],
-    ['sec/no-token', '/api/workspaces', ID, 401],
-    ['sec/bad-token', '/api/workspaces', { ...ID, Authorization: `Bearer ${'x'.repeat(43)}` }, 401],
-    ['sec/query-token', `/api/workspaces?t=${TOKEN}`, ID, 401],
-    ['sec/shell-no-identity', '/', {}, 403],
+  const BEARER = { Authorization: `Bearer ${TOKEN}` };
+  const viaOwner = await proxyGet(ownerProxy.port, '/api/workspaces', BEARER);
+  clause('sec/control-through-serve', viaOwner.status === 200, `owner device through the serve stand-in: ${viaOwner.status}`);
+  for (const [name, fn, want] of [
+    ['sec/no-identity', () => req(SOCK, '/api/workspaces', BEARER), 403],
+    ['sec/colleague-through-serve', () => proxyGet(colleagueProxy.port, '/api/workspaces', BEARER), 403],
+    ['sec/colleague-forges-owner-header', () => proxyGet(colleagueProxy.port, '/api/workspaces', { ...BEARER, 'Tailscale-User-Login': LOGIN }), 403],
+    ['sec/tagged-device-forges-owner-header', () => proxyGet(taggedProxy.port, '/api/workspaces', { ...BEARER, 'Tailscale-User-Login': LOGIN }), 403],
+    ['sec/no-token', () => proxyGet(ownerProxy.port, '/api/workspaces'), 401],
+    ['sec/bad-token', () => proxyGet(ownerProxy.port, '/api/workspaces', { Authorization: `Bearer ${'x'.repeat(43)}` }), 401],
+    ['sec/query-token', () => proxyGet(ownerProxy.port, `/api/workspaces?t=${TOKEN}`), 401],
+    ['sec/shell-no-identity', () => req(SOCK, '/'), 403],
   ]) {
-    const r = await req(AM_PORT, p, h);
+    const r = await fn();
     clause(name, r.status === want && !r.body.includes('am-'), `status ${r.status} (want ${want}), body ${r.body.length} bytes`);
   }
-  const lan = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
-  clause('sec/loopback-only', (await connects('127.0.0.1', AM_PORT)) && (!lan || !(await connects(lan, AM_PORT))), `127.0.0.1 connects; ${lan ?? 'no non-loopback IPv4'} refused`);
+  const tcp = tcpListenersOf(pids[0]);
+  clause('sec/no-tcp-listener', tcp.length === 0, `server pid ${pids[0]} TCP listening sockets: [${tcp.join(', ')}] (app CDP port ${cdpPort})`);
 
   // phone: headless chromium, iPhone metrics, serve's identity header injected
   const chromeDir = path.join(world.d, 'chromium'); fs.mkdirSync(chromeDir, { recursive: true });
@@ -187,9 +230,8 @@ try {
   await phone.send('Page.enable'); await phone.send('Network.enable');
   await phone.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await phone.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
-  await phone.send('Network.setExtraHTTPHeaders', { headers: ID });
   const prePhone = await phone.eval(`location.href`);
-  await phone.send('Page.navigate', { url: `http://127.0.0.1:${AM_PORT}/#t=${TOKEN}` });
+  await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
   await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'three rows on the phone');
   const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.textContent), text: document.body.innerText })`);
   clause('phone/paired-fragment-stripped', P.stored && !P.href.includes('#') && !P.href.includes(TOKEN), `${prePhone} -> ${P.href}; token stored=${P.stored}`);
@@ -211,34 +253,36 @@ try {
   await cdp.clickSel('[data-am-open]');
   await waitFor(() => cdp.eval(`(document.querySelector('[data-am-health]')||{}).dataset?.amHealth === 'listening'`), 15000, 'dialog health listening');
   const D = await cdp.eval(`(() => { const d = document.querySelector('.acces-mobile-settings'); const r = d.getBoundingClientRect(); return { health: d.querySelector('[data-am-health]').textContent, cmd: d.querySelector('[data-am-serve-cmd]').textContent, login: d.querySelector('[data-am-login]').value, inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight }; })()`);
-  clause('settings/dialog', !preDlg && D.inView && D.health.includes(`127.0.0.1:${AM_PORT}`) && D.cmd === `tailscale serve --bg --https=${SERVE_PORT} http://127.0.0.1:${AM_PORT}` && D.login === LOGIN, `dialog false->true, in viewport ${D.inView}; "${D.health}"; "${D.cmd}"`);
+  clause('settings/dialog', !preDlg && D.inView && /private local socket/.test(D.health) && D.cmd === `tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}` && D.login === LOGIN, `dialog false->true, in viewport ${D.inView}; "${D.health}"; "${D.cmd}"`);
   saveShot('settings-on.png', await cdp.shot());
   const pidOn = serverPids(TOKEN_FILE)[0];
   await cdp.clickSel('[data-am-toggle]');
   await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'off'`), 15000, 'health off');
-  await waitFor(async () => !(await connects('127.0.0.1', AM_PORT)) && serverPids(TOKEN_FILE).length === 0, 15000, 'port closed + process gone');
+  await waitFor(async () => !fs.existsSync(SOCK) && serverPids(TOKEN_FILE).length === 0, 15000, 'socket removed + process gone');
   const storedOff = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).accesMobile;
-  clause('settings/toggle-off', storedOff.enabled === false, `listening(pid ${pidOn}) -> off: port refused, no server process, store.accesMobile.enabled=${storedOff.enabled}`);
+  clause('settings/toggle-off', storedOff.enabled === false, `listening(pid ${pidOn}) -> off: socket removed, no server process, store.accesMobile.enabled=${storedOff.enabled}`);
   saveShot('settings-off.png', await cdp.shot());
   const phoneOff = await phone.eval(`fetch('/api/workspaces', { headers: { Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') } }).then((r) => 'status ' + r.status, () => 'network error')`);
-  clause('settings/phone-sees-off', phoneOff === 'network error', `phone fetch while off: ${phoneOff}`);
+  clause('settings/phone-sees-off', phoneOff === 'status 502', `phone fetch while off (serve stand-in, nothing behind it): ${phoneOff}`);
   await cdp.clickSel('[data-am-toggle]');
   await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'listening'`), 20000, 'health listening again');
   const pidOn2 = serverPids(TOKEN_FILE)[0];
-  clause('settings/toggle-on-again', pidOn2 && pidOn2 !== pidOn && (await req(AM_PORT, '/api/workspaces', AUTH)).status === 200, `off -> listening, new pid ${pidOn2}`);
+  await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
+  clause('settings/toggle-on-again', pidOn2 && pidOn2 !== pidOn && (await req(SOCK, '/api/workspaces', AUTH)).status === 200, `off -> listening, new pid ${pidOn2}`);
 
   // supervision: SIGKILL the server ⇒ restarted
   process.kill(pidOn2, 'SIGKILL');
   const pidOn3 = await waitFor(() => { const p = serverPids(TOKEN_FILE); return p.length && p[0] !== pidOn2 ? p[0] : null; }, 20000, 'a restarted server');
-  await waitFor(() => connects('127.0.0.1', AM_PORT), 15000, 'port back');
-  clause('supervise/restart-after-kill', (await req(AM_PORT, '/api/workspaces', AUTH)).status === 200, `SIGKILL pid ${pidOn2} -> restarted as pid ${pidOn3}`);
+  await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
+  clause('supervise/restart-after-kill', (await req(SOCK, '/api/workspaces', AUTH)).status === 200, `SIGKILL pid ${pidOn2} -> restarted as pid ${pidOn3} (stale socket replaced)`);
 
   // app crash ⇒ the server exits (no orphan listening)
   cdp.close(); cdp = null;
   process.kill(app.pid, 'SIGKILL');
   await waitFor(() => serverPids(TOKEN_FILE).length === 0, 15000, 'server gone after app SIGKILL').catch(() => null);
   const left = serverPids(TOKEN_FILE);
-  clause('supervise/dies-with-app', left.length === 0 && !(await connects('127.0.0.1', AM_PORT)), `after app SIGKILL: server pids [${left.join(',')}], port ${await connects('127.0.0.1', AM_PORT) ? 'OPEN' : 'closed'}`);
+  const stillServing = await sockConnects(SOCK);
+  clause('supervise/dies-with-app', left.length === 0 && !stillServing, `after app SIGKILL: server pids [${left.join(',')}], socket ${stillServing ? 'STILL ANSWERS' : 'dead'} (${fs.existsSync(SOCK) ? 'file left' : 'file removed'})`);
 
   const dup = shots.length !== new Set(shots.map((s) => s.md5)).size;
   clause('ctl/screenshots-distinct', !dup, shots.map((s) => `${path.basename(s.file)}=${s.md5.slice(0, 8)}`).join(' '));
@@ -248,6 +292,8 @@ try {
   exitCode = 2;
 } finally {
   try { cdp?.close(); phone?.close(); } catch {}
+  for (const p of [ownerProxy, colleagueProxy, taggedProxy]) p.srv.close();
+  if (SOCK && fs.existsSync(SOCK)) { try { fs.unlinkSync(SOCK); } catch {} }
   for (const p of [chrome, app]) { if (p?.pid) { try { process.kill(-p.pid, 'SIGKILL'); } catch {} } }
   for (const p of serverPids(TOKEN_FILE)) { try { process.kill(p, 'SIGKILL'); } catch {} }
 }

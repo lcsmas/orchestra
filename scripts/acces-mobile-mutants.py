@@ -14,13 +14,23 @@ MUTANTS = [
     ('M5-no-token', 'src/acces-mobile/server.ts', "    if (!presented) return refuse(401, 'no-token');\n", '', 'RED'),
     ('M6-empty-expected', 'src/acces-mobile/server.ts', "  if (!presented || !expected) return false;\n", "  if (!presented) return false;\n", 'EQUIV'),  # sha256 of a non-empty token never equals sha256('')
     ('M7-login-substring', 'src/shared/acces-mobile.ts', "  return a.trim().toLowerCase() === b.trim().toLowerCase();\n", "  return a.trim().toLowerCase().startsWith(b.trim().toLowerCase());\n", 'RED'),
-    ('M8-bind-all', 'src/acces-mobile/index.ts', "server.listen(port, '127.0.0.1',", "server.listen(port, '0.0.0.0',", 'RED'),
+    ('M8-socket-world-open', 'src/acces-mobile/index.ts', "process.umask(0o177);\nserver.listen(sockPath, () => {\n  try {\n    fs.chmodSync(sockPath, 0o600); // belt and braces: umask already made it 0600\n", "process.umask(0o000);\nserver.listen(sockPath, () => {\n  try {\n", 'RED'),
+    ('M8b-tcp-listener', 'src/acces-mobile/index.ts', "server.listen(sockPath, () => {", "require('node:net').createServer().listen(0, '127.0.0.1');\nserver.listen(sockPath, () => {", 'RED'),
+    ('M8c-open-dir-accepted', 'src/acces-mobile/index.ts', " || (st.mode & 0o077) !== 0)", ")", 'RED'),
+    ('M11-no-exit-with-parent', 'src/acces-mobile/index.ts', "process.stdin.on('end', () => exit(0));\nprocess.stdin.on('close', () => exit(0));\n", "", 'RED'),
+    ('M12-entry-token-cached', 'src/acces-mobile/index.ts', "  readToken: () => fs.readFileSync(tokenFile, 'utf8'),", "  readToken: ((t: string) => () => t)(fs.readFileSync(tokenFile, 'utf8')),", 'RED'),
+    ('M13-no-rate-limit', 'src/acces-mobile/server.ts', "    if (count < REFUSAL_LOG_BURST) {", "    if (true) {", 'RED'),
+    ('M14-no-csp', 'src/acces-mobile/server.ts', "  'Content-Security-Policy':", "  'X-Removed-CSP':", 'RED'),
+    ('M15-token-dir-not-chmod', 'src/main/acces-mobile-host.ts', "  fs.chmodSync(dir, 0o700);\n", "", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('M16-boot-unguarded', 'src/main/acces-mobile-host.ts', "export function startAccesMobileHost(): void {\n  try {\n    applyAccesMobile(store.getAccesMobileSettings());\n  } catch (e) {\n    log.warn('Accès mobile could not start — the app boots without it', e);\n  }\n}", "export function startAccesMobileHost(): void {\n  applyAccesMobile(store.getAccesMobileSettings());\n}", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('M9-token-read-once', 'src/acces-mobile/server.ts', "      expected = opts.readToken().trim();\n", "      expected = (globalThis as any).__t ??= opts.readToken().trim();\n", 'RED'),
     ('M10-shell-without-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const asset0 = STATIC[pathOnly]; if (asset0) { res.writeHead(200); res.end(asset0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED'),
 ]
 
 bad = 0
-for mid, rel, old, new, expected in MUTANTS:
+for m in MUTANTS:
+    mid, rel, old, new, expected = m[:5]
+    test = m[5] if len(m) > 5 else TEST
     path = os.path.join(ROOT, rel)
     backup = path + '.mutant-backup'
     src = open(path).read()
@@ -29,9 +39,13 @@ for mid, rel, old, new, expected in MUTANTS:
     shutil.copy2(path, backup)
     try:
         open(path, 'w').write(src.replace(old, new))
-        r = subprocess.run(['node', '--test', '--experimental-strip-types', TEST], cwd=ROOT, capture_output=True, text=True, timeout=180)
-        fails = [l for l in r.stdout.splitlines() if l.startswith('# fail ')]
-        red = r.returncode != 0
+        try:
+            r = subprocess.run(['node', '--test', '--experimental-strip-types', test], cwd=ROOT, capture_output=True, text=True, timeout=180)
+            fails = [l for l in r.stdout.splitlines() if l.startswith('# fail ')]
+            red = r.returncode != 0
+        except subprocess.TimeoutExpired:
+            fails = ['HUNG (suite timed out) — the instrument must fail, not hang']
+            red = False  # a hang is not a kill: it is reported as SURVIVED
         verdict = 'RED' if red else 'GREEN'
         ok = (verdict == 'RED') if expected == 'RED' else True
         print(f'{mid}: {verdict} ({fails[0] if fails else "no summary"}) expected={expected} {"OK" if ok else "SURVIVED"}')

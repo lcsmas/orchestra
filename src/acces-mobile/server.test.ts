@@ -8,9 +8,9 @@ import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
-import { createAccesMobileServer, tokenMatches, type Upstream } from './server.ts';
+import { createAccesMobileServer, tokenMatches, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -62,6 +62,7 @@ function get(port: number, p: string, headers: Record<string, string> = {}, meth
 }
 
 const ID = { 'Tailscale-User-Login': LOGIN };
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const AUTH = { ...ID, Authorization: `Bearer ${TOKEN}` };
 
 test('control: identity + token reach the workspace list through the upstream', async () => {
@@ -219,66 +220,173 @@ test('tokenMatches: equal only on exact equality, never on empty', () => {
   assert.equal(tokenMatches(TOKEN, ''), false);
 });
 
-// ---- the real entry point: binds 127.0.0.1 only, talks to main over a Unix socket, dies with its parent ----
-
-function nonLoopbackIPv4(): string | null {
-  for (const addrs of Object.values(os.networkInterfaces())) {
-    for (const a of addrs ?? []) if (a.family === 'IPv4' && !a.internal) return a.address;
+test('refusal logging is rate-limited: a flood costs at most REFUSAL_LOG_BURST lines per window, then one summary', async () => {
+  let t = 1_000_000;
+  const logs: string[] = [];
+  const server = createAccesMobileServer({ allowedLogin: LOGIN, readToken: () => TOKEN, upstream: async () => ROWS, log: (l) => logs.push(l), now: () => t });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    assert.equal((await get(port, '/api/workspaces', AUTH)).status, 200, 'control');
+    for (let i = 0; i < 100; i++) assert.equal((await get(port, '/api/workspaces', { 'Tailscale-User-Login': 'colleague@x' })).status, 403);
+    assert.equal(logs.length, REFUSAL_LOG_BURST, `100 refusals ⇒ ${logs.length} lines`);
+    t += REFUSAL_LOG_WINDOW_MS;
+    await get(port, '/api/workspaces', { 'Tailscale-User-Login': 'colleague@x' });
+    assert.match(logs[REFUSAL_LOG_BURST], /^refusals: 80 more suppressed/);
+    assert.match(logs[REFUSAL_LOG_BURST + 1], /^refused 403 wrong-identity/);
+  } finally {
+    await new Promise((r) => server.close(() => r(null)));
   }
-  return null;
-}
+});
 
-function connects(host: string, port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = net.connect({ host, port });
-    s.setTimeout(1500, () => { s.destroy(); resolve(false); });
-    s.on('connect', () => { s.destroy(); resolve(true); });
-    s.on('error', () => resolve(false));
+test('the shell carries the browser hardening headers (CSP, no framing, no referrer, no store)', async () => {
+  const r = await rig();
+  try {
+    const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const q = http.request({ host: '127.0.0.1', port: r.port, path: '/', headers: ID }, resolve);
+      q.on('error', reject);
+      q.end();
+    });
+    res.resume();
+    assert.equal(res.statusCode, 200);
+    assert.match(String(res.headers['content-security-policy']), /default-src 'self'.*frame-ancestors 'none'/);
+    assert.equal(res.headers['x-frame-options'], 'DENY');
+    assert.equal(res.headers['referrer-policy'], 'no-referrer');
+    assert.equal(res.headers['cache-control'], 'no-store');
+    assert.equal(res.headers['access-control-allow-origin'], undefined, 'no CORS: another origin can never read a reply');
+  } finally {
+    await r.close();
+  }
+});
+
+// ---- the real entry point: a 0600 Unix socket (no TCP at all), talks to main over a Unix socket, dies with its parent ----
+
+function sockGet(socketPath: string, p: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ socketPath, path: p, headers }, (res) => {
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    r.on('error', reject);
+    r.end();
   });
 }
 
-test('entry: listens on 127.0.0.1 only, reaches main over the socket, exits when its parent pipe closes', async (t) => {
+/** TCP listening sockets owned by `pid`, read from its own fd table vs /proc/net/tcp{,6} (no external tool). */
+function tcpListenersOf(pid: number): number {
+  const inodes = new Set<string>();
+  for (const fd of fs.readdirSync(`/proc/${pid}/fd`)) {
+    try {
+      const m = /^socket:\[(\d+)\]$/.exec(fs.readlinkSync(`/proc/${pid}/fd/${fd}`));
+      if (m) inodes.add(m[1]);
+    } catch {}
+  }
+  let n = 0;
+  for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    for (const line of fs.readFileSync(f, 'utf8').split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols[3] === '0A' && inodes.has(cols[9])) n++; // 0A = LISTEN
+    }
+  }
+  return n;
+}
+
+/** Every entry process a test started — killed after each test, so a mutant that keeps one alive fails instead of hanging the run. */
+const live = new Set<ReturnType<typeof spawn>>();
+test.afterEach(() => {
+  for (const c of live) c.kill('SIGKILL');
+});
+
+function startEntry(env: Record<string, string>) {
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(import.meta.dirname, 'index.ts')], {
+    env: { PATH: process.env.PATH ?? '', ...env },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  let err = '';
+  child.stdout.on('data', (c) => (out += c));
+  child.stderr.on('data', (c) => (err += c));
+  const ready = new Promise<void>((resolve, reject) => {
+    const to = setTimeout(() => reject(new Error(`no listening line; stdout=${out} stderr=${err}`)), 10_000);
+    child.stdout.on('data', () => {
+      if (out.includes('listening ')) {
+        clearTimeout(to);
+        resolve();
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(to);
+      reject(new Error(`exited ${code}: ${err}`));
+    });
+  });
+  ready.catch(() => {}); // a test that expects a rejection awaits it itself; never an unhandled rejection
+  const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
+  live.add(child);
+  child.on('exit', () => live.delete(child));
+  return { child, ready, exited, stderr: () => err };
+}
+
+test('entry: 0600 socket in a 0700 dir, no TCP listener, reaches main, rotates, exits with its parent', { timeout: 30_000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
-  const sock = path.join(dir, 'main.sock');
+  fs.chmodSync(dir, 0o700);
+  const mainSock = path.join(dir, 'main.sock');
+  const amSock = path.join(dir, 'am.sock');
   const tokenFile = path.join(dir, 'token');
   fs.writeFileSync(tokenFile, TOKEN + '\n', { mode: 0o600 });
+  fs.mkdirSync(path.dirname(amSock), { recursive: true });
+  // a stale socket from a SIGKILLed predecessor must not block the bind
+  execFileSync('python3', ['-I', '-c', 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])', amSock]); // bound, never unlinked
+  assert.ok(fs.lstatSync(amSock).isSocket(), 'control: a stale socket file is really there before the start');
   const seen: string[] = [];
   const fakeMain = http.createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
     res.end(JSON.stringify(ROWS));
   });
-  await new Promise<void>((r) => fakeMain.listen(sock, r));
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(import.meta.dirname, 'index.ts')], {
-    env: { PATH: process.env.PATH ?? '', ACCES_MOBILE_PORT: String(port), ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: sock },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  await new Promise<void>((r) => fakeMain.listen(mainSock, r));
+  const e = startEntry({ ACCES_MOBILE_SOCKET: amSock, ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: mainSock });
   t.after(() => {
-    child.kill('SIGKILL');
+    e.child.kill('SIGKILL');
     fakeMain.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  let out = '';
-  await new Promise<void>((resolve, reject) => {
-    const to = setTimeout(() => reject(new Error(`no listening line; stdout=${out}`)), 10_000);
-    child.stdout.on('data', (c) => {
-      out += c;
-      if (out.includes(`listening ${port}`)) {
-        clearTimeout(to);
-        resolve();
-      }
-    });
-    child.on('exit', (code) => reject(new Error(`exited ${code}`)));
-  });
-  const res = await get(port, '/api/workspaces', AUTH);
+  await e.ready;
+  const st = fs.statSync(amSock);
+  assert.ok(st.isSocket(), 'control: the path is a socket');
+  assert.equal(st.mode & 0o777, 0o600, `socket mode ${(st.mode & 0o777).toString(8)}`);
+  assert.equal(tcpListenersOf(e.child.pid!), 0, 'no TCP listening socket at all');
+  const res = await sockGet(amSock, '/api/workspaces', AUTH);
   assert.equal(res.status, 200, 'control through the real entry');
   assert.deepEqual(JSON.parse(res.body), ROWS);
   assert.deepEqual(seen, ['POST /mobile/workspaces']);
-  assert.equal(await connects('127.0.0.1', port), true, 'control: loopback connects');
-  const lan = nonLoopbackIPv4();
-  if (lan) assert.equal(await connects(lan, port), false, `not reachable on ${lan}`);
-  const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
-  child.stdin.end();
-  assert.equal(await exited, 0, 'parent pipe closed ⇒ clean exit');
-  assert.equal(await connects('127.0.0.1', port), false, 'nothing listens after exit');
+  assert.equal((await sockGet(amSock, '/api/workspaces', ID)).status, 401, 'no token through the real entry');
+  // rotation: the entry reads the token file at every request
+  const fresh = 'tok_' + 'r'.repeat(40);
+  fs.writeFileSync(tokenFile, fresh + '\n');
+  assert.equal((await sockGet(amSock, '/api/workspaces', AUTH)).status, 401, 'old token refused after rotation');
+  assert.equal((await sockGet(amSock, '/api/workspaces', { ...ID, Authorization: `Bearer ${fresh}` })).status, 200, 'new token accepted');
+  e.child.stdin.end();
+  assert.equal(await Promise.race([e.exited, sleepMs(5000).then(() => 'still running')]), 0, 'parent pipe closed ⇒ clean exit');
+  assert.equal(fs.existsSync(amSock), false, 'socket removed on exit');
+});
+
+test('entry must-FAIL: a socket directory open to others is refused (control: the same layout at 0700 starts)', { timeout: 30_000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
+  const open = path.join(dir, 'open');
+  const closed = path.join(dir, 'closed');
+  fs.mkdirSync(open, { mode: 0o755 });
+  fs.chmodSync(open, 0o755);
+  fs.mkdirSync(closed, { mode: 0o700 });
+  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: path.join(dir, 'main.sock') };
+  const ok = startEntry({ ...base, ACCES_MOBILE_SOCKET: path.join(closed, 'am.sock') });
+  await ok.ready;
+  ok.child.stdin.end();
+  assert.equal(await Promise.race([ok.exited, sleepMs(5000).then(() => 'still running')]), 0, 'control: 0700 dir starts and exits cleanly');
+  const bad = startEntry({ ...base, ACCES_MOBILE_SOCKET: path.join(open, 'am.sock') });
+  await assert.rejects(bad.ready, /must be owned by this user and mode 0700/);
+  assert.equal(await Promise.race([bad.exited, sleepMs(5000).then(() => 'still running')]), 2);
+  assert.equal(fs.existsSync(path.join(open, 'am.sock')), false, 'nothing bound in the open dir');
 });

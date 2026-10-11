@@ -7,6 +7,7 @@ import {
   projectMobileWorkspaces,
   sameLogin,
   tailscaleServeCommand,
+  accesMobileSocketPath,
 } from './acces-mobile.ts';
 import type { Account } from './accounts.ts';
 import type { RepoEntry, Workspace } from './types.ts';
@@ -27,7 +28,8 @@ test('settings: default is OFF and fail-closed (no login)', () => {
   assert.equal(DEFAULT_ACCES_MOBILE_SETTINGS.enabled, false);
   assert.equal(DEFAULT_ACCES_MOBILE_SETTINGS.allowedLogin, '');
   assert.equal(normalizeAccesMobileSettings({ enabled: 'yes' as unknown as boolean }).enabled, false, 'only a literal true enables');
-  assert.equal(normalizeAccesMobileSettings({ port: 80 }).port, DEFAULT_ACCES_MOBILE_SETTINGS.port, 'privileged port refused');
+  assert.equal(normalizeAccesMobileSettings({ servePort: 80 }).servePort, DEFAULT_ACCES_MOBILE_SETTINGS.servePort, 'privileged port refused');
+  assert.equal('port' in normalizeAccesMobileSettings({ port: 47823 } as never), false, 'a pre-review store with a TCP port normalizes it away');
 });
 
 test('settings patch: enabling without a login is refused; invalid values write nothing', () => {
@@ -36,15 +38,16 @@ test('settings patch: enabling without a login is refused; invalid values write 
   const on = patchAccesMobileSettings(cur, { enabled: true, allowedLogin: ' lucas.mas@mobile.club ' });
   assert.ok(on.ok);
   if (on.ok) assert.equal(on.settings.allowedLogin, 'lucas.mas@mobile.club');
-  assert.equal(patchAccesMobileSettings(cur, { port: 99999 }).ok, false);
+  assert.equal(patchAccesMobileSettings(cur, { servePort: 99999 }).ok, false);
   assert.equal(patchAccesMobileSettings(cur, { allowedLogin: 'not a login' }).ok, false);
-  assert.equal(patchAccesMobileSettings(cur, { port: 8445, servePort: 8445 }).ok, false);
   const off = patchAccesMobileSettings({ ...cur, enabled: true, allowedLogin: 'a@b' }, { enabled: false, allowedLogin: '' });
   assert.ok(off.ok, 'turning off while clearing the login is fine');
 });
 
-test('serve command maps the tailnet HTTPS port to loopback only', () => {
-  assert.equal(tailscaleServeCommand({ port: 47823, servePort: 8445 }), 'tailscale serve --bg --https=8445 http://127.0.0.1:47823');
+test('serve command targets the Unix socket, never a TCP port', () => {
+  const sock = accesMobileSocketPath('/run/user/1000/', 'abcdef012345');
+  assert.equal(sock, '/run/user/1000/orchestra-acces-mobile-abcdef012345.sock');
+  assert.equal(tailscaleServeCommand(sock, 8445), 'tailscale serve --bg --https=8445 unix:/run/user/1000/orchestra-acces-mobile-abcdef012345.sock');
 });
 
 test('sameLogin: exact modulo case/space, never empty', () => {

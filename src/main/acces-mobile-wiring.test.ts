@@ -32,7 +32,8 @@ test('the socket route serves the projection (every account, archived dropped)',
 
 test('main opens no port: the host spawns a process and never listens', () => {
   assert.doesNotMatch(host, /\.listen\(|createServer\(/);
-  assert.match(host, /spawn\(process\.execPath, \[script\]/);
+  assert.match(host, /spawn\('\/bin\/bash', \['-c', CLOSE_INHERITED_FDS, 'orchestra-acces-mobile', process\.execPath, script\]/);
+  assert.match(host, /eval "exec \$n>&-"/, 'every inherited fd above stderr is closed before the server runs');
 });
 
 test('the network-facing process gets an ALLOWLISTED env, never main\'s', () => {
@@ -41,18 +42,25 @@ test('the network-facing process gets an ALLOWLISTED env, never main\'s', () => 
   assert.doesNotMatch(envBlock, /\.\.\.process\.env/);
   assert.deepEqual(
     [...envBlock.matchAll(/^\s*([A-Z_]+):/gm)].map((m) => m[1]).sort(),
-    ['ACCES_MOBILE_LOGIN', 'ACCES_MOBILE_PORT', 'ACCES_MOBILE_TOKEN_FILE', 'ELECTRON_RUN_AS_NODE', 'ORCHESTRA_SOCK', 'PATH'],
+    ['ACCES_MOBILE_LOGIN', 'ACCES_MOBILE_SOCKET', 'ACCES_MOBILE_TOKEN_FILE', 'ELECTRON_RUN_AS_NODE', 'ORCHESTRA_SOCK', 'PATH'],
   );
 });
 
-test('the server binds loopback only', () => {
-  assert.match(entry, /server\.listen\(port, '127\.0\.0\.1'/);
+test('the server listens on its Unix socket only, created 0600 (umask before bind) — no TCP port at all', () => {
   const code = entry.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
-  assert.doesNotMatch(code, /0\.0\.0\.0|'::'/);
+  assert.match(code, /process\.umask\(0o177\);\nserver\.listen\(sockPath,/);
+  assert.equal([...code.matchAll(/\.listen\(/g)].length, 1, 'exactly one listen');
+  assert.doesNotMatch(code, /127\.0\.0\.1|0\.0\.0\.0|'::'|ACCES_MOBILE_PORT/);
+});
+
+test('a failure of the optional feature never stops main\'s boot', () => {
+  assert.match(host, /export function startAccesMobileHost\(\): void \{\n  try \{\n    applyAccesMobile/);
+  assert.match(host, /function startChildSafe\(s: AccesMobileSettings\): void \{\n  try \{\n    startChild\(s\);/);
+  assert.doesNotMatch(host.replace(/function startChildSafe[\s\S]*?\n\}\n/, ''), /[^e]startChild\(desired\)|  startChild\(s\);/, 'every other start goes through startChildSafe');
 });
 
 test('the token file is written 0600 in a 0700 dir, atomically', () => {
-  assert.match(host, /mkdirSync\(dir, \{ recursive: true, mode: 0o700 \}\)/);
+  assert.match(host, /mkdirSync\(dir, \{ recursive: true, mode: 0o700 \}\);\n  fs\.chmodSync\(dir, 0o700\);/);
   assert.match(host, /writeFileSync\(tmp, token \+ '\\n', \{ mode: 0o600 \}\)/);
   assert.match(host, /renameSync\(tmp, accesMobileTokenPath\(\)\)/);
 });

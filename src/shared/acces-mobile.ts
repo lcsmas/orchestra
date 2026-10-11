@@ -7,8 +7,6 @@ import type { RepoEntry, Workspace, WorkspaceStatus } from './types.ts';
 export interface AccesMobileSettings {
   /** Off by default: nothing listens for the phone unless the human turned it on. */
   enabled: boolean;
-  /** Local port the server process binds on 127.0.0.1 — never any other interface. */
-  port: number;
   /** HTTPS port `tailscale serve` exposes on the tailnet (only used to print the command and the pairing URL). */
   servePort: number;
   /** The ONLY Tailscale login allowed in (`Tailscale-User-Login`). Empty ⇒ every request is refused (fail closed). */
@@ -17,7 +15,6 @@ export interface AccesMobileSettings {
 
 export const DEFAULT_ACCES_MOBILE_SETTINGS: AccesMobileSettings = {
   enabled: false,
-  port: 47823,
   servePort: 8445,
   allowedLogin: '',
 };
@@ -32,7 +29,6 @@ export function normalizeAccesMobileSettings(raw: Partial<AccesMobileSettings> |
   if (!raw || typeof raw !== 'object') return { ...d };
   return {
     enabled: raw.enabled === true,
-    port: validPort(raw.port) ? raw.port : d.port,
     servePort: validPort(raw.servePort) ? raw.servePort : d.servePort,
     allowedLogin: typeof raw.allowedLogin === 'string' ? raw.allowedLogin.trim() : d.allowedLogin,
   };
@@ -44,10 +40,6 @@ export type AccesMobilePatchResult = { ok: true; settings: AccesMobileSettings }
 export function patchAccesMobileSettings(current: AccesMobileSettings, patch: Partial<AccesMobileSettings>): AccesMobilePatchResult {
   const next: AccesMobileSettings = { ...current };
   if (patch.enabled !== undefined) next.enabled = patch.enabled === true;
-  if (patch.port !== undefined) {
-    if (!validPort(patch.port)) return { ok: false, error: 'port must be an integer between 1024 and 65535' };
-    next.port = patch.port;
-  }
   if (patch.servePort !== undefined) {
     if (!validPort(patch.servePort)) return { ok: false, error: 'tailnet port must be an integer between 1024 and 65535' };
     next.servePort = patch.servePort;
@@ -58,7 +50,6 @@ export function patchAccesMobileSettings(current: AccesMobileSettings, patch: Pa
     next.allowedLogin = login;
   }
   if (next.enabled && next.allowedLogin === '') return { ok: false, error: 'set your Tailscale login before turning Accès mobile on' };
-  if (next.port === next.servePort) return { ok: false, error: 'local port and tailnet port must differ' };
   return { ok: true, settings: next };
 }
 
@@ -66,22 +57,31 @@ export function patchAccesMobileSettings(current: AccesMobileSettings, patch: Pa
 export type AccesMobileHealth =
   | { state: 'off' }
   | { state: 'starting'; pid?: number }
-  | { state: 'listening'; pid: number; port: number }
+  | { state: 'listening'; pid: number; socketPath: string }
   | { state: 'failed'; error: string; retryInMs: number | null };
 
 export interface AccesMobileView {
   settings: AccesMobileSettings;
   health: AccesMobileHealth;
   serveCommand: string;
+  /** The Unix socket the server listens on (0600) — the `tailscale serve` target. */
+  socketPath: string;
   /** `#t=<token>` — appended to the tailnet URL to pair the phone. null when no token exists yet (never enabled). */
   pairingFragment: string | null;
 }
 
 export type AccesMobileSetResult = { ok: true; view: AccesMobileView } | { ok: false; error: string; view: AccesMobileView };
 
-/** The command the human runs ONCE by hand — Orchestra never runs `tailscale` itself (ADR 0006). */
-export function tailscaleServeCommand(s: Pick<AccesMobileSettings, 'port' | 'servePort'>): string {
-  return `tailscale serve --bg --https=${s.servePort} http://127.0.0.1:${s.port}`;
+/** The command the human runs ONCE by hand — Orchestra never runs `tailscale` itself (ADR 0006). The target is the server's
+ *  0600 Unix socket, never a TCP port: any local process can take a free loopback port and harvest the phone's token (#334 review). */
+export function tailscaleServeCommand(socketPath: string, servePort: number): string {
+  return `tailscale serve --bg --https=${servePort} unix:${socketPath}`;
+}
+
+/** Where the server listens: a stable path (the serve config outlives restarts), keyed on ORCHESTRA_HOME like the hooks socket, in
+ *  the per-user 0700 runtime dir. `homeHash` = first 12 hex of sha256(ORCHESTRA_HOME). */
+export function accesMobileSocketPath(runtimeDir: string, homeHash: string): string {
+  return `${runtimeDir.replace(/\/+$/, '')}/orchestra-acces-mobile-${homeHash}.sock`;
 }
 
 /** Login comparison: Tailscale logins are e-mail-like; case never distinguishes two people. */

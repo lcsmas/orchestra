@@ -11,6 +11,7 @@ import { scoped } from './logger';
 import { orchestraHome } from './platform';
 import { getHookSocketPath } from './hooks-server';
 import {
+  accesMobileSocketPath as socketPathIn,
   patchAccesMobileSettings,
   tailscaleServeCommand,
   type AccesMobileHealth,
@@ -22,6 +23,11 @@ import {
 const log = scoped('acces-mobile');
 
 const MAX_BACKOFF_MS = 30_000;
+
+/** Linux: exec the server through bash after closing every inherited fd above stderr. Electron/Chromium leaves some of its own
+ *  sockets without CLOEXEC — the e2e rig caught the server holding main's DevTools LISTEN socket — and the network-facing process
+ *  must hold nothing of main's. `$0` is a label; `"$@"` = runtime + script. */
+const CLOSE_INHERITED_FDS = 'shopt -s nullglob; for f in /proc/$$/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ]; then eval "exec $n>&-"; fi; done; exec "$@"';
 const STABLE_UPTIME_MS = 60_000;
 
 export function accesMobileDir(): string {
@@ -30,6 +36,22 @@ export function accesMobileDir(): string {
 export function accesMobileTokenPath(): string {
   return path.join(accesMobileDir(), 'token');
 }
+/** The server's Unix socket: in $XDG_RUNTIME_DIR (per-user, 0700) when it is ours, else in our own 0700 dir. Stable across
+ *  restarts — the human's one-time `tailscale serve … unix:<path>` points at it. */
+export function accesMobileSocketPath(): string {
+  const hash = crypto.createHash('sha256').update(orchestraHome()).digest('hex').slice(0, 12);
+  const rt = process.env.XDG_RUNTIME_DIR;
+  if (rt && path.isAbsolute(rt)) {
+    try {
+      const st = fs.statSync(rt);
+      if (st.isDirectory() && st.uid === process.getuid?.() && (st.mode & 0o077) === 0) return socketPathIn(rt, hash);
+    } catch {
+      /* fall through */
+    }
+  }
+  return socketPathIn(accesMobileDir(), hash);
+}
+
 function installedServerPath(): string {
   return path.join(orchestraHome(), 'bin', 'acces-mobile.js');
 }
@@ -94,7 +116,32 @@ let desired: AccesMobileSettings | null = null;
 let quitting = false;
 
 function configKey(s: AccesMobileSettings): string {
-  return `${s.port}|${s.allowedLogin}`;
+  return s.allowedLogin;
+}
+
+function scheduleRetry(error: string): void {
+  if (retryTimer) clearTimeout(retryTimer);
+  const wait = backoffMs;
+  backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+  health = { state: 'failed', error, retryInMs: wait };
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (desired?.enabled && !child && !quitting) startChildSafe(desired);
+  }, wait);
+}
+
+/** Never throws: a failure of this OPTIONAL feature (disk full writing the token or the bundle, EACCES …) must not stop main's
+ *  boot (#334 review) — it becomes a `failed` health with a retry. */
+function startChildSafe(s: AccesMobileSettings): void {
+  try {
+    startChild(s);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log.warn(`server start failed: ${msg}`);
+    child = null;
+    childKey = '';
+    scheduleRetry(msg);
+  }
 }
 
 function stopChild(): void {
@@ -120,28 +167,33 @@ function startChild(s: AccesMobileSettings): void {
     return;
   }
   ensureToken();
+  const listenPath = accesMobileSocketPath();
+  fs.mkdirSync(path.dirname(listenPath), { recursive: true, mode: 0o700 });
   // Allowlisted env: the network-facing process gets nothing it does not need (no API keys, no CLAUDE_* from main's env).
   const env: NodeJS.ProcessEnv = {
     ELECTRON_RUN_AS_NODE: '1',
     PATH: process.env.PATH ?? '/usr/bin:/bin',
-    ACCES_MOBILE_PORT: String(s.port),
+    ACCES_MOBILE_SOCKET: listenPath,
     ACCES_MOBILE_LOGIN: s.allowedLogin,
     ACCES_MOBILE_TOKEN_FILE: accesMobileTokenPath(),
     ORCHESTRA_SOCK: sock,
   };
   const startedAt = Date.now();
-  const c = spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const viaBash = process.platform === 'linux' && fs.existsSync('/bin/bash');
+  const c = viaBash
+    ? spawn('/bin/bash', ['-c', CLOSE_INHERITED_FDS, 'orchestra-acces-mobile', process.execPath, script], { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   child = c;
   childKey = configKey(s);
   health = { state: 'starting', pid: c.pid };
-  log.info(`server starting (pid=${c.pid}, 127.0.0.1:${s.port}, login=${s.allowedLogin})`);
+  log.info(`server starting (pid=${c.pid}, ${listenPath}, login=${s.allowedLogin})`);
   let lastErr = '';
   c.stdout?.setEncoding('utf8');
   c.stdout?.on('data', (chunk: string) => {
-    const m = /listening (\d+)/.exec(chunk);
+    const m = /listening (\/\S+)/.exec(chunk);
     if (m && child === c) {
-      health = { state: 'listening', pid: c.pid ?? 0, port: Number(m[1]) };
-      log.info(`server listening on 127.0.0.1:${m[1]} (pid=${c.pid})`);
+      health = { state: 'listening', pid: c.pid ?? 0, socketPath: m[1] };
+      log.info(`server listening on ${m[1]} (pid=${c.pid})`);
     }
   });
   c.stderr?.setEncoding('utf8');
@@ -165,15 +217,9 @@ function startChild(s: AccesMobileSettings): void {
       return;
     }
     if (Date.now() - startedAt > STABLE_UPTIME_MS) backoffMs = 1000;
-    const wait = backoffMs;
-    backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
     const error = lastErr || `exited (${signal ?? code})`;
-    health = { state: 'failed', error, retryInMs: wait };
-    log.warn(`server exited (${signal ?? code}): ${error} — restarting in ${wait} ms`);
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      if (desired?.enabled && !child && !quitting) startChild(desired);
-    }, wait);
+    log.warn(`server exited (${signal ?? code}): ${error} — restarting in ${backoffMs} ms`);
+    scheduleRetry(error);
   });
 }
 
@@ -188,12 +234,16 @@ export function applyAccesMobile(s: AccesMobileSettings): void {
   if (child && childKey === configKey(s)) return;
   stopChild();
   backoffMs = 1000;
-  startChild(s);
+  startChildSafe(s);
 }
 
 /** Boot: called once the hooks socket is listening and the store is loaded. */
 export function startAccesMobileHost(): void {
-  applyAccesMobile(store.getAccesMobileSettings());
+  try {
+    applyAccesMobile(store.getAccesMobileSettings());
+  } catch (e) {
+    log.warn('Accès mobile could not start — the app boots without it', e);
+  }
 }
 
 export function stopAccesMobileHost(): void {
@@ -208,7 +258,8 @@ export function accesMobileView(): AccesMobileView {
   return {
     settings,
     health,
-    serveCommand: tailscaleServeCommand(settings),
+    serveCommand: tailscaleServeCommand(accesMobileSocketPath(), settings.servePort),
+    socketPath: accesMobileSocketPath(),
     pairingFragment: token ? `#t=${token}` : null,
   };
 }
@@ -218,7 +269,7 @@ export async function setAccesMobileSettings(patch: Partial<AccesMobileSettings>
   const res = patchAccesMobileSettings(current, patch);
   if (!res.ok) return { ok: false, error: res.error, view: accesMobileView() };
   await store.setAccesMobileSettings(res.settings);
-  log.info(`settings changed — ${current.enabled ? 'ON' : 'OFF'}→${res.settings.enabled ? 'ON' : 'OFF'}, port ${res.settings.port}, tailnet port ${res.settings.servePort}`);
+  log.info(`settings changed — ${current.enabled ? 'ON' : 'OFF'}→${res.settings.enabled ? 'ON' : 'OFF'}, tailnet port ${res.settings.servePort}`);
   applyAccesMobile(res.settings);
   return { ok: true, view: accesMobileView() };
 }
