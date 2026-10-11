@@ -448,8 +448,9 @@ export function memNoticeText(rec: MemNoticeRecord): string {
   const reason = rec.level === 'hard'
     ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
     : 'killed by the system under memory pressure (not by the Plafond mémoire)';
-  if (rec.command === null) return `A command was killed: ${reason} (it lived too briefly to be named)`;
-  const cmd = cutChars(rec.command, 120);
+  const named = rec.command === null ? null : stripBidi(rec.command);
+  if (named === null || named.trim() === '') return `A command was killed: ${reason} (it lived too briefly to be named)`; // same « unnamed » reading as the row
+  const cmd = cutChars(named, 120);
   const prefix = rec.source === 'kernel' ? `Command ${cmd}` : `A command (probably ${cmd})`;
   const main = rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
   return rec.role ? `${main} — this was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : main;
@@ -477,8 +478,11 @@ export function estimateOomBadness(s: Pick<VictimSnap, 'rssPages' | 'adj'>, tota
   return s.rssPages + (s.adj / 1000) * totalPages;
 }
 
+/** Unicode bidi controls (LRM/RLM/ALM, embeddings + overrides, isolates): never shown from a command — an unterminated override reorders the sentence around it, in the row, its tooltip and the legacy plain text (#322 review m4). */
+export const stripBidi = (s: string): string => s.replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
+
 export function describeCommand(cmdline: string, comm: string, max = 200): string {
-  const c = (cmdline || comm || '').replace(/\s+/g, ' ').trim();
+  const c = stripBidi(cmdline || comm || '').replace(/\s+/g, ' ').trim();
   return cutChars(c, max);
 }
 

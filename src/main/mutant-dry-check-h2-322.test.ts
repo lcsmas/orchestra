@@ -56,6 +56,15 @@ for (const script of SCRIPTS) {
       assert.equal(r.scratch, false, args.join(' '));
     }
   });
+  test(`${name}: a bare (positional) argument fails closed — exit 2, nothing launched, no scratch; so does a second id after --only (it used to be silently dropped)`, () => {
+    for (const args of [['R01'], ['--check', 'R01'], ['--only', 'R01', 'R02'], ['--only', 'R01,R02', 'R03'], ['R01', '--only', 'R02']]) {
+      const r = run(script, args);
+      assert.equal(r.status, 2, args.join(' '));
+      assert.match(r.stderr, /REFUSING: unexpected argument/, args.join(' '));
+      assert.deepEqual(r.calls, [], args.join(' '));
+      assert.equal(r.scratch, false, args.join(' '));
+    }
+  });
   test(`${name}: --only that names NO mutant, or has no list, fails closed — exit 2, a sentence, nothing launched, no scratch (it used to print « MUTANTS: 0/0 killed » and exit 0)`, () => {
     for (const args of [['--only', 'NOPE'], ['--only', 'R01,NOPE'], ['--only', 'R01_back'], ['--only'], ['--only', '--check'], ['--check', '--only', 'NOPE']]) {
       const r = run(script, args);

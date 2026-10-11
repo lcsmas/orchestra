@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_CHIP_CHARS, MAX_MEM_NOTICES, addMemNotice, interleaveMemNotices, makeMemNotice, memCapRowOf, memNoticeEntryOf, memNoticeKey, rowOfEntry } from './mem-notice.ts';
-import type { MemKillRecord, MemSoftRecord } from './memory-scope.ts';
+import { describeCommand, memNoticeText, stripBidi, type MemKillRecord, type MemSoftRecord } from './memory-scope.ts';
 import type { AgentEvent } from './types.ts';
 
 const kill: MemKillRecord = { kind: 'kill', source: 'kernel', seq: 4, at: 1_000, level: 'hard', command: 'cargo build', pid: 9, rssBytes: 1, candidates: [], unit: 'u.scope', hardBytes: 6 * 1024 ** 3 };
@@ -92,6 +92,26 @@ test('R5b the chip boundary is EXACTLY 80 characters, in literal numbers (not th
   assert.equal(chipOf(79), 'y'.repeat(79));
   assert.equal(chipOf(80), 'y'.repeat(80), 'exactly the limit is NOT cut');
   assert.equal(chipOf(81), `${'y'.repeat(79)}…`);
+});
+
+test('R8 (#322 fu, review m4) a bidi control in a command never reaches a displayed sentence — the chip, the tooltip text, the legacy plain row and describeCommand are stripped; a bidi-only command is « unnamed »', () => {
+  const RLO = '\u202E', ISO = '\u2066', RLM = '\u200F';
+  const BIDI = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/;
+  const evil = { ...kill, command: `ls ${RLO}gnp.exe ${ISO}x${RLM}` };
+  for (const rec of [evil, { ...evil, source: 'inferred' as const }, { ...evil, role: 'cli' as const }]) {
+    const row = memCapRowOf(rec);
+    assert.ok(!BIDI.test(JSON.stringify(row.segments).replace(/\\u[0-9a-f]{4}/gi, (m) => String.fromCharCode(parseInt(m.slice(2), 16)))), 'row segments (chip + text) carry no bidi control');
+    assert.ok(!BIDI.test(memNoticeText(rec)), 'the tooltip sentence carries none');
+    assert.ok(!BIDI.test(makeMemNotice({ seq: 1 }, memNoticeEntryOf(rec)).text), 'the notice text (= tooltip + echo identity) carries none');
+  }
+  assert.equal(stripBidi(`a${RLO}b${ISO}c${RLM}d`), 'abcd');
+  assert.ok(!BIDI.test(describeCommand(`ls ${RLO}x`, 'ls')), 'describeCommand strips at the source');
+  const legacy = { unit: 'u.scope', seq: 8, at: 5, level: 'hard' as const, text: `Command ls ${RLO}x killed: Plafond mémoire 6 GB reached` };
+  assert.ok(!BIDI.test(rowOfEntry(legacy).segments.map((x) => x.text).join('')), 'a legacy entry (persisted by master, no `row`) is stripped too');
+  assert.ok(!BIDI.test(makeMemNotice({ seq: 1 }, legacy).text), '… and so is its message text (tooltip)');
+  const bidiOnly = { ...kill, command: `${RLO}${ISO}  ${RLM}` };
+  assert.match(memCapRowOf(bidiOnly).segments[0].text, /lived too briefly to be named/);
+  assert.match(memNoticeText(bidiOnly), /lived too briefly to be named/, 'the tooltip reads « unnamed » too (not « Command  killed »)');
 });
 
 test('R5c the cut never splits an emoji into a lone surrogate (chip AND the 120-character tooltip sentence); blank commands are no name at all (never an empty pill)', () => {

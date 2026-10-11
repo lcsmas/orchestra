@@ -15,7 +15,7 @@ function codeOf(rel: string): string {
 
 test('ROW: the builder emits the DEDICATED kind (no longer the generic Warning row), with the structured row; the fold carries it to the message; the renderer routes it', () => {
   const m = codeOf('src/shared/mem-notice.ts');
-  assert.ok(/stamp\(ctx, \{ type: 'notice' as const, kind: 'memory-cap' as const, text: e\.text, memCap: rowOfEntry\(e\) \}\)/.test(m), 'makeMemNotice');
+  assert.ok(/stamp\(ctx, \{ type: 'notice' as const, kind: 'memory-cap' as const, text: stripBidi\(e\.text\), memCap: rowOfEntry\(e\) \}\)/.test(m), 'makeMemNotice');
   assert.ok(!/kind: 'warning'/.test(m), 'the Warning row is gone from this path');
   assert.ok(/row: memCapRowOf\(rec\) \}/.test(m), 'the entry is persisted WITH its structured row');
   const f = codeOf('src/shared/agent-events.ts');

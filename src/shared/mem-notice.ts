@@ -3,7 +3,7 @@
 
 import type { AgentEvent, AgentNoticeEvent, MemCapRow } from './types.ts';
 import { stamp, type NormalizeContext } from './agent-events.ts';
-import { cutChars, fmtGb, isSoftRecord, memNoticeText, type MemNoticeRecord } from './memory-scope.ts';
+import { cutChars, fmtGb, isSoftRecord, memNoticeText, stripBidi, type MemNoticeRecord } from './memory-scope.ts';
 
 /** One persisted row (`Workspace.sdkMemNotices`): enough to rebuild the row after an app restart. `(unit, seq)` is the identity — a record delivered twice stores once. */
 export interface MemNoticeEntry {
@@ -45,14 +45,15 @@ export function memCapRowOf(rec: MemNoticeRecord): MemCapRow {
   const reason = rec.level === 'hard' ? `${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}` : 'by the system under memory pressure (not by the Plafond mémoire)';
   const ended = rec.role ? ` — the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : '';
   const dash = rec.level === 'hard' ? '— ' : '';
-  if (rec.command === null || rec.command.trim() === '') return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} (it lived too briefly to be named)${ended}` }] }; // a blank command is no name either: never an empty pill
-  if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, chipOf(rec.command), { kind: 'text', text: `killed ${dash}${reason}${ended}` }] };
+  const command = rec.command === null ? null : stripBidi(rec.command); // a bidi override in a command must never reach the sentence (review m4)
+  if (command === null || command.trim() === '') return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} (it lived too briefly to be named)${ended}` }] }; // a blank command is no name either: never an empty pill
+  if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, chipOf(command), { kind: 'text', text: `killed ${dash}${reason}${ended}` }] };
   // inferred: « … probably [cmd] » closes the sentence, the session-ended clause follows the chip (never a dangling « probably »)
-  return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} · probably` }, chipOf(rec.command), ...(ended ? [{ kind: 'text' as const, text: ended.trimStart() }] : [])] };
+  return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} · probably` }, chipOf(command), ...(ended ? [{ kind: 'text' as const, text: ended.trimStart() }] : [])] };
 }
 
 /** The row to render for an entry: the stored one, or — for an entry persisted before the dedicated row — a plain one-text row from its own `text`, tone by level. */
-export const rowOfEntry = (e: MemNoticeEntry): MemCapRow => e.row ?? { tone: e.level === 'soft' ? 'soft' : 'hard', segments: [{ kind: 'text', text: e.text }] };
+export const rowOfEntry = (e: MemNoticeEntry): MemCapRow => e.row ?? { tone: e.level === 'soft' ? 'soft' : 'hard', segments: [{ kind: 'text', text: stripBidi(e.text) }] };
 
 /** `list` + `entry`, oldest dropped past the cap; null when `entry` is already there (a re-delivery adds nothing). */
 export function addMemNotice(list: readonly MemNoticeEntry[] | undefined, entry: MemNoticeEntry): MemNoticeEntry[] | null {
@@ -65,7 +66,7 @@ export function addMemNotice(list: readonly MemNoticeEntry[] | undefined, entry:
 
 /** The row: the dedicated `memory-cap` notice (D-Q7 B) — plain `text` for the a11y label / echo identity, the structured `memCap` for the renderer. ONE builder for the live emit and the reopened-pane backfill; `at` is the event's own time, so a reopened pane shows it where it happened. */
 export function makeMemNotice(ctx: NormalizeContext, e: MemNoticeEntry): AgentNoticeEvent & { seq: number; at: number } {
-  const ev = stamp(ctx, { type: 'notice' as const, kind: 'memory-cap' as const, text: e.text, memCap: rowOfEntry(e) });
+  const ev = stamp(ctx, { type: 'notice' as const, kind: 'memory-cap' as const, text: stripBidi(e.text), memCap: rowOfEntry(e) });
   return { ...ev, at: e.at };
 }
 
