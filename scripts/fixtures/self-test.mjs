@@ -15,6 +15,7 @@ import {
   contextCommandUsage,
   toolResultMetaTrio,
   backgroundTasksSequence,
+  localCommandCapture,
   rawLiveContextUsagePayload,
   rawContextCommandPayload,
 } from './index.mjs';
@@ -94,6 +95,12 @@ builds('tool_result_meta trio classifies structurally', () => toolResultMetaTrio
   return null;
 });
 
+builds('local-command capture: stream + transcript twins normalize/backfill to the same rows (#341)', () => localCommandCapture(), (c) => {
+  if (c.stream.length !== 3) return `expected 3 stream messages, got ${c.stream.length}`;
+  if (!c.stream.every((m) => c.transcript.some((t) => t.uuid === m.uuid))) return 'a stream message has no transcript twin';
+  return null;
+});
+
 builds('background_tasks_changed sequence validates', () => backgroundTasksSequence(), (f) => {
   if (f.length !== 4) return `expected 4 frames, got ${f.length}`;
   if (f.at(-1).tasks.length !== 0) return 'the final frame must drain to empty';
@@ -101,6 +108,14 @@ builds('background_tasks_changed sequence validates', () => backgroundTasksSeque
 });
 
 console.log('\nARM 2 — malformed fixtures are REJECTED (each validator watched failing):');
+
+rejects('a local-command stream message that is NOT synthetic (it would have streamed deltas)', () =>
+  localCommandCapture({ stream: [{ type: 'assistant', uuid: 'x', local_command_source: '<local-command-stdout>x</local-command-stdout>', message: { model: 'claude-opus-5-5', content: [] } }] }),
+);
+
+rejects('a local-command capture whose transcript twin disagrees with the stream', () =>
+  localCommandCapture({ transcript: [{ type: 'system', subtype: 'local_command', uuid: 'z', content: '<local-command-stdout>a different text</local-command-stdout>' }] }),
+);
 
 // Every case below is a real rig-side defect shape from the two retrospectives.
 rejects('a category row missing `kind` on the /context wire shape', () =>
