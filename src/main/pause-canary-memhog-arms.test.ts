@@ -25,6 +25,7 @@ const worker = (i: number, over: W = {}): W => {
     memberKillRows: [`Command "python3 swarm.py 1 400 5 ${marker}" killed: Plafond mémoire 0.25 GB reached`],
     coordMsgs: [{ kind: 'escalation', recipient: OPS, body: `w${i} (${id}): python3 swarm.py killed at the hard level (0.25 GB)` }],
     coordRead: 1,
+    backstop: { kLeafKills: 0, beyondWorkKills: 0 },
     ...over,
   };
 };
@@ -44,6 +45,10 @@ const SCENARIOS: Record<string, () => Check[]> = {
   'control:sabotage-leak': () => [evaluateSurvivors({ procs: 1, units: 0 })],
   'control:sabotage-leak-unit': () => [evaluateSurvivors({ procs: 0, units: 1 })],
   'control:sabotage-no-worker': () => evaluateMemhogCycle(cycle({ up: false })),
+  // #343 witness: the keeper leaf squeezed, the kernel kills inside k (a k-leaf oom_kill) — and the session dies with it
+  'control:sabotage-backstop': () => evaluateMemhogCycle(cycle({ backstop: { kLeafKills: 1, beyondWorkKills: 1 }, session: { keeperSame: true, cliSame: false, keeperAlive: true, cliAlive: false, answered: false, scopeActive: true, capState: 'active' } })),
+  // the same witness mid-chain: counters unreadable is not what the arm wants, a measured episode is
+  'control:chain-backstop': () => evaluateChainRun({ planned: 30, done: 4, killsTotal: 3, lostAfter: 3, backstop: { kLeafKills: 1, beyondWorkKills: 1 }, keeperAlive: true, cliAlive: false, answered: false, inScope: true, cliSeen: true }),
   // the Q9 instrument with the cap OFF: no capped scope, no kill, the keeper and the CLI alive and answering
   'control:chain-cap-off': () => evaluateChainRun({ planned: 5, done: 5, killsTotal: 0, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, inScope: false, cliSeen: true }),
 };
@@ -91,4 +96,16 @@ test('every proof arm is internally consistent: must-FAIL arms name something to
   }
   // control: a clean arm has nothing to redden, and the table does carry the must-FAIL arms this test is about
   assert.equal((PROOF_ARMS as W[]).filter((a) => a.sabotage || a.switch === 'off').length >= 8, true);
+});
+
+test('chain arms: every one states the verdict it expects — a sabotage never expects PASS, the clean chain does, the cap-OFF chain is a VOID', () => {
+  const chain = (PROOF_ARMS as W[]).filter((a) => a.exercise === 'chain');
+  assert.deepEqual(chain.map((a) => a.name).sort(), ['chain:q9', 'control:chain-backstop', 'control:chain-cap-off']);
+  for (const a of chain) assert.ok(['PASS', 'FAIL', 'VOID'].includes(a.expectVerdict), `${a.name}: expectVerdict ${a.expectVerdict}`);
+  assert.equal(chain.find((a) => a.name === 'chain:q9')!.expectVerdict, 'PASS');
+  assert.equal(chain.find((a) => a.name === 'control:chain-backstop')!.expectVerdict, 'FAIL');
+  assert.equal(chain.find((a) => a.name === 'control:chain-cap-off')!.expectVerdict, 'VOID');
+  assert.equal(chain.find((a) => a.name === 'control:chain-backstop')!.sabotage, 'backstop');
+  assert.ok((PROOF_ARMS as W[]).some((a) => a.name === 'control:sabotage-backstop' && a.sabotage === 'backstop' && a.redden.includes('bar:no_backstop_kill')), 'the memhog-cycle witness of #343 exists');
+  assert.ok(!(PROOF_ARMS as W[]).some((a) => /known-red/.test(a.name)), 'no KNOWN-RED arm is left: Q9 is a bar');
 });

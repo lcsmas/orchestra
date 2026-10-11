@@ -28,6 +28,15 @@ export function memhogAppEnvelope({ members, capGb, softGb, hogMb, capOn, waiver
   return null;
 }
 
+/** D-Q15 (LEAD, ledger #329): the cap-ON packaged run takes BOTH heavy tokens (A and B) — no other heavy rig beside it — and starts from MemAvailable ≥ 11 GB (stricter than D-Q11's 9). Null = inside the rule, else why not. */
+export const CAP_ON_START_GB = 11;
+export function heavyTokensWhy({ heavy, capOn }) {
+  if (!heavy) return 'no --heavy-token';
+  if (!capOn) return null;
+  const refs = String(heavy).split(',').map((x) => x.trim()).filter(Boolean);
+  return refs.length === 2 && refs[0] !== refs[1] ? null : 'the cap-ON run takes BOTH heavy tokens, A and B (D-Q15): --heavy-token <A>,<B>';
+}
+
 /** The keeper's own summary line `memory cap: <STATE> unit=… memory.max=… cgroup=…` (`klog`, src/keeper/index.ts) → the `cap.state` vocabulary of its status probe (active | unprotected | not-applied | no-scope); the LAST one wins, none → null.
  *  (#324 review 2: the packaged app's own log has no such line, and the keeper log is the only place the state is written.) */
 export function capStateFromKeeperLog(text) {
@@ -40,7 +49,7 @@ export function capStateFromKeeperLog(text) {
  * One worker's metric for one cycle.
  *  w {k,id} · cycle · t0 (ms epoch the hogs were started) · opsId
  *  f: { up, scope, swarmText, oomKillDelta, noticeText, storeNotices (Workspace.sdkMemNotices), msgs (bus rows this worker SENT: sequence, kind, recipient, body, created_at), lots (the OPS's deliveries),
- *       idPre {claude, keeper, pid}, idPost {claude, keeper}, keeperAlive, cliAlive, probeAfter (the post-kill probe file exists), scopeActive, keeperLog (the worker's keepers/<ws>.log text) }
+ *       idPre {claude, keeper, pid}, idPost {claude, keeper}, keeperAlive, cliAlive, probeAfter (the post-kill probe file exists), scopeActive, keeperLog (the worker's keepers/<ws>.log text), backstop (#343: {kLeafKills, beyondWorkKills} or null) }
  */
 export function workerFromAppFacts(w, cycle, t0, opsId, f) {
   const msgs = f.msgs ?? [];
@@ -54,6 +63,7 @@ export function workerFromAppFacts(w, cycle, t0, opsId, f) {
     scope: f.scope,
     swarm: parseSwarm(f.swarmText),
     oomKillDelta: typeof f.oomKillDelta === 'number' ? f.oomKillDelta : null,
+    backstop: f.backstop ?? null,   // {kLeafKills, beyondWorkKills} from `backstopDelta`, null = not measured (#343)
     records,
     session: {
       keeperAlive: f.keeperAlive === true, cliAlive: f.cliAlive === true,

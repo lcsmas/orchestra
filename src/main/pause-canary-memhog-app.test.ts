@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope } from '../../scripts/pause-canary/memhog-app-facts.mjs';
+import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB } from '../../scripts/pause-canary/memhog-app-facts.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { evaluateMemhogCycle } from '../../scripts/pause-canary/memhog-bars.mjs';
 import { appendMemNotice } from '../shared/mem-notice-file.ts';
@@ -52,6 +52,7 @@ function facts(i: number, over: Record<string, unknown> = {}) {
       lots: [{ from_seq: 0, to_seq: 100, acked_at: T0 + 9000 }],
       idPre: { claude: `${100 + i}@5`, keeper: `${90 + i}@4` }, idPost: { claude: `${100 + i}@5`, keeper: `${90 + i}@4` },
       keeperAlive: true, cliAlive: true, probeAfter: true, scopeActive: true,
+      backstop: { kLeafKills: 0, beyondWorkKills: 0 },
       keeperLog: keeperCapLine('ACTIVE', `orchestra-rig-wh-h3-x-${w.k}.scope`),
       ...over,
     },
@@ -92,6 +93,9 @@ test('every degradation of the real-path facts reads RED on the bar that owns it
   assert.deepEqual(red(withOver({ idPre: { claude: undefined, keeper: undefined }, idPost: { claude: undefined, keeper: undefined } })), ['bar:session_survives'], 'identities that could not be read are not « the same »');
   assert.ok(red(withOver({ oomKillDelta: undefined })).includes('bar:hog_killed'), 'no kernel reading is NOT MEASURED, never a default');
   assert.deepEqual(red(withOver({ probeAfter: false })), ['bar:session_survives'], 'the CLI no longer works');
+  assert.deepEqual(red(withOver({ backstop: { kLeafKills: 1, beyondWorkKills: 1 } })), ['bar:no_backstop_kill'], 'a kill in the keeper leaf of a session that SURVIVED (#343)');
+  assert.deepEqual(red(withOver({ backstop: null })), ['bar:no_backstop_kill'], 'unreadable counters');
+  assert.deepEqual(red(withOver({ keeperAlive: false })).sort(), ['bar:no_backstop_kill'].sort(), 'a dead keeper is a #343 signal (the identity bars see the unchanged identities)');
   assert.deepEqual(red(withOver({ keeperLog: 'nothing' })), ['bar:cap_holds_after_kill'], 'the keeper never said the cap was ACTIVE');
   assert.deepEqual(red(withOver({ keeperLog: '' })), ['bar:cap_holds_after_kill'], 'no keeper log read');
   assert.deepEqual(red(withOver({ keeperLog: keeperCapLine('NOT-APPLIED', 'x.scope') })), ['bar:cap_holds_after_kill'], 'in a scope but memory.max not applied');
@@ -186,4 +190,14 @@ test('the Q11 envelope of the packaged run: inside it ⇒ null; every bound, a N
   assert.equal(memhogAppEnvelope({ ...off, members: 3, hogMb: 1200 }), null, 'exactly 3600 MB is allowed');
   assert.ok(memhogAppEnvelope({ ...off, members: 4, hogMb: 1200 }) !== null);
   assert.ok(memhogAppEnvelope({ ...off, members: 7 }) !== null, 'members bound applies to the OFF control too');
+});
+
+test('D-Q15: the cap-ON packaged run takes BOTH heavy tokens (two distinct refs, A,B) and starts from 11 GB; the cap-OFF control takes one token', () => {
+  assert.equal(CAP_ON_START_GB, 11);
+  assert.equal(heavyTokensWhy({ heavy: 'tokA,tokB', capOn: true }), null);
+  assert.equal(heavyTokensWhy({ heavy: ' tokA , tokB ', capOn: true }), null);
+  for (const bad of ['tokA', 'tokA,tokA', 'tokA,', ',tokB', 'a,b,c', '']) assert.notEqual(heavyTokensWhy({ heavy: bad, capOn: true }), null, `cap-ON with ${JSON.stringify(bad)}`);
+  assert.equal(heavyTokensWhy({ heavy: 'tokA', capOn: false }), null, 'the cap-OFF control: one token');
+  assert.notEqual(heavyTokensWhy({ heavy: '', capOn: false }), null, 'no token at all');
+  assert.notEqual(heavyTokensWhy({ heavy: undefined, capOn: true }), null);
 });

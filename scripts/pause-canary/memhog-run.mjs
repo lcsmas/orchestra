@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Pause canary 1b — the MEMORY-HOG exercise (#324, wave H ledger #329):   pnpm run canary:memhog [-- options]
 //   node scripts/pause-canary/memhog-run.mjs --heavy-token <ref> [--exercise memhog,chain] [--cycles 3] [--members 6] [--out <dir>]
-//   node scripts/pause-canary/memhog-run.mjs --heavy-token <ref> --proof [--only <arm,…>]    the HARNESS proof: a clean control must PASS, the cap OFF must FAIL, every instrument must be seen RED by a sabotage, Q9 must stay KNOWN-RED
+//   node scripts/pause-canary/memhog-run.mjs --heavy-token <ref> --proof [--only <arm,…>]    the HARNESS proof: a clean control must PASS, the cap OFF must FAIL, every instrument must be seen RED by a sabotage (the #343 backstop witness included), the Q9 chain must PASS
 //   node scripts/pause-canary/memhog-run.mjs --list                                          the proof arms (no token, nothing run)
 // WHAT IT PROVES (OPS lot 6198): on a dummy fleet LEAD ⊃ OPS ⊃ N workers each in its own kernel memory scope (256 MiB), a process that overflows the cap is killed · the worker's session (keeper + CLI) survives ·
 // the worker AND its coordinator are told (#322, read through the coordinator's own relève) · only the coordinator is told · 0 survivors. The `memory_cap` DEFAULT is NOT flipped by this work (Q9 blocks it, the LEAD decides).
 // SUBSTRATE: the real keeper + real systemd scopes + real scratch bus + the production notice sink, with the H1 stand-in CLI (a real `claude` is ~330 MB: it needs the LEAD's waiver of D2, `--cli claude` is refused).
 // HEAVY: real scopes and kernel OOM kills — run ONLY under the heavy-rig token (ask the OPS), MemAvailable ≥ 6 GB + the rig's footprint, one heavy rig at a time; return the token right after.
-// Exit: 0 PASS (full shape: ≥ 6 workers × ≥ 3 cycles, chain run) · 4 green but PARTIAL · 5 green but a KNOWN-RED instrument went green (Q9 fixed? promote it) · 1 a bar is RED (a bug report, never a retuned number) · 3 VOID (host / tooling: nothing measured).
+// Exit: 0 PASS (full shape: ≥ 6 workers × ≥ 3 cycles, chain run) · 4 green but PARTIAL · 1 a bar is RED (the Q9 chain and any #343 scope-backstop kill included) (a bug report, never a retuned number) · 3 VOID (host / tooling: nothing measured).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { randomPrefix } from './ids.mjs';
 import { liveSnapshot } from './lib.mjs';
-import { MEMHOG_BARS, KNOWN_RED, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict, voidOrFail } from './memhog-bars.mjs';
+import { MEMHOG_BARS, REQUIRED_CYCLE_CHECKS, renderMemhogTable, drillVerdict, missingChecks, splitChecks, evaluateSurvivors, evaluateLiveUntouched, memhogArmVerdict, voidOrFail, canaryWord, canaryExit } from './memhog-bars.mjs';
 import { rigProcesses, killByIdentity } from './memhog-os.mjs';
 import { PROOF_ARMS } from './memhog-arms.mjs';
 
@@ -43,7 +43,7 @@ const HEAVY = opt('heavy-token', process.env.MEMHOG_HEAVY_TOKEN ?? '');
 if (HEAVY.startsWith('--')) { say(`MEMHOG-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
 // the live-config control runs on a scratch home with no drive, no scope, no docker: it needs no token
 const onlyNames = (opt('only', '') || '').split(',').filter(Boolean);
-const internalOnly = flag('proof') && onlyNames.length > 0 && onlyNames.every((n) => PROOF_ARMS.some((a) => a.internal && (a.name === n || a.name.replace(/^(control|known-red):/, '') === n)));
+const internalOnly = flag('proof') && onlyNames.length > 0 && onlyNames.every((n) => PROOF_ARMS.some((a) => a.internal && (a.name === n || a.name.replace(/^(control|chain):/, '') === n)));
 if (!HEAVY && !internalOnly) { say('MEMHOG-CANARY: VOID — real scopes + kernel OOM kills = a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
 
 // ── host guards ──
@@ -152,18 +152,21 @@ if (!flag('proof')) {
   const chainSurv = ch ? ch.checks.filter((c) => c.id === 'bar:no_survivors').map((c) => ({ ...c, exercise: 'chain' })) : [];
   const mhChecks = mh ? [...mh.checks, ...chainSurv, { exercise: 'memhog', cycle: 0, ...liveCheck }] : [];
   const mhVerdict = !mh ? null : mh.rc === 3 || mh.verdict === 'VOID' ? voidOrFail(mhChecks) : !complete(mh, cycles) ? 'FAIL' : drillVerdict(mhChecks, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors', 'bar:live_config_untouched']);
-  // the Q9 chain's state: a result is only believed when EVERY wanted run reported (a chain cut short is neither KNOWN-RED nor GONE)
+  // the chain's state (a BAR since #332 closed Q9): a result is only believed when EVERY wanted run reported (a chain cut short is neither PASS nor FAIL)
   const chRaw = ch ? (ch.exercises[0]?.result ?? ch.verdict) : null;
-  const chV = !ch ? null : ['KNOWN-RED', 'KNOWN-RED-GONE'].includes(chRaw) ? (ch.chains.length === cycles ? chRaw : 'INCOMPLETE') : chRaw === 'VOID' || ch.rc === 3 ? 'VOID' : 'ERROR';
+  const chV = !ch ? null : ['PASS', 'FAIL'].includes(chRaw) ? (ch.chains.length === cycles ? chRaw : 'INCOMPLETE') : chRaw === 'VOID' || ch.rc === 3 ? 'VOID' : 'ERROR';
   const chainSurvBad = !!ch && ch.checks.some((c) => c.id === 'bar:no_survivors' && !c.ok);
   const table = mh ? renderMemhogTable(mh.cycles.map((c) => ({ ...c, checks: c.checks }))) : '(memhog not run)';
   const reds = mhChecks.filter((c) => !c.ok);
-  const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && (chV === 'KNOWN-RED' || chV === 'KNOWN-RED-GONE');
+  const bsTotal = mh ? mh.cycles.reduce((a, c) => a + (c.summary?.backstopKills ?? 0), 0) : 0;
+  const bsChain = ch ? ch.chains.reduce((a, r) => a + (r.backstop?.beyondWorkKills ?? 0), 0) : 0;
+  const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && chV === 'PASS';
   const md = [`# Pause canary 1b — memory-hog exercise (${members} workers + OPS + LEAD, ${cycles} cycles)`, '',
     `tree ${gitHead} (${gitBranch}) · stand-in CLI (a real claude does not fit D2's ≤ 300 MB scopes: NOT run) · cap ${0.25} GB (256 MiB), warning 0.2 GB · heavy token ${HEAVY}`,
     `host: bar ${MIN_AVAIL_GB} GB / load 20 · min MemAvailable ${mh?.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · \`memory_cap\` default NOT flipped (Q9 blocks it; the LEAD decides)`, '', table, '',
     `verdict memhog: **${mhVerdict ?? 'not run'}**${mhVerdict === 'PASS' && !full ? ` (PARTIAL: not ${exercises.includes('chain') ? '' : 'memhog+chain × '}≥ 6 workers × ≥ 3 cycles)` : ''}`,
-    ch ? `Q9 chain (KNOWN-RED, not a bar — ${KNOWN_RED['q9:session_survives_chain'].ref}): **${chV}** — ${ch.exercises[0]?.detail ?? ''}` : 'Q9 chain: not run',
+    ch ? `Q9 chain (a BAR since #332 — ledger #329): **${chV}** — ${ch.exercises[0]?.detail ?? ''}` : 'Q9 chain: not run',
+    `#343 scope-backstop kills (a k-leaf oom_kill, a scope oom_kill beyond the work leaf's, keeper/CLI dead): **${bsTotal}** in the memhog cycles, **${bsChain}** in the chain runs${bsTotal + bsChain > 0 ? ' — ANY blocks the default activation (LEAD rule)' : ''}`,
     `survivors: ${parts.map((p) => `${p.exercise} procs=${p.survivors.procs} scopes=${p.survivors.units}`).join(' · ')}`,
     `bars (never lowered): hog killed (tool + kernel + named record) · keeper + CLI same pid+start and still answer · scope active, cap.state active · exactly one #322 notice row per kill · exactly one escalation per kill to the coordinator, read by its own relève · only the coordinator told · 0 survivors · live config untouched. No latency bar: published.`, '',
     reds.length ? `RED checks:\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED bar.', ''].join('\n');
@@ -171,19 +174,15 @@ if (!flag('proof')) {
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ tree: gitHead, members, cycles, token: HEAVY, memhog: mh && { verdict: mhVerdict, cycles: mh.cycles, checks: mhChecks }, chain: ch && { verdict: chV, runs: ch.chains, detail: ch.exercises[0]?.detail } }, null, 1));
   say(`\n${table}\n`);
   fs.rmSync(RUN_DIR, { recursive: true, force: true });
-  const gone = chV === 'KNOWN-RED-GONE';
-  const chainMeasured = chV === 'KNOWN-RED' || gone;
   // the verdict word: memhog's (PARTIAL when green but not the contract shape), else — chain alone — the chain's own state. A chain that was ASKED FOR and never measured is no PASS; a leak or a changed live config fails whatever ran.
-  let word = mh ? (mhVerdict === 'PASS' && !full ? 'PARTIAL' : mhVerdict) : ch ? (chV === 'KNOWN-RED' ? 'KNOWN-RED' : gone ? 'KNOWN-RED-GONE' : chV === 'VOID' ? 'VOID' : 'FAIL') : 'NOT-RUN';
-  if (mh && ch && !chainMeasured && (word === 'PASS' || word === 'PARTIAL')) word = chV === 'VOID' ? 'VOID' : 'FAIL';
-  if (!mh && (chainSurvBad || !liveCheck.ok)) word = 'FAIL';
-  say(`MEMHOG-CANARY: ${word}${members < 6 && mh ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''}${gone ? ' — THE KNOWN-RED INSTRUMENT WENT GREEN: Q9 fixed or the chain stopped reproducing; look, then promote it to a bar' : ''}`);
-  process.exit(gone && ['PASS', 'PARTIAL', 'KNOWN-RED-GONE'].includes(word) ? 5 : word === 'PASS' || word === 'KNOWN-RED' ? 0 : word === 'PARTIAL' ? 4 : word === 'VOID' || word === 'NOT-RUN' ? 3 : 1);
+  const word = canaryWord({ hasMh: !!mh, hasCh: !!ch, mhVerdict, full, chV, chainSurvBad, liveOk: liveCheck.ok });
+  say(`MEMHOG-CANARY: ${word}${members < 6 && mh ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''} · backstop kills ${bsTotal + bsChain}${bsTotal + bsChain > 0 ? ' — BLOCKS the default activation (#343)' : ''}`);
+  process.exit(canaryExit(word));
 }
 
 // ── the HARNESS proof ──
 const only = new Set((opt('only', '') || '').split(',').filter(Boolean));
-const sel = PROOF_ARMS.filter((a) => only.size === 0 || only.has(a.name) || only.has(a.name.replace(/^(control|known-red):/, '')));
+const sel = PROOF_ARMS.filter((a) => only.size === 0 || only.has(a.name) || only.has(a.name.replace(/^(control|chain):/, '')));
 if (sel.length === 0) { say(`MEMHOG-CANARY PROOF: no arm matches --only ${JSON.stringify([...only])} (have: ${PROOF_ARMS.map((a) => a.name).join(', ')})`); process.exit(2); }
 const members = Number(opt('members', '3'));
 say(`harness proof: ${sel.length} arm(s) at ${members} workers × ${opt('cycles', '1')} cycle(s) · token ${HEAVY} · MemAvailable ${h0.availGB.toFixed(2)} GB`);
@@ -226,7 +225,7 @@ for (const arm of sel) {
     const ex = r.exercises[0];
     const got = ex?.result ?? r.verdict;
     const measured = (arm.redden ?? []).filter((id) => red.some((c) => c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
-    verdict = got === arm.expectVerdict && (arm.redden ? measured.length === arm.redden.length : true) ? 'AS-EXPECTED' : got === 'KNOWN-RED-GONE' ? 'STALE (KNOWN-RED-GONE: Q9 fixed or the chain stopped reproducing — look, then promote it to a bar)' : `UNEXPECTED (${got})`;
+    verdict = got === arm.expectVerdict && (arm.redden ? measured.length === arm.redden.length : true) ? 'AS-EXPECTED' : `UNEXPECTED (${got})`;
     why = `${got}: ${ex?.detail ?? ''}${arm.redden ? ` · RED with a measured reason: ${measured.join(', ') || 'none'}` : ''}`;
   } else if (arm.expect) {
     // a drive that died, was cut short, or measured only the runner's own check is NOT a pass: it needs every required check present and green, a complete set of cycles and a clean exit

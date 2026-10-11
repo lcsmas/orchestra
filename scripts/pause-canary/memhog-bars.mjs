@@ -12,10 +12,8 @@ export const MEMHOG_BARS = Object.freeze({
   capSlackBytes: 65536,
 });
 
-/** KNOWN-RED instruments: expected RED until their ticket is fixed. NOT bars — a RED here never fails a drill, and a GREEN here fails the PROOF (the instrument went stale, or Q9 is fixed: promote it to a bar by emptying this table). */
-export const KNOWN_RED = Object.freeze({
-  'q9:session_survives_chain': { what: 'a chain of tool commands killed one after the other must not cost the session (keeper + CLI)', ticket: 'Q9 / residual (d) of #320', ref: 'ledger #329 comment 6070521692' },
-});
+/** KNOWN-RED instruments: expected RED until their ticket is fixed. NOT bars — a RED here never fails a drill. EMPTY since #332 closed Q9 (ledger #329): the chain `q9:session_survives_chain` is a BAR now (promoted by emptying this table, as designed); the machinery stays for the next one. */
+export const KNOWN_RED = Object.freeze({});
 
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
 const fmt = (v) => (num(v) ? `${v.toFixed(1)} s` : 'NOT MEASURED');
@@ -80,6 +78,27 @@ export function capHoldsWhy(w) {
   return bad.length ? bad.join(', ') : null;
 }
 
+/** #343 (LEAD rule, ledger #329): a session killed by the scope's BACKSTOP — not by the work leaf's hard level. Counted explicitly, one episode blocks the default activation. Three signals: a `k`-leaf `oom_kill`, a scope `oom_kill` beyond the work leaf's
+ *  (the scope's counter is hierarchical, so it includes `k`'s), the keeper or the CLI dead. Absent counters are NOT MEASURED, never zero. */
+export function backstopWhy(w) {
+  const b = w.backstop;
+  if (!b || !num(b.kLeafKills) || !num(b.beyondWorkKills)) return 'NOT MEASURED (no k-leaf / scope oom_kill counters)';
+  const s = w.session ?? {};
+  const bad = [];
+  if (b.kLeafKills > 0) bad.push(`keeper-leaf (k) oom_kill +${b.kLeafKills}`);
+  if (b.beyondWorkKills > 0) bad.push(`scope oom_kill +${b.beyondWorkKills} beyond the work leaf's`);
+  if (s.keeperAlive !== true) bad.push('keeper dead');
+  if (s.cliAlive !== true) bad.push('CLI dead');
+  return bad.length ? `BACKSTOP episode: ${bad.join(', ')}` : null;
+}
+/** Counters {k, scope, work} (oom_kill of the keeper leaf, the scope — hierarchical — and the work leaf; null = unreadable) read at two instants → the window's backstop kills; null when either reading is incomplete or a counter went DOWN. */
+export function backstopDelta(before, after) {
+  const ok = (c) => !!c && num(c.k) && num(c.scope) && num(c.work);
+  if (!ok(before) || !ok(after)) return null;
+  const d = { kLeafKills: after.k - before.k, beyondWorkKills: (after.scope - after.work) - (before.scope - before.work) };
+  return d.kLeafKills < 0 || d.beyondWorkKills < 0 ? null : d;
+}
+
 export function memberToldWhy(w, m) {
   const rows = w.memberKillRows;
   if (!Array.isArray(rows) || !num(w.oomKillDelta)) return 'NOT MEASURED (no stream / no kernel count)';
@@ -118,6 +137,7 @@ export function evaluateMemhogCycle(m) {
   each('bar:hog_killed', hogKilledWhy, 'had the overflowing process killed (tool + kernel + named record)');
   each('bar:session_survives', sessionWhy, 'kept keeper + CLI (same pid+start) and still answer');
   each('bar:cap_holds_after_kill', capHoldsWhy, 'still have an active scope after the kill');
+  each('bar:no_backstop_kill', backstopWhy, 'had NO scope-backstop kill (k-leaf and beyond-work oom_kill 0, keeper + CLI alive) — #343');
   each('bar:member_told', memberToldWhy, 'got exactly one #322 notice row per kill');
   each('bar:coordinator_told', coordinatorToldWhy, 'had their coordinator told (one escalation per kill, read by its own relève)');
   // only the coordinator is told: every member-sent message goes to the OPS, names its own sender, and the LEAD (the coordinator's coordinator) saw none
@@ -135,7 +155,7 @@ export function evaluateMemhogCycle(m) {
 export function summarizeMemhogCycle(m) {
   const ws = Array.isArray(m.workers) ? m.workers : [];
   const n = (why) => ws.filter((w) => why(w, m) === null).length;
-  return { workers: ws.length, killed: n(hogKilledWhy), sessions: n(sessionWhy), memberTold: n(memberToldWhy), coordTold: n(coordinatorToldWhy), kills: ws.reduce((a, w) => a + (num(w.oomKillDelta) ? w.oomKillDelta : 0), 0) };
+  return { workers: ws.length, killed: n(hogKilledWhy), sessions: n(sessionWhy), memberTold: n(memberToldWhy), coordTold: n(coordinatorToldWhy), kills: ws.reduce((a, w) => a + (num(w.oomKillDelta) ? w.oomKillDelta : 0), 0), backstopKills: ws.reduce((a, w) => a + (num(w.backstop?.beyondWorkKills) ? w.backstop.beyondWorkKills : 0), 0), backstopOk: n(backstopWhy) };
 }
 
 /** The runner-side checks (measured by the PARENT, from outside the child): survivors and the live config. */
@@ -165,29 +185,34 @@ export function evaluateChainRun(r) {
     lost ? `session LOST after ${r.lostAfter} kernel kill(s): keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}`
       : `${r.done}/${r.planned} tools killed, keeper ${r.keeperAlive ? 'alive' : 'GONE'}, CLI ${r.cliAlive ? 'alive' : 'GONE'}, ${r.answered === true ? 'answers' : alive ? 'ALIVE BUT DID NOT ANSWER a tool (3 tries)' : 'no answer'}`,
     { lostAfter: lost ? r.lostAfter : null, alive });
+  // #343: the chain must not trip the scope's backstop either (counted from the k leaf and the scope beyond the work leaf)
+  const bs = backstopWhy({ backstop: r.backstop, session: { keeperAlive: r.keeperAlive, cliAlive: r.cliAlive } });
+  add('bar:no_backstop_kill', bs === null, bs ?? 'no k-leaf / beyond-work oom_kill, keeper + CLI alive', { backstop: r.backstop ?? null });
   return checks;
 }
 
-/** The verdict over a Q9 chain exercise (its runs' checks). KNOWN-RED = the expected state; KNOWN-RED-GONE = the chain never lost the session in any run (Q9 fixed, or the instrument stopped reproducing: look, then promote). */
+/** The verdict over the chain exercise (its runs' checks): PASS = no run lost the session or tripped the backstop (a BAR since #332 closed Q9); FAIL = at least one did (a regression of #332 / #343); VOID = a run killed no tool chain (premise RED). */
 export function chainVerdict(runs) {
   if (!Array.isArray(runs) || runs.length === 0) return { verdict: 'VOID', detail: 'no chain run' };
   const premiseRed = runs.filter((r) => r.some((c) => c.id === 'premise_chain_killed_tools' && !c.ok));
   if (premiseRed.length) return { verdict: 'VOID', detail: `${premiseRed.length}/${runs.length} run(s) killed no tool chain (premise RED) — nothing measured` };
-  const lost = runs.filter((r) => r.some((c) => c.id === 'q9:session_survives_chain' && !c.ok));
-  const at = (r) => r.find((c) => c.id === 'q9:session_survives_chain');
-  const detail = `${lost.length}/${runs.length} run(s) lost the session${lost.length ? ` (${lost.map((r) => (num(at(r).lostAfter) ? `after ${at(r).lostAfter} kill(s)` : at(r).alive === true ? 'alive but unresponsive' : 'cut short')).join(', ')})` : ''}`;
-  return { verdict: lost.length > 0 ? 'KNOWN-RED' : 'KNOWN-RED-GONE', detail };
+  const q9 = (r) => r.find((c) => c.id === 'q9:session_survives_chain');
+  const bsOf = (r) => r.find((c) => c.id === 'bar:no_backstop_kill');
+  const lost = runs.filter((r) => q9(r)?.ok === false || bsOf(r)?.ok === false);
+  const how = (r) => (q9(r)?.ok === false ? (num(q9(r).lostAfter) ? `session lost after ${q9(r).lostAfter} kill(s)` : q9(r).alive === true ? 'alive but unresponsive' : 'cut short') : `backstop kill: ${clip(bsOf(r).detail, 90)}`);
+  const detail = `${lost.length}/${runs.length} run(s) lost the session or tripped the scope backstop${lost.length ? ` (${lost.map(how).join('; ')})` : ''}`;
+  return { verdict: lost.length > 0 ? 'FAIL' : 'PASS', detail };
 }
 
 /** Split a check list: bars (decide PASS) vs KNOWN-RED instruments (published, never decisive when RED). */
-export function splitChecks(checks) {
-  const bars = checks.filter((c) => !Object.hasOwn(KNOWN_RED, c.id));
-  const known = checks.filter((c) => Object.hasOwn(KNOWN_RED, c.id));
+export function splitChecks(checks, table = KNOWN_RED) {
+  const bars = checks.filter((c) => !Object.hasOwn(table, c.id));
+  const known = checks.filter((c) => Object.hasOwn(table, c.id));
   return { bars, known, barsRed: bars.filter((c) => !c.ok && !c.id.startsWith('published:')), knownGreen: known.filter((c) => c.ok), knownRed: known.filter((c) => !c.ok) };
 }
 
 /** The checks a drill that really ran always has — a list missing any of them (a drive that died before measuring, an empty list) is NOT a PASS. */
-export const REQUIRED_CYCLE_CHECKS = Object.freeze(['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed', 'bar:session_survives', 'bar:cap_holds_after_kill', 'bar:member_told', 'bar:coordinator_told', 'bar:only_coordinator_told']);
+export const REQUIRED_CYCLE_CHECKS = Object.freeze(['workers_up', 'bar:cap_scope_applied', 'bar:hog_killed', 'bar:session_survives', 'bar:cap_holds_after_kill', 'bar:no_backstop_kill', 'bar:member_told', 'bar:coordinator_told', 'bar:only_coordinator_told']);
 /** What the RUNNER adds (measured from outside the drive). */
 export const REQUIRED_RUNNER_CHECKS = Object.freeze(['bar:no_survivors']);
 
@@ -213,14 +238,24 @@ export function renderMemhogTable(cycles) {
   const s = (v) => (num(v) ? v.toFixed(1) : 'n/a');
   const rows = cycles.map((c) => {
     const k = c.summary;
-    if (!k) return `| ${c.exercise} | ${c.cycle} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ABORTED (no summary: the cycle did not finish measuring) |`;   // review 2, finding 8: an aborted cycle has no summary and must not lose the report
+    if (!k) return `| ${c.exercise} | ${c.cycle} | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ABORTED (no summary: the cycle did not finish measuring) |`;   // review 2, finding 8: an aborted cycle has no summary and must not lose the report
     const verdict = drillVerdict(c.checks) === 'PASS' ? 'PASS' : `FAIL (${splitChecks(c.checks).barsRed.map((x) => x.id.replace(/^bar:/, '')).join(', ')})`;
-    return `| ${c.exercise} | ${c.cycle} | ${k.workers}/${c.expectWorkers} | ${k.killed}/${k.workers} | ${k.sessions}/${k.workers} | ${k.memberTold}/${k.workers} | ${k.coordTold}/${k.workers} | ${k.kills} | ${s(c.tMemberToldS)} | ${s(c.tCoordToldS)} | ${verdict} |`;
+    return `| ${c.exercise} | ${c.cycle} | ${k.workers}/${c.expectWorkers} | ${k.killed}/${k.workers} | ${k.sessions}/${k.workers} | ${k.memberTold}/${k.workers} | ${k.coordTold}/${k.workers} | ${k.kills} | ${k.backstopKills ?? 'n/a'} | ${s(c.tMemberToldS)} | ${s(c.tCoordToldS)} | ${verdict} |`;
   });
-  return ['| exercice | cycle | workers | hog tué | session intacte | membre prévenu | coordinateur prévenu | kills noyau | notice membre (s) | notice coord. (s) | verdict |', '|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n');
+  return ['| exercice | cycle | workers | hog tué | session intacte | membre prévenu | coordinateur prévenu | kills noyau | kills filet (#343) | notice membre (s) | notice coord. (s) | verdict |', '|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n');
 }
 
 /** A drill the host cut short (rc 3 / VOID) is no verdict — unless a bar was ALREADY measured RED before the cut: that RED is evidence, the verdict is FAIL (never a VOID that hides it). */
 export function voidOrFail(checks) {
   return splitChecks(Array.isArray(checks) ? checks : []).barsRed.length > 0 ? 'FAIL' : 'VOID';
 }
+
+/** The runner's verdict word over what ran: memhog's (PARTIAL when green but not the contract shape), else — chain alone — the chain's own state. A chain ASKED FOR and never measured is no PASS; a leak or a changed live config fails whatever ran. */
+export function canaryWord({ hasMh, hasCh, mhVerdict, full, chV, chainSurvBad, liveOk }) {
+  let word = hasMh ? (mhVerdict === 'PASS' && !full ? 'PARTIAL' : mhVerdict) : hasCh ? (chV === 'PASS' ? 'PASS' : chV === 'VOID' ? 'VOID' : 'FAIL') : 'NOT-RUN';
+  if (hasMh && hasCh && chV !== 'PASS' && (word === 'PASS' || word === 'PARTIAL')) word = chV === 'VOID' ? 'VOID' : 'FAIL';
+  if (!hasMh && (chainSurvBad || !liveOk)) word = 'FAIL';
+  return word;
+}
+/** Exit code of a verdict word: 0 PASS · 4 PARTIAL · 3 VOID / NOT-RUN (nothing measured) · 1 anything else (a bar is RED — never a retuned number). */
+export const canaryExit = (word) => (word === 'PASS' ? 0 : word === 'PARTIAL' ? 4 : word === 'VOID' || word === 'NOT-RUN' ? 3 : 1);

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, fmtCap, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, voidOrFail, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
+import { MEMHOG_BARS, KNOWN_RED, evaluateMemhogCycle, summarizeMemhogCycle, evaluateSurvivors, evaluateLiveUntouched, evaluateChainRun, chainVerdict, fmtCap, hogMarker, hasMarker, parseSwarm, readByCoordinator, splitChecks, drillVerdict, missingChecks, REQUIRED_CYCLE_CHECKS, memhogArmVerdict, voidOrFail, backstopWhy, backstopDelta, canaryWord, canaryExit, renderMemhogTable } from '../../scripts/pause-canary/memhog-bars.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { mustFailVerdict } from '../../scripts/pause-canary/bars.mjs';
 
@@ -27,6 +27,7 @@ const worker = (i: number, over: W = {}): W => {
     memberKillRows: [`Command "python3 swarm.py 1 400 5 ${marker}" killed: Plafond mémoire 0.25 GB reached`],
     coordMsgs: [{ kind: 'escalation', recipient: OPS, body: `w${i} (${id}): python3 swarm.py killed at the hard level (0.25 GB)` }],
     coordRead: 1,
+    backstop: { kLeafKills: 0, beyondWorkKills: 0 },
     ...over,
   };
 };
@@ -40,8 +41,8 @@ const redOf = (over: W = {}, wover: W | ((i: number) => W) = {}, n = 3) => red(e
 test('a clean cycle is GREEN on every check, and the table counts every worker everywhere', () => {
   const m = good();
   assert.deepEqual(red(evaluateMemhogCycle(m)), []);
-  assert.deepEqual(summarizeMemhogCycle(m), { workers: 3, killed: 3, sessions: 3, memberTold: 3, coordTold: 3, kills: 3 });
-  assert.match(renderMemhogTable([{ exercise: 'memhog', cycle: 1, expectWorkers: 3, summary: summarizeMemhogCycle(m), checks: evaluateMemhogCycle(m), tMemberToldS: 1.2, tCoordToldS: 1.4 }]), /\| memhog \| 1 \| 3\/3 \| 3\/3 \| 3\/3 \| 3\/3 \| 3\/3 \| 3 \| 1\.2 \| 1\.4 \| PASS \|/);
+  assert.deepEqual(summarizeMemhogCycle(m), { workers: 3, killed: 3, sessions: 3, memberTold: 3, coordTold: 3, kills: 3, backstopKills: 0, backstopOk: 3 });
+  assert.match(renderMemhogTable([{ exercise: 'memhog', cycle: 1, expectWorkers: 3, summary: summarizeMemhogCycle(m), checks: evaluateMemhogCycle(m), tMemberToldS: 1.2, tCoordToldS: 1.4 }]), /\| memhog \| 1 \| 3\/3 \| 3\/3 \| 3\/3 \| 3\/3 \| 3\/3 \| 3 \| 0 \| 1\.2 \| 1\.4 \| PASS \|/);
 });
 
 test('the cap level is a PARAMETER, not 0.25: a 0.29 GB cap is green only with a 0.29 GB scope, a 0.29 GB row wording and a 0.29 GB escalation', () => {
@@ -55,7 +56,7 @@ test('the cap level is a PARAMETER, not 0.25: a 0.29 GB cap is green only with a
 test('the table counts per worker: ONE worker that fails an instrument lowers exactly that column', () => {
   const m = good();
   const broken = { ...m, workers: [m.workers[0], { ...m.workers[1], swarm: { children: 1, killed: 0, survived: 1 }, session: { ...m.workers[1].session, answered: false }, memberKillRows: [], coordMsgs: [], coordRead: 0 }, m.workers[2]] };
-  assert.deepEqual(summarizeMemhogCycle(broken), { workers: 3, killed: 2, sessions: 2, memberTold: 2, coordTold: 2, kills: 3 });
+  assert.deepEqual(summarizeMemhogCycle(broken), { workers: 3, killed: 2, sessions: 2, memberTold: 2, coordTold: 2, kills: 3, backstopKills: 0, backstopOk: 3 });
 });
 
 test('cap OFF (no scope, the hog survives, nobody told) reads RED on exactly the cap bars — the session bar stays green (nothing killed it)', () => {
@@ -99,9 +100,10 @@ test('the hog marker is a WHOLE argument: a record naming `…-c11` does not sat
 test('session survives: a replaced or vanished keeper, a replaced or vanished CLI, a CLI that stopped answering, or no facts are each RED; the other worker\'s intact session does not hide it', () => {
   const ses = (o: W) => ({ keeperSame: true, cliSame: true, keeperAlive: true, cliAlive: true, answered: true, scopeActive: true, capState: 'active', ...o });
   for (const bad of [{ keeperSame: false, keeperAlive: false }, { keeperSame: false, keeperAlive: true }, { cliSame: false, cliAlive: false }, { cliSame: false, cliAlive: true }, { answered: false }, { answered: undefined }]) {
-    assert.deepEqual(redOf({}, (i) => (i === 2 ? { session: ses(bad) } : {})), ['bar:session_survives'], JSON.stringify(bad));
+    const dead = (bad as W).keeperAlive === false || (bad as W).cliAlive === false;   // a DEAD keeper/CLI is a #343 signal too; a replaced-but-alive one is not
+    assert.deepEqual(redOf({}, (i) => (i === 2 ? { session: ses(bad) } : {})).sort(), (dead ? ['bar:no_backstop_kill', 'bar:session_survives'] : ['bar:session_survives']).sort(), JSON.stringify(bad));
   }
-  assert.deepEqual(redOf({}, { session: undefined }).sort(), ['bar:cap_holds_after_kill', 'bar:session_survives']);
+  assert.deepEqual(redOf({}, { session: undefined }).sort(), ['bar:cap_holds_after_kill', 'bar:no_backstop_kill', 'bar:session_survives']);
   const r = evaluateMemhogCycle({ ...good(), workers: [worker(1), worker(2, { session: ses({ cliSame: false, cliAlive: false }) }), worker(3)] }).find((c: Check) => c.id === 'bar:session_survives');
   assert.match(r.detail, /2\/3 workers/);
   assert.match(r.detail, /w2: CLI GONE/);
@@ -174,13 +176,13 @@ test('survivors and live config: any leftover process or scope, an unmeasured co
   assert.equal(evaluateLiveUntouched(null, snap).ok, false);
 });
 
-const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, inScope: true, cliSeen: true, lostAfter: null, keeperAlive: true, cliAlive: true, answered: true, ...o });
+const chainRun = (o: W = {}) => ({ planned: MEMHOG_BARS.chainPlanned, done: MEMHOG_BARS.chainPlanned, killsTotal: MEMHOG_BARS.chainPlanned, inScope: true, cliSeen: true, lostAfter: null, backstop: { kLeafKills: 0, beyondWorkKills: 0 }, keeperAlive: true, cliAlive: true, answered: true, ...o });
 
-test('Q9 chain: a session lost after 7 kills reads RED on the KNOWN-RED instrument and green on the premise; a full survived chain is green; a chain that killed nothing is a VOID premise', () => {
+test('Q9 chain (a BAR since #332): a session lost after 7 kills reads RED on the chain bar AND the backstop bar and green on the premise; a full survived chain is green; a chain that killed nothing is a VOID premise', () => {
   const lost = evaluateChainRun(chainRun({ done: 8, killsTotal: 7, lostAfter: 7, keeperAlive: false, cliAlive: false, answered: false }));
-  assert.deepEqual(red(lost), ['q9:session_survives_chain']);
+  assert.deepEqual(red(lost), ['q9:session_survives_chain', 'bar:no_backstop_kill'], 'a dead keeper + CLI is a #343 signal too');
   assert.match(lost.find((c: Check) => c.id === 'q9:session_survives_chain').detail, /LOST after 7 .*keeper GONE, CLI GONE/);
-  assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }))), ['q9:session_survives_chain'], 'a session lost at the VERY FIRST kill (the counter dies with the scope: 0 read) is a loss, not an unexercised chain');
+  assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }))), ['q9:session_survives_chain', 'bar:no_backstop_kill'], 'a session lost at the VERY FIRST kill (the counter dies with the scope: 0 read) is a loss, not an unexercised chain');
   assert.deepEqual(red(evaluateChainRun(chainRun({ inScope: false }))), ['premise_chain_killed_tools'], 'no capped scope: nothing was measured');
   assert.match(evaluateChainRun(chainRun({ answered: false })).find((c: Check) => c.id === 'q9:session_survives_chain').detail, /ALIVE BUT DID NOT ANSWER/, 'a session that is alive but silent says so — not « lost after N kills »');
   assert.deepEqual(red(evaluateChainRun(chainRun())), []);
@@ -188,10 +190,10 @@ test('Q9 chain: a session lost after 7 kills reads RED on the KNOWN-RED instrume
   assert.deepEqual(red(evaluateChainRun(chainRun({ killsTotal: 12 }))).includes('premise_chain_killed_tools'), true, 'a "survived" chain that killed 12 of 30 tools did not exercise the cap');
   assert.deepEqual(red(evaluateChainRun(chainRun({ done: 29 }))), ['q9:session_survives_chain'], 'a chain cut short is not a survival');
   assert.deepEqual(red(evaluateChainRun(chainRun({ answered: false }))), ['q9:session_survives_chain']);
-  assert.deepEqual(red(evaluateChainRun(chainRun({ keeperAlive: undefined }))), ['q9:session_survives_chain']);
+  assert.deepEqual(red(evaluateChainRun(chainRun({ keeperAlive: undefined }))), ['q9:session_survives_chain', 'bar:no_backstop_kill']);
 });
 
-test('Q9 chain (review 2, finding 6): a CLI that never initialised, or a CLI lost with NO kernel kill while the keeper lives, is a VOID premise — never a KNOWN-RED « session lost »', () => {
+test('Q9 chain (review 2, finding 6): a CLI that never initialised, or a CLI lost with NO kernel kill while the keeper lives, is a VOID premise — never a FAIL « session lost »', () => {
   const never = evaluateChainRun(chainRun({ cliSeen: false, killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: true, cliAlive: false, answered: false }));
   assert.ok(red(never).includes('premise_chain_killed_tools'));
   assert.match(never.find((c: Check) => c.id === 'premise_chain_killed_tools').detail, /the CLI never initialised/);
@@ -203,33 +205,36 @@ test('Q9 chain (review 2, finding 6): a CLI that never initialised, or a CLI los
   assert.ok(red(noKill).includes('premise_chain_killed_tools'), 'the CLI vanished with nothing killed and the keeper alive: not the cap');
   assert.equal(chainVerdict([noKill]).verdict, 'VOID');
   const afterKill = evaluateChainRun(chainRun({ killsTotal: 2, lostAfter: 2, done: 3, keeperAlive: true, cliAlive: false, answered: false }));
-  assert.deepEqual(red(afterKill), ['q9:session_survives_chain'], 'the CLI vanished AFTER a kernel kill: the cap reached it');
-  assert.equal(chainVerdict([afterKill]).verdict, 'KNOWN-RED');
+  assert.deepEqual(red(afterKill), ['q9:session_survives_chain', 'bar:no_backstop_kill'], 'the CLI vanished AFTER a kernel kill: the cap reached it');
+  assert.equal(chainVerdict([afterKill]).verdict, 'FAIL');
   const keeperGone = evaluateChainRun(chainRun({ killsTotal: 0, lostAfter: 0, done: 1, keeperAlive: false, cliAlive: false, answered: false }));
-  assert.deepEqual(red(keeperGone), ['q9:session_survives_chain'], 'the keeper went with the scope at the first kill (the counter died with it)');
+  assert.deepEqual(red(keeperGone), ['q9:session_survives_chain', 'bar:no_backstop_kill'], 'the keeper went with the scope at the first kill (the counter died with it)');
 });
 
 test('Q9 chain: a recorded loss is a loss even if the liveness flags were read after a respawn', () => {
   assert.deepEqual(red(evaluateChainRun(chainRun({ lostAfter: 3 }))), ['q9:session_survives_chain']);
 });
 
-test('Q9 verdict: KNOWN-RED while any run loses the session, KNOWN-RED-GONE only when none does (promote it), VOID without evidence — and the known-red check never fails a drill', () => {
+test('chain verdict (Q9 is a BAR since #332): FAIL while any run loses the session or trips the backstop, PASS only when none does, VOID without evidence — and the chain checks decide a drill like any bar', () => {
   const lost = evaluateChainRun(chainRun({ done: 8, killsTotal: 7, lostAfter: 7, keeperAlive: false, cliAlive: false, answered: false }));
   const ok = evaluateChainRun(chainRun());
   const none = evaluateChainRun(chainRun({ killsTotal: 0 }));
-  assert.equal(chainVerdict([lost, lost, lost]).verdict, 'KNOWN-RED');
-  assert.equal(chainVerdict([ok, lost, ok]).verdict, 'KNOWN-RED', 'one lost session in three is still the hole');
-  assert.equal(chainVerdict([ok, ok, ok]).verdict, 'KNOWN-RED-GONE');
+  const bsOnly = evaluateChainRun(chainRun({ backstop: { kLeafKills: 1, beyondWorkKills: 1 } }));   // the session SURVIVED, but the kernel killed something in the keeper leaf
+  assert.equal(chainVerdict([lost, lost, lost]).verdict, 'FAIL');
+  assert.equal(chainVerdict([ok, lost, ok]).verdict, 'FAIL', 'one lost session in three is the regression');
+  assert.equal(chainVerdict([ok, ok, ok]).verdict, 'PASS');
+  assert.equal(chainVerdict([ok, bsOnly, ok]).verdict, 'FAIL', 'a surviving session that tripped the backstop once is still a #343 episode');
+  assert.match(chainVerdict([ok, bsOnly]).detail, /1\/2 run\(s\) lost the session or tripped the scope backstop \(backstop kill: .*k\)? ?oom_kill \+1/);
   assert.equal(chainVerdict([none, lost]).verdict, 'VOID');
   assert.equal(chainVerdict([]).verdict, 'VOID');
-  assert.match(chainVerdict([lost, lost]).detail, /2\/2 run\(s\) lost the session \(after 7 kill\(s\), after 7 kill\(s\)\)/);
+  assert.match(chainVerdict([lost, lost]).detail, /2\/2 run\(s\) lost the session or tripped the scope backstop \(session lost after 7 kill\(s\); session lost after 7 kill\(s\)\)/);
   assert.match(chainVerdict([evaluateChainRun(chainRun({ answered: false }))]).detail, /alive but unresponsive/);
-  assert.ok(Object.hasOwn(KNOWN_RED, 'q9:session_survives_chain'));
+  assert.deepEqual(Object.keys(KNOWN_RED), [], 'Q9 was promoted by emptying the table');
   const s = splitChecks([...lost, ...evaluateMemhogCycle(good())]);
-  assert.deepEqual(s.knownRed.map((c: Check) => c.id), ['q9:session_survives_chain']);
-  assert.deepEqual(s.barsRed, []);
-  assert.equal(drillVerdict([...lost, ...evaluateMemhogCycle(good())]), 'PASS', 'Q9 is not a bar');
-  assert.equal(splitChecks([...ok]).knownGreen.length, 1, 'a GREEN known-red is reported so the runner can nag');
+  assert.deepEqual(s.knownRed, []);
+  assert.deepEqual(s.barsRed.map((c: Check) => c.id), ['q9:session_survives_chain', 'bar:no_backstop_kill']);
+  assert.equal(drillVerdict([...lost, ...evaluateMemhogCycle(good())]), 'FAIL', 'a lost chain session now fails a drill');
+  assert.equal(drillVerdict([...ok, ...evaluateMemhogCycle(good())]), 'PASS');
   assert.equal(drillVerdict([...evaluateMemhogCycle(good({ tMemberToldS: null }))]), 'FAIL', 'a missing published metric fails the drill');
   assert.equal(drillVerdict([{ id: 'bar:no_survivors', ok: false, detail: 'LEAK' }]), 'FAIL');
   assert.equal(drillVerdict([]), 'FAIL', 'an empty list is NOT a pass');
@@ -240,6 +245,7 @@ test('Q9 verdict: KNOWN-RED while any run loses the session, KNOWN-RED-GONE only
   assert.deepEqual(missingChecks(cyc.filter((c: Check) => c.id !== 'bar:hog_killed')), ['bar:hog_killed']);
   assert.equal(drillVerdict(cyc, [...REQUIRED_CYCLE_CHECKS, 'bar:no_survivors']), 'FAIL', 'the runner can demand its own checks too');
 });
+
 
 test('arm verdict: the named instrument RED + precision. Unreached rig, a RED premise, a stayed-green instrument and an over-red sabotage are each NOT "AS-EXPECTED"', () => {
   assert.equal(memhogArmVerdict({ reached: true, premiseRed: [], hit: ['bar:hog_killed'] }), 'AS-EXPECTED (RED)');
@@ -289,5 +295,79 @@ test('voidOrFail: a drill the host cut short is VOID — unless a bar was alread
   assert.equal(voidOrFail([bar('bar:hog_killed', true), bar('bar:member_told', true)]), 'VOID');
   assert.equal(voidOrFail([bar('bar:hog_killed', true), bar('bar:member_told', false)]), 'FAIL');
   assert.equal(voidOrFail([bar('published:time_to_member_told_s', false)]), 'VOID', 'a published timing is not a bar');
-  assert.equal(voidOrFail([bar('q9:session_survives_chain', false)]), 'VOID', 'the KNOWN-RED instrument is never decisive');
+  assert.equal(voidOrFail([bar('q9:session_survives_chain', false)]), 'FAIL', 'the chain is a BAR since #332: a RED measured before the cut is evidence');
+});
+
+test('#343 backstop bar: a k-leaf kill, a scope kill beyond the work leaf\'s, a dead keeper or a dead CLI are each RED with the signal named; absent counters are NOT MEASURED (RED), never zero; a clean worker is green', () => {
+  assert.deepEqual(redOf({}, {}), [], 'control: zero counters, both alive');
+  const one = (o: W) => redOf({}, (i) => (i === 2 ? o : {}));
+  assert.deepEqual(one({ backstop: { kLeafKills: 1, beyondWorkKills: 1 } }), ['bar:no_backstop_kill'], 'a kill INSIDE the keeper leaf');
+  assert.deepEqual(one({ backstop: { kLeafKills: 0, beyondWorkKills: 2 } }), ['bar:no_backstop_kill'], 'a scope-level kill the work leaf does not own');
+  assert.deepEqual(one({ backstop: undefined }), ['bar:no_backstop_kill'], 'no counters');
+  assert.deepEqual(one({ backstop: { kLeafKills: null, beyondWorkKills: 0 } }), ['bar:no_backstop_kill']);
+  assert.deepEqual(one({ backstop: { kLeafKills: 0, beyondWorkKills: undefined } }), ['bar:no_backstop_kill']);
+  const ses = (o: W) => ({ keeperSame: true, cliSame: true, keeperAlive: true, cliAlive: true, answered: true, scopeActive: true, capState: 'active', ...o });
+  assert.deepEqual(one({ session: ses({ keeperAlive: false, keeperSame: false }) }).sort(), ['bar:no_backstop_kill', 'bar:session_survives']);
+  assert.deepEqual(one({ session: ses({ cliAlive: false, cliSame: false }) }).sort(), ['bar:no_backstop_kill', 'bar:session_survives']);
+  assert.match(backstopWhy(worker(1, { backstop: { kLeafKills: 1, beyondWorkKills: 1 } })), /^BACKSTOP episode: keeper-leaf \(k\) oom_kill \+1, scope oom_kill \+1 beyond the work leaf's$/);
+  assert.match(backstopWhy(worker(1, { session: ses({ keeperAlive: false, cliAlive: false }) })), /keeper dead, CLI dead/);
+  assert.equal(backstopWhy(worker(1)), null);
+  assert.match(String(backstopWhy(worker(1, { backstop: undefined }))), /^NOT MEASURED/);
+  const detail = evaluateMemhogCycle(good({}, 3, { backstop: { kLeafKills: 1, beyondWorkKills: 1 } })).find((c: Check) => c.id === 'bar:no_backstop_kill')!.detail;
+  assert.match(detail, /0\/3 workers had NO scope-backstop kill/);
+  assert.ok(REQUIRED_CYCLE_CHECKS.includes('bar:no_backstop_kill'), 'a drill without the backstop check is not a PASS');
+  const m = good({}, 3, {});
+  m.workers[1] = worker(2, { backstop: { kLeafKills: 1, beyondWorkKills: 3 } });
+  assert.equal(summarizeMemhogCycle(m).backstopKills, 3, 'the verdict COUNTS the episodes (beyond-work total, the k-leaf ones included)');
+  assert.equal(summarizeMemhogCycle(m).backstopOk, 2);
+  assert.match(renderMemhogTable([{ exercise: 'memhog', cycle: 1, expectWorkers: 3, summary: summarizeMemhogCycle(m), checks: evaluateMemhogCycle(m), tMemberToldS: 1, tCoordToldS: 1 }]), /\| 3 \| 3 \| 1\.0 \| 1\.0 \| FAIL \(no_backstop_kill\) \|/);
+});
+
+test('backstopDelta: the window\'s kills are the k-leaf counter\'s rise and the rise of (scope − work); an unreadable or DECREASING counter is null, never zero', () => {
+  const c = (k: number | null, scope: number | null, work: number | null) => ({ k, scope, work });
+  assert.deepEqual(backstopDelta(c(0, 2, 2), c(0, 5, 5)), { kLeafKills: 0, beyondWorkKills: 0 }, 'three kills, all in the work leaf: the hog kills of the cap');
+  assert.deepEqual(backstopDelta(c(0, 2, 2), c(1, 6, 5)), { kLeafKills: 1, beyondWorkKills: 1 }, 'one more in k, counted by the (hierarchical) scope too');
+  assert.deepEqual(backstopDelta(c(0, 0, 0), c(0, 2, 0)), { kLeafKills: 0, beyondWorkKills: 2 }, 'a kill at the scope level itself');
+  assert.equal(backstopDelta(null, c(0, 0, 0)), null);
+  assert.equal(backstopDelta(c(0, 0, 0), null), null);
+  assert.equal(backstopDelta(c(0, 0, 0), c(null, 0, 0)), null);
+  assert.equal(backstopDelta(c(0, 0, 0), c(0, null, 0)), null);
+  assert.equal(backstopDelta(c(0, 0, 0), c(0, 0, null)), null);
+  assert.equal(backstopDelta(c(3, 5, 2), c(2, 5, 2)), null, 'a counter that went down is another cgroup, not an improvement');
+  assert.equal(backstopDelta(undefined, undefined), null);
+});
+
+test('the verdict word and its exit code: PASS needs the memhog drill green AND the full shape AND the chain PASS; a chain asked for and not PASS never leaves a green word; no exit code 5 any more (Q9 is a bar)', () => {
+  const w = (o: W) => canaryWord({ hasMh: true, hasCh: true, mhVerdict: 'PASS', full: true, chV: 'PASS', chainSurvBad: false, liveOk: true, ...o });
+  assert.equal(w({}), 'PASS');
+  assert.equal(w({ full: false }), 'PARTIAL');
+  assert.equal(w({ chV: 'FAIL' }), 'FAIL', 'the chain lost a session / tripped the backstop');
+  assert.equal(w({ chV: 'FAIL', full: false }), 'FAIL');
+  assert.equal(w({ chV: 'VOID' }), 'VOID');
+  assert.equal(w({ chV: 'INCOMPLETE' }), 'FAIL', 'a chain cut short is not measured');
+  assert.equal(w({ chV: 'ERROR' }), 'FAIL');
+  assert.equal(w({ mhVerdict: 'FAIL' }), 'FAIL');
+  assert.equal(w({ mhVerdict: 'VOID' }), 'VOID');
+  const chainOnly = (o: W) => canaryWord({ hasMh: false, hasCh: true, mhVerdict: null, full: false, chV: 'PASS', chainSurvBad: false, liveOk: true, ...o });
+  assert.equal(chainOnly({}), 'PASS');
+  assert.equal(chainOnly({ chV: 'FAIL' }), 'FAIL');
+  assert.equal(chainOnly({ chV: 'VOID' }), 'VOID');
+  assert.equal(chainOnly({ chainSurvBad: true }), 'FAIL', 'a leak fails whatever ran');
+  assert.equal(chainOnly({ liveOk: false }), 'FAIL', 'a changed live config fails whatever ran');
+  assert.equal(canaryWord({ hasMh: false, hasCh: false, mhVerdict: null, full: false, chV: null, chainSurvBad: false, liveOk: true }), 'NOT-RUN');
+  assert.deepEqual(['PASS', 'PARTIAL', 'VOID', 'NOT-RUN', 'FAIL', 'KNOWN-RED-GONE', 'KNOWN-RED'].map(canaryExit), [0, 4, 3, 3, 1, 1, 1], 'the old KNOWN-RED words fall to 1: nothing exits 5');
+});
+
+test('splitChecks: with a KNOWN-RED table the listed ids are published, never decisive when RED, and a GREEN one is reported; with the shipped (empty) table every check is a bar', () => {
+  const checks = [{ id: 'bar:a', ok: true, detail: '' }, { id: 'x:known', ok: false, detail: '' }, { id: 'bar:b', ok: false, detail: '' }];
+  const table = { 'x:known': { what: 'x', ticket: 'x', ref: 'x' } };
+  const s = splitChecks(checks, table);
+  assert.deepEqual(s.known.map((c: Check) => c.id), ['x:known']);
+  assert.deepEqual(s.bars.map((c: Check) => c.id), ['bar:a', 'bar:b']);
+  assert.deepEqual(s.barsRed.map((c: Check) => c.id), ['bar:b'], 'a RED known-red check never fails the drill');
+  assert.deepEqual(s.knownRed.map((c: Check) => c.id), ['x:known']);
+  assert.equal(splitChecks([{ id: 'x:known', ok: true, detail: '' }], table).knownGreen.length, 1);
+  const shipped = splitChecks(checks);
+  assert.deepEqual(shipped.known, [], 'the shipped table is empty: nothing is excused');
+  assert.deepEqual(shipped.barsRed.map((c: Check) => c.id), ['x:known', 'bar:b']);
 });

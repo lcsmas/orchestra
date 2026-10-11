@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, SCOPE_LEAVES, WORK_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
+import { rigProcesses, killByIdentity, ancestorsOf, ticks, alive, standinCliEnv, scopeDirOf, capCarrierOf, scopeFactsFromDir, oomKillFromDir, backstopCountersFromDir, SCOPE_LEAVES, WORK_LEAF, KEEPER_LEAF } from '../../scripts/pause-canary/memhog-os.mjs';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'mhos-'));
 const home = path.join(base, 'rig', 'home');
@@ -242,4 +242,18 @@ test('the leaf names are pinned to the product\'s: src/shared/memory-scope.ts ex
   } else {
     assert.ok(!src.includes('SCOPE_LEAVES'), 'a product without the SCOPE_LEAF_* constants has no half-defined leaves either');
   }
+});
+
+test('#343 counters from fake cgroup trees: the keeper leaf\'s, the scope\'s (hierarchical) and the work leaf\'s oom_kill; a flat scope has no keeper leaf (0) and its own counter IS the work one; unreadable = null', () => {
+  assert.equal(KEEPER_LEAF, 'k');
+  // a scope that took 4 hog kills in w AND 1 backstop kill in k: its hierarchical counter is 5
+  const l = cgTree('bs-leaves', {
+    [`${UNIT}/memory.events`]: 'oom_kill 5\n', [`${UNIT}/k/memory.events`]: 'oom_kill 1\n', [`${UNIT}/w/memory.events`]: 'oom_kill 4\n',
+  });
+  assert.deepEqual(backstopCountersFromDir(path.join(l, UNIT)), { k: 1, scope: 5, work: 4, layout: 'leaves' });
+  const f = flat();
+  assert.deepEqual(backstopCountersFromDir(path.join(f, UNIT)), { k: 0, scope: 2, work: 2, layout: 'flat' });
+  assert.equal(backstopCountersFromDir(null), null);
+  const broken = cgTree('bs-broken', { [`${UNIT}/memory.events`]: 'oom_kill 0\n', [`${UNIT}/w/memory.events`]: 'oom_kill 0\n' });   // the k leaf is missing its file
+  assert.deepEqual(backstopCountersFromDir(path.join(broken, UNIT)), { k: null, scope: 0, work: 0, layout: 'leaves' }, 'an unreadable counter is null, never 0');
 });

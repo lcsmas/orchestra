@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { makeMutantApp, MUTANTS } from './mutants.mjs';
 import { renderTable, BARS, mustFailVerdict } from './bars.mjs';
 import { renderMemhogTable } from './memhog-bars.mjs';
-import { memhogAppEnvelope } from './memhog-app-facts.mjs';
+import { memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB } from './memhog-app-facts.mjs';
 import { initBase } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -31,7 +31,8 @@ const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pause-cana
 const OUT = path.resolve(opt('out', path.join(BASE, 'reports', new Date().toISOString().replace(/[:.]/g, '-'))));
 // Q11 (ledger #329, D-Q11): a `memhog-app` run starts only with MemAvailable > 9 GB and adds no footprint on top (6 scopes of 1 GiB are the design); every other drill keeps the 6 GB bar + footprint
 const MH_ON = args.some((a) => /memhog-app/.test(a));   // the `memhog-app` exercise or its proof arms, either switch (the cap-OFF control's hogs are unbounded: same 9 GB start)
-const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON ? 9 : 0);
+const MH_CAP_ON = MH_ON && !flag('proof') && opt('memhog-switch', 'on') === 'on';   // the cap-ON packaged run (D-Q15: both heavy tokens, start ≥ 11 GB)
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_CAP_ON ? CAP_ON_START_GB : MH_ON ? 9 : 0);
 initBase(BASE);   // the scratch guard also runs HERE: the runner creates dirs and rm -rf's apps/mut-* under --base before any drive starts
 const HOST_NOTE = `bar ${MIN_AVAIL_GB} GB / load 20${process.env.PC_IGNORE_HOST === '1' ? ' — HOST GUARD IGNORED (PC_IGNORE_HOST=1)' : ''}${MIN_AVAIL_GB !== 6 ? ' — NON-DEFAULT --min-avail-gb' : ''}`;
 const say = (s = '') => console.log(s);
@@ -68,6 +69,10 @@ if (flag('list')) { for (const a of PROOF_ARMS) say(`${a.name.padEnd(36)} ${a.ex
 // #324 review 2, finding 9: the packaged memory-hog path is a HEAVY rig (real claude × N, real kernel kills): it runs only under the heavy-rig token, like the stand-in path
 const HEAVY = opt('heavy-token', process.env.MEMHOG_HEAVY_TOKEN ?? '');
 if (MH_ON && !HEAVY) { say('PAUSE-CANARY: VOID — the packaged memhog-app run is a HEAVY rig: run it only under the heavy-rig token (ask the OPS), then pass --heavy-token <ref> (or MEMHOG_HEAVY_TOKEN). Nothing was run.'); process.exit(3); }
+if (MH_ON) {
+  const why = heavyTokensWhy({ heavy: HEAVY, capOn: MH_CAP_ON });
+  if (why && HEAVY) { say(`PAUSE-CANARY: VOID — ${why}. Nothing was run.`); process.exit(3); }
+}
 if (MH_ON && HEAVY.startsWith('--')) { say(`PAUSE-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
 const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
 if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build

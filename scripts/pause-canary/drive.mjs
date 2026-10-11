@@ -14,9 +14,9 @@ import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
-import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors } from './memhog-bars.mjs';
-import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope } from './memhog-app-facts.mjs';
-import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow } from './memhog-os.mjs';
+import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors, backstopDelta } from './memhog-bars.mjs';
+import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB } from './memhog-app-facts.mjs';
+import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -32,7 +32,7 @@ const MH_APP = argv.includes('memhog-app');   // --exercise memhog-app (it runs 
 const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
 // Q11 (ledger #329, D-Q11): the cap-ON packaged run is granted for #324 ONLY — hard 1 GiB / soft 768 MiB, 6 members at most, ONE run under the token, MemAvailable > 9 GB BEFORE it starts. 6 scopes of 1 GiB are the design (the hogs are bounded by them), so
 // the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
-const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_APP ? 9 : 0);   // both switches: the cap-OFF control's hogs are UNBOUNDED by a scope, it starts from the same 9 GB
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP ? CAP_ON_START_GB : MH_APP ? 9 : 0);   // D-Q15: the cap-ON run starts from 11 GB; the cap-OFF control (hogs no scope bounds) from 9
 const RUN_FLOOR_GB = MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
@@ -225,12 +225,17 @@ async function runExercise(name) {
       const seq0 = await maxSeq();
       const oom0 = Object.fromEntries(wk.map((w) => [w.k, oomKillOf(kpid(w.k))]));
       const last = { ...oom0 };
+      // #343: the backstop counters (k leaf / scope / work leaf), before the hogs and again at every later reading — the LAST complete one is kept (the scope may be gone if a session was lost)
+      const bsAt = (w) => backstopCountersFromDir(scopeDirOfPid(kpid(w.k)));
+      const bs0 = Object.fromEntries(wk.map((w) => [w.k, bsAt(w)]));
+      const lastBs = { ...bs0 };
+      const refreshBs = () => { for (const w of wk) { const b = bsAt(w); if (b) lastBs[w.k] = b; } };
       // 2. every worker overflows its scope at once
       const t0 = Date.now();
       await Promise.all(wk.map((w) => sendTo(w.id, `SCN:hog c${c}`)));
       await waitFor(() => wk.every((w) => /swarm:/.test(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`) ?? '')), 240000, 500);   // the swarm line = the hog tool is over, killed or not
       let prev = '';
-      await waitFor(() => { const cur = wk.map((w) => { const v = oomKillOf(kpid(w.k)); if (v !== null) last[w.k] = v; return last[w.k]; }).join(','); const stable = cur === prev; prev = cur; return stable; }, 40000, 1500);   // the kernel counts stop moving
+      await waitFor(() => { const cur = wk.map((w) => { const v = oomKillOf(kpid(w.k)); if (v !== null) last[w.k] = v; return last[w.k]; }).join(','); refreshBs(); const stable = cur === prev; prev = cur; return stable; }, 40000, 1500);   // the kernel counts stop moving
       await sleep(2500);
       const delta = (w) => (typeof last[w.k] === 'number' && typeof oom0[w.k] === 'number' ? last[w.k] - oom0[w.k] : null);
       const rowsOf = (w) => (storeWs(w.id)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft' && e.at >= t0 - 1000);   // the settle wait below
@@ -244,6 +249,7 @@ async function runExercise(name) {
       // 3. the session still works AFTER the kill: a second probe tool runs
       await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}b`)));
       await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
+      refreshBs();   // after the post-kill probe: a late backstop episode shows here
       const idPost = identities();
       const keeperLogOf = (id) => ['.log.old', '.log'].map((x) => { try { return fs.readFileSync(`${rig.H}/keepers/${id}${x}`, 'utf8'); } catch { return ''; } }).join('\n');   // the keeper's own `memory cap: <STATE>` line (the app log has none)
       const lots = await lotsOps();
@@ -256,7 +262,7 @@ async function runExercise(name) {
           noticeText: (() => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8'); } catch { return ''; } })(),
           storeNotices: storeWs(w.id)?.sdkMemNotices ?? [], msgs: await msgsOf(w), lots,
           idPre: { claude: idPre[w.k]?.claude, keeper: idPre[w.k]?.keeper }, idPost: { claude: idPost[w.k]?.claude, keeper: idPost[w.k]?.keeper },
-          keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), keeperLog: keeperLogOf(w.id),
+          backstop: backstopDelta(bs0[w.k], lastBs[w.k]), keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), keeperLog: keeperLogOf(w.id),
         }));
       }
       const leadSeen = (await Q('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?', spec.lead, seq0))?.[0]?.n ?? null;

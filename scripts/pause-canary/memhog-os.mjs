@@ -21,6 +21,7 @@ export const hostAvailGB = () => Number(/MemAvailable:\s+(\d+) kB/.exec(readSafe
 //    The leaf names are pinned against src/shared/memory-scope.ts (SCOPE_LEAVES) by pause-canary-memhog-os.test.ts as soon as that module has them.
 export const SCOPE_LEAVES = ['k', 'w'];
 export const WORK_LEAF = 'w';
+export const KEEPER_LEAF = 'k';
 /** `.../<unit>.scope/<leaf>` → the scope's own directory; any other path is returned as is (a flat scope, a plain cgroup, null). */
 export const scopeDirOf = (dir) => (dir && SCOPE_LEAVES.includes(path.basename(dir)) && path.basename(path.dirname(dir)).endsWith('.scope') ? path.dirname(dir) : dir ?? null);
 /** The cgroup that carries the member's hard level and its `oom_kill` counter: the work leaf when the scope has one, else the scope itself. */
@@ -44,6 +45,14 @@ export function scopeFactsFromDir(dir, unitPrefix, { read = readSafe, exists = f
 }
 export const scopeFactsOf = (keeperPid, unitPrefix, deps) => scopeFactsFromDir(scopeDirOfPid(keeperPid), unitPrefix, deps);
 /** `oom_kill` of the cgroup that carries the cap (hierarchical `memory.events`), or null when unreadable — a flat scope's own counter, or the work leaf's (the keeper leaf's would always read 0). */
+/** #343: the `oom_kill` counters that tell a SCOPE-BACKSTOP episode from the work leaf's hard-level kills — {k (keeper leaf), scope (hierarchical: includes k and w), work (the cap carrier)}; any null = unreadable. A flat scope has no keeper leaf: k is 0 and the scope's counter IS the work one. */
+export function backstopCountersFromDir(scopeDir, exists = fs.existsSync) {
+  if (!scopeDir) return null;
+  const kills = (d) => { const v = eventsOf(d).oom_kill; return Number.isFinite(v) ? v : null; };
+  const leaves = exists(path.join(scopeDir, WORK_LEAF));
+  const scope = kills(scopeDir);
+  return { k: leaves ? kills(path.join(scopeDir, KEEPER_LEAF)) : 0, scope, work: leaves ? kills(path.join(scopeDir, WORK_LEAF)) : scope, layout: leaves ? 'leaves' : 'flat' };
+}
 export const oomKillFromDir = (scopeDir) => { const d = capCarrierOf(scopeDir); return d ? eventsOf(d).oom_kill ?? null : null; };
 export const oomKillOf = (keeperPid) => oomKillFromDir(scopeDirOfPid(keeperPid));
 

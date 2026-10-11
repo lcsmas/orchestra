@@ -13,8 +13,8 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fleetSpec } from './ids.mjs';
-import { readSafe, ticks, ident, alive, scopeDirOfPid, oomKillFromDir, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
-import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
+import { readSafe, ticks, ident, alive, scopeDirOfPid, oomKillFromDir, backstopCountersFromDir, KEEPER_LEAF, unitsNow, unitActive, hostAvailGB, scopeFactsOf, oomKillOf, rigProcesses, killByIdentity, standinCliEnv } from './memhog-os.mjs';
+import { MEMHOG_BARS, evaluateMemhogCycle, summarizeMemhogCycle, evaluateChainRun, chainVerdict, backstopDelta, drillVerdict, memberToldWhy, coordinatorToldWhy, hogMarker, parseSwarm } from './memhog-bars.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -35,7 +35,7 @@ const HOG_HOLD_S = Number(opt('hog-hold-s', '5'));
 const CHAIN_N = Number(opt('chain-n', String(MEMHOG_BARS.chainPlanned)));
 const CHAIN_GAP_MS = Number(opt('chain-gap-ms', String(MEMHOG_BARS.chainGapMs)));
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
-const SABOTAGES = ['session', 'member-sink', 'coord-sink', 'stray-lead', 'hog-small', 'leak', 'leak-unit', 'no-worker'];
+const SABOTAGES = ['session', 'member-sink', 'coord-sink', 'stray-lead', 'hog-small', 'leak', 'leak-unit', 'no-worker', 'backstop'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const emit = (tag, o) => console.log(`${tag} ${JSON.stringify(o)}`);
 const say = (s) => console.log(s);
@@ -205,6 +205,20 @@ const startedAt = Date.now();
 let verdict = 'ERROR';
 let hostVoid = false;   // VOID because the HOST dipped under the bar (exit 3) — a Q9 chain whose premise failed is a VOID VERDICT, not a void run
 const allChecks = [];
+/** SABOTAGE `backstop` (the #343 witness): shrink the KEEPER leaf's limit below what its keeper + CLI hold in anonymous memory, so the kernel kills something INSIDE `k` — the very shape of a scope-backstop episode. Only ever on a scope carrying the rig prefix. */
+async function injectBackstopKill(keeperPid, cliPid) {
+  const sd = scopeDirOfPid(keeperPid);
+  if (!sd || !path.basename(sd).startsWith(UNIT_PREFIX)) { say('   SABOTAGE backstop: no rig scope for that keeper — nothing injected'); return null; }
+  const kd = path.join(sd, KEEPER_LEAF);
+  const anon = Number(/^anon (\d+)$/m.exec(readSafe(path.join(kd, 'memory.stat')) ?? '')?.[1]);
+  if (!Number.isFinite(anon) || anon <= 0) { say('   SABOTAGE backstop: the keeper leaf has no readable anon figure — nothing injected'); return null; }
+  const limit = Math.max(4 * 1024 * 1024, Math.floor(anon * 0.4));
+  fs.writeFileSync(path.join(kd, 'memory.max'), String(limit));
+  say(`   SABOTAGE backstop: k/memory.max ${limit} B (anon ${anon} B) — waiting for a kill inside the keeper leaf`);
+  let seen = null;
+  await waitFor(() => { const b = backstopCountersFromDir(sd); if (b) seen = b; return (b && b.k > 0) || !alive(keeperPid) || !alive(cliPid); }, 20_000, 250);
+  return { counters: seen };   // the counters AS THEY WERE when the kill showed: the scope may be gone a moment later
+}
 const report = (exercise, cycle, checks) => { for (const c of checks) { allChecks.push({ exercise, cycle, ...c }); emit('PC-CHECK', { exercise, cycle, id: c.id, ok: c.ok, detail: c.detail }); say(`${c.ok ? 'ok ' : 'RED'} ${exercise} c${cycle} ${c.id} — ${c.detail}`); } };
 
 try {
@@ -255,13 +269,17 @@ try {
       const oomAt = (w) => oomKillOf(idsOf.get(w.id).keeperPid);
       const lastOom = new Map(spec.workers.map((w) => [w.id, oomAt(w)]));
       const oom0 = new Map(lastOom);
+      const bsAt = (w) => backstopCountersFromDir(scopeDirOfPid(idsOf.get(w.id).keeperPid));
+      const bs0 = new Map(spec.workers.map((w) => [w.id, bsAt(w)]));
+      const lastBs = new Map(bs0);
+      const refreshBs = () => { for (const w of spec.workers) { const b = bsAt(w); if (b) lastBs.set(w.id, b); } };
       // all hogs at once: each worker's tool command touches HOG_MB in 10 MB steps 0.1 s apart (slow enough for the keeper's snapshot to see it by name) — far more than the scope holds
       const t0 = Date.now();
       for (const w of spec.workers) { if (upMap.get(w.id)) sessions.get(w.id).send({ tool: `python3 ${RIG_DIR}/swarm.py 1 ${HOG_MB} ${HOG_HOLD_S} ${hogMarker(w.k, cycle)}`, id: `hog-c${cycle}` }); }
       await Promise.all(spec.workers.map((w) => waitFor(() => resultOf(sessions.get(w.id), `hog-c${cycle}`) || sessions.get(w.id).exited || !upMap.get(w.id), 120_000, 100)));
       // settle: the kernel counts stop moving (two readings 1.5 s apart), then the kernel-log lookup + delivery
       let prev = '';
-      await waitFor(() => { const cur = spec.workers.map((w) => { const v = oomAt(w); if (v !== null) lastOom.set(w.id, v); return lastOom.get(w.id); }).join(','); const stable = cur === prev; prev = cur; return stable; }, 40_000, 1500);
+      await waitFor(() => { const cur = spec.workers.map((w) => { const v = oomAt(w); if (v !== null) lastOom.set(w.id, v); return lastOom.get(w.id); }).join(','); refreshBs(); const stable = cur === prev; prev = cur; return stable; }, 40_000, 1500);
       // the notices are DUE for every kill the kernel counted: wait for them (the keeper's kernel-log lookup + delivery take a moment — a fixed sleep would read a late one as a bug), then a beat so a surplus (a duplicate) can show
       const killRowsOf = (w) => agentEvents.slice(ev0).filter((e) => e.wsId === w.id && e.ev?.type === 'notice' && !isSoftText(e.ev.text)).length;
       const dueOf = (w) => { const a = lastOom.get(w.id), b = oom0.get(w.id); return typeof a === 'number' && typeof b === 'number' ? Math.max(0, a - b) : 0; };
@@ -280,6 +298,8 @@ try {
         const w1 = spec.workers[0]; const ids = idsOf.get(w1.id);
         if (ids.cliPid && ident(ids.cliPid) === ids.cliId) { process.kill(ids.cliPid, 'SIGTERM'); await waitFor(() => !alive(ids.cliPid), 10_000); }
       }
+      if (SABOTAGE === 'backstop' && cycle === 1) { const w1 = spec.workers[0]; const ids = idsOf.get(w1.id); const inj = await injectBackstopKill(ids.keeperPid, ids.cliPid); if (inj?.counters) lastBs.set(w1.id, inj.counters); }
+      refreshBs();
       // read the world: the coordinator reads its OWN relève (the real `check`), then acks it as the coordinator would
       const lot = bus.check(busDb, spec.ops, spec.ops, 500);
       if (lot.delivery) bus.ack(busDb, spec.ops, spec.ops, lot.delivery.id);
@@ -301,6 +321,7 @@ try {
           swarm: sw,
           oomKillDelta: delta,
           records: kills.filter((k) => k.ws === w.id).slice(rec0.get(w.id)).map((k) => ({ level: k.level, command: k.command ?? null, pid: k.pid, source: k.source })),
+          backstop: backstopDelta(bs0.get(w.id), lastBs.get(w.id)),
           session: { keeperAlive: alive(kp), cliAlive: alive(pre.cliPid), keeperSame: alive(kp) && ident(kp) === pre.keeperId, cliSame: alive(pre.cliPid) && ident(pre.cliPid) === pre.cliId, answered: probe?.code === 0 && (probe.stdout ?? '').includes(`alive-${w.k}-c${cycle}`), scopeActive: unitActive(scope.unit), capState: pr?.cap?.state ?? null },
           memberKillRows: killRows.map((e) => e.ev.text), softRows: rows.length - killRows.length,
           coordMsgs: msgs.map((x) => ({ kind: x.kind, recipient: x.recipient, body: x.body })),
@@ -323,7 +344,7 @@ try {
       emit('PC-EXERCISE', { exercise: 'memhog', result: verdict, cycles: CYCLES, wanted: CYCLES });
     }
   } else {
-    // ── Q9 chain (residual (d) of #320, ledger c/6070521692): single tool commands OOM-killed ONE AFTER THE OTHER, stand-in CLI at 0 MB as in the H1 repro. KNOWN-RED: a lost session is expected today. ──
+    // ── Q9 chain (residual (d) of #320, ledger c/6070521692): single tool commands OOM-killed ONE AFTER THE OTHER, stand-in CLI at 0 MB as in the H1 repro. A BAR since #332 closed Q9: a lost session, or any scope-backstop kill (#343), is RED. ──
     const runs = [];
     for (let cycle = 1; cycle <= CYCLES; cycle++) {
       if (hostBelow()) { emit('PC-EXERCISE', { exercise: 'chain', result: 'VOID', cycles: cycle - 1, wanted: CYCLES, reason: `host below the ${MIN_AVAIL_GB} GB bar` }); verdict = 'VOID'; hostVoid = true; break; }
@@ -338,18 +359,21 @@ try {
       const oomOf = () => oomKillFromDir(sdir) ?? undefined;   // re-resolved at each reading: the work leaf appears at keeper boot
       const oom0 = sdir ? oomOf() ?? 0 : 0;
       let lastKills = 0; let done = 0; let lostAfter = null;
+      const bs0 = backstopCountersFromDir(sdir); let lastBs = bs0;
       for (let i = 0; i < CHAIN_N; i++) {
+        if (SABOTAGE === 'backstop' && i === 3) { const inj = await injectBackstopKill(kp, cliPid); if (inj?.counters) lastBs = inj.counters; }   // the #343 witness, mid-chain
         await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (400 * 1024 * 1024)'`, `t-chain-${i}`, 30_000);
         done++;
         await sleep(CHAIN_GAP_MS);
         const ev = alive(kp) && sdir ? oomOf() : undefined;
         if (ev !== undefined) lastKills = ev - oom0;   // the last reading while the scope exists
+        { const b = alive(kp) && sdir ? backstopCountersFromDir(sdir) : null; if (b) lastBs = b; }
         if (!alive(kp) || !alive(cliPid)) { lostAfter = lastKills; break; }
       }
       const keeperAlive = alive(kp); const cliAlive = alive(cliPid);
-      let probe = null;   // three tries: ONE flaky answer must not read as a lost session (a fixed Q9 would then never reach KNOWN-RED-GONE)
+      let probe = null;   // three tries: ONE flaky answer must not read as a lost session (a flaky answer would otherwise fail a fixed chain)
       for (let k = 0; k < 3 && keeperAlive && cliAlive && !(probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive')); k++) probe = await runTool(st, 'echo chain-alive', `t-chain-probe${k}`, 20_000);
-      const r = { cycle, planned: CHAIN_N, done, killsTotal: inScope ? lastKills : 0, lostAfter, keeperAlive, cliAlive, answered: probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive'), inScope, cliSeen: cliPid !== null };
+      const r = { cycle, planned: CHAIN_N, done, killsTotal: inScope ? lastKills : 0, lostAfter, backstop: backstopDelta(bs0, lastBs), keeperAlive, cliAlive, answered: probe?.code === 0 && (probe.stdout ?? '').includes('chain-alive'), inScope, cliSeen: cliPid !== null };
       const checks = evaluateChainRun(r);
       runs.push(checks);
       emit('PC-CHAIN', r);
