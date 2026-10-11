@@ -94,9 +94,15 @@ const path = require('node:path');
 const OUT = process.env.SHOT_DIR, PAGE = process.env.PAGE_DIR;
 const results = [];
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// every page script runs inside a try/catch that RETURNS the page's own error (Electron only says « Script failed to execute »): the failing probe is named, not guessed
+async function ev(win, code) {
+  const r = await ev(win, '(async () => { try { return { v: await (' + code + ') }; } catch (e) { return { err: String((e && e.stack) || e) }; } })()');
+  if (r && r.err) throw new Error('page script threw: ' + r.err + ' :: ' + code.slice(0, 160));
+  return r.v;
+}
 async function ready(win, sel) {
   for (let i = 0; i < 200; i++) {
-    const ok = await win.webContents.executeJavaScript("(async () => { if (!document.querySelector(" + JSON.stringify(sel) + ")) return false; await document.fonts.ready; return document.fonts.status === 'loaded'; })()");
+    const ok = await ev(win, "(async () => { if (!document.querySelector(" + JSON.stringify(sel) + ")) return false; await document.fonts.ready; return document.fonts.status === 'loaded'; })()");
     if (ok) return;
     await wait(50);
   }
@@ -105,7 +111,7 @@ async function shoot(win, file, extra) {
   await wait(300);
   const img = await win.webContents.capturePage();
   fs.writeFileSync(path.join(OUT, file), img.toPNG());
-  const probe = await win.webContents.executeJavaScript(extra);
+  const probe = await ev(win, extra);
   const size = img.getSize();
   results.push({ file, width: size.width, height: size.height, ...probe });
 }
@@ -122,7 +128,7 @@ app.whenReady().then(async () => {
     await ready(win, '[data-mg-cap-section]');
     await shoot(win, 'memcap-window.png', "(() => { " + rectOf + " const sec = document.querySelector('[data-mg-cap-section]'); const soft = document.querySelector('[data-mg-cap-soft]'), hard = document.querySelector('[data-mg-cap-hard]'), wait = document.querySelector('[data-mg-reliquat-wait]'), adm = document.querySelector('[data-mg-admission]'), crit = document.querySelector('[data-mg-critical]'); return { kind: 'window', sec: rect(sec), secTitleColor: getComputedStyle(sec.querySelector('.mg-section-title')).color, borderTop: getComputedStyle(sec).borderTopColor, soft: { v: soft.value, rect: rect(soft), dis: soft.disabled }, hard: { v: hard.value, rect: rect(hard), dis: hard.disabled }, wait: { v: wait.value, rect: rect(wait), dis: wait.disabled }, admY: rect(adm)?.y, critY: rect(crit)?.y, sw: document.querySelector('[data-mg-cap-switch]')?.getAttribute('data-mg-cap-switch'), swText: document.querySelector('[data-mg-cap-switch]')?.innerText, checkboxes: document.querySelectorAll('input[type=checkbox]').length, err: !!document.querySelector('[data-mg-error]'), text: sec.innerText.replace(/\\\\s+/g, ' ') }; })()");
     // type soft 7 > hard 6 and leave the field: the pair is REFUSED inline, nothing is sent (the stub would answer [] to a write)
-    await win.webContents.executeJavaScript("(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
+    await ev(win, "(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
     await wait(400);
     await shoot(win, 'memcap-window-refused.png', "(() => { " + rectOf + " const e = document.querySelector('[data-mg-error]'); const soft = document.querySelector('[data-mg-cap-soft]'); return { kind: 'refused', err: e ? { text: e.innerText, role: e.getAttribute('role'), rect: rect(e), color: getComputedStyle(e).color } : null, softV: soft.value, hardV: document.querySelector('[data-mg-cap-hard]').value }; })()");
     // ── the dialog must FIT (gate c/6112245304: at 1440x900 the window grew to 923 px in a 720 px max-height, clipping the Reliquat wait, the refusal and Done) ──
@@ -133,14 +139,14 @@ app.whenReady().then(async () => {
       await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=window' });
       await ready(win, '[data-mg-cap-section]');
       await shoot(win, 'memcap-window-' + vw + 'x' + vh + '.png', "(() => ({ state: 'rest', size: '" + vw + "x" + vh + "' }))()");
-      const rest = await win.webContents.executeJavaScript(FIT);
-      await win.webContents.executeJavaScript("document.querySelector('[data-mg-reliquat-wait]').scrollIntoView({ block: 'end' })");
+      const rest = await ev(win, FIT);
+      await ev(win, "document.querySelector('[data-mg-reliquat-wait]').scrollIntoView({ block: 'end' })");
       await wait(250);
-      const scrolled = await win.webContents.executeJavaScript(FIT);
-      await win.webContents.executeJavaScript("(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
+      const scrolled = await ev(win, FIT);
+      await ev(win, "(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
       await wait(400);
       await shoot(win, 'memcap-window-refused-' + vw + 'x' + vh + '.png', "(() => ({ state: 'refused', size: '" + vw + "x" + vh + "' }))()");
-      const refused = await win.webContents.executeJavaScript(FIT);
+      const refused = await ev(win, FIT);
       results.push({ kind: 'fits', vw, vh, rest, scrolled, refused });
     }
     fs.writeFileSync(process.env.PROBE_OUT, JSON.stringify(results));
