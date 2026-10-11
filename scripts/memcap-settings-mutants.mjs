@@ -121,7 +121,7 @@ const MUTANTS = [
   { id: 'Y19_cap_summary_not_a_read_channel', file: BP, find: "{ channel: 'bus:capSummary', writes: false,", to: "{ channel: 'bus:capSummary', writes: true,", expect: ['#323 (review MAJOR 2)'] },
   { id: 'Y20_reliquat_hint_drops_the_veille_caveat', file: WIN, find: "Counts only above the normal Veille delay; a fast Veille under memory pressure never waits. ", to: "", expect: ['smoke:the Reliquat wait (#326) is a third field'], smoke: true },
   { id: 'Y21_unknown_runs_text_dropped', file: WIN, find: "{capSwitch ? capSwitch.text : '…'}", to: "{capSwitch ? `Cap is ${capSwitch.liveOn ? 'ON' : 'OFF'} for new runs · ON on ${capSwitch.runsOn} of ${capSwitch.runsOpen} open runs` : '…'}", expect: ['smoke:a bus that is not open reads'], smoke: true },
-  { id: 'Y22_existing_threshold_hook_renamed_ordering_check_vacuous', file: WIN, find: "data-mg-critical", to: "data-mg-criticalx", expect: ['smoke:the section is there', 'smoke:the existing threshold fields are untouched'], smoke: true },
+  { id: 'Y22_existing_threshold_hook_renamed_ordering_check_vacuous', file: WIN, find: "data-mg-critical", to: "data-mg-crit", expect: ['smoke:the section is there', 'smoke:the existing threshold fields are untouched'], smoke: true },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
