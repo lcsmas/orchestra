@@ -41,7 +41,7 @@ export async function setMemoryGuardSettings(
     saveError = e; // the store already holds the value in memory (it is what the sampler reads): it IS live, it just won't survive a restart
   }
   slog.info(
-    `settings changed${saveError ? ' (NOT saved to disk)' : ''} — Admission ${current.admissionGb}→${res.settings.admissionGb} GB, critical ${current.criticalGb}→${res.settings.criticalGb} GB, ` +
+    `settings changed${saveError ? ' (NOT saved to disk)' : ''} — Admission ${current.admissionGb}→${res.settings.admissionGb} GB, critical ${current.criticalGb}→${res.settings.criticalGb} GB, memory cap soft ${current.capSoftGb}→${res.settings.capSoftGb} GB, hard ${current.capHardGb}→${res.settings.capHardGb} GB, ` +
       `Admission/fast-Veille toggle ${current.admissionEnabled ? 'ON' : 'OFF'}→${res.settings.admissionEnabled ? 'ON' : 'OFF'}`,
   );
   const snap = sampleMemoryGuardNow();

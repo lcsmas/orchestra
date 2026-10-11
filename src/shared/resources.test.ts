@@ -336,3 +336,20 @@ test('G12 (#328 F2, D-Q3) a scope WITHOUT a Reliquat never makes a row of its ow
   assert.deepEqual(rows.map((r) => r.key), ['ws-left']);
   assert.equal(rows[0].scopeOnly, true);
 });
+
+test('G13 (#323) the row carries the cap the member\'s CURRENT session runs under (the keeper\'s scope: limit, bill, working set); a member without a limit applied, a remote row, a scope-only row and a container-only row carry none', () => {
+  const capped = memberViewFrom('ws-a', [{ ...rd(2100, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }]), maxBytes: 6144 * MBg, workingSetBytes: 1600 * MBg, peakBytes: 2400 * MBg }]);
+  const uncapped = memberViewFrom('ws-b', [{ ...rd(300, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }]), maxBytes: null }]);
+  const left = memberViewFrom('ws-left', [{ ...rd(300, [{ pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }], null), maxBytes: 6144 * MBg }]);
+  const { rows } = groupSessionsByWorkspace([sess({ ptyId: 'ws-a:sdk', workspaceId: 'ws-a', kind: 'sdk' }), sess({ ptyId: 'ws-b:sdk', workspaceId: 'ws-b', kind: 'sdk' }), sess({ ptyId: 'ws-r', workspaceId: 'ws-r', remote: true })], null, rep(capped, uncapped, left));
+  const by = Object.fromEntries(rows.map((r) => [r.key, r]));
+  assert.deepEqual(by['ws-a'].cap, { unit: 'u', hardBytes: 6144 * MBg, billBytes: 2100 * MBg, workingSetBytes: 1600 * MBg, peakBytes: 2400 * MBg, scopes: 1 });
+  assert.equal(by['ws-b'].cap, null, 'scope without a limit: no cap to compare against');
+  assert.equal(by['ws-r'].cap, null, 'a sandbox row never reads a local scope');
+  assert.equal(by['ws-left'].scopeOnly, true);
+  assert.equal(by['ws-left'].cap, null, 'a leftover scope (no live session) has no cap to show even though the kernel limit exists');
+  // even when the view of a session-less row DOES have a cap (its keeper is alive in the scope, the boot window before its session row), the scope-only row is only the Reliquats' row: no bar
+  const boot = memberViewFrom('ws-boot', [{ ...rd(300, [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'keeper' }, { pid: 9, startTicks: 9, rssBytes: 200 * MBg, role: 'reliquat', comm: 'chrome' }]), maxBytes: 6144 * MBg, workingSetBytes: 250 * MBg }]);
+  assert.ok(boot.cap !== null, 'precondition: this view has a cap');
+  assert.equal(groupSessionsByWorkspace([], null, rep(boot)).rows[0].cap, null, 'a scope-only row never carries a cap');
+});

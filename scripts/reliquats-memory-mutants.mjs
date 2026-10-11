@@ -3,7 +3,7 @@
 // mutated files must be empty at the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 //
 // HEAVY by the wave rule (a mutation sweep): needs the OPS's heavy-rig token + MemAvailable > 6 GB right before. A rig arm starts a real keeper in a disposable ≤ 300 MB scope and prints its survivors.
-// Run: node scripts/reliquats-memory-mutants.mjs [--only M01,M02] [--check-anchors] [--no-rig]
+// Run: node scripts/reliquats-memory-mutants.mjs [--only M01,M02] [--check | --check-anchors] [--no-rig]
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,8 +15,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const BACKUP = path.join(os.homedir(), '.cache', 'h2-328', 'mutant-backup');
-fs.mkdirSync(BACKUP, { recursive: true });
 const args = process.argv.slice(2);
+const KNOWN_FLAGS = new Set(['--only', '--check-anchors', '--check', '--no-rig']);
+const unknownFlags = args.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must never fall through to the full (heavy) sweep (OPS, 2026-10-09: `--check` once did)
+  console.error(`REFUSING: unknown option(s) ${unknownFlags.join(' ')} — NOTHING was run. Known: --only ID,ID | --check (alias --check-anchors: dry anchor check, no build / keeper / scope / scratch) | --no-rig`);
+  process.exit(2);
+}
+const dryCheck = args.includes('--check-anchors') || args.includes('--check');
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const noRig = args.includes('--no-rig');
 
@@ -60,7 +66,7 @@ const MUTANTS = [
   { id: 'M20_workspace_asked_twice', file: P, find: 'for (const wsId of new Set(d.workspaceIds())) {', to: 'for (const wsId of d.workspaceIds()) {', expect: ['P6 the same workspace id'] },
   { id: 'M21_no_scope_member_tracked', file: P, find: '    if (scopes.length === 0) continue;\n', to: '', expect: ['P1 a tracked member', 'rig:untracked_fallback'], rig: ['untracked_fallback'] },
   { id: 'M22_scope_lookup_throw_escapes', file: P, find: "      warnOnce(`memberScopes(${wsId})`, e);\n      continue; // an unreadable directory scan = not tracked: today's behaviour", to: '      throw e;', expect: ['P4 FI-1 calls that throw'] },
-  { id: 'M23_unreadable_meter_is_zero', file: P, find: 'currentBytes = d.readMemory(s)?.currentBytes ?? null;', to: 'currentBytes = d.readMemory(s)?.currentBytes ?? 0;', expect: ['P4 FI-1 calls that throw'] },
+  { id: 'M23_unreadable_meter_is_zero', file: P, find: 'currentBytes = mem?.currentBytes ?? null;', to: 'currentBytes = mem?.currentBytes ?? 0;', expect: ['P4 FI-1 calls that throw'] },
   { id: 'M24_support_throw_escapes', file: P, find: "    support = { ok: false, reason: `scope support could not be probed: ${(e as Error)?.message ?? e}` };", to: '    throw e;', expect: ['P5 a support probe'] },
   { id: 'M25_unsupported_reason_dropped', file: P, find: 'const unsupported = support.ok ? null : support.reason;', to: 'const unsupported = null;', expect: ['P3 no scope anywhere'] },
   { id: 'M26_scopes_ignore_fi1', file: P, find: 'scopes: (wsId) => memberScopes(wsId),', to: 'scopes: (_wsId) => [],', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
@@ -101,7 +107,7 @@ const MUTANTS = [
   { id: 'M59_reliquat_procs_not_listed', file: V, find: '{reliquatProcs.map((p) => (', to: '{([] as typeof reliquatProcs).map((p) => (', expect: ['shot:expanded: the opened feat-x row lists'], shot: true },
   { id: 'M60_note_line_removed', file: V, find: '{reliquatsLine && (', to: '{false && reliquatsLine && (', expect: ['W8 the Resources page', 'shot:seeded: the dim line names'], shot: true },
   { id: 'M61_chip_not_yellow', file: CSS, find: '.res-chip.reliquat { color: var(--yellow);', to: '.res-chip.reliquat { color: var(--accent);', expect: ['W8 the Resources page', 'shot:seeded: the chip is YELLOW'], shot: true },
-  { id: 'M62_note_is_yellow', file: CSS, find: 'line-height: 1.4; color: var(--text-dim); }\n/* The dim line under the Agents table', to: 'line-height: 1.4; color: var(--yellow); }\n/* The dim line under the Agents table', expect: ['W8 the Resources page', 'shot:seeded: the dim line is DIM'], shot: true },
+  { id: 'M62_note_is_yellow', file: CSS, find: '.res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }', to: '.res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--yellow); }', expect: ['W8 the Resources page', 'shot:seeded: the dim line is DIM'], shot: true },
   { id: 'M63_procs_sorted_ascending', file: S, find: '.sort((a, b) => b.rssBytes - a.rssBytes || a.pid - b.pid)', to: '.sort((a, b) => a.rssBytes - b.rssBytes || a.pid - b.pid)', expect: ['M13 reliquatProcs'] },
   { id: 'M64_procs_not_capped', file: S, find: '      .slice(0, MAX_RELIQUAT_PROCS),', to: '      ,', expect: ['M13 reliquatProcs'] },
   { id: 'M65_note_for_a_healthy_page', file: S, find: 'if (r.untracked.length > 0 || stray > 0) bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', to: 'bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', expect: ['M14 reliquatsNote'] },
@@ -156,7 +162,7 @@ function rigRed(arms) {
 }
 const buildCli = () => { const r = sh('pnpm', ['run', 'build:cli']); if (r.status !== 0) throw new Error(`build:cli failed: ${r.stderr}`); };
 
-if (args.includes('--check-anchors')) { // dry check: does every mutant's find resolve exactly once on the CURRENT sources? (no mutation, no run)
+if (dryCheck) { // dry check: does every mutant's find resolve exactly once on the CURRENT sources? (no mutation, no run)
   let bad = 0;
   for (const m of MUTANTS) {
     let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
@@ -166,6 +172,7 @@ if (args.includes('--check-anchors')) { // dry check: does every mutant's find r
   console.log(`ANCHORS: ${MUTANTS.length - bad}/${MUTANTS.length} resolve exactly once`);
   process.exit(bad ? 1 : 0);
 }
+fs.mkdirSync(BACKUP, { recursive: true }); // scratch exists only for a real sweep, never for the dry check
 
 // ── guard: the tree must be committed (git diff is the independent restoration proof) ──
 const files = [...new Set(MUTANTS.map((m) => m.file))];

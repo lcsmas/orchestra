@@ -208,6 +208,8 @@ export interface ScopeMemory {
   highBytes: number | null;
   swapMaxBytes: number | null;
   swapCurrentBytes: number | null;
+  /** FI-1 v1.11 (#323): the WORKING SET (`memory.current` − `inactive_file`, ledger R5) — what the soft level compares; `memory.current` is what the hard level compares (R1). null = `memory.stat` unreadable (never a fabricated figure). */
+  workingSetBytes: number | null;
   events: MemoryEvents;
 }
 
