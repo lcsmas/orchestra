@@ -73,6 +73,8 @@ tracer #334 (list). Pending: pairing/QR/install #336, conversation #337, send #3
 - A Unix-socket target needs `sudo tailscale serve` — an operator alone gets « must be root … to serve a path or Unix socket ».
   Hence the `sudo` in the printed command. Not measured: a real colleague's or a tagged device (no second device).
 
+- The phone's send passes origin `'human'`, so like the desktop composer it is ALLOWED while a fleet run is paused — by decision
+  (grilling Q13). `pause-gates-wiring.test.ts` enumerates every `'human'` site; hooks-server's `/mobile/send` is listed there.
 - A pinned account DROPS inherited `ANTHROPIC_API_KEY/BASE_URL` (workspaces.ts `accountAgentEnv`): a rig that wants the fake API
   must put `${ANTHROPIC_*}` templates in the account's `env` — else « Not logged in » and nothing reaches the fake.
 - A seeded transcript must live under the workspace's ACCOUNT config dir (`projects/<worktree path with every non-alnum → '-'>/<sdkSessionId>.jsonl`).

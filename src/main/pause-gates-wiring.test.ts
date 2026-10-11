@@ -46,7 +46,7 @@ test('row 14 wiring: the boot roster is the REAL wakeRosterEntry, whose wakeable
   assert.match(ROSTER, /pauseRefusal\(ws, 'auto'\) === null &&/);
 });
 
-test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tray, Send now, Fix checks, Send review and the toolbar Restart — a new one is a new pause bypass', () => {
+test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tray, Send now, Fix checks, Send review, the toolbar Restart and the phone composer — a new one is a new pause bypass', () => {
   const dir = path.join(process.cwd(), 'src', 'main');
   const found: Record<string, number> = {};
   for (const f of fs.readdirSync(dir)) {
@@ -60,6 +60,7 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
     'agent-sdk.ts': 1,          // the `origin === 'human'` tag that feeds the drain gate
     'api-handlers.ts': 5,       // composer + tray release + release-all + Fix checks + Send review
     'bus-pause.ts': 1,          // pauseRefusalWith: a human origin is never refused
+    'hooks-server.ts': 1,       // /mobile/send: the human typing on the phone (Accès mobile #338) — the composer's call, by decision
     'prompt-queue.ts': 1,       // "Send now" (force)
     'restart-workspace.ts': 1,  // trigger 'toolbar' → human
   });
