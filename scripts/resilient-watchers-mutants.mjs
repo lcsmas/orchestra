@@ -181,12 +181,23 @@ const MUTANTS = [
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 500_000, ...opts });
 
+// ONE `node --test` per file with its OWN timeout: a mutant that leaks a real fs.watch handle HANGS watchers.test.ts, and in a shared run the kill-by-timeout threw away every other file's already-finished reds
+// (R24 was reported SURVIVED while resilient-watch.test.ts went red on it by hand). A timed-out file is itself a red (`hang: <file>`), never an empty result.
 function unitRed() {
-  const r = sh(process.execPath, ['--test', '--experimental-strip-types', ...TESTS]);
-  const names = [...(r.stdout ?? '').matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1].replace(/\\([#])/g, '$1'));
-  const pass = Number(/^# pass (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
-  const skipped = Number(/^# skipped (\d+)/m.exec(r.stdout ?? '')?.[1] ?? NaN);
-  return { names, pass, skipped, status: r.status };
+  const names = [];
+  let pass = 0;
+  let skipped = 0;
+  let status = 0;
+  for (const f of TESTS) {
+    const r = sh(process.execPath, ['--test', '--experimental-strip-types', f], { timeout: 150_000 });
+    const out = r.stdout ?? '';
+    names.push(...[...out.matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1].replace(/\\([#])/g, '$1')));
+    if (r.error || r.signal) { names.push(`hang: ${f} (${r.error?.code ?? r.signal})`); status = 1; }
+    else if (r.status !== 0) status = r.status;
+    pass += Number(/^# pass (\d+)/m.exec(out)?.[1] ?? 0);
+    skipped += Number(/^# skipped (\d+)/m.exec(out)?.[1] ?? 0);
+  }
+  return { names, pass, skipped, status };
 }
 function smokeRed() {
   const r = sh(process.execPath, [path.join(HERE, 'watchers-strip-render-smoke.mjs')]);
