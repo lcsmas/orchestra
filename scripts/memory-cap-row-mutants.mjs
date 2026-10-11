@@ -82,6 +82,7 @@ const MUTANTS = [
   { id: 'R37_time_dimmed_below_contrast', file: CSS, find: ".av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; }", to: ".av-notice-tag { margin-left: auto; flex: none; font-size: 9.5px; opacity: 0.6; }", expect: ['ROW: the one-line markup'] },
   { id: 'R38_command_not_monospace', file: CSS, find: "font-family: var(--av-mono); font-size: 11px; padding: 0 5px;", to: "font-size: 11px; padding: 0 5px;", expect: ['ROW: the one-line markup'] },
   { id: 'R39_light_hard_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-error) 82%, #000); }", to: "{ color: var(--av-error); }", expect: ['ROW: the one-line markup'] },
+  { id: 'R41_chip_not_bidi_isolated', file: CSS, find: " unicode-bidi: isolate;", to: "", expect: ['ROW: the one-line markup'] },
   { id: 'R40_light_soft_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-warn) 78%, #000); }", to: "{ color: var(--av-warn); }", expect: ['ROW: the one-line markup'] },
 ];
 

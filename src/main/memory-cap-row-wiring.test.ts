@@ -39,6 +39,7 @@ test('ROW: the one-line markup — red / amber by tone, the command in a chip, t
   assert.ok(/\.av-notice-memory-cap\.is-hard \.av-notice-dot \{ background: var\(--av-error\); \}/.test(block) && /\.av-notice-memory-cap\.is-soft \.av-notice-dot \{ background: var\(--av-warn\); \}/.test(block));
   assert.ok(/\.av-notice-chip \{[^}]*var\(--av-code-bg\)[^}]*var\(--av-code-border\)/.test(css), 'the chip is the code-chip tokens');
   assert.ok(/\.av-notice-chip \{[^}]*font-family: var\(--av-mono\)/.test(css), 'the command is MONOSPACE');
+  assert.ok(/\.av-notice-chip \{[^}]*unicode-bidi: isolate;/.test(css), 'the chip ISOLATES its text: an unterminated bidi override in a command (U+202E) must not reorder the sentence around it');
   assert.ok(/\.av-notice-memory-cap\.is-hard \.av-notice-label \{ color: var\(--av-error\); \}/.test(css) && /\.av-notice-memory-cap\.is-soft \.av-notice-label \{ color: var\(--av-warn\); \}/.test(css), 'the label wears the tone colour');
   assert.ok(/\.av-notice-tag \{[^}]*margin-left: auto/.test(css), 'the time sits at the RIGHT edge');
   assert.ok(!/\.av-notice-tag \{[^}]*opacity/.test(css), 'the time keeps the full dim-text token (opacity .6 measured 2.5:1)');

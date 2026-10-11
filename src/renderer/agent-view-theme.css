@@ -2508,8 +2508,9 @@ h6.av-md-h {
 .av-notice-memory-cap.is-soft .av-notice-dot { background: var(--av-warn); }
 .av-notice-memory-cap.is-hard .av-notice-label { color: var(--av-error); }
 .av-notice-memory-cap.is-soft .av-notice-label { color: var(--av-warn); }
+/* unicode-bidi: a command can carry a bidi override (U+202E…): isolated, it cannot reorder the sentence around the chip (pre-review F1) */
 .av-notice-chip {
-  font-family: var(--av-mono); font-size: 11px; padding: 0 5px; border-radius: 4px;
+  font-family: var(--av-mono); font-size: 11px; padding: 0 5px; border-radius: 4px; unicode-bidi: isolate;
   background: var(--av-code-bg); border: 1px solid var(--av-code-border); color: var(--av-text);
 }
 /* the time keeps the row's full text colour (no opacity): with the old 0.6 opacity it measured 2.5:1 (review) */
