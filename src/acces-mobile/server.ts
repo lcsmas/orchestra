@@ -76,6 +76,8 @@ const STATIC: Record<string, { type: string; body: string }> = {
 
 /** At most this many live streams at once (one per open phone page is the normal case). */
 export const MAX_STREAMS = 8;
+/** At most this many sends / answers waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1. */
+export const MAX_WRITES_IN_FLIGHT = 4;
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
 export function tokenMatches(presented: string, expected: string): boolean {
@@ -102,6 +104,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     }
   };
   let openStreams = 0;
+  let writesInFlight = 0;
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
@@ -143,7 +146,15 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       res.end(JSON.stringify(obj));
     };
     const relay = (route: string, body: Record<string, unknown>, timeoutMs?: number): void => {
-      opts.upstream(route, body, timeoutMs).then(
+      const isWrite = route === '/mobile/send' || route === '/mobile/answer';
+      if (isWrite) {
+        if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');
+        writesInFlight++;
+      }
+      const done = (): void => {
+        if (isWrite) writesInFlight--;
+      };
+      opts.upstream(route, body, timeoutMs).finally(done).then(
         (out) => json(200, out),
         (e: unknown) => {
           log('upstream', `upstream ${route} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -260,69 +271,4 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     }
     return refuse(404, 'not-found');
   });
-}
-
-/** Open main's long-lived NDJSON route over its Unix socket. */
-export function socketUpstreamStream(socketPath: string): UpstreamStream {
-  return (route, onMessage, onEnd) => {
-    let ended = false;
-    const end = (): void => {
-      if (ended) return;
-      ended = true;
-      onEnd();
-    };
-    const req = http.request({ socketPath, path: route, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': 2 } }, (res) => {
-      let buf = '';
-      res.setEncoding('utf8');
-      res.on('data', (c: string) => {
-        buf += c;
-        let i: number;
-        while ((i = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, i);
-          buf = buf.slice(i + 1);
-          if (!line.trim()) continue;
-          try {
-            onMessage(JSON.parse(line));
-          } catch {
-            /* a torn line is dropped, never fatal */
-          }
-        }
-        if (buf.length > 65536) req.destroy(); // a line that never ends is not ours
-      });
-      res.on('end', end);
-      res.on('close', end);
-    });
-    req.on('error', end);
-    req.end('{}');
-    return () => {
-      ended = true;
-      req.destroy();
-    };
-  };
-}
-
-/** POST JSON to main's hooks server over its Unix socket. */
-export function socketUpstream(socketPath: string, defaultTimeoutMs = 5000): Upstream {
-  return (route, body, timeoutMs = defaultTimeoutMs) =>
-    new Promise((resolve, reject) => {
-      const payload = JSON.stringify(body);
-      const req = http.request(
-        { socketPath, path: route, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }, timeout: timeoutMs },
-        (res) => {
-          let data = '';
-          res.setEncoding('utf8');
-          res.on('data', (c) => (data += c));
-          res.on('end', () => {
-            try {
-              resolve(JSON.parse(data));
-            } catch {
-              reject(new Error(`bad upstream reply (${res.statusCode})`));
-            }
-          });
-        },
-      );
-      req.on('timeout', () => req.destroy(new Error('upstream timeout')));
-      req.on('error', reject);
-      req.end(payload);
-    });
 }

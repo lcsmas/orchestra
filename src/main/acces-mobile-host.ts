@@ -9,7 +9,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { store } from './store';
 import { scoped } from './logger';
 import { orchestraHome } from './platform';
-import { getHookSocketPath } from './hooks-server';
+import { serveRpc, type RpcWire } from '../shared/acces-mobile-rpc';
+import { mobileRpcHandlers } from './acces-mobile-routes';
 import {
   CLOSE_INHERITED_FDS,
   pickSocketDir,
@@ -149,10 +150,9 @@ function stopChild(): void {
 }
 
 function startChild(s: AccesMobileSettings): void {
-  const sock = getHookSocketPath();
   const script = installServer();
-  if (!sock || !script) {
-    health = { state: 'failed', error: !sock ? 'local socket not ready' : 'server bundle missing', retryInMs: null };
+  if (!script) {
+    health = { state: 'failed', error: 'server bundle missing', retryInMs: null };
     return;
   }
   ensureToken();
@@ -165,13 +165,19 @@ function startChild(s: AccesMobileSettings): void {
     ACCES_MOBILE_SOCKET: listenPath,
     ACCES_MOBILE_LOGIN: s.allowedLogin,
     ACCES_MOBILE_TOKEN_FILE: accesMobileTokenPath(),
-    ORCHESTRA_SOCK: sock,
   };
   const startedAt = Date.now();
   const viaBash = process.platform === 'linux' && fs.existsSync('/bin/bash');
   const c = viaBash
-    ? spawn('/bin/bash', ['-c', CLOSE_INHERITED_FDS, 'orchestra-acces-mobile', process.execPath, script], { env, stdio: ['pipe', 'pipe', 'pipe'] })
-    : spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    ? spawn('/bin/bash', ['-c', CLOSE_INHERITED_FDS, 'orchestra-acces-mobile', process.execPath, script], { env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [script], { env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  // fd 3 = the PRIVATE channel to main (a socketpair only this process holds): the phone's operations live there, not on the
+  // hooks socket every local agent can reach (#338 review M1).
+  const channel = c.stdio[3] as unknown as (RpcWire & { on(e: 'error', cb: () => void): unknown }) | null;
+  if (channel) {
+    channel.on('error', () => {});
+    serveRpc(channel, mobileRpcHandlers, (e) => log.warn('mobile channel error', e));
+  }
   child = c;
   childKey = configKey(s);
   health = { state: 'starting', pid: c.pid };

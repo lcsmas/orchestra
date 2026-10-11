@@ -10,8 +10,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
-import { createAccesMobileServer, tokenMatches, MAX_STREAMS, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
+import { createAccesMobileServer, tokenMatches, MAX_STREAMS, MAX_WRITES_IN_FLIGHT, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
 import { CLOSE_INHERITED_FDS, pickSocketDir } from '../shared/acces-mobile.ts';
+import { serveRpc, type RpcWire } from '../shared/acces-mobile-rpc.ts';
 import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
@@ -300,11 +301,24 @@ test.afterEach(() => {
   for (const c of live) c.kill('SIGKILL');
 });
 
-function startEntry(env: Record<string, string>) {
+/** Spawn the REAL entry the way main does: fd 3 = the private channel, on which THIS test plays main (serveRpc). */
+function startEntry(env: Record<string, string>, opts: { noChannel?: boolean } = {}) {
   const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(import.meta.dirname, 'index.ts')], {
     env: { PATH: process.env.PATH ?? '', ...env },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+    stdio: opts.noChannel ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe', 'pipe'],
+  }) as ReturnType<typeof spawn> & { stdout: NodeJS.ReadableStream; stderr: NodeJS.ReadableStream; stdin: NodeJS.WritableStream };
+  const seen: { route: string; body: Record<string, unknown> }[] = [];
+  if (!opts.noChannel) {
+    const ch = child.stdio[3] as unknown as RpcWire & { on(e: 'error', cb: () => void): unknown };
+    ch.on('error', () => {});
+    serveRpc(ch, {
+      call: async (route, body) => {
+        seen.push({ route, body });
+        return route === '/mobile/workspaces' ? ROWS : { ok: true };
+      },
+      stream: () => null,
+    });
+  }
   let out = '';
   let err = '';
   child.stdout.on('data', (c) => (out += c));
@@ -326,13 +340,12 @@ function startEntry(env: Record<string, string>) {
   const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
   live.add(child);
   child.on('exit', () => live.delete(child));
-  return { child, ready, exited, stderr: () => err };
+  return { child, ready, exited, stderr: () => err, seen };
 }
 
 test('entry: 0600 socket in a 0700 dir, no TCP listener, reaches main, rotates, exits with its parent', { timeout: 30_000 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
   fs.chmodSync(dir, 0o700);
-  const mainSock = path.join(dir, 'main.sock');
   const amSock = path.join(dir, 'am.sock');
   const tokenFile = path.join(dir, 'token');
   fs.writeFileSync(tokenFile, TOKEN + '\n', { mode: 0o600 });
@@ -340,16 +353,9 @@ test('entry: 0600 socket in a 0700 dir, no TCP listener, reaches main, rotates, 
   // a stale socket from a SIGKILLed predecessor must not block the bind
   execFileSync('python3', ['-I', '-c', 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])', amSock]); // bound, never unlinked
   assert.ok(fs.lstatSync(amSock).isSocket(), 'control: a stale socket file is really there before the start');
-  const seen: string[] = [];
-  const fakeMain = http.createServer((req, res) => {
-    seen.push(`${req.method} ${req.url}`);
-    res.end(JSON.stringify(ROWS));
-  });
-  await new Promise<void>((r) => fakeMain.listen(mainSock, r));
-  const e = startEntry({ ACCES_MOBILE_SOCKET: amSock, ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: mainSock });
+  const e = startEntry({ ACCES_MOBILE_SOCKET: amSock, ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile });
   t.after(() => {
     e.child.kill('SIGKILL');
-    fakeMain.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
   await e.ready;
@@ -360,7 +366,7 @@ test('entry: 0600 socket in a 0700 dir, no TCP listener, reaches main, rotates, 
   const res = await sockGet(amSock, '/api/workspaces', AUTH);
   assert.equal(res.status, 200, 'control through the real entry');
   assert.deepEqual(JSON.parse(res.body), ROWS);
-  assert.deepEqual(seen, ['POST /mobile/workspaces']);
+  assert.deepEqual(e.seen.map((x) => x.route), ['/mobile/workspaces'], 'reached main over the fd-3 channel');
   assert.equal((await sockGet(amSock, '/api/workspaces', ID)).status, 401, 'no token through the real entry');
   // rotation: the entry reads the token file at every request
   const fresh = 'tok_' + 'r'.repeat(40);
@@ -382,7 +388,7 @@ test('entry must-FAIL: a socket directory open to others is refused (control: th
   fs.mkdirSync(open, { mode: 0o755 });
   fs.chmodSync(open, 0o755);
   fs.mkdirSync(closed, { mode: 0o700 });
-  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: path.join(dir, 'main.sock') };
+  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile };
   const ok = startEntry({ ...base, ACCES_MOBILE_SOCKET: path.join(closed, 'am.sock') });
   await ok.ready;
   ok.child.stdin.end();
@@ -399,11 +405,7 @@ test('entry must-FAIL: a late-exiting predecessor never deletes its successor\'s
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const tokenFile = path.join(dir, 'token');
   fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
-  const mainSock = path.join(dir, 'main.sock');
-  const fakeMain = http.createServer((_q, res) => res.end(JSON.stringify(ROWS)));
-  await new Promise<void>((r) => fakeMain.listen(mainSock, r));
-  t.after(() => fakeMain.close());
-  const env = { ACCES_MOBILE_SOCKET: path.join(dir, 'am.sock'), ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: mainSock };
+  const env = { ACCES_MOBILE_SOCKET: path.join(dir, 'am.sock'), ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile };
   const oldSrv = startEntry(env);
   await oldSrv.ready;
   const newSrv = startEntry(env); // replaces the path while the old one is still alive (restart without waiting)
@@ -424,7 +426,7 @@ test('entry must-FAIL: a non-socket at the socket path is refused and left intac
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const tokenFile = path.join(dir, 'token');
   fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
-  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile, ORCHESTRA_SOCK: path.join(dir, 'main.sock') };
+  const base = { ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile };
   const victim = path.join(dir, 'am.sock');
   fs.writeFileSync(victim, 'precious');
   const a = startEntry({ ...base, ACCES_MOBILE_SOCKET: victim });
@@ -445,7 +447,7 @@ test('entry must-FAIL: a non-socket at the socket path is refused and left intac
   await assert.rejects(b.ready, /must be owned by this user and mode 0700/);
 });
 
-test('the exec wrapper closes every inherited fd above stderr (control: without it the target inherits them)', async () => {
+test('the exec wrapper keeps ONLY fd 3 (the private channel) and closes every other inherited fd (control: without it the target inherits them)', async () => {
   // fds 3 and 4 are inheritable pipes, 5 a TCP LISTEN socket — what a Chromium fd without CLOEXEC looks like to the child.
   const listener = net.createServer();
   await new Promise<void>((r) => listener.listen(0, '127.0.0.1', r));
@@ -466,10 +468,12 @@ test('the exec wrapper closes every inherited fd above stderr (control: without 
     const target = ['-c', 'exec python3 -I -c "$0"', lister];
     const listenObj = fs.readlinkSync(`/proc/self/fd/${listenFd}`);
     const above2 = (out: string) => out.trim().split(/\s+/).filter((kv) => Number(kv.split('=')[0]) > 2);
+    const above3 = (out: string) => above2(out).filter((kv) => Number(kv.split('=')[0]) > 3);
     const bare = await run(target);
     const wrapped = await run(['-c', CLOSE_INHERITED_FDS, 'label', '/bin/bash', ...target]);
     assert.ok(above2(bare).some((kv) => kv.endsWith(listenObj)) && above2(bare).length >= 3, `control: the bare target inherits the listener + 2 pipes (got "${bare}")`);
-    assert.deepEqual(above2(wrapped), [], `wrapped target fds: "${wrapped}"`);
+    assert.deepEqual(above3(wrapped), [], `wrapped target fds: "${wrapped}"`);
+    assert.ok(above2(wrapped).some((kv) => kv.startsWith('3=pipe:') || kv.startsWith('3=socket:')), `fd 3 (the channel) survives: "${wrapped}"`);
   } finally {
     listener.close();
   }
@@ -681,6 +685,52 @@ test('send: relayed to main with the text, only as POST JSON with identity + tok
     assert.equal(big.status, 413, 'oversized body refused with a readable 413');
     assert.equal((await get(port, '/api/send?id=w1', AUTH)).status, 404, 'GET is not a send');
     assert.equal(seen.length, 1, 'no refused request reached main');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(() => r(null)));
+  }
+});
+
+test('entry must-FAIL: without the private fd-3 channel the server refuses to start (control: with it, it starts)', { timeout: 30_000 }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acces-mobile-'));
+  fs.chmodSync(dir, 0o700);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenFile = path.join(dir, 'token');
+  fs.writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
+  const env = { ACCES_MOBILE_SOCKET: path.join(dir, 'am.sock'), ACCES_MOBILE_LOGIN: LOGIN, ACCES_MOBILE_TOKEN_FILE: tokenFile };
+  const ok = startEntry(env);
+  await ok.ready;
+  ok.child.stdin.end();
+  assert.equal(await Promise.race([ok.exited, sleepMs(5000).then(() => 'still running')]), 0, 'control');
+  const bad = startEntry(env, { noChannel: true });
+  await assert.rejects(bad.ready, /main channel/);
+  assert.equal(await Promise.race([bad.exited, sleepMs(5000).then(() => 'still running')]), 2);
+});
+
+test('#338 review m1: at most MAX_WRITES_IN_FLIGHT sends/answers wait on main at once; a slot frees when one returns', { timeout: 15_000 }, async () => {
+  const releases: (() => void)[] = [];
+  let reached = 0;
+  const server = createAccesMobileServer({
+    allowedLogin: LOGIN,
+    readToken: () => TOKEN,
+    upstream: (route) => (route === '/mobile/send' ? (reached++, new Promise((r) => releases.push(() => r({ ok: true })))) : Promise.resolve({ ok: true })),
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const JSONH = { ...AUTH, 'Content-Type': 'application/json' };
+  try {
+    const held = Array.from({ length: MAX_WRITES_IN_FLIGHT }, () => post(port, '/api/send?id=w1', JSONH, '{"text":"x"}'));
+    while (reached < MAX_WRITES_IN_FLIGHT) await sleepMs(5);
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, '{"text":"one too many"}')).status, 429);
+    assert.equal(reached, MAX_WRITES_IN_FLIGHT, 'the refused one never reached main');
+    assert.equal((await get(port, '/api/workspaces', AUTH)).status, 200, 'reads are not capped by writes');
+    releases.shift()!();
+    assert.equal((await held[0]).status, 200);
+    const again = post(port, '/api/send?id=w1', JSONH, '{"text":"now fits"}');
+    while (reached < MAX_WRITES_IN_FLIGHT + 1) await sleepMs(5);
+    releases.forEach((r) => r());
+    assert.equal((await again).status, 200, 'a freed slot is reused');
+    await Promise.all(held);
   } finally {
     server.closeAllConnections();
     await new Promise((r) => server.close(() => r(null)));

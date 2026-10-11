@@ -1,0 +1,69 @@
+// Accès mobile (#334–#339): the phone's operations in main. Served ONLY on the private channel main hands the phone server at
+// spawn (fd 3, shared/acces-mobile-rpc.ts) — never on the hooks socket every local agent can reach: `/mobile/send` speaks with the
+// HUMAN's origin (a fleet-pause bypass by decision), so it must be reachable only from the process that checked the Tailscale
+// identity + token (#338 review M1).
+
+import { store } from './store';
+import { sdkAnswerAskUserQuestion, sdkSend } from './agent-sdk';
+import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
+import { markWorkspaceSeen } from './mark-seen';
+import { projectMobileWorkspaces } from '../shared/acces-mobile';
+import { MOBILE_SEND_MAX_CHARS, validWorkspaceId } from '../shared/acces-mobile-conversation';
+import type { RpcHandlers } from '../shared/acces-mobile-rpc';
+
+function liveWorkspace(id: unknown) {
+  const ws = validWorkspaceId(id) ? store.getWorkspace(id) : undefined;
+  return ws && !ws.archived ? ws : undefined;
+}
+
+export const mobileRpcHandlers: RpcHandlers = {
+  async call(route, msg) {
+    switch (route) {
+      case '/mobile/workspaces':
+        // Every non-archived workspace, every account.
+        return { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts) };
+      case '/mobile/conversation': {
+        // One workspace's conversation, folded + projected for the phone (account-aware history).
+        const ws = liveWorkspace(msg.id);
+        return ws ? getMobileConversation(ws.id) : { ok: false, error: 'unknown workspace' };
+      }
+      case '/mobile/seen': {
+        // The SAME « seen » as the desktop (clears non lu, resolves en attente) — mark-seen.ts.
+        const ws = validWorkspaceId(msg.id) ? store.getWorkspace(msg.id) : undefined;
+        if (!ws) return { ok: false, error: 'unknown workspace' };
+        await markWorkspaceSeen(ws.id);
+        return { ok: true };
+      }
+      case '/mobile/send': {
+        // The human typed this on the phone — the SAME call as the desktop composer (origin 'human': queued if mid-turn, wakes a
+        // Veille session, allowed while a run is paused). NEVER the agent-to-agent `/message` path.
+        const ws = liveWorkspace(msg.id);
+        const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+        if (!ws) return { ok: false, error: 'unknown or archived workspace' };
+        if (!text || text.length > MOBILE_SEND_MAX_CHARS) return { ok: false, error: `message must be 1–${MOBILE_SEND_MAX_CHARS} characters` };
+        try {
+          await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+      case '/mobile/answer': {
+        // Answer a parked AskUserQuestion — validated, built with the desktop card's builder, refused when already answered.
+        const ws = liveWorkspace(msg.id);
+        const answers = msg.answers;
+        if (!ws) return { ok: false, error: 'unknown or archived workspace' };
+        if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 200) return { ok: false, error: 'bad request id' };
+        if (!answers || typeof answers !== 'object' || Array.isArray(answers) || !Object.values(answers).every((v) => Array.isArray(v) && v.every((l) => typeof l === 'string')))
+          return { ok: false, error: 'answers must map each question to a list of labels' };
+        return sdkAnswerAskUserQuestion(ws.id, msg.requestId, answers as Record<string, string[]>);
+      }
+      default:
+        return { ok: false, error: 'unknown route' };
+    }
+  },
+  stream(route, push) {
+    // Change announcements for the server to relay to the phone.
+    return route === '/mobile/stream' ? subscribeMobileFeed(push) : null;
+  },
+};

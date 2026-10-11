@@ -230,7 +230,7 @@ try {
   clause('ctl/settings-port-ignored', !('port' in view.settings) && view.serveCommand === `sudo tailscale serve --bg --https=${SERVE_PORT} unix:${SOCK}`, `settings ${JSON.stringify(view.settings)}; "${view.serveCommand}"`);
   const srvEnv = environOf(pids[0]).map((e) => e.split('=')[0]).sort();
   clause('ctl/server-one-process', pids.length === 1, `pids ${pids.join(',')} argv ${cmdlineOf(pids[0]).join(' ')}`);
-  clause('ctl/server-env-allowlisted', !srvEnv.includes('SECRET_CANARY_FROM_MAIN') && !srvEnv.includes('HOME') && !srvEnv.includes('CLAUDE_CONFIG_DIR') && srvEnv.includes('ACCES_MOBILE_SOCKET') && !srvEnv.includes('ACCES_MOBILE_PORT'), `server environ keys: ${srvEnv.join(' ')}`);
+  clause('ctl/server-env-allowlisted', !srvEnv.includes('SECRET_CANARY_FROM_MAIN') && !srvEnv.includes('HOME') && !srvEnv.includes('CLAUDE_CONFIG_DIR') && srvEnv.includes('ACCES_MOBILE_SOCKET') && !srvEnv.includes('ACCES_MOBILE_PORT') && !srvEnv.includes('ORCHESTRA_SOCK'), `server environ keys: ${srvEnv.join(' ')}`);
   const tokStat = fs.statSync(TOKEN_FILE), dirStat = fs.statSync(path.dirname(TOKEN_FILE));
   clause('ctl/token-file-mode', (tokStat.mode & 0o777) === 0o600 && (dirStat.mode & 0o777) === 0o700, `token ${(tokStat.mode & 0o777).toString(8)}, dir ${(dirStat.mode & 0o777).toString(8)}`);
   const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
@@ -317,11 +317,22 @@ try {
   saveShot('phone-conversation-live.png', await phone.shot());
 
   // #338 must-FAIL control: the AGENT path (`/message` on the hooks socket) refuses am-idle — its run has bus delivery ON …
-  const mainSock = environOf(serverPids(TOKEN_FILE)[0]).find((e) => e.startsWith('ORCHESTRA_SOCK=')).slice('ORCHESTRA_SOCK='.length);
+  // The hooks socket every local agent can reach (its path from the app's pointer file — the phone server is NOT told it).
+  const mainSock = fs.readFileSync(path.join(world.ohome, 'sock'), 'utf8').trim();
   const viaAgentPath = await new Promise((resolve, reject) => {
     const r = http.request({ socketPath: mainSock, path: '/message', method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve(JSON.parse(b))); });
     r.on('error', reject); r.end(JSON.stringify({ to: 'ws-am-idle', text: 'coordination via the agent path' }));
   });
+  // #338 review M1 must-FAIL: an agent-like local process calling /mobile/send on the HOOKS socket gets nothing — no such route there
+  // (the default route answers {}), and no turn starts; only the phone server's private fd-3 channel carries it.
+  const modelsBeforeForge = fakeApi.requests.filter((r) => r.type === 'model').length;
+  const forged = await new Promise((resolve, reject) => {
+    const r = http.request({ socketPath: mainSock, path: '/mobile/send', method: 'POST', headers: { 'Content-Type': 'application/json' } }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve(b)); });
+    r.on('error', reject); r.end(JSON.stringify({ id: 'ws-am-idle', text: 'forged human message from a local agent' }));
+  });
+  await sleep(4000);
+  const forgedLines = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].filter((e) => e.textContent.includes('forged human message')).length`);
+  clause('send/hooks-socket-has-no-mobile-route', forged === '{}' && forgedLines === 0 && fakeApi.requests.filter((r) => r.type === 'model').length === modelsBeforeForge, `hooks /mobile/send answered ${forged}; no line, no model request in 4 s`);
   clause('send/agent-path-refused', viaAgentPath.ok === false && /delivery switch ON/.test(viaAgentPath.error ?? ''), `hooks /message to the fleet member: ${JSON.stringify(viaAgentPath).slice(0, 160)}`);
   // … while the SAME member takes the human's message from the phone composer (trusted typing + click), and the turn runs.
   const beforeSend = fakeApi.requests.filter((r) => r.type === 'model').length;

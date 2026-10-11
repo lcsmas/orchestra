@@ -81,8 +81,9 @@ export function tailscaleServeCommand(socketPath: string, servePort: number): st
 
 /** Linux: exec the server through `bash -c` after closing every inherited fd above stderr. Electron/Chromium leaves some of its
  *  own sockets without CLOEXEC — the e2e rig caught the server holding main's DevTools LISTEN socket — and the network-facing
- *  process must hold nothing of main's. Usage: bash -c CLOSE_INHERITED_FDS <label> <runtime> <script>. */
-export const CLOSE_INHERITED_FDS = 'shopt -s nullglob; for f in /proc/$$/fd/*; do n=${f##*/}; if [ "$n" -gt 2 ]; then eval "exec $n>&-"; fi; done; exec "$@"';
+ *  process must hold nothing of main's — except fd 3, the private channel main hands it on purpose (#338 review M1).
+ *  Usage: bash -c CLOSE_INHERITED_FDS <label> <runtime> <script>. */
+export const CLOSE_INHERITED_FDS = 'shopt -s nullglob; for f in /proc/$$/fd/*; do n=${f##*/}; if [ "$n" -gt 3 ]; then eval "exec $n>&-"; fi; done; exec "$@"';
 
 /** The directory for the socket: $XDG_RUNTIME_DIR only when it is a directory OURS and closed to others (0700), else `fallback`
  *  (our own 0700 dir). A runtime dir we do not own could let its owner swap the socket. */

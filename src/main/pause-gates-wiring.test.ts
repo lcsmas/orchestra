@@ -57,10 +57,11 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
     if (n > 0) found[f] = n;
   }
   assert.deepEqual(found, {
+    'acces-mobile-routes.ts': 1, // /mobile/send on the PRIVATE fd-3 channel: the human typing on the phone (#338) — the composer's call, by decision
     'agent-sdk.ts': 1,          // the `origin === 'human'` tag that feeds the drain gate
     'api-handlers.ts': 5,       // composer + tray release + release-all + Fix checks + Send review
     'bus-pause.ts': 1,          // pauseRefusalWith: a human origin is never refused
-    'hooks-server.ts': 1,       // /mobile/send: the human typing on the phone (Accès mobile #338) — the composer's call, by decision
+
     'prompt-queue.ts': 1,       // "Send now" (force)
     'restart-workspace.ts': 1,  // trigger 'toolbar' → human
   });

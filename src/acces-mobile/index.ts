@@ -8,7 +8,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { createAccesMobileServer, socketUpstream, socketUpstreamStream } from './server.ts';
+import net from 'node:net';
+import { createAccesMobileServer } from './server.ts';
+import { createRpcClient } from '../shared/acces-mobile-rpc.ts';
 
 function fail(msg: string): never {
   process.stderr.write(`acces-mobile: ${msg}\n`);
@@ -18,13 +20,20 @@ function fail(msg: string): never {
 const sockPath = process.env.ACCES_MOBILE_SOCKET ?? '';
 const allowedLogin = process.env.ACCES_MOBILE_LOGIN ?? '';
 const tokenFile = process.env.ACCES_MOBILE_TOKEN_FILE ?? '';
-const sock = process.env.ORCHESTRA_SOCK ?? '';
 if (!sockPath || !path.isAbsolute(sockPath)) fail('bad ACCES_MOBILE_SOCKET');
 if (Buffer.byteLength(sockPath) > 107) fail('ACCES_MOBILE_SOCKET path too long for a Unix socket');
 if (!allowedLogin) fail('no ACCES_MOBILE_LOGIN');
 if (!tokenFile) fail('no ACCES_MOBILE_TOKEN_FILE');
-if (!sock) fail('no ORCHESTRA_SOCK');
-
+// fd 3 = the private channel main handed us at spawn (a socketpair): the ONLY way to main (#338 review M1).
+let channel: net.Socket;
+try {
+  if (!fs.fstatSync(3).isSocket()) fail('fd 3 is not the main channel');
+  channel = new net.Socket({ fd: 3, readable: true, writable: true });
+} catch {
+  fail('no main channel on fd 3');
+}
+channel.on('error', () => {});
+const rpc = createRpcClient(channel);
 // The directory must be ours and closed to everyone else, or another user could pre-create / swap the socket path.
 const dir = path.dirname(sockPath);
 let st: fs.Stats;
@@ -46,8 +55,8 @@ try {
 const server = createAccesMobileServer({
   allowedLogin,
   readToken: () => fs.readFileSync(tokenFile, 'utf8'),
-  upstream: socketUpstream(sock),
-  upstreamStream: socketUpstreamStream(sock),
+  upstream: (route, body, timeoutMs) => rpc.call(route, body, timeoutMs),
+  upstreamStream: (route, onMessage, onEnd) => rpc.stream(route, onMessage, onEnd),
   log: (line) => process.stderr.write(`acces-mobile: ${line}\n`),
 });
 server.on('error', (e: NodeJS.ErrnoException) => fail(`listen failed: ${e.code ?? e.message}`));

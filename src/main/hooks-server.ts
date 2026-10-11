@@ -43,10 +43,6 @@ import { currentMemberMemory } from './member-memory-host.ts';
 import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
-import { projectMobileWorkspaces } from '../shared/acces-mobile.ts';
-import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, validWorkspaceId } from '../shared/acces-mobile-conversation.ts';
-import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed.ts';
-import { markWorkspaceSeen } from './mark-seen.ts';
 import { repriseStatusView } from './pause-reprise.ts';
 import { getLiveSwitches } from './bus-settings.ts';
 import { serializeSwitches } from '../shared/bus-switches.ts';
@@ -58,7 +54,7 @@ import {
 } from './linear-tickets';
 import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
-import { dispatchReloadSkillsRequest, sdkAnswerAskUserQuestion, sdkSend } from './agent-sdk';
+import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
@@ -189,7 +185,7 @@ export async function startHooksServer(): Promise<void> {
     // caller saw an empty reply and had to guess that the payload was the
     // culprit — so /spawn gets a generous ceiling while other routes stay
     // locked down, and an over-cap request now answers with a clear 413.
-    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : route === '/mobile/send' || route === '/mobile/answer' ? MOBILE_SEND_MAX_BODY : 4096;
+    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : 4096;
     let body = '';
     let tooLarge = false;
     req.setEncoding('utf8');
@@ -625,55 +621,6 @@ export async function startHooksServer(): Promise<void> {
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());
-          } else if (route === '/mobile/conversation') {
-            // Accès mobile (#337): one workspace's conversation, folded + projected for the phone (account-aware history).
-            if (!validWorkspaceId(msg.id) || !store.getWorkspace(msg.id) || store.getWorkspace(msg.id)?.archived) send(200, { ok: false, error: 'unknown workspace' });
-            else send(200, await getMobileConversation(msg.id));
-          } else if (route === '/mobile/seen') {
-            // The phone opened it: the SAME « seen » as the desktop (clears non lu, resolves en attente) — mark-seen.ts.
-            if (!validWorkspaceId(msg.id) || !store.getWorkspace(msg.id)) send(200, { ok: false, error: 'unknown workspace' });
-            else {
-              await markWorkspaceSeen(msg.id);
-              send(200, { ok: true });
-            }
-          } else if (route === '/mobile/send') {
-            // Accès mobile (#338): the human typed this on the phone — the SAME call as the desktop composer (origin 'human': queued
-            // if mid-turn, wakes a Veille session, allowed while a run is paused). NEVER the agent-to-agent `/message` path, whose
-            // fleet gate refuses a member with the bus delivery switch ON.
-            const ws = validWorkspaceId(msg.id) ? store.getWorkspace(msg.id) : undefined;
-            const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-            if (!ws || ws.archived) send(200, { ok: false, error: 'unknown or archived workspace' });
-            else if (!text || text.length > MOBILE_SEND_MAX_CHARS) send(200, { ok: false, error: `message must be 1–${MOBILE_SEND_MAX_CHARS} characters` });
-            else {
-              try {
-                await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');
-                send(200, { ok: true });
-              } catch (e) {
-                send(200, { ok: false, error: e instanceof Error ? e.message : String(e) });
-              }
-            }
-          } else if (route === '/mobile/answer') {
-            // Accès mobile (#339): answer a parked AskUserQuestion from the phone — validated, built with the desktop card's
-            // builder on the original input, refused when already answered (the desktop may have been first).
-            const ws = validWorkspaceId(msg.id) ? store.getWorkspace(msg.id) : undefined;
-            const answers = msg.answers;
-            if (!ws || ws.archived) send(200, { ok: false, error: 'unknown or archived workspace' });
-            else if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 200) send(200, { ok: false, error: 'bad request id' });
-            else if (!answers || typeof answers !== 'object' || Array.isArray(answers) || !Object.values(answers).every((v) => Array.isArray(v) && v.every((l) => typeof l === 'string')))
-              send(200, { ok: false, error: 'answers must map each question to a list of labels' });
-            else send(200, sdkAnswerAskUserQuestion(ws.id, msg.requestId, answers as Record<string, string[]>));
-          } else if (route === '/mobile/stream') {
-            // Long-lived NDJSON: change announcements for the server process to relay to the phone. Ends when it hangs up.
-            res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' });
-            const unsubscribe = subscribeMobileFeed((m) => {
-              if (!res.writableEnded) res.write(JSON.stringify(m) + '\n');
-            });
-            res.write(JSON.stringify({ t: 'ping' }) + '\n');
-            res.on('close', unsubscribe);
-          } else if (route === '/mobile/workspaces') {
-            // Accès mobile (#334): the phone's list — every non-archived workspace, every account. Called only by the Accès
-            // mobile server process, which has already checked the Tailscale identity + token (ADR 0006).
-            send(200, { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts) });
           } else {
             // Default route handles activity events: /event or anything else.
             if (typeof msg.id === 'string' && typeof msg.event === 'string') {
