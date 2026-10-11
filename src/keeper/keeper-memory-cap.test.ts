@@ -11,6 +11,7 @@ import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createLineSplitter, encodeKeeperFrame, parseKeeperFrame, type KeeperClientFrame, type KeeperDaemonFrame } from '../shared/keeper-protocol.ts';
+import { carrying, identOf, reap, type Ident } from './test-teardown.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const KEEPER_JS = path.join(REPO, 'dist-electron', 'keeper.js');
@@ -23,6 +24,7 @@ process.stdin.on('data', (d) => {
   }
 });
 setInterval(() => {}, 1000);
+setTimeout(() => process.exit(0), 120000); // a runner that dies mid-test must not leave this CLI forever (pre-review F1)
 `;
 
 before(() => {
@@ -34,37 +36,12 @@ before(() => {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const dirs: string[] = [];
-const pids: number[] = [];
+/** Every keeper launched, with its identity (pid + start time) read right after the spawn. */
+const keepers: Ident[] = [];
 
-// TEARDOWN BY IDENTITY (D2): the keeper is spawned detached, so SIGKILL of its pid ALONE leaves its fake CLI orphaned (ppid 1, `setInterval` forever) whenever the keeper did not get to stop it first — measured at
-// ~2 orphans per full-suite run (wave H). The whole process group goes first, then anything still carrying a test dir is killed with its identity (pid + /proc start time) re-read at signal time.
-const readSafe = (p: string): string | null => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
-const startTicks = (pid: number): string | null => { const t = readSafe(`/proc/${pid}/stat`); return t ? t.slice(t.lastIndexOf(')') + 2).split(' ')[19] ?? null : null; };
-/** The processes whose argv or environment carries `dir` (every test process embeds its own scratch dir), with the identity to re-check before a signal. */
-function carrying(dir: string): Array<{ pid: number; ticks: string }> {
-  const out: Array<{ pid: number; ticks: string }> = [];
-  for (const name of fs.readdirSync('/proc')) {
-    if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-    const cmd = readSafe(`/proc/${name}/cmdline`);
-    const env = cmd?.includes(dir) ? '' : readSafe(`/proc/${name}/environ`);
-    if ((cmd?.includes(dir) || env?.includes(dir)) && startTicks(Number(name)) !== null) out.push({ pid: Number(name), ticks: startTicks(Number(name))! });
-  }
-  return out;
-}
-/** Kill everything the suite started; returns the survivors (must be []). Idempotent. */
-async function teardownAll(): Promise<Array<{ pid: number; ticks: string }>> {
-  for (const p of pids) {
-    try { process.kill(-p, 'SIGKILL'); } catch { /* group gone */ }
-    try { process.kill(p, 'SIGKILL'); } catch { /* gone */ }
-  }
-  for (let round = 0; round < 20; round++) {
-    const left = dirs.flatMap(carrying);
-    if (left.length === 0) break;
-    for (const s of left) if (startTicks(s.pid) === s.ticks) { try { process.kill(s.pid, 'SIGKILL'); } catch { /* gone */ } }
-    await sleep(100);
-  }
-  return dirs.flatMap(carrying);
-}
+// TEARDOWN BY IDENTITY (D2): the keeper is spawned detached, so SIGKILL of its pid ALONE leaves its fake CLI orphaned (ppid 1, `setInterval` forever) — measured at ~2 orphans per full-suite run (wave H).
+// test-teardown.ts: each keeper's process group first, then anything still carrying a test dir (argv or environ); EVERY signal only after the target's /proc start time is re-read and found equal.
+const teardownAll = () => reap(keepers, dirs, true);
 after(async () => {
   const left = await teardownAll();
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
@@ -82,7 +59,8 @@ async function startKeeper(): Promise<{ peer: Peer; dir: string; cli: string; ws
   fs.writeFileSync(cli, FAKE_CLI);
   const child = spawn(process.execPath, [KEEPER_JS, wsId, sock, path.join(dir, 'k.pid'), path.join(dir, 'k.log')], { detached: true, stdio: 'ignore', env: { ...process.env, ORCHESTRA_KEEPER_LINGER_MS: '60000' } });
   child.unref();
-  if (child.pid) pids.push(child.pid);
+  const id = child.pid ? identOf(child.pid) : null;
+  if (id) keepers.push(id);
   let s: net.Socket | null = null;
   for (let i = 0; i < 60 && !s; i++) {
     s = await new Promise<net.Socket | null>((res) => { const c = net.connect(sock); c.once('connect', () => res(c)); c.once('error', () => res(null)); });
@@ -145,15 +123,15 @@ test('teardown (D2): a keeper killed WITHOUT the chance to stop its CLI leaves n
   const { peer, dir, cli } = await startKeeper();
   peer.send({ t: 'spawn', command: process.execPath, args: [cli], cwd: dir, env: { PATH: process.env.PATH } });
   await sleep(400);
-  const keeperPid = pids[pids.length - 1];
+  const keeperPid = keepers[keepers.length - 1].pid;
   process.kill(keeperPid, 'SIGKILL'); // what the OLD `after` hook did: the keeper pid alone
   await sleep(300);
-  const orphans = carrying(dir).filter((p) => p.pid !== keeperPid && startTicks(p.pid) !== null);
+  const orphans = carrying(dir, true).filter((p) => p.pid !== keeperPid);
   assert.ok(orphans.length >= 1, 'the instrument sees the orphaned fake CLI that the old teardown left behind');
   const orphan = orphans[0];
   peer.close();
   const left = await teardownAll();
-  assert.equal(startTicks(orphan.pid) === orphan.ticks, false, 'the orphan is gone');
+  assert.equal(identOf(orphan.pid)?.ticks === orphan.ticks, false, 'the orphan is gone');
   console.log(`# kmc teardown: orphans before=${orphans.length} survivors after=${left.length}`);
   assert.equal(left.length, 0);
 });

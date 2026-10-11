@@ -501,3 +501,7 @@ wired, incl. the remote-aware probe and the coalescing wrapper).
 Not covered while detached (by design): queued sends/`pendingLocalContext`
 die with the app; permission prompts park in the CLI and redeliver on attach;
 background-task cards / cost readouts rebuild or reset on reattach.
+
+## Keeper test hygiene (D2, wave H)
+
+`keeper.test.ts` and `keeper-memory-cap.test.ts` start REAL keepers + fake CLIs. A runner killed before its `after` hook (timeout, Pause dure, ^C) used to leave the two SIGTERM-ignoring D1 CLIs forever (ppid 1). Now: the fixture CLI exits when its keeper is gone, `keeper.test.ts` keepers end themselves within ~1 min (`BOUNDED_KEEPER_ENV`; `keeper-memory-cap.test.ts` only caps its fake CLI at 120 s), and teardown goes through `src/keeper/test-teardown.ts` (`reap`: process group of each recorded keeper, then anything carrying a scratch dir — every signal only after the start time is re-read). Rig: `node scripts/keeper-test-leak-rig.mjs` (kills the runner mid-file; heavy: real keepers). Mutants: `scripts/keeper-test-leak-mutants.mjs` (`--check` is a dry run).
