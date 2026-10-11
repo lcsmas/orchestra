@@ -136,22 +136,30 @@ app.whenReady().then(async () => {
     await shoot(win, 'memcap-window-refused.png', "(() => { " + rectOf + " const e = document.querySelector('[data-mg-error]'); const soft = document.querySelector('[data-mg-cap-soft]'); return { kind: 'refused', err: e ? { text: e.innerText, role: e.getAttribute('role'), rect: rect(e), color: getComputedStyle(e).color } : null, softV: soft.value, hardV: document.querySelector('[data-mg-cap-hard]').value }; })()");
     // ── the dialog must FIT (gate c/6112245304: at 1440x900 the window grew to 923 px in a 720 px max-height, clipping the Reliquat wait, the refusal and Done) ──
     const FIT = "(() => { const R = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null; const dlg = document.querySelector('[role=dialog]'), body = document.querySelector('[data-mg-body]'), done = [...document.querySelectorAll('[role=dialog] button')].find((b) => /Done/.test(b.textContent)), err = document.querySelector('[data-mg-error]'), waitEl = document.querySelector('[data-mg-reliquat-wait]'); const cs = body ? getComputedStyle(body) : null; return { kind: 'fit', vw: innerWidth, vh: innerHeight, dlg: R(dlg), body: R(body), bodyScroll: body ? { sh: body.scrollHeight, ch: body.clientHeight, oy: cs.overflowY } : null, done: R(done), doneInDialog: !!(done && dlg && dlg.contains(done)), err: R(err), errInBody: !!(err && body && body.contains(err)), wait: R(waitEl) }; })()";
+    // The rig pins its output (HEADLESS-1 1600x1000) and tiles the window: setContentSize cannot make a 1920x1080 viewport. The viewport is IMPOSED through CDP (Emulation.setDeviceMetricsOverride) and the page's own
+    // innerWidth/innerHeight are READ BACK and asserted equal to the request for every state — a proof at a size nobody measured would be empty (OPS review m3).
+    const dbg = win.webContents.debugger;
+    dbg.attach('1.3');
+    const png = async () => Buffer.from((await dbg.sendCommand('Page.captureScreenshot', { format: 'png' })).data, 'base64');
     for (const [vw, vh] of [[1440, 900], [1920, 1080], [1280, 640]]) {
-      win.setContentSize(vw, vh);
+      await dbg.sendCommand('Emulation.setDeviceMetricsOverride', { width: vw, height: vh, deviceScaleFactor: 1, mobile: false });
       await wait(300);
       await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=window' });
       await ready(win, '[data-mg-cap-section]');
-      await shoot(win, 'memcap-window-' + vw + 'x' + vh + '.png', "(() => ({ state: 'rest', size: '" + vw + "x" + vh + "' }))()");
+      await wait(300);
+      fs.writeFileSync(path.join(OUT, 'memcap-window-' + vw + 'x' + vh + '.png'), await png());
       const rest = await ev(win, FIT);
       await ev(win, "document.querySelector('[data-mg-reliquat-wait]').scrollIntoView({ block: 'end' })");
       await wait(250);
       const scrolled = await ev(win, FIT);
       await ev(win, "(() => { const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; const el = document.querySelector('[data-mg-cap-soft]'); el.focus(); set.call(el, '7'); el.dispatchEvent(new Event('input', { bubbles: true })); el.blur(); })()");
       await wait(400);
-      await shoot(win, 'memcap-window-refused-' + vw + 'x' + vh + '.png', "(() => ({ state: 'refused', size: '" + vw + "x" + vh + "' }))()");
+      await wait(300);
+      fs.writeFileSync(path.join(OUT, 'memcap-window-refused-' + vw + 'x' + vh + '.png'), await png());
       const refused = await ev(win, FIT);
-      results.push({ kind: 'fits', vw, vh, rest, scrolled, refused });
+      results.push({ kind: 'fits', vw, vh, rest, scrolled, refused, files: ['memcap-window-' + vw + 'x' + vh + '.png', 'memcap-window-refused-' + vw + 'x' + vh + '.png'] });
     }
+    dbg.detach();
     fs.writeFileSync(process.env.PROBE_OUT, JSON.stringify(results));
     app.exit(0);
   } catch (e) {
@@ -217,17 +225,19 @@ check('three viewports probed: 1440x900, 1920x1080 and a SHORT 1280x640', fits.l
 for (const f of fits) {
   const tag = `${f.vw}x${f.vh}`;
   for (const [state, m] of [['at rest', f.rest], ['scrolled to the Reliquat wait', f.scrolled], ['refusal shown', f.refused]]) {
+    check(`${tag} ${state}: the page's MEASURED viewport is exactly ${f.vw}x${f.vh} (innerWidth x innerHeight read back, not assumed)`, m.vw === f.vw && m.vh === f.vh, `measured ${m.vw}x${m.vh}`);
     check(`${tag} ${state}: the dialog is entirely inside the viewport`, inside(m.dlg, m.vw, m.vh), JSON.stringify([m.dlg, m.vw, m.vh]));
     check(`${tag} ${state}: DONE is inside the viewport and inside the dialog (always reachable)`, inside(m.done, m.vw, m.vh) && m.doneInDialog && within(m.done, m.dlg), JSON.stringify([m.done, m.dlg]));
   }
   check(`${tag}: the fields scroll INSIDE the dialog when they do not fit (overflow-y auto/scroll) — scrollHeight ${f.rest.bodyScroll?.sh} vs ${f.rest.bodyScroll?.ch}`, !!f.rest.bodyScroll && (f.rest.bodyScroll.sh <= f.rest.bodyScroll.ch + 1 || /auto|scroll/.test(f.rest.bodyScroll.oy)), JSON.stringify(f.rest.bodyScroll));
   check(`${tag}: scrolled to the end, the Reliquat wait is visible INSIDE the scrolling part and the viewport`, within(f.scrolled.wait, f.scrolled.body) && inside(f.scrolled.wait, f.scrolled.vw, f.scrolled.vh), JSON.stringify([f.scrolled.wait, f.scrolled.body]));
   check(`${tag}: the refusal line is visible (inside viewport and dialog) and sits OUTSIDE the scrolling part, so it can never scroll away`, !!f.refused.err && inside(f.refused.err, f.refused.vw, f.refused.vh) && within(f.refused.err, f.refused.dlg) && f.refused.errInBody === false, JSON.stringify([f.refused.err, f.refused.errInBody]));
-  const pr = shots.find((x) => x.file === `memcap-window-refused-${tag}.png`);
-  const pp = pr ? png(pr) : null;
+  const refusedFile = path.join(outDir, f.files[1]);
+  const pp = fs.existsSync(refusedFile) ? decodePng(fs.readFileSync(refusedFile)) : null;
+  check(`${tag}: the refusal capture is a real ${f.vw}x${f.vh} frame (decoded dimensions)`, !!pp && pp.w === f.vw && pp.h === f.vh, pp ? `${pp.w}x${pp.h}` : 'no file');
   if (pp && f.refused.done) check(`${tag}: decoded pixels — the Done button is really painted in the refusal capture`, distinctColours(crop(pp, f.refused.done.x, f.refused.done.y, f.refused.done.width, f.refused.done.height)) > 2, JSON.stringify(f.refused.done));
 }
-console.log(`\nScreenshots: ${shots.filter((s) => s.file).map((s) => path.join(outDir, s.file)).join('\n             ')}`);
+console.log(`\nScreenshots: ${[...shots.filter((s) => s.file).map((s) => s.file), ...fits.flatMap((f) => f.files)].map((f) => path.join(outDir, f)).join('\n             ')}`);
 fs.rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.log(`\nmemcap-screenshot: ${failures} FAILURE(S)`); process.exit(1); }
 console.log('\nmemcap-screenshot: all checks passed');
