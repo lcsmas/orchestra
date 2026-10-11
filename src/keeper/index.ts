@@ -55,7 +55,7 @@ import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memo
 import { readKernelOomKills } from './kernel-oom-log.ts';
 import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, probeWithRetry, readLeafCpuUsec, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
-import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, decideCapState, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -360,6 +360,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   // must not decide a member's whole life; 2 x 2.5 s, no longer than the one 5 s probe it replaces). A wrapper that RAN but landed elsewhere keeps the prefix (tools keep adj 1000 — the kernel still prefers them): only the STATE says
   // the cap is not held. A wrapper that cannot be EXECUTED at all is dropped as the prefix (it would fail every Bash call) — loudly.
   let placed = true;
+  let wrapperRuns = true;
   if (wrapperOk && cap.wrapper) {
     const probe = probeWithRetry(() => probeToolPlacement({
       wrapper: cap.wrapper as string,
@@ -375,13 +376,14 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
       placed = false;
       if (!probe.ran) {
         wrapperOk = false;
-        klog(`memory cap: the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level`);
+        wrapperRuns = false;
+        klog(`memory cap: WARNING — the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level (state not-applied)`);
       } else {
         klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (${probe.attempts} attempts; saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (the prefix stays: they keep oom_score_adj ${OOM_ADJ_TOOLS})`);
       }
     }
   }
-  capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : !wrapperOk || !placed ? 'unprotected' : 'active', hardBytes: cap.hardBytes };
+  capInfo = { unit: cap.unit, state: decideCapState({ swapOk, wrapperOk, wrapperRuns, placed }), hardBytes: cap.hardBytes };
   // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have been charged CPU time (cpu.stat usage_usec: unlike memory.stat's
   // pgfault it is flushed on read — measured) since the probe; if not, no tool ever landed there. The flip is visible in the keeper log and in every LATER helloAck/probe `cap.state`; the app logs the state once, at spawn.
   placementTripwire = null;

@@ -878,7 +878,7 @@ try {
     check('a tool command runs at adj 1000 in the WORK leaf', lines[0] === '1000' && (lines[1] ?? '').trim().endsWith('/w'), JSON.stringify(lines));
     detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'probe_unrunnable_prefix_dropped') {
-    // A wrapper that cannot RUN at all (exit 1 on every call): as the shell prefix it would fail EVERY Bash call, so it is dropped — loudly; the state says unprotected and tools still work.
+    // A wrapper that cannot RUN at all (exit 1 on every call): as the shell prefix it would fail EVERY Bash call, so it is dropped — loudly (keeper log + app WARN); the state says not-applied and tools still work.
     fs.writeFileSync(WRAPPER, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
     const up = await waitFor(() => initOf(st), 30_000);
@@ -886,7 +886,8 @@ try {
     const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
     const pr = await kc.probeKeeper(ws);
     check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
-    check('the keeper reports cap.state = unprotected', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
+    check('the keeper reports cap.state = not-applied (the member is UNCAPPED; never active, and not merely unprotected)', pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
+    check('the app log WARNs for it (describeCapState: the cap is NOT applied / the wrapper cannot be RUN)', await waitFor(() => /tool wrapper cannot be RUN/.test(orchLog()), 8000), '');
     check('the log says the wrapper could not be RUN and the prefix is NOT set', /could not be RUN \(2 attempts/.test(klog) && /prefix is NOT set/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
     check('the CLI got NO shell prefix (a prefix that cannot run would fail every Bash call)', !initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
     const t = await runTool(st, 'echo still-works', 't-works', 20_000);
