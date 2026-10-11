@@ -15,6 +15,19 @@
 
 const lastActivity = new Map<string, number>();
 
+// The MONOTONIC twin of the wall-clock stamps (#326-fu m2): CLOCK_MONOTONIC via `performance.now()` — immune to NTP steps and a resume's wall-clock jump. Only the Reliquat wait reads it (an irreversible stop must not
+// be shortened by a clock jump forward); a global, so this leaf still imports NOTHING. A test/rig seam replaces the source (the rigs skew `Date.now`, and must skew this the same way).
+let monoSource: () => number = () => performance.now();
+const lastActivityMono = new Map<string, number>();
+let appStartedMono = monoSource();
+export function monotonicNow(): number {
+  return monoSource();
+}
+/** Test/rig seam: replace (or, with null, restore) the monotonic source. */
+export function __setMonotonicClockForTests(fn: (() => number) | null): void {
+  monoSource = fn ?? (() => performance.now());
+}
+
 /** Epoch ms this app run started — the floor for workspaces that have not
  *  emitted a lifecycle event yet. Without it, a session that has been quietly
  *  live since launch (started, never emitted another event) would have no
@@ -28,11 +41,17 @@ let appStartedAt = Date.now();
  *  immediately re-eligible on the next sweep. */
 export function noteActivity(wsId: string): void {
   lastActivity.set(wsId, Date.now());
+  lastActivityMono.set(wsId, monoSource());
 }
 
 /** Last observed activity, or `undefined` when nothing has been seen. */
 export function getLastActivity(wsId: string): number | undefined {
   return lastActivity.get(wsId);
+}
+
+/** Last observed activity on the monotonic clock, or `undefined` when nothing has been seen this run. */
+export function getLastActivityMono(wsId: string): number | undefined {
+  return lastActivityMono.get(wsId);
 }
 
 /** Workspaces whose delete has begun — the sweeper skips them (delete/hibernate serialization, #205). */
@@ -46,6 +65,7 @@ export function isBeingDeleted(wsId: string): boolean {
 export function forgetHibernationActivity(wsId: string): void {
   deleting.add(wsId);
   lastActivity.delete(wsId);
+  lastActivityMono.delete(wsId);
   inFlightTools.delete(wsId);
   toolDetail.delete(wsId);
 }
@@ -227,6 +247,7 @@ export function getInFlightTools(wsId: string): InFlightTool[] {
 /** Reset the app-start floor. Called once when the sweeper starts. */
 export function noteAppStart(): void {
   appStartedAt = Date.now();
+  appStartedMono = monoSource();
 }
 
 // --- the workspace the user is looking at -----------------------------------
@@ -251,6 +272,11 @@ export function noteActiveWorkspace(id: string | null): void {
 /** The renderer's currently-selected workspace, or null. */
 export function getActiveWorkspaceId(): string | null {
   return activeWorkspaceId;
+}
+
+/** Raw monotonic floor — read ONLY by `idle-clock.ts` (#326-fu); consumers call `monotonicIdleOf`. */
+export function getAppStartedMono(): number {
+  return appStartedMono;
 }
 
 /** Raw floor — read ONLY by `idle-clock.ts` (#236); consumers call `idleClockOf`. */
