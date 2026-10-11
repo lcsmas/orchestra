@@ -193,6 +193,8 @@ const FA = 'memhog-arms.mjs';
 export const MEMHOG_ARMS_MUTANTS = [
   ['arms-chain-regex-old', String.raw`expectDetail: /^NO capped scope; 0 kernel kill\(s\) over (\d+) of \1 tools$/ }`, String.raw`expectDetail: /^0 kernel kill/ }`],
   ['arms-backstop-regex-broken', String.raw`expectDetail: /BACKSTOP episode/ },   // #343 witness: the first`, String.raw`expectDetail: /BACKSTOP kill/ },   // #343 witness: the first`],
+  ['arms-session-regex-cli-only', String.raw`expectDetail: /w1: (keeper (GONE|REPLACED), )?CLI (GONE|REPLACED)/`, String.raw`expectDetail: /w1: CLI (GONE|REPLACED)/`],
+  ['arms-backstop-stays-green-scope', "stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told'], expectDetail: /BACKSTOP episode/", "stayGreen: ['bar:hog_killed', 'bar:member_told', 'bar:coordinator_told', 'bar:cap_scope_applied'], expectDetail: /BACKSTOP episode/"],
   ['arms-chain-backstop-expects-pass', "expectVerdict: 'FAIL', redden: ['bar:no_backstop_kill']", "expectVerdict: 'PASS', redden: ['bar:no_backstop_kill']"],
   ['arms-q9-expects-fail', "{ name: 'chain:q9', exercise: 'chain', cycles: 3, expectVerdict: 'PASS' }", "{ name: 'chain:q9', exercise: 'chain', cycles: 3, expectVerdict: 'FAIL' }"],
   ['arms-chain-regex-unanchored', String.raw`of \1 tools$/ }`, String.raw`of \1 tools/ }`],

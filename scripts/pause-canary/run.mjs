@@ -79,7 +79,7 @@ if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memho
 // the Q11 envelope, checked HERE too (the same pure check the drive applies): a bad invocation must not cost a PACKAGED-app build first
 if (MH_ON) {
   const capGb = Number(opt('cap-gb', '0.25'));
-  const capOn = opt('memhog-switch', 'on') === 'on';
+  const capOn = MH_CAP_ON;   // the proof's memhog-app arm is the cap-OFF control (its switch is the ARM's, not a flag): never the Q11 waiver path
   const why = memhogAppEnvelope({ members: Number(opt('members', flag('proof') ? '3' : '6')), capGb, softGb: Number(opt('soft-gb', String(Math.round(capGb * 0.75 * 100) / 100))), hogMb: Number(opt('hog-mb', String(Math.ceil(capGb * 1024) + 150))), capOn, waiver: opt('waiver', null) });
   if (why) { say(`PAUSE-CANARY: VOID — memhog-app runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY; either switch): ${why}. Nothing was run.`); process.exit(3); }
 }

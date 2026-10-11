@@ -237,3 +237,11 @@ test('OPS 7283 (D-Q14): a cap-state flip AFTER boot reaches only keepers/<ws>.lo
   assert.deepEqual(red(cycleOf(flipped) as ReturnType<typeof cycle>), ['bar:cap_holds_after_kill']);
   assert.deepEqual(red(cycleOf(workerFromAppFacts(w, 1, T0, OPS, { ...f, keeperLog: boot })) as ReturnType<typeof cycle>), [], 'control: the same facts without the flip line are green');
 });
+
+test('run.mjs wiring (found by the first real attempt of the proof\'s cap-OFF arm): the up-front Q11 check treats the proof\'s memhog-app arm as the cap-OFF control — capOn is MH_CAP_ON, which excludes --proof and a switch OFF — and both tokens/start bar hang on the same flag', () => {
+  const src = fs.readFileSync(new URL('../../scripts/pause-canary/run.mjs', import.meta.url), 'utf8');
+  assert.match(src, /const MH_CAP_ON = MH_ON && !flag\('proof'\) && opt\('memhog-switch', 'on'\) === 'on';/);
+  assert.match(src, /const capOn = MH_CAP_ON;/);
+  assert.match(src, /heavyTokensWhy\(\{ heavy: HEAVY, capOn: MH_CAP_ON \}\)/);
+  assert.match(src, /MH_CAP_ON \? CAP_ON_START_GB : MH_ON \? 9 : 0/);
+});

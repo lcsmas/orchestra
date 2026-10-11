@@ -38,7 +38,8 @@ const cycle = (w1Over: W = {}, over: W = {}) => ({
 /** arm name → the checks the REAL bars print for the scenario that arm creates. */
 const SCENARIOS: Record<string, () => Check[]> = {
   'control:hog-small': () => evaluateMemhogCycle(cycle({ swarm: { children: 1, killed: 0, survived: 1 }, oomKillDelta: 0, records: [], memberKillRows: [], coordMsgs: [], coordRead: 0 })),
-  'control:sabotage-session': () => evaluateMemhogCycle(cycle({ session: { keeperSame: true, cliSame: false, keeperAlive: true, cliAlive: false, answered: false, scopeActive: true, capState: 'active' } })),
+  // measured on the real keeper: SIGTERM of the CLI takes the keeper with it, so the real detail reads « keeper GONE, CLI GONE »
+  'control:sabotage-session': () => evaluateMemhogCycle(cycle({ session: { keeperSame: false, cliSame: false, keeperAlive: false, cliAlive: false, answered: false, scopeActive: false, capState: 'active' } })),
   'control:sabotage-member-sink': () => evaluateMemhogCycle(cycle({ memberKillRows: [] })),
   'control:sabotage-coord-sink': () => evaluateMemhogCycle(cycle({ coordMsgs: [], coordRead: 0 })),
   'control:sabotage-stray-lead': () => evaluateMemhogCycle(cycle({}, { leadSeen: 3 })),
@@ -108,4 +109,19 @@ test('chain arms: every one states the verdict it expects — a sabotage never e
   assert.equal(chain.find((a) => a.name === 'control:chain-backstop')!.sabotage, 'backstop');
   assert.ok((PROOF_ARMS as W[]).some((a) => a.name === 'control:sabotage-backstop' && a.sabotage === 'backstop' && a.redden.includes('bar:no_backstop_kill')), 'the memhog-cycle witness of #343 exists');
   assert.ok(!(PROOF_ARMS as W[]).some((a) => /known-red/.test(a.name)), 'no KNOWN-RED arm is left: Q9 is a bar');
+});
+
+test('control:sabotage-session\'s regex matches BOTH shapes of the measured detail (keeper gone with the CLI, or the CLI alone) and nothing else', () => {
+  const arm = (PROOF_ARMS as W[]).find((a) => a.name === 'control:sabotage-session')!;
+  assert.match('w1: keeper GONE, CLI GONE, the CLI no longer answers a tool command', arm.expectDetail);
+  assert.match('w1: CLI GONE, the CLI no longer answers a tool command', arm.expectDetail);
+  assert.match('w1: keeper REPLACED, CLI REPLACED', arm.expectDetail);
+  assert.doesNotMatch('w1: keeper GONE', arm.expectDetail, 'a keeper loss without the CLI is not this sabotage');
+  assert.doesNotMatch('w2: CLI GONE', arm.expectDetail, 'the sabotage targets the first worker');
+});
+
+test('the #343 witness arm does not demand cap_scope_applied green: the squeezed keeper leaf takes the whole session and the scope vanishes (measured)', () => {
+  const arm = (PROOF_ARMS as W[]).find((a) => a.name === 'control:sabotage-backstop')!;
+  assert.ok(!arm.stayGreen.includes('bar:cap_scope_applied'));
+  assert.deepEqual(arm.redden, ['bar:no_backstop_kill']);
 });
