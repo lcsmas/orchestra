@@ -320,6 +320,14 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
     assert.equal(fs.readdirSync(leafDir).length, 1, 'no WORK_LEAF env (an uncapped / pre-#332 keeper) ⇒ the wrapper moves nothing');
     const broken = spawnSync(w, ['echo still-runs'], { env: { ...env, [WORK_LEAF_ENV]: path.join(dir, 'no-such-leaf') }, encoding: 'utf8' });
     assert.equal(broken.stdout.trim(), 'still-runs', 'a leaf that cannot be entered never stops the tool (it stays at adj 1000 under the scope backstop)');
+    assert.equal(broken.stderr, '', 'review #332: …and SILENTLY — the shell\'s own open error must not reach the tool\'s stderr (the redirect covers the whole group)');
+    assert.equal(broken.status, 0);
+    // review #332 (item 2): the move happens BEFORE the arity guard, so a call with more (or fewer) than one argument — which is exec'd as given — is moved into the leaf too (it is a tool all the same)
+    const leaf2 = path.join(dir, 'leaf2');
+    fs.mkdirSync(leaf2);
+    const multi = spawnSync(w, ['printf', '%s', 'multi'], { env: { ...env, [WORK_LEAF_ENV]: leaf2 }, encoding: 'utf8' });
+    assert.equal(multi.stdout, 'multi');
+    assert.equal(fs.readFileSync(path.join(leaf2, 'cgroup.procs'), 'utf8').trim(), String(multi.pid), 'a non-1-arg call is moved too');
     // our own adj stays at 0: the wrapper changed only the process it exec'd into
     assert.equal(fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim(), baseline, 'the wrapper raised only the process it exec\'d into, not its caller');
     assert.notEqual(baseline, String(OOM_ADJ_TOOLS), 'precondition: the baseline is not already 1000, else the raise proves nothing');
@@ -338,10 +346,20 @@ test('wrapperPathUsable: only an absolute path without whitespace can be CLAUDE_
   for (const bad of ['/home/my user/.orchestra/bin/w.sh', 'bin/w.sh', '', undefined, null, '/tmp/a\tb']) assert.equal(wrapperPathUsable(bad as string | undefined), false, String(bad));
 });
 
+test('describeCapState (#332): active names the work leaf and says what sits outside it; unprotected says NOTHING is capped at the hard level', () => {
+  const act = describeCapState('active', 'u.scope', 6 * GIB).text;
+  assert.match(act, /work leaf/);
+  assert.match(act, /MCP servers \/ hooks/);
+  assert.match(act, /keeper and the CLI process sit outside/);
+  const un = describeCapState('unprotected', 'u.scope', 6 * GIB).text;
+  assert.match(un, /NOTHING is capped at the hard level \(6\.00 GB\)/);
+  assert.doesNotMatch(un, /kill the CLI/, 'the old text («the kernel would kill the CLI first») is no longer true');
+});
+
 test('describeCapState: only `active` is info; unprotected / not-applied / no-scope / unknown say what the member is left with', () => {
   assert.equal(describeCapState('active', 'u.scope', 6 * GIB).level, 'info');
   for (const st of ['unprotected', 'not-applied', 'no-scope', undefined] as const) assert.equal(describeCapState(st, 'u.scope', 6 * GIB).level, 'warn', String(st));
-  assert.match(describeCapState('unprotected', 'u.scope', 6 * GIB).text, /kill the CLI/);
+  assert.match(describeCapState('unprotected', 'u.scope', 6 * GIB).text, /NOTHING is capped/);
   assert.match(describeCapState('not-applied', 'u.scope', 6 * GIB).text, /UNCAPPED/);
   assert.match(describeCapState(undefined, 'u.scope', 6 * GIB).text, /UNVERIFIED/);
 });

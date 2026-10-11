@@ -58,3 +58,23 @@ export function buildMemberLeaves(a: { scopeDir: string; hardBytes: number; pid:
   }
   return { ok: true, keeperDir, workDir };
 }
+
+export interface PlacementProbe {
+  ok: boolean;
+  /** What the probe saw: the cgroup path the wrapped command reported, or why it could not. */
+  saw: string;
+}
+
+/**
+ * RUNTIME proof that the tool wrapper really puts a command into the work leaf: run the wrapper once on `cat /proc/self/cgroup` with the leaf in its environment and read where the command found itself.
+ * `run` = spawn + capture (injected). A wrapper that is stale, not executable, or cannot write the leaf's cgroup.procs (an unwritable cgroupfs) would otherwise leave EVERY tool in `k`, `w` empty and the cap
+ * nothing while the state read `active`. Proves the wrapper and the leaf, not that the CLI honours the prefix (that is `scripts/memory-cap/real-cli-prefix.mjs`, which asserts the placement of the real CLI's tools).
+ */
+export function probeToolPlacement(a: { wrapper: string; workDir: string; cgroupRoot: string; parseCgroup: (text: string) => string | null; run: (wrapper: string, args: string[], env: Record<string, string>) => string | null }): PlacementProbe {
+  const out = a.run(a.wrapper, ['cat /proc/self/cgroup'], { PATH: '/usr/local/bin:/usr/bin:/bin', SHELL: '/bin/bash', ORCHESTRA_MEMCAP_WORK_LEAF: a.workDir });
+  if (out === null) return { ok: false, saw: 'the wrapper did not run' };
+  const cg = a.parseCgroup(out);
+  if (cg === null) return { ok: false, saw: `no cgroup v2 line in ${JSON.stringify(out.slice(0, 80))}` };
+  const where = path.join(a.cgroupRoot, cg);
+  return { ok: where === a.workDir, saw: where };
+}

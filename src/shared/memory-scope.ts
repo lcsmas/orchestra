@@ -111,8 +111,8 @@ export function decideMemoryCap(i: MemoryCapInput): MemoryCapDecision {
 }
 
 // ─── The scope's two leaves (#332, Q9) ─────────────────────────────────────────────────────────────────────────────
-// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper AND the CLI (no limit of their own), `w` holds the TOOL COMMANDS (each Bash command's shell moves itself into
-// it, through the CLAUDE_CODE_SHELL_PREFIX wrapper) and carries the member's HARD level. Why: after a tool is OOM-killed its pages stay charged for a few ms while its mm is already detached, so the kernel's next
+// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper AND the CLI process itself (no limit of their own), `w` holds EVERYTHING THE CLI SPAWNS THROUGH ITS SHELL PREFIX — Bash
+// tool commands, MCP servers, hooks (measured on claude 2.1.291: all three call the prefix; each moves itself into `w` through the CLAUDE_CODE_SHELL_PREFIX wrapper) — and carries the member's HARD level. Why: after a tool is OOM-killed its pages stay charged for a few ms while its mm is already detached, so the kernel's next
 // episode — opened by an adj-0 task that allocates at the limit: the keeper REACTING to the kill, or a busy CLI — has no tool left to kill and takes the keeper, then the CLI (Q9, ledger #329: session lost 10/10;
 // with the CLI inside the limited leaf a busy CLI still lost it 4/8; keeper + CLI outside it 8/8 alive). Only the tool commands are capped; the scope itself keeps a backstop limit above the hard level.
 
@@ -121,7 +121,7 @@ export const SCOPE_LEAF_WORK = 'w';
 export const SCOPE_LEAVES: readonly string[] = [SCOPE_LEAF_KEEPER, SCOPE_LEAF_WORK];
 /** Env var the keeper puts in the CLI's environment: the work leaf's directory, which the tool wrapper moves its shell into. */
 export const WORK_LEAF_ENV = 'ORCHESTRA_MEMCAP_WORK_LEAF';
-/** The scope's own `MemoryMax` is the hard level PLUS this room for the keeper, the CLI (≈330 MB real), its MCP servers and hooks: the work leaf must always hit its limit first; the scope's limit is only a backstop. */
+/** The scope's own `MemoryMax` is the hard level PLUS this room for the keeper and the CLI process (≈330 MB real) and whatever of theirs is not started through the shell prefix: the work leaf must always hit its limit first; the scope's limit is only a backstop. */
 export const KEEPER_LEAF_RESERVE_BYTES = 1024 * 1024 * 1024;
 /** Rigs (disposable scopes ≤ 300 MB) override the reserve; `0` = NO scope-level limit (the work leaf still carries the cap). A non-integer / negative value is ignored. */
 export const MEMCAP_RESERVE_ENV = 'ORCHESTRA_MEMCAP_RESERVE_BYTES';
@@ -173,7 +173,7 @@ export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
 # kernel's OOM killer picks a tool process, never the keeper or the CLI (both stay at 0).
 echo ${OOM_ADJ_TOOLS} > /proc/self/oom_score_adj 2>/dev/null
 # #332: a capped member's tool command moves ITSELF into the work leaf — the one cgroup that carries the hard level (the keeper and the CLI stay outside it); a leaf that cannot be entered leaves the tool where it is (adj 1000, the scope backstop)
-[ -n "\${${WORK_LEAF_ENV}:-}" ] && echo $$ > "\$${WORK_LEAF_ENV}/cgroup.procs" 2>/dev/null
+[ -n "\${${WORK_LEAF_ENV}:-}" ] && { echo $$ > "\$${WORK_LEAF_ENV}/cgroup.procs"; } 2>/dev/null
 [ "$#" -eq 1 ] || exec "$@"
 if [ -n "\${${INNER_SHELL_PREFIX_ENV}:-}" ]; then
   # the user's own prefix, chained exactly as the CLI would have called it
@@ -579,9 +579,9 @@ export function describeCapState(state: 'active' | 'unprotected' | 'not-applied'
   const hard = `${(hardBytes / GIB).toFixed(2)} GB`;
   switch (state) {
     case 'active':
-      return { level: 'info', text: `ACTIVE — scope ${unit}, hard ${hard}, tool commands run at oom_score_adj ${OOM_ADJ_TOOLS}` };
+      return { level: 'info', text: `ACTIVE — scope ${unit}, hard ${hard} on the work leaf: tool commands (and the MCP servers / hooks the CLI starts) run there at oom_score_adj ${OOM_ADJ_TOOLS}; the keeper and the CLI process sit outside it` };
     case 'unprotected':
-      return { level: 'warn', text: `scope ${unit} has its hard limit (${hard}) but the tool wrapper is unusable — the kernel would kill the CLI (the biggest process) before a runaway tool command` };
+      return { level: 'warn', text: `scope ${unit}: the tool wrapper is unusable or does not place tool commands in the capped work leaf — NOTHING is capped at the hard level (${hard}); only the scope's backstop limit, if any, holds` };
     case 'not-applied':
       return { level: 'warn', text: `scope ${unit} exists but its memory limit (${hard}) or its swap limit (0) is NOT applied (memory controller not delegated? no swap accounting?) — this member runs UNCAPPED` };
     case 'no-scope':

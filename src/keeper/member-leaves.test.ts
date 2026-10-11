@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMemberLeaves, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, probeToolPlacement, type LeafFs } from './member-leaves.ts';
 
 const S = '/sys/fs/cgroup/user.slice/app.slice/orchestra-ws-w-abc.scope';
 const HARD = 256 * 1024 * 1024;
@@ -50,4 +50,30 @@ test('#332 fail closed: a limit that reads back different from the one asked (no
 test('#332: the swap escape of the work leaf is closed best-effort (a kernel without swap accounting has no such file)', () => {
   const f = fakeFs({ failOn: 'memory.swap.max' });
   assert.ok(buildMemberLeaves({ scopeDir: S, hardBytes: HARD, pid: 1, fs: f.fs }).ok);
+});
+
+test('#332 probe: the wrapper PLACES a command in the work leaf ⇒ ok; anywhere else (the keeper leaf, the scope), no cgroup line, or a wrapper that did not run ⇒ not ok, with what it saw', () => {
+  const ROOT = '/sys/fs/cgroup';
+  const W = `${ROOT}/user.slice/app.slice/orchestra-ws-w-abc.scope/w`;
+  const parse = (t: string): string | null => /^0::(.*)$/m.exec(t)?.[1] ?? null;
+  const mk = (out: string | null) => probeToolPlacement({ wrapper: '/h/bin/oom-tool-wrapper.sh', workDir: W, cgroupRoot: ROOT, parseCgroup: parse, run: (_w, _a, _e) => out });
+  assert.deepEqual(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/w\n'), { ok: true, saw: W });
+  const inK = mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/k\n');
+  assert.equal(inK.ok, false);
+  assert.match(inK.saw, /scope\/k$/);
+  assert.equal(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope\n').ok, false, 'in the scope itself is not in the leaf');
+  assert.equal(mk('0::/user.slice/app.slice/other-ws.scope/w\n').ok, false, 'another member\'s leaf is not ours');
+  assert.match(mk('garbage\n').saw, /no cgroup v2 line/);
+  assert.deepEqual(mk(null), { ok: false, saw: 'the wrapper did not run' });
+});
+
+test('#332 probe: the probe command and environment — the wrapper gets ONE argument, the work leaf and a PATH/SHELL, nothing from the keeper\'s environment', () => {
+  let seen: { w: string; a: string[]; e: Record<string, string> } | null = null;
+  probeToolPlacement({ wrapper: '/h/w.sh', workDir: '/sys/fs/cgroup/x.scope/w', cgroupRoot: '/sys/fs/cgroup', parseCgroup: () => null, run: (w, a, e) => { seen = { w, a, e }; return ''; } });
+  assert.ok(seen);
+  const s = seen as { w: string; a: string[]; e: Record<string, string> };
+  assert.equal(s.w, '/h/w.sh');
+  assert.deepEqual(s.a, ['cat /proc/self/cgroup'], 'one argument: the wrapper\'s 1-arg path (the shell route the CLI uses)');
+  assert.equal(s.e.ORCHESTRA_MEMCAP_WORK_LEAF, '/sys/fs/cgroup/x.scope/w');
+  assert.deepEqual(Object.keys(s.e).sort(), ['ORCHESTRA_MEMCAP_WORK_LEAF', 'PATH', 'SHELL']);
 });

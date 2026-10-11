@@ -34,7 +34,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
   createLineSplitter,
   encodeKeeperFrame,
@@ -53,7 +53,7 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { buildMemberLeaves, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, probeToolPlacement, type LeafFs } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
 import { INNER_SHELL_PREFIX_ENV, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
@@ -347,6 +347,23 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   }
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
+  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, once, before saying `active`
+  if (wrapperOk && cap.wrapper) {
+    const probe = probeToolPlacement({
+      wrapper: cap.wrapper,
+      workDir: dir,
+      cgroupRoot: CGROUP_ROOT,
+      parseCgroup: parseProcCgroupV2,
+      run: (w, args, penv) => {
+        const r = spawnSync(w, args, { env: penv, encoding: 'utf8', timeout: 5000 });
+        return r.status === 0 ? r.stdout : null;
+      },
+    });
+    if (!probe.ok) {
+      wrapperOk = false;
+      klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (saw ${probe.saw}; expected ${dir}) — tool commands run in the keeper leaf: NOTHING is capped at the hard level`);
+    }
+  }
   capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {

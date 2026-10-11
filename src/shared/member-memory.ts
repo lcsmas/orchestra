@@ -6,7 +6,7 @@
 export interface ScopeReading {
   unit: string;
   gen: string;
-  /** `memory.current` of the scope — the kernel's own meter (page cache included; it is what the Plafond compares to). */
+  /** `memory.current` of the SCOPE — the whole member's bill: keeper + CLI + tools (page cache included). Since #332 the Plafond's hard level compares the WORK leaf's `memory.current` (the tools), not this: a bar of the cap must read the leaf. */
   currentBytes: number | null;
   /** The scope's members with their role (`reliquat` = chain reaches no live keeper of this scope, FI-1.4); null = could not be listed. */
   procs: ReadonlyArray<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null;

@@ -210,7 +210,7 @@ export function countMemberScopes(e: ScopeEnv = realScopeEnv()): { total: number
       const mem = readScopeMemory({ cgroupDir: dir }, e);
       let swapText: string | null = null;
       try {
-        swapText = e.readFile(path.join(e.exists(path.join(dir, SCOPE_LEAF_WORK, 'memory.max')) ? path.join(dir, SCOPE_LEAF_WORK) : dir, 'memory.swap.max')); // #332: the swap escape that matters is the work leaf's
+        swapText = e.readFile(path.join(e.exists(path.join(dir, SCOPE_LEAF_WORK)) ? path.join(dir, SCOPE_LEAF_WORK) : dir, 'memory.swap.max')); // #332: the swap escape that matters is the work leaf's
       } catch {
         /* no swap accounting */
       }
@@ -264,7 +264,7 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
   }
   // #332: with the leaves, the member's hard level and its kill counters live on the WORK leaf; `current`/`peak` stay the scope's (the whole bill: keeper leaf included)
   const workDir = path.join(d, SCOPE_LEAF_WORK);
-  const capDir = e.exists(path.join(workDir, 'memory.max')) ? workDir : d;
+  const capDir = e.exists(workDir) ? workDir : d; // a scope WITH its leaves is capped by the work leaf's limit file — absent (the controller could not be handed down) = unlimited, never the scope's backstop
   if (capDir !== d) {
     try {
       events = parseMemoryEvents(e.readFile(path.join(capDir, 'memory.events')));

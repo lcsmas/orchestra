@@ -343,3 +343,16 @@ test('#332 leaves: countMemberScopes — a leafed scope is a CAP when its WORK l
   fs.rmSync(path.join(capped.wDir, 'memory.max'));
   assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'no limit file on the work leaf ⇒ the scope\'s own (max) is read ⇒ unlimited');
 });
+
+test('#332 leaves (review): a scope WITH a work leaf whose memory.max is absent (the controller could not be handed down) is UNLIMITED — never read as capped by the scope\'s own backstop limit', () => {
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'SwapTotal:       8388604 kB\n');
+  const base = countMemberScopes(env());
+  const half = mkLeafScope('orchestra-ws-leafy8-1jjjjj.scope', 7081, 7082, 7083);
+  fs.writeFileSync(path.join(half.scopeDir, 'memory.max'), `${268435456 + 1073741824}\n`); // the production backstop (hard + 1 GiB) on the scope
+  fs.rmSync(path.join(half.wDir, 'memory.max'));
+  fs.rmSync(path.join(half.wDir, 'memory.swap.max'));
+  const mem = readScopeMemory({ cgroupDir: half.scopeDir }, env());
+  assert.equal(mem!.maxBytes, null, 'the work leaf has no limit file: no cap — not the scope\'s backstop');
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'counted as a scope WITHOUT a limit');
+});

@@ -47,3 +47,14 @@ test('the CLI is NOT moved: it starts where the keeper is (leaf k); the work lea
   assert.doesNotMatch(startChild, /cgroup\.procs|work leaf|workLeaf/, 'no rewrite of the CLI argv: a busy CLI inside the limited leaf lost the session 4/8 (Q9 addendum)');
   assert.doesNotMatch(keeper, /inWorkLeafArgv|workLeafDir/);
 });
+
+test('the wrapper is PROBED at runtime before `active` is claimed: a probe that does not land in the work leaf downgrades the state to unprotected and says so', () => {
+  const probeAt = setup.indexOf('probeToolPlacement({');
+  const stateAt = setup.indexOf("capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected'");
+  assert.ok(probeAt > 0 && stateAt > probeAt, 'the probe runs BEFORE the state is decided');
+  const block = setup.slice(probeAt, stateAt);
+  assert.match(block, /wrapper: cap\.wrapper,\n\s+workDir: dir,\n\s+cgroupRoot: CGROUP_ROOT,/);
+  assert.match(block, /if \(!probe\.ok\) \{\n\s+wrapperOk = false;/);
+  assert.match(block, /NOTHING is capped at the hard level/);
+  assert.match(setup, /if \(wrapperOk && cap\.wrapper\) \{\n    const probe = /, 'only when a wrapper is in play');
+});

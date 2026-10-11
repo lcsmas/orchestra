@@ -817,7 +817,20 @@ try {
     const e1 = eventsOf(f.cgroupDir);
     check('a tool over the hard level is killed ON THE WORK LEAF (oom_kill +1 there) — the kill is not a scope-level one', (e1.oom_kill ?? 0) - (e0.oom_kill ?? 0) === 1 && (t?.signal === 'SIGKILL' || t?.code === 137), `leaf oom_kill ${e0.oom_kill}->${e1.oom_kill} sig=${t?.signal} code=${t?.code}`);
     check('keeper and CLI ALIVE, same identities', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId);
-    detail = `scope.max=${sMax} leaf.max=${wMax}`;
+    // the backstop must not change the chain's outcome: a one-after-the-other chain of 10 hogs UNDER the production-shaped scope (backstop on, busy CLI): the session still lives and the leaf keeps killing
+    const e2 = eventsOf(f.cgroupDir);
+    let lost = null;
+    for (let i = 0; i < 10; i++) {
+      await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (230 * 1024 * 1024)'`, `t-chain${i}`, 60_000);
+      await sleep(80);
+      if (!alive(f.keeperPid) || !alive(f.cliPid) || st.exited) { lost = i + 1; break; }
+      await sleep(250);
+    }
+    const e3 = eventsOf(f.cgroupDir);
+    check('a chain of 10 back-to-back kills under the production-shaped scope (backstop on): keeper and CLI ALIVE, the leaf killed each hog', lost === null && (e3.oom_kill ?? 0) - (e2.oom_kill ?? 0) >= 10, `lostAt=${lost} leaf oom_kill ${e2.oom_kill}->${e3.oom_kill}`);
+    const localEv = Object.fromEntries((readSafe(path.join(f.scopeDir, 'memory.events.local')) ?? '').trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)])); // .local = this cgroup's OWN events (memory.events also counts its descendants')
+    check('...and the SCOPE-level limit never fired (the backstop is untouched: its own max / oom_kill counters stayed 0)', (localEv.max ?? 0) === 0 && (localEv.oom_kill ?? 0) === 0, JSON.stringify(localEv));
+    detail = `scope.max=${sMax} leaf.max=${wMax} chain lost=${lost}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
     const stub = path.join(base, 'stubbin');
@@ -1090,7 +1103,7 @@ try {
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: addr ?? '', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '' } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
-    const memberCg = cgOf(f.cliPid); // #332: the browser lives with the CLI + tools (leaf w)
+    const memberCg = `${scopeOfCg(cgOf(f.keeperPid))}/w`; // #332: a browser a tool starts lives in the WORK leaf (the tools' leaf); the keeper and the CLI are in `k`
     check('the member is in its scope', f.inRigScope || !hasCap, `unit=${f.unit}`);
     const t0 = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-env');
     check('the member\'s tool env has NO session-bus address (the keeper removed it)', t0?.stdout.trim() === 'unset', `saw=${t0?.stdout.trim().slice(0, 60)}`);
@@ -1114,7 +1127,7 @@ echo DONE`;
     const prof2 = path.join(base, 'prof-control'); fs.mkdirSync(prof2, { recursive: true });
     const r2 = await runTool(stc, browserScript(prof2, `export DBUS_SESSION_BUS_ADDRESS='${addr}'\n`), 't-browser2', 90_000);
     const rows2 = parse(r2);
-    const memberCgC = cgOf(fc.cliPid);
+    const memberCgC = `${scopeOfCg(cgOf(fc.keeperPid))}/w`;
     check('control: with the address put back by hand the main process DOES leave the scope (the probe can see an escape)', rows2.length >= 1 && rows2.some((x) => x.cg !== memberCgC), JSON.stringify(rows2.map((x) => x.cg.split('/').pop())).slice(0, 200) + ` n=${rows2.length} tool=${JSON.stringify(r2 ? { code: r2.code, signal: r2.signal, out: r2.stdout.slice(-120) } : null)}`);
     detail = `inside=${rows1.filter((x) => x.cg === memberCg).length}/${rows1.length}`;
   } else if (ARM === 'not_applied_reported') {
