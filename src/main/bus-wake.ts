@@ -1015,6 +1015,7 @@ export function armBusWalWatcher(): void {
     label: 'Réveils',
     dir,
     fallback: `${SWEEP_MS / 1000} s sweep`,
+    fallbackFr: `un balayage toutes les ${SWEEP_MS / 1000} s`,
     // Filter to the WAL file. A null filename (platform-dependent) is treated as a match rather than dropped — a spurious idempotent sweep is cheaper than a missed wake, which is the whole defect (#149).
     filter: (filename) => filename === null || filename === walName,
     onChange: fire,

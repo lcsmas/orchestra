@@ -145,6 +145,7 @@ export function startPauseUiWatcher(): void {
     label: 'Vue Pause',
     dir,
     fallback: "the UI's own writes and pull",
+    fallbackFr: "les écritures de l'interface et sa lecture à la demande",
     ensureDir: true,
     filter: (filename) => !filename || filename === `${base}-wal` || filename === base, // a null filename is a match: a spurious idempotent recompute beats a missed pause
     onChange: () => coalescer.poke(),

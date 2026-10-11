@@ -141,6 +141,7 @@ function watchForLogin(dir: string, baselineToken: string, onLoggedIn: () => voi
     label: 'Détection de connexion',
     dir,
     fallback: '1.5 s poll',
+    fallbackFr: 'une lecture toutes les 1,5 s',
     persistent: false,
     filter: (name) => !name || name === '.credentials.json' || String(name).startsWith('.credentials'),
     onChange: check,

@@ -39,7 +39,7 @@ const check = (label, cond, detail = '') => { if (cond) console.log(`  ok   ${la
 const html = (el) => renderToString(el).replace(/<!-- -->/g, '');
 const h = React.createElement;
 const T0 = Date.parse('2026-10-08T12:53:48Z');
-const snap = (name, label, over = {}) => ({ name, label, dir: `/d/${name}`, state: 'ok', since: T0, lastError: null, attempts: 0, recoveries: 0, fallback: '60 s sweep', ...over });
+const snap = (name, label, over = {}) => ({ name, label, dir: `/d/${name}`, state: 'ok', since: T0, lastError: null, attempts: 0, recoveries: 0, fallback: '60 s sweep', fallbackFr: 'un balayage toutes les 60 s', ...over });
 const down = (name, label, code = 'EMFILE') => snap(name, label, { state: 'degraded', lastError: { code, message: `${code}: too many open files` }, attempts: 3 });
 
 console.log('\nWatchersStrip (D-Q8 A):');
@@ -54,10 +54,10 @@ const on = html(h(WatchersStrip));
 check('two degraded ⇒ the strip: hook, status role (non-blocking), Pause-unreadable class (same slot/style)', on.includes('data-watchers-chip=""') && on.includes('role="status"') && on.includes('aria-live="polite"') && on.includes('pause-unreadable'), on.slice(0, 260));
 check('it names what lags in plain words — only the degraded ones — and that it retries by itself', on.includes('Mises à jour en retard') && on.includes('Réveils, Vue Pause') && !on.includes('Inbox') && on.includes('Nouvel essai automatique'), on);
 check('EMFILE ⇒ « limite de surveillance de fichiers atteinte »', on.includes('limite de surveillance de fichiers atteinte'));
-check('the tooltip carries one line per degraded watcher with the cause and the fallback', /title="Réveils · depuis [^"]*system watch limit reached \(EMFILE\)[^"]*en attendant : 60 s sweep\nVue Pause · depuis/.test(on), on.slice(0, 500));
+check('the tooltip carries one line per degraded watcher with the cause and the fallback', /title="Réveils · depuis [^"]*limite de surveillance de fichiers atteinte \(EMFILE\)[^"]*en attendant : un balayage toutes les 60 s\nVue Pause · depuis/.test(on) && !/watch limit reached|sweep/.test(on), on.slice(0, 500));
 check('NO button, link or dismissal (it goes away by itself, D-Q8)', !/<button|<a |onclick/i.test(on));
 setWatchers({ at: 4, rev: 4, watchers: [down('inbox-tray', 'Inbox', 'ENOENT')] });
-check('a non-limit cause does not claim the system limit', !html(h(WatchersStrip)).includes('limite de surveillance') && html(h(WatchersStrip)).includes('surveillance de fichiers interrompue'));
+check('a non-limit cause does not claim the system limit', !html(h(WatchersStrip)).includes('limite de surveillance') && html(h(WatchersStrip)).includes('dossier surveillé introuvable'));
 setWatchers({ at: 5, rev: 5, watchers: [snap('inbox-tray', 'Inbox'), snap('bus-wake', 'Réveils')] });
 check('the last watcher back ⇒ the strip is GONE (disappears on its own)', html(h(WatchersStrip)) === '');
 

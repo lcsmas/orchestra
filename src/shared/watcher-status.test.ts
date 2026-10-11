@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { WatcherSnapshot } from './resilient-watch.ts';
-import { degradedKey, degradedLabels, degradedOf, fmtDuration, formatWatchersLines, newerWatchers, watchersStripCopy, type WatchersStatus } from './watcher-status.ts';
+import { degradedKey, degradedLabels, degradedOf, fmtDuration, formatWatchersLines, newerWatchers, watchersStripCopy, type WatchersStatus, causeFr } from './watcher-status.ts';
 
 // #330 — what bus-status and the app say about the watchers. Asserts the WORDS an operator reads: which watcher, since when, which error, what keeps working; and that a healthy app prints one calm line.
 
@@ -16,6 +16,7 @@ const snap = (name: string, label: string, over: Partial<WatcherSnapshot> = {}):
   attempts: 0,
   recoveries: 0,
   fallback: '60 s sweep',
+  fallbackFr: 'un balayage toutes les 60 s',
   ...over,
 });
 const down = (name: string, label: string, code = 'EMFILE', over: Partial<WatcherSnapshot> = {}): WatcherSnapshot =>
@@ -69,11 +70,29 @@ test('strip copy (D-Q8 A): null when healthy; otherwise the plain labels of what
   assert.equal(c.body, 'Réveils, Vue Pause — limite de surveillance de fichiers atteinte. Nouvel essai automatique.');
   assert.equal(c.lines.length, 2, 'only the degraded ones');
   const local = [new Date(T0).getHours(), new Date(T0).getMinutes(), new Date(T0).getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
-  assert.equal(c.lines[0], `Réveils · depuis ${local} (3m12s) · system watch limit reached (EMFILE) · en attendant : 60 s sweep`, 'a person reads LOCAL time; bus-status keeps UTC');
+  assert.equal(c.lines[0], `Réveils · depuis ${local} (3m12s) · limite de surveillance de fichiers atteinte (EMFILE) · en attendant : un balayage toutes les 60 s`, 'a person reads LOCAL time; bus-status keeps UTC');
   assert.doesNotMatch(c.lines[0], /Z /);
   const other = watchersStripCopy(status([down('inbox-tray', 'Inbox', 'ENOENT')]), T0)!;
-  assert.match(other.body, /surveillance de fichiers interrompue/, 'a non-limit cause does not claim the system limit');
+  assert.equal(other.body, 'Inbox — dossier surveillé introuvable. Nouvel essai automatique.', 'a non-limit cause does not claim the system limit');
   assert.doesNotMatch(other.body, /limite/);
+});
+
+test('strip copy (review m2): ONE cause per watcher — a limit on one never labels the others; causes grouped in registry order; an unknown cause keeps the generic words', () => {
+  const mixed = watchersStripCopy(status([down('bus-wake', 'Réveils', 'EMFILE'), down('inbox-tray', 'Inbox', 'ESTALE'), down('pause-ui', 'Vue Pause', 'ENOSPC')]), T0)!;
+  assert.equal(mixed.body, 'Réveils, Vue Pause — limite de surveillance de fichiers atteinte ; Inbox — dossier surveillé supprimé ou déplacé. Nouvel essai automatique.');
+  assert.doesNotMatch(mixed.body, /Inbox[^;]*limite/, 'the limit is not said of Inbox');
+  assert.equal(watchersStripCopy(status([down('a', 'A', 'EIO')]), T0)!.body, 'A — surveillance de fichiers interrompue. Nouvel essai automatique.');
+  assert.equal(watchersStripCopy(status([down('a', 'A', 'ESTALE'), down('b', 'B', 'ESTALE')]), T0)!.body, 'A, B — dossier surveillé supprimé ou déplacé. Nouvel essai automatique.', 'one cause for all keeps the one-sentence form');
+  assert.equal(causeFr(null), 'surveillance de fichiers interrompue');
+  assert.equal(causeFr({ code: 'ENOENT', message: '' }), 'dossier surveillé introuvable');
+});
+
+test('strip tooltip (review m2): ONE language — the cause and the fallback are French, the raw message and the English fallback never appear; the code stays in parentheses', () => {
+  const c = watchersStripCopy(status([down('pause-ui', 'Vue Pause', 'ESTALE', { fallback: "the UI's own writes and pull", fallbackFr: "les écritures de l'interface et sa lecture à la demande" })]), T0 + 120_000)!;
+  const line = c.lines[0];
+  assert.match(line, /dossier surveillé supprimé ou déplacé \(ESTALE\) · en attendant : les écritures de l'interface et sa lecture à la demande$/);
+  assert.doesNotMatch(line, /the UI|watched directory|too many|system watch|removed or renamed/i, 'no English cause / fallback / OS message');
+  assert.doesNotMatch(watchersStripCopy(status([down('a', 'A', 'EMFILE')]), T0)!.lines[0], /watch limit reached/);
 });
 
 test('newerWatchers: ordered by the registry\'s rev, NEVER by the wall clock — a clock stepped back between two readings must not freeze the strip (#330 review M1)', () => {

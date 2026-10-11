@@ -38,8 +38,11 @@ const QUIET_MS = 1200; // how long « not seen live » is observed (a healthy wa
 const SIX = ['bus-wake', 'events-spool', 'human-gates', 'inbox-tray', 'pause-trap', 'pause-ui'];
 
 // ═══ PARENT: one child process per arm ═══════════════════════════════════════════════════════════════════════════════
+if (ARM && !ARMS.includes(ARM)) { console.error(`REFUSING: unknown arm ${ARM} (arms: ${ARMS.join(' ')}) — NOTHING was run`); process.exit(2); }
 if (!ARM) {
   const only = process.env.RIG_ARMS ? new Set(process.env.RIG_ARMS.split(',')) : null;
+  const unknownArms = only ? [...only].filter((a) => !ARMS.includes(a)) : [];
+  if (unknownArms.length) { console.error(`REFUSING: RIG_ARMS names no arm: ${unknownArms.map((a) => JSON.stringify(a)).join(',')} (arms: ${ARMS.join(' ')}) — NOTHING was run`); process.exit(2); } // a mistyped arm (catchup_bus_wake for catchup_bus-wake) was « RED (0/0 arms) » with exit 0
   const runId = randomBytes(3).toString('hex');
   const rows = [];
   for (const arm of ARMS) {
@@ -59,7 +62,7 @@ if (!ARM) {
   }
   const red = rows.filter((r) => !r.ok).map((r) => r.arm);
   console.log(`RESILIENT WATCHERS: ${red.length === 0 && rows.length === (only ? only.size : ARMS.length) ? 'ALL PASS' : `RED ${red.join(',')}`} (${rows.length - red.length}/${rows.length} arms) tree ${REPO}`);
-  process.exit(red.length === 0 ? 0 : 1);
+  process.exit(red.length === 0 && rows.length === (only ? only.size : ARMS.length) ? 0 : 1);
 }
 
 // ═══ CHILD: one arm ══════════════════════════════════════════════════════════════════════════════════════════════════

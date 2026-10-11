@@ -43,6 +43,17 @@ test('NO HAND-ROLLED DIRECTORY WATCH in the main process: `fs.watch(` appears on
   assert.ok(/fs\.watch\(/.test(codeOf('src/main/watchers.ts')), 'the shared primitive is the one fs.watch');
 });
 
+/** The strip tooltip is French: each site's `fallbackFr`, exactly (no English word may come back through a new site). */
+const FALLBACK_FR: Record<string, string> = {
+  'bus-wake': '`un balayage toutes les ${SWEEP_MS / 1000} s`,',
+  'pause-ui': '"les écritures de l\'interface et sa lecture à la demande",',
+  'pause-trap': '`un balayage toutes les ${PAUSE_SWEEP_MS / 1000} s`,',
+  'human-gates': "'la diffusion à la résolution et la lecture au montage',",
+  'inbox-tray': "'les compteurs envoyés à chaque modification et au montage',",
+  'events-spool': '`une lecture toutes les ${POLL_MS / 1000} s`,',
+  'login-watch': "'une lecture toutes les 1,5 s',",
+};
+
 for (const site of SITES) {
   test(`SITE ${site.name} (${site.file}): created through createWatcher with its fallback, runs ONE catch-up on recovery, stop() cancels the retries`, () => {
     const code = codeOf(site.file);
@@ -50,6 +61,7 @@ for (const site of SITES) {
     const i = at(code, `name: '${site.name}'`);
     const spec = code.slice(i - 80, i + 1500);
     assert.ok(/fallback:/.test(spec), 'the spec names the fallback that keeps the subsystem working meanwhile');
+    assert.ok(spec.includes(`fallbackFr: ${FALLBACK_FR[site.name]}`), `the strip's French words for that fallback (review m2): ${FALLBACK_FR[site.name]}`);
     assert.ok(site.recover.test(code.slice(i)), `the catch-up pass: ${site.recover}`);
     assert.ok(site.stop.test(code), `the owner's stop() stops the watcher: ${site.stop}`);
     assert.ok(/\.start\(\);/.test(code.slice(i)), 'the watcher is started');
