@@ -316,6 +316,7 @@ export function startInboxWatcher(): void {
     label: 'Inbox',
     dir: INBOX_ROOT,
     fallback: 'the counts sent on each mutation and at mount',
+    fallbackFr: 'les compteurs envoyés à chaque modification et au montage',
     ensureDir: true,
     filter: (filename) => !!filename && filename.endsWith('.txt'),
     onChange: (filename) => {

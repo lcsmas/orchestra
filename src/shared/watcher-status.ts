@@ -1,6 +1,6 @@
 // #330 (wave H, ledger #329) — what the app tells a human / an operator about its directory watchers. PURE: the registry (src/main/watchers.ts) hands a `WatchersStatus`; this file turns it into the `bus-status` lines
 // and the app warning's words. One source for both so the CLI and the chip can never disagree about WHAT is degraded.
-import { plainWatchError, type WatcherSnapshot } from './resilient-watch.ts';
+import { plainWatchError, type WatchErrorInfo, type WatcherSnapshot } from './resilient-watch.ts';
 
 /** The registry's reading: every ARMED watcher (a stopped one is gone). JSON-safe — it rides `/busStatus` and the `watchers:update` push. */
 export interface WatchersStatus {
@@ -40,6 +40,21 @@ export function degradedLabels(s: WatchersStatus | null | undefined): string[] {
   return [...new Set(degradedOf(s).map((w) => w.label))];
 }
 
+/** The strip's French words for ONE cause — « limite » is said only of the two kernel limits; a watched directory that vanished or was swapped is not a limit (#330 review m2). The raw code stays, in parentheses (language-neutral). */
+export function causeFr(e: WatchErrorInfo | null | undefined): string {
+  switch (e?.code) {
+    case 'EMFILE':
+    case 'ENOSPC':
+      return 'limite de surveillance de fichiers atteinte';
+    case 'ENOENT':
+      return 'dossier surveillé introuvable';
+    case 'ESTALE':
+      return 'dossier surveillé supprimé ou déplacé';
+    default:
+      return 'surveillance de fichiers interrompue';
+  }
+}
+
 /** The renderer keeps the NEWER of two readings (the boot PULL can be answered after a push that already carried a later state): by the registry's own `rev` counter, never by the wall clock, which can step back. */
 export const newerWatchers = (prev: WatchersStatus | null | undefined, next: WatchersStatus): WatchersStatus => (!prev || next.rev >= prev.rev ? next : prev);
 
@@ -58,11 +73,13 @@ export interface WatchersStripCopy {
 export function watchersStripCopy(s: WatchersStatus | null | undefined, now: number): WatchersStripCopy | null {
   const d = degradedOf(s);
   if (d.length === 0) return null;
-  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');
+  // ONE cause per group of watchers, in registry order: « Réveils — limite … ; Inbox — dossier surveillé supprimé ou déplacé » (a single cause for all keeps the one-sentence form)
+  const groups = new Map<string, string[]>();
+  for (const w of d) groups.set(causeFr(w.lastError), [...new Set([...(groups.get(causeFr(w.lastError)) ?? []), w.label])]);
   return {
     title: 'Mises à jour en retard',
-    body: `${degradedLabels(s).join(', ')} — ${limit ? 'limite de surveillance de fichiers atteinte' : 'surveillance de fichiers interrompue'}. Nouvel essai automatique.`,
-    lines: d.map((w) => `${w.label} · depuis ${localClock(w.since)} (${fmtDuration(now - w.since)}) · ${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant : ${w.fallback}`),
+    body: `${[...groups].map(([cause, labels]) => `${labels.join(', ')} — ${cause}`).join(' ; ')}. Nouvel essai automatique.`,
+    lines: d.map((w) => `${w.label} · depuis ${localClock(w.since)} (${fmtDuration(now - w.since)}) · ${causeFr(w.lastError)}${w.lastError?.code ? ` (${w.lastError.code})` : ''} · en attendant : ${w.fallbackFr}`),
   };
 }
 

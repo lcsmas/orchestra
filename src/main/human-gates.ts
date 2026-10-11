@@ -219,6 +219,7 @@ export function startHumanGatesWatcher(): void {
     label: 'Questions',
     dir,
     fallback: 'the resolve-time broadcast and the mount-time read',
+    fallbackFr: 'la diffusion à la résolution et la lecture au montage',
     ensureDir: true,
     // A null filename (platform-dependent) is treated as a match — a spurious idempotent recompute is cheaper than a missed gate.
     filter: (filename) => !filename || filename === walName || filename === path.basename(bus),

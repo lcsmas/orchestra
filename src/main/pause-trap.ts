@@ -986,6 +986,7 @@ export function startPauseTrap(deps: TrapDeps): void {
     label: 'Pause dure',
     dir,
     fallback: `${PAUSE_SWEEP_MS / 1000} s sweep`,
+    fallbackFr: `un balayage toutes les ${PAUSE_SWEEP_MS / 1000} s`,
     filter: (filename) => filename === null || filename === walName || filename === path.basename(bus),
     onChange: () => {
       if (debounce) clearTimeout(debounce);
