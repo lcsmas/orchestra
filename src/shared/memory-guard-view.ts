@@ -5,6 +5,7 @@ import {
   GIB,
   RELEASE_MARGIN_GB,
   formatGb,
+  patchMemoryGuardSettings,
   validateMemoryGuardSettings,
   type MemoryGuardSettings,
   type MemoryGuardSnapshot,
@@ -65,6 +66,8 @@ export function gaugeModel(availBytes: number | null, totalBytes: number | null,
 export function parseGbInput(text: string): number | null {
   const t = text.trim().replace(',', '.');
   if (t === '') return null;
+  if (/^\d{1,3}(,\d{3})+$/.test(text.trim())) return null; // « 1,000 » is a thousands group, not 1.000: refuse rather than misread
+  if (!/^-?(\d+\.?\d*|\.\d+)$/.test(t)) return null; // plain decimals only (a sign stays so the range sentence names it): no hex (0x10), no exponent (1e3)
   const n = Number(t);
   return Number.isFinite(n) ? n : null;
 }
@@ -84,4 +87,37 @@ export function planThresholdCommit(admissionText: string, criticalText: string,
   if (error !== null) return { kind: 'invalid', error: `${error.charAt(0).toUpperCase()}${error.slice(1)}.` };
   if (admissionGb === current.admissionGb && criticalGb === current.criticalGb) return { kind: 'unchanged' };
   return { kind: 'patch', patch: { admissionGb, criticalGb } };
+}
+
+export type CapCommit =
+  | { kind: 'unchanged' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'patch'; patch: { capSoftGb: number; capHardGb: number } };
+
+/** #323: what committing the two typed Plafond mémoire fields does. Like the thresholds, the PAIR travels together — raising the soft level above the old hard level (or lowering the hard level under the old soft one) is only valid as a pair —
+ *  and nothing is written until the pair is valid (hard > soft; the same validator the backend runs, so the inline refusal and the write path can never disagree). */
+export function planCapCommit(softText: string, hardText: string, current: MemoryGuardSettings, totalBytes?: number | null): CapCommit {
+  const capSoftGb = parseGbInput(softText);
+  const capHardGb = parseGbInput(hardText);
+  if (capSoftGb === null || capHardGb === null) return { kind: 'invalid', error: 'Enter both levels as a number of GB.' };
+  // The SAME function the write path runs (patchMemoryGuardSettings): the MemTotal bound judges only a CHANGED Admission pair, so a cap commit is never refused for a stored pair a small host cannot satisfy (review MAJOR 1).
+  const res = patchMemoryGuardSettings(current, { capSoftGb, capHardGb }, totalBytes);
+  if (!res.ok) return { kind: 'invalid', error: `${res.error.charAt(0).toUpperCase()}${res.error.slice(1)}.` };
+  if (capSoftGb === current.capSoftGb && capHardGb === current.capHardGb) return { kind: 'unchanged' };
+  return { kind: 'patch', patch: { capSoftGb, capHardGb } };
+}
+
+export type WaitCommit =
+  | { kind: 'unchanged' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'patch'; patch: { reliquatWaitMin: number } };
+
+/** #323 / #326: what committing the typed Reliquat wait (minutes) does — validated by the SAME backend rule (1 … 1440 min), nothing written until it is valid. The field travels alone: it is not part of any other pair. */
+export function planReliquatWaitCommit(text: string, current: MemoryGuardSettings, totalBytes?: number | null): WaitCommit {
+  const reliquatWaitMin = parseGbInput(text); // a plain number parser ("30", "7,5"); the unit is minutes, not GB
+  if (reliquatWaitMin === null) return { kind: 'invalid', error: 'Enter the Reliquat wait as a number of minutes.' };
+  const res = patchMemoryGuardSettings(current, { reliquatWaitMin }, totalBytes); // same write-path validator (see planCapCommit)
+  if (!res.ok) return { kind: 'invalid', error: `${res.error.charAt(0).toUpperCase()}${res.error.slice(1)}.` };
+  if (reliquatWaitMin === current.reliquatWaitMin) return { kind: 'unchanged' };
+  return { kind: 'patch', patch: { reliquatWaitMin } };
 }

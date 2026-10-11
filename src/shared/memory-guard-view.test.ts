@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clock, gaugeModel, guardChip, parseGbInput, planThresholdCommit } from './memory-guard-view.ts';
+import { clock, gaugeModel, guardChip, parseGbInput, planCapCommit, planReliquatWaitCommit, planThresholdCommit } from './memory-guard-view.ts';
 import { DEFAULT_MEMORY_GUARD_SETTINGS, GIB, type MemoryGuardSnapshot } from './memory-guard.ts';
 
 const D = DEFAULT_MEMORY_GUARD_SETTINGS;
@@ -64,6 +64,12 @@ test('parseGbInput: decimals, comma decimals, blanks, junk', () => {
   assert.equal(parseGbInput('  '), null);
   assert.equal(parseGbInput('abc'), null);
   assert.equal(parseGbInput('Infinity'), null);
+  assert.equal(parseGbInput('0x10'), null, 'hex is not a number the user means');
+  assert.equal(parseGbInput('1e3'), null, 'nor an exponent');
+  assert.equal(parseGbInput('1,000'), null, '« 1,000 » is a thousands group — refused, never misread as 1');
+  assert.equal(parseGbInput('6.'), 6);
+  assert.equal(parseGbInput('.5'), 0.5);
+  assert.equal(parseGbInput('-5'), -5, 'a sign is kept so the range sentence can name it');
 });
 
 test('commit: a valid changed pair → patch with BOTH fields; the same pair → unchanged', () => {
@@ -88,4 +94,67 @@ test('commit: an Admission threshold at/above the machine\'s memory is refused w
 });
 test('commit: raising critical above the OLD Admission is valid as a pair (the reason both fields travel together)', () => {
   assert.deepEqual(planThresholdCommit('12', '8', D), { kind: 'patch', patch: { admissionGb: 12, criticalGb: 8 } });
+});
+
+test('cap commit (#323): a valid changed pair → patch with BOTH fields; the same pair (any spelling) → unchanged', () => {
+  assert.deepEqual(planCapCommit('4', '8', D), { kind: 'patch', patch: { capSoftGb: 4, capHardGb: 8 } });
+  assert.deepEqual(planCapCommit('3', '6', D), { kind: 'unchanged' });
+  assert.deepEqual(planCapCommit('3.0', '6,0', D), { kind: 'unchanged' });
+  assert.deepEqual(planCapCommit('2,5', '6', D), { kind: 'patch', patch: { capSoftGb: 2.5, capHardGb: 6 } });
+});
+
+test('cap commit (#323): hard ≤ soft is REFUSED with the backend\'s own sentence, never a patch (nothing is written)', () => {
+  const eq = planCapCommit('6', '6', D);
+  assert.equal(eq.kind, 'invalid', 'equal levels: hard must be strictly above soft');
+  const inverted = planCapCommit('7', '6', D);
+  assert.equal(inverted.kind, 'invalid');
+  assert.match(inverted.kind === 'invalid' ? inverted.error : '', /^The memory cap soft level \(7 GB\) must be above 0 and below the hard level \(6 GB\)\.$/);
+  for (const [a, b] of [['', '6'], ['3', '']] as const) {
+    const r = planCapCommit(a, b, D);
+    assert.equal(r.kind === 'invalid' ? r.error : null, 'Enter both levels as a number of GB.', `a half-empty pair (${a} / ${b}) is refused with THE sentence, not a validator side effect`);
+  }
+  for (const [a, b] of [['', '6'], ['3', ''], ['x', '6'], ['3', 'Infinity'], ['0', '6'], ['-1', '6'], ['3', '0.05'], ['3', '999']] as const) assert.equal(planCapCommit(a, b, D).kind, 'invalid', `${a} / ${b}`);
+});
+
+test('cap commit (#323): the pair travels together — raising soft above the OLD hard is valid with a higher hard; lowering hard under the OLD soft is valid with a lower soft', () => {
+  assert.deepEqual(planCapCommit('8', '12', D), { kind: 'patch', patch: { capSoftGb: 8, capHardGb: 12 } });
+  assert.deepEqual(planCapCommit('1', '2', D), { kind: 'patch', patch: { capSoftGb: 1, capHardGb: 2 } });
+  assert.equal(planCapCommit('8', '6', D).kind, 'invalid', 'the half-edit that would leave soft above the old hard');
+});
+
+test('cap commit (#323): the thresholds are untouched by a cap commit (the patch carries the cap pair only) and a cap commit validates over the CURRENT thresholds', () => {
+  const r = planCapCommit('4', '8', { ...D, admissionGb: 10, criticalGb: 4 });
+  assert.deepEqual(r, { kind: 'patch', patch: { capSoftGb: 4, capHardGb: 8 } });
+  assert.deepEqual(Object.keys((r as { patch: object }).patch).sort(), ['capHardGb', 'capSoftGb']);
+});
+
+test('Reliquat wait commit (#323/#326): a valid changed value → a patch with ONLY that key; the same value (any spelling) → unchanged', () => {
+  assert.deepEqual(planReliquatWaitCommit('45', D), { kind: 'patch', patch: { reliquatWaitMin: 45 } });
+  assert.deepEqual(planReliquatWaitCommit('30', D), { kind: 'unchanged' });
+  assert.deepEqual(planReliquatWaitCommit('30.0', D), { kind: 'unchanged' });
+  assert.deepEqual(planReliquatWaitCommit('1', D), { kind: 'patch', patch: { reliquatWaitMin: 1 } }, 'the lower bound is allowed');
+  assert.deepEqual(planReliquatWaitCommit('1440', D), { kind: 'patch', patch: { reliquatWaitMin: 1440 } }, 'the upper bound is allowed');
+});
+
+test('Reliquat wait commit: out-of-range or non-numeric input is REFUSED with a sentence, never a patch (nothing is written)', () => {
+  for (const t of ['0', '-5', '1441', '99999', '0.5']) {
+    const r = planReliquatWaitCommit(t, D);
+    assert.equal(r.kind, 'invalid', t);
+    assert.match(r.kind === 'invalid' ? r.error : '', /^The Reliquat wait must be between 1 and 1440 minutes\.$/);
+  }
+  for (const t of ['', '  ', 'abc', 'Infinity']) {
+    const r = planReliquatWaitCommit(t, D);
+    assert.equal(r.kind === 'invalid' ? r.error : null, 'Enter the Reliquat wait as a number of minutes.', JSON.stringify(t));
+  }
+});
+
+test('cap + Reliquat wait commits (#323 review MAJOR 1): judged by the WRITE PATH\'s own rule — the MemTotal bound applies only to a CHANGED Admission pair, so a small host under the stored 6/3 can still commit its cap levels and its Reliquat wait', () => {
+  const small = 7 * GIB; // 6 GB Admission + the 1 GB reopen margin is not below 7 GB: the stored pair is unreachable, and not what the user is editing
+  assert.deepEqual(planCapCommit('2', '5', D, small), { kind: 'patch', patch: { capSoftGb: 2, capHardGb: 5 } });
+  assert.deepEqual(planReliquatWaitCommit('45', D, small), { kind: 'patch', patch: { reliquatWaitMin: 45 } });
+  assert.deepEqual(planCapCommit('3', '6', D, small), { kind: 'unchanged' });
+  // positive control: the SAME host still refuses a threshold commit that keeps the unreachable pair (the bound is live, not dropped)
+  const t = planThresholdCommit('6', '3', D, small);
+  assert.equal(t.kind, 'invalid');
+  assert.match(t.kind === 'invalid' ? t.error : '', /must be below this machine's memory/);
 });
