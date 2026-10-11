@@ -9,7 +9,7 @@ import { killReliquats } from './pause-reliquats.ts';
 import { memberScopeDeps } from './pause-reliquats-scope.ts';
 import { realKillDeps } from './pause-kill.ts';
 import { realScopeEnv, scopePrefix, type ScopeEnv } from './memory-scope.ts';
-import { parseProcCgroupV2, scopeGenForWorkspace } from '../shared/memory-scope.ts';
+import { parseProcCgroupV2, scopeGenForWorkspace, scopePathOfCgroup } from '../shared/memory-scope.ts';
 import { stopMemberScope, type ScopeStopDeps, type ScopeStopReport } from './scope-stop.ts';
 
 /** `systemctl --user stop <unit>` through execFile (no shell). Only reached for a unit `ownsUnit` accepted. */
@@ -25,7 +25,7 @@ export function trackedKeeperUnit(wsId: string, e: ScopeEnv, pidOf: (wsId: strin
   if (pid === null) return null;
   try {
     const cg = parseProcCgroupV2(e.readFile(`${e.procRoot}/${pid}/cgroup`));
-    return cg ? path.posix.basename(cg) : 'unknown';
+    return cg ? path.posix.basename(scopePathOfCgroup(cg)) : 'unknown'; // #332: the keeper sits in leaf `k` of its scope — the unit is the scope's
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     return code === 'ENOENT' || code === 'ESRCH' ? null : 'unknown'; // died since the pid check: no live keeper

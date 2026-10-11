@@ -13,7 +13,7 @@ const MB = 1024 * 1024;
 const scope = (ws: string, gen = 'k1'): MemberScope => ({ unit: `orchestra-ws-${ws}-${gen}.scope`, gen, cgroupDir: `/fake/${ws}-${gen}`, keeperPid: gen === 'k1' ? 100 : null });
 
 /** A fake host: which scopes exist per workspace, what each reads, who is a live member. Every call recorded. */
-function host(over: Partial<MemberMemoryDeps> = {}, world: { scopes?: Record<string, MemberScope[]>; mem?: Record<string, number | null | Error>; procs?: Record<string, Array<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null | Error>; cap?: Record<string, { maxBytes: number | null; workingSetBytes: number | null; peakBytes: number | null }> } = {}) {
+function host(over: Partial<MemberMemoryDeps> = {}, world: { scopes?: Record<string, MemberScope[]>; mem?: Record<string, number | null | Error>; procs?: Record<string, Array<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null | Error>; cap?: Record<string, { capCurrentBytes?: number | null; maxBytes: number | null; workingSetBytes: number | null; peakBytes: number | null }> } = {}) {
   const calls = { scopes: [] as string[], mem: [] as string[], procs: [] as string[] };
   const deps: MemberMemoryDeps = {
     now: () => 42,
@@ -271,4 +271,13 @@ test('P16 (#323) the cap view THROUGH H1\'s real FI-1 functions over a fake cgro
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('P16 (#332 × #323) the producer carries the CAP\'s own current (the work leaf\'s) into the cap view while the member\'s MEM figure stays the scope total', () => {
+  __resetMemberMemoryForTests();
+  const a = scope('ws-a');
+  const { deps } = host({}, { scopes: { 'ws-a': [a] }, mem: { [a.unit]: 2100 * MB }, procs: { [a.unit]: [] }, cap: { [a.unit]: { maxBytes: 6144 * MB, capCurrentBytes: 1500 * MB, workingSetBytes: 1100 * MB, peakBytes: 1800 * MB } } });
+  const v = sampleMemberMemory(deps).tracked[0];
+  assert.equal(v.cap?.billBytes, 1500 * MB, 'the bar: the tools\' memory.current (what the hard level compares)');
+  assert.equal(v.bytes, 2100 * MB, 'the MEM figure: the whole scope');
 });

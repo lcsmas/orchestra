@@ -10,7 +10,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -63,7 +63,7 @@ if (process.env.MC_WRAPPER_FILE) fs.copyFileSync(process.env.MC_WRAPPER_FILE, wr
 fs.chmodSync(wrapper, 0o755);
 
 const sse = (ev, d) => `event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`;
-const toolCmd = 'echo "TOOL-ADJ=$(cat /proc/self/oom_score_adj) PARENT-ADJ=$(cat /proc/$PPID/oom_score_adj)"; echo to-stderr >&2; exit 3';
+const toolCmd = 'echo "TOOL-PID=$$ TOOL-ADJ=$(cat /proc/self/oom_score_adj) PARENT-ADJ=$(cat /proc/$PPID/oom_score_adj)"; echo to-stderr >&2; exit 3';
 const bodies = [];
 const server = http.createServer((req, res) => {
   const chunks = []; req.on('data', (c) => chunks.push(c));
@@ -91,15 +91,27 @@ if (arm === 'prefix_on') env.CLAUDE_CODE_SHELL_PREFIX = wrapper;
 // What ELSE the CLI starts besides Bash tool commands: a stdio MCP server (+ a grandchild it spawns) and a command hook. Each records its own oom_score_adj into ADJ_OUT.
 const adjOut = path.join(root, 'adj.log');
 env.ADJ_OUT = adjOut;
-fs.writeFileSync(path.join(process.env.HOME, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: `echo HOOK-ADJ=$(cat /proc/self/oom_score_adj) >> ${adjOut}` }] }] } }));
+fs.writeFileSync(path.join(process.env.HOME, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: `echo HOOK-PID=$$ HOOK-ADJ=$(cat /proc/self/oom_score_adj) >> ${adjOut}` }] }] } }));
 const mcpConfig = path.join(root, 'mcp.json');
 fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { 'adj-probe': { command: process.execPath, args: [path.join(HERE_REPO, 'scripts', 'memory-cap', 'adj-mcp-server.cjs')], env: { ADJ_OUT: adjOut } } } }));
+// #332: the work leaf is a FIFO named cgroup.procs: every wrapper call that moves its shell into the leaf (`echo $$ > $LEAF/cgroup.procs`) shows up here, so the PLACEMENT of the real CLI's tools, MCP servers and hooks is asserted, not just their adj
+const leafDir = path.join(root, 'leaf');
+fs.mkdirSync(leafDir, { recursive: true });
+execFileSync('mkfifo', [path.join(leafDir, 'cgroup.procs')]);
+const leafFd = fs.openSync(path.join(leafDir, 'cgroup.procs'), fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+let leafText = '';
+const leafTimer = setInterval(() => { const b = Buffer.alloc(4096); for (;;) { let n = 0; try { n = fs.readSync(leafFd, b, 0, b.length, null); } catch { break; } if (n <= 0) break; leafText += b.subarray(0, n).toString(); } }, 15);
+env.ORCHESTRA_MEMCAP_WORK_LEAF = leafDir;
 const cli = spawn('claude', ['-p', 'run it', '--output-format', 'json', '--dangerously-skip-permissions', '--model', 'sonnet', '--max-turns', '4', '--mcp-config', mcpConfig, '--strict-mcp-config'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 let cliAdj = null;
 const adjTimer = setInterval(() => { try { cliAdj = Number(fs.readFileSync(`/proc/${cli.pid}/oom_score_adj`, 'utf8')); } catch { /* gone */ } }, 30);
 let so = '', se = ''; cli.stdout.on('data', (d) => (so += d)); cli.stderr.on('data', (d) => (se += d));
 const rc = await new Promise((r) => { const t = setTimeout(() => { cli.kill('SIGKILL'); r('TIMEOUT'); }, 90_000); cli.on('close', (c) => { clearTimeout(t); r(c); }); });
 clearInterval(adjTimer);
+await new Promise((r) => setTimeout(r, 200));
+clearInterval(leafTimer);
+fs.closeSync(leafFd);
+const leafPids = new Set(leafText.split('\n').map((x) => x.trim()).filter(Boolean).map(Number));
 server.close();
 const second = JSON.stringify(bodies.find((b) => JSON.stringify(b.messages ?? []).includes('tool_result'))?.messages ?? []);
 const toolAdj = /TOOL-ADJ=(\d+)/.exec(second)?.[1] ?? null;
@@ -117,7 +129,17 @@ console.error(`  note: MEASURED adj of what else the CLI starts — ${JSON.strin
 check(`a stdio MCP server runs at oom_score_adj ${ARMS[arm].expectAdj}`, seen('MCP-ADJ').length >= 1 && seen('MCP-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('MCP-ADJ')));
 check(`...and so does the process that MCP server spawns`, seen('MCP-CHILD-ADJ').length >= 1 && seen('MCP-CHILD-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('MCP-CHILD-ADJ')));
 check(`a command hook runs at oom_score_adj ${ARMS[arm].expectAdj}`, seen('HOOK-ADJ').length >= 1 && seen('HOOK-ADJ').every((v) => v === ARMS[arm].expectAdj), JSON.stringify(seen('HOOK-ADJ')));
+const toolPid = Number(/TOOL-PID=(\d+)/.exec(second)?.[1] ?? NaN);
+const hookPid = Number(/HOOK-PID=(\d+)/.exec(adjLog)?.[1] ?? NaN);
+if (arm === 'prefix_on') {
+  check('#332 placement: the Bash tool command moved ITSELF into the work leaf (its pid was written to <leaf>/cgroup.procs by the wrapper)', Number.isFinite(toolPid) && leafPids.has(toolPid), `tool pid=${toolPid} leaf pids=${[...leafPids].join(',')}`);
+  check('#332 placement: so did the command hook', Number.isFinite(hookPid) && leafPids.has(hookPid), `hook pid=${hookPid}`);
+  check('#332 placement: …and the stdio MCP server (at least tool + hook + MCP = 3 distinct movers)', leafPids.size >= 3, `distinct=${leafPids.size}`);
+  check('#332 placement: the CLI process itself was NOT moved (its pid is not in the leaf)', !leafPids.has(cli.pid ?? -1), `cli pid=${cli.pid}`);
+} else {
+  check('#332 placement: without the prefix nothing is written to the leaf', leafPids.size === 0, `leaf pids=${[...leafPids].join(',')}`);
+}
 check('claude exited cleanly', rc === 0, `rc=${rc} ${se.slice(-120)}`);
 for (const c of checks) console.error(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}${c.detail ? `  [${c.detail}]` : ''}`);
-console.log(JSON.stringify({ arm, ok: checks.every((c) => c.ok), detail: `tool adj=${toolAdj} cli adj=${cliAdj} mcp=${seen('MCP-ADJ')} hook=${seen('HOOK-ADJ')}`, failed: checks.filter((c) => !c.ok).map((c) => c.name) }));
+console.log(JSON.stringify({ arm, ok: checks.every((c) => c.ok), detail: `tool adj=${toolAdj} cli adj=${cliAdj} mcp=${seen('MCP-ADJ')} hook=${seen('HOOK-ADJ')} leaf movers=${leafPids.size}`, failed: checks.filter((c) => !c.ok).map((c) => c.name) }));
 process.exit(0);

@@ -48,6 +48,9 @@ const ARMS = {
   app_restart_keeps_scopes: {},
   clear_then_fresh_start: { mustFailOnMaster: true },
   unit_stop_takes_spared: { mustFailOnMaster: true },
+  // #332 (Q9): the SESSION survives back-to-back cap kills — keeper in leaf k (no limit), CLI + tools in leaf w (the hard level)
+  session_survives_chain: { mustFailOnMaster: true },
+  backstop_scope_limit: { mustFailOnMaster: true },
   // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
   no_scope_changes_nothing: {},
   scoped_extra_runs_first: { mustFailOnMaster: true },
@@ -155,6 +158,7 @@ fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 process.env.ORCHESTRA_HOME = home;
 process.env.HOME = home;
 process.env.ORCHESTRA_MEMORY_SCOPE_PREFIX = UNIT_PREFIX;
+process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = process.env.MC_RESERVE_BYTES ?? '0'; // #332: disposable scopes stay ≤ 300 MB, so the scope-level backstop (hard + keeper room) is off here; the arm `backstop_scope_limit` sets it
 process.env.ORCHESTRA_KEEPER_LINGER_MS = '300000';
 const { assertScratch } = await import(`${HERE_REPO}/scripts/session-budget/scratch-guard.mjs`);
 const liveNames = fs.readdirSync(REAL_HOME).filter((n) => n.startsWith('.claude') || n.startsWith('.orchestra')); // every live config/home dir, whatever its suffix
@@ -164,7 +168,7 @@ assertScratch('ORCHESTRA_HOME', home, base, live);
 // The daemon bundle the run EXECUTES: rebuild when missing or older than ANY of its sources (a stale bundle reproduces perfectly in isolation).
 const KEEPER_JS = process.env.MC_KEEPER_BUNDLE ?? path.join(REPO, 'dist-electron', 'keeper.js');
 if (!process.env.MC_KEEPER_BUNDLE) {
-  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/keeper/kernel-oom-log.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts', 'src/shared/mem-notice-file.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
+  const srcs = ['src/keeper/index.ts', 'src/keeper/memory-watch.ts', 'src/keeper/kernel-oom-log.ts', 'src/keeper/member-leaves.ts', 'src/shared/keeper-protocol.ts', 'src/shared/memory-scope.ts', 'src/shared/mem-notice-file.ts'].map((s) => path.join(REPO, s)).filter((s) => fs.existsSync(s));
   if (!fs.existsSync(KEEPER_JS) || srcs.some((s) => fs.statSync(s).mtimeMs > fs.statSync(KEEPER_JS).mtimeMs)) {
     execFileSync(process.execPath, [path.join(REPO, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.keeper.config.ts'], { cwd: REPO, stdio: 'ignore' });
   }
@@ -217,6 +221,9 @@ const ident = (pid) => (pid ? `${pid}:${ticks(pid)}` : null);
 const alive = (pid) => { if (!pid) return false; const s = readSafe(`/proc/${pid}/stat`); return !!s && s.slice(s.lastIndexOf(')') + 2)[0] !== 'Z'; };
 const cgOf = (pid) => { const t = readSafe(`/proc/${pid}/cgroup`); const l = t?.split('\n').find((x) => x.startsWith('0::')); return l ? l.slice(3) : null; };
 const cgDir = (pid) => { const c = cgOf(pid); return c ? path.join('/sys/fs/cgroup', c) : null; };
+// #332: a scope has two leaves — `k` (the keeper) and `w` (the CLI + tools, carrying the hard level). `scopeOfCg` maps a cgroup path to its scope; `sameScope` compares two pids by scope.
+const scopeOfCg = (c) => (c && ['k', 'w'].includes(path.basename(c)) ? path.dirname(c) : c);
+const sameScope = (pidA, pidB) => { const a = scopeOfCg(cgOf(pidA)); return !!a && a === scopeOfCg(cgOf(pidB)); };
 const eventsOf = (dir) => Object.fromEntries((readSafe(path.join(dir, 'memory.events')) ?? '').trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)]));
 const pidFilePid = (ws) => { try { return JSON.parse(fs.readFileSync(path.join(home, 'keepers', `${ws}.pid`), 'utf8')).pid; } catch { return null; } };
 async function waitFor(pred, ms, step = 50) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await pred()) return true; await sleep(step); } return !!(await pred()); }
@@ -255,9 +262,12 @@ const decide = (ws, { fleet = true, run = 'run-on' } = {}) =>
 function factsOf(ws, st) {
   const kp = pidFilePid(ws);
   const init = st ? initOf(st) : null;
-  const dir = kp ? cgDir(kp) : null;
-  const unit = dir && dir.endsWith('.scope') ? path.basename(dir) : null;
-  return { keeperPid: kp, keeperId: ident(kp), cliPid: init?.pid ?? null, cliId: ident(init?.pid), cgroupDir: dir, unit, inRigScope: !!unit && unit.startsWith(UNIT_PREFIX), init };
+  const rawDir = kp ? cgDir(kp) : null;
+  const scopeDir = rawDir && ['k', 'w'].includes(path.basename(rawDir)) ? path.dirname(rawDir) : rawDir;
+  // `cgroupDir` = the dir that CARRIES THE CAP (memory.max / events / high): the work leaf when the scope has its leaves, else the scope itself
+  const dir = scopeDir && fs.existsSync(path.join(scopeDir, 'w', 'memory.max')) ? path.join(scopeDir, 'w') : scopeDir;
+  const unit = scopeDir && scopeDir.endsWith('.scope') ? path.basename(scopeDir) : null;
+  return { keeperPid: kp, keeperId: ident(kp), cliPid: init?.pid ?? null, cliId: ident(init?.pid), cgroupDir: dir, scopeDir, unit, inRigScope: !!unit && unit.startsWith(UNIT_PREFIX), init };
 }
 const wsName = (tag) => `mc${RUN_TOKEN}${tag}`;
 const checks = [];
@@ -314,7 +324,8 @@ const fileRecords = (file) => (readSafe(file) ?? '').trim().split('\n').filter(B
 const kernelKilledPids = (unit, sinceSec) => {
   const r = spawnSync('journalctl', ['-k', '--no-pager', '-q', '-o', 'json', '--grep', 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', `@${sinceSec}`], { encoding: 'utf8', maxBuffer: 16 << 20 });
   return (r.stdout ?? '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l).MESSAGE; } catch { return ''; } })
-    .filter((m) => typeof m === 'string' && m.includes(`/${unit},`)).map((m) => Number(/,pid=(\d+),uid=/.exec(m)?.[1])).filter(Boolean);
+    .filter((m) => typeof m === 'string' && (m.includes(`/${unit},`) || m.includes(`/${unit}/w,`))) // #332: the limit that kills is the WORK leaf's
+    .map((m) => Number(/,pid=(\d+),uid=/.exec(m)?.[1])).filter(Boolean);
 };
 const notified = async (wsId) => { if (memNoticeMod) await memNoticeMod.__memNoticeIdle(wsId); };
 
@@ -357,7 +368,10 @@ try {
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
     check('a scope exists: the keeper runs in a rig-prefixed .scope', f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
-    check('the CLI is in the SAME scope as the keeper', f.cliPid && cgOf(f.cliPid) === cgOf(f.keeperPid), `cli=${cgOf(f.cliPid)}`);
+    check('the CLI is in the SAME scope as the keeper (#332: keeper leaf k, CLI + tools leaf w)', f.cliPid && sameScope(f.cliPid, f.keeperPid), `cli=${cgOf(f.cliPid)} keeper=${cgOf(f.keeperPid)}`);
+    const kMax = readSafe(path.join(f.scopeDir ?? '/nonexistent', 'k', 'memory.max'))?.trim();
+    const cgTool = await runTool(st, 'cat /proc/self/cgroup', 't-cg', 20_000);
+    check('#332 leaves: the keeper AND the CLI are in `k` (NO limit of their own), a Bash tool command is in `w` — where the cap (memory.max) lives', path.basename(cgOf(f.keeperPid) ?? '') === 'k' && path.basename(cgOf(f.cliPid) ?? '') === 'k' && (cgTool?.stdout ?? '').trim().endsWith('/w') && (kMax === undefined || kMax === 'max'), `keeper=${cgOf(f.keeperPid)} cli=${cgOf(f.cliPid)} tool=${(cgTool?.stdout ?? '').trim()} k/memory.max=${kMax}`);
     const maxB = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.max')));
     const want = Math.round(HARD_GB * 1024 ** 3);
     check('levels: memory.max = the Garde mémoire HARD level (±1 page)', Math.abs(maxB - want) <= 65536, `memory.max=${maxB} want=${want}`);
@@ -517,12 +531,12 @@ try {
     await sleep(500);
     const dpid = procsMarked(`${ws}-daemon`)[0];
     const dId = ident(dpid);
-    check('setup: the member runs in its rig scope and left a DETACHED process in it', f.inRigScope && td?.code === 0 && !!dpid && cgOf(dpid) === cgOf(f.keeperPid), `unit=${f.unit} daemon=${dpid} cg=${cgOf(dpid)}`);
+    check('setup: the member runs in its rig scope and left a DETACHED process in it', f.inRigScope && td?.code === 0 && !!dpid && sameScope(dpid, f.keeperPid), `unit=${f.unit} daemon=${dpid} cg=${cgOf(dpid)}`);
     const rep = await explicitStop(ws, 'workspace-deleted');
     await waitFor(() => !alive(dpid) && !armUnits(ws).length, 15_000);
     check('the detached process is GONE (pid+start identity)', !alive(dpid) || ident(dpid) !== dId, `daemon ${dpid} alive=${alive(dpid)}`);
     check('keeper and CLI are gone', !alive(f.keeperPid) && !alive(f.cliPid));
-    check('the scope is REMOVED: no unit, no memberScopes entry, no cgroup directory', armUnits(ws).length === 0 && (scopeMod ? scopeMod.memberScopes(ws).length === 0 : true) && !fs.existsSync(f.cgroupDir ?? '/nonexistent-unit'), `units=${armUnits(ws)} dir=${f.cgroupDir && fs.existsSync(f.cgroupDir)}`);
+    check('the scope is REMOVED: no unit, no memberScopes entry, no cgroup directory', armUnits(ws).length === 0 && (scopeMod ? scopeMod.memberScopes(ws).length === 0 : true) && !fs.existsSync(f.scopeDir ?? f.cgroupDir ?? '/nonexistent-unit'), `units=${armUnits(ws)} dir=${f.cgroupDir && fs.existsSync(f.cgroupDir)}`);
     check('the report says what it did: Reliquats killed, THAT unit stopped', !!rep && rep.killed >= 1 && rep.stopped.includes(f.unit) && rep.kept.length === 0, JSON.stringify(rep));
     check('the app log has the stop line (workspace, reason) — the instrument can say yes', new RegExp(`scope-stop\\[${ws}\\] \\(workspace-deleted\\): killed [1-9]`).test(orchLog()));
     detail = `unit=${f.unit} killed=${rep?.killed}`;
@@ -629,7 +643,7 @@ try {
     await runTool(st, `${python.join(' ')} ${RIG_DIR}/daemonize.py 120 ${ws}-old`, 't-old', 20_000);
     await sleep(500);
     const dOld = procsMarked(`${ws}-old`)[0];
-    check('setup: a detached process of the OLD conversation lives in the scope', !!dOld && cgOf(dOld) === cgOf(f.keeperPid), `old=${dOld}`);
+    check('setup: a detached process of the OLD conversation lives in the scope', !!dOld && sameScope(dOld, f.keeperPid), `old=${dOld}`);
     const rep = await explicitStop(ws, 'clear', { forbid: false });
     await waitFor(() => !alive(dOld) && !armUnits(ws).length, 15_000);
     check('the old conversation\'s detached process is GONE and its scope removed', !alive(dOld) && armUnits(ws).length === 0, JSON.stringify(rep));
@@ -651,7 +665,7 @@ try {
     await sleep(500);
     const opid = procsMarked(orphan)[0];
     const dpid = procsMarked(`${ws}-daemon`)[0];
-    check('setup: a detached `claude`-named orphan AND a plain daemon live in the member\'s scope', tc?.code === 0 && !!opid && !!dpid && readSafe(`/proc/${opid}/comm`)?.trim() === 'claude' && cgOf(opid) === cgOf(f.keeperPid) && cgOf(dpid) === cgOf(f.keeperPid), `orphan=${opid} daemon=${dpid}`);
+    check('setup: a detached `claude`-named orphan AND a plain daemon live in the member\'s scope', tc?.code === 0 && !!opid && !!dpid && readSafe(`/proc/${opid}/comm`)?.trim() === 'claude' && sameScope(opid, f.keeperPid) && sameScope(dpid, f.keeperPid), `orphan=${opid} daemon=${dpid}`);
     const rep = await explicitStop(ws, 'workspace-deleted');
     await waitFor(() => !alive(opid) && !alive(dpid) && !armUnits(ws).length, 15_000);
     check('the plain daemon is gone (killed by identity: report.killed counts it)', !alive(dpid) && !!rep && rep.killed >= 1, JSON.stringify(rep));
@@ -680,7 +694,7 @@ try {
     await sleep(500);
     const dpid = procsMarked(`${ws}-daemon`)[0];
     const keeperBefore = kc.readTrackedKeeperPid?.(ws) ?? null;
-    check('setup: a scoped member with a detached process in its scope', f.inRigScope && !!dpid && cgOf(dpid) === cgOf(f.keeperPid) && keeperBefore === f.keeperPid, `unit=${f.unit} daemon=${dpid}`);
+    check('setup: a scoped member with a detached process in its scope', f.inRigScope && !!dpid && sameScope(dpid, f.keeperPid) && keeperBefore === f.keeperPid, `unit=${f.unit} daemon=${dpid}`);
     const order = [];
     const rep = await stopIfAny(ws, 'workspace-archived', async () => { order.push('extra'); await kc.killKeeperIf(ws, keeperBefore, 'workspace-archived'); order.push('extra-done'); });
     await waitFor(() => !alive(dpid) && !armUnits(ws).length, 15_000);
@@ -756,6 +770,68 @@ try {
     check('the wake then starts a FRESH generation (another keeper, another unit) that the teardown did not kill', up && f2.inRigScope && f2.keeperPid !== f1.keeperPid && f2.unit !== f1.unit && alive(f2.keeperPid) && alive(f2.cliPid), `old=${f1.unit} new=${f2.unit}`);
     check('the old conversation\'s keeper and detached job are gone, its unit removed', !alive(f1.keeperPid) && !alive(dOld) && !armUnits(ws).includes(f1.unit), JSON.stringify(rep));
     detail = `old=${f1.unit} new=${f2.unit}`;
+  } else if (ARM === 'session_survives_chain') {
+    // The chain that lost keeper AND CLI 10/10 on master (residual (d) of #320): one hog tool after the other, each OOM-killed by the cap — with a BUSY CLI (a 50 ms timer allocating like an event loop: it alone lost the session 5/6 in the limited cgroup)
+    // and a CLI that processes every result at once (16 MB touched right after the kill).
+    const N = Number(process.env.MC_CHAIN_TOOLS ?? 30), MB = Number(process.env.MC_CLI_ALLOC_MB ?? 16);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS, STANDIN_CLI_RESULT_ALLOC_MB: String(MB), STANDIN_CLI_TICK_MS: process.env.MC_CLI_TICK_MS ?? '50' } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const cgTool0 = await runTool(st, 'cat /proc/self/cgroup', 't-cg', 20_000);
+    check('setup: the member runs in its rig scope — keeper AND CLI in leaf k, a tool command in leaf w', f.inRigScope && path.basename(cgOf(f.keeperPid) ?? '') === 'k' && path.basename(cgOf(f.cliPid) ?? '') === 'k' && (cgTool0?.stdout ?? '').trim().endsWith('/w'), `keeper=${cgOf(f.keeperPid)} cli=${cgOf(f.cliPid)} tool=${(cgTool0?.stdout ?? '').trim()}`);
+    const e0 = f.cgroupDir ? eventsOf(f.cgroupDir) : {};
+    let lostAt = null;
+    for (let i = 0; i < N; i++) {
+      await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (400 * 1024 * 1024)'`, `t${i}`, 60_000);
+      await sleep(80);
+      if (!alive(f.keeperPid) || !alive(f.cliPid) || st.exited) { lostAt = i + 1; break; }
+      await sleep(300);
+    }
+    await sleep(500);
+    const ev = f.cgroupDir ? eventsOf(f.cgroupDir) : {};
+    const killed = (ev.oom_kill ?? 0) - (e0.oom_kill ?? 0);
+    check(`the session survived ${N} back-to-back cap kills (lost at: ${lostAt ?? 'never'})`, lostAt === null, `lostAt=${lostAt} keeper=${alive(f.keeperPid)} cli=${alive(f.cliPid)}`);
+    check('keeper ALIVE (same pid+start)', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId);
+    check('CLI ALIVE (same pid+start)', alive(f.cliPid) && ident(f.cliPid) === f.cliId);
+    check('the cap still bites: one kernel kill per hog (oom_kill on the work leaf ≥ the number of tools)', killed >= N, `oom_kill delta=${killed} tools=${N}`);
+    check('the scope is still active (never group-killed)', !!f.unit && spawnSync('systemctl', ['--user', 'is-active', f.unit], { encoding: 'utf8' }).stdout.trim() === 'active');
+    detail = `tools=${N} cliAlloc=${MB}MB busyCli=50ms oom_kill=${killed} lostAt=${lostAt}`;
+  } else if (ARM === 'backstop_scope_limit') {
+    // The PRODUCTION shape of the scope: delegated, MemoryMax = hard + keeper room (the backstop), the hard level on the work leaf — the leaf trips first, the session lives. (Disposable: hard 150 MiB + 128 MiB room = 278 MiB ≤ 300 MB.)
+    const RESERVE = 128 * 1024 * 1024;
+    process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = String(RESERVE);
+    settings = { ...settings, capHardGb: 0.15, capSoftGb: 0.1 };
+    const HARD = Math.round(0.15 * 1024 ** 3);
+    const st = open(ws, decide(ws), { extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const sMax = Number(readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.max')));
+    const wMax = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.max')));
+    check('the SCOPE carries the backstop: memory.max = hard + keeper room (±1 page)', Math.abs(sMax - (HARD + RESERVE)) <= 65536, `scope=${sMax} want=${HARD + RESERVE}`);
+    check('the WORK LEAF carries the hard level (±1 page) — strictly below the scope\'s, so it always trips first', Math.abs(wMax - HARD) <= 65536 && wMax < sMax, `leaf=${wMax} scope=${sMax}`);
+    const pr = await kc.probeKeeper(ws);
+    check('the cap is ACTIVE (leaves built, limit read back)', pr?.cap?.state === 'active', JSON.stringify(pr?.cap ?? null));
+    const e0 = eventsOf(f.cgroupDir);
+    const t = await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (230 * 1024 * 1024)'`, 't-hog', 60_000);
+    await sleep(600);
+    const e1 = eventsOf(f.cgroupDir);
+    check('a tool over the hard level is killed ON THE WORK LEAF (oom_kill +1 there) — the kill is not a scope-level one', (e1.oom_kill ?? 0) - (e0.oom_kill ?? 0) === 1 && (t?.signal === 'SIGKILL' || t?.code === 137), `leaf oom_kill ${e0.oom_kill}->${e1.oom_kill} sig=${t?.signal} code=${t?.code}`);
+    check('keeper and CLI ALIVE, same identities', alive(f.keeperPid) && ident(f.keeperPid) === f.keeperId && alive(f.cliPid) && ident(f.cliPid) === f.cliId);
+    // the backstop must not change the chain's outcome: a one-after-the-other chain of 10 hogs UNDER the production-shaped scope (backstop on, busy CLI): the session still lives and the leaf keeps killing
+    const e2 = eventsOf(f.cgroupDir);
+    let lost = null;
+    for (let i = 0; i < 10; i++) {
+      await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (230 * 1024 * 1024)'`, `t-chain${i}`, 60_000);
+      await sleep(80);
+      if (!alive(f.keeperPid) || !alive(f.cliPid) || st.exited) { lost = i + 1; break; }
+      await sleep(250);
+    }
+    const e3 = eventsOf(f.cgroupDir);
+    check('a chain of 10 back-to-back kills under the production-shaped scope (backstop on): keeper and CLI ALIVE, the leaf killed each hog', lost === null && (e3.oom_kill ?? 0) - (e2.oom_kill ?? 0) >= 10, `lostAt=${lost} leaf oom_kill ${e2.oom_kill}->${e3.oom_kill}`);
+    const localEv = Object.fromEntries((readSafe(path.join(f.scopeDir, 'memory.events.local')) ?? '').trim().split('\n').filter(Boolean).map((l) => l.split(' ')).map(([k, v]) => [k, Number(v)])); // .local = this cgroup's OWN events (memory.events also counts its descendants')
+    // `max` counts reclaim at the scope's own limit (page cache of the keeper leaf — the keeper bundle, node modules — is charged to the scope and is reclaimed, no kill): informational. What must hold is NO KILL at the scope level.
+    check('...and the SCOPE-level limit killed NOTHING (the backstop is not what takes a hog: its own oom_kill counter stayed 0; reclaim events `max` are informational)', (localEv.oom_kill ?? 0) === 0 && (localEv.oom_group_kill ?? 0) === 0, JSON.stringify(localEv));
+    detail = `scope.max=${sMax} leaf.max=${wMax} chain lost=${lost}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
     const stub = path.join(base, 'stubbin');
@@ -913,7 +989,7 @@ try {
     check('precondition: the scope starts BELOW the warning level (else nothing is a crossing)', cur0 < 0.15 * 1024 ** 3 * 0.9, `memory.current=${cur0}`);
     // R5 control FIRST: 130 MB of reclaimable PAGE CACHE pushes memory.current over the level, but it is not a working set — the kernel reclaims it before any kill — so it must NOT warn.
     const cacheFile = path.join(base, 'cache-fill.bin');
-    st.send({ tool: `${python.join(' ')} ${RIG_DIR}/cache-fill.py ${cacheFile} 130 2.5`, id: 't-cache' });
+    st.send({ tool: `${python.join(' ')} ${RIG_DIR}/cache-fill.py ${cacheFile} 170 2.5`, id: 't-cache' }); // #332: the level reads the WORK leaf (tools only) — 170 MB of cache, since the keeper + CLI baseline is no longer in it
     await sleep(1600);
     const curCache = Number(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.current')));
     const inactive = Number((/^inactive_file (\d+)/m.exec(readSafe(path.join(f.cgroupDir ?? '/nonexistent', 'memory.stat')) ?? '') ?? [])[1] ?? 0);
@@ -922,7 +998,7 @@ try {
     check('positive control: the page cache DID push raw memory.current over the warning level (the false alarm this guards against was real)', curCache > 0.15 * 1024 ** 3, `memory.current=${(curCache / 1048576).toFixed(0)} MB inactive_file=${(inactive / 1048576).toFixed(0)} MB level=${(0.15 * 1024).toFixed(0)} MB`);
     check('R5: …yet NO warning — the level keys on the working set (memory.current − inactive_file), not on page cache', softs.length === 0, `softs=${softs.length}`);
     const t0 = Date.now();
-    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 120 1.5 1.7 3 soft-notice`, 't-soft', 60_000);
+    const t = await runTool(st, `${python.join(' ')} ${RIG_DIR}/soft-cross.py 175 1.5 1.7 3 soft-notice`, 't-soft', 60_000);
     const wall = Date.now() - t0;
     await sleep(1500);
     await notified(ws);
@@ -1028,7 +1104,7 @@ try {
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: addr ?? '', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '' } });
     await waitFor(() => initOf(st), 30_000);
     const f = factsOf(ws, st);
-    const memberCg = cgOf(f.keeperPid);
+    const memberCg = `${scopeOfCg(cgOf(f.keeperPid))}/w`; // #332: a browser a tool starts lives in the WORK leaf (the tools' leaf); the keeper and the CLI are in `k`
     check('the member is in its scope', f.inRigScope || !hasCap, `unit=${f.unit}`);
     const t0 = await runTool(st, 'printf "%s" "${DBUS_SESSION_BUS_ADDRESS-unset}"', 't-env');
     check('the member\'s tool env has NO session-bus address (the keeper removed it)', t0?.stdout.trim() === 'unset', `saw=${t0?.stdout.trim().slice(0, 60)}`);
@@ -1052,16 +1128,17 @@ echo DONE`;
     const prof2 = path.join(base, 'prof-control'); fs.mkdirSync(prof2, { recursive: true });
     const r2 = await runTool(stc, browserScript(prof2, `export DBUS_SESSION_BUS_ADDRESS='${addr}'\n`), 't-browser2', 90_000);
     const rows2 = parse(r2);
-    const memberCgC = cgOf(fc.keeperPid);
+    const memberCgC = `${scopeOfCg(cgOf(fc.keeperPid))}/w`;
     check('control: with the address put back by hand the main process DOES leave the scope (the probe can see an escape)', rows2.length >= 1 && rows2.some((x) => x.cg !== memberCgC), JSON.stringify(rows2.map((x) => x.cg.split('/').pop())).slice(0, 200) + ` n=${rows2.length} tool=${JSON.stringify(r2 ? { code: r2.code, signal: r2.signal, out: r2.stdout.slice(-120) } : null)}`);
     detail = `inside=${rows1.filter((x) => x.cg === memberCg).length}/${rows1.length}`;
   } else if (ARM === 'not_applied_reported') {
-    // A scope that EXISTS but whose cap is not the asked one (the verifier's probe seeded it: a systemd-run shim that DROPS one property). The keeper must report `not-applied` (never `active`),
-    // the app must say «UNCAPPED» in its log, the tools must NOT be wrapped, and a scope with no memory.max is counted as «WITHOUT a limit» for bus-status.
+    // A scope that EXISTS but whose cap cannot be built (the verifier's probe seeded it: a systemd-run shim that DROPS one property). #332: the scope is DELEGATED so the keeper can build its two leaves; a scope that is NOT delegated
+    // cannot have them: the keeper must report `not-applied` (never `active`), the app must say «UNCAPPED» in its log, and a scope with no limit is counted as «WITHOUT a limit» for bus-status. A dropped MemorySwapMax is
+    // NOT a hole any more: the keeper closes the swap escape itself on the work leaf (state `active`).
     const realSR = spawnSync('sh', ['-c', 'command -v systemd-run'], { encoding: 'utf8' }).stdout.trim();
     const variants = [
-      { tag: 'nomax', drop: 'MemoryMax=*', what: 'MemoryMax dropped (memory.max = max)' },
-      { tag: 'noswap', drop: 'MemorySwapMax=*', what: 'MemorySwapMax=0 dropped (the swap escape is open)' },
+      { tag: 'nodelegate', drop: null, what: 'the scope\'s cgroup directory is not writable (leaves cannot be built: no cap)' },
+      { tag: 'noswap', drop: 'MemorySwapMax=*', what: 'MemorySwapMax=0 dropped at the scope (the keeper must close the swap escape itself)' },
     ];
     const realPath = process.env.PATH;
     for (const v of variants) {
@@ -1069,7 +1146,12 @@ echo DONE`;
       wsList.push(wsv);
       const dir = path.join(base, `shim-${v.tag}`);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nprev=""\nfor a in "$@"; do\n  if [ "$prev" = "-p" ] && [[ "$a" == ${v.drop} ]]; then unset 'args[${'$'}{#args[@]}-1]'; prev=""; continue; fi\n  args+=("$a"); prev="$a"\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      if (v.drop === null) {
+        // pass every argument through, but run the keeper behind a one-line `sh` that makes the scope's own directory read-only first (what a non-delegated / locked cgroup looks like to the keeper's mkdir)
+        fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nseen=0\nfor a in "$@"; do\n  args+=("$a")\n  if [ "$a" = "--" ] && [ $seen = 0 ]; then seen=1; args+=(/bin/sh -c 'chmod a-w "/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)" && exec "$@"' q9-lock); fi\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      } else {
+        fs.writeFileSync(path.join(dir, 'systemd-run'), `#!/bin/bash\nargs=()\nprev=""\nfor a in "$@"; do\n  if [ "$prev" = "-p" ] && [[ "$a" == ${v.drop} ]]; then unset 'args[${'$'}{#args[@]}-1]'; prev=""; continue; fi\n  args+=("$a"); prev="$a"\ndone\nexec ${realSR} "${'$'}{args[@]}"\n`, { mode: 0o755 });
+      }
       process.env.PATH = `${dir}:${realPath}`;
       scopeMod?.resetScopeSupportCache?.();
       const stv = open(wsv, decide(wsv));
@@ -1077,22 +1159,20 @@ echo DONE`;
       process.env.PATH = realPath;
       const f = factsOf(wsv, stv);
       check(`[${v.what}] the member started, IN its scope`, up && f.inRigScope, `cgroup=${cgOf(f.keeperPid)}`);
-      const lim = f.cgroupDir ? readSafe(path.join(f.cgroupDir, v.tag === 'nomax' ? 'memory.max' : 'memory.swap.max'))?.trim() : null;
-      check(`[${v.what}] precondition: the seeded limit really is open`, lim === 'max', `limit file=${lim}`);
+      const hasLeaves = !!f.scopeDir && fs.existsSync(path.join(f.scopeDir, 'w', 'memory.max'));
       const pr = await kc.probeKeeper(wsv);
-      check(`[${v.what}] the keeper reports cap.state = not-applied (never active)`, pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
       const klog = readSafe(path.join(home, 'keepers', `${wsv}.log`)) ?? '';
-      if (v.tag === 'noswap') {
-        // pre-review m4: memory.max IS enforced — the tools stay the first victims and the kills stay named; only the STATE says the cap leaks.
-        check(`[${v.what}] the tools ARE still wrapped (memory.max is enforced: the kernel must pick a tool, not the CLI)`, !!initOf(stv)?.shellPrefix, `prefix=${initOf(stv)?.shellPrefix}`);
-        check(`[${v.what}] the kill watch is on (the keeper logs its full-path line)`, /memory cap: NOT-APPLIED unit=/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-200));
-      } else {
-        check(`[${v.what}] the tools are NOT wrapped and no watch runs (nothing to protect without a cap)`, initOf(stv)?.shellPrefix == null && !/memory cap: NOT-APPLIED unit=/.test(klog), `prefix=${initOf(stv)?.shellPrefix}`);
-      }
-      check(`[${v.what}] the app log says UNCAPPED`, await waitFor(() => new RegExp(`memory-cap\\[${wsv}\\]: scope .* NOT applied.* UNCAPPED`).test(orchLog()), 8000), '');
-      if (v.tag === 'nomax') {
+      if (v.tag === 'nodelegate') {
+        check(`[${v.what}] precondition: no leaves exist and the scope has no limit`, !hasLeaves && readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.max'))?.trim() === 'max', `leaves=${hasLeaves}`);
+        check(`[${v.what}] the keeper reports cap.state = not-applied (never active)`, pr?.cap?.state === 'not-applied', JSON.stringify(pr?.cap ?? null));
+        check(`[${v.what}] the tools ARE still wrapped (adj 1000: a backstop episode takes a tool first)`, !!initOf(stv)?.shellPrefix, `prefix=${initOf(stv)?.shellPrefix}`);
+        check(`[${v.what}] the log says why (leaves could not be built: mkdir) and NO kill watch runs`, /leaves could not be built \(mkdir keeper leaf/.test(klog) && !/memory cap: ACTIVE unit=/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-220));
+        check(`[${v.what}] the app log says UNCAPPED`, await waitFor(() => new RegExp(`memory-cap\\[${wsv}\\]: scope .* NOT applied.* UNCAPPED`).test(orchLog()), 8000), '');
         const cnt = scopeMod?.countMemberScopes();
-        check('[no memory.max] bus-status would count it as a scope WITHOUT a limit', !!cnt && cnt.unlimited >= 1, JSON.stringify(cnt));
+        check(`[${v.what}] bus-status would count it as a scope WITHOUT a limit`, !!cnt && cnt.unlimited >= 1, JSON.stringify(cnt));
+      } else {
+        check(`[${v.what}] precondition: the scope's own swap limit really is open, the work leaf's is closed by the keeper`, readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.swap.max'))?.trim() === 'max' && readSafe(path.join(f.scopeDir ?? '/nonexistent', 'w', 'memory.swap.max'))?.trim() === '0', `scope=${readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.swap.max'))?.trim()} w=${readSafe(path.join(f.scopeDir ?? '/nonexistent', 'w', 'memory.swap.max'))?.trim()}`);
+        check(`[${v.what}] the keeper reports cap.state = active, the tools ARE wrapped and the kill watch is on`, pr?.cap?.state === 'active' && !!initOf(stv)?.shellPrefix && /memory cap: ACTIVE unit=/.test(klog), JSON.stringify(pr?.cap ?? null));
       }
     }
     process.env.PATH = realPath;

@@ -171,7 +171,7 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
@@ -255,4 +255,138 @@ test('FI-1 v1.9 (pre-review m1/m2): a stale keeper pid claims nothing; a pid rec
   const listed = listKeeperTreeOutsideScope({ cgroupDir: dir, keeperPid: 1300 }, flip).map((p) => p.pid);
   assert.equal(reads >= 2, true, 'the probe really intercepted the second read');
   assert.deepEqual(listed, [1301], 'the recycled pid is dropped, the genuine escapee stays');
+});
+
+// ─── #332: a scope with its two leaves (`k` keeper, `w` CLI + tools) ─────────────────────────────────────────────────
+
+function mkLeafScope(unit: string, keeperPid: number, cliPid: number, daemonPid: number): { scopeDir: string; kDir: string; wDir: string } {
+  const scopeDir = mkScope(unit, { 'memory.max': `${268435456 + 134217728}\n`, 'memory.current': '90000000\n', 'cgroup.procs': '' });
+  const kDir = path.join(scopeDir, 'k');
+  const wDir = path.join(scopeDir, 'w');
+  fs.mkdirSync(kDir);
+  fs.mkdirSync(wDir);
+  fs.writeFileSync(path.join(kDir, 'cgroup.procs'), `${keeperPid}\n`);
+  fs.writeFileSync(path.join(wDir, 'cgroup.procs'), `${cliPid}\n${daemonPid}\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.max'), '268435456\n');
+  fs.writeFileSync(path.join(wDir, 'memory.swap.max'), '0\n');
+  fs.writeFileSync(path.join(wDir, 'memory.high'), 'max\n');
+  fs.writeFileSync(path.join(wDir, 'memory.events'), 'low 0\nhigh 0\nmax 12\noom 3\noom_kill 3\noom_group_kill 0\n');
+  fs.writeFileSync(path.join(scopeDir, 'memory.events'), 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n');
+  return { scopeDir, kDir, wDir };
+}
+
+test('#332 leaves: the scope\'s members are the union of its two leaves (its own cgroup.procs is empty); the keeper is found in k, the CLI and a detached job in w', () => {
+  const unit = 'orchestra-ws-leafy-1aaaaa.scope';
+  const { scopeDir, kDir, wDir } = mkLeafScope(unit, 7001, 7002, 7003);
+  mkProc(7001, 1, 'node-22', cgPathOf(kDir), 100, `node /x/keeper.js leafy /s ${keepers}/leafy.pid /l`);
+  mkProc(7002, 7001, 'node-22', cgPathOf(wDir));
+  mkProc(7003, 1, 'python3', cgPathOf(wDir));
+  const e = env();
+  const [scope] = memberScopes('leafy', e);
+  assert.equal(scope.unit, unit);
+  assert.equal(scope.cgroupDir, scopeDir);
+  assert.equal(scope.keeperPid, 7001, 'found by argv in the keeper leaf (no pid file yet)');
+  fs.writeFileSync(path.join(keepers, 'leafy.pid'), JSON.stringify({ pid: 7001 }));
+  assert.equal(memberScopes('leafy', e)[0].keeperPid, 7001, 'and by the pid file + the pid\'s own cgroup (k maps to its scope)');
+  const procs = listScopeProcs(memberScopes('leafy', e)[0], 7002, e);
+  assert.deepEqual(procs.map((p) => [p.pid, p.role]).sort(), [[7001, 'keeper'], [7002, 'cli'], [7003, 'reliquat']]);
+});
+
+test('#332 leaves: a leaf that EXISTS but cannot be read is an error (no quiet undercount that would hide the keeper); a scope without leaves reads as before', () => {
+  const { scopeDir } = mkLeafScope('orchestra-ws-leafy2-1bbbbb.scope', 7011, 7012, 7013);
+  mkProc(7011, 1, 'node-22', cgPathOf(path.join(scopeDir, 'k')));
+  mkProc(7012, 7011, 'node-22', cgPathOf(path.join(scopeDir, 'w')));
+  mkProc(7013, 1, 'python3', cgPathOf(path.join(scopeDir, 'w')));
+  const e = env({ readFile: (p) => { if (p === path.join(scopeDir, 'k', 'cgroup.procs')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); return fs.readFileSync(p, 'utf8'); } });
+  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, e), [], 'unreadable ⇒ [] as for any unreadable scope (the Reliquat killer reads the file first and calls it UNKNOWN)');
+  assert.deepEqual(listScopeProcs({ cgroupDir: scopeDir, keeperPid: null }, null, env()).map((p) => p.pid).sort(), [7011, 7012, 7013], 'control: readable, the same scope lists all three');
+  const flat = mkScope('orchestra-ws-flat-1ccccc.scope', { 'cgroup.procs': '7021\n' });
+  mkProc(7021, 1, 'python3', cgPathOf(flat));
+  assert.deepEqual(listScopeProcs({ cgroupDir: flat, keeperPid: null }, null, env()).map((p) => p.pid), [7021]);
+});
+
+test('#332 leaves: readScopeMemory — the cap (max, swap, events) is the WORK leaf\'s, the bill (current) is the scope\'s', () => {
+  const { scopeDir } = mkLeafScope('orchestra-ws-leafy3-1ddddd.scope', 7031, 7032, 7033);
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env());
+  assert.ok(m);
+  assert.equal(m!.currentBytes, 90000000);
+  assert.equal(m!.maxBytes, 268435456, 'the hard level, not the scope\'s backstop (hard + keeper reserve)');
+  assert.equal(m!.swapMaxBytes, 0);
+  assert.equal(m!.events.oomKill, 3, 'the kernel kills happen on the work leaf');
+  const flat = readScopeMemory({ cgroupDir: mkScope('orchestra-ws-flat2-1eeeee.scope') }, env());
+  assert.equal(flat!.maxBytes, 268435456, 'a scope without leaves: its own limit, as before');
+});
+
+test('#332 leaves: the keeper in leaf k is resolved by the pid file alone (its own cgroup `<scope>/k` maps to the scope) — no keeper argv to fall back on', () => {
+  const { kDir, wDir } = mkLeafScope('orchestra-ws-leafy4-1fffff.scope', 7041, 7042, 7043);
+  mkProc(7041, 1, 'node-22', cgPathOf(kDir), 100, 'node something-else');
+  mkProc(7042, 7041, 'node-22', cgPathOf(wDir));
+  mkProc(7043, 1, 'python3', cgPathOf(wDir));
+  assert.equal(memberScopes('leafy4', env())[0].keeperPid, null, 'no pid file yet, and the argv is not a keeper\'s');
+  fs.writeFileSync(path.join(keepers, 'leafy4.pid'), JSON.stringify({ pid: 7041 }));
+  assert.equal(memberScopes('leafy4', env())[0].keeperPid, 7041);
+});
+
+test('#332 leaves — FI-1 v1.9 keeps working: the keeper in leaf k and its tools in leaf w are INSIDE the scope; only a process in some OTHER cgroup is an escapee (this returned [] before the fix)', () => {
+  const { scopeDir, kDir, wDir } = mkLeafScope('orchestra-ws-leafy5-1ggggg.scope', 7051, 7052, 7054);
+  const chromiumScope = '/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-7053.scope';
+  mkProc(7051, 1, 'node-22', cgPathOf(kDir), 10, 'node keeper.js');
+  mkProc(7052, 7051, 'claude', cgPathOf(wDir), 20, 'claude --x');
+  mkProc(7053, 7052, 'chromium', chromiumScope, 5000, 'chromium --headless=new about:blank'); // a browser main that left the member's cgroup through the session bus
+  mkProc(7054, 7053, 'chromium', cgPathOf(wDir), 3000, 'chromium --type=renderer'); // a helper that stayed in w
+  const scope = { cgroupDir: scopeDir, keeperPid: 7051 };
+  const out = listKeeperTreeOutsideScope(scope, env());
+  assert.deepEqual(out.map((p) => [p.pid, p.cgroup]), [[7053, chromiumScope]], 'the CLI (w) and the helper (w) are inside; the keeper (k) is the walk\'s root; only the escapee is listed');
+  assert.deepEqual(listKeeperTreeOutsideScope({ cgroupDir: scopeDir, keeperPid: 7099 }, env()), [], 'a stale keeper pid still claims nothing');
+});
+
+test('#332 leaves: countMemberScopes — a leafed scope is a CAP when its WORK leaf has a limit and a closed swap escape, whatever the scope itself says; without the leaf limit it counts as unlimited again', () => {
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'SwapTotal:       8388604 kB\n');
+  const base = countMemberScopes(env());
+  assert.ok(base);
+  const capped = mkLeafScope('orchestra-ws-leafy6-1hhhhh.scope', 7061, 7062, 7063);
+  fs.writeFileSync(path.join(capped.scopeDir, 'memory.swap.max'), 'max\n'); // the scope's OWN swap limit open (a dropped property): the keeper closed the work leaf's
+  fs.writeFileSync(path.join(capped.scopeDir, 'memory.max'), 'max\n'); // and no scope-level limit (rig reserve 0)
+  const withCapped = countMemberScopes(env());
+  assert.equal(withCapped!.total, base!.total + 1);
+  assert.equal(withCapped!.unlimited, base!.unlimited, 'capped by the work leaf (limit + swap 0): NOT counted as a leak although the scope itself says max / max');
+  fs.writeFileSync(path.join(capped.wDir, 'memory.swap.max'), 'max\n');
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'the work leaf\'s swap escape open ⇒ counted');
+  fs.writeFileSync(path.join(capped.wDir, 'memory.swap.max'), '0\n');
+  fs.rmSync(path.join(capped.wDir, 'memory.max'));
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'no limit file on the work leaf ⇒ the scope\'s own (max) is read ⇒ unlimited');
+});
+
+test('#332 leaves (review): a scope WITH a work leaf whose memory.max is absent (the controller could not be handed down) is UNLIMITED — never read as capped by the scope\'s own backstop limit', () => {
+  fs.mkdirSync(procRoot, { recursive: true });
+  fs.writeFileSync(path.join(procRoot, 'meminfo'), 'SwapTotal:       8388604 kB\n');
+  const base = countMemberScopes(env());
+  const half = mkLeafScope('orchestra-ws-leafy8-1jjjjj.scope', 7081, 7082, 7083);
+  fs.writeFileSync(path.join(half.scopeDir, 'memory.max'), `${268435456 + 1073741824}\n`); // the production backstop (hard + 1 GiB) on the scope
+  fs.rmSync(path.join(half.wDir, 'memory.max'));
+  fs.rmSync(path.join(half.wDir, 'memory.swap.max'));
+  const mem = readScopeMemory({ cgroupDir: half.scopeDir }, env());
+  assert.equal(mem!.maxBytes, null, 'the work leaf has no limit file: no cap — not the scope\'s backstop');
+  assert.equal(countMemberScopes(env())!.unlimited, base!.unlimited + 1, 'counted as a scope WITHOUT a limit');
+});
+
+test('#332 leaves × #323: the CAP figures (current / working set / peak) are the WORK leaf\'s; the scope\'s currentBytes stays the member\'s whole bill (keeper + CLI + tools) — the bar and the MEM column read different cgroups', () => {
+  const { scopeDir, wDir } = mkLeafScope('orchestra-ws-leafy9-1kkkkk.scope', 7091, 7092, 7093);
+  fs.writeFileSync(path.join(scopeDir, 'memory.current'), `${500 * 1048576}\n`); // the bill: 500 MB (keeper + CLI ~340 MB + tools)
+  fs.writeFileSync(path.join(scopeDir, 'memory.stat'), `anon ${400 * 1048576}\ninactive_file ${60 * 1048576}\nactive_file 0\n`);
+  fs.writeFileSync(path.join(scopeDir, 'memory.peak'), `${600 * 1048576}\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.current'), `${160 * 1048576}\n`); // the tools: 160 MB, 40 MB of it reclaimable cache
+  fs.writeFileSync(path.join(wDir, 'memory.stat'), `anon ${120 * 1048576}\ninactive_file ${40 * 1048576}\nactive_file 0\n`);
+  fs.writeFileSync(path.join(wDir, 'memory.peak'), `${200 * 1048576}\n`);
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(m.currentBytes, 500 * 1048576, 'the member\'s whole bill');
+  assert.equal(m.capCurrentBytes, 160 * 1048576, 'what the hard level compares');
+  assert.equal(m.workingSetBytes, 120 * 1048576, 'what the soft level compares: the leaf\'s memory.current − the LEAF\'s inactive_file (not the scope\'s)');
+  assert.equal(m.peakBytes, 200 * 1048576, 'the cap\'s peak');
+  assert.equal(m.maxBytes, 268435456);
+  fs.rmSync(path.join(wDir, 'memory.current'));
+  const noCur = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(noCur.capCurrentBytes, null, 'a leaf whose memory.current cannot be read is UNKNOWN for the cap, never the scope\'s figure');
+  assert.equal(noCur.workingSetBytes, null);
 });

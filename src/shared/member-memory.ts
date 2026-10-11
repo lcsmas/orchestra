@@ -6,7 +6,7 @@
 export interface ScopeReading {
   unit: string;
   gen: string;
-  /** `memory.current` of the scope — the kernel's own meter (page cache included; it is what the Plafond compares to). */
+  /** `memory.current` of the SCOPE — the whole member's bill: keeper + CLI + tools (page cache included). Since #332 the Plafond's hard level compares the WORK leaf's `memory.current` (the tools), not this: a bar of the cap must read the leaf. */
   currentBytes: number | null;
   /** The scope's members with their role (`reliquat` = chain reaches no live keeper of this scope, FI-1.4); null = could not be listed. */
   procs: ReadonlyArray<{ pid: number; startTicks: number; rssBytes: number; role: string; comm?: string }> | null;
@@ -14,6 +14,8 @@ export interface ScopeReading {
   keeperPid: number | null;
   /** #323 (FI-1 `readScopeMemory`): the scope's hard limit (`memory.max`; null = no limit applied / unreadable), its WORKING SET (`memory.current` − `inactive_file`, R5; null = unreadable) and its peak. Optional: absent = not read. */
   maxBytes?: number | null;
+  /** #332: `memory.current` of the cgroup that carries the cap (the work leaf) — the bar's figure. Absent / null = the scope's `currentBytes` (a scope without leaves, or an older reader). */
+  capCurrentBytes?: number | null;
   workingSetBytes?: number | null;
   peakBytes?: number | null;
 }
@@ -23,7 +25,7 @@ export interface MemberCapView {
   unit: string;
   /** `memory.max` of that scope. */
   hardBytes: number;
-  /** `memory.current` of that scope — the figure the hard level compares (R1). */
+  /** `memory.current` of the cgroup that carries the cap — the work leaf since #332 (the scope's total for a scope without leaves): the figure the hard level compares (R1). NOT the member's whole bill. */
   billBytes: number;
   /** `memory.current − inactive_file` — the figure the soft level compares (R5); null = unreadable. */
   workingSetBytes: number | null;
@@ -103,7 +105,7 @@ export function memberViewFrom(wsId: string, readings: readonly ScopeReading[], 
 function capOf(readings: readonly ScopeReading[]): MemberCapView | null {
   const r = readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);
   if (!r || !finite(r.currentBytes) || !finite(r.maxBytes) || (r.maxBytes as number) <= 0) return null;
-  return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };
+  return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: finite(r.capCurrentBytes) ? (r.capCurrentBytes as number) : r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };
 }
 
 export function buildMemberMemoryReport(at: number, tracked: readonly MemberMemoryView[], untracked: readonly string[], unsupported: string | null, strayScopes: number | null = null): MemberMemoryReport {
