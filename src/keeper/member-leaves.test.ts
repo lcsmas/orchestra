@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, readLeafFaults, type LeafFs } from './member-leaves.ts';
+import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, probeWithRetry, readLeafCpuUsec, type LeafFs } from './member-leaves.ts';
 
 const S = '/sys/fs/cgroup/user.slice/app.slice/orchestra-ws-w-abc.scope';
 const HARD = 256 * 1024 * 1024;
@@ -57,14 +57,16 @@ test('#332 probe: the wrapper PLACES a command in the work leaf ⇒ ok; anywhere
   const W = `${ROOT}/user.slice/app.slice/orchestra-ws-w-abc.scope/w`;
   const parse = (t: string): string | null => /^0::(.*)$/m.exec(t)?.[1] ?? null;
   const mk = (out: string | null) => probeToolPlacement({ wrapper: '/h/bin/oom-tool-wrapper.sh', workDir: W, cgroupRoot: ROOT, parseCgroup: parse, run: (_w, _a, _e) => out });
-  assert.deepEqual(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/w\n'), { ok: true, saw: W });
+  assert.deepEqual(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/w\n'), { ok: true, ran: true, saw: W });
   const inK = mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope/k\n');
   assert.equal(inK.ok, false);
   assert.match(inK.saw, /scope\/k$/);
   assert.equal(mk('0::/user.slice/app.slice/orchestra-ws-w-abc.scope\n').ok, false, 'in the scope itself is not in the leaf');
   assert.equal(mk('0::/user.slice/app.slice/other-ws.scope/w\n').ok, false, 'another member\'s leaf is not ours');
   assert.match(mk('garbage\n').saw, /no cgroup v2 line/);
-  assert.deepEqual(mk(null), { ok: false, saw: 'the wrapper did not run' });
+  assert.equal(mk('garbage\n').ran, true, 'it RAN (output came back) — only the placement is unproven');
+  assert.equal(inK.ran, true);
+  assert.deepEqual(mk(null), { ok: false, ran: false, saw: 'the wrapper did not run' });
 });
 
 test('#332 probe: the probe command and environment — the wrapper gets ONE argument, the work leaf and a PATH/SHELL, nothing from the keeper\'s environment', () => {
@@ -78,31 +80,40 @@ test('#332 probe: the probe command and environment — the wrapper gets ONE arg
   assert.deepEqual(Object.keys(s.e).sort(), ['ORCHESTRA_MEMCAP_WORK_LEAF', 'PATH', 'SHELL']);
 });
 
-test('#332 fu tripwire: readLeafFaults reads pgfault of memory.stat; absent / unreadable is null, never 0', () => {
-  assert.equal(readLeafFaults(() => 'anon 100\npgfault 4242\npgmajfault 3\n'), 4242);
-  assert.equal(readLeafFaults(() => 'anon 100\npgmajfault 3\n'), null, 'a stat without pgfault is not a reading');
-  assert.equal(readLeafFaults(() => 'anon 100\nxpgfault 9\n'), null, 'anchored: a longer key is not pgfault');
-  assert.equal(readLeafFaults(() => null), null);
+test('#332 fu tripwire: readLeafCpuUsec reads usage_usec of cpu.stat (NOT memory.stat pgfault: its flush is lazy, measured); absent / unreadable is null, never 0', () => {
+  assert.equal(readLeafCpuUsec(() => 'usage_usec 171443\nuser_usec 100000\nsystem_usec 71443\n'), 171443);
+  assert.equal(readLeafCpuUsec(() => 'user_usec 5\n'), null, 'a stat without usage_usec is not a reading');
+  assert.equal(readLeafCpuUsec(() => 'xusage_usec 9\nusage_usec_extra 7\n'), null, 'anchored: a longer key is not usage_usec');
+  assert.equal(readLeafCpuUsec(() => null), null);
+});
+
+test('#332 fu probe retry: the probe runs again ONCE after a failure and stops at the first success; `attempts` says how many ran', () => {
+  const mk = (...seq: boolean[]) => { let i = 0; return () => { const ok = seq[i++] ?? false; return { ok, ran: true, saw: ok ? 'w' : 'k' }; }; };
+  assert.deepEqual(probeWithRetry(mk(true)), { ok: true, ran: true, saw: 'w', attempts: 1 }, 'first probe fine: no second run');
+  assert.deepEqual(probeWithRetry(mk(false, true)), { ok: true, ran: true, saw: 'w', attempts: 2 }, 'one flaky spawn does not decide the member\'s whole life');
+  assert.equal(probeWithRetry(mk(false, false, true)).ok, false, 'ONE retry, not a loop');
+  assert.equal(probeWithRetry(mk(false, false, true)).attempts, 2);
+  assert.equal(probeWithRetry(mk(false, true), 0).attempts, 1, 'retries = 0 is the old single probe');
 });
 
 const bashUse = (id: string) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'ls' } }] } });
 const readUse = (id: string) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: '/x' } }] } });
 const result = (id: string) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } });
 
-test('#332 fu tripwire (review m2c): after 5 BASH tool results, a work leaf whose page-fault counter never moved past the post-probe baseline TRIPS (once); one that moved does not', () => {
+test('#332 fu tripwire (review m2c): after 5 BASH tool results, a work leaf whose CPU-time counter never moved past the post-probe baseline TRIPS (once); one that moved does not', () => {
   const trips: number[] = [];
-  const tw = createPlacementTripwire({ baseline: 100, readFaults: () => 100, onTrip: (n) => trips.push(n) });
+  const tw = createPlacementTripwire({ baseline: 100, readCounter: () => 100, onTrip: (n) => trips.push(n) });
   tw.onLine('{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}');
   for (let i = 1; i <= 4; i++) { tw.onLine(bashUse(`b${i}`)); tw.onLine(result(`b${i}`)); }
   assert.deepEqual(trips, [], 'four results: too early to say');
   tw.onLine(bashUse('b5'));
   tw.onLine(result('b5'));
-  assert.deepEqual(trips, [5], 'the fifth Bash result: the leaf never faulted a page ⇒ no shell command ever ran in it');
+  assert.deepEqual(trips, [5], 'the fifth Bash result: the leaf was never charged CPU time ⇒ no shell command ever ran in it');
   assert.equal(tw.tripped(), true);
   for (let i = 6; i < 12; i++) { tw.onLine(bashUse(`b${i}`)); tw.onLine(result(`b${i}`)); }
   assert.deepEqual(trips, [5], 'fires ONCE');
   const ok: number[] = [];
-  const tw2 = createPlacementTripwire({ baseline: 100, readFaults: () => 5000, onTrip: (n) => ok.push(n) });
+  const tw2 = createPlacementTripwire({ baseline: 100, readCounter: () => 5000, onTrip: (n) => ok.push(n) });
   for (let i = 0; i < 8; i++) { tw2.onLine(bashUse(`c${i}`)); tw2.onLine(result(`c${i}`)); }
   assert.deepEqual(ok, []);
   assert.equal(tw2.tripped(), false);
@@ -110,7 +121,7 @@ test('#332 fu tripwire (review m2c): after 5 BASH tool results, a work leaf whos
 
 test('#332 fu tripwire: Read / Edit / MCP results and results of unknown ids say NOTHING about the work leaf — a session that only read files never trips', () => {
   const trips: number[] = [];
-  const tw = createPlacementTripwire({ baseline: 100, readFaults: () => 100, onTrip: (n) => trips.push(n) });
+  const tw = createPlacementTripwire({ baseline: 100, readCounter: () => 100, onTrip: (n) => trips.push(n) });
   for (let i = 0; i < 20; i++) { tw.onLine(readUse(`r${i}`)); tw.onLine(result(`r${i}`)); }
   tw.onLine(result('never-announced'));
   tw.onLine('not json with "tool_result" inside');
@@ -123,7 +134,7 @@ test('#332 fu tripwire: an UNREADABLE counter never trips (unknown is not a verd
   let reads = 0;
   let value: number | null = null;
   const trips: number[] = [];
-  const tw = createPlacementTripwire({ baseline: 10, readFaults: () => { reads += 1; return value; }, onTrip: (n) => trips.push(n), after: 2, giveUpAfter: 4 });
+  const tw = createPlacementTripwire({ baseline: 10, readCounter: () => { reads += 1; return value; }, onTrip: (n) => trips.push(n), after: 2, giveUpAfter: 4 });
   const line = '{"type":"user","tool_result":{"id":"x"}}';
   for (let i = 0; i < 3; i++) tw.onLine(line);
   assert.equal(reads, 2, 'results 2 and 3 each tried to read');
@@ -135,9 +146,30 @@ test('#332 fu tripwire: an UNREADABLE counter never trips (unknown is not a verd
   assert.equal(reads, reads0, 'done: no more reads after the verdict');
   let v2: number | null = null;
   const gaveUp: number[] = [];
-  const tw3 = createPlacementTripwire({ baseline: 10, readFaults: () => v2, onTrip: (n) => gaveUp.push(n), after: 1, giveUpAfter: 3 });
+  const tw3 = createPlacementTripwire({ baseline: 10, readCounter: () => v2, onTrip: (n) => gaveUp.push(n), after: 1, giveUpAfter: 3 });
   for (let i = 0; i < 5; i++) tw3.onLine(line);
   v2 = 10;
   tw3.onLine(line);
   assert.deepEqual(gaveUp, [], 'gave up while unreadable: a later readable-but-unmoved counter does not retroactively trip');
+});
+
+const resultMeta = (id: string, kind: string) => JSON.stringify({ type: 'user', tool_result_meta: [{ id, non_execution_kind: kind }], message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'The operation could not be completed.' }] } });
+
+test('#332 fu tripwire (review): Bash results the CLI marks non_execution_kind (user-rejected / interrupted / cancelled) came back WITHOUT the command running — they never count', () => {
+  const trips: number[] = [];
+  const tw = createPlacementTripwire({ baseline: 100, readCounter: () => 100, onTrip: (n) => trips.push(n) });
+  for (const [i, kind] of ['user-rejected', 'interrupted', 'cancelled', 'user-rejected', 'user-rejected', 'cancelled'].entries()) { tw.onLine(bashUse(`n${i}`)); tw.onLine(resultMeta(`n${i}`, kind)); }
+  assert.deepEqual(trips, [], 'six Bash calls that never ran: nothing counted');
+  for (let i = 0; i < 4; i++) { tw.onLine(bashUse(`x${i}`)); tw.onLine(result(`x${i}`)); }
+  assert.deepEqual(trips, [], 'four real results: still too early');
+  tw.onLine(bashUse('x4'));
+  tw.onLine(result('x4'));
+  assert.deepEqual(trips, [5], 'the fifth REAL result trips');
+});
+
+test('#332 fu tripwire (review): a tripwire that gives up on an unreadable counter SAYS so, once', () => {
+  const gave: number[] = [];
+  const tw = createPlacementTripwire({ baseline: 1, readCounter: () => null, onTrip: () => assert.fail('never trips on an unknown'), onGiveUp: (n) => gave.push(n), after: 1, giveUpAfter: 3 });
+  for (let i = 0; i < 8; i++) tw.onLine('{"type":"user","tool_result":{"id":"x"}}');
+  assert.deepEqual(gave, [3], 'said once, at giveUpAfter');
 });

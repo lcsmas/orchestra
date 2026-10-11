@@ -61,6 +61,8 @@ export function buildMemberLeaves(a: { scopeDir: string; hardBytes: number; pid:
 
 export interface PlacementProbe {
   ok: boolean;
+  /** Did the wrapper RUN (its command produced output)? false = it could not be executed at all: a prefix that cannot run would make EVERY Bash tool call fail. */
+  ran: boolean;
   /** What the probe saw: the cgroup path the wrapped command reported, or why it could not. */
   saw: string;
 }
@@ -72,18 +74,32 @@ export interface PlacementProbe {
  */
 export function probeToolPlacement(a: { wrapper: string; workDir: string; cgroupRoot: string; parseCgroup: (text: string) => string | null; run: (wrapper: string, args: string[], env: Record<string, string>) => string | null }): PlacementProbe {
   const out = a.run(a.wrapper, ['cat /proc/self/cgroup'], { PATH: '/usr/local/bin:/usr/bin:/bin', SHELL: '/bin/bash', ORCHESTRA_MEMCAP_WORK_LEAF: a.workDir });
-  if (out === null) return { ok: false, saw: 'the wrapper did not run' };
+  if (out === null) return { ok: false, ran: false, saw: 'the wrapper did not run' };
   const cg = a.parseCgroup(out);
-  if (cg === null) return { ok: false, saw: `no cgroup v2 line in ${JSON.stringify(out.slice(0, 80))}` };
+  if (cg === null) return { ok: false, ran: true, saw: `no cgroup v2 line in ${JSON.stringify(out.slice(0, 80))}` };
   const where = path.join(a.cgroupRoot, cg);
-  return { ok: where === a.workDir, saw: where };
+  return { ok: where === a.workDir, ran: true, saw: where };
 }
 
-/** The page-fault counter of the work leaf (`pgfault` in its memory.stat): it only ever grows, and every process that runs in the leaf — however short — faults dozens of pages. null = unreadable. */
-export function readLeafFaults(readStat: () => string | null): number | null {
+/** Probe up to `1 + retries` times and stop at the first success (a single failed spawn under host pressure must not decide a member's whole life). `attempts` = how many probes ran. */
+export function probeWithRetry(probe: () => PlacementProbe, retries = 1): PlacementProbe & { attempts: number } {
+  let r = probe();
+  let attempts = 1;
+  while (!r.ok && attempts <= retries) {
+    r = probe();
+    attempts += 1;
+  }
+  return { ...r, attempts };
+}
+
+/**
+ * The CPU time ever charged to the work leaf (`usage_usec` in its cpu.stat): it only grows and every process that runs in the leaf, however short, adds to it. cpu.stat FLUSHES the rstat tree on read; `memory.stat`'s
+ * `pgfault` does NOT (measured on kernel 6.19, 10 cpus: 5 tiny commands left it unmoved in 12 of 25 reads, cpu.stat 0 of 75). null = unreadable.
+ */
+export function readLeafCpuUsec(readStat: () => string | null): number | null {
   const text = readStat();
   if (text === null) return null;
-  const m = /^pgfault (\d+)$/m.exec(text);
+  const m = /^usage_usec (\d+)$/m.exec(text);
   return m ? Number(m[1]) : null;
 }
 
@@ -102,8 +118,11 @@ function bashEvents(line: string, bashIds: Set<string>): number {
   } catch {
     return 0;
   }
-  const obj = o as { type?: string; message?: { content?: unknown }; tool_result?: unknown };
+  const obj = o as { type?: string; message?: { content?: unknown }; tool_result?: unknown; tool_result_meta?: unknown };
   if (obj.tool_result && typeof obj.tool_result === 'object') return 1; // the stand-in CLI's shape: every tool it runs is a shell command
+  // A result the CLI marks `non_execution_kind` (user-rejected / interrupted / cancelled) came back WITHOUT the command having run: it says nothing about the work leaf
+  const notRun = new Set<string>();
+  if (Array.isArray(obj.tool_result_meta)) for (const m of obj.tool_result_meta as Array<{ id?: unknown; non_execution_kind?: unknown }>) if (m && typeof m.id === 'string' && m.non_execution_kind) notRun.add(m.id);
   const content = Array.isArray(obj.message?.content) ? (obj.message?.content as Array<{ type?: string; id?: string; name?: string; tool_use_id?: string }>) : [];
   for (const b of content) {
     if (b?.type === 'tool_use' && b.name === 'Bash' && typeof b.id === 'string') {
@@ -111,19 +130,20 @@ function bashEvents(line: string, bashIds: Set<string>): number {
       if (bashIds.size > 400) bashIds.delete(bashIds.values().next().value as string);
     } else if (b?.type === 'tool_result' && typeof b.tool_use_id === 'string' && bashIds.has(b.tool_use_id)) {
       bashIds.delete(b.tool_use_id);
-      n += 1;
+      if (!notRun.has(b.tool_use_id)) n += 1;
     }
   }
   return n;
 }
 
 /**
- * Runtime tripwire for what the start-time probe cannot prove (it injects the leaf into the wrapper's env itself): after `after` BASH tool results have come back from the CLI, the work leaf's page-fault counter must have
+ * Runtime tripwire for what the start-time probe cannot prove (it injects the leaf into the wrapper's env itself): after `after` BASH tool results have come back from the CLI, the work leaf's CPU-time counter must have
  * moved past its post-probe baseline — if not, NO shell command ever ran in the work leaf (a CLI that drops the env, a version that no longer calls the prefix, a read-only cgroup.procs...) and the cap is nothing while the
  * state reads `active`. Only Bash results count (a session that has only Read / Edit / Grep'd so far has run nothing through the prefix). Default `after` = 5: a few permission-denied commands run nothing. Fires `onTrip` ONCE.
- * An unreadable counter never trips (unknown is not a verdict); it re-checks at later results, up to `giveUpAfter`.
+ * An unreadable counter never trips (unknown is not a verdict); it re-checks at later results, up to `giveUpAfter`, then says so through `onGiveUp`. The counter is leaf-wide: MCP servers and hooks also run through the prefix,
+ * so one that landed in the leaf can hide a Bash that did not (a false NEGATIVE — the wire stays quiet; never a false trip).
  */
-export function createPlacementTripwire(a: { baseline: number; readFaults: () => number | null; onTrip: (toolResults: number) => void; after?: number; giveUpAfter?: number }): PlacementTripwire {
+export function createPlacementTripwire(a: { baseline: number; readCounter: () => number | null; onTrip: (toolResults: number) => void; onGiveUp?: (toolResults: number) => void; after?: number; giveUpAfter?: number }): PlacementTripwire {
   const after = a.after ?? 5;
   const giveUp = a.giveUpAfter ?? 40;
   const bashIds = new Set<string>();
@@ -137,9 +157,12 @@ export function createPlacementTripwire(a: { baseline: number; readFaults: () =>
       if (n === 0) return;
       results += n;
       if (results < after) return;
-      const now = a.readFaults();
+      const now = a.readCounter();
       if (now === null) {
-        if (results >= giveUp) done = true;
+        if (results >= giveUp) {
+          done = true;
+          a.onGiveUp?.(results); // said once: a tripwire that disarms itself must not do it silently
+        }
         return;
       }
       done = true;

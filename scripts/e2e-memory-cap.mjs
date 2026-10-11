@@ -53,6 +53,8 @@ const ARMS = {
   backstop_scope_limit: { mustFailOnMaster: true },
   // #332 fu (review m2): a probe that fails keeps the prefix; a CLI whose tools never reach the work leaf is caught by the tripwire
   probe_fails_prefix_kept: { mustFailOnMaster: true },
+  probe_flaky_retry_passes: { mustFailOnMaster: true },
+  probe_unrunnable_prefix_dropped: { mustFailOnMaster: true },
   tripwire_tools_not_landing: { mustFailOnMaster: true },
   // review round 1 (OPS m1-m4): a member WITHOUT a scope is stopped as before; a scoped /clear leaves a successor whole and holds off a wake; the pid file is not the only live-keeper signal
   no_scope_changes_nothing: {},
@@ -840,7 +842,7 @@ try {
     check('...and the SCOPE-level limit killed NOTHING (the backstop is not what takes a hog: its own oom_kill counter stayed 0; reclaim events `max` are informational)', (localEv.oom_kill ?? 0) === 0 && (localEv.oom_group_kill ?? 0) === 0, JSON.stringify(localEv));
     detail = `scope.max=${sMax} leaf.max=${wMax} chain lost=${lost}`;
   } else if (ARM === 'probe_fails_prefix_kept') {
-    // A wrapper that raises adj but does NOT move into the work leaf (stale / broken): the start-time probe fails TWICE. The member keeps the PREFIX (tools stay at adj 1000), the state says unprotected, the log says why — and the session lives.
+    // A wrapper that RUNS and raises adj but does NOT move into the work leaf (stale / broken): the start-time probe fails TWICE. The member keeps the PREFIX (tools stay at adj 1000), the state says unprotected, the log says why — and the session lives.
     fs.writeFileSync(WRAPPER, '#!/bin/sh\necho 1000 > /proc/self/oom_score_adj 2>/dev/null\n[ "$#" -eq 1 ] || exec "$@"\ncase "${SHELL:-}" in */bash|*/zsh) sh_=$SHELL ;; *) sh_=/bin/bash ;; esac\nexec "$sh_" -c "$1"\n', { mode: 0o755 });
     const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
     const up = await waitFor(() => initOf(st), 30_000);
@@ -849,7 +851,7 @@ try {
     const pr = await kc.probeKeeper(ws);
     check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
     check('the keeper reports cap.state = unprotected (never active)', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
-    check('the log says why: the probe failed TWICE and nothing is capped at the hard level', /did NOT place a probe command in the work leaf, twice/.test(klog) && /NOTHING is capped at the hard level/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
+    check('the log says why: the probe failed (2 attempts) and nothing is capped at the hard level', /did NOT place a probe command in the work leaf \(2 attempts/.test(klog) && /NOTHING is capped at the hard level/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
     check('the PREFIX is still set: the CLI got CLAUDE_CODE_SHELL_PREFIX (tools stay protected by adj 1000)', !!initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
     const t = await runTool(st, 'cat /proc/self/oom_score_adj; cat /proc/self/cgroup', 't-adj', 20_000);
     const lines = (t?.stdout ?? '').trim().split('\n');
@@ -857,6 +859,39 @@ try {
     check('...in the KEEPER leaf (nothing capped at the hard level — said so)', (lines[1] ?? '').trim().endsWith('/k'), lines[1]);
     check('the app log says UNCAPPED-ish for the unprotected state (describeCapState)', await waitFor(() => /NOTHING is capped at the hard level/.test(orchLog()), 8000), '');
     detail = `state=${pr?.cap?.state} adj=${lines[0]}`;
+  } else if (ARM === 'probe_flaky_retry_passes') {
+    // The FIRST wrapper call fails (a spawn failing once under host pressure), every later one works: the ONE retry rescues the member — state active, no failure line, the tools land in the work leaf.
+    const real = fs.readFileSync(WRAPPER, 'utf8').replace(/^#!.*\n/, '');
+    const marker = path.join(base, 'flaky-first-call');
+    fs.writeFileSync(WRAPPER, `#!/bin/sh\nif [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi\n${real}`, { mode: 0o755 });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const up = await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
+    check('the first probe really failed (the marker was created by the failing call)', fs.existsSync(marker), marker);
+    check('the retry rescued it: cap.state = active', pr?.cap?.state === 'active', JSON.stringify(pr?.cap ?? null));
+    check('...and the log has NO probe-failure line', !/did NOT place a probe command|could not be RUN/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
+    const t = await runTool(st, 'cat /proc/self/oom_score_adj; cat /proc/self/cgroup', 't-where', 20_000);
+    const lines = (t?.stdout ?? '').trim().split('\n');
+    check('a tool command runs at adj 1000 in the WORK leaf', lines[0] === '1000' && (lines[1] ?? '').trim().endsWith('/w'), JSON.stringify(lines));
+    detail = `state=${pr?.cap?.state}`;
+  } else if (ARM === 'probe_unrunnable_prefix_dropped') {
+    // A wrapper that cannot RUN at all (exit 1 on every call): as the shell prefix it would fail EVERY Bash call, so it is dropped — loudly; the state says unprotected and tools still work.
+    fs.writeFileSync(WRAPPER, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    const up = await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const klog = readSafe(path.join(home, 'keepers', `${ws}.log`)) ?? '';
+    const pr = await kc.probeKeeper(ws);
+    check('the member STARTED in its scope', up && f.inRigScope && alive(f.keeperPid) && alive(f.cliPid), `cgroup=${cgOf(f.keeperPid)}`);
+    check('the keeper reports cap.state = unprotected', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
+    check('the log says the wrapper could not be RUN and the prefix is NOT set', /could not be RUN \(2 attempts/.test(klog) && /prefix is NOT set/.test(klog), klog.split('\n').slice(-3).join(' | ').slice(-240));
+    check('the CLI got NO shell prefix (a prefix that cannot run would fail every Bash call)', !initOf(st)?.shellPrefix, `prefix=${initOf(st)?.shellPrefix}`);
+    const t = await runTool(st, 'echo still-works', 't-works', 20_000);
+    check('a Bash tool command still WORKS', (t?.stdout ?? '').trim() === 'still-works', JSON.stringify(t?.stdout));
+    detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'tripwire_tools_not_landing') {
     // The probe passes (it injects the leaf into the wrapper's env itself), but the CLI does NOT forward ORCHESTRA_MEMCAP_WORK_LEAF to its tools: no tool ever lands in the work leaf. After 3 tool results the tripwire fires, once.
     process.env.ORCHESTRA_MEMCAP_TRIPWIRE_AFTER = '3'; // the keeper inherits it: the default is 5 Bash results
@@ -870,7 +905,7 @@ try {
     const tripped = await waitFor(() => /TRIPWIRE — /.test(readSafe(klogPath) ?? ''), 8000);
     const klog = readSafe(klogPath) ?? '';
     const pr = await kc.probeKeeper(ws);
-    check('the TRIPWIRE fired: «N tool results came back but the work leaf never faulted a page»', tripped, klog.split('\n').slice(-2).join(' | ').slice(-240));
+    check('the TRIPWIRE fired: «N tool results came back but the work leaf was charged no CPU time»', tripped, klog.split('\n').slice(-2).join(' | ').slice(-240));
     check('...exactly ONCE', (klog.match(/TRIPWIRE — /g) ?? []).length === 1, `n=${(klog.match(/TRIPWIRE — /g) ?? []).length}`);
     check('...and the state is now unprotected (read back from the keeper)', pr?.cap?.state === 'unprotected', JSON.stringify(pr?.cap ?? null));
     const t = await runTool(st, 'cat /proc/self/cgroup', 't-where', 20_000);

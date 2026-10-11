@@ -111,7 +111,7 @@ export interface TrapDeps {
   /** #254: how often a Pause douce still waiting re-checks its members' turns (ms, default {@link DOUCE_POLL_MS}); a turn ending is not a bus write. */
   douceCheckMs?: number;
   /** #325 (wave H ledger #329, FI-1 v1 of the member scope #320): kill the member's RELIQUATS — processes of its kernel scope whose ppid chain reaches no live keeper (a detached rig browser, a double-forked `env -i` daemon),
-   *  which the tool-tree kill above cannot reach — AFTER the tool trees. Production: `killReliquats` of pause-reliquats.ts over `memberScopes` / `listScopeProcs`. Resolves null when the member has NO tracked scope (nothing was looked
+   *  which the tool-tree kill above cannot reach — AFTER the tool trees. Production: `killReliquats` of pause-reliquats.ts over `memberScopes` / `listScopeProcsOrThrow`. Resolves null when the member has NO tracked scope (nothing was looked
    *  at: the Bilan stays byte-identical to before). Omitted ⇒ no step. */
   killReliquats?(m: TrapMember, opts: ReliquatKillOptions): Promise<ReliquatReport | null>;
   /** #331 (ledger #329 track H10): the BRIDGE until the member scope is ON — stop the member's orphaned headless browsers (launcher dead, profile under `agent-tmp/<its id>/`; pipe mode and port mode with no client) and report them in the Bilan's

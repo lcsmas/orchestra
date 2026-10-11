@@ -1,5 +1,5 @@
 // #328 (wave H, ledger #329; epic #319; contract FI-1 v1) — the PRODUCER of per-member memory read from the member's kernel scope. Pure half: src/shared/member-memory.ts.
-// Consumers resolve a scope ONLY through FI-1's `memberScopes` / `readScopeMemory` / `listScopeProcs` (src/main/memory-scope.ts) — never a hard-coded slice path (FI-1.3); `[]` = not tracked,
+// Consumers resolve a scope ONLY through FI-1's `memberScopes` / `readScopeMemory` / `listScopeProcsOrThrow` (src/main/memory-scope.ts) — never a hard-coded slice path (FI-1.3); `[]` = not tracked,
 // and the member keeps today's process-tree figure. Read-only: it never signals, moves or stops anything (the Pause/stop tracks own that, FI-1.4). Electron-free: ids and the clock are injected.
 
 import { countMemberScopes, listKeeperTreeOutsideScope, listScopeProcsOrThrow, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope } from './memory-scope.ts';

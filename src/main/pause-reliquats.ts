@@ -26,7 +26,7 @@ import {
 export interface ReliquatScopeDeps {
   /** FI-1 `memberScopes(wsId)`: the member's scopes (every generation). [] = NOT TRACKED (the Pause keeps today's behaviour); a throw = UNKNOWN. */
   scopes(wsId: string): ScopeRef[];
-  /** FI-1 `listScopeProcs(scope)` + `classifyScopeMembers`, read NOW. 'gone' = the scope no longer exists; 'unreadable' = UNKNOWN. */
+  /** FI-1 `listScopeProcsOrThrow(scope)` (+ the adapter's gone/unreadable mapping) + `classifyScopeMembers`, read NOW. 'gone' = the scope no longer exists; 'unreadable' = UNKNOWN. */
   list(scope: ScopeRef): ScopeListing;
   /** The cgroup (v2 path) `pid` sits in NOW, null when unknown — only to NAME where a Reliquat's parent went when it left the scope (review F1). */
   cgroupOf?(pid: number): string | null;

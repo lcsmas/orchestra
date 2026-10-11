@@ -53,7 +53,7 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
-import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, readLeafFaults, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
+import { buildMemberLeaves, createPlacementTripwire, probeToolPlacement, probeWithRetry, readLeafCpuUsec, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
 import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
@@ -208,7 +208,11 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
   const splitStdout = createLineSplitter((line) => {
     state.onStdoutLine(line, Date.now());
-    placementTripwire?.onLine(line);
+    try {
+      placementTripwire?.onLine(line);
+    } catch {
+      /* an observer must never take the keeper down */
+    }
   });
   child.stdout?.on('data', (d: Buffer) => {
     // Always drain; forward only when attached. Line-split a copy for the
@@ -353,40 +357,49 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
   // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, before saying `active`. ONE retry (a single spawn failing under host pressure
-  // must not decide a member's whole life); and a probe that still fails does NOT take the prefix off — the tools keep the wrapper's adj 1000 (the kernel still prefers them), only the STATE says the cap is not held.
+  // must not decide a member's whole life; 2 x 2.5 s, no longer than the one 5 s probe it replaces). A wrapper that RAN but landed elsewhere keeps the prefix (tools keep adj 1000 — the kernel still prefers them): only the STATE says
+  // the cap is not held. A wrapper that cannot be EXECUTED at all is dropped as the prefix (it would fail every Bash call) — loudly.
   let placed = true;
   if (wrapperOk && cap.wrapper) {
-    const tryProbe = () => probeToolPlacement({
+    const probe = probeWithRetry(() => probeToolPlacement({
       wrapper: cap.wrapper as string,
       workDir: dir,
       cgroupRoot: CGROUP_ROOT,
       parseCgroup: parseProcCgroupV2,
       run: (w, args, penv) => {
-        const r = spawnSync(w, args, { env: penv, encoding: 'utf8', timeout: 5000 });
+        const r = spawnSync(w, args, { env: penv, encoding: 'utf8', timeout: 2500 });
         return r.status === 0 ? r.stdout : null;
       },
-    });
-    let probe = tryProbe();
-    if (!probe.ok) probe = tryProbe();
+    }));
     if (!probe.ok) {
       placed = false;
-      klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf, twice (saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (they keep oom_score_adj ${OOM_ADJ_TOOLS} through the prefix)`);
+      if (!probe.ran) {
+        wrapperOk = false;
+        klog(`memory cap: the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level`);
+      } else {
+        klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (${probe.attempts} attempts; saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (the prefix stays: they keep oom_score_adj ${OOM_ADJ_TOOLS})`);
+      }
     }
   }
   capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : !wrapperOk || !placed ? 'unprotected' : 'active', hardBytes: cap.hardBytes };
-  // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have faulted pages since the probe; if not, no tool ever landed there.
+  // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have been charged CPU time (cpu.stat usage_usec: unlike memory.stat's
+  // pgfault it is flushed on read — measured) since the probe; if not, no tool ever landed there. The flip is visible in the keeper log and in every LATER helloAck/probe `cap.state`; the app logs the state once, at spawn.
   placementTripwire = null;
   if (capInfo.state === 'active') {
-    const base = readLeafFaults(() => { try { return fs.readFileSync(path.join(dir, 'memory.stat'), 'utf8'); } catch { return null; } });
-    if (base !== null) {
+    const readCpu = (): number | null => readLeafCpuUsec(() => { try { return fs.readFileSync(path.join(dir, 'cpu.stat'), 'utf8'); } catch { return null; } });
+    const base = readCpu();
+    if (base === null) {
+      klog(`memory cap: the placement tripwire is NOT armed — ${path.join(dir, 'cpu.stat')} is unreadable; the state stays active on the probe's word alone`);
+    } else {
       placementTripwire = createPlacementTripwire({
         baseline: base,
         after: intEnv('ORCHESTRA_MEMCAP_TRIPWIRE_AFTER', 5),
-        readFaults: () => readLeafFaults(() => { try { return fs.readFileSync(path.join(dir, 'memory.stat'), 'utf8'); } catch { return null; } }),
+        readCounter: readCpu,
         onTrip: (n) => {
           if (capInfo) capInfo = { ...capInfo, state: 'unprotected' };
-          klog(`memory cap: TRIPWIRE — ${n} Bash tool results came back but the work leaf's page-fault counter never moved since the probe: no tool command has run in the work leaf (the CLI drops ${WORK_LEAF_ENV}, or no longer calls the shell prefix?) — NOTHING is capped at the hard level`);
+          klog(`memory cap: TRIPWIRE — ${n} Bash tool results came back but the work leaf was charged no CPU time since the probe: no tool command has run in the work leaf (the CLI drops ${WORK_LEAF_ENV}, or no longer calls the shell prefix?) — NOTHING is capped at the hard level`);
         },
+        onGiveUp: (n) => klog(`memory cap: the placement tripwire gave up after ${n} tool results — cpu.stat stayed unreadable; the state stays active on the probe's word alone`),
       });
     }
   }
