@@ -1,7 +1,7 @@
 // #322 self-gate — IN-PLACE mutation sweep of the dedicated Plafond mémoire notice row (D-Q7 = B): the pure row builder (red kill / amber warning, command chip, inferred « probably », session ended, external OOM, legacy fallback),
 // the fold, the renderer and its markup. Each mutant edits ONE clause of the real source, runs the unit + wiring suites AND the SSR render smoke (scripts/memory-cap-row-render-smoke.mjs), and must turn red at least one NAMED
 // test / smoke check. Restored by byte-exact backup + `cmp`; `git diff` of the mutated files must be empty at the end (commit first). NOT heavy (unit + SSR only).
-// Run: node scripts/memory-cap-row-mutants.mjs [--only R01,R02] [--check | --check-anchors]
+// Run: node scripts/memory-cap-row-mutants.mjs [--only R01,R02] [--check | --check-anchors]   (--only takes mutant ids or their leading R<nn> code; anything else is REFUSED, exit 2, nothing run)
 // `expect` = a substring of a reddened unit test title, or `smoke:<check label>` for a failing smoke check — at least one MUST be red. `smoke: true` also runs the smoke.
 
 import fs from 'node:fs';
@@ -22,7 +22,13 @@ if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must
   process.exit(2);
 }
 const dryCheck = args.includes('--check-anchors') || args.includes('--check');
-const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
+const onlyAt = args.indexOf('--only');
+const onlyArg = onlyAt >= 0 ? args[onlyAt + 1] : undefined;
+if (onlyAt >= 0 && (onlyArg === undefined || onlyArg === '' || onlyArg.startsWith('-'))) { // `--only` with no list must not fall through to the full sweep either
+  console.error('REFUSING: --only needs a comma-separated list of mutant ids (or their leading R<nn> code) — NOTHING was run');
+  process.exit(2);
+}
+const only = onlyAt >= 0 ? new Set(onlyArg.split(',')) : null;
 const noRig = true;
 
 const MN = 'src/shared/mem-notice.ts';
@@ -78,6 +84,13 @@ const MUTANTS = [
   { id: 'R39_light_hard_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-error) 82%, #000); }", to: "{ color: var(--av-error); }", expect: ['ROW: the one-line markup'] },
   { id: 'R40_light_soft_label_back_to_the_raw_token', file: CSS, find: "{ color: color-mix(in srgb, var(--av-warn) 78%, #000); }", to: "{ color: var(--av-warn); }", expect: ['ROW: the one-line markup'] },
 ];
+
+// `--only` tokens must NAME a mutant (its full id or its leading R<nn> code): an unknown one used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 — a vacuous green.
+const wanted = (m) => !only || only.has(m.id) || only.has(m.id.split('_')[0]);
+if (only) {
+  const unknown = [...only].filter((t) => !MUTANTS.some((m) => m.id === t || m.id.split('_')[0] === t));
+  if (unknown.length) { console.error(`REFUSING: --only names no mutant: ${unknown.join(',')} — NOTHING was run. Known: ${MUTANTS.map((m) => m.id.split('_')[0]).join(' ')}`); process.exit(2); }
+}
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 500_000, ...opts });
@@ -144,7 +157,7 @@ const restore = (m, backupFile) => {
   if (spawnSync('cmp', ['-s', backupFile, path.join(REPO, m.file)]).status !== 0) { restoreBad = true; console.error(`RESTORE FAILED for ${m.file} — stop and fix by hand: git checkout -- ${m.file}`); }
 };
 for (const m of MUTANTS) {
-  if (only && !only.has(m.id)) continue;
+  if (!wanted(m)) continue;
   const abs = path.join(REPO, m.file);
   const original = fs.readFileSync(abs, 'utf8');
   let mutated = original; let anchorBad = null;

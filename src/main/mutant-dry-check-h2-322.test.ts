@@ -56,6 +56,23 @@ for (const script of SCRIPTS) {
       assert.equal(r.scratch, false, args.join(' '));
     }
   });
+  test(`${name}: --only that names NO mutant, or has no list, fails closed — exit 2, a sentence, nothing launched, no scratch (it used to print « MUTANTS: 0/0 killed » and exit 0)`, () => {
+    for (const args of [['--only', 'NOPE'], ['--only', 'R01,NOPE'], ['--only', 'R01_back'], ['--only'], ['--only', '--check'], ['--check', '--only', 'NOPE']]) {
+      const r = run(script, args);
+      assert.equal(r.status, 2, args.join(' '));
+      assert.match(r.stderr, /REFUSING: --only (names no mutant|needs a comma-separated list)/, args.join(' '));
+      assert.deepEqual(r.calls, [], args.join(' '));
+      assert.equal(r.scratch, false, args.join(' '));
+    }
+  });
+  test(`${name} (control): --only R01 (the documented short code) and a full id both pass the --only check and proceed to the first guarded call — so the refusals above are about the ids, not about --only`, () => {
+    for (const id of ['R01', 'R01_back_to_the_warning_row', 'R01,R02_entry_without_the_row']) {
+      const r = run(script, ['--only', id]);
+      assert.ok(r.calls.length >= 1, `${id}: no shim call recorded; stderr=${r.stderr.slice(0, 200)}`);
+      assert.doesNotMatch(r.stderr, /REFUSING: --only/, id);
+      assert.match(r.stderr, /uncommitted changes/, `${id}: reached the clean-tree guard`);
+    }
+  });
   test(`${name} (control): with NO flag the script does reach its first shimmed call — so an empty call log above is evidence, not a blind instrument`, () => {
     const r = run(script, []);
     assert.ok(r.calls.length >= 1, `no shim call recorded; stdout=${r.stdout.slice(0, 200)} stderr=${r.stderr.slice(0, 200)}`);
