@@ -123,7 +123,15 @@ export const platform: OrchestraPlatform = {
   },
   broadcast: (channel, ...args) => {
     current().broadcast(channel, ...args);
-    if (taps.size) for (const t of taps) t(channel, args);
+    if (taps.size) {
+      for (const t of taps) {
+        try {
+          t(channel, args);
+        } catch {
+          /* a tap (the phone feed) must never break the desktop's push */
+        }
+      }
+    }
   },
   broadcastPtyData: (id, data) => current().broadcastPtyData(id, data),
   canBroadcast: () => current().canBroadcast(),

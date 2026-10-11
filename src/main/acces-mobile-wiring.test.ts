@@ -81,6 +81,6 @@ test('#337: the conversation, seen and stream routes are wired to the feed and t
   const feed = read('src/main/acces-mobile-feed.ts');
   assert.match(feed, /createMobileFeed\(\{ loadHistory: sdkHistory, onBroadcast,/, 'history = the account-aware sdkHistory; live = the platform tap');
   const platform = read('src/main/platform/index.ts');
-  assert.match(platform, /current\(\)\.broadcast\(channel, \.\.\.args\);\n\s*if \(taps\.size\) for \(const t of taps\) t\(channel, args\);/, 'every UI push reaches the taps');
+  assert.match(platform, /current\(\)\.broadcast\(channel, \.\.\.args\);\n\s*if \(taps\.size\) \{\n\s*for \(const t of taps\) \{\n\s*try \{\n\s*t\(channel, args\);\n\s*\} catch \{/, 'every UI push reaches the taps, AFTER the window, and a throwing tap is contained');
   assert.match(entry, /upstreamStream: socketUpstreamStream\(sock\)/);
 });
