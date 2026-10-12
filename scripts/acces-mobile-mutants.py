@@ -351,6 +351,12 @@ MUTANTS = [
     ('FH26-default-heal-pace-never', 'src/main/acces-mobile-feed-core.ts', 'const HEAL_MS = 1000;', 'const HEAL_MS = 600000;', 'RED', FEEDCORE),
     ('FH27-activity-recency-not-refreshed', 'src/main/acces-mobile-feed-core.ts', '    lastEventAt.delete(wsId);\n', '', 'RED', FEEDCORE),
     ('FH28-retries-without-the-pace-floor', 'src/main/acces-mobile-feed-core.ts', 'Math.max(deps.healMs ?? HEAL_MS, trustIn)', 'trustIn', 'RED', FEEDCORE),
+    ('LA50-ok-without-an-id-is-a-success', 'src/main/acces-mobile-launch.ts', 'if (res.id && res.ok) {', 'if (res.ok) {', 'RED', 'src/main/acces-mobile-launch.test.ts'),
+    ('LA51-cap-twenty', 'src/shared/acces-mobile-launch.ts', 'export const MOBILE_LAUNCH_PER_WINDOW = 10;', 'export const MOBILE_LAUNCH_PER_WINDOW = 20;', 'RED', 'src/shared/acces-mobile-launch.test.ts'),
+    ('LA52-cap-window-ten-minutes', 'src/shared/acces-mobile-launch.ts', 'export const MOBILE_LAUNCH_WINDOW_MS = 60_000;', 'export const MOBILE_LAUNCH_WINDOW_MS = 600_000;', 'RED', 'src/shared/acces-mobile-launch.test.ts'),
+    ('LA53-repeat-window-one-ms', 'src/shared/acces-mobile-launch.ts', 'export const MOBILE_LAUNCH_REPEAT_WINDOW_MS = 5 * 60_000;', 'export const MOBILE_LAUNCH_REPEAT_WINDOW_MS = 1;', 'RED', 'src/shared/acces-mobile-launch.test.ts'),
+    ('LA54-repeat-window-one-day', 'src/shared/acces-mobile-launch.ts', 'export const MOBILE_LAUNCH_REPEAT_WINDOW_MS = 5 * 60_000;', 'export const MOBILE_LAUNCH_REPEAT_WINDOW_MS = 86_400_000;', 'RED', 'src/shared/acces-mobile-launch.test.ts'),
+    ('LU40-pending-id-survives-a-success', 'src/acces-mobile/launch.ts', "st.launched = made(res.body); st.draft = ''; st.pending = null; st.error = null;", "st.launched = made(res.body); st.draft = ''; st.error = null;", 'RED', 'src/acces-mobile/launch.test.ts'),
 ]
 
 E2E = '--e2e' in sys.argv[1:]

@@ -138,6 +138,12 @@ test('an ok-with-a-caveat spawn (first turn not confirmed) keeps its note', asyn
   assert.deepEqual(await r.launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(1) }), { ok: true, id: 'w', note: 'first turn not confirmed within 20 s — started, not confirmed' });
 });
 
+test('a spawn answer with ok but no id is NOT a success (the phone would open nothing)', async () => {
+  const r = rig(async () => ({ ok: true }));
+  const out = await r.launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(1) });
+  assert.equal(out.ok, false);
+});
+
 test('the repeat table is bounded: the oldest settled id is forgotten past 256, the newest is remembered', async () => {
   const r = rig();
   for (let i = 0; i < 300; i++) await r.launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(i) });

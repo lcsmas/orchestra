@@ -6,6 +6,8 @@ import {
   MOBILE_LAUNCH_MAX_PATH,
   MOBILE_LAUNCH_MAX_PROMPT,
   MOBILE_LAUNCH_PER_WINDOW,
+  MOBILE_LAUNCH_REPEAT_WINDOW_MS,
+  MOBILE_LAUNCH_TIMEOUT_MS,
   MOBILE_LAUNCH_WINDOW_MS,
   createLaunchLimiter,
   parseMobileLaunch,
@@ -139,4 +141,12 @@ test('mobileLaunchRequestId: 32 hex chars from 16 bytes, accepted by the server\
   assert.equal(injected(Uint8Array.from({ length: 16 }, (_, i) => i)), '000102030405060708090a0b0c0d0e0f');
   const injectedFailure = (0, eval)(`(${mobileLaunchFailure.toString()})`) as typeof mobileLaunchFailure;
   assert.deepEqual(injectedFailure(429, null), mobileLaunchFailure(429, null), 'the failure wording is self-contained too');
+});
+
+test('#376: the numbers of the contract are pinned LITERALLY — a test that imports them only restates the code', () => {
+  assert.equal(MOBILE_LAUNCH_PER_WINDOW, 10, 'ten launches ...');
+  assert.equal(MOBILE_LAUNCH_WINDOW_MS, 60_000, '... per rolling minute');
+  assert.equal(MOBILE_LAUNCH_TIMEOUT_MS, 60_000, 'a relayed launch waits at most a minute for main');
+  assert.equal(MOBILE_LAUNCH_REPEAT_WINDOW_MS, 5 * 60_000, 'a request id is remembered five minutes');
+  assert.ok(MOBILE_LAUNCH_REPEAT_WINDOW_MS >= MOBILE_LAUNCH_TIMEOUT_MS, 'a retry after a relay that timed out is still inside the repeat window (else it makes a second workspace)');
 });

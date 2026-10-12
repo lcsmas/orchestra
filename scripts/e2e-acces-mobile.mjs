@@ -108,7 +108,7 @@ function serveProxy(getSock, login, seen = [], who = '?') {
   const srv = http.createServer((inReq, inRes) => {
     const headers = Object.fromEntries(Object.entries(inReq.headers).filter(([k]) => !k.toLowerCase().startsWith('tailscale-user-')));
     if (login) headers['tailscale-user-login'] = login;
-    const line = { who, method: inReq.method, url: inReq.url, ua: String(inReq.headers['user-agent'] ?? ''), status: null }; seen.push(line); // the REQUEST LINE the server would see
+    const line = { who, method: inReq.method, url: inReq.url, ua: String(inReq.headers['user-agent'] ?? ''), status: null, at: Date.now() }; seen.push(line); // the REQUEST LINE the server would see
     // an upstream that dies mid-response (the server killed / turned off) cuts the device's connection too, as tailscale serve does —
     // a bare pipe would leave the phone's stream hanging open forever
     const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { line.status = r.statusCode; inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); r.on('close', () => { if (!r.complete) inRes.destroy(); }); });
@@ -710,8 +710,10 @@ try {
   }
   // #376: the 11th launch inside a minute ⇒ 429 and NOTHING is created. Run FIRST, in a burst, so ten launches really fall in ONE minute: launches
   // main refuses (/etc is no registered repo) still count — they are launches — and cost nothing. The window is then waited out (61 s) so the
-  // real launches below (9 in all, < 10) are never capped by it. A 429 reads « bare »: no body, nothing relayed.
+  // real launches below are never capped by it: `launchRoom(n)` waits until the server's rolling minute has room for n more (a launch that was
+  // answered 200 took a slot, a 429 / 400 did not), so the 10/min budget never depends on how fast the arms run. A 429 reads « bare »: no body.
   const okLaunches = () => seenLines.filter((l) => l.url.startsWith('/api/launch') && l.status === 200).length;
+  const launchRoom = async (n) => { while (seenLines.filter((l) => l.url.startsWith('/api/launch') && l.method === 'POST' && l.status === 200 && Date.now() - l.at < 60_000).length + n > 10) await sleep(1000); };
   const burst = async () => {
     const n0 = okLaunches(); let cap = null, tries = 0;
     while (cap === null && tries++ < 15) {
@@ -734,6 +736,7 @@ try {
   git(unreg, ['init', '-q', '-b', 'main'], world.fakeHome); fs.writeFileSync(path.join(unreg, 'README.md'), '#\n'); git(unreg, ['add', '.'], world.fakeHome); git(unreg, ['commit', '-q', '-m', 'seed'], world.fakeHome);
   const wtUnreg = worktreesOf(unreg);
   const refusedRepos = [];
+  await launchRoom(2);
   for (const rp of [unreg, '/etc']) refusedRepos.push(JSON.parse((await proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ repoPath: rp }))).body));
   clause('launch/unregistered-repo-refused', refusedRepos.every((r) => r.ok === false && r.code === 'unknown-repo') && worktreesOf(unreg) === wtUnreg && (await unchanged()), `real unregistered git repo + /etc ⇒ ${JSON.stringify(refusedRepos)}; worktrees of the unregistered repo ${wtUnreg} -> ${worktreesOf(unreg)}; store ${wsBefore.length} -> ${(await wsList()).length}`);
   clause('launch/refusals-create-nothing', await unchanged(), `${wsBefore.length} workspaces and ${wtBeforeA}+${wtBeforeB} worktrees before every refusal above, the same after`);
@@ -741,6 +744,7 @@ try {
   // the REAL launch: the repo's Compte, the WORKSPACE default model + effort, top-level, a generated branch; the prompt reaches the CLI
   const R1 = crypto.randomUUID(), PROMPT1 = `${LAUNCH_SENTINEL} corrige la faute dans le titre`;
   const modelsBeforeLaunch = fakeApi.requests.filter((r) => r.type === 'model').length;
+  await launchRoom(1);
   const launched = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT1, requestId: R1 }));
   const L1 = launched.status === 200 ? JSON.parse(launched.body) : { ok: false };
   const wsAfter = await wsList();
@@ -755,11 +759,13 @@ try {
 
   // #376: a double submit (two POSTs, the same request id, sent together) = ONE workspace, both answers carry its id
   const R2 = crypto.randomUUID(), PROMPT2 = `${LAUNCH_SENTINEL} double tap`;
+  await launchRoom(2);
   const dbl = await Promise.all([1, 2].map(() => proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT2, requestId: R2 }))));
   const [DB1, DB2] = dbl.map((r) => (r.status === 200 ? JSON.parse(r.body) : { ok: false, status: r.status }));
   const dupes = (await wsList()).filter((w) => w.lastTask === PROMPT2);
   clause('launch/double-submit-one-workspace', DB1.ok === true && DB2.ok === true && DB1.id === DB2.id && dupes.length === 1 && dupes[0].id === DB1.id && dupes[0].accountId === 'acc-perso', `two POSTs, one request id ⇒ ${JSON.stringify([DB1, DB2])}; workspaces with that prompt: ${dupes.length}`);
   const R3 = crypto.randomUUID(), PROMPT3 = `${LAUNCH_SENTINEL} second request id`;
+  await launchRoom(2);
   const two = [await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: R3 })), await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: crypto.randomUUID() }))].map((r) => JSON.parse(r.body));
   clause('launch/distinct-request-ids-distinct-workspaces', two[0].ok && two[1].ok && two[0].id !== two[1].id && (await wsList()).filter((w) => w.lastTask === PROMPT3).length === 2, `control for the double-submit arm: two request ids ⇒ ${JSON.stringify(two.map((t) => t.id))}`);
 
@@ -779,7 +785,8 @@ try {
     fakeOpts.replyDelayMs = 8000;
     const SLOW_PROMPT = `${LAUNCH_SENTINEL} première réponse lente (8 s)`;
     let slowLaunch;
-    try { slowLaunch = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: SLOW_PROMPT })); } finally { fakeOpts.replyDelayMs = 0; }
+    await launchRoom(1);
+    try { slowLaunch = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: SLOW_PROMPT, requestId: crypto.randomUUID() })); } finally { fakeOpts.replyDelayMs = 0; }
     const SL = slowLaunch.status === 200 ? JSON.parse(slowLaunch.body) : { ok: false };
     await phone.eval(`location.hash = 'w=' + ${JSON.stringify(SL.id)}; true`);
     const convKinds = () => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind)`);
@@ -830,6 +837,7 @@ try {
   await phone.send('Runtime.enable').catch(() => {}); await phone.send('Network.enable').catch(() => {});
   const modelsBeforePage = fakeApi.requests.filter((r) => r.type === 'model').length;
   const wsBeforePage = (await wsList()).length;
+  await launchRoom(1);
   await phone.clickSel('#launch .nf-go');
   await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden && document.getElementById('launch').hidden`), 90000, 'the conversation of the launched workspace');
   const pageId = (await phone.eval(`location.hash`)).slice(3);
@@ -861,6 +869,7 @@ try {
   await phone.clickSel(`#launch .nf-repo[data-path="${repoPathB}"]`);
   await typeIn(DBL_PROMPT);
   const reqsBeforeDbl = phoneLaunchLines().length;
+  await launchRoom(1);
   const goPos = await phone.eval(`(() => { const r = document.querySelector('#launch .nf-go').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (let k = 0; k < 2; k++) for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: goPos.x, y: goPos.y, ...extra });
   await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden`), 90000, 'the conversation after the double tap');

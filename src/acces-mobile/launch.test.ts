@@ -190,6 +190,22 @@ test('a retry of the SAME launch keeps its request id (the server answers with t
   assert.notEqual(JSON.parse(r.launches()[3].init.body!).requestId, c, 'another repo ⇒ another id');
 });
 
+test('after a SUCCESS the same repo + prompt typed again is a NEW launch — a new request id, never the old workspace for five minutes', async () => {
+  const ok1 = { status: 200, body: { ok: true, id: 'ws-1', branch: 'quiet-fox' } };
+  const ok2 = { status: 200, body: { ok: true, id: 'ws-2', branch: 'calm-owl' } };
+  const r = await filled({ replies: [{ status: 200, body: REPOS }, ok1, { status: 200, body: REPOS }, ok2] }, 'beta');
+  go(r).tap(); await r.settle();
+  assert.equal(r.location.hash, 'w=ws-1');
+  r.api.close();
+  r.api.open(); await r.settle();
+  r.root.all('nf-repo').find((b) => b.textContent.includes('beta'))!.tap();
+  r.root.one('nf-task').type_('fix the typo'); // the very same repo and prompt
+  go(r).tap(); await r.settle();
+  const [a, b] = r.launches().map((f) => JSON.parse(f.init.body!).requestId);
+  assert.equal(r.launches().length, 2, 'two launches were sent');
+  assert.notEqual(a, b, 'the second is another intention: main would otherwise answer it with the first workspace');
+});
+
 test('success: the conversation opens (#w=<id>), the draft is gone, and the screen knows the row it just made', async () => {
   const r = await filled({ replies: [{ status: 200, body: REPOS }, { status: 200, body: { ok: true, id: 'ws-1', branch: 'quiet-fox' } }] }, 'beta');
   go(r).tap(); await r.settle();
