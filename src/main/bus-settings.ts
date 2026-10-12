@@ -13,11 +13,7 @@
 // change.
 
 import { store } from './store.ts';
-import {
-  type BusSwitches,
-  normalizeLiveSwitches,
-  DEFAULT_BUS_SWITCHES,
-} from '../shared/bus-switches.ts';
+import { type BusSwitches, liveSwitchesFromStore, saveLiveSwitches } from '../shared/bus-switches.ts';
 
 /**
  * The live switch values from the app store, defaulted per-mechanism.
@@ -27,13 +23,8 @@ import {
  * at boot, so this is a plain object read.
  */
 export function getLiveSwitches(): BusSwitches {
-  try {
-    return normalizeLiveSwitches(store.getBusSwitches());
-  } catch {
-    // A store that cannot be read must not turn every mechanism ON. All-OFF is
-    // the coexistence-safe direction: the old channels keep working.
-    return { ...DEFAULT_BUS_SWITCHES };
-  }
+  // A store that cannot be read must not turn every mechanism ON: all-OFF is the coexistence-safe direction (liveSwitchesFromStore).
+  return liveSwitchesFromStore(() => store.getBusSwitches());
 }
 
 /**
@@ -45,7 +36,6 @@ export function getLiveSwitches(): BusSwitches {
  * flip to running runs, that is T118.2's disproof, not a feature.
  */
 export async function setLiveSwitches(next: Partial<BusSwitches>): Promise<BusSwitches> {
-  const merged = normalizeLiveSwitches({ ...getLiveSwitches(), ...next });
-  await store.setBusSwitches(merged);
-  return merged;
+  // Only the keys the human has ever set are persisted (saveLiveSwitches / mergeExplicitSwitches): an unset key keeps following its live default (#324 review m3).
+  return saveLiveSwitches(() => store.getBusSwitches(), (explicit) => store.setBusSwitches(explicit), next);
 }

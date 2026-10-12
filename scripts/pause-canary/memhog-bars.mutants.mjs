@@ -104,6 +104,8 @@ export const MEMHOG_MUTANTS = [
   ['chain-incomplete-pass', "if (incomplete.length) return { verdict: 'VOID',", "if (false) return { verdict: 'VOID',"],
   ['chain-counted-ignored', "if (premiseRed.length && counted.length === 0)", "if (premiseRed.length)"],
   ['chain-counted-flag-off', "episodes: !!r.backstop && (r.backstop.kLeafKills > 0 || r.backstop.beyondWorkKills > 0)", "episodes: false"],
+  ['hog-delta-vs-killed-ignored', "if (w.oomKillDelta !== sw.killed) return `the kernel counted", "if (false) return `the kernel counted"],
+  ['hog-delta-vs-killed-loose', "if (w.oomKillDelta !== sw.killed) return `the kernel counted", "if (w.oomKillDelta < sw.killed) return `the kernel counted"],
   ['table-aborted-cycle-unguarded', 'if (!k) return `| ${c.exercise} | ${c.cycle} | n/a', 'if (false) return `| ${c.exercise} | ${c.cycle} | n/a'],
 ].map(([name, find, replace]) => [name, find, replace, F]);
 
@@ -139,6 +141,9 @@ export const MEMHOG_FACTS_MUTANTS = [
   ['degradation-dropped-from-facts', "      capDegradations: capDegradationsFromKeeperLog(f.keeperLog),\n", ""],
   ['degradation-benign-tripwire-fired', "memory cap: the placement tripwire (is NOT armed|gave up)", "memory cap: (the placement tripwire (is NOT armed|gave up)|TRIPWIRE)"],
   ['degradation-benign-wrapper-warning', "memory cap: the placement tripwire (is NOT armed|gave up)", "memory cap: (the placement tripwire (is NOT armed|gave up)|WARNING)"],
+  ['void-never-pass-off', "(voidReason && result === 'PASS' ? 'VOID' : result)", "result"],
+  ['void-turns-fail-into-void', "(voidReason && result === 'PASS' ? 'VOID' : result)", "(voidReason ? 'VOID' : result)"],
+  ['void-ignores-reason', "(voidReason && result === 'PASS' ? 'VOID' : result)", "(result === 'PASS' ? 'VOID' : result)"],
   ['env-nan-allowed', 'if (![members, capGb, softGb, hogMb].every(Number.isFinite)) return', 'if (false) return'],
   ['env-members-upper', 'members >= 1 && members <= 6', 'members >= 1 && members <= 7'],
   ['env-members-lower', 'members >= 1 && members <= 6', 'members <= 6'],

@@ -118,6 +118,40 @@ export function normalizeLiveSwitches(raw: unknown): BusSwitches {
   return out;
 }
 
+/** The live switches as the app reads them: the stored (RAW) object normalized with LIVE_SWITCH_DEFAULTS; a store that cannot be read is all-OFF (the coexistence-safe fallback — never every mechanism ON). */
+export function liveSwitchesFromStore(readRaw: () => unknown): BusSwitches {
+  try {
+    return normalizeLiveSwitches(readRaw());
+  } catch {
+    return { ...DEFAULT_BUS_SWITCHES };
+  }
+}
+
+/**
+ * What a Settings save PERSISTS (#324 review m3): the keys the human has EVER set — the stored ones plus the ones changed now. An unset key stays unset, so a later change of its live default still
+ * reaches it; writing all ten keys on the first save froze every default at the value of the day (a later flip never arrived). The store format is unchanged (the keys were always optional).
+ */
+export function mergeExplicitSwitches(raw: unknown, next: Partial<Record<string, unknown>>): Partial<Record<BusMechanism, boolean>> {
+  const src = (raw ?? {}) as Record<string, unknown>;
+  const out: Partial<Record<BusMechanism, boolean>> = {};
+  for (const m of BUS_MECHANISMS) {
+    if (next[m] !== undefined) out[m] = next[m] === true;
+    else if (src[m] !== undefined) out[m] = src[m] === true;
+  }
+  return out;
+}
+
+/** Persist a Settings change: read the RAW stored object, write only the explicit keys, return the resulting LIVE set. A read error propagates (nothing is written on a guess). */
+export async function saveLiveSwitches(
+  readRaw: () => unknown,
+  write: (explicit: Partial<Record<string, boolean>>) => Promise<void>,
+  next: Partial<Record<string, unknown>>,
+): Promise<BusSwitches> {
+  const explicit = mergeExplicitSwitches(readRaw(), next);
+  await write(explicit);
+  return normalizeLiveSwitches(explicit);
+}
+
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
 export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
   delivery: 'Delivery (Lot / Relève)',
@@ -324,7 +358,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'memoryCap') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — each of your session starts (spawn, restart, wake) runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and your session survives. Keep tests and rigs light; a session that started before this was ON is not capped.`
+          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a FLEET MEMBER (a workspace with a coordinator) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. This applies to you ONLY if you are such a member — a coordinator (LEAD / OPS), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
           : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;

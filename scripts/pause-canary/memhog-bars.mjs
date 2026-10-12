@@ -55,6 +55,7 @@ export function hogKilledWhy(w) {
   if (!num(w.oomKillDelta)) return 'NOT MEASURED (no memory.events reading)';
   if (sw.killed < 1 || sw.survived !== 0) return `hog NOT killed: killed=${sw.killed} survived=${sw.survived}, oom_kill +${w.oomKillDelta}`;
   if (w.oomKillDelta < 1) return `the tool says killed=${sw.killed} but the kernel counted oom_kill +${w.oomKillDelta}`;
+  if (w.oomKillDelta !== sw.killed) return `the kernel counted oom_kill +${w.oomKillDelta} but the hog tool reaped killed=${sw.killed}: a kill the tool does not own (a stray, a second episode) or one it missed`;   // #324 review m7: the two counts must AGREE
   const named = (w.records ?? []).some((r) => r.level === 'hard' && typeof w.marker === 'string' && w.marker !== '' && hasMarker(r.command, w.marker));
   return named ? null : `killed (oom_kill +${w.oomKillDelta}) but no record names this worker's hog "${w.marker}": ${clip((w.records ?? []).map((r) => r.command ?? 'null').join(' | '))}`;
 }

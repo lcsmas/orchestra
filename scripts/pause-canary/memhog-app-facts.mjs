@@ -28,6 +28,9 @@ export function memhogAppEnvelope({ members, capGb, softGb, hogMb, capOn, waiver
   return null;
 }
 
+/** D-Q15 / review m5: a run that recorded a void reason (the 250 ms floor guard, the 5 s host sampler) is NEVER a PASS — even when the trip came after the last cycle's last wait. PASS → VOID; every other result is kept. */
+export const neverPassUnderVoid = (result, voidReason) => (voidReason && result === 'PASS' ? 'VOID' : result);
+
 /** D-Q15 (LEAD, ledger #329): the cap-ON packaged run takes BOTH heavy tokens (A and B) — no other heavy rig beside it — and starts from MemAvailable ≥ 11 GB (stricter than D-Q11's 9). Null = inside the rule, else why not. */
 export const CAP_ON_START_GB = 11;
 export function heavyTokensWhy({ heavy, capOn }) {
