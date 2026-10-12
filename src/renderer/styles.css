@@ -4176,6 +4176,9 @@ button.danger-primary:active {
 }
 .memory-banner.warn { background: rgba(255, 200, 87, 0.10); box-shadow: inset 3px 0 0 var(--yellow); }
 .memory-banner.crit { background: rgba(255, 107, 107, 0.12); box-shadow: inset 3px 0 0 var(--red); }
+.memory-banner.info { background: rgba(110, 168, 255, 0.10); box-shadow: inset 3px 0 0 var(--accent, #6ea8ff); }
+.memory-banner.info .memory-banner-ico { background: var(--accent, #6ea8ff); }
+.app-update-relaunch { padding: 3px 12px; font-size: 12px; flex: 0 0 auto; font-weight: 600; }
 .memory-banner-ico {
   width: 16px;
   height: 16px;

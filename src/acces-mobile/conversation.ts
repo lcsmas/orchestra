@@ -20,19 +20,28 @@ export const CONVERSATION_JS = `(function () {
   var handlers = [];
   var backoff = 1000;
   var ctrl = null;
+  // A stream that stops delivering bytes without ending (a half-open connection, a proxy that lost its upstream) would leave the page
+  // « en ligne » on a dead feed: main pings every 25 s, so 60 s of silence = dead — drop it and reconnect.
+  var STALL_MS = 60000;
   function onStream(fn) { handlers.push(fn); }
   function emit(m) { handlers.forEach(function (h) { h(m); }); }
   function connect() {
     if (!token()) return;
     if (ctrl) ctrl.abort();
     var c = new AbortController(); ctrl = c;
+    var lastByte = Date.now(), stalled = false;
+    var dog = setInterval(function () {
+      if (ctrl !== c) { clearInterval(dog); return; }
+      if (Date.now() - lastByte > STALL_MS) { clearInterval(dog); stalled = true; c.abort(); }
+    }, 5000);
     fetch('/api/stream', { headers: auth(), cache: 'no-store', signal: c.signal }).then(function (r) {
-      if (!r.ok || !r.body) throw new Error('status ' + r.status);
+      if (!r.ok || !r.body) { var er = new Error('status ' + r.status); er.status = r.status; throw er; }
       var healthy = false;
       var reader = r.body.getReader(); var dec = new TextDecoder(); var buf = '';
       function pump() {
         return reader.read().then(function (x) {
           if (x.done) throw new Error('ended');
+          lastByte = Date.now();
           buf += dec.decode(x.value, { stream: true });
           var i;
           while ((i = buf.indexOf('\\n\\n')) >= 0) {
@@ -51,9 +60,11 @@ export const CONVERSATION_JS = `(function () {
         });
       }
       return pump();
-    }).catch(function () {
-      if (c.signal.aborted) return;
-      emit({ t: 'down' });
+    }).catch(function (e) {
+      clearInterval(dog);
+      if (c.signal.aborted && !stalled) return; // replaced by a newer connect()
+      // a refused token (401) is told at once — the list then says « Jeton refusé » and offers pairing (not at the next 30 s poll)
+      emit({ t: 'down', status: e && e.status });
       setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000);
     });
   }
@@ -530,6 +541,8 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .scan{position:fixed;inset:0;z-index:50;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom))}
 .v1 .scan[hidden]{display:none}
 .v1 .pair[hidden]{display:none}
+.v1 .update{margin:10px 0 2px;padding:9px 12px;border-radius:12px;background:rgba(110,168,255,.10);box-shadow:inset 3px 0 0 var(--accent);color:var(--text);font-size:13.5px;line-height:1.4}
+.v1 .update[hidden]{display:none}
 .v1 .scan video{width:100%;max-height:70vh;object-fit:cover;border-radius:16px}
 .v1 .scan p{color:#ddd;font-size:15px;text-align:center}
 .v1 .toast{margin:0 0 8px;padding:10px 13px;border-radius:12px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.45);color:#f1c9c9;font-size:13.5px;line-height:1.3}

@@ -179,6 +179,8 @@ export type PreviewOf = (ws: Workspace) => MobileWorkspaceRow['preview'] | undef
 export interface MobileWorkspaceList {
   ok: true;
   workspaces: MobileWorkspaceRow[];
+  /** A newer Orchestra is installed on the computer (the running one keeps the old code until relaunched) — the phone says so. */
+  appUpdate?: { version: string | null };
 }
 
 /** Rank inside the list: en attente (blocked on the human) first, then non lu, then the rest. */

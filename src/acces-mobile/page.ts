@@ -25,6 +25,7 @@ export const INDEX_HTML = `<!doctype html>
 <div class="tt"><h1>Workspaces</h1><span id="live" class="live off" data-live="off"><i></i><span id="liveText">hors ligne</span></span></div>
 <div class="seg"><button type="button" id="segAll" class="on">Tout <b id="cntAll">0</b></button><button type="button" id="segMe">À traiter <b id="cntMe">0</b></button></div>
 <input type="checkbox" id="needsMe" hidden>
+<div id="appUpdate" class="update" role="status" hidden></div>
 </div>
 <div id="state">Chargement…</div>
 <div id="pair" class="pair" hidden>
@@ -251,7 +252,14 @@ export const APP_JS = `(function () {
         if (!r.ok) { setState('Orchestra injoignable.'); return null; }
         return r.json();
       })
-      .then(function (j) { if (j && j.ok) { last = j.workspaces; render(); } })
+      .then(function (j) {
+        if (!j || !j.ok) return;
+        // A newer Orchestra installed on the computer: say so (relaunching it is done there — a failed relaunch would cut this phone off).
+        var upd = document.getElementById('appUpdate'), u = j.appUpdate;
+        upd.hidden = !u;
+        upd.textContent = u ? 'Nouvelle version d’Orchestra installée' + (u.version ? ' (v' + u.version + ')' : '') + ' : relance-la sur l’ordinateur pour l’avoir ici.' : '';
+        last = j.workspaces; render();
+      })
       .catch(function () { setState('Orchestra injoignable.'); });
   }
   needsMe.addEventListener('change', render);
@@ -282,7 +290,7 @@ export const APP_JS = `(function () {
     route();
   });
   conv.onStream(function (m) {
-    if (m.t === 'down') return live(false);
+    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }
     live(true);
     if (m.t === 'workspaces' || m.t === 'resume') load();
   });

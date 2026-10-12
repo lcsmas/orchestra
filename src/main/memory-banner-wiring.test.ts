@@ -81,7 +81,7 @@ test('WIRING component + mounts: the banner reads the store slice, hides on the 
   assert.match(c, /role="status"/);
   assert.match(c, />\s*Masquer\s*</);
   const app = read('src/renderer/App.tsx');
-  assert.match(app, /<MemoryBanner \/>\s*<SetupBanner key=\{`setup-\$\{active\.id\}`\} workspace=\{active\} \/>/, 'with an active workspace: above the pane row, before the other banners');
+  assert.match(app, /<MemoryBanner \/>\s*(?:<AppUpdateBanner \/>\s*)?<SetupBanner key=\{`setup-\$\{active\.id\}`\} workspace=\{active\} \/>/, 'with an active workspace: above the pane row, before the other banners');
   assert.match(app, /\{loaded && !active && <MemoryBanner \/>\}/, 'without one: the same banner');
   assert.equal((app.match(/<MemoryBanner \/>/g) ?? []).length, 2);
   assert.match(app, /import \{ MemoryBanner \} from '\.\/components\/MemoryBanner';/);

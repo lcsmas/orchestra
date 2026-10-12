@@ -104,7 +104,9 @@ function serveProxy(getSock, login, seen = [], who = '?') {
     const headers = Object.fromEntries(Object.entries(inReq.headers).filter(([k]) => !k.toLowerCase().startsWith('tailscale-user-')));
     if (login) headers['tailscale-user-login'] = login;
     const line = { who, method: inReq.method, url: inReq.url, ua: String(inReq.headers['user-agent'] ?? ''), status: null }; seen.push(line); // the REQUEST LINE the server would see
-    const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { line.status = r.statusCode; inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); });
+    // an upstream that dies mid-response (the server killed / turned off) cuts the device's connection too, as tailscale serve does —
+    // a bare pipe would leave the phone's stream hanging open forever
+    const out = http.request({ socketPath: getSock(), path: inReq.url, method: inReq.method, headers }, (r) => { line.status = r.statusCode; inRes.writeHead(r.statusCode, r.headers); r.pipe(inRes); r.on('close', () => { if (!r.complete) inRes.destroy(); }); });
     out.on('error', () => { line.status = 502; inRes.writeHead(502); inRes.end(); });
     inReq.pipe(out);
   });
@@ -268,12 +270,18 @@ const env = { PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeH
   WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
   ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(cdpPort), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.accounts[0].configDir, LANG: 'C.UTF-8',
   SECRET_CANARY_FROM_MAIN: 'must-not-reach-the-server',
-  ANTHROPIC_BASE_URL: fakeApi.url, ANTHROPIC_API_KEY: 'sk-ant-fake-rig-key', HTTPS_PROXY: fakeApi.proxyUrl, HTTP_PROXY: fakeApi.proxyUrl, NO_PROXY: '127.0.0.1,localhost' };
+  ANTHROPIC_BASE_URL: fakeApi.url, ANTHROPIC_API_KEY: 'sk-ant-fake-rig-key', HTTPS_PROXY: fakeApi.proxyUrl, HTTP_PROXY: fakeApi.proxyUrl, NO_PROXY: '127.0.0.1,localhost',
+  // « Nouvelle version installée »: an unpackaged app has no AppImage — this stands for the installed one (update/* swaps it)
+  ORCHESTRA_INSTALLED_APP: path.join(world.d, 'installed', 'Orchestra.AppImage') };
+fs.mkdirSync(path.dirname(env.ORCHESTRA_INSTALLED_APP), { recursive: true });
+fs.writeFileSync(env.ORCHESTRA_INSTALLED_APP, '#!/bin/sh\necho the build this app started from\n', { mode: 0o755 });
 for (const k of ['HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
 sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
 const logFile = path.join(world.d, 'app.log'); const fd = fs.openSync(logFile, 'w');
 const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
 console.log(`app pid ${app.pid}, cdp ${cdpPort}, log ${logFile}`);
+let appPid = app.pid; // update/relaunch replaces the app
+fs.writeFileSync(path.join(world.d, 'app.pid'), String(app.pid));
 let SOCK = null;
 const seenLines = []; // every request line any stand-in forwarded (leak/* reads it)
 const ownerProxy = await serveProxy(() => SOCK, LOGIN, seenLines, 'owner');
@@ -690,6 +698,7 @@ try {
   const phoneKey = () => phone.eval(`localStorage.getItem(${JSON.stringify(KEY)})`);
   const phoneStatus = () => phone.eval(`fetch('/api/workspaces', { headers: { Authorization: 'Bearer ' + localStorage.getItem(${JSON.stringify(KEY)}) } }).then((r) => r.status)`);
   const beforeRegen = { stored: await phoneKey(), status: await phoneStatus(), direct: (await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${TOKEN}` })).status };
+  const seenAtRegen = seenLines.length;
   await cdp.clickSel('[data-am-regenerate]');
   await waitFor(() => fs.readFileSync(TOKEN_FILE, 'utf8').trim() !== TOKEN, 10000, 'a new token on disk');
   const NEW = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
@@ -705,7 +714,11 @@ try {
   const dec2 = decodeQr(q2.clip);
   saveShot('settings-qr-regenerated.png', q2.full);
   clause('regen/qr-follows-the-new-token', dec2 === urlFor(NEW) && dec2 !== dec1 && q2.r.inView, `after regeneration jsQR on the rendered QR ⇒ ${dec2 === urlFor(NEW) ? 'the NEW url' : JSON.stringify(dec2)}; differs from the first QR's content: ${dec2 !== dec1}`);
-  await waitFor(async () => /Jeton refusé/.test(await phone.eval(`document.getElementById('state').textContent`)), 15000, 'the phone to notice the refused token');
+  await waitFor(async () => /Jeton refusé/.test(await phone.eval(`document.getElementById('state').textContent`)), 15000, 'the phone to notice the refused token').catch(async (e) => {
+    const dbg = await phone.eval(`({ href: location.href, state: document.getElementById('state').textContent, homeHidden: document.getElementById('home').hidden, rows: document.querySelectorAll('li[data-id]').length, live: document.getElementById('live').dataset.live, upd: !!document.getElementById('appUpdate') })`).catch((x) => String(x));
+    const lines = seenLines.slice(seenAtRegen).map((l) => `${l.who} ${l.method} ${l.url.split('?')[0]} ${l.status}`);
+    throw new Error(`${e.message} — phone: ${JSON.stringify(dbg)}; stand-in lines since regen: ${JSON.stringify(lines)}`);
+  });
   const refusedText = await phone.eval(`document.getElementById('state').textContent`);
   saveShot('phone-token-refused.png', await phone.shot());
   const shown = await cdp.eval(`document.querySelector('[data-am-url]').textContent`);
@@ -792,9 +805,66 @@ try {
   await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
   clause('supervise/restart-after-kill', (await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${NEW}` })).status === 200, `SIGKILL pid ${pidNow} -> restarted as pid ${pidOn3} (stale socket replaced; the regenerated token still the one it accepts)`);
 
-  // app crash ⇒ the server exits (no orphan listening)
+  // « Nouvelle version installée » (Lucas 2026-10-12): a release replaces the installed app on disk; the running one keeps its old code.
+  // Swap it the way release.sh --install does (sidecar from the tmp file's inode, then rename) ⇒ the desktop banner + the phone say so;
+  // « Plus tard » hides it until the NEXT install; « Relancer » quits, then the installed app starts once the old one is gone — here
+  // that « installed app » re-launches this very build, so the relaunch is a REAL one (same CDP port, same ORCHESTRA_HOME).
+  const INSTALLED = env.ORCHESTRA_INSTALLED_APP;
+  const relaunchRecord = path.join(world.d, 'relaunch.record'), app2PidFile = path.join(world.d, 'app2.pid');
+  // the relaunched app gets its OWN debug port: right after the old app exits its port can still be held (Chromium: « bind() failed:
+  // Address already in use » — rig-only, production opens no debug port)
+  const cdpPort2 = await freePort();
+  const installFake = (version) => {
+    const tmp = `${INSTALLED}.tmp`;
+    fs.writeFileSync(tmp, `#!/bin/sh\n# fake installed Orchestra ${version}\nOLD=$(cat '${path.join(world.d, 'app.pid')}')\nif kill -0 "$OLD" 2>/dev/null; then echo "old-alive $#" > '${relaunchRecord}'; else echo "old-gone $#" > '${relaunchRecord}'; fi\necho $$ > '${app2PidFile}'\nexport ORCHESTRA_DEBUG_PORT=${cdpPort2}\nexec '${path.join(APP_DIR, 'node_modules/electron/dist/electron')}' '${APP_DIR}' --ozone-platform=wayland >> '${path.join(world.d, 'app2.log')}' 2>&1\n`, { mode: 0o755 });
+    const st = fs.statSync(tmp);
+    fs.writeFileSync(`${INSTALLED}.version.tmp`, `${version} ${st.ino} ${st.size}\n`); fs.renameSync(`${INSTALLED}.version.tmp`, `${INSTALLED}.version`);
+    fs.renameSync(tmp, INSTALLED);
+  };
+  const deskBanner = `(() => { const b = document.querySelector('[data-app-update]'); return b ? { v: b.dataset.appUpdate, text: b.textContent } : null; })()`;
+  if (await cdp.eval(`!!document.querySelector('.acces-mobile-settings .modal-actions .btn')`)) await cdp.clickSel('.acces-mobile-settings .modal-actions .btn'); // « Done »
+  await waitFor(() => cdp.eval(`!document.querySelector('.modal-backdrop')`), 5000, 'the settings dialog closed');
+  const before = await cdp.eval(deskBanner);
+  const phoneBefore = await phone.eval(`(() => { const u = document.getElementById('appUpdate'); return u ? !u.hidden : 'absent'; })()`);
+  installFake('0.5.999');
+  const D1 = await waitFor(() => cdp.eval(deskBanner), 15000, 'the desktop banner after an install').catch(() => null);
+  saveShot('desktop-app-update.png', await cdp.shot());
+  clause('update/desktop-banner', before === null && D1?.v === '0.5.999' && /Nouvelle version installée \(v0\.5\.999\)/.test(D1.text) && /Relancer/.test(D1.text), `before the install: ${JSON.stringify(before)}; after: ${JSON.stringify(D1)}`);
+  await phone.send('Page.reload');
+  const P1 = await waitFor(() => phone.eval(`(() => { const u = document.getElementById('appUpdate'); return u && !u.hidden ? u.textContent : null; })()`), 20000, 'the phone banner').catch(() => null);
+  saveShot('phone-app-update.png', await phone.shot());
+  clause('update/phone-banner', phoneBefore === false && /Nouvelle version d’Orchestra installée \(v0\.5\.999\)/.test(P1 ?? '') && !(await phone.eval(`!!document.querySelector('#appUpdate button')`)), `phone before: shown=${phoneBefore}; after: « ${P1} » (no relaunch button on the phone)`);
+  // a trusted click that must land ON the control: the Accès mobile dialog left open by regen/* would swallow it (« Done » closes it)
+  const clickDesk = async (sel) => {
+    const c = await cdp.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, on: !!(hit && hit.closest(${JSON.stringify(sel)})) }; })()`);
+    if (!c.on) throw new Error(`the click on ${sel} would not land on it (covered)`);
+    await cdp.click(c.x, c.y); await sleep(300);
+  };
+  await clickDesk('[data-app-update-later]');
+  const afterLater = await cdp.eval(deskBanner);
+  installFake('0.5.1000');
+  const D2 = await waitFor(() => cdp.eval(`(() => { const b = document.querySelector('[data-app-update]'); return b && b.dataset.appUpdate === '0.5.1000' ? b.dataset.appUpdate : null; })()`), 15000, 'the banner after the next install').catch(() => null);
+  clause('update/later-until-next-install', afterLater === null && D2 === '0.5.1000', `« Plus tard » ⇒ ${afterLater === null ? 'hidden' : 'STILL SHOWN'}; the next install (0.5.1000) ⇒ ${D2 ? 'shown again' : 'not shown'}`);
+  // « Relancer » (trusted click): the old app exits, its phone server with it, then the installed app starts — the record says the
+  // old one was already gone — and boots: same page, same phone server path, no banner (it started FROM the current file).
+  const oldPid = appPid;
+  try { fs.unlinkSync(relaunchRecord); } catch {}
+  await clickDesk('[data-app-update-relaunch]');
   cdp.close(); cdp = null;
-  process.kill(app.pid, 'SIGKILL');
+  await waitFor(() => { try { process.kill(oldPid, 0); return false; } catch { return true; } }, 30000, 'the old app gone');
+  const rec = await waitFor(() => (fs.existsSync(relaunchRecord) ? fs.readFileSync(relaunchRecord, 'utf8').trim() : null), 30000, 'the installed app started');
+  appPid = Number(await waitFor(() => (fs.existsSync(app2PidFile) ? fs.readFileSync(app2PidFile, 'utf8').trim() : null), 10000, 'the new app pid'));
+  const target2 = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${cdpPort2}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the relaunched app page').catch(() => null);
+  if (target2) { cdp = await Cdp.connect(target2.webSocketDebuggerUrl); await cdp.send('Page.enable'); }
+  const booted = target2 ? await waitFor(() => cdp.eval(`!!document.querySelector('[data-am-open]')`), 60000, 'the relaunched app UI').catch(() => false) : false;
+  const bannerAfter = booted ? await cdp.eval(deskBanner) : 'n/a';
+  const serverBack = await waitFor(() => serverPids(TOKEN_FILE).length > 0 && sockConnects(SOCK), 30000, 'the phone server back').catch(() => false);
+  clause('update/relaunch', rec === 'old-gone 0' && appPid !== oldPid && booted && bannerAfter === null && !!serverBack, `trusted « Relancer » ⇒ old app ${oldPid} exited, the installed app started after it (« ${rec} »), new app ${appPid} booted=${booted}, banner after boot ${JSON.stringify(bannerAfter)}, phone server back=${!!serverBack}`);
+  try { process.kill(appPid, 0); } catch { throw new Error('the relaunched app is not running'); }
+
+  // app crash ⇒ the server exits (no orphan listening)
+  cdp?.close(); cdp = null;
+  process.kill(appPid, 'SIGKILL');
   await waitFor(() => serverPids(TOKEN_FILE).length === 0, 15000, 'server gone after app SIGKILL').catch(() => null);
   const left = serverPids(TOKEN_FILE);
   const stillServing = await sockConnects(SOCK);
@@ -811,6 +881,7 @@ try {
   for (const p of [ownerProxy, colleagueProxy, taggedProxy]) p.srv.close();
   if (SOCK && fs.existsSync(SOCK)) { try { fs.unlinkSync(SOCK); } catch {} }
   for (const p of [chrome, app]) { if (p?.pid) { try { process.kill(-p.pid, 'SIGKILL'); } catch {} } }
+  if (appPid !== app.pid) { try { process.kill(-appPid, 'SIGKILL'); } catch {} try { process.kill(appPid, 'SIGKILL'); } catch {} }
   // keepers + CLIs are detached from the app: select them by identity (this rig's ORCHESTRA_HOME in their environ)
   for (const pid of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
     try { if (environOf(pid).includes(`ORCHESTRA_HOME=${world.ohome}`) && +pid !== process.pid) process.kill(+pid, 'SIGKILL'); } catch {}

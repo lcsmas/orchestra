@@ -9,6 +9,7 @@ import type { HumanGateView, HumanGateResolveResult } from './human-gates.ts';
 import type { PauseMode } from './pause-lifecycle.ts';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
 import type { MemoryBannerState } from './memory-banner.ts';
+import type { AppUpdateState } from './app-update.ts';
 import type { WatchersStatus } from './watcher-status.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -173,6 +174,10 @@ export interface OrchestraAPI {
   memoryBanner: () => Promise<MemoryBannerState>;
   /** Live push: the WHOLE banner state, only when it changed (revision-stamped: drop an older one). Returns an unsubscribe fn. */
   onMemoryBanner: (cb: (state: MemoryBannerState) => void) => () => void;
+  /** « Nouvelle version installée »: the pull, the push on change, and the relaunch into the installed app. */
+  appUpdateState: () => Promise<AppUpdateState>;
+  onAppUpdate: (cb: (state: AppUpdateState) => void) => () => void;
+  relaunchInstalled: () => Promise<{ ok: boolean; error?: string }>;
   /** Directory-watcher health (#330): every ARMED watcher's state, for the initial paint / a reload. NEVER rejects. */
   watchersStatus: () => Promise<WatchersStatus>;
   /** Live push: the whole watcher status, ONLY when the degraded set changes (a watcher degraded, recovered, or was stopped while degraded). Returns an unsubscribe fn. */

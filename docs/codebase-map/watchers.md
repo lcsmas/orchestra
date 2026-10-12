@@ -22,7 +22,7 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 - **Silent detach** (`inodeOf` + `healthMs`): an inotify watch on a directory that is deleted and recreated never says so. Every 30 s a healthy watch is compared with its directory's inode; a changed inode (`ESTALE`) or a missing directory (`ENOENT`) degrades it, and it re-arms on the new directory. The inode is sampled BEFORE the watch is armed (a swap in between fails safe: one spurious re-arm). LIMIT of the inode check alone: a delete+recreate that reuses the same inode number (ext4 often does) is not detected by it, and a swap inside the 30 s window is seen only at the next check. THE DIRECTORY'S OWN REMOVAL/RENAME is therefore also caught by the kernel's event (#330 review m1): `fs.watch` emits a `rename` named like the watched directory (measured on btrfs and tmpfs; twice), the watch is dead from then on — the module re-arms at once (`ESTALE`), BEFORE the site's filter, without waiting for the 30 s check; the event is also sent for a chmod/touch/xattr of the directory itself or a child named like it, so before degrading the module PROVES the directory is the same one (`birthOf` + `inodeOf`: same inode AND the same recorded birth time ⇒ ignore, the event flows on to the site; anything unproven — missing, other inode, reused inode with a new birth time, a filesystem that records no birth time — degrades, because a missed removal is silent staleness). A watch path ending in `/` gets the EMPTY name from libuv: both names match (review m1/m2). A RENAMED PARENT is the pure inode-check case (no event about the directory).
 - `stop()` cancels every retry and the health timer and closes the watch; idempotent; `start()` after `stop()` is a no-op.
 
-## The seven sites (each keeps its OWN fallback; the registry lists a watcher only from `start()` to `stop()`)
+## The sites (each keeps its OWN fallback; the registry lists a watcher only from `start()` to `stop()`)
 | name | label (the human's word) | file | fallback while degraded | catch-up on recovery |
 |---|---|---|---|---|
 | `bus-wake` | Réveils | `bus-wake.ts:1014` | 60 s sweep | `sweepBusWake()` |
@@ -32,6 +32,7 @@ Every directory watch of the main process goes through **`createWatcher()`** (`s
 | `inbox-tray` | Inbox | `inbox-tray.ts:315` | counts sent on each mutation and at mount | `broadcastInbox` for every live workspace |
 | `events-spool` | Activité des agents | `events-spool.ts:396` | the 1 s poll | `drainAll` |
 | `login-watch` | Détection de connexion | `account-usage.ts:140` | 1.5 s poll (`persistent:false`; registered only while a login is watched) | `check` |
+| `app-update` | Nouvelle version | `app-update-host.ts` (`startAppUpdate`) — the installed AppImage's directory; only when the app runs from one | 60 s poll | `check` |
 
 `ensureDir` (mkdir before EVERY arm, retries included — a deleted directory is recreated and the watch heals) only where the old block did it at start: pause-ui, human-gates, inbox-tray. The bus-wake / pause-trap watches never CREATE the bus directory — a missing one is `ENOENT` → degraded → recovers when the bus opens.
 

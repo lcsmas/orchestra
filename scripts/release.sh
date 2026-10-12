@@ -456,6 +456,10 @@ if [ "$CI_ONLY" = 0 ]; then
     say "Install local build → $INSTALL_PATH"
     run "cp '$APPIMAGE' '$INSTALL_PATH.tmp'"
     run "chmod +x '$INSTALL_PATH.tmp'"
+    # The running Orchestra watches its AppImage and says « Nouvelle version installée (vX) — Relancer ». The version rides a
+    # sidecar `<version> <inode> <size>` of the file it describes: written BEFORE the swap from the tmp file (a rename keeps the
+    # inode), so the app never pairs a new binary with an old number (src/shared/app-update.ts parseVersionSidecar).
+    run "printf '%s %s %s\\n' '$NEW' \"\$(stat -c %i '$INSTALL_PATH.tmp')\" \"\$(stat -c %s '$INSTALL_PATH.tmp')\" > '$INSTALL_PATH.version.tmp' && mv -f '$INSTALL_PATH.version.tmp' '$INSTALL_PATH.version'"
     run "mv -f '$INSTALL_PATH.tmp' '$INSTALL_PATH'"
     # Launchers (rofi, GNOME, …) resolve the desktop entry's `Icon=orchestra`
     # through the XDG icon theme, not the AppImage's embedded icon — install it

@@ -263,6 +263,7 @@ import { startMemoryPause, stopMemoryPause } from './pause-memory-host';
 import { keeperResident } from './admission-wake';
 import { startMemoryAlert, stopMemoryAlert } from './memory-alert-host';
 import { registerMemoryBannerIpc, startMemoryBanner, stopMemoryBanner } from './memory-banner-host';
+import { registerAppUpdateIpc, startAppUpdate, stopAppUpdate } from './app-update-host';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -640,6 +641,8 @@ async function createMainWindow() {
   startMemoryAlert();
   // Memory banner (#289, D5 D-pick3): the state the app's banner shows (Admission held / memory Pause in effect), pushed on change. After the memory Pause: its runs are written on the same guard edge.
   startMemoryBanner();
+  // « Nouvelle version installée »: the installed AppImage replaced on disk ⇒ the app (and the phone) say a relaunch picks it up.
+  startAppUpdate();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
   // hibernated agent restores on the next keystroke/send/activation.
@@ -831,6 +834,7 @@ registerStaleRunSource(listStaleRunWorkspaces);
 // #257 — the fleet Pause UI channels (`pause:*`): ONE read + the three shipped writers, each marked in PAUSE_UI_IPC_CHANNELS. NOT through registerBusPaneIpc() (read-only).
 registerPauseUiIpc();
 registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
+registerAppUpdateIpc(); // « Nouvelle version installée »: pull + relaunch (ONCE, module scope)
 registerWatchersIpc(); // #330 — the directory-watcher health pull channel (ONCE, module scope)
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
@@ -948,6 +952,7 @@ function shutdownSubsystems(): void {
   stopAdmission();
   stopDockerHold();
   stopMemoryBanner();
+  stopAppUpdate();
   stopMemoryAlert();
   stopMemoryPause();
   stopMemoryGuard();

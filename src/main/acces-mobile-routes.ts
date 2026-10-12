@@ -3,6 +3,7 @@
 // HUMAN's origin (a fleet-pause bypass by decision), so it must be reachable only from the process that checked the Tailscale
 // identity + token (#338 review M1).
 
+import { appUpdateState } from './app-update-host';
 import { store } from './store';
 import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-sdk';
 import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
@@ -34,7 +35,14 @@ export const mobileRpcHandlers: RpcHandlers = {
     switch (route) {
       case '/mobile/workspaces':
         // Every non-archived workspace, every account.
-        return { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts, previewOfLive) };
+      {
+        const update = appUpdateState();
+        return {
+          ok: true,
+          workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts, previewOfLive),
+          ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),
+        };
+      }
       case '/mobile/conversation': {
         // One workspace's conversation, folded + projected for the phone (account-aware history).
         const ws = liveWorkspace(msg.id);
