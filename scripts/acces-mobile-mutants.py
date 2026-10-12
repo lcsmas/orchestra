@@ -17,6 +17,7 @@ PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
 WIRING = 'src/main/acces-mobile-wiring.test.ts'
+FEEDCORE = 'src/main/acces-mobile-feed-core.test.ts'
 CLOSERACE = 'src/acces-mobile/conversation-close-race.test.ts'
 MUTANTS = [
     # (id, file, original, replacement, expected) — expected 'RED' (must be killed) or 'EQUIV' (a second guard covers it)
@@ -234,6 +235,17 @@ MUTANTS = [
     ('CV4-abandoned-refresh-moves-the-throttle-clock', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n      lastFetch = Date.now();\n', '      lastFetch = Date.now();\n      if (!id) { inflight = false; again = false; return; }\n', 'RED', CLOSERACE),
     ('CV5-stale-success-draws-into-the-next-conversation', 'src/acces-mobile/conversation.ts', "          if (id !== current) return;\n          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", "          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", 'RED', CLOSERACE),
     ('CV6-late-failure-paints-the-next-conversation', 'src/acces-mobile/conversation.ts', '.catch(function () { if (id !== current) return; var stEl', '.catch(function () { var stEl', 'RED', CLOSERACE),
+    ('FH1-empty-history-trusted', 'src/main/acces-mobile-feed-core.ts', '  e.suspect = lagging || e.session.messages.length === 0;\n  if (e.suspect) scheduleEmptyHeal(id, e);\n  else e.emptyRetries = 0;\n', '  e.suspect = false;\n  e.emptyRetries = 0;\n', 'RED', FEEDCORE),
+    ('FH2-heal-announces-the-same-version', 'src/main/acces-mobile-feed-core.ts', '    e.version++; // a CHANGED version: the phone only refetches on a version it does not have\n', '', 'RED', FEEDCORE),
+    ('FH3-heal-unbounded', 'src/main/acces-mobile-feed-core.ts', 'if (e.emptyTimer || e.emptyRetries >= EMPTY_RETRY_MAX) return;', 'if (e.emptyTimer) return;', 'EQUIV', FEEDCORE),  # the retry budget is also checked at the read-time reload and on reloadPending: the timer's own check is the third guard
+    ('FH5-dropped-entry-keeps-its-timer', 'src/main/acces-mobile-feed-core.ts', '  if (e?.emptyTimer) clearTimeout(e.emptyTimer);\n', '', 'RED', FEEDCORE),
+    ('FH6-empty-conversation-never-re-read', 'src/main/acces-mobile-feed-core.ts', '(e.reloadPending || (e.suspect && e.session.messages.length === 0 && e.emptyRetries < EMPTY_RETRY_MAX))', '(e.reloadPending)', 'RED', FEEDCORE),
+    ('FH7-lagging-disk-replaces-the-live-fold', 'src/main/acces-mobile-feed-core.ts', '  const lagging = e.suspect && next.messages.length < e.session.messages.length;\n', '  const lagging = false;\n', 'RED', FEEDCORE),
+    ('FH8-turn-end-does-not-re-read-a-suspect-entry', 'src/main/acces-mobile-feed-core.ts', '(e.missedWhileLoading || e.suspect)) e.reloadPending = true;', '(e.missedWhileLoading)) e.reloadPending = true;', 'RED', FEEDCORE),
+    ('FH9-retry-timer-never-clears', 'src/main/acces-mobile-feed-core.ts', '    e.emptyTimer = null;\n    e.emptyRetries++;', '    e.emptyRetries++;', 'RED', FEEDCORE),
+    ('FH10-retry-budget-one', 'src/main/acces-mobile-feed-core.ts', 'export const EMPTY_RETRY_MAX = 5;', 'export const EMPTY_RETRY_MAX = 1;', 'RED', FEEDCORE),
+    ('FH11-re-read-mid-turn', 'src/main/acces-mobile-feed-core.ts', 'if (!e.loading && !running(id, e) && (e.reloadPending ||', 'if (!e.loading && (e.reloadPending ||', 'RED', FEEDCORE),
+    ('FH12-rejected-re-read-retries-forever', 'src/main/acces-mobile-feed-core.ts', '  e.reloadPending = lagging && e.emptyRetries < EMPTY_RETRY_MAX;\n', '  e.reloadPending = lagging;\n', 'RED', FEEDCORE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]

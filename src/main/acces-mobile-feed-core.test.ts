@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transcriptToEvents } from '../shared/agent-transcript.ts';
-import { createMobileFeed, MAX_CACHED, type FeedMessage } from './acces-mobile-feed-core.ts';
+import { createMobileFeed, EMPTY_RETRY_MAX, MAX_CACHED, type FeedMessage } from './acces-mobile-feed-core.ts';
 import type { AgentEvent } from '../shared/types.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -14,7 +14,7 @@ const SAMPLE = fs.readFileSync(path.join(root, 'scripts/fixtures/payloads/acces-
 const eventsOf = (lines: string[], seq: number): AgentEvent[] => transcriptToEvents(lines.join('\n'), { seq, now: () => 1_700_000_000_000 }, 'claude-opus-5-5');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function rig(history: (id: string) => Promise<AgentEvent[]>) {
+function rig(history: (id: string) => Promise<AgentEvent[]>, emptyRetryMs = 5, isRunning?: (id: string) => boolean) {
   const taps = new Set<(c: string, a: unknown[]) => void>();
   const loads: string[] = [];
   const warns: string[] = [];
@@ -30,6 +30,8 @@ function rig(history: (id: string) => Promise<AgentEvent[]>) {
     warn: (m) => warns.push(m),
     announceMs: 5,
     pingMs: 60_000,
+    emptyRetryMs,
+    ...(isRunning ? { isRunning } : {}),
   });
   const broadcast = (channel: string, ...args: unknown[]) => taps.forEach((t) => t(channel, args));
   return { feed, taps, loads, warns, broadcast };
@@ -182,4 +184,141 @@ test('sweep: an open stream keeps the conversations; without one, idle ones are 
   feed.sweep();
   assert.deepEqual(feed.mobileFeedState().cached, [], 'dropped once nobody streams');
   assert.equal(feed.mobileFeedState().tapped, false, 'and the tap released');
+});
+
+// ---- #375: a workspace the phone opens right after it was launched — its transcript may not be on disk yet ----
+
+test('#375 must-FAIL on the unfixed feed: an EMPTY history (the transcript was not on disk yet) is not trusted — the phone is told, and the next read heals', async () => {
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE.slice(0, 1), 1_000_000)));
+  const msgs: FeedMessage[] = [];
+  const off = r.feed.subscribeMobileFeed((m) => msgs.push(m));
+  const first = await r.feed.getMobileConversation('w1');
+  assert.deepEqual(first.lines, [], 'control: the first read found nothing');
+  await sleep(60); // the heal timer fires (5 ms) and the announcement is coalesced (5 ms)
+  const told = msgs.filter((m): m is Extract<FeedMessage, { t: 'conv' }> => m.t === 'conv');
+  assert.ok(told.length >= 1 && told[0].v > first.version, `the phone must be told with a NEW version (it ignores the one it has): ${JSON.stringify(told)} vs ${first.version}`);
+  const healed = await r.feed.getMobileConversation('w1');
+  assert.deepEqual(healed.lines.map((l) => l.kind), ['user'], 'the re-read found the transcript');
+  assert.equal(r.loads.length, 2);
+  off();
+});
+
+test('#375: the heal is BOUNDED — a conversation that stays empty is re-read a few times, then left alone', async () => {
+  const r = rig(async () => []);
+  const msgs: FeedMessage[] = [];
+  let v = -1;
+  const off = r.feed.subscribeMobileFeed(async (m) => {
+    if (m.t === 'conv' && m.v !== v) {
+      v = m.v;
+      msgs.push(m);
+      const c = await r.feed.getMobileConversation('w1'); // the phone refetches on a new version
+      v = c.version;
+    }
+  });
+  await r.feed.getMobileConversation('w1');
+  await sleep(400);
+  const loadsAfter = r.loads.length;
+  assert.ok(loadsAfter >= 2 && loadsAfter <= 6, `re-read a few times (got ${loadsAfter})`);
+  await sleep(200);
+  assert.equal(r.loads.length, loadsAfter, 'and then quiet: no endless polling of an empty workspace');
+  off();
+});
+
+test('#375: a NON-empty history is never re-read on a timer (the live fold stays authoritative)', async () => {
+  const r = rig(async () => eventsOf(SAMPLE.slice(0, 1), 1_000_000));
+  const msgs: FeedMessage[] = [];
+  const off = r.feed.subscribeMobileFeed((m) => msgs.push(m));
+  await r.feed.getMobileConversation('w1');
+  await sleep(80);
+  assert.equal(msgs.filter((m) => m.t === 'conv').length, 0, 'no announcement from a timer');
+  await r.feed.getMobileConversation('w1');
+  assert.equal(r.loads.length, 1, 'one read');
+  off();
+});
+
+test('#375: an entry evicted before its heal timer fires announces nothing afterwards', async () => {
+  const r = rig(async (id) => (id === 'w-empty' ? [] : eventsOf(SAMPLE.slice(0, 1), 1_000_000)), 40);
+  const msgs: FeedMessage[] = [];
+  const off = r.feed.subscribeMobileFeed((m) => msgs.push(m));
+  await r.feed.getMobileConversation('w-empty');
+  for (let i = 0; i < MAX_CACHED; i++) await r.feed.getMobileConversation(`w${i}`); // evicts w-empty (the oldest)
+  await sleep(120);
+  assert.deepEqual(msgs.filter((m) => m.t === 'conv' && m.id === 'w-empty'), [], 'a dropped conversation stays silent');
+  off();
+});
+
+test('#375 must-FAIL on the first heal: once LIVE events have filled an empty conversation, a lagging disk read never SHRINKS the live fold (the rig\'s conv/live-turn lost its user line)', async () => {
+  // the workspace starts EMPTY, the human sends a message, the real turn's events arrive live — the CLI has not written its transcript
+  // yet when the feed re-reads, so a re-read that replaced the live fold would drop the user line it already has.
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE.slice(1), 1_000_000)), 20); // a lagging disk: later reads miss the first line
+  const off = r.feed.subscribeMobileFeed(() => {});
+  const first = await r.feed.getMobileConversation('w1');
+  assert.deepEqual(first.lines, [], 'control: opened empty');
+  for (const e of eventsOf(SAMPLE, 2_000_000)) r.broadcast('agent:event', 'w1', e); // the live turn, complete (ends with its turn end)
+  let last = -1;
+  let stable = 0;
+  for (let i = 0; i < 200 && stable < 8; i++) {
+    const c = await r.feed.getMobileConversation('w1'); // the phone keeps reading while the heal timers fire
+    assert.deepEqual(c.lines.map((l) => l.kind), ['user', 'tool', 'assistant'], `read ${i}: the live fold is what the phone gets, user line included`);
+    if (r.loads.length === last) stable++;
+    else {
+      stable = 0;
+      last = r.loads.length;
+    }
+    await sleep(15);
+  }
+  assert.ok(last >= 2, `control: a re-read WAS attempted (the lagging disk was offered and refused) — got ${last}`);
+  assert.ok(stable >= 8, 'and the attempts STOP: a disk that never catches up is not polled forever (the retry budget is spent)');
+  off();
+});
+
+test('#375 must-FAIL on the first heal (review MAJOR): a SLOW first turn — the phone read an empty history while the turn runs; at the turn end the conversation is re-read and the user line the live fold never saw appears', async () => {
+  let running = true;
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE, 1_000_000)), 15, () => running); // the transcript is complete on the 2nd read
+  const off = r.feed.subscribeMobileFeed(() => {});
+  const first = await r.feed.getMobileConversation('w1');
+  assert.deepEqual(first.lines, [], 'control: the first read found nothing');
+  await sleep(60); // the heal timer fires while the turn RUNS: the phone re-reads, nothing is re-read mid-turn
+  await r.feed.getMobileConversation('w1');
+  assert.equal(r.loads.length, 1, 'control: no disk re-read mid-turn (it would overlap the events still arriving)');
+  for (const e of eventsOf(SAMPLE.slice(1), 2_000_000)) r.broadcast('agent:event', 'w1', e); // the turn streams in WITHOUT its user echo (emitted before the feed was armed)
+  running = false; // …and ends
+  const after = await r.feed.getMobileConversation('w1');
+  assert.deepEqual(after.lines.map((l) => l.kind), ['user', 'tool', 'assistant'], 'the turn end re-folded from the complete transcript: the prompt is back');
+  off();
+});
+
+test('#375: the heal is bounded to EXACTLY EMPTY_RETRY_MAX reads in all (the first + the retries), each retry announcing a new version', async () => {
+  const r = rig(async () => [], 10);
+  const seen: number[] = [];
+  let v = -1;
+  const off = r.feed.subscribeMobileFeed(async (m) => {
+    if (m.t === 'conv' && m.v !== v) {
+      seen.push(m.v);
+      v = (await r.feed.getMobileConversation('w1')).version;
+    }
+  });
+  v = (await r.feed.getMobileConversation('w1')).version;
+  await sleep(500);
+  assert.equal(r.loads.length, EMPTY_RETRY_MAX, 'the first read + EMPTY_RETRY_MAX - 1 re-reads (the last announcement finds the budget spent)');
+  assert.equal(seen.length, EMPTY_RETRY_MAX, 'one announcement per retry, each a version the phone did not have');
+  off();
+});
+
+test('#375: an empty conversation is NOT re-read while its turn runs (the retry waits for the turn end); it is once the turn is over', async () => {
+  let running = true;
+  const r = rig(async () => [], 10, () => running);
+  const off = r.feed.subscribeMobileFeed(() => {});
+  await r.feed.getMobileConversation('w1');
+  await sleep(40);
+  await r.feed.getMobileConversation('w1');
+  await r.feed.getMobileConversation('w1');
+  assert.equal(r.loads.length, 1, 'no re-read while running');
+  running = false;
+  await r.feed.getMobileConversation('w1');
+  assert.equal(r.loads.length, 2, 'the first read after the turn re-reads');
+  off();
 });
