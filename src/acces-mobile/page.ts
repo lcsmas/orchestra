@@ -2,6 +2,7 @@
 // Design V1 « Boîte de réception » (#335 pick, applied in #340): styles in conversation.ts (CONVERSATION_CSS, one stylesheet).
 
 import { MANIFEST_ICONS } from './icons.ts';
+import { pairingTokenFrom } from '../shared/acces-mobile.ts';
 
 export const INDEX_HTML = `<!doctype html>
 <html lang="fr">
@@ -26,6 +27,13 @@ export const INDEX_HTML = `<!doctype html>
 <input type="checkbox" id="needsMe" hidden>
 </div>
 <div id="state">Chargement…</div>
+<div id="pair" class="pair" hidden>
+<p id="pairWhy"></p>
+<button type="button" id="pairScan" class="btn pair-scan">Scanner le QR code</button>
+<form id="pairForm" class="pair-form"><input id="pairInput" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="…ou colle le lien d’appairage"><button type="submit" class="btn2">OK</button></form>
+<div id="pairErr" class="pair-err" role="alert"></div>
+</div>
+<div id="scan" class="scan" hidden><video id="scanVideo" playsinline muted autoplay></video><p id="scanHint">Vise le QR code : Orchestra → Réglages → Accès mobile.</p><button type="button" id="scanClose" class="btn2">Annuler</button></div>
 <div id="list" class="scroll"></div>
 </div>
 <div id="conv" class="col" hidden></div>
@@ -49,6 +57,74 @@ export const APP_JS = `(function () {
   }
   pairFromHash();
   var token = null;
+  // In-app pairing (Lucas 2026-10-12): an iOS home-screen app has ITS OWN storage — the pairing done in Safari never reaches it, and
+  // it opens at start_url without the fragment. So an unpaired (or refused) page pairs itself: scan the QR with the camera, or paste.
+  var tokenFrom = (${pairingTokenFrom.toString()});
+  var pairEl = document.getElementById('pair'), pairWhy = document.getElementById('pairWhy'), pairErr = document.getElementById('pairErr');
+  var pairInput = document.getElementById('pairInput'), scanEl = document.getElementById('scan'), scanVideo = document.getElementById('scanVideo');
+  var scanHint = document.getElementById('scanHint');
+  var standalone = navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  function showPair(on) {
+    pairEl.hidden = !on;
+    if (on) pairWhy.textContent = standalone
+      ? 'L’app de l’écran d’accueil a son propre stockage : l’appairage fait dans Safari ne la suit pas. Scanne le QR code ici, une fois.'
+      : 'Scanne le QR code : Orchestra → Réglages → Accès mobile.';
+  }
+  function adopt(tok) {
+    try { localStorage.setItem(KEY, tok); } catch (e) {}
+    token = tok; pairErr.textContent = ''; pairInput.value = ''; showPair(false);
+    conv.connect(); route();
+  }
+  var decoder = null;
+  function loadDecoder() {
+    if (typeof window.jsQR === 'function') return Promise.resolve();
+    if (!decoder) decoder = new Promise(function (ok, ko) {
+      var sc = document.createElement('script'); sc.src = '/jsqr.js';
+      sc.onload = function () { ok(); }; sc.onerror = function () { decoder = null; ko(new Error('decoder')); };
+      document.head.appendChild(sc);
+    });
+    return decoder;
+  }
+  var scanStream = null, scanTimer = null;
+  function stopScan() {
+    if (scanTimer) clearInterval(scanTimer); scanTimer = null;
+    if (scanStream) scanStream.getTracks().forEach(function (t) { t.stop(); });
+    scanStream = null; scanVideo.srcObject = null; scanEl.hidden = true;
+  }
+  function startScan() {
+    pairErr.textContent = '';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { pairErr.textContent = 'Caméra indisponible ici : colle le lien d’appairage.'; return; }
+    loadDecoder()
+      .then(function () { return navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false }); })
+      .then(function (stream) {
+        scanStream = stream; scanVideo.srcObject = stream; scanEl.hidden = false; scanHint.textContent = 'Vise le QR code : Orchestra → Réglages → Accès mobile.';
+        var p = scanVideo.play(); if (p && p.catch) p.catch(function () {});
+        var c = document.createElement('canvas'), g = c.getContext('2d', { willReadFrequently: true });
+        scanTimer = setInterval(function () {
+          var w = scanVideo.videoWidth, h = scanVideo.videoHeight;
+          if (!w || !h) return;
+          var k = Math.min(1, 720 / Math.max(w, h)); c.width = Math.round(w * k); c.height = Math.round(h * k);
+          g.drawImage(scanVideo, 0, 0, c.width, c.height);
+          var hit = window.jsQR(g.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+          if (!hit) return;
+          var tok = tokenFrom(hit.data);
+          if (!tok) { scanHint.textContent = 'Ce QR code n’est pas un lien d’appairage Orchestra.'; return; }
+          stopScan(); adopt(tok);
+        }, 250);
+      })
+      .catch(function (e) {
+        stopScan();
+        pairErr.textContent = e && e.name === 'NotAllowedError' ? 'Accès à la caméra refusé : autorise-le, ou colle le lien d’appairage.' : 'Caméra indisponible : colle le lien d’appairage.';
+      });
+  }
+  document.getElementById('pairScan').addEventListener('click', startScan);
+  document.getElementById('scanClose').addEventListener('click', stopScan);
+  document.getElementById('pairForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var tok = tokenFrom(pairInput.value);
+    if (!tok) { pairErr.textContent = 'Ce n’est pas un lien d’appairage Orchestra.'; return; }
+    adopt(tok);
+  });
   try { token = localStorage.getItem(KEY); } catch (e) {}
   var stateEl = document.getElementById('state');
   var listEl = document.getElementById('list');
@@ -166,11 +242,12 @@ export const APP_JS = `(function () {
   }
 
   function load() {
-    if (!token) { setState('Pas appairé : scanne le QR code dans Orchestra → Réglages → Accès mobile.'); return; }
+    if (!token) { setState('Pas appairé.'); showPair(true); return; }
+    showPair(false);
     fetch('/api/workspaces', { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' })
       .then(function (r) {
         // A refused token (regenerated, or revoked) must not leave the last list on screen: the phone lost its access.
-        if (r.status === 401) { last = []; listEl.textContent = ''; setState('Jeton refusé : re-scanne le QR code.'); return null; }
+        if (r.status === 401) { last = []; listEl.textContent = ''; setState('Jeton refusé : re-scanne le QR code.'); showPair(true); return null; }
         if (!r.ok) { setState('Orchestra injoignable.'); return null; }
         return r.json();
       })

@@ -31,6 +31,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
+import QRCode from 'qrcode';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -66,6 +67,18 @@ function jpegSize(b) {
     i += 2 + b.readUInt16BE(i + 2);
   }
   return null;
+}
+
+/** A Y4M video (Chromium's fake camera input) of `text` as a QR code, black on white, 640×480. */
+function qrY4m(text) {
+  const W = 640, H = 480;
+  const { size, data } = QRCode.create(text, { errorCorrectionLevel: 'M' }).modules;
+  const px = Math.floor(Math.min(W, H) / (size + 8)), ox = Math.floor((W - size * px) / 2), oy = Math.floor((H - size * px) / 2);
+  const y = Buffer.alloc(W * H, 255);
+  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (data[r * size + c]) for (let dy = 0; dy < px; dy++) y.fill(0, (oy + r * px + dy) * W + ox + c * px, (oy + r * px + dy) * W + ox + (c + 1) * px);
+  const uv = Buffer.alloc((W / 2) * (H / 2), 128);
+  const frame = Buffer.concat([Buffer.from('FRAME\n'), y, uv, uv]);
+  return Buffer.concat([Buffer.from(`YUV4MPEG2 W${W} H${H} F10:1 Ip A1:1 C420jpeg\n`), ...Array.from({ length: 10 }, () => frame)]);
 }
 
 async function waitFor(fn, ms, what) {
@@ -339,7 +352,9 @@ try {
   // phone: headless chromium, iPhone metrics, serve's identity header injected
   const chromeDir = path.join(world.d, 'chromium'); fs.mkdirSync(chromeDir, { recursive: true });
   const chromePort = await freePort();
-  chrome = spawn(CHROMIUM, ['--headless=new', `--remote-debugging-port=${chromePort}`, `--user-data-dir=${chromeDir}`, '--no-first-run', '--no-default-browser-check', 'about:blank'], { env: { PATH: process.env.PATH, HOME: world.fakeHome }, stdio: 'ignore', detached: true });
+  // the phone's CAMERA is a file (in-app QR pairing): rewritten before each scan, reopened by every getUserMedia
+  const cameraFile = path.join(world.d, 'camera.y4m'); fs.writeFileSync(cameraFile, qrY4m('nothing yet'));
+  chrome = spawn(CHROMIUM, ['--headless=new', `--remote-debugging-port=${chromePort}`, `--user-data-dir=${chromeDir}`, '--no-first-run', '--no-default-browser-check', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${cameraFile}`, 'about:blank'], { env: { PATH: process.env.PATH, HOME: world.fakeHome }, stdio: 'ignore', detached: true });
   const ptarget = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json`)).json()).find((x) => x.type === 'page') || null, 30000, 'chromium page');
   phone = await Cdp.connect(ptarget.webSocketDebuggerUrl);
   await phone.send('Page.enable'); await phone.send('Network.enable');
@@ -367,6 +382,56 @@ try {
   await phone.send('Page.reload');
   await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after reload without the fragment');
   clause('phone/reload-still-paired', true, 'reload without #t= still lists the 3 visible rows (token from localStorage)');
+
+  // Lucas 2026-10-12: the app added to the iOS home screen opened « Pas appairé » — it has ITS OWN storage (Safari's pairing does
+  // not follow) and starts at `/` without the fragment. An ISOLATED browser context (empty storage) stands in for it: the page
+  // offers in-app pairing — a trusted tap on « Scanner le QR code » reads the QR through the (fake) camera; or a pasted link.
+  const browserWs = (await (await fetch(`http://127.0.0.1:${chromePort}/json/version`)).json()).webSocketDebuggerUrl;
+  const browserCdp = await Cdp.connect(browserWs);
+  const isolatedPhone = async () => {
+    const { browserContextId } = await browserCdp.send('Target.createBrowserContext');
+    const { targetId } = await browserCdp.send('Target.createTarget', { url: 'about:blank', browserContextId });
+    const t = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json`)).json()).find((x) => x.id === targetId) || null, 15000, 'isolated phone page');
+    const p = await Cdp.connect(t.webSocketDebuggerUrl);
+    await p.send('Page.enable');
+    await p.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await p.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/` });
+    await waitFor(() => p.eval(`!!document.getElementById('pair') && !document.getElementById('pair').hidden && document.getElementById('state').textContent === 'Pas appairé.'`), 20000, 'the pairing panel on an unpaired page');
+    const tap = async (sel) => { const c = await p.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await p.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, ...extra }); await sleep(200); };
+    return { p, tap, close: async () => { p.close?.(); await browserCdp.send('Target.disposeBrowserContext', { browserContextId }).catch(() => {}); } };
+  };
+  const liveToken = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+  const tracksLive = `(() => { const v = document.getElementById('scanVideo'); return !!(v.srcObject && v.srcObject.getTracks().some((t) => t.readyState === 'live')); })()`;
+  // must-FAIL first: a QR that is not a pairing link is read and REFUSED (nothing stored), and « Annuler » stops the camera
+  fs.writeFileSync(cameraFile, qrY4m('https://example.com/menu'));
+  const foreign = await isolatedPhone();
+  saveShot('phone-pair-panel.png', await foreign.p.shot());
+  await foreign.tap('#pairScan');
+  await waitFor(() => foreign.p.eval(`/pas un lien d’appairage/.test(document.getElementById('scanHint').textContent)`), 20000, 'the foreign QR refused');
+  const FQ = await foreign.p.eval(`({ stored: localStorage.getItem('orchestra.accesMobile.token'), scanShown: !document.getElementById('scan').hidden, live: ${tracksLive} })`);
+  saveShot('phone-pair-scanning.png', await foreign.p.shot());
+  await foreign.tap('#scanClose');
+  const FQ2 = await foreign.p.eval(`({ scanShown: !document.getElementById('scan').hidden, live: ${tracksLive} })`);
+  clause('pair/scan-refuses-a-foreign-qr', FQ.stored === null && FQ.scanShown && FQ.live && !FQ2.scanShown && !FQ2.live, `a QR of https://example.com/menu: « pas un lien d’appairage », stored ${FQ.stored}, camera live ${FQ.live}; Annuler ⇒ overlay ${FQ2.scanShown ? 'still shown' : 'gone'}, camera live ${FQ2.live}`);
+  await foreign.close();
+  // the scan pairs: the QR Orchestra shows (the pairing URL, this token)
+  fs.writeFileSync(cameraFile, qrY4m(`https://rig-box.tail0000.ts.net:${SERVE_PORT}/#t=${liveToken}`));
+  const scanner = await isolatedPhone();
+  await scanner.tap('#pairScan');
+  await waitFor(() => scanner.p.eval(`document.querySelectorAll('li[data-id]').length === 3`), 30000, 'the list after the in-app scan');
+  const SQ = await scanner.p.eval(`({ stored: localStorage.getItem('orchestra.accesMobile.token'), pairShown: !document.getElementById('pair').hidden, scanShown: !document.getElementById('scan').hidden, live: ${tracksLive}, href: location.href })`);
+  clause('pair/in-app-scan', SQ.stored === liveToken && !SQ.pairShown && !SQ.scanShown && !SQ.live && !SQ.href.includes(liveToken), `trusted tap « Scanner le QR code » ⇒ token stored ${SQ.stored === liveToken}, list of 3, panel ${SQ.pairShown ? 'still shown' : 'gone'}, camera stopped ${!SQ.live}, address ${SQ.href}`);
+  await scanner.close();
+  // the paste: the same link pasted (trusted typing) pairs too
+  const paster = await isolatedPhone();
+  await paster.p.eval(`document.getElementById('pairInput').focus(); true`);
+  await paster.p.send('Input.insertText', { text: `https://rig-box.tail0000.ts.net:${SERVE_PORT}/#t=${liveToken}` });
+  await paster.tap('#pairForm .btn2');
+  await waitFor(() => paster.p.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'the list after the pasted link');
+  const PQ = await paster.p.eval(`({ stored: localStorage.getItem('orchestra.accesMobile.token'), input: document.getElementById('pairInput').value })`);
+  clause('pair/in-app-paste', PQ.stored === liveToken && PQ.input === '', `pasted link ⇒ token stored ${PQ.stored === liveToken}, field cleared ${PQ.input === ''}, list of 3`);
+  await paster.close();
+  browserCdp.close?.();
   // V1: the segmented « À traiter » button (a TRUSTED tap), not the hidden checkbox it drives
   const segMe = await phone.eval(`(() => { const r = document.getElementById('segMe').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: segMe.x, y: segMe.y, ...extra });

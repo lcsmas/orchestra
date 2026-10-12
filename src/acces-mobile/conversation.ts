@@ -518,6 +518,18 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .att{width:32px;height:32px;margin-left:-11px;border-radius:50%;display:grid;place-items:center;flex:none;color:var(--dim);font-size:24px;line-height:1}
 .v1 .att:disabled{opacity:.5}
 .v1 .msg-atts{font-size:13px;color:var(--dim);margin-top:4px}
+.v1 .pair{padding:4px 20px 24px;display:flex;flex-direction:column;gap:12px}
+.v1 .pair p{color:var(--dim);font-size:14px;line-height:1.45;text-align:center}
+.v1 .pair-scan{width:100%;height:48px;margin-top:0;border-radius:14px;font-size:16px;font-weight:600}
+.v1 .pair-form{display:flex;gap:8px}
+.v1 .pair-form input{flex:1;min-width:0;min-height:44px;padding:0 14px;border-radius:12px;background:var(--raised);border:1px solid var(--hair2);font-size:16px;color:var(--text)}
+.v1 .pair-form .btn2,.v1 .scan .btn2{min-height:44px;padding:0 16px;border-radius:12px;background:var(--raised);border:1px solid var(--hair2);color:var(--text);font-weight:600}
+.v1 .pair-err{color:var(--red);font-size:14px;text-align:center;min-height:1em}
+.v1 .scan{position:fixed;inset:0;z-index:50;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom))}
+.v1 .scan[hidden]{display:none}
+.v1 .pair[hidden]{display:none}
+.v1 .scan video{width:100%;max-height:70vh;object-fit:cover;border-radius:16px}
+.v1 .scan p{color:#ddd;font-size:15px;text-align:center}
 .v1 .toast{margin:0 0 8px;padding:10px 13px;border-radius:12px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.45);color:#f1c9c9;font-size:13.5px;line-height:1.3}
 .v1 .toast:empty{display:none}
 `;
