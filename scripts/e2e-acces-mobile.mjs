@@ -228,10 +228,10 @@ const world = (() => {
   fs.writeFileSync(path.join(histDir, `${HISTORY_SESSION}.jsonl`), copies.join('\n') + '\n');
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
   const workspaces = [
-    { ...base, id: 'ws-am-waiting', name: 'am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
-    { ...base, id: 'ws-am-idle', name: 'am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc', parentId: 'ws-am-coord' },
+    { ...base, id: 'ws-am-waiting', name: 'repo-orchestra · am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
+    { ...base, id: 'ws-am-idle', name: 'repo-orchestra · am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc', parentId: 'ws-am-coord' },
     // #338: am-idle is a FLEET MEMBER of this coordinator's run, whose bus `delivery` switch is ON — the agent `/message` path refuses it.
-    { ...base, id: 'ws-am-coord', name: 'am-coord', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: coordDir, branch: 'am-coord', status: 'idle' },
+    { ...base, id: 'ws-am-coord', name: 'orchestrator · am-coord', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: coordDir, branch: 'am-coord', status: 'idle' },
     { ...base, id: 'ws-am-unread', name: 'am-unread', repoPath: repoB, worktreePath: wts[2], branch: 'e2e/am-unread', status: 'idle', autoUnread: true, accountId: 'acc-perso', sdkSessionId: HISTORY_SESSION },
     { ...base, id: 'ws-am-archived', name: 'am-archived', repoPath: repoB, worktreePath: wts[3], branch: 'e2e/am-archived', status: 'idle', archived: true, archivedAt: Date.now(), accountId: 'acc-perso' },
   ];
@@ -324,7 +324,7 @@ try {
   // security arms against the live port
   const ctl = await req(SOCK, '/api/workspaces', AUTH);
   const rows = ctl.status === 200 ? JSON.parse(ctl.body).workspaces : [];
-  clause('sec/control-200', ctl.status === 200 && rows.length === 4 && rows.some((r) => r.name === "am-coord" && r.group === "Orchestrators"), `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
+  clause('sec/control-200', ctl.status === 200 && rows.length === 4 && rows.some((r) => r.name === 'orchestrator · am-coord' && r.displayName === 'am-coord' && r.group === 'Orchestrators') && rows.some((r) => r.name === 'repo-orchestra · am-idle' && r.displayName === 'am-idle') && rows.some((r) => r.name === 'am-unread' && r.displayName === 'am-unread'), `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
   // A seeded `waiting` is resolved to idle + non lu at store load (store.ts: no live process can still be asking), so a real
   // en attente needs a live AskUserQuestion (#339). Here: attention rank never decreases, both accounts, archived dropped.
   const rank = (r) => (r.status === 'waiting' ? 0 : r.unread ? 1 : 2);
@@ -384,6 +384,11 @@ try {
   const tapSel = async (sel) => { const c = await phone.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, ...extra }); await sleep(200); };
   await tapSel('li.fold[data-fold="ws-am-coord"]');
   const F1 = await phone.eval(`(() => { const r = document.querySelector('li[data-id="ws-am-idle"]'); return r ? { child: r.classList.contains('child'), afterFold: r.previousElementSibling?.dataset.fold === 'ws-am-coord', br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent, stl: (r.querySelector('.stl') || {}).textContent } : null; })()`);
+  // #372: no repo prefix on the phone — the VISIBLE text (innerText) of every row, the fold open so the worker is there too. The seeded desktop
+  // names carry `repo-orchestra · ` (the repo DIR's basename, ≠ the chip « orchestra-rig »), `orchestrator · `, and one hand-renamed name (whole).
+  const T = await phone.eval(`Object.fromEntries([...document.querySelectorAll('li[data-id]')].map((l) => [l.dataset.id, { title: (l.querySelector('.r1 b') || {}).textContent, text: l.innerText }]))`);
+  const wantTitles = { 'ws-am-idle': 'am-idle', 'ws-am-coord': 'am-coord', 'ws-am-unread': 'am-unread' };
+  clause('phone/no-repo-prefix', Object.keys(wantTitles).every((id) => T[id]?.title === wantTitles[id]) && Object.values(T).every((r) => !/repo-orchestra\s*·|orchestrator\s*·|scratch\s*·/.test(r.text)), `row titles ${JSON.stringify(Object.fromEntries(Object.entries(T).map(([id, r]) => [id, r.title])))}; no « repo · » / « orchestrator · » in any row's visible text`);
   saveShot('phone-list-fold-open.png', await phone.shot());
   await tapSel('li.fold[data-fold="ws-am-coord"]');
   const F2 = await phone.eval(`!document.querySelector('li[data-id="ws-am-idle"]')`);
@@ -475,6 +480,8 @@ try {
   // #337 live: open am-idle, drive a REAL turn from the desktop IPC (real CLI, fake API) ⇒ the phone shows it without a reload.
   await phone.eval(`location.hash = 'w=ws-am-idle'; true`);
   await waitFor(() => phone.eval(`document.querySelector('#conv')?.dataset.id === 'ws-am-idle' && !!document.querySelector('#conv')?.dataset.version`), 15000, 'am-idle conversation open');
+  const convTitle = await phone.eval(`(document.querySelector('#conv .conv-title') || {}).textContent`);
+  clause('conv/title-no-repo-prefix', convTitle === 'am-idle', `the conversation header of « repo-orchestra · am-idle » reads « ${convTitle} »`);
   const pre = await phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length`);
   const modelBefore = fakeApi.requests.filter((r) => r.type === 'model').length;
   const trace = [];
@@ -580,8 +587,9 @@ try {
   const deskPending1 = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).map((a) => a.requestId)`);
   const reqId1 = deskPending1[0];
   // a folded worker that waits on the human is NOT hidden by its fold: it surfaces in « En attente » (the list behind the open conv)
-  const W = await waitFor(() => phone.eval(`(() => { const r = document.querySelector('#list li.waiting[data-id="ws-am-idle"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return r && h && h.dataset.group === 'En attente' ? { pv: (r.querySelector('.pv') || {}).textContent, me: document.getElementById('cntMe').textContent } : false; })()`), 20000, 'am-idle in En attente').catch(() => null);
+  const W = await waitFor(() => phone.eval(`(() => { const r = document.querySelector('#list li.waiting[data-id="ws-am-idle"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return r && h && h.dataset.group === 'En attente' ? { pv: (r.querySelector('.pv') || {}).textContent, me: document.getElementById('cntMe').textContent, title: (r.querySelector('.r1 b') || {}).textContent, repo: (r.querySelector('.r2 .repo') || {}).textContent } : false; })()`), 20000, 'am-idle in En attente').catch(() => null);
   clause('phone/folded-worker-waiting-surfaces', W && /Quelle option pour le rig/.test(W.pv || '') && W.me === '1', `am-idle (folded under am-coord) ⇒ En attente ${JSON.stringify(W)}`);
+  clause('phone/waiting-row-keeps-repo-chip', W && W.title === 'am-idle' && W.repo === 'orchestra-rig', `En attente row: title « ${W?.title} » (no prefix), repo chip « ${W?.repo} » (the registered repo name, kept)`);
   const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.dataset.label === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: optB.x, y: optB.y, ...extra });
   await waitFor(() => phone.eval(`!!document.querySelector('#conv .ask-opt.picked') && !document.querySelector('#conv .ask-submit').disabled`), 5000, 'option picked, submit enabled');

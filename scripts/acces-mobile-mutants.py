@@ -9,6 +9,7 @@ import os, shutil, subprocess, sys, filecmp
 ROOT = os.getcwd()
 TEST = 'src/acces-mobile/server.test.ts'
 PWA = 'src/acces-mobile/pwa.test.ts'
+PL = 'src/acces-mobile/page-list.test.ts'
 PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
@@ -144,6 +145,23 @@ MUTANTS = [
     ('U4-push-on-every-check', 'src/main/app-update.ts', "      if (appUpdateStateKey(next) === appUpdateStateKey(state)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
     ('U5-mid-swap-hides-the-banner', 'src/main/app-update.ts', "      if (next.kind === 'none' && state.kind === 'installed' && !deps.stat(deps.path)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
     ('W1-silent-stream-kept', 'src/acces-mobile/conversation.ts', "      if (Date.now() - lastByte > STALL_MS) {", "      if (false) {", 'RED', 'src/acces-mobile/conversation-stream.test.ts'),
+    # ── 2026-10-12 wave I (#372): the phone list shows the name without its repo prefix ──
+    ('N1-repo-prefix-not-cut', 'src/shared/acces-mobile.ts', "[...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']", "['scratch · ', 'orchestrator · ']", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N2-scratch-prefix-not-cut', 'src/shared/acces-mobile.ts', "[...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']", "[...(base ? [`${base} · `] : []), 'orchestrator · ']", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N3-orchestrator-prefix-not-cut', 'src/shared/acces-mobile.ts', "[...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']", "[...(base ? [`${base} · `] : []), 'scratch · ']", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N4-kind-prefix-before-repo', 'src/shared/acces-mobile.ts', "[...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']", "['scratch · ', 'orchestrator · ', ...(base ? [`${base} · `] : [])]", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N5-empty-remainder-cut', 'src/shared/acces-mobile.ts', " && ws.name.length > prefix.length", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N6-cut-at-first-separator', 'src/shared/acces-mobile.ts', "if (ws.name.startsWith(prefix) && ws.name.length > prefix.length) return ws.name.slice(prefix.length);", "if (ws.name.includes(' · ')) return ws.name.slice(ws.name.indexOf(' · ') + 3);", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N7-trailing-slash-kept', 'src/shared/acces-mobile.ts', r"ws.repoPath.replace(/\/+$/, '').split('/').pop()", "ws.repoPath.split('/').pop()", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N8-display-name-not-projected', 'src/shared/acces-mobile.ts', "      displayName: mobileDisplayName(ws),\n", "      displayName: ws.name,\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N9-desktop-name-replaced', 'src/shared/acces-mobile.ts', "      name: ws.name,\n      displayName: mobileDisplayName(ws),\n", "      name: mobileDisplayName(ws),\n      displayName: mobileDisplayName(ws),\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N10-page-renders-the-full-name', 'src/acces-mobile/page.ts', "r1.appendChild(el('b', null, w.displayName || w.name));", "r1.appendChild(el('b', null, w.name));", 'RED', PL),
+    ('N11-page-without-fallback', 'src/acces-mobile/page.ts', "r1.appendChild(el('b', null, w.displayName || w.name));", "r1.appendChild(el('b', null, w.displayName));", 'RED', PL),
+    ('N12-waiting-row-loses-its-repo-chip', 'src/acces-mobile/page.ts', "    if (withRepo) r2.appendChild(el('span', 'repo', w.group));\n", "", 'RED', PL),
+    ('N14-first-path-segment-is-the-repo', 'src/shared/acces-mobile.ts', r"ws.repoPath.replace(/\/+$/, '').split('/').pop()", r"ws.repoPath.replace(/\/+$/, '').split('/')[2]", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N15-sorted-by-the-desktop-name', 'src/shared/acces-mobile.ts', "a.displayName.localeCompare(b.displayName) || ", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('N16-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'RED', PL),
+    ('N13-fold-owner-full-name', 'src/acces-mobile/page.ts', "name: byId[pid].displayName || byId[pid].name })", "name: byId[pid].name })", 'RED', PL),
     ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
 ]
 
@@ -175,6 +193,10 @@ E2E_MUTANTS = [
     ('E20-status-bar-strip-gone', 'src/acces-mobile/conversation.ts', "body.v1::before{content:", "body.v1::after{content:", 'conv/header-below-status-bar'),
     ('E21-later-ignored', 'src/renderer/components/AppUpdateBanner.tsx', "          dismissedKey = key;\n", "", 'update/later-until-next-install'),
     ('E22-relaunch-without-waiting', 'src/shared/app-update.ts', "while kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 600 ]; do", "while false; do", 'update/relaunch'),
+    ('E24-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'conv/title-no-repo-prefix'),
+    ('E25-list-renders-the-full-name', 'src/acces-mobile/page.ts', "r1.appendChild(el('b', null, w.displayName || w.name));", "r1.appendChild(el('b', null, w.name));", 'phone/no-repo-prefix'),
+    ('E26-waiting-row-without-repo-chip', 'src/acces-mobile/page.ts', "    if (withRepo) r2.appendChild(el('span', 'repo', w.group));\n", "", 'phone/waiting-row-keeps-repo-chip'),
+    ('E27-projection-without-displayName', 'src/shared/acces-mobile.ts', "      displayName: mobileDisplayName(ws),\n", "      displayName: ws.name,\n", 'phone/no-repo-prefix'),
     ('E23-phone-not-told', 'src/main/acces-mobile-routes.ts', "          ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),\n", "", 'update/phone-banner'),
 ]
 

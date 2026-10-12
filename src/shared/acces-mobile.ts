@@ -155,7 +155,10 @@ export function sameLogin(a: string | undefined | null, b: string): boolean {
 
 export interface MobileWorkspaceRow {
   id: string;
+  /** The desktop name, unchanged (`<repo> · <branch>`). */
   name: string;
+  /** #372: what the phone shows as the title — `name` without its `<repo basename> · ` / `scratch · ` / `orchestrator · ` prefix. */
+  displayName: string;
   branch: string;
   /** Sidebar-style group: the repo's name, else "Orchestrators". */
   group: string;
@@ -192,7 +195,19 @@ export function attentionRank(row: Pick<MobileWorkspaceRow, 'status' | 'unread'>
 
 const ORCHESTRATORS_GROUP = 'Orchestrators';
 
-/** Every non-archived workspace, every account. Sorted by attention, then group, then name — stable for the phone to render. */
+/** #372: the phone row's title. The desktop name is `<repo basename> · <branch>`, `scratch · <label>` or `orchestrator · <label>`
+ *  (`workspace-name.ts`); the row already sits under its repo's section, so the prefix is noise on a phone. One LEADING prefix is
+ *  cut — the repo's FIRST, so a repo whose name contains « · » loses all of it. A name without the prefix (renamed by hand), or
+ *  one the cut would leave empty, is shown whole. */
+export function mobileDisplayName(ws: Pick<Workspace, 'name' | 'repoPath'>): string {
+  const base = ws.repoPath ? ws.repoPath.replace(/\/+$/, '').split('/').pop() : '';
+  for (const prefix of [...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']) {
+    if (ws.name.startsWith(prefix) && ws.name.length > prefix.length) return ws.name.slice(prefix.length);
+  }
+  return ws.name;
+}
+
+/** Every non-archived workspace, every account. Sorted by attention, then group, then the title the phone shows (displayName) — stable for the phone to render. */
 export function projectMobileWorkspaces(
   workspaces: readonly Workspace[],
   repos: readonly RepoEntry[],
@@ -211,6 +226,7 @@ export function projectMobileWorkspaces(
     const row: MobileWorkspaceRow = {
       id: ws.id,
       name: ws.name,
+      displayName: mobileDisplayName(ws),
       branch: ws.branch,
       group: repo?.name ?? ORCHESTRATORS_GROUP,
       account: accountId ? (labelOf.get(accountId) ?? accountId) : 'default',
@@ -225,7 +241,8 @@ export function projectMobileWorkspaces(
     rows.push(row);
   }
   return rows.sort(
-    (a, b) => attentionRank(a) - attentionRank(b) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+    (a, b) =>
+      attentionRank(a) - attentionRank(b) || a.group.localeCompare(b.group) || a.displayName.localeCompare(b.displayName) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
   );
 }
 

@@ -366,7 +366,7 @@ export const CONVERSATION_JS = `(function () {
     back.addEventListener('click', function () { location.hash = ''; });
     head.appendChild(back);
     if (othersWaiting) head.appendChild(el('span', 'bk', String(othersWaiting)));
-    var ct = el('div', 'ct'); ct.appendChild(el('b', 'conv-title', meta.name || id));
+    var ct = el('div', 'ct'); ct.appendChild(el('b', 'conv-title', meta.displayName || meta.name || id));
     var cs = el('div', 'cs');
     if (meta.group) cs.appendChild(el('span', null, meta.group + (meta.branch ? ' · ' + meta.branch : '')));
     if (meta.account) cs.appendChild(acct(meta.account));

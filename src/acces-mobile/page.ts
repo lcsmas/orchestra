@@ -165,7 +165,7 @@ export const APP_JS = `(function () {
     li.addEventListener('click', function () { location.hash = 'w=' + encodeURIComponent(w.id); });
     li.appendChild(el('div', 'g ' + (waiting ? 'g-wait' : w.unread ? 'g-unread' : (GLYPH[w.status] || 'g-idle'))));
     var rb = el('div', 'rb');
-    var r1 = el('div', 'r1'); r1.appendChild(el('b', null, w.name)); r1.appendChild(el('time', null, ago(w.at))); rb.appendChild(r1);
+    var r1 = el('div', 'r1'); r1.appendChild(el('b', null, w.displayName || w.name)); r1.appendChild(el('time', null, ago(w.at))); rb.appendChild(r1);
     var r2 = el('div', 'r2');
     if (withRepo) r2.appendChild(el('span', 'repo', w.group));
     r2.appendChild(el('span', 'br', w.branch));
@@ -222,7 +222,7 @@ export const APP_JS = `(function () {
       else top.push(w);
     });
     // a coordinator that is itself en attente still owns its fold: give it a header row-less fold in its repo group
-    Object.keys(kidsOf).forEach(function (pid) { if (needs(byId[pid]) && top.indexOf(byId[pid]) < 0) top.push({ foldOnly: true, id: pid, group: byId[pid].group, name: byId[pid].name }); });
+    Object.keys(kidsOf).forEach(function (pid) { if (needs(byId[pid]) && top.indexOf(byId[pid]) < 0) top.push({ foldOnly: true, id: pid, group: byId[pid].group, name: byId[pid].displayName || byId[pid].name }); });
     var groups = Object.create(null); var order = [];
     top.forEach(function (w) { if (!groups[w.group]) { groups[w.group] = []; order.push(w.group); } groups[w.group].push(w); });
     order.forEach(function (g) {

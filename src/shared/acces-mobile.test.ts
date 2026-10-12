@@ -4,6 +4,7 @@ import {
   DEFAULT_ACCES_MOBILE_SETTINGS,
   normalizeAccesMobileSettings,
   patchAccesMobileSettings,
+  mobileDisplayName,
   projectMobileWorkspaces,
   sameLogin,
   tailscaleServeCommand,
@@ -117,4 +118,53 @@ test('pairingTokenFrom: a pairing URL or a bare token, nothing else; the toStrin
     assert.equal(pairingTokenFrom(input), want, input);
     assert.equal(injected(input), want, `injected: ${input}`);
   }
+});
+
+test('displayName (#372): the desktop name without its `<repo basename> · ` / `scratch · ` / `orchestrator · ` prefix; the desktop `name` untouched', () => {
+  const dn = (over: Partial<Workspace>) => mobileDisplayName(ws(over));
+  assert.equal(dn({ name: 'orchestra · fix-foo', repoPath: '/r/orchestra' }), 'fix-foo', 'repo prefix');
+  assert.equal(dn({ name: 'orchestra · fix-foo', repoPath: '/r/orchestra/' }), 'fix-foo', 'a trailing slash on the repo path');
+  assert.equal(dn({ name: 'scratch · idea', repoPath: '', kind: 'scratch' }), 'idea', 'scratch prefix');
+  assert.equal(dn({ name: 'orchestrator · vague-i', repoPath: '', kind: 'orchestrator' }), 'vague-i', 'orchestrator prefix');
+  assert.equal(dn({ name: 'orchestrator · vague-i', repoPath: '/r/orchestra', kind: 'orchestrator' }), 'vague-i', 'an orchestrator that owns a repo keeps the orchestrator prefix, not the repo one');
+  assert.equal(dn({ name: 'renamed by hand', repoPath: '/r/orchestra' }), 'renamed by hand', 'no prefix ⇒ shown whole');
+  assert.equal(dn({ name: 'perso · fix-foo', repoPath: '/r/orchestra' }), 'perso · fix-foo', "another repo's prefix is not ours to cut");
+  assert.equal(dn({ name: 'see orchestra · fix-foo', repoPath: '/r/orchestra' }), 'see orchestra · fix-foo', 'only a LEADING prefix');
+  assert.equal(dn({ name: 'orchestra · orchestra · x', repoPath: '/r/orchestra' }), 'orchestra · x', 'one prefix, once');
+  assert.equal(dn({ name: 'orchestra · ', repoPath: '/r/orchestra' }), 'orchestra · ', 'nothing left ⇒ shown whole, never an empty title');
+  assert.equal(dn({ name: 'orchestra ·fix-foo', repoPath: '/r/orchestra' }), 'orchestra ·fix-foo', 'the prefix is « name · » exactly');
+  assert.equal(dn({ name: 'a · b · feat', repoPath: '/r/a · b' }), 'feat', 'a repo whose name contains « · »: the whole repo name goes, not its first segment');
+  assert.equal(dn({ name: 'scratch · a · b', repoPath: '/r/scratch · a' }), 'b', 'the repo prefix wins when it is the longer match');
+  assert.equal(dn({ name: 'orchestra · fix-foo', repoPath: '/opt/work/src/orchestra' }), 'fix-foo', 'a deep real-world path: the LAST segment is the repo');
+  assert.equal(dn({ name: 'scratch · x', repoPath: '/r/orchestra' }), 'x', 'a worktree demoted by hand to a scratch-style name still reads short');
+});
+
+test('list: every row carries displayName; `name` stays the desktop one', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'a', name: 'orchestra · fix-foo', branch: 'fix-foo' }),
+      ws({ id: 'b', name: 'orchestrator · vague-i', repoPath: '', kind: 'orchestrator' }),
+      ws({ id: 'c', name: 'perso · q', repoPath: '/r/perso' }),
+      ws({ id: 'd', name: 'hand-made', repoPath: '/r/perso' }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.deepEqual(rows.map((r) => [r.id, r.name, r.displayName]).sort(), [
+    ['a', 'orchestra · fix-foo', 'fix-foo'],
+    ['b', 'orchestrator · vague-i', 'vague-i'],
+    ['c', 'perso · q', 'q'],
+    ['d', 'hand-made', 'hand-made'],
+  ]);
+  assert.equal(by.a.group, 'orchestra', 'the repo chip data (En attente rows) is untouched');
+});
+
+test('list (#372): inside a section rows are ordered by the title the phone SHOWS (a hand-renamed one is not pushed around by a prefix it does not display)', () => {
+  const rows = projectMobileWorkspaces(
+    [ws({ id: 'z', name: 'orchestra · z' }), ws({ id: 'h', name: 'handmade' }), ws({ id: 'a', name: 'orchestra · a' })],
+    repos,
+    accounts,
+  );
+  assert.deepEqual(rows.map((r) => r.displayName), ['a', 'handmade', 'z']);
 });
