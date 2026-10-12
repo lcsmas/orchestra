@@ -268,6 +268,23 @@ test('G4b × #324 (LEAD Q17 option A) — the wave-boundary re-freeze takes ever
   }
 });
 
+test('G4b × #324 — the D1b call hands refreezeRun the wave keep list (the dep receives it as its 4th argument), so a fake dep sees exactly [memoryCap]', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live = { v: switches({ memoryCap: false }) };
+    const seen: unknown[][] = [];
+    const d = { ...deps(db, live), refreezeRun: (...a: unknown[]) => { seen.push(a); return false; } } as BusRunAnchorDeps;
+    maybeStartRunAtAnchor(d, anchorInfoOf(LEAD, WAVE));
+    live.v = switches({ memoryCap: true });
+    maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
+    assert.equal(seen.length, 1, 'one wave-boundary re-freeze');
+    assert.equal(seen[0][1], 'lead');
+    assert.deepEqual([...(seen[0][3] as string[])], ['memoryCap'], 'the automatic path passes the keep list');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
 test('G4b F1 — an OPS (vague) row is NEVER re-frozen: byte-identical across a member spawn', () => {
   const { db, dir } = tmpDb();
   try {

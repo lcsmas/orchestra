@@ -110,9 +110,14 @@ test('#324 the default flip is for NEW runs only: a run that froze memory_cap OF
   // re-reading is stable, and a vague row is never re-frozen by a wave boundary (only a MISSION row is — D1b, existing semantics for every switch)
   assert.equal(refreezeRun(db, 'old-vague', normalizeLiveSwitches(undefined)), false, 'a vague (OPS) row is never re-frozen');
   assert.equal(busSwitch(db, 'old-vague', 'memory_cap'), false);
-  assert.equal(refreezeRun(db, 'old-mission', normalizeLiveSwitches(undefined)), true, 'a MISSION row IS re-frozen at a wave boundary (D1b) — for every switch but memoryCap (LEAD Q17 option A)');
+  const { WAVE_REFREEZE_KEEPS_FROZEN } = await import('../shared/bus-switches.ts');
+  assert.equal(refreezeRun(db, 'old-mission', normalizeLiveSwitches(undefined), WAVE_REFREEZE_KEEPS_FROZEN), true, 'a MISSION row IS re-frozen at a wave boundary (D1b) — for every switch but memoryCap (LEAD Q17 option A)');
   assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), false, 'an already-open mission keeps launching its plain children UNCAPPED');
   assert.equal(memoryCapSpecFor(args({ runId: 'old-mission' }), real), undefined);
+  const { refreezeMissionRun } = await import('./bus-runs.ts');
+  assert.equal(refreezeMissionRun(db, 'old-mission', normalizeLiveSwitches(undefined), { hasLiveChild: false }), 'refrozen', 'the EXPLICIT `orchestra run refreeze` applies the live value');
+  assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), true, 'and an operator can thereby opt an open mission in');
+  assert.ok(memoryCapSpecFor(args({ runId: 'old-mission' }), real));
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
