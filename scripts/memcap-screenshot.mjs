@@ -52,8 +52,8 @@ const reading = (unit, bill, wsB, hard, peak) => ({ unit, gen: 'a', currentBytes
 const TRACKED = [
   memberViewFrom('ws-ok', [reading('u1', 2.1, 1.6, 6, 2.4)]),            // 35 %  — ok
   memberViewFrom('ws-warn', [reading('u2', 3.6, 3.1, 6, 3.8)]),          // 60 %  — working set over the soft level ⇒ amber
-  memberViewFrom('ws-crit', [reading('u3', 5.7, 4.2, 6, 5.8)]),          // 95 %  — within 10 % of the hard level ⇒ red
-  memberViewFrom('ws-cache', [reading('u4', 4.5, 1.2, 6, 4.6)]),         // big page cache, small working set ⇒ NOT amber
+  memberViewFrom('ws-crit', [reading('u3', 5.7, 5.5, 6, 5.8)]),          // 95 %  — bill AND working set (92 %) within 10 % of the hard level ⇒ red (#343: red keys on the working set)
+  memberViewFrom('ws-cache', [reading('u4', 5.7, 1.2, 6, 5.8)]),         // #343: bill 95 % of the hard level but only 20 % working set (page cache) ⇒ NOT amber, NOT red
   memberViewFrom('ws-none', [reading('u5', 0.7, 0.6, null, null)]),      // tracked, no limit applied ⇒ uncapped (no bar)
   memberViewFrom('ws-nolimit', [{ ...reading('u7', 0.65, 0.5, null, null), limitApplied: false }]), // tracked, the kernel reports max ⇒ « No memory cap applied » (dim tooltip, no bar) — vs ws-none above: limit UNKNOWN ⇒ plain
   memberViewFrom('ws-gone', [reading('u6', 1.1, 0.4, 6, 1.2)]),          // session gone, scope left ⇒ scope-only row never carries a cap
@@ -63,9 +63,28 @@ const { rows, login } = groupSnapshot({ sessions: SESSIONS, containers: undefine
 const rowsWs = rows.map((g) => ({ ...g, ws: WS[g.key] ?? null, fallbackName: g.key }));
 const trace = [2, 4, 3, 6, 8, 5, 7, 4, 3, 5];
 const LV = { softGb: 3, hardGb: 6 };
+// ── #343 (D-pick B): the keeper-leaf room — chip from 70 %, tooltip line always, grey line; an unprotected member never gets a bar. SAME pipeline: ScopeReading → memberViewFrom → groupSnapshot → AgentsTable ──
+const roomReading = (unit, kGb, extra = {}) => ({ unit, gen: 'a', currentBytes: 2.2 * GB, workingSetBytes: 1.5 * GB, maxBytes: 6 * GB, peakBytes: 2.4 * GB, keeperPid: 1, procs: [{ pid: 1, startTicks: 1, rssBytes: 1, role: 'cli', comm: 'claude' }], backstopBytes: 7 * GB, keeperLeaf: { currentBytes: kGb * GB, workingSetBytes: kGb * GB, oomKills: 0 }, scopeEpisodes: 0, ...extra });
+const RWS = { 'ws-calm': ws('ws-calm', 'feat-calm'), 'ws-close': ws('ws-close', 'feat-close'), 'ws-over': ws('ws-over', 'feat-over'), 'ws-unprot': ws('ws-unprot', 'feat-unprotected'), 'ws-flat': ws('ws-flat', 'feat-noroom') };
+const RSESS = ['ws-calm', 'ws-close', 'ws-over', 'ws-unprot', 'ws-flat'].map((id) => sdk(id, 700 * MB));
+const RTRACKED = [
+  memberViewFrom('ws-calm', [roomReading('r1', 0.41)]),                            // 41 % of the room — no chip, the tooltip still says it
+  memberViewFrom('ws-close', [roomReading('r2', 0.9)]),                            // 90 % — amber chip
+  memberViewFrom('ws-over', [roomReading('r3', 1.3)]),                             // 130 % — red chip (k alone fills the room)
+  memberViewFrom('ws-unprot', [roomReading('r4', 0.2, { capState: 'unprotected' })]), // numeric limit, but the keeper says the tools are not in it ⇒ NO bar
+  memberViewFrom('ws-flat', [roomReading('r5', 0.2, { backstopBytes: null, keeperLeaf: null })]), // no backstop ⇒ no margin to state
+];
+const rMembers = buildMemberMemoryReport(Date.now(), RTRACKED, [], null, 0);
+const rGroup = groupSnapshot({ sessions: RSESS, containers: undefined, members: rMembers });
+const rRows = rGroup.rows.map((g) => ({ ...g, ws: RWS[g.key] ?? null, fallbackName: g.key }));
 const view = new URLSearchParams(location.search).get('view');
 const root = createRoot(document.getElementById('root'));
-if (view === 'table') {
+if (view === 'room') {
+  root.render(React.createElement('div', { style: { padding: 18, maxWidth: 1250 } }, React.createElement(AgentsTable, {
+    rows: rRows, loginSessions: rGroup.login, traceOf: () => trace, diskOf: () => 120 * MB, ctxOf: () => 40000, accountLabelFor: () => null, warning: null,
+    capLevels: LV, capLine: capSummaryLine(rRows.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap, room: r.room }))),
+  })));
+} else if (view === 'table') {
   root.render(React.createElement('div', { style: { padding: 18, maxWidth: 1250 } }, React.createElement(AgentsTable, {
     rows: rowsWs, loginSessions: login, traceOf: () => trace, diskOf: () => 120 * MB, ctxOf: () => 40000, accountLabelFor: () => null, warning: null,
     capLevels: LV, capLine: capSummaryLine(rowsWs.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap }))),
@@ -126,6 +145,10 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=table' });
     await ready(win, '[data-res-cap]');
     await shoot(win, 'memcap-resources.png', "(() => { " + rectOf + " const bars = [...document.querySelectorAll('[data-res-cap]')].map((b) => { const q = (c) => b.querySelector(c); const cs = (el) => el ? getComputedStyle(el).backgroundColor : null; let a = b; while (a && !a.querySelector('.res-agent-branch')) a = a.parentElement; return { name: a ? a.querySelector('.res-agent-branch').textContent : '', pct: b.getAttribute('data-res-cap'), tone: b.getAttribute('data-res-cap-tone'), rect: rect(b), fill: cs(q('.res-capbar-fill')), fillOp: q('.res-capbar-fill') ? Number(getComputedStyle(q('.res-capbar-fill')).opacity) : null, wsOp: q('.res-capbar-ws') ? Number(getComputedStyle(q('.res-capbar-ws')).opacity) : null, fillW: rect(q('.res-capbar-fill'))?.width, ws: cs(q('.res-capbar-ws')), wsW: rect(q('.res-capbar-ws'))?.width, softX: rect(q('.res-capbar-soft'))?.x, title: b.getAttribute('title'), inMem: !!b.closest('.res-mem') }; }); const note = document.querySelector('[data-res-cap-note]'); const nocap = [...document.querySelectorAll('[data-res-nocap]')].map((c) => { let a = c; while (a && !a.querySelector('.res-agent-branch')) a = a.parentElement; const cs = getComputedStyle(c); return { name: a ? a.querySelector('.res-agent-branch').textContent : '', text: c.innerText.trim(), title: c.getAttribute('title'), tabIndex: c.tabIndex, role: c.getAttribute('role'), aria: c.getAttribute('aria-label'), decoLine: cs.textDecorationLine, decoStyle: cs.textDecorationStyle, cursor: cs.cursor, hasBar: !!c.querySelector('.res-capbar'), rect: rect(c) }; }); return { kind: 'table', nocap, bars, note: note ? { text: note.innerText, rect: rect(note), color: getComputedStyle(note).color } : null, memCells: document.querySelectorAll('.res-mem').length, scopeOnly: [...document.querySelectorAll('*')].filter((e) => e.children.length === 0 && /verifier-gone/.test(e.textContent)).length, text: document.body.innerText.replace(/\\\\s+/g, ' ') }; })()");
+    // ── #343: the keeper-leaf room (D-pick B) + the unprotected cell ──
+    await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=room' });
+    await ready(win, '[data-res-room]');
+    await shoot(win, 'memcap-room.png', "(() => { " + rectOf + " const rowOf = (el) => { let a = el; while (a && !a.querySelector('.res-agent-branch')) a = a.parentElement; return a; }; const nameOf = (el) => { const r = rowOf(el); return r ? r.querySelector('.res-agent-branch').textContent : ''; }; const chips = [...document.querySelectorAll('[data-res-room]')].map((c) => { const cs = getComputedStyle(c); const memCell = rowOf(c).querySelector('.res-mem, .res-mem-nocap'); return { name: nameOf(c), text: c.innerText.trim(), pct: c.getAttribute('data-res-room'), tone: c.getAttribute('data-res-room-tone'), title: c.getAttribute('title'), color: cs.color, border: cs.borderTopColor, rect: rect(c), memX: memCell ? rect(memCell).x : null }; }); const bars = [...document.querySelectorAll('[data-res-cap]')].map((b) => ({ name: nameOf(b), title: b.getAttribute('title'), tone: b.getAttribute('data-res-cap-tone') })); const unprot = [...document.querySelectorAll('[data-res-unprotected]')].map((c) => { const cs = getComputedStyle(c); return { name: nameOf(c), text: c.innerText.trim(), title: c.getAttribute('title'), tabIndex: c.tabIndex, role: c.getAttribute('role'), aria: c.getAttribute('aria-label'), decoLine: cs.textDecorationLine, decoStyle: cs.textDecorationStyle, decoColor: cs.textDecorationColor, cursor: cs.cursor, hasBar: !!c.querySelector('.res-capbar'), rect: rect(c) }; }); const note = document.querySelector('[data-res-cap-note]'); const rowNames = [...document.querySelectorAll('.res-agent-branch')].map((e) => e.textContent); return { kind: 'room', chips, bars, unprot, rowNames, note: note ? { text: note.innerText, color: getComputedStyle(note).color } : null }; })()");
     win.setContentSize(1440, 900);
     await wait(300);
     await win.loadFile(path.join(PAGE, 'index.html'), { search: 'view=window' });
@@ -182,7 +205,7 @@ if (!fs.existsSync(probeOut)) { console.log(`  FAIL the capture produced no outp
 const shots = JSON.parse(fs.readFileSync(probeOut, 'utf8'));
 if (shots[0]?.error) { console.log(`  FAIL capture threw: ${shots[0].error}`); process.exit(1); }
 const core = shots.filter((x) => x.kind !== 'fits' && !x.state);
-check('three core captures (Resources table, window, window refused)', core.length === 3, `got ${core.length}`);
+check('four core captures (Resources table, keeper-leaf room, window, window refused)', core.length === 4, `got ${core.length}`);
 const png = (s) => { const f = path.join(outDir, s.file); return fs.existsSync(f) ? decodePng(fs.readFileSync(f)) : null; };
 for (const s of shots.filter((x) => x.file)) { const p = png(s); check(`${s.file}: PNG written, real dimensions, many colours (not a blank frame)`, !!p && s.width > 600 && s.height > 300 && distinctColours(p) > 30, `${s.width}x${s.height}, ${p ? distinctColours(p) : 0} colours`); }
 
@@ -192,15 +215,15 @@ if (t) {
   const ok = by('feat-comfortable'), warn = by('feat-warming'), crit = by('big-job'), cache = by('feat-cache');
   check('exactly FOUR rows carry a bar (comfortable, warming, big-job, cache); the uncapped and the scope-only rows carry none', t.bars.length === 4 && !!ok && !!warn && !!crit && !!cache, JSON.stringify(t.bars.map((b) => [b.name, b.pct, b.tone])));
   check('the bar sits INSIDE the MEM cell of its row', t.bars.every((b) => b.inMem));
-  check('percentages are bill / hard: 35, 60, 95 and 75 %', ok?.pct === '35' && warn?.pct === '60' && crit?.pct === '95' && cache?.pct === '75', JSON.stringify(t.bars.map((b) => b.pct)));
-  check('tones: comfortable ok, warming AMBER (working set 3.1 ≥ soft 3), big-job RED (95 % ≥ 90 %), cache ok (bill 4.5 but working set 1.2 — page cache is not pressure)', ok?.tone === 'ok' && warn?.tone === 'warn' && crit?.tone === 'crit' && cache?.tone === 'ok', JSON.stringify(t.bars.map((b) => b.tone)));
+  check('percentages are bill / hard: 35, 60, 95 and 95 %', ok?.pct === '35' && warn?.pct === '60' && crit?.pct === '95' && cache?.pct === '95', JSON.stringify(t.bars.map((b) => b.pct)));
+  check('tones: comfortable ok, warming AMBER (working set 3.1 ≥ soft 3), big-job RED (working set 92 % ≥ 90 %), cache ok (bill 95 % of the hard level but working set 1.2 GB — page cache is not pressure: #343, was RED on master)', ok?.tone === 'ok' && warn?.tone === 'warn' && crit?.tone === 'crit' && cache?.tone === 'ok', JSON.stringify(t.bars.map((b) => b.tone)));
   check('the three tones are three DIFFERENT painted colours (accent / yellow / red), the working-set part SOLID over a translucent fill of the same colour (opacity tells them apart)', !!ok && !!warn && !!crit && new Set([ok.ws, warn.ws, crit.ws]).size === 3 && ok.fillOp !== null && ok.wsOp !== null && ok.fillOp < ok.wsOp, JSON.stringify([ok?.ws, warn?.ws, crit?.ws]));
   check('geometry: fill width = bill/hard of the track (35 % of the bar), the working-set part narrower than the fill, the soft tick at 50 %', !!ok && Math.abs(ok.fillW / ok.rect.width - 0.35) < 0.03 && ok.wsW < ok.fillW && Math.abs((ok.softX - ok.rect.x) / ok.rect.width - 0.5) < 0.03, JSON.stringify([ok?.fillW, ok?.rect, ok?.wsW, ok?.softX]));
   check('the track is THIN (a bar under the figure, not a second column): ≤ 6 px high, and only the four capped rows have a capped MEM cell', !!ok && ok.rect.height <= 6 && t.memCells === 4, JSON.stringify([ok?.rect, t.memCells]));
   check('the tooltip names both figures and what each compares to', !!ok && /kernel bill \(what the hard level compares\)/.test(ok.title) && /working set \(what the soft level compares\)/.test(ok.title) && /soft 3 GB \(settings now\)/.test(ok.title), ok?.title);
   check('#323-fu (m2): EXACTLY ONE member shows the « No memory cap applied » cell — feat-nolimit (limit read `max`); human-ws (limit unknown) and the capped rows do not', t.nocap.length === 1 && t.nocap[0].name === 'feat-nolimit', JSON.stringify(t.nocap.map((c) => c.name)));
   const nc = t.nocap[0];
-  check('#323-fu (m2): that cell keeps its plain figure (650 MB), carries the dim tooltip, and has NO bar', !!nc && /^650 MB$|^0\.6[0-9] GB$|^6[0-9]{2} MB$/.test(nc.text) && /^No memory cap applied — this session runs in a scope with no limit/.test(nc.title) && nc.hasBar === false, JSON.stringify(nc));
+  check('#323-fu (m2): that cell keeps its plain figure (650 MB), carries the dim tooltip, and has NO bar', !!nc && /^650 MB$|^0\.6[0-9] GB$|^6[0-9]{2} MB$/.test(nc.text) && /^No memory cap applied — the tool commands of this session run in a leaf with no limit/.test(nc.title) && nc.hasBar === false, JSON.stringify(nc));
   check('#323-fu (m2): the cue is RENDERED — dotted underline, help cursor — and the cell is focusable (tabIndex 0) with a role and an aria-label = figure + tip (a title alone is mouse-only)', !!nc && /underline/.test(nc.decoLine) && nc.decoStyle === 'dotted' && nc.cursor === 'help' && nc.tabIndex === 0 && nc.role === 'note' && /No memory cap applied/.test(nc.aria ?? ''), JSON.stringify(nc));
   check('the dim summary line sits under the table: « 4 capped members · closest: big-job 95 % of 6 GB »', !!t.note && /4 capped members · closest: big-job 95 % of 6(\.0)? GB/.test(t.note.text), JSON.stringify(t.note));
   const p = png(t);
@@ -209,6 +232,32 @@ if (t) {
     const num = (s) => (s.match(/\d+/g) ?? []).slice(0, 3).map(Number);
     check('decoded pixels: the red bar really painted red, the amber one amber, the comfortable one neither', px(crit, num(crit.ws), 12) > 20 && px(warn, num(warn.ws), 12) > 20 && px(ok, num(crit.ws), 40) === 0 && px(ok, num(warn.ws), 40) === 0, JSON.stringify([px(crit, num(crit.ws), 12), px(warn, num(warn.ws), 12), px(ok, num(crit.ws), 40)]));
   }
+}
+// ── #343 (D-pick B): the keeper-leaf room on the page ──
+const rm = shots.find((s) => s.kind === 'room');
+if (rm) {
+  const chip = (needle) => rm.chips.find((c) => c.name.includes(needle));
+  const close = chip('feat-close'), over = chip('feat-over');
+  check('the chip shows ONLY from 70 % of the room: feat-close (90 %) AMBER and feat-over (130 %) RED; feat-calm (41 %), feat-unprotected and feat-noroom have none', rm.chips.length === 2 && close?.tone === 'warn' && over?.tone === 'crit', JSON.stringify(rm.chips.map((c) => [c.name, c.pct, c.tone])));
+  check('the chips read « k 0.9 GB / 1 GB room » and « k 1.3 GB / 1 GB room »', close?.text === 'k 0.9 GB / 1 GB room' && over?.text === 'k 1.3 GB / 1 GB room', JSON.stringify(rm.chips.map((c) => c.text)));
+  check('the chip sits in the chips cell, LEFT of the MEM cell of its row, and is a small chip (≤ 20 px high)', !!close && !!over && close.rect.x + close.rect.width < close.memX && over.rect.x + over.rect.width < over.memX && close.rect.height <= 20 && over.rect.height <= 20, JSON.stringify([close?.rect, close?.memX]));
+  check('painted COLOURS: amber chip is yellow, red chip is red, and they differ (computed colour + border)', !!close && !!over && close.color !== over.color && close.border !== over.border && /^rgb\(255, 200, 87\)$/.test(close.color) && /^rgb\(255, 107, 107\)$/.test(over.color), JSON.stringify([close?.color, over?.color, close?.border, over?.border]));
+  check('the chip\'s title is the room sentence (red one says what red means)', !!close && !!over && /keeper \+ CLI 0\.9 GB of the 1 GB room above the tool level \(90 %\) — close to the room/.test(close.title) && /\(130 %\) — above the room: a full tool leaf would open a scope-level OOM/.test(over.title), JSON.stringify([close?.title, over?.title]));
+  const calmBar = rm.bars.find((b) => b.name.includes('feat-calm'));
+  check('the MEM tooltip of the CALM row (no chip) still says the room: 420 MB of the 1 GB room (41 %)', !!calmBar && /keeper \+ CLI 420 MB of the 1 GB room above the tool level \(41 %\)/.test(calmBar.title) && !/close to the room|above the room/.test(calmBar.title), calmBar?.title);
+  const flatBar = rm.bars.find((b) => b.name.includes('feat-noroom'));
+  check('a member with no margin (no backstop) keeps today\'s tooltip: no room sentence, no chip', !!flatBar && !/room above the tool level/.test(flatBar.title), flatBar?.title);
+  check('the grey line under the table names the member with the least room', !!rm.note && /least room: feat-over 130 % of 1 GB/.test(rm.note.text), JSON.stringify(rm.note));
+  const un = rm.unprot[0];
+  check('#343 gap 2: EXACTLY ONE unprotected cell — feat-unprotected — and NO capped bar on that row (the numeric limit would have drawn one)', rm.unprot.length === 1 && !!un && un.name.includes('feat-unprotected') && !rm.bars.some((b) => b.name.includes('feat-unprotected')) && un.hasBar === false, JSON.stringify([rm.unprot.map((c) => c.name), rm.bars.map((b) => b.name)]));
+  check('#343 gap 2: the cell keeps its plain figure (the scope bill, 2.2 GB), says « Memory cap NOT holding », is focusable with a role and an aria-label, and its cue is a dotted AMBER underline with a help cursor', !!un && /^2\.2\d* GB$/.test(un.text) && /^Memory cap NOT holding — /.test(un.title) && un.tabIndex === 0 && un.role === 'note' && /Memory cap NOT holding/.test(un.aria) && /underline/.test(un.decoLine) && un.decoStyle === 'dotted' && un.cursor === 'help' && /^rgb\(255, 200, 87\)$/.test(un.decoColor), JSON.stringify(un));
+  const rp = png(rm);
+  if (rp && close && over) {
+    const num = (s) => (s.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+    const near = (c, rgb) => pixelsNear(crop(rp, c.rect.x, c.rect.y, c.rect.width, c.rect.height), rgb, 40);
+    check('decoded pixels: the amber chip really painted amber (and no red), the red chip really painted red (and no amber)', near(close, num(close.color)) > 10 && near(over, num(over.color)) > 10 && near(close, num(over.color)) === 0 && near(over, num(close.color)) === 0, JSON.stringify([near(close, num(close.color)), near(over, num(over.color)), near(close, num(over.color)), near(over, num(close.color))]));
+  }
+  if (rp && un) check('decoded pixels: the unprotected cell\'s dotted underline painted amber', pixelsNear(crop(rp, un.rect.x, un.rect.y, un.rect.width, un.rect.height + 6), [255, 200, 87], 40) > 3, JSON.stringify(un.rect));
 }
 const w = shots.find((s) => s.kind === 'window');
 if (w) {

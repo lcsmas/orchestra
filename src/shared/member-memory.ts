@@ -2,6 +2,8 @@
 // src/main/member-memory.ts). A Reliquat (CONTEXT.md §Memory) = a process the member launched that left its tree; the process-tree walk cannot see it, the scope can.
 // Dependency-free so `node --test` covers it without cgroups. Structural inputs only: this file never imports H1's memory-scope.ts types (FI-1.3 stays one-way).
 
+import { keeperRoomOf, type KeeperRoom } from './keeper-room.ts';
+
 /** One scope generation as read: the kernel meter + its members. `null` = could not be read (the scope vanished mid-read) — unmeasured, never 0. */
 export interface ScopeReading {
   unit: string;
@@ -20,6 +22,12 @@ export interface ScopeReading {
   peakBytes?: number | null;
   /** #323-fu (review m2): FI-1 `readScopeMemory().limitApplied` — false = `memory.max` reads `max` (no limit applied on this scope), null/absent = unknown. */
   limitApplied?: boolean | null;
+  /** #343 (FI-1 `readScopeMemory`): the scope's own `memory.max` (the backstop), the keeper leaf `k`'s bill / working set / kills, and the OOM episodes the scope itself opened. Optional: absent = not read. */
+  backstopBytes?: number | null;
+  keeperLeaf?: { currentBytes: number | null; workingSetBytes: number | null; oomKills: number | null } | null;
+  scopeEpisodes?: number | null;
+  /** #343 gap 2: the cap state THE KEEPER reported for this scope (`unprotected` = its tools are not confined to the capped leaf; `not-applied` = the limit did not fully take) — present only on the scope that holds the keeper. Absent = unknown. */
+  capState?: 'active' | 'unprotected' | 'not-applied' | 'no-scope' | null;
 }
 
 /** #323: a member's usage against the cap its CURRENT session runs under — read from the scope that holds its keeper, so it is the limit the kernel really holds (not what the Garde mémoire window says now). */
@@ -58,8 +66,11 @@ export interface MemberMemoryView {
   outsideCount: number;
   /** #323: usage vs cap of the scope holding the member's keeper; null = no limit applied there (a scope that only carries leftovers, an uncapped scope), unreadable, or the keeper is in no scope. */
   cap: MemberCapView | null;
-  /** #323-fu (review m2): `'not-applied'` = the scope holding the member's keeper is READABLE and its `memory.max` reads `max` — a tracked member with NO limit (the mockup-A dim tooltip says why: no bar, never silence). null = capped (see `cap`), not tracked, no keeper scope, or the limit could not be read (unknown is never claimed as « not applied »). */
-  capNote: 'not-applied' | null;
+  /** #323-fu (review m2): `'not-applied'` = the scope holding the member's keeper is READABLE and its `memory.max` reads `max` — a tracked member with NO limit (the mockup-A dim tooltip says why: no bar, never silence). null = capped (see `cap`), not tracked, no keeper scope, or the limit could not be read (unknown is never claimed as « not applied »).
+   *  #343 gap 2: `'unprotected'` = the limit reads numeric but the KEEPER says the cap does not hold (its tools are not confined to the capped leaf, or the limit did not fully take): such a member never has a bar — an unprotected agent must not look protected. */
+  capNote: 'not-applied' | 'unprotected' | null;
+  /** #343: how close keeper + CLI (leaf `k`) are to the room under the scope's backstop; null/absent = not stateable (no backstop, no `k`, unreadable). */
+  room?: KeeperRoom | null;
 }
 
 /** How many Reliquats a member's view carries for display (the IPC payload stays small; the count is exact regardless). */
@@ -103,22 +114,44 @@ export function memberViewFrom(wsId: string, readings: readonly ScopeReading[], 
     outsideCount: outside.length,
     cap: capOf(readings),
     capNote: capNoteOf(readings),
+    room: roomOf(readings),
   };
+}
+
+/** #343: the margin of the keeper leaf of the scope that HOLDS the keeper (an older generation kept alive by Reliquats is not the session's). */
+function roomOf(readings: readonly ScopeReading[]): KeeperRoom | null {
+  const r = keeperReading(readings);
+  if (!r || !r.keeperLeaf) return null;
+  return keeperRoomOf({
+    backstopBytes: finite(r.backstopBytes) ? (r.backstopBytes as number) : null,
+    hardBytes: finite(r.maxBytes) && (r.maxBytes as number) > 0 ? (r.maxBytes as number) : null,
+    kWorkingSetBytes: finite(r.keeperLeaf.workingSetBytes) ? r.keeperLeaf.workingSetBytes : null,
+    kCurrentBytes: finite(r.keeperLeaf.currentBytes) ? r.keeperLeaf.currentBytes : null,
+    scopeCurrentBytes: finite(r.currentBytes) ? (r.currentBytes as number) : null,
+    kOomKills: finite(r.keeperLeaf.oomKills) ? r.keeperLeaf.oomKills : null,
+    scopeEpisodes: finite(r.scopeEpisodes) ? (r.scopeEpisodes as number) : null,
+  });
 }
 
 /** The scope generation that HOLDS the member's keeper — the session's own; an older generation kept alive by Reliquats is never it. */
 const keeperReading = (readings: readonly ScopeReading[]): ScopeReading | undefined => readings.find((x) => x.keeperPid !== null && x.keeperPid !== undefined);
 
 /** `'not-applied'` iff the keeper's scope has a finite meter AND explicitly reads « no limit » (never for an unreadable limit, a scope without the keeper, or a numeric cap). */
-function capNoteOf(readings: readonly ScopeReading[]): 'not-applied' | null {
+function capNoteOf(readings: readonly ScopeReading[]): 'not-applied' | 'unprotected' | null {
   const r = keeperReading(readings);
-  return r && finite(r.currentBytes) && r.limitApplied === false ? 'not-applied' : null;
+  if (!r || !finite(r.currentBytes)) return null;
+  if (r.limitApplied === false) return 'not-applied';
+  return keeperSaysCapDoesNotHold(r) ? 'unprotected' : null;
 }
+
+/** #343 gap 2: the keeper's own verdict on its cap (`unprotected` / `not-applied`) — sysfs alone cannot see that the tools never reach the capped leaf (`w/memory.max` stays numeric). */
+const keeperSaysCapDoesNotHold = (r: ScopeReading): boolean => r.capState === 'unprotected' || r.capState === 'not-applied';
 
 /** The cap view of the scope that holds the keeper — the generation the member's live session runs in. An older generation kept alive by Reliquats has its own limit but is not the session's. */
 function capOf(readings: readonly ScopeReading[]): MemberCapView | null {
   const r = keeperReading(readings);
   if (!r || !finite(r.currentBytes) || !finite(r.maxBytes) || (r.maxBytes as number) <= 0) return null;
+  if (keeperSaysCapDoesNotHold(r)) return null; // #343 gap 2: a numeric limit the keeper says does not protect the tools is NOT a cap to draw a bar for
   return { unit: r.unit, hardBytes: r.maxBytes as number, billBytes: finite(r.capCurrentBytes) ? (r.capCurrentBytes as number) : r.currentBytes, workingSetBytes: finite(r.workingSetBytes) ? (r.workingSetBytes as number) : null, peakBytes: finite(r.peakBytes) ? (r.peakBytes as number) : null, scopes: readings.length };
 }
 
@@ -216,4 +249,19 @@ export function formatReliquatsLine(r: MemberMemoryReport, labelOf: (wsId: strin
   if (blind > 0) parts.push(`${blind} member${blind === 1 ? '' : 's'} could not be fully read — figures incomplete`);
   if (stray > 0) parts.push(strayText);
   return `reliquats: ${parts.join(' · ')}`;
+}
+
+/**
+ * The `memory room:` line of `orchestra bus-status` (#343): how close keeper + CLI (leaf `k`) are to the room a full tool leaf leaves under the scope's backstop — the closest member first. Always ONE line when the app
+ * returned a report: nothing tracked / no margin stateable says so (never silence). `scope kills` counts what the backstop already did (kills charged to `k` + episodes the scope opened) on the live scopes.
+ */
+export function formatRoomLine(r: MemberMemoryReport, labelOf: (wsId: string) => string): string {
+  const withRoom = r.tracked.flatMap((m) => (m.room ? [{ m, room: m.room }] : []));
+  if (r.tracked.length === 0) return 'memory room: no member has a scope — nothing to measure';
+  if (withRoom.length === 0) return `memory room: ${r.tracked.length} tracked member${r.tracked.length === 1 ? '' : 's'}, no margin stateable (no scope-level backstop or no keeper-leaf reading — e.g. rig scopes, or a scope without the two-leaf layout)`;
+  const closest = withRoom.reduce((a, b) => (b.room.frac > a.room.frac ? b : a));
+  const events = withRoom.reduce((n, x) => n + x.room.netEvents, 0);
+  const tag = closest.room.tone === 'crit' ? ' — ABOVE the room: a full tool leaf would open a scope-level OOM' : closest.room.tone === 'warn' ? ' — close' : '';
+  const approx = closest.room.approx ? ' (upper bound: cache not separable)' : '';
+  return `memory room: ${withRoom.length} member${withRoom.length === 1 ? '' : 's'} measured · least room: ${labelOf(closest.m.wsId)} — keeper+CLI ${fmtBytes(closest.room.kBytes)}${approx} of ${fmtBytes(closest.room.roomBytes)} room (${closest.room.pct} %)${tag} · scope backstop events: ${events}`;
 }

@@ -41,6 +41,9 @@ import {
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
   reserveBytesFromEnv,
+  scopeMemoryMaxBytes,
+  parseMemoryScopeUnit,
+  SCOPE_LEAF_WORK,
   launcherExecedKeeper,
   describeCapState,
   formatMemKillLine,
@@ -56,6 +59,10 @@ import { pruneVerdict, readMemNoticesChecked } from '../shared/mem-notice-file';
 import { parseProcIdentity } from '../shared/resources';
 import { orchestraHome } from './platform';
 import { createMemKillCursor, type MemKillCursor } from './memkill-cursor';
+import { createScopeNet, type ScopeNet } from './scope-net.ts';
+import { createCapStateCache } from './cap-state-cache.ts';
+import { appSliceDir, scopePrefix } from './memory-scope.ts';
+import { readKernelOomKills } from '../keeper/kernel-oom-log';
 import { APPIMAGE_PATH } from './app-image';
 import { log } from './logger';
 
@@ -190,6 +197,121 @@ export function onMemorySoft(fn: MemorySoftListener): () => void {
     const i = memSoftListeners.indexOf(fn);
     if (i >= 0) memSoftListeners.splice(i, 1);
   };
+}
+
+// ── Scope backstop kills (#343) ──────────────────────────────────────────────────────────────────────────────────
+
+/** The ledger of launched scopes + the app-side check of the kernel log (src/main/scope-net.ts): a kill at the scope's backstop is reported even when the keeper — the only thing that watches — was the victim. */
+let scopeNetHost: ScopeNet | null = null;
+function scopeNet(): ScopeNet {
+  return (scopeNetHost ??= createScopeNet({
+    ledgerFile: path.join(keeperDir(), 'memscopes.json'),
+    now: Date.now,
+    readKernelKills: (sinceMs, needle) => readKernelOomKills(sinceMs, { match: needle, maxBufferBytes: 32 * 1024 * 1024, timeoutMs: 20_000, allBoots: true }),
+    scopeAlive: (unit) => {
+      const slice = appSliceDir();
+      return !!slice && fs.existsSync(path.join(slice, unit));
+    },
+    deliver: deliverScopeNetKill,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log,
+  }));
+}
+
+/** Hand a backstop-kill record to the same listeners as every other memory notice (the member's row + the coordinator's message). THROWS when nobody could take it or a listener failed: the ledger keeps the line owed. */
+function deliverScopeNetKill(wsId: string, rec: MemKillRecord): void {
+  if (memKillListeners.length === 0) throw new Error('no memory-notice listener is subscribed yet');
+  let failure: unknown = null;
+  for (const fn of [...memKillListeners]) {
+    try {
+      fn(wsId, rec);
+    } catch (e) {
+      failure ??= e;
+    }
+  }
+  if (failure !== null) throw failure;
+}
+
+/** Remember a scope this app launched (cgroups vanish with their last process; the unit, the tool cap and the backstop must be written down). */
+function noteScopeLaunch(wsId: string, cap: MemoryCapLaunch, launchedAt: number): void {
+  if (!cap.limits) return;
+  try {
+    scopeNet().note(cap.unit, { wsId, startedAt: launchedAt, hardBytes: cap.limits.hardBytes, backstopBytes: scopeMemoryMaxBytes(cap.limits.hardBytes, reserveBytesFromEnv(process.env)) });
+  } catch (e) {
+    log.warn(`scope-net[${wsId}]: could not remember scope ${cap.unit}`, e);
+  }
+}
+
+/** A member session ended abnormally (CLI killed by a signal / non-zero exit, or the keeper vanished): look for a backstop kill of its scope(s). Fire and forget — never throws. */
+function scopeNetSessionEnded(wsId: string): void {
+  void scopeNet().sessionEnded(wsId).catch(() => {});
+}
+
+/** The scopes of keepers that were already running (an older app launched them, or the ledger was lost): adopt every member scope on the host so their end is checked too. Idempotent. */
+function adoptHostScopes(): void {
+  const slice = appSliceDir();
+  if (!slice) return;
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(slice);
+  } catch {
+    return;
+  }
+  const prefix = scopePrefix();
+  const num = (p: string): number | null => {
+    try {
+      const v = fs.readFileSync(p, 'utf8').trim();
+      return /^\d+$/.test(v) ? Number(v) : null;
+    } catch {
+      return null;
+    }
+  };
+  for (const unit of names) {
+    const parsed = parseMemoryScopeUnit(prefix, unit);
+    if (!parsed) continue;
+    const dir = path.join(slice, unit);
+    const gen = parseInt(parsed.gen, 36);
+    scopeNet().note(unit, { wsId: parsed.wsId, startedAt: Number.isFinite(gen) && gen > 0 ? gen : Date.now(), hardBytes: num(path.join(dir, SCOPE_LEAF_WORK, 'memory.max')), backstopBytes: num(path.join(dir, 'memory.max')) });
+  }
+}
+
+/** App start (after the memory-notice sink is subscribed): adopt the live scopes, then check every remembered scope that ended while the app was down — ONE kernel-log read. Never throws. */
+export async function sweepScopeNet(isKnownWorkspace: (wsId: string) => boolean): Promise<void> {
+  try {
+    adoptHostScopes();
+    await scopeNet().sweep(isKnownWorkspace);
+  } catch (e) {
+    log.warn('scope-net: boot sweep failed', e);
+  }
+}
+
+// ── The cap state the keeper reports (#343, gap 2) ───────────────────────────────────────────────────────────────
+
+/** What each live keeper last said about its own cap — pushed (`capState`), read from `helloAck.cap`, or PROBED for a keeper nobody is attached to (src/main/cap-state-cache.ts). The Resources page asks it: a member whose tools are NOT confined to the capped leaf must never look capped. */
+type KeeperCapState = NonNullable<KeeperProbe['cap']>;
+const capCache = createCapStateCache({
+  probe: (wsId) => probeKeeper(wsId),
+  now: Date.now,
+  log: { warn: (wsId, m) => log.warn(`memory-cap[${wsId}]: ${m}`) },
+  describe: (cap) => describeCapState(cap.state, cap.unit, cap.hardBytes).text,
+});
+export function capStateOf(wsId: string): KeeperCapState | null {
+  return capCache.of(wsId);
+}
+function rememberCapState(wsId: string, cap: KeeperCapState): void {
+  capCache.remember(wsId, cap);
+}
+/** Probe the keepers whose cap state is unknown or older than 30 s — an unattached keeper never pushes (review M3). Fire and forget. */
+export function refreshCapStates(wsIds: readonly string[]): void {
+  capCache.refresh(wsIds);
+}
+/** App start: learn every live keeper's cap state BEFORE the Resources page asks (attach is lazy — an app restart leaves them all unattached). */
+export function primeCapStates(): void {
+  try {
+    capCache.refresh(listKeeperRoots().map((r) => r.workspaceId));
+  } catch (e) {
+    log.warn('cap-state priming failed', e);
+  }
 }
 
 /** A listener that throws (the bus is down) leaves the record UNDELIVERED (cursor not marked) so the next drain retries it, every {@link RETRY_DRAIN_MS} — ~10 min of outage, then it is dropped with a log line
@@ -328,6 +450,7 @@ async function reportCapState(wsId: string, cap: MemoryCapLaunch): Promise<void>
     const pr = await probeKeeper(wsId);
     if (!pr) continue;
     if (pr.cap === undefined && i < 3) continue; // the spawn frame may not have been processed yet
+    if (pr.cap) rememberCapState(wsId, pr.cap);
     const d = describeCapState(pr.cap?.state, cap.unit, cap.limits?.hardBytes ?? 0);
     (d.level === 'info' ? log.info : log.warn)(`memory-cap[${wsId}]: ${d.text}`);
     return;
@@ -1075,6 +1198,7 @@ export function makeKeeperSpawn(
           const f = parseKeeperFrame(line);
           if (!f) return;
           if (f.t === 'helloAck') {
+            if (f.cap) rememberCapState(wsId, f.cap); // #343 gap 2: an attach reads the CURRENT state (it may have flipped while the app was down)
             drainMemNotices(wsId); // #322 m1: the keeper's durable file first (kills AND warnings, in order) …
             deliverCatchUp(f.memKills, f.memSofts); // #320: … then the in-memory catch-up of an older keeper (already-delivered records are skipped by the cursor)
             ackWaiter?.resolve({
@@ -1085,6 +1209,8 @@ export function makeKeeperSpawn(
               shuttingDown: f.shuttingDown,
             });
             ackWaiter = null;
+          } else if (f.t === 'capState') {
+            rememberCapState(wsId, f.cap); // #343 gap 2: the Resources page must not show an unprotected member as capped
           } else if (f.t === 'memKill') {
             deliverMemRecord(wsId, f.rec);
           } else if (f.t === 'memSoft') {
@@ -1093,6 +1219,7 @@ export function makeKeeperSpawn(
             stdout.write(Buffer.from(f.b64, 'base64'));
           } else if (f.t === 'exit') {
             drainMemNotices(wsId); // #322 m1: a kill that ended the CLI is in the file by now (the keeper's stop() flushes a pending kill before it exits — review F2)
+            if (f.signal !== null || (f.code !== null && f.code !== 0)) scopeNetSessionEnded(wsId); // #343: a CLI killed by a signal may be the scope's backstop at work — the keeper's watch cannot see that
             exited = true;
             handle.exitCode = f.code;
             stdout.end();
@@ -1121,6 +1248,7 @@ export function makeKeeperSpawn(
         // ledger, and let resume-by-id recover the conversation.
         if (!exited && !appQuitting) {
           exited = true;
+          scopeNetSessionEnded(wsId); // #343: the keeper vanished under a live session — if the scope's backstop took it, only the kernel log says so
           stdout.end();
           ev.emit('exit', -1, null);
         }
@@ -1198,9 +1326,11 @@ export function makeKeeperSpawn(
               log.warn(`memory-cap[${wsId}]: the tool wrapper ${oomWrapperPath()} is missing or unusable — NOT creating the scope (without it the kernel would kill the CLI first); this member runs uncapped`);
               cap = undefined;
             }
+            const launchedAt = Date.now();
             sock = await launchKeeperDaemon(wsId, cap);
             wireSocket(sock);
             await helloOn(sock);
+            if (cap?.limits) noteScopeLaunch(wsId, cap, launchedAt);
             sock.write(
               encodeKeeperFrame({
                 t: 'spawn',

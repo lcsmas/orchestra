@@ -5374,6 +5374,10 @@ button.danger-primary:active {
 .res-chip.docker { color: var(--accent); border-color: rgba(110, 168, 255, 0.4); text-transform: none; letter-spacing: 0; }
 /* #328 (D-Q3 option A): the Reliquat chip — leftover processes of the workspace. Yellow: a genuine problem state (like low free space), hidden at 0. */
 .res-chip.reliquat { color: var(--yellow); border-color: rgba(255, 200, 87, 0.5); text-transform: none; letter-spacing: 0; }
+/* #343 (D-pick B): keeper + CLI close to the room under the scope's backstop — amber from 70 % of the room, red from 100 % (k alone fills it); hidden below, a healthy page shows no chip */
+.res-chip.room { text-transform: none; letter-spacing: 0; }
+.res-chip.room.tone-warn { color: var(--yellow); border-color: rgba(255, 200, 87, 0.5); }
+.res-chip.room.tone-crit { color: var(--red); border-color: rgba(255, 107, 107, 0.55); }
 .res-proc.reliquat .res-proc-comm { color: var(--yellow); }
 /* Not a problem state: « Reliquats not tracked » is information — dim, never yellow. */
 .res-reliquats-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
@@ -5390,6 +5394,7 @@ button.danger-primary:active {
 .res-capbar > .res-capbar-soft { top: -2px; bottom: -2px; width: 1px; border-radius: 0; background: var(--text-dim); }
 /* Not a problem state: how many members run under a cap and which one is closest — information, dim. */
 /* a tracked member with NO limit on its scope: the figure is today's, a faint dotted underline says there is a (dim) tooltip — no bar, never silence (#323-fu, mockup A) */
+.res-cell.res-mem-nocap.res-mem-unprotected { text-decoration-color: var(--yellow); } /* #343 gap 2: an unprotected member is a problem state, not just information — the dotted cue is amber */
 .res-cell.res-mem-nocap { cursor: help; text-decoration: underline dotted var(--text-dim); text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .res-cap-note { margin: 6px 12px 2px; font-size: 11px; line-height: 1.4; color: var(--text-dim); }
 /* #331 (D-Q4 A'): browsers Orchestra stopped for this workspace since the app started — a RESOLVED count, history tone (the default grey chip), no status colour. Hidden at 0. */

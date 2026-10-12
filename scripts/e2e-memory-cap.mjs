@@ -70,6 +70,12 @@ const ARMS = {
   notice_soft_reported: { mustFailOnMaster: true },
   notice_app_closed: { mustFailOnMaster: true },
   notice_storm_no_wrong_certainty: { mustFailOnMaster: true },
+  // #343: the scope's BACKSTOP killing the SESSION (keeper + CLI outgrow the room above the tool cap) is reported — by the APP, from the kernel log, even when the keeper is the victim
+  net_cli_killed_reported: { mustFailOnMaster: true },
+  net_keeper_killed_reported: { mustFailOnMaster: true },
+  net_tool_kill_stays_a_tool_kill: {},
+  net_tool_kill_at_scope_level: { mustFailOnMaster: true },
+  net_margin_reads_k: { mustFailOnMaster: true },
   // needs a real Chromium (CHROMIUM or /usr/lib64/chromium-browser/chromium-browser): run by `pnpm run test:memory-cap-browser`, skipped by `all` unless MC_BROWSER=1
   browser_contained: { mustFailOnMaster: true, needsChromium: true },
 };
@@ -361,6 +367,22 @@ async function explicitStop(w, reason, { forbid = true } = {}) {
 }
 /** The pids carrying `marker` in their argv AND this arm's scratch dir (a detached process of THIS arm only). */
 const procsMarked = (marker) => survivorsOf(base).filter((pid) => (readSafe(`/proc/${pid}/cmdline`) ?? '').includes(marker));
+
+/** #343: the app's journal read as keeper-client wires it — (since, needle) → readKernelOomKills(since, { match, allBoots }). Passing the reader bare would hand the needle STRING in as the options object (`'x'.match` is a function: a garbage grep, a silent « nothing found »). `seen` records what each read RETURNED, so a « tells nothing again » check can prove it read the line it declined to tell. */
+const readSeen = [];
+const realRead = async (since, needle) => {
+  const kol = await import(`${REPO}/src/keeper/kernel-oom-log.ts`);
+  const out = await kol.readKernelOomKills(since, { match: needle, allBoots: true });
+  readSeen.push(out === null ? null : out.length);
+  return out;
+};
+
+/** #343 gap 2: the member's view exactly as the Resources page / bus-status build it — the REAL FI-1 binding over the REAL cgroup files, with the app's cache of what the keeper reported about its own cap (`capStateOf`, absent on a tree without it). */
+async function memberViewOf(wsId) {
+  const memberMod = await import(`${REPO}/src/main/member-memory.ts`);
+  const rep = memberMod.sampleMemberMemory(memberMod.realMemberMemoryDeps({ workspaceIds: () => [wsId], liveMemberIds: () => [wsId], capState: kc.capStateOf }));
+  return rep.tracked.find((m) => m.wsId === wsId) ?? null;
+}
 
 // ═══ the arms ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 const ws = wsName(ARM.slice(0, 4));
@@ -860,6 +882,12 @@ try {
     check('a tool command runs at oom_score_adj 1000 although it did not move (the old behaviour dropped the prefix: adj 0)', lines[0] === '1000', `adj=${lines[0]}`);
     check('...in the KEEPER leaf (nothing capped at the hard level — said so)', (lines[1] ?? '').trim().endsWith('/k'), lines[1]);
     check('the app log says UNCAPPED-ish for the unprotected state (describeCapState)', await waitFor(() => /NOTHING is capped at the hard level/.test(orchLog()), 8000), '');
+    // #343 gap 2: the TRAP — the work leaf still carries a numeric memory.max, so the sysfs alone says « capped »; only the keeper's own verdict (pushed to the app) says the tools are not in it
+    const wMax0 = readSafe(path.join(f.scopeDir ?? '/nonexistent', 'w', 'memory.max'))?.trim() ?? '';
+    check('gap 2 setup (the trap): w/memory.max is NUMERIC although nothing is capped — the sysfs alone would draw a healthy bar', /^\d+$/.test(wMax0), `w/memory.max=${wMax0}`);
+    check('gap 2: the app learned the keeper\'s verdict by PUSH (capStateOf = unprotected, for THIS scope)', await waitFor(() => kc.capStateOf?.(ws)?.state === 'unprotected' && kc.capStateOf(ws).unit === f.unit, 8000), JSON.stringify(kc.capStateOf?.(ws) ?? null));
+    const v1 = await memberViewOf(ws);
+    check('gap 2: the member view has NO cap (no bar) and the note says unprotected — an unprotected agent never looks protected', !!v1 && v1.cap === null && v1.capNote === 'unprotected', JSON.stringify({ cap: v1?.cap ?? null, capNote: v1?.capNote ?? null }));
     detail = `state=${pr?.cap?.state} adj=${lines[0]}`;
   } else if (ARM === 'probe_flaky_retry_passes') {
     // The FIRST wrapper call fails (a spawn failing once under host pressure), every later one works: the ONE retry rescues the member — state active, no failure line, the tools land in the work leaf.
@@ -944,6 +972,7 @@ try {
     const f = factsOf(ws, st);
     const pr0 = await kc.probeKeeper(ws);
     check('setup: the probe PASSED (state active at start — the start-time check cannot see this fault)', pr0?.cap?.state === 'active', JSON.stringify(pr0?.cap ?? null));
+    check('gap 2 setup: while the state is active the member LOOKS capped (a bar) — the control for the flip below', await waitFor(() => kc.capStateOf?.(ws)?.state === 'active', 8000) && (await memberViewOf(ws))?.cap !== null && (await memberViewOf(ws))?.capNote === null, JSON.stringify(kc.capStateOf?.(ws) ?? null));
     for (let i = 0; i < 4; i++) await runTool(st, `echo tool${i}; cat /proc/self/cgroup`, `t${i}`, 20_000);
     const klogPath = path.join(home, 'keepers', `${ws}.log`);
     const tripped = await waitFor(() => /TRIPWIRE — /.test(readSafe(klogPath) ?? ''), 8000);
@@ -955,6 +984,9 @@ try {
     const t = await runTool(st, 'cat /proc/self/cgroup', 't-where', 20_000);
     check('control: the tools really were in the keeper leaf (the fault the tripwire names is real)', (t?.stdout ?? '').trim().endsWith('/k'), (t?.stdout ?? '').trim());
     check('the session is alive (a tripwire reports, it kills nothing)', alive(f.keeperPid) && alive(f.cliPid));
+    check('gap 2: the FLIP reached the app by PUSH (capStateOf unprotected, with a « cap state changed active → unprotected » line in the app log)', await waitFor(() => kc.capStateOf?.(ws)?.state === 'unprotected', 8000) && /cap state changed active → unprotected/.test(orchLog()), JSON.stringify(kc.capStateOf?.(ws) ?? null));
+    const v2 = await memberViewOf(ws);
+    check('gap 2: after the flip the member view has NO cap and says unprotected (was: a bar)', !!v2 && v2.cap === null && v2.capNote === 'unprotected', JSON.stringify({ cap: v2?.cap ?? null, capNote: v2?.capNote ?? null }));
     detail = `state=${pr?.cap?.state}`;
   } else if (ARM === 'launcher_fails_plain') {
     // systemd-run exists on PATH (so the app believes it can scope) but FAILS (no user manager reachable…): the member must still start — uncapped, and saying so.
@@ -1216,6 +1248,201 @@ try {
     check('every other record is a labelled guess', kills.every((k) => k.source === 'kernel' || k.source === 'inferred'), `sources=${[...new Set(kills.map((k) => k.source ?? 'none'))]}`);
     check('the kernel path still names what it can: at least one record is kernel-named', byKernel.length >= 1, `kernel ${byKernel.length}/${kills.length}`);
     detail = `kills=${kills.length} kernel=${byKernel.length} oracle=${oracle.size}`;
+  } else if (ARM === 'net_cli_killed_reported' || ARM === 'net_keeper_killed_reported') {
+    // #343: keeper + CLI (leaf `k`, no limit) outgrow the room above the tool cap ⇒ the OOM episode is the SCOPE's. The keeper's watch reads `w` and sees nothing; the session ends (CLI killed, or — arm 2 — the KEEPER itself,
+    // made the preferred victim by raising its oom_score_adj). The APP finds the kernel's own line in the journal and tells the member (a notice row) and its coordinator (ONE escalation), once, even across an app restart.
+    const keeperVictim = ARM === 'net_keeper_killed_reported';
+    const RESERVE = 96 * 1024 * 1024;
+    process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = String(RESERVE);
+    settings = { ...settings, capHardGb: 0.1, capSoftGb: 0.08 };
+    const HARD = Math.round(0.1 * 1024 ** 3);
+    const sinkOk = await armSink([ws]);
+    check('the notice sink and the scope-net host exist in this tree (scope-net.ts)', sinkOk && fs.existsSync(path.join(REPO, 'src', 'main', 'scope-net.ts')), '');
+    const t0 = Math.floor(Date.now() / 1000);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const sMax = Number(readSafe(path.join(f.scopeDir ?? '/nonexistent', 'memory.max')));
+    const wMax = Number(readSafe(path.join(f.scopeDir ?? '/nonexistent', 'w', 'memory.max')));
+    check('setup: production-shaped scope — keeper AND CLI in `k` (no limit), tool cap on `w`, backstop = hard + room on the scope', f.inRigScope && path.basename(cgOf(f.keeperPid) ?? '') === 'k' && path.basename(cgOf(f.cliPid) ?? '') === 'k' && Math.abs(wMax - HARD) <= 65536 && Math.abs(sMax - (HARD + RESERVE)) <= 65536, `keeper=${cgOf(f.keeperPid)} cli=${cgOf(f.cliPid)} w=${wMax} scope=${sMax}`);
+    const victimPid = keeperVictim ? f.keeperPid : f.cliPid;
+    if (keeperVictim) {
+      try { fs.writeFileSync(`/proc/${f.keeperPid}/oom_score_adj`, '1000'); } catch { /* checked below */ }
+      check('setup: the keeper is the kernel\'s preferred victim (oom_score_adj raised to 1000 — an unprivileged process may RAISE it)', readSafe(`/proc/${f.keeperPid}/oom_score_adj`)?.trim() === '1000', `adj=${readSafe(`/proc/${f.keeperPid}/oom_score_adj`)?.trim()}`);
+    }
+    const keeperId0 = f.keeperId;
+    st.send({ inflate: { mb: 500, stepMb: 8, stepMs: 40 } });
+    const gone = await waitFor(() => !alive(victimPid), 60_000, 100);
+    check(`the ${keeperVictim ? 'KEEPER' : 'CLI'} was killed while it grew in \`k\``, gone, `victim=${victimPid}`);
+    // the rig's independent oracle: the kernel's own line, read from outside — the scope (not the tool leaf) hit its limit, the victim lived in `k`
+    await sleep(1500);
+    const lines = (spawnSync('journalctl', ['-k', '--no-pager', '-q', '-o', 'json', '--grep', 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', `@${t0 - 2}`], { encoding: 'utf8', maxBuffer: 16 << 20 }).stdout ?? '').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l).MESSAGE; } catch { return ''; } }).filter((m) => typeof m === 'string' && m.includes(`/${f.unit},`) || (typeof m === 'string' && m.includes(`/${f.unit}/k,`)));
+    const oracle = lines.find((m) => m.includes(`oom_memcg=`) && new RegExp(`oom_memcg=[^,]*/${f.unit},task_memcg=[^,]*/${f.unit}/k,.*pid=${victimPid},`).test(m));
+    check('ORACLE (kernel journal, read from outside): the SCOPE hit its limit and the victim lived in /k — a scope-level kill, not a tool kill', journalReadable() ? !!oracle : true, oracle ? oracle.slice(oracle.indexOf('oom_memcg=')).slice(0, 220) : `no matching line among ${lines.length}`);
+    const rowsOk = await waitFor(() => noticeEvents(ws).length >= 1, 30_000, 250);
+    await notified(ws);
+    const rows = noticeEvents(ws);
+    check('the member\'s event stream has ONE notice row, worded as a SCOPE BACKSTOP kill ("the session ended"), naming the victim — not the tool-kill sentence', rowsOk && rows.length === 1 && /^Scope backstop .* reached — the session ended: /.test(rows[0].ev.text) && rows[0].ev.text.includes(`(pid ${victimPid})`) && !/Plafond mémoire .* reached$/.test(rows[0].ev.text), `rows=${rows.length} ${rows[0]?.ev?.text?.slice(0, 200)}`);
+    check('...in the dedicated Plafond mémoire row, red (tone hard), victim in a chip', rows.length === 1 && rows[0].ev.kind === 'memory-cap' && rows[0].ev.memCap?.tone === 'hard' && rows[0].ev.memCap.segments.some((sg) => sg.kind === 'chip' && sg.text.includes(`pid ${victimPid}`)), JSON.stringify(rows[0]?.ev?.memCap ?? null).slice(0, 200));
+    const bus = busRows(ws);
+    check('the coordinator got ONE escalation, from the member to its coordinator, saying SCOPE BACKSTOP (NOT a tool kill), the workspace, the victim pid and that the SESSION ENDED', bus.length === 1 && bus[0].kind === 'escalation' && bus[0].recipient === 'rig-coordinator' && /SCOPE BACKSTOP kill \(NOT a tool kill\)/.test(bus[0].body) && bus[0].body.includes(ws) && bus[0].body.includes(`pid ${victimPid}`) && /SESSION ENDED/.test(bus[0].body), `rows=${bus.length} ${(bus[0]?.body ?? '').slice(0, 260)}`);
+    const logged = (orchLog().match(/SCOPE BACKSTOP kill:/g) ?? []).length;
+    check('the app log has the line, once', logged === 1 && new RegExp(`memory-cap\\[${ws}\\] SCOPE BACKSTOP kill:`).test(orchLog()), `lines=${logged}`);
+    check('...and it is a different line from a tool kill (no `killed "<cmd>" at the hard level` for this scope)', !new RegExp(`memory-cap\\[${ws}\\] killed `).test(orchLog()));
+    const nfile = path.join(home, 'keepers', `${ws}.memnotices.jsonl`);
+    check('the keeper recorded NOTHING for it (its watch reads `w`; a killed keeper cannot write): no tool-kill record reached the listeners, nothing in its notice file', kills.filter((k) => k.level !== 'net').length === 0 && fileRecords(nfile).length === 0, `listeners=${kills.map((k) => k.level)} file=${fileRecords(nfile).length}`);
+    check('persisted for a reopened pane: ONE entry, level net', (fakeWs.get(ws)?.sdkMemNotices ?? []).length === 1 && fakeWs.get(ws).sdkMemNotices[0].level === 'net', JSON.stringify((fakeWs.get(ws)?.sdkMemNotices ?? []).map((e) => e.level)));
+    if (keeperVictim) check('the keeper is really gone (same pid+start no longer alive) — nothing in the member was left to say it', !alive(f.keeperPid) && ident(f.keeperPid) !== keeperId0, '');
+    else check('the kernel took the CLI, not the keeper (the oracle names the CLI pid; the keeper only exits afterwards, its CLI gone) — and it still recorded nothing', !!oracle || !journalReadable(), '');
+    // a restarted app: a fresh scope-net over the SAME ledger and the SAME journal tells nothing again
+    if (!fs.existsSync(path.join(REPO, 'src', 'main', 'scope-net.ts'))) {
+      check('a RESTARTED app tells nothing again, and the ledger remembers the unit', false, 'this tree has no src/main/scope-net.ts (no ledger, no report)');
+    } else {
+    const scopeNetMod = await import(`${REPO}/src/main/scope-net.ts`);
+    const kolMod = await import(`${REPO}/src/keeper/kernel-oom-log.ts`);
+    const slice = `/sys/fs/cgroup/user.slice/user-${process.getuid()}.slice/user@${process.getuid()}.service/app.slice`;
+    let redelivered = 0;
+    const fresh = scopeNetMod.createScopeNet({ ledgerFile: path.join(home, 'keepers', 'memscopes.json'), now: Date.now, readKernelKills: realRead, scopeAlive: (u) => fs.existsSync(path.join(slice, u)), deliver: () => { redelivered++; }, sleep, log: { info: () => {}, warn: () => {} }, attemptDelaysMs: [0] });
+    await fresh.sessionEnded(ws);
+    await fresh.sweep(() => true);
+    check('a RESTARTED app (fresh instance, same ledger + journal) tells nothing again: no second row, no second message', redelivered === 0 && noticeEvents(ws).length === 1 && busRows(ws).length === 1, `redelivered=${redelivered} rows=${noticeEvents(ws).length} bus=${busRows(ws).length}`);
+    check('...it does not even LOOK again: the unit was closed (done) when its kill was told and the scope was gone — the closure is persisted', readSeen.length === 0, `reads=${JSON.stringify(readSeen)}`);
+    // NON-VACUOUS: reopen the unit in a COPY of the ledger (done=false) — the restarted app now READS the journal, SEES the kill line, and tells nothing because `reported` was persisted
+    const led0 = JSON.parse(readSafe(path.join(home, 'keepers', 'memscopes.json')) ?? '{}');
+    if (led0[f.unit]) led0[f.unit].done = false;
+    const copyLedger = path.join(home, 'keepers', 'memscopes-reopened.json');
+    fs.writeFileSync(copyLedger, JSON.stringify(led0));
+    let redelivered2 = 0;
+    const fresh2 = scopeNetMod.createScopeNet({ ledgerFile: copyLedger, now: Date.now, readKernelKills: realRead, scopeAlive: () => true, deliver: () => { redelivered2++; }, sleep, log: { info: () => {}, warn: () => {} }, attemptDelaysMs: [0] });
+    await fresh2.sessionEnded(ws);
+    check('...and with the unit REOPENED the restarted app READS the journal and SEES the kill (the read returned ≥ 1 line) yet tells NOTHING: the reported line was persisted', readSeen.length >= 1 && readSeen.every((n) => n !== null) && readSeen.some((n) => n >= 1) && redelivered2 === 0, `reads=${JSON.stringify(readSeen)} redelivered=${redelivered2}`);
+    const led = JSON.parse(readSafe(path.join(home, 'keepers', 'memscopes.json')) ?? '{}')[f.unit];
+    check('the ledger remembers the unit, its tool cap, its backstop and the reported line', !!led && led.wsId === ws && Math.abs(led.hardBytes - HARD) <= 65536 && Math.abs(led.backstopBytes - (HARD + RESERVE)) <= 65536 && led.reported.length >= 1, JSON.stringify(led ?? null).slice(0, 200));
+    }
+    detail = `${keeperVictim ? 'keeper' : 'cli'} pid=${victimPid} rows=${rows.length} bus=${bus.length}`;
+  } else if (ARM === 'net_tool_kill_stays_a_tool_kill') {
+    // CONTROL on the same production-shaped scope: a tool over the hard level is killed ON THE TOOL LEAF — a tool-kill notice, and the backstop detector, asked about the same scope against the REAL journal (which holds this very kill), says nothing.
+    const RESERVE = 96 * 1024 * 1024;
+    process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = String(RESERVE);
+    settings = { ...settings, capHardGb: 0.1, capSoftGb: 0.08 };
+    await armSink([ws]);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const e0 = eventsOf(f.cgroupDir ?? '/nonexistent');
+    await runTool(st, `python3 -c 'b = bytearray(b"\\xa5") * (230 * 1024 * 1024)'`, 't-hog', 60_000);
+    await sleep(2500);
+    await notified(ws);
+    const e1 = eventsOf(f.cgroupDir ?? '/nonexistent');
+    check('POSITIVE CONTROL: the tool leaf killed the hog (oom_kill +1 on `w`)', (e1.oom_kill ?? 0) - (e0.oom_kill ?? 0) >= 1, `w oom_kill ${e0.oom_kill}->${e1.oom_kill}`);
+    const toolRows = noticeEvents(ws).filter((e) => /Plafond mémoire .* reached$/.test(e.ev.text ?? ''));
+    check('the member got the ordinary TOOL-KILL row (not a backstop sentence)', toolRows.length >= 1 && noticeEvents(ws).every((e) => !/backstop/i.test(e.ev.text ?? '')), noticeEvents(ws).map((e) => e.ev.text?.slice(0, 80)).join(' | '));
+    if (fs.existsSync(path.join(REPO, 'src', 'main', 'scope-net.ts'))) {
+      const scopeNetMod = await import(`${REPO}/src/main/scope-net.ts`);
+      const kolMod = await import(`${REPO}/src/keeper/kernel-oom-log.ts`);
+      let told = 0;
+      // POSITIVE CONTROL: the app's own reader returns this tool-leaf kill (oom_memcg = the tool leaf) — a silent detector is a classification, not a blind reader
+      const readBackCtl = (await kolMod.readKernelOomKills(Date.now() - 300_000)) ?? [];
+      const ctlLine = readBackCtl.find((k) => k.oomMemcg.endsWith(`/${f.unit}/w`) && k.taskMemcg.endsWith(`/${f.unit}/w`));
+      check('positive control: the app\'s own journal reader returns this tool-leaf kill (oom_memcg = the tool leaf)', journalReadable() ? !!ctlLine : true, ctlLine ? `pid=${ctlLine.pid}` : `none among ${readBackCtl.length}`);
+      const sn = scopeNetMod.createScopeNet({ ledgerFile: path.join(base, 'ctl-ledger.json'), now: Date.now, readKernelKills: realRead, scopeAlive: () => false, deliver: () => { told++; }, sleep, log: { info: () => {}, warn: () => {} }, attemptDelaysMs: [0] });
+      sn.note(f.unit, { wsId: ws, startedAt: Date.now() - 120_000, hardBytes: Math.round(0.1 * 1024 ** 3), backstopBytes: Math.round(0.1 * 1024 ** 3) + RESERVE });
+      await sn.sessionEnded(ws);
+      check('the backstop detector, run over the REAL journal that holds this tool kill, reports NOTHING', told === 0 && journalReadable(), `told=${told}`);
+    }
+    check('the session is untouched: keeper and CLI alive', alive(f.keeperPid) && alive(f.cliPid));
+    detail = `tool rows=${toolRows.length}`;
+  } else if (ARM === 'net_tool_kill_at_scope_level') {
+    // review M2: a TOOL killed by the SCOPE's episode (keeper + CLI outgrew the room while the tool leaf is below its own limit — the tool is the kernel's first pick, adj 1000) is the KEEPER's record, in its own words
+    // (« the scope backstop reached »), told ONCE — the app's backstop path must not tell it a second time. The session survives.
+    const RESERVE = 96 * 1024 * 1024;
+    process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = String(RESERVE);
+    settings = { ...settings, capHardGb: 0.1, capSoftGb: 0.08 };
+    await armSink([ws]);
+    const t0 = Math.floor(Date.now() / 1000);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    // DETERMINISTIC: first `k` is grown by 112 MB and the CLI goes IDLE (nothing allocates in `k` from here on); THEN a tool allocates 90 MB in `w` (under its own 107 MB limit) in ONE burst — the scope (backstop ≈ 203 MB) overflows
+    // exactly once, at the tool's own allocation, the tool is the kernel's pick (adj 1000) and nobody else allocates during its kill (a CLI that kept inflating took the session in 3 runs of 6 under load).
+    st.send({ inflate: { mb: 112, stepMb: 4, stepMs: 30 } });
+    await waitFor(() => st.lines.some((l) => l.inflated >= 112), 30_000, 100);
+    await sleep(800);
+    const kDir = path.join(f.scopeDir ?? '/nonexistent', 'k');
+    const kBefore = Number(readSafe(path.join(kDir, 'memory.current')));
+    check('setup: keeper + CLI hold ≈ 112+ MB in `k` and the scope is still under its backstop (no episode yet)', alive(f.keeperPid) && alive(f.cliPid) && kBefore > 100 * 1024 * 1024 && (eventsOf(f.scopeDir ?? '/nonexistent').oom_kill ?? 0) === 0, `k.current=${Math.round(kBefore / 1048576)} MB`);
+    const wDir = path.join(f.scopeDir ?? '/nonexistent', 'w');
+    const e0 = eventsOf(wDir);
+    st.send({ tool: `python3 -c 'b = bytearray(b"\\xa5") * (90 * 1024 * 1024); import time; time.sleep(60)'`, id: 't-hold' });
+    const toolDone = await waitFor(() => resultOf(st, 't-hold'), 60_000, 100);
+    await sleep(2500);
+    await notified(ws);
+    const e1 = eventsOf(wDir);
+    const lines = (spawnSync('journalctl', ['-k', '--no-pager', '-o', 'json', '--grep', 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', `@${t0 - 2}`], { encoding: 'utf8', maxBuffer: 16 << 20 }).stdout ?? '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l).MESSAGE; } catch { return ''; } }).filter((m) => typeof m === 'string' && m.includes(`/${f.unit},`));
+    const oracle = lines.find((m) => new RegExp(`oom_memcg=[^,]*/${f.unit},task_memcg=[^,]*/${f.unit}/w,`).test(m));
+    check('ORACLE (kernel journal, from outside): the SCOPE hit its limit and the victim lived in /w — a tool killed by the scope-level episode', journalReadable() ? !!oracle : true, oracle ? oracle.slice(oracle.indexOf('oom_memcg=')).slice(0, 200) : `no matching line among ${lines.length}`);
+    check('the tool was killed (SIGKILL) and the session SURVIVED: keeper and CLI alive, same identities', toolDone && (resultOf(st, 't-hold')?.signal === 'SIGKILL' || resultOf(st, 't-hold')?.code === 137) && alive(f.keeperPid) && alive(f.cliPid) && ident(f.keeperPid) === f.keeperId && ident(f.cliPid) === f.cliId, JSON.stringify(resultOf(st, 't-hold') ?? null));
+    check('the tool leaf counted the kill (oom_kill +1 on `w`: why the KEEPER\'s watch sees it)', (e1.oom_kill ?? 0) - (e0.oom_kill ?? 0) >= 1, `w oom_kill ${e0.oom_kill}->${e1.oom_kill}`);
+    const rows = killRows(ws); // the tool also crossed the warning level on its way up (90 MB > soft 80 MB): that row/`status` is counted apart
+    const rec = kills.find((k) => k.level !== 'net');
+    check('the KEEPER\'s record is tagged scopeLevel (the kernel line names the scope, not the tool leaf)', !!rec && rec.scopeLevel === true && rec.source === 'kernel', JSON.stringify(rec ?? null).slice(0, 220));
+    check('the member\'s row says so in its OWN words — « Command … killed — the scope backstop reached — keeper + CLI outgrew the room above the tool cap » — not « memory pressure » and not the hard-level sentence', rows.length === 1 && /killed: the scope backstop reached — keeper \+ CLI outgrew the room above the tool cap/.test(rows[0].ev.text) && !/memory pressure|Plafond mémoire .* reached/.test(rows[0].ev.text), `rows=${rows.length} ${rows[0]?.ev?.text?.slice(0, 200)}`);
+    const bus = busRows(ws).filter((b) => b.kind === 'escalation');
+    check('the coordinator got exactly ONE escalation: an escalation naming the SCOPE BACKSTOP and saying the session survived', bus.length === 1 && bus[0].kind === 'escalation' && /KILLED at the SCOPE BACKSTOP/.test(bus[0].body) && /session survived/.test(bus[0].body), `rows=${bus.length} ${(bus[0]?.body ?? '').slice(0, 220)}`);
+    // the app's own backstop path, over the REAL journal that holds this very line, tells NOTHING (no double report)
+    if (fs.existsSync(path.join(REPO, 'src', 'main', 'scope-net.ts'))) {
+      const scopeNetMod = await import(`${REPO}/src/main/scope-net.ts`);
+      const kolMod = await import(`${REPO}/src/keeper/kernel-oom-log.ts`);
+      let told = 0;
+      // POSITIVE CONTROL (the instrument can see the line it is about to ignore): the app's OWN reader returns this very scope-level `w` victim from the real journal — so a silent detector is a CLASSIFICATION, not a blind reader
+      const readBack = (await kolMod.readKernelOomKills(Date.now() - 300_000)) ?? [];
+      const seenLine = readBack.find((k) => k.oomMemcg.endsWith(`/${f.unit}`) && k.taskMemcg.endsWith(`/${f.unit}/w`));
+      check('positive control: the app\'s own journal reader returns this scope-level tool-leaf victim (oom_memcg = the scope, task in /w)', journalReadable() ? !!seenLine : true, seenLine ? `pid=${seenLine.pid}` : `none among ${readBack.length}`);
+      const sn = scopeNetMod.createScopeNet({ ledgerFile: path.join(base, 'ctl2-ledger.json'), now: Date.now, readKernelKills: realRead, scopeAlive: () => false, deliver: () => { told++; }, sleep, log: { info: () => {}, warn: () => {} }, attemptDelaysMs: [0] });
+      sn.note(f.unit, { wsId: ws, startedAt: Date.now() - 120_000, hardBytes: Math.round(0.1 * 1024 ** 3), backstopBytes: Math.round(0.1 * 1024 ** 3) + RESERVE });
+      await sn.sessionEnded(ws);
+      check('the backstop path (a fresh app over the same journal) reports NOTHING for this tool victim — the keeper already told it, once', told === 0 && journalReadable(), `told=${told}`);
+    }
+    detail = `rows=${rows.length} bus=${bus.length} w oom_kill=${e1.oom_kill}`;
+  } else if (ARM === 'net_margin_reads_k') {
+    // The margin of the keeper leaf against the room: read from the REAL cgroup files through the shipped reader and the shipped member view; it MOVES when the CLI grows in `k` (known-magnitude), and stays
+    // quiet about a scope without a backstop.
+    const RESERVE = 96 * 1024 * 1024;
+    process.env.ORCHESTRA_MEMCAP_RESERVE_BYTES = String(RESERVE);
+    settings = { ...settings, capHardGb: 0.1, capSoftGb: 0.08 };
+    const HARD = Math.round(0.1 * 1024 ** 3);
+    const st = open(ws, decide(ws), { rssMb: 0, extraEnv: { DBUS_SESSION_BUS_ADDRESS: FAKE_BUS } });
+    await waitFor(() => initOf(st), 30_000);
+    const f = factsOf(ws, st);
+    const memberMod = await import(`${REPO}/src/main/member-memory.ts`);
+    const sharedMod = await import(`${REPO}/src/shared/member-memory.ts`);
+    const roomOnce = () => { const rep = memberMod.sampleMemberMemory(memberMod.realMemberMemoryDeps({ workspaceIds: () => [ws], liveMemberIds: () => [ws], capState: kc.capStateOf })); return { rep, v: rep.tracked.find((m) => m.wsId === ws) }; };
+    await sleep(800);
+    const a = roomOnce();
+    check('the member view carries the keeper-leaf margin: room = backstop − hard (= the reserve), k > 0 and well under the room at rest', !!a.v?.room && Math.abs(a.v.room.roomBytes - RESERVE) <= 65536 * 2 && a.v.room.kBytes > 10 * 1024 * 1024 && a.v.room.frac < 0.95, JSON.stringify(a.v?.room ?? null));
+    const grow = 40; // MB
+    st.send({ inflate: { mb: grow, stepMb: 8, stepMs: 20 } });
+    await waitFor(() => st.lines.some((l) => l.inflated >= grow), 20_000, 100);
+    await sleep(600);
+    const b = roomOnce();
+    const delta = ((b.v?.room?.kBytes ?? 0) - (a.v?.room?.kBytes ?? 0)) / (1024 * 1024);
+    check(`the margin MOVES with the CLI's growth in \`k\`: +${grow} MB inflated ⇒ k up by ${grow} ± 12 MB`, delta > grow - 12 && delta < grow + 12, `delta=${delta.toFixed(1)} MB`);
+    check('...and the tone follows the fraction of the room (k/room)', b.v?.room && b.v.room.tone === (b.v.room.frac >= 1 ? 'crit' : b.v.room.frac >= 0.7 ? 'warn' : 'ok'), JSON.stringify(b.v?.room ?? null));
+    const line = sharedMod.formatRoomLine?.(b.rep, () => 'rig-member');
+    check('the bus-status line names the closest member, its keeper+CLI bytes, the room and the percent', typeof line === 'string' && /^memory room: 1 member measured · least room: rig-member — keeper\+CLI \d+ MB of \d+ MB room \(\d+ %\)/.test(line), line ?? 'formatRoomLine missing');
+    // the page's model over the REAL report: groupSnapshot → the row carries the room, the chip rule and the tooltip line follow it (the render itself is proven by memcap-screenshot.mjs, the data path HERE)
+    const resMod = await import(`${REPO}/src/shared/resources.ts`);
+    const roomMod = await import(`${REPO}/src/shared/keeper-room.ts`).catch(() => null);
+    const viewMod = await import(`${REPO}/src/shared/memory-cap-view.ts`);
+    const grouped = resMod.groupSnapshot?.({ sessions: [{ ptyId: `${ws}:sdk`, workspaceId: ws, kind: 'sdk', remote: false, cpuPct: 1, memBytes: 1 << 20, procCount: 1, processes: [] }], containers: undefined, members: b.rep });
+    const row = grouped?.rows?.find((r) => r.key === ws);
+    const chip = roomMod?.roomChipOf?.(row?.room);
+    const tip = row?.cap ? viewMod.capTooltip(row.cap, { softGb: 0.08, hardGb: 0.1 }, row.room) : '';
+    check('the page row model over the REAL report carries the room; the chip follows the 70 % rule (k/room read from the real files) and the MEM tooltip names it', !!row?.room && (row.room.frac >= 0.7 ? chip?.tone === (row.room.frac >= 1 ? 'crit' : 'warn') : chip === null) && /of the \d+ MB room above the tool level \(\d+ %\)/.test(tip), JSON.stringify({ frac: row?.room?.frac, chip: chip?.text ?? null, tip: tip.slice(-120) }));
+    check('no kill and no backstop event so far on this scope', (b.v?.room?.netEvents ?? 0) === 0 && alive(f.keeperPid) && alive(f.cliPid), `events=${b.v?.room?.netEvents}`);
+    check('gap 2 CONTROL: an ACTIVE member (the keeper says so) keeps its cap view — the unprotected rule does not touch a healthy one', !!b.v?.cap && b.v.capNote === null, JSON.stringify({ cap: !!b.v?.cap, note: b.v?.capNote }));
+    detail = `k ${(a.v?.room?.kBytes / 1048576).toFixed(0)}→${(b.v?.room?.kBytes / 1048576).toFixed(0)} MB of ${(a.v?.room?.roomBytes / 1048576).toFixed(0)} MB`;
   } else if (ARM === 'browser_contained') {
     // H2 review F1 (ledger Q5): a real headless Chromium started by a capped member's tool must STAY in the member's scope. Measured on this host: with DBUS_SESSION_BUS_ADDRESS in its env
     // Chromium moves its main process into its own transient scope (out of the cap); without it all 9 processes stay. The keeper removes the address from a capped member's CLI env.

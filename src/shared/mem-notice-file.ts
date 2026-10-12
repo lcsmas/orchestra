@@ -59,6 +59,7 @@ export function parseMemNotice(v: unknown): MemNoticeRecord | null {
     command: typeof r.command === 'string' ? r.command : null,
     pid: isNum(r.pid) ? r.pid : null,
     rssBytes: isNum(r.rssBytes) ? r.rssBytes : null,
+    ...(r.scopeLevel === true ? { scopeLevel: true as const } : {}), // #343 M2: it must survive the trip through the keeper's file
     candidates: Array.isArray(r.candidates) ? r.candidates.filter((c): c is string => typeof c === 'string').slice(0, 5) : [],
     unit: r.unit,
     hardBytes: isNum(r.hardBytes) ? r.hardBytes : null,

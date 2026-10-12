@@ -3,14 +3,14 @@
 
 import type { AgentEvent, AgentNoticeEvent, MemCapRow } from './types.ts';
 import { stamp, type NormalizeContext } from './agent-events.ts';
-import { cutChars, fmtGb, isSoftRecord, memNoticeText, stripBidi, type MemNoticeRecord } from './memory-scope.ts';
+import { SCOPE_LEVEL_REASON, cutChars, fmtGb, isSoftRecord, memNoticeText, netLimitPhrase, netVictimsPhrase, stripBidi, type MemNoticeRecord } from './memory-scope.ts';
 
 /** One persisted row (`Workspace.sdkMemNotices`): enough to rebuild the row after an app restart. `(unit, seq)` is the identity — a record delivered twice stores once. */
 export interface MemNoticeEntry {
   unit: string;
   seq: number;
   at: number;
-  level: 'hard' | 'external' | 'soft';
+  level: 'hard' | 'external' | 'soft' | 'net';
   text: string;
   /** #322 (D-Q7 B): the structured row (tone + text/command-chip segments), built ONCE from the record. Absent on an entry persisted before the dedicated row — {@link rowOfEntry} then derives a plain one from `text`. */
   row?: MemCapRow;
@@ -39,12 +39,22 @@ const chipOf = (command: string): { kind: 'chip'; text: string } => ({ kind: 'ch
  *   · warning level          → « Working set 3.1 GB — warning level 3 GB crossed (hard cap 6 GB) »
  */
 export function memCapRowOf(rec: MemNoticeRecord): MemCapRow {
+  if (!isSoftRecord(rec) && rec.level === 'net' && rec.net) {
+    // #343: a backstop kill is its own sentence — « Scope backstop 7 GB (tool cap 6 GB + 1 GB room) reached — the session ended: keeper + CLI outgrew the room · killed [node-22 (pid 123)] » (red, like a kill; the victims in a chip)
+    return {
+      tone: 'hard',
+      segments: [
+        { kind: 'text', text: `Scope backstop ${netLimitPhrase(rec.net, rec.hardBytes)} reached — ${rec.net.sessionEnded ? 'the session ended' : 'a process was killed'}: keeper + CLI outgrew the room above the tool cap · killed` },
+        chipOf(netVictimsPhrase(rec.net)),
+      ],
+    };
+  }
   if (isSoftRecord(rec)) {
     return { tone: 'soft', segments: [{ kind: 'text', text: `Working set ${fmtGb(rec.bytes)} — warning level ${fmtGb(rec.softBytes)} crossed${rec.hardBytes !== null ? ` (hard cap ${fmtGb(rec.hardBytes)})` : ''}` }] };
   }
-  const reason = rec.level === 'hard' ? `${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}` : 'by the system under memory pressure (not by the Plafond mémoire)';
+  const reason = rec.scopeLevel ? SCOPE_LEVEL_REASON : rec.level === 'hard' ? `${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}` : 'by the system under memory pressure (not by the Plafond mémoire)';
   const ended = rec.role ? ` — the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : '';
-  const dash = rec.level === 'hard' ? '— ' : '';
+  const dash = rec.level === 'hard' || rec.scopeLevel ? '— ' : '';
   const command = rec.command === null ? null : stripBidi(rec.command); // a bidi override in a command must never reach the sentence (review m4)
   if (command === null || command.trim() === '') return { tone: 'hard', segments: [{ kind: 'text', text: `A command was killed ${dash}${reason} (it lived too briefly to be named)${ended}` }] }; // a blank command is no name either: never an empty pill
   if (rec.source === 'kernel') return { tone: 'hard', segments: [{ kind: 'text', text: 'Command' }, chipOf(command), { kind: 'text', text: `killed ${dash}${reason}${ended}` }] };

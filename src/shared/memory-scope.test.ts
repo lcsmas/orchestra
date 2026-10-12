@@ -556,3 +556,56 @@ test("planKernelPairing: a LATE line (its debt already forgiven) naming a pid an
   assert.deepEqual(plan.pair.map((l) => l.pid), [13]);
   assert.deepEqual(plan.claim.map((l) => l.pid), [12, 13]);
 });
+
+// ─── #343 (review M2): a tool killed by the SCOPE's episode is the keeper's record, tagged `scopeLevel`, in its own words ──────────────────────
+
+import { isScopeLevelToolKill, SCOPE_LEVEL_REASON, memBusBody as memBusBody343, memNoticeText as memNoticeText343, formatMemKillLine as formatMemKillLine343, applyKernelKills as applyKernelKills343, type KernelOomKill as KernelOomKill343, type MemKillRecord as MemKillRecord343 } from './memory-scope.ts';
+import { memCapRowOf as memCapRowOf343 } from './mem-notice.ts';
+import { parseMemNotice as parseMemNotice343 } from './mem-notice-file.ts';
+
+const SL = '/user.slice/user-1000.slice/user@1000.service/app.slice';
+const SU = 'orchestra-ws-sl01-mv0s5wm6.scope';
+const kl = (oom: string, task: string, pid = 42): KernelOomKill343 => ({ atMs: 1000, pid, comm: 'cargo', oomMemcg: oom, taskMemcg: task });
+const base343: MemKillRecord343 = { kind: 'kill', seq: 1, at: 1000, level: 'external', command: 'cargo build', pid: 42, rssBytes: 1, candidates: [], unit: SU, hardBytes: 6 * 1024 ** 3 };
+
+test('#343 SL1 isScopeLevelToolKill: ONLY « the scope hit its limit, the victim lived in <unit>/w » — never the tool leaf\'s own limit, a flat scope\'s root victim, a keeper-leaf victim or another unit', () => {
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/${SU}`, `${SL}/${SU}/w`), SU), true);
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/${SU}/w`, `${SL}/${SU}/w`), SU), false, 'the TOOL leaf hit its limit: the Plafond at work');
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/${SU}`, `${SL}/${SU}`), SU), false, 'flat scope: its hard level');
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/${SU}`, `${SL}/${SU}/k`), SU), false, 'a keeper-leaf victim is the NET record\'s, not this');
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/${SU}x`, `${SL}/${SU}x/w`), SU), false, 'basenames are compared whole');
+  assert.equal(isScopeLevelToolKill(kl(`${SL}/other.scope`, `${SL}/other.scope/w`), SU), false);
+});
+
+test('#343 SL2 the keeper pairs the kernel line and TAGS the record: a scope-level tool kill gets `scopeLevel`, a tool-leaf kill does not', () => {
+  const [tagged] = applyKernelKills343([base343], [kl(`${SL}/${SU}`, `${SL}/${SU}/w`)], [], 4096);
+  assert.equal(tagged.scopeLevel, true);
+  assert.equal(tagged.source, 'kernel');
+  const [plain] = applyKernelKills343([{ ...base343, level: 'hard' }], [kl(`${SL}/${SU}/w`, `${SL}/${SU}/w`)], [], 4096);
+  assert.equal(plain.scopeLevel, undefined);
+  const [inferred] = applyKernelKills343([base343], [], [], 4096);
+  assert.equal(inferred.scopeLevel, undefined, 'no kernel line ⇒ no claim about which cgroup hit its limit');
+});
+
+test('#343 SL3 the words for a scope-level tool kill: own sentence in the row, the bus message, the log line — never « under memory pressure (not by the Plafond mémoire) » and never the hard level', () => {
+  const rec: MemKillRecord343 = { ...base343, source: 'kernel', scopeLevel: true };
+  assert.equal(memNoticeText343(rec), `Command cargo build killed: ${SCOPE_LEVEL_REASON}`);
+  assert.doesNotMatch(memNoticeText343(rec), /memory pressure|Plafond mémoire .* reached/);
+  const row = memCapRowOf343(rec);
+  assert.equal(row.tone, 'hard');
+  assert.equal(row.segments.map((x) => x.text).join(' '), `Command cargo build killed — ${SCOPE_LEVEL_REASON}`);
+  const bus = memBusBody343('feat-x (sl01)', rec);
+  assert.match(bus, /KILLED at the SCOPE BACKSTOP \(keeper \+ CLI outgrew the room above the tool cap — the tool died before the cap did\)/);
+  assert.match(bus, /The member's session survived\./);
+  assert.match(formatMemKillLine343('sl01', rec), /at the SCOPE BACKSTOP \(keeper \+ CLI outgrew the room above the tool cap\)/);
+  assert.match(memNoticeText343({ ...rec, role: 'cli' }), /this was the member's own agent process: the session ended$/);
+  const plain = memNoticeText343({ ...base343, level: 'hard', source: 'kernel' });
+  assert.match(plain, /Plafond mémoire 6 GB reached/, 'control: a hard-level kill keeps its words');
+});
+
+test('#343 SL4 the tag survives the keeper\'s notice file (a keeper that dies right after writing it): scopeLevel true round-trips, anything else is dropped', () => {
+  const rec: MemKillRecord343 = { ...base343, source: 'kernel', scopeLevel: true };
+  assert.equal((parseMemNotice343(JSON.parse(JSON.stringify(rec))) as MemKillRecord343).scopeLevel, true);
+  assert.equal((parseMemNotice343(JSON.parse(JSON.stringify({ ...rec, scopeLevel: 'yes' }))) as MemKillRecord343).scopeLevel, undefined);
+  assert.equal((parseMemNotice343(JSON.parse(JSON.stringify(base343))) as MemKillRecord343).scopeLevel, undefined);
+});

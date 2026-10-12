@@ -5,8 +5,9 @@
 import { GIB } from './memory-guard.ts';
 import type { MemberCapView } from './member-memory.ts';
 import type { BusSwitches } from './bus-switches.ts';
+import { leastRoomClause, roomTooltipLine, type KeeperRoom } from './keeper-room.ts';
 
-/** The bill is « close to the cap » from this fraction of the hard level (the bar turns red). */
+/** The member is « close to the cap » from this fraction of the hard level (the bar turns red). Keyed on the WORKING SET since #343 (the kernel reclaims page cache before it kills anything, so a bill that is mostly cache is no alarm). */
 export const CAP_NEAR_FRACTION = 0.9;
 
 export type CapTone = 'ok' | 'warn' | 'crit';
@@ -18,18 +19,21 @@ export interface CapUsage {
   workingFrac: number | null;
   /** soft / hard; null = no soft level (or one at/above the hard level — nothing to mark). */
   softFrac: number | null;
-  /** warn = the WORKING SET is at/over the soft level (the keeper's warning is armed); crit = the BILL is within {@link CAP_NEAR_FRACTION} of the hard level (the kernel kills at the hard level). crit wins. */
+  /** warn = the WORKING SET is at/over the soft level (the keeper's warning is armed); crit = what the kernel cannot reclaim is within {@link CAP_NEAR_FRACTION} of the hard level — the WORKING SET, or the bill alone when the working set is unreadable (#343: a bill inflated by page cache while the working set is low is NOT red). crit wins. */
   tone: CapTone;
   /** Whole percent of the hard level the bill uses (what a « CAP » column prints). */
   billPct: number;
 }
+
+/** The figure that decides « close to the kill »: the working set / hard when it is known, else the bill / hard (we cannot tell cache from anonymous memory then — the cautious reading). */
+export const pressureFrac = (cap: MemberCapView): number => (cap.workingSetBytes === null ? cap.billBytes : cap.workingSetBytes) / cap.hardBytes;
 
 /** `softBytes` = the soft level to mark (null/0 = none). An unreadable working set never raises the warning tone (we cannot tell) — the bill alone can still turn the bar red. */
 export function capUsage(cap: MemberCapView, softBytes: number | null): CapUsage {
   const billFrac = cap.billBytes / cap.hardBytes;
   const workingFrac = cap.workingSetBytes === null ? null : cap.workingSetBytes / cap.hardBytes;
   const softOk = softBytes !== null && softBytes > 0 && softBytes < cap.hardBytes;
-  const tone: CapTone = billFrac >= CAP_NEAR_FRACTION ? 'crit' : softOk && cap.workingSetBytes !== null && cap.workingSetBytes >= (softBytes as number) ? 'warn' : 'ok';
+  const tone: CapTone = pressureFrac(cap) >= CAP_NEAR_FRACTION ? 'crit' : softOk && cap.workingSetBytes !== null && cap.workingSetBytes >= (softBytes as number) ? 'warn' : 'ok';
   return { billFrac, workingFrac, softFrac: softOk ? (softBytes as number) / cap.hardBytes : null, tone, billPct: pctFloor(billFrac) };
 }
 
@@ -42,11 +46,12 @@ const gbExact = (b: number): string => `${Math.round((b / GIB) * 100) / 100} GB`
  * The row's tooltip. Both figures are named with what each is compared to. The hard level is the one the KERNEL holds for this very scope (read from `memory.max`); the soft level is the Garde mémoire setting NOW —
  * a member keeps what it started with, so when the settings moved since its start the line says so instead of letting the bar pretend.
  */
-export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardGb: number } | null): string {
+export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardGb: number } | null, room?: KeeperRoom | null): string {
   const parts = [`${gb(cap.billBytes)} kernel bill (what the hard level compares)`];
   if (cap.workingSetBytes !== null) parts.push(`${gb(cap.workingSetBytes)} working set (what the soft level compares)`);
   if (cap.peakBytes !== null) parts.push(`peak ${gb(cap.peakBytes)}`);
   const applied = `hard ${gbExact(cap.hardBytes)} (held by the kernel for this session)`;
+  if (room) parts.push(roomTooltipLine(room)); // #343: how close keeper + CLI are to the room under the scope's backstop — always said when it can be
   if (settings === null) {
     parts.push(applied); // an older main that does not send the levels: only what the kernel holds
     return parts.join(' · ');
@@ -58,13 +63,18 @@ export function capTooltip(cap: MemberCapView, settings: { softGb: number; hardG
   return parts.join(' · ');
 }
 
-/** The dim tooltip of a tracked member whose session scope holds NO limit (mockup A: « no bar, a dim tooltip says why »). Says what is true and what it means; names no cause it cannot know. */
-export const CAP_NOT_APPLIED_TIP = 'No memory cap applied — this session runs in a scope with no limit, so nothing stops it at the hard level.';
+/** The dim tooltip of a tracked member whose TOOL leaf holds NO limit (mockup A: « no bar, a dim tooltip says why »). Says what is true and what it means; names no cause it cannot know. Since #332 the scope itself may hold a backstop limit while only the tool leaf is unlimited (#343, comment on the ticket): the text does not claim « a scope with no limit ». */
+export const CAP_NOT_APPLIED_TIP = 'No memory cap applied — the tool commands of this session run in a leaf with no limit (its scope may still hold a backstop), so nothing stops them at the hard level.';
+
+/** #343 gap 2: the dim tooltip of a tracked member whose limit reads numeric but whose KEEPER says the cap does not hold (tools not confined to the capped leaf, or the limit did not fully take). Said as what it is, with no bar. */
+export const CAP_UNPROTECTED_TIP = 'Memory cap NOT holding — the keeper reports this session as unprotected: the tool commands of this session are not confined to the capped leaf (tool wrapper missing, cannot run, or no tool seen landing there) or the limit did not fully take (e.g. swap not closed), so nothing reliably stops them at the hard level.';
 
 export interface CapRowLike {
   key: string;
   name: string;
   cap: MemberCapView | null;
+  /** #343: the keeper leaf's margin (absent / null = not stateable). */
+  room?: KeeperRoom | null;
 }
 
 /** The dim line under the Agents table: how many members run under a cap and which one is closest to it. null = none capped (the page shows nothing). */
@@ -73,7 +83,8 @@ export function capSummaryLine(rows: readonly CapRowLike[]): string | null {
   if (capped.length === 0) return null;
   const worst = capped.reduce((a, b) => (b.cap.billBytes / b.cap.hardBytes > a.cap.billBytes / a.cap.hardBytes ? b : a));
   const pct = pctFloor(worst.cap.billBytes / worst.cap.hardBytes);
-  return `${capped.length} capped member${capped.length === 1 ? '' : 's'} · closest: ${worst.name} ${pct} % of ${gbExact(worst.cap.hardBytes)}`;
+  const least = leastRoomClause(capped); // #343: the member with the least room for keeper + CLI, when any has a margin
+  return `${capped.length} capped member${capped.length === 1 ? '' : 's'} · closest: ${worst.name} ${pct} % of ${gbExact(worst.cap.hardBytes)}${least ? ` · ${least}` : ''}`;
 }
 
 // ─── The activation, as the Garde mémoire window may SAY it ────────────────────────────────────────────────────────

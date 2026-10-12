@@ -1,6 +1,7 @@
 import { GIB } from '../../shared/memory-guard';
 import type { MemberCapView } from '../../shared/member-memory';
 import { capTooltip, capUsage } from '../../shared/memory-cap-view';
+import type { KeeperRoom } from '../../shared/keeper-room';
 
 const pct = (f: number): string => `${(Math.min(1, Math.max(0, f)) * 100).toFixed(1)}%`;
 
@@ -9,10 +10,10 @@ const pct = (f: number): string => `${(Math.min(1, Math.max(0, f)) * 100).toFixe
  * (`memory.current − inactive_file`, what the soft warning compares); the tick = the soft level. Amber once the working set is at/over the soft level, red once the bill is within 90 % of the hard level
  * (`capUsage` decides — pure, src/shared/memory-cap-view.ts). Rendered only for a member whose scope has a limit applied; the tooltip names both figures with what each is compared to.
  */
-export function CapBar({ cap, levels: given }: { cap: MemberCapView; levels: { softGb: number; hardGb: number } | null }) {
+export function CapBar({ cap, levels: given, room }: { cap: MemberCapView; levels: { softGb: number; hardGb: number } | null; room?: KeeperRoom | null }) {
   const levels = given ?? null; // a caller that forgets them degrades to « what the kernel holds », never a crash
   const u = capUsage(cap, levels ? levels.softGb * GIB : null);
-  const tip = capTooltip(cap, levels);
+  const tip = capTooltip(cap, levels, room); // #343: the tooltip also says how close keeper + CLI are to the room
   return (
     <span className={`res-capbar tone-${u.tone}`} role="img" aria-label={`${u.billPct} % of the memory cap`} title={tip} data-res-cap={u.billPct} data-res-cap-tone={u.tone}>
       <i className="res-capbar-fill" style={{ width: pct(u.billFrac) }} />
