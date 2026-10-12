@@ -26,6 +26,7 @@ const ASSETS: Array<[string, RegExp]> = [
   ['/apple-touch-icon.png', /^image\/png$/],
   ['/icon-192.png', /^image\/png$/],
   ['/icon-512.png', /^image\/png$/],
+  ['/jsqr.js', /^text\/javascript/], // the in-app pairing's QR decoder: behind identity like every asset
 ];
 
 async function withServer<T>(fn: (port: number, logs: string[]) => Promise<T>): Promise<T> {
@@ -372,12 +373,12 @@ test('sw: only same-origin GETs of shell paths are handled — everything else g
 const STORAGE_KEY = 'orchestra.accesMobile.token';
 
 /** Run the real APP_JS against a fake DOM/location. `reply` scripts what /api/workspaces answers. */
-function runApp(opts: { hash?: string; stored?: string; reply?: 'reject' | number; replies?: Array<'reject' | number> } = {}) {
+function runApp(opts: { hash?: string; stored?: string; reply?: 'reject' | number; replies?: Array<'reject' | number>; standalone?: boolean } = {}) {
   const els: Record<string, any> = {};
   // `clears` counts assignments of '' to textContent, `appended` the children added — enough to tell a rendered list from a cleared one.
   const mk = () => {
     let text = '';
-    return { get textContent() { return text; }, set textContent(v: string) { text = v; if (v === '') this.clears++; }, clears: 0, appended: 0, hidden: false, checked: false, dataset: {} as Record<string, string>, className: '', appendChild() { this.appended++; }, addEventListener() {} };
+    return { get textContent() { return text; }, set textContent(v: string) { text = v; if (v === '') this.clears++; }, clears: 0, appended: 0, hidden: false, checked: false, value: '', dataset: {} as Record<string, string>, className: '', on: {} as Record<string, (e?: unknown) => void>, appendChild() { this.appended++; }, addEventListener(t: string, h: (e?: unknown) => void) { this.on[t] = h; } };
   };
   const storage = new Map<string, string>(opts.stored ? [[STORAGE_KEY, opts.stored]] : []);
   const calls = { replaceState: [] as unknown[][], fetch: [] as Array<{ url: string; init: any }>, register: [] as string[], conv: [] as string[] };
@@ -399,7 +400,7 @@ function runApp(opts: { hash?: string; stored?: string; reply?: 'reject' | numbe
       return reply === 'reject' || reply === undefined ? Promise.reject(new TypeError('offline')) : Promise.resolve({ ok: reply < 400, status: reply, json: async () => ({ ok: true, workspaces: [{ id: 'w1', name: 'n', branch: 'b', group: 'g', account: 'a', status: 'idle', unread: false }] }) });
     },
     setInterval: () => 0,
-    navigator: { serviceWorker: { register: (p: string) => (calls.register.push(p), Promise.resolve()) } },
+    navigator: { standalone: opts.standalone === true, serviceWorker: { register: (p: string) => (calls.register.push(p), Promise.resolve()) } },
   };
   vm.runInNewContext(APP_JS, sandbox);
   /** A same-document navigation to `/#t=…` over the open page (a QR re-scan): the browser only fires hashchange. */
@@ -483,4 +484,37 @@ test('page: registers the service worker at /sw.js, once, and a failing registra
   assert.deepEqual(r.calls.register, ['/sw.js']);
   const noSw = runApp({ stored: TOKEN, reply: 200 });
   assert.equal(noSw.calls.register.length, 1, 'control: one registration per page load');
+});
+
+test('in-app pairing (iOS home-screen app = its own storage): unpaired ⇒ the pairing panel; a pasted pairing URL pairs the page; junk never does', async () => {
+  const r = runApp({ standalone: true, reply: 200 });
+  await r.settle();
+  assert.equal(r.calls.fetch.length, 0, 'unpaired: nothing is sent');
+  assert.equal(r.els.pair.hidden, false, 'the pairing panel is shown');
+  assert.match(r.els.pairWhy.textContent, /écran d’accueil/, 'the home-screen app says why Safari’s pairing did not follow');
+  for (const junk of ['https://x.ts.net:8445/', 'bonjour', '#t=short']) {
+    r.els.pairInput.value = junk;
+    r.els.pairForm.on.submit({ preventDefault() {} });
+    assert.equal(r.storage.has(STORAGE_KEY), false, junk);
+    assert.match(r.els.pairErr.textContent, /pas un lien d’appairage/);
+  }
+  r.els.pairInput.value = `  https://box.tail0000.ts.net:8445/#t=${TOKEN}\n`;
+  r.els.pairForm.on.submit({ preventDefault() {} });
+  await r.settle();
+  assert.equal(r.storage.get(STORAGE_KEY), TOKEN, 'stored');
+  assert.equal(r.els.pair.hidden, true, 'panel gone');
+  assert.ok(r.calls.conv.includes('connect'), 'the stream reopens with the token');
+  assert.equal(r.calls.fetch.at(-1)?.init.headers.Authorization, `Bearer ${TOKEN}`, 'the list is fetched with it');
+  const browser = runApp({});
+  await browser.settle();
+  assert.doesNotMatch(browser.els.pairWhy.textContent, /écran d’accueil/, 'in Safari: the plain hint');
+});
+
+test('a refused token (401) offers the in-app pairing again (control: a 200 hides it)', async () => {
+  const bad = runApp({ stored: TOKEN, reply: 401 });
+  await bad.settle(); await bad.settle();
+  assert.equal(bad.els.pair.hidden, false);
+  const ok = runApp({ stored: TOKEN, reply: 200 });
+  await ok.settle(); await ok.settle();
+  assert.equal(ok.els.pair.hidden, true);
 });

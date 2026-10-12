@@ -7,8 +7,7 @@ import {
   projectMobileWorkspaces,
   sameLogin,
   tailscaleServeCommand,
-  accesMobileSocketPath,
-} from './acces-mobile.ts';
+  accesMobileSocketPath, pairingTokenFrom } from './acces-mobile.ts';
 import type { Account } from './accounts.ts';
 import type { RepoEntry, Workspace } from './types.ts';
 
@@ -97,4 +96,25 @@ test('a fleet worker carries its coordinator (parentId) only when that parent is
   assert.equal(by.w2.parentId, undefined, 'a dangling parent is not a fold');
   assert.equal(by.w3.parentId, undefined, 'an archived parent is not listed, so not a fold');
   assert.equal(by.coord.parentId, undefined);
+});
+
+test('pairingTokenFrom: a pairing URL or a bare token, nothing else; the toString-injected copy agrees', () => {
+  const T = 'abcdefghijklmnopqrstuvwxyz_-0123456789ABCDEFG';
+  const cases: [string, string | null][] = [
+    [`https://box.tail0000.ts.net:8445/#t=${T}`, T],
+    [`  https://box.tail0000.ts.net:8445/#t=${T}\n`, T],
+    [`#t=${T}`, T],
+    [T, T],
+    [`https://box/#t=${T}&x=1`, T],
+    ['https://box.tail0000.ts.net:8445/', null],
+    [`https://box/?t=${T}`, null],
+    ['#t=short', null],
+    [`https://box/#t=${T}!`, null],
+    ['', null],
+  ];
+  const injected = new Function(`return (${pairingTokenFrom.toString()})`)() as typeof pairingTokenFrom;
+  for (const [input, want] of cases) {
+    assert.equal(pairingTokenFrom(input), want, input);
+    assert.equal(injected(input), want, `injected: ${input}`);
+  }
 });

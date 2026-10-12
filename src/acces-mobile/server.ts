@@ -3,6 +3,7 @@
 // `Tailscale-User-Login` and strips any client-sent copy (tailscale.com/kb/1312/serve). Every request needs that identity;
 // every /api/* request ALSO needs the current token. Main is reached only through `upstream` (the 0600 hooks socket).
 
+import { jsqrSource } from './jsqr-src.ts';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
@@ -75,6 +76,8 @@ const STATIC: Record<string, { type: string; body: string | Buffer }> = {
   '/manifest.webmanifest': { type: 'application/manifest+json', body: MANIFEST_JSON },
   '/conversation.js': { type: 'text/javascript; charset=utf-8', body: CONVERSATION_JS },
   '/conversation.css': { type: 'text/css; charset=utf-8', body: CONVERSATION_CSS },
+  // loaded on demand by an UNPAIRED page (in-app QR pairing); not in the service worker's shell
+  '/jsqr.js': { type: 'text/javascript; charset=utf-8', body: jsqrSource() },
   ...Object.fromEntries(PWA_ICONS.map((i) => [i.path, { type: 'image/png', body: i.png }])),
 };
 

@@ -226,3 +226,11 @@ export function projectMobileWorkspaces(
     (a, b) => attentionRank(a) - attentionRank(b) || a.group.localeCompare(b.group) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
   );
 }
+
+/** The pairing token in what the phone scanned or pasted: a pairing URL (`…#t=<token>`) or the bare token; null otherwise.
+ *  ONE self-contained function: page.ts injects `pairingTokenFrom.toString()` into the phone script. */
+export function pairingTokenFrom(text: string): string | null {
+  const s = String(text == null ? '' : text).trim();
+  const m = /[#&]t=([A-Za-z0-9_-]{16,256})(?:&|$)/.exec(s) || /^([A-Za-z0-9_-]{16,256})$/.exec(s);
+  return m ? m[1] : null;
+}

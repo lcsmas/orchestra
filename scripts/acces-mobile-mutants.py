@@ -131,6 +131,12 @@ MUTANTS = [
     ('A7-files-alone-refused', 'src/acces-mobile/server.ts', "(!text.trim() && !atts.images.length)", "!text.trim()", 'RED'),
     ('A8-main-trusts-the-server', 'src/main/acces-mobile-routes.ts', "        const atts = parseMobileAttachments(msg.attachments);\n        if (!atts.ok) return { ok: false, error: atts.error };\n", "        const atts = { images: (msg.attachments ?? []) as never[] };\n", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('A9-bubble-without-files', 'src/shared/acces-mobile-conversation.ts', "      if (atts.length) line.attachments = atts;\n", "", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    # ── 2026-10-12: in-app pairing (an iOS home-screen app has its own storage) ──
+    ('G1-token-from-query', 'src/shared/acces-mobile.ts', "const m = /[#&]t=([A-Za-z0-9_-]{16,256})(?:&|$)/.exec(s)", "const m = /[#&?]t=([A-Za-z0-9_-]{16,256})(?:&|$)/.exec(s)", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('G2-token-from-anything', 'src/shared/acces-mobile.ts', "|| /^([A-Za-z0-9_-]{16,256})$/.exec(s);", "|| /([A-Za-z0-9_-]{16,256})/.exec(s);", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('G3-401-no-repair-offer', 'src/acces-mobile/page.ts', "setState('Jeton refusé : re-scanne le QR code.'); showPair(true); return null;", "setState('Jeton refusé : re-scanne le QR code.'); return null;", 'RED', PWA),
+    ('G4-unpaired-no-panel', 'src/acces-mobile/page.ts', "    if (!token) { setState('Pas appairé.'); showPair(true); return; }", "    if (!token) { setState('Pas appairé.'); return; }", 'RED', PWA),
+    ('G5-decoder-not-served', 'src/acces-mobile/server.ts', "  '/jsqr.js': { type: 'text/javascript; charset=utf-8', body: jsqrSource() },\n", "", 'RED', PWA),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -154,6 +160,9 @@ E2E_MUTANTS = [
     ('E13-photo-not-scaled', 'src/acces-mobile/conversation.ts', "IMG_EDGE = 1568;", "IMG_EDGE = 100000;", 'attach/reach-the-model'),
     ('E14-main-drops-files', 'src/main/acces-mobile-routes.ts', "await sdkSend(ws.id, text, atts.images.length ? atts.images : undefined,", "await sdkSend(ws.id, text, undefined,", 'attach/'),
     ('E15-paste-ignored', 'src/acces-mobile/conversation.ts', "      if (!cd.getData('text/plain')) ev.preventDefault();\n      addFiles(files);\n", "", 'attach/pick-paste-remove'),
+    ('E16-scan-never-pairs', 'src/acces-mobile/page.ts', "          stopScan(); adopt(tok);", "          stopScan();", 'pair/in-app-scan'),
+    ('E17-camera-left-on', 'src/acces-mobile/page.ts', "          stopScan(); adopt(tok);", "          adopt(tok);", 'pair/in-app-scan'),
+    ('E18-decoder-not-inlined', 'vite.acces-mobile.config.ts', "if (!id.endsWith('/src/acces-mobile/jsqr-src.ts')) return null;", "if (!id.endsWith('/nothing-matches.ts')) return null;", 'pair/'),
 ]
 
 def run_e2e(ids):
