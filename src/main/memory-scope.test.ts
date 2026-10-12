@@ -172,7 +172,7 @@ test('keeperPid before the keeper wrote its pid file (it listens first): the sco
 test('readScopeMemory: sysfs numbers, limits as numbers or null, the kill counter; a vanished scope is null', () => {
   const dir = mkScope('orchestra-ws-wsmem-ffffff.scope');
   const m = readScopeMemory({ cgroupDir: dir }, env());
-  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, limitApplied: true, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
+  assert.deepEqual(m, { currentBytes: 1000000, capCurrentBytes: 1000000, peakBytes: 2000000, maxBytes: 268435456, limitApplied: true, highBytes: null, swapMaxBytes: 0, swapCurrentBytes: 0, workingSetBytes: null, backstopBytes: null, keeperLeaf: null, scopeEpisodes: null, events: { high: 0, max: 3, oom: 1, oomKill: 1, oomGroupKill: 0 } });
   assert.equal(readScopeMemory({ cgroupDir: path.join(APP, 'gone.scope') }, env()), null);
   fs.writeFileSync(path.join(dir, 'memory.max'), 'max\n');
   assert.equal(readScopeMemory({ cgroupDir: dir }, env())?.maxBytes, null, 'no limit reads as null — "tracked, uncapped"');
@@ -453,3 +453,51 @@ test('#323-fu × #332 (3/3): EACCES / EIO / any other failure on w/memory.max �
   assert.ok(wExistsAnswers >= 2, 'precondition: exists(w) was asked twice — once to choose the cap cgroup, once to judge the ENOENT');
 });
 
+
+// ─── #343: the keeper leaf's margin — `k`, the backstop and the scope's own OOM episodes are READ from the cgroup files ───────────────────────
+
+const GIBI = 1024 ** 3;
+function addKeeperLeafFiles(kDir: string, scopeDir: string, o: { current: number; inactiveFile?: number | null; kills?: number; episodes?: number }): void {
+  fs.writeFileSync(path.join(kDir, 'memory.current'), `${o.current}\n`);
+  fs.writeFileSync(path.join(kDir, 'memory.stat'), `anon 1\nfile 2\n${o.inactiveFile === null ? '' : `inactive_file ${o.inactiveFile ?? 0}\n`}`);
+  fs.writeFileSync(path.join(kDir, 'memory.events'), `low 0\nhigh 0\nmax 0\noom ${o.kills ?? 0}\noom_kill ${o.kills ?? 0}\noom_group_kill 0\n`);
+  fs.writeFileSync(path.join(scopeDir, 'memory.events.local'), `low 0\nhigh 0\nmax 0\noom ${o.episodes ?? 0}\noom_kill 0\noom_group_kill 0\n`);
+}
+
+test('#343 R1: readScopeMemory returns the backstop (the scope\'s own memory.max), the keeper leaf\'s bill and WORKING SET (cache excluded), its kills and the scope\'s own OOM episodes', () => {
+  const { scopeDir, kDir } = mkLeafScope('orchestra-ws-room1-1aaaaa.scope', 7201, 7202, 7203);
+  addKeeperLeafFiles(kDir, scopeDir, { current: 400 * 1024 ** 2, inactiveFile: 300 * 1024 ** 2, kills: 2, episodes: 5 });
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(m.backstopBytes, 268435456 + 134217728, 'the scope\'s numeric limit is the backstop (hard 256 MiB + 128 MiB room in this fixture)');
+  assert.deepEqual(m.keeperLeaf, { currentBytes: 400 * 1024 ** 2, workingSetBytes: 100 * 1024 ** 2, oomKills: 2 });
+  assert.equal(m.scopeEpisodes, 5);
+});
+
+test('#343 R2: a working set is NEVER the raw bill — `inactive_file` absent from k/memory.stat ⇒ workingSetBytes null (the margin then labels itself an upper bound)', () => {
+  const { scopeDir, kDir } = mkLeafScope('orchestra-ws-room2-1aaaaa.scope', 7211, 7212, 7213);
+  addKeeperLeafFiles(kDir, scopeDir, { current: 400 * 1024 ** 2, inactiveFile: null });
+  assert.equal(readScopeMemory({ cgroupDir: scopeDir }, env())!.keeperLeaf!.workingSetBytes, null);
+});
+
+test('#343 R3: a flat scope (no `k`) has no keeper leaf; an unreadable k/memory.current is no reading (null), never 0; a missing events.local is unknown (null), not « no episodes »', () => {
+  const flat = mkScope('orchestra-ws-room3-1aaaaa.scope');
+  const f = readScopeMemory({ cgroupDir: flat }, env())!;
+  assert.equal(f.keeperLeaf, null);
+  assert.equal(f.scopeEpisodes, null);
+  const { scopeDir, kDir } = mkLeafScope('orchestra-ws-room3-1bbbbb.scope', 7221, 7222, 7223);
+  fs.mkdirSync(kDir, { recursive: true });
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  assert.equal(m.keeperLeaf, null, 'k exists but has no readable memory.current');
+});
+
+test('#343 R4: end to end over the fake tree — the member view\'s room is k\'s working set against backstop − hard', async () => {
+  const { memberViewFrom } = await import('../shared/member-memory.ts');
+  const { scopeDir, kDir } = mkLeafScope('orchestra-ws-room4-1aaaaa.scope', 7231, 7232, 7233);
+  addKeeperLeafFiles(kDir, scopeDir, { current: 600 * 1024 ** 2, inactiveFile: 100 * 1024 ** 2 });
+  const m = readScopeMemory({ cgroupDir: scopeDir }, env())!;
+  const v = memberViewFrom('ws-room4', [{ unit: 'orchestra-ws-room4-1aaaaa.scope', gen: '1aaaaa', currentBytes: m.currentBytes, procs: [], keeperPid: 7231, maxBytes: m.maxBytes, capCurrentBytes: m.capCurrentBytes, workingSetBytes: m.workingSetBytes, peakBytes: m.peakBytes, limitApplied: m.limitApplied, backstopBytes: m.backstopBytes, keeperLeaf: m.keeperLeaf, scopeEpisodes: m.scopeEpisodes }]);
+  assert.equal(v.room?.roomBytes, 134217728, 'room = backstop − hard = 128 MiB');
+  assert.equal(v.room?.kBytes, 500 * 1024 ** 2, 'k\'s working set (600 − 100 MiB of inactive cache), not its bill');
+  assert.equal(v.room?.tone, 'crit', 'k alone (500 MiB) is above the 128 MiB room');
+  void GIBI;
+});

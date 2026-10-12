@@ -2,7 +2,7 @@
 // A SHORT cache (not a standing poller): the page and a CLI polling bus-status must not each re-scan every scope, and a stale reading older than a few seconds is never served.
 
 import { store } from './store';
-import { listKeeperRoots } from './keeper-client';
+import { capStateOf, listKeeperRoots, refreshCapStates } from './keeper-client';
 import { memoizeEscaped, realMemberMemoryDeps, sampleMemberMemory } from './member-memory.ts';
 import type { MemberMemoryReport } from '../shared/member-memory.ts';
 
@@ -16,7 +16,8 @@ export function currentMemberMemory(opts: { now?: number; fresh?: boolean } = {}
   const now = opts.now ?? Date.now();
   if (!opts.fresh && cache && now - cache.at >= 0 && now - cache.at < MEMBER_MEMORY_TTL_MS) return cache.report;
   const live = listKeeperRoots().map((r) => r.workspaceId);
-  const deps = realMemberMemoryDeps({ workspaceIds: () => [...store.workspaces.map((w) => w.id), ...live], liveMemberIds: () => live });
+  refreshCapStates(live); // #343 review M3: an unattached keeper never pushes — ask the ones we have not heard from lately (the answer is there for the next look)
+  const deps = realMemberMemoryDeps({ workspaceIds: () => [...store.workspaces.map((w) => w.id), ...live], liveMemberIds: () => live, capState: capStateOf });
   if (deps.escaped) deps.escaped = memoizeEscaped(deps.escaped, { fresh: opts.fresh, now: () => now }); // FI-1 v1.9's walk is one stat read per host pid: 10 s for the pollers, fresh for the monitor's record
   const report = sampleMemberMemory(deps);
   cache = { at: now, report };

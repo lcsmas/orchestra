@@ -76,7 +76,7 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
   assert.match(view, /const grouped = groupSnapshot\(snap\);/);
   assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members\);/);
   assert.match(view, /\{reliquats && reliquats\.count > 0 && \(\s*\n\s*<span className="res-chip reliquat" data-res-reliquats=\{reliquats\.count\} title=\{reliquatChipTitle\(reliquats\)\}>/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} \/>/);
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} \/>/); // #343 adds the keeper-leaf room
   assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/);
   assert.match(view, /reliquatsLine=\{reliquatsNote\(snap\?\.members\)\}/);
   assert.match(view, /const nameById = new Map\(workspaces\.map\(\(w\) => \[w\.id, w\.branch\]\)\);/);
@@ -89,7 +89,7 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
 
 test('W9 the keeper-outside-its-scopes rule: a live member whose keeper is in none of its scopes is listed untracked for its live session, the scope reading carries FI-1\'s own keeper identity (never its own guess)', () => {
   assert.match(producer, /const untracked = \[\.\.\.new Set\(live\)\]\.filter\(\(id\) => !trackedIds\.has\(id\) \|\| keeperless\.has\(id\)\);/);
-  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid, maxBytes: mem\?\.maxBytes \?\? null, capCurrentBytes: mem\?\.capCurrentBytes \?\? null, workingSetBytes: mem\?\.workingSetBytes \?\? null, peakBytes: mem\?\.peakBytes \?\? null, limitApplied: mem\?\.limitApplied \?\? null \};/); // #323 adds the applied cap (and #323-fu whether a limit is applied at all) to the same reading; #332 the cap's own current (the work leaf's)
+  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid, maxBytes: mem\?\.maxBytes \?\? null, capCurrentBytes: mem\?\.capCurrentBytes \?\? null, workingSetBytes: mem\?\.workingSetBytes \?\? null, peakBytes: mem\?\.peakBytes \?\? null, limitApplied: mem\?\.limitApplied \?\? null, backstopBytes: mem\?\.backstopBytes \?\? null, keeperLeaf: mem\?\.keeperLeaf \?\? null, scopeEpisodes: mem\?\.scopeEpisodes \?\? null, \.\.\.\(kcap && kcap\.unit === s\.unit && s\.keeperPid !== null \? \{ capState: kcap\.state as ScopeReading\['capState'\] \} : \{\}\) \};/); // #343 adds the keeper leaf's margin inputs; #323 adds the applied cap (and #323-fu whether a limit is applied at all) to the same reading; #332 the cap's own current (the work leaf's)
   assert.match(producer, /countScopes: \(\) => countMemberScopes\(\)\?\.total \?\? null,/);
 });
 

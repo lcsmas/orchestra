@@ -33,6 +33,7 @@ const SC = 'src/shared/memory-cap-view.ts';
 const SM = 'src/shared/member-memory.ts';
 const SR = 'src/shared/resources.ts';
 const SG = 'src/shared/memory-guard-view.ts';
+const KRM = 'src/shared/keeper-room.ts';
 const MS = 'src/main/memory-scope.ts';
 const PM = 'src/main/member-memory.ts';
 const RS = 'src/main/resources.ts';
@@ -41,7 +42,7 @@ const BAR = 'src/renderer/components/CapBar.tsx';
 const RV = 'src/renderer/components/ResourcesView.tsx';
 const WIN = 'src/renderer/components/MemoryGuardSettings.tsx';
 const BP = 'src/main/bus-pane.ts';
-const TESTS = ['src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts', 'src/main/bus-pane.test.ts', 'src/main/mutant-survivors.test.ts'];
+const TESTS = ['src/shared/keeper-room.test.ts', 'src/main/scope-net-wiring.test.ts', 'src/shared/memory-cap-view.test.ts', 'src/shared/memory-guard-view.test.ts', 'src/shared/member-memory.test.ts', 'src/main/member-memory.test.ts', 'src/main/memory-scope.test.ts', 'src/shared/resources.test.ts', 'src/main/memcap-settings-wiring.test.ts', 'src/main/memory-guard-settings.test.ts', 'src/main/member-memory-wiring.test.ts', 'src/main/bus-pane.test.ts', 'src/main/mutant-survivors.test.ts'];
 
 const MUTANTS = [
   // ── the applied cap per member (FI-1 v1.11 → member view → row) ──
@@ -55,7 +56,7 @@ const MUTANTS = [
   { id: 'M08_row_without_cap', file: SR, find: "      cap: view?.cap ?? null,", to: "      cap: null,", expect: ['G13 (#323)'] },
   { id: 'M09_leftover_scope_row_carries_a_cap', file: SR, find: "scopeOnly: true, cap: null });", to: "scopeOnly: true, cap: m.cap });", expect: ['G13 (#323)'] },
   // ── usage vs cap: the tones, the words ──
-  { id: 'V01_red_threshold_strict', file: SC, find: "billFrac >= CAP_NEAR_FRACTION ? 'crit'", to: "billFrac > CAP_NEAR_FRACTION ? 'crit'", expect: ['V2 thresholds'] },
+  { id: 'V01_red_threshold_strict', file: SC, find: "pressureFrac(cap) >= CAP_NEAR_FRACTION ? 'crit'", to: "pressureFrac(cap) > CAP_NEAR_FRACTION ? 'crit'", expect: ['V2 thresholds'] },
   { id: 'V02_red_threshold_moved', file: SC, find: "export const CAP_NEAR_FRACTION = 0.9;", to: "export const CAP_NEAR_FRACTION = 0.95;", expect: ['V2 thresholds', 'V1 tone'] },
   { id: 'V03_soft_keys_on_the_bill', file: SC, find: "cap.workingSetBytes !== null && cap.workingSetBytes >= (softBytes as number) ? 'warn'", to: "cap.billBytes >= (softBytes as number) ? 'warn'", expect: ['V1 tone', 'smoke:a big page cache alone'], smoke: true },
   { id: 'V04_soft_strict', file: SC, find: "cap.workingSetBytes >= (softBytes as number) ? 'warn'", to: "cap.workingSetBytes > (softBytes as number) ? 'warn'", expect: ['V2 thresholds'] },
@@ -144,12 +145,12 @@ const MUTANTS = [
   { id: 'N01_max_read_as_applied', file: 'src/shared/memory-scope.ts', find: "  if (v === 'max') return false;", to: "  if (v === 'max') return true;", expect: ['limitApplied tells'] },
   { id: 'N02_garbage_read_as_not_applied', file: 'src/shared/memory-scope.ts', find: "return /^\\d+$/.test(v) ? true : null;", to: "return /^\\d+$/.test(v) ? true : false;", expect: ['limitApplied tells'] },
   { id: 'N03_unreadable_limit_read_as_not_applied', file: MS, find: "    limitFileAbsent = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "    limitFileAbsent = true;", expect: ['#323-fu × #332 (3/3)', 'P18 (#323-fu × #332)'] },
-  { id: 'N04_producer_drops_limit_applied', file: PM, find: "peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null };", to: "peakBytes: mem?.peakBytes ?? null, limitApplied: null };", expect: ['P17 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
-  { id: 'N05_note_without_an_explicit_max', file: SM, find: "r.limitApplied === false ? 'not-applied' : null", to: "r.limitApplied !== true ? 'not-applied' : null", expect: ['C3 (#323-fu'] },
-  { id: 'N06_note_on_an_unreadable_meter', file: SM, find: "return r && finite(r.currentBytes) && r.limitApplied === false", to: "return r && r.limitApplied === false", expect: ['C3 (#323-fu'] },
+  { id: 'N04_producer_drops_limit_applied', file: PM, find: "peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null, backstopBytes", to: "peakBytes: mem?.peakBytes ?? null, limitApplied: null, backstopBytes", expect: ['P17 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
+  { id: 'N05_note_without_an_explicit_max', file: SM, find: "if (r.limitApplied === false) return 'not-applied';", to: "if (r.limitApplied !== true) return 'not-applied';", expect: ['C3 (#323-fu'] },
+  { id: 'N06_note_on_an_unreadable_meter', file: SM, find: "if (!r || !finite(r.currentBytes)) return null;\n  if (r.limitApplied === false) return 'not-applied';", to: "if (!r) return null;\n  if (r.limitApplied === false) return 'not-applied';", expect: ['C3 (#323-fu'] },
   { id: 'N07_note_not_carried_to_the_row', file: SR, find: "      capNote: view?.capNote ?? null,\n", to: "", expect: ['G14 (#323-fu', '#323-fu m2: the « not applied » note travels'] },
   { id: 'N08_note_cell_without_the_tooltip', file: RV, find: "title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\"", to: "data-res-nocap=\"\"", expect: ['smoke:#323-fu (m2): a tracked member whose scope has NO limit', '#323-fu m2: the « not applied » note travels'], smoke: true },
-  { id: 'N09_tooltip_claims_a_cause', file: SC, find: "so nothing stops it at the hard level.'", to: "so nothing stops it at the hard level, because the Plafond mémoire is disabled.'", expect: ['smoke:#323-fu (m2): the tooltip does not claim a cause'], smoke: true },
+  { id: 'N09_tooltip_claims_a_cause', file: SC, find: "so nothing stops them at the hard level.'", to: "so nothing stops them at the hard level, because the Plafond mémoire is disabled.'", expect: ['smoke:#323-fu (m2): the tooltip does not claim a cause'], smoke: true },
   { id: 'N10_note_cell_without_the_dotted_cue', file: 'src/renderer/styles.css', find: "cursor: help; text-decoration: underline dotted var(--text-dim);", to: "", expect: ['#323-fu m2: the « not applied » note travels'] },
   { id: 'N11_note_on_the_capped_branch_order', file: RV, find: "{row.cap ? (", to: "{row.capNote === 'not-applied' ? (<span className=\"res-cell res-mem-nocap\" title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\">{formatBytes(row.memBytes)}</span>) : row.cap ? (", expect: ['#323-fu m2: the « not applied » note travels', 'RESOURCES: the snapshot carries the levels NOW'], smoke: true },
   { id: 'N12_window_points_at_the_bus_page', file: WIN, find: "set it in « Fleet bus mechanisms » (the bus button in the header), not here.", to: "set it on the Bus page, not here.", expect: ['#323-fu m5', 'smoke:it says where the switch IS set'], smoke: true },
@@ -164,7 +165,7 @@ const MUTANTS = [
   { id: 'V27_empty_token_selects_everything', file: 'scripts/mutant-survivors.mjs', find: "if (!token) throw new Error(", to: "if (false) throw new Error(", expect: ['markedProcesses / strayProcesses: an ORPHAN'] },
   // ── pre-review round of the follow-up ──
   { id: 'N13_note_cell_without_aria_label', file: RV, find: " aria-label={`${formatBytes(row.memBytes)} — ${CAP_NOT_APPLIED_TIP}`}", to: "", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
-  { id: 'N14_note_cell_not_focusable', file: RV, find: " tabIndex={0} role=\"note\"", to: " role=\"note\"", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
+  { id: 'N14_note_cell_not_focusable', file: RV, find: " title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\" tabIndex={0} role=\"note\"", to: " title={CAP_NOT_APPLIED_TIP} data-res-nocap=\"\" role=\"note\"", expect: ['smoke:#323-fu (m2, review): the cell is keyboard-focusable', '#323-fu m2: the « not applied » note travels'], smoke: true },
   { id: 'N15_dotted_cue_loses_its_hairline', file: 'src/renderer/styles.css', find: " text-decoration-thickness: 1px; text-underline-offset: 3px; }", to: " }", expect: ['#323-fu m2: the « not applied » note travels'] },
   { id: 'N16_dotted_cue_loses_its_dim_colour', file: 'src/renderer/styles.css', find: "text-decoration: underline dotted var(--text-dim);", to: "text-decoration: underline dotted;", expect: ['#323-fu m2: the « not applied » note travels'] },
   { id: 'N17_remote_row_reads_a_local_view', file: SR, find: "const view = remote ? undefined : viewFor(members, key);", to: "const view = viewFor(members, key);", expect: ['G14 (#323-fu'] },
@@ -180,6 +181,23 @@ const MUTANTS = [
   { id: 'Z04_vanished_scope_counts_as_absent', file: MS, find: "(err as NodeJS.ErrnoException | null)?.code === 'ENOENT' && e.exists(capDir);", to: "(err as NodeJS.ErrnoException | null)?.code === 'ENOENT';", expect: ['#323-fu × #332 (3/3)'] },
   { id: 'Z05_max_bytes_from_the_scope_again', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: lim('memory.max'),", expect: ['#323-fu m2: the « not applied » note travels'] },
   { id: 'Z06_absent_limit_file_reads_a_stale_number', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: limitText === null ? (limitFileAbsent ? 1 : null) : parseCgroupLimit(limitText),", expect: ['#323-fu × #332 (2/3)'] },
+  // ── #343 (D-pick B + the two gaps): the keeper-leaf room on the page, and an unprotected member never looks capped ──
+  { id: 'R01_room_chip_never_rendered', file: RV, find: '{roomChip && (', to: '{false && (', expect: ['smoke:the chip shows ONLY from 70 %'], smoke: true },
+  { id: 'R02_room_not_given_to_the_chips', file: RV, find: 'browsers={browsers} room={row.room} />', to: 'browsers={browsers} />', expect: ['smoke:the chip shows ONLY from 70 %', 'W9 (D-pick B)'], smoke: true },
+  { id: 'R03_capbar_gets_no_room', file: RV, find: '<CapBar cap={row.cap} levels={capLevels} room={row.room} />', to: '<CapBar cap={row.cap} levels={capLevels} />', expect: ['smoke:the MEM tooltip ALWAYS carries the room line', 'W9 (D-pick B)'], smoke: true },
+  { id: 'R04_unprotected_cell_missing', file: RV, find: "row.capNote === 'unprotected' ? (", to: 'false ? (', expect: ['smoke:#343 gap 2: an UNPROTECTED member gets NO bar'], smoke: true },
+  { id: 'R05_grey_line_without_room', file: RV, find: 'cap: r.cap, room: r.room })))}', to: 'cap: r.cap })))}', expect: ['W9 (D-pick B)'] },
+  { id: 'R06_chip_shows_while_comfortable', file: KRM, find: "if (!room || room.tone === 'ok') return null;", to: 'if (!room) return null;', expect: ['K1 the chip', 'smoke:the chip shows ONLY from 70 %'], smoke: true },
+  { id: 'R07_tooltip_line_dropped', file: SC, find: 'if (room) parts.push(roomTooltipLine(room));', to: '', expect: ['V8 (#343)', 'smoke:the MEM tooltip ALWAYS carries the room line'], smoke: true },
+  { id: 'R08_grey_clause_dropped', file: SC, find: "${least ? ` · ${least}` : ''}", to: '', expect: ['V9 (#343)'] },
+  { id: 'R09_least_room_is_the_first_row', file: KRM, find: 'const worst = withRoom.reduce((a, b) => (b.room.frac > a.room.frac ? b : a));', to: 'const worst = withRoom[0];', expect: ['K4 the grey line', 'V9 (#343)'] },
+  { id: 'R10_keeper_verdict_ignored', file: SM, find: "r.capState === 'unprotected' || r.capState === 'not-applied';", to: 'false;', expect: ['G2-a', 'G2-b'] },
+  { id: 'R11_bar_kept_when_unprotected', file: SM, find: 'if (keeperSaysCapDoesNotHold(r)) return null; // #343 gap 2: a numeric limit the keeper says does not protect the tools is NOT a cap to draw a bar for', to: '', expect: ['G2-a'] },
+  { id: 'R12_state_of_any_unit_accepted', file: PM, find: 'kcap && kcap.unit === s.unit && s.keeperPid !== null ?', to: 'kcap ?', expect: ['P-cap'] },
+  { id: 'R13_producer_drops_the_state', file: PM, find: "...(kcap && kcap.unit === s.unit && s.keeperPid !== null ? { capState: kcap.state as ScopeReading['capState'] } : {}) };", to: '};', expect: ['P-cap', 'W8 (gap 2)'] },
+  { id: 'R14_no_limit_tip_claims_a_scope_again', file: SC, find: 'run in a leaf with no limit (its scope may still hold a backstop)', to: 'runs in a scope with no limit', expect: ['V10 (#343 gap 1)'] },
+  { id: 'R15_unprotected_tip_reads_healthy', file: SC, find: "'Memory cap NOT holding — the keeper reports", to: "'No memory cap applied — the keeper reports", expect: ['V11 (#343 gap 2)'] },
+  { id: 'R16_not_applied_state_shows_a_bar', file: SM, find: "r.capState === 'unprotected' || r.capState === 'not-applied';", to: "r.capState === 'unprotected';", expect: ['G2-a'] },
 ];
 
 // `--only` takes EXACT mutant ids: an unknown / missing id used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 (OPS review, #323 m3) — now exit 2, nothing run.

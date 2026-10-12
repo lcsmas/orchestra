@@ -223,6 +223,8 @@ import {
   onMemoryKill,
   onMemorySoft,
   drainAllMemNotices,
+  sweepScopeNet,
+  primeCapStates,
 } from './keeper-client';
 import { startMemoryNotices } from './memory-notice';
 import { sendGated } from './memory-notice-bus';
@@ -618,6 +620,9 @@ async function createMainWindow() {
     { onMemoryKill, onMemorySoft },
   );
   drainAllMemNotices((id) => !!store.getWorkspace(id));
+  // #343: a scope the backstop emptied while the app was down (keeper and CLI both gone) left no notice file — the kernel log is the record; check each remembered scope that ended, ONCE.
+  void sweepScopeNet((id) => !!store.getWorkspace(id));
+  primeCapStates(); // #343 gap 2 (review M3): every live keeper's cap state, before the Resources page asks (keepers are unattached after a restart)
   // Fleet PAUSE host trap (#252 D1b, ADR 0003): when a run becomes hard-paused (the CLI writes the
   // bus directly) snapshot every member worktree to a pause ref, write the Bilan de pause, interrupt
   // the turn and kill the tool process trees — never the session or keeper. Drains a pause that

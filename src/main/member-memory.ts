@@ -26,23 +26,26 @@ export interface MemberMemoryDeps {
   /** FI-1 `memberScopes`: [] = not tracked. */
   scopes(wsId: string): MemberScope[];
   /** FI-1 `readScopeMemory`: null / throw = unmeasured. */
-  readMemory(scope: MemberScope): { currentBytes: number; capCurrentBytes?: number | null; maxBytes?: number | null; workingSetBytes?: number | null; peakBytes?: number | null; limitApplied?: boolean | null } | null;
+  readMemory(scope: MemberScope): { currentBytes: number; capCurrentBytes?: number | null; maxBytes?: number | null; workingSetBytes?: number | null; peakBytes?: number | null; limitApplied?: boolean | null; backstopBytes?: number | null; keeperLeaf?: { currentBytes: number | null; workingSetBytes: number | null; oomKills: number | null } | null; scopeEpisodes?: number | null } | null;
   /** FI-1 `listScopeProcs`: null / throw = unlisted. */
   listProcs(scope: MemberScope): ScopeReading['procs'];
   /** FI-1 v1.9 `listKeeperTreeOutsideScope`: the processes of the keeper's tree (host-wide ppid chain) that left THIS scope — a browser main that moved itself into its own systemd scope (#328 review F1). Called with the scope that holds the keeper; null / throw = not measured (nothing is billed). Optional: a host without it bills the scope alone. */
   escaped?(scope: MemberScope): Array<{ pid: number; comm: string; rssBytes: number }> | null;
   /** FI-1 `scopeSupportCached` (`scopeSupport` is ~6 stat calls — too many for a 2 s poll). */
   support(): { ok: true } | { ok: false; reason: string };
+  /** #343 gap 2: the cap state the member's KEEPER reported about itself (`capStateOf`) — `unit` says which scope it speaks for. Optional: absent = unknown, the member is judged on the sysfs alone. */
+  capState?(wsId: string): { unit: string; state: string } | null;
   /** H1's `countMemberScopes().total`: every member scope on the host (any workspace) — null = not countable. The surplus over the scopes we READ is reported, never read. */
   countScopes(): number | null;
 }
 
 /** The FI-1 functions, wrapped so a throw anywhere reads as "unmeasured / not tracked" — the monitor line, the page and bus-status never fail on a scope. */
-export function realMemberMemoryDeps(ids: { workspaceIds(): string[]; liveMemberIds(): string[] }): MemberMemoryDeps {
+export function realMemberMemoryDeps(ids: { workspaceIds(): string[]; liveMemberIds(): string[]; capState?(wsId: string): { unit: string; state: string } | null }): MemberMemoryDeps {
   return {
     now: () => Date.now(),
     workspaceIds: ids.workspaceIds,
     liveMemberIds: ids.liveMemberIds,
+    ...(ids.capState ? { capState: ids.capState } : {}),
     scopes: (wsId) => memberScopes(wsId),
     readMemory: (s) => readScopeMemory(s),
     listProcs: (s) => listScopeProcsOrThrow(s), // throws on an unreadable scope or leaf ⇒ the reading's procs are null (unknown), never «no Reliquats»
@@ -91,6 +94,12 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
       continue; // an unreadable directory scan = not tracked: today's behaviour
     }
     if (scopes.length === 0) continue;
+    let kcap: { unit: string; state: string } | null = null;
+    try {
+      kcap = d.capState?.(wsId) ?? null;
+    } catch (e) {
+      warnOnce(`capState(${wsId})`, e);
+    }
     const readings: ScopeReading[] = scopes.map((s) => {
       let currentBytes: number | null = null;
       let mem: ReturnType<MemberMemoryDeps['readMemory']> = null;
@@ -108,7 +117,7 @@ export function sampleMemberMemory(d: MemberMemoryDeps): MemberMemoryReport {
         warnOnce(`listScopeProcsOrThrow(${s.unit})`, e);
       }
       // `s.keeperPid` is FI-1's own identity read (pid file, or — while the keeper has not written it yet — the scope's keeper.js process by argv); null = this member's keeper is NOT in this scope
-      return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid, maxBytes: mem?.maxBytes ?? null, capCurrentBytes: mem?.capCurrentBytes ?? null, workingSetBytes: mem?.workingSetBytes ?? null, peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null };
+      return { unit: s.unit, gen: s.gen, currentBytes, procs, keeperPid: s.keeperPid, maxBytes: mem?.maxBytes ?? null, capCurrentBytes: mem?.capCurrentBytes ?? null, workingSetBytes: mem?.workingSetBytes ?? null, peakBytes: mem?.peakBytes ?? null, limitApplied: mem?.limitApplied ?? null, backstopBytes: mem?.backstopBytes ?? null, keeperLeaf: mem?.keeperLeaf ?? null, scopeEpisodes: mem?.scopeEpisodes ?? null, ...(kcap && kcap.unit === s.unit && s.keeperPid !== null ? { capState: kcap.state as ScopeReading['capState'] } : {}) };
     });
     // What the keeper's tree holds OUTSIDE its scope (a browser main in its own systemd scope): in nobody's bill. Only a keeper that is IN one of the scopes has a tree to walk; one read of /proc per sample, lazily.
     const keeperAt = readings.findIndex((r) => r.keeperPid !== null);

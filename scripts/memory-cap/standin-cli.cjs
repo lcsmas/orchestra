@@ -27,6 +27,11 @@ process.stdin.on('data', (d) => {
     if (!line.trim()) continue;
     let m; try { m = JSON.parse(line); } catch { continue; }
     if (m.report) out({ type: 'assistant', report: facts() });
+    // #343: grow IN THE KEEPER LEAF (this process lives in `k`, no tool wrapper involved) — {"inflate":{"mb":400,"stepMb":8,"stepMs":40}} touches `stepMb` more every `stepMs` until `mb` is held (or the kernel kills us)
+    if (m.inflate) {
+      const { mb = 200, stepMb = 8, stepMs = 40 } = m.inflate; const held = []; let got = 0;
+      const t = setInterval(() => { held.push(Buffer.alloc(stepMb * 1024 * 1024, 0xa5)); got += stepMb; out({ type: 'assistant', inflated: got }); if (got >= mb) clearInterval(t); }, stepMs);
+    }
     if (m.tool) {
       const prefix = process.env.CLAUDE_CODE_SHELL_PREFIX;
       const shell = process.env.SHELL || '/bin/bash';

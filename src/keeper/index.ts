@@ -253,6 +253,10 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
 type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
 let capInfo: CapInfo | null = null;
+/** #343 (gap 2): tell the attached client the cap state NOW (it caches it for the Resources page); a later attach reads `helloAck.cap`. */
+function announceCap(): void {
+  if (capInfo) send({ t: 'capState', cap: capInfo });
+}
 /** #332 (review m2c): armed after a good probe; fed the CLI's stdout lines. */
 let placementTripwire: PlacementTripwire | null = null;
 const realLeafFs: LeafFs = {
@@ -288,6 +292,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   const scopePath = cgPath ? scopePathOfCgroup(cgPath) : null;
   if (!cgPath || !scopePath || path.basename(scopePath) !== cap.unit) {
     capInfo = { unit: cap.unit, state: 'no-scope', hardBytes: cap.hardBytes };
+    announceCap();
     klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
     return env;
   }
@@ -323,6 +328,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   const leaves = buildMemberLeaves({ scopeDir: path.join(CGROUP_ROOT, scopePath), hardBytes: cap.hardBytes, pid: process.pid, fs: realLeafFs, alreadyInKeeperLeaf: inKeeperLeaf });
   if (!leaves.ok) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
+    announceCap();
     klog(`memory cap: scope ${cap.unit} is not delegated or its leaves could not be built (${leaves.step}: ${leaves.error}) — the cap is NOT applied (only the scope's backstop limit holds, if any); tools are still wrapped (adj 1000: a backstop episode takes a tool first), no kill watch`);
     return cliEnv(null);
   }
@@ -351,6 +357,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);
   if (!limitOk) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
+    announceCap();
     klog(`memory cap: in scope ${cap.unit} but the work leaf's memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are still wrapped (adj 1000), no kill watch`);
     return cliEnv(null);
   }
@@ -383,6 +390,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     }
   }
   capInfo = { unit: cap.unit, state: decideCapState({ swapOk, wrapperOk, wrapperRuns, placed }), hardBytes: cap.hardBytes };
+  announceCap();
   // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have been charged CPU time (cpu.stat usage_usec: unlike memory.stat's
   // pgfault it is flushed on read — measured) since the probe; if not, no tool ever landed there. The flip is visible in the keeper log and in every LATER helloAck/probe `cap.state`; the app logs the state once, at spawn.
   placementTripwire = null;
@@ -398,6 +406,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
         readCounter: readCpu,
         onTrip: (n) => {
           if (capInfo) capInfo = { ...capInfo, state: 'unprotected' };
+          announceCap();
           klog(`memory cap: TRIPWIRE — ${n} Bash tool results came back but the work leaf was charged no CPU time since the probe: no tool command has run in the work leaf (the CLI drops ${WORK_LEAF_ENV}, or no longer calls the shell prefix?) — NOTHING is capped at the hard level`);
         },
         onGiveUp: (n) => klog(`memory cap: the placement tripwire gave up after ${n} tool results — cpu.stat stayed unreadable; the state stays active on the probe's word alone`),

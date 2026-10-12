@@ -257,6 +257,12 @@ export interface ScopeMemory {
   /** FI-1 v1.11 (#323): the WORKING SET (`memory.current` − `inactive_file`, ledger R5) — what the soft level compares; `memory.current` is what the hard level compares (R1). null = `memory.stat` unreadable (never a fabricated figure). */
   workingSetBytes: number | null; // #332: of the cgroup that carries the cap (the work leaf), like capCurrentBytes
   events: MemoryEvents;
+  /** #343: the SCOPE's own `memory.max` — the backstop (hard + room); null = none / unreadable. Absent = an older reader. */
+  backstopBytes?: number | null;
+  /** #343: the keeper leaf `k` (keeper + CLI): its bill, working set and the kernel kills charged to it; null = the scope has no `k` (a flat scope) or it is unreadable. Absent = an older reader. */
+  keeperLeaf?: { currentBytes: number | null; workingSetBytes: number | null; oomKills: number | null } | null;
+  /** #343: OOM episodes the scope ITSELF opened (`memory.events.local` oom) — each is a backstop episode; null = unreadable / no such file. Absent = an older reader. */
+  scopeEpisodes?: number | null;
 }
 
 // ─── Telling the session from the Reliquats (FI-1 c) ───────────────────────────────────────────────────────────────
@@ -330,6 +336,22 @@ export interface VictimSnap {
 
 export const snapKey = (pid: number, startTicks: number): string => `${pid}:${startTicks}`;
 
+/** #343: a process the kernel killed in an OOM episode of the member scope's BACKSTOP (the scope's own `MemoryMax` = hard + room, or its keeper leaf), not of the tool leaf `w`. `leaf` = where the victim lived. */
+export interface MemNetVictim {
+  pid: number;
+  comm: string;
+  /** Always the keeper leaf: a TOOL killed by a scope-level episode is the KEEPER's record (`scopeLevel`), never this one. */
+  leaf: 'k';
+}
+/** What a backstop (« filet ») kill adds to a {@link MemKillRecord}. Produced by the APP from the kernel log (src/main/scope-net.ts), so it survives the keeper being the victim. */
+export interface MemNetDetail {
+  /** The scope's own `MemoryMax` (tool cap + room); null = not known to the reporter. */
+  backstopBytes: number | null;
+  /** The member's session was over when the report was made (the CLI died by a signal / the keeper vanished). false = the session survived (a tool or a helper was the victim). */
+  sessionEnded: boolean;
+  victims: MemNetVictim[];
+}
+
 /** One kill by the Plafond mémoire. `command` is a best match (the kernel does not name its victim): null when nothing vanished. */
 export interface MemKillRecord {
   /** Absent on a record written before #322 (= `kill`). */
@@ -341,8 +363,12 @@ export interface MemKillRecord {
   /** Monotonic per keeper (1, 2, …) — a reattaching app delivers only what it has not seen. */
   seq: number;
   at: number;
-  /** `hard` = the scope hit its own MemoryMax (the `oom` counter moved); `external` = an OOM kill from outside the scope's own limit (global OOM). */
-  level: 'hard' | 'external';
+  /** `hard` = the scope hit its own MemoryMax (the `oom` counter moved); `external` = an OOM kill from outside the scope's own limit (global OOM); `net` (#343) = the member scope's BACKSTOP (hard + room) was hit — NOT a tool kill, see {@link MemNetDetail}. */
+  level: 'hard' | 'external' | 'net';
+  /** #343: only on `level: 'net'`. */
+  net?: MemNetDetail;
+  /** #343 (review M2): a TOOL killed by the SCOPE's backstop episode — the kernel line says the cgroup that hit its limit was the scope, not the tool leaf (keeper + CLI outgrew the room above the tool cap). The keeper owns every tool-leaf victim; this only changes its words. */
+  scopeLevel?: true;
   command: string | null;
   pid: number | null;
   rssBytes: number | null;
@@ -467,6 +493,13 @@ export function planKernelPairing(fresh: readonly KernelOomKill[], namedPids: Re
  * records in order. A record with no line left keeps its inference (`source: 'inferred'`). `vanished` = the members seen before this look
  * (the command line / rss of a pid we had snapshotted). Returns new records; the inputs are not mutated.
  */
+/** A kernel line is a TOOL killed by the SCOPE's backstop (two-leaf scope): the cgroup that hit its limit is `<unit>` itself and the victim lived in `<unit>/w`. A victim in the scope ROOT is the flat shape (its hard level), not this. */
+export function isScopeLevelToolKill(l: Pick<KernelOomKill, 'oomMemcg' | 'taskMemcg'>, unit: string): boolean {
+  const base = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
+  const parentBase = (p: string): string => base(p.slice(0, Math.max(0, p.lastIndexOf('/'))));
+  return base(l.oomMemcg) === unit && base(l.taskMemcg) === SCOPE_LEAF_WORK && parentBase(l.taskMemcg) === unit;
+}
+
 export function applyKernelKills(records: readonly MemKillRecord[], kills: readonly KernelOomKill[], vanished: readonly Pick<VictimSnap, 'pid' | 'comm' | 'cmdline' | 'rssPages'>[], pageSize = 4096): MemKillRecord[] {
   return records.map((r, i) => {
     const k = kills[i];
@@ -479,6 +512,7 @@ export function applyKernelKills(records: readonly MemKillRecord[], kills: reado
       pid: k.pid,
       rssBytes: seen ? seen.rssPages * pageSize : null,
       candidates: [], // everything else that vanished in the window exited on its own: the kernel said who died
+      ...(isScopeLevelToolKill(k, r.unit) ? { scopeLevel: true as const } : {}), // #343 M2: the SCOPE hit its limit, not the tool leaf — keeper + CLI are what outgrew the room
     };
   });
 }
@@ -490,19 +524,39 @@ export const fmtGb = (bytes: number): string => {
   return `${Number.isInteger(g) ? g : +g.toFixed(2)} GB`; // 6 GB, 3.1 GB, 0.25 GB (a rig cap) — never a rounded-off cap
 };
 
+/** #343: the victims of a backstop kill as one phrase — `node-22 (pid 123)`, at most 3, then `+N more`. Commands are bidi-stripped (a comm is attacker-influenced). */
+export function netVictimsPhrase(net: MemNetDetail): string {
+  const shown = net.victims.slice(0, 3).map((v) => `${cutChars(stripBidi(v.comm), 40)} (pid ${v.pid})`);
+  return shown.join(', ') + (net.victims.length > 3 ? ` +${net.victims.length - 3} more` : '');
+}
+/** #343: « 7 GB (tool cap 6 GB + 1 GB room) » — what the backstop is made of, as far as it is known. */
+export function netLimitPhrase(net: MemNetDetail, hardBytes: number | null): string {
+  if (net.backstopBytes === null) return 'the scope backstop';
+  const room = hardBytes !== null && net.backstopBytes > hardBytes ? ` (tool cap ${fmtGb(hardBytes)} + ${fmtGb(net.backstopBytes - hardBytes)} room)` : '';
+  return `${fmtGb(net.backstopBytes)}${room}`;
+}
+
+/** #343 (M2): why a tool died when the SCOPE (not the tool leaf) hit its limit. */
+export const SCOPE_LEVEL_REASON = 'the scope backstop reached — keeper + CLI outgrew the room above the tool cap';
+
 /** The row the member sees. One text for the live row and the reopened one (the builder is the single source). */
 export function memNoticeText(rec: MemNoticeRecord): string {
+  if (!isSoftRecord(rec) && rec.level === 'net' && rec.net) {
+    return `Scope backstop ${netLimitPhrase(rec.net, rec.hardBytes)} reached — ${rec.net.sessionEnded ? 'the session ended' : 'a process was killed'}: keeper + CLI outgrew the room above the tool cap (not a tool kill) · killed ${netVictimsPhrase(rec.net)}`;
+  }
   if (isSoftRecord(rec)) {
     return `Working set ${fmtGb(rec.bytes)} (reclaimable cache excluded) — Plafond mémoire warning level (${fmtGb(rec.softBytes)}) crossed${rec.hardBytes !== null ? `; hard cap ${fmtGb(rec.hardBytes)}` : ''}`;
   }
-  const reason = rec.level === 'hard'
-    ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
-    : 'killed by the system under memory pressure (not by the Plafond mémoire)';
+  const reason = rec.scopeLevel
+    ? SCOPE_LEVEL_REASON
+    : rec.level === 'hard'
+      ? `Plafond mémoire${rec.hardBytes !== null ? ` ${fmtGb(rec.hardBytes)}` : ''} reached`
+      : 'killed by the system under memory pressure (not by the Plafond mémoire)';
   const named = rec.command === null ? null : stripBidi(rec.command);
   if (named === null || named.trim() === '') return `A command was killed: ${reason} (it lived too briefly to be named)`; // same « unnamed » reading as the row
   const cmd = cutChars(named, 120);
   const prefix = rec.source === 'kernel' ? `Command ${cmd}` : `A command (probably ${cmd})`;
-  const main = rec.level === 'hard' ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
+  const main = rec.level === 'hard' || rec.scopeLevel ? `${prefix} killed: ${reason}` : `${prefix} ${reason}`;
   return rec.role ? `${main} — this was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : main;
 }
 
@@ -511,8 +565,12 @@ export function memBusBody(wsLabel: string, rec: MemNoticeRecord): string {
   if (isSoftRecord(rec)) {
     return `Plafond mémoire — workspace ${wsLabel}: working set ${fmtGb(rec.bytes)} crossed the warning level (${fmtGb(rec.softBytes)})${rec.hardBytes !== null ? `, hard cap ${fmtGb(rec.hardBytes)}` : ''}${rec.suppressed ? ` (${rec.suppressed} further crossing(s) since the last warning were not repeated)` : ''}. Nothing was killed or slowed. Scope ${rec.unit}.`;
   }
+  if (rec.level === 'net' && rec.net) {
+    const after = rec.net.sessionEnded ? "The member's SESSION ENDED: its keeper + CLI outgrew the room above the tool cap (its tools are not the cause) — restart it and look at what the CLI/keeper held." : 'The member\'s session survived this time, but keeper + CLI are close to the room: the next full tool leaf can end it.';
+    return `Plafond mémoire — workspace ${wsLabel}: SCOPE BACKSTOP kill (NOT a tool kill) — the member scope reached ${netLimitPhrase(rec.net, rec.hardBytes)}; killed ${netVictimsPhrase(rec.net)}. ${after} Scope ${rec.unit}.`;
+  }
   const cmd = rec.command === null ? 'an unnamed command (it lived too briefly)' : `${rec.source === 'kernel' ? 'command' : 'probably the command'} \`${rec.command}\`${rec.pid !== null ? ` (pid ${rec.pid}${rec.rssBytes ? `, ~${Math.round(rec.rssBytes / (1024 * 1024))} MB` : ''})` : ''}`;
-  const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${fmtGb(rec.hardBytes)})` : ''}` : 'an OOM kill from outside the scope limit';
+  const lvl = rec.scopeLevel ? 'SCOPE BACKSTOP (keeper + CLI outgrew the room above the tool cap — the tool died before the cap did)' : rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${fmtGb(rec.hardBytes)})` : ''}` : 'an OOM kill from outside the scope limit';
   const after = rec.role ? `This was the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: its SESSION ENDED (the cap's last resort).` : "The member's session survived.";
   return `Plafond mémoire — workspace ${wsLabel}: ${cmd} KILLED at the ${lvl}. ${after} Scope ${rec.unit}.`;
 }
@@ -594,8 +652,9 @@ export function inferKillRecords(a: InferKillsInput): MemKillRecord[] {
 
 /** The app-log line for one kill (workspace, killed command, level). */
 export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
+  if (rec.level === 'net' && rec.net) return `memory-cap[${wsLabel}] SCOPE BACKSTOP kill: ${netVictimsPhrase(rec.net)} in the keeper leaf — scope ${rec.unit} reached ${netLimitPhrase(rec.net, rec.hardBytes)} — session ${rec.net.sessionEnded ? 'ENDED' : 'survived'} — at ${new Date(rec.at).toISOString()} — victims named by the kernel log`;
   const cmd = rec.command === null ? 'an unnamed process (it lived less than one snapshot)' : `"${rec.command}" (pid ${rec.pid}, ~${Math.round((rec.rssBytes ?? 0) / (1024 * 1024))} MB)`;
-  const lvl = rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${(rec.hardBytes / GIB).toFixed(2)} GB)` : ''}` : 'an OOM kill from outside the scope limit';
+  const lvl = rec.scopeLevel ? 'SCOPE BACKSTOP (keeper + CLI outgrew the room above the tool cap)' : rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${(rec.hardBytes / GIB).toFixed(2)} GB)` : ''}` : 'an OOM kill from outside the scope limit';
   const amb = rec.candidates.length ? ` — also gone in the same window: ${rec.candidates.join(' | ')}` : '';
   return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}${rec.source === 'kernel' ? ' — victim named by the kernel log' : ''}`;
 }

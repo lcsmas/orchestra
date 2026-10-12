@@ -2,6 +2,7 @@ import { viewBytesFor, type ContainerAccountingView } from './container-accounti
 import { rowProcessBytes, viewFor, type MemberCapView, type MemberMemoryReport } from './member-memory.ts';
 import type { VolumeStat } from './disk-space.ts';
 import type { BrowserReliquatView } from './browser-chip.ts';
+import type { KeeperRoom } from './keeper-room.ts';
 
 // Pure logic for the Resources page: parsing the OS process table, walking
 // process trees, and turning raw jiffy counters into per-session CPU/memory
@@ -353,7 +354,9 @@ export interface SessionGroup {
   /** #323: usage against the cap this member's CURRENT session runs under (the limit the kernel holds on its keeper's scope); null = no cap applied / not scope-tracked / no live session. */
   cap: MemberCapView | null;
   /** #323-fu (review m2): `'not-applied'` = this tracked member's session scope holds NO limit (dim tooltip, no bar); null otherwise. Live session rows only; absent from an older main. */
-  capNote?: 'not-applied' | null;
+  capNote?: 'not-applied' | 'unprotected' | null;
+  /** #343: how close keeper + CLI (leaf `k`) are to the room under the scope's backstop — drives the row's chip (from 70 %), the MEM tooltip line and the grey line; null/absent = not stateable. Live session rows only. */
+  room?: KeeperRoom | null;
 }
 
 /**
@@ -398,6 +401,7 @@ export function groupSessionsByWorkspace(
       scopeOnly: false,
       cap: view?.cap ?? null,
       capNote: view?.capNote ?? null,
+      room: view?.room ?? null,
     };
   });
   // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row

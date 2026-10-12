@@ -8,6 +8,7 @@ import { orchestraHome } from './platform/index.ts';
 import { parseKeeperArgv } from '../shared/resource-monitor.ts';
 import {
   MEMORY_SCOPE_PREFIX_ENV,
+  SCOPE_LEAF_KEEPER,
   SCOPE_LEAF_WORK,
   SCOPE_LEAVES,
   classifyScopeMembers,
@@ -314,7 +315,40 @@ export function readScopeMemory(scope: Pick<MemberScope, 'cgroupDir'>, e: ScopeE
       }
     })(),
     events: events ?? { high: 0, max: 0, oom: 0, oomKill: 0, oomGroupKill: 0 },
+    // #343: the margin of the keeper leaf against the room under the scope's backstop
+    backstopBytes: capDir !== d ? num(e, path.join(d, 'memory.max')) : null, // only a scope WITH its leaves has a backstop: a flat scope's own limit is its hard level
+    keeperLeaf: readKeeperLeaf(e, d),
+    scopeEpisodes: (() => {
+      try {
+        const m = /^oom\s+(\d+)\s*$/m.exec(e.readFile(path.join(d, 'memory.events.local')));
+        return m ? Number(m[1]) : null;
+      } catch {
+        return null;
+      }
+    })(),
   };
+}
+
+/** #343: the keeper leaf `k` of a scope — null when the scope has none (flat) or `memory.current` is unreadable; its working set stays null when `memory.stat` has no `inactive_file` (never the raw bill). */
+function readKeeperLeaf(e: ScopeEnv, scopeDir: string): { currentBytes: number | null; workingSetBytes: number | null; oomKills: number | null } | null {
+  const kDir = path.join(scopeDir, SCOPE_LEAF_KEEPER);
+  if (!e.exists(kDir)) return null;
+  const current = num(e, path.join(kDir, 'memory.current'));
+  if (current === null) return null;
+  let workingSet: number | null = null;
+  try {
+    const stat = parseMemoryStat(e.readFile(path.join(kDir, 'memory.stat')));
+    if (Number.isFinite(stat.inactive_file)) workingSet = workingSetBytes(current, stat);
+  } catch {
+    /* unreadable: unknown */
+  }
+  let oomKills: number | null = null;
+  try {
+    oomKills = parseMemoryEvents(e.readFile(path.join(kDir, 'memory.events')))?.oomKill ?? null;
+  } catch {
+    /* unreadable */
+  }
+  return { currentBytes: current, workingSetBytes: workingSet, oomKills };
 }
 
 /** The parent of any pid on the host, read from /proc (cached per call); null when unreadable / a kernel root. */

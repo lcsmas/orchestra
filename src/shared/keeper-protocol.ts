@@ -99,6 +99,9 @@ export type KeeperDaemonFrame =
   | { t: 'memKill'; rec: MemKillRecord }
   /** #322: one warning-level crossing, pushed the moment the keeper sees it (same delivery rules as `memKill`). */
   | { t: 'memSoft'; rec: MemSoftRecord }
+  /** #343 (gap 2): the cap state the moment it is known or CHANGES (the placement tripwire flips `active` → `unprotected` mid-session) — the app caches it so the Resources page never shows a member as capped while its tools run in the
+   *  unlimited keeper leaf. A later attach reads the same value from `helloAck.cap`. Delivered to an attached client only. */
+  | { t: 'capState'; cap: { unit: string; state: 'active' | 'unprotected' | 'not-applied' | 'no-scope'; hardBytes: number } }
   /** Raw bytes from the CLI's stdout. */
   | { t: 'stdout'; b64: string }
   /** CLI exited (delivered only to an attached client; a detached keeper just

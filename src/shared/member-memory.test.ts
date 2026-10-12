@@ -245,3 +245,76 @@ test('#332 × #323: the cap view\'s bill is the cgroup that carries the cap (cap
   const { capCurrentBytes: _omit, ...older } = live;
   assert.equal(memberViewFrom('ws-a', [older]).cap?.billBytes, 2100 * MB, 'an older reader without the field');
 });
+
+// ─── #343: the keeper leaf's margin in the member view and on the bus-status line ────────────────────────────────────────────────────────────
+
+import { formatRoomLine, type MemberMemoryReport, type ScopeReading } from './member-memory.ts';
+
+const G = 1024 ** 3;
+const readingRoom = (over: Partial<ScopeReading> = {}): ScopeReading => ({ unit: 'u.scope', gen: 'g', currentBytes: 2 * G, procs: [], keeperPid: 1, maxBytes: 6 * G, capCurrentBytes: 1 * G, workingSetBytes: 1 * G, peakBytes: null, limitApplied: true, backstopBytes: 7 * G, keeperLeaf: { currentBytes: 0.5 * G, workingSetBytes: 0.4 * G, oomKills: 0 }, scopeEpisodes: 0, ...over });
+
+test('#343 M1: the view carries the keeper-leaf room — k\'s working set against backstop − hard — for the scope that HOLDS the keeper only', () => {
+  const v = memberViewFrom('w1', [readingRoom()]);
+  assert.equal(v.room?.pct, 40);
+  assert.equal(v.room?.roomBytes, 1 * G);
+  const older = memberViewFrom('w1', [readingRoom({ keeperPid: null, keeperLeaf: { currentBytes: 5 * G, workingSetBytes: 5 * G, oomKills: 0 } }), readingRoom()]);
+  assert.equal(older.room?.kBytes, 0.4 * G, 'an older generation kept alive by Reliquats is not the session\'s margin');
+  assert.equal(memberViewFrom('w1', [readingRoom({ keeperPid: null })]).room, null, 'no scope holds the keeper ⇒ no margin');
+});
+
+test('#343 M2: no backstop / no tool cap / no keeper leaf / junk ⇒ NO margin (never a fabricated figure)', () => {
+  assert.equal(memberViewFrom('w', [readingRoom({ backstopBytes: null })]).room, null);
+  assert.equal(memberViewFrom('w', [readingRoom({ maxBytes: null })]).room, null);
+  assert.equal(memberViewFrom('w', [readingRoom({ keeperLeaf: null })]).room, null);
+  assert.equal(memberViewFrom('w', [readingRoom({ keeperLeaf: undefined })]).room, null);
+  assert.equal(memberViewFrom('w', [readingRoom({ backstopBytes: Number.NaN })]).room, null);
+});
+
+const report = (views: ReturnType<typeof memberViewFrom>[]): MemberMemoryReport => ({ at: 1, tracked: views, untracked: [], unsupported: null, strayScopes: null });
+
+test('#343 M3: the bus-status line names the closest member, its k, the room and the percent, and counts the backstop events', () => {
+  const a = memberViewFrom('wa', [readingRoom()]);
+  const b = memberViewFrom('wb', [readingRoom({ keeperLeaf: { currentBytes: 0.95 * G, workingSetBytes: 0.9 * G, oomKills: 1 }, scopeEpisodes: 2 })]);
+  const line = formatRoomLine(report([a, b]), (id) => `feat-${id}`);
+  assert.match(line, /^memory room: 2 members measured · least room: feat-wb — keeper\+CLI 922 MB of 1\.0 GB room \(90 %\) — close · scope backstop events: 2$/); // the larger of k kills (1) and scope episodes (2): one episode bumps both counters
+  assert.match(formatRoomLine(report([memberViewFrom('wc', [readingRoom({ keeperLeaf: { currentBytes: 1.2 * G, workingSetBytes: 1.1 * G, oomKills: 0 } })])]), (i) => i), /ABOVE the room: a full tool leaf would open a scope-level OOM/);
+});
+
+test('#343 M4: nothing tracked / nothing stateable says so — one line, never silence', () => {
+  assert.equal(formatRoomLine(report([]), (i) => i), 'memory room: no member has a scope — nothing to measure');
+  assert.match(formatRoomLine(report([memberViewFrom('wd', [readingRoom({ backstopBytes: null })])]), (i) => i), /^memory room: 1 tracked member, no margin stateable/);
+  const approx = formatRoomLine(report([memberViewFrom('we', [readingRoom({ keeperLeaf: { currentBytes: 0.5 * G, workingSetBytes: null, oomKills: 0 } })])]), (i) => i);
+  assert.match(approx, /\(upper bound: cache not separable\)/);
+});
+
+// ─── #343 gap 2: an unprotected member never looks capped ────────────────────────────────────────────────────────────────────────────────────
+
+test('#343 G2-a: the keeper says UNPROTECTED while w/memory.max is numeric ⇒ NO bar (cap null), the dim note says unprotected — the sysfs alone would have drawn a healthy cap', () => {
+  const healthy = memberViewFrom('w1', [readingRoom({ capState: 'active' })]);
+  assert.ok(healthy.cap, 'control: an active member has its bar');
+  assert.equal(healthy.capNote, null);
+  const unprotected = memberViewFrom('w1', [readingRoom({ capState: 'unprotected' })]);
+  assert.equal(unprotected.cap, null, 'tools run in the unlimited keeper leaf: the cap is not holding, no bar');
+  assert.equal(unprotected.capNote, 'unprotected');
+  const notApplied = memberViewFrom('w1', [readingRoom({ capState: 'not-applied' })]);
+  assert.equal(notApplied.cap, null);
+  assert.equal(notApplied.capNote, 'unprotected', 'the limit did not fully take (swap escape open / wrapper cannot run): not protected either');
+});
+
+test('#343 G2-b: only the scope that HOLDS the keeper speaks for the member; an unknown state changes nothing; « no limit at all » keeps its own, more specific note', () => {
+  assert.equal(memberViewFrom('w1', [readingRoom({ capState: undefined })]).capNote, null, 'unknown ≠ unprotected');
+  assert.equal(memberViewFrom('w1', [readingRoom({ capState: null })]).capNote, null);
+  const older = memberViewFrom('w1', [readingRoom({ keeperPid: null, capState: 'unprotected' }), readingRoom({ capState: 'active' })]);
+  assert.ok(older.cap && older.capNote === null, 'an older generation kept alive by Reliquats does not make the live session unprotected');
+  const noLimit = memberViewFrom('w1', [readingRoom({ limitApplied: false, maxBytes: null, capState: 'unprotected' })]);
+  assert.equal(noLimit.capNote, 'not-applied', 'the sysfs says NO limit at all: the more specific note wins');
+  assert.equal(memberViewFrom('w1', [readingRoom({ currentBytes: null, capState: 'unprotected' })]).capNote, null, 'an unreadable meter is unknown, not a verdict');
+});
+
+test('#343 G2-c: the SessionGroup carries the new note (and the room) to the row', async () => {
+  const { groupSessionsByWorkspace } = await import('./resources.ts');
+  const v = memberViewFrom('w1', [readingRoom({ capState: 'unprotected' })]);
+  const { rows } = groupSessionsByWorkspace([{ ptyId: 'w1:sdk', workspaceId: 'w1', kind: 'sdk', cpuPct: 1, memBytes: 10, procCount: 1, remote: false } as never], undefined as never, { at: 1, tracked: [v], untracked: [], unsupported: null, strayScopes: null });
+  assert.equal(rows.find((r) => r.key === 'w1')?.capNote, 'unprotected');
+  assert.ok(rows.find((r) => r.key === 'w1')?.room, 'the margin rides along');
+});

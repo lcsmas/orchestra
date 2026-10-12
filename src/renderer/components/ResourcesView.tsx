@@ -9,7 +9,8 @@ import { groupSnapshot, type ResourceSnapshot, type SessionGroup, type SessionRe
 import { containersChipTitle, unattributedWarning } from '../../shared/container-accounting';
 import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/member-memory';
 import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-chip';
-import { CAP_NOT_APPLIED_TIP, capSummaryLine } from '../../shared/memory-cap-view';
+import { CAP_NOT_APPLIED_TIP, CAP_UNPROTECTED_TIP, capSummaryLine } from '../../shared/memory-cap-view';
+import { roomChipOf } from '../../shared/keeper-room';
 import { CapBar } from './CapBar';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
@@ -163,7 +164,8 @@ interface AgentRow extends SessionGroup {
 
 /** Session-kind chips; a keeper-hosted structured agent (`sdk`) reads « agent » — it IS the workspace's agent, just not under a PTY — and a workspace with attributed containers gets the 🐳 chip
  *  (#293, D-pick4 A): count in the label, the measured figure in the tooltip (it is already part of the row's memory figure). */
-function SessionChips({ sessions, containers, reliquats, browsers }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats']; browsers?: BrowserChip | null }) {
+function SessionChips({ sessions, containers, reliquats, browsers, room }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats']; browsers?: BrowserChip | null; room?: SessionGroup['room'] }) {
+  const roomChip = roomChipOf(room);
   return (
     <span className="res-chips">
       {sessions.map((s) => (
@@ -180,6 +182,12 @@ function SessionChips({ sessions, containers, reliquats, browsers }: { sessions:
       {reliquats && reliquats.count > 0 && (
         <span className="res-chip reliquat" data-res-reliquats={reliquats.count} title={reliquatChipTitle(reliquats)}>
           {'\u26A0'} {reliquatWord(reliquats.count)}
+        </span>
+      )}
+      {/* #343 (D-pick B): keeper + CLI close to the room under the scope's backstop — hidden under 70 %, amber 70–99 %, red from 100 % (k alone fills the room); the same sentence is the MEM tooltip's last line */}
+      {roomChip && (
+        <span className={`res-chip room tone-${roomChip.tone}`} data-res-room={room?.pct} data-res-room-tone={roomChip.tone} title={roomChip.title}>
+          {roomChip.text}
         </span>
       )}
       {browsers && (
@@ -277,7 +285,7 @@ function AgentRowView({
             )}
           </span>
         </span>
-        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} />
+        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} room={row.room} />
         {row.remote ? (
           <span className="res-remote-note">runs in sandbox — no local footprint</span>
         ) : row.containerOnly || row.scopeOnly ? (
@@ -296,10 +304,14 @@ function AgentRowView({
             {row.cap ? (
               <span className="res-cell res-mem">
                 {formatBytes(row.memBytes)}
-                <CapBar cap={row.cap} levels={capLevels} />
+                <CapBar cap={row.cap} levels={capLevels} room={row.room} />
               </span>
             ) : row.capNote === 'not-applied' ? (
               <span className="res-cell res-mem-nocap" title={CAP_NOT_APPLIED_TIP} data-res-nocap="" tabIndex={0} role="note" aria-label={`${formatBytes(row.memBytes)} — ${CAP_NOT_APPLIED_TIP}`}>
+                {formatBytes(row.memBytes)}
+              </span>
+            ) : row.capNote === 'unprotected' ? (
+              <span className="res-cell res-mem-nocap res-mem-unprotected" title={CAP_UNPROTECTED_TIP} data-res-unprotected="" tabIndex={0} role="note" aria-label={`${formatBytes(row.memBytes)} — ${CAP_UNPROTECTED_TIP}`}>
                 {formatBytes(row.memBytes)}
               </span>
             ) : (
@@ -841,7 +853,7 @@ export function ResourcesView() {
             accountLabelFor={accountLabelFor}
             warning={unattributedWarning(snap?.containers)}
             reliquatsLine={reliquatsNote(snap?.members)}
-            capLine={capSummaryLine(rows.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap })))}
+            capLine={capSummaryLine(rows.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap, room: r.room })))}
             capLevels={snap?.capLevels ?? null}
             browsersOf={(row) => browsersChipFor(snap?.browserReliquats, row)}
           />

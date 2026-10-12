@@ -173,7 +173,10 @@ servers and hooks included), with all they spawn, tests and scripts too. Since Q
 D-Q12) the session itself — the keeper and the CLI process — sits outside the limited
 cgroup, under a looser backstop on the whole member scope (hard level + room). Above the
 soft level the member and its coordinator are warned; above the hard level the kernel
-kills one of those processes, not the session (below the backstop). A human's own
+kills one of those processes, not the session (below the backstop). When keeper + CLI
+alone outgrow the room the backstop leaves, the kernel can take the session: that
+**backstop kill** is reported on its own (not as a tool kill) and `bus-status` shows
+how close the keeper and the CLI are to that room. A human's own
 sessions have no Plafond mémoire.
 Containers are outside it: they wait for Admission instead.
 _Avoid_: quota, limit, budget (the session budget suite is a different thing)

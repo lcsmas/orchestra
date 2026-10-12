@@ -36,10 +36,10 @@ test('RESOURCES: the snapshot carries the levels NOW; the table gets them and th
   const r = codeOf('src/main/resources.ts');
   assert.ok(/capLevels: \(\(\) => \{\s*const s = store\.getMemoryGuardSettings\(\);\s*return \{ softGb: s\.capSoftGb, hardGb: s\.capHardGb \};\s*\}\)\(\),/.test(r));
   const v = codeOf('src/renderer/components/ResourcesView.tsx');
-  assert.ok(/capLine=\{capSummaryLine\(rows\.map\(\(r\) => \(\{ key: r\.key, name: r\.ws \? r\.ws\.branch : r\.fallbackName, cap: r\.cap \}\)\)\)\}/.test(v));
+  assert.ok(/capLine=\{capSummaryLine\(rows\.map\(\(r\) => \(\{ key: r\.key, name: r\.ws \? r\.ws\.branch : r\.fallbackName, cap: r\.cap, room: r\.room \}\)\)\)\}/.test(v)); // #343: the room rides along to the grey line
   assert.ok(/capLevels=\{snap\?\.capLevels \?\? null\}/.test(v));
-  assert.ok(/\{row\.cap \? \(\s*<span className="res-cell res-mem">\s*\{formatBytes\(row\.memBytes\)\}\s*<CapBar cap=\{row\.cap\} levels=\{capLevels\} \/>\s*<\/span>\s*\) : row\.capNote === 'not-applied' \? \(\s*<span className="res-cell res-mem-nocap"[^>]*>\s*\{formatBytes\(row\.memBytes\)\}\s*<\/span>\s*\) : \(\s*<span className="res-cell">\{formatBytes\(row\.memBytes\)\}<\/span>\s*\)\}/.test(v), 'capped ⇒ figure + bar; not applied ⇒ figure + dim tooltip; else today\'s cell');
-  assert.ok(/<CapBar cap=\{row\.cap\} levels=\{capLevels\} \/>/.test(v) && !/<CapBar[^>]*scopeOnly/.test(v));
+  assert.ok(/\{row\.cap \? \(\s*<span className="res-cell res-mem">\s*\{formatBytes\(row\.memBytes\)\}\s*<CapBar cap=\{row\.cap\} levels=\{capLevels\} room=\{row\.room\} \/>\s*<\/span>\s*\) : row\.capNote === 'not-applied' \? \(\s*<span className="res-cell res-mem-nocap"[^>]*>\s*\{formatBytes\(row\.memBytes\)\}\s*<\/span>\s*\) : row\.capNote === 'unprotected' \? \(\s*<span className="res-cell res-mem-nocap res-mem-unprotected"[^>]*>\s*\{formatBytes\(row\.memBytes\)\}\s*<\/span>\s*\) : \(\s*<span className="res-cell">\{formatBytes\(row\.memBytes\)\}<\/span>\s*\)\}/.test(v), 'capped ⇒ figure + bar; not applied ⇒ figure + dim tooltip; else today\'s cell');
+  assert.ok(/<CapBar cap=\{row\.cap\} levels=\{capLevels\} room=\{row\.room\} \/>/.test(v) && !/<CapBar[^>]*scopeOnly/.test(v));
   const g = codeOf('src/shared/resources.ts');
   assert.ok(/cap: view\?\.cap \?\? null,/.test(g) && /scopeOnly: true, cap: null/.test(g) && /scopeOnly: false, cap: null/.test(g), 'only a live session row carries a cap');
 });
@@ -99,14 +99,14 @@ test('#323-fu m2: the « not applied » note travels FI-1 limitApplied → Scope
   assert.ok(/limitFileAbsent = \(err as NodeJS\.ErrnoException \| null\)\?\.code === 'ENOENT' && e\.exists\(capDir\);/.test(fi1), 'only ENOENT while the cap cgroup still exists counts as « absent » (EACCES/EIO/a vanished scope stay unknown)');
   assert.ok(/limitApplied: mem\?\.limitApplied \?\? null/.test(codeOf('src/main/member-memory.ts')), 'the producer carries it into the reading');
   const sm = codeOf('src/shared/member-memory.ts');
-  assert.ok(/r\.limitApplied === false \? 'not-applied' : null/.test(sm) && /capNote: capNoteOf\(readings\)/.test(sm), 'the view derives the note from the keeper scope, only on an explicit « max »');
+  assert.ok(/if \(r\.limitApplied === false\) return 'not-applied';/.test(sm) && /capNote: capNoteOf\(readings\)/.test(sm), 'the view derives the note from the keeper scope, only on an explicit « max »');
   assert.ok(/capNote: view\?\.capNote \?\? null,/.test(codeOf('src/shared/resources.ts')), 'the live session row carries it');
   const v = codeOf('src/renderer/components/ResourcesView.tsx');
   const capped = v.indexOf('{row.cap ? (');
   const noted = v.indexOf("row.capNote === 'not-applied' ? (");
   const plain = v.indexOf('<span className="res-cell">{formatBytes(row.memBytes)}</span>\n            )}');
   assert.ok(capped > 0 && noted > capped && plain > noted, 'branch order: capped bar, then the note, then today\'s plain cell');
-  assert.ok(/title=\{CAP_NOT_APPLIED_TIP\} data-res-nocap=""/.test(v) && /import \{ CAP_NOT_APPLIED_TIP, capSummaryLine \}/.test(v));
+  assert.ok(/title=\{CAP_NOT_APPLIED_TIP\} data-res-nocap=""/.test(v) && /import \{ CAP_NOT_APPLIED_TIP, CAP_UNPROTECTED_TIP, capSummaryLine \}/.test(v));
   assert.ok(/\.res-cell\.res-mem-nocap \{ cursor: help; text-decoration: underline dotted var\(--text-dim\); text-decoration-thickness: 1px; text-underline-offset: 3px; \}/.test(fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8')), 'the dim cue that a tooltip exists: dotted, DIM colour, hairline, offset — each part pinned');
   assert.ok(/tabIndex=\{0\} role="note" aria-label=\{`\$\{formatBytes\(row\.memBytes\)\} — \$\{CAP_NOT_APPLIED_TIP\}`\}/.test(v), 'keyboard + assistive tech reach the same explanation (a title alone is mouse-only)');
 });

@@ -375,3 +375,29 @@ test('P16 (#332 × #323) the producer carries the CAP\'s own current (the work l
   assert.equal(v.cap?.billBytes, 1500 * MB, 'the bar: the tools\' memory.current (what the hard level compares)');
   assert.equal(v.bytes, 2100 * MB, 'the MEM figure: the whole scope');
 });
+
+// ─── #343 gap 2: the keeper's reported cap state reaches the reading — for the scope that holds the keeper, matched on the UNIT ─────────────
+
+test('#343 P-cap: capState(wsId) lands on the reading of the scope that HOLDS the keeper and whose unit it names — never on an older generation, never on a mismatching unit; a throwing dep is "unknown"', async () => {
+  const { sampleMemberMemory } = await import('./member-memory.ts');
+  const scopeA = { unit: 'orchestra-ws-wcap-1aaaaa.scope', gen: '1aaaaa', cgroupDir: '/x/a', keeperPid: null };
+  const scopeB = { unit: 'orchestra-ws-wcap-1bbbbb.scope', gen: '1bbbbb', cgroupDir: '/x/b', keeperPid: 4242 };
+  const mk = (cap: (id: string) => { unit: string; state: string } | null): Parameters<typeof sampleMemberMemory>[0] => ({
+    now: () => 1,
+    workspaceIds: () => ['wcap'],
+    liveMemberIds: () => ['wcap'],
+    scopes: () => [scopeA, scopeB],
+    readMemory: () => ({ currentBytes: 1000, maxBytes: 6 * 1024 ** 3, capCurrentBytes: 1000, workingSetBytes: 500, limitApplied: true }),
+    listProcs: () => [],
+    support: () => ({ ok: true }),
+    countScopes: () => 2,
+    capState: cap,
+  });
+  const v = (cap: Parameters<typeof mk>[0]) => sampleMemberMemory(mk(cap)).tracked[0];
+  assert.equal(v(() => ({ unit: scopeB.unit, state: 'unprotected' })).capNote, 'unprotected');
+  assert.equal(v(() => ({ unit: scopeB.unit, state: 'unprotected' })).cap, null);
+  assert.ok(v(() => ({ unit: scopeA.unit, state: 'unprotected' })).cap, 'the state names the OLD generation: the live session is not affected');
+  assert.ok(v(() => ({ unit: 'orchestra-ws-other-1ccccc.scope', state: 'unprotected' })).cap, 'a state for another unit is ignored');
+  assert.ok(v(() => { throw new Error('boom'); }).cap, 'a throwing capState is unknown, the member is judged on the sysfs alone');
+  assert.ok(v(() => null).cap);
+});

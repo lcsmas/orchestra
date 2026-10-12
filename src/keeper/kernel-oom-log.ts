@@ -22,16 +22,31 @@ export function parseJournalJson(stdout: string): KernelOomKill[] {
   return out;
 }
 
-/** The memcg OOM kills in the kernel log since `sinceMs`; null when `journalctl` cannot run (missing, timeout, unreadable). `[]` = nothing matched (journalctl exits 1 on no match). */
-export function readKernelOomKills(sinceMs: number): Promise<KernelOomKill[] | null> {
+/** Options of {@link readKernelOomKills}. The keeper's own lookups (a few seconds back) use none. */
+export interface KernelLogOpts {
+  /** A regex (PCRE) the line must ALSO match — the APP's lookup of a scope's backstop kill reads a window of hours or days, so it asks only for its own scopes' lines (journalctl greps before it prints). */
+  match?: string;
+  /** Output cap (default 4 MiB). */
+  maxBufferBytes?: number;
+  /** Time cap (default 4 s). */
+  timeoutMs?: number;
+  /** Read every boot still in the journal, not just the current one (`journalctl -k` implies `-b`): the APP asks about scopes that may have ended before a reboot. */
+  allBoots?: boolean;
+}
+
+/** The memcg OOM kills in the kernel log since `sinceMs`; null when `journalctl` cannot run (missing, timeout, unreadable, output over the cap). `[]` = nothing matched (journalctl exits 1 on no match). */
+export function readKernelOomKills(sinceMs: number, opts: KernelLogOpts = {}): Promise<KernelOomKill[] | null> {
   return new Promise((resolve) => {
     const since = `@${Math.max(0, Math.floor(sinceMs / 1000))}`;
     execFile(
       'journalctl',
-      ['-k', '--no-pager', '-q', '-o', 'json', '--grep', 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', since],
-      { timeout: 4000, maxBuffer: 4 * 1024 * 1024, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C' } },
-      (err, stdout) => {
-        if (err && (err as { code?: unknown }).code !== 1) return resolve(null); // exit 1 = «no match»; anything else (ENOENT, timeout, killed) = unreadable
+      // no `-q`: it hides the « inaccessible journal » warnings, and exit 1 alone cannot tell « nothing matched » (stderr empty) from « the journal cannot be read / has no entries » (stderr says so)
+      ['-k', ...(opts.allBoots ? ['-b', 'all'] : []), '--no-pager', '-o', 'json', '--grep', opts.match ? `oom-kill:constraint=CONSTRAINT_MEMCG.*(${opts.match})` : 'oom-kill:constraint=CONSTRAINT_MEMCG', '--since', since],
+      { timeout: opts.timeoutMs ?? 4000, maxBuffer: opts.maxBufferBytes ?? 4 * 1024 * 1024, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C' } },
+      (err, stdout, stderr) => {
+        if (err && (err as { code?: unknown }).code !== 1) return resolve(null); // anything but exit 1 (ENOENT, timeout, killed, buffer overflow) = unreadable
+        // exit 1 with a message on stderr (« No journal files were opened due to insufficient permissions », « No journal boot entry found … ») is UNKNOWN, never « nothing matched » (#343 review M4)
+        if (err && String(stderr ?? '').trim() !== '') return resolve(null);
         resolve(parseJournalJson(String(stdout ?? '')));
       },
     );
