@@ -261,3 +261,27 @@ A workspace whose turn finished while the human was not looking — the bell.
 Looking at its conversation, on the desktop or through the accès mobile,
 clears it and resolves an en attente workspace to idle.
 _Avoid_: waiting (that is en attente), new
+
+### Accounts
+
+**Compte** (account):
+A named place Orchestra can run agents under: its own configuration, history
+and sign-in, independent of the other Comptes. The claude.ai identity signed in
+to it is not fixed: signing in again with another identity keeps the Compte and
+changes who it bills. UI says "Compte", code says `Account`. Every workspace
+runs under an explicit Compte: there is no default account. Settled with the
+user 2026-09-30 (map #243, spec #358).
+_Avoid_: profil / profile (collides with the isolated browser profile used
+during sign-in), login (that is the act, not the thing)
+
+**Connexion** (sign-in):
+A Compte's signed-in session with claude.ai. It has an end date fixed when the
+human signs in (refreshing never extends it); when it ends or is revoked, the
+human must sign in again. The only auth state the UI ever shows.
+_Avoid_: token (internal, renewed silently; its expiry is never a problem to show), login
+
+**Configuration source**:
+The `~/.claude` directory as the place every Compte inherits skills, MCP
+servers and settings from. It is not a Compte: no agent runs under it, and any
+sign-in it holds is ignored.
+_Avoid_: default account, default login, global account
