@@ -2483,9 +2483,12 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 - **`kind`** = `'mission'` for a top-level orchestrator (parentRunId null),
   `'vague'` for a nested one — the discriminator `refreezeRun` gates on.
 - **D1b mission re-freeze:** when a NEW nested (OPS) run is created,
-  `refreezeRun(db, parentRunId, live)` UPDATEs the parent **mission** row's flags
-  to the current live switches (SQL WHERE `kind='mission'` — the guard, so an
-  OPS/member row is NEVER re-frozen). Wave-boundary only (new-nested-run), never on
+  `refreezeRun(db, parentRunId, live, WAVE_REFREEZE_KEEPS_FROZEN)` UPDATEs the parent **mission** row's flags
+  to the current live switches EXCEPT the keys in `WAVE_REFREEZE_KEEPS_FROZEN` (today `memoryCap`, #324 Q17-A: they keep the
+  value the mission froze — in BOTH directions, so a mission frozen ON also stays ON when a human later turns the switch OFF;
+  only the explicit `orchestra run refreeze` = `refreezeMissionRun`, which passes no keep list, propagates either way)
+  (SQL WHERE `kind='mission'` — the guard, so an OPS/member row is NEVER re-frozen). A mission row whose stored flags lack
+  the key (frozen before the switch existed) reads OFF through `normalizeSwitches` and is re-frozen with `memoryCap:false`. Wave-boundary only (new-nested-run), never on
   a member spawn that merely reads an existing OPS row. Keeps the LEAD's own plain
   children tracking the latest flip while preserving F1 for OPS/member rows.
 - **D1 — never blocks a spawn:** `getBus()` null / `startRun` throw are caught,
