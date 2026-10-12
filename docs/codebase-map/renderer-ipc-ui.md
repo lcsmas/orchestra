@@ -58,9 +58,9 @@ Bootstrap order matters; several steps run *before* the window:
   `MAX_MOUNTED_PANES` in App.tsx + `src/shared/mounted-panes.ts`): only the 12
   most-recently-used workspaces keep a `StructuredView` (the Agent view) mounted;
   older ones unmount and cold-boot on reopen. Since #230 no agent xterm is
-  mounted at all (`TerminalView` is no longer imported by App.tsx; the file goes
-  in #231), so the cap now bounds DOM/scroll state and the WebGL contexts left
-  are the Run/nvim/login terminals.
+  mounted at all and #231 deleted the component (`Terminal.tsx`, its CSS, the
+  Unicode11 addon), so the cap now bounds DOM/scroll state; the only WebGL
+  context left is the Run terminal's.
 - **Single-instance lock** `:1011` — second instance `app.exit(0)`; primary
   focuses. Dev `ORCHESTRA_HOME` gets a separate lock so dev+packaged coexist.
 - **IPC wrapper** `handle()` `:228` — logs every handler failure with its channel
@@ -68,9 +68,10 @@ Bootstrap order matters; several steps run *before* the window:
 
 IPC handlers: the request/response BODIES live in the shared table
 `src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
-workspaces CRUD, sandbox, PTY (`ptyStart` idempotent + heavy-resume gate;
-`ptyWrite` flips `hasInput` and applies the heavy-resume keystroke
-suppression), git (stats poll piggybacks merge+branch refresh; findPR
+workspaces CRUD, sandbox, PTY (`ptyWrite` flips `hasInput` and applies the
+heavy-resume keystroke suppression; `ptyStart` / `ptyRepaint` / `saveClipboardImage` /
+`stopAgent` are no longer renderer-facing — retyped under `ExtraApiMethods` and
+unreachable until #233 deletes them), git (stats poll piggybacks merge+branch refresh; findPR
 piggybacks release detection), scripts, linear, accounts, usage, deps).
 index.ts wires the table to its historical channels in one loop over
 `METHOD_IPC_CHANNELS` (every registration still goes through the logging
@@ -169,7 +170,8 @@ then faithfully divided up an already-oversized box and `.diff-scroll` ended wit
 `clientHeight === scrollHeight`. Measured in the real app: `.main` 3789px in a
 971px viewport, diff unscrollable; with the fix, 971px and it scrolls.
 
-This hid for a long time because **`.terminal-pane` and `.av-view` are
+This hid for a long time because **the workspace panes (`.av-view`, and the then-mounted
+`.terminal-pane`, deleted in #231) are
 `position: absolute; inset: 0`** and contribute ZERO intrinsic height — DiffPane
 (`.pane.diff-pane`, in normal flow) was the first pane whose content is
 arbitrarily tall. Note `overflow: hidden` on `.pane` does NOT fix this: overflow

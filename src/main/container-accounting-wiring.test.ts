@@ -81,7 +81,7 @@ test('W7 who imports the producer: the monitor, the page sampler, /busStatus and
   assert.deepEqual(importers, ['hooks-server.ts', 'memory-alert-host.ts', 'resource-monitor.ts', 'resources.ts']);
 });
 
-test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAMPLED (the PTY listing never saw them), the row shows the 🐳 chip and a container-only row, the unattributed line renders under the table, and a keeper-hosted row has NO stop button (the page stops PTYs only)', () => {
+test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAMPLED (the PTY listing never saw them), the row shows the 🐳 chip and a container-only row, the unattributed line renders under the table, and no row has a stop button (#231: the only target was an agent PTY, which no longer exists)', () => {
   const res = read('src/main/resources.ts');
   assert.match(res, /const sessions = \[\.\.\.ptySessions, \.\.\.aggregateKeeperSessions\(listKeeperRoots\(\), ptyList\.flatMap\(\(s\) => \(s\.remote \|\| s\.pid === undefined \? \[\] : \[s\.pid\]\)\), table, cpuPcts\)\];/, 'a keeper is skipped only when it sits INSIDE a PTY root\'s tree (by pid), never because its workspace also has a terminal agent');
   const view = read('src/renderer/components/ResourcesView.tsx');
@@ -90,8 +90,8 @@ test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAM
   assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} \/>/); // + the #331 browsers chip (D-Q4 A')
   assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/, 'a workspace whose only footprint is a container (or, #328, only its Reliquats) gets its own row (cpu / procs « — »)');
   assert.match(view, /className="res-chip docker" data-res-containers=\{containers\.count\} title=\{containersChipTitle\(containers\)\}/);
-  assert.match(view, /const agentCount = rows\.filter\(\(r\) => r\.sessions\.some\(\(s\) => s\.kind === 'agent' \|\| s\.kind === 'sdk'\)\)\.length;/, 'the Live agents tile counts structured agents too — it agrees with the table');
-  assert.match(view, /const agentSession = row\.sessions\.find\(\(s\) => s\.kind === 'agent'\);/, 'the stop target is the PTY agent ONLY — an sdk / container-only row has none');
+  assert.match(view, /const agentCount = rows\.filter\(\(r\) => r\.sessions\.some\(\(s\) => s\.kind === 'sdk'\)\)\.length;/, 'the Live agents tile counts the keeper-hosted Agent-view sessions — it agrees with the table (#231: no agent-kind PTY exists any more)');
+  assert.doesNotMatch(view, /stopAgent|res-stop-btn|agentSession/, 'no per-row stop control: its only target was an agent PTY (#231)');
   assert.match(read('src/renderer/styles.css'), /\.res-chip\.docker \{/);
   assert.match(read('src/renderer/styles.css'), /\.res-unattributed \{/);
   assert.ok(fs.existsSync(path.join(root, 'scripts/container-memory-screenshot.mjs')), 'the screenshot gate exists (UI gate: pixels + assertions under a headless sway)');

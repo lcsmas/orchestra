@@ -246,6 +246,12 @@ export interface ExtraApiMethods {
    *  Diff tab was removed — Monaco was too heavy); kept as a served backend
    *  method behind the `git:diff` channel. */
   getDiff: (id: string) => Promise<DiffFile[]>;
+  /** #231: the agent-terminal channels. The renderer/preload wrappers are gone (no agent PTY any more);
+   *  these handlers stay UNREACHABLE until the launcher-deletion ticket (#233) deletes them with this block. */
+  ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
+  ptyRepaint: (id: string, cols: number, rows: number) => Promise<void>;
+  saveClipboardImage: (mime: string, bytes: Uint8Array) => Promise<string | null>;
+  stopAgent: (id: string) => Promise<void>;
 }
 
 export type ApiHandlerTable = ServableApi & ExtraApiMethods;

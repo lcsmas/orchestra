@@ -104,6 +104,14 @@ const EXPECT = {
   // #230 (#228 review O1 + F1): the FIRST session start of a LEGACY terminal-only workspace adopts the terminal transcript, whichever Agent-view
   // action causes it — composer send, `!cmd`, the MCP popover (baseline: the session starts BLANK while the history pane shows the old transcript).
   firstStartAdopts: { baseline: false, after: true },
+  // #231: the agent terminal's renderer surface. Preload wrappers only the agent terminal used (start, repaint, stopped signal, clipboard image save, + the
+  // Resources page's agent stop, whose only caller was the dead per-row button), the stylesheet rules of the component, and the Unicode11 addon in the manifest + lockfile.
+  agentTerminalWrappers: { baseline: true, after: false },
+  agentTerminalCss: { baseline: true, after: false },
+  unicode11InManifest: { baseline: true, after: false },
+  // The addon in the BUILT renderer bundle: false in BOTH modes — B5 (#230) unmounted Terminal.tsx, so on master it is unreachable and tree-shaken already;
+  // this clause is a guard against a re-import, not a removal discriminator (its mutant is the proof it can fire).
+  unicode11InBundle: { baseline: false, after: false },
 };
 // #228 legacy seed: a real-shaped TERMINAL transcript (entrypoint 'cli') the wake path must adopt. A valid UUID: the SDK's session index keys on it.
 const LEGACY_SESSION_ID = '228c0de0-7e57-4a11-8b3a-00000000b301';
@@ -1991,7 +1999,7 @@ const ARMS = [
         ctx.clause('view/start-error-rendered-once', rows === 1, `'${START_ERR}' text nodes in the page after reload=${rows} (persisted copy must not double a live row)`);
       }
       // ── a WAKE that cannot start: message → inbox, prompt queue → re-queued, review → refused ──
-      const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
+      const stopAndWait = async () => { if (!wantPty) return; /* #231: the stopAgent wrapper is gone — and there is no PTY to stop */ await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
       await stopAndWait(); // baseline: kill the spawn-fallback PTY so the wake path is what runs; after: nothing to stop
       const msg = await runCli(app, ['message', child.id, MSG_TEXT]);
       const want = pick(EXPECT.messageDelivery);
@@ -2503,6 +2511,77 @@ const ARMS = [
     name: 'other_terminals_work', boots: true, ticket: '#230',
     doc: 'the terminals that SURVIVE the removal still work, identically in both modes: the Run tab (run-kind PTY), the nvim file pane (nvim-kind PTY running nvim) and the account login modal (login-kind PTY running `claude /login` in the account\'s scratch dir)',
     run: otherTerminalsRun,
+  },
+  {
+    name: 'agent_terminal_static', boots: false, ticket: '#231',
+    doc: 'the Unicode11 addon (only the agent terminal used it) is gone from the manifest, the lockfile and the BUILT renderer bundle (the bundle is scanned, not only the manifest); the xterm packages Run/nvim/login need stay. The bundle clause is green on master by design (Terminal.tsx was already unreachable since #230) — a re-import guard, proven by its mutant',
+    async run(ctx) {
+      const read = (f) => (fs.existsSync(path.join(APP_DIR, f)) ? fs.readFileSync(path.join(APP_DIR, f), 'utf8') : null);
+      const pkg = JSON.parse(read('package.json'));
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const KEEP = ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links', '@xterm/addon-webgl'];
+      ctx.clause('control/shared-xterm-deps-kept', KEEP.every((k) => k in deps), `Run/nvim/login deps in package.json: ${KEEP.map((k) => `${k}=${k in deps}`).join(' ')}`);
+      ctx.clause('manifest/unicode11-addon', ('@xterm/addon-unicode11' in deps) === pick(EXPECT.unicode11InManifest), `'@xterm/addon-unicode11' in package.json=${'@xterm/addon-unicode11' in deps} expected(${MODE})=${pick(EXPECT.unicode11InManifest)}`);
+      const lock = read('pnpm-lock.yaml');
+      if (lock === null) ctx.skip('lockfile/unicode11-addon', 'no pnpm-lock.yaml under <app-dir>');
+      else {
+        ctx.clause('control/lockfile-has-the-kept-xterm-packages', KEEP.every((k) => lock.includes(`'${k}'`)), `pnpm-lock.yaml names ${KEEP.filter((k) => lock.includes(`'${k}'`)).length}/${KEEP.length} of the kept xterm packages`);
+        ctx.clause('lockfile/unicode11-addon', lock.includes('addon-unicode11') === pick(EXPECT.unicode11InManifest), `'addon-unicode11' in pnpm-lock.yaml=${lock.includes('addon-unicode11')} expected(${MODE})=${pick(EXPECT.unicode11InManifest)}`);
+      }
+      // Two table fragments that exist in the addon's minified output and NOT in xterm core (MEASURED against @xterm/xterm 5.x lib/xterm.js): the Unicode-11 wide table and combining-SMP table.
+      const MARKERS = ['[4352,4447],[8986,8987],[9001,9002],[9193,9196]', '[66045,66045],[66272,66272],[66422,66426],[68097,68099]'];
+      const assets = path.join(APP_DIR, 'dist/assets');
+      const files = fs.existsSync(assets) ? fs.readdirSync(assets).filter((f) => f.endsWith('.js')) : [];
+      const text = files.map((f) => fs.readFileSync(path.join(assets, f), 'utf8')).join('\n');
+      // CONTROL: this really is the renderer bundle (big, carries the Agent view + Resources strings) — else "marker absent" is measured on an empty dir.
+      ctx.clause('control/bundle-is-the-renderer', text.length > 500_000 && text.includes('av-message-list') && text.includes('res-agent-row'), `scanned ${files.length} dist/assets/*.js, ${text.length} bytes; has 'av-message-list'=${text.includes('av-message-list')} 'res-agent-row'=${text.includes('res-agent-row')} (need > 500000 bytes + both)`);
+      const hit = MARKERS.filter((m) => text.includes(m));
+      ctx.clause('bundle/unicode11-addon', (hit.length > 0) === pick(EXPECT.unicode11InBundle), `addon table fragments found in the built renderer bundle=${hit.length}/${MARKERS.length} expected(${MODE})=${pick(EXPECT.unicode11InBundle) ? '>0' : '0'}`);
+    },
+  },
+  {
+    name: 'agent_terminal_removed', boots: true, ticket: '#231',
+    doc: 'the RUNNING app: the preload bridge no longer exposes the agent-terminal-only wrappers (ptyStart, ptyRepaint, onPtyStopped, saveClipboardImage, stopAgent) while the shared PTY wrappers + the Run/nvim/login ones stay; the loaded stylesheets no longer carry the component\'s rules (.terminal-pane / .term-scroll-thumb / .term-boot-* / .res-stop-btn) while the Run/Resources rules stay',
+    async run(ctx) {
+      const { app } = ctx; const J = JSON.stringify;
+      const REMOVED = ['ptyStart', 'ptyRepaint', 'onPtyStopped', 'saveClipboardImage', 'stopAgent'];
+      const KEPT = ['ptyWrite', 'ptyResize', 'onPtyData', 'onPtyExit', 'onPtyRestart', 'restartAgent', 'nvimStart', 'runScriptStart', 'accountLoginStop'];
+      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J([...REMOVED, ...KEPT])}) r[k] = typeof o[k]; return r; })()`);
+      ctx.clause('control/shared-wrappers-kept', KEPT.every((k) => types[k] === 'function'), `typeof window.orchestra.<k> for the shared + Run/nvim/login wrappers: ${KEPT.map((k) => `${k}=${types[k]}`).join(' ')}`);
+      for (const k of REMOVED) ctx.clause(`preload/${k}-wrapper`, (types[k] === 'function') === pick(EXPECT.agentTerminalWrappers), `typeof window.orchestra.${k}=${types[k]} expected(${MODE})=${pick(EXPECT.agentTerminalWrappers) ? 'function' : 'undefined'}`);
+      // Rules read off the LOADED stylesheets (CSSOM). CONTROL: the sheets were readable and still carry the rules Run/Resources use (`.res-agent-row`, xterm's own `.xterm`).
+      const css = await app.cdp.eval(`(() => { const dead = [], live = { res: 0, xterm: 0 }; for (const ss of document.styleSheets) { let rs; try { rs = ss.cssRules; } catch { continue; }
+        const walk = (list) => { for (const r of list) { if (r.cssRules && !r.selectorText) walk(r.cssRules); const t = r.selectorText || (r.name ? '@keyframes ' + r.name : ''); if (!t) continue;
+          if (/terminal-pane|term-scroll-thumb|term-boot|res-stop-btn|res-col-stop/.test(t)) dead.push(t); else if (/\\.res-agent-row/.test(t)) live.res++; else if (/^\\.xterm\\b/.test(t)) live.xterm++; } };
+        walk(rs); } return { dead, live }; })()`);
+      const groups = (a) => [...new Set(a.map((x) => x.replace(/(\.terminal-pane|\.term-[a-z-]+|\.res-[a-z-]+).*$/, '$1')))];
+      ctx.clause('control/stylesheets-readable', css.live.res >= 3 && css.live.xterm >= 3, `surviving .res-agent-row rules=${css.live.res}, xterm.css rules=${css.live.xterm} (control: need >= 3 each)`);
+      ctx.clause('css/agent-terminal-rules', (css.dead.length > 0) === pick(EXPECT.agentTerminalCss), `agent-terminal / stop-button selectors in the loaded CSS=${css.dead.length} (${groups(css.dead).join(', ') || '∅'}) expected(${MODE})=${pick(EXPECT.agentTerminalCss) ? '>0' : '0'}`);
+    },
+  },
+  {
+    name: 'resources_live_agent', boots: true, ticket: '#231',
+    doc: 'Resources page (review #230 F4): with ONE live Agent-view session the « Live agents » tile reads 1 (it counts SDK sessions, not agent PTYs), the row carries the « agent » chip, and there is no per-row stop control (its only target was an agent PTY). Regression pin — identical in both modes; green on master by design (the tile already counted SDK sessions)',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world;
+      keeperControl(ctx);
+      await openAgentTab(app);
+      const sent = await composerSend(app, 'AVR-RESOURCES-231');
+      const seen = new Set();
+      const start = await waitFor('claude session start (stub argv log)', () => sessionStarts(app)[0], 40000, 250).catch(() => null);
+      ctx.clause('control/composer-send-started-a-session', !!start && !!sent.pre?.includes('AVR-RESOURCES-231'), `composer text pre=${JSON.stringify((sent.pre ?? '').slice(0, 40))}; session start ${start ? `pid ${start.pid}` : 'NEVER happened'}`);
+      void seen; void w;
+      const sdk = await waitFor('an sdk-kind session in sampleResources', async () => { const ps = await app.ptys(); const s = ps.filter((p) => p.kind === 'sdk'); return s.length ? s : null; }, 30000, 500).catch(() => []);
+      ctx.clause('control/sdk-session-listed', sdk.length === 1, `sampleResources sdk-kind sessions=${sdk.length} (${sdk.map((p) => p.ptyId).join(',') || '∅'}); agent-kind PTYs=${(await app.ptys()).filter((p) => p.kind === 'agent').length}`);
+      const btn = await waitFor('Resources sidebar button', () => app.cdp.eval(`(() => { const e = document.querySelector('[aria-label="Open the Resources page"]'); if (!e) return null; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 ? { cx: r.x + r.width / 2, cy: r.y + r.height / 2 } : null; })()`), 15000);
+      await app.click(btn.cx, btn.cy);
+      const page = await waitFor('Resources tiles rendered + the live agent counted', () => app.cdp.eval(`(() => { const t = [...document.querySelectorAll('.res-tile')].find((e) => /Live agents/.test(e.querySelector('.res-tile-label')?.textContent || ''));
+        if (!t) return null; const v = (t.querySelector('.res-tile-value')?.textContent || '').trim(); return v === '0' ? null : { tile: v, rows: document.querySelectorAll('.res-agent-row').length, agentChips: document.querySelectorAll('.res-chip.agent').length, stopControls: document.querySelectorAll('.res-stop-btn, [aria-label^="Stop agent"]').length }; })()`), 25000, 500).catch(() => null);
+      ctx.clause('resources/live-agents-tile-counts-the-sdk-session', page?.tile === '1', `« Live agents » tile=${JSON.stringify(page?.tile ?? null)} with one live Agent-view session (want '1'; '0' = it keys on agent PTYs)`);
+      ctx.clause('resources/row-has-the-agent-chip', (page?.agentChips ?? 0) >= 1 && (page?.rows ?? 0) >= 1, `agent rows=${page?.rows ?? '?'} agent chips=${page?.agentChips ?? '?'}`);
+      ctx.clause('resources/no-per-row-stop-control', page?.stopControls === 0, `stop controls rendered=${page?.stopControls ?? '?'} (want 0: it could only ever target an agent PTY)`);
+      const f = await app.shot('resources-live-agent', null); const st = pngStats(fs.readFileSync(f)); console.log(`SHOT      resources-live-agent ${f} ${st.w}x${st.h} bytes=${st.bytes} distinct=${st.distinct} nonBg=${st.nonBgPct}%`);
+    },
   },
   {
     name: 'other_terminals_work_slow_profile', boots: true, ticket: '#230', boot: { slowProfileS: 4 },

@@ -54,7 +54,7 @@ export function RunTerminal({ workspaceId, isActive, hasRunScript }: Props) {
     );
     term.open(containerRef.current);
 
-    // GPU-accelerated rendering, same as the agent terminal (see Terminal.tsx).
+    // GPU-accelerated rendering (the only terminal that has it since #231).
     // The default DOM renderer repaints heavy output entirely on the main
     // thread; a noisy dev server (bundler spew, a stack trace) can jank the
     // renderer and — because all main→renderer IPC shares one ordered channel —

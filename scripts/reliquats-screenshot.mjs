@@ -164,7 +164,7 @@ async function shoot(win, state, file, expand) {
     const rect = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null;
     const rows = [...document.querySelectorAll('.res-agent-row')].map((r) => ({
       text: r.innerText.replace(/\\\\s+/g, ' ').trim(),
-      stopBtns: r.querySelectorAll('.res-stop-btn').length,
+      stopBtns: r.querySelectorAll('.res-stop-btn, [aria-label^="Stop agent"], button[title^="Stop this agent"]').length,
       chips: [...r.querySelectorAll('.res-chip')].map((c) => ({ text: c.innerText.trim(), cls: c.className, title: c.getAttribute('title'), reliquats: c.getAttribute('data-res-reliquats'), color: getComputedStyle(c).color })),
     }));
     const note = document.querySelector('[data-res-reliquats-note]');
@@ -262,7 +262,7 @@ check('seeded: feat-x MEM = the scope bill (1.27 GB), NOT the keeper tree (620 M
 check('seeded: feat-y (tracked, no Reliquat) has NO chip and reads its scope bill (300 MB)', !!y && !reliquatChip(y) && /300 MB/.test(y.text), y?.text);
 check('seeded: feat-z (not tracked) has NO chip and keeps its tree figure (880 MB)', !!z && !reliquatChip(z) && /880 MB/.test(z.text), z?.text);
 check('seeded: the finished member that has only Reliquats left KEEPS a row, with the chip « ⚠ 56 Reliquats » and its scope bill (14.5 GB), cpu / procs « — »', !!w6 && !!reliquatChip(w6) && reliquatChip(w6).reliquats === '56' && /14\.5 GB/.test(w6.text) && (w6.text.match(/—/g) ?? []).length >= 2, w6?.text);
-check('seeded: POSITIVE CONTROL — the terminal (PTY) agent row HAS its stop button', !!ptyRow && ptyRow.stopBtns === 1, JSON.stringify({ pty: ptyRow?.stopBtns }));
+check('seeded: the legacy agent-kind (PTY) row IS rendered (control for the 0s below) and has NO stop button either — #231 removed the per-row stop', !!ptyRow && ptyRow.stopBtns === 0, JSON.stringify({ pty: ptyRow?.stopBtns }));
 check('seeded: NO stop button on the keeper-hosted rows nor on the Reliquat-only row', !!x && !!y && !!w6 && x.stopBtns === 0 && y.stopBtns === 0 && w6.stopBtns === 0);
 check('seeded: the dim line names the untracked remainder (2 members) and sits BELOW the table', !!seeded.note && /^Reliquats not tracked for 2 members \(no scope\)$/.test(seeded.note) && !!seeded.noteRect && !!seeded.tableRect && seeded.noteRect.y >= seeded.tableRect.y + seeded.tableRect.height - 1, JSON.stringify({ n: seeded.note, r: seeded.noteRect, t: seeded.tableRect }));
 check('seeded: the dim line is DIM — exactly the colour of the table\'s other dim cells, not the yellow of a problem state (information, not alarm)', !!seeded.noteColor && seeded.noteColor === seeded.dimColor && seeded.noteColor !== 'rgb(255, 200, 87)', JSON.stringify({ note: seeded.noteColor, dim: seeded.dimColor }));

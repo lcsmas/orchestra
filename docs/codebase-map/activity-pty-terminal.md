@@ -2,8 +2,9 @@
 
 How Orchestra knows an agent's status (the sidebar dot) and how terminal I/O
 flows. Files: `src/main/activity.ts`, `events-spool.ts` (+ `.test.ts`),
-`pty.ts`, `logger.ts`; renderer `Terminal.tsx` (the removed agent terminal — **no longer
-mounted since #230**, deleted in #231), `RunTerminal.tsx`, `term-write-queue.ts` (+ `.test.ts`).
+`pty.ts`, `logger.ts`; renderer `RunTerminal.tsx`, `NvimView.tsx`, `AccountLoginModal.tsx`,
+`term-write-queue.ts` (+ `.test.ts`), `term-theme.ts` (the agent terminal, `Terminal.tsx`, was
+unmounted by #230 and **deleted in #231**).
 **Terminals** (ADR 0007): the only PTYs left are the Run script (`<ws>:run`), nvim
 (`<ws>:nvim`) and account login (`account-login:<id>`); the agent (`<ws>` id, kind `agent`) is
 the Agent view's SDK session and never a PTY — the removal rig below asserts exactly that.
@@ -607,6 +608,14 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   legacy ws's session FIRST — composer send, `!cmd`, the MCP popover — resumes the terminal transcript, because adoption is in `ensureSessionInner`;
   baseline starts blank; a fresh ws adopts nothing) + `legacy_adopted_unresumable` (a stub replaying the REAL refusal (`RESUME_FAIL_STUB`: one `result/error_during_execution` line from a measured fixture, then exit 1) — the dead adopted id is cleared to `''`, the 2nd send starts fresh, no relaunch loop, no re-adoption) + its must-PASS controls `legacy_adopted_dies_after_init` (death AFTER init keeps the id) and `legacy_adopted_crash_before_init` (a kill before ANY output, `RESUME_CRASH_ONCE_STUB`, keeps the id and the next send resumes the same transcript), `other_terminals_work` (Run / nvim / account-login PTYs
   still appear and run their programs; `login/pty-runs-claude-login` is a BOUNDED wait — the PTY is a `bash -ilc … claude /login` reading its profile before the stub starts, so an immediate read raced, 2/5 red at load 11-27) + `other_terminals_work_slow_profile` (the same arm with a 4 s `sleep` in the fake HOME's `.bash_profile`/`.bashrc` via `boot: { slowProfileS }` — the deterministic instrument for that race: the wait removed reddens it 2/2). `--mode after` on master is red on every one of them except `other_terminals_work`.
+- **#231 arms** (renderer removal; `--mode baseline` = master `8c7863f6`, the first build WITHOUT the Raw tab but still carrying the dead component's surface):
+  `agent_terminal_static` (no boot: the `@xterm/addon-unicode11` dependency in `package.json` + `pnpm-lock.yaml` — red on master — and two table fragments only
+  the addon's minified code contains, scanned in `dist/assets/*.js` with a control that the dir really is the renderer bundle; the BUNDLE clause is green on
+  master BY DESIGN (the orphaned `Terminal.tsx` was already tree-shaken) and only a re-import turns it red), `agent_terminal_removed` (the RUNNING app's
+  preload bridge has none of `ptyStart` / `ptyRepaint` / `onPtyStopped` / `saveClipboardImage` / `stopAgent` while the shared + Run/nvim/login wrappers stay; the
+  loaded stylesheets carry none of `.terminal-pane` / `.term-scroll-thumb` / `.term-boot-*` / `.res-stop-btn`, with a control that `.res-agent-row` and xterm.css rules are
+  still there) and `resources_live_agent` (one live Agent-view session → the « Live agents » tile reads 1, the row has the « agent » chip, no stop control; a regression
+  pin, green on master by design). Run / nvim / login still open and run their programs: the existing `other_terminals_work` arms.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the baseline Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 - **Spawn-failure arms (#227)** — `spawn_failure_reported`, `restart_delivers_task_once` (boot arms with `sdkLess: true`).
@@ -799,7 +808,7 @@ long-idle agents and lets the existing resume paths bring them back.
 - **Restore** rides the paths that already resume: `clearHibernated(id)` is
   called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
   start/resume/wake, so no restore path can forget it), the `ptyStart` handler
-  (which is also Terminal.tsx's press-any-key `claude --continue` relaunch),
+  (no renderer caller since #231; #233 deletes it),
   `wakeAgentWithPrompt` (up front — its raw-PTY fallback is gone, #227), and workspace
   ACTIVATION. The renderer reports selection over the new
   `setActiveWorkspace` IPC (`workspaces:setActive`) — both so the sweeper never
@@ -811,99 +820,55 @@ long-idle agents and lets the existing resume paths bring them back.
   on the sidebar row plus a further-dimmed `.ws-dot.hibernated` (an explicit user
   bookmark still wins the dot), with a tooltip aging `hibernatedAt`.
 
-## Terminal.tsx (agent view, ~479 lines) — UNMOUNTED since #230, deleted in #231
+## Removed: the agent terminal (`Terminal.tsx`, deleted in #231)
 
-> **ADR 0007 / #230:** `App.tsx` no longer imports or mounts `TerminalView`; there is no Terminal/Raw
-> tab and nothing calls `pty:start` for an agent. The section below documents the dormant component
-> until #231 deletes it (and #233 the launcher behind it).
+`Terminal.tsx` (`TerminalView`, the xterm that drove the agent's `claude` TUI) was unmounted by
+#230 (ADR 0007) and deleted by #231 with everything only it used: its CSS (`.terminal-pane*`,
+`.term-scroll-thumb*`, `.term-boot-*`, `@keyframes term-boot-in`), the `@xterm/addon-unicode11`
+dependency (manifest + lockfile; the BUILT bundle already lacked it after #230 — Vite drops an
+unimported module — so the bundle check is a re-import guard, not a removal proof) and the preload
+wrappers of channels only it called: `ptyStart` (`pty:start`), `ptyRepaint` (`pty:repaint`),
+`onPtyStopped` (`pty:stopped`), `saveClipboardImage` (`clipboard:saveImage`) and `stopAgent`
+(`agent:stop` — its last caller was the Resources page's per-row stop button, which keyed on an
+agent PTY and so had not rendered since #230; see [resources.md](resources.md)).
+**The main-process handlers stay** (`ptyStart`, `ptyRepaint`, `saveClipboardImage`, `stopAgent` in
+`api-handlers.ts`, retyped under `ExtraApiMethods` since they are no longer part of the
+renderer-facing `OrchestraAPI`; the `pty:stopped` broadcast) — unreachable from the renderer until
+#233 deletes the launcher behind them. **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
+and `onPtyData` / `onPtyExit` / `onPtyRestart` (push), used by Run, nvim and login. Rig arms
+`agent_terminal_static` + `agent_terminal_removed` (scripts/e2e-agent-view-removal.mjs) pin all of it.
 
-xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),
-themed via the shared `TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome
-bg/fg/cursor plus Ghostty's default ANSI-16 palette (Tomorrow Night); xterm's
-stock ANSI colors are the legacy VGA set, which made Claude's TUI look harsher
-in-app than in a native terminal),
-**Unicode11Addon** (`:104` — align char widths with Claude's Ink TUI so emoji
-don't cause overwrites), **WebglAddon** (`:117`, GPU; disposes on context-loss →
-DOM fallback). Font stack leads with **"Orchestra Symbols"** (bundled mono
-symbol-font subset) so circled-number/dingbat glyphs render at cell width — and
-the texture atlas is cleared once the font loads (`:139`) to evict any cached
-proportional fallback. (This is the "cramped ①②③" fix.)
+## Shared terminal plumbing (Run, nvim, login)
+
+xterm.js with **FitAddon** + **WebLinksAddon** (opens via IPC) in all three; **WebglAddon** (GPU;
+disposes on context-loss → DOM fallback) in `RunTerminal` only, which is also the only one themed via
+`TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome bg/fg/cursor plus Ghostty's default ANSI-16 palette
+(Tomorrow Night); xterm's stock ANSI colors are the legacy VGA set). There is no Unicode11 width
+provider any more (it existed to align widths with Claude's Ink TUI, #231).
 
 **Shared write queue — term-write-queue.ts (`src/renderer/`, ~180 lines):**
 PTY data reaches xterm through `createTermWriteQueue`, a dependency-free
-module (node-testable; seams for RAF/clock injected in tests) used by both
-Terminal.tsx and RunTerminal.tsx. It does three things:
+module (node-testable; seams for RAF/clock injected in tests) used by
+RunTerminal.tsx (the agent terminal was its other user). It does three things:
 - **RAF-batched writes (the dot-latency fix):** hands xterm at most
   `WRITE_BUDGET_BYTES = 256 KiB` per animation frame, then yields — a big
   tool-dump parsed in one sync tick used to jank the renderer and stall the
   shared IPC channel (the "~10s dot lag"). 256 KiB is tuned (xterm 5.5 +
   WebGL parses ~35–50 MB/s; 64 KiB is slower per-byte, 512 KiB regresses).
-- **Atomic ?2026 sync frames (the flicker fix):** pty.ts advertises
-  `CLAUDE_CODE_FORCE_SYNC_OUTPUT`, so Claude wraps every TUI redraw in
-  `\x1b[?2026h…l`. xterm.js ignores mode 2026, so the queue supplies the
+- **Atomic ?2026 sync frames (the flicker fix):** built for Claude's TUI, which
+  wraps every redraw in `\x1b[?2026h…l`. xterm.js ignores mode 2026, so the queue supplies the
   atomicity: a drain slice never ends inside an open frame — it extends to
   the frame's close, or holds the frame until the close arrives (bounded by
   `SYNC_HOLD_MS = 150` so a lost close can't stall output). Split markers at
   chunk boundaries are held too, so tracking can't be defeated by IPC
-  chunking.
+  chunking. Kept (and tested) although no agent PTY feeds it any more.
 - **Small-chunk fast path (input latency):** a chunk ≤ `FAST_PATH_BYTES = 4
   KiB` arriving with nothing scheduled (a keystroke echo) is written
   immediately instead of waiting up to a frame for the next RAF.
 
-Terminal.tsx also has: custom floating scrollbar (no gutter), Ctrl+C→copy,
-Ctrl+V image-paste (spill to temp file, bracketed-paste the path),
-Shift+Enter→ESC+CR, lazy PTY start + size re-assert on visibility/focus.
-
-**Cold-boot pill (the blank-first-open fix):** lazy-start means the first open
-of a previously-running workspace cold-boots `claude --continue`; Claude opens
-a ?2026 frame, paints only its small splash header (~500 B), then loads the
-session silently for seconds — the pane read as a blank page with just the
-Clawd logo. `beginBoot()` (called in `start()` right before `ptyStart`) shows a
-centered "Resuming previous session…" / "Starting agent…" pill (label from an
-imperative `useStore.getState()` read of `ws.hasInput` — no subscription);
-cleared once cumulative PTY output ≥ `BOOT_PAINT_BYTES` (2 KiB — above the
-splash, below any real TUI frame), or on user keystroke, PTY exit, spawn
-failure, or a `BOOT_PILL_MAX_MS` (20 s) safety timeout. CSS
-`.term-boot-pill` (styles.css) fades in after 250 ms so fast starts never
-flash it.
-
-**Stop without respawn (`agent:stop`, main index.ts):** the Resources page's
-per-agent stop kills the agent PTY and deliberately does NOT respawn (the point
-is freeing CPU/memory). `stopPty` disposes the transport listeners before
-killing, so the exit handler's `reconcileExited` floor never fires on this path
-— the handler reconciles explicitly, then emits `pty:stopped`. Terminal.tsx
-handles it (and natural `pty:exit`) by un-latching `started` and printing a
-"press any key to relaunch" notice; `term.onData` treats the first keystroke on
-a dead session as a relaunch trigger (calls `start()`, does not forward the
-key), so the next spawn resumes via `claude --continue`.
-
-**Repaint-on-show (the garbled-frame fix):** a hidden tab is `visibility:hidden`
-(not unmounted), so the PTY keeps streaming and `drainPending` keeps writing into
-xterm while its WebGL canvas is offscreen/occluded — on some GPUs that leaves the
-glyph texture atlas + composited canvas half-updated, so returning to the tab
-shows scrambled glyph soup. The `isActive` effect (and `onVisible` for the active
-pane) calls `repaint()` after the refit: `webgl.clearTextureAtlas()` +
-`term.refresh(0, rows-1)` redraws every row from xterm's (always-correct) buffer.
-`repaintRef`/`isActiveRef` bridge the value into the mount effect's long-lived
-closures without stale captures. Both sites ALSO call
-`window.orchestra.ptyRepaint` (→ `repaintPty` SIGWINCH bounce): `repaint()`
-only redraws xterm's buffer, but when the buffer ITSELF has diverged from
-Claude's per-cell diff-render model (diffs hop over "unchanged" cells, so
-divergence accumulates as scattered-word fragments and never self-heals — the
-2026-07-18 garbled-terminal bug; the byte stream and parser were proven clean
-via @xterm/headless replay of the PTY log), only a child repaint reconverges
-the two. Human-paced (window-shown / window-FOCUS / tab activation) and a
-no-op resize when nothing diverged. The `onFocus` copy is load-bearing on
-Linux: Chromium has NO window-occlusion detection on Wayland, so a window on
-a hidden sway workspace keeps `visibilityState === 'visible'` and
-visibilitychange never fires (verified via CDP against a headless-sway
-instance) — window `focus` is the only return signal that actually fires
-there.
-
 ## RunTerminal.tsx (run-script view, ~250 lines)
-Simpler xterm than the agent view (no Unicode11/custom scrollbar, 5k
-scrollback), but shares its performance path: WebGL renderer (same
-context-loss→DOM-fallback guard) and the same shared write queue
+A plain xterm (5k scrollback, no Unicode11), with the performance path above: WebGL renderer
+(context-loss→DOM-fallback guard) and the shared write queue
 (`createTermWriteQueue` from `term-write-queue.ts`) — a noisy dev server
 can no longer jank the shared IPC channel. Scrollback replay on mount goes
 through the same `queue.push` so a big replay is spread across frames too;

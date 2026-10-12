@@ -97,7 +97,7 @@ import { forkTargetId, canForkFrom } from '../../shared/fork-session';
 interface Props {
   workspaceId: string;
   /** Whether this workspace's structured tab is the visible one. The component
-   *  stays mounted when inactive (like TerminalView) so scroll/session survive
+   *  stays mounted when inactive so scroll/session survive
    *  tab switches; CSS hides it via `av-view` (no `.active`). */
   isActive: boolean;
 }
@@ -1427,7 +1427,7 @@ function Composer({
   //
   // The browser pane's element picker queues picks in the STORE (not straight
   // into this component), which is what makes a pick survive a composer that
-  // isn't mounted: the user can pick while on the Terminal tab or on another
+  // isn't mounted: the user can pick while on the Run or Diff tab or on another
   // workspace, and the pick waits until this composer mounts and drains it.
   //
   // Draining is one atomic store action (`takeDesignPicks` reads + clears in a

@@ -398,7 +398,7 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   processes). `store.load()` resets persisted `running` → `idle`; the agent's SDK
   session lazy-starts (resuming `sdkSessionId`) on the first send or wake for the
   workspace — since #230 nothing opens an agent PTY (no Terminal tab; the renderer
-  no longer mounts `TerminalView`, so `pty:start` is never called for an agent). A
+  no longer mounts a terminal for the agent — `Terminal.tsx` is deleted, #231 — so `pty:start` is never called for an agent). A
   LEGACY terminal-only workspace (`hasInput`, no `sdkSessionId`) has its terminal
   transcript adopted as the resume id by `adoptTerminalTranscript` on wake, restart
   AND at the session-start funnel itself (`ensureSessionInner`, #230 / #228 review O1+F1), so any Agent-view action that starts the session first resumes it.

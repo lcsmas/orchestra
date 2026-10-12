@@ -1,18 +1,16 @@
 // Which workspace panes stay mounted in the renderer at once.
 //
-// Every mounted workspace keeps a TerminalView (a WebGL-backed xterm) and a
-// StructuredView alive so their scrollback / scroll position survive tab
-// switches. But each live TerminalView holds a WebGL context, and Chromium
+// Every mounted workspace keeps a StructuredView (the Agent view) alive so its
+// scroll position survives tab switches. The cap dates from when every pane was a
+// WebGL-backed xterm (only the Run terminal still holds a context): Chromium
 // force-loses WebGL contexts past ~16 per page while the shared GPU process
 // buckles well before dozens are live — the observed failure was the entire
-// content area going black (GL contexts lost, renderer still alive, nothing
-// recovers it) until the user restarts Orchestra.
+// content area going black until the user restarted Orchestra.
 //
 // So we mount only the most-recently-used workspaces: the `max` most recent by
 // activation order, plus the active one unconditionally (it may not be in the
 // LRU list yet on the first render after selection). Everything else unmounts
-// and releases its WebGL context; reopening it rebuilds the pane instantly (a
-// fresh xterm repaints via `claude --continue`).
+// and reopening it rebuilds the pane.
 //
 // CAUTION for the STRUCTURED view: eviction destroys component-local state, and
 // anything reconstructed from a per-mount ref must therefore be keyed on the
@@ -21,7 +19,7 @@
 // evicted here and later handed a background turn comes back holding only those
 // few messages. StructuredView's history backfill hit exactly this and now gates
 // on `AgentSession.historyBackfilled` (renderer/history-backfill.ts) instead of
-// message count. "No agent state lost" holds for the TERMINAL pane only.
+// message count.
 //
 // Pure and dependency-free so it is unit-testable without React/Electron.
 export function computeMountedIds(opts: {
