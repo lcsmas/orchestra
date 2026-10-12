@@ -4,10 +4,10 @@
 // identity + token (#338 review M1).
 
 import { store } from './store';
-import { sdkAnswerAskUserQuestion, sdkSend } from './agent-sdk';
+import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-sdk';
 import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
-import { projectMobileWorkspaces } from '../shared/acces-mobile';
+import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acces-mobile';
 import { MOBILE_SEND_MAX_CHARS, validWorkspaceId } from '../shared/acces-mobile-conversation';
 import type { RpcHandlers } from '../shared/acces-mobile-rpc';
 
@@ -16,12 +16,25 @@ function liveWorkspace(id: unknown) {
   return ws && !ws.archived ? ws : undefined;
 }
 
+/** #340: what a waiting row says — the question it is parked on (live, never a fold); else the status note (default). */
+function previewOfLive(ws: { id: string }): MobileWorkspaceRow['preview'] | undefined {
+  const live = sdkLiveAnswerables(ws.id);
+  if (!live?.length) return undefined;
+  const a = live[0];
+  if (a.type === 'permission-request' && a.name === 'AskUserQuestion') {
+    const q = Array.isArray(a.input?.questions) ? (a.input.questions as { question?: unknown }[])[0] : undefined;
+    if (typeof q?.question === 'string') return { kind: 'question', text: q.question };
+  }
+  if (a.type === 'elicitation-request') return { kind: 'desktop', text: `${a.serverName} : ${a.message}` };
+  return { kind: 'desktop', text: a.type === 'permission-request' ? `Permission : ${a.title ?? a.name}` : 'Dialogue à traiter sur le bureau' };
+}
+
 export const mobileRpcHandlers: RpcHandlers = {
   async call(route, msg) {
     switch (route) {
       case '/mobile/workspaces':
         // Every non-archived workspace, every account.
-        return { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts) };
+        return { ok: true, workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts, previewOfLive) };
       case '/mobile/conversation': {
         // One workspace's conversation, folded + projected for the phone (account-aware history).
         const ws = liveWorkspace(msg.id);

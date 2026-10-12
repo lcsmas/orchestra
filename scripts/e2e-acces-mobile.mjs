@@ -324,20 +324,23 @@ try {
   const prePhone = await phone.eval(`location.href`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
   await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, "four rows on the phone (incl. the coordinator)");
-  const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.textContent), text: document.body.innerText })`);
+  const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.dataset.group), unreadRows: document.querySelectorAll('li[data-unread="1"]').length, unreadRow: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); return r ? { repo: (r.querySelector('.repo') || {}).textContent, br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent } : null; })(), idleRow: (() => { const r = document.querySelector('li[data-id="ws-am-idle"]'); return r ? { br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent, stl: (r.querySelector('.stl') || {}).textContent } : null; })(), counts: [document.getElementById('cntAll').textContent, document.getElementById('cntMe').textContent], live: document.getElementById('live').dataset.live })`);
   clause('phone/paired-fragment-stripped', P.stored && !P.href.includes('#') && !P.href.includes(TOKEN), `${prePhone} -> ${P.href}; token stored=${P.stored}`);
   const apiOrder = rows.map((r) => r.id);
-  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(apiOrder) && !P.ids.includes('ws-am-archived') && (P.text.match(/non lu/g) || []).length === 2 && /perso-rig · e2e\/am-unread · perso/.test(P.text) && /e2e\/am-idle · mc/.test(P.text) && P.groups[0] === 'Pour toi' && P.groups.length === 3 && P.groups.includes('Orchestrators'), `phone rows ${P.ids.join(',')} == api order; groups ${P.groups.join(' | ')}; 2× "non lu"; group · branch · account shown`);
+  // V1 (#340): « Non lu » section (any repo, with its repo shown), then repo groups; the segmented counts; the live dot.
+  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(apiOrder) && !P.ids.includes('ws-am-archived') && P.unreadRows === 2 && JSON.stringify(P.groups) === JSON.stringify(['Non lu', 'orchestra-rig', 'Orchestrators']) && JSON.stringify(P.unreadRow) === JSON.stringify({ repo: 'perso-rig', br: 'e2e/am-unread', acct: 'perso' }) && P.idleRow?.br === 'e2e/am-idle' && P.idleRow?.acct === 'mc' && P.idleRow?.stl === 'inactif' && JSON.stringify(P.counts) === JSON.stringify(['4', '2']), `phone rows ${P.ids.join(',')} == api order; groups ${P.groups.join(' | ')}; non lu row ${JSON.stringify(P.unreadRow)}; idle row ${JSON.stringify(P.idleRow)}; counts Tout/À traiter ${P.counts.join('/')}; live ${P.live}`);
   saveShot('phone-list.png', await phone.shot());
   await phone.send('Page.reload');
   await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, 'rows after reload without the fragment');
   clause('phone/reload-still-paired', true, 'reload without #t= still lists 4 rows (token from localStorage)');
-  await phone.eval(`(() => { const c = document.getElementById('needsMe'); c.click(); return true; })()`);
+  // V1: the segmented « À traiter » button (a TRUSTED tap), not the hidden checkbox it drives
+  const segMe = await phone.eval(`(() => { const r = document.getElementById('segMe').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: segMe.x, y: segMe.y, ...extra });
   await sleep(200);
   const filtered = await phone.eval(`[...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id)`);
   clause('phone/filter-needs-me', filtered.length === 2 && !filtered.includes('ws-am-idle'), `4 -> ${filtered.length} rows: ${filtered.join(',')}`);
   saveShot('phone-list-needs-me.png', await phone.shot());
-  await phone.eval(`(() => { const c = document.getElementById('needsMe'); if (c.checked) c.click(); return true; })()`);
+  await phone.eval(`(() => { if (document.getElementById('needsMe').checked) document.getElementById('segAll').click(); return true; })()`);
 
   // #337 history: open am-unread on the phone ⇒ its transcript (other account) reads as user / tool / assistant, and the desktop's
   // bell clears (the phone's « seen » is the desktop's).
@@ -422,7 +425,7 @@ try {
   await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"] .ask-opt').length === 2`), 90000, 'the question on the phone');
   const deskPending1 = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).map((a) => a.requestId)`);
   const reqId1 = deskPending1[0];
-  const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.textContent === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.dataset.label === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: optB.x, y: optB.y, ...extra });
   await waitFor(() => phone.eval(`!!document.querySelector('#conv .ask-opt.picked') && !document.querySelector('#conv .ask-submit').disabled`), 5000, 'option picked, submit enabled');
   saveShot('phone-ask-picked.png', await phone.shot());
@@ -592,7 +595,7 @@ try {
     await act();
     await waitFor(async () => (await phone.eval(`performance.timeOrigin`)) !== t0 && (await phone.eval(`(document.getElementById('state') || {}).textContent`)) === 'Orchestra injoignable.', 25000, `« Orchestra injoignable » on a fresh load (${what})`);
   };
-  const shellFromWorker = () => phone.eval(`(() => { const n = performance.getEntriesByType('navigation')[0]; return { shell: !!document.querySelector('h1') && document.querySelector('h1').textContent === 'Orchestra' && !!document.getElementById('needsMe'), workerStart: n ? n.workerStart : -1, controlled: !!navigator.serviceWorker.controller, text: document.body.innerText.trim().replace(/\\s+/g, ' ') }; })()`); // (\\s: this is a template literal — a bare \s would silently become "s")
+  const shellFromWorker = () => phone.eval(`(() => { const n = performance.getEntriesByType('navigation')[0]; return { shell: !!document.querySelector('h1') && document.querySelector('h1').textContent === 'Workspaces' && !!document.getElementById('needsMe'), workerStart: n ? n.workerStart : -1, controlled: !!navigator.serviceWorker.controller, text: document.body.innerText.trim().replace(/\\s+/g, ' ') }; })()`); // (\\s: this is a template literal — a bare \s would silently become "s")
   await ensureDialog();
   await cdp.clickSel('[data-am-toggle]');
   await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'off'`), 15000, 'health off');
@@ -606,7 +609,7 @@ try {
   const fresh = await serveProxy(() => SOCK, LOGIN, seenLines, 'fresh-origin');
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${fresh.port}/` });
   await sleep(1500);
-  const noWorker = await phone.eval(`({ h1: ((document.querySelector('h1') || {}).textContent || '') === 'Orchestra' && !!document.getElementById('needsMe'), text: ((document.body || {}).innerText || '').trim(), controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller) })`);
+  const noWorker = await phone.eval(`({ h1: ((document.querySelector('h1') || {}).textContent || '') === 'Workspaces' && !!document.getElementById('needsMe'), text: ((document.body || {}).innerText || '').trim(), controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller) })`);
   fresh.srv.closeAllConnections?.(); fresh.srv.close();
   clause('pwa/unreachable-server-off-served-from-cache', off.shell && off.workerStart > 0 && off.controlled && off.text.includes('Orchestra injoignable') && sawBadGateway.length > 0 && !noWorker.h1 && !noWorker.controlled, `Accès mobile off: reload ⇒ the page still renders (h1 Orchestra, filter box) and says « injoignable »; navigation workerStart=${Math.round(off.workerStart)} ms (served by the worker) while the stand-in answered ${sawBadGateway.length}× 502 for "/"; control — a never-visited origin behind the same dead server renders no shell (app shell=${noWorker.h1}, worker=${noWorker.controlled}, text "${noWorker.text.replace(/\s+/g, ' ').slice(0, 80)}")`);
   await injoignable('back on the paired origin', () => phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/` }));

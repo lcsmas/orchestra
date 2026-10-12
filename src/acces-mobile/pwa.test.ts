@@ -151,7 +151,8 @@ test('index: apple-touch-icon + apple-mobile-web-app metas + manifest link, ever
   assert.match(INDEX_HTML, /<link rel="manifest" href="\/manifest\.webmanifest">/);
   assert.match(INDEX_HTML, /<meta name="apple-mobile-web-app-capable" content="yes">/);
   assert.match(INDEX_HTML, /<meta name="apple-mobile-web-app-title" content="Orchestra">/);
-  assert.match(INDEX_HTML, /<meta name="apple-mobile-web-app-status-bar-style" content="black">/);
+  // V1 (#340): content under the status bar, laid out with env(safe-area-inset-top).
+  assert.match(INDEX_HTML, /<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">/);
   assert.match(APP_JS, /navigator\.serviceWorker\.register\('\/sw\.js'\)/);
   const refs = [...INDEX_HTML.matchAll(/(?:href|src)="(\/[^"]*)"/g)].map((m) => m[1]);
   assert.ok(refs.length >= 4, `control: the page references assets (${refs.join(', ')})`);

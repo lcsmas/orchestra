@@ -1,6 +1,8 @@
-// The phone's conversation screen + the live stream (#337). A separate static asset so the shell (page.ts) only routes to it.
-// Rendering is textContent-only: agent and user text can contain anything, it must never become markup.
-// The stream is read with fetch() (EventSource cannot send the bearer header, and the token must never travel in a URL).
+// The phone's conversation screen + the live stream (#337), in design V1 « Boîte de réception » (#335 pick, #340). A separate
+// static asset so the shell (page.ts) only routes to it. Rendering is textContent-only: agent and user text can contain anything,
+// it must never become markup. The stream is read with fetch() (EventSource cannot send the bearer header, and the token must
+// never travel in a URL). Class names the e2e rig and tests read (conv-lines, [data-kind], ask-opt[data-label], ask-submit,
+// conv-input, conv-send, conv-compose[data-state], conv-send-error) are part of the contract — the V1 classes ride beside them.
 
 export const CONVERSATION_JS = `(function () {
   'use strict';
@@ -14,6 +16,7 @@ export const CONVERSATION_JS = `(function () {
   var backoff = 1000;
   var ctrl = null;
   function onStream(fn) { handlers.push(fn); }
+  function emit(m) { handlers.forEach(function (h) { h(m); }); }
   function connect() {
     if (!token()) return;
     if (ctrl) ctrl.abort();
@@ -30,14 +33,13 @@ export const CONVERSATION_JS = `(function () {
           while ((i = buf.indexOf('\\n\\n')) >= 0) {
             var block = buf.slice(0, i); buf = buf.slice(i + 2);
             // Only a REAL message proves main is behind the stream (the server answers 200 even when main is gone): reset the
-            // backoff then, and catch up on whatever was announced while we were away (#337 review m1/m2).
+            // backoff then, and catch up — on EVERY healthy (re)connect, the first one too (a page loaded during an outage).
             if (!healthy && block !== ': open') {
-              // Every healthy (re)connect catches up — the FIRST one too: a page loaded during an outage never had data.
               healthy = true; backoff = 1000;
-              handlers.forEach(function (h) { h({ t: 'resume' }); });
+              emit({ t: 'resume' });
             }
             if (block.indexOf('data: ') === 0) {
-              try { var m = JSON.parse(block.slice(6)); handlers.forEach(function (h) { h(m); }); } catch (e) {}
+              try { emit(JSON.parse(block.slice(6))); } catch (e) {}
             }
           }
           return pump();
@@ -46,72 +48,101 @@ export const CONVERSATION_JS = `(function () {
       return pump();
     }).catch(function () {
       if (c.signal.aborted) return;
+      emit({ t: 'down' });
       setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000);
     });
   }
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) { backoff = 1000; connect(); handlers.forEach(function (h) { h({ t: 'resume' }); }); } });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { backoff = 1000; connect(); emit({ t: 'resume' }); } });
 
   // ---- conversation screen ----
-  var root = null, current = null, version = -1, inflight = false, again = false, lastFetch = 0;
+  var root = null, current = null, meta = null, version = -1, inflight = false, again = false, lastFetch = 0, lastConv = null;
   var STATE = { running: '…', ok: '✓', error: '✗' };
+  function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
+
   function render(c) {
+    lastConv = c;
     var list = root.querySelector('.conv-lines');
     var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     list.textContent = '';
     if (c.truncated) list.appendChild(el('div', 'conv-more', c.truncated + ' messages plus anciens sur le bureau'));
+    var tools = null; // consecutive tool lines share one compact block (V1)
     c.lines.forEach(function (l) {
       var row;
-      if (l.kind === 'user') row = el('div', 'msg user', l.text);
-      else if (l.kind === 'assistant') { row = el('div', 'msg assistant', l.text); if (l.streaming) row.classList.add('streaming'); }
-      else if (l.kind === 'tool' || l.kind === 'command') { row = el('div', 'tool ' + l.state, STATE[l.state] + ' ' + l.label); }
+      if (l.kind === 'tool' || l.kind === 'command') {
+        if (!tools) { tools = el('div', 'tools'); list.appendChild(tools); }
+        row = el('div', 'tool tl ' + l.state);
+        row.appendChild(el('span', 'tg', STATE[l.state]));
+        row.appendChild(document.createTextNode(' ' + l.label));
+        row.dataset.kind = l.kind; row.dataset.id = l.id;
+        tools.appendChild(row);
+        return;
+      }
+      tools = null;
+      if (l.kind === 'user') row = el('div', 'msg user u', l.text);
+      else if (l.kind === 'assistant') row = el('div', 'msg assistant a' + (l.streaming ? ' streaming' : ''), l.text);
       else row = el('div', 'notice' + (l.error ? ' error' : ''), l.text);
       row.dataset.kind = l.kind; row.dataset.id = l.id;
       list.appendChild(row);
     });
     var asks = root.querySelector('.conv-asks'); asks.textContent = '';
     c.asks.forEach(function (a) {
-      var box = el('div', 'ask'); box.dataset.kind = a.kind;
-      if (a.kind === 'askUser') {
-        renderAskUser(box, a);
-      } else {
-        box.appendChild(el('div', 'ask-q', a.title));
-        box.appendChild(el('div', 'ask-hint', 'À traiter sur le bureau.'));
+      var box = el('div', a.kind === 'askUser' ? 'ask' : 'ask elic'); box.dataset.kind = a.kind;
+      if (a.kind === 'askUser') renderAskUser(box, a);
+      else {
+        box.appendChild(el('div', 'elic-h', 'Demande d’un serveur MCP'));
+        box.appendChild(el('p', 'ask-q', a.title));
+        box.appendChild(el('div', 'desk', 'À traiter sur le bureau'));
       }
       asks.appendChild(box);
     });
-    root.querySelector('.conv-running').hidden = !c.running;
+    var running = root.querySelector('.conv-running'); running.hidden = !c.running;
+    var pill = root.querySelector('.pill');
+    var waiting = c.asks.length > 0;
+    pill.className = 'pill ' + (waiting ? 'wait' : c.running ? 'run' : 'idle');
+    pill.textContent = waiting ? 'en attente' : c.running ? 'en cours' : 'inactif';
     root.dataset.version = String(c.version);
-    lastConv = c;
     if (nearBottom || version < 0) list.scrollTop = list.scrollHeight;
     version = c.version;
   }
+
   // #339: answering an AskUserQuestion. The selection survives re-renders (every stream announcement redraws the screen).
   var picks = Object.create(null); // requestId -> question -> { labels: [], other: '' } — no prototype: a question may be named anything
+  var status = Object.create(null); // requestId -> { text, sending }
   function renderAskUser(box, a) {
     var st = picks[a.requestId] || (picks[a.requestId] = Object.create(null));
+    var ss = status[a.requestId] || (status[a.requestId] = { text: '', sending: false });
+    box.appendChild(el('div', 'ask-h', a.questions.length > 1 ? a.questions.length + ' questions' : 'Question'));
+    var syncs = [];
     a.questions.forEach(function (q) {
       var cur = st[q.question] || (st[q.question] = { labels: [], other: '' });
-      if (q.header) box.appendChild(el('div', 'ask-h', q.header));
-      box.appendChild(el('div', 'ask-q', q.question));
+      if (q.header && a.questions.length > 1) box.appendChild(el('div', 'ask-hd', q.header));
+      box.appendChild(el('h3', 'ask-q', q.question));
       var opts = el('div', 'ask-opts');
-      q.options.forEach(function (o) {
-        var b = el('button', 'ask-opt', o.label); b.type = 'button'; b.title = o.description || '';
-        if (cur.labels.indexOf(o.label) >= 0) b.classList.add('picked');
+      q.options.forEach(function (o, i) {
+        var b = el('button', 'ask-opt opt'); b.type = 'button'; b.dataset.label = o.label;
+        b.appendChild(el('span', 'n', String(i + 1)));
+        var ot = el('span', 'ot'); ot.appendChild(el('b', null, o.label)); if (o.description) ot.appendChild(el('small', null, o.description));
+        b.appendChild(ot);
+        if (cur.labels.indexOf(o.label) >= 0) b.className += ' picked';
         b.addEventListener('click', function () {
-          var i = cur.labels.indexOf(o.label);
-          if (q.multiSelect) { if (i >= 0) cur.labels.splice(i, 1); else cur.labels.push(o.label); }
-          else { cur.labels = i >= 0 ? [] : [o.label]; cur.other = ''; }
-          rerenderAsks();
+          var k = cur.labels.indexOf(o.label);
+          if (q.multiSelect) { if (k >= 0) cur.labels.splice(k, 1); else cur.labels.push(o.label); }
+          else { cur.labels = k >= 0 ? [] : [o.label]; cur.other = ''; }
+          if (lastConv) render(lastConv);
         });
         opts.appendChild(b);
       });
       box.appendChild(opts);
-      var other = el('input', 'ask-other'); other.placeholder = 'Autre réponse…'; other.value = cur.other; other.maxLength = 2000;
-      other.addEventListener('input', function () { cur.other = other.value; if (!q.multiSelect && other.value.trim()) { cur.labels = []; opts.querySelectorAll('.picked').forEach(function (p) { p.classList.remove('picked'); }); } syncSubmit(); });
+      var other = el('input', 'ask-other other'); other.placeholder = 'Autre réponse…'; other.value = cur.other; other.maxLength = 2000;
+      other.addEventListener('input', function () {
+        cur.other = other.value;
+        if (!q.multiSelect && other.value.trim() && cur.labels.length) { cur.labels = []; opts.querySelectorAll('.picked').forEach(function (p) { p.className = p.className.replace(' picked', ''); }); }
+        syncs.forEach(function (f) { f(); });
+      });
       box.appendChild(other);
     });
-    var submit = el('button', 'ask-submit', 'Répondre'); submit.type = 'button';
-    var status = el('div', 'ask-status', st.__status || ''); status.setAttribute('role', 'status');
+    var submit = el('button', 'ask-submit btn', 'Répondre'); submit.type = 'button';
+    var said = el('div', 'ask-status', ss.text); said.setAttribute('role', 'status');
     function answers() {
       var out = Object.create(null); var complete = true;
       a.questions.forEach(function (q) {
@@ -122,21 +153,21 @@ export const CONVERSATION_JS = `(function () {
       });
       return complete ? out : null;
     }
-    function syncSubmit() { submit.disabled = !answers() || st.__sending === true; }
+    function sync() { submit.disabled = !answers() || ss.sending; }
+    syncs.push(sync);
     submit.addEventListener('click', function () {
       var ans = answers(); if (!ans) return;
-      st.__sending = true; syncSubmit(); status.textContent = 'Envoi…';
+      ss.sending = true; sync(); said.textContent = 'Envoi…';
       fetch('/api/answer?id=' + encodeURIComponent(current) + '&request=' + encodeURIComponent(a.requestId), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ answers: ans }) })
-        .then(function (r) { return r.ok ? r.json() : { ok: false, error: r.status === 401 ? 'Jeton refusé.' : 'Orchestra injoignable : la réponse n’est peut-être pas partie.' }; })
-        .then(function (res) { st.__status = res && res.ok ? 'Réponse envoyée.' : ((res && res.error) || 'Échec.'); box.dataset.state = res && res.ok ? 'answered' : 'error'; status.textContent = st.__status; fetchConv(); })
-        .catch(function () { st.__status = 'Réseau coupé : la réponse n’est peut-être pas partie.'; status.textContent = st.__status; })
-        .then(function () { st.__sending = false; syncSubmit(); });
+        .then(function (r) { return r.ok ? r.json() : { ok: false, error: r.status === 401 ? 'Jeton refusé.' : r.status === 429 ? 'Trop d’envois en cours, réessaie.' : 'Orchestra injoignable : la réponse n’est peut-être pas partie.' }; })
+        .then(function (res) { ss.text = res && res.ok ? 'Réponse envoyée.' : ((res && res.error) || 'Échec.'); box.dataset.state = res && res.ok ? 'answered' : 'error'; said.textContent = ss.text; fetchConv(); })
+        .catch(function () { ss.text = 'Réseau coupé : la réponse n’est peut-être pas partie.'; said.textContent = ss.text; })
+        .then(function () { ss.sending = false; sync(); });
     });
-    syncSubmit();
-    box.appendChild(submit); box.appendChild(status);
+    sync();
+    box.appendChild(submit); box.appendChild(said);
   }
-  var lastConv = null;
-  function rerenderAsks() { if (lastConv) render(lastConv); }
+
   function fetchConv() {
     if (!current) return;
     if (inflight) { again = true; return; }
@@ -148,10 +179,11 @@ export const CONVERSATION_JS = `(function () {
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
           if (id !== current) return;
-          if (c && c.ok) { root.querySelector('.conv-state').textContent = ''; render(c); }
-          else root.querySelector('.conv-state').textContent = c ? 'Workspace introuvable.' : 'Orchestra injoignable.';
+          var stEl = root.querySelector('.conv-state');
+          if (c && c.ok) { stEl.textContent = ''; stEl.className = 'conv-state'; render(c); }
+          else { stEl.textContent = c ? 'Workspace introuvable.' : 'Orchestra injoignable.'; stEl.className = 'conv-state offline'; }
         })
-        .catch(function () { root.querySelector('.conv-state').textContent = 'Orchestra injoignable.'; })
+        .catch(function () { var stEl = root.querySelector('.conv-state'); stEl.textContent = 'Orchestra injoignable.'; stEl.className = 'conv-state offline'; })
         .then(function () { inflight = false; if (again) { again = false; fetchConv(); } });
     }, wait);
   }
@@ -160,31 +192,16 @@ export const CONVERSATION_JS = `(function () {
     if ((m.t === 'conv' && m.id === current && m.v !== version) || m.t === 'resume') fetchConv();
   });
 
-  function open(id, name) {
-    current = id; version = -1;
-    root = document.getElementById('conv');
-    root.textContent = '';
-    var head = el('div', 'conv-head');
-    var back = el('button', 'conv-back', '‹ Workspaces'); back.addEventListener('click', function () { location.hash = ''; });
-    head.appendChild(back); head.appendChild(el('div', 'conv-title', name || id));
-    root.appendChild(head);
-    root.appendChild(el('div', 'conv-state', ''));
-    root.appendChild(el('div', 'conv-lines'));
-    var running = el('div', 'conv-running', '● en cours…'); running.hidden = true; root.appendChild(running);
-    root.appendChild(el('div', 'conv-asks'));
-    root.appendChild(composer(id));
-    root.dataset.id = id;
-    root.hidden = false;
-    fetch('/api/seen?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() }).catch(function () {});
-    fetchConv();
-  }
   // #338: the composer — the message goes the desktop composer's way (queued if mid-turn). Never claims « sent » on a doubt.
   function composer(id) {
-    var form = el('form', 'conv-compose');
-    var ta = el('textarea', 'conv-input'); ta.rows = 2; ta.placeholder = 'Message à l’agent…'; ta.maxLength = 32000;
-    var btn = el('button', 'conv-send', 'Envoyer'); btn.type = 'submit';
-    var err = el('div', 'conv-send-error', ''); err.setAttribute('role', 'alert');
-    form.appendChild(ta); form.appendChild(btn); form.appendChild(err);
+    var form = el('form', 'conv-compose cmp');
+    var err = el('div', 'conv-send-error toast', ''); err.setAttribute('role', 'alert');
+    var fld = el('div', 'fld');
+    var ta = el('textarea', 'conv-input'); ta.rows = 1; ta.placeholder = 'Message à l’agent…'; ta.maxLength = 32000;
+    var btn = el('button', 'conv-send send', '↑'); btn.type = 'submit'; btn.setAttribute('aria-label', 'Envoyer');
+    ta.addEventListener('input', function () { btn.className = 'conv-send send' + (ta.value.trim() ? ' on' : ''); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
+    fld.appendChild(ta); fld.appendChild(btn);
+    form.appendChild(err); form.appendChild(fld);
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var text = ta.value.trim();
@@ -193,12 +210,13 @@ export const CONVERSATION_JS = `(function () {
       fetch('/api/send?id=' + encodeURIComponent(id), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ text: text }) })
         .then(function (r) {
           if (r.status === 401) return { ok: false, error: 'Jeton refusé : re-scanne le QR code.' };
+          if (r.status === 429) return { ok: false, error: 'Trop d’envois en cours, réessaie dans un instant.' };
           if (r.status === 502) return { ok: false, error: 'Orchestra injoignable : le message n’est peut-être pas parti, vérifie la conversation.' };
           if (!r.ok) return { ok: false, error: 'Refusé (' + r.status + ').' };
           return r.json();
         })
         .then(function (res) {
-          if (res && res.ok) { ta.value = ''; form.dataset.state = 'sent'; fetchConv(); }
+          if (res && res.ok) { ta.value = ''; btn.className = 'conv-send send'; form.dataset.state = 'sent'; fetchConv(); }
           else { err.textContent = (res && res.error) || 'Échec de l’envoi.'; form.dataset.state = 'error'; }
         })
         .catch(function () { err.textContent = 'Réseau coupé : le message n’est peut-être pas parti, vérifie la conversation.'; form.dataset.state = 'error'; })
@@ -206,44 +224,154 @@ export const CONVERSATION_JS = `(function () {
     });
     return form;
   }
-  function close() { current = null; version = -1; if (root) { root.hidden = true; root.textContent = ''; } }
+
+  function open(id, row, othersWaiting) {
+    current = id; meta = row || { name: id }; version = -1;
+    root = document.getElementById('conv');
+    root.textContent = '';
+    var head = el('div', 'ch');
+    var back = el('button', 'conv-back back', '‹'); back.type = 'button'; back.setAttribute('aria-label', 'Workspaces');
+    back.addEventListener('click', function () { location.hash = ''; });
+    head.appendChild(back);
+    if (othersWaiting) head.appendChild(el('span', 'bk', String(othersWaiting)));
+    var ct = el('div', 'ct'); ct.appendChild(el('b', 'conv-title', meta.name || id));
+    var cs = el('div', 'cs');
+    if (meta.group) cs.appendChild(el('span', null, meta.group + (meta.branch ? ' · ' + meta.branch : '')));
+    if (meta.account) cs.appendChild(acct(meta.account));
+    ct.appendChild(cs); head.appendChild(ct);
+    head.appendChild(el('span', 'pill idle', 'inactif'));
+    root.appendChild(head);
+    root.appendChild(el('div', 'conv-state', ''));
+    var lines = el('div', 'conv-lines stream'); root.appendChild(lines);
+    var running = el('div', 'conv-running working', 'L’agent travaille…'); running.hidden = true; root.appendChild(running);
+    root.appendChild(el('div', 'conv-asks'));
+    root.appendChild(composer(id));
+    root.dataset.id = id;
+    root.hidden = false;
+    fetch('/api/seen?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() }).catch(function () {});
+    fetchConv();
+  }
+  function close() { current = null; lastConv = null; version = -1; if (root) { root.hidden = true; root.textContent = ''; } }
 
   window.OrchestraConversation = { open: open, close: close, onStream: onStream, connect: connect };
 })();
 `;
 
+/** The ONE stylesheet of the phone (V1 « Boîte de réception »): tokens from Orchestra's desktop agent view, dark; system fonts
+ *  (no font files shipped). Ported from prototypes/acces-mobile-mockups/v1-boite/style.css (branch acces-mobile-mockups). */
 export const CONVERSATION_CSS = `
-#conv{display:flex;flex-direction:column;min-height:100vh}
-#conv[hidden]{display:none}
-.conv-head{position:sticky;top:0;display:flex;gap:8px;align-items:center;padding:8px 12px;background:Canvas;border-bottom:1px solid #8883}
-.conv-back{font:inherit;border:0;background:none;color:LinkText;padding:4px 0}
-.conv-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conv-state{margin:8px 12px;opacity:.7}
-.conv-lines{display:flex;flex-direction:column;gap:6px;padding:8px 12px;overflow-y:auto}
-.msg{white-space:pre-wrap;word-break:break-word;padding:8px 10px;border-radius:12px;max-width:92%}
-.msg.user{align-self:flex-end;background:#3478f6;color:#fff}
-.msg.assistant{align-self:flex-start;background:#8882}
-.msg.streaming{opacity:.85}
-.tool,.notice{font-size:13px;opacity:.7;font-family:ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tool.error,.notice.error{color:#d33;opacity:1}
-.conv-more{font-size:12px;opacity:.6;text-align:center}
-.conv-running{margin:4px 12px;font-size:13px;opacity:.7}
-.ask{margin:8px 12px;padding:10px;border:1px solid #e9a400;border-radius:10px}
-.ask-q{font-weight:600;margin-bottom:6px}
-.ask-opts{display:flex;flex-wrap:wrap;gap:6px}
-.ask-opt{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #8886;background:none}
-.ask-opt.picked{background:#3478f6;color:#fff;border-color:#3478f6}
-.ask-h{font-size:12px;text-transform:uppercase;opacity:.6}
-.ask-other{display:block;width:100%;box-sizing:border-box;margin-top:6px;font:inherit;padding:6px;border-radius:8px;border:1px solid #8886}
-.ask-submit{margin-top:8px;font:inherit;padding:8px 14px;border-radius:10px;border:0;background:#e9a400;color:#000}
-.ask-submit:disabled{opacity:.4}
-.ask-status{font-size:13px;margin-top:4px}
-.ask-status:empty{display:none}
-.ask-hint{font-size:12px;opacity:.7;margin-top:6px}
-.conv-compose{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:Canvas;border-top:1px solid #8883;margin-top:auto}
-.conv-input{flex:1;font:inherit;padding:8px;border-radius:10px;border:1px solid #8886;resize:none;min-width:0}
-.conv-send{font:inherit;padding:8px 14px;border-radius:10px;border:0;background:#3478f6;color:#fff}
-.conv-send:disabled{opacity:.5}
-.conv-send-error{flex-basis:100%;font-size:13px;color:#d33}
-.conv-send-error:empty{display:none}
+.v1{--surface:#1a1f26;--raised:#1f242c;--sunken:#14181e;--hair:#262d37;--hair2:#353b45;--hairf:rgba(255,255,255,.055);--text:#eef1f5;--dim:#8f99a9;--faint:#737e92;--accent:#6ea8ff;--ink:#081022;--amber:#ffb62e;--yellow:#ffc857;--green:#5bd68b;--red:#ff6b6b;--violet:#9d8fff;--teal:#4fd1c5;--work:#f0b90b;--mono:ui-monospace,"SF Mono",Menlo,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;background:#1a1f26}
+body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,system-ui,"Inter",sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+.v1 button,.v1 input,.v1 textarea{font:inherit;color:inherit;background:none;border:0}
+.v1 button{cursor:pointer}
+.v1 [hidden]{display:none!important}
+.v1 .col{min-height:100vh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+.v1 ul{list-style:none;margin:0;padding:0}
+.v1 h1,.v1 h2,.v1 h3,.v1 p{margin:0}
+.v1 .top{padding:6px 20px 0}
+.v1 .tt{display:flex;align-items:center;justify-content:space-between;height:42px}
+.v1 h1{font-size:28px;font-weight:650;letter-spacing:-.025em}
+.v1 .live{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)}
+.v1 .live i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(91,214,139,.7)}
+.v1 .live.off{color:var(--red)} .v1 .live.off i{background:var(--red);box-shadow:0 0 8px rgba(255,107,107,.7)}
+.v1 .seg{display:flex;gap:8px;padding:10px 0 12px}
+.v1 .seg button{display:flex;align-items:center;gap:7px;height:36px;padding:0 15px;border-radius:18px;border:1px solid var(--hair2);font-size:14.5px;font-weight:500;color:var(--dim)}
+.v1 .seg button b{font-family:var(--mono);font-weight:500;font-size:12.5px;color:var(--faint)}
+.v1 .seg button.on{background:#eef1f5;border-color:#eef1f5;color:#0a0b0d}
+.v1 .seg button.on b{color:#3b4350}
+.v1 .seg button b.hot{background:var(--amber);color:#1a1100;border-radius:9px;padding:1px 6px;font-weight:700}
+.v1 .scroll{flex:1;border-top:1px solid var(--hair);padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+#state.hint-state{padding:30px 40px;text-align:center;color:var(--dim)}
+.v1 .offline{margin:0 16px 12px;padding:14px;border:1px solid rgba(255,107,107,.45);background:rgba(255,107,107,.09);border-radius:14px;color:var(--red);font-weight:600}
+.v1 h2.sub{display:flex;align-items:center;gap:7px;padding:14px 20px 7px;font:700 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.v1 h2 b{font-weight:500;color:var(--faint)}
+.v1 h2.sub.w{color:var(--amber)} .v1 h2.sub.w .d{width:8px;height:8px;border-radius:50%;background:var(--yellow);box-shadow:0 0 8px rgba(255,200,87,.6)}
+.v1 h2.sub.w b{color:rgba(255,182,46,.65)}
+.v1 h2.sub.un{color:var(--accent)} .v1 h2.sub.un b{color:rgba(110,168,255,.6)}
+.v1 h2.rh{display:flex;align-items:center;gap:7px;padding:16px 20px 6px;font:700 11.5px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--dim);border-top:1px solid var(--hairf)}
+.v1 .row{display:grid;grid-template-columns:22px 1fr;gap:12px;padding:12px 20px;border-bottom:1px solid var(--hairf);cursor:pointer}
+.v1 .row.small{padding:10px 20px}
+.v1 .row.waiting{background:rgba(255,200,87,.055);box-shadow:inset 3px 0 0 var(--amber)}
+.v1 .rb{min-width:0}
+.v1 .r1{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.v1 .r1 b{font-size:16px;font-weight:620;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v1 .row.small .r1 b{font-size:15.5px;font-weight:500}
+.v1 .row.unread .r1 b,.v1 .row.waiting .r1 b{font-weight:680}
+.v1 time{font:11px var(--mono);color:var(--faint);white-space:nowrap;flex:none}
+.v1 .r2{display:flex;align-items:center;gap:8px;margin-top:3px;font-size:11.5px;color:var(--dim);min-width:0}
+.v1 .r2 .repo{flex:none;color:var(--text);opacity:.75;font:500 11.5px var(--mono)}
+.v1 .r2 .br{font-family:var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+.v1 .r2 .stl{font-family:var(--mono);color:var(--dim);flex:none}
+.v1 .r2 .acct{margin-left:auto}
+.v1 .pv{margin-top:6px;font-size:14px;line-height:1.38;color:#c3cad6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.v1 .pv em{font:700 10.5px var(--mono);font-style:normal;letter-spacing:.06em;text-transform:uppercase;margin-right:6px;color:var(--accent)}
+.v1 .row.waiting .pv{color:var(--text)} .v1 .row.waiting .pv em{color:var(--amber)}
+.v1 .acct{font:10.5px/1 var(--mono);padding:3px 6px;border-radius:5px;border:1px solid var(--hair2);color:var(--dim);flex:none}
+.v1 .a-perso{color:var(--teal);border-color:rgba(79,209,197,.4);background:rgba(79,209,197,.08)}
+.v1 .a-mc{color:var(--violet);border-color:rgba(157,143,255,.42);background:rgba(157,143,255,.09)}
+.v1 .g{width:22px;height:22px;display:grid;place-items:center;margin-top:1px}
+.v1 .g::before{content:"";display:block}
+.v1 .g-wait::before{width:12px;height:12px;border-radius:50%;background:var(--yellow);box-shadow:0 0 10px rgba(255,200,87,.65)}
+.v1 .g-unread::before{width:10px;height:10px;border-radius:50%;border:2px solid var(--accent)}
+.v1 .g-run::before{width:12px;height:12px;border-radius:50%;border:2px solid var(--work);border-right-color:transparent}
+.v1 .g-idle::before{width:9px;height:9px;border-radius:50%;background:var(--dim);opacity:.55}
+.v1 .g-err::before{content:"×";color:var(--red);font-weight:700;font-size:18px;line-height:1}
+.v1 .g-stop::before{width:8px;height:8px;border-radius:2px;background:#5b6370}
+.v1 .ch{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:4px 16px 10px 8px;border-bottom:1px solid var(--hair);min-height:58px;background:var(--surface)}
+.v1 .back{color:var(--accent);font-size:30px;line-height:1;padding:0 8px}
+.v1 .bk{min-width:19px;height:19px;margin-left:-6px;border-radius:10px;background:var(--amber);color:#1a1100;font:700 11.5px/19px var(--mono);text-align:center}
+.v1 .ct{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.v1 .ct b{font-size:17px;font-weight:650;letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v1 .cs{display:flex;align-items:center;gap:6px;font:11.5px var(--mono);color:var(--faint);min-width:0}
+.v1 .cs>span:not(.acct){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v1 .pill{flex:none;font:600 11.5px/1 var(--mono);padding:6px 9px;border-radius:8px;border:1px solid}
+.v1 .pill.wait{color:var(--amber);border-color:rgba(255,182,46,.5);background:rgba(255,182,46,.1)}
+.v1 .pill.run{color:var(--work);border-color:rgba(240,185,11,.45);background:rgba(240,185,11,.09)}
+.v1 .pill.idle{color:var(--dim);border-color:var(--hair2)}
+.v1 .conv-state:empty{display:none}
+.v1 .stream{flex:1;display:flex;flex-direction:column;gap:14px;padding:14px 20px}
+.v1 .conv-more{font:12px var(--mono);color:var(--faint);text-align:center}
+.v1 .msg{white-space:pre-wrap;word-break:break-word}
+.v1 .msg.u{align-self:flex-end;max-width:84%;background:#272e38;border-radius:18px 18px 5px 18px;padding:10px 14px;font-size:15.5px;line-height:1.42}
+.v1 .msg.a{font-size:16px;line-height:1.55;color:#e6e9ef}
+.v1 .msg.a.streaming::after{content:"";display:inline-block;width:8px;height:17px;margin-left:2px;vertical-align:-3px;background:var(--accent);border-radius:1px}
+.v1 .tools{display:flex;flex-direction:column;gap:1px;margin:-4px 0}
+.v1 .tl{display:flex;align-items:center;gap:8px;min-height:27px;font:12.5px var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v1 .tl .tg{width:14px;text-align:center;flex:none}
+.v1 .tl.ok .tg{color:var(--green)} .v1 .tl.running .tg,.v1 .tl.running{color:var(--work)} .v1 .tl.error,.v1 .tl.error .tg{color:var(--red)}
+.v1 .notice{font:12.5px var(--mono);color:var(--faint)} .v1 .notice.error{color:var(--red)}
+.v1 .working{margin:0 20px 8px;font-size:13.5px;color:var(--work)}
+.v1 .conv-asks:empty{display:none}
+.v1 .conv-asks{padding:0 20px 12px;display:flex;flex-direction:column;gap:12px}
+.v1 .ask{border:1px solid rgba(255,182,46,.55);background:rgba(255,200,87,.06);border-radius:16px;padding:14px}
+.v1 .ask-h{color:var(--amber);font:700 11px var(--mono);letter-spacing:.07em;text-transform:uppercase}
+.v1 .ask-hd{margin-top:10px;font:700 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.v1 .ask h3{margin:9px 0 12px;font-size:17px;line-height:1.3;font-weight:640;letter-spacing:-.012em;white-space:pre-wrap;word-break:break-word}
+.v1 .opt{display:flex;align-items:center;gap:12px;width:100%;margin-bottom:8px;padding:11px 14px 11px 12px;text-align:left;background:var(--raised);border:1px solid var(--hair2);border-radius:12px}
+.v1 .opt.picked{border-color:var(--amber);background:rgba(255,182,46,.12)}
+.v1 .opt .n{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:rgba(255,182,46,.14);color:var(--amber);font:700 13px var(--mono);flex:none}
+.v1 .opt.picked .n{background:var(--amber);color:#1a1100}
+.v1 .opt .ot{display:flex;flex-direction:column;gap:2px;min-width:0}
+.v1 .opt b{font-size:15.5px;font-weight:620;word-break:break-word}
+.v1 .opt small{font-size:12.5px;color:var(--dim)}
+.v1 .other{display:block;width:100%;height:46px;padding:0 15px;border-radius:23px;border:1px solid var(--hair2);background:var(--sunken);font-size:15px}
+.v1 .other::placeholder{color:var(--faint)}
+.v1 .btn{margin-top:10px;height:40px;padding:0 18px;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:650;font-size:14.5px}
+.v1 .btn:disabled{opacity:.35}
+.v1 .ask-status{margin-top:8px;font-size:13px;color:var(--dim)} .v1 .ask-status:empty{display:none}
+.v1 .elic{border:1px dashed var(--hair2);background:var(--sunken)}
+.v1 .elic-h{color:var(--dim);font:700 11px var(--mono);letter-spacing:.07em;text-transform:uppercase}
+.v1 .elic p{margin:9px 0 13px;font-size:16px;line-height:1.4;font-weight:560}
+.v1 .desk{display:flex;align-items:center;justify-content:center;height:46px;border-radius:12px;background:rgba(255,182,46,.12);color:var(--amber);font-weight:650;font-size:15px;border:1px solid rgba(255,182,46,.4)}
+.v1 .cmp{position:sticky;bottom:0;padding:8px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--hair);background:var(--surface)}
+.v1 .fld{display:flex;align-items:flex-end;gap:8px;min-height:44px;padding:5px 5px 5px 16px;border-radius:22px;background:var(--raised);border:1px solid var(--hair2)}
+.v1 .conv-input{flex:1;min-width:0;resize:none;font-size:16px;line-height:1.35;padding:6px 0;max-height:140px;outline:none}
+.v1 .conv-input::placeholder{color:var(--faint)}
+.v1 .send{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--hair2);color:var(--faint);flex:none;font-weight:700}
+.v1 .send.on{background:var(--accent);color:var(--ink)}
+.v1 .send:disabled{opacity:.5}
+.v1 .toast{margin:0 0 8px;padding:10px 13px;border-radius:12px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.45);color:#f1c9c9;font-size:13.5px;line-height:1.3}
+.v1 .toast:empty{display:none}
 `;

@@ -165,7 +165,13 @@ export interface MobileWorkspaceRow {
   /** Non lu: the turn finished while the human was not looking (the bell). */
   unread: boolean;
   statusText?: string;
+  /** Last activity (ms): the latest of turn start / stop / status note / creation. */
+  at: number;
+  /** #340 (design V1): one line under the row — the question it is blocked on, else the agent's status note. */
+  preview?: { kind: 'question' | 'desktop' | 'status'; text: string };
 }
+
+export type PreviewOf = (ws: Workspace) => MobileWorkspaceRow['preview'] | undefined;
 
 export interface MobileWorkspaceList {
   ok: true;
@@ -186,6 +192,7 @@ export function projectMobileWorkspaces(
   workspaces: readonly Workspace[],
   repos: readonly RepoEntry[],
   accounts: readonly Account[],
+  previewOf?: PreviewOf,
 ): MobileWorkspaceRow[] {
   const repoByPath = new Map(repos.map((r) => [r.path, r]));
   const known = new Set(accounts.map((a) => a.id));
@@ -203,8 +210,11 @@ export function projectMobileWorkspaces(
       account: accountId ? (labelOf.get(accountId) ?? accountId) : 'default',
       status: ws.status,
       unread: ws.autoUnread === true,
+      at: Math.max(ws.createdAt ?? 0, ws.lastTurnStartAt ?? 0, ws.lastStopReasonAt ?? 0, ws.statusTextAt ?? 0),
     };
     if (ws.statusText) row.statusText = ws.statusText;
+    const pv = previewOf?.(ws) ?? (ws.statusText ? { kind: 'status' as const, text: ws.statusText } : undefined);
+    if (pv) row.preview = { kind: pv.kind, text: pv.text.length > 300 ? pv.text.slice(0, 300) + '…' : pv.text };
     rows.push(row);
   }
   return rows.sort(

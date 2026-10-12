@@ -115,7 +115,7 @@ test('#338 review M1: the phone\'s operations are NOT on the hooks socket any lo
 });
 
 test('the routes: list, conversation (archived refused), seen (the ONE mark-seen), stream (the feed)', () => {
-  assert.match(routes, /case '\/mobile\/workspaces':[\s\S]*?projectMobileWorkspaces\(store\.workspaces, store\.repos, store\.accounts\)/);
+  assert.match(routes, /case '\/mobile\/workspaces':[\s\S]*?projectMobileWorkspaces\(store\.workspaces, store\.repos, store\.accounts, previewOfLive\)/);
   assert.match(routes, /function liveWorkspace[\s\S]*?return ws && !ws\.archived \? ws : undefined;/);
   assert.match(routes, /case '\/mobile\/conversation': \{\n[^\n]*\n\s*const ws = liveWorkspace\(msg\.id\);\n\s*return ws \? getMobileConversation\(ws\.id\)/);
   assert.match(routes, /case '\/mobile\/seen':[\s\S]*?await markWorkspaceSeen\(ws\.id\)/);
