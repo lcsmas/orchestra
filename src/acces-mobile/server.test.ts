@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, tokenMatches, MAX_STREAMS, MAX_WRITES_IN_FLIGHT, REFUSAL_LOG_BURST, REFUSAL_LOG_WINDOW_MS, type Upstream } from './server.ts';
 import { CLOSE_INHERITED_FDS, pickSocketDir } from '../shared/acces-mobile.ts';
 import { serveRpc, type RpcWire } from '../shared/acces-mobile-rpc.ts';
-import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
+import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -681,8 +681,17 @@ test('send: relayed to main with the text, only as POST JSON with identity + tok
     assert.equal((await post(port, '/api/send?id=w1', JSONH, 'not json')).status, 400);
     assert.equal((await post(port, '/api/send?id=w1', JSONH, '{"text":"   "}')).status, 400, 'blank');
     assert.equal((await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'x'.repeat(MOBILE_SEND_MAX_CHARS + 1) }))).status, 400, 'too many chars');
-    const big = await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'é'.repeat(MOBILE_SEND_MAX_BODY) }));
+    const big = await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'x', attachments: [{ mediaType: 'image/png', dataBase64: 'A'.repeat(MOBILE_ATTACH_MAX_BODY) }] }));
     assert.equal(big.status, 413, 'oversized body refused with a readable 413');
+    // attachments: a send may weigh megabytes (an image), every other route keeps the small cap
+    const img = { mediaType: 'image/jpeg', dataBase64: 'A'.repeat(4 * 1_048_576) };
+    const withFile = await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: '', attachments: [img] }));
+    assert.equal(withFile.status, 200, 'a 4 MB image alone is a send');
+    assert.deepEqual(seen.at(-1), { route: '/mobile/send', body: { id: 'w1', text: '', attachments: [img] }, timeoutMs: 45_000 });
+    seen.pop();
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: 'x', attachments: [{ mediaType: 'text/html', dataBase64: 'AAAA' }] }))).status, 400, 'bad attachment');
+    assert.equal((await post(port, '/api/send?id=w1', JSONH, JSON.stringify({ text: ' ', attachments: [] }))).status, 400, 'blank with no file');
+    assert.equal((await post(port, '/api/answer?id=w1&request=r1', JSONH, JSON.stringify({ answers: { q: ['é'.repeat(MOBILE_SEND_MAX_BODY)] } }))).status, 413, 'the big cap is the send route only');
     assert.equal((await get(port, '/api/send?id=w1', AUTH)).status, 404, 'GET is not a send');
     assert.equal(seen.length, 1, 'no refused request reached main');
   } finally {

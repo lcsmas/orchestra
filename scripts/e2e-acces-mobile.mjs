@@ -55,6 +55,19 @@ const mustBeScratch = (what, p) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
+/** Width × height of a baseline/progressive JPEG (its SOF segment), null if it is not one. */
+function jpegSize(b) {
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) return null;
+    const m = b[i + 1];
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(m)) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 async function waitFor(fn, ms, what) {
   const t0 = Date.now(); let last;
   while (Date.now() - t0 < ms) { try { last = await fn(); if (last) return last; } catch (e) { last = e; } await sleep(200); }
@@ -166,7 +179,7 @@ const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
 // tool call; everything else gets the canned text.
 const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', header: 'Choix', multiSelect: false, options: [{ label: 'Réponse-rig-A', description: 'la première' }, { label: 'Réponse-rig-B', description: 'la seconde' }] }] };
 let wantAsk = 0;
-const fakeApi = await startFakeApi({ reply: (rec) => {
+const fakeApi = await startFakeApi({ keepAttachmentData: true, reply: (rec) => {
   if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
   return { text: FAKE_REPLY_MD };
 } });
@@ -444,6 +457,42 @@ try {
   // errors are never a false « sent »: an archived workspace is refused with a reason
   const arch = await phone.eval(`fetch('/api/send?id=ws-am-archived', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ text: 'x' }) }).then((r) => r.json())`);
   clause('send/archived-refused', arch.ok === false && /archived/.test(arch.error), JSON.stringify(arch));
+
+  // Lucas 2026-10-12 « je ne peux pas coller des fichiers »: a photo (3000×2000) and a PDF PICKED on the phone (the file input the
+  // + button opens), plus a PASTED screenshot removed again with a trusted tap, reach the MODEL as image / document blocks — the
+  // photo redrawn to ≤ 1568 px, the PDF byte-exact — and show on the phone AND the desktop.
+  const filesDir = path.join(RIG_DIR, 'files'); fs.mkdirSync(filesDir, { recursive: true });
+  const photo = new PNG({ width: 3000, height: 2000 });
+  for (let y = 0; y < 2000; y++) for (let x = 0; x < 3000; x++) { const i = (y * 3000 + x) * 4; photo.data[i] = x % 256; photo.data[i + 1] = y % 256; photo.data[i + 2] = (x + y) % 256; photo.data[i + 3] = 255; }
+  const photoPath = path.join(filesDir, 'photo.png'); fs.writeFileSync(photoPath, PNG.sync.write(photo));
+  const pdfBytes = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n');
+  const pdfPath = path.join(filesDir, 'note.pdf'); fs.writeFileSync(pdfPath, pdfBytes);
+  const { root: docRoot } = await phone.send('DOM.getDocument', { depth: -1 });
+  const { nodeId: fileNode } = await phone.send('DOM.querySelector', { nodeId: docRoot.nodeId, selector: '#conv .conv-file' });
+  await phone.send('DOM.setFileInputFiles', { nodeId: fileNode, files: [photoPath, pdfPath] });
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-att').length === 2 && !document.querySelector('.conv-compose').dataset.attaching`), 30000, 'two attachments in the tray');
+  const T1 = await phone.eval(`[...document.querySelectorAll('#conv .conv-att')].map((a) => a.dataset.kind + (a.querySelector('img') ? ':img' : ':' + a.querySelector('.att-pdf').textContent))`);
+  const tiny = new PNG({ width: 4, height: 4 }); tiny.data.fill(200);
+  await phone.eval(`(() => { const b = atob(${JSON.stringify(PNG.sync.write(tiny).toString('base64'))}); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); const dt = new DataTransfer(); dt.items.add(new File([u], 'capture.png', { type: 'image/png' })); const ta = document.querySelector('.conv-input'); ta.focus(); ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-att').length === 3`), 10000, 'the pasted screenshot in the tray');
+  saveShot('phone-attachments.png', await phone.shot());
+  await tapSel('#conv .conv-att:nth-child(3) .conv-att-x');
+  const T2 = await phone.eval(`document.querySelectorAll('#conv .conv-att').length`);
+  clause('attach/pick-paste-remove', JSON.stringify(T1) === JSON.stringify(['image:img', 'pdf:PDF · note.pdf']) && T2 === 2, `picked ${JSON.stringify(T1)}; a pasted screenshot ⇒ 3 in the tray; trusted × ⇒ ${T2}`);
+  const beforeAttach = fakeApi.requests.length;
+  await phone.eval(`document.querySelector('.conv-input').focus(); true`);
+  await phone.send('Input.insertText', { text: 'Voici une photo et un PDF' });
+  await tapSel('.conv-send');
+  const R = await waitFor(() => fakeApi.requests.slice(beforeAttach).find((r) => r.type === 'model' && (r.attachments ?? []).length >= 2) || false, 60000, 'a model request carrying the attachments');
+  const aImg = R.attachments.find((a) => a.type === 'image'), aDoc = R.attachments.find((a) => a.type === 'document');
+  const dims = aImg ? jpegSize(Buffer.from(aImg.data, 'base64')) : null;
+  clause('attach/reach-the-model', R.attachments.length === 2 && aImg?.media_type === 'image/jpeg' && dims?.w === 1568 && dims?.h === 1045 && aDoc?.media_type === 'application/pdf' && aDoc.data === pdfBytes.toString('base64'), `model request #${R.seq}: ${JSON.stringify(R.attachments.map((a) => ({ type: a.type, media_type: a.media_type, bytes: a.bytes })))}; photo 3000×2000 ⇒ jpeg ${JSON.stringify(dims)}; pdf byte-exact ${aDoc?.data === pdfBytes.toString('base64')}`);
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].some((e) => e.textContent.startsWith('Voici une photo et un PDF'))`), 30000, 'the attached message in the conversation');
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].filter((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)})).length >= 3`), 60000, 'the reply to the attached message');
+  const B = await phone.eval(`(() => { const u = [...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].filter((e) => e.textContent.startsWith('Voici une photo')).at(-1); return { chip: (u.querySelector('.msg-atts') || {}).textContent, tray: document.querySelectorAll('#conv .conv-att').length, state: document.querySelector('.conv-compose').dataset.state }; })()`);
+  const deskImgs = await cdp.eval(`(() => { const m = (window.__readAgentSession('ws-am-idle')?.messages ?? []).filter((x) => x.role === 'user' && String(x.text ?? '').startsWith('Voici une photo')).at(-1); return m ? (m.images || []).map((i) => i.mediaType) : null; })()`);
+  clause('attach/shown-on-both-surfaces', B.chip === '🖼 1 image · 📄 1 PDF' && B.tray === 0 && B.state === 'sent' && JSON.stringify(deskImgs) === JSON.stringify(['image/jpeg', 'application/pdf']), `phone bubble « ${B.chip} », tray ${B.tray}, state ${B.state}; desktop user message attachments ${JSON.stringify(deskImgs)}`);
+  saveShot('phone-attachments-sent.png', await phone.shot());
 
   // #339 round 1 — the real CLI parks an AskUserQuestion; the PHONE answers it; the card leaves both surfaces; a 2nd answer is refused.
   wantAsk = 1;

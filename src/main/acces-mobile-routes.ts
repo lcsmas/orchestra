@@ -8,7 +8,7 @@ import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-s
 import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
 import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acces-mobile';
-import { MOBILE_SEND_MAX_CHARS, validWorkspaceId } from '../shared/acces-mobile-conversation';
+import { MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validWorkspaceId } from '../shared/acces-mobile-conversation';
 import type { RpcHandlers } from '../shared/acces-mobile-rpc';
 
 function liveWorkspace(id: unknown) {
@@ -53,9 +53,12 @@ export const mobileRpcHandlers: RpcHandlers = {
         const ws = liveWorkspace(msg.id);
         const text = typeof msg.text === 'string' ? msg.text.trim() : '';
         if (!ws) return { ok: false, error: 'unknown or archived workspace' };
-        if (!text || text.length > MOBILE_SEND_MAX_CHARS) return { ok: false, error: `message must be 1–${MOBILE_SEND_MAX_CHARS} characters` };
+        // Images / PDFs attached on the phone ride the desktop composer's AgentImage path (paste/drop) — validated again here.
+        const atts = parseMobileAttachments(msg.attachments);
+        if (!atts.ok) return { ok: false, error: atts.error };
+        if ((!text && !atts.images.length) || text.length > MOBILE_SEND_MAX_CHARS) return { ok: false, error: `message must be 1–${MOBILE_SEND_MAX_CHARS} characters` };
         try {
-          await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');
+          await sdkSend(ws.id, text, atts.images.length ? atts.images : undefined, undefined, undefined, false, false, 'human');
           return { ok: true };
         } catch (e) {
           return { ok: false, error: e instanceof Error ? e.message : String(e) };

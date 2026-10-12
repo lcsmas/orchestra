@@ -133,7 +133,8 @@ test('the routes: list, conversation (archived refused), seen (the ONE mark-seen
 test('#338: a phone message takes the HUMAN composer path, never the agent-message gate; #339 answers through the desktop builder', () => {
   const send = /case '\/mobile\/send': \{[\s\S]*?\n {6}\}/.exec(routes)?.[0] ?? '';
   assert.ok(send.includes('liveWorkspace(msg.id)'), 'control: found the send case (archived refused)');
-  assert.match(send, /await sdkSend\(ws\.id, text, undefined, undefined, undefined, false, false, 'human'\)/);
+  assert.match(send, /const atts = parseMobileAttachments\(msg\.attachments\);\n\s*if \(!atts\.ok\) return \{ ok: false, error: atts\.error \};/, 'attachments re-validated in main');
+  assert.match(send, /await sdkSend\(ws\.id, text, atts\.images\.length \? atts\.images : undefined, undefined, undefined, false, false, 'human'\)/, 'attachments ride the desktop images arg');
   assert.match(read('src/main/api-handlers.ts'), /agentSdkSend: async \(wsId, text, images\) => \{[\s\S]*?await sdkSend\(wsId, text, images, undefined, undefined, false, false, 'human'\)/, 'identical to the desktop composer call');
   const code = send.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   assert.doesNotMatch(code, /dispatchMessageRequest|decideMessageChannel|sdkDeliver/, 'not the agent-to-agent path');

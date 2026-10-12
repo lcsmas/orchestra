@@ -51,15 +51,15 @@ MUTANTS = [
     ('C7-ask-not-recognized', 'src/shared/acces-mobile-conversation.ts', "a.name === 'AskUserQuestion'", "a.name === 'AskUserQuestionX'", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('C8-id-unvalidated', 'src/acces-mobile/server.ts', "      return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;", "      return id || null;", 'RED'),
     ('C9-tap-never-disarmed', 'src/main/acces-mobile-feed-core.ts', "  untap?.();\n  untap = null;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
-    ('P1-send-via-agent-path', 'src/main/acces-mobile-routes.ts', "          await sdkSend(ws.id, text, undefined, undefined, undefined, false, false, 'human');", "          await dispatchMessageRequest({ to: ws.id, text } as never);", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('P1-send-via-agent-path', 'src/main/acces-mobile-routes.ts', "          await sdkSend(ws.id, text, atts.images.length ? atts.images : undefined, undefined, undefined, false, false, 'human');", "          await dispatchMessageRequest({ to: ws.id, text } as never);", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('P1b-mobile-route-on-hooks-socket', 'src/main/hooks-server.ts', "          } else if (route === '/accounts') {", "          } else if (route === '/mobile/send') { send(200, {});\n          } else if (route === '/accounts') {", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('P1c-server-told-the-hooks-socket', 'src/main/acces-mobile-host.ts', "    ELECTRON_RUN_AS_NODE: '1',", "    ELECTRON_RUN_AS_NODE: '1',\n    ORCHESTRA_SOCK: process.env.ORCHESTRA_SOCK ?? '',", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('P1d-entry-without-channel-check', 'src/acces-mobile/index.ts', "  if (!fs.fstatSync(3).isSocket()) fail('fd 3 is not the main channel');\n", "", 'EQUIV'),  # new net.Socket({fd:3}) throws EBADF on a missing fd anyway
-    ('P2-no-body-cap', 'src/acces-mobile/server.ts', "        if (Buffer.byteLength(raw) > MOBILE_SEND_MAX_BODY) {", "        if (false) {", 'RED'),
+    ('P2-no-body-cap', 'src/acces-mobile/server.ts', "        if (size > maxBytes) {", "        if (false) {", 'RED'),
     ('P3-archived-accepted', 'src/main/acces-mobile-routes.ts', "  return ws && !ws.archived ? ws : undefined;", "  return ws;", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('P4-any-content-type', 'src/acces-mobile/server.ts', "      if (!/^application\\/json\\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');\n", "", 'RED'),
-    ('P5-short-send-timeout', 'src/acces-mobile/server.ts', "        relay('/mobile/send', { id, text }, 45_000);", "        relay('/mobile/send', { id, text });", 'RED'),
-    ('P6-blank-accepted', 'src/acces-mobile/server.ts', "        if (typeof text !== 'string' || !text.trim() || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');", "        if (typeof text !== 'string') return refuse(400, 'bad-text');", 'RED'),
+    ('P5-short-send-timeout', 'src/acces-mobile/server.ts', "        relay('/mobile/send', atts.images.length ? { id, text, attachments: atts.images } : { id, text }, 45_000);", "        relay('/mobile/send', atts.images.length ? { id, text, attachments: atts.images } : { id, text });", 'RED'),
+    ('P6-blank-accepted', 'src/acces-mobile/server.ts', "        if (typeof text !== 'string' || (!text.trim() && !atts.images.length) || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');", "        if (typeof text !== 'string') return refuse(400, 'bad-text');", 'RED'),
     ('K1-rpc-replies-crossed', 'src/shared/acces-mobile-rpc.ts', "      const c = calls.get(m.id);", "      const c = calls.get(Math.min(...calls.keys()));", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
     ('K2-rpc-streams-leak-on-close', 'src/shared/acces-mobile-rpc.ts', "    for (const [, off] of subs) off();\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
     ('K3-rpc-cancel-ignored', 'src/shared/acces-mobile-rpc.ts', "          subs.get(id)?.();\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
@@ -121,6 +121,16 @@ MUTANTS = [
     ('D2-md-snake-case-italic', 'src/shared/mini-markdown.ts', "        if (c === '*' || !/[A-Za-z0-9]/.test(before)) {", "        if (true) {", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D3-md-table-separator-kept', 'src/shared/mini-markdown.ts', "        if (cells.every((x) => /^:?-+:?$/.test(x))) continue;", "        if (false) continue;", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D4-parent-not-listed-kept', 'src/shared/acces-mobile.ts', " && listed.has(ws.parentId)) row.parentId", ") row.parentId", 'RED', 'src/shared/acces-mobile.test.ts'),
+    # ── 2026-10-12: files attached on the phone (images + PDFs) ──
+    ('A1-any-media-type', 'src/shared/acces-mobile-conversation.ts', "    if (typeof mediaType !== 'string' || !MOBILE_ATTACH_TYPES.includes(mediaType)) return", "    if (typeof mediaType !== 'string') return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('A2-no-count-cap', 'src/shared/acces-mobile-conversation.ts', "  if (raw.length > MOBILE_ATTACH_MAX_COUNT) return", "  if (false) return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('A3-base64-unchecked', 'src/shared/acces-mobile-conversation.ts', "    if (typeof data !== 'string' || !data || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return", "    if (typeof data !== 'string') return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('A4-small-cap-on-send', 'src/acces-mobile/server.ts', "      }, MOBILE_ATTACH_MAX_BODY);", "      });", 'RED'),
+    ('A5-big-cap-everywhere', 'src/acces-mobile/server.ts', "        if (size > maxBytes) {", "        if (size > MOBILE_ATTACH_MAX_BODY) {", 'RED'),
+    ('A6-server-drops-files', 'src/acces-mobile/server.ts', "        relay('/mobile/send', atts.images.length ? { id, text, attachments: atts.images } : { id, text }, 45_000);", "        relay('/mobile/send', { id, text }, 45_000);", 'RED'),
+    ('A7-files-alone-refused', 'src/acces-mobile/server.ts', "(!text.trim() && !atts.images.length)", "!text.trim()", 'RED'),
+    ('A8-main-trusts-the-server', 'src/main/acces-mobile-routes.ts', "        const atts = parseMobileAttachments(msg.attachments);\n        if (!atts.ok) return { ok: false, error: atts.error };\n", "        const atts = { images: (msg.attachments ?? []) as never[] };\n", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('A9-bubble-without-files', 'src/shared/acces-mobile-conversation.ts', "      if (atts.length) line.attachments = atts;\n", "", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -141,6 +151,9 @@ E2E_MUTANTS = [
     ('E10-markdown-shown-raw', 'src/acces-mobile/conversation.ts', "row.appendChild(md(l.text)); }", "row.textContent = l.text; }", 'conv/markdown'),
     ('E11-opens-at-the-top', 'src/acces-mobile/conversation.ts', "    if (nearBottom || version < 0) se.scrollTop", "    if (nearBottom && version >= 0) se.scrollTop", 'conv/opens-at-end'),
     ('E12-fold-hides-a-waiting-worker', 'src/acces-mobile/page.ts', "    var waiting = rows.filter(needs);", "    var waiting = rows.filter(function (w) { return needs(w) && !w.parentId; });", 'phone/folded-worker-waiting-surfaces'),
+    ('E13-photo-not-scaled', 'src/acces-mobile/conversation.ts', "IMG_EDGE = 1568;", "IMG_EDGE = 100000;", 'attach/reach-the-model'),
+    ('E14-main-drops-files', 'src/main/acces-mobile-routes.ts', "await sdkSend(ws.id, text, atts.images.length ? atts.images : undefined,", "await sdkSend(ws.id, text, undefined,", 'attach/'),
+    ('E15-paste-ignored', 'src/acces-mobile/conversation.ts', "      if (!cd.getData('text/plain')) ev.preventDefault();\n      addFiles(files);\n", "", 'attach/pick-paste-remove'),
 ]
 
 def run_e2e(ids):

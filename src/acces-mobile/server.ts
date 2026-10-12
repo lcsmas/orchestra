@@ -6,7 +6,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
-import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
+import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 import { PWA_ICONS } from './icons.ts';
@@ -180,33 +180,36 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       const id = wsId();
       return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');
     }
-    /** The body is read ONLY after identity + token passed: JSON, capped at MOBILE_SEND_MAX_BODY (a readable 413, then a short drain). */
-    const readJson = (then: (body: Record<string, unknown>) => void): void => {
+    /** The body is read ONLY after identity + token passed: JSON, capped at `maxBytes` (a readable 413, then a short drain).
+     *  Bytes are counted per chunk (a 20 MB send must not rescan its whole prefix on every chunk). */
+    const readJson = (then: (body: Record<string, unknown>) => void, maxBytes = MOBILE_SEND_MAX_BODY): void => {
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');
-      let raw = '';
+      let chunks: Buffer[] = [];
+      let size = 0;
       let tooBig = false;
       let discarded = 0;
-      req.setEncoding('utf8');
-      req.on('data', (c: string) => {
+      req.on('data', (c: Buffer) => {
         if (tooBig) {
           // Answer 413 once, drain a little so the client can read it, then cut a sender that keeps pushing.
           discarded += c.length;
           if (discarded > 8 * MOBILE_SEND_MAX_BODY) req.destroy();
           return;
         }
-        raw += c;
-        if (Buffer.byteLength(raw) > MOBILE_SEND_MAX_BODY) {
+        size += c.length;
+        if (size > maxBytes) {
           tooBig = true;
-          raw = '';
+          chunks = [];
           res.setHeader('Connection', 'close');
           refuse(413, 'too-large');
+          return;
         }
+        chunks.push(c);
       });
       req.on('end', () => {
         if (tooBig) return;
         let body: unknown;
         try {
-          body = JSON.parse(raw);
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         } catch {
           return refuse(400, 'bad-json');
         }
@@ -220,10 +223,13 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       if (!id) return refuse(400, 'bad-id');
       return readJson((body) => {
         const text = body.text;
-        if (typeof text !== 'string' || !text.trim() || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');
+        // Files attached on the phone (images / PDFs): shape-checked here, re-validated in main; a send may be files alone.
+        const atts = parseMobileAttachments(body.attachments);
+        if (!atts.ok) return refuse(400, 'bad-attachments');
+        if (typeof text !== 'string' || (!text.trim() && !atts.images.length) || text.length > MOBILE_SEND_MAX_CHARS) return refuse(400, 'bad-text');
         // A cold session start (CLI boot) can take seconds: give main time to say whether the message was taken.
-        relay('/mobile/send', { id, text }, 45_000);
-      });
+        relay('/mobile/send', atts.images.length ? { id, text, attachments: atts.images } : { id, text }, 45_000);
+      }, MOBILE_ATTACH_MAX_BODY);
     }
     if (pathOnly === '/api/answer' && method === 'POST') {
       // #339: answer a parked AskUserQuestion. Shape-checked here, validated against the real question in main.
