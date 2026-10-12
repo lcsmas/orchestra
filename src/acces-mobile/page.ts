@@ -76,11 +76,14 @@ export const APP_JS = `(function () {
     return Math.floor(s / 86400) + ' j';
   }
   function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
-  function needs(w) { return w.status === 'waiting' || w.unread; }
+  // « À traiter » = blocked on the human only (en attente). A non lu row stays in its repo, bold with its glyph: a vague's workers
+  // finishing one after another made a separate « Non lu » section pure noise (Lucas, 2026-10-12).
+  function needs(w) { return w.status === 'waiting'; }
+  var open = Object.create(null); // coordinator id -> its workers are unfolded
 
-  function row(w, withRepo) {
+  function row(w, withRepo, child) {
     var waiting = w.status === 'waiting';
-    var li = el('li', 'row ' + (waiting ? 'big waiting' : w.unread ? 'big unread' : 'small'));
+    var li = el('li', 'row ' + (waiting ? 'big waiting' : w.unread ? 'unread' : 'small') + (child ? ' child' : ''));
     li.dataset.id = w.id; li.dataset.status = w.status; if (w.unread) li.dataset.unread = '1';
     li.addEventListener('click', function () { location.hash = 'w=' + encodeURIComponent(w.id); });
     li.appendChild(el('div', 'g ' + (waiting ? 'g-wait' : w.unread ? 'g-unread' : (GLYPH[w.status] || 'g-idle'))));
@@ -89,10 +92,10 @@ export const APP_JS = `(function () {
     var r2 = el('div', 'r2');
     if (withRepo) r2.appendChild(el('span', 'repo', w.group));
     r2.appendChild(el('span', 'br', w.branch));
-    if (!withRepo && !waiting && !w.unread) r2.appendChild(el('span', 'stl', LABEL[w.status] || w.status));
+    if (!waiting) r2.appendChild(el('span', 'stl', w.unread ? 'non lu' : (LABEL[w.status] || w.status)));
     r2.appendChild(acct(w.account));
     rb.appendChild(r2);
-    if (w.preview && (withRepo || w.preview.kind === 'status')) {
+    if (w.preview && (waiting || w.preview.kind === 'status')) {
       var pv = el('div', 'pv'); pv.appendChild(el('em', null, PV[w.preview.kind] || '')); pv.appendChild(el('span', null, w.preview.text)); rb.appendChild(pv);
     }
     li.appendChild(rb);
@@ -104,32 +107,62 @@ export const APP_JS = `(function () {
     h.appendChild(el('span', null, label)); h.appendChild(el('b', null, String(n)));
     return h;
   }
+  /** The fold line under a coordinator: « N agents » + how many are running / non lu; a tap unfolds them. */
+  function fold(parentId, kids) {
+    var li = el('li', 'fold' + (open[parentId] ? ' open' : '')); li.dataset.fold = parentId;
+    var running = kids.filter(function (k) { return k.status === 'running'; }).length;
+    var unread = kids.filter(function (k) { return k.unread; }).length;
+    li.appendChild(el('span', 'fold-arrow', open[parentId] ? '▾' : '▸'));
+    li.appendChild(el('span', 'fold-n', kids.length + ' agent' + (kids.length > 1 ? 's' : '')));
+    if (running) li.appendChild(el('span', 'fold-run', running + ' en cours'));
+    if (unread) li.appendChild(el('span', 'fold-unread', unread + ' non lu' + (unread > 1 ? 's' : '')));
+    li.addEventListener('click', function () { open[parentId] = !open[parentId]; render(); });
+    return li;
+  }
 
   function render() {
     var me = last.filter(needs);
     cntAll.textContent = String(last.length); cntMe.textContent = String(me.length); cntMe.className = me.length ? 'hot' : '';
     segAll.className = needsMe.checked ? '' : 'on'; segMe.className = needsMe.checked ? 'on' : '';
-    var rows = needsMe.checked ? me : last;
     listEl.textContent = '';
+    var rows = needsMe.checked ? me : last;
     if (!rows.length) { setState(needsMe.checked ? 'Rien ne t’attend.' : 'Aucun workspace.'); return; }
     setState('');
-    // V1 « Boîte de réception »: attention beats grouping — en attente, then non lu (any repo, rows arrive attention-sorted),
-    // then the rest by repo like the desktop sidebar.
-    var waiting = rows.filter(function (w) { return w.status === 'waiting'; });
-    var unread = rows.filter(function (w) { return w.status !== 'waiting' && w.unread; });
-    var rest = rows.filter(function (w) { return !needs(w); });
-    function block(cls, label, ws, withRepo) {
-      if (!ws.length) return;
-      listEl.appendChild(section(cls, label, ws.length));
-      var ul = el('ul', cls === 'rh' ? 'repo-g' : null);
-      ws.forEach(function (w) { ul.appendChild(row(w, withRepo)); });
-      listEl.appendChild(ul);
+    // V1: what is blocked on the human first (any repo, repo shown); then repos like the desktop sidebar, a coordinator's
+    // workers folded under it. A waiting worker is in « En attente » (never hidden by a fold) and not repeated below.
+    var waiting = rows.filter(needs);
+    if (waiting.length) {
+      listEl.appendChild(section('sub w', 'En attente', waiting.length));
+      var wl = el('ul'); waiting.forEach(function (w) { wl.appendChild(row(w, true, false)); }); listEl.appendChild(wl);
     }
-    block('sub w', 'En attente', waiting, true);
-    block('sub un', 'Non lu', unread, true); // not 'u': that is the user-bubble class (conversation.css)
-    var groups = {}; var order = [];
-    rest.forEach(function (w) { if (!groups[w.group]) { groups[w.group] = []; order.push(w.group); } groups[w.group].push(w); });
-    order.forEach(function (g) { block('rh', g, groups[g], false); });
+    if (needsMe.checked) return;
+    var byId = Object.create(null); last.forEach(function (w) { byId[w.id] = w; });
+    var kidsOf = Object.create(null);
+    var top = [];
+    last.forEach(function (w) {
+      if (needs(w)) return;
+      if (w.parentId && byId[w.parentId]) (kidsOf[w.parentId] || (kidsOf[w.parentId] = [])).push(w);
+      else top.push(w);
+    });
+    // a coordinator that is itself en attente still owns its fold: give it a header row-less fold in its repo group
+    Object.keys(kidsOf).forEach(function (pid) { if (needs(byId[pid]) && top.indexOf(byId[pid]) < 0) top.push({ foldOnly: true, id: pid, group: byId[pid].group, name: byId[pid].name }); });
+    var groups = Object.create(null); var order = [];
+    top.forEach(function (w) { if (!groups[w.group]) { groups[w.group] = []; order.push(w.group); } groups[w.group].push(w); });
+    order.forEach(function (g) {
+      var n = 0; groups[g].forEach(function (w) { n += (w.foldOnly ? 0 : 1) + (kidsOf[w.id] ? kidsOf[w.id].length : 0); });
+      listEl.appendChild(section('rh', g, n));
+      var ul = el('ul', 'repo-g');
+      groups[g].forEach(function (w) {
+        if (w.foldOnly) { var lbl = el('li', 'fold-owner', w.name + ' (en attente, plus haut)'); ul.appendChild(lbl); }
+        else ul.appendChild(row(w, false, false));
+        var kids = kidsOf[w.id];
+        if (kids) {
+          ul.appendChild(fold(w.id, kids));
+          if (open[w.id]) kids.forEach(function (k) { ul.appendChild(row(k, false, true)); });
+        }
+      });
+      listEl.appendChild(ul);
+    });
   }
 
   function load() {

@@ -79,3 +79,22 @@ test('list: every account, archived dropped, en attente then non lu first', () =
   assert.equal(by.f.account, 'default', 'dangling pin ⇒ default login');
   assert.equal(by.a.group, 'orchestra');
 });
+
+test('a fleet worker carries its coordinator (parentId) only when that parent is listed', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'coord', name: 'coord', repoPath: '', kind: 'orchestrator' }),
+      ws({ id: 'w1', name: 'w1', parentId: 'coord' }),
+      ws({ id: 'w2', name: 'w2', parentId: 'gone' }),
+      ws({ id: 'w3', name: 'w3', parentId: 'arch' }),
+      ws({ id: 'arch', name: 'arch', archived: true }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+  assert.equal(by.w1.parentId, 'coord');
+  assert.equal(by.w2.parentId, undefined, 'a dangling parent is not a fold');
+  assert.equal(by.w3.parentId, undefined, 'an archived parent is not listed, so not a fold');
+  assert.equal(by.coord.parentId, undefined);
+});

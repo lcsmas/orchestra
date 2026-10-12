@@ -4,8 +4,12 @@
 // never travel in a URL). Class names the e2e rig and tests read (conv-lines, [data-kind], ask-opt[data-label], ask-submit,
 // conv-input, conv-send, conv-compose[data-state], conv-send-error) are part of the contract — the V1 classes ride beside them.
 
+import { parseMarkdown } from '../shared/mini-markdown.ts';
+
 export const CONVERSATION_JS = `(function () {
   'use strict';
+  // The Markdown parser (shared/mini-markdown.ts, unit-tested) — self-contained, so its source can be injected as is.
+  var mdParse = (${parseMarkdown.toString()});
   var KEY = 'orchestra.accesMobile.token';
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function auth() { return { Authorization: 'Bearer ' + token() }; }
@@ -57,12 +61,45 @@ export const CONVERSATION_JS = `(function () {
   // ---- conversation screen ----
   var root = null, current = null, meta = null, version = -1, inflight = false, again = false, lastFetch = 0, lastConv = null;
   var STATE = { running: '…', ok: '✓', error: '✗' };
+  // Markdown → DOM, textContent only (the parser returns plain strings; nothing becomes markup). Links: http(s) only.
+  function spansInto(parent, spans) {
+    spans.forEach(function (s) {
+      var n;
+      if (s.t === 'b') n = el('strong', null, s.text);
+      else if (s.t === 'i') n = el('em', null, s.text);
+      else if (s.t === 'code') n = el('code', null, s.text);
+      else if (s.t === 'a' && /^https?:\\/\\//.test(s.href)) { n = el('a', null, s.text); n.href = s.href; n.target = '_blank'; n.rel = 'noopener noreferrer'; }
+      else n = document.createTextNode(s.text);
+      parent.appendChild(n);
+    });
+    return parent;
+  }
+  function md(text) {
+    var frag = document.createDocumentFragment();
+    var blocks;
+    try { blocks = mdParse(text); } catch (e) { blocks = [{ t: 'p', spans: [{ t: 'text', text: text }] }]; }
+    blocks.forEach(function (b) {
+      var n;
+      if (b.t === 'p') n = spansInto(el('p'), b.spans);
+      else if (b.t === 'h') n = spansInto(el('p', 'mdh mdh' + Math.min(b.level, 4)), b.spans);
+      else if (b.t === 'code') { n = el('pre'); n.appendChild(el('code', null, b.text)); }
+      else if (b.t === 'ul' || b.t === 'ol') { n = el(b.t); b.items.forEach(function (it) { n.appendChild(spansInto(el('li'), it)); }); }
+      else if (b.t === 'quote') n = spansInto(el('blockquote'), b.spans);
+      else if (b.t === 'table') { var wrap = el('div', 'mdt'); var t = el('table'); b.rows.forEach(function (r, ri) { var tr = el('tr'); r.forEach(function (c) { tr.appendChild(spansInto(el(ri === 0 ? 'th' : 'td'), c)); }); t.appendChild(tr); }); wrap.appendChild(t); n = wrap; }
+      else if (b.t === 'hr') n = el('hr');
+      if (n) frag.appendChild(n);
+    });
+    return frag;
+  }
   function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
 
   function render(c) {
     lastConv = c;
     var list = root.querySelector('.conv-lines');
-    var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+    // The PAGE scrolls (not the list): open at the END — the latest messages and the question are what matter (Lucas,
+    // 2026-10-12) — and follow new messages only while the reader is already near the bottom.
+    var se = document.scrollingElement || document.documentElement;
+    var nearBottom = se.scrollHeight - se.scrollTop - se.clientHeight < 120;
     list.textContent = '';
     if (c.truncated) list.appendChild(el('div', 'conv-more', c.truncated + ' messages plus anciens sur le bureau'));
     var tools = null; // consecutive tool lines share one compact block (V1)
@@ -79,7 +116,7 @@ export const CONVERSATION_JS = `(function () {
       }
       tools = null;
       if (l.kind === 'user') row = el('div', 'msg user u', l.text);
-      else if (l.kind === 'assistant') row = el('div', 'msg assistant a' + (l.streaming ? ' streaming' : ''), l.text);
+      else if (l.kind === 'assistant') { row = el('div', 'msg assistant a md' + (l.streaming ? ' streaming' : '')); row.appendChild(md(l.text)); }
       else row = el('div', 'notice' + (l.error ? ' error' : ''), l.text);
       row.dataset.kind = l.kind; row.dataset.id = l.id;
       list.appendChild(row);
@@ -101,7 +138,7 @@ export const CONVERSATION_JS = `(function () {
     pill.className = 'pill ' + (waiting ? 'wait' : c.running ? 'run' : 'idle');
     pill.textContent = waiting ? 'en attente' : c.running ? 'en cours' : 'inactif';
     root.dataset.version = String(c.version);
-    if (nearBottom || version < 0) list.scrollTop = list.scrollHeight;
+    if (nearBottom || version < 0) se.scrollTop = se.scrollHeight;
     version = c.version;
   }
 
@@ -311,6 +348,11 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .acct{font:10.5px/1 var(--mono);padding:3px 6px;border-radius:5px;border:1px solid var(--hair2);color:var(--dim);flex:none}
 .v1 .a-perso{color:var(--teal);border-color:rgba(79,209,197,.4);background:rgba(79,209,197,.08)}
 .v1 .a-mc{color:var(--violet);border-color:rgba(157,143,255,.42);background:rgba(157,143,255,.09)}
+.v1 .row.child{padding-left:42px;background:rgba(255,255,255,.015)}
+.v1 .row.unread .stl{color:var(--accent)}
+.v1 .fold{display:flex;align-items:center;gap:10px;padding:8px 20px 8px 54px;font:12px var(--mono);color:var(--dim);border-bottom:1px solid var(--hairf);cursor:pointer}
+.v1 .fold-arrow{width:10px;color:var(--faint)} .v1 .fold-run{color:var(--work)} .v1 .fold-unread{color:var(--accent)}
+.v1 .fold-owner{padding:10px 20px;font-size:13px;color:var(--faint)}
 .v1 .g{width:22px;height:22px;display:grid;place-items:center;margin-top:1px}
 .v1 .g::before{content:"";display:block}
 .v1 .g-wait::before{width:12px;height:12px;border-radius:50%;background:var(--yellow);box-shadow:0 0 10px rgba(255,200,87,.65)}
@@ -335,6 +377,18 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .conv-more{font:12px var(--mono);color:var(--faint);text-align:center}
 .v1 .msg{white-space:pre-wrap;word-break:break-word}
 .v1 .msg.u{align-self:flex-end;max-width:84%;background:#272e38;border-radius:18px 18px 5px 18px;padding:10px 14px;font-size:15.5px;line-height:1.42}
+.v1 .md{white-space:normal}
+.v1 .md>*+*{margin-top:8px}
+.v1 .md p{white-space:pre-wrap}
+.v1 .md .mdh{font-weight:680;letter-spacing:-.01em;color:var(--text)} .v1 .md .mdh1{font-size:19px} .v1 .md .mdh2{font-size:17.5px} .v1 .md .mdh3,.v1 .md .mdh4{font-size:16px}
+.v1 .md ul,.v1 .md ol{margin:0;padding-left:22px} .v1 .md li+li{margin-top:3px}
+.v1 .md code{font:13px var(--mono);padding:1.5px 5px;border-radius:5px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.07)}
+.v1 .md pre{margin:0;padding:10px 12px;border-radius:10px;background:var(--sunken);border:1px solid var(--hair);overflow-x:auto}
+.v1 .md pre code{padding:0;border:0;background:none;font-size:12.5px;white-space:pre}
+.v1 .md blockquote{margin:0;padding-left:12px;border-left:3px solid var(--hair2);color:var(--dim);white-space:pre-wrap}
+.v1 .md a{color:var(--accent)}
+.v1 .md hr{border:0;border-top:1px solid var(--hair2)}
+.v1 .mdt{overflow-x:auto} .v1 .md table{border-collapse:collapse;font-size:13.5px} .v1 .md th,.v1 .md td{border:1px solid var(--hair2);padding:4px 8px;text-align:left} .v1 .md th{color:var(--dim)}
 .v1 .msg.a{font-size:16px;line-height:1.55;color:#e6e9ef}
 .v1 .msg.a.streaming::after{content:"";display:inline-block;width:8px;height:17px;margin-left:2px;vertical-align:-3px;background:var(--accent);border-radius:1px}
 .v1 .tools{display:flex;flex-direction:column;gap:1px;margin:-4px 0}
