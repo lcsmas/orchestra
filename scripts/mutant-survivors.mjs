@@ -43,3 +43,46 @@ export function settleBackups(dir, sourceOf) {
   }
   return left;
 }
+
+// ── review m1/m2 of #323 (gate c/6112361358): an ORPHAN (its parent exited; reparented to init OR to a systemd user manager / subreaper — not only « ppid 1 ») is no descendant any more, and a HOME-global scratch dir
+// let one run judge, and delete, another run's backups. So: processes are selected by a MARKER in their environment (inherited by every child the harness spawns, orphaned or not), and scratch is per RUN.
+
+/** The env var the harness puts on EVERY process it spawns; its value identifies ONE run. */
+export const SWEEP_MARK_ENV = 'ORCHESTRA_MUTANT_SWEEP';
+
+/** Live processes whose environment carries `SWEEP_MARK_ENV=<token>` (readable only for our own uid: another user's processes cannot be ours). `self` is never counted. Zombies are not alive. */
+export function markedProcesses(token, procDir = '/proc', self = process.pid) {
+  if (!token) throw new Error('markedProcesses needs a run token (an empty one would select every process)');
+  const needle = `${SWEEP_MARK_ENV}=${token}`;
+  const out = [];
+  for (const n of fs.readdirSync(procDir)) {
+    if (!/^\d+$/.test(n) || Number(n) === self) continue;
+    try {
+      const env = fs.readFileSync(path.join(procDir, n, 'environ'), 'latin1').split('\0');
+      if (!env.includes(needle)) continue;
+      const stat = fs.readFileSync(path.join(procDir, n, 'stat'), 'utf8');
+      if (/^\d+ \(.*\) Z /s.test(stat)) continue;
+      out.push(Number(n));
+    } catch { /* gone / not ours */ }
+  }
+  return out;
+}
+
+/** Everything of THIS run still alive: its live descendants ∪ its marked processes (orphans included). */
+export function strayProcesses(rootPid, token, procDir = '/proc') {
+  return [...new Set([...descendantsOf(rootPid, procDir), ...markedProcesses(token, procDir, rootPid)])].sort((a, b) => a - b);
+}
+
+/** A scratch dir that belongs to THIS run alone (`<base>/run-<pid>-<ms>`): another run's backups are neither read, counted nor deleted. */
+export function makeRunDir(base, pid = process.pid, now = Date.now()) {
+  const dir = path.join(base, `run-${pid}-${now}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** End of run: settle the run's own backups (identical ones are cleaned), remove the run dir if nothing is left, return what is left (0 = clean). */
+export function finishRunDir(dir, sourceOf) {
+  const left = settleBackups(dir, sourceOf);
+  if (left === 0) fs.rmSync(dir, { recursive: true, force: true });
+  return left;
+}

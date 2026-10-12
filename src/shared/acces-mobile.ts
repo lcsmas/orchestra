@@ -11,16 +11,43 @@ export interface AccesMobileSettings {
   servePort: number;
   /** The ONLY Tailscale login allowed in (`Tailscale-User-Login`). Empty ⇒ every request is refused (fail closed). */
   allowedLogin: string;
+  /** This machine's MagicDNS name on the tailnet (`tailscale status --json` → `Self.DNSName`), typed ONCE by the human — Orchestra
+   *  never runs `tailscale` to find it (ADR 0006). Empty ⇒ no pairing URL, no QR code. */
+  tailnetHost: string;
 }
 
 export const DEFAULT_ACCES_MOBILE_SETTINGS: AccesMobileSettings = {
   enabled: false,
   servePort: 8445,
   allowedLogin: '',
+  tailnetHost: '',
 };
 
 function validPort(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 1024 && v <= 65535;
+}
+
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** A MagicDNS host as the human pastes it (`Self.DNSName` ends with a dot): lower-cased, trailing dot dropped. null when it cannot be a
+ *  tailnet HTTPS name: no scheme/port/path/space, ≥ 2 labels, numeric TLD refused (an IP has no certificate). */
+export function normalizeTailnetHost(raw: string): string | null {
+  const h = raw.trim().replace(/\.$/, '').toLowerCase();
+  if (h.length === 0 || h.length > 253) return null;
+  const labels = h.split('.');
+  if (labels.length < 2 || !labels.every((l) => DNS_LABEL.test(l))) return null;
+  if (/^[0-9]+$/.test(labels[labels.length - 1])) return null;
+  return h;
+}
+
+/** The token shape the phone page reads from `#t=` (page.ts) and the server accepts in `Authorization` (server.ts). */
+const PAIRING_TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
+
+/** The one URL the phone opens: the token rides in the FRAGMENT only — a fragment is never sent in a request line, so no server,
+ *  proxy or log ever sees it. null until a host and a well-formed token exist. */
+export function pairingUrl(host: string, servePort: number, token: string | null | undefined): string | null {
+  if (!host || !token || !PAIRING_TOKEN.test(token)) return null;
+  return `https://${host}:${servePort}/#t=${token}`;
 }
 
 /** Store value → settings; anything malformed falls back to the default (and so to OFF). */
@@ -31,6 +58,7 @@ export function normalizeAccesMobileSettings(raw: Partial<AccesMobileSettings> |
     enabled: raw.enabled === true,
     servePort: validPort(raw.servePort) ? raw.servePort : d.servePort,
     allowedLogin: typeof raw.allowedLogin === 'string' ? raw.allowedLogin.trim() : d.allowedLogin,
+    tailnetHost: typeof raw.tailnetHost === 'string' ? (normalizeTailnetHost(raw.tailnetHost) ?? d.tailnetHost) : d.tailnetHost,
   };
 }
 
@@ -48,6 +76,12 @@ export function patchAccesMobileSettings(current: AccesMobileSettings, patch: Pa
     const login = String(patch.allowedLogin).trim();
     if (login !== '' && !/^[^\s@]+@[^\s@]*$/.test(login)) return { ok: false, error: 'Tailscale login looks like name@domain (see `tailscale whoami`)' };
     next.allowedLogin = login;
+  }
+  if (patch.tailnetHost !== undefined) {
+    const raw = String(patch.tailnetHost).trim();
+    const host = raw === '' ? '' : normalizeTailnetHost(raw);
+    if (host === null) return { ok: false, error: 'tailnet host looks like my-machine.tailnet-name.ts.net (`tailscale status --json` → Self.DNSName)' };
+    next.tailnetHost = host;
   }
   if (next.enabled && next.allowedLogin === '') return { ok: false, error: 'set your Tailscale login before turning Accès mobile on' };
   return { ok: true, settings: next };
@@ -68,6 +102,8 @@ export interface AccesMobileView {
   socketPath: string;
   /** `#t=<token>` — appended to the tailnet URL to pair the phone. null when no token exists yet (never enabled). */
   pairingFragment: string | null;
+  /** `https://<tailnetHost>:<servePort>/#t=<token>` — what the QR code encodes. null without a host or a token. */
+  pairingUrl: string | null;
 }
 
 export type AccesMobileSetResult = { ok: true; view: AccesMobileView } | { ok: false; error: string; view: AccesMobileView };

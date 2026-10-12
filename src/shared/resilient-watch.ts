@@ -29,8 +29,10 @@ export interface WatcherSnapshot {
   attempts: number;
   /** How many times it came back. */
   recoveries: number;
-  /** What keeps the subsystem working while this watch is down (`60 s sweep`). */
+  /** What keeps the subsystem working while this watch is down (`60 s sweep`) — English, for `bus-status` and the logs. */
   fallback: string;
+  /** The same, in the words of the sidebar strip (French, like `label`): the tooltip never mixes languages (#330 review m2). */
+  fallbackFr: string;
 }
 
 export interface WatchHandle {
@@ -66,6 +68,7 @@ export interface ResilientWatchSpec {
   label: string;
   dir: string;
   fallback: string;
+  fallbackFr: string;
   onChange(filename: string | null, event: string): void;
   /** false = ignore this event. A null filename is the caller's call (the sites treat it as a match: a spurious idempotent pass beats a missed one). */
   filter?(filename: string | null): boolean;
@@ -128,7 +131,7 @@ export function createResilientWatcher(spec: ResilientWatchSpec, deps: Resilient
 
   const dirName = spec.dir.replace(/\/+$/, '').split('/').pop() ?? ''; // basename of the watched directory (events about the directory itself carry this name); '' = nothing to match
   const selfNames = dirName === '' ? [] : [dirName, spec.dir.split('/').pop() ?? '']; // libuv names a self event after the path AS GIVEN: a trailing '/' makes it '' (#330 review m2)
-  const snapshot = (): WatcherSnapshot => ({ name: spec.name, label: spec.label, dir: spec.dir, state, since, lastError: lastError ? { ...lastError } : null, attempts, recoveries, fallback: spec.fallback });
+  const snapshot = (): WatcherSnapshot => ({ name: spec.name, label: spec.label, dir: spec.dir, state, since, lastError: lastError ? { ...lastError } : null, attempts, recoveries, fallback: spec.fallback, fallbackFr: spec.fallbackFr });
   const transition = (): void => {
     try {
       spec.onTransition?.(snapshot());

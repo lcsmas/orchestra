@@ -1,11 +1,11 @@
 // Pause trap — the member-scope adapter of the Reliquat kill (#325, wave H ledger #329, FI-1 v1.3): the ONLY place the trap meets `memberScopes` / `listScopeProcs`
 // (src/main/memory-scope.ts, Electron-free). A scope is never a hard-coded slice path. Two things FI-1's readers do not say that a DESTRUCTIVE act must know:
-//  - `listScopeProcs` answers `[]` for a `cgroup.procs` it cannot read — "empty" and "unreadable" look alike. Here the file is read first: ENOENT/ENODEV/ESRCH = the scope is gone
-//    (every member died), any other error = UNKNOWN (the caller retries, it never reads it as "no Reliquat").
+//  - `listScopeProcs` answers `[]` for a `cgroup.procs` it cannot read — "empty" and "unreadable" look alike. Here the scope's own file is read first and the listing is `listScopeProcsOrThrow` (#332: it also
+//    throws on an unreadable LEAF): ENOENT/ENODEV/ESRCH = the scope is gone (every member died), any other error = UNKNOWN (the caller retries, it never reads it as "no Reliquat").
 //  - the scope's keeper is re-resolved (pid file + the pid's own /proc cgroup) at EVERY listing, so a keeper replaced since the plan changes the roles, not a stale pid.
 
 import path from 'node:path';
-import { listScopeProcs, memberScopes, realScopeEnv, type MemberScope, type ScopeEnv } from './memory-scope.ts';
+import { listScopeProcsOrThrow, memberScopes, realScopeEnv, type MemberScope, type ScopeEnv } from './memory-scope.ts';
 import { parseProcCgroupV2 } from '../shared/memory-scope.ts';
 import type { ReliquatScopeDeps } from './pause-reliquats.ts';
 import type { ScopeListing, ScopeRef } from '../shared/pause-reliquats.ts';
@@ -40,7 +40,7 @@ export function memberScopeDeps(wsId: string, e: ScopeEnv = realScopeEnv()): Rel
     scopes: (): ScopeRef[] => scopesOrThrow(wsId, e).map((s) => ({ unit: s.unit, cgroupDir: s.cgroupDir })),
     list: (scope): ScopeListing => {
       try {
-        e.readFile(path.join(scope.cgroupDir, 'cgroup.procs'));
+        e.readFile(path.join(scope.cgroupDir, 'cgroup.procs')); // is the scope itself still there? (its leaves are read, and may throw, by the listing below)
       } catch (err) {
         return GONE.has((err as NodeJS.ErrnoException).code ?? '') ? 'gone' : 'unreadable';
       }
@@ -51,7 +51,11 @@ export function memberScopeDeps(wsId: string, e: ScopeEnv = realScopeEnv()): Rel
         return 'unreadable'; // the slice could not be listed: the scope is not known to be gone
       }
       if (!fresh) return 'gone';
-      return listScopeProcs(fresh, null, e);
+      try {
+        return listScopeProcsOrThrow(fresh, null, e);
+      } catch (err) {
+        return GONE.has((err as NodeJS.ErrnoException).code ?? '') ? 'gone' : 'unreadable'; // a leaf unreadable at the listing: UNKNOWN (only a vanished unit is « gone »)
+      }
     },
     cgroupOf: (pid): string | null => {
       try {

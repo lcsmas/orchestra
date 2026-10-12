@@ -64,6 +64,11 @@ export const mobileRpcHandlers: RpcHandlers = {
   },
   stream(route, push) {
     // Change announcements for the server to relay to the phone.
-    return route === '/mobile/stream' ? subscribeMobileFeed(push) : null;
+    if (route !== '/mobile/stream') return null;
+    const off = subscribeMobileFeed(push);
+    // An immediate ping: the phone treats a stream as healthy (backoff reset, catch-up refetch) only on a REAL message — without
+    // it, a phone back from an outage waited for the 25 s keep-alive before refreshing (combined e2e, « rows back »).
+    push({ t: 'ping' });
+    return off;
   },
 };

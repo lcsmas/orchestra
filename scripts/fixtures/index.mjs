@@ -28,6 +28,9 @@
 //       `tool_result_meta` sidecar. RUNTIME SUPERSET: 0 occurrences in sdk.d.ts
 //       at SDK 0.3.241, 3 in the CLI 2.1.241 binary (verified by `strings` with
 //       a positive and a negative control). Shipped by PR #46 (#26).
+//   local-command.capture.json .......... a built-in slash command's OUTPUT (/recap, /model, /help) as the real
+//       CLI 2.1.291 + SDK 0.3.241 emit it: the SYNTHETIC `assistant` stream messages (`local_command_source`, no
+//       stream_event deltas) AND the on-disk transcript lines (`system/local_command`) of the same session. #341.
 //   background-tasks-changed.sequence.json  a 4-frame REPLACE-semantics
 //       sequence (grow → grow → shrink → empty); frame 1 is the organic capture
 //       from docs/research/sdk-runtime-payloads.md §4.
@@ -55,6 +58,7 @@ import {
 } from '../../src/shared/context-usage.ts';
 import { buildContextBreakdown } from '../../src/shared/context-breakdown.ts';
 import { normalizeSdkMessage, indexToolResultMeta, toNonExecutionKind } from '../../src/shared/agent-events.ts';
+import { transcriptToEvents } from '../../src/shared/agent-transcript.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const payloadDir = path.join(here, 'payloads');
@@ -311,9 +315,41 @@ export function backgroundTasksSequence(overrides) {
   return frames;
 }
 
+/** A built-in slash command's output as the REAL CLI emits it (#341): `{ cli, stream, transcript }` —
+ *  `stream` = the raw SDK messages (synthetic assistant + `local_command_source`) `consume()` iterates,
+ *  `transcript` = the session's on-disk JSONL lines (`system/local_command`), twins by `uuid`.
+ *
+ *  Validated by running BOTH halves through the app's own readers: every stream message must normalize to
+ *  exactly one `command-output` notice, and the transcript must backfill to the same texts. */
+export function localCommandCapture(overrides) {
+  const cap = withOverrides(loadJson('local-command.capture.json'), overrides);
+  must(Array.isArray(cap.stream) && cap.stream.length > 0, 'localCommandCapture: no stream messages');
+  must(Array.isArray(cap.transcript) && cap.transcript.length > 0, 'localCommandCapture: no transcript lines');
+  const ctx = () => ({ seq: 0, now: () => FIXTURE_AT });
+  const live = cap.stream.map((m) => {
+    must(m.type === 'assistant' && typeof m.local_command_source === 'string', 'localCommandCapture: a stream message is not a tagged assistant message');
+    must(m.message?.model === '<synthetic>', 'localCommandCapture: a local-command message must be synthetic (no stream deltas)');
+    const ns = normalizeSdkMessage(m, ctx()).filter((e) => e.type === 'notice');
+    must(ns.length === 1 && ns[0].kind === 'command-output', `localCommandCapture: ${m.uuid} did not normalize to ONE command-output notice`);
+    return ns[0].text;
+  });
+  const back = transcriptToEvents(cap.transcript.map((l) => JSON.stringify(l)).join('\n'), ctx())
+    .filter((e) => e.type === 'notice')
+    .map((e) => e.text);
+  must(JSON.stringify(back) === JSON.stringify(live), 'localCommandCapture: the backfilled texts differ from the live ones');
+  // The CLI re-emits the last local-command message after /compact: SAME uuid + source, a NEW message.id (a dedupe key that
+  // were message.id would miss it; one that were the text would swallow two legitimate identical outputs).
+  const re = cap.compactReemit;
+  must(re?.original?.uuid && re.original.uuid === re.reemitted?.uuid, 'localCommandCapture: compactReemit must carry the SAME top-level uuid twice');
+  must(re.original.message?.id !== re.reemitted.message?.id, 'localCommandCapture: compactReemit must carry a DIFFERENT message.id (that is the trap)');
+  must(re.original.local_command_source === re.reemitted.local_command_source, 'localCommandCapture: compactReemit must repeat the same local_command_source');
+  return cap;
+}
+
 /** Everything, for a harness that just wants the whole library validated. */
 export function allFixtures() {
   return {
+    localCommandCapture: localCommandCapture(),
     liveContextUsage: liveContextUsage(),
     contextCommandUsage: contextCommandUsage(),
     toolResultMetaTrio: toolResultMetaTrio(),

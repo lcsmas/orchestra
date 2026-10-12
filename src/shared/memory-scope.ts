@@ -110,11 +110,42 @@ export function decideMemoryCap(i: MemoryCapInput): MemoryCapDecision {
   return { createScope, limits, reason: createScope ? 'ok' : 'switch-off' };
 }
 
-/** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). */
-export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[] }): { cmd: string; args: string[] } {
+// ─── The scope's two leaves (#332, Q9) ─────────────────────────────────────────────────────────────────────────────
+// ONE scope per member (ADR 0005), shaped as a parent cgroup with two LEAVES: `k` holds the keeper AND the CLI process itself (no limit of their own), `w` holds EVERYTHING THE CLI SPAWNS THROUGH ITS SHELL PREFIX — Bash
+// tool commands, MCP servers, hooks (measured on claude 2.1.291: all three call the prefix; each moves itself into `w` through the CLAUDE_CODE_SHELL_PREFIX wrapper) — and carries the member's HARD level. Why: after a tool is OOM-killed its pages stay charged for a few ms while its mm is already detached, so the kernel's next
+// episode — opened by an adj-0 task that allocates at the limit: the keeper REACTING to the kill, or a busy CLI — has no tool left to kill and takes the keeper, then the CLI (Q9, ledger #329: session lost 10/10;
+// with the CLI inside the limited leaf a busy CLI still lost it 4/8; keeper + CLI outside it 8/8 alive). Only the tool commands are capped; the scope itself keeps a backstop limit above the hard level.
+
+export const SCOPE_LEAF_KEEPER = 'k';
+export const SCOPE_LEAF_WORK = 'w';
+export const SCOPE_LEAVES: readonly string[] = [SCOPE_LEAF_KEEPER, SCOPE_LEAF_WORK];
+/** Env var the keeper puts in the CLI's environment: the work leaf's directory, which the tool wrapper moves its shell into. */
+export const WORK_LEAF_ENV = 'ORCHESTRA_MEMCAP_WORK_LEAF';
+/** The scope's own `MemoryMax` is the hard level PLUS this room for the keeper and the CLI process (≈330 MB real) and whatever of theirs is not started through the shell prefix: the work leaf must always hit its limit first; the scope's limit is only a backstop. */
+export const KEEPER_LEAF_RESERVE_BYTES = 1024 * 1024 * 1024;
+/** Rigs (disposable scopes ≤ 300 MB) override the reserve; `0` = NO scope-level limit (the work leaf still carries the cap). A non-integer / negative value is ignored. */
+export const MEMCAP_RESERVE_ENV = 'ORCHESTRA_MEMCAP_RESERVE_BYTES';
+export function reserveBytesFromEnv(env: Record<string, string | undefined>): number {
+  const raw = env[MEMCAP_RESERVE_ENV];
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) return KEEPER_LEAF_RESERVE_BYTES;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) ? n : KEEPER_LEAF_RESERVE_BYTES;
+}
+/** The scope's backstop `MemoryMax`, or null (no scope-level limit) when the reserve is 0. */
+export const scopeMemoryMaxBytes = (hardBytes: number, reserveBytes: number = KEEPER_LEAF_RESERVE_BYTES): number | null => (reserveBytes > 0 ? hardBytes + reserveBytes : null);
+
+/** `.../<unit>.scope` or `.../<unit>.scope/<leaf>` (a cgroup v2 path) → the scope's own path. */
+export function scopePathOfCgroup(cgPath: string): string {
+  const slash = cgPath.lastIndexOf('/');
+  return slash > 0 && SCOPE_LEAVES.includes(cgPath.slice(slash + 1)) ? cgPath.slice(0, slash) : cgPath;
+}
+
+/** `systemd-run` argv that starts `cmd args…` as the main process of a NEW user scope (never moves an existing process). The scope is DELEGATED (`Delegate=yes`): the keeper builds its two leaves inside it. */
+export function buildScopeLaunchArgv(a: { unit: string; limits: MemoryCapLimits | null; description?: string; cmd: string; args: string[]; reserveBytes?: number }): { cmd: string; args: string[] } {
   const props: string[] = ['OOMPolicy=continue']; // systemd's default `stop` ends the WHOLE scope after one oom_kill
   if (a.limits) {
-    props.push(`MemoryMax=${a.limits.hardBytes}`, `MemorySwapMax=${a.limits.swapMaxBytes}`);
+    const backstop = scopeMemoryMaxBytes(a.limits.hardBytes, a.reserveBytes);
+    props.push('Delegate=yes', ...(backstop === null ? [] : [`MemoryMax=${backstop}`]), `MemorySwapMax=${a.limits.swapMaxBytes}`);
   }
   return {
     cmd: 'systemd-run',
@@ -141,6 +172,8 @@ export const OOM_TOOL_WRAPPER_SCRIPT = `#!/bin/sh
 # The keeper and the CLI sit at the default (0) and an unprivileged process cannot go below its floor, so protect them by RAISING this tool command (everything under it inherits it) so the
 # kernel's OOM killer picks a tool process, never the keeper or the CLI (both stay at 0).
 echo ${OOM_ADJ_TOOLS} > /proc/self/oom_score_adj 2>/dev/null
+# #332: a capped member's tool command moves ITSELF into the work leaf — the one cgroup that carries the hard level (the keeper and the CLI stay outside it); a leaf that cannot be entered leaves the tool where it is (adj 1000, the scope backstop)
+[ -n "\${${WORK_LEAF_ENV}:-}" ] && { echo $$ > "\$${WORK_LEAF_ENV}/cgroup.procs"; } 2>/dev/null
 [ "$#" -eq 1 ] || exec "$@"
 if [ -n "\${${INNER_SHELL_PREFIX_ENV}:-}" ]; then
   # the user's own prefix, chained exactly as the CLI would have called it
@@ -177,6 +210,13 @@ export function parseCgroupLimit(text: string): number | null {
   return /^\d+$/.test(v) ? Number(v) : null;
 }
 
+/** Is a limit APPLIED? `max` ⇒ false (the kernel holds none), a number ⇒ true, anything else ⇒ null (unknown — never read as « not applied »). parseCgroupLimit alone cannot tell `max` from garbage. */
+export function parseLimitApplied(text: string): boolean | null {
+  const v = text.trim();
+  if (v === 'max') return false;
+  return /^\d+$/.test(v) ? true : null;
+}
+
 /** The cgroup-v2 path (`/user.slice/…/x.scope`) in a `/proc/<pid>/cgroup` text, or null (v1 / unreadable). */
 export function parseProcCgroupV2(text: string): string | null {
   for (const line of text.split('\n')) {
@@ -201,15 +241,21 @@ export function swapLimitApplied(swapMaxText: string | null, swapTotalKb: number
 }
 
 export interface ScopeMemory {
+  /** `memory.current` of the SCOPE: the whole member's bill (keeper + CLI + tools + Reliquats) — what the MEM column of the Resources page adds up. */
   currentBytes: number;
+  /** #332: `memory.current` of the WORK leaf — the figure the hard level really compares (the tools; the keeper and the CLI are in `k`). Equals `currentBytes` for a scope without leaves. null = the leaf exists but is unreadable. */
+  capCurrentBytes: number | null;
+  /** The peak of the cgroup that carries the cap (the work leaf when the scope has one — #332 — else the scope). */
   peakBytes: number | null;
   /** null = no limit (or unreadable). A capped scope reads a number. */
   maxBytes: number | null;
+  /** #323-fu (review m2): true = a limit is applied, false = `memory.max` reads `max` (NO limit — the cap is « not applied » on this scope), null = unreadable / unparseable (unknown, never claimed as « not applied »). */
+  limitApplied: boolean | null;
   highBytes: number | null;
   swapMaxBytes: number | null;
   swapCurrentBytes: number | null;
   /** FI-1 v1.11 (#323): the WORKING SET (`memory.current` − `inactive_file`, ledger R5) — what the soft level compares; `memory.current` is what the hard level compares (R1). null = `memory.stat` unreadable (never a fabricated figure). */
-  workingSetBytes: number | null;
+  workingSetBytes: number | null; // #332: of the cgroup that carries the cap (the work leaf), like capCurrentBytes
   events: MemoryEvents;
 }
 
@@ -365,9 +411,13 @@ export function parseKernelOomMessage(message: string, atMs: number): KernelOomK
 
 /** The kernel kills that belong to THIS scope (its own cgroup hit its limit — basename = the unit), not older than `sinceMs`, oldest first. */
 export function kernelKillsForUnit(lines: readonly KernelOomKill[], unit: string, sinceMs: number): KernelOomKill[] {
+  // A kill belongs to the unit when its VICTIM lived in the scope itself (a flat scope) or in its WORK leaf `<unit>/w` — the cgroup the watch counts. A victim in the keeper leaf `<unit>/k` died to a scope-level
+  // backstop episode: it is NOT in the work leaf's `oom_kill` counter, so pairing its line with the next real kill would name the wrong victim (#332 pre-review).
   const base = (p: string): string => p.slice(p.lastIndexOf('/') + 1);
+  const parentBase = (p: string): string => base(p.slice(0, Math.max(0, p.lastIndexOf('/'))));
+  const inWork = (p: string): boolean => base(p) === unit || (base(p) === SCOPE_LEAF_WORK && parentBase(p) === unit);
   return lines
-    .filter((l) => l.atMs >= sinceMs && (base(l.oomMemcg) === unit || base(l.taskMemcg) === unit))
+    .filter((l) => l.atMs >= sinceMs && (l.taskMemcg ? inWork(l.taskMemcg) : inWork(l.oomMemcg)))
     .sort((a, b) => a.atMs - b.atMs || a.pid - b.pid);
 }
 
@@ -550,16 +600,25 @@ export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
   return `memory-cap[${wsLabel}] killed ${cmd} at the ${lvl} — scope ${rec.unit} — at ${new Date(rec.at).toISOString()}${amb}${rec.source === 'kernel' ? ' — victim named by the kernel log' : ''}`;
 }
 
+/**
+ * The cap state a keeper reports, from what its setup found. `not-applied` = the cap does not hold at all: the swap escape is open, OR (#332-fu) the tool wrapper cannot be RUN so the shell prefix was dropped (tools run
+ * unwrapped in `k`: nothing is capped). `unprotected` = the wrapper runs but the tools do not land in the work leaf (prefix kept, adj 1000) or there is no wrapper. Else `active`.
+ */
+export function decideCapState(a: { swapOk: boolean; wrapperOk: boolean; wrapperRuns: boolean; placed: boolean }): 'active' | 'unprotected' | 'not-applied' {
+  if (!a.swapOk || !a.wrapperRuns) return 'not-applied';
+  return !a.wrapperOk || !a.placed ? 'unprotected' : 'active';
+}
+
 /** What the app says about a freshly launched scoped keeper, from the state the keeper reports (`helloAck.cap.state`). `warn` states are ones where the promise «a runaway tool dies, the session survives» does NOT hold. */
 export function describeCapState(state: 'active' | 'unprotected' | 'not-applied' | 'no-scope' | undefined, unit: string, hardBytes: number): { level: 'info' | 'warn'; text: string } {
   const hard = `${(hardBytes / GIB).toFixed(2)} GB`;
   switch (state) {
     case 'active':
-      return { level: 'info', text: `ACTIVE — scope ${unit}, hard ${hard}, tool commands run at oom_score_adj ${OOM_ADJ_TOOLS}` };
+      return { level: 'info', text: `ACTIVE — scope ${unit}, hard ${hard} on the work leaf: tool commands (and the MCP servers / hooks the CLI starts) run there at oom_score_adj ${OOM_ADJ_TOOLS}; the keeper and the CLI process sit outside it` };
     case 'unprotected':
-      return { level: 'warn', text: `scope ${unit} has its hard limit (${hard}) but the tool wrapper is unusable — the kernel would kill the CLI (the biggest process) before a runaway tool command` };
+      return { level: 'warn', text: `scope ${unit}: the tool wrapper is unusable or does not place tool commands in the capped work leaf — NOTHING is capped at the hard level (${hard}); only the scope's backstop limit, if any, holds` };
     case 'not-applied':
-      return { level: 'warn', text: `scope ${unit} exists but its memory limit (${hard}) or its swap limit (0) is NOT applied (memory controller not delegated? no swap accounting?) — this member runs UNCAPPED` };
+      return { level: 'warn', text: `scope ${unit} exists but the cap (${hard}) is NOT applied: its memory limit or swap limit (0) did not take (memory controller not delegated? no swap accounting? leaves not built?), or the tool wrapper cannot be RUN so the shell prefix was dropped — this member runs UNCAPPED` };
     case 'no-scope':
       return { level: 'warn', text: `the keeper is not in scope ${unit} — this member runs UNCAPPED` };
     default:

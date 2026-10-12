@@ -17,7 +17,7 @@ test('W1 FI-1.3: the consumer resolves a scope ONLY through memberScopes/readSco
     assert.doesNotMatch(src, /\/sys\/fs\/cgroup|user\.slice|app\.slice|user@|readFileSync|readdirSync/, `${name} must not know where a scope lives (FI-1.3)`);
   }
   assert.match(producer, /support: \(\) => scopeSupportCached\(\)/, 'the 2 s page poll must use H1\'s 30 s support cache');
-  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope \} from '\.\/memory-scope\.ts';/);
+  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcsOrThrow, memberScopes, readScopeMemory, scopeSupportCached, type MemberScope \} from '\.\/memory-scope\.ts';/);
 });
 
 test('W2 FI-1.4: the consumer only READS — no signal, no systemctl, no child process, no process move', () => {
@@ -89,12 +89,17 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
 
 test('W9 the keeper-outside-its-scopes rule: a live member whose keeper is in none of its scopes is listed untracked for its live session, the scope reading carries FI-1\'s own keeper identity (never its own guess)', () => {
   assert.match(producer, /const untracked = \[\.\.\.new Set\(live\)\]\.filter\(\(id\) => !trackedIds\.has\(id\) \|\| keeperless\.has\(id\)\);/);
-  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid, maxBytes: mem\?\.maxBytes \?\? null, workingSetBytes: mem\?\.workingSetBytes \?\? null, peakBytes: mem\?\.peakBytes \?\? null \};/); // #323 adds the applied cap to the same reading
+  assert.match(producer, /return \{ unit: s\.unit, gen: s\.gen, currentBytes, procs, keeperPid: s\.keeperPid, maxBytes: mem\?\.maxBytes \?\? null, capCurrentBytes: mem\?\.capCurrentBytes \?\? null, workingSetBytes: mem\?\.workingSetBytes \?\? null, peakBytes: mem\?\.peakBytes \?\? null, limitApplied: mem\?\.limitApplied \?\? null \};/); // #323 adds the applied cap (and #323-fu whether a limit is applied at all) to the same reading; #332 the cap's own current (the work leaf's)
   assert.match(producer, /countScopes: \(\) => countMemberScopes\(\)\?\.total \?\? null,/);
 });
 
+test('W1b (#332 fu, review m1) the producer lists a scope with the THROWING variant: an unreadable leaf is « unknown » (procs null), never an empty Reliquat list', () => {
+  assert.match(producer, /listProcs: \(s\) => listScopeProcsOrThrow\(s\),/);
+  assert.doesNotMatch(producer, /=> listScopeProcs\(|[^`]\blistScopeProcs\(s/, 'the swallowing variant is not called by the producer');
+});
+
 test('W10 (#328 review F1) the escaped keeper tree comes from FI-1 v1.9 `listKeeperTreeOutsideScope` (never a /proc walk of this consumer), asked for the scope that HOLDS the keeper, and only then', () => {
-  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcs,/);
+  assert.match(producer, /import \{ countMemberScopes, listKeeperTreeOutsideScope, listScopeProcsOrThrow,/);
   assert.match(producer, /const keeperAt = readings\.findIndex\(\(r\) => r\.keeperPid !== null\);/);
   assert.match(producer, /if \(keeperAt >= 0 && d\.escaped\) \{/);
   assert.match(producer, /outside = d\.escaped\(scopes\[keeperAt\]\) \?\? \[\];/);

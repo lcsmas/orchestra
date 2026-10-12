@@ -167,11 +167,15 @@ that created it — the stamp on the container is the truth of who owns it.
 _Avoid_: tagged container, managed container
 
 **Plafond mémoire** (memory cap):
-The most memory one fleet member — its session and everything it starts, tools,
-tests and scripts included — may use, enforced by the kernel. Above the soft
-level the member and its coordinator are warned; above the hard level the kernel kills one of the
-processes the member started, never the session itself. A human's own sessions
-have no Plafond mémoire. Containers are outside it: they wait for Admission instead.
+The most memory one fleet member's TOOLS may use, enforced by the kernel — the Bash
+commands its session runs and everything the CLI starts through its shell prefix (MCP
+servers and hooks included), with all they spawn, tests and scripts too. Since Q9 (LEAD
+D-Q12) the session itself — the keeper and the CLI process — sits outside the limited
+cgroup, under a looser backstop on the whole member scope (hard level + room). Above the
+soft level the member and its coordinator are warned; above the hard level the kernel
+kills one of those processes, not the session (below the backstop). A human's own
+sessions have no Plafond mémoire.
+Containers are outside it: they wait for Admission instead.
 _Avoid_: quota, limit, budget (the session budget suite is a different thing)
 
 **Reliquat** (leftover):

@@ -11,11 +11,13 @@ script) can still drain memory between two samples, which is how the 2026-10-06 
 held the line with a heavy-rig "token" written in its ledger: a convention nothing enforces, blind to any
 command an agent improvises. We make the limit structural instead: the keeper starts each fleet member's
 session in its own cgroup v2 scope with a hard level (`MemoryMax`, default 6 GB, `MemorySwapMax=0`) and a
-soft level (default 3 GB) that the keeper watches and only reports; everything the member starts inherits it. The keeper and the CLI are made the
-least likely OOM victims so the kernel kills the runaway tool process, not the session; the keeper watches
+soft level (default 3 GB) that the keeper watches and only reports; everything the member's CLI starts through its shell prefix (Bash tools, MCP servers, hooks) is held to it (see the 2026-10-09 amendment: the keeper and the CLI process sit outside the limited cgroup). Tool commands are made the
+most likely OOM victims so the kernel kills the runaway tool process, not the session; the keeper watches
 `memory.events` and the host reports each kill to the member's view and to its coordinator. Containers run
 under dockerd, outside the scope, so the keeper's Docker relay (ADR 0004) holds their creation under the
 Admission threshold instead. Decided with the user on 2026-10-07 (grilling session).
+
+**Amended 2026-10-09 (wave H Q9, ticket #332).** The scope is still ONE per member, but shaped as a delegated parent cgroup with two leaves: the keeper AND the CLI in `k` (no limit of their own), the tool commands in `w` (each Bash command's shell moves itself in through the existing tool wrapper), which carries the hard level. A flat scope loses the SESSION to back-to-back tool kills: the keeper's reaction to a kill allocates at the limit while the killed tool's pages are still charged, and with no tool left to kill the kernel takes the keeper, then the CLI (measured: 10/10 lost). The CLI must stay out of the limited cgroup too: a busy CLI inside it lost the session 4/8; with keeper + CLI in `k` and only the tools in `w`, 8/8 survived (ledger #329 c/6078715647 and c/6079188380). So the hard level now caps everything the CLI spawns through its shell prefix — the Bash commands (the incident's culprit) AND, measured on claude 2.1.291, the MCP servers and hooks, which call the same prefix — but not the keeper nor the CLI process itself; the scope keeps a backstop limit above the hard level (`hard + 1 GiB` of room for the keeper, the CLI and anything it starts without the prefix) so `w` normally trips first. **Residual:** a tool can leave `w` by writing its own pid to `k/cgroup.procs` (it runs as the same user; the cgroup files are user-owned) — the same class as the D-Bus / `systemd-run --user` route accepted in D-Q5, nothing here makes it harder or easier. If keeper + CLI alone ever exceed that room the backstop can take the session — the one remaining way, reported only as an ordinary CLI exit (the kill watch reads `w`). The claim «never the session» holds below the backstop, and the Q9 acceptance used a stand-in CLI (a real `claude` at ≈330 MB RSS has not been run through the chain).
 
 ## Considered options
 
@@ -28,6 +30,8 @@ Admission threshold instead. Decided with the user on 2026-10-07 (grilling sessi
   the CLI included, and the hard level never fires. The soft level is a warning to the member and its
   coordinator instead.
 - **Soft only** — rejected: a throttle alone leaves a stuck member nobody is told about.
+- **One flat scope for keeper + CLI + tools** — rejected 2026-10-09 (Q9): the keeper shares the cgroup that reaches its limit, so its own reaction to a kill can open the episode that kills it. A sacrificial adj-1000 sentinel only postpones that (consumed at ≈0.12 per kill).
+- **Keeper alone outside the limit, CLI + tools inside** — rejected 2026-10-09 (Q9 addendum): a busy CLI is itself an adj-0 allocator in the window (lost the session 4/8).
 
 ## Consequences
 

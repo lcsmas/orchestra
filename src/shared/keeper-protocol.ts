@@ -86,7 +86,7 @@ export type KeeperDaemonFrame =
        *  (legacy: absence means "not shutting down"). */
       shuttingDown?: boolean;
       /** #320: the Plafond mémoire as THIS keeper sees it — absent = launched without one (switch OFF, human session, pre-#320 keeper).
-       *  `active` = in its scope with the limit applied and tools protected; `unprotected` = limit applied but the wrapper is missing;
+       *  `active` = in its scope with the limit applied and tools protected; `unprotected` = limit applied but the tools are NOT in the work leaf (wrapper missing / could not run / probe found it elsewhere, #332-fu; or the placement tripwire fired — it can flip AFTER start);
        *  `not-applied` = in the scope, limit NOT applied (controller not delegated); `no-scope` = launched plain (systemd-run unavailable). */
       cap?: { unit: string; state: 'active' | 'unprotected' | 'not-applied' | 'no-scope'; hardBytes: number };
       /** #320: the kills this keeper has recorded (last ≤ 20, `seq` monotonic) — a reattaching app delivers what it has not seen. */

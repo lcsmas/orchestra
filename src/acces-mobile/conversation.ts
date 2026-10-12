@@ -13,7 +13,6 @@ export const CONVERSATION_JS = `(function () {
   var handlers = [];
   var backoff = 1000;
   var ctrl = null;
-  var everConnected = false;
   function onStream(fn) { handlers.push(fn); }
   function connect() {
     if (!token()) return;
@@ -33,9 +32,9 @@ export const CONVERSATION_JS = `(function () {
             // Only a REAL message proves main is behind the stream (the server answers 200 even when main is gone): reset the
             // backoff then, and catch up on whatever was announced while we were away (#337 review m1/m2).
             if (!healthy && block !== ': open') {
+              // Every healthy (re)connect catches up — the FIRST one too: a page loaded during an outage never had data.
               healthy = true; backoff = 1000;
-              if (everConnected) handlers.forEach(function (h) { h({ t: 'resume' }); });
-              everConnected = true;
+              handlers.forEach(function (h) { h({ t: 'resume' }); });
             }
             if (block.indexOf('data: ') === 0) {
               try { var m = JSON.parse(block.slice(6)); handlers.forEach(function (h) { h(m); }); } catch (e) {}

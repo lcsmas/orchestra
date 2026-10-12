@@ -3,7 +3,7 @@
 // mutated files must be empty at the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 //
 // HEAVY by the wave rule (a mutation sweep): needs the OPS's heavy-rig token + MemAvailable > 6 GB right before. A rig arm starts a real keeper in a disposable ≤ 300 MB scope and prints its survivors.
-// Run: node scripts/reliquats-memory-mutants.mjs [--only M01,M02] [--check | --check-anchors] [--no-rig]
+// Run: node scripts/reliquats-memory-mutants.mjs [--only M01_unreadable_is_zero,M02_generations_not_summed] [--check | --check-anchors] [--no-rig]
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +23,7 @@ if (unknownFlags.length) { // fail CLOSED: a flag this script does not know must
   process.exit(2);
 }
 const dryCheck = args.includes('--check-anchors') || args.includes('--check');
-const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
+const only = args.includes('--only') && (args[args.indexOf('--only') + 1] ?? '') !== '' ? new Set(args[args.indexOf('--only') + 1].split(',')) : null; // a missing / empty value is refused below, never a crash
 const noRig = args.includes('--no-rig');
 
 const S = 'src/shared/member-memory.ts';
@@ -70,7 +70,7 @@ const MUTANTS = [
   { id: 'M24_support_throw_escapes', file: P, find: "    support = { ok: false, reason: `scope support could not be probed: ${(e as Error)?.message ?? e}` };", to: '    throw e;', expect: ['P5 a support probe'] },
   { id: 'M25_unsupported_reason_dropped', file: P, find: 'const unsupported = support.ok ? null : support.reason;', to: 'const unsupported = null;', expect: ['P3 no scope anywhere'] },
   { id: 'M26_scopes_ignore_fi1', file: P, find: 'scopes: (wsId) => memberScopes(wsId),', to: 'scopes: (_wsId) => [],', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
-  { id: 'M27_list_procs_ignored', file: P, find: 'listProcs: (s) => listScopeProcs(s),', to: 'listProcs: (_s) => null,', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
+  { id: 'M27_list_procs_ignored', file: P, find: 'listProcs: (s) => listScopeProcsOrThrow(s),', to: 'listProcs: (_s) => null,', expect: ['rig:known_magnitude', 'rig:keeper_gone_reliquat_stays'], rig: ['known_magnitude', 'keeper_gone_reliquat_stays'] },
   // ── the shared read ──
   { id: 'M28_cache_never_expires', file: HOST, find: '&& now - cache.at < MEMBER_MEMORY_TTL_MS) return cache.report;', to: '&& true) return cache.report;', expect: ['W4 the host facade'] },
   { id: 'M29_fresh_ignored', file: HOST, find: 'if (!opts.fresh && cache &&', to: 'if (cache &&', expect: ['W4 the host facade'] },
@@ -116,7 +116,7 @@ const MUTANTS = [
   // ── delta review (renderer round): real FI-1 binding, keeper outside its scopes, keeper without its pid file, archived names ──
   { id: 'M69_count_scopes_stubbed', file: P, find: 'countScopes: () => countMemberScopes()?.total ?? null,', to: 'countScopes: () => null,', expect: ['P7 the REAL FI-1 binding', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
   { id: 'M70_read_memory_stubbed', file: P, find: 'readMemory: (s) => readScopeMemory(s),', to: 'readMemory: (_s) => null,', expect: ['P7 the REAL FI-1 binding'] },
-  { id: 'M71_list_procs_stubbed', file: P, find: '    listProcs: (s) => listScopeProcs(s),\n', to: '    listProcs: (_s) => null,\n', expect: ['P7 the REAL FI-1 binding'] },
+  { id: 'M71_list_procs_stubbed', file: P, find: "    listProcs: (s) => listScopeProcsOrThrow(s), // throws on an unreadable scope or leaf ⇒ the reading's procs are null (unknown), never «no Reliquats»\n", to: '    listProcs: (_s) => null,\n', expect: ['P7 the REAL FI-1 binding'] },
   { id: 'M74_keeperless_member_not_untracked', file: P, find: ' || keeperless.has(id));', to: ');', expect: ['P10 a live member whose keeper runs OUTSIDE'] },
   { id: 'M75_disjoint_rule_dropped', file: S, find: '  if (!view.keeperInScope) return all + view.bytes;\n', to: '', expect: ['M16 keeperInScope', 'G10'] },
   { id: 'M76_keeper_always_in_scope', file: S, find: 'keeperInScope: readings.some((r) => r.keeperPid !== null && r.keeperPid !== undefined),', to: 'keeperInScope: true,', expect: ['M16 keeperInScope', 'G10', 'P10 a live member whose keeper runs OUTSIDE'] },
@@ -137,6 +137,18 @@ const MUTANTS = [
   { id: 'M43_cli_no_reliquats_line', file: CLI, find: 'process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\\n`);', to: 'void 0;', expect: ['W6 /busStatus', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
 ];
 
+// `--only` takes EXACT mutant ids: an unknown / missing id used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 (OPS review, #323 m3) — now exit 2, nothing run.
+{
+  const i = args.indexOf('--only');
+  const value = i >= 0 ? args[i + 1] : undefined;
+  if (i >= 0 && (value === undefined || value.startsWith('-') || value === '')) { console.error('REFUSING: --only needs a comma-separated list of EXACT mutant ids — NOTHING was run.'); process.exit(2); }
+  if (only && [...only].some((id) => id.trim() === '')) { console.error('REFUSING: --only has an EMPTY id (a stray comma?) — NOTHING was run.'); process.exit(2); }
+  const unknown = only ? [...only].filter((id) => !MUTANTS.some((m) => m.id === id)) : [];
+  if (unknown.length) {
+    console.error(`REFUSING: unknown mutant id(s) ${unknown.join(', ')} — NOTHING was run (ids are exact, e.g. ${MUTANTS[0].id}).`);
+    process.exit(2);
+  }
+}
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
 const sh = (cmd, a, opts = {}) => spawnSync(cmd, a, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 400_000, ...opts });
 

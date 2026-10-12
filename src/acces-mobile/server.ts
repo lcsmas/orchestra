@@ -9,6 +9,8 @@ import { sameLogin } from '../shared/acces-mobile.ts';
 import { MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
+import { PWA_ICONS } from './icons.ts';
+import { SW_JS } from './sw.ts';
 
 export type Upstream = (route: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
 /** A long-lived upstream (main's `/mobile/stream`): one parsed JSON value per line; returns the abort. */
@@ -66,12 +68,14 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
 };
 
-const STATIC: Record<string, { type: string; body: string }> = {
+const STATIC: Record<string, { type: string; body: string | Buffer }> = {
   '/': { type: 'text/html; charset=utf-8', body: INDEX_HTML },
   '/app.js': { type: 'text/javascript; charset=utf-8', body: APP_JS },
+  '/sw.js': { type: 'text/javascript; charset=utf-8', body: SW_JS },
   '/manifest.webmanifest': { type: 'application/manifest+json', body: MANIFEST_JSON },
   '/conversation.js': { type: 'text/javascript; charset=utf-8', body: CONVERSATION_JS },
   '/conversation.css': { type: 'text/css; charset=utf-8', body: CONVERSATION_CSS },
+  ...Object.fromEntries(PWA_ICONS.map((i) => [i.path, { type: 'image/png', body: i.png }])),
 };
 
 /** At most this many live streams at once (one per open phone page is the normal case). */

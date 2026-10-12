@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Accès mobile (#334): remove each auth/bind clause in place, run the server suite, require RED, restore byte-exact.
-Usage: python3 -I scripts/acces-mobile-mutants.py   (from the repo root)"""
+"""Accès mobile (#334, #336): remove each auth/bind/pairing/PWA clause in place, run the suite that owns it, require RED, restore byte-exact.
+Usage: python3 -I scripts/acces-mobile-mutants.py [id-prefix ...]   (from the repo root; no argument = every mutant)
+       E2E_RIG_BASE=<a dir OUTSIDE every live dir the rig guards> python3 -I scripts/acces-mobile-mutants.py --e2e [id ...]
+                                                                     (BUILT-APP mutants: copy the tree under $ACCES_MOBILE_E2E_SCRATCH, mutate,
+                                                                      rebuild the bundles, run scripts/e2e-acces-mobile.sh, require a red clause)"""
 import os, shutil, subprocess, sys, filecmp
 
 ROOT = os.getcwd()
 TEST = 'src/acces-mobile/server.test.ts'
+PWA = 'src/acces-mobile/pwa.test.ts'
+PAIR = 'src/shared/acces-mobile-pairing.test.ts'
+QR = 'src/shared/qr.test.ts'
+TOKEN = 'src/main/acces-mobile-token.test.ts'
+WIRING = 'src/main/acces-mobile-wiring.test.ts'
 MUTANTS = [
     # (id, file, original, replacement, expected) — expected 'RED' (must be killed) or 'EQUIV' (a second guard covers it)
     ('M1-no-allowed-login', 'src/acces-mobile/server.ts', "    if (!opts.allowedLogin) return refuse(403, 'no-allowed-login');\n", '', 'RED'),
@@ -21,7 +29,7 @@ MUTANTS = [
     ('M12-entry-token-cached', 'src/acces-mobile/index.ts', "  readToken: () => fs.readFileSync(tokenFile, 'utf8'),", "  readToken: ((t: string) => () => t)(fs.readFileSync(tokenFile, 'utf8')),", 'RED'),
     ('M13-no-rate-limit', 'src/acces-mobile/server.ts', "    if (b.count < REFUSAL_LOG_BURST) {", "    if (true) {", 'RED'),
     ('M14-no-csp', 'src/acces-mobile/server.ts', "  'Content-Security-Policy':", "  'X-Removed-CSP':", 'RED'),
-    ('M15-token-dir-not-chmod', 'src/main/acces-mobile-host.ts', "  fs.chmodSync(dir, 0o700);\n", "", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('M15-token-dir-not-chmod', 'src/main/acces-mobile-token.ts', "  fs.chmodSync(dir, 0o700);\n", "", 'RED', 'src/main/acces-mobile-token.test.ts'),
     ('M16-boot-unguarded', 'src/main/acces-mobile-host.ts', "export function startAccesMobileHost(): void {\n  try {\n    applyAccesMobile(store.getAccesMobileSettings());\n  } catch (e) {\n    log.warn('Accès mobile could not start — the app boots without it', e);\n  }\n}", "export function startAccesMobileHost(): void {\n  applyAccesMobile(store.getAccesMobileSettings());\n}", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
     ('Y1-non-socket-unlinked', 'src/acces-mobile/index.ts', "  if (!old.isSocket()) fail(`${sockPath} exists and is not a socket`);\n", "", 'RED'),
     ('Y2-no-fd-wrapper', 'src/main/acces-mobile-host.ts', "  const viaBash = process.platform === 'linux' && fs.existsSync('/bin/bash');", "  const viaBash = false;", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
@@ -57,15 +65,105 @@ MUTANTS = [
     ('K3-rpc-cancel-ignored', 'src/shared/acces-mobile-rpc.ts', "          subs.get(id)?.();\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
     ('K4-writes-uncapped', 'src/acces-mobile/server.ts', "        if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');", "        if (false) return refuse(429, 'too-many-writes');", 'RED'),
     ('M9-token-read-once', 'src/acces-mobile/server.ts', "    const expected = readTokenSafe();\n", "    const expected = ((globalThis as any).__t ??= readTokenSafe()) as string;\n", 'RED'),
+    # ── #336: pairing URL / QR / regenerate / PWA ──
+    ('Q1-url-token-in-query', 'src/shared/acces-mobile.ts', "return `https://${host}:${servePort}/#t=${token}`;", "return `https://${host}:${servePort}/?t=${token}`;", 'RED', PAIR),
+    ('Q2-url-ignores-serve-port', 'src/shared/acces-mobile.ts', "return `https://${host}:${servePort}/#t=${token}`;", "return `https://${host}:8445/#t=${token}`;", 'RED', PAIR),
+    ('Q3-url-token-unvalidated', 'src/shared/acces-mobile.ts', "if (!host || !token || !PAIRING_TOKEN.test(token)) return null;", "if (!host || !token) return null;", 'RED', PAIR),
+    ('Q4-host-unvalidated', 'src/shared/acces-mobile.ts', "if (labels.length < 2 || !labels.every((l) => DNS_LABEL.test(l))) return null;", "if (labels.length < 1) return null;", 'RED', PAIR),
+    ('Q4b-host-ip-accepted', 'src/shared/acces-mobile.ts', "  if (/^[0-9]+$/.test(labels[labels.length - 1])) return null;\n", "", 'RED', PAIR),
+    ('Q5-qr-no-quiet-zone', 'src/shared/qr.ts', "export const QR_MARGIN = 4;", "export const QR_MARGIN = 0;", 'RED', QR),
+    ('Q6-qr-encodes-truncated-text', 'src/shared/qr.ts', "QRCode.create(text, {", "QRCode.create(text.slice(0, 40), {", 'RED', QR),
+    ('Q7-qr-run-drops-its-last-module', 'src/shared/qr.ts', "while (end < row.length && row[end]) end++;", "while (end < row.length - 1 && row[end]) end++;", 'RED', QR),
+    ('Q7b-qr-zero-height-modules', 'src/shared/qr.ts', "h${end - x}v1h-${end - x}z", "h${end - x}v0h-${end - x}z", 'RED', QR),
+    ('Q7c-qr-transposed-matrix', 'src/shared/qr.ts', "modules.get(r, c) === 1", "modules.get(c, r) === 1", 'EQUIV', QR),  # a diagonal mirror of a QR symbol decodes: readers (jsQR included) accept mirrored codes
+    ('Q7d-qr-skipped-light-module', 'src/shared/qr.ts', "      x = end;\n", "      x = end + 1;\n", 'EQUIV', QR),  # row[end] is light by the loop's own exit, so skipping it changes nothing
+    ('Q8-ui-qr-encodes-fragment-only', 'src/renderer/components/AccesMobileSettings.tsx', "<AccesMobileQr text={view.pairingUrl} />", "<AccesMobileQr text={view.pairingFragment ?? ''} />", 'RED', WIRING),
+    ('Q9-view-url-from-fragment', 'src/main/acces-mobile-host.ts', "    pairingUrl: pairingUrl(settings.tailnetHost, settings.servePort, token),", "    pairingUrl: token ? `#t=${token}` : null,", 'RED', WIRING),
+    ('R1-regenerate-keeps-token', 'src/main/acces-mobile-token.ts', "  const token = crypto.randomBytes(32).toString('base64url');", "  const token = readTokenIn(dir) ?? crypto.randomBytes(32).toString('base64url');", 'RED', TOKEN),
+    ('R2-regenerate-never-lands', 'src/main/acces-mobile-token.ts', "  fs.renameSync(tmp, tokenFileIn(dir));\n", "", 'RED', TOKEN),
+    ('R3-regenerate-ipc-unhandled', 'src/main/api-handlers.ts', "  regenerateAccesMobileToken: async () => regenerateAccesMobileToken(),\n", "", 'RED', WIRING),
+    ('R4-regenerate-logs-token', 'src/main/acces-mobile-host.ts', "  generateAccesMobileToken();\n  log.info('pairing token regenerated — the previous token is refused from now on');", "  const t = generateAccesMobileToken();\n  log.info(`pairing token regenerated ${t}`);", 'RED', WIRING),
+    ('R5-regenerate-button-gone', 'src/renderer/components/AccesMobileSettings.tsx', "data-am-regenerate disabled={regenerating}", "data-am-gone disabled={regenerating}", 'RED', WIRING),
+    ('R6-host-runs-tailscale', 'src/main/acces-mobile-host.ts', "const log = scoped('acces-mobile');", "const log = scoped('acces-mobile');\nvoid spawn('tailscale', ['status', '--json']);", 'RED', WIRING),
+    ('S1-sw-no-allowlist', 'src/acces-mobile/sw.ts', "    if (isNav ? url.pathname !== '/' : SHELL.indexOf(url.pathname) < 0) return;\n", "    if (isNav && url.pathname !== '/') return;\n", 'RED', PWA),
+    ('S1b-sw-api-guard-removed', 'src/acces-mobile/sw.ts', "    if (url.pathname.indexOf('/api/') === 0) return; // data (and the token that unlocks it) never goes through the cache\n", "", 'EQUIV', PWA),  # the shell allowlist below it also refuses /api/*
+    ('S1c-sw-no-api-guard-no-allowlist', 'src/acces-mobile/sw.ts', "    if (url.pathname.indexOf('/api/') === 0) return; // data (and the token that unlocks it) never goes through the cache\n    var isNav = req.mode === 'navigate';\n    if (isNav ? url.pathname !== '/' : SHELL.indexOf(url.pathname) < 0) return;\n", "    var isNav = req.mode === 'navigate';\n", 'RED', PWA),
+    ('S1d-api-in-shell-paths', 'src/acces-mobile/sw.ts', "'/manifest.webmanifest', ...PWA_ICONS.map((i) => i.path)];", "'/manifest.webmanifest', '/api/workspaces', ...PWA_ICONS.map((i) => i.path)];", 'RED', PWA),
+    ('S2-sw-never-refreshes-cache', 'src/acces-mobile/sw.ts', "        e.waitUntil(caches.open(CACHE).then(function (c) { return c.put(key, copy); }));\n", "", 'RED', PWA),
+    ('S3-sw-masks-4xx', 'src/acces-mobile/sw.ts', "      if (res.status >= 500) return fromCache", "      if (res.status >= 400) return fromCache", 'RED', PWA),
+    ('S4-sw-caches-error-pages', 'src/acces-mobile/sw.ts', "      if (res.status === 200) {\n        var copy", "      if (res.status >= 200) {\n        var copy", 'RED', PWA),
+    ('S5-sw-no-cache-on-network-error', 'src/acces-mobile/sw.ts', "      return fromCache(key).then(function (hit) { return hit || (isNav ? unreachablePage() : Response.error()); });\n    });", "      return isNav ? unreachablePage() : Response.error();\n    });", 'RED', PWA),
+    ('S6-sw-keeps-the-query', 'src/acces-mobile/sw.ts', "e.respondWith(networkFirst(url.pathname, isNav, e));", "e.respondWith(networkFirst(url.pathname + url.search, isNav, e));", 'RED', PWA),
+    ('S7-sw-no-timeout', 'src/acces-mobile/sw.ts', "setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);", "setTimeout(function () {}, TIMEOUT_MS);", 'RED', PWA),
+    ('S8-sw-no-unreachable-page', 'src/acces-mobile/sw.ts', "hit || (isNav ? unreachablePage() : Response.error())", "hit || Response.error()", 'RED', PWA),
+    ('S9-sw-precaches-error-pages', 'src/acces-mobile/sw.ts', "return c.addAll(SHELL);", "return Promise.all(SHELL.map(function (p) { return fetch(p).then(function (r) { return c.put(p, r); }); }));", 'RED', PWA),
+    ('S10-sw-keeps-stale-caches', 'src/acces-mobile/sw.ts', "return caches.delete(k);", "return null;", 'RED', PWA),
+    ('S11-sw-forwards-request-headers', 'src/acces-mobile/sw.ts', "return fetch(key, { cache: 'no-store', signal: ctl.signal })", "return fetch(key, { cache: 'no-store', signal: ctl.signal, headers: e.request.headers })", 'RED', PWA),
+    ('I1-icons-before-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const png0 = STATIC[pathOnly]; if (png0 && png0.type === 'image/png') { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(png0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED', PWA),
+    ('I2-sw-before-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    if (pathOnly === '/sw.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(STATIC['/sw.js'].body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED', PWA),
+    ('I3-shell-embeds-the-token', 'src/acces-mobile/server.ts', "      res.end(asset.body);\n", "      res.end(typeof asset.body === 'string' ? asset.body + '<!-- ' + opts.readToken() + ' -->' : asset.body);\n", 'RED', PWA),
+    ('I4-manifest-without-icons', 'src/acces-mobile/page.ts', "  icons: MANIFEST_ICONS,\n", "", 'RED', PWA),
+    ('I5-no-apple-touch-icon', 'src/acces-mobile/page.ts', '<link rel="apple-touch-icon" href="/apple-touch-icon.png">\n', "", 'RED', PWA),
+    ('I6-no-sw-registration', 'src/acces-mobile/page.ts', "  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(function () {});\n", "", 'RED', PWA),
+    ('I7-page-keeps-the-fragment', 'src/acces-mobile/page.ts', "    history.replaceState(null, '', location.pathname);\n", "", 'RED', PWA),
+    ('I8-icon-wrong-size', 'src/acces-mobile/icons.ts', "{ path: '/icon-192.png', size: 192,", "{ path: '/icon-192.png', size: 193,", 'RED', PWA),
+    ('I10-no-repair-on-hashchange', 'src/acces-mobile/page.ts', "    if (pairFromHash()) {\n      try { token = localStorage.getItem(KEY); } catch (e) {}\n      conv.connect();\n      route();\n      return;\n    }\n", "", 'RED', PWA),
+    ('I10b-hashchange-keeps-old-token', 'src/acces-mobile/page.ts', "      try { token = localStorage.getItem(KEY); } catch (e) {}\n      conv.connect();", "      conv.connect();", 'RED', PWA),
+    ('I11-401-keeps-the-list', 'src/acces-mobile/page.ts', "{ last = []; listEl.textContent = ''; setState('Jeton refusé", "{ setState('Jeton refusé", 'RED', PWA),
+    ('I9-refusal-log-has-the-query', 'src/acces-mobile/server.ts', "${method} ${pathOnly.slice(0, 80)}`);", "${method} ${(req.url ?? '').slice(0, 200)}`);", 'RED', PWA),
     ('M10-shell-without-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const asset0 = STATIC[pathOnly]; if (asset0) { res.writeHead(200); res.end(asset0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED'),
 ]
 
+E2E = '--e2e' in sys.argv[1:]
+ONLY = [a for a in sys.argv[1:] if a != '--e2e']
+
+# Built-app mutants (#336): each must turn at least one e2e clause red (or abort the drive) on the REAL built app.
+E2E_MUTANTS = [
+    # (id, file, original, replacement, the clause (prefix) expected to go red)
+    ('E1-qr-encodes-fragment-only', 'src/renderer/components/AccesMobileSettings.tsx', "<AccesMobileQr text={view.pairingUrl} />", "<AccesMobileQr text={view.pairingFragment ?? ''} />", 'qr/rendered-pixels-decode-to-url'),
+    ('E2-regenerate-never-lands', 'src/main/acces-mobile-token.ts', "  fs.renameSync(tmp, tokenFileIn(dir));\n", "", 'regen/'),
+    ('E3-sw-caches-api', 'src/acces-mobile/sw.ts', "    if (url.pathname.indexOf('/api/') === 0) return; // data (and the token that unlocks it) never goes through the cache\n    var isNav = req.mode === 'navigate';\n    if (isNav ? url.pathname !== '/' : SHELL.indexOf(url.pathname) < 0) return;\n", "    var isNav = req.mode === 'navigate';\n", 'pwa/service-worker-shell-only-cache'),
+    ('E4-icons-before-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const png0 = STATIC[pathOnly]; if (png0 && png0.type === 'image/png') { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(png0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'sec/assets-need-identity'),
+    ('E5-sw-no-fallback-on-502', 'src/acces-mobile/sw.ts', "      if (res.status >= 500) return fromCache", "      if (res.status >= 600) return fromCache", 'pwa/unreachable-server-off-served-from-cache'),
+    ('E6-regenerate-logs-token', 'src/main/acces-mobile-host.ts', "  generateAccesMobileToken();\n  log.info('pairing token regenerated — the previous token is refused from now on');", "  const t = generateAccesMobileToken();\n  log.info(`pairing token regenerated ${t}`);", 'leak/no-token-in-logs-or-files'),
+    ('E7-page-ignores-hashchange', 'src/acces-mobile/page.ts', "    if (pairFromHash()) {\n      try { token = localStorage.getItem(KEY); } catch (e) {}\n      conv.connect();\n      route();\n      return;\n    }\n", "", 'regen/repair-with-new-url'),
+]
+
+def run_e2e(ids):
+    base = os.environ.get('ACCES_MOBILE_E2E_SCRATCH') or os.path.expanduser('~/.cache/acces-mobile-e2e-mutants')
+    os.makedirs(base, exist_ok=True)
+    bad = 0
+    for mid, rel, old, new, clause in [m for m in E2E_MUTANTS if not ids or any(m[0].startswith(i) for i in ids)]:
+        work = os.path.join(base, mid)
+        subprocess.run(['rsync', '-a', '--delete', '--exclude', 'node_modules', '--exclude', '.git', '--exclude', 'dist', '--exclude', 'dist-electron', '--exclude', 'release', '--exclude', 'shots', ROOT + '/', work + '/'], check=True)
+        if not os.path.lexists(os.path.join(work, 'node_modules')): os.symlink(os.path.join(ROOT, 'node_modules'), os.path.join(work, 'node_modules'))
+        path = os.path.join(work, rel); src = open(path).read()
+        if src.count(old) != 1: print(f'{mid}: ANCHOR NOT FOUND (count={src.count(old)})'); bad += 1; continue
+        open(path, 'w').write(src.replace(old, new))
+        b = subprocess.run('pnpm run build:bundles', shell=True, cwd=work, capture_output=True, text=True, timeout=600)
+        if b.returncode != 0: print(f'{mid}: BUILD FAILED\n{b.stdout[-800:]}{b.stderr[-800:]}'); bad += 1; continue
+        env = dict(os.environ)
+        r = subprocess.run(['bash', os.path.join(work, 'scripts/e2e-acces-mobile.sh'), work, '--out', os.path.join(work, 'shots')], cwd=work, env=env, capture_output=True, text=True, timeout=900)
+        out = r.stdout
+        fails = [l.split('—')[0].strip()[6:] for l in out.splitlines() if l.startswith('  FAIL')]
+        errored = [l for l in out.splitlines() if l.startswith('ERROR:')]
+        passes = sum(1 for l in out.splitlines() if l.startswith('  PASS'))
+        hit = any(f.startswith(clause) for f in fails) or any(clause.rstrip('/') in l or True for l in errored[:0])
+        if passes + len(fails) == 0:  # not one clause ran: the rig refused / crashed — that is a broken instrument, never a verdict
+            print(f'{mid}: INSTRUMENT BROKEN — no clause ran. rig output tail: {out[-600:]!r} stderr: {r.stderr[-300:]!r}'); bad += 1; continue
+        red = bool(fails or errored)
+        ok = red and (hit or bool(errored))
+        print(f'{mid}: {"RED" if red else "GREEN"} on {fails or [e[:120] for e in errored[:1]]} (expected {clause}; {passes} clauses passed) {"OK" if ok else "SURVIVED"}')
+        if not ok: bad += 1
+    print('E2E CLEAN' if bad == 0 else f'E2E DIRTY ({bad})')
+    sys.exit(1 if bad else 0)
+
+if E2E: run_e2e(ONLY)
+MUTANTS = [m for m in MUTANTS if not ONLY or any(m[0].startswith(p) for p in ONLY)]
+if not MUTANTS: print('no mutant matches', ONLY); sys.exit(2)
 bad = 0
-ONLY = sys.argv[1:]  # optional id prefixes: run a subset (the full set is the gate)
 for m in MUTANTS:
     mid, rel, old, new, expected = m[:5]
-    if ONLY and not any(mid.startswith(p) for p in ONLY):
-        continue
     test = m[5] if len(m) > 5 else TEST
     path = os.path.join(ROOT, rel)
     backup = path + '.mutant-backup'
@@ -89,9 +187,11 @@ for m in MUTANTS:
     finally:
         shutil.copy2(backup, path); os.remove(backup)
         if open(path).read() != src: print(f'{mid}: RESTORE FAILED'); bad += 1
-# control: the unmutated suite is green
-r = subprocess.run(['node', '--test', '--experimental-strip-types', TEST], cwd=ROOT, capture_output=True, text=True, timeout=180)
-print(f'CONTROL unmutated: {"GREEN" if r.returncode == 0 else "RED"}')
-if r.returncode != 0: bad += 1
+# control: every suite a mutant is judged by is green unmutated (a suite that is red/skipped before the mutation proves nothing)
+for t in sorted({TEST} | {m[5] for m in MUTANTS if len(m) > 5}):
+    r = subprocess.run(['node', '--test', '--experimental-strip-types', t], cwd=ROOT, capture_output=True, text=True, timeout=180)
+    skipped = [l for l in r.stdout.splitlines() if l.startswith('# skipped ')]
+    print(f'CONTROL unmutated {t}: {"GREEN" if r.returncode == 0 else "RED"} ({skipped[0] if skipped else "no summary"})')
+    if r.returncode != 0 or skipped != ['# skipped 0']: bad += 1
 print('CLEAN' if bad == 0 else f'DIRTY ({bad})')
 sys.exit(1 if bad else 0)

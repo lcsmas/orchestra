@@ -18,8 +18,11 @@
  *   • `isSidechain: true` lines are Task-subagent transcripts interleaved into
  *     the same file — they must be skipped or the main transcript is flooded
  *     with subagent noise.
+ *   • `type:"system", subtype:"local_command"` lines are the OUTPUT of a built-in
+ *     slash command (`/recap`, `/usage`, …) — `<local-command-stdout>…` content,
+ *     rendered as the same `command-output` notice the live stream yields (#341).
  *   • Bookkeeping line types (`mode`, `attachment`, `file-history-*`,
- *     `ai-title`, `pr-link`, …) are skipped by only matching user/assistant.
+ *     `ai-title`, `pr-link`, …) are skipped by only matching user/assistant/system.
  *
  * Pure data-in/data-out (no node/electron imports) so `node --test` covers it.
  */
@@ -36,6 +39,7 @@ import {
   normalizeResultContent,
   classifyUserText,
   originLabel,
+  wrappedCommandOutput,
   type NormalizeContext,
 } from './agent-events.ts';
 import {
@@ -73,6 +77,10 @@ export const HISTORY_SEQ_BASE = 1_000_000_000;
 
 interface TranscriptEnvelope {
   type?: string;
+  /** `system` lines only: `local_command` is a built-in command's output. */
+  subtype?: string;
+  /** `system` lines only: the text (`<local-command-stdout>…</…>` for command output). */
+  content?: unknown;
   isSidechain?: boolean;
   /** The Claude Code message UUID for this line — the **rewind target** for a
    *  user turn (see AgentUserMessageEvent.rewindId). Note the on-disk envelope
@@ -324,6 +332,18 @@ export function transcriptToEvents(
             }),
           );
         }
+      }
+      continue;
+    }
+
+    // A built-in command's output (`/recap` …) is a `system/local_command` line
+    // — the stream's synthetic-assistant twin (#341). Only the `<local-command-
+    // stdout|stderr>` wrapper is output: a bare string is the invocation echo
+    // (`/help`) and an empty wrapper (`/clear`'s ack) renders nothing.
+    if (entry.type === 'system') {
+      if (entry.subtype === 'local_command') {
+        const text = wrappedCommandOutput(entry.content);
+        if (text) out.push(st(ctx, { type: 'notice', kind: 'command-output', text }));
       }
       continue;
     }

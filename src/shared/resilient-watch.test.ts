@@ -79,6 +79,7 @@ function rig(opts: { inodes?: Map<string, number | null>; births?: Map<string, n
     label: 'Réveils',
     dir: '/bus',
     fallback: '60 s sweep',
+    fallbackFr: 'un balayage toutes les 60 s',
     onChange: (f) => void calls.changes.push(f),
     onRecover: () => void calls.recover++,
     onArmed: ({ recovered }) => void calls.armed.push(recovered),
@@ -101,6 +102,14 @@ test('healthy arm: stays ok, no retry, no log, no catch-up (positive control)', 
   assert.equal(r.calls.recover, 0, 'the catch-up pass is for RECOVERY only, never the first arm');
   assert.deepEqual(r.calls.armed, [false]);
   assert.deepEqual(r.transitions, [], 'no transition on a healthy boot');
+});
+
+test('the snapshot carries BOTH fallbacks — the English one (bus-status, logs) and the French one (the strip tooltip, review m2)', () => {
+  const r = rig();
+  const w = createResilientWatcher(r.spec({ fallback: 'a poll', fallbackFr: 'une lecture' }), r.deps);
+  w.start();
+  assert.equal(w.snapshot().fallback, 'a poll');
+  assert.equal(w.snapshot().fallbackFr, 'une lecture');
 });
 
 test('events reach onChange; the filter drops what the site does not care about (null filename passes)', () => {

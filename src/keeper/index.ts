@@ -53,8 +53,9 @@ import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lea
 import { admissionLeaseFile } from '../shared/docker-hold.ts';
 import { SOFT_MIN_INTERVAL_MS, startMemoryWatch, type MemoryWatch } from './memory-watch.ts';
 import { readKernelOomKills } from './kernel-oom-log.ts';
+import { buildMemberLeaves, createPlacementTripwire, PROBE_TIMEOUT_MS, probeToolPlacement, probeWithRetry, readLeafCpuUsec, runProbeSpawn, type LeafFs, type PlacementTripwire } from './member-leaves.ts';
 import { appendMemNotice, createNoticeBudget } from '../shared/mem-notice-file.ts';
-import { INNER_SHELL_PREFIX_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
+import { INNER_SHELL_PREFIX_ENV, OOM_ADJ_TOOLS, decideCapState, SCOPE_LEAF_KEEPER, WORK_LEAF_ENV, formatMemKillLine, parseCgroupLimit, formatMemSoftLine, parseProcCgroupV2, scopePathOfCgroup, swapLimitApplied, wrapperPathUsable, type MemKillRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 
 const [, , wsId, sockPath, pidPath, logPath] = process.argv;
 if (!wsId || !sockPath || !pidPath || !logPath) {
@@ -205,7 +206,14 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
   child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   state.onSpawn(Date.now());
 
-  const splitStdout = createLineSplitter((line) => state.onStdoutLine(line, Date.now()));
+  const splitStdout = createLineSplitter((line) => {
+    state.onStdoutLine(line, Date.now());
+    try {
+      placementTripwire?.onLine(line);
+    } catch {
+      /* an observer must never take the keeper down */
+    }
+  });
   child.stdout?.on('data', (d: Buffer) => {
     // Always drain; forward only when attached. Line-split a copy for the
     // policy state machine regardless (turn detection must work detached).
@@ -245,6 +253,19 @@ function startChild(command: string, args: string[], cwd: string, env: Record<st
 
 type CapInfo = NonNullable<Extract<KeeperDaemonFrame, { t: 'helloAck' }>['cap']>;
 let capInfo: CapInfo | null = null;
+/** #332 (review m2c): armed after a good probe; fed the CLI's stdout lines. */
+let placementTripwire: PlacementTripwire | null = null;
+const realLeafFs: LeafFs = {
+  mkdir: (p) => {
+    try {
+      fs.mkdirSync(p);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+  },
+  write: (p, t) => fs.writeFileSync(p, t),
+  read: (p) => fs.readFileSync(p, 'utf8'),
+};
 let memWatch: MemoryWatch | null = null;
 const memKills: MemKillRecord[] = [];
 const memSofts: MemSoftRecord[] = [];
@@ -262,12 +283,50 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   } catch {
     /* no /proc */
   }
-  if (!cgPath || path.basename(cgPath) !== cap.unit) {
+  // #332: the keeper's own cgroup is the scope (first call) or its keeper leaf `k` (a repeat call): both map to the scope
+  const inKeeperLeaf = !!cgPath && path.basename(cgPath) === SCOPE_LEAF_KEEPER;
+  const scopePath = cgPath ? scopePathOfCgroup(cgPath) : null;
+  if (!cgPath || !scopePath || path.basename(scopePath) !== cap.unit) {
     capInfo = { unit: cap.unit, state: 'no-scope', hardBytes: cap.hardBytes };
     klog(`memory cap: NOT in scope ${cap.unit} (cgroup ${cgPath ?? 'unreadable'}) — the keeper was launched plain; no cap, no watch`);
     return env;
   }
-  const dir = path.join(CGROUP_ROOT, cgPath);
+  let wrapperOk = false;
+  if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
+    klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
+  } else if (cap.wrapper) {
+    try {
+      fs.accessSync(cap.wrapper, fs.constants.X_OK);
+      wrapperOk = true;
+    } catch {
+      klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
+    }
+  }
+  /** The CLI's environment for a capped member: DBUS removed, the tool wrapper as the shell prefix (when usable) and — when the work leaf exists — the variable the wrapper moves its shell by. */
+  const cliEnv = (workLeaf: string | null): Record<string, string | undefined> => {
+    // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
+    // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
+    // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
+    // #332: the CLI inherits THIS leaf (k); its tool commands move themselves into the work leaf through the wrapper, which reads this variable
+    const base: Record<string, string | undefined> = { ...env, ...(workLeaf ? { [WORK_LEAF_ENV]: workLeaf } : {}) };
+    if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
+      delete base.DBUS_SESSION_BUS_ADDRESS;
+      klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
+    }
+    if (!wrapperOk || !cap.wrapper) return base;
+    const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
+    // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
+    if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
+    return out;
+  };
+  // #332 (Q9): two leaves inside the delegated scope — this keeper (and, by inheritance, the CLI) in `k` (no limit), the TOOL COMMANDS in `w` (the member's hard level; each tool shell moves itself in through the wrapper). The kill watch and the limit checks use `w`.
+  const leaves = buildMemberLeaves({ scopeDir: path.join(CGROUP_ROOT, scopePath), hardBytes: cap.hardBytes, pid: process.pid, fs: realLeafFs, alreadyInKeeperLeaf: inKeeperLeaf });
+  if (!leaves.ok) {
+    capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
+    klog(`memory cap: scope ${cap.unit} is not delegated or its leaves could not be built (${leaves.step}: ${leaves.error}) — the cap is NOT applied (only the scope's backstop limit holds, if any); tools are still wrapped (adj 1000: a backstop episode takes a tool first), no kill watch`);
+    return cliEnv(null);
+  }
+  const dir = leaves.workDir;
   let limit: number | null = null;
   try {
     limit = parseCgroupLimit(fs.readFileSync(path.join(dir, 'memory.max'), 'utf8'));
@@ -292,23 +351,59 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
   const swapOk = swapLimitApplied(swapMaxText, swapTotalKb);
   if (!limitOk) {
     capInfo = { unit: cap.unit, state: 'not-applied', hardBytes: cap.hardBytes };
-    klog(`memory cap: in scope ${cap.unit} but memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are not wrapped, no kill watch`);
-    return env;
+    klog(`memory cap: in scope ${cap.unit} but the work leaf's memory.max=${limit ?? 'max'} (asked ${cap.hardBytes}) — the cap is NOT applied (memory controller not delegated?); tools are still wrapped (adj 1000), no kill watch`);
+    return cliEnv(null);
   }
   // memory.max IS enforced when only the swap escape is open: the kernel still kills once swap is full, so the tools stay the victims (wrapper) and the kills are still named (watch); the STATE says the cap leaks.
   if (!swapOk) klog(`memory cap: memory.swap.max=${swapMaxText?.trim() ?? 'absent'} with SwapTotal=${swapTotalKb ?? '?'} kB — the swap escape is open: the hard level only bites once swap is full (state not-applied; tools still wrapped, watch on)`);
-  let wrapperOk = false;
-  if (cap.wrapper && !wrapperPathUsable(cap.wrapper)) {
-    klog(`memory cap: tool wrapper path ${JSON.stringify(cap.wrapper)} is not usable as CLAUDE_CODE_SHELL_PREFIX (relative or contains whitespace) — tool commands keep oom_score_adj 0`);
-  } else if (cap.wrapper) {
-    try {
-      fs.accessSync(cap.wrapper, fs.constants.X_OK);
-      wrapperOk = true;
-    } catch {
-      klog(`memory cap: tool wrapper ${cap.wrapper} is missing or not executable — tool commands keep oom_score_adj 0`);
+  // #332: a wrapper that does not PLACE the tool commands in the work leaf leaves `w` empty and the cap nothing: prove the placement at runtime, before saying `active`. ONE retry after a fast failure (a single spawn failing under host
+  // pressure must not decide a member's whole life), NONE after a timeout; each attempt gets master's 5 s. A wrapper that STARTED (landed elsewhere, timed out, failed) keeps the prefix (tools keep adj 1000 — the kernel still
+  // prefers them): only the STATE says the cap is not proven. Only PROOF that it cannot be EXECUTED (ENOENT / EACCES / ENOEXEC / exit 126-127) drops the prefix (it would fail every Bash call) — loudly (D-Q13).
+  let placed = true;
+  let wrapperRuns = true;
+  if (wrapperOk && cap.wrapper) {
+    const probe = probeWithRetry(() => probeToolPlacement({
+      wrapper: cap.wrapper as string,
+      workDir: dir,
+      cgroupRoot: CGROUP_ROOT,
+      parseCgroup: parseProcCgroupV2,
+      run: runProbeSpawn,
+    }));
+    if (!probe.ok) {
+      placed = false;
+      if (!probe.ran) {
+        wrapperOk = false;
+        wrapperRuns = false;
+        klog(`memory cap: WARNING — the tool wrapper could not be RUN (${probe.attempts} attempts: ${probe.saw}) — the shell prefix is NOT set (it would fail every Bash call): tools run unwrapped (oom_score_adj 0) and NOTHING is capped at the hard level (state not-applied)`);
+      } else if (probe.timedOut) {
+        klog(`memory cap: WARNING — the tool wrapper probe TIMED OUT after ${PROBE_TIMEOUT_MS} ms: it STARTED (a slow host?) but did not finish, so its placement in the work leaf is UNPROVEN — the prefix stays (tools keep oom_score_adj ${OOM_ADJ_TOOLS}), state unprotected: NOTHING is known to be capped at the hard level`);
+      } else {
+        klog(`memory cap: the tool wrapper did NOT place a probe command in the work leaf (${probe.attempts} attempts; saw ${probe.saw}; expected ${dir}) — tool commands run in the KEEPER leaf: NOTHING is capped at the hard level (the prefix stays: they keep oom_score_adj ${OOM_ADJ_TOOLS})`);
+      }
     }
   }
-  capInfo = { unit: cap.unit, state: !swapOk ? 'not-applied' : wrapperOk ? 'active' : 'unprotected', hardBytes: cap.hardBytes };
+  capInfo = { unit: cap.unit, state: decideCapState({ swapOk, wrapperOk, wrapperRuns, placed }), hardBytes: cap.hardBytes };
+  // Tripwire (review m2c): what the probe cannot see — the CLI's OWN env/prefix. After ORCHESTRA_MEMCAP_TRIPWIRE_AFTER (5) Bash tool results, the work leaf must have been charged CPU time (cpu.stat usage_usec: unlike memory.stat's
+  // pgfault it is flushed on read — measured) since the probe; if not, no tool ever landed there. The flip is visible in the keeper log and in every LATER helloAck/probe `cap.state`; the app logs the state once, at spawn.
+  placementTripwire = null;
+  if (capInfo.state === 'active') {
+    const readCpu = (): number | null => readLeafCpuUsec(() => { try { return fs.readFileSync(path.join(dir, 'cpu.stat'), 'utf8'); } catch { return null; } });
+    const base = readCpu();
+    if (base === null) {
+      klog(`memory cap: the placement tripwire is NOT armed — ${path.join(dir, 'cpu.stat')} is unreadable; the state stays active on the probe's word alone`);
+    } else {
+      placementTripwire = createPlacementTripwire({
+        baseline: base,
+        after: intEnv('ORCHESTRA_MEMCAP_TRIPWIRE_AFTER', 5),
+        readCounter: readCpu,
+        onTrip: (n) => {
+          if (capInfo) capInfo = { ...capInfo, state: 'unprotected' };
+          klog(`memory cap: TRIPWIRE — ${n} Bash tool results came back but the work leaf was charged no CPU time since the probe: no tool command has run in the work leaf (the CLI drops ${WORK_LEAF_ENV}, or no longer calls the shell prefix?) — NOTHING is capped at the hard level`);
+        },
+        onGiveUp: (n) => klog(`memory cap: the placement tripwire gave up after ${n} tool results — cpu.stat stayed unreadable; the state stays active on the probe's word alone`),
+      });
+    }
+  }
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {
     if (!cap.noticeFile) return;
@@ -346,19 +441,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     },
   });
   klog(`memory cap: ${capInfo.state.toUpperCase()} unit=${cap.unit} memory.max=${limit} cgroup=${dir}`);
-  // A browser started from this session moves its main process into ITS OWN systemd scope through the session bus (measured: app-org.chromium.Chromium-<pid>.scope) — out of the cap, with the
-  // 56-Chromium incident that motivated the cap in plain view. Without DBUS_SESSION_BUS_ADDRESS Chromium stays where it was started (measured 9/9 inside; the user-manager tools, `systemd-run --user`,
-  // gh and git keep working). Capped members only; the human's sessions and a switch-OFF run keep the address.
-  const base: Record<string, string | undefined> = { ...env };
-  if (base.DBUS_SESSION_BUS_ADDRESS !== undefined) {
-    delete base.DBUS_SESSION_BUS_ADDRESS;
-    klog('memory cap: DBUS_SESSION_BUS_ADDRESS removed from the CLI env (a browser would leave the scope through the session bus)');
-  }
-  if (!wrapperOk || !cap.wrapper) return base;
-  const out: Record<string, string | undefined> = { ...base, CLAUDE_CODE_SHELL_PREFIX: cap.wrapper };
-  // The user's own prefix keeps working: our wrapper chains it exactly as the CLI would have called it.
-  if (env.CLAUDE_CODE_SHELL_PREFIX && env.CLAUDE_CODE_SHELL_PREFIX !== cap.wrapper) out[INNER_SHELL_PREFIX_ENV] = env.CLAUDE_CODE_SHELL_PREFIX;
-  return out;
+  return cliEnv(dir);
 }
 
 // ── Docker relay (#291) ──────────────────────────────────────────────────────────────────────────────────────────

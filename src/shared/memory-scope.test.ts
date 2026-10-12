@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,8 +10,17 @@ import {
   OOM_ADJ_TOOLS,
   OOM_TOOL_WRAPPER_SCRIPT,
   buildScopeLaunchArgv,
+  KEEPER_LEAF_RESERVE_BYTES,
+  MEMCAP_RESERVE_ENV,
+  WORK_LEAF_ENV,
+  reserveBytesFromEnv,
+  SCOPE_LEAF_KEEPER,
+  SCOPE_LEAF_WORK,
+  scopeMemoryMaxBytes,
+  scopePathOfCgroup,
   classifyScopeMembers,
   decideMemoryCap,
+  decideCapState,
   describeCapState,
   describeCommand,
   estimateOomBadness,
@@ -120,15 +129,44 @@ test('decideMemoryCap: a soft level that is not below the hard one is dropped, n
 
 // ── the launch argv (the production flags) ───────────────────────────────────────────────────────────────────────
 
-test('buildScopeLaunchArgv: new scope, OOMPolicy=continue, MemoryMax=hard, MemorySwapMax=0 — and and NEVER a MemoryHigh (ledger D-Q2)', () => {
+test('buildScopeLaunchArgv: new DELEGATED scope, OOMPolicy=continue, MemoryMax=hard+keeper-leaf reserve (the work leaf carries the hard level), MemorySwapMax=0 — and NEVER a MemoryHigh (ledger D-Q2)', () => {
   const unit = 'orchestra-ws-ws1-abcdef.scope';
   const { cmd, args } = buildScopeLaunchArgv({ unit, limits: { hardBytes: 6 * GIB, softBytes: 3 * GIB, swapMaxBytes: 0 }, cmd: '/usr/bin/node', args: ['keeper.js', 'ws1'] });
   assert.equal(cmd, 'systemd-run');
   const props = args.flatMap((a, i) => (args[i - 1] === '-p' ? [a] : []));
-  assert.deepEqual(props, ['OOMPolicy=continue', `MemoryMax=${6 * GIB}`, 'MemorySwapMax=0']);
+  assert.deepEqual(props, ['OOMPolicy=continue', 'Delegate=yes', `MemoryMax=${6 * GIB + KEEPER_LEAF_RESERVE_BYTES}`, 'MemorySwapMax=0']);
   assert.ok(!args.some((a) => a.includes('MemoryHigh')), 'the soft level is a warning level: never a kernel MemoryHigh (it would crawl a runaway forever instead of killing it)');
   assert.deepEqual(args.slice(0, 5), ['--user', '--scope', '--collect', '--quiet', `--unit=${unit}`]);
   assert.deepEqual(args.slice(args.indexOf('--')), ['--', '/usr/bin/node', 'keeper.js', 'ws1'], 'the command follows `--`: it is the scope\'s main process, never an existing one');
+});
+
+test('#332 leaves: the scope\'s limit is the hard level + a reserve (the work leaf must trip first); a leaf path maps back to its scope; only the two leaf names are leaves', () => {
+  assert.equal(scopeMemoryMaxBytes(6 * GIB), 6 * GIB + KEEPER_LEAF_RESERVE_BYTES);
+  assert.ok(KEEPER_LEAF_RESERVE_BYTES >= 512 * 1024 * 1024, 'room for the keeper + the real CLI process (≈330 MB) + what starts without the prefix: a smaller backstop would trip BEFORE the work leaf and take the session');
+  assert.equal(scopeMemoryMaxBytes(6 * GIB, 0), null, 'reserve 0 = no scope-level limit (rigs ≤ 300 MB)');
+  assert.equal(scopeMemoryMaxBytes(6 * GIB, 100), 6 * GIB + 100);
+  const env = (v?: string) => ({ [MEMCAP_RESERVE_ENV]: v });
+  assert.equal(reserveBytesFromEnv(env()), KEEPER_LEAF_RESERVE_BYTES);
+  assert.equal(reserveBytesFromEnv(env('0')), 0);
+  assert.equal(reserveBytesFromEnv(env(' 47185920 ')), 47185920);
+  for (const bad of ['-1', '1.5', 'abc', '', '9'.repeat(30)]) assert.equal(reserveBytesFromEnv(env(bad)), KEEPER_LEAF_RESERVE_BYTES, `ignored: ${JSON.stringify(bad)}`);
+  const noBackstop = buildScopeLaunchArgv({ unit: 'u.scope', limits: { hardBytes: GIB, softBytes: null, swapMaxBytes: 0 }, cmd: 'node', args: [], reserveBytes: 0 });
+  assert.deepEqual(noBackstop.args.flatMap((a, i) => (noBackstop.args[i - 1] === '-p' ? [a] : [])), ['OOMPolicy=continue', 'Delegate=yes', 'MemorySwapMax=0'], 'reserve 0: delegated, swap closed, no scope-level MemoryMax');
+  const scope = '/user.slice/user-1000.slice/user@1000.service/app.slice/orchestra-ws-w1-abc.scope';
+  assert.equal(scopePathOfCgroup(scope), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/${SCOPE_LEAF_KEEPER}`), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/${SCOPE_LEAF_WORK}`), scope);
+  assert.equal(scopePathOfCgroup(`${scope}/other`), `${scope}/other`, 'a directory that is not one of our leaves is not mapped');
+  assert.equal(scopePathOfCgroup('/'), '/');
+});
+
+test('#332 kernelKillsForUnit: a kill whose victim lived in the work leaf (`<unit>/w`) belongs to the unit; a victim in the KEEPER leaf (a scope-level backstop episode, not in the work leaf\'s counter) and another unit\'s leaf do not', () => {
+  const mk = (memcg: string, pid: number) => ({ atMs: 1000, pid, comm: 'python3', oomMemcg: memcg, taskMemcg: memcg });
+  const u = 'orchestra-ws-w1-abc.scope';
+  const lines = [mk(`/a/b/${u}/w`, 1), mk(`/a/b/${u}`, 2), mk('/a/b/orchestra-ws-w2-abc.scope/w', 3), mk(`/a/b/${u}/k`, 4), mk(`/a/b/x${u}/w`, 5)];
+  assert.deepEqual(kernelKillsForUnit(lines, u, 0).map((l) => l.pid), [1, 2]);
+  // the victim's memcg decides: an episode opened at the scope but whose victim sat in the work leaf IS a work-leaf kill
+  assert.deepEqual(kernelKillsForUnit([{ atMs: 1000, pid: 9, comm: 'python3', oomMemcg: `/a/b/${u}`, taskMemcg: `/a/b/${u}/w` }], u, 0).map((l) => l.pid), [9]);
 });
 
 test('buildScopeLaunchArgv: clause 1 without clause 2 = a scope with no limits (only OOMPolicy)', () => {
@@ -272,6 +310,25 @@ test('the tool wrapper: raises ONLY its own tree to +1000, hands the single comm
     assert.equal(execFileSync(w, ['printf', '%s', 'two-args'], { env, encoding: 'utf8' }), 'two-args', 'review m: the arity guard — argv ≠ 1 is exec\'d as is, never fed to the user shell as a command string');
     // a non-bash/zsh SHELL (fish…) falls back to bash instead of failing the command
     assert.match(execFileSync(w, ['echo fine'], { env: { ...env, SHELL: '/usr/bin/fish' }, encoding: 'utf8' }), /fine/);
+    // #332: a capped member's tool shell moves ITSELF into the work leaf named by the env (a plain file here; the cgroup.procs of the real leaf in the rig) — and ONLY then
+    const leafDir = path.join(dir, 'leaf');
+    fs.mkdirSync(leafDir);
+    const r = spawnSync(w, ['echo moved'], { env: { ...env, [WORK_LEAF_ENV]: leafDir }, encoding: 'utf8' });
+    assert.equal(r.stdout.trim(), 'moved');
+    assert.equal(fs.readFileSync(path.join(leafDir, 'cgroup.procs'), 'utf8').trim(), String(r.pid), 'the wrapper wrote ITS OWN pid (the shell it became) into the work leaf');
+    const none = spawnSync(w, ['echo plain'], { env, encoding: 'utf8' });
+    assert.equal(none.stdout.trim(), 'plain');
+    assert.equal(fs.readdirSync(leafDir).length, 1, 'no WORK_LEAF env (an uncapped / pre-#332 keeper) ⇒ the wrapper moves nothing');
+    const broken = spawnSync(w, ['echo still-runs'], { env: { ...env, [WORK_LEAF_ENV]: path.join(dir, 'no-such-leaf') }, encoding: 'utf8' });
+    assert.equal(broken.stdout.trim(), 'still-runs', 'a leaf that cannot be entered never stops the tool (it stays at adj 1000 under the scope backstop)');
+    assert.equal(broken.stderr, '', 'review #332: …and SILENTLY — the shell\'s own open error must not reach the tool\'s stderr (the redirect covers the whole group)');
+    assert.equal(broken.status, 0);
+    // review #332 (item 2): the move happens BEFORE the arity guard, so a call with more (or fewer) than one argument — which is exec'd as given — is moved into the leaf too (it is a tool all the same)
+    const leaf2 = path.join(dir, 'leaf2');
+    fs.mkdirSync(leaf2);
+    const multi = spawnSync(w, ['printf', '%s', 'multi'], { env: { ...env, [WORK_LEAF_ENV]: leaf2 }, encoding: 'utf8' });
+    assert.equal(multi.stdout, 'multi');
+    assert.equal(fs.readFileSync(path.join(leaf2, 'cgroup.procs'), 'utf8').trim(), String(multi.pid), 'a non-1-arg call is moved too');
     // our own adj stays at 0: the wrapper changed only the process it exec'd into
     assert.equal(fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim(), baseline, 'the wrapper raised only the process it exec\'d into, not its caller');
     assert.notEqual(baseline, String(OOM_ADJ_TOOLS), 'precondition: the baseline is not already 1000, else the raise proves nothing');
@@ -290,10 +347,32 @@ test('wrapperPathUsable: only an absolute path without whitespace can be CLAUDE_
   for (const bad of ['/home/my user/.orchestra/bin/w.sh', 'bin/w.sh', '', undefined, null, '/tmp/a\tb']) assert.equal(wrapperPathUsable(bad as string | undefined), false, String(bad));
 });
 
+test('describeCapState (#332): active names the work leaf and says what sits outside it; unprotected says NOTHING is capped at the hard level', () => {
+  const act = describeCapState('active', 'u.scope', 6 * GIB).text;
+  assert.match(act, /work leaf/);
+  assert.match(act, /MCP servers \/ hooks/);
+  assert.match(act, /keeper and the CLI process sit outside/);
+  const un = describeCapState('unprotected', 'u.scope', 6 * GIB).text;
+  assert.match(un, /NOTHING is capped at the hard level \(6\.00 GB\)/);
+  assert.doesNotMatch(un, /kill the CLI/, 'the old text («the kernel would kill the CLI first») is no longer true');
+});
+
+test('decideCapState (#332-fu, OPS 7259): a wrapper that cannot RUN (prefix dropped) or an open swap escape is `not-applied`; a wrapper that ran but missed the work leaf, or no wrapper, is `unprotected`; only a clean setup is `active`', () => {
+  const ok = { swapOk: true, wrapperOk: true, wrapperRuns: true, placed: true };
+  assert.equal(decideCapState(ok), 'active');
+  assert.equal(decideCapState({ ...ok, placed: false }), 'unprotected', 'ran, landed elsewhere: prefix kept, state unprotected');
+  assert.equal(decideCapState({ ...ok, wrapperOk: false }), 'unprotected', 'no usable wrapper');
+  assert.equal(decideCapState({ ...ok, wrapperRuns: false, wrapperOk: false, placed: false }), 'not-applied', 'cannot run: the member is UNCAPPED');
+  assert.equal(decideCapState({ ...ok, swapOk: false }), 'not-applied');
+  assert.equal(decideCapState({ ...ok, swapOk: false, placed: false }), 'not-applied', 'not-applied wins over unprotected');
+  assert.match(describeCapState('not-applied', 'u.scope', 6 * GIB).text, /tool wrapper cannot be RUN/, 'the app WARN names this cause too');
+  assert.equal(describeCapState('not-applied', 'u.scope', 6 * GIB).level, 'warn');
+});
+
 test('describeCapState: only `active` is info; unprotected / not-applied / no-scope / unknown say what the member is left with', () => {
   assert.equal(describeCapState('active', 'u.scope', 6 * GIB).level, 'info');
   for (const st of ['unprotected', 'not-applied', 'no-scope', undefined] as const) assert.equal(describeCapState(st, 'u.scope', 6 * GIB).level, 'warn', String(st));
-  assert.match(describeCapState('unprotected', 'u.scope', 6 * GIB).text, /kill the CLI/);
+  assert.match(describeCapState('unprotected', 'u.scope', 6 * GIB).text, /NOTHING is capped/);
   assert.match(describeCapState('not-applied', 'u.scope', 6 * GIB).text, /UNCAPPED/);
   assert.match(describeCapState(undefined, 'u.scope', 6 * GIB).text, /UNVERIFIED/);
 });

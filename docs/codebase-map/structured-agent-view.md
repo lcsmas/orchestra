@@ -353,7 +353,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   / refusal / permission-denied / notification / warning / info /
   command-output / interrupted) surfaces `rate_limit_event`, `auth_status`,
   `system/{compact_boundary, local_command(_output), informational, notification,
-  permission_denied, model_refusal_*}` as quiet system rows
+  permission_denied, model_refusal_*}` as quiet system rows (a built-in command's
+  output does NOT arrive as `system/local_command` on the stream — see **Built-in
+  command output (#341)** below)
   (`NoticeRow.tsx`, `.av-notice-*`). `interrupted` renders as a centered
   hairline divider with a square "stop" dot (`.av-notice-interrupted`), and
   the fold collapses back-to-back `interrupted` notices into one row. **`AgentStatusEvent`**
@@ -833,6 +835,44 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   drop), marker → `interrupted` notice (trailing typed text survives as its own
   bubble). Applied by BOTH the live normalize `user` branch and the
   `transcriptToEvents` backfill so live and reopened views agree.
+- **Built-in command output (#341)** — `/recap`, `/usage`, `/model`, `/context`,
+  `/help` … render as ONE `command-output` row (`NoticeRow`, preformatted), live
+  AND after reopen; empty output renders nothing, raw XML never. **Measured on the
+  real path** (CLI 2.1.291 + SDK 0.3.241, `query()` streaming-input vs the local fake
+  API; fixture `scripts/fixtures/payloads/local-command.capture.json`): what
+  `consume()` receives for a built-in is NOT `system/local_command(_output)` but a
+  SYNTHETIC `assistant` message (`message.model:'<synthetic>'`, ZERO `stream_event`
+  deltas) tagged top-level **`local_command_source`**
+  (`<local-command-stdout>…</…>`, + `local_command_run:{command,args}` or
+  `local_command_outcome`); `/help` in a headless session answers "isn't available".
+  The `assistant` branch assumed "text already streamed via stream_event" and lifted
+  only `tool_use`, so the output was dropped — the live cause. Fix in
+  `normalizeSdkMessage` `case 'assistant'`: `local_command_source` ⇒
+  `wrappedCommandOutput()` (the one reading, `agent-events.ts`: wrapper → text,
+  empty wrapper → `''`, not a wrapper → `null` ⇒ fall back to the message's text
+  blocks) ⇒ a `command-output` notice, AFTER the usage tracking and `/context`'s
+  `context_usage` lift (those still run). **The CLI re-emits the last local-command
+  message (same top-level `uuid`) after `/compact`**, so `ctx.localCommandUuids`
+  (bounded 256, per stream context) drops a replay wholesale before it touches
+  `lastApiCallUsage`. Backfill: the transcript carries the same text as
+  `{type:'system', subtype:'local_command', content:'<local-command-stdout>…'}`;
+  `transcriptToEvents` now reads `system` lines (only that subtype, main chain,
+  wrapper content via the same `wrappedCommandOutput`, line timestamp). A BARE
+  `system/local_command` content (`/help`) is the invocation echo, not output —
+  skipped on disk (the live `system/local_command(_output)` branch is unchanged and
+  still passes bare text through; the real stream never carries it). An SDK
+  `resume` does not replay old local-command messages (measured). Guards:
+  `src/shared/builtin-command-output.test.ts` (18 arms against the real capture,
+  incl. the real `/recap`→`/compact` re-emit; 16 fail on master),
+  `pnpm run test:command-output-mutants` (`scripts/command-output-mutants.mjs`,
+  18 mutants + 1 predicted-equivalent that must SURVIVE), and the built-app drive
+  `pnpm run test:command-output-e2e` (`scripts/command-output/e2e-command-output.sh
+  <app-dir> [--expect fixed|master]`: own headless sway + the REAL `claude` against
+  the local fake API inside bwrap net+pid; backfill from the real transcript capture,
+  live `/recap` → `/compact` → `/model` through the composer; `--expect master` is
+  the must-FAIL arm — bubble, no row; a build without the uuid dedupe shows the
+  recap row twice after `/compact`). Rig trap: the contained rig's `$$` is 2 inside
+  the pid namespace, so the wrapper gives every run a fresh `E2E_RIG_BASE`.
 - **Interrupt is not an error** — a user-requested interrupt ends the turn with
   an `is_error` result (`subtype: error_during_execution`) that used to raise a
   red "agent turn errored (error_during_execution)" banner. `emitFrom` now
@@ -1474,7 +1514,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   wire's `msg.origin`, via the now-exported `originLabel`) so claude.ai/peer-originated
   turns keep their badge on reopen. Slash-command invocation frames
   (`<command-name>…`) are NOT synthetic on disk and still reconstruct as the
-  `/cmd args` user bubble — same as live.
+  `/cmd args` user bubble — same as live. **`system/local_command` lines** (a built-in
+  command's output, e.g. `/recap`) become the same `command-output` notice as live
+  (#341); other `system` lines (`compact_boundary`, …) are still skipped.
   `agent-sdk.ts sdkHistory(wsId)` locates the
   file (`<configDir>/projects/<mangleProjectDir(worktreePath)>/<sdkSessionId>.jsonl`,
   tail-capped at 4MB) and StructuredView requests it through the

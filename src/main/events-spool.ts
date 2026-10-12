@@ -397,6 +397,7 @@ export function startEventsSpool(): void {
     label: 'Activité des agents',
     dir: EVENTS_DIR,
     fallback: `${POLL_MS / 1000} s poll`,
+    fallbackFr: `une lecture toutes les ${POLL_MS / 1000} s`,
     onChange: (filename) => {
       if (!filename) {
         drainAll();

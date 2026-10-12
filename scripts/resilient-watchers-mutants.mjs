@@ -2,7 +2,7 @@
 // (scripts/e2e-resilient-watchers.mjs), and must turn red at least one NAMED test / rig check. Restored by byte-exact backup + `cmp` after every mutant; `git diff` of the mutated files must be empty at
 // the end (commit first). A CLI-affecting mutant rebuilds dist-electron/cli.js (the instrument is rebuilt, never reused stale); the clean build is restored at the end.
 // NOT heavy by the wave rule: no browser / app / keeper / scope / Docker — unit suites + the rig (one node process per arm + the built CLI). Survivors printed: stray rig processes + leftover scratch dirs.
-// Run: node scripts/resilient-watchers-mutants.mjs [--only R01,R02] [--check-anchors] [--no-rig]
+// Run: node scripts/resilient-watchers-mutants.mjs [--only R01,R02] [--check-anchors | --check] [--no-rig]   (--check = alias of --check-anchors: a DRY anchor check. --only takes mutant ids or their leading code (R01); an unknown option, a bare argument or an unknown id is REFUSED: exit 2, nothing run)
 // `smoke: true` also runs the SSR render smoke (scripts/watchers-strip-render-smoke.mjs): its failing checks become `smoke:<label>`.
 // `expect` = a substring of a reddened unit test title, or `rig:<arm>:<check>` (a failing rig check), or `rig:<arm>` (any check of that arm) — at least one MUST be red.
 
@@ -16,10 +16,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const BACKUP = path.join(os.homedir(), '.cache', 'h2-330', 'mutant-backup');
-fs.mkdirSync(BACKUP, { recursive: true });
 const args = process.argv.slice(2);
-const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
+const KNOWN_FLAGS = new Set(['--only', '--check-anchors', '--check', '--no-rig']);
+const unknownFlags = args.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+const positional = args.filter((a, i) => !a.startsWith('-') && !(i > 0 && args[i - 1] === '--only'));
+const onlyAt = args.indexOf('--only');
+const onlyArg = onlyAt >= 0 ? args[onlyAt + 1] : undefined;
+const refuse = (why) => { console.error(`REFUSING: ${why} — NOTHING was run. Known: --only ID,ID | --check-anchors (alias --check: dry) | --no-rig`); process.exit(2); }; // fail CLOSED: nothing falls through to the mutating sweep
+if (unknownFlags.length) refuse(`unknown option(s) ${unknownFlags.join(' ')}`);
+if (positional.length) refuse(`unexpected argument(s) ${positional.join(' ')} (ids go after --only, comma-separated)`);
+if (onlyAt >= 0 && (onlyArg === undefined || onlyArg === '' || onlyArg.startsWith('-'))) refuse('--only needs a comma-separated list of mutant ids');
+const only = onlyAt >= 0 ? new Set(onlyArg.split(',')) : null;
 const noRig = args.includes('--no-rig');
+const dryCheck = args.includes('--check-anchors') || args.includes('--check');
 
 const RW = 'src/shared/resilient-watch.ts';
 const WS = 'src/shared/watcher-status.ts';
@@ -113,7 +122,7 @@ const MUTANTS = [
   { id: 'S01_summary_word_lowercase', file: WS, find: '· ${d.length} DEGRADED —', to: '· ${d.length} degraded —', expect: ['degraded: summary line names', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: true },
   { id: 'S02_limit_never_named', file: WS, find: "${limit ? ' (system watch limit reached)' : ''}; the app re-arms by itself", to: "${limit ? '' : ''}; the app re-arms by itself", expect: ['degraded: summary line names', 'a non-limit degradation', 'rig:degraded:bus_status_names_the_system_limit'], rig: ['degraded'], cli: true },
   { id: 'S03_every_error_is_the_limit', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  const lines = [", to: 'const limit = true;\n  const lines = [', expect: ['a non-limit degradation'] },
-  { id: 'S12_strip_claims_the_limit_for_any_cause', file: WS, find: "const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {", to: 'const limit = true;\n  return {', expect: ['strip copy (D-Q8 A)'] },
+  { id: 'S12_strip_claims_the_limit_for_any_cause', file: WS, find: "    default:\n      return 'surveillance de fichiers interrompue';", to: "    default:\n      return 'limite de surveillance de fichiers atteinte';", expect: ['strip copy (review m2)'] },
   { id: 'S13_strip_pull_not_ordered', file: WS, find: '(!prev || next.rev >= prev.rev ? next : prev)', to: '(next)', expect: ['newerWatchers'] },
   { id: 'S14_strip_older_wins', file: WS, find: '(!prev || next.rev >= prev.rev ? next : prev)', to: '(!prev || next.rev <= prev.rev ? next : prev)', expect: ['newerWatchers'] },
   { id: 'S04_edge_key_counts_attempts', file: WS, find: '.map((w) => `${w.name}@${w.since}:${w.lastError?.code ?? \'\'}`)', to: '.map((w) => `${w.name}@${w.since}:${w.lastError?.code ?? \'\'}@${w.attempts}`)', expect: ['degradedOf / degradedLabels / degradedKey'] },
@@ -126,7 +135,13 @@ const MUTANTS = [
   { id: 'S08_fallback_not_named', file: WS, find: ' · meanwhile: ${w.fallback}`', to: '`', expect: ['degraded: summary line names'] },
   { id: 'S09_since_is_now', file: WS, find: 'DEGRADED since ${clock(w.since)} (', to: 'DEGRADED since ${clock(now)} (', expect: ['degraded: summary line names'] },
   { id: 'S11_dir_not_in_the_line', file: WS, find: ' · ${w.dir} · meanwhile:', to: ' · meanwhile:', expect: ['degraded: summary line names'] },
-  { id: 'S10_strip_never_shown', file: WS, find: "  if (d.length === 0) return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", to: "  if (d.length === 0) return null;\n  return null;\n  const limit = d.some((w) => w.lastError?.code === 'EMFILE' || w.lastError?.code === 'ENOSPC');\n  return {\n    title:", expect: ['strip copy (D-Q8 A)'] },
+  // ── follow-up (review m2): one cause per watcher, one language ──
+  { id: 'S18_estale_called_a_limit', file: WS, find: "    case 'ESTALE':\n      return 'dossier surveillé supprimé ou déplacé';", to: "    case 'ESTALE':\n      return 'limite de surveillance de fichiers atteinte';", expect: ['strip copy (review m2)'] },
+  { id: 'S19_one_cause_for_all_the_watchers', file: WS, find: "groups.set(causeFr(w.lastError), [...new Set([...(groups.get(causeFr(w.lastError)) ?? []), w.label])]);", to: "groups.set(causeFr(d[0].lastError), [...new Set([...(groups.get(causeFr(d[0].lastError)) ?? []), w.label])]);", expect: ['strip copy (review m2)'] },
+  { id: 'S20_tooltip_english_fallback', file: WS, find: "en attendant : ${w.fallbackFr}", to: "en attendant : ${w.fallback}", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'S21_tooltip_english_cause', file: WS, find: "${causeFr(w.lastError)}${w.lastError?.code ? ` (${w.lastError.code})` : ''} · en attendant", to: "${w.lastError ? plainWatchError(w.lastError) : 'erreur inconnue'} · en attendant", expect: ['strip tooltip (review m2)', 'strip copy (D-Q8 A)', 'smoke:the tooltip carries one line per degraded watcher'], smoke: true },
+  { id: 'S22_snapshot_drops_the_french_fallback', file: RW, find: "fallbackFr: spec.fallbackFr }", to: "fallbackFr: spec.fallback }", expect: ['the snapshot carries BOTH fallbacks'] },
+  { id: 'S10_strip_never_shown', file: WS, find: "  if (d.length === 0) return null;\n  // ONE cause per group of watchers", to: "  if (d.length === 0) return null;\n  return null;\n  // ONE cause per group of watchers", expect: ['strip copy (D-Q8 A)'] },
   // ── the registry + production binding (src/main/watchers.ts) ──
   { id: 'W01_never_registered', file: WR, find: '      armed.add(handle);\n      inner.start();', to: '      inner.start();', expect: ['EMFILE at arm: bus-status data lists it degraded', 'rig:degraded:bus_status_lists_six_degraded'], rig: ['degraded'], cli: false },
   { id: 'W02_stop_keeps_registered', file: WR, find: '      armed.delete(handle); // first:', to: '      void 0; // first:', expect: ['stop() of a DEGRADED watcher clears', 'healthy watcher: listed as ok', 'rig:shutdown:registry_empty_after_shutdown'], rig: ['shutdown'] },
@@ -230,10 +245,19 @@ const strays = () => {
 };
 const scratchLeft = () => { try { return fs.readdirSync(path.join(os.homedir(), '.cache', 'e2e-rw')).length; } catch { return 0; } };
 
+// `--only` tokens must NAME a mutant (its full id or its leading code): an unknown one used to select nothing and print « MUTANTS: 0/0 killed » with exit 0 — a vacuous green (review m1).
+const codeOf = (m) => m.id.split('_')[0];
+const dupCodes = [...new Set(MUTANTS.map(codeOf).filter((c, i, all) => all.indexOf(c) !== i))];
+if (dupCodes.length) refuse(`two mutants share the code ${dupCodes.join(',')} — --only CODE would select both (rename one)`);
+const wanted = (m) => !only || only.has(m.id) || only.has(codeOf(m));
+if (only) {
+  const unknown = [...only].filter((t) => !MUTANTS.some((m) => m.id === t || m.id.split('_')[0] === t));
+  if (unknown.length) refuse(`--only names no mutant: ${unknown.join(',')}`);
+}
 const editsOf = (m) => m.edits ?? [{ find: m.find, to: m.to }];
 // a restore re-stamps the file: any mutant under src/shared or src/cli (the CLI bundle's inputs) makes the bundle STALE for the next mutant's rig — rebuild around it, always
 for (const m of MUTANTS) if (m.file.startsWith('src/shared/') || m.file.startsWith('src/cli/')) m.cli = true;
-if (args.includes('--check-anchors')) {
+if (dryCheck) {
   let bad = 0;
   for (const m of MUTANTS) {
     let text = fs.readFileSync(path.join(REPO, m.file), 'utf8'); let why = null;
@@ -244,6 +268,7 @@ if (args.includes('--check-anchors')) {
   process.exit(bad ? 1 : 0);
 }
 
+fs.mkdirSync(BACKUP, { recursive: true }); // scratch exists only for a real sweep, never for the dry check or a refusal
 const files = [...new Set(MUTANTS.map((m) => m.file))];
 const dirty = sh('git', ['diff', '--quiet', '--', ...files, ...TESTS, 'scripts/e2e-resilient-watchers.mjs', 'scripts/resilient-watchers-mutants.mjs']).status !== 0;
 if (dirty) { console.error('REFUSING: the mutated files / suites / rig have uncommitted changes — commit first (the end-of-sweep `git diff` must prove restoration)'); process.exit(2); }
@@ -264,7 +289,7 @@ const restore = (m, backupFile) => {
   if (spawnSync('cmp', ['-s', backupFile, path.join(REPO, m.file)]).status !== 0) { restoreBad = true; console.error(`RESTORE FAILED for ${m.file} — stop and fix by hand: git checkout -- ${m.file}`); }
 };
 for (const m of MUTANTS) {
-  if (only && !only.has(m.id)) continue;
+  if (!wanted(m)) continue;
   const abs = path.join(REPO, m.file);
   const original = fs.readFileSync(abs, 'utf8');
   let mutated = original; let anchorBad = null;

@@ -255,6 +255,7 @@ const api: OrchestraAPI = {
   setMemoryGuard: (next) => ipcRenderer.invoke('settings:setMemoryGuard', next),
   accesMobile: () => ipcRenderer.invoke('settings:accesMobile'),
   setAccesMobile: (next) => ipcRenderer.invoke('settings:setAccesMobile', next),
+  regenerateAccesMobileToken: () => ipcRenderer.invoke('settings:regenerateAccesMobileToken'),
   refreshTickets: () => ipcRenderer.invoke('tickets:refresh'),
   removeTicket: (identifier) => ipcRenderer.invoke('tickets:remove', identifier),
   spawnFromTicket: (identifier, repoPath) =>

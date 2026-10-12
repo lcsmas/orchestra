@@ -84,7 +84,14 @@ export interface NormalizeContext {
    *  final call's `input + cache + output` measures what's actually in the
    *  window. */
   lastApiCallUsage?: RawUsage | null;
+  /** `uuid`s of the local-command output messages already normalized on this
+   *  stream (#341), so the CLI's post-`/compact` re-emit of the last one renders
+   *  nothing. Bounded by {@link LOCAL_COMMAND_UUID_CAP}; created on first use. */
+  localCommandUuids?: Set<string>;
 }
+
+/** How many local-command `uuid`s a stream context remembers (oldest dropped). */
+const LOCAL_COMMAND_UUID_CAP = 256;
 
 interface RawDelta {
   type?: string;
@@ -162,6 +169,16 @@ export interface SdkMessage {
   // at CLI 2.1.234; snake_case, unlike `getContextUsage()`'s camelCase, so it
   // gets its own adapter rather than a cast.
   context_usage?: ContextCommandUsagePayload;
+  /** assistant (#341): the OUTPUT of a built-in slash command (`/recap`, `/usage`,
+   *  `/model`, `/context`, `/help` …) — the CLI yields it as a SYNTHETIC assistant
+   *  message (`message.model: '<synthetic>'`, NO `stream_event` deltas) carrying the
+   *  `<local-command-stdout>…</local-command-stdout>` text here, beside `message`.
+   *  Measured at CLI 2.1.291 / SDK 0.3.241 (scripts/fixtures `local-command.capture.json`);
+   *  no `system/local_command(_output)` message is emitted for these. */
+  local_command_source?: string;
+  /** Per-message identity. The CLI RE-EMITS the last local-command message (same
+   *  `uuid`) after a `/compact` — {@link normalizeSdkMessage} dedupes on it. */
+  uuid?: string;
   /** user: the `tool_result_meta` SIDECAR — display metadata for this message's
    *  `tool_result` blocks, keyed by `tool_use_id`. A WRAPPER-LEVEL sibling of
    *  `message` (never inside `message.content`), so it is not replayed to the
@@ -578,6 +595,12 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       return msg.event ? normalizeStreamEvent(ctx, msg.event) : [];
 
     case 'assistant': {
+      // #341: a built-in slash command's OUTPUT is a synthetic assistant message
+      // tagged `local_command_source` — no stream deltas ever carry its text, so
+      // the "text already streamed" assumption below would drop it. The CLI
+      // re-emits the last one (same uuid) after `/compact`: already rendered.
+      const localCmd = typeof msg.local_command_source === 'string';
+      if (localCmd && seenLocalCommand(ctx, msg.uuid)) return [];
       // Track the newest top-level API call's usage for the context gauge —
       // sidechain (subagent) calls are excluded: their context is not this
       // session's window.
@@ -597,6 +620,13 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
       if (msg.context_usage) {
         const usage = normalizeContextCommandUsage(msg.context_usage, ctx.now ? ctx.now() : Date.now());
         if (usage) out.push(stamp(ctx, { type: 'session/context', usage }));
+      }
+      if (localCmd) {
+        // Unwrap `<local-command-stdout|stderr>` (never raw XML); an unrecognised
+        // shape falls back to the message's own text blocks; empty renders nothing.
+        const text = wrappedCommandOutput(msg.local_command_source) ?? textBlocksOf(content);
+        if (text) out.push(stamp(ctx, { type: 'notice', kind: 'command-output', text }));
+        return out; // nothing else to lift: a local command has no tool_use blocks
       }
       if (!Array.isArray(content)) return out;
       for (const b of content) {
@@ -1011,6 +1041,39 @@ export function classifyUserText(raw: string): UserTextClassification {
     return { kind: 'command-output', text: inner.join('\n') };
   }
   return { kind: 'text', text };
+}
+
+/** The output text a `<local-command-stdout|stderr>` wrapper carries (blocks
+ *  joined by `\n`): `''` for an empty wrapper (render nothing), `null` when
+ *  `content` is not such a wrapper. The ONE reading of built-in command output
+ *  shared by the live stream (`assistant.local_command_source`) and the on-disk
+ *  backfill (`system/local_command`, agent-transcript.ts) — a bare string there
+ *  is the command INVOCATION echo (`/help`), not output, hence `null`. #341. */
+export function wrappedCommandOutput(content: unknown): string | null {
+  if (typeof content !== 'string') return null;
+  const c = classifyUserText(content);
+  return c.kind === 'command-output' ? c.text : null;
+}
+
+/** Whether this local-command message `uuid` was already normalized on `ctx`;
+ *  records it otherwise. A message without a uuid is never a duplicate. */
+function seenLocalCommand(ctx: NormalizeContext, uuid: string | undefined): boolean {
+  if (typeof uuid !== 'string' || !uuid) return false;
+  const seen = (ctx.localCommandUuids ??= new Set<string>());
+  if (seen.has(uuid)) return true;
+  seen.add(uuid);
+  if (seen.size > LOCAL_COMMAND_UUID_CAP) seen.delete(seen.values().next().value as string);
+  return false;
+}
+
+/** The trimmed joined `text` blocks of an assistant message's content ('' when none). */
+function textBlocksOf(content: RawContentBlock[] | string | undefined): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((b) => (b.type === 'text' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : ''))
+    .join('\n')
+    .trim();
 }
 
 /** Extract renderable user TEXT from a stream `user` message's content —
