@@ -58,7 +58,7 @@ MUTANTS = [
     ('C3-relay-any-kind', 'src/acces-mobile/server.ts', "          else if (t === 'conv' || t === 'workspaces') res.write", "          else res.write", 'RED'),
     ('C4-no-stream-cap', 'src/acces-mobile/server.ts', "      if (openStreams >= MAX_STREAMS) return refuse(429, 'too-many-streams');", "      if (false) return refuse(429, 'too-many-streams');", 'RED'),
     ('C5-miss-not-recorded', 'src/main/acces-mobile-feed-core.ts', "      e.missedWhileLoading = true;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
-    ('C6-reload-every-turn', 'src/main/acces-mobile-feed-core.ts', "    if (event.type === 'turn-end' && e.missedWhileLoading) e.reloadPending = true;", "    if (event.type === 'turn-end') e.reloadPending = true;", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
+    ('C6-reload-every-turn', 'src/main/acces-mobile-feed-core.ts', "    if (event.type === 'turn-end' && (e.missedWhileLoading || e.suspect)) {", "    if (event.type === 'turn-end') {", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
     ('C7-ask-not-recognized', 'src/shared/acces-mobile-conversation.ts', "a.name === 'AskUserQuestion'", "a.name === 'AskUserQuestionX'", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('C8-id-unvalidated', 'src/acces-mobile/server.ts', "      return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;", "      return id || null;", 'RED'),
     ('C9-tap-never-disarmed', 'src/main/acces-mobile-feed-core.ts', "  untap?.();\n  untap = null;\n", "", 'RED', 'src/main/acces-mobile-feed-core.test.ts'),
@@ -171,7 +171,6 @@ MUTANTS = [
     ('N15-sorted-by-the-desktop-name', 'src/shared/acces-mobile.ts', "a.displayName.localeCompare(b.displayName) || ", "", 'RED', 'src/shared/acces-mobile.test.ts'),
     ('N16-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'RED', PL),
     ('N13-stand-in-full-name', 'src/acces-mobile/page.ts', "document.createTextNode((n.row.displayName || n.row.name) + ' ')", "document.createTextNode(n.row.name + ' ')", 'RED', PL),
-    ('N13-fold-owner-full-name', 'src/acces-mobile/page.ts', "name: byId[pid].displayName || byId[pid].name })", "name: byId[pid].name })", 'RED', PL),
     # ── 2026-10-12 wave I: launch a workspace from the phone (#375) ──
     ('LA1-launch-post-refused', 'src/acces-mobile/server.ts', " || pathOnly === '/api/launch'))) return refuse(405, 'method');", "))) return refuse(405, 'method');", 'RED', SLAUNCH),
     ('LA2-launch-body-unvalidated', 'src/acces-mobile/server.ts', "        if (!parsed.ok) return refuse(400, 'bad-launch');\n        relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "        relay('/mobile/launch', body, MOBILE_LAUNCH_TIMEOUT_MS);", 'RED', SLAUNCH),
@@ -241,17 +240,6 @@ MUTANTS = [
     ('CV4-abandoned-refresh-moves-the-throttle-clock', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n      lastFetch = Date.now();\n', '      lastFetch = Date.now();\n      if (!id) { inflight = false; again = false; return; }\n', 'RED', CLOSERACE),
     ('CV5-stale-success-draws-into-the-next-conversation', 'src/acces-mobile/conversation.ts', "          if (id !== current) return;\n          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", "          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", 'RED', CLOSERACE),
     ('CV6-late-failure-paints-the-next-conversation', 'src/acces-mobile/conversation.ts', '.catch(function () { if (id !== current) return; var stEl', '.catch(function () { var stEl', 'RED', CLOSERACE),
-    ('FH1-empty-history-trusted', 'src/main/acces-mobile-feed-core.ts', '  e.suspect = lagging || e.session.messages.length === 0;\n  if (e.suspect) scheduleEmptyHeal(id, e);\n  else e.emptyRetries = 0;\n', '  e.suspect = false;\n  e.emptyRetries = 0;\n', 'RED', FEEDCORE),
-    ('FH2-heal-announces-the-same-version', 'src/main/acces-mobile-feed-core.ts', '    e.version++; // a CHANGED version: the phone only refetches on a version it does not have\n', '', 'RED', FEEDCORE),
-    ('FH3-heal-unbounded', 'src/main/acces-mobile-feed-core.ts', 'if (e.emptyTimer || e.emptyRetries >= EMPTY_RETRY_MAX) return;', 'if (e.emptyTimer) return;', 'EQUIV', FEEDCORE),  # the retry budget is also checked at the read-time reload and on reloadPending: the timer's own check is the third guard
-    ('FH5-dropped-entry-keeps-its-timer', 'src/main/acces-mobile-feed-core.ts', '  if (e?.emptyTimer) clearTimeout(e.emptyTimer);\n', '', 'RED', FEEDCORE),
-    ('FH6-empty-conversation-never-re-read', 'src/main/acces-mobile-feed-core.ts', '(e.reloadPending || (e.suspect && e.session.messages.length === 0 && e.emptyRetries < EMPTY_RETRY_MAX))', '(e.reloadPending)', 'RED', FEEDCORE),
-    ('FH7-lagging-disk-replaces-the-live-fold', 'src/main/acces-mobile-feed-core.ts', '  const lagging = e.suspect && next.messages.length < e.session.messages.length;\n', '  const lagging = false;\n', 'RED', FEEDCORE),
-    ('FH8-turn-end-does-not-re-read-a-suspect-entry', 'src/main/acces-mobile-feed-core.ts', '(e.missedWhileLoading || e.suspect)) e.reloadPending = true;', '(e.missedWhileLoading)) e.reloadPending = true;', 'RED', FEEDCORE),
-    ('FH9-retry-timer-never-clears', 'src/main/acces-mobile-feed-core.ts', '    e.emptyTimer = null;\n    e.emptyRetries++;', '    e.emptyRetries++;', 'RED', FEEDCORE),
-    ('FH10-retry-budget-one', 'src/main/acces-mobile-feed-core.ts', 'export const EMPTY_RETRY_MAX = 5;', 'export const EMPTY_RETRY_MAX = 1;', 'RED', FEEDCORE),
-    ('FH11-re-read-mid-turn', 'src/main/acces-mobile-feed-core.ts', 'if (!e.loading && !running(id, e) && (e.reloadPending ||', 'if (!e.loading && (e.reloadPending ||', 'RED', FEEDCORE),
-    ('FH12-rejected-re-read-retries-forever', 'src/main/acces-mobile-feed-core.ts', '  e.reloadPending = lagging && e.emptyRetries < EMPTY_RETRY_MAX;\n', '  e.reloadPending = lagging;\n', 'RED', FEEDCORE),
     ('LA40-launch-unattended-by-main', 'src/main/acces-mobile-routes.ts', "        return launcher.launch(msg);", "        return { ok: true };", 'RED', WIRING),
     ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
     # ── 2026-10-12 (#374): the phone and the desktop share ONE tool line (src/shared/tool-line.ts) ──
@@ -317,6 +305,34 @@ MUTANTS = [
     ('TT17-self-parent-guards-removed', 'src/shared/acces-mobile-tree.ts', "    parentOf.push(p !== undefined && p !== i ? p : -1);\n    if (p !== undefined && p !== i) kidsOf[p].push(i);", "    parentOf.push(p !== undefined ? p : -1);\n    if (p !== undefined) kidsOf[p].push(i);", 'EQUIV', TREE),
     # EQUIVALENT (documented, reviewer R373): differs only WITH duplicate ids, which cannot exist (store.ts upserts by id, ids are randomUUID())
     ('TT18-last-duplicate-wins', 'src/shared/acces-mobile-tree.ts', "if (first[rows[i].id] === undefined) first[rows[i].id] = i;", "first[rows[i].id] = i;", 'EQUIV', TREE),
+    ('FH1-suspect-never-set', 'src/main/acces-mobile-feed-core.ts', '  e.suspect = hot || e.session.messages.length === 0 || (next.messages.length === 0 && have > 0);\n  if (e.suspect) scheduleHeal(id, e);\n  else {\n    e.healReads = 0;\n    e.healSkips = 0;\n  }\n', '  e.suspect = false;\n  e.healReads = 0;\n  e.healSkips = 0;\n', 'RED', FEEDCORE),
+    ('FH2-heal-announces-the-same-version', 'src/main/acces-mobile-feed-core.ts', '    e.version++; // a CHANGED version: the phone only refetches on a version it does not have\n', '', 'RED', FEEDCORE),
+    ('FH3-heal-timer-ignores-the-budget', 'src/main/acces-mobile-feed-core.ts', 'if (e.healTimer || e.healReads >= HEAL_RETRY_MAX) return;', 'if (e.healTimer) return;', 'RED', FEEDCORE),
+    ('FH5-dropped-entry-keeps-its-timer', 'src/main/acces-mobile-feed-core.ts', '  if (e?.healTimer) clearTimeout(e.healTimer);\n', '', 'RED', FEEDCORE),
+    ('FH6-read-without-being-due', 'src/main/acces-mobile-feed-core.ts', '} else if (!e.loading && e.reloadPending && e.healReads < HEAL_RETRY_MAX) {', '} else if (!e.loading && e.healReads < HEAL_RETRY_MAX) {', 'RED', FEEDCORE),
+    ('FH7-lagging-disk-replaces-the-live-fold', 'src/main/acces-mobile-feed-core.ts', '  const install = have === 0 || next.messages.length > have || (!hot && next.messages.length === have);\n', '  const install = true;\n', 'RED', FEEDCORE),
+    ('FH7b-equal-length-hot-read-installs', 'src/main/acces-mobile-feed-core.ts', '(!hot && next.messages.length === have)', '(next.messages.length === have)', 'RED', FEEDCORE),
+    ('FH8-turn-end-does-not-re-read-a-suspect-entry', 'src/main/acces-mobile-feed-core.ts', '(e.missedWhileLoading || e.suspect)) {\n      e.reloadPending = true;', '(e.missedWhileLoading)) {\n      e.reloadPending = true;', 'RED', FEEDCORE),
+    ('FH9-retry-timer-never-clears', 'src/main/acces-mobile-feed-core.ts', '    e.healTimer = null;\n    if (!e.suspect) return;', '    if (!e.suspect) return;', 'RED', FEEDCORE),
+    ('FH10-retry-budget-one', 'src/main/acces-mobile-feed-core.ts', 'export const HEAL_RETRY_MAX = 5;', 'export const HEAL_RETRY_MAX = 1;', 'RED', FEEDCORE),
+    ('FH11-re-read-mid-turn', 'src/main/acces-mobile-feed-core.ts', '    if (running(id, e)) {\n      if (e.healSkips++', '    if (false) {\n      if (e.healSkips++', 'RED', FEEDCORE),
+    ('FH12-every-read-owes-another', 'src/main/acces-mobile-feed-core.ts', '  e.reloadPending = false;\n  if (e.missedWhileLoading) e.healReads = 0;', '  e.reloadPending = true;\n  if (e.missedWhileLoading) e.healReads = 0;', 'RED', FEEDCORE),
+    ('FH13-never-hot', 'src/main/acces-mobile-feed-core.ts', '  const hot = last !== undefined && last > startedAt - (deps.lagMs ?? LAG_MS);\n', '  const hot = false;\n', 'RED', FEEDCORE),
+    ('FH14-activity-not-recorded', 'src/main/acces-mobile-feed-core.ts', '    lastEventAt.set(wsId, now());\n', '', 'RED', FEEDCORE),
+    ('FH15-always-hot', 'src/main/acces-mobile-feed-core.ts', '  const hot = last !== undefined && last > startedAt - (deps.lagMs ?? LAG_MS);\n', '  const hot = last !== undefined;\n', 'RED', FEEDCORE),
+    ('FH16-retries-ignore-the-quiet-window', 'src/main/acces-mobile-feed-core.ts', '  const delay = e.healReads === 0 ? (deps.healMs ?? HEAL_MS) : Math.max(deps.healMs ?? HEAL_MS, trustIn);\n', '  const delay = deps.healMs ?? HEAL_MS;\n', 'RED', FEEDCORE),
+    ('FH17-turn-end-keeps-the-spent-budget', 'src/main/acces-mobile-feed-core.ts', '      e.healReads = 0; // the budget is per turn\n', '', 'RED', FEEDCORE),
+    ('FH18-activity-table-unbounded', 'src/main/acces-mobile-feed-core.ts', '    if (lastEventAt.size > MAX_ACTIVITY) lastEventAt.delete(lastEventAt.keys().next().value as string);\n', '', 'RED', FEEDCORE),
+    ('FH19-empty-read-earns-the-trust', 'src/main/acces-mobile-feed-core.ts', 'e.session.messages.length === 0 || (next.messages.length === 0 && have > 0);', 'e.session.messages.length === 0;', 'RED', FEEDCORE),
+    ('FH20-skipped-heal-never-asked-again', 'src/main/acces-mobile-feed-core.ts', 'if (e.healSkips++ < HEAL_RETRY_MAX) scheduleHeal(id, e);', 'e.healSkips++;', 'RED', FEEDCORE),
+    ('FH21-skipped-heals-unbounded', 'src/main/acces-mobile-feed-core.ts', 'if (e.healSkips++ < HEAL_RETRY_MAX) scheduleHeal(id, e);', 'scheduleHeal(id, e);', 'RED', FEEDCORE),
+    ('FH22-lost-events-keep-the-spent-budget', 'src/main/acces-mobile-feed-core.ts', '  if (e.missedWhileLoading) e.healReads = 0; // lost events are not lag: the follow-up read is owed whatever the budget says (before it is scheduled)\n', '', 'RED', FEEDCORE),
+    ('FH23-hot-judged-from-the-end-of-the-read', 'src/main/acces-mobile-feed-core.ts', 'last > startedAt - (deps.lagMs ?? LAG_MS)', 'last > now() - (deps.lagMs ?? LAG_MS)', 'RED', FEEDCORE),
+    ('FH24-default-quiet-window-1ms', 'src/main/acces-mobile-feed-core.ts', 'const LAG_MS = 5000;', 'const LAG_MS = 1;', 'RED', FEEDCORE),
+    ('FH25-default-heal-pace-1ms', 'src/main/acces-mobile-feed-core.ts', 'const HEAL_MS = 1000;', 'const HEAL_MS = 1;', 'RED', FEEDCORE),
+    ('FH26-default-heal-pace-never', 'src/main/acces-mobile-feed-core.ts', 'const HEAL_MS = 1000;', 'const HEAL_MS = 600000;', 'RED', FEEDCORE),
+    ('FH27-activity-recency-not-refreshed', 'src/main/acces-mobile-feed-core.ts', '    lastEventAt.delete(wsId);\n', '', 'RED', FEEDCORE),
+    ('FH28-retries-without-the-pace-floor', 'src/main/acces-mobile-feed-core.ts', 'Math.max(deps.healMs ?? HEAL_MS, trustIn)', 'trustIn', 'RED', FEEDCORE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -370,6 +386,8 @@ E2E_MUTANTS = [
     ('E53-launch-loses-the-prompt', 'src/main/acces-mobile-launch.ts', 'res = await deps.spawn({ repoPath, task: prompt });', "res = await deps.spawn({ repoPath, task: 'ignore le prompt du telephone' });", 'launch/creates-workspace'),
     ('E54-prompt-optional-on-the-phone', 'src/acces-mobile/launch.ts', '      go.disabled = st.busy || !st.sel || !ta.value.trim();', '      go.disabled = st.busy || !st.sel;', 'launch/phone-prompt-and-repo-required'),
     ('E55-plus-button-dead', 'src/acces-mobile/page.ts', "  document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });", '', 'launch/phone-form-lists-repos-with-compte'),
+    ('E58-slow-first-turn-read-trusted', 'src/main/acces-mobile-feed-core.ts', "  const hot = last !== undefined && last > startedAt - (deps.lagMs ?? LAG_MS);\n", "  const hot = false;\n", 'launch/slow-first-turn-shows-the-prompt-and-the-answer'),
+    ('E59-activity-not-recorded', 'src/main/acces-mobile-feed-core.ts', "    lastEventAt.set(wsId, now());\n", "", 'launch/slow-first-turn-shows-the-prompt-and-the-answer'),
 ]
 
 def run_e2e(ids):

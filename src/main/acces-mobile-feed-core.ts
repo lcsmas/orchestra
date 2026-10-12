@@ -23,8 +23,10 @@ export interface FeedDeps {
   /** Mid-turn right now (the store's status) — the history fold always ends with a synthetic turn end (#337 review M2). */
   isRunning?: (id: string) => boolean;
   now?: () => number;
-  /** How long an EMPTY history waits before it is re-read (#375). */
-  emptyRetryMs?: number;
+  /** Pace of the re-reads of a suspect history (#375). */
+  healMs?: number;
+  /** A transcript read that started less than this after the workspace's last agent event may predate it (#375). */
+  lagMs?: number;
 }
 
 /** At most this many folded conversations in memory (LRU), each dropped after IDLE_MS without a read while no stream is open. */
@@ -32,11 +34,13 @@ export const MAX_CACHED = 6;
 const IDLE_MS = 10 * 60_000;
 /** A change announcement per conversation at most this often (text deltas arrive per token). */
 const ANNOUNCE_MS = 400;
-/** #375: a workspace opened on the phone right after it was launched can be read BEFORE its transcript is on disk (a fast first turn is over
- *  before the CLI wrote its file): the empty history was cached for good and nothing refreshed it. An empty history is now re-read every
- *  EMPTY_RETRY_MS, at most EMPTY_RETRY_MAX times — each time with a CHANGED version, since the phone ignores an announcement of the version it has. */
-const EMPTY_RETRY_MS = 1000;
-export const EMPTY_RETRY_MAX = 5;
+/** #375: a history read that is EMPTY or started within LAG_MS of the workspace's last agent event may predate the CLI's own flush: it is suspect
+ *  and re-read (first after HEAL_MS, then once past the quiet window; at most HEAL_RETRY_MAX times) until a read starts after LAG_MS of quiet. */
+const HEAL_MS = 1000;
+export const HEAL_RETRY_MAX = 5;
+const LAG_MS = 5000;
+/** Last-event times kept for workspaces the phone has not opened (a launch's answer is over before its conversation is first read). */
+const MAX_ACTIVITY = 256;
 
 export type FeedMessage = { t: 'conv'; id: string; v: number } | { t: 'workspaces' } | { t: 'ping' };
 
@@ -51,12 +55,11 @@ interface Entry {
    *  for every turn would replace the live fold with a disk read that can lag behind it. */
   reloadPending: boolean;
   announceTimer: NodeJS.Timeout | null;
-  /** #375: the empty-history heal — attempts so far and the pending timer. `suspect` = the history was EMPTY at the last read (the CLI had
-   *  not written its transcript yet): the live fold may lack its head (events emitted before the feed was armed). A suspect entry is
-   *  re-read from disk at the next turn end, a re-read may only GROW the conversation (the disk can lag behind the live fold), and an
-   *  empty one is re-read on a short bounded timer. */
-  emptyRetries: number;
-  emptyTimer: NodeJS.Timeout | null;
+  /** #375 heal: `suspect` = the last read was empty or hot (see LAG_MS); it is re-read on `healTimer` and at each turn end, `healReads` bounded. */
+  healReads: number;
+  /** Heal reads skipped because the store still says « running » (its status can lag the turn-end event): each re-arms the timer, bounded. */
+  healSkips: number;
+  healTimer: NodeJS.Timeout | null;
   suspect: boolean;
 }
 
@@ -65,6 +68,7 @@ export type MobileFeed = ReturnType<typeof createMobileFeed>;
 export function createMobileFeed(deps: FeedDeps) {
 const now = deps.now ?? Date.now;
 const cache = new Map<string, Entry>();
+const lastEventAt = new Map<string, number>(); // insertion order = recency
 const listeners = new Set<(m: FeedMessage) => void>();
 let untap: (() => void) | null = null;
 let sweepTimer: NodeJS.Timeout | null = null;
@@ -90,6 +94,9 @@ function announce(id: string, e: Entry): void {
 function onTap(channel: string, args: unknown[]): void {
   if (channel === 'agent:event') {
     const [wsId, event] = args as [string, AgentEvent];
+    lastEventAt.delete(wsId);
+    lastEventAt.set(wsId, now());
+    if (lastEventAt.size > MAX_ACTIVITY) lastEventAt.delete(lastEventAt.keys().next().value as string);
     const e = cache.get(wsId);
     if (!e) return;
     if (e.loading) {
@@ -98,7 +105,12 @@ function onTap(channel: string, args: unknown[]): void {
     }
     e.session = foldEvent(e.session, event);
     e.version++;
-    if (event.type === 'turn-end' && (e.missedWhileLoading || e.suspect)) e.reloadPending = true;
+    if (event.type === 'turn-end' && (e.missedWhileLoading || e.suspect)) {
+      e.reloadPending = true;
+      e.healReads = 0; // the budget is per turn
+      e.healSkips = 0;
+      if (e.suspect) scheduleHeal(wsId, e);
+    }
     announce(wsId, e);
   } else if (channel === 'workspace:update' || channel === 'workspace:removed' || channel === 'workspaces:removed' || channel === 'workspace:added') {
     if (listeners.size) emit({ t: 'workspaces' });
@@ -124,7 +136,7 @@ function disarmIfIdle(): void {
 function drop(id: string): void {
   const e = cache.get(id);
   if (e?.announceTimer) clearTimeout(e.announceTimer);
-  if (e?.emptyTimer) clearTimeout(e.emptyTimer);
+  if (e?.healTimer) clearTimeout(e.healTimer);
   cache.delete(id);
 }
 
@@ -136,22 +148,25 @@ function sweep(): void {
   disarmIfIdle();
 }
 
-/** A suspect entry is re-read soon (#375): the phone is told to read again after a short wait, bounded by EMPTY_RETRY_MAX. */
-function scheduleEmptyHeal(id: string, e: Entry): void {
-  if (e.emptyTimer || e.emptyRetries >= EMPTY_RETRY_MAX) return;
-  e.emptyTimer = setTimeout(() => {
-    e.emptyTimer = null;
-    e.emptyRetries++;
-    // nothing left to heal: trusted now, or live events filled the session and no re-read is owed (a turn end sets reloadPending)
-    if (!e.suspect || (e.session.messages.length > 0 && !e.reloadPending)) return;
+/** A suspect entry is re-read soon (#375): the first retry after HEAL_MS, the next once a read would be past LAG_MS of quiet. */
+function scheduleHeal(id: string, e: Entry): void {
+  if (e.healTimer || e.healReads >= HEAL_RETRY_MAX) return;
+  const last = lastEventAt.get(id);
+  const trustIn = last === undefined ? 0 : last + (deps.lagMs ?? LAG_MS) + 100 - now();
+  const delay = e.healReads === 0 ? (deps.healMs ?? HEAL_MS) : Math.max(deps.healMs ?? HEAL_MS, trustIn);
+  e.healTimer = setTimeout(() => {
+    e.healTimer = null;
+    if (!e.suspect) return;
+    e.reloadPending = true;
     e.version++; // a CHANGED version: the phone only refetches on a version it does not have
     announce(id, e);
-  }, deps.emptyRetryMs ?? EMPTY_RETRY_MS);
-  e.emptyTimer.unref?.();
+  }, delay);
+  e.healTimer.unref?.();
 }
 
 async function load(id: string, e: Entry): Promise<void> {
   e.missedWhileLoading = false; // misses DURING this read count; earlier ones are covered by it
+  const startedAt = now();
   let next: AgentSession;
   try {
     const events = await deps.loadHistory(id);
@@ -160,16 +175,23 @@ async function load(id: string, e: Entry): Promise<void> {
     deps.warn?.(`history for ${id} could not be read — the phone shows live events only`, err);
     next = emptySession(id);
   }
-  // #375: a re-read of a SUSPECT entry may only grow the conversation. The disk can lag behind the live fold (the CLI flushes its transcript
-  // after the events were emitted): replacing a longer live fold by a shorter read dropped the user line (rig conv/live-turn). Rejected ⇒
-  // still suspect, retried on the bounded timer.
-  const lagging = e.suspect && next.messages.length < e.session.messages.length;
-  if (!lagging) e.session = next;
+  // HOT = an agent event of this workspace came less than LAG_MS before the read started (or during it): the CLI flushes its transcript
+  // after emitting, so the read may lack the tail. The conversation only GROWS through a heal; an equal-length read counts only when not hot.
+  const last = lastEventAt.get(id);
+  const hot = last !== undefined && last > startedAt - (deps.lagMs ?? LAG_MS);
+  const have = e.session.messages.length;
+  const install = have === 0 || next.messages.length > have || (!hot && next.messages.length === have);
+  if (install) e.session = next;
   e.version++;
-  e.reloadPending = lagging && e.emptyRetries < EMPTY_RETRY_MAX;
-  e.suspect = lagging || e.session.messages.length === 0;
-  if (e.suspect) scheduleEmptyHeal(id, e);
-  else e.emptyRetries = 0;
+  e.reloadPending = false;
+  if (e.missedWhileLoading) e.healReads = 0; // lost events are not lag: the follow-up read is owed whatever the budget says (before it is scheduled)
+  // an EMPTY read of a non-empty conversation (the read failed, or the file is mid-rewrite) says nothing: it never earns the trust
+  e.suspect = hot || e.session.messages.length === 0 || (next.messages.length === 0 && have > 0);
+  if (e.suspect) scheduleHeal(id, e);
+  else {
+    e.healReads = 0;
+    e.healSkips = 0;
+  }
   // Events arrived WHILE we read (#337 review M3: possibly the turn end itself): the read may predate them. Re-fold from disk at
   // the next read once the turn is over, and tell the phone something changed.
   if (e.missedWhileLoading) {
@@ -187,17 +209,22 @@ async function getMobileConversation(id: string): Promise<PhoneConversation> {
       const oldest = [...cache.entries()].sort((a, b) => a[1].lastRead - b[1].lastRead)[0];
       if (oldest) drop(oldest[0]);
     }
-    e = { session: emptySession(id), version: 0, lastRead: now(), loading: null, missedWhileLoading: false, reloadPending: false, announceTimer: null, emptyRetries: 0, emptyTimer: null, suspect: false };
+    e = { session: emptySession(id), version: 0, lastRead: now(), loading: null, missedWhileLoading: false, reloadPending: false, announceTimer: null, healReads: 0, healSkips: 0, healTimer: null, suspect: false };
     cache.set(id, e);
     const entry = e;
     entry.loading = load(id, entry).finally(() => {
       entry.loading = null;
     });
-  } else if (!e.loading && !running(id, e) && (e.reloadPending || (e.suspect && e.session.messages.length === 0 && e.emptyRetries < EMPTY_RETRY_MAX))) {
-    const entry = e;
-    entry.loading = load(id, entry).finally(() => {
-      entry.loading = null;
-    });
+  } else if (!e.loading && e.reloadPending && e.healReads < HEAL_RETRY_MAX) {
+    if (running(id, e)) {
+      if (e.healSkips++ < HEAL_RETRY_MAX) scheduleHeal(id, e); // nothing is re-read mid-turn; the status may lag the turn end, so ask again soon
+    } else {
+      const entry = e;
+      entry.healReads++;
+      entry.loading = load(id, entry).finally(() => {
+        entry.loading = null;
+      });
+    }
   }
   e.lastRead = now();
   if (e.loading) await e.loading;
@@ -228,8 +255,8 @@ function subscribeMobileFeed(listener: (m: FeedMessage) => void): () => void {
 }
 
 /** Test/diagnostic view. */
-function mobileFeedState(): { cached: string[]; listeners: number; tapped: boolean } {
-  return { cached: [...cache.keys()], listeners: listeners.size, tapped: !!untap };
+function mobileFeedState(): { cached: string[]; listeners: number; tapped: boolean; activity: number } {
+  return { cached: [...cache.keys()], listeners: listeners.size, tapped: !!untap, activity: lastEventAt.size };
 }
 
 return { getMobileConversation, subscribeMobileFeed, mobileFeedState, sweep };

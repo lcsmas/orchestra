@@ -213,10 +213,11 @@ const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', heade
 let wantAsk = 0;
 // #375: a sentinel in every phone-launched prompt — `marks` on a model request says the prompt REACHED the session.
 const LAUNCH_SENTINEL = 'LANCEMENT-TEL-SENTINELLE-7f3a';
-const fakeApi = await startFakeApi({ keepAttachmentData: true, markers: { launch: LAUNCH_SENTINEL }, reply: (rec) => {
+const fakeOpts = { keepAttachmentData: true, markers: { launch: LAUNCH_SENTINEL }, reply: (rec) => {
   if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
   return { text: FAKE_REPLY_MD };
-} });
+} };
+const fakeApi = await startFakeApi(fakeOpts); // fakeOpts.replyDelayMs is read per request: the slow-first-turn arm sets it
 const LOGIN = 'rig.owner@example.invalid';
 const world = (() => {
   const d = path.join(RIG_DIR, 'world');
@@ -738,6 +739,25 @@ try {
     for (const route of ['/mobile/launch', '/mobile/repos']) forgedOnHooks.push(await reqPost(mainSock2, route, { 'Content-Type': 'application/json' }, JSON.stringify({ repoPath: repoPathA, prompt: 'forged launch from a local agent', requestId: crypto.randomUUID() })));
     await sleep(1500);
     clause('launch/hooks-socket-has-no-launch-route', forgedOnHooks.every((r) => r.body === '{}') && (await wsList()).length === nWs && !(await wsList()).some((w) => w.lastTask === 'forged launch from a local agent'), `hooks /mobile/launch + /mobile/repos answered ${forgedOnHooks.map((r) => r.body)}; workspaces ${nWs} -> ${(await wsList()).length}`);
+  }
+
+  // A SLOW first turn (verifier MAJOR on 7377c71e, 0/3): the launch returns at the session's first output, so the answer is over when the phone opens
+  // and the CLI has flushed the user line only. The phone must still end on user + answer — no event follows to tell the feed.
+  {
+    fakeOpts.replyDelayMs = 8000;
+    const SLOW_PROMPT = `${LAUNCH_SENTINEL} première réponse lente (8 s)`;
+    let slowLaunch;
+    try { slowLaunch = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: SLOW_PROMPT })); } finally { fakeOpts.replyDelayMs = 0; }
+    const SL = slowLaunch.status === 200 ? JSON.parse(slowLaunch.body) : { ok: false };
+    await phone.eval(`location.hash = 'w=' + ${JSON.stringify(SL.id)}; true`);
+    const convKinds = () => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind)`);
+    let kinds = [], shownAfter = null;
+    const tSlow = Date.now();
+    while (Date.now() - tSlow < 25000) { kinds = await convKinds(); if (kinds.includes('user') && kinds.includes('assistant')) { shownAfter = Date.now() - tSlow; break; } await sleep(500); }
+    const apiKinds = await (async () => { try { return JSON.parse((await proxyGet(ownerProxy.port, '/api/conversation?id=' + encodeURIComponent(SL.id), BEARER)).body).lines.map((l) => l.kind); } catch { return ['?']; } })();
+    clause('launch/slow-first-turn-shows-the-prompt-and-the-answer', SL.ok === true && shownAfter !== null && apiKinds.includes('assistant'), `launch ok ${SL.ok}; the phone showed [${kinds}] ${shownAfter === null ? 'NEVER (25 s)' : shownAfter + ' ms after opening'}; /api/conversation lines [${apiKinds}]`);
+    await phone.eval(`location.hash = ''; true`);
+    await sleep(500);
   }
 
   // ── the phone's own screen (design A, ledger #377 D-Q1): « + » → #new → repo cards + prompt + « Lancer » → the conversation ──
