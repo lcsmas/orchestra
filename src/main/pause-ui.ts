@@ -11,7 +11,7 @@ import { getRun, runHoldAuthority, setRunHold } from './bus-runs.ts';
 import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type RunPauseOutcome } from './bus-pause.ts';
 import { listBilan, readPauseOrigin, recordPauseOrigin, replacePauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
-import { readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
+import { presentMembers, readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
 import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
@@ -142,7 +142,7 @@ function runView(db: BusDb, deps: PauseUiDeps, carrierId: string, auto: boolean,
   if (!pv || pv.carrierRunId !== carrierId) return null;
   const label = labeler(deps);
   const bilans = new Map(listBilan(db, carrierId, pv.pausedAt).map((b) => [b.wsId, b]));
-  const roster = readRoster(db, carrierId, pv.pausedAt);
+  const roster = presentMembers(readRoster(db, carrierId, pv.pausedAt));
   const rp = repriseStatusView(db, carrierId);
   const own = rp && rp.carrier === carrierId ? rp : null;
   return {
@@ -170,7 +170,7 @@ function trackedRepriseRun(db: BusDb, deps: PauseUiDeps, carrierId: string, titl
   const rp = repriseStatusView(db, carrierId);
   if (!rp || rp.carrier !== carrierId || rp.phase !== 'active') return null;
   const label = labeler(deps);
-  const roster = readRoster(db, carrierId, rp.pausedAt);
+  const roster = presentMembers(readRoster(db, carrierId, rp.pausedAt));
   const bilans = new Map(listBilan(db, carrierId, rp.pausedAt).map((b) => [b.wsId, b]));
   const sum = pauseRosterSummary('resuming', roster);
   return {

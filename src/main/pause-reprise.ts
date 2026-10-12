@@ -73,6 +73,13 @@ function liveTree(): LiveTree | null {
   }
 }
 const sameId = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+/** `released_by` of a member whose workspace was DELETED mid-pause: it can neither be released by anyone nor accuse, so the host releases it and every count drops it. */
+export const GONE_BY = 'host:supprimé';
+/** The roster minus members whose workspace was deleted (absent from the live tree; an archived one stays). No tree known ⇒ unchanged (UNKNOWN is not NONE). */
+export function presentMembers<T extends { wsId: string }>(rows: readonly T[]): T[] {
+  const tree = liveTree();
+  return tree ? rows.filter((r) => tree.get(r.wsId) !== undefined) : [...rows];
+}
 /** `id` and its ancestors along the live `parentId` chain, self first (bounded; stops at a parent the tree does not have). `dangling` = it stopped at a parent the tree no
  *  longer has (a deleted ancestor): the chain says nothing about what lies above. */
 function liveChainInfo(tree: LiveTree, id: string): { ids: string[]; dangling: boolean } {
@@ -996,7 +1003,7 @@ export function repriseStatusView(db: BusDb, runId: string): RepriseStatusView |
       pausedAt = Number(last.m);
       phase = 'active';
     }
-    const rows = readRoster(db, id, pausedAt);
+    const rows = presentMembers(readRoster(db, id, pausedAt)); // a deleted member is neither "repris" nor "bloqué"
     if (rows.length === 0) continue;
     if (phase === 'active' && !rows.some((r) => r.releasedAt !== null)) continue; // an old pause that never reached a Reprise
     // a forgotten accusé (an archived / deleted / sandbox member that will never send one) stops nagging a day after the last release
@@ -1036,6 +1043,17 @@ export interface RepriseSweepDeps {
  * when the roster is fully released. Idempotent; a no-op for a switch-OFF run (only ever resuming when the switch was ON). Returns the carriers
  * that went ACTIVE.
  */
+/** A deleted member blocks `finishRepriseIfDone` for ever (nobody can release it): released by the host as {@link GONE_BY}. Writes only rows still unreleased (no-op once done). */
+function releaseGoneMembers(db: BusDb, carrierRunId: string, pausedAt: number, live: ReadonlyArray<{ wsId: string }>, now: number): void {
+  const tree = liveTree();
+  if (!tree) return;
+  const listed = new Set(live.map((m) => m.wsId.toLowerCase())); // a member the live enumeration lists is alive, whatever the tree says
+  const upd = db.prepare('UPDATE pause_members SET released_at = ?, released_by = ? WHERE run_id = ? AND paused_at = ? AND ws_id = ? AND released_at IS NULL');
+  for (const r of readRoster(db, carrierRunId, pausedAt)) {
+    if (r.releasedAt === null && tree.get(r.wsId) === undefined && !listed.has(r.wsId.toLowerCase())) upd.run(now, GONE_BY, carrierRunId, pausedAt, r.wsId);
+  }
+}
+
 export function sweepReprise(deps: RepriseSweepDeps): string[] {
   const db = deps.getBus();
   if (!db) return [];
@@ -1057,6 +1075,7 @@ export function sweepReprise(deps: RepriseSweepDeps): string[] {
           const cur = readCarrierColumns(db, c.id);
           if (cur && cur.pausedAt === Number(c.paused_at) && cur.resumeStartedAt !== null) {
             seedRoster(db, c.id, Number(c.paused_at), subtree, members);
+            releaseGoneMembers(db, c.id, Number(c.paused_at), members, Date.now());
             // #292: a begin that PARKED its coordinators (containers owed) releases them once the container step is done; while any restart is still owed nothing parked is released
             // (not even by the late pass below — a parked coordinator is Bilan'd, so the late pass would otherwise open the gate before its containers are back)
             const owed = containersOwed(db, c.id);

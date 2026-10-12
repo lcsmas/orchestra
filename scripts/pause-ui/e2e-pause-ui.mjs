@@ -146,6 +146,7 @@ console.log(`[rig] app ${APP_DIR ?? PACKAGED} label ${LABEL} arms ${ARMS.join(',
 for (const arm of ARMS) {
   if (arm === 'ipc') await armIpc();
   else if (arm === 'ui') { const { armUi } = await import('./ui-arm.mjs'); await armUi({ bootArm, rec, guard, OUT, LABEL, RIG_DIR, RIG_WAYLAND, APP_DIR, PACKAGED }); }
+  else if (arm === 'gone') { const { armGone } = await import('./gone-arm.mjs'); await armGone({ bootArm, rec, LABEL }); }
   else refuse(`unknown arm ${arm}`);
 }
 const after = liveCanary(LIVE_HOME);

@@ -19,6 +19,7 @@ import { insertBilan, recordPauseOrigin } from './bus-pause-records.ts';
 import {
   confirmReprise,
   finishRepriseIfDone,
+  GONE_BY,
   releasedWhileResuming,
   REPRISE_TRACKING_TTL_MS,
   readCarrierColumns,
@@ -496,6 +497,32 @@ test('SWEEP closes a Reprise whose roster is already fully released (coordinator
   assert.equal(readRoster(b.db, 'L', readCarrierColumns(b.db, 'L')!.pausedAt!).some((r) => r.wsId === 'w9' && r.releasedAt === null), true);
   assert.equal(finishRepriseIfDone(b.db, 'L'), false);
   b.db.close();
+});
+
+test('DELETED members (gone from the live tree): out of every count, released by the host sweep as GONE_BY, so the Reprise closes', () => {
+  const { db } = freshDb();
+  tree(db);
+  const pausedAt = pauseAndTrap(db);
+  beginReprise(db, 'L', 'L');
+  const alive = NODES.filter((w) => w.id !== 'o2' && w.id !== 'x1'); // o2 and x1 deleted mid-Reprise
+  const m = new Map(alive.map((w) => [w.id, w]));
+  setLiveTreeSource(() => ({ get: (id) => m.get(id), ids: () => alive.map((w) => w.id) }));
+  try {
+    const v = repriseStatusView(db, 'L')!;
+    assert.deepEqual([v.total, v.released, v.done], [7, 4, 0], 'a deleted member is not counted');
+    assert.deepEqual(v.blocked.sort(), ['l1', 'o1', 's1'], 'nor named bloqué');
+    const deps = { getBus: () => db, members: () => alive.filter((w) => w.parentId).map((w) => ({ wsId: w.id, runId: w.parentId! })), subtree: runSubtreeIds };
+    assert.deepEqual(sweepReprise(deps), [], 'live members still blocked');
+    const gone = readRoster(db, 'L', pausedAt).filter((r) => r.releasedBy === GONE_BY).map((r) => r.wsId).sort();
+    assert.deepEqual(gone, ['o2', 'x1'], 'the host released exactly the deleted members');
+    releaseMembers(db, 'L', 'O', ['o1']);
+    releaseMembers(db, 'L', 'S', ['s1']);
+    releaseMembers(db, 'L', 'L', ['l1']);
+    assert.equal(readCarrierColumns(db, 'L')!.pausedAt, null, 'the last live release closed the Reprise — deleted members no longer hold it');
+  } finally {
+    setLiveTreeSource(null);
+    db.close();
+  }
 });
 
 // ── durability: the app is DOWN / restarts ──────────────────────────────────

@@ -29,6 +29,7 @@ import {
 } from '../shared/pause-lifecycle.ts';
 import { renderPauseOrder, softDeadlineAt, type PauseStatusView } from '../shared/pause-douce.ts';
 import type { TrapDeps, TrapMember } from './pause-trap.ts';
+import { presentMembers } from './pause-reprise.ts';
 import { log } from './logger.ts';
 
 /** Where the host drops a member's pause order for its tool-result hook (production: pause-trap-host.ts). `write` replaces, `remove` is idempotent. */
@@ -426,7 +427,7 @@ export function pauseStatusView(db: BusDb, runId: string): PauseStatusView | nul
   const cols = readCarrierColumns(db, hit.runId);
   if (!cols) return null;
   const phase = pausePhaseOf(cols);
-  const rows = listRoster(db, hit.runId, hit.pausedAt);
+  const rows = presentMembers(listRoster(db, hit.runId, hit.pausedAt)); // a deleted member is not counted
   return {
     carrierRunId: hit.runId,
     mode: cols.mode,
