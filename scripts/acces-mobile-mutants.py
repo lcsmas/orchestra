@@ -11,6 +11,8 @@ TEST = 'src/acces-mobile/server.test.ts'
 PWA = 'src/acces-mobile/pwa.test.ts'
 PL = 'src/acces-mobile/page-list.test.ts'
 TREE = 'src/shared/acces-mobile-tree.test.ts'
+CSS = 'src/acces-mobile/page-css.test.ts'
+CV = 'src/acces-mobile/conversation.ts'
 PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
@@ -187,6 +189,26 @@ MUTANTS = [
     ('TT14-sections-reversed', 'src/shared/acces-mobile-tree.ts', "out.groups.push(g);", "out.groups.unshift(g);", 'RED', TREE),
     ('TT15-siblings-reversed', 'src/shared/acces-mobile-tree.ts', "if (p !== undefined && p !== i) kidsOf[p].push(i);", "if (p !== undefined && p !== i) kidsOf[p].unshift(i);", 'RED', TREE),
     ('TT16-depth-flat', 'src/shared/acces-mobile-tree.ts', "depth[kid] = depth[cur] + 1;", "depth[kid] = 1;", 'RED', TREE),
+    # ── #373-fu (review R373-1 / R373-2): the layout geometry and the memoised ancestor walk ──
+    ('L5-memo-not-read', 'src/shared/acces-mobile.ts', "      if (resolved.has(cur)) { answer = resolved.get(cur); break; }\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L6-memo-not-filled', 'src/shared/acces-mobile.ts', "    for (const id of path) resolved.set(id, answer);\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L7-no-loop-guard', 'src/shared/acces-mobile.ts', "      if (onPath.has(cur)) break;\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L8-negative-answer-not-memoised', 'src/shared/acces-mobile.ts', "    for (const id of path) resolved.set(id, answer);\n", "    if (answer !== undefined) for (const id of path) resolved.set(id, answer);\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('CSS13-row-padding-moves-the-root-glyph', CV, "padding:12px 20px;border-bottom:1px solid var(--hairf);cursor:pointer}", "padding:12px 24px;border-bottom:1px solid var(--hairf);cursor:pointer}", 'RED', CSS),
+    ('CSS14-small-row-padding-moves-the-root-glyph', CV, ".v1 .row.small{padding:10px 20px}", ".v1 .row.small{padding:10px 24px}", 'RED', CSS),
+    ('CSS15-stand-in-glyph-column-wider', CV, ".v1 .so-g{width:22px;", ".v1 .so-g{width:26px;", 'RED', CSS),
+    ('CSS1-clamp-removed', CV, "--d:min(var(--depth),8);", "--d:var(--depth);", 'RED', CSS),
+    ('CSS2-clamp-too-early', CV, "--d:min(var(--depth),8);", "--d:min(var(--depth),3);", 'RED', CSS),
+    ('CSS3-step-not-16', CV, "--ind:calc(20px + var(--d)*16px)", "--ind:calc(20px + var(--d)*14px)", 'RED', CSS),
+    ('CSS4-rail-size-unclamped', CV, "background-size:calc(var(--d)*16px) 100%", "background-size:calc(var(--depth)*16px) 100%", 'RED', CSS),
+    ('CSS5-rail-off-by-one-px', CV, "transparent 0 15px,var(--hair2) 15px 16px", "transparent 0 14px,var(--hair2) 14px 15px", 'RED', CSS),
+    ('CSS6-fold-line-not-indented', CV, "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px 54px", 'RED', CSS),
+    ('CSS7-fold-text-not-under-the-title', CV, "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px calc(var(--ind,20px) + 30px)", 'RED', CSS),
+    ('CSS8-stand-in-not-indented', CV, ".v1 .fold-owner.stand{display:flex;align-items:center;gap:12px;padding-left:var(--ind)}", ".v1 .fold-owner.stand{display:flex;align-items:center;gap:12px}", 'RED', CSS),
+    ('CSS9-nested-row-not-indented', CV, ".v1 .row.child{padding-left:var(--ind);", ".v1 .row.child{padding-left:42px;", 'RED', CSS),
+    ('CSS10-no-rail-on-fold-lines', CV, ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .row.child,.v1 .fold-owner.stand{background-image", 'RED', CSS),
+    ('CSS11-no-rail-on-stand-in', CV, ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .row.child,.v1 .fold[data-depth]{background-image", 'RED', CSS),
+    ('CSS12-rail-anchored-wrong', CV, "background-repeat:no-repeat;background-position:16px 0;", "background-repeat:no-repeat;background-position:20px 0;", 'RED', CSS),
     ('TT33-cycle-walked-from-the-first-row-not-its-entry', 'src/shared/acces-mobile-tree.ts', "    walk(x);\n  }\n  roots.sort(", "    walk(i);\n  }\n  roots.sort(", 'RED', TREE),
     ('TT19-fold-counts-direct-kids', 'src/acces-mobile/page.ts', "li.appendChild(el('span', 'fold-n', n.agents + ' agent' + (n.agents > 1 ? 's' : '')));", "li.appendChild(el('span', 'fold-n', n.kids.length + ' agent' + (n.kids.length > 1 ? 's' : '')));", 'RED', PL),
     ('TT20-fold-running-not-shown', 'src/acces-mobile/page.ts', "    if (n.running) li.appendChild(el('span', 'fold-run', n.running + ' en cours'));\n", "", 'RED', PL),
@@ -204,7 +226,7 @@ MUTANTS = [
     ('TT32-a-fold-never-closes', 'src/acces-mobile/page.ts', "    li.addEventListener('click', function () { open[id] = !open[id]; render(); });", "    li.addEventListener('click', function () { open[id] = true; render(); });", 'RED', PL),
     # EQUIVALENT (documented): a self-parent is also handled by the cycle pass (the row is its own kid, seen ⇒ skipped) — the explicit guards are belt and braces
     ('TT17-self-parent-guards-removed', 'src/shared/acces-mobile-tree.ts', "    parentOf.push(p !== undefined && p !== i ? p : -1);\n    if (p !== undefined && p !== i) kidsOf[p].push(i);", "    parentOf.push(p !== undefined ? p : -1);\n    if (p !== undefined) kidsOf[p].push(i);", 'EQUIV', TREE),
-    # EQUIVALENT (documented): duplicate workspace ids do not exist; which duplicate owns the children is unobservable
+    # EQUIVALENT (documented, reviewer R373): differs only WITH duplicate ids, which cannot exist (store.ts upserts by id, ids are randomUUID())
     ('TT18-last-duplicate-wins', 'src/shared/acces-mobile-tree.ts', "if (first[rows[i].id] === undefined) first[rows[i].id] = i;", "first[rows[i].id] = i;", 'EQUIV', TREE),
 ]
 
@@ -248,6 +270,11 @@ E2E_MUTANTS = [
     ('E31-stand-in-not-drawn', 'src/acces-mobile/page.ts', "    ul.appendChild(n.standIn ? standIn(n) : row(n.row, false, n.depth));", "    if (!n.standIn) ul.appendChild(row(n.row, false, n.depth));", 'phone/tree-waiting-ancestor-stand-in'),
     ('E32-only-first-level-drawn', 'src/acces-mobile/page.ts', "    if (open[n.row.id]) n.kids.forEach(function (k) { drawNode(ul, k); });", "    if (open[n.row.id] && !n.depth) n.kids.forEach(function (k) { drawNode(ul, k); });", 'phone/tree-every-row-reachable'),
     ('E33-archived-parent-not-walked', 'src/shared/acces-mobile.ts', "      cur = byId.get(cur)?.parentId;\n", "      cur = undefined;\n", 'phone/tree-fold-counts-whole-subtree'), # the row still shows (as a root): it is the PLACEMENT and the counts that break
+    # ── #373-fu: the layout contract in real Chromium ──
+    ('E34-clamp-removed', 'src/acces-mobile/conversation.ts', "--d:min(var(--depth),8);", "--d:var(--depth);", 'phone/tree-css-geometry'),
+    ('E35-fold-line-not-indented', 'src/acces-mobile/conversation.ts', "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px 54px", 'phone/tree-css-geometry'),
+    ('E36-rail-gone-from-rows', 'src/acces-mobile/conversation.ts', ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", 'phone/tree-css-geometry'),
+    ('E37-rail-size-unclamped', 'src/acces-mobile/conversation.ts', "background-size:calc(var(--d)*16px) 100%", "background-size:calc(var(--depth)*16px) 100%", 'phone/tree-css-geometry'),
 ]
 
 def run_e2e(ids):

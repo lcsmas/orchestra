@@ -415,6 +415,19 @@ try {
   await waitFor(() => phone.eval(`(() => { const rs = [...document.querySelectorAll('li[data-id]')]; return rs.length > 0 && rs.every((l) => !l.__before) && !document.getElementById('home').hidden; })()`), 15000, 'the list re-rendered (every row is a NEW element) and shown');
   const TR3 = await treeSnap();
   clause('phone/tree-open-state-survives-refresh', JSON.stringify(TR3.ids) === JSON.stringify(TR1.ids) && JSON.stringify(TR3.folds) === JSON.stringify(TR1.folds), `${TR1.ids.length} rows before, ${TR3.ids.length} after leaving the list and coming back (${Object.keys(TR3.folds).length} folds)`);
+  // #373-fu (review R373-1): the layout CONTRACT in the REAL stylesheet on real Chromium — synthetic nested row / fold / stand-in at depth 1, 2 and 12
+  // appended to the list, computed styles read, then removed. One 16 px step per level, the fold text under its coordinator's title (+34), a rail
+  // one period per level, and nothing moves past the 8-level clamp (depth 12 = depth 8).
+  const GEO = await phone.eval(`(() => {
+    const ul = document.querySelector('#list ul.repo-g'); if (!ul) return null;
+    const mk = (cls, depth) => { const li = document.createElement('li'); li.className = cls; li.dataset.depth = String(depth); li.style.setProperty('--depth', String(depth)); ul.appendChild(li); return li; };
+    const rail = (li) => getComputedStyle(li).backgroundImage.startsWith('repeating-linear-gradient');
+    const probe = (d) => { const r = mk('row small child', d), f = mk('fold', d), s = mk('fold-owner stand', d); const c = (e) => getComputedStyle(e); const o = { row: c(r).paddingLeft, fold: c(f).paddingLeft, stand: c(s).paddingLeft, railW: c(r).backgroundSize.split(' ')[0], railX: c(r).backgroundPositionX, rails: [rail(r), rail(f), rail(s)] }; [r, f, s].forEach((e) => e.remove()); return o; };
+    return { d1: probe(1), d2: probe(2), d12: probe(12) };
+  })()`);
+  const geoWant = (d) => ({ row: `${20 + 16 * d}px`, fold: `${54 + 16 * d}px`, stand: `${20 + 16 * d}px`, railW: `${16 * d}px`, railX: '16px', rails: [true, true, true] });
+  const geoOk = GEO && JSON.stringify(GEO.d1) === JSON.stringify(geoWant(1)) && JSON.stringify(GEO.d2) === JSON.stringify(geoWant(2)) && JSON.stringify(GEO.d12) === JSON.stringify(geoWant(8));
+  clause('phone/tree-css-geometry', geoOk, `computed styles d1 ${JSON.stringify(GEO?.d1)} · d2 ${JSON.stringify(GEO?.d2)} · d12 ${JSON.stringify(GEO?.d12)} (want 16 px/level, fold +34, rail 16 px/level, clamp at 8 ⇒ d12 = ${JSON.stringify(geoWant(8))})`);
   for (const f of ['ws-am-deep', 'ws-am-sub', 'ws-am-idle', 'ws-am-coord']) await tapMaybe(`li.fold[data-fold="${f}"]`); // close them again: the arms below start from the closed list
   saveShot('phone-list.png', await phone.shot());
   await phone.send('Page.reload');
