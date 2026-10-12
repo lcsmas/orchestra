@@ -214,7 +214,8 @@ _Avoid_: regression, bug (too broad)
 **Spawned agent**:
 A workspace created by an agent through `orchestra spawn`. A workspace created
 by a human click is not a spawned agent, even when the click goes through the
-same spawn path (e.g. spawning from a pinned Linear ticket).
+same spawn path (e.g. spawning from a pinned Linear ticket), nor one the human
+launches from the accès mobile.
 _Avoid_: child (only meaningful under an orchestrator), worker (a fleet role)
 
 **Default model**:
