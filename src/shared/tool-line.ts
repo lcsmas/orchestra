@@ -10,7 +10,19 @@ export type ToolState = 'running' | 'ok' | 'error';
 export const TOOL_GLYPH: Record<ToolState, string> = { running: '…', ok: '✓', error: '✗' };
 
 export const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
-export const oneLine = (s: string, n = 120): string => clip(s.replace(/\s+/g, ' ').trim(), n);
+/** `oneLine` plus how many characters of `s` it examined. The label of every tool is rebuilt on every list render and scroll, so a huge
+ *  input (a heredoc) must not be collapsed whole: the window grows only while the collapsed head is still ≤ `n` (a whitespace-heavy
+ *  input), and stops as soon as the head already holds more than `n` — the first `n` characters can no longer change. Exact, never approximate. */
+export function oneLineScan(s: string, n = 120): { text: string; scanned: number } {
+  let window = Math.max(512, n * 8);
+  for (;;) {
+    const head = window >= s.length ? s : s.slice(0, window);
+    const t = head.replace(/\s+/g, ' ').trim();
+    if (head === s || t.length > n) return { text: clip(t, n), scanned: head.length };
+    window *= 4;
+  }
+}
+export const oneLine = (s: string, n = 120): string => oneLineScan(s, n).text;
 
 /** The one thing worth reading about a tool call, per well-known tool; else the first string input. */
 export function toolLabel(name: string, input: Record<string, unknown> | undefined): string {

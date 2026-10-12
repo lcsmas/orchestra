@@ -28,6 +28,10 @@ MUTANTS = [
     ('D12-skill-label-wrong-key', 'src/shared/tool-line.ts', "detail = s('skill');", "detail = s('name');", TL),
     # (no mutant for the `label`/`state` terms of toolRowsEqual: both are derived from message fields toolMessageEqual already compares — defense in depth, equivalent by construction)
     ('R2-memo-ignores-message', 'src/renderer/components/agent/tool-util.ts', " || !toolMessageEqual(a[i].message, b[i].message)) return false;", ") return false;", AC),
+    ('F1a-oneline-unbounded', 'src/shared/tool-line.ts', "let window = Math.max(512, n * 8);", "let window = Infinity;", TL),
+    ('F1b-oneline-stops-too-early', 'src/shared/tool-line.ts', "if (head === s || t.length > n) return", "if (head === s || t.length > 0) return", TL),
+    ('F1c-oneline-window-capped', 'src/shared/tool-line.ts', "    window *= 4;\n", "    window *= 4;\n    if (window > 4000) return { text: clip(t, n), scanned: head.length };\n", TL),
+    ('S7-ssr-card-pending-old-rule', 'src/renderer/components/agent/ToolCard.tsx', "toolState(message) === 'running'", "(!result && !message.done)", SMOKE),
     ('S1-ssr-glyph-not-from-state', 'src/renderer/components/agent/ToolGroup.tsx', "{TOOL_GLYPH[r.state]}", "{TOOL_GLYPH.ok}", SMOKE),
     ('S2-ssr-open-by-default', 'src/renderer/components/agent/ToolGroup.tsx', "useState<ReadonlySet<string>>(() => new Set(defaultOpenIds))", "useState<ReadonlySet<string>>(() => new Set(rows.map((r) => r.id)))", SMOKE),
     ('S3-ssr-state-class-dropped', 'src/renderer/components/agent/ToolGroup.tsx', "className={`av-tool-line av-tool-line-${r.state} ${isOpen", "className={`av-tool-line ${isOpen", SMOKE),
