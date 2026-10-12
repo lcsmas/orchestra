@@ -383,13 +383,14 @@ function runApp(opts: { hash?: string; stored?: string; reply?: 'reject' | numbe
   const storage = new Map<string, string>(opts.stored ? [[STORAGE_KEY, opts.stored]] : []);
   const calls = { replaceState: [] as unknown[][], fetch: [] as Array<{ url: string; init: any }>, register: [] as string[], conv: [] as string[] };
   const listeners: Record<string, () => void> = {};
+  const streamHandlers: Array<(m: unknown) => void> = [];
   const location = { hash: opts.hash ?? '', pathname: '/' };
   const sandbox = {
     location,
     window: {
       addEventListener: (t: string, h: () => void) => (listeners[t] = h),
       // #337: conversation.js (its own tests) — here a recorder, so the shell's routing + re-pairing are observable.
-      OrchestraConversation: { open: (id: string) => calls.conv.push(`open:${id}`), close: () => calls.conv.push('close'), onStream: () => {}, connect: () => calls.conv.push('connect') },
+      OrchestraConversation: { open: (id: string) => calls.conv.push(`open:${id}`), close: () => calls.conv.push('close'), onStream: (h: (m: unknown) => void) => streamHandlers.push(h), connect: () => calls.conv.push('connect') },
     },
     history: { replaceState: (...a: unknown[]) => calls.replaceState.push(a) },
     localStorage: { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => storage.set(k, v) },
@@ -405,7 +406,8 @@ function runApp(opts: { hash?: string; stored?: string; reply?: 'reject' | numbe
   vm.runInNewContext(APP_JS, sandbox);
   /** A same-document navigation to `/#t=…` over the open page (a QR re-scan): the browser only fires hashchange. */
   const navigateHash = (hash: string) => { location.hash = hash; listeners.hashchange?.(); };
-  return { els, calls, storage, navigateHash, settle: () => new Promise((r) => setImmediate(r)) };
+  const stream = (m: unknown) => streamHandlers.forEach((h) => h(m));
+  return { els, calls, storage, navigateHash, stream, settle: () => new Promise((r) => setImmediate(r)) };
 }
 
 test('page: #t=<token> is stored, stripped from the address, and used as the bearer — nowhere in a URL (control: a reload without it stays paired)', async () => {
@@ -517,4 +519,18 @@ test('a refused token (401) offers the in-app pairing again (control: a 200 hide
   const ok = runApp({ stored: TOKEN, reply: 200 });
   await ok.settle(); await ok.settle();
   assert.equal(ok.els.pair.hidden, true);
+});
+
+test('a stream refused with 401 (token regenerated) reloads the list at once ⇒ « Jeton refusé » + pairing; a plain outage does not refetch', async () => {
+  const r = runApp({ stored: TOKEN, replies: [200, 401] });
+  await r.settle(); await r.settle();
+  const n = r.calls.fetch.length;
+  r.stream({ t: 'down' });
+  await r.settle();
+  assert.equal(r.calls.fetch.length, n, 'control: an outage (no status) only marks the page offline');
+  r.stream({ t: 'down', status: 401 });
+  await r.settle(); await r.settle();
+  assert.equal(r.calls.fetch.length, n + 1);
+  assert.match(r.els.state.textContent, /Jeton refusé/);
+  assert.equal(r.els.pair.hidden, false);
 });

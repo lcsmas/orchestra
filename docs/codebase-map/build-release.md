@@ -175,7 +175,9 @@ real `release.sh` in a sandbox (local bare origin, fake `gh`, real tsc/`node
 
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +
-validate AppImage → (if `--install`) **atomic** cp-to-temp + `mv` over the
+validate AppImage → (if `--install`) **atomic** cp-to-temp, the version sidecar
+`<AppImage>.version` = `<version> <inode> <size>` of the tmp file (a rename keeps the inode; the running app's
+« Nouvelle version installée » banner reads it — `src/shared/app-update.ts`), then `mv` over the
 launcher's AppImage → `git push --follow-tags` → (if `--to-master`) push master
 again → (unless `--ci-only`) `gh release create $TAG` with the local AppImage
 and `--notes-file` (or `--generate-notes`). `--dry-run` prints every step.

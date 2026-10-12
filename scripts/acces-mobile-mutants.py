@@ -137,6 +137,14 @@ MUTANTS = [
     ('G3-401-no-repair-offer', 'src/acces-mobile/page.ts', "setState('Jeton refusé : re-scanne le QR code.'); showPair(true); return null;", "setState('Jeton refusé : re-scanne le QR code.'); return null;", 'RED', PWA),
     ('G4-unpaired-no-panel', 'src/acces-mobile/page.ts', "    if (!token) { setState('Pas appairé.'); showPair(true); return; }", "    if (!token) { setState('Pas appairé.'); return; }", 'RED', PWA),
     ('G5-decoder-not-served', 'src/acces-mobile/server.ts', "  '/jsqr.js': { type: 'text/javascript; charset=utf-8', body: jsqrSource() },\n", "", 'RED', PWA),
+    # ── 2026-10-12: « Nouvelle version installée » + the phone stream's health ──
+    ('U1-replaced-file-ignored', 'src/shared/app-update.ts', "  if (identityKey(boot) === identityKey(now)) return APP_UPDATE_NONE;", "  return APP_UPDATE_NONE;", 'RED', 'src/shared/app-update.test.ts'),
+    ('U2-sidecar-of-another-file-trusted', 'src/shared/app-update.ts', "if (!m || Number(m[2]) !== now.ino || Number(m[3]) !== now.size) return null;", "if (!m) return null;", 'RED', 'src/shared/app-update.test.ts'),
+    ('U3-relaunch-does-not-wait', 'src/shared/app-update.ts', "while kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 600 ]; do", "while false; do", 'RED', 'src/shared/app-update.test.ts'),
+    ('U4-push-on-every-check', 'src/main/app-update.ts', "      if (appUpdateStateKey(next) === appUpdateStateKey(state)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
+    ('U5-mid-swap-hides-the-banner', 'src/main/app-update.ts', "      if (next.kind === 'none' && state.kind === 'installed' && !deps.stat(deps.path)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
+    ('W1-silent-stream-kept', 'src/acces-mobile/conversation.ts', "      if (Date.now() - lastByte > STALL_MS) {", "      if (false) {", 'RED', 'src/acces-mobile/conversation-stream.test.ts'),
+    ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -165,6 +173,9 @@ E2E_MUTANTS = [
     ('E18-decoder-not-inlined', 'vite.acces-mobile.config.ts', "if (!id.endsWith('/src/acces-mobile/jsqr-src.ts')) return null;", "if (!id.endsWith('/nothing-matches.ts')) return null;", 'pair/'),
     ('E19-header-sticks-under-status-bar', 'src/acces-mobile/conversation.ts', ".v1 .ch{position:sticky;top:env(safe-area-inset-top);z-index:2;", ".v1 .ch{position:sticky;top:0;z-index:2;", 'conv/header-below-status-bar'),
     ('E20-status-bar-strip-gone', 'src/acces-mobile/conversation.ts', "body.v1::before{content:", "body.v1::after{content:", 'conv/header-below-status-bar'),
+    ('E21-later-ignored', 'src/renderer/components/AppUpdateBanner.tsx', "          dismissedKey = key;\n", "", 'update/later-until-next-install'),
+    ('E22-relaunch-without-waiting', 'src/shared/app-update.ts', "while kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 600 ]; do", "while false; do", 'update/relaunch'),
+    ('E23-phone-not-told', 'src/main/acces-mobile-routes.ts', "          ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),\n", "", 'update/phone-banner'),
 ]
 
 def run_e2e(ids):
