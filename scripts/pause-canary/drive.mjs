@@ -641,11 +641,12 @@ if (h0.availGB < MIN_AVAIL_GB || h0.load1 > MAX_LOAD) { voidReason = `host below
 const results = [];
 for (const ex of EXERCISES) {
   if (voidReason) { emit('PC-EXERCISE', { exercise: ex, result: 'VOID', cycles: 0, wanted: CYCLES, reason: voidReason }); results.push({ name: ex, result: 'VOID', cycles: [] }); continue; }
-  results.push(await runExercise(ex));
+  const exRes = await runExercise(ex);
+  exRes.result = neverPassUnderVoid(exRes.result, voidReason);   // review m5 / m-a: the void recorded DURING this exercise (a void from an earlier one skipped the loop above) — never the global reason applied to exercises that already PASSED
+  results.push(exRes);
 }
 clearInterval(sampler);
 if (floorGuard) clearInterval(floorGuard);
-for (const r of results) r.result = neverPassUnderVoid(r.result, voidReason);   // review m5: a void recorded during the teardown still turns a PASS into a VOID
 const after = liveSnapshot();
 const same = JSON.stringify(before) === JSON.stringify(after);
 say(`LIVE-AFTER same=${same}`);

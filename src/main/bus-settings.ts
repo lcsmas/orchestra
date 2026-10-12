@@ -23,7 +23,7 @@ import { type BusSwitches, liveSwitchesFromStore, saveLiveSwitches } from '../sh
  * at boot, so this is a plain object read.
  */
 export function getLiveSwitches(): BusSwitches {
-  // A store that cannot be read must not turn every mechanism ON: all-OFF is the coexistence-safe direction (liveSwitchesFromStore).
+  // A reader that THROWS must not turn every mechanism ON: all-OFF is the coexistence-safe direction (liveSwitchesFromStore). A store.json that fails to PARSE never reaches here as an error — store.ts loads it EMPTY, so the live defaults apply.
   return liveSwitchesFromStore(() => store.getBusSwitches());
 }
 

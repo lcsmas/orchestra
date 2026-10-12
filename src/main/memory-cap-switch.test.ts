@@ -121,3 +121,21 @@ test('#324 the default flip is for NEW runs only: a run that froze memory_cap OF
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('#324-fu F1: the memory_cap ON notice agrees with the REAL decision per workspace kind — an OPS (parentId = the LEAD) HAS a scope, the top-level LEAD (no parent) and a human have none', async () => {
+  const { busSwitchNoticeLines } = await import('../shared/bus-switches.ts');
+  busOn = new Set(['run-on']);
+  const decide = (ws: { parentId?: string }) => memoryCapDecisionFor(args({ ws }), deps());
+  const ops = decide({ parentId: 'lead-0524718f' });
+  const worker = decide({ parentId: 'ops-1' });
+  const lead = decide({});
+  assert.equal(ops.reason, 'ok', 'an OPS (coordinator = the LEAD) is capped');
+  assert.ok(ops.createScope && worker.createScope, 'OPS and workers get a scope');
+  assert.equal(lead.reason, 'human', 'the top-level LEAD has no coordinator: no scope (the same branch as a human session)');
+  assert.equal(lead.createScope, false);
+  const line = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, memoryCap: true }).find((l) => l.includes('memory_cap='))!;
+  // what the notice promises matches the decision: workers and OPS are in the « gets a scope » set, only the top-level LEAD in the « no scope » set
+  assert.match(line, /WITH a coordinator \(a worker, or an OPS under the LEAD\)/);
+  assert.match(line, /Only the top-level LEAD \(a workspace with no coordinator\)/);
+  assert.ok(!/OPS[^.]*runs in no scope/.test(line.split('Only the top-level LEAD')[1] ?? ''), 'OPS is not listed among the scope-less');
+});

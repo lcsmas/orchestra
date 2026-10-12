@@ -90,7 +90,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
 /**
  * Default LIVE setting (what the next run freezes) for a mechanism the human never set.
  * Only `pause` (#258, canaries passed), `dockerRelay` and `memoryCap` (#324: the packaged Q11 canary PASSED on 2026-10-12, ledger #329) are ON; DEFAULT_BUS_SWITCHES stays
- * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
+ * all-OFF because it is also the safe fallback when the switches CANNOT BE READ AT ALL (a reader that throws, no run row, bus down). A store.json that fails to PARSE is not that case: the store loads EMPTY defaults, so the live defaults apply (the human's explicit OFFs are lost with the rest of the file — pre-existing). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
  */
 export const LIVE_SWITCH_DEFAULTS: BusSwitches = Object.freeze({
   ...DEFAULT_BUS_SWITCHES,
@@ -118,7 +118,7 @@ export function normalizeLiveSwitches(raw: unknown): BusSwitches {
   return out;
 }
 
-/** The live switches as the app reads them: the stored (RAW) object normalized with LIVE_SWITCH_DEFAULTS; a store that cannot be read is all-OFF (the coexistence-safe fallback — never every mechanism ON). */
+/** The live switches as the app reads them: the stored (RAW) object normalized with LIVE_SWITCH_DEFAULTS; a reader that THROWS is all-OFF (the coexistence-safe fallback; a store.json that fails to parse is loaded EMPTY by store.ts and reads the live defaults instead — never every mechanism ON). */
 export function liveSwitchesFromStore(readRaw: () => unknown): BusSwitches {
   try {
     return normalizeLiveSwitches(readRaw());
@@ -358,7 +358,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'memoryCap') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a FLEET MEMBER (a workspace with a coordinator) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. This applies to you ONLY if you are such a member — a coordinator (LEAD / OPS), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
+          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a workspace WITH a coordinator (a worker, or an OPS under the LEAD) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. Only the top-level LEAD (a workspace with no coordinator), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
           : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;

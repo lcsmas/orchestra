@@ -285,5 +285,8 @@ test('review m5: a recorded void reason is NEVER a PASS — PASS becomes VOID wh
   for (const r of ['FAIL', 'VOID', 'ERROR']) assert.equal(neverPassUnderVoid(r, 'FLOOR: x'), r, `${r} is kept`);
   const drive = fs.readFileSync(new URL('../../scripts/pause-canary/drive.mjs', import.meta.url), 'utf8');
   assert.match(drive, /stopIfVoid\(\);[^\n]*\n    result = neverPassUnderVoid\(allChecks\(\)\.every/);
-  assert.match(drive, /for \(const r of results\) r\.result = neverPassUnderVoid\(r\.result, voidReason\);/);
+  // m-a (review of #324-fu): the reason is applied to THE exercise that just ran — never as a final pass over results that already PASSED (a void in `auto` must not turn douce / dure / reprise into VOID)
+  assert.match(drive, /const exRes = await runExercise\(ex\);\n  exRes\.result = neverPassUnderVoid\(exRes\.result, voidReason\);/);
+  assert.ok(!/for \(const r of results\) r\.result = neverPassUnderVoid/.test(drive), 'the global final loop is gone');
+  assert.match(drive, /if \(voidReason\) \{ emit\('PC-EXERCISE', \{ exercise: ex, result: 'VOID'/, 'an exercise started after a void is VOID with the reason, not run');
 });

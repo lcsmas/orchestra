@@ -390,11 +390,11 @@ test('#320 memoryCap: default OFF, wire name memory_cap round-trips, notice name
   const on = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, memoryCap: true }).find((l) => l.includes('memory_cap='));
   const off = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES }).find((l) => l.includes('memory_cap='));
   assert.match(on ?? '', /memory_cap=ON .*memory scope.*killed by the kernel/);
-  // #324 review m4: the ON line must not promise a scope to sessions that never get one — it names WHO gets it and who does not
-  assert.match(on ?? '', /FLEET MEMBER \(a workspace with a coordinator\)/);
-  assert.match(on ?? '', /ONLY if you are such a member/);
-  assert.match(on ?? '', /coordinator \(LEAD \/ OPS\), a human's session, a sandbox or an unsupported host runs in no scope/);
-  assert.ok(!/each of your session starts/.test(on ?? ''), 'the unconditional promise is gone');
+  // #324 review m4 + F1: the ON line must not promise a scope to sessions that never get one — it names WHO gets it (every workspace WITH a coordinator, an OPS under the LEAD included) and who does not (only the top-level LEAD)
+  assert.match(on ?? '', /a workspace WITH a coordinator \(a worker, or an OPS under the LEAD\)/);
+  assert.match(on ?? '', /Only the top-level LEAD \(a workspace with no coordinator\), a human's session, a sandbox or an unsupported host runs in no scope/);
+  assert.ok(!/coordinator \(LEAD \/ OPS\)/.test(on ?? ''), 'F1: an OPS is NOT scope-less — it has a coordinator (the LEAD)');
+  assert.ok(!/FLEET MEMBER|ONLY if you are such a member|each of your session starts/.test(on ?? ''), 'the earlier wordings are gone');
   assert.match(on ?? '', /started before this was ON is not capped/);
   assert.match(off ?? '', /memory_cap=OFF .*no per-member memory limit/);
   assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'memory_cap is not a bus mechanism — the generic wording would be false');
@@ -462,4 +462,13 @@ test('#324 m3 wiring: bus-settings.ts delegates to the pure read/save (the app w
   assert.match(src, /liveSwitchesFromStore\(\(\) => store\.getBusSwitches\(\)\)/);
   assert.match(src, /saveLiveSwitches\(\(\) => store\.getBusSwitches\(\), \(explicit\) => store\.setBusSwitches\(explicit\), next\)/);
   assert.ok(!/normalizeLiveSwitches\(\{ \.\.\.getLiveSwitches\(\)/.test(src), 'the all-keys merge is gone');
+});
+
+test('#324-fu m-c: a reader that THROWS is all-OFF, but a store that loaded EMPTY (a store.json that failed to parse) reads the LIVE defaults — the two cases the old comment conflated', () => {
+  const empty = liveSwitchesFromStore(() => ({}));
+  assert.deepEqual(empty, { ...LIVE_SWITCH_DEFAULTS });
+  assert.equal(empty.memoryCap, true, 'an empty store reads the live default ON');
+  const throwing = liveSwitchesFromStore(() => { throw new Error('x'); });
+  assert.equal(throwing.memoryCap, false);
+  assert.notDeepEqual(empty, throwing);
 });
