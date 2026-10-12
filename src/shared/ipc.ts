@@ -378,12 +378,17 @@ export interface OrchestraAPI {
   ) => Promise<{ released: number; remaining: number; error?: string }>;
 
   // Terminal (pty)
+  ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
   /** Restart the agent process while keeping the conversation: stops the
    * current PTY and triggers a fresh spawn that runs `claude --continue`,
    * picking up MCP server / settings.json changes without losing context. */
   restartAgent: (id: string) => Promise<void>;
+  /** Stop the agent process WITHOUT respawning (the Resources page's per-agent
+   * stop). The conversation isn't lost: the terminal relaunches the agent with
+   * `claude --continue` on the next activation or keystroke. */
+  stopAgent: (id: string) => Promise<void>;
 
   // ---------- Structured agent view (Claude Agent SDK) ----------
   // The reverse (user → agent) path for the structured view. The forward path

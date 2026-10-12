@@ -408,9 +408,9 @@ account first) → **Free space** → Orchestra data on disk.
 
 **No per-row stop (#231).** The page used to carry a stop button per row that called `agent:stop` on the
 row's agent PTY id; since #230 no agent PTY exists, so the button (it keyed on `kind === 'agent'`) never
-rendered and #231 deleted it (button, handler, `.res-stop-btn` CSS, the `stopAgent` preload wrapper — the
-trailing 20 px grid column stays, as `.res-col-gutter`). The `agent:stop` main handler stays until #233 and
-only stops a PTY, so it would be a no-op on an Agent-view row; a stop for the keeper-hosted session is a
+rendered and #231 deleted it (button, handler, `.res-stop-btn` CSS — the trailing 20 px grid column
+stays, as `.res-col-gutter`). The `stopAgent` preload wrapper and the `agent:stop` main handler stay until
+#233 (no renderer caller left); the handler only stops a PTY, so it would be a no-op on an Agent-view row; a stop for the keeper-hosted session is a
 separate feature (main-side `sdkStop` wiring + a spec decision). The row is a `div[role=button]` (expand /
 collapse), not a `<button>`, so interactive content could nest in it.
 

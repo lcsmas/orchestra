@@ -612,7 +612,7 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   `agent_terminal_static` (no boot: the `@xterm/addon-unicode11` dependency in `package.json` + `pnpm-lock.yaml` — red on master — and two table fragments only
   the addon's minified code contains, scanned in `dist/assets/*.js` with a control that the dir really is the renderer bundle; the BUNDLE clause is green on
   master BY DESIGN (the orphaned `Terminal.tsx` was already tree-shaken) and only a re-import turns it red), `agent_terminal_removed` (the RUNNING app's
-  preload bridge has none of `ptyStart` / `ptyRepaint` / `onPtyStopped` / `saveClipboardImage` / `stopAgent` while the shared + Run/nvim/login wrappers stay; the
+  preload bridge has none of `ptyRepaint` / `onPtyStopped` / `saveClipboardImage`, while the shared + Run/nvim/login wrappers AND `ptyStart` / `stopAgent` (kept until #233) stay; the
   loaded stylesheets carry none of `.terminal-pane` / `.term-scroll-thumb` / `.term-boot-*` / `.res-stop-btn`, with a control that `.res-agent-row` and xterm.css rules are
   still there) and `resources_live_agent` (one live Agent-view session → the « Live agents » tile reads 1, the row has the « agent » chip, no stop control; a regression
   pin, green on master by design). Run / nvim / login still open and run their programs: the existing `other_terminals_work` arms.
@@ -827,14 +827,15 @@ long-idle agents and lets the existing resume paths bring them back.
 `.term-scroll-thumb*`, `.term-boot-*`, `@keyframes term-boot-in`), the `@xterm/addon-unicode11`
 dependency (manifest + lockfile; the BUILT bundle already lacked it after #230 — Vite drops an
 unimported module — so the bundle check is a re-import guard, not a removal proof) and the preload
-wrappers of channels only it called: `ptyStart` (`pty:start`), `ptyRepaint` (`pty:repaint`),
-`onPtyStopped` (`pty:stopped`), `saveClipboardImage` (`clipboard:saveImage`) and `stopAgent`
-(`agent:stop` — its last caller was the Resources page's per-row stop button, which keyed on an
-agent PTY and so had not rendered since #230; see [resources.md](resources.md)).
-**The main-process handlers stay** (`ptyStart`, `ptyRepaint`, `saveClipboardImage`, `stopAgent` in
-`api-handlers.ts`, retyped under `ExtraApiMethods` since they are no longer part of the
-renderer-facing `OrchestraAPI`; the `pty:stopped` broadcast) — unreachable from the renderer until
-#233 deletes the launcher behind them. **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
+wrappers of channels only it called: `ptyRepaint` (`pty:repaint`), `onPtyStopped` (`pty:stopped`)
+and `saveClipboardImage` (`clipboard:saveImage`). **Two wrappers deliberately STAY until #233**:
+`ptyStart` (`pty:start`) and `stopAgent` (`agent:stop` — its only renderer caller was the Resources
+page's per-row stop button, deleted in #231, see [resources.md](resources.md)): the rig's stray-agent-PTY
+seam (#232 arms) can only create/clean a PTY through them; #233 deletes them with the launcher.
+**The main-process handlers stay** (`ptyRepaint`, `saveClipboardImage` in `api-handlers.ts`, retyped
+under `ExtraApiMethods` since they are no longer part of the renderer-facing `OrchestraAPI`; `ptyStart` /
+`stopAgent` remain ordinary `OrchestraAPI` members; the `pty:stopped` broadcast) — unreachable from the
+renderer until #233 deletes the launcher behind them. **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
 and `onPtyData` / `onPtyExit` / `onPtyRestart` (push), used by Run, nvim and login. Rig arms
 `agent_terminal_static` + `agent_terminal_removed` (scripts/e2e-agent-view-removal.mjs) pin all of it.
 

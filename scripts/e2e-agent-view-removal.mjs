@@ -104,8 +104,8 @@ const EXPECT = {
   // #230 (#228 review O1 + F1): the FIRST session start of a LEGACY terminal-only workspace adopts the terminal transcript, whichever Agent-view
   // action causes it — composer send, `!cmd`, the MCP popover (baseline: the session starts BLANK while the history pane shows the old transcript).
   firstStartAdopts: { baseline: false, after: true },
-  // #231: the agent terminal's renderer surface. Preload wrappers only the agent terminal used (start, repaint, stopped signal, clipboard image save, + the
-  // Resources page's agent stop, whose only caller was the dead per-row button), the stylesheet rules of the component, and the Unicode11 addon in the manifest + lockfile.
+  // #231: the agent terminal's renderer surface. Preload wrappers only the agent terminal used (repaint, stopped signal, clipboard image save), the stylesheet rules of the component, and the
+  // Unicode11 addon in the manifest + lockfile. (`ptyStart` / `stopAgent` are NOT here: kept until #233 for the #232 stray-PTY seam — asserted present in both modes.)
   agentTerminalWrappers: { baseline: true, after: false },
   agentTerminalCss: { baseline: true, after: false },
   unicode11InManifest: { baseline: true, after: false },
@@ -1999,7 +1999,7 @@ const ARMS = [
         ctx.clause('view/start-error-rendered-once', rows === 1, `'${START_ERR}' text nodes in the page after reload=${rows} (persisted copy must not double a live row)`);
       }
       // ── a WAKE that cannot start: message → inbox, prompt queue → re-queued, review → refused ──
-      const stopAndWait = async () => { if (!wantPty) return; /* #231: the stopAgent wrapper is gone — and there is no PTY to stop */ await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
+      const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
       await stopAndWait(); // baseline: kill the spawn-fallback PTY so the wake path is what runs; after: nothing to stop
       const msg = await runCli(app, ['message', child.id, MSG_TEXT]);
       const want = pick(EXPECT.messageDelivery);
@@ -2541,13 +2541,17 @@ const ARMS = [
   },
   {
     name: 'agent_terminal_removed', boots: true, ticket: '#231',
-    doc: 'the RUNNING app: the preload bridge no longer exposes the agent-terminal-only wrappers (ptyStart, ptyRepaint, onPtyStopped, saveClipboardImage, stopAgent) while the shared PTY wrappers + the Run/nvim/login ones stay; the loaded stylesheets no longer carry the component\'s rules (.terminal-pane / .term-scroll-thumb / .term-boot-* / .res-stop-btn) while the Run/Resources rules stay',
+    doc: 'the RUNNING app: the preload bridge no longer exposes the agent-terminal-only wrappers (ptyRepaint, onPtyStopped, saveClipboardImage) while the shared PTY wrappers + the Run/nvim/login ones stay, AND ptyStart / stopAgent are still exposed until #233 (the stray-PTY rig seam needs them); the loaded stylesheets no longer carry the component\'s rules (.terminal-pane / .term-scroll-thumb / .term-boot-* / .res-stop-btn) while the Run/Resources rules stay',
     async run(ctx) {
       const { app } = ctx; const J = JSON.stringify;
-      const REMOVED = ['ptyStart', 'ptyRepaint', 'onPtyStopped', 'saveClipboardImage', 'stopAgent'];
+      const REMOVED = ['ptyRepaint', 'onPtyStopped', 'saveClipboardImage'];
+      // KEPT ON PURPOSE until #233 (OPS ruling, review #231 F1): the stray-agent-PTY seam of the #232 arms creates a PTY via ptyStart and cleans it via stopAgent — a renderer has no other route.
+      // #233 removes both with the launcher (and flips these two clauses). Identical in both modes.
+      const UNTIL_233 = ['ptyStart', 'stopAgent'];
       const KEPT = ['ptyWrite', 'ptyResize', 'onPtyData', 'onPtyExit', 'onPtyRestart', 'restartAgent', 'nvimStart', 'runScriptStart', 'accountLoginStop'];
-      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J([...REMOVED, ...KEPT])}) r[k] = typeof o[k]; return r; })()`);
+      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J([...REMOVED, ...KEPT, ...UNTIL_233])}) r[k] = typeof o[k]; return r; })()`);
       ctx.clause('control/shared-wrappers-kept', KEPT.every((k) => types[k] === 'function'), `typeof window.orchestra.<k> for the shared + Run/nvim/login wrappers: ${KEPT.map((k) => `${k}=${types[k]}`).join(' ')}`);
+      for (const k of UNTIL_233) ctx.clause(`preload/${k}-wrapper-kept-until-233`, types[k] === 'function', `typeof window.orchestra.${k}=${types[k]} expected(both modes)=function (kept until #233 removes the launcher; the #232 stray-PTY arms need it)`);
       for (const k of REMOVED) ctx.clause(`preload/${k}-wrapper`, (types[k] === 'function') === pick(EXPECT.agentTerminalWrappers), `typeof window.orchestra.${k}=${types[k]} expected(${MODE})=${pick(EXPECT.agentTerminalWrappers) ? 'function' : 'undefined'}`);
       // Rules read off the LOADED stylesheets (CSSOM). CONTROL: the sheets were readable and still carry the rules Run/Resources use (`.res-agent-row`, xterm's own `.xterm`).
       const css = await app.cdp.eval(`(() => { const dead = [], live = { res: 0, xterm: 0 }; for (const ss of document.styleSheets) { let rs; try { rs = ss.cssRules; } catch { continue; }

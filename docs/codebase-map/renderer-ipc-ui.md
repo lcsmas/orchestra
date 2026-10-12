@@ -69,9 +69,9 @@ Bootstrap order matters; several steps run *before* the window:
 IPC handlers: the request/response BODIES live in the shared table
 `src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
 workspaces CRUD, sandbox, PTY (`ptyWrite` flips `hasInput` and applies the
-heavy-resume keystroke suppression; `ptyStart` / `ptyRepaint` / `saveClipboardImage` /
-`stopAgent` are no longer renderer-facing — retyped under `ExtraApiMethods` and
-unreachable until #233 deletes them), git (stats poll piggybacks merge+branch refresh; findPR
+heavy-resume keystroke suppression; `ptyRepaint` / `saveClipboardImage` are no longer
+renderer-facing — retyped under `ExtraApiMethods`, unreachable until #233 deletes them;
+`ptyStart` / `stopAgent` keep their preload wrappers until #233, no renderer caller), git (stats poll piggybacks merge+branch refresh; findPR
 piggybacks release detection), scripts, linear, accounts, usage, deps).
 index.ts wires the table to its historical channels in one loop over
 `METHOD_IPC_CHANNELS` (every registration still goes through the logging
