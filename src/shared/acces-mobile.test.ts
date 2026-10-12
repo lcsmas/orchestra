@@ -168,3 +168,69 @@ test('list (#372): inside a section rows are ordered by the title the phone SHOW
   );
   assert.deepEqual(rows.map((r) => r.displayName), ['a', 'handmade', 'z']);
 });
+
+test('parentId (#373): the nearest LISTED ancestor — archived / unlisted parents are walked through; none listed ⇒ a root', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'root', name: 'root', repoPath: '', kind: 'orchestrator' }),
+      ws({ id: 'sub', name: 'sub', parentId: 'root' }),
+      ws({ id: 'leaf', name: 'leaf', parentId: 'sub' }),
+      // an archived middle parent: leaf2 hangs under the grandparent
+      ws({ id: 'mid', name: 'mid', archived: true, parentId: 'root' }),
+      ws({ id: 'leaf2', name: 'leaf2', parentId: 'mid' }),
+      // two archived levels
+      ws({ id: 'mid-a', name: 'mid-a', archived: true, parentId: 'sub' }),
+      ws({ id: 'mid-b', name: 'mid-b', archived: true, parentId: 'mid-a' }),
+      ws({ id: 'leaf3', name: 'leaf3', parentId: 'mid-b' }),
+      // every ancestor archived or unknown ⇒ a root
+      ws({ id: 'old-root', name: 'old-root', archived: true, parentId: 'gone' }),
+      ws({ id: 'orphan', name: 'orphan', parentId: 'old-root' }),
+      // a self parent
+      ws({ id: 'me', name: 'me', parentId: 'me' }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r.parentId]));
+  assert.equal(by.sub, 'root', 'listed parent');
+  assert.equal(by.leaf, 'sub', 'a worker of a worker (two levels)');
+  assert.equal(by.leaf2, 'root', 'archived middle parent ⇒ the grandparent');
+  assert.equal(by.leaf3, 'sub', 'two archived levels ⇒ the nearest listed ancestor above them');
+  assert.equal(by.orphan, undefined, 'no listed ancestor ⇒ root');
+  assert.equal(by.me, undefined, 'itself is no parent');
+  assert.equal(by.root, undefined);
+  assert.ok(!rows.some((r) => r.id === 'mid' || r.id === 'old-root'), 'archived rows stay out of the list');
+});
+
+test('parentId (#373): a chain that loops back through unlisted rows ends the walk; a loop of LISTED rows is kept for the tree module to break', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'a', name: 'a', parentId: 'x' }),
+      ws({ id: 'x', name: 'x', archived: true, parentId: 'y' }),
+      ws({ id: 'y', name: 'y', archived: true, parentId: 'x' }),
+      ws({ id: 'p', name: 'p', parentId: 'q' }),
+      ws({ id: 'q', name: 'q', parentId: 'p' }),
+      ws({ id: 'a2', name: 'a2', parentId: 'x2' }),
+      ws({ id: 'x2', name: 'x2', archived: true, parentId: 'a2' }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r.parentId]));
+  assert.equal(by.a, undefined, 'an unlisted loop never reaches a listed row, and never hangs');
+  assert.equal(by.a2, undefined, 'a chain that comes back to the row itself through an archived one: the row is no ancestor of itself');
+  assert.deepEqual([by.p, by.q], ['q', 'p'], 'both rows are still in the list');
+});
+
+test('parentId (#373): a long archived chain under many listed rows resolves in linear time (no per-row re-walk)', () => {
+  const N = 4000;
+  const list: Workspace[] = [ws({ id: 'top', name: 'top', repoPath: '', kind: 'orchestrator' })];
+  for (let i = 0; i < N; i++) list.push(ws({ id: `arch${i}`, name: `arch${i}`, archived: true, parentId: i === 0 ? 'top' : `arch${i - 1}` }));
+  for (let i = 0; i < N; i++) list.push(ws({ id: `leaf${i}`, name: `leaf${i}`, parentId: `arch${N - 1}` }));
+  const t0 = Date.now();
+  const rows = projectMobileWorkspaces(list, repos, accounts);
+  const ms = Date.now() - t0;
+  assert.equal(rows.length, N + 1);
+  assert.ok(rows.filter((r) => r.id.startsWith('leaf')).every((r) => r.parentId === 'top'), 'every leaf hangs under the nearest listed ancestor above the archived chain');
+  assert.ok(ms < 1500, `linear: ${ms} ms (a per-row re-walk of the chain took ~3 s at this size on the reference host)`);
+});

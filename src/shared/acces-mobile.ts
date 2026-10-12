@@ -170,8 +170,8 @@ export interface MobileWorkspaceRow {
   statusText?: string;
   /** Last activity (ms): the latest of turn start / stop / status note / creation. */
   at: number;
-  /** The coordinator this workspace runs under (a fleet worker), when that parent is listed too — the phone folds workers
-   *  under it so a vague does not flood the list (Lucas, 2026-10-12). */
+  /** The coordinator this workspace runs under (a fleet worker): its nearest LISTED ancestor — archived / unlisted parents are walked
+   *  through (#373) — so the phone can fold the whole tree, at any depth (Lucas, 2026-10-12). Absent ⇒ a root. */
   parentId?: string;
   /** #340 (design V1): one line under the row — the question it is blocked on, else the agent's status note. */
   preview?: { kind: 'question' | 'desktop' | 'status'; text: string };
@@ -219,6 +219,32 @@ export function projectMobileWorkspaces(
   const labelOf = new Map(accounts.map((a) => [a.id, a.label]));
   const rows: MobileWorkspaceRow[] = [];
   const listed = new Set(workspaces.filter((w) => !w.archived).map((w) => w.id));
+  const byId = new Map(workspaces.map((w) => [w.id, w]));
+  const resolved = new Map<string, string | undefined>(); // unlisted id ⇒ the first listed row at or above it (memoised: O(rows) overall)
+  /** The first LISTED row on the parent chain starting AT `start`; undefined when the chain ends or loops among unlisted rows. */
+  const firstListed = (start: string | undefined): string | undefined => {
+    const path: string[] = [];
+    const onPath = new Set<string>();
+    let cur = start;
+    let answer: string | undefined;
+    for (;;) {
+      if (!cur) break;
+      if (listed.has(cur)) { answer = cur; break; }
+      if (resolved.has(cur)) { answer = resolved.get(cur); break; }
+      if (onPath.has(cur)) break;
+      onPath.add(cur);
+      path.push(cur);
+      cur = byId.get(cur)?.parentId;
+    }
+    for (const id of path) resolved.set(id, answer);
+    return answer;
+  };
+  /** #373: a row's parent is its nearest LISTED ancestor — the walk goes up through archived / unlisted parents; none listed ⇒ a root.
+   *  A chain that comes back to the row itself is no ancestor (the page's tree module breaks any cycle of LISTED rows). */
+  const listedAncestor = (ws: Workspace): string | undefined => {
+    const a = firstListed(ws.parentId);
+    return a === ws.id ? undefined : a;
+  };
   for (const ws of workspaces) {
     if (ws.archived) continue;
     const repo = repoByPath.get(ws.repoPath) ?? (ws.repoAssociation ? repoByPath.get(ws.repoAssociation) : undefined);
@@ -235,7 +261,8 @@ export function projectMobileWorkspaces(
       at: Math.max(ws.createdAt ?? 0, ws.lastTurnStartAt ?? 0, ws.lastStopReasonAt ?? 0, ws.statusTextAt ?? 0),
     };
     if (ws.statusText) row.statusText = ws.statusText;
-    if (ws.parentId && ws.parentId !== ws.id && listed.has(ws.parentId)) row.parentId = ws.parentId;
+    const parentId = listedAncestor(ws);
+    if (parentId) row.parentId = parentId;
     const pv = previewOf?.(ws) ?? (ws.statusText ? { kind: 'status' as const, text: ws.statusText } : undefined);
     if (pv) row.preview = { kind: pv.kind, text: pv.text.length > 300 ? pv.text.slice(0, 300) + '…' : pv.text };
     rows.push(row);

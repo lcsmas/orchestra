@@ -3,6 +3,7 @@
 
 import { MANIFEST_ICONS } from './icons.ts';
 import { pairingTokenFrom } from '../shared/acces-mobile.ts';
+import { buildPhoneTree } from '../shared/acces-mobile-tree.ts';
 
 export const INDEX_HTML = `<!doctype html>
 <html lang="fr">
@@ -61,6 +62,8 @@ export const APP_JS = `(function () {
   // In-app pairing (Lucas 2026-10-12): an iOS home-screen app has ITS OWN storage — the pairing done in Safari never reaches it, and
   // it opens at start_url without the fragment. So an unpaired (or refused) page pairs itself: scan the QR with the camera, or paste.
   var tokenFrom = (${pairingTokenFrom.toString()});
+  // #373: the list as a tree — ONE pure function (src/shared/acces-mobile-tree.ts); this page only draws what it returns.
+  var buildTree = (${buildPhoneTree.toString()});
   var pairEl = document.getElementById('pair'), pairWhy = document.getElementById('pairWhy'), pairErr = document.getElementById('pairErr');
   var pairInput = document.getElementById('pairInput'), scanEl = document.getElementById('scan'), scanVideo = document.getElementById('scanVideo');
   var scanHint = document.getElementById('scanHint');
@@ -156,11 +159,13 @@ export const APP_JS = `(function () {
   // « À traiter » = blocked on the human only (en attente). A non lu row stays in its repo, bold with its glyph: a vague's workers
   // finishing one after another made a separate « Non lu » section pure noise (Lucas, 2026-10-12).
   function needs(w) { return w.status === 'waiting'; }
-  var open = Object.create(null); // coordinator id -> its workers are unfolded
+  var open = Object.create(null); // node id -> its fold is open (kept across list refreshes: render() never resets it)
 
-  function row(w, withRepo, child) {
+  /** Indentation = one step per tree level: data-depth for the tests, --depth for the stylesheet (any depth). */
+  function level(li, depth) { li.dataset.depth = String(depth); li.style.setProperty('--depth', String(depth)); return li; }
+  function row(w, withRepo, depth) {
     var waiting = w.status === 'waiting';
-    var li = el('li', 'row ' + (waiting ? 'big waiting' : w.unread ? 'unread' : 'small') + (child ? ' child' : ''));
+    var li = level(el('li', 'row ' + (waiting ? 'big waiting' : w.unread ? 'unread' : 'small') + (depth ? ' child' : '')), depth);
     li.dataset.id = w.id; li.dataset.status = w.status; if (w.unread) li.dataset.unread = '1';
     li.addEventListener('click', function () { location.hash = 'w=' + encodeURIComponent(w.id); });
     li.appendChild(el('div', 'g ' + (waiting ? 'g-wait' : w.unread ? 'g-unread' : (GLYPH[w.status] || 'g-idle'))));
@@ -184,17 +189,31 @@ export const APP_JS = `(function () {
     h.appendChild(el('span', null, label)); h.appendChild(el('b', null, String(n)));
     return h;
   }
-  /** The fold line under a coordinator: « N agents » + how many are running / non lu; a tap unfolds them. */
-  function fold(parentId, kids) {
-    var li = el('li', 'fold' + (open[parentId] ? ' open' : '')); li.dataset.fold = parentId;
-    var running = kids.filter(function (k) { return k.status === 'running'; }).length;
-    var unread = kids.filter(function (k) { return k.unread; }).length;
-    li.appendChild(el('span', 'fold-arrow', open[parentId] ? '▾' : '▸'));
-    li.appendChild(el('span', 'fold-n', kids.length + ' agent' + (kids.length > 1 ? 's' : '')));
-    if (running) li.appendChild(el('span', 'fold-run', running + ' en cours'));
-    if (unread) li.appendChild(el('span', 'fold-unread', unread + ' non lu' + (unread > 1 ? 's' : '')));
-    li.addEventListener('click', function () { open[parentId] = !open[parentId]; render(); });
+  /** The fold line under a coordinator: « N agents » + how many are running / non lu — over its WHOLE subtree; a tap unfolds it. */
+  function fold(n) {
+    var id = n.row.id;
+    var li = level(el('li', 'fold' + (open[id] ? ' open' : '')), n.depth); li.dataset.fold = id;
+    li.appendChild(el('span', 'fold-arrow', open[id] ? '▾' : '▸'));
+    li.appendChild(el('span', 'fold-n', n.agents + ' agent' + (n.agents > 1 ? 's' : '')));
+    if (n.running) li.appendChild(el('span', 'fold-run', n.running + ' en cours'));
+    if (n.unread) li.appendChild(el('span', 'fold-unread', n.unread + ' non lu' + (n.unread > 1 ? 's' : '')));
+    li.addEventListener('click', function () { open[id] = !open[id]; render(); });
     return li;
+  }
+  /** An en attente coordinator with live agents below it: it is listed in « En attente », this line only holds its place. */
+  function standIn(n) {
+    var li = level(el('li', 'fold-owner stand'), n.depth); li.dataset.standIn = n.row.id;
+    li.appendChild(el('span', 'so-g'));
+    li.appendChild(document.createTextNode((n.row.displayName || n.row.name) + ' '));
+    li.appendChild(el('em', null, '(en attente, plus haut)'));
+    return li;
+  }
+  /** One node: its row (or its stand-in), then its fold and — open — its kids one level deeper. */
+  function drawNode(ul, n) {
+    ul.appendChild(n.standIn ? standIn(n) : row(n.row, false, n.depth));
+    if (!n.kids.length) return;
+    ul.appendChild(fold(n));
+    if (open[n.row.id]) n.kids.forEach(function (k) { drawNode(ul, k); });
   }
 
   function render() {
@@ -210,34 +229,13 @@ export const APP_JS = `(function () {
     var waiting = rows.filter(needs);
     if (waiting.length) {
       listEl.appendChild(section('sub w', 'En attente', waiting.length));
-      var wl = el('ul'); waiting.forEach(function (w) { wl.appendChild(row(w, true, false)); }); listEl.appendChild(wl);
+      var wl = el('ul'); waiting.forEach(function (w) { wl.appendChild(row(w, true, 0)); }); listEl.appendChild(wl);
     }
     if (needsMe.checked) return;
-    var byId = Object.create(null); last.forEach(function (w) { byId[w.id] = w; });
-    var kidsOf = Object.create(null);
-    var top = [];
-    last.forEach(function (w) {
-      if (needs(w)) return;
-      if (w.parentId && byId[w.parentId]) (kidsOf[w.parentId] || (kidsOf[w.parentId] = [])).push(w);
-      else top.push(w);
-    });
-    // a coordinator that is itself en attente still owns its fold: give it a header row-less fold in its repo group
-    Object.keys(kidsOf).forEach(function (pid) { if (needs(byId[pid]) && top.indexOf(byId[pid]) < 0) top.push({ foldOnly: true, id: pid, group: byId[pid].group, name: byId[pid].displayName || byId[pid].name }); });
-    var groups = Object.create(null); var order = [];
-    top.forEach(function (w) { if (!groups[w.group]) { groups[w.group] = []; order.push(w.group); } groups[w.group].push(w); });
-    order.forEach(function (g) {
-      var n = 0; groups[g].forEach(function (w) { n += (w.foldOnly ? 0 : 1) + (kidsOf[w.id] ? kidsOf[w.id].length : 0); });
-      listEl.appendChild(section('rh', g, n));
+    buildTree(last).groups.forEach(function (g) {
+      listEl.appendChild(section('rh', g.group, g.count));
       var ul = el('ul', 'repo-g');
-      groups[g].forEach(function (w) {
-        if (w.foldOnly) { var lbl = el('li', 'fold-owner', w.name + ' (en attente, plus haut)'); ul.appendChild(lbl); }
-        else ul.appendChild(row(w, false, false));
-        var kids = kidsOf[w.id];
-        if (kids) {
-          ul.appendChild(fold(w.id, kids));
-          if (open[w.id]) kids.forEach(function (k) { ul.appendChild(row(k, false, true)); });
-        }
-      });
+      g.roots.forEach(function (n) { drawNode(ul, n); });
       listEl.appendChild(ul);
     });
   }

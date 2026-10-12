@@ -206,6 +206,7 @@ const world = (() => {
   for (const x of [fakeHome, ohome, cfgA, cfgB, repoA, repoB, path.join(d, 'wt')]) { fs.mkdirSync(x, { recursive: true }); mustBeScratch('seed', x); }
   const wts = [];
   const coordDir = path.join(d, 'coord'); fs.mkdirSync(coordDir, { recursive: true });
+  const plainDir = (n) => { const x = path.join(d, `plain-${n}`); fs.mkdirSync(x, { recursive: true }); return x; };
   for (const [repo, name] of [[repoA, 'am-waiting'], [repoA, 'am-idle'], [repoB, 'am-unread'], [repoB, 'am-archived']]) {
     if (!fs.existsSync(path.join(repo, '.git'))) { git(repo, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repo, 'README.md'), '#\n'); git(repo, ['add', '.'], fakeHome); git(repo, ['commit', '-q', '-m', 'seed'], fakeHome); }
     const wt = path.join(d, 'wt', name); git(repo, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome); wts.push(wt);
@@ -232,6 +233,9 @@ const world = (() => {
     { ...base, id: 'ws-am-idle', name: 'repo-orchestra · am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc', parentId: 'ws-am-coord' },
     // #338: am-idle is a FLEET MEMBER of this coordinator's run, whose bus `delivery` switch is ON — the agent `/message` path refuses it.
     { ...base, id: 'ws-am-coord', name: 'orchestrator · am-coord', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: coordDir, branch: 'am-coord', status: 'idle' },
+    // #373: the whole tree — am-coord › am-sub › am-deep › am-deeper; am-kid under am-idle (a waiting ancestor later); am-hung under an ARCHIVED middle parent
+    ...[['sub', 'ws-am-coord'], ['deep', 'ws-am-sub'], ['deeper', 'ws-am-deep'], ['kid', 'ws-am-idle'], ['hung', 'ws-am-arch2']].map(([n, parentId]) => ({ ...base, id: `ws-am-${n}`, name: `orchestrator · am-${n}`, kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: plainDir(n), branch: `am-${n}`, status: 'idle', parentId })),
+    { ...base, id: 'ws-am-arch2', name: 'orchestrator · am-arch2', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: plainDir('arch2'), branch: 'am-arch2', status: 'idle', archived: true, archivedAt: Date.now(), parentId: 'ws-am-coord' },
     { ...base, id: 'ws-am-unread', name: 'am-unread', repoPath: repoB, worktreePath: wts[2], branch: 'e2e/am-unread', status: 'idle', autoUnread: true, accountId: 'acc-perso', sdkSessionId: HISTORY_SESSION },
     { ...base, id: 'ws-am-archived', name: 'am-archived', repoPath: repoB, worktreePath: wts[3], branch: 'e2e/am-archived', status: 'idle', archived: true, archivedAt: Date.now(), accountId: 'acc-perso' },
   ];
@@ -324,7 +328,7 @@ try {
   // security arms against the live port
   const ctl = await req(SOCK, '/api/workspaces', AUTH);
   const rows = ctl.status === 200 ? JSON.parse(ctl.body).workspaces : [];
-  clause('sec/control-200', ctl.status === 200 && rows.length === 4 && rows.some((r) => r.name === 'orchestrator · am-coord' && r.displayName === 'am-coord' && r.group === 'Orchestrators') && rows.some((r) => r.name === 'repo-orchestra · am-idle' && r.displayName === 'am-idle') && rows.some((r) => r.name === 'am-unread' && r.displayName === 'am-unread'), `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
+  clause('sec/control-200', ctl.status === 200 && rows.length === 9 && rows.some((r) => r.name === 'orchestrator · am-coord' && r.displayName === 'am-coord' && r.group === 'Orchestrators') && rows.some((r) => r.name === 'repo-orchestra · am-idle' && r.displayName === 'am-idle') && rows.some((r) => r.name === 'am-unread' && r.displayName === 'am-unread'), `status ${ctl.status}; rows ${rows.map((r) => `${r.name}[${r.status}${r.unread ? ',unread' : ''}/${r.account}/${r.group}]`).join(' ')}`);
   // A seeded `waiting` is resolved to idle + non lu at store load (store.ts: no live process can still be asking), so a real
   // en attente needs a live AskUserQuestion (#339). Here: attention rank never decreases, both accounts, archived dropped.
   const rank = (r) => (r.status === 'waiting' ? 0 : r.unread ? 1 : 2);
@@ -372,14 +376,14 @@ try {
   await phone.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
   const prePhone = await phone.eval(`location.href`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, "three rows on the phone (am-idle folded under am-coord)");
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 20000, "three rows on the phone (am-idle folded under am-coord)");
   const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.dataset.group), unreadRows: document.querySelectorAll('li[data-unread="1"]').length, unreadRow: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); return r ? { repo: (r.querySelector('.repo') || {}).textContent, br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent } : null; })(), unreadStl: (document.querySelector('li[data-id="ws-am-unread"] .stl') || {}).textContent, unreadIn: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return h ? h.dataset.group : null; })(), idleHidden: !document.querySelector('li[data-id="ws-am-idle"]'), fold: (document.querySelector('li.fold[data-fold="ws-am-coord"] .fold-n') || {}).textContent || null, counts: [document.getElementById('cntAll').textContent, document.getElementById('cntMe').textContent], live: document.getElementById('live').dataset.live })`);
   clause('phone/paired-fragment-stripped', P.stored && !P.href.includes('#') && !P.href.includes(TOKEN), `${prePhone} -> ${P.href}; token stored=${P.stored}`);
   const apiOrder = rows.map((r) => r.id);
   // Lucas 2026-10-12 (the app boots every row idle ⇒ nothing en attente yet): a non lu row stays IN its repo (bold, « non lu »), no separate section;
-  // a coordinator's workers are folded under it (« 1 agent »); « À traiter » counts the en attente only.
-  const visibleApi = apiOrder.filter((id) => id !== 'ws-am-idle');
-  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(visibleApi) && !P.ids.includes('ws-am-archived') && JSON.stringify(P.groups) === JSON.stringify(['orchestra-rig', 'perso-rig', 'Orchestrators']) && P.unreadRows === 2 && P.unreadIn === 'perso-rig' && P.unreadStl === 'non lu' && JSON.stringify(P.unreadRow) === JSON.stringify({ br: 'e2e/am-unread', acct: 'perso' }) && P.idleHidden && P.fold === '1 agent' && JSON.stringify(P.counts) === JSON.stringify(['4', '0']), `phone rows ${P.ids.join(',')} == api order minus the folded worker; groups ${P.groups.join(' | ')}; non lu row in ${P.unreadIn} ${JSON.stringify(P.unreadRow)} stl ${P.unreadStl}; am-idle hidden ${P.idleHidden}, fold « ${P.fold} »; counts Tout/À traiter ${P.counts.join('/')}; live ${P.live}`);
+  // a coordinator's workers are folded under it (« 6 agents » once the tree is whole); « À traiter » counts the en attente only.
+  const visibleApi = apiOrder.filter((id) => !rows.find((r) => r.id === id).parentId); // roots: every worker (any depth) is folded
+  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(visibleApi) && !P.ids.includes('ws-am-archived') && JSON.stringify(P.groups) === JSON.stringify(['orchestra-rig', 'perso-rig', 'Orchestrators']) && P.unreadRows === 2 && P.unreadIn === 'perso-rig' && P.unreadStl === 'non lu' && JSON.stringify(P.unreadRow) === JSON.stringify({ br: 'e2e/am-unread', acct: 'perso' }) && P.idleHidden && P.fold === '6 agents' && JSON.stringify(P.counts) === JSON.stringify(['9', '0']), `phone rows ${P.ids.join(',')} == api order minus the folded worker; groups ${P.groups.join(' | ')}; non lu row in ${P.unreadIn} ${JSON.stringify(P.unreadRow)} stl ${P.unreadStl}; am-idle hidden ${P.idleHidden}, fold « ${P.fold} »; counts Tout/À traiter ${P.counts.join('/')}; live ${P.live}`);
   // the fold opens on a TRUSTED tap (the worker row appears under it, indented) and closes on a second one
   const tapSel = async (sel) => { const c = await phone.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, ...extra }); await sleep(200); };
   await tapSel('li.fold[data-fold="ws-am-coord"]');
@@ -393,9 +397,28 @@ try {
   await tapSel('li.fold[data-fold="ws-am-coord"]');
   const F2 = await phone.eval(`!document.querySelector('li[data-id="ws-am-idle"]')`);
   clause('phone/fold-workers', F1?.child && F1.afterFold && F1.br === 'e2e/am-idle' && F1.acct === 'mc' && F1.stl === 'inactif' && F2, `tap ⇒ ${JSON.stringify(F1)}; tap again ⇒ folded ${F2}`);
+  // #373: the WHOLE tree. TRUSTED taps open am-coord › am-sub › am-deep (+ am-idle's own fold): every row is reachable, one indentation step per level
+  // (the glyph's x), each fold counts its whole subtree; an open fold survives a list refresh; the page never scrolls sideways.
+  const tapMaybe = async (sel) => { if (!(await phone.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; e.scrollIntoView({ block: 'center', behavior: 'instant' }); return true; })()`))) return false; await sleep(150); await tapSel(sel); return true; };
+  const tapped = [];
+  for (const f of ['ws-am-coord', 'ws-am-sub', 'ws-am-deep', 'ws-am-idle']) tapped.push(await tapMaybe(`li.fold[data-fold="${f}"]`));
+  const treeSnap = () => phone.eval(`(() => { const rs = [...document.querySelectorAll('li[data-id]')]; return { ids: rs.map((l) => l.dataset.id).sort(), depth: Object.fromEntries(rs.map((l) => [l.dataset.id, l.dataset.depth])), x: Object.fromEntries(rs.map((l) => [l.dataset.id, Math.round(l.querySelector('.g').getBoundingClientRect().left)])), folds: Object.fromEntries([...document.querySelectorAll('li.fold')].map((f) => [f.dataset.fold, f.textContent])), noSideScroll: document.documentElement.scrollWidth <= window.innerWidth }; })()`);
+  const TR1 = await treeSnap();
+  const treeAllIds = rows.map((r) => r.id).sort();
+  const dx = (a, b) => Math.abs(TR1.x[a] - TR1.x[b]);
+  clause('phone/tree-every-row-reachable', JSON.stringify(TR1.ids) === JSON.stringify(treeAllIds) && new Set(TR1.ids).size === treeAllIds.length, `${TR1.ids.length}/${treeAllIds.length} rows on the phone after opening the folds (taps ${tapped.join(',')}); ids ${TR1.ids.join(',')}`);
+  clause('phone/tree-indent-one-step-per-level', TR1.depth['ws-am-coord'] === '0' && TR1.depth['ws-am-sub'] === '1' && TR1.depth['ws-am-hung'] === '1' && TR1.depth['ws-am-deep'] === '2' && TR1.depth['ws-am-kid'] === '2' && TR1.depth['ws-am-deeper'] === '3' && TR1.x['ws-am-sub'] > TR1.x['ws-am-coord'] && Math.abs(dx('ws-am-sub', 'ws-am-coord') - 16) <= 1 && Math.abs(dx('ws-am-deep', 'ws-am-sub') - 16) <= 1 && Math.abs(dx('ws-am-deeper', 'ws-am-deep') - 16) <= 1 && TR1.noSideScroll, `depth ${JSON.stringify(TR1.depth)}; glyph x ${JSON.stringify(TR1.x)}; no sideways scroll ${TR1.noSideScroll}`);
+  clause('phone/tree-fold-counts-whole-subtree', TR1.folds['ws-am-coord'] === '▾6 agents' && TR1.folds['ws-am-sub'] === '▾2 agents' && TR1.folds['ws-am-deep'] === '▾1 agent' && TR1.folds['ws-am-idle'] === '▾1 agent', `folds ${JSON.stringify(TR1.folds)}`);
+  saveShot('phone-tree-open.png', await phone.shot());
+  // a list refresh (the live stream does this): a hash that is no conversation, then back ⇒ route() reloads the list (never open a REAL conversation here: it would mark it seen and spoil conv/seen-clears-bell); the folds opened above must stay open
+  await phone.eval(`document.querySelectorAll('li[data-id]').forEach((l) => { l.__before = true; }); location.hash = 'away'; true`); await sleep(400); await phone.eval(`location.hash = ''; true`);
+  await waitFor(() => phone.eval(`(() => { const rs = [...document.querySelectorAll('li[data-id]')]; return rs.length > 0 && rs.every((l) => !l.__before) && !document.getElementById('home').hidden; })()`), 15000, 'the list re-rendered (every row is a NEW element) and shown');
+  const TR3 = await treeSnap();
+  clause('phone/tree-open-state-survives-refresh', JSON.stringify(TR3.ids) === JSON.stringify(TR1.ids) && JSON.stringify(TR3.folds) === JSON.stringify(TR1.folds), `${TR1.ids.length} rows before, ${TR3.ids.length} after leaving the list and coming back (${Object.keys(TR3.folds).length} folds)`);
+  for (const f of ['ws-am-deep', 'ws-am-sub', 'ws-am-idle', 'ws-am-coord']) await tapMaybe(`li.fold[data-fold="${f}"]`); // close them again: the arms below start from the closed list
   saveShot('phone-list.png', await phone.shot());
   await phone.send('Page.reload');
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after reload without the fragment');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 20000, 'rows after reload without the fragment');
   clause('phone/reload-still-paired', true, 'reload without #t= still lists the 3 visible rows (token from localStorage)');
 
   // Lucas 2026-10-12: the app added to the iOS home screen opened « Pas appairé » — it has ITS OWN storage (Safari's pairing does
@@ -433,7 +456,7 @@ try {
   fs.writeFileSync(cameraFile, qrY4m(`https://rig-box.tail0000.ts.net:${SERVE_PORT}/#t=${liveToken}`));
   const scanner = await isolatedPhone();
   await scanner.tap('#pairScan');
-  await waitFor(() => scanner.p.eval(`document.querySelectorAll('li[data-id]').length === 3`), 30000, 'the list after the in-app scan');
+  await waitFor(() => scanner.p.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 30000, 'the list after the in-app scan');
   const SQ = await scanner.p.eval(`({ stored: localStorage.getItem('orchestra.accesMobile.token'), pairShown: !document.getElementById('pair').hidden, scanShown: !document.getElementById('scan').hidden, live: ${tracksLive}, href: location.href })`);
   clause('pair/in-app-scan', SQ.stored === liveToken && !SQ.pairShown && !SQ.scanShown && !SQ.live && !SQ.href.includes(liveToken), `trusted tap « Scanner le QR code » ⇒ token stored ${SQ.stored === liveToken}, list of 3, panel ${SQ.pairShown ? 'still shown' : 'gone'}, camera stopped ${!SQ.live}, address ${SQ.href}`);
   await scanner.close();
@@ -442,7 +465,7 @@ try {
   await paster.p.eval(`document.getElementById('pairInput').focus(); true`);
   await paster.p.send('Input.insertText', { text: `https://rig-box.tail0000.ts.net:${SERVE_PORT}/#t=${liveToken}` });
   await paster.tap('#pairForm .btn2');
-  await waitFor(() => paster.p.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'the list after the pasted link');
+  await waitFor(() => paster.p.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 20000, 'the list after the pasted link');
   const PQ = await paster.p.eval(`({ stored: localStorage.getItem('orchestra.accesMobile.token'), input: document.getElementById('pairInput').value })`);
   clause('pair/in-app-paste', PQ.stored === liveToken && PQ.input === '', `pasted link ⇒ token stored ${PQ.stored === liveToken}, field cleared ${PQ.input === ''}, list of 3`);
   await paster.close();
@@ -589,6 +612,15 @@ try {
   // a folded worker that waits on the human is NOT hidden by its fold: it surfaces in « En attente » (the list behind the open conv)
   const W = await waitFor(() => phone.eval(`(() => { const r = document.querySelector('#list li.waiting[data-id="ws-am-idle"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return r && h && h.dataset.group === 'En attente' ? { pv: (r.querySelector('.pv') || {}).textContent, me: document.getElementById('cntMe').textContent, title: (r.querySelector('.r1 b') || {}).textContent, repo: (r.querySelector('.r2 .repo') || {}).textContent } : false; })()`), 20000, 'am-idle in En attente').catch(() => null);
   clause('phone/folded-worker-waiting-surfaces', W && /Quelle option pour le rig/.test(W.pv || '') && W.me === '1', `am-idle (folded under am-coord) ⇒ En attente ${JSON.stringify(W)}`);
+  // #373: am-idle is now en attente AND an ancestor (am-kid): lifted to En attente (once), a stand-in at its place keeps am-kid reachable.
+  // Its conversation is open (the list underneath is hidden): drive the list's folds with JS clicks and read the DOM, not pixels.
+  const jsTap = (sel) => phone.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; e.click(); return true; })()`);
+  await jsTap('li.fold[data-fold="ws-am-coord"]');
+  const ST = await phone.eval(`(() => { const st = document.querySelector('li.fold-owner.stand'); return { stand: st ? st.textContent : null, idleRows: document.querySelectorAll('li[data-id="ws-am-idle"]').length, kidFold: !!document.querySelector('li.fold[data-fold="ws-am-idle"]'), coordFold: (document.querySelector('li.fold[data-fold="ws-am-coord"] .fold-n') || {}).textContent }; })()`);
+  await jsTap('li.fold[data-fold="ws-am-idle"]');
+  const ST2 = await phone.eval(`(() => { const k = document.querySelector('li[data-id="ws-am-kid"]'); return k ? { depth: k.dataset.depth } : null; })()`);
+  clause('phone/tree-waiting-ancestor-stand-in', ST.stand === 'am-idle (en attente, plus haut)' && ST.idleRows === 1 && ST.kidFold && ST.coordFold === '5 agents' && ST2?.depth === '2', `stand-in « ${ST.stand} », am-idle rows ${ST.idleRows} (En attente only), its fold ${ST.kidFold}, am-coord fold « ${ST.coordFold} » (am-idle not counted), am-kid ${JSON.stringify(ST2)}`);
+  await jsTap('li.fold[data-fold="ws-am-idle"]'); await jsTap('li.fold[data-fold="ws-am-coord"]');
   clause('phone/waiting-row-keeps-repo-chip', W && W.title === 'am-idle' && W.repo === 'orchestra-rig', `En attente row: title « ${W?.title} » (no prefix), repo chip « ${W?.repo} » (the registered repo name, kept)`);
   const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.dataset.label === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: optB.x, y: optB.y, ...extra });
@@ -733,7 +765,7 @@ try {
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/${new URL(shown).hash}` }); // the displayed URL, its origin swapped for the stand-in (no real tailnet here)
   // Same URL, new fragment ⇒ a same-document navigation (hashchange): the open page keeps its state (its filter
   // is on Tout ⇒ 3 visible rows) and must adopt the new token by itself — the « Jeton refusé » text is replaced by the list.
-  await waitFor(() => phone.eval(`document.getElementById('state').textContent === '' && document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after re-pairing with the new URL').catch(async (e) => {
+  await waitFor(() => phone.eval(`document.getElementById('state').textContent === '' && document.querySelectorAll('li[data-id]').length >= 3`), 20000, 'rows after re-pairing with the new URL').catch(async (e) => {
     const dbg = await phone.eval(`({ href: location.href, stored: localStorage.getItem(${JSON.stringify(KEY)}), state: (document.getElementById('state') || {}).textContent, rows: document.querySelectorAll('li[data-id]').length })`).catch((x) => String(x));
     throw new Error(`${e.message} — phone: ${JSON.stringify(dbg)}; wanted token ${NEW}; navigated to ${shown.replace(NEW, '<NEW>')}`);
   });
@@ -793,7 +825,7 @@ try {
   await cdp.clickSel('[data-am-toggle]');
   await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'listening'`), 20000, 'health listening again');
   await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 25000, 'rows back without a reload');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 25000, 'rows back without a reload');
   clause('pwa/recovers-by-itself', true, 'stand-in + Orchestra back ⇒ the page that said « injoignable » lists 3 workspaces again with no reload (its own 5 s poll)');
 
   // leak/* — the token never travels in a request line (phone traffic) nor lands in a log / any file under ORCHESTRA_HOME

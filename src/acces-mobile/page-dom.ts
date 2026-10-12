@@ -23,6 +23,7 @@ export class El {
   addEventListener(t: string, h: () => void): void { this.on[t] = h; }
   setAttribute(name: string, v: string): void { this.attrs[name] = v; }
   attrs: Record<string, string> = {};
+  style = { props: {} as Record<string, string>, setProperty(k: string, v: string) { this.props[k] = v; } };
   click(): void { this.on.click?.(); }
   has(cls: string): boolean { return this.className.split(/\s+/).includes(cls); }
 }
@@ -37,18 +38,20 @@ export const row = (id: string, over: Partial<Row> = {}): Row => ({ id, name: id
 
 /** Run the real page against `rows` (what /api/workspaces answers) and return the DOM it drew, plus a way to tap and re-render. */
 export async function drawList(rows: Row[]) {
+  let current = rows;
+  let stream: ((m: unknown) => void) | null = null;
   const els: Record<string, El> = {};
   const get = (id: string): El => (els[id] ??= new El());
   const sandbox = {
     location: { hash: '', pathname: '/' },
     window: {
       addEventListener: () => {},
-      OrchestraConversation: { open: () => {}, close: () => {}, onStream: () => {}, connect: () => {} },
+      OrchestraConversation: { open: () => {}, close: () => {}, onStream: (h: (m: unknown) => void) => { stream = h; }, connect: () => {} },
     },
     history: { replaceState: () => {} },
     localStorage: { getItem: () => TOKEN, setItem: () => {} },
-    document: { getElementById: get, createElement: (tag: string) => new El(tag) },
-    fetch: () => Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, workspaces: rows }) }),
+    document: { getElementById: get, createElement: (tag: string) => new El(tag), createTextNode: (t: string) => { const e = new El('#text'); e.textContent = t; return e; } },
+    fetch: () => Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, workspaces: current }) }),
     setInterval: () => 0,
     navigator: { standalone: false, serviceWorker: { register: () => Promise.resolve() } },
   };
@@ -66,6 +69,8 @@ export async function drawList(rows: Row[]) {
     title: (li: El) => first(li, (e) => e.tag === 'b')?.textContent,
     chip: (li: El, cls: string) => first(li, (e) => e.tag === 'span' && e.has(cls))?.textContent,
     headings: () => all(list, (e) => e.tag === 'h2').map((h) => h.dataset.group),
+    /** What the live stream does when the list changes: the page refetches and redraws (the fold state must survive). */
+    refresh: async (next?: Row[]) => { if (next) current = next; stream?.({ t: 'workspaces' }); await settle(); await settle(); },
     needsMe: () => { get('needsMe').checked = true; get('needsMe').on.change?.(); },
   };
 }
