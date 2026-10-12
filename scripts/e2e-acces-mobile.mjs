@@ -157,7 +157,10 @@ function serverPids(tokenFile) {
 
 // ── seed ──
 const SAMPLE_TRANSCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures/payloads/acces-mobile-transcript.sample.jsonl');
+const HISTORY_COPIES = 40;
 const HISTORY_SESSION = JSON.parse(fs.readFileSync(SAMPLE_TRANSCRIPT, 'utf8').split('\n')[0]).sessionId;
+// The fake model answers in Markdown: the phone must RENDER it (« faux modèle » in <strong>), so the visible text is FAKE_REPLY.
+const FAKE_REPLY_MD = 'Réponse du **faux modèle** pour le téléphone';
 const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
 // #339: the rig ASKS for a question (wantAsk++) and the next main (tool-carrying) model request answers with a real AskUserQuestion
 // tool call; everything else gets the canned text.
@@ -165,7 +168,7 @@ const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', heade
 let wantAsk = 0;
 const fakeApi = await startFakeApi({ reply: (rec) => {
   if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
-  return { text: FAKE_REPLY };
+  return { text: FAKE_REPLY_MD };
 } });
 const LOGIN = 'rig.owner@example.invalid';
 const world = (() => {
@@ -186,7 +189,15 @@ const world = (() => {
   // #337: a transcript captured from the real CLI (texts replaced) as am-unread's history, in ITS account's project dir.
   const histDir = path.join(cfgB, 'projects', fs.realpathSync(wts[2]).replace(/[^A-Za-z0-9]/g, '-'));
   fs.mkdirSync(histDir, { recursive: true });
-  fs.copyFileSync(SAMPLE_TRANSCRIPT, path.join(histDir, `${HISTORY_SESSION}.jsonl`));
+  const sampleLines = fs.readFileSync(SAMPLE_TRANSCRIPT, 'utf8').trim().split('\n');
+  const copies = [];
+  for (let k = 0; k < HISTORY_COPIES; k++) {
+    for (const l of sampleLines) {
+      // re-mint every id per copy (uuid, message id, tool ids) so 40 copies are 40 distinct exchanges, structure untouched
+      copies.push(l.replace(/("uuid":"|"parentUuid":"|"id":"|"tool_use_id":"|"sourceToolAssistantUUID":")([^"]+)"/g, (_m, key, id) => `${key}${id}-c${k}"`).replace(/"toolu_[^"]+":/g, (m) => m.replace('":', `-c${k}":`)));
+    }
+  }
+  fs.writeFileSync(path.join(histDir, `${HISTORY_SESSION}.jsonl`), copies.join('\n') + '\n');
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
   const workspaces = [
     { ...base, id: 'ws-am-waiting', name: 'am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
@@ -323,22 +334,32 @@ try {
   await phone.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
   const prePhone = await phone.eval(`location.href`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, "four rows on the phone (incl. the coordinator)");
-  const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.dataset.group), unreadRows: document.querySelectorAll('li[data-unread="1"]').length, unreadRow: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); return r ? { repo: (r.querySelector('.repo') || {}).textContent, br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent } : null; })(), idleRow: (() => { const r = document.querySelector('li[data-id="ws-am-idle"]'); return r ? { br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent, stl: (r.querySelector('.stl') || {}).textContent } : null; })(), counts: [document.getElementById('cntAll').textContent, document.getElementById('cntMe').textContent], live: document.getElementById('live').dataset.live })`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, "three rows on the phone (am-idle folded under am-coord)");
+  const P = await phone.eval(`({ href: location.href, stored: localStorage.getItem('orchestra.accesMobile.token') === ${JSON.stringify(TOKEN)}, ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), groups: [...document.querySelectorAll('h2')].map((h) => h.dataset.group), unreadRows: document.querySelectorAll('li[data-unread="1"]').length, unreadRow: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); return r ? { repo: (r.querySelector('.repo') || {}).textContent, br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent } : null; })(), unreadStl: (document.querySelector('li[data-id="ws-am-unread"] .stl') || {}).textContent, unreadIn: (() => { const r = document.querySelector('li[data-id="ws-am-unread"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return h ? h.dataset.group : null; })(), idleHidden: !document.querySelector('li[data-id="ws-am-idle"]'), fold: (document.querySelector('li.fold[data-fold="ws-am-coord"] .fold-n') || {}).textContent || null, counts: [document.getElementById('cntAll').textContent, document.getElementById('cntMe').textContent], live: document.getElementById('live').dataset.live })`);
   clause('phone/paired-fragment-stripped', P.stored && !P.href.includes('#') && !P.href.includes(TOKEN), `${prePhone} -> ${P.href}; token stored=${P.stored}`);
   const apiOrder = rows.map((r) => r.id);
-  // V1 (#340): « Non lu » section (any repo, with its repo shown), then repo groups; the segmented counts; the live dot.
-  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(apiOrder) && !P.ids.includes('ws-am-archived') && P.unreadRows === 2 && JSON.stringify(P.groups) === JSON.stringify(['Non lu', 'orchestra-rig', 'Orchestrators']) && JSON.stringify(P.unreadRow) === JSON.stringify({ repo: 'perso-rig', br: 'e2e/am-unread', acct: 'perso' }) && P.idleRow?.br === 'e2e/am-idle' && P.idleRow?.acct === 'mc' && P.idleRow?.stl === 'inactif' && JSON.stringify(P.counts) === JSON.stringify(['4', '2']), `phone rows ${P.ids.join(',')} == api order; groups ${P.groups.join(' | ')}; non lu row ${JSON.stringify(P.unreadRow)}; idle row ${JSON.stringify(P.idleRow)}; counts Tout/À traiter ${P.counts.join('/')}; live ${P.live}`);
+  // Lucas 2026-10-12 (the app boots every row idle ⇒ nothing en attente yet): a non lu row stays IN its repo (bold, « non lu »), no separate section;
+  // a coordinator's workers are folded under it (« 1 agent »); « À traiter » counts the en attente only.
+  const visibleApi = apiOrder.filter((id) => id !== 'ws-am-idle');
+  clause('phone/list', JSON.stringify(P.ids) === JSON.stringify(visibleApi) && !P.ids.includes('ws-am-archived') && JSON.stringify(P.groups) === JSON.stringify(['orchestra-rig', 'perso-rig', 'Orchestrators']) && P.unreadRows === 2 && P.unreadIn === 'perso-rig' && P.unreadStl === 'non lu' && JSON.stringify(P.unreadRow) === JSON.stringify({ br: 'e2e/am-unread', acct: 'perso' }) && P.idleHidden && P.fold === '1 agent' && JSON.stringify(P.counts) === JSON.stringify(['4', '0']), `phone rows ${P.ids.join(',')} == api order minus the folded worker; groups ${P.groups.join(' | ')}; non lu row in ${P.unreadIn} ${JSON.stringify(P.unreadRow)} stl ${P.unreadStl}; am-idle hidden ${P.idleHidden}, fold « ${P.fold} »; counts Tout/À traiter ${P.counts.join('/')}; live ${P.live}`);
+  // the fold opens on a TRUSTED tap (the worker row appears under it, indented) and closes on a second one
+  const tapSel = async (sel) => { const c = await phone.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, ...extra }); await sleep(200); };
+  await tapSel('li.fold[data-fold="ws-am-coord"]');
+  const F1 = await phone.eval(`(() => { const r = document.querySelector('li[data-id="ws-am-idle"]'); return r ? { child: r.classList.contains('child'), afterFold: r.previousElementSibling?.dataset.fold === 'ws-am-coord', br: (r.querySelector('.br') || {}).textContent, acct: (r.querySelector('.acct') || {}).textContent, stl: (r.querySelector('.stl') || {}).textContent } : null; })()`);
+  saveShot('phone-list-fold-open.png', await phone.shot());
+  await tapSel('li.fold[data-fold="ws-am-coord"]');
+  const F2 = await phone.eval(`!document.querySelector('li[data-id="ws-am-idle"]')`);
+  clause('phone/fold-workers', F1?.child && F1.afterFold && F1.br === 'e2e/am-idle' && F1.acct === 'mc' && F1.stl === 'inactif' && F2, `tap ⇒ ${JSON.stringify(F1)}; tap again ⇒ folded ${F2}`);
   saveShot('phone-list.png', await phone.shot());
   await phone.send('Page.reload');
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 20000, 'rows after reload without the fragment');
-  clause('phone/reload-still-paired', true, 'reload without #t= still lists 4 rows (token from localStorage)');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after reload without the fragment');
+  clause('phone/reload-still-paired', true, 'reload without #t= still lists the 3 visible rows (token from localStorage)');
   // V1: the segmented « À traiter » button (a TRUSTED tap), not the hidden checkbox it drives
   const segMe = await phone.eval(`(() => { const r = document.getElementById('segMe').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: segMe.x, y: segMe.y, ...extra });
   await sleep(200);
-  const filtered = await phone.eval(`[...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id)`);
-  clause('phone/filter-needs-me', filtered.length === 2 && !filtered.includes('ws-am-idle'), `4 -> ${filtered.length} rows: ${filtered.join(',')}`);
+  const filtered = await phone.eval(`({ ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), state: document.getElementById('state').textContent })`);
+  clause('phone/filter-needs-me', filtered.ids.length === 0 && filtered.state === 'Rien ne t’attend.', `3 -> ${filtered.ids.length} rows, « ${filtered.state} » (en attente only; the 2 non lus are not « à traiter »)`);
   saveShot('phone-list-needs-me.png', await phone.shot());
   await phone.eval(`(() => { if (document.getElementById('needsMe').checked) document.getElementById('segAll').click(); return true; })()`);
 
@@ -346,9 +367,13 @@ try {
   // bell clears (the phone's « seen » is the desktop's).
   const unreadBefore = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread;
   await phone.eval(`window.__noReload = 1; document.querySelector('li[data-id="ws-am-unread"]').click(); true`);
-  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length === 3`), 20000, 'the history on the phone');
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length === ${3 * HISTORY_COPIES}`), 20000, 'the history on the phone');
+  await sleep(300);
+  const SC = await phone.eval(`(() => { const se = document.scrollingElement; const last = [...document.querySelectorAll('#conv .conv-lines [data-kind]')].at(-1).getBoundingClientRect(); return { top: se.scrollTop, h: se.scrollHeight, vh: innerHeight, lastBottom: Math.round(last.bottom) }; })()`);
   const H = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent)`);
-  clause('conv/history', H[0] === 'user:Liste les fichiers du dépôt, s’il te plaît.' && /^tool:✓ Bash · List repository files$/.test(H[1]) && H[2] === 'assistant:Voici les fichiers : README.md et src/.', `phone lines ${JSON.stringify(H)}`);
+  clause('conv/history', H.length === 3 * HISTORY_COPIES && H[0] === 'user:Liste les fichiers du dépôt, s’il te plaît.' && /^tool:✓ Bash · List repository files$/.test(H[1]) && H[2] === 'assistant:Voici les fichiers : README.md et src/.' && H.at(-1) === H[2], `${H.length} phone lines, first 3 ${JSON.stringify(H.slice(0, 3))}`);
+  // Lucas 2026-10-12: « ce qui nous intéresse c'est la fin » — a long conversation opens scrolled to its last line
+  clause('conv/opens-at-end', SC.h > 3 * SC.vh && SC.top > 0 && SC.top + SC.vh >= SC.h - 4 && SC.lastBottom <= SC.vh, `scrollTop ${SC.top} + viewport ${SC.vh} vs scrollHeight ${SC.h}; last line bottom ${SC.lastBottom}`);
   saveShot('phone-conversation-history.png', await phone.shot());
   await waitFor(() => !JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread, 10000, 'the bell cleared in the store').catch(() => null);
   const unreadAfter = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread;
@@ -370,7 +395,8 @@ try {
   })();
   await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', 'Bonjour depuis le rig').then(() => true)`);
   await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].some((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)}))`), 90000, 'the fake reply on the phone');
-  const L = await phone.eval(`({ lines: [...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent.slice(0, 60)), noReload: window.__noReload === 1 })`);
+  const L = await phone.eval(`({ lines: [...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent.slice(0, 60)), noReload: window.__noReload === 1, strong: [...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"] strong')].map((e) => e.textContent), stars: [...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].some((e) => e.textContent.includes('**')) })`);
+  clause('conv/markdown', L.strong.includes('faux modèle') && !L.stars, `reply ${JSON.stringify(FAKE_REPLY_MD)} ⇒ <strong> ${JSON.stringify(L.strong)}, raw ** shown ${L.stars}`);
   const modelAfter = fakeApi.requests.filter((r) => r.type === 'model').length;
   const apiConv = await phone.eval(`fetch('/api/conversation?id=ws-am-idle', { headers: { Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') } }).then((r) => r.json()).then((c) => ({ v: c.version, running: c.running, lines: c.lines.map((l) => l.kind + ':' + (l.text || l.label || '').slice(0, 40)) }))`);
   const deskConv = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.messages ?? []).map((m) => m.role + ':' + String(m.text ?? '').slice(0, 40) + (m.queued ? '(queued)' : ''))`);
@@ -425,6 +451,9 @@ try {
   await waitFor(() => phone.eval(`document.querySelectorAll('#conv .ask[data-kind="askUser"] .ask-opt').length === 2`), 90000, 'the question on the phone');
   const deskPending1 = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.pendingAnswerables ?? []).map((a) => a.requestId)`);
   const reqId1 = deskPending1[0];
+  // a folded worker that waits on the human is NOT hidden by its fold: it surfaces in « En attente » (the list behind the open conv)
+  const W = await waitFor(() => phone.eval(`(() => { const r = document.querySelector('#list li.waiting[data-id="ws-am-idle"]'); const h = r && r.closest('ul') && r.closest('ul').previousElementSibling; return r && h && h.dataset.group === 'En attente' ? { pv: (r.querySelector('.pv') || {}).textContent, me: document.getElementById('cntMe').textContent } : false; })()`), 20000, 'am-idle in En attente').catch(() => null);
+  clause('phone/folded-worker-waiting-surfaces', W && /Quelle option pour le rig/.test(W.pv || '') && W.me === '1', `am-idle (folded under am-coord) ⇒ En attente ${JSON.stringify(W)}`);
   const optB = await phone.eval(`(() => { const b = [...document.querySelectorAll('#conv .ask-opt')].find((x) => x.dataset.label === 'Réponse-rig-B'); const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: optB.x, y: optB.y, ...extra });
   await waitFor(() => phone.eval(`!!document.querySelector('#conv .ask-opt.picked') && !document.querySelector('#conv .ask-submit').disabled`), 5000, 'option picked, submit enabled');
@@ -481,7 +510,7 @@ try {
   const secs = (Date.now() - t0.at) / 1000;
   const mainPct = ((ticks(app.pid) - t0.main) / HZ / secs) * 100, srvPct = ((ticks(pidOn2) - t0.srv) / HZ / secs) * 100;
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
-  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 4, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
+  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
 
   // ───────────── #336: pairing QR, regenerate, PWA install, unreachable ─────────────
   const KEY = 'orchestra.accesMobile.token';
@@ -561,14 +590,14 @@ try {
   saveShot('phone-token-refused.png', await phone.shot());
   const shown = await cdp.eval(`document.querySelector('[data-am-url]').textContent`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/${new URL(shown).hash}` }); // the displayed URL, its origin swapped for the stand-in (no real tailnet here)
-  // Same URL, new fragment ⇒ a same-document navigation (hashchange): the open page keeps its state (the « M'attend seulement » filter is
-  // still ON ⇒ 2 rows) and must adopt the new token by itself — the « Jeton refusé » text is replaced by the list.
-  await waitFor(() => phone.eval(`document.getElementById('state').textContent === '' && document.querySelectorAll('li[data-id]').length === 4`), 20000, 'rows after re-pairing with the new URL').catch(async (e) => {
+  // Same URL, new fragment ⇒ a same-document navigation (hashchange): the open page keeps its state (its filter
+  // is on Tout ⇒ 3 visible rows) and must adopt the new token by itself — the « Jeton refusé » text is replaced by the list.
+  await waitFor(() => phone.eval(`document.getElementById('state').textContent === '' && document.querySelectorAll('li[data-id]').length === 3`), 20000, 'rows after re-pairing with the new URL').catch(async (e) => {
     const dbg = await phone.eval(`({ href: location.href, stored: localStorage.getItem(${JSON.stringify(KEY)}), state: (document.getElementById('state') || {}).textContent, rows: document.querySelectorAll('li[data-id]').length })`).catch((x) => String(x));
     throw new Error(`${e.message} — phone: ${JSON.stringify(dbg)}; wanted token ${NEW}; navigated to ${shown.replace(NEW, '<NEW>')}`);
   });
   const rp = await phone.eval(`({ href: location.href, stored: localStorage.getItem(${JSON.stringify(KEY)}) })`);
-  clause('regen/repair-with-new-url', /Jeton refusé/.test(refusedText) && rp.stored === NEW && !rp.href.includes('#') && !rp.href.includes(NEW), `phone showed "${refusedText.trim()}"; opening the NEW displayed URL over the open page ⇒ its list is back (2 rows, filter kept), token stored=${rp.stored === NEW}, address now ${rp.href}`);
+  clause('regen/repair-with-new-url', /Jeton refusé/.test(refusedText) && rp.stored === NEW && !rp.href.includes('#') && !rp.href.includes(NEW), `phone showed "${refusedText.trim()}"; opening the NEW displayed URL over the open page ⇒ its list is back (3 rows), token stored=${rp.stored === NEW}, address now ${rp.href}`);
 
   // pwa/* — manifest, icons, apple-touch-icon, service worker, shell-only cache
   const pm = await phone.send('Page.getAppManifest');
@@ -623,7 +652,7 @@ try {
   await cdp.clickSel('[data-am-toggle]');
   await waitFor(() => cdp.eval(`document.querySelector('[data-am-health]').dataset.amHealth === 'listening'`), 20000, 'health listening again');
   await waitFor(() => sockConnects(SOCK), 15000, 'socket back');
-  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 4`), 25000, 'rows back without a reload');
+  await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length === 3`), 25000, 'rows back without a reload');
   clause('pwa/recovers-by-itself', true, 'stand-in + Orchestra back ⇒ the page that said « injoignable » lists 3 workspaces again with no reload (its own 5 s poll)');
 
   // leak/* — the token never travels in a request line (phone traffic) nor lands in a log / any file under ORCHESTRA_HOME

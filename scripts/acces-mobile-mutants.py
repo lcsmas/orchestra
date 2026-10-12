@@ -116,6 +116,11 @@ MUTANTS = [
     ('I11-401-keeps-the-list', 'src/acces-mobile/page.ts', "{ last = []; listEl.textContent = ''; setState('Jeton refusé", "{ setState('Jeton refusé", 'RED', PWA),
     ('I9-refusal-log-has-the-query', 'src/acces-mobile/server.ts', "${method} ${pathOnly.slice(0, 80)}`);", "${method} ${(req.url ?? '').slice(0, 200)}`);", 'RED', PWA),
     ('M10-shell-without-identity', 'src/acces-mobile/server.ts', "    const login = req.headers['tailscale-user-login'];\n", "    const asset0 = STATIC[pathOnly]; if (asset0) { res.writeHead(200); res.end(asset0.body); return; }\n    const login = req.headers['tailscale-user-login'];\n", 'RED'),
+    # ── 2026-10-12 feedback: Markdown on the phone, workers folded under their coordinator ──
+    ('D1-md-any-link-scheme', 'src/shared/mini-markdown.ts', "          if (/^https?:\\/\\/\\S+$/.test(href)) {", "          if (href) {", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D2-md-snake-case-italic', 'src/shared/mini-markdown.ts', "        if (c === '*' || !/[A-Za-z0-9]/.test(before)) {", "        if (true) {", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D3-md-table-separator-kept', 'src/shared/mini-markdown.ts', "        if (cells.every((x) => /^:?-+:?$/.test(x))) continue;", "        if (false) continue;", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D4-parent-not-listed-kept', 'src/shared/acces-mobile.ts', " && listed.has(ws.parentId)) row.parentId", ") row.parentId", 'RED', 'src/shared/acces-mobile.test.ts'),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -131,6 +136,11 @@ E2E_MUTANTS = [
     ('E5-sw-no-fallback-on-502', 'src/acces-mobile/sw.ts', "      if (res.status >= 500) return fromCache", "      if (res.status >= 600) return fromCache", 'pwa/unreachable-server-off-served-from-cache'),
     ('E6-regenerate-logs-token', 'src/main/acces-mobile-host.ts', "  generateAccesMobileToken();\n  log.info('pairing token regenerated — the previous token is refused from now on');", "  const t = generateAccesMobileToken();\n  log.info(`pairing token regenerated ${t}`);", 'leak/no-token-in-logs-or-files'),
     ('E7-page-ignores-hashchange', 'src/acces-mobile/page.ts', "    if (pairFromHash()) {\n      try { token = localStorage.getItem(KEY); } catch (e) {}\n      conv.connect();\n      route();\n      return;\n    }\n", "", 'regen/repair-with-new-url'),
+    ('E8-unread-counts-as-a-traiter', 'src/acces-mobile/page.ts', "  function needs(w) { return w.status === 'waiting'; }", "  function needs(w) { return w.status === 'waiting' || w.unread; }", 'phone/list'),
+    ('E9-workers-not-folded', 'src/acces-mobile/page.ts', "      if (w.parentId && byId[w.parentId]) (kidsOf", "      if (false) (kidsOf", 'phone/list'),
+    ('E10-markdown-shown-raw', 'src/acces-mobile/conversation.ts', "row.appendChild(md(l.text)); }", "row.textContent = l.text; }", 'conv/markdown'),
+    ('E11-opens-at-the-top', 'src/acces-mobile/conversation.ts', "    if (nearBottom || version < 0) se.scrollTop", "    if (nearBottom && version >= 0) se.scrollTop", 'conv/opens-at-end'),
+    ('E12-fold-hides-a-waiting-worker', 'src/acces-mobile/page.ts', "    var waiting = rows.filter(needs);", "    var waiting = rows.filter(function (w) { return needs(w) && !w.parentId; });", 'phone/folded-worker-waiting-surfaces'),
 ]
 
 def run_e2e(ids):

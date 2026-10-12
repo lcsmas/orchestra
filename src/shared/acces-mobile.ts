@@ -167,6 +167,9 @@ export interface MobileWorkspaceRow {
   statusText?: string;
   /** Last activity (ms): the latest of turn start / stop / status note / creation. */
   at: number;
+  /** The coordinator this workspace runs under (a fleet worker), when that parent is listed too — the phone folds workers
+   *  under it so a vague does not flood the list (Lucas, 2026-10-12). */
+  parentId?: string;
   /** #340 (design V1): one line under the row — the question it is blocked on, else the agent's status note. */
   preview?: { kind: 'question' | 'desktop' | 'status'; text: string };
 }
@@ -198,6 +201,7 @@ export function projectMobileWorkspaces(
   const known = new Set(accounts.map((a) => a.id));
   const labelOf = new Map(accounts.map((a) => [a.id, a.label]));
   const rows: MobileWorkspaceRow[] = [];
+  const listed = new Set(workspaces.filter((w) => !w.archived).map((w) => w.id));
   for (const ws of workspaces) {
     if (ws.archived) continue;
     const repo = repoByPath.get(ws.repoPath) ?? (ws.repoAssociation ? repoByPath.get(ws.repoAssociation) : undefined);
@@ -213,6 +217,7 @@ export function projectMobileWorkspaces(
       at: Math.max(ws.createdAt ?? 0, ws.lastTurnStartAt ?? 0, ws.lastStopReasonAt ?? 0, ws.statusTextAt ?? 0),
     };
     if (ws.statusText) row.statusText = ws.statusText;
+    if (ws.parentId && ws.parentId !== ws.id && listed.has(ws.parentId)) row.parentId = ws.parentId;
     const pv = previewOf?.(ws) ?? (ws.statusText ? { kind: 'status' as const, text: ws.statusText } : undefined);
     if (pv) row.preview = { kind: pv.kind, text: pv.text.length > 300 ? pv.text.slice(0, 300) + '…' : pv.text };
     rows.push(row);
