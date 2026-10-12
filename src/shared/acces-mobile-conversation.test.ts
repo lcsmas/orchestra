@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transcriptToEvents } from './agent-transcript.ts';
 import { emptySession, foldEvent, foldEvents } from './agent-events.ts';
-import { MAX_PHONE_LINES, projectConversation, toolLabel, validWorkspaceId } from './acces-mobile-conversation.ts';
+import { MAX_PHONE_LINES, MOBILE_ATTACH_MAX_COUNT, parseMobileAttachments, projectConversation, toolLabel, validWorkspaceId } from './acces-mobile-conversation.ts';
 import type { AgentEvent, AgentSession } from './types.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -107,4 +107,37 @@ test('final review m4: an AskUserQuestion travels with its FULL question and opt
     assert.equal(a.questions[0].question, longQ);
     assert.equal(a.questions[0].options[0].label, longLabel);
   }
+});
+
+test('phone attachments: images + PDFs of an API type with canonical base64, at most MOBILE_ATTACH_MAX_COUNT', () => {
+  const png = { mediaType: 'image/png', dataBase64: 'iVBORw0KGgo=' };
+  const pdf = { mediaType: 'application/pdf', dataBase64: 'JVBERi0xLjQK' };
+  assert.deepEqual(parseMobileAttachments(undefined), { ok: true, images: [] });
+  assert.deepEqual(parseMobileAttachments([png, pdf]), { ok: true, images: [png, pdf] });
+  assert.deepEqual(parseMobileAttachments([{ ...png, extra: 1 }]), { ok: true, images: [png] }, 'only the two fields travel');
+  const refused = (x: unknown) => parseMobileAttachments(x).ok === false;
+  assert.ok(refused('x'), 'not a list');
+  assert.ok(refused(Array.from({ length: MOBILE_ATTACH_MAX_COUNT + 1 }, () => png)), 'too many');
+  assert.ok(!refused(Array.from({ length: MOBILE_ATTACH_MAX_COUNT }, () => png)), 'the cap itself is allowed');
+  assert.ok(refused([{ mediaType: 'image/heic', dataBase64: 'AAAA' }]), 'a type the API does not take');
+  assert.ok(refused([{ mediaType: 'text/html', dataBase64: 'AAAA' }]));
+  assert.ok(refused([{ mediaType: 'image/png', dataBase64: '' }]), 'empty');
+  assert.ok(refused([{ mediaType: 'image/png', dataBase64: 'data:image/png;base64,AAAA' }]), 'a data URL is not base64');
+  assert.ok(refused([{ mediaType: 'image/png', dataBase64: 'AAA' }]), 'length not a multiple of 4');
+  assert.ok(refused([{ mediaType: 'image/png', dataBase64: 'AA\nAA==' }]), 'whitespace');
+  assert.ok(refused([null]));
+});
+
+test('a user turn with attachments reads on the phone with them counted (even without text)', () => {
+  const ev = (seq: number, text: string, images?: { mediaType: string; dataBase64: string }[]) =>
+    ({ type: 'user-message', seq, at: seq, text, ...(images ? { images } : {}) }) as unknown as AgentEvent;
+  let s = foldEvent(emptySession(), ev(1, 'Regarde', [{ mediaType: 'image/jpeg', dataBase64: 'AAAA' }, { mediaType: 'application/pdf', dataBase64: 'AAAA' }]));
+  s = foldEvent(s, ev(2, '', [{ mediaType: 'image/png', dataBase64: 'AAAA' }]));
+  s = foldEvent(s, ev(3, 'texte seul'));
+  const lines = projectConversation('w', s, 1).lines.map((l) => (l.kind === 'user' ? { text: l.text, attachments: l.attachments } : null));
+  assert.deepEqual(lines, [
+    { text: 'Regarde', attachments: ['image', 'pdf'] },
+    { text: '', attachments: ['image'] },
+    { text: 'texte seul', attachments: undefined },
+  ]);
 });

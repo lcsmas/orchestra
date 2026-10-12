@@ -95,7 +95,7 @@ function readBody(req) {
   });
 }
 
-function summarizeModelBody(buf, markers = {}) {
+function summarizeModelBody(buf, markers = {}, keepAttachmentData = false) {
   try {
     const text = buf.toString('utf8');
     const b = JSON.parse(text);
@@ -112,6 +112,10 @@ function summarizeModelBody(buf, markers = {}) {
       preview: String(Array.isArray(b.messages) && b.messages[0] ? (typeof b.messages[0].content === 'string' ? b.messages[0].content : JSON.stringify(b.messages[0].content)) : sysText).replace(/\s+/g, ' ').slice(0, 100),
       // Which planted sentinels (opts.markers name -> substring) this request body carries.
       marks: Object.keys(markers).filter((k) => text.includes(markers[k])),
+      // Every image / document block in the conversation (Accès mobile: files attached on the phone must reach the model).
+      attachments: (Array.isArray(b.messages) ? b.messages : []).flatMap((m) => (Array.isArray(m?.content) ? m.content : []))
+        .filter((c) => c && (c.type === 'image' || c.type === 'document') && c.source?.type === 'base64')
+        .map((c) => ({ type: c.type, media_type: c.source.media_type, bytes: String(c.source.data ?? '').length, ...(keepAttachmentData ? { data: c.source.data } : {}) })),
     };
   } catch {
     return { model: null, unparsable: true };
@@ -122,6 +126,7 @@ function summarizeModelBody(buf, markers = {}) {
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
  * @param {(req: object) => ({text?: string, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
+ * @param {boolean} [opts.keepAttachmentData]  keep the base64 of image/document blocks in each request record (default: sizes only)
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
  * @param {number} [opts.proxyPort]  fixed port for the egress proxy (default: any free port) — needed when a process must be
  *                                    started with HTTPS_PROXY already pointing at it (NODE_USE_ENV_PROXY is read at bootstrap)
@@ -153,7 +158,7 @@ export async function startFakeApi(opts = {}) {
       ua: String(req.headers['user-agent'] ?? '').slice(0, 60),
       beta: String(req.headers['anthropic-beta'] ?? ''),
     };
-    if (type === 'model' || type === 'count_tokens') Object.assign(rec, summarizeModelBody(body, opts.markers));
+    if (type === 'model' || type === 'count_tokens') Object.assign(rec, summarizeModelBody(body, opts.markers, opts.keepAttachmentData === true));
     requests.push(rec);
     try { opts.onRequest?.(rec); } catch { /* observer errors never break the fake */ }
 

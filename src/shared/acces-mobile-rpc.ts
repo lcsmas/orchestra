@@ -14,7 +14,7 @@ export interface RpcWire {
 import { StringDecoder } from 'node:string_decoder';
 
 /** A conversation projection is ≤ 200 lines × 4000 chars before JSON escaping (which can multiply it): room to spare. */
-export const MAX_LINE = 8 * 1_048_576;
+export const MAX_LINE = 24 * 1_048_576; // above MOBILE_ATTACH_MAX_BODY: a send with attachments is ONE line
 /** Main answers at most this many calls of one server at once; beyond, `{ok:false, error:'busy'}` (final review m3). */
 export const MAX_CALLS_IN_FLIGHT = 32;
 
