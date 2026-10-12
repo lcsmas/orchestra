@@ -3,6 +3,7 @@
 // 'already-woken'), they run the REAL `orchestra run confirm pause|reprise` / `run release` verbs from THEIR OWN Bash tool (so the packaged `orchestra` shim is exercised).
 import { textOf, TOKENS, ACCT_A } from './lib.mjs';
 import { branchOf } from './ids.mjs';
+import { hogMarker } from './memhog-bars.mjs';
 
 const bash = (command, description, extra = {}) => ({ tool: { name: 'Bash', input: { command, description: `pc ${description}`, ...extra } } });
 const LIMIT = (resetS) => ({ http: { status: 429, headers: { 'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-reset': String(resetS), 'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-status': 'rejected', 'anthropic-ratelimit-unified-5h-reset': String(resetS), 'anthropic-ratelimit-unified-5h-utilization': '1.0', 'retry-after': '3600' }, body: { type: 'error', error: { type: 'rate_limit_error', message: 'limit' } } } });
@@ -62,6 +63,18 @@ export function makeModel({ kindOfRole, plan, limited, resetS }) {
     }
     if (consignes > confirms) return bash('orchestra run confirm reprise; echo CONFIRM_RC=$?', 'reprise accusé');
     if (coord) return { text: 'ok' };
+    // ── #324 memhog-app: a `hog` worker overflows its memory scope on request (one swarm child far over the cap, tagged with a per-worker marker), then proves the session still takes turns and runs tools ──
+    if (kind === 'hog') {
+      let at = -1, scn = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role !== 'user') continue;
+        const hit = /SCN:(hog|probe) c(\d+)([ab]?)/.exec(textOf(messages[i].content));
+        if (hit) { at = i; scn = hit; break; }
+      }
+      if (at < 0 || commandsAfter(messages, at).length > 0) return { text: 'ok' };
+      if (scn[1] === 'probe') return bash(`echo "probe-ok ${role} c${scn[2]}${scn[3]}" > probe-${role}-c${scn[2]}${scn[3]}.txt; echo PROBE_RC=$?`, 'probe: the session still works');
+      return bash(`python3 ${plan.hog.script} 1 ${plan.hog.mb} ${plan.hog.hold} ${hogMarker(role, scn[2])} > memhog-out-${role}-c${scn[2]}.txt 2>&1; echo HOG_RC=$?`, 'memory hog: overflow the scope', { timeout: 300000 });
+    }
     // the harness's `--inject late-request` prompt: ONE plain reply, never the old work scenario still in the history (it would loop for ever)
     if (/SCN:late/.test(lastUser)) return { text: 'late ok' };
     // ── work (a worker's scenario, one cycle) ──

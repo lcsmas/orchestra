@@ -171,8 +171,13 @@ export function startRun(
  * (nothing to update). `startRun` stays INSERT-OR-IGNORE freeze-once; this is the
  * SEPARATE explicit path D1b requires — never fold re-freeze into `startRun`.
  */
-export function refreezeRun(db: BusDb, runId: string, liveSwitches: BusSwitches): boolean {
-  const frozen = freezeSwitches(liveSwitches);
+export function refreezeRun(db: BusDb, runId: string, liveSwitches: BusSwitches, keepFrozen: readonly BusMechanism[] = []): boolean {
+  // #324 (LEAD Q17, option A): the keys in `keepFrozen` keep the value the row froze at creation; every other key takes the live value. The AUTOMATIC wave-boundary caller (bus-run-anchor.ts) passes
+  // WAVE_REFREEZE_KEEPS_FROZEN; the explicit `run refreeze` (refreezeMissionRun) passes nothing — it applies the live value of every key.
+  const current = getRun(db, runId)?.flags;
+  const merged: BusSwitches = { ...liveSwitches };
+  if (current) for (const m of keepFrozen) merged[m] = current[m] === true;
+  const frozen = freezeSwitches(merged);
   const info = db
     .prepare(
       `UPDATE run_flags SET flags = ?, frozen_at = ?

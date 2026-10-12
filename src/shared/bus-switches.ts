@@ -89,14 +89,22 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
 
 /**
  * Default LIVE setting (what the next run freezes) for a mechanism the human never set.
- * Only `pause` (#258, canaries passed) and `dockerRelay` are ON; DEFAULT_BUS_SWITCHES stays
- * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down).
+ * Only `pause` (#258, canaries passed), `dockerRelay` and `memoryCap` (#324: the packaged Q11 canary PASSED on 2026-10-12, ledger #329) are ON; DEFAULT_BUS_SWITCHES stays
+ * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
  */
 export const LIVE_SWITCH_DEFAULTS: BusSwitches = Object.freeze({
   ...DEFAULT_BUS_SWITCHES,
   pause: true,
   dockerRelay: true,
+  memoryCap: true, // #324 — flipped by the LAST, separate commit of memhog-canary-impl-h3-324 (revert that commit alone to undo)
 });
+
+/**
+ * Switches the AUTOMATIC mission re-freeze (D1b: a NEW OPS launched under a LEAD mission) leaves at the value the mission row froze at creation (#324, LEAD Q17 option A). `memoryCap`: its default
+ * was flipped ON for runs created after the flip; an already-open mission must not be capped under its running fleet by its next OPS launch. The EXPLICIT `orchestra run refreeze` is NOT in this
+ * list's scope — it applies the live value of every key, `memoryCap` included (that is how an operator opts an open mission in).
+ */
+export const WAVE_REFREEZE_KEEPS_FROZEN: readonly BusMechanism[] = Object.freeze(['memoryCap'] as BusMechanism[]);
 
 /** Like {@link normalizeSwitches}, for the LIVE settings only: an absent key (never set, or a
  *  store older than the mechanism) takes LIVE_SWITCH_DEFAULTS; a present key still needs `=== true`.

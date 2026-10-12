@@ -353,9 +353,9 @@ test('#291 dockerRelay: default OFF, wire name docker_relay round-trips, notice 
 });
 
 // ── #258 pause + dockerRelay ON by default for NEW runs (live settings only) ──────────────────────────────────────
-test('#258 live defaults: an unset pause/dockerRelay reads ON; every other mechanism and the safe fallback stay OFF', () => {
+test('#258 / #324 live defaults: an unset pause / dockerRelay / memoryCap reads ON; every other mechanism and the safe fallback stay OFF', () => {
   const fresh = normalizeLiveSwitches(undefined);
-  for (const m of BUS_MECHANISMS) assert.equal(fresh[m], m === 'pause' || m === 'dockerRelay', m);
+  for (const m of BUS_MECHANISMS) assert.equal(fresh[m], m === 'pause' || m === 'dockerRelay' || m === 'memoryCap', m);
   assert.deepEqual(normalizeLiveSwitches({}), fresh);
   assert.deepEqual(fresh, { ...LIVE_SWITCH_DEFAULTS });
   for (const m of BUS_MECHANISMS) assert.equal(DEFAULT_BUS_SWITCHES[m], false, `fallback ${m} must stay OFF`);
@@ -397,4 +397,18 @@ test('#320 memoryCap is stored/normalized like every mechanism: an old run row w
   assert.equal(normalizeSwitches({ memoryCap: 'true' }).memoryCap, false);
   assert.equal(normalizeSwitches({ memoryCap: true }).memoryCap, true);
   assert.equal(JSON.parse(serializeSwitches({ ...DEFAULT_BUS_SWITCHES, memoryCap: true })).memoryCap, true);
+});
+
+// ── #324 memory_cap ON by default for NEW runs (live settings only; the canary Q11 PASSED) ─────────────────────────
+test('#324 memoryCap live default ON: an unset key reads ON, a human OFF wins, a typo is OFF, a run ROW and the safe fallback stay OFF', () => {
+  assert.equal(LIVE_SWITCH_DEFAULTS.memoryCap, true);
+  assert.equal(normalizeLiveSwitches(undefined).memoryCap, true);
+  assert.equal(normalizeLiveSwitches({ delivery: true }).memoryCap, true, 'a store older than #320 never chose');
+  assert.equal(normalizeLiveSwitches({ memoryCap: false }).memoryCap, false, 'the human turned it OFF: that choice wins');
+  assert.equal(normalizeLiveSwitches({ memoryCap: 'true' }).memoryCap, false, 'a present non-true value is OFF');
+  assert.equal(normalizeLiveSwitches({ memoryCap: null }).memoryCap, false);
+  assert.equal(DEFAULT_BUS_SWITCHES.memoryCap, false, 'the safe fallback (unreadable store, no run row, bus down) stays OFF');
+  assert.equal(normalizeSwitches({ delivery: true }).memoryCap, false, 'a row frozen without the key was frozen OFF');
+  assert.equal(parseSwitches(undefined).memoryCap, false);
+  assert.equal(freezeSwitches(normalizeLiveSwitches(undefined)).memoryCap, true, 'what the NEXT run freezes');
 });

@@ -1,6 +1,6 @@
 {
   "name": "orchestra",
-  "version": "0.5.321",
+  "version": "0.5.322",
   "description": "Run parallel Claude Code agents in isolated git worktrees",
   "license": "Apache-2.0",
   "author": "Lucas Mas",
@@ -78,6 +78,9 @@
     "canary:pause": "node scripts/pause-canary/run.mjs",
     "canary:pause-proof": "node scripts/pause-canary/run.mjs --proof",
     "canary:pause-bars-mutants": "node scripts/pause-canary/mutate-bars.mjs",
+    "canary:memhog": "node scripts/pause-canary/memhog-run.mjs",
+    "canary:memhog-proof": "node scripts/pause-canary/memhog-run.mjs --proof",
+    "canary:memhog-bars-mutants": "node scripts/pause-canary/mutate-bars.mjs --memhog",
     "smoke:session-budget-real": "node scripts/session-budget/smoke-real.mjs",
     "test:turn-boundary": "node scripts/session-budget/turn-boundary.mjs --proof",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",

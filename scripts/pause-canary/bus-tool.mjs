@@ -1,5 +1,5 @@
 // Pause canary (#258) — the rig's ISOLATED bus (<H>/bus.sqlite), never the live one.
-//   seed  <H> <TREE> <leadId> <opsId> [pause-off|wake-off]   create the LEAD (mission) + OPS (vague, parent LEAD) runs with every switch ON (a real wave's frozen flags + `pause`), using the modules of TREE (the source tree matching the app under drive)
+//   seed  <H> <TREE> <leadId> <opsId> [pause-off|wake-off|cap-off]   create the LEAD (mission) + OPS (vague, parent LEAD) runs with every switch ON (a real wave's frozen flags + `pause`), using the modules of TREE (the source tree matching the app under drive)
 //   serve <H> <TREE>                        persistent read-only SQL server: one JSON line {id,sql,args} in → {id,rows|err} out (the drive polls at 250 ms; a node spawn per poll would skew the timings)
 import path from 'node:path';
 import fs from 'node:fs';
@@ -25,6 +25,7 @@ if (cmd === 'seed') {
     if (!LEAD || !OPS) throw new Error('seed needs <leadId> <opsId>');
     if (mode === 'pause-off') all.pause = false;   // the must-FAIL control arm: the same drive with the switch OFF
     if (mode === 'wake-off') all.wake = false;
+    if (mode === 'cap-off') all.memoryCap = false;   // #324 memhog-app: the must-FAIL control — the same drill with the frozen `memory_cap` switch OFF
     const sw = { ...DEFAULT_BUS_SWITCHES, ...all };
     startRun(db, { id: LEAD, kind: 'mission', coordinator: LEAD }, sw);
     startRun(db, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD }, sw);

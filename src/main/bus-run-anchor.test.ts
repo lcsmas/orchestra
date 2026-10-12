@@ -238,6 +238,53 @@ test('G4b — starting a NEW OPS re-freezes the LEAD mission row to the latest f
   }
 });
 
+test('G4b × #324 (LEAD Q17 option A) — the wave-boundary re-freeze takes every flip EXCEPT memoryCap: an already-open mission frozen OFF stays OFF while the new OPS freezes the live default ON', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live = { v: switches({ wake: false, memoryCap: false }) };
+    const d = deps(db, live);
+    maybeStartRunAtAnchor(d, anchorInfoOf(LEAD, WAVE));   // the mission froze BEFORE the default flip: wake OFF, memoryCap OFF
+    assert.equal(runFlags(db, 'lead').memoryCap, false);
+    // the flip: memory_cap becomes ON by default (and the human also flips wake); the LEAD then launches a new OPS (wave boundary)
+    live.v = switches({ wake: true, memoryCap: true });
+    maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
+    assert.equal(runFlags(db, 'lead').wake, true, 'control: the re-freeze still tracks the other flips (D1b)');
+    assert.equal(runFlags(db, 'lead').memoryCap, false, 'the mission row KEEPS memoryCap OFF — its plain children are not capped under a running fleet');
+    assert.equal(runFlags(db, 'ops').memoryCap, true, 'the NEW OPS run froze the live default');
+    // a frozen ON stays ON as well (the row keeps whatever it froze at creation)
+    const live2 = { v: switches({ memoryCap: true }) };
+    const { db: db2, dir: dir2 } = tmpDb();
+    try {
+      const d2 = deps(db2, live2);
+      maybeStartRunAtAnchor(d2, anchorInfoOf(LEAD, WAVE));
+      live2.v = switches({ memoryCap: false });
+      maybeStartRunAtAnchor(d2, anchorInfoOf(OPS, WAVE));
+      assert.equal(runFlags(db2, 'lead').memoryCap, true, 'a mission frozen ON keeps ON when the live setting is later turned off');
+    } finally {
+      cleanup(db2, dir2);
+    }
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('G4b × #324 — the D1b call hands refreezeRun the wave keep list (the dep receives it as its 4th argument), so a fake dep sees exactly [memoryCap]', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const live = { v: switches({ memoryCap: false }) };
+    const seen: unknown[][] = [];
+    const d = { ...deps(db, live), refreezeRun: (...a: unknown[]) => { seen.push(a); return false; } } as BusRunAnchorDeps;
+    maybeStartRunAtAnchor(d, anchorInfoOf(LEAD, WAVE));
+    live.v = switches({ memoryCap: true });
+    maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
+    assert.equal(seen.length, 1, 'one wave-boundary re-freeze');
+    assert.equal(seen[0][1], 'lead');
+    assert.deepEqual([...(seen[0][3] as string[])], ['memoryCap'], 'the automatic path passes the keep list');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
 test('G4b F1 — an OPS (vague) row is NEVER re-frozen: byte-identical across a member spawn', () => {
   const { db, dir } = tmpDb();
   try {

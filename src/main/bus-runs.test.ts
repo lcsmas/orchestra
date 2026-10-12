@@ -47,6 +47,7 @@ import {
   busSwitchNotice,
   busSwitchNoticeLines,
   BUS_MECHANISMS,
+  WAVE_REFREEZE_KEEPS_FROZEN,
   type BusSwitches,
 } from '../shared/bus-switches.ts';
 
@@ -847,6 +848,64 @@ test('one-switch: unknown run and missing flags row are refused, never late-inse
     db.prepare('DELETE FROM run_flags WHERE run_id = ?').run('w');
     assert.equal(refreezeOneSwitch(db, 'w', 'dockerRelay', live, PAUSED_IDLE), 'no-flags');
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM run_flags WHERE run_id = ?').get('w').n, 0, 'no late insert');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+// ═══ #324 (LEAD Q17, option A) — the AUTOMATIC wave-boundary re-freeze keeps memoryCap; the EXPLICIT `run refreeze` applies the live value ═══
+test('T324.1 — refreezeRun with the wave-boundary keep list takes every live flip but KEEPS the row\'s memoryCap, both ways; only a mission row is touched; no row is late-inserted', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const sw = (o: Partial<BusSwitches>): BusSwitches => ({ ...DEFAULT_BUS_SWITCHES, ...o });
+    startRun(db, { id: 'm-off', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: false }));
+    startRun(db, { id: 'm-on', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: true, delivery: true }));
+    startRun(db, { id: 'v-off', kind: 'vague', coordinator: 'c' }, sw({ memoryCap: false }));
+    assert.deepEqual([...WAVE_REFREEZE_KEEPS_FROZEN], ['memoryCap'], 'the keep list is exactly memoryCap');
+    assert.equal(refreezeRun(db, 'm-off', sw({ delivery: true, wake: true, memoryCap: true }), WAVE_REFREEZE_KEEPS_FROZEN), true);
+    assert.equal(runFlags(db, 'm-off').delivery, true, 'control: the other flips are taken');
+    assert.equal(runFlags(db, 'm-off').wake, true);
+    assert.equal(runFlags(db, 'm-off').memoryCap, false, 'a mission frozen OFF stays OFF when the live default is ON');
+    assert.equal(busSwitch(db, 'm-off', 'memory_cap'), false);
+    assert.equal(refreezeRun(db, 'm-on', sw({ delivery: false, memoryCap: false }), WAVE_REFREEZE_KEEPS_FROZEN), true);
+    assert.equal(runFlags(db, 'm-on').delivery, false, 'control: delivery followed the live setting');
+    assert.equal(runFlags(db, 'm-on').memoryCap, true, 'a mission frozen ON keeps ON when the live setting is later turned off');
+    assert.equal(refreezeRun(db, 'v-off', sw({ memoryCap: true }), WAVE_REFREEZE_KEEPS_FROZEN), false, 'a vague row is never touched');
+    assert.equal(runFlags(db, 'v-off').memoryCap, false);
+    assert.equal(refreezeRun(db, 'ghost', sw({ memoryCap: true }), WAVE_REFREEZE_KEEPS_FROZEN), false);
+    assert.equal(getRun(db, 'ghost'), null, 'no late insert');
+    startRun(db, { id: 'm-new', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: true }));
+    assert.equal(runFlags(db, 'm-new').memoryCap, true, 'a run created AFTER the flip freezes the live default');
+    const live = sw({ delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true, pause: true, dockerRelay: true, memoryCap: true });
+    startRun(db, { id: 'm-all', kind: 'mission', coordinator: 'c' }, sw({}));
+    refreezeRun(db, 'm-all', live, WAVE_REFREEZE_KEEPS_FROZEN);
+    for (const m of BUS_MECHANISMS) assert.equal(runFlags(db, 'm-all')[m], m !== 'memoryCap', `${m}: the exclusion is exactly one key wide`);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('T324.2 — the EXPLICIT re-freeze (`orchestra run refreeze` = refreezeMissionRun, and refreezeRun without a keep list) applies the live value of EVERY key, memoryCap included: that is how an operator opts an open mission in', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const sw = (o: Partial<BusSwitches>): BusSwitches => ({ ...DEFAULT_BUS_SWITCHES, ...o });
+    startRun(db, { id: 'm-flat', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: false }));
+    assert.equal(refreezeMissionRun(db, 'm-flat', sw({ delivery: true, memoryCap: true }), { hasLiveChild: false }), 'refrozen');
+    assert.equal(runFlags(db, 'm-flat').memoryCap, true, 'the explicit refreeze turned the cap ON for the open mission');
+    assert.equal(runFlags(db, 'm-flat').delivery, true);
+    assert.equal(busSwitch(db, 'm-flat', 'memory_cap'), true);
+    // and the other way: live OFF is applied too (no key is special on the explicit path)
+    assert.equal(refreezeMissionRun(db, 'm-flat', sw({ memoryCap: false }), { hasLiveChild: false }), 'refrozen');
+    assert.equal(runFlags(db, 'm-flat').memoryCap, false);
+    // the gates are unchanged: a live child still refuses, a vague row is still refused
+    assert.equal(refreezeMissionRun(db, 'm-flat', sw({ memoryCap: true }), { hasLiveChild: true }), 'live-child');
+    assert.equal(runFlags(db, 'm-flat').memoryCap, false, 'a refused refreeze changed nothing');
+    startRun(db, { id: 'v', kind: 'vague', coordinator: 'c' }, sw({ memoryCap: false }));
+    assert.equal(refreezeMissionRun(db, 'v', sw({ memoryCap: true }), { hasLiveChild: false }), 'not-mission');
+    // refreezeRun with no keep list = the explicit behaviour
+    startRun(db, { id: 'm-raw', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: false }));
+    assert.equal(refreezeRun(db, 'm-raw', sw({ memoryCap: true })), true);
+    assert.equal(runFlags(db, 'm-raw').memoryCap, true);
   } finally {
     cleanup(db, dir);
   }

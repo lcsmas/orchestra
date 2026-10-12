@@ -25,7 +25,7 @@
 
 import type { BusDb } from './bus.ts';
 import type { BusRunRow } from './bus-runs.ts';
-import type { BusSwitches } from '../shared/bus-switches.ts';
+import { WAVE_REFREEZE_KEEPS_FROZEN, type BusMechanism, type BusSwitches } from '../shared/bus-switches.ts';
 import {
   nearestOrchestratorId,
   nodeOrchestrates,
@@ -49,7 +49,7 @@ export interface BusRunAnchorDeps {
   /** RE-FREEZE a MISSION run's flags at a wave boundary (#134 D1b). No-op unless
    *  the run is a mission. Fired ONLY when a NEW nested (OPS) run is created, so
    *  the LEAD's plain children track the latest flip; never on member spawn. */
-  refreezeRun: (db: BusDb, runId: string, liveSwitches: BusSwitches) => boolean;
+  refreezeRun: (db: BusDb, runId: string, liveSwitches: BusSwitches, keepFrozen?: readonly BusMechanism[]) => boolean;
   /** The live switch set to freeze onto a NEW run row. */
   getLiveSwitches: () => BusSwitches;
   /** Structured log for the D1 best-effort failure line. */
@@ -204,7 +204,8 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
     // the mission's frozen flags.
     if (anchor.parentRunId && anchor.wsId === anchor.anchorId) {
       try {
-        deps.refreezeRun(db, anchor.parentRunId, deps.getLiveSwitches());
+        // #324 (LEAD Q17 option A): the AUTOMATIC re-freeze leaves memoryCap as the mission froze it; only `orchestra run refreeze` applies the live value of that key
+        deps.refreezeRun(db, anchor.parentRunId, deps.getLiveSwitches(), WAVE_REFREEZE_KEEPS_FROZEN);
       } catch (e) {
         deps.warn(`bus-run-anchor: mission re-freeze for ${anchor.parentRunId} failed`, e);
       }

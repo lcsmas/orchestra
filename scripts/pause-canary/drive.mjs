@@ -14,6 +14,9 @@ import { initBase, preflight, liveSnapshot, hostNow, startApi, makeRig, seedRuns
 import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
+import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors, backstopDelta } from './memhog-bars.mjs';
+import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB } from './memhog-app-facts.mjs';
+import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir, keeperLogText, killHogs, hostAvailGB } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -25,10 +28,25 @@ const CYCLES = Number(opt('cycles', '3'));
 const MEMBERS = Number(opt('members', '10'));
 const DWELL_S = Number(opt('dwell-s', '40'));
 const PAUSE_SWITCH = opt('pause', 'on');
-const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
+const MH_APP = argv.includes('memhog-app');   // --exercise memhog-app (it runs ALONE)
+const MH_ON_APP = MH_APP && opt('memhog-switch', 'on') === 'on';
+// Q11 (ledger #329, D-Q11): the cap-ON packaged run is granted for #324 ONLY — hard 1 GiB / soft 768 MiB, 6 members at most, ONE run under the token, MemAvailable > 9 GB BEFORE it starts. 6 scopes of 1 GiB are the design (the hogs are bounded by them), so
+// the 6 GB bar is a START bar (9 GB here) and the run keeps a lower FLOOR that only protects the host; the rig-grew-too-much « blowup » rule is off for it (the hogs live in the rig).
+const REHEARSAL = argv.includes('--rehearsal');   // OPS 7313: 1-member cap-ON plumbing try, one token, start 9 GB — labelled DRY by the runner
+const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP && !REHEARSAL ? CAP_ON_START_GB : MH_APP ? 9 : 0);   // D-Q15: the cap-ON run starts from 11 GB; the cap-OFF control (hogs no scope bounds) from 9
+// --floor-gb exists ONLY for the labelled rehearsal: it lets the floor guard be SEEN tripping (a positive control) — the Q11 run keeps the 2 GB floor
+const FLOOR_TEST = REHEARSAL ? Number(opt('floor-gb', NaN)) : NaN;
+const RUN_FLOOR_GB = Number.isFinite(FLOOR_TEST) ? FLOOR_TEST : MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
 const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
 const CYCLE_RESULTS_FILE = opt('out', null);
+// #324 `memhog-app` — the memory-hog exercise on the PACKAGED app (real keepers + real `claude` + the app's own #322 sink). With the cap ON a real `claude` (~330 MB) does not fit a test scope ≤ 300 MB (ledger D2): that arm needs the LEAD's waiver (`--waiver <ref>`, `--cap-gb` ≥ 0.6).
+const MH_SWITCH = opt('memhog-switch', 'on');   // 'off' = the must-FAIL control: the frozen `memory_cap` switch OFF
+const CAP_GB = Number(opt('cap-gb', '0.25'));
+const SOFT_GB = Number(opt('soft-gb', String(Math.round(CAP_GB * 0.75 * 100) / 100)));
+const WAIVER = opt('waiver', null);
+const HOG_MB = Number(opt('hog-mb', String(Math.ceil(CAP_GB * 1024) + 150)));   // far over the cap, whatever the cap is
+const MH_UNIT_PREFIX = 'orchestra-rig-wh-h3-';
 // harness-level INSTRUMENT controls (proof arms only): after the pause, sabotage one member's evidence — the matching instrument must read RED
 const SABOTAGE = opt('sabotage', null);   // 'branch' (rewind a branch to master) | 'ref' (delete a pause ref) | 'session' (SIGTERM a member's CLI)
 // proof-only process INJECTION during the hold window (dure only): 'orphan-tool' = a REAL command that came back in a member worktree (an orphan: must stay detected);
@@ -37,8 +55,14 @@ const INJECT = opt('inject', null);
 const WINDOW = opt('window', 'member');   // 'member' = per-member, opened at the member's Bilan for new turns (default) · 'confirm' = per-member from its confirmation (the previous design: the proof's Bilan-gap blind arm) · 'legacy' = the run-level hold window only (the H-1 blind arm)
 const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definition (any non-keeper/CLI/app process in a member worktree): the proof's must-FAIL arm for the app-git injection
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
-const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
+const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
+if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
+if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
+if (MH_APP) {
+  const why = memhogAppEnvelope({ members: MEMBERS, capGb: CAP_GB, softGb: SOFT_GB, hogMb: HOG_MB, capOn: MH_ON_APP, waiver: WAIVER });
+  if (why) { console.log(`PAUSE-CANARY-DRIVE VOID — memhog-app runs only inside the LEAD's Q11 envelope (ledger #329 D-Q11, for #324 ONLY; either switch): ${why}. Nothing was run.`); process.exit(3); }
+}
 if (!Number.isInteger(CYCLES) || CYCLES < 1 || !Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10) { console.error(`--cycles must be ≥ 1 and --members 1..10 (got ${CYCLES}, ${MEMBERS})`); process.exit(2); }
 if (INJECT && (!['orphan-tool', 'app-git', 'late-request', 'gap-request'].includes(INJECT) || EXERCISES.join() !== 'dure')) { console.error('--inject orphan-tool|app-git|late-request|gap-request applies to `--exercise dure` only'); process.exit(2); }
 if (!['member', 'confirm', 'legacy'].includes(WINDOW)) { console.error('--window member|confirm|legacy'); process.exit(2); }
@@ -58,18 +82,20 @@ const emit = (tag, obj) => say(`${tag} ${JSON.stringify(obj)}`);
 
 async function runExercise(name) {
   const spec = fleetSpec(MEMBERS);
+  if (name === 'memhog-app') for (const w of spec.workers) w.kind = 'hog';   // every worker overflows its scope on request
   const kindOfRole = Object.fromEntries(spec.workers.map((w) => [w.k, w.kind]));
   const quotaWorkers = spec.workers.filter((w) => w.kind === 'quota');
   const limited = new Set();
-  const plan = { release: name === 'reprise' ? 'manual' : 'all', first: [] };
+  const plan = { release: name === 'reprise' ? 'manual' : 'all', first: [], hog: { script: path.join(REPO, 'scripts', 'memory-cap', 'swarm.py'), mb: HOG_MB, hold: 5 } };
   const usageProbeHits = [];
   const usageHeaders = (cred) => { usageProbeHits.push({ t: Date.now(), cred }); const rs = Math.floor(Date.now() / 1000); return { 'anthropic-ratelimit-unified-5h-utilization': '0.10', 'anthropic-ratelimit-unified-5h-reset': String(rs + 3 * 3600), 'anthropic-ratelimit-unified-7d-utilization': '0.20', 'anthropic-ratelimit-unified-7d-reset': String(rs + 5 * 86400) }; };
   const resetS = Math.floor(Date.now() / 1000) + 3600;
   const api = await startApi({ decide: makeModel({ kindOfRole, plan, limited, resetS }), usageHeaders });
-  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE });
+  const rig = await makeRig({ label: `${LABEL}-${name}`, spec, apiUrl: api.url, appBin: APP, claudeBin: CLAUDE, storeExtra: name === 'memhog-app' ? { memoryGuard: appMemoryGuardSeed(SOFT_GB, CAP_GB) } : {} });
   curRig = rig; curBaselineMB = null;
+  if (name === 'memhog-app') say(`[${name}] app memory guard NEUTRALISED for this rig (Admission OFF, levels 0.6 / 0.5 GB) so only the CAP is under test: ${JSON.stringify(appMemoryGuardSeed(SOFT_GB, CAP_GB))}`);
   say(`[${name}] RIG H=${rig.H} workers=${spec.workers.map((w) => `${w.k}:${w.kind}`).join(' ')}`);
-  say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : 'none'))}`);
+  say(`[${name}] SEED-RUNS ${JSON.stringify(seedRuns(rig, APP_TREE, PAUSE_SWITCH === 'off' ? 'pause-off' : name === 'memhog-app' && MH_SWITCH === 'off' ? 'cap-off' : 'none'))}`);
   const busr = startBusReader(rig, REPO);
   const Q = (sql, ...a) => busr.q(sql, ...a);
   const nm = rig.names;
@@ -127,7 +153,7 @@ async function runExercise(name) {
   let app, result = 'ABORT';
   const abort = (cyc, msg) => Object.assign(new Error(msg), { cyc });
   try {
-    app = await launchApp(rig);
+    app = await launchApp(rig, { extraEnv: name === 'memhog-app' ? { ORCHESTRA_MEMORY_SCOPE_PREFIX: MH_UNIT_PREFIX } : {} });
     await sleep(3000);
     const who = await app.cli(spec.lead, ['whoami'], { run: spec.lead });
     check(null, 'cli_speaks_control', who.out.length > 0, `whoami rc=${who.code}`);
@@ -141,6 +167,7 @@ async function runExercise(name) {
       const cyc = { exercise: name, cycle: c, workers: spec.workers.length, mode: name === 'douce' ? 'soft' : 'hard', rosterMin: spec.workers.length + (name === 'auto' ? 1 : 2), checks: [] };
       curCyc = cyc;
       say(`── [${name}] cycle ${c}/${CYCLES} ──`);
+      if (name === 'memhog-app') { await doMemhogApp(cyc, c); cycles.push(cyc); emit('PC-CYCLE', cyc); await sleep(2000); continue; }
       const carrier = name === 'auto' ? spec.ops : spec.lead;
       // 0. the run must be ACTIVE (the previous cycle's Reprise really lifted the gate)
       const r0 = await runRow(carrier);
@@ -185,6 +212,69 @@ async function runExercise(name) {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+    /** #324 `memhog-app` — one cycle of the memory-hog exercise on the PACKAGED app. The bars are the stand-in drill's (memhog-bars.mjs); the FACTS come from the real path: /proc + cgroupfs for the keeper/CLI/scope/oom_kill, the swarm line the hog tool wrote
+     *  in the worktree, the keeper's durable notice file for the records, the app's persisted `sdkMemNotices` for the member's rows, the bus (+ the scripted OPS's own acked relève) for the coordinator. NOT RUN with the cap ON before the LEAD's waiver (D2). */
+    async function doMemhogApp(cyc, c) {
+      const wk = spec.workers;
+      cyc.expectWorkers = wk.length;
+      // 1. every worker's session is up and WORKS (a probe tool runs in its worktree) — sessions start lazily, on the first prompt
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}a`)));
+      const upOk = await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}a.txt`)), 240000, 500);
+      check(cyc, 'workers_mid_work', !!upOk, `${wk.length} worker(s) up and running tools (probe files)`);
+      if (!upOk) throw abort(cyc, 'memhog-app: the fleet never came up');
+      const idPre = identities();
+      check(cyc, 'identity_instrument_armed', wk.every((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper), `keeper+CLI identity read for ${wk.filter((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper).length}/${wk.length} workers`);
+      const kpid = (k) => Number(String(idPre[k]?.keeper ?? '').split('@')[0]) || null;
+      const seq0 = await maxSeq();
+      const oom0 = Object.fromEntries(wk.map((w) => [w.k, oomKillOf(kpid(w.k))]));
+      const last = { ...oom0 };
+      // #343: the backstop counters (k leaf / scope / work leaf), before the hogs and again at every later reading — the LAST complete one is kept (the scope may be gone if a session was lost)
+      const bsAt = (w) => backstopCountersFromDir(scopeDirOfPid(kpid(w.k)));
+      const bs0 = Object.fromEntries(wk.map((w) => [w.k, bsAt(w)]));
+      const lastBs = { ...bs0 };
+      const refreshBs = () => { for (const w of wk) { const b = bsAt(w); if (b) lastBs[w.k] = b; } };
+      // 2. every worker overflows its scope at once
+      const t0 = Date.now();
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:hog c${c}`)));
+      await waitFor(() => wk.every((w) => /swarm:/.test(readWt(w.k, `memhog-out-${w.k}-c${c}.txt`) ?? '')), 240000, 500);   // the swarm line = the hog tool is over, killed or not
+      let prev = '';
+      await waitFor(() => { const cur = wk.map((w) => { const v = oomKillOf(kpid(w.k)); if (v !== null) last[w.k] = v; return last[w.k]; }).join(','); refreshBs(); const stable = cur === prev; prev = cur; return stable; }, 40000, 1500);   // the kernel counts stop moving
+      await sleep(2500);
+      const delta = (w) => (typeof last[w.k] === 'number' && typeof oom0[w.k] === 'number' ? last[w.k] - oom0[w.k] : null);
+      const rowsOf = (w) => (storeWs(w.id)?.sdkMemNotices ?? []).filter((e) => e.level !== 'soft' && e.at >= t0 - 1000);   // the settle wait below
+      const msgsOf = async (w) => (await Q('SELECT sequence, kind, recipient, body, created_at FROM messages WHERE sender = ? AND sequence > ? ORDER BY sequence', w.id, seq0)) ?? [];
+      // the member's row and the coordinator's escalation reach the kill count (the keeper's kernel-log lookup + delivery take a moment)
+      await waitFor(async () => { for (const w of wk) { const d = delta(w); if (d && (rowsOf(w).length < d || (await msgsOf(w)).filter((x) => x.kind === 'escalation').length < d)) return false; } return true; }, 45000, 1000);
+      // the coordinator READS: the scripted OPS is woken by the escalation, runs `orchestra check` and acks (the REAL relève) — wait for every escalation to lie in an acked lot
+      const escSeqs = async () => (await Q("SELECT sequence FROM messages WHERE kind = 'escalation' AND recipient = ? AND sequence > ?", spec.ops, seq0))?.map((x) => x.sequence) ?? [];
+      const lotsOps = async () => (await Q('SELECT from_seq, to_seq, acked_at FROM deliveries WHERE reader = ?', spec.ops)) ?? [];
+      await waitFor(async () => { const e = await escSeqs(); return e.length > 0 && readByCoordinator(e, await lotsOps()) === e.length; }, 90000, 1000);
+      // 3. the session still works AFTER the kill: a second probe tool runs
+      await Promise.all(wk.map((w) => sendTo(w.id, `SCN:probe c${c}b`)));
+      await waitFor(() => wk.every((w) => readWt(w.k, `probe-${w.k}-c${c}b.txt`)), 120000, 500);
+      refreshBs();   // after the post-kill probe: a late backstop episode shows here
+      const idPost = identities();
+      const keeperLogOf = (id) => keeperLogText(rig.H, id);   // the keeper's own `memory cap:` lines — the boot summary AND any later flip (the app log has none)
+      const lots = await lotsOps();
+      const workers = [];
+      for (const w of wk) {
+        const scope = scopeFactsOf(kpid(w.k), MH_UNIT_PREFIX);
+        workers.push(workerFromAppFacts(w, c, t0, spec.ops, {
+          up: !!idPre[w.k]?.claude && !!readWt(w.k, `probe-${w.k}-c${c}a.txt`),
+          scope, swarmText: readWt(w.k, `memhog-out-${w.k}-c${c}.txt`), oomKillDelta: delta(w),
+          noticeText: (() => { try { return fs.readFileSync(`${rig.H}/keepers/${w.id}.memnotices.jsonl`, 'utf8'); } catch { return ''; } })(),
+          storeNotices: storeWs(w.id)?.sdkMemNotices ?? [], msgs: await msgsOf(w), lots,
+          idPre: { claude: idPre[w.k]?.claude, keeper: idPre[w.k]?.keeper }, idPost: { claude: idPost[w.k]?.claude, keeper: idPost[w.k]?.keeper },
+          backstop: backstopDelta(bs0[w.k], lastBs[w.k]), keeperAlive: alive(kpid(w.k)), cliAlive: alive(idPre[w.k]?.pid), probeAfter: !!readWt(w.k, `probe-${w.k}-c${c}b.txt`), scopeActive: unitActive(scope.unit), keeperLog: keeperLogOf(w.id),
+        }));
+      }
+      const leadSeen = (await Q('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?', spec.lead, seq0))?.[0]?.n ?? null;
+      const maxMs = (key) => (workers.every((x) => typeof x[key] === 'number') ? Math.max(...workers.map((x) => x[key])) / 1000 : null);
+      const m = { exercise: 'memhog-app', cycle: c, expectWorkers: wk.length, capGb: CAP_GB, opsId: spec.ops, leadSeen, workers, tMemberToldS: maxMs('firstRowMs'), tCoordToldS: maxMs('firstEscMs') };
+      cyc.summary = summarizeMemhogCycle(m);
+      cyc.tMemberToldS = m.tMemberToldS; cyc.tCoordToldS = m.tCoordToldS;
+      for (const k of evaluateMemhogCycle(m)) check(cyc, k.id, k.ok, k.detail);
+    }
     async function snapshotFacts(cyc, c, pre, tP) {
       // lost work: each marker must be in the member's branch tip, its pushed branch OR the pause ref; each branch (workers AND coordinators) must still contain its pre-pause head
       const facts = [];
@@ -502,6 +592,13 @@ async function runExercise(name) {
     busr.close();
     const left = await teardown(rig, app);
     say(`[${name}] TEARDOWN leftover=${left.length}`);
+    if (name === 'memhog-app') {   // the scopes of THIS rig (rig prefix + its random id prefix), stopped by NAME, counted before and printed
+      const units = unitsNow(`${MH_UNIT_PREFIX}${spec.prefix}*`);
+      for (const u of units) { try { execFileSync('systemctl', ['--user', 'stop', u], { stdio: 'ignore' }); } catch { /* gone */ } }
+      const sv = evaluateSurvivors({ procs: left.length, units: units.length });
+      check(null, sv.id, sv.ok, sv.detail);
+      if (!sv.ok && result === 'PASS') result = 'FAIL';
+    }
     await api.stop();
     curRig = null; curBaselineMB = null;
     emit('PC-EXERCISE', { exercise: name, result, cycles: cycles.length, wanted: CYCLES, leftover: left.length, red: allChecks().filter((k) => !k.ok).map((k) => `${k.cycle ? `c${k.cycle} ` : ''}${k.id}`) });
@@ -514,15 +611,28 @@ async function runExercise(name) {
 const sampler = setInterval(() => {
   const h = hostNow();
   host.samples++; host.minAvailGB = Math.min(host.minAvailGB, h.availGB); host.maxLoad = Math.max(host.maxLoad, h.load1);
-  host.lowStreak = (h.availGB < MIN_AVAIL_GB || h.load1 > MAX_LOAD) ? host.lowStreak + 1 : 0;
+  host.lowStreak = (h.availGB < RUN_FLOOR_GB || h.load1 > MAX_LOAD) ? host.lowStreak + 1 : 0;
   if (host.lowStreak >= 3 && !voidReason) {
     let rigMB = null;
     try { rigMB = curRig ? rigMemory(curRig).totalMB : null; } catch { /* the rig is going away */ }
-    const blowup = rigMB !== null && curBaselineMB !== null && rigMB > curBaselineMB * 1.5 + 300;
+    const blowup = !MH_APP && rigMB !== null && curBaselineMB !== null && rigMB > curBaselineMB * 1.5 + 300;
     voidKind = blowup ? 'blowup' : 'host';
-    voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${MIN_AVAIL_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
+    voidReason = `${blowup ? `the RIG grew to ${rigMB.toFixed(0)} MB (mid-work baseline ${curBaselineMB.toFixed(0)} MB) while ` : ''}host below the bar for 3 samples: MemAvailable ${h.availGB.toFixed(2)} GB (< ${RUN_FLOOR_GB}) or load ${h.load1.toFixed(1)} (> ${MAX_LOAD})${rigMB !== null ? `; rig PSS ${rigMB.toFixed(0)} MB` : ''}`;
   }
 }, 5000);
+// FLOOR guard (D-Q15, review 4 M1): the 5 s / 3-sample rule above reacts in 10-15 s, a hog ramp is 12 s — for the packaged memory-hog run MemAvailable is read every 250 ms and the first reading under the floor
+// kills the rig's hog tools (swarm.py under the rig dir, identity re-read) and makes the run VOID, never a PASS.
+let floorTripped = false;
+const floorGuard = MH_APP ? setInterval(() => {
+  if (floorTripped || !curRig) return;
+  const a = hostAvailGB();
+  if (a >= RUN_FLOOR_GB) return;
+  floorTripped = true;
+  const killed = killHogs(curRig.H);
+  voidKind = 'host';
+  voidReason = `FLOOR: MemAvailable ${a.toFixed(2)} GB < ${RUN_FLOOR_GB} GB — the hog tools were stopped (${killed.length} process(es), by identity) and the run is VOID, never a PASS`;
+  say(`!! ${voidReason}`);
+}, 250) : null;
 const h0 = hostNow();
 say(`HOST-START MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)} swap used ${h0.swapUsedGB.toFixed(1)} GB`);
 if (h0.availGB < MIN_AVAIL_GB || h0.load1 > MAX_LOAD) { voidReason = `host below the bar at start: MemAvailable ${h0.availGB.toFixed(2)} GB (< ${MIN_AVAIL_GB}) or load ${h0.load1.toFixed(1)} (> ${MAX_LOAD})`; voidKind = 'host'; }
@@ -533,6 +643,7 @@ for (const ex of EXERCISES) {
   results.push(await runExercise(ex));
 }
 clearInterval(sampler);
+if (floorGuard) clearInterval(floorGuard);
 const after = liveSnapshot();
 const same = JSON.stringify(before) === JSON.stringify(after);
 say(`LIVE-AFTER same=${same}`);
