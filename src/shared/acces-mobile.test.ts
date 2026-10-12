@@ -168,3 +168,107 @@ test('list (#372): inside a section rows are ordered by the title the phone SHOW
   );
   assert.deepEqual(rows.map((r) => r.displayName), ['a', 'handmade', 'z']);
 });
+
+test('parentId (#373): the nearest LISTED ancestor — archived / unlisted parents are walked through; none listed ⇒ a root', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'root', name: 'root', repoPath: '', kind: 'orchestrator' }),
+      ws({ id: 'sub', name: 'sub', parentId: 'root' }),
+      ws({ id: 'leaf', name: 'leaf', parentId: 'sub' }),
+      // an archived middle parent: leaf2 hangs under the grandparent
+      ws({ id: 'mid', name: 'mid', archived: true, parentId: 'root' }),
+      ws({ id: 'leaf2', name: 'leaf2', parentId: 'mid' }),
+      // two archived levels
+      ws({ id: 'mid-a', name: 'mid-a', archived: true, parentId: 'sub' }),
+      ws({ id: 'mid-b', name: 'mid-b', archived: true, parentId: 'mid-a' }),
+      ws({ id: 'leaf3', name: 'leaf3', parentId: 'mid-b' }),
+      // every ancestor archived or unknown ⇒ a root
+      ws({ id: 'old-root', name: 'old-root', archived: true, parentId: 'gone' }),
+      ws({ id: 'orphan', name: 'orphan', parentId: 'old-root' }),
+      // a self parent
+      ws({ id: 'me', name: 'me', parentId: 'me' }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r.parentId]));
+  assert.equal(by.sub, 'root', 'listed parent');
+  assert.equal(by.leaf, 'sub', 'a worker of a worker (two levels)');
+  assert.equal(by.leaf2, 'root', 'archived middle parent ⇒ the grandparent');
+  assert.equal(by.leaf3, 'sub', 'two archived levels ⇒ the nearest listed ancestor above them');
+  assert.equal(by.orphan, undefined, 'no listed ancestor ⇒ root');
+  assert.equal(by.me, undefined, 'itself is no parent');
+  assert.equal(by.root, undefined);
+  assert.ok(!rows.some((r) => r.id === 'mid' || r.id === 'old-root'), 'archived rows stay out of the list');
+});
+
+test('parentId (#373): a chain that loops back through unlisted rows ends the walk; a loop of LISTED rows is kept for the tree module to break', () => {
+  const rows = projectMobileWorkspaces(
+    [
+      ws({ id: 'a', name: 'a', parentId: 'x' }),
+      ws({ id: 'x', name: 'x', archived: true, parentId: 'y' }),
+      ws({ id: 'y', name: 'y', archived: true, parentId: 'x' }),
+      ws({ id: 'p', name: 'p', parentId: 'q' }),
+      ws({ id: 'q', name: 'q', parentId: 'p' }),
+      ws({ id: 'a2', name: 'a2', parentId: 'x2' }),
+      ws({ id: 'x2', name: 'x2', archived: true, parentId: 'a2' }),
+    ],
+    repos,
+    accounts,
+  );
+  const by = Object.fromEntries(rows.map((r) => [r.id, r.parentId]));
+  assert.equal(by.a, undefined, 'an unlisted loop never reaches a listed row, and never hangs');
+  assert.equal(by.a2, undefined, 'a chain that comes back to the row itself through an archived one: the row is no ancestor of itself');
+  assert.deepEqual([by.p, by.q], ['q', 'p'], 'both rows are still in the list');
+});
+
+/** `ws()` whose `parentId` is a counting getter: every read of it goes through `onRead` (which may throw). */
+const counted = (over: Partial<Workspace>, onRead: () => void): Workspace => {
+  const w = ws(over);
+  const pid = w.parentId;
+  Object.defineProperty(w, 'parentId', { get() { onRead(); return pid; }, enumerable: true });
+  return w;
+};
+
+test('parentId (#373): a long archived chain under many listed rows is walked ONCE — each row\'s parent is read a bounded number of times (a count, not a clock)', () => {
+  const N = 600;
+  let reads = 0;
+  const list: Workspace[] = [counted({ id: 'top', name: 'top', repoPath: '', kind: 'orchestrator' }, () => { reads++; })];
+  for (let i = 0; i < N; i++) list.push(counted({ id: `arch${i}`, name: `arch${i}`, archived: true, parentId: i === 0 ? 'top' : `arch${i - 1}` }, () => { reads++; }));
+  for (let i = 0; i < N; i++) list.push(counted({ id: `leaf${i}`, name: `leaf${i}`, parentId: `arch${N - 1}` }, () => { reads++; }));
+  const rows = projectMobileWorkspaces(list, repos, accounts);
+  assert.equal(rows.length, N + 1);
+  assert.ok(rows.filter((r) => r.id.startsWith('leaf')).every((r) => r.parentId === 'top'), 'every leaf hangs under the nearest listed ancestor above the archived chain');
+  // each row's parent is read once for its own query + once per archived row the walk crosses — memoised, that is ≤ 2 per row; without
+  // the memo every leaf re-walks the whole chain (≈ N² = 360 000 reads)
+  assert.ok(reads <= 2 * list.length, `${reads} parent reads for ${list.length} rows (≤ ${2 * list.length}): the walk is memoised`);
+});
+
+test('parentId (#373): a loop among unlisted rows ends the walk — it never runs away (the parent read THROWS past a bound, so a missing guard is a red test, not a hang)', () => {
+  let reads = 0;
+  const bounded = () => { if (++reads > 1000) throw new Error('runaway ancestor walk'); };
+  const rows = projectMobileWorkspaces(
+    [
+      counted({ id: 'a', name: 'a', parentId: 'x' }, bounded),
+      counted({ id: 'x', name: 'x', archived: true, parentId: 'y' }, bounded),
+      counted({ id: 'y', name: 'y', archived: true, parentId: 'x' }, bounded),
+      counted({ id: 'b', name: 'b', parentId: 'y' }, bounded), // a second row into the SAME loop: answered from the memo
+    ],
+    repos,
+    accounts,
+  );
+  assert.deepEqual(rows.map((r) => [r.id, r.parentId]).sort(), [['a', undefined], ['b', undefined]]);
+  assert.ok(reads < 20, `${reads} reads: 2 own queries (a, b — archived rows run no query) + the loop's two rows once`);
+});
+
+test('parentId (#373): the NEGATIVE answer (« no listed ancestor ») is memoised too — a long archived chain with no listed root, many leaves under its tail', () => {
+  const N = 600;
+  let reads = 0;
+  const list: Workspace[] = [];
+  for (let i = 0; i < N; i++) list.push(counted({ id: `arch${i}`, name: `arch${i}`, archived: true, parentId: i === 0 ? 'gone' : `arch${i - 1}` }, () => { reads++; }));
+  for (let i = 0; i < N; i++) list.push(counted({ id: `leaf${i}`, name: `leaf${i}`, parentId: `arch${N - 1}` }, () => { reads++; }));
+  const rows = projectMobileWorkspaces(list, repos, accounts);
+  assert.equal(rows.length, N);
+  assert.ok(rows.every((r) => r.parentId === undefined), 'no listed ancestor above the chain: every leaf is a root');
+  assert.ok(reads <= 2 * list.length, `${reads} parent reads for ${list.length} rows (≤ ${2 * list.length}): « none » is cached like an answer`);
+});

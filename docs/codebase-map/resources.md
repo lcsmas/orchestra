@@ -144,7 +144,7 @@ creates with `orchestra.ws=<id>` (`DOCKER_LABEL_WS`, `src/shared/docker-labels.t
   `containers` block and, per keeper session, `containerBytes` (SEPARATE from `rssBytes`, so the RSS advisory is not tripped by a container; ABSENT when not measured — never a fake 0).
 - **Resources page (D-pick4 = mockup A)**: `ResourceSnapshot.containers` (the last tick's view; the 2 s poll never calls Docker). **Keeper-hosted structured agents now have a row**: `sampleResources` adds
   one synthetic `<wsId>:sdk` session (`SessionKind` `sdk`, shown as an « agent » chip, no stop button — the page stops PTYs only) per LIVE keeper tree via `aggregateKeeperSessions(listKeeperRoots(), ptyRootPids, …)`
-  (`shared/resources.ts`: the keeper is detached so its tree is disjoint from the PTY's — both show; only a keeper INSIDE a PTY root's tree is skipped; a keeper whose tree left the table yields no row). The « Live agents » tile counts `agent` and `sdk` rows. `groupSessionsByWorkspace(sessions, containers)` (pure, unit-tested G1–G5, also
+  (`shared/resources.ts`: the keeper is detached so its tree is disjoint from the PTY's — both show; only a keeper INSIDE a PTY root's tree is skipped; a keeper whose tree left the table yields no row). The « Live agents » tile counts the rows with an `sdk` session (the Agent view's keeper-hosted session — the only kind of agent since #230/#231; pinned by rig arm `resources_live_agent`). `groupSessionsByWorkspace(sessions, containers)` (pure, unit-tested G1–G5, also
   what the rig drives) folds `viewBytesFor` into the owning row's EXISTING memory figure, gives the row its **🐳 N chip** (`SessionGroup.containers`; tooltip `containersChipTitle`: « 2 containers · 700 MB »), and adds a
   **container-only row** for a workspace whose only footprint is a container (`containerOnly`: cpu / procs « — »); Docker down adds none of it. `AgentsTable` (exported, `ResourcesView.tsx`) renders the rows and the dim
   yellow **unattributed line** under the table (`unattributedWarning`: « ⚠ 2 unattributed containers (web-1, g9-old (orphan of ws-x)) — not attributed to any workspace · never touched », only when Docker answered).
@@ -400,20 +400,19 @@ panes, so every mounted Agent view keeps its scroll state. `store.page`
 Sections: stat tiles (agent CPU with a fleet-wide sparkline, agent memory, app
 memory, worktrees on disk, live-agent count) → Agents table (per-workspace
 rows: status dot, branch, session-kind chips, 3-minute CPU trace, cpu/mem/
-procs/disk/ctx, and a per-row stop button; click a row to expand its process
+procs/disk/ctx; click a row to expand its process
 list; remote rows show a "runs in sandbox" note; login PTYs listed after) →
 App processes → Token usage by login (per-account cards: 5h/7d/Fable/extra
 meters with reset countdowns, error/expired notes, pinned workspaces; hottest
 account first) → **Free space** → Orchestra data on disk.
 
-Per-row stop (`.res-stop-btn`): rows with a live agent session carry a stop
-control that calls `agent:stop` on the agent PTY id — kill without respawn, so
-the process's CPU/memory is actually freed (a confirm dialog guards a mid-turn
-`running` agent). The row is a `div[role=button]`, not a `<button>`, because
-the stop button nests inside it. The workspace terminal prints "[agent stopped
-— press any key to relaunch]" and relaunches with `claude --continue` on the
-next keystroke or activation (see
-[activity-pty-terminal.md](activity-pty-terminal.md)).
+**No per-row stop (#231).** The page used to carry a stop button per row that called `agent:stop` on the
+row's agent PTY id; since #230 no agent PTY exists, so the button (it keyed on `kind === 'agent'`) never
+rendered and #231 deleted it (button, handler, `.res-stop-btn` CSS — the trailing 20 px grid column
+stays, as `.res-col-gutter`). The `stopAgent` preload wrapper and the `agent:stop` main handler stay until
+#233 (no renderer caller left); the handler only stops a PTY, so it would be a no-op on an Agent-view row; a stop for the keeper-hosted session is a
+separate feature (main-side `sdkStop` wiring + a spec decision). The row is a `div[role=button]` (expand /
+collapse), not a `<button>`, so interactive content could nest in it.
 
 CPU traces live in a component-local ref (`histRef`, 90 samples ≈ 3 min at the
 2s cadence, keyed by workspace id + `__total__`); a workspace with no live

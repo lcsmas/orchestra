@@ -2,11 +2,11 @@
  *
  * A5 owns the visual design system in this file, keyed on the `av-*` classes
  * that StructuredView.tsx stamps. Everything here is intentionally minimal:
- * just the layout, the always-mounted show/hide (mirrors `.terminal-pane`), and
+ * just the layout, the always-mounted show/hide, and
  * enough default styling that the view is legible and non-broken before the
  * design pass lands. A5 may replace any of these rules. */
 
-/* Always-mounted per workspace (like .terminal-pane): all structured panes
+/* Always-mounted per workspace: all structured panes
    share the one pane box via absolute positioning; only the active one is
    visible, so tab switches never unmount and the folded session/scroll survive. */
 .av-view {

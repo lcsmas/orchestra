@@ -2,8 +2,9 @@
 
 How Orchestra knows an agent's status (the sidebar dot) and how terminal I/O
 flows. Files: `src/main/activity.ts`, `events-spool.ts` (+ `.test.ts`),
-`pty.ts`, `logger.ts`; renderer `Terminal.tsx` (the removed agent terminal — **no longer
-mounted since #230**, deleted in #231), `RunTerminal.tsx`, `term-write-queue.ts` (+ `.test.ts`).
+`pty.ts`, `logger.ts`; renderer `RunTerminal.tsx`, `NvimView.tsx`, `AccountLoginModal.tsx`,
+`term-write-queue.ts` (+ `.test.ts`), `term-theme.ts` (the agent terminal, `Terminal.tsx`, was
+unmounted by #230 and **deleted in #231**).
 **Terminals** (ADR 0007): the only PTYs left are the Run script (`<ws>:run`), nvim
 (`<ws>:nvim`) and account login (`account-login:<id>`); the agent (`<ws>` id, kind `agent`) is
 the Agent view's SDK session and never a PTY — the removal rig below asserts exactly that.
@@ -539,6 +540,21 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY). Both need `dist-electron/keeper.js` (build with
   `pnpm run build:bundles`, which `test:agent-view-removal` now does): the wrapper ABORTs without it and each arm asserts
   `env/keeper-runtime-installed`, because without a keeper no session can start and every "no session" claim is vacuous.
+- **#232 arms — `sdk_only_seams` · `sdk_only_hibernate` · `refused_id_not_readopted`** (`EXPECT`: `strayTyped`, `strayMessageDelivery`,
+  `strayKilledByRestart`, `strayKilledByBranchSwitch`, `strayMigrationResumes`, `strayHibernated`, `peersRunningKey`, `refusedIdAfter`,
+  `refusedIdReadopted`; baseline = the pre-#232 build, i.e. master after #230). The first two conjure a STRAY agent PTY on a workspace
+  through `window.orchestra.ptyStart` (`ensureStray`; the launcher #233 deletes — those two arms go with it) and assert every seam that
+  used to treat a live PTY as THE agent now ignores it: `orchestra message`, `sendReviewToAgent`, `fixChecks` and the prompt-queue flush land in
+  an SDK session's stdin (baseline: typed into the PTY), the toolbar Restart / `switchBranch` / `orchestra migrate-account` leave the PTY alone
+  (baseline: stop it; `(resumed)`), `/peers` (raw socket POST, `socketPost`) carries no `running` key, and the Veille sweep (env
+  `ORCHESTRA_HIBERNATE_AFTER_MS=3000`, `…SWEEP_MS=1000`, three extra scratch workspaces from `boot.scratchNames`) still hibernates an idle SDK
+  workspace and still spares one with a live Run terminal, but no longer reaps a workspace whose only process is the stray PTY. The
+  instrument: `SDK_ONLY_STUB` (= `LOGGING_STUB` + pid-tagged launch headers + `stub-argv.log`) splits `stub-stdin.log` into one section per
+  launch (`stubLaunches`), so "typed into the PTY" (a launch without `--input-format`, whose pid is the PTY's) and "delivered to an SDK session"
+  (JSON turns) are told apart, with a typed probe as the positive control. `refused_id_not_readopted` (`boot: {sdkBorn:true}` = hasInput +
+  an SDK-born `sdkSessionId` whose transcript is on disk; `RESUME_FAIL_STUB` = the measured real refusal) is the permanent one: the refused
+  id must clear to `''` and the next send start fresh (baseline: undefined → `--resume=<same id>` again). `boot.extraBranch` / `boot.account2`
+  seed the branch-switch target and the migration target (a second SCRATCH account dir, guarded like the first).
 - **Arms** (`ARMS` :1099): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
@@ -607,6 +623,14 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   legacy ws's session FIRST — composer send, `!cmd`, the MCP popover — resumes the terminal transcript, because adoption is in `ensureSessionInner`;
   baseline starts blank; a fresh ws adopts nothing) + `legacy_adopted_unresumable` (a stub replaying the REAL refusal (`RESUME_FAIL_STUB`: one `result/error_during_execution` line from a measured fixture, then exit 1) — the dead adopted id is cleared to `''`, the 2nd send starts fresh, no relaunch loop, no re-adoption) + its must-PASS controls `legacy_adopted_dies_after_init` (death AFTER init keeps the id) and `legacy_adopted_crash_before_init` (a kill before ANY output, `RESUME_CRASH_ONCE_STUB`, keeps the id and the next send resumes the same transcript), `other_terminals_work` (Run / nvim / account-login PTYs
   still appear and run their programs; `login/pty-runs-claude-login` is a BOUNDED wait — the PTY is a `bash -ilc … claude /login` reading its profile before the stub starts, so an immediate read raced, 2/5 red at load 11-27) + `other_terminals_work_slow_profile` (the same arm with a 4 s `sleep` in the fake HOME's `.bash_profile`/`.bashrc` via `boot: { slowProfileS }` — the deterministic instrument for that race: the wait removed reddens it 2/2). `--mode after` on master is red on every one of them except `other_terminals_work`.
+- **#231 arms** (renderer removal; `--mode baseline` = master `8c7863f6`, the first build WITHOUT the Raw tab but still carrying the dead component's surface):
+  `agent_terminal_static` (no boot: the `@xterm/addon-unicode11` dependency in `package.json` + `pnpm-lock.yaml` — red on master — and two table fragments only
+  the addon's minified code contains, scanned in `dist/assets/*.js` with a control that the dir really is the renderer bundle; the BUNDLE clause is green on
+  master BY DESIGN (the orphaned `Terminal.tsx` was already tree-shaken) and only a re-import turns it red), `agent_terminal_removed` (the RUNNING app's
+  preload bridge has none of `ptyRepaint` / `onPtyStopped` / `saveClipboardImage`, while the shared + Run/nvim/login wrappers AND `ptyStart` / `stopAgent` (kept until #233) stay; the
+  loaded stylesheets carry none of `.terminal-pane` / `.term-scroll-thumb` / `.term-boot-*` / `.res-stop-btn`, with a control that `.res-agent-row` and xterm.css rules are
+  still there) and `resources_live_agent` (one live Agent-view session → the « Live agents » tile reads 1, the row has the « agent » chip, no stop control; a regression
+  pin, green on master by design). Run / nvim / login still open and run their programs: the existing `other_terminals_work` arms.
 - **Stub `claude`** on the child's PATH keeps the baseline free of API calls; the baseline Raw-tab clause asserts the
   agent PTY's cmdline is the stub.
 - **Spawn-failure arms (#227)** — `spawn_failure_reported`, `restart_delivers_task_once` (boot arms with `sdkLess: true`).
@@ -656,14 +680,15 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
 
 Idle agents used to keep their processes forever: the renderer's 12-pane LRU
 (`shared/mounted-panes.ts`) unmounts React components but never the backing
-process, and `stopPty`/`sdkStop` fired only on explicit stop/delete/archive/quit
+process, and `sdkStop` fired only on explicit stop/delete/archive/quit
 — so ~19 live agents held hundreds of MB of resident memory. The sweeper stops
 long-idle agents and lets the existing resume paths bring them back.
 
 - **Eligibility is pure** — `src/shared/hibernation.ts` `shouldHibernate(ws,
   signals)` + `resolveHibernateAfterMs` + `formatIdleDuration`, exhaustively
   unit-tested (`hibernation.test.ts`, incl. a positive-control baseline so the
-  negative assertions can't pass vacuously). ALL must hold: a process is live;
+  negative assertions can't pass vacuously). ALL must hold: a live SDK session (`hasLiveSdk` — the
+  PTY signal `hasLivePty` is gone, #232: no agent PTY exists to reclaim; the RUN-terminal guard stays);
   `status === 'idle'` (never `running`/`waiting`/`error`/`stopped` — `waiting`
   means the human is needed and the dot + inbox entry must survive); not
   `autoUnread` unless a fleet member (`parentId`); not the active workspace; not sandbox-hosted (`ws.host` absent); not archived; no live
@@ -673,9 +698,7 @@ long-idle agents and lets the existing resume paths bring them back.
   cannot see it. The main-side fold is `foldTaskEventForLiveness`: a `changed` LEVEL
   snapshot also SEEDS a running entry for an unseen id, because a keeper REATTACH gets
   the snapshot, not the `started` edge (and a background Bash emits no `task_progress`)
-  — the panel fold keeps its no-create rule. **Accepted gap (R4):** a PTY-hosted agent's
-  background tasks are NOT tracked — the spool hook forwards `session_crons`, not
-  `background_tasks` (workspaces.ts), so it still hibernates at 5 min); idle ≥ threshold. Threshold from
+  — the panel fold keeps its no-create rule); idle ≥ threshold. Threshold from
   `ORCHESTRA_HIBERNATE_AFTER_MS`: unset/empty/garbage/`0` → 5 min default (#198
   D14, was 30 min — a resource lever; resume ~1s and lossless),
   `-1` → disabled (its own sentinel, since an env var with a default is not a
@@ -683,7 +706,7 @@ long-idle agents and lets the existing resume paths bring them back.
 - **The sweeper** — `src/main/hibernation.ts` `startHibernationSweeper()` (wired
   in index.ts beside the other pollers, torn down in `shutdownSubsystems`) runs
   `sweepHibernation()` on an unref'd `setInterval`. Per eligible workspace:
-  `sdkStopIfLive` (the sdk-delivery seam) then `stopPty`, then `markHibernated`
+  `sdkStopIfLive` (the sdk-delivery seam; #232: no `stopPty`/`getPtyPid` any more — the only PTY probe left is `isRunning(\`<id>:run\`)` for the Run-terminal guard), then `markHibernated`
   records `ws.hibernatedAt` and broadcasts `workspace:update` (mutation-site
   broadcast: persist in the background, broadcast immediately). **The stop is
   async, so a wake can land mid-teardown (#198 D14/N1):** `clearHibernated`
@@ -768,11 +791,11 @@ long-idle agents and lets the existing resume paths bring them back.
   The startup banner prints both as raw ms next to the friendly duration,
   because `formatIdleDuration` renders 5s and 55s identically as "<1m" and so
   cannot confirm an injection took.
-- **The log line names the KILLED PID** (`… — idle 5m pty pid=12345`), sampled
-  via `getPtyPid` (pty.ts) BEFORE `stopPty` — afterwards the session is gone
-  from the registry and the pid is unrecoverable. This is what makes process
-  death assertable with `ps -p <pid>`; an absent registry entry or UI text
-  proves only that the app's own bookkeeping changed.
+- **The log line** reads `hibernating <name> (<id>) — idle 5m sdk` (+ the Reliquat / fast-Veille
+  suffixes). It used to name the KILLED PTY's pid (`… pty pid=12345`, sampled via `getPtyPid` before
+  `stopPty`); with no agent PTY (#232) process death is asserted on the SDK stub's pid
+  (`ps -p`, rig arm `sdk_only_hibernate`); an absent registry entry or UI text proves only that the
+  app's own bookkeeping changed.
 - **The sweep NEVER touches disk.** It acts only on state it owns — live
   process/session handles and store fields. `ORCHESTRA_HOME` relocates
   userData/logs/spool but NOT worktrees or scratch dirs, which stay under the
@@ -799,7 +822,7 @@ long-idle agents and lets the existing resume paths bring them back.
 - **Restore** rides the paths that already resume: `clearHibernated(id)` is
   called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
   start/resume/wake, so no restore path can forget it), the `ptyStart` handler
-  (which is also Terminal.tsx's press-any-key `claude --continue` relaunch),
+  (no renderer caller since #231; #233 deletes it),
   `wakeAgentWithPrompt` (up front — its raw-PTY fallback is gone, #227), and workspace
   ACTIVATION. The renderer reports selection over the new
   `setActiveWorkspace` IPC (`workspaces:setActive`) — both so the sweeper never
@@ -811,99 +834,56 @@ long-idle agents and lets the existing resume paths bring them back.
   on the sidebar row plus a further-dimmed `.ws-dot.hibernated` (an explicit user
   bookmark still wins the dot), with a tooltip aging `hibernatedAt`.
 
-## Terminal.tsx (agent view, ~479 lines) — UNMOUNTED since #230, deleted in #231
+## Removed: the agent terminal (`Terminal.tsx`, deleted in #231)
 
-> **ADR 0007 / #230:** `App.tsx` no longer imports or mounts `TerminalView`; there is no Terminal/Raw
-> tab and nothing calls `pty:start` for an agent. The section below documents the dormant component
-> until #231 deletes it (and #233 the launcher behind it).
+`Terminal.tsx` (`TerminalView`, the xterm that drove the agent's `claude` TUI) was unmounted by
+#230 (ADR 0007) and deleted by #231 with everything only it used: its CSS (`.terminal-pane*`,
+`.term-scroll-thumb*`, `.term-boot-*`, `@keyframes term-boot-in`), the `@xterm/addon-unicode11`
+dependency (manifest + lockfile; the BUILT bundle already lacked it after #230 — Vite drops an
+unimported module — so the bundle check is a re-import guard, not a removal proof) and the preload
+wrappers of channels only it called: `ptyRepaint` (`pty:repaint`), `onPtyStopped` (`pty:stopped`)
+and `saveClipboardImage` (`clipboard:saveImage`). **Two wrappers deliberately STAY until #233**:
+`ptyStart` (`pty:start`) and `stopAgent` (`agent:stop` — its only renderer caller was the Resources
+page's per-row stop button, deleted in #231, see [resources.md](resources.md)): the rig's stray-agent-PTY
+seam (#232 arms) can only create/clean a PTY through them; #233 deletes them with the launcher.
+**The main-process handlers stay** (`ptyRepaint`, `saveClipboardImage` in `api-handlers.ts`, retyped
+under `ExtraApiMethods` since they are no longer part of the renderer-facing `OrchestraAPI`; `ptyStart` /
+`stopAgent` remain ordinary `OrchestraAPI` members; the `pty:stopped` broadcast) — unreachable from the
+renderer until #233 deletes the launcher behind them. **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
+and `onPtyData` / `onPtyExit` / `onPtyRestart` (push), used by Run, nvim and login. Rig arms
+`agent_terminal_static` + `agent_terminal_removed` (scripts/e2e-agent-view-removal.mjs) pin all of it.
 
-xterm.js with addons: **FitAddon**, **WebLinksAddon** (opens via IPC),
-themed via the shared `TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome
-bg/fg/cursor plus Ghostty's default ANSI-16 palette (Tomorrow Night); xterm's
-stock ANSI colors are the legacy VGA set, which made Claude's TUI look harsher
-in-app than in a native terminal),
-**Unicode11Addon** (`:104` — align char widths with Claude's Ink TUI so emoji
-don't cause overwrites), **WebglAddon** (`:117`, GPU; disposes on context-loss →
-DOM fallback). Font stack leads with **"Orchestra Symbols"** (bundled mono
-symbol-font subset) so circled-number/dingbat glyphs render at cell width — and
-the texture atlas is cleared once the font loads (`:139`) to evict any cached
-proportional fallback. (This is the "cramped ①②③" fix.)
+## Shared terminal plumbing (Run, nvim, login)
+
+xterm.js with **FitAddon** + **WebLinksAddon** (opens via IPC) in all three; **WebglAddon** (GPU;
+disposes on context-loss → DOM fallback) in `RunTerminal` only, which is also the only one themed via
+`TERM_THEME` (`src/renderer/term-theme.ts` — app-chrome bg/fg/cursor plus Ghostty's default ANSI-16 palette
+(Tomorrow Night); xterm's stock ANSI colors are the legacy VGA set). There is no Unicode11 width
+provider any more (it existed to align widths with Claude's Ink TUI, #231).
 
 **Shared write queue — term-write-queue.ts (`src/renderer/`, ~180 lines):**
 PTY data reaches xterm through `createTermWriteQueue`, a dependency-free
-module (node-testable; seams for RAF/clock injected in tests) used by both
-Terminal.tsx and RunTerminal.tsx. It does three things:
+module (node-testable; seams for RAF/clock injected in tests) used by
+RunTerminal.tsx (the agent terminal was its other user). It does three things:
 - **RAF-batched writes (the dot-latency fix):** hands xterm at most
   `WRITE_BUDGET_BYTES = 256 KiB` per animation frame, then yields — a big
   tool-dump parsed in one sync tick used to jank the renderer and stall the
   shared IPC channel (the "~10s dot lag"). 256 KiB is tuned (xterm 5.5 +
   WebGL parses ~35–50 MB/s; 64 KiB is slower per-byte, 512 KiB regresses).
-- **Atomic ?2026 sync frames (the flicker fix):** pty.ts advertises
-  `CLAUDE_CODE_FORCE_SYNC_OUTPUT`, so Claude wraps every TUI redraw in
-  `\x1b[?2026h…l`. xterm.js ignores mode 2026, so the queue supplies the
+- **Atomic ?2026 sync frames (the flicker fix):** built for Claude's TUI, which
+  wraps every redraw in `\x1b[?2026h…l`. xterm.js ignores mode 2026, so the queue supplies the
   atomicity: a drain slice never ends inside an open frame — it extends to
   the frame's close, or holds the frame until the close arrives (bounded by
   `SYNC_HOLD_MS = 150` so a lost close can't stall output). Split markers at
   chunk boundaries are held too, so tracking can't be defeated by IPC
-  chunking.
+  chunking. Kept (and tested) although no agent PTY feeds it any more.
 - **Small-chunk fast path (input latency):** a chunk ≤ `FAST_PATH_BYTES = 4
   KiB` arriving with nothing scheduled (a keystroke echo) is written
   immediately instead of waiting up to a frame for the next RAF.
 
-Terminal.tsx also has: custom floating scrollbar (no gutter), Ctrl+C→copy,
-Ctrl+V image-paste (spill to temp file, bracketed-paste the path),
-Shift+Enter→ESC+CR, lazy PTY start + size re-assert on visibility/focus.
-
-**Cold-boot pill (the blank-first-open fix):** lazy-start means the first open
-of a previously-running workspace cold-boots `claude --continue`; Claude opens
-a ?2026 frame, paints only its small splash header (~500 B), then loads the
-session silently for seconds — the pane read as a blank page with just the
-Clawd logo. `beginBoot()` (called in `start()` right before `ptyStart`) shows a
-centered "Resuming previous session…" / "Starting agent…" pill (label from an
-imperative `useStore.getState()` read of `ws.hasInput` — no subscription);
-cleared once cumulative PTY output ≥ `BOOT_PAINT_BYTES` (2 KiB — above the
-splash, below any real TUI frame), or on user keystroke, PTY exit, spawn
-failure, or a `BOOT_PILL_MAX_MS` (20 s) safety timeout. CSS
-`.term-boot-pill` (styles.css) fades in after 250 ms so fast starts never
-flash it.
-
-**Stop without respawn (`agent:stop`, main index.ts):** the Resources page's
-per-agent stop kills the agent PTY and deliberately does NOT respawn (the point
-is freeing CPU/memory). `stopPty` disposes the transport listeners before
-killing, so the exit handler's `reconcileExited` floor never fires on this path
-— the handler reconciles explicitly, then emits `pty:stopped`. Terminal.tsx
-handles it (and natural `pty:exit`) by un-latching `started` and printing a
-"press any key to relaunch" notice; `term.onData` treats the first keystroke on
-a dead session as a relaunch trigger (calls `start()`, does not forward the
-key), so the next spawn resumes via `claude --continue`.
-
-**Repaint-on-show (the garbled-frame fix):** a hidden tab is `visibility:hidden`
-(not unmounted), so the PTY keeps streaming and `drainPending` keeps writing into
-xterm while its WebGL canvas is offscreen/occluded — on some GPUs that leaves the
-glyph texture atlas + composited canvas half-updated, so returning to the tab
-shows scrambled glyph soup. The `isActive` effect (and `onVisible` for the active
-pane) calls `repaint()` after the refit: `webgl.clearTextureAtlas()` +
-`term.refresh(0, rows-1)` redraws every row from xterm's (always-correct) buffer.
-`repaintRef`/`isActiveRef` bridge the value into the mount effect's long-lived
-closures without stale captures. Both sites ALSO call
-`window.orchestra.ptyRepaint` (→ `repaintPty` SIGWINCH bounce): `repaint()`
-only redraws xterm's buffer, but when the buffer ITSELF has diverged from
-Claude's per-cell diff-render model (diffs hop over "unchanged" cells, so
-divergence accumulates as scattered-word fragments and never self-heals — the
-2026-07-18 garbled-terminal bug; the byte stream and parser were proven clean
-via @xterm/headless replay of the PTY log), only a child repaint reconverges
-the two. Human-paced (window-shown / window-FOCUS / tab activation) and a
-no-op resize when nothing diverged. The `onFocus` copy is load-bearing on
-Linux: Chromium has NO window-occlusion detection on Wayland, so a window on
-a hidden sway workspace keeps `visibilityState === 'visible'` and
-visibilitychange never fires (verified via CDP against a headless-sway
-instance) — window `focus` is the only return signal that actually fires
-there.
-
 ## RunTerminal.tsx (run-script view, ~250 lines)
-Simpler xterm than the agent view (no Unicode11/custom scrollbar, 5k
-scrollback), but shares its performance path: WebGL renderer (same
-context-loss→DOM-fallback guard) and the same shared write queue
+A plain xterm (5k scrollback, no Unicode11), with the performance path above: WebGL renderer
+(context-loss→DOM-fallback guard) and the shared write queue
 (`createTermWriteQueue` from `term-write-queue.ts`) — a noisy dev server
 can no longer jank the shared IPC channel. Scrollback replay on mount goes
 through the same `queue.push` so a big replay is spread across frames too;

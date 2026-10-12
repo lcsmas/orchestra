@@ -44,8 +44,7 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
     now: NOW,
     lastActivityAt: NOW - THRESHOLD - 1000,
     isActive: false,
-    hasLivePty: true,
-    hasLiveSdk: false,
+    hasLiveSdk: true,
     hasLiveRunPty: false,
     hasLiveBackgroundTask: false,
     thresholdMs: THRESHOLD,
@@ -62,23 +61,13 @@ function signals(over: Partial<HibernationSignals> = {}): HibernationSignals {
 // --- positive control: the baseline MUST be eligible, else every negative
 // assertion below is vacuous (it would pass against a function that always
 // returns false).
-test('baseline: an idle, inactive, local, long-idle workspace with a live PTY IS eligible', () => {
+test('baseline: an idle, inactive, local, long-idle workspace with a live SDK session IS eligible', () => {
   assert.equal(shouldHibernate(ws(), signals()), true);
 });
 
-test('baseline holds for a live SDK session with no PTY', () => {
-  assert.equal(
-    shouldHibernate(ws(), signals({ hasLivePty: false, hasLiveSdk: true })),
-    true,
-  );
-});
-
 // --- condition: something must be running
-test('nothing live → not eligible (nothing to reclaim)', () => {
-  assert.equal(
-    shouldHibernate(ws(), signals({ hasLivePty: false, hasLiveSdk: false })),
-    false,
-  );
+test('no live SDK session → not eligible (nothing to reclaim)', () => {
+  assert.equal(shouldHibernate(ws(), signals({ hasLiveSdk: false })), false);
 });
 
 // --- condition: status must be idle
@@ -337,7 +326,7 @@ test('idleClockStart: a non-finite createdAt or lastSeen is ignored (floors at a
 
 // --- fast Veille (#288): while Admission is held an idle FLEET member is past its threshold; every other guard still applies.
 const FLEET = { parentId: 'coord-1' } as const;
-const RECENT = { lastActivityAt: NOW - 60_000, hasLiveSdk: true, hasLivePty: false }; // idle 1 min, far under the 30-min threshold
+const RECENT = { lastActivityAt: NOW - 60_000, hasLiveSdk: true }; // idle 1 min, far under the 30-min threshold
 const HELD = { admissionHeld: true } as const;
 
 test('fast Veille: baseline pair — a fleet member idle 1 min waits with Admission open, goes with it held', () => {
@@ -355,7 +344,7 @@ test('fast Veille: the hold changes nothing for an already-eligible workspace, f
 });
 
 test('fast Veille: a just-active fleet member (idle 0 ms) goes too — the idle clock is waived, not shortened', () => {
-  assert.equal(shouldHibernate(ws(FLEET), signals({ ...HELD, lastActivityAt: NOW, hasLiveSdk: true, hasLivePty: false })), true);
+  assert.equal(shouldHibernate(ws(FLEET), signals({ ...HELD, lastActivityAt: NOW, hasLiveSdk: true })), true);
 });
 
 // One test per OTHER guard, each with the positive control that the hold alone makes the fleet member eligible.
@@ -371,7 +360,7 @@ const GUARDS: Array<[string, Partial<Workspace>, Partial<HibernationSignals>]> =
   ['run-script PTY', {}, { hasLiveRunPty: true }],
   ['sandbox-hosted', { host: { kind: 'sandbox', endpoint: 'ws://box:1234' } }, {}],
   ['archived', { archived: true }, {}],
-  ['no live process', {}, { hasLivePty: false, hasLiveSdk: false }],
+  ['no live process', {}, { hasLiveSdk: false }],
   ['unknown activity (no opinion)', {}, { lastActivityAt: undefined }],
 ];
 for (const [name, wsOver, sigOver] of GUARDS) {
@@ -473,7 +462,7 @@ test('#326 every OTHER guard still applies to a member with Reliquats past the d
   assert.equal(shouldHibernate(member(), signals({ ...past, hasLiveBackgroundTask: true })), false);
   assert.equal(shouldHibernate(member({ loopingSince: 1 } as Partial<Workspace>), signals(past)), false);
   assert.equal(shouldHibernate(member(), signals({ ...past, thresholdMs: HIBERNATION_DISABLED })), false, 'the kill switch stays one');
-  assert.equal(shouldHibernate(member(), signals({ ...past, hasLivePty: false, hasLiveSdk: false })), false);
+  assert.equal(shouldHibernate(member(), signals({ ...past, hasLiveSdk: false })), false);
 });
 
 // ── #326-fu: m2 (the wait is measured on BOTH clocks), m4 (fleet members only) ─────────────────────────────────────────────────────────────────────────────────────

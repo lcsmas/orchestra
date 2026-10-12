@@ -446,11 +446,16 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .acct{font:10.5px/1 var(--mono);padding:3px 6px;border-radius:5px;border:1px solid var(--hair2);color:var(--dim);flex:none}
 .v1 .a-perso{color:var(--teal);border-color:rgba(79,209,197,.4);background:rgba(79,209,197,.08)}
 .v1 .a-mc{color:var(--violet);border-color:rgba(157,143,255,.42);background:rgba(157,143,255,.09)}
-.v1 .row.child{padding-left:42px;background:rgba(255,255,255,.015)}
+.v1 li[data-depth]{--d:min(var(--depth),8);--ind:calc(20px + var(--d)*16px)} /* #373: one 16px step per tree level (clamped at 8: a very deep tree keeps its text width) */
+.v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image:repeating-linear-gradient(to right,transparent 0 15px,var(--hair2) 15px 16px);background-repeat:no-repeat;background-position:16px 0;background-size:calc(var(--d)*16px) 100%} /* a hairline at each ancestor's glyph */
+.v1 .row.child{padding-left:var(--ind);background-color:rgba(255,255,255,.015)}
 .v1 .row.unread .stl{color:var(--accent)}
-.v1 .fold{display:flex;align-items:center;gap:10px;padding:8px 20px 8px 54px;font:12px var(--mono);color:var(--dim);border-bottom:1px solid var(--hairf);cursor:pointer}
+.v1 .fold{display:flex;align-items:center;gap:10px;padding:8px 20px 8px calc(var(--ind,20px) + 34px);font:12px var(--mono);color:var(--dim);border-bottom:1px solid var(--hairf);cursor:pointer}
 .v1 .fold-arrow{width:10px;color:var(--faint)} .v1 .fold-run{color:var(--work)} .v1 .fold-unread{color:var(--accent)}
 .v1 .fold-owner{padding:10px 20px;font-size:13px;color:var(--faint)}
+.v1 .fold-owner.stand{display:flex;align-items:center;gap:12px;padding-left:var(--ind)}
+.v1 .so-g{width:22px;display:grid;place-items:center} .v1 .so-g::before{content:"";width:10px;height:10px;border-radius:50%;border:2px dashed var(--yellow)}
+.v1 .fold-owner em{font-style:normal;color:var(--amber);font-size:12px}
 .v1 .g{width:22px;height:22px;display:grid;place-items:center;margin-top:1px}
 .v1 .g::before{content:"";display:block}
 .v1 .g-wait::before{width:12px;height:12px;border-radius:50%;background:var(--yellow);box-shadow:0 0 10px rgba(255,200,87,.65)}

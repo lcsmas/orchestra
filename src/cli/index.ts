@@ -96,7 +96,6 @@ interface PeerInfo {
   branch: string;
   repo: string;
   status: string;
-  running?: boolean;
   lastTask?: string;
   /** Agent-authored one-line status note (`orchestra status`), if any. */
   statusText?: string;
@@ -2457,8 +2456,7 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? 'failed to migrate account');
       const target = (res.accountId as string | null | undefined) ?? null;
       const label = target ?? 'default login';
-      const resumed = res.resumed === true ? ' (resumed)' : '';
-      process.stdout.write(`Migrated ${res.id as string} to ${label}${resumed}\n`);
+      process.stdout.write(`Migrated ${res.id as string} to ${label}\n`);
       return;
     }
 

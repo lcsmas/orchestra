@@ -206,17 +206,27 @@ test('#230: ensureSessionInner adopts the terminal transcript AFTER the sandbox 
   assert.ok(callsUncommented(body, 'ws = store.getWorkspace(wsId) ?? ws;'), 'ws must be re-read after the adoption persisted the resume id');
 });
 
-test('#230: consume clears an ADOPTED id to the \'\' marker INSIDE the bad-resume branch — and never on a bare pre-init death', () => {
+test('#230/#232: consume clears a REFUSED id (adopted or not) to the \'\' marker INSIDE the bad-resume branch — and never on a bare pre-init death', () => {
   const body = bodyOf(agentSdkSrc, 'async function consume');
   const at = body.indexOf('if (isBadResumeError(message)) {');
   assert.notEqual(at, -1, 'the bad-resume branch must exist');
   const branch = body.slice(at, body.indexOf('} finally {', at));
-  assert.ok(callsUncommented(branch, "void persistWorkspacePatch(session.wsId, { sdkSessionId: wasAdopted ? '' : undefined });"), "an adopted id clears to '' (undefined would let a hasInput ws re-adopt the same transcript); any other bad id clears to undefined");
+  assert.ok(callsUncommented(branch, 'void persistWorkspacePatch(session.wsId, { sdkSessionId: refusedResumeClearValue(wsNow) });'), "a refused id clears through refusedResumeClearValue ('' — undefined lets a hasInput ws re-adopt the same transcript at the funnel; only a kept child still owing its brief keeps undefined) — #232");
+  assert.ok(!/sdkSessionId:\s*undefined/.test(branch), "no refused id may clear to undefined (#232: the ensureSessionInner funnel would re-adopt it at every first action)");
   // must-FAIL arm: no clear keyed on "died before any stream message" — a kill/OOM/crash before init says nothing about the transcript (rig arm legacy_adopted_crash_before_init).
   assert.ok(!branch.includes('firstMessageSeen') && !/adoptedDead/.test(body), 'a pre-init death must NOT clear an adopted id (only the CLI refusing it does)');
   // the id is recorded by the adoption and stamped ONCE at session creation
   assert.ok(callsUncommented(bodyOf(agentSdkSrc, 'async function adoptTerminalTranscript'), 'adoptedTranscripts.set(wsId, adopted);'), 'adoptTerminalTranscript must record the id it adopted');
   assert.ok(callsUncommented(bodyOf(agentSdkSrc, 'async function ensureSessionInner'), 'session.adoptedResume = adoptedId !== undefined && resumeId === adoptedId ? adoptedId : undefined;'), 'ensureSessionInner must stamp session.adoptedResume only when the resumed id IS the adopted one');
+});
+
+test('#232: the sdkSend start-failure catch clears a refused id to the \'\' marker too — same class as consume (undefined = re-adopted)', () => {
+  const body = bodyOf(agentSdkSrc, 'export async function sdkSend');
+  const at = body.indexOf('if (wsNow?.sdkSessionId && isBadResumeError(message)) {');
+  assert.notEqual(at, -1, 'the sdkSend bad-resume branch must exist');
+  const branch = body.slice(at, body.indexOf('throw err;', at));
+  assert.ok(callsUncommented(branch, 'await persistWorkspacePatch(wsId, { sdkSessionId: refusedResumeClearValue(wsNow) })'), "the start-failure catch must clear a refused id through refusedResumeClearValue ('')");
+  assert.ok(!/sdkSessionId:\s*undefined/.test(branch), 'must NOT clear to undefined (the funnel re-adopts the same refused transcript)');
 });
 
 test('#230: the composer IPC routes through sdkSend (→ ensureSession, where adoption lives) — no other entry point to guard', () => {

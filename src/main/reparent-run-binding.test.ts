@@ -92,16 +92,15 @@ test('#171 — dispatchPromoteRequest snapshots + reconciles on BOTH routes (env
     `promote must reconcile on BOTH routes (worktree + scratch), found ${recon.length}`,
   );
   // must-FAIL arm: a promote-triggered reconcile must NOT --no-restart by default
-  // (that would leave EVERY idle promote stale, defeating the auto-refresh), and
-  // must defer a live PTY rather than kill it mid-turn (arm 2).
+  // (that would leave EVERY idle promote stale, defeating the auto-refresh); a working
+  // session is never killed mid-turn — its restart is refused and downgrades to mark-stale
+  // (arm 2, pinned below).
   assert.ok(
     callsUncommented(body, 'noRestart: false'),
     'promote must reconcile with noRestart:false (auto-restart an idle session)',
   );
-  assert.ok(
-    callsUncommented(body, 'preferStaleForLivePty: true'),
-    'promote must defer a live raw PTY (arm 2: never a mid-turn kill of an unguarded PTY)',
-  );
+  // #232: no live-PTY deferral any more — the option is gone from the call sites.
+  assert.ok(!/preferStaleForLivePty/.test(body), 'promote must not carry the removed live-PTY deferral option (#232)');
 });
 
 test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a stale run silently)', () => {
@@ -121,13 +120,10 @@ test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a
     /markedStale\.push\(ws\.id\)/.test(elseBlock),
     'the fallback stale must be reported in markedStale',
   );
-  // must-FAIL arm: the forceStale computation must gate on a LIVE pty (a cold or
-  // structured session must NOT be force-deferred — it either restarts or is
-  // notice-only).
-  assert.ok(
-    /const forceStale = opts\.preferStaleForLivePty === true && ptyLive/.test(body),
-    'forceStale must require preferStaleForLivePty AND a live PTY specifically',
-  );
+  // #232 must-FAIL arm: liveness is the SDK session ONLY — no agent-PTY probe, no force-stale
+  // (a working session's mid-turn guard is the one deferral; a cold session restarts or is notice-only).
+  assert.ok(callsUncommented(body, 'live: sdkSessionLive(ws.id),'), 'the reparent candidate is live iff its SDK session is');
+  assert.ok(!/isRunning\(/.test(body) && !/forceStale|ptyLive/.test(body), 'reconcileRunAfterReparent must not reason about a live agent PTY (#232)');
 });
 
 test('#171 — the CLI promote verb reports the reconcile side effects', () => {

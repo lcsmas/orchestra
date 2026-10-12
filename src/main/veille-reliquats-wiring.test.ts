@@ -92,13 +92,13 @@ test('the sweep marks a member BUSY before its verdict and drops the mark in a f
   // #326-fu m1: ONE fresh judgement serves the post-verdict re-check AND the stop itself (before the first signal and before every signal round, through `stillEligible`)
   const fresh = sweep.slice(sweep.indexOf('const judgedFresh = (liveReliquats: number, heldNow: boolean = isAdmissionHolding(getMemoryGuardSnapshot())): boolean => {'), sweep.indexOf('let verdict: Awaited<ReturnType<typeof judgeVeille>>;'));
   assert.ok(fresh.length > 100, 'judgedFresh is defined before the verdict is awaited');
-  for (const re of [/\(liveReliquats === 0 \|\| isFleetMember\(fresh\)\) &&/, /hasLivePty: isRunning\(ws\.id\),/, /hasLiveRunPty: isRunning\(`\$\{ws\.id\}:run`\),/, /hasLiveBackgroundTask: sdkHasBackgroundTasks\(ws\.id\),/, /now: Date\.now\(\),/, /store\.getWorkspace\(ws\.id\)/, /lastActivityAt: idleClockOf\(fresh\),/, /monotonicIdleMs: monotonicIdleOf\(ws\.id\),/, /isActive: getActiveWorkspaceId\(\) === ws\.id,/, /hasLiveSdk: sdkSessionLive\(ws\.id\),/, /heldNow: boolean = isAdmissionHolding\(getMemoryGuardSnapshot\(\)\)/, /admissionHeld: heldNow,/, /^\s*liveReliquats,$/m]) assert.match(fresh, re, String(re));
+  for (const re of [/\(liveReliquats === 0 \|\| isFleetMember\(fresh\)\) &&/, /hasLiveRunPty: isRunning\(`\$\{ws\.id\}:run`\),/, /hasLiveBackgroundTask: sdkHasBackgroundTasks\(ws\.id\),/, /now: Date\.now\(\),/, /store\.getWorkspace\(ws\.id\)/, /lastActivityAt: idleClockOf\(fresh\),/, /monotonicIdleMs: monotonicIdleOf\(ws\.id\),/, /isActive: getActiveWorkspaceId\(\) === ws\.id,/, /hasLiveSdk: sdkSessionLive\(ws\.id\),/, /heldNow: boolean = isAdmissionHolding\(getMemoryGuardSnapshot\(\)\)/, /admissionHeld: heldNow,/, /^\s*liveReliquats,$/m]) assert.match(fresh, re, String(re));
   assert.match(sweep, /stillEligible: \(n\) => judgedFresh\(n\),/, 'the stop is handed the fresh judgement');
   assert.match(sweep, /stillEligibleAfterSignal: \(n\) => judgedFresh\(n, signals\.admissionHeld\),/, 'once a signal is out the hold is what it was when the verdict began (F2, R10)');
   assert.match(sweep, /thresholdMs,\s*\n\s*monotonicIdleMs: monotonicIdleOf\(ws\.id\),\s*\n\s*admissionHeld,/, 'the monotonic idle time is a signal of every member\'s verdict (#326-fu m2)');
   assert.doesNotMatch(sweep, /if \(verdict\.stopped\) \{/, 'the re-check is not conditional on a stop: a census awaits too');
   assert.match(sweep, /stillWanted: \(\) => \(wakeEpoch\.get\(ws\.id\) \?\? 0\) === epochBefore && !isBeingDeleted\(ws\.id\),/, 'the stop is told when the member woke / is being deleted');
-  assert.match(sweep, /const liveSdkNow = sdkSessionLive\(ws\.id\);\s*const livePtyNow = isRunning\(ws\.id\);\s*if \(!liveSdkNow && !livePtyNow\) continue;/, 'liveness read AGAIN after the verdict');
+  assert.match(sweep, /const liveSdkNow = sdkSessionLive\(ws\.id\);\s*if \(!liveSdkNow\) continue;/, 'liveness read AGAIN after the verdict');
 });
 
 test('the #288 mutant gate derives its baseline rig-arm count from the rig\'s own ARMS — a hard-coded number aborted the whole gate the day the rig gained arms (#326-fu review F1)', () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { owesOpeningTask, startKeepsFailing, restartOwesOpeningTask, START_FAIL_STREAK, START_FAIL_WINDOW_MS } from './opening-task.ts';
+import { owesOpeningTask, startKeepsFailing, restartOwesOpeningTask, refusedResumeClearValue, START_FAIL_STREAK, START_FAIL_WINDOW_MS } from './opening-task.ts';
 
 // #227 — "is this workspace still owed its opening task?" decides whether Restart RETRIES a child whose SDK start failed
 // (deliver the retained task) or resumes normally. Every clause is asserted alone against literals, never the constant.
@@ -80,12 +80,22 @@ test('startKeepsFailing (F2): a LIVE session is never blocked, whatever its erro
 
 test('restartOwesOpeningTask (r4 F2): stopped+owed retries; a LIVE session only when ITS OWN first turn failed — a hung/slow second start restarts normally', () => {
   const err = [{ at: 1, message: 'stale first failure' }];   // a STALE persisted error must not disarm a Restart of a live hung start
-  const idle = { ptyLive: false, sdkLive: false }, live = { ptyLive: false, sdkLive: true };
+  const idle = { sdkLive: false }, live = { sdkLive: true };
   assert.equal(restartOwesOpeningTask({ lastTask: 'x' }, idle), true, 'a stopped kept child');
   assert.equal(restartOwesOpeningTask({ lastTask: 'x' }, live), false, 'a live session still on its first turn restarts normally');
   assert.equal(restartOwesOpeningTask({ lastTask: 'x', sdkStartErrors: err }, live), false, 'live + a stale persisted error is NOT the owed route (r4 F2)');
   assert.equal(restartOwesOpeningTask({ lastTask: 'x', sdkStartErrors: err }, { ...live, sdkFailed: true }), true, 'live but ITS first turn errored: retry, deliver once');
-  assert.equal(restartOwesOpeningTask({ lastTask: 'x' }, { ptyLive: true, sdkLive: true, sdkFailed: true }), false, 'a live PTY is never the owed route');
   assert.equal(restartOwesOpeningTask({ lastTask: 'x', hasInput: true }, { ...live, sdkFailed: true }), false, 'nothing owed');
   assert.equal(restartOwesOpeningTask({}, idle), false, 'no task');
+});
+
+test('refusedResumeClearValue (#232 F1): a refused id clears to the \'\' marker so the funnel cannot re-adopt it — except a kept child still owing its brief, which keeps undefined (Restart redelivers)', () => {
+  assert.equal(refusedResumeClearValue({ lastTask: 'x', hasInput: true, sdkSessionId: 'refused' }), '', 'hasInput ws: \'\' (undefined would be re-adopted)');
+  assert.equal(refusedResumeClearValue({ hasInput: true, sdkSessionId: 'refused' }), '', 'no task: nothing owed');
+  assert.equal(refusedResumeClearValue({ lastTask: 'x', openingTaskDelivered: true, sdkSessionId: 'refused' }), '', 'brief already delivered: nothing owed');
+  assert.equal(refusedResumeClearValue({ lastTask: 'x', archived: true, sdkSessionId: 'refused' }), '', 'archived: nothing owed');
+  assert.equal(refusedResumeClearValue({ lastTask: 'x', sdkSessionId: 'refused' }), undefined, 'kept child, brief owed once the id is gone: undefined re-arms the owed-task Restart (no hasInput, so no adoption loop)');
+  // the two outcomes really differ for the owed route
+  assert.equal(owesOpeningTask({ lastTask: 'x', sdkSessionId: refusedResumeClearValue({ lastTask: 'x', sdkSessionId: 'r' }) }), true);
+  assert.equal(owesOpeningTask({ lastTask: 'x', hasInput: true, sdkSessionId: refusedResumeClearValue({ lastTask: 'x', hasInput: true, sdkSessionId: 'r' }) }), false);
 });

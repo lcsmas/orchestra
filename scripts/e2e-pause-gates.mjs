@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? '';
 const ARMS = [
-  'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume', 'migrate',
+  'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
   'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'pty_brief', 'hang_selftest',
@@ -592,31 +592,6 @@ if (ARM === 'spawn') {
   // control: the release DID happen on the lift — the parked turn starts (the new turn re-arms the gate, so `gateHeld` alone cannot say)
   rec('queuedStartedAfterLift', await untilOrFail(() => yielded.some((y) => y.includes('QUEUED-BEHIND')), 3000));
   ok = out.gateHeldWhilePaused === true && out.sameTurnWhilePaused === true && out.queuedStarted === false && out.queuedStartedAfterLift === true;
-
-// ═════════════════════════════════════════════════════════════════════════════
-} else if (ARM === 'migrate') {
-  // row 13 — account-migrate's auto-RESUME of a running terminal agent is skipped while paused (the stop/move/re-pin still happen).
-  useFakeSeam();
-  await seedFleet();
-  const pty = await import(`${REPO}/src/main/pty.ts`);
-  const acct = path.join(tmpHome, 'acct-b');
-  fs.mkdirSync(acct, { recursive: true });
-  await store.setAccounts([{ id: 'acct-b', label: 'B', configDir: acct }]);
-  const launches = () => (fs.existsSync(ranLog) ? fs.readFileSync(ranLog, 'utf8').split('\n').filter(Boolean).length : 0);
-  for (const id of ['ws-m1', 'ws-xm']) await workspaces.startAgentPty(ws(id), 80, 24);
-  const running0 = { m1: pty.isRunning('ws-m1'), xm: pty.isRunning('ws-xm') };
-  await sleep(400);
-  const l0 = launches();
-  pause();
-  const a = rec('pausedMember', await workspaces.dispatchMigrateAccountRequest({ id: 'ws-m1', accountId: 'acct-b' }));
-  const b = rec('otherRun', await workspaces.dispatchMigrateAccountRequest({ id: 'ws-xm', accountId: 'acct-b' }));
-  await sleep(500);
-  rec('launchesAdded', launches() - l0);
-  rec('running', { m1: pty.isRunning('ws-m1'), xm: pty.isRunning('ws-xm') });
-  rec('repinned', ws('ws-m1').accountId);
-  for (const id of ['ws-m1', 'ws-xm']) { try { pty.stopPty(id); } catch { /* */ } }
-  ok = running0.m1 && running0.xm && a.ok === true && a.resumed === false && b.ok === true && b.resumed === true
-    && out.launchesAdded === 1 && out.running.m1 === false && out.running.xm === true && out.repinned === 'acct-b';
 
 // ═════════════════════════════════════════════════════════════════════════════
 } else if (ARM === 'off_identity') {

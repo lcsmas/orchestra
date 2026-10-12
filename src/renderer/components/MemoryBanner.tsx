@@ -5,7 +5,7 @@ import { bannerCopy, bannerVisible, type MemoryBannerState } from '../../shared/
 /** Memory banner (#289, epic #284 "Visibility"; D5 ruling D-pick3 = option B: main column above the pane, two lines, French, GLOBAL). Shown while the memory guard HOLDS Admission (amber) or a memory Pause is in
  *  effect (red); it vanishes by itself on recovery. « Masquer » hides exactly this banner until the episode ends — it comes back on an escalation (held → Pause), a new Pause cycle or the next episode. The words
  *  and the dismiss rule are pure (src/shared/memory-banner.ts); the state is pushed by main (`memoryGuard:bannerUpdate`) and cached WHOLESALE in the store. Same above-the-pane-row placement as SetupBanner so the
- *  absolutely-positioned TerminalView can't eclipse it; mounted for EVERY screen, with or without an active workspace. The full-page overlays (Bus, Insights, Help, Resources) are `inset: 0` in the same column: the
+ *  the absolutely-positioned workspace panes can't eclipse it; mounted for EVERY screen, with or without an active workspace. The full-page overlays (Bus, Insights, Help, Resources) are `inset: 0` in the same column: the
  *  banner publishes its height as `--memory-banner-h` on `main.main` and they start below it (styles.css), so none of them hides it. */
 export function MemoryBanner() {
   const banner = useStore((s) => s.memoryBanner);

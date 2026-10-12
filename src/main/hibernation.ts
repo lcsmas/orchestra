@@ -2,7 +2,7 @@
 //
 // Stops the agent process of workspaces that have sat `idle` past the
 // threshold, reclaiming their memory while leaving the conversation intact
-// (terminal resumes via `claude --continue`, structured via ws.sdkSessionId).
+// (the Agent view session resumes via ws.sdkSessionId).
 // The eligibility rules are pure and unit-tested in src/shared/hibernation.ts;
 // this file supplies the live signals and performs the stop.
 //
@@ -19,7 +19,7 @@
 import { store } from './store';
 import { platform } from './platform';
 import { scoped } from './logger';
-import { getPtyPid, isRunning, stopPty } from './pty';
+import { isRunning } from './pty'; // the RUN-script PTY probe only (`<id>:run`)
 import { sdkHasBackgroundTasks, sdkSessionLive, sdkStopIfLive } from './sdk-delivery';
 // NOTE the .ts extension on this VALUE import: main modules pulled into
 // `node --test --experimental-strip-types` suites do not resolve extensionless
@@ -161,7 +161,6 @@ export async function sweepHibernation(): Promise<string[]> {
 
   for (const ws of store.workspaces) {
     if (isBeingDeleted(ws.id)) continue; // delete owns the teardown (#205)
-    const hasLivePty = isRunning(ws.id);
     const hasLiveSdk = sdkSessionLive(ws.id);
     // Unseen workspaces idle from the app-start floor, bounded by createdAt —
     // otherwise a session quietly live since launch would never become eligible.
@@ -175,7 +174,6 @@ export async function sweepHibernation(): Promise<string[]> {
       now,
       lastActivityAt,
       isActive: getActiveWorkspaceId() === ws.id,
-      hasLivePty,
       hasLiveSdk,
       // The run-script PTY registry uses the `<id>:run` naming convention
       // (api-handlers.ts runScript*). Check it BEFORE killing anything.
@@ -202,7 +200,6 @@ export async function sweepHibernation(): Promise<string[]> {
           lastActivityAt: idleClockOf(fresh),
           monotonicIdleMs: monotonicIdleOf(ws.id),
           isActive: getActiveWorkspaceId() === ws.id,
-          hasLivePty: isRunning(ws.id),
           hasLiveSdk: sdkSessionLive(ws.id),
           hasLiveRunPty: isRunning(`${ws.id}:run`),
           hasLiveBackgroundTask: sdkHasBackgroundTasks(ws.id),
@@ -252,31 +249,18 @@ export async function sweepHibernation(): Promise<string[]> {
     // Liveness is read AGAIN here, after the verdict awaited, and NOTHING awaits between this read and the stop calls below: a second pass in the same tick cannot interleave
     // between the check and the stop (pinned by hibernation-fast-veille-wiring.test.ts); a session stopped meanwhile (user stop, crash) is not "hibernated".
     const liveSdkNow = sdkSessionLive(ws.id);
-    const livePtyNow = isRunning(ws.id);
-    if (!liveSdkNow && !livePtyNow) continue;
+    if (!liveSdkNow) continue;
     const idleFor = formatIdleDuration(now - lastActivityAt);
-    // Sample the pid BEFORE stopping — after `stopPty` the session is gone from
-    // the registry and the pid is unrecoverable. Naming it in the log is what
-    // makes process death assertable by `ps -p <pid>`: UI text or an absent
-    // registry entry proves the app's bookkeeping changed, not that the OS
-    // process actually exited.
-    const ptyPid = livePtyNow ? getPtyPid(ws.id) : undefined;
     hlog.info(
-      `hibernating ${ws.name} (${ws.id}) — idle ${idleFor}` +
-        `${livePtyNow ? ` pty${ptyPid !== undefined ? ` pid=${ptyPid}` : ' pid=unknown'}` : ''}` +
-        `${liveSdkNow ? ' sdk' : ''}` +
+      `hibernating ${ws.name} (${ws.id}) — idle ${idleFor} sdk` +
         (verdict.stopped ? ` — stopped ${verdict.report?.killed.filter((k) => k.outcome !== 'planned').length ?? 0} Reliquat(s) first${verdict.told ? ', member told' : ''}${verdict.fast ? ' (fast Veille)' : ''}` : '') +
         // Every Veille taken under the hold names the MemAvailable behind it (#288, for incident reconstruction).
         fastVeilleLogSuffix(admissionHeld, guardSnap, early, thresholdMs),
     );
 
-    if (liveSdkNow) {
-      // Stop the structured session first: it is the path that persists
-      // `sdkSessionId`, and stopping it is async. A failure here must not
-      // prevent the PTY stop below or abort the whole sweep.
-      await sdkStopIfLive(ws.id, { hibernate: true }).catch((e) => hlog.swallow(`sdk stop for ${ws.id}`, e));
-    }
-    if (livePtyNow) stopPty(ws.id);
+    // Stop the structured session: it is the path that persists `sdkSessionId`, and stopping it is async.
+    // A failure here must not abort the whole sweep.
+    await sdkStopIfLive(ws.id, { hibernate: true }).catch((e) => hlog.swallow(`sdk stop for ${ws.id}`, e));
 
     // A wake can land mid-teardown (the stop is async): don't stamp a chip on a woken workspace.
     if ((wakeEpoch.get(ws.id) ?? 0) !== epochBefore) {

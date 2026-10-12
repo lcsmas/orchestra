@@ -10,6 +10,9 @@ ROOT = os.getcwd()
 TEST = 'src/acces-mobile/server.test.ts'
 PWA = 'src/acces-mobile/pwa.test.ts'
 PL = 'src/acces-mobile/page-list.test.ts'
+TREE = 'src/shared/acces-mobile-tree.test.ts'
+CSS = 'src/acces-mobile/page-css.test.ts'
+CV = 'src/acces-mobile/conversation.ts'
 PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
@@ -121,7 +124,6 @@ MUTANTS = [
     ('D1-md-any-link-scheme', 'src/shared/mini-markdown.ts', "          if (/^https?:\\/\\/\\S+$/.test(href)) {", "          if (href) {", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D2-md-snake-case-italic', 'src/shared/mini-markdown.ts', "        if (c === '*' || !/[A-Za-z0-9]/.test(before)) {", "        if (true) {", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D3-md-table-separator-kept', 'src/shared/mini-markdown.ts', "        if (cells.every((x) => /^:?-+:?$/.test(x))) continue;", "        if (false) continue;", 'RED', 'src/shared/mini-markdown.test.ts'),
-    ('D4-parent-not-listed-kept', 'src/shared/acces-mobile.ts', " && listed.has(ws.parentId)) row.parentId", ") row.parentId", 'RED', 'src/shared/acces-mobile.test.ts'),
     # ── 2026-10-12: files attached on the phone (images + PDFs) ──
     ('A1-any-media-type', 'src/shared/acces-mobile-conversation.ts', "    if (typeof mediaType !== 'string' || !MOBILE_ATTACH_TYPES.includes(mediaType)) return", "    if (typeof mediaType !== 'string') return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('A2-no-count-cap', 'src/shared/acces-mobile-conversation.ts', "  if (raw.length > MOBILE_ATTACH_MAX_COUNT) return", "  if (false) return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
@@ -161,11 +163,71 @@ MUTANTS = [
     ('N14-first-path-segment-is-the-repo', 'src/shared/acces-mobile.ts', r"ws.repoPath.replace(/\/+$/, '').split('/').pop()", r"ws.repoPath.replace(/\/+$/, '').split('/')[2]", 'RED', 'src/shared/acces-mobile.test.ts'),
     ('N15-sorted-by-the-desktop-name', 'src/shared/acces-mobile.ts', "a.displayName.localeCompare(b.displayName) || ", "", 'RED', 'src/shared/acces-mobile.test.ts'),
     ('N16-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'RED', PL),
-    ('N13-fold-owner-full-name', 'src/acces-mobile/page.ts', "name: byId[pid].displayName || byId[pid].name })", "name: byId[pid].name })", 'RED', PL),
+    ('N13-stand-in-full-name', 'src/acces-mobile/page.ts', "document.createTextNode((n.row.displayName || n.row.name) + ' ')", "document.createTextNode(n.row.name + ' ')", 'RED', PL),
     ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
     # ── 2026-10-12 (#374): the phone and the desktop share ONE tool line (src/shared/tool-line.ts) ──
     ('T1-phone-tool-line-own-label', 'src/shared/acces-mobile-conversation.ts', "return { id: m.id, kind: 'tool', ...toolLine(m), at };", "return { id: m.id, kind: 'tool', label: m.toolUse.name, state: 'ok', at };", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('T2-phone-glyph-map-forked', 'src/acces-mobile/conversation.ts', "var STATE = ${JSON.stringify(TOOL_GLYPH)};", 'var STATE = {"running":"…","ok":"✓","error":"✓"};', 'RED', 'src/shared/tool-line.test.ts'),
+    # ── 2026-10-12 wave I (#373): the whole agent tree on the phone ──
+    ('L1-direct-parent-only', 'src/shared/acces-mobile.ts', "      cur = byId.get(cur)?.parentId;\n", "      cur = undefined;\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L2-archived-parent-is-listed', 'src/shared/acces-mobile.ts', "      if (listed.has(cur)) { answer = cur; break; }\n", "      if (byId.has(cur)) { answer = cur; break; }\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L3-row-is-its-own-ancestor', 'src/shared/acces-mobile.ts', "    return a === ws.id ? undefined : a;\n", "    return a;\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L4-parent-not-projected', 'src/shared/acces-mobile.ts', "    if (parentId) row.parentId = parentId;\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('TT1-cycle-rows-dropped', 'src/shared/acces-mobile-tree.ts', "    walk(x);\n  }\n  roots.sort(", "  }\n  roots.sort(", 'RED', TREE),
+    ('TT2-roots-not-in-input-order', 'src/shared/acces-mobile-tree.ts', "  roots.sort(function (a, b) { return a - b; });\n", "", 'RED', TREE),
+    ('TT3-stand-in-without-anyone-below', 'src/shared/acces-mobile-tree.ts', "    if (waiting && !kids.length) continue; // leaves nodes[x] undefined\n", "", 'RED', TREE),
+    ('TT4-waiting-row-kept-as-a-row', 'src/shared/acces-mobile-tree.ts', "standIn: waiting,", "standIn: false,", 'RED', TREE),
+    ('TT5-stand-in-counted-as-an-agent', 'src/shared/acces-mobile-tree.ts', "if (!child.standIn) { agents += 1;", "if (true) { agents += 1;", 'RED', TREE),
+    ('TT6-agents-direct-kids-only', 'src/shared/acces-mobile-tree.ts', "agents += child.agents; running += child.running; unread += child.unread;", "running += child.running; unread += child.unread;", 'RED', TREE),
+    ('TT7-running-direct-kids-only', 'src/shared/acces-mobile-tree.ts', "agents += child.agents; running += child.running; unread += child.unread;", "agents += child.agents; unread += child.unread;", 'RED', TREE),
+    ('TT8-unread-direct-kids-only', 'src/shared/acces-mobile-tree.ts', "agents += child.agents; running += child.running; unread += child.unread;", "agents += child.agents; running += child.running;", 'RED', TREE),
+    ('TT9-running-not-counted', 'src/shared/acces-mobile-tree.ts', "if (child.row.status === 'running') running += 1; ", "", 'RED', TREE),
+    ('TT10-unread-not-counted', 'src/shared/acces-mobile-tree.ts', "if (child.row.unread) unread += 1; ", "", 'RED', TREE),
+    ('TT11-waiting-only-at-the-top', 'src/shared/acces-mobile-tree.ts', "if (rows[i].status === 'waiting') out.waiting.push(rows[i]);", "if (rows[i].status === 'waiting' && parentOf[i] < 0) out.waiting.push(rows[i]);", 'RED', TREE),
+    ('TT12-section-count-roots-only', 'src/shared/acces-mobile-tree.ts', "g.count += (node.standIn ? 0 : 1) + node.agents;", "g.count += (node.standIn ? 0 : 1);", 'RED', TREE),
+    ('TT13-section-counts-the-stand-in', 'src/shared/acces-mobile-tree.ts', "g.count += (node.standIn ? 0 : 1) + node.agents;", "g.count += 1 + node.agents;", 'RED', TREE),
+    ('TT14-sections-reversed', 'src/shared/acces-mobile-tree.ts', "out.groups.push(g);", "out.groups.unshift(g);", 'RED', TREE),
+    ('TT15-siblings-reversed', 'src/shared/acces-mobile-tree.ts', "if (p !== undefined && p !== i) kidsOf[p].push(i);", "if (p !== undefined && p !== i) kidsOf[p].unshift(i);", 'RED', TREE),
+    ('TT16-depth-flat', 'src/shared/acces-mobile-tree.ts', "depth[kid] = depth[cur] + 1;", "depth[kid] = 1;", 'RED', TREE),
+    # ── #373-fu (review R373-1 / R373-2): the layout geometry and the memoised ancestor walk ──
+    ('L5-memo-not-read', 'src/shared/acces-mobile.ts', "      if (resolved.has(cur)) { answer = resolved.get(cur); break; }\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L6-memo-not-filled', 'src/shared/acces-mobile.ts', "    for (const id of path) resolved.set(id, answer);\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L7-no-loop-guard', 'src/shared/acces-mobile.ts', "      if (onPath.has(cur)) break;\n", "", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('L8-negative-answer-not-memoised', 'src/shared/acces-mobile.ts', "    for (const id of path) resolved.set(id, answer);\n", "    if (answer !== undefined) for (const id of path) resolved.set(id, answer);\n", 'RED', 'src/shared/acces-mobile.test.ts'),
+    ('CSS13-row-padding-moves-the-root-glyph', CV, "padding:12px 20px;border-bottom:1px solid var(--hairf);cursor:pointer}", "padding:12px 24px;border-bottom:1px solid var(--hairf);cursor:pointer}", 'RED', CSS),
+    ('CSS14-small-row-padding-moves-the-root-glyph', CV, ".v1 .row.small{padding:10px 20px}", ".v1 .row.small{padding:10px 24px}", 'RED', CSS),
+    ('CSS15-stand-in-glyph-column-wider', CV, ".v1 .so-g{width:22px;", ".v1 .so-g{width:26px;", 'RED', CSS),
+    ('CSS1-clamp-removed', CV, "--d:min(var(--depth),8);", "--d:var(--depth);", 'RED', CSS),
+    ('CSS2-clamp-too-early', CV, "--d:min(var(--depth),8);", "--d:min(var(--depth),3);", 'RED', CSS),
+    ('CSS3-step-not-16', CV, "--ind:calc(20px + var(--d)*16px)", "--ind:calc(20px + var(--d)*14px)", 'RED', CSS),
+    ('CSS4-rail-size-unclamped', CV, "background-size:calc(var(--d)*16px) 100%", "background-size:calc(var(--depth)*16px) 100%", 'RED', CSS),
+    ('CSS5-rail-off-by-one-px', CV, "transparent 0 15px,var(--hair2) 15px 16px", "transparent 0 14px,var(--hair2) 14px 15px", 'RED', CSS),
+    ('CSS6-fold-line-not-indented', CV, "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px 54px", 'RED', CSS),
+    ('CSS7-fold-text-not-under-the-title', CV, "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px calc(var(--ind,20px) + 30px)", 'RED', CSS),
+    ('CSS8-stand-in-not-indented', CV, ".v1 .fold-owner.stand{display:flex;align-items:center;gap:12px;padding-left:var(--ind)}", ".v1 .fold-owner.stand{display:flex;align-items:center;gap:12px}", 'RED', CSS),
+    ('CSS9-nested-row-not-indented', CV, ".v1 .row.child{padding-left:var(--ind);", ".v1 .row.child{padding-left:42px;", 'RED', CSS),
+    ('CSS10-no-rail-on-fold-lines', CV, ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .row.child,.v1 .fold-owner.stand{background-image", 'RED', CSS),
+    ('CSS11-no-rail-on-stand-in', CV, ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .row.child,.v1 .fold[data-depth]{background-image", 'RED', CSS),
+    ('CSS12-rail-anchored-wrong', CV, "background-repeat:no-repeat;background-position:16px 0;", "background-repeat:no-repeat;background-position:20px 0;", 'RED', CSS),
+    ('TT33-cycle-walked-from-the-first-row-not-its-entry', 'src/shared/acces-mobile-tree.ts', "    walk(x);\n  }\n  roots.sort(", "    walk(i);\n  }\n  roots.sort(", 'RED', TREE),
+    ('TT19-fold-counts-direct-kids', 'src/acces-mobile/page.ts', "li.appendChild(el('span', 'fold-n', n.agents + ' agent' + (n.agents > 1 ? 's' : '')));", "li.appendChild(el('span', 'fold-n', n.kids.length + ' agent' + (n.kids.length > 1 ? 's' : '')));", 'RED', PL),
+    ('TT20-fold-running-not-shown', 'src/acces-mobile/page.ts', "    if (n.running) li.appendChild(el('span', 'fold-run', n.running + ' en cours'));\n", "", 'RED', PL),
+    ('TT21-fold-unread-not-shown', 'src/acces-mobile/page.ts', "    if (n.unread) li.appendChild(el('span', 'fold-unread', n.unread + ' non lu' + (n.unread > 1 ? 's' : '')));\n", "", 'RED', PL),
+    ('TT22-open-state-reset-on-redraw', 'src/acces-mobile/page.ts', "    listEl.textContent = '';\n    var rows = needsMe.checked ? me : last;", "    listEl.textContent = ''; open = Object.create(null);\n    var rows = needsMe.checked ? me : last;", 'RED', PL),
+    ('TT34-open-state-reset-on-refresh', 'src/acces-mobile/page.ts', "        last = j.workspaces; render();", "        last = j.workspaces; open = Object.create(null); render();", 'RED', PL),
+    ('TT23-folds-share-one-state', 'src/acces-mobile/page.ts', "    li.addEventListener('click', function () { open[id] = !open[id]; render(); });\n    return li;\n  }\n  /** An en attente coordinator", "    li.addEventListener('click', function () { var v = !open[id]; open = Object.create(null); open[id] = v; render(); });\n    return li;\n  }\n  /** An en attente coordinator", 'RED', PL),
+    ('TT24-kids-not-drawn-when-open', 'src/acces-mobile/page.ts', "    if (open[n.row.id]) n.kids.forEach(function (k) { drawNode(ul, k); });", "    if (open[n.row.id] && !n.depth) n.kids.forEach(function (k) { drawNode(ul, k); });", 'RED', PL),
+    ('TT25-no-indent-depth', 'src/acces-mobile/page.ts', "li.dataset.depth = String(depth); li.style.setProperty('--depth', String(depth)); return li; }", "li.dataset.depth = String(depth); li.style.setProperty('--depth', '1'); return li; }", 'RED', PL),
+    ('TT26-stand-in-not-drawn', 'src/acces-mobile/page.ts', "    ul.appendChild(n.standIn ? standIn(n) : row(n.row, false, n.depth));", "    if (!n.standIn) ul.appendChild(row(n.row, false, n.depth));", 'RED', PL),
+    ('TT27-stand-in-fold-missing', 'src/acces-mobile/page.ts', "    if (!n.kids.length) return;\n    ul.appendChild(fold(n));", "    if (!n.kids.length || n.standIn) return;\n    ul.appendChild(fold(n));", 'RED', PL),
+    ('TT28-waiting-row-also-in-the-tree', 'src/acces-mobile/page.ts', "    buildTree(last).groups.forEach(function (g) {", "    buildTree(last.map(function (w) { return w.status === 'waiting' ? Object.assign({}, w, { status: 'idle' }) : w; })).groups.forEach(function (g) {", 'RED', PL),
+    ('TT29-section-count-direct-rows', 'src/acces-mobile/page.ts', "      listEl.appendChild(section('rh', g.group, g.count));", "      listEl.appendChild(section('rh', g.group, g.roots.length));", 'RED', PL),
+    ('TT30-tree-not-used-for-the-list', 'src/acces-mobile/page.ts', "    buildTree(last).groups.forEach(function (g) {", "    buildTree(last.map(function (w) { return Object.assign({}, w, { parentId: undefined }); })).groups.forEach(function (g) {", 'RED', PL),
+    ('TT32-a-fold-never-closes', 'src/acces-mobile/page.ts', "    li.addEventListener('click', function () { open[id] = !open[id]; render(); });", "    li.addEventListener('click', function () { open[id] = true; render(); });", 'RED', PL),
+    # EQUIVALENT (documented): a self-parent is also handled by the cycle pass (the row is its own kid, seen ⇒ skipped) — the explicit guards are belt and braces
+    ('TT17-self-parent-guards-removed', 'src/shared/acces-mobile-tree.ts', "    parentOf.push(p !== undefined && p !== i ? p : -1);\n    if (p !== undefined && p !== i) kidsOf[p].push(i);", "    parentOf.push(p !== undefined ? p : -1);\n    if (p !== undefined) kidsOf[p].push(i);", 'EQUIV', TREE),
+    # EQUIVALENT (documented, reviewer R373): differs only WITH duplicate ids, which cannot exist (store.ts upserts by id, ids are randomUUID())
+    ('TT18-last-duplicate-wins', 'src/shared/acces-mobile-tree.ts', "if (first[rows[i].id] === undefined) first[rows[i].id] = i;", "first[rows[i].id] = i;", 'EQUIV', TREE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -182,7 +244,7 @@ E2E_MUTANTS = [
     ('E6-regenerate-logs-token', 'src/main/acces-mobile-host.ts', "  generateAccesMobileToken();\n  log.info('pairing token regenerated — the previous token is refused from now on');", "  const t = generateAccesMobileToken();\n  log.info(`pairing token regenerated ${t}`);", 'leak/no-token-in-logs-or-files'),
     ('E7-page-ignores-hashchange', 'src/acces-mobile/page.ts', "    if (pairFromHash()) {\n      try { token = localStorage.getItem(KEY); } catch (e) {}\n      conv.connect();\n      route();\n      return;\n    }\n", "", 'regen/repair-with-new-url'),
     ('E8-unread-counts-as-a-traiter', 'src/acces-mobile/page.ts', "  function needs(w) { return w.status === 'waiting'; }", "  function needs(w) { return w.status === 'waiting' || w.unread; }", 'phone/list'),
-    ('E9-workers-not-folded', 'src/acces-mobile/page.ts', "      if (w.parentId && byId[w.parentId]) (kidsOf", "      if (false) (kidsOf", 'phone/list'),
+    ('E9-workers-not-folded', 'src/acces-mobile/page.ts', "    buildTree(last).groups.forEach(function (g) {", "    buildTree(last.map(function (w) { return Object.assign({}, w, { parentId: undefined }); })).groups.forEach(function (g) {", 'phone/list'),
     ('E10-markdown-shown-raw', 'src/acces-mobile/conversation.ts', "row.appendChild(md(l.text)); }", "row.textContent = l.text; }", 'conv/markdown'),
     ('E11-opens-at-the-top', 'src/acces-mobile/conversation.ts', "    if (nearBottom || version < 0) se.scrollTop", "    if (nearBottom && version >= 0) se.scrollTop", 'conv/opens-at-end'),
     ('E12-fold-hides-a-waiting-worker', 'src/acces-mobile/page.ts', "    var waiting = rows.filter(needs);", "    var waiting = rows.filter(function (w) { return needs(w) && !w.parentId; });", 'phone/folded-worker-waiting-surfaces'),
@@ -201,6 +263,18 @@ E2E_MUTANTS = [
     ('E26-waiting-row-without-repo-chip', 'src/acces-mobile/page.ts', "    if (withRepo) r2.appendChild(el('span', 'repo', w.group));\n", "", 'phone/waiting-row-keeps-repo-chip'),
     ('E27-projection-without-displayName', 'src/shared/acces-mobile.ts', "      displayName: mobileDisplayName(ws),\n", "      displayName: ws.name,\n", 'phone/no-repo-prefix'),
     ('E23-phone-not-told', 'src/main/acces-mobile-routes.ts', "          ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),\n", "", 'update/phone-banner'),
+    # ── 2026-10-12 wave I (#373): the whole agent tree ──
+    ('E28-indent-css-gone', 'src/acces-mobile/conversation.ts', ".v1 .row.child{padding-left:var(--ind);background-color:rgba(255,255,255,.015)}", ".v1 .row.child{padding-left:42px;background-color:rgba(255,255,255,.015)}", 'phone/tree-indent-one-step-per-level'),
+    ('E29-fold-counts-direct-kids', 'src/acces-mobile/page.ts', "li.appendChild(el('span', 'fold-n', n.agents + ' agent' + (n.agents > 1 ? 's' : '')));", "li.appendChild(el('span', 'fold-n', n.kids.length + ' agent' + (n.kids.length > 1 ? 's' : '')));", 'phone/tree-fold-counts-whole-subtree'),
+    ('E30-open-state-reset-on-refresh', 'src/acces-mobile/page.ts', "        last = j.workspaces; render();", "        last = j.workspaces; open = Object.create(null); render();", 'phone/tree-open-state-survives-refresh'),
+    ('E31-stand-in-not-drawn', 'src/acces-mobile/page.ts', "    ul.appendChild(n.standIn ? standIn(n) : row(n.row, false, n.depth));", "    if (!n.standIn) ul.appendChild(row(n.row, false, n.depth));", 'phone/tree-waiting-ancestor-stand-in'),
+    ('E32-only-first-level-drawn', 'src/acces-mobile/page.ts', "    if (open[n.row.id]) n.kids.forEach(function (k) { drawNode(ul, k); });", "    if (open[n.row.id] && !n.depth) n.kids.forEach(function (k) { drawNode(ul, k); });", 'phone/tree-every-row-reachable'),
+    ('E33-archived-parent-not-walked', 'src/shared/acces-mobile.ts', "      cur = byId.get(cur)?.parentId;\n", "      cur = undefined;\n", 'phone/tree-fold-counts-whole-subtree'), # the row still shows (as a root): it is the PLACEMENT and the counts that break
+    # ── #373-fu: the layout contract in real Chromium ──
+    ('E34-clamp-removed', 'src/acces-mobile/conversation.ts', "--d:min(var(--depth),8);", "--d:var(--depth);", 'phone/tree-css-geometry'),
+    ('E35-fold-line-not-indented', 'src/acces-mobile/conversation.ts', "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px 54px", 'phone/tree-css-geometry'),
+    ('E36-rail-gone-from-rows', 'src/acces-mobile/conversation.ts', ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", 'phone/tree-css-geometry'),
+    ('E37-rail-size-unclamped', 'src/acces-mobile/conversation.ts', "background-size:calc(var(--d)*16px) 100%", "background-size:calc(var(--depth)*16px) 100%", 'phone/tree-css-geometry'),
 ]
 
 def run_e2e(ids):

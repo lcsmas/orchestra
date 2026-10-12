@@ -17,7 +17,7 @@ const DELAY = 30 * MIN;
 /** A FLEET member by default (it has a coordinator): the Reliquat machinery is for the fleet (OPS ruling R11, #326-fu m4). */
 const ws = (over: Partial<Workspace> = {}): Workspace => ({ id: 'w1', name: 'n', repoPath: '/r', worktreePath: '/w', branch: 'b', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', parentId: 'coord', ...over }) as Workspace;
 const sig = (idleMs: number, over: Partial<Omit<HibernationSignals, 'liveReliquats'>> = {}): Omit<HibernationSignals, 'liveReliquats'> => ({
-  now: NOW, lastActivityAt: NOW - idleMs, isActive: false, hasLivePty: false, hasLiveSdk: true, hasLiveRunPty: false, hasLiveBackgroundTask: false,
+  now: NOW, lastActivityAt: NOW - idleMs, isActive: false, hasLiveSdk: true, hasLiveRunPty: false, hasLiveBackgroundTask: false,
   thresholdMs: THRESHOLD, monotonicIdleMs: idleMs, admissionHeld: false, reliquatDelayMs: DELAY, ...over,
 });
 const K = (pid: number): ReliquatKilled => ({ pid, startTicks: pid, comm: 'x', cmd: `proc-${pid}`, cwd: null, startedAt: 0, scope: 's', evidence: 'e', signal: 'SIGTERM', outcome: 'exited' });

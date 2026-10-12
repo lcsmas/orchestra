@@ -2,13 +2,13 @@
 //
 // Orchestra keeps every agent's process alive for the whole app run: the
 // renderer's 12-pane LRU (mounted-panes.ts) unmounts React components but
-// NEVER touches the backing process, and stopPty/sdkStop fire only on an
+// NEVER touches the backing process, and sdkStop fires only on an
 // explicit stop/delete/archive/quit. With ~19 live agents that is hundreds of
 // MB of resident memory held by sessions nobody has touched in hours.
 //
 // Hibernation stops the PROCESS of a long-idle agent while keeping its
-// conversation: the terminal path resumes with `claude --continue` on the next
-// keystroke, the structured path resumes by `ws.sdkSessionId`. So this is a
+// conversation: the Agent view session resumes by `ws.sdkSessionId` on the next
+// message. So this is a
 // memory optimization with no user-visible loss of state — which is exactly
 // why the eligibility rules must be conservative. A wrongly-hibernated agent
 // is not a crash, it is a silently-killed turn, and that is far more expensive
@@ -49,8 +49,6 @@ export interface HibernationSignals {
   /** True iff this workspace is the one the user currently has open. The active
    *  pane's process must never be killed under the user's cursor. */
   isActive: boolean;
-  /** True iff an agent PTY (`<wsId>`) is live for this workspace. */
-  hasLivePty: boolean;
   /** True iff a structured (SDK) session is live for this workspace. */
   hasLiveSdk: boolean;
   /** True iff a RUN-SCRIPT pty (`<wsId>:run`) is live — a dev server, a watcher,
@@ -183,7 +181,6 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
     now,
     lastActivityAt,
     isActive,
-    hasLivePty,
     hasLiveSdk,
     hasLiveRunPty,
     hasLiveBackgroundTask,
@@ -198,7 +195,7 @@ export function shouldHibernate(ws: Workspace, signals: HibernationSignals): boo
   if (thresholdMs <= 0) return false;
 
   // Nothing running → nothing to reclaim.
-  if (!hasLivePty && !hasLiveSdk) return false;
+  if (!hasLiveSdk) return false;
 
   if (ws.status !== 'idle') return false;
   // An unseen finished turn is a standing request for attention, exactly as

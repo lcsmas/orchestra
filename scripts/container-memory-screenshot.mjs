@@ -153,7 +153,7 @@ async function shoot(win, state, file) {
   const img = await win.webContents.capturePage();
   fs.writeFileSync(path.join(OUT, file), img.toPNG());
   const probe = await win.webContents.executeJavaScript(\`(() => {
-    const rows = [...document.querySelectorAll('.res-agent-row')].map((r) => ({ text: r.innerText.replace(/\\\\s+/g, ' ').trim(), stopBtns: r.querySelectorAll('.res-stop-btn').length, chips: [...r.querySelectorAll('.res-chip')].map((c) => ({ cls: c.className, text: c.innerText.trim(), title: c.getAttribute('title'), containers: c.getAttribute('data-res-containers') })) }));
+    const rows = [...document.querySelectorAll('.res-agent-row')].map((r) => ({ text: r.innerText.replace(/\\\\s+/g, ' ').trim(), stopBtns: r.querySelectorAll('.res-stop-btn, [aria-label^="Stop agent"], button[title^="Stop this agent"]').length, chips: [...r.querySelectorAll('.res-chip')].map((c) => ({ cls: c.className, text: c.innerText.trim(), title: c.getAttribute('title'), containers: c.getAttribute('data-res-containers') })) }));
     const warn = document.querySelector('[data-res-unattributed]');
     const rect = (el) => el ? (({ x, y, width, height }) => ({ x, y, width, height }))(el.getBoundingClientRect()) : null;
     return { rows, warning: warn ? warn.innerText : null, warningRect: rect(warn), tableRect: rect(document.querySelector('.res-table')), text: document.body.innerText };
@@ -249,8 +249,8 @@ check('seeded: feat-db memory = process tree + containers (1.9 GB + 700 MB = 2.5
 check('seeded: the process-only workspace shows only its tree (1.86 GB)', !!login && /1\.86 GB/.test(login.text), login?.text);
 check('seeded: a container-only workspace has its OWN row with the chip and its figure (640 MB), cpu/procs « — »', !!infra && /640 MB/.test(infra.text) && infra.chips.some((c) => /docker/.test(c.cls) && c.containers === '1') && (infra.text.match(/—/g) ?? []).length >= 2, infra?.text);
 const ptyRow = rowOf(seeded, 'feat-pty');
-check('seeded: POSITIVE CONTROL — the terminal (PTY) agent row HAS its stop button (so a count of 0 elsewhere means something)', !!ptyRow && ptyRow.stopBtns === 1, JSON.stringify({ pty: ptyRow?.stopBtns }));
-check('seeded: NO stop button on a keeper-hosted / container-only row (the page stops PTYs only)', !!login && !!db && !!infra && login.stopBtns === 0 && db.stopBtns === 0 && infra.stopBtns === 0, JSON.stringify({ login: login?.stopBtns, db: db?.stopBtns, infra: infra?.stopBtns }));
+check('seeded: the legacy agent-kind (PTY) row IS rendered (control for the 0s below) and has NO stop button either — #231 removed the per-row stop', !!ptyRow && ptyRow.stopBtns === 0, JSON.stringify({ pty: ptyRow?.stopBtns }));
+check('seeded: NO stop button on a keeper-hosted / container-only row', !!login && !!db && !!infra && login.stopBtns === 0 && db.stopBtns === 0 && infra.stopBtns === 0, JSON.stringify({ login: login?.stopBtns, db: db?.stopBtns, infra: infra?.stopBtns }));
 check('seeded: the unattributed line is on screen, names both containers, says never touched', !!seeded.warning && /2 unattributed containers \(web-1, g9-old \(orphan of ws-deleted-77\)\)/.test(seeded.warning) && /never touched/.test(seeded.warning), seeded.warning ?? 'none');
 check('seeded: the warning sits BELOW the table', !!seeded.warningRect && !!seeded.tableRect && seeded.warningRect.y >= seeded.tableRect.y + seeded.tableRect.height - 1, JSON.stringify({ w: seeded.warningRect, t: seeded.tableRect }));
 

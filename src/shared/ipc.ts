@@ -59,8 +59,6 @@ export interface MigrateAccountResult {
   branch?: string;
   /** The account id the workspace is now pinned to, or null for default login. */
   accountId?: string | null;
-  /** True when the agent was running and was auto-resumed after the move. */
-  resumed?: boolean;
   error?: string;
 }
 
@@ -381,17 +379,6 @@ export interface OrchestraAPI {
   ptyStart: (id: string, cols: number, rows: number) => Promise<void>;
   ptyWrite: (id: string, data: string) => Promise<void>;
   ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
-  /** Force the child TUI to fully repaint via a SIGWINCH bounce (cols−1, then
-   * back to the given dims). Heals a terminal whose xterm state diverged from
-   * the child's diff-render model — the scattered-words garble that per-cell
-   * diff painting can never repair on its own. No-op if the PTY isn't running
-   * or another resize lands inside the bounce window. */
-  ptyRepaint: (id: string, cols: number, rows: number) => Promise<void>;
-  /** Spill clipboard image bytes (read in the renderer) to a temp file and
-   * return its absolute path, for injection into the agent prompt — which
-   * Claude Code auto-attaches. `mime` picks the file extension. Returns null
-   * for empty input. */
-  saveClipboardImage: (mime: string, bytes: Uint8Array) => Promise<string | null>;
   /** Restart the agent process while keeping the conversation: stops the
    * current PTY and triggers a fresh spawn that runs `claude --continue`,
    * picking up MCP server / settings.json changes without losing context. */
@@ -611,9 +598,6 @@ export interface OrchestraAPI {
   onPtyData: (cb: (id: string, data: string) => void) => () => void;
   onPtyExit: (cb: (id: string, code: number) => void) => () => void;
   onPtyRestart: (cb: (id: string) => void) => () => void;
-  /** Fires after `stopAgent` killed a workspace's agent PTY — no respawn
-   * follows (unlike onPtyRestart). */
-  onPtyStopped: (cb: (id: string) => void) => () => void;
 
   // Sandbox cross-machine ownership (one driver, other machines read-only).
   /** Latest ownership state for a sandbox-hosted workspace's endpoint, or null

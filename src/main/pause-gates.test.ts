@@ -119,16 +119,6 @@ test('GATE row 16 usage-limit auto-resume: a limit-killed member of a paused run
   assert.equal(r.ok, true);
 });
 
-test('GATE row 13 migrate: account migration stops/moves/re-pins but does NOT auto-resume a running agent of a paused run', () => {
-  const r = runArm('migrate');
-  assert.equal(r.pausedMember.resumed, false);
-  assert.equal(r.otherRun.resumed, true, 'control: the unrelated run resumes');
-  assert.equal(r.launchesAdded, 1, 'exactly one relaunch (the control), none for the paused member');
-  assert.deepEqual(r.running, { m1: false, xm: true });
-  assert.equal(r.repinned, 'acct-b', 'the migration itself still happened');
-  assert.equal(r.ok, true);
-});
-
 test('GATE rows 1/2 sdkSend funnel: every AUTO start is refused with NO side effect; HUMAN composer send allowed and un-pauses nothing; a live session does not exempt AUTO', () => {
   const r = runArm('send_funnel');
   assert.equal(r.autoSend, PAUSED);

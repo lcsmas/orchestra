@@ -23,6 +23,13 @@ export function owesOpeningTask(ws: OpeningTaskView): boolean {
   );
 }
 
+/** What a REFUSED resume id is cleared to (#232). `''` (the explicit cleared marker): with `undefined`, a `hasInput` workspace's session-start funnel re-adopts the
+ *  SAME refused transcript at the next first action (review #230 r3 F1). EXCEPT a kept child that would still owe its brief once the id is gone (`hasInput` unset): there
+ *  `undefined` is what re-arms the owed-task Restart ({@link owesOpeningTask}) and it cannot loop, since adoption needs `hasInput`. */
+export function refusedResumeClearValue(ws: OpeningTaskView): '' | undefined {
+  return owesOpeningTask({ ...ws, sdkSessionId: undefined }) ? undefined : '';
+}
+
 /** Same start error this many times in a row = a start that keeps failing for a reason a re-wake will not change (#227 F4). */
 export const START_FAIL_STREAK = 3;
 /** Only failures this recent count toward the streak: a transient cause (EMFILE/ENOMEM under load) must not leave a child un-wakeable
@@ -43,10 +50,10 @@ export function startKeepsFailing(ws: OpeningTaskView, sessionLive = false, now 
   return recent.slice(-START_FAIL_STREAK).every((e) => e.message === last);
 }
 
-/** Does Restart take the owed-opening-task route (retry the SDK start, delivering the brief once)? Nothing may be running under a PTY; a LIVE
- *  session only counts when ITS OWN first turn already failed (`sdkFailed`) — a live session whose start is merely slow or hung restarts
- *  normally (tear it down and redeliver), and a stale persisted error must not disarm that (#227 r4 F2). */
-export function restartOwesOpeningTask(ws: OpeningTaskView, live: { ptyLive: boolean; sdkLive: boolean; sdkFailed?: boolean }): boolean {
-  if (live.ptyLive || !owesOpeningTask(ws)) return false;
+/** Does Restart take the owed-opening-task route (retry the SDK start, delivering the brief once)? A LIVE session only counts when ITS OWN
+ *  first turn already failed (`sdkFailed`) — a live session whose start is merely slow or hung restarts normally (tear it down and
+ *  redeliver), and a stale persisted error must not disarm that (#227 r4 F2). */
+export function restartOwesOpeningTask(ws: OpeningTaskView, live: { sdkLive: boolean; sdkFailed?: boolean }): boolean {
+  if (!owesOpeningTask(ws)) return false;
   return !live.sdkLive || live.sdkFailed === true;
 }

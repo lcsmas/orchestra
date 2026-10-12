@@ -693,8 +693,8 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/wake-roster.ts",
-    "find": "sleeping: !isRunning(ws.id) && !sdkSessionLive(ws.id),",
-    "to": "sleeping: !isRunning(ws.id),"
+    "find": "sleeping: !sdkSessionLive(ws.id),",
+    "to": "sleeping: true,"
    }
   ]
  },
@@ -1288,7 +1288,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/shared/hibernation.ts",
-    "find": "  if (!hasLivePty && !hasLiveSdk) return false;",
+    "find": "  if (!hasLiveSdk) return false;",
     "to": ""
    }
   ]

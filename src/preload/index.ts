@@ -148,8 +148,6 @@ const api: OrchestraAPI = {
   ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),
-  ptyRepaint: (id, cols, rows) => ipcRenderer.invoke('pty:repaint', id, cols, rows),
-  saveClipboardImage: (mime, bytes) => ipcRenderer.invoke('clipboard:saveImage', mime, bytes),
   restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
   stopAgent: (id) => ipcRenderer.invoke('agent:stop', id),
   agentSdkSend: (wsId, text, images) => ipcRenderer.invoke('agent:sdkSend', wsId, text, images),
@@ -229,11 +227,6 @@ const api: OrchestraAPI = {
     const listener = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on('pty:restart', listener);
     return () => ipcRenderer.off('pty:restart', listener);
-  },
-  onPtyStopped: (cb) => {
-    const listener = (_e: unknown, id: string) => cb(id);
-    ipcRenderer.on('pty:stopped', listener);
-    return () => ipcRenderer.off('pty:stopped', listener);
   },
 
   sandboxControlState: (id) => ipcRenderer.invoke('sandbox:controlState', id),

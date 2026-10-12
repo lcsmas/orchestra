@@ -107,7 +107,7 @@ interface State {
    *  drained into its composer, keyed by workspace id.
    *
    *  This queue is what makes a pick survive a composer that is not mounted:
-   *  the user can be on the Terminal tab, or on another workspace entirely, arm
+   *  the user can be on the Run or Diff tab, or on another workspace entirely, arm
    *  design mode, click an element, and the pick waits here until the composer
    *  mounts and drains it. Putting the pick in the STORE rather than pushing it
    *  at a component is the whole reason requirement "deliver even if the

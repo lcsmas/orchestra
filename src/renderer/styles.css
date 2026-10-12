@@ -2898,7 +2898,7 @@ input:focus, textarea:focus, select:focus {
 
 /* Main */
 /* position: relative anchors the full-pane overlays (Insights, Resources —
-   absolute, inset 0) without disturbing the always-mounted terminal views. */
+   absolute, inset 0) without disturbing the always-mounted Agent views. */
 /* `min-height: 0` is load-bearing, exactly as on `.sidebar` (the other grid
    item). Without it this grid item's automatic minimum size is its content's,
    so a tall in-flow pane inflates the row and every `min-height: 0` further
@@ -3537,169 +3537,6 @@ button.active {
   background: rgba(110, 168, 255, 0.18);
   border-color: rgba(110, 168, 255, 0.5);
 }
-/* All terminal panes share the same pane box via absolute positioning. This
-   keeps every xterm canvas laid out at real dimensions even when its
-   workspace is not the active tab, which prevents display:none→visible
-   repaint flashes and eliminates resize churn on tab switch. */
-.terminal-pane {
-  position: absolute;
-  inset: 0;
-  /* Zero right padding so the scrollbar pill sits flush against the pane
-     edge; small breathing room on the other sides keeps text off the frame. */
-  padding: 6px 0 6px 6px;
-  /* Match the xterm.js theme background (set in Terminal.tsx) so the
-     padding frame blends seamlessly into the scrollback area. */
-  background: #1a1f26;
-  visibility: hidden;
-  pointer-events: none;
-}
-.terminal-pane.active {
-  visibility: visible;
-  pointer-events: auto;
-}
-.terminal-pane .xterm { height: 100%; }
-
-/* Slim translucent scrollbar on the terminal viewport. xterm.js renders its
-   scrollback area as .xterm-viewport; we restyle that element's native scroll
-   UI so it visually matches the dark pane without getting in the way. */
-/* The app hides scrollbars globally (`* { scrollbar-width: none }` +
-   `*::-webkit-scrollbar { display: none }` at the top of this file), so the
-   terminal pane has to opt back in with !important everywhere. */
-.terminal-pane .xterm-viewport {
-  /* Scrollbar hidden entirely — no reserved gutter, so the terminal content
-     extends flush to the right edge of the pane. Scroll with wheel/trackpad.
-     (Chromium dropped `overflow: overlay`, so a 12px-only-on-hover pill would
-     either reserve a gutter at rest or reflow on hover — we opt for neither.) */
-  scrollbar-width: none !important;
-}
-.terminal-pane .xterm-viewport::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-}
-/* Remove the native up/down arrow buttons at the ends of the track. */
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:single-button,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:start,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:end,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:vertical:decrement,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:vertical:increment,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:horizontal:decrement,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-button:horizontal:increment {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-  background: transparent !important;
-}
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
-  /* Hidden at rest — appears only while the user is interacting with the
-     viewport. Pointer hover / active scrolling both count as "interacting". */
-  background-color: transparent !important;
-  border: 3px solid transparent !important;
-  background-clip: padding-box !important;
-  border-radius: 999px !important;
-  min-height: 40px !important;
-  transition: background-color 140ms var(--ease);
-}
-.terminal-pane:hover .xterm-viewport::-webkit-scrollbar-thumb,
-.terminal-pane .xterm-viewport:active::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.22) !important;
-}
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.4) !important;
-}
-.terminal-pane .xterm-viewport::-webkit-scrollbar-track,
-.terminal-pane .xterm-viewport::-webkit-scrollbar-corner {
-  background: transparent !important;
-}
-/* Custom overlay scrollbar thumb. The native xterm-viewport scrollbar is
-   fully hidden (no gutter reserved on the right), and Terminal.tsx syncs this
-   thumb's position from the viewport's scroll state. The thumb sits above the
-   xterm canvas via z-index so it's actually visible (otherwise the canvas
-   would paint over it). Appears on pane hover, invisible at rest. */
-.terminal-pane .term-scroll-thumb {
-  position: absolute;
-  top: 0;
-  right: 2px;
-  width: 8px;
-  min-height: 30px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
-  opacity: 0;
-  cursor: grab;
-  /* The thumb sits in front of the xterm canvas so pointerdown lands here
-     for drag, but the track area around it stays click-through to xterm. */
-  pointer-events: auto;
-  transition: opacity 160ms var(--ease), background-color 140ms var(--ease);
-  z-index: 5;
-}
-.terminal-pane.active:hover .term-scroll-thumb {
-  opacity: 1;
-}
-.terminal-pane .term-scroll-thumb:hover {
-  background: rgba(255, 255, 255, 0.45);
-}
-.terminal-pane .term-scroll-thumb.dragging {
-  background: rgba(255, 255, 255, 0.55);
-  cursor: grabbing;
-  opacity: 1;
-}
-
-/* Cold-boot pill — floats centered over the terminal while a freshly-spawned
-   agent loads its session (lazy-start cold boot: `claude --continue` paints
-   only its small splash header for a couple of seconds, so the pane otherwise
-   reads as a blank/broken page). Terminal.tsx clears it once real output
-   lands. The delayed fade-in keeps a fast start from flashing it. */
-.terminal-pane .term-boot-pill {
-  position: absolute;
-  left: 50%;
-  top: 45%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-radius: 999px;
-  background: #222933;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--text-dim);
-  font-size: 12.5px;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 5;
-  animation: term-boot-in 160ms var(--ease) 250ms both;
-}
-.term-boot-spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(110, 168, 255, 0.25);
-  border-top-color: #6ea8ff;
-  border-radius: 50%;
-  animation: setup-spin 0.7s linear infinite;
-  flex: 0 0 auto;
-}
-@keyframes term-boot-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, calc(-50% + 5px));
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%);
-  }
-}
-
-/* Every workspace renders a .terminal-pane (stacked absolutely so xterm
-   scrollback survives tab switches). Only the active one is visible, so hide
-   the other panes' scrollbar gutters — otherwise Chromium paints their thumbs
-   through regardless of `visibility: hidden`. */
-.terminal-pane:not(.active) .xterm-viewport {
-  scrollbar-width: none;
-}
-.terminal-pane:not(.active) .xterm-viewport::-webkit-scrollbar {
-  display: none;
-}
-
 /* (Removed: a dead `.diff-pane` grid rule plus `.diff-files`/`.diff-file-item`/
    `.diff-file-name`/`.diff-stat`, left over from the old side-by-side file-list
    pane. No renderer code emits those classes any more. The live Diff pane rules
@@ -5129,7 +4966,7 @@ button.danger-primary:active {
 
 /* ---- Resources page ------------------------------------------------------ */
 /* Full-page overlay pinned over .main (which is position:relative) so every
-   TerminalView underneath stays mounted with its scrollback intact. */
+   Agent view underneath stays mounted with its scroll position intact. */
 .res-page {
   position: absolute;
   inset: 0;
@@ -5296,8 +5133,8 @@ button.danger-primary:active {
 }
 .res-table-head span:nth-child(n+5) { text-align: right; }
 .res-agent-row {
-  /* row is a div[role=button] (expand/collapse) — the stop button nests
-     inside, which a real <button> can't contain */
+  /* row is a div[role=button] (expand/collapse) — nested controls would be
+     invalid inside a real <button> */
   width: 100%;
   text-align: left;
   background: transparent;
@@ -5313,30 +5150,8 @@ button.danger-primary:active {
 .res-procs + .res-agent-row { border-top: 1px solid var(--border); }
 .res-agent-row:hover { background: var(--bg-3); transform: none; box-shadow: none; }
 .res-agent-row.static { cursor: default; }
-/* Per-row stop-the-agent control. Dim square that turns red on hover — a
-   deliberate kill affordance, not a status color. */
-.res-col-stop { display: flex; justify-content: flex-end; }
-.res-stop-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  box-shadow: none;
-  color: var(--text-dim);
-  opacity: 0.6;
-}
-.res-stop-btn:hover {
-  background: rgba(240, 90, 90, 0.15);
-  color: var(--red);
-  opacity: 1;
-  transform: none;
-  box-shadow: none;
-}
+/* Right-edge grid column (20px) — empty since the per-row stop control went away with the agent PTY (#231). */
+.res-col-gutter { display: flex; justify-content: flex-end; }
 .res-agent-name {
   display: flex;
   flex-direction: column;
