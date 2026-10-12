@@ -19,6 +19,11 @@
 //                shell, and with the server off (502) or the stand-in gone (connection refused) the phone page is served from that
 //                cache and says « Orchestra injoignable » — then recovers by itself
 //   leak/*       no token in any request line the server saw, none in any log / file under ORCHESTRA_HOME
+//   launch/*     (#375) a workspace launched from the phone: the repos list, every auth refusal (no identity / colleague / forged header /
+//                no or bad or query token) beside a passing launch, an UNREGISTERED real git repo refused with nothing created, an empty
+//                prompt refused, the REAL create (repo's Compte, the WORKSPACE default model + effort — not the spawned one —, top-level, a
+//                generated branch) whose first prompt reaches the REAL claude CLI (fake API), the hooks socket has no launch route; and the
+//                phone's own screen: « + », the repo cards, prompt + repo required, « Lancer » opens the conversation
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -140,6 +145,18 @@ function filesContaining(dir, secrets, skip = new Set()) {
   walk(dir);
   return { hits, scanned };
 }
+function proxyPost(port, p, headers, body) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, path: p, method: 'POST', headers }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
+    r.on('error', reject); r.end(body);
+  });
+}
+function reqPost(socketPath, p, headers, body) {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ socketPath, path: p, method: 'POST', headers }, (res) => { let b = ''; res.on('data', (c) => (b += c)); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
+    r.on('error', reject); r.end(body);
+  });
+}
 function proxyGet(port, p, headers = {}) {
   return new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port, path: p, headers }, (res) => { let body = ''; res.on('data', (c) => (body += c)); res.on('end', () => resolve({ status: res.statusCode, body })); });
@@ -159,7 +176,7 @@ function tcpListenersOf(pid) {
 }
 
 class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); ws.onmessage = (ev) => { const m = JSON.parse(ev.data); const p = m.id && this.pending.get(m.id); if (p) { this.pending.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result); } }; }
+  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.method && this.tap) { try { this.tap(m); } catch {} } const p = m.id && this.pending.get(m.id); if (p) { this.pending.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result); } }; }
   static async connect(url) { const ws = new WebSocket(url); await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws error')); }); return new Cdp(ws); }
   send(method, params = {}, ms = 20000) { const id = ++this.id; return new Promise((res, rej) => { const t = setTimeout(() => { this.pending.delete(id); rej(new Error(`CDP ${method} timed out`)); }, ms); this.pending.set(id, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } }); this.ws.send(JSON.stringify({ id, method, params })); }); }
   async eval(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(`eval threw: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`); return r.result.value; }
@@ -194,7 +211,9 @@ const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
 // tool call; everything else gets the canned text.
 const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', header: 'Choix', multiSelect: false, options: [{ label: 'Réponse-rig-A', description: 'la première' }, { label: 'Réponse-rig-B', description: 'la seconde' }] }] };
 let wantAsk = 0;
-const fakeApi = await startFakeApi({ keepAttachmentData: true, reply: (rec) => {
+// #375: a sentinel in every phone-launched prompt — `marks` on a model request says the prompt REACHED the session.
+const LAUNCH_SENTINEL = 'LANCEMENT-TEL-SENTINELLE-7f3a';
+const fakeApi = await startFakeApi({ keepAttachmentData: true, markers: { launch: LAUNCH_SENTINEL }, reply: (rec) => {
   if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
   return { text: FAKE_REPLY_MD };
 } });
@@ -352,7 +371,7 @@ try {
   }
   const tcp = tcpListenersOf(pids[0]);
   // #336: every static asset of the PWA (worker, manifest, icons) is behind the identity check like the shell
-  const ASSET_PATHS = ['/', '/app.js', '/sw.js', '/manifest.webmanifest', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png'];
+  const ASSET_PATHS = ['/', '/app.js', '/sw.js', '/manifest.webmanifest', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/launch.js', '/launch.css'];
   const assetsOwner = await Promise.all(ASSET_PATHS.map((p) => proxyGetBin(ownerProxy.port, p, {})));
   clause('sec/assets-control-owner', assetsOwner.every((r) => r.status === 200 && r.body.length > 0) && assetsOwner.filter((r) => r.type === 'image/png').length === 3, `owner device through serve: ${ASSET_PATHS.map((p, i) => `${p}=${assetsOwner[i].status}`).join(' ')}`);
   const assetsAnon = await Promise.all(ASSET_PATHS.map((p) => req(SOCK, p)));
@@ -659,6 +678,133 @@ try {
   clause('ask/desktop-answers', p2.length === 1 && (await phone.eval(`window.__noReload === 1`)), `desktop answered ${p2[0]?.requestId}; phone card 1 -> 0 without reload`);
   await phone.eval(`location.hash = ''; true`);
 
+  // ───────────── wave I #375/#376: launch a workspace from the phone ─────────────
+  // The two default kinds must DIFFER, or a launch that took the spawned-agent kind could not be told apart from the right one.
+  await cdp.eval(`window.orchestra.setModelDefaults({ workspace: 'claude-sonnet-4-5', spawned: 'claude-haiku-4-5' }).then(() => window.orchestra.setEffortDefaults({ workspace: 'high', spawned: 'low' })).then(() => true)`);
+  const JSONB = { ...BEARER, 'Content-Type': 'application/json' };
+  const repoPathA = world.repos[0].path, repoPathB = world.repos[1].path;
+  const wsList = () => cdp.eval(`window.orchestra.listWorkspaces().then((l) => l.map((w) => ({ id: w.id, name: w.name, repoPath: w.repoPath, branch: w.branch, accountId: w.accountId, model: w.model, sdkEffort: w.sdkEffort, parentId: w.parentId, kind: w.kind, archived: !!w.archived, lastTask: w.lastTask, status: w.status })))`);
+  const worktreesOf = (repo) => sh('git', ['-C', repo, 'worktree', 'list', '--porcelain'], { env: { PATH: process.env.PATH, HOME: world.fakeHome } }).split('\n').filter((l) => l.startsWith('worktree ')).length;
+  const lbody = (extra = {}) => JSON.stringify({ repoPath: repoPathA, prompt: `${LAUNCH_SENTINEL} fais le travail`, ...extra });
+  const wsBefore = await wsList(), wtBeforeA = worktreesOf(repoPathA), wtBeforeB = worktreesOf(repoPathB);
+  const unchanged = async () => { const l = await wsList(); return l.length === wsBefore.length && worktreesOf(repoPathA) === wtBeforeA && worktreesOf(repoPathB) === wtBeforeB; };
+
+  const reposRes = await proxyGet(ownerProxy.port, '/api/repos', BEARER);
+  const reposJ = reposRes.status === 200 ? JSON.parse(reposRes.body) : { repos: [] };
+  clause('launch/repos-list', reposJ.ok === true && reposJ.repos.length === 2 && reposJ.repos.some((r) => r.path === repoPathA && r.name === 'orchestra-rig' && r.account === 'mc') && reposJ.repos.some((r) => r.path === repoPathB && r.name === 'perso-rig' && r.account === 'perso'), `/api/repos through serve: ${JSON.stringify(reposJ.repos)}`);
+  for (const [name, fn, want] of [
+    ['launch/sec/no-identity', () => reqPost(SOCK, '/api/launch', { ...BEARER, 'Content-Type': 'application/json' }, lbody()), 403],
+    ['launch/sec/colleague-with-token', () => proxyPost(colleagueProxy.port, '/api/launch', JSONB, lbody()), 403],
+    ['launch/sec/colleague-forges-owner-header', () => proxyPost(colleagueProxy.port, '/api/launch', { ...JSONB, 'Tailscale-User-Login': LOGIN }, lbody()), 403],
+    ['launch/sec/tagged-device-forges-owner-header', () => proxyPost(taggedProxy.port, '/api/launch', { ...JSONB, 'Tailscale-User-Login': LOGIN }, lbody()), 403],
+    ['launch/sec/no-token', () => proxyPost(ownerProxy.port, '/api/launch', { 'Content-Type': 'application/json' }, lbody()), 401],
+    ['launch/sec/bad-token', () => proxyPost(ownerProxy.port, '/api/launch', { Authorization: `Bearer ${'x'.repeat(43)}`, 'Content-Type': 'application/json' }, lbody()), 401],
+    ['launch/sec/query-token', () => proxyPost(ownerProxy.port, `/api/launch?t=${TOKEN}`, { 'Content-Type': 'application/json' }, lbody()), 401],
+    ['launch/sec/get-is-not-a-launch', () => proxyGet(ownerProxy.port, '/api/launch', BEARER), 404],
+    ['launch/empty-prompt-refused', () => proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ prompt: '   ' })), 400],
+  ]) {
+    const r = await fn();
+    clause(name, r.status === want && !/"ok":true/.test(r.body), `status ${r.status} (want ${want}), body ${r.body.length} bytes`);
+  }
+  // must-FAIL: a REAL git repo that is NOT registered, and a system path — refused by main, nothing created anywhere
+  const unreg = path.join(world.d, 'repo-unregistered'); fs.mkdirSync(unreg, { recursive: true }); mustBeScratch('seed', unreg);
+  git(unreg, ['init', '-q', '-b', 'main'], world.fakeHome); fs.writeFileSync(path.join(unreg, 'README.md'), '#\n'); git(unreg, ['add', '.'], world.fakeHome); git(unreg, ['commit', '-q', '-m', 'seed'], world.fakeHome);
+  const wtUnreg = worktreesOf(unreg);
+  const refusedRepos = [];
+  for (const rp of [unreg, '/etc']) refusedRepos.push(JSON.parse((await proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ repoPath: rp }))).body));
+  clause('launch/unregistered-repo-refused', refusedRepos.every((r) => r.ok === false && r.code === 'unknown-repo') && worktreesOf(unreg) === wtUnreg && (await unchanged()), `real unregistered git repo + /etc ⇒ ${JSON.stringify(refusedRepos)}; worktrees of the unregistered repo ${wtUnreg} -> ${worktreesOf(unreg)}; store ${wsBefore.length} -> ${(await wsList()).length}`);
+  clause('launch/refusals-create-nothing', await unchanged(), `${wsBefore.length} workspaces and ${wtBeforeA}+${wtBeforeB} worktrees before every refusal above, the same after`);
+
+  // the REAL launch: the repo's Compte, the WORKSPACE default model + effort, top-level, a generated branch; the prompt reaches the CLI
+  const PROMPT1 = `${LAUNCH_SENTINEL} corrige la faute dans le titre`;
+  const modelsBeforeLaunch = fakeApi.requests.filter((r) => r.type === 'model').length;
+  const launched = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT1 }));
+  const L1 = launched.status === 200 ? JSON.parse(launched.body) : { ok: false };
+  const wsAfter = await wsList();
+  const created = wsAfter.find((w) => w.id === L1.id);
+  clause('launch/creates-workspace', launched.status === 200 && L1.ok === true && !!created && wsAfter.length === wsBefore.length + 1 && created.repoPath === repoPathA && !created.archived && created.parentId === undefined && created.kind === undefined && /^[a-z]+-[a-z]+$/.test(created.branch) && created.lastTask === PROMPT1, `status ${launched.status} ${launched.body.slice(0, 120)}; desktop store ${wsBefore.length} -> ${wsAfter.length}; ${JSON.stringify(created)}`);
+  clause('launch/repos-compte-and-workspace-defaults', created?.accountId === 'acc-mc' && created?.model === 'claude-sonnet-4-5' && created?.sdkEffort === 'high', `accountId ${created?.accountId} (repo's: acc-mc), model ${created?.model} (workspace default claude-sonnet-4-5, spawned default claude-haiku-4-5), effort ${created?.sdkEffort} (workspace high, spawned low)`);
+  const promptReq = fakeApi.requests.filter((r) => r.type === 'model').slice(modelsBeforeLaunch).find((r) => (r.marks || []).includes('launch'));
+  const deskSeen = await waitFor(() => cdp.eval(`(() => { const m = (window.__readAgentSession(${JSON.stringify(L1.id)})?.messages ?? []).find((x) => x.role === 'user' && String(x.text ?? '').includes(${JSON.stringify(LAUNCH_SENTINEL)})); return m ? m.text : null; })()`), 30000, 'the first prompt in the desktop conversation').catch(() => null);
+  clause('launch/first-prompt-reaches-the-session', !!promptReq && promptReq.model === 'claude-sonnet-4-5' && !!deskSeen && deskSeen.includes('corrige la faute'), `fake API model request #${promptReq?.seq} carries the prompt, model ${promptReq?.model}; desktop user message « ${String(deskSeen).slice(0, 60)} »`);
+  const phoneRows = JSON.parse((await proxyGet(ownerProxy.port, '/api/workspaces', BEARER)).body).workspaces;
+  clause('launch/shown-on-the-phone-list', phoneRows.some((r) => r.id === L1.id && r.group === 'orchestra-rig' && r.account === 'mc' && !r.parentId), `phone list row ${JSON.stringify(phoneRows.find((r) => r.id === L1.id))}`);
+
+  // the hooks socket (every local agent can reach it) has NO launch / repos route: forged calls create nothing
+  {
+    const mainSock2 = fs.readFileSync(path.join(world.ohome, 'sock'), 'utf8').trim();
+    const nWs = (await wsList()).length;
+    const forgedOnHooks = [];
+    for (const route of ['/mobile/launch', '/mobile/repos']) forgedOnHooks.push(await reqPost(mainSock2, route, { 'Content-Type': 'application/json' }, JSON.stringify({ repoPath: repoPathA, prompt: 'forged launch from a local agent', requestId: crypto.randomUUID() })));
+    await sleep(1500);
+    clause('launch/hooks-socket-has-no-launch-route', forgedOnHooks.every((r) => r.body === '{}') && (await wsList()).length === nWs && !(await wsList()).some((w) => w.lastTask === 'forged launch from a local agent'), `hooks /mobile/launch + /mobile/repos answered ${forgedOnHooks.map((r) => r.body)}; workspaces ${nWs} -> ${(await wsList()).length}`);
+  }
+
+  // ── the phone's own screen (design A, ledger #377 D-Q1): « + » → #new → repo cards + prompt + « Lancer » → the conversation ──
+  const PAGE_PROMPT = `${LAUNCH_SENTINEL} lancé depuis l’écran du téléphone`;
+  await phone.eval(`location.hash = ''; true`);
+  await waitFor(() => phone.eval(`!document.getElementById('home').hidden && !!document.getElementById('newBtn')`), 10000, 'the list with its « + »');
+  const plus = await phone.eval(`(() => { const r = document.getElementById('newBtn').getBoundingClientRect(); return { w: r.width, h: r.height, right: r.right, top: r.top, vw: innerWidth, label: document.getElementById('newBtn').getAttribute('aria-label') }; })()`);
+  clause('launch/phone-plus-in-the-header', plus.w >= 36 && plus.h >= 36 && plus.right <= plus.vw - 16 && plus.top >= 47 && plus.label === 'Nouveau workspace', `« + » ${plus.w}×${plus.h}px, right edge ${plus.right} of ${plus.vw}, below the status bar (top ${plus.top} ≥ 47), aria-label « ${plus.label} »`);
+  saveShot('phone-launch-list-with-plus.png', await phone.shot());
+  await phone.clickSel('#newBtn');
+  await waitFor(() => phone.eval(`location.hash === '#new' && !document.getElementById('launch').hidden && document.querySelectorAll('#launch .nf-repo').length === 2`), 15000, 'the launch screen with its two repo cards');
+  const F0 = await phone.eval(`({ listHidden: document.getElementById('home').hidden, go: document.querySelector('#launch .nf-go').disabled, cards: [...document.querySelectorAll('#launch .nf-repo')].map((b) => ({ path: b.dataset.path, text: b.textContent, acct: (b.querySelector('.acct') || {}).textContent })) })`);
+  clause('launch/phone-form-lists-repos-with-compte', F0.listHidden === true && F0.go === true && F0.cards.some((c) => c.path === repoPathA && /orchestra-rig/.test(c.text) && c.acct === 'mc') && F0.cards.some((c) => c.path === repoPathB && /perso-rig/.test(c.text) && c.acct === 'perso'), `list hidden ${F0.listHidden}, « Lancer » disabled ${F0.go}; cards ${JSON.stringify(F0.cards.map((c) => [c.path.split('/').pop(), c.acct]))}`);
+  saveShot('phone-launch-empty.png', await phone.shot());
+  const typeIn = async (text) => { await phone.eval(`(() => { const t = document.querySelector('#launch .nf-task'); t.focus(); return true; })()`); await phone.send('Input.insertText', { text }); };
+  const goState = () => phone.eval(`document.querySelector('#launch .nf-go').disabled`);
+  const clearTask = (v = '') => phone.eval(`(() => { const t = document.querySelector('#launch .nf-task'); t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event('input')); return true; })()`);
+  await typeIn('x');
+  const dNoRepo = await goState();
+  await clearTask('');
+  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathA}"]`);
+  const dNoPrompt = await goState();
+  await clearTask('   \n  ');
+  const dBlank = await goState();
+  await clearTask('');
+  await typeIn(PAGE_PROMPT);
+  const dReady = await goState();
+  clause('launch/phone-prompt-and-repo-required', dNoRepo === true && dNoPrompt === true && dBlank === true && dReady === false, `« Lancer » disabled: prompt without repo ${dNoRepo}, repo without prompt ${dNoPrompt}, repo + blank prompt ${dBlank}; enabled with repo + prompt: ${!dReady}`);
+  saveShot('phone-launch-filled.png', await phone.shot());
+  // armed BEFORE « Lancer »: whatever the page throws or fails to fetch on the way to the conversation is kept for the dump below
+  const pageEvents = [];
+  phone.tap = (m) => {
+    if (m.method === 'Runtime.exceptionThrown') pageEvents.push('exception ' + String(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text).slice(0, 200));
+    else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) pageEvents.push(`console.${m.params.type} ` + m.params.args.map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200));
+    else if (m.method === 'Network.loadingFailed') pageEvents.push(`net-failed ${m.params.errorText} ${m.params.requestId}`);
+  };
+  await phone.send('Runtime.enable').catch(() => {}); await phone.send('Network.enable').catch(() => {});
+  const modelsBeforePage = fakeApi.requests.filter((r) => r.type === 'model').length;
+  const wsBeforePage = (await wsList()).length;
+  await phone.clickSel('#launch .nf-go');
+  await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden && document.getElementById('launch').hidden`), 90000, 'the conversation of the launched workspace');
+  const pageId = (await phone.eval(`location.hash`)).slice(3);
+  // a timeout here must say WHAT the phone, the server projection and the desktop fold each held — never a bare « timeout »
+  const convDiag = async () => {
+    const phoneLines = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent.slice(0, 50))`).catch((e) => `eval failed: ${e.message}`);
+    const api = await proxyGet(ownerProxy.port, `/api/conversation?id=${pageId}`, BEARER).catch((e) => ({ status: 'fetch failed', body: String(e) }));
+    let proj = api.body.slice(0, 200);
+    try { const j = JSON.parse(api.body); proj = `v${j.version} running=${j.running} lines=${JSON.stringify((j.lines || []).map((l) => `${l.kind}:${String(l.text ?? l.label ?? '').slice(0, 40)}`))}`; } catch {}
+    const desk = await cdp.eval(`(window.__readAgentSession(${JSON.stringify(pageId)})?.messages ?? []).map((m) => m.role + ':' + String(m.text ?? '').slice(0, 40))`).catch((e) => `eval failed: ${e.message}`);
+    const wsNow = (await wsList()).find((w) => w.id === pageId);
+    const res = await phone.eval(`performance.getEntriesByType('resource').filter((r) => /\\/api\\/(conversation|launch|seen|repos)/.test(r.name)).map((r) => r.name.replace(/^https?:\\/\\/[^/]+/, '') + ' ' + r.responseStatus + ' ' + Math.round(r.duration) + 'ms')`).catch((e) => `eval failed: ${e.message}`);
+    const scr = await phone.eval(`({ hash: location.hash, conv: !document.getElementById('conv').hidden, state: (document.querySelector('#conv .conv-state') || {}).textContent, html: document.getElementById('conv').innerHTML.slice(0, 260) })`).catch((e) => `eval failed: ${e.message}`);
+    return `phone resources ${JSON.stringify(res)}; phone screen ${JSON.stringify(scr)}; page events ${JSON.stringify(pageEvents.slice(-8))}; phone DOM ${JSON.stringify(phoneLines)}; /api/conversation ${api.status} ${proj}; desktop fold ${JSON.stringify(desk)}; store status ${wsNow?.status}`;
+  };
+  const waitOrDiag = (fn, ms, what) => waitFor(fn, ms, what).catch(async (e) => { throw new Error(`${e.message} — ${await convDiag()}`); });
+  await waitOrDiag(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].some((e) => e.textContent.includes(${JSON.stringify(LAUNCH_SENTINEL)}))`), 60000, 'the launch prompt as the first user line');
+  await waitOrDiag(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].some((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)}))`), 60000, 'the agent\'s reply');
+  const C0 = await phone.eval(`({ title: document.querySelector('#conv .conv-title').textContent, sub: document.querySelector('#conv .cs').textContent, user: [...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].map((e) => e.textContent)[0] })`);
+  const wsPage = (await wsList()).find((w) => w.id === pageId);
+  clause('launch/phone-launch-opens-the-conversation', !!wsPage && (await wsList()).length === wsBeforePage + 1 && wsPage.lastTask === PAGE_PROMPT && wsPage.accountId === 'acc-mc' && C0.user.includes('lancé depuis l’écran du téléphone') && C0.title === wsPage.branch && /orchestra-rig/.test(C0.sub) && fakeApi.requests.filter((r) => r.type === 'model').slice(modelsBeforePage).some((r) => (r.marks || []).includes('launch')), `tapped « Lancer » ⇒ #w=${pageId.slice(0, 8)}…, header « ${C0.title} » / « ${C0.sub} », first user line « ${String(C0.user).slice(0, 50)} », desktop store +1 (${wsPage?.branch}), the fake API saw the prompt`);
+  saveShot('phone-launch-conversation.png', await phone.shot());
+
+  await phone.eval(`location.hash = ''; true`);
+
+
+  await cdp.eval(`window.orchestra.setModelDefaults({ workspace: 'claude-opus-4-8', spawned: 'claude-opus-4-8' }).then(() => window.orchestra.setEffortDefaults({ workspace: 'default', spawned: 'default' })).then(() => true)`);
+
   // settings dialog in the app: health, serve command; TRUSTED toggle off/on
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 895 });
   const preDlg = await cdp.eval(`!!document.querySelector('.acces-mobile-settings')`);
@@ -691,7 +837,8 @@ try {
   const secs = (Date.now() - t0.at) / 1000;
   const mainPct = ((ticks(app.pid) - t0.main) / HZ / secs) * 100, srvPct = ((ticks(pidOn2) - t0.srv) / HZ / secs) * 100;
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
-  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled})`);
+  const launchedRows = (await wsList()).length - wsBefore.length; // the launch/* arms above made these workspaces: the phone lists them too
+  clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3 + launchedRows, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled}: 3 seeded + ${launchedRows} launched)`);
 
   // ───────────── #336: pairing QR, regenerate, PWA install, unreachable ─────────────
   const KEY = 'orchestra.accesMobile.token';
@@ -800,7 +947,7 @@ try {
   const cacheDump = await phone.eval(`(async () => { const secrets = ${JSON.stringify([TOKEN, NEW])}; const out = {}; for (const k of await caches.keys()) { out[k] = []; const c = await caches.open(k); for (const r of await c.keys()) { const res = await c.match(r); const txt = new TextDecoder('latin1').decode(await res.arrayBuffer()); const u = new URL(r.url); out[k].push({ path: u.pathname + u.search + u.hash, status: res.status, leaks: secrets.some((t) => txt.includes(t)) }); } } return out; })()`);
   const cacheKeys = Object.keys(cacheDump);
   const cachedPaths = (cacheDump[cacheKeys[0]] || []).map((e) => e.path).sort();
-  clause('pwa/service-worker-shell-only-cache', swInfo.state === 'activated' && swInfo.script === '/sw.js' && swInfo.controlled && cacheKeys.length === 1 && JSON.stringify(cachedPaths) === JSON.stringify(['/', '/app.js', '/apple-touch-icon.png', '/conversation.css', '/conversation.js', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest']) && cacheDump[cacheKeys[0]].every((e) => e.status === 200 && !e.leaks), `worker ${swInfo.script} ${swInfo.state}, controlling the page=${swInfo.controlled}; Cache Storage ${JSON.stringify(cacheKeys)} holds exactly [${cachedPaths.join(' ')}] — no /api entry (control: the shell IS cached), no token in any body, all 200`);
+  clause('pwa/service-worker-shell-only-cache', swInfo.state === 'activated' && swInfo.script === '/sw.js' && swInfo.controlled && cacheKeys.length === 1 && JSON.stringify(cachedPaths) === JSON.stringify(['/', '/app.js', '/apple-touch-icon.png', '/conversation.css', '/conversation.js', '/icon-192.png', '/icon-512.png', '/launch.css', '/launch.js', '/manifest.webmanifest']) && cacheDump[cacheKeys[0]].every((e) => e.status === 200 && !e.leaks), `worker ${swInfo.script} ${swInfo.state}, controlling the page=${swInfo.controlled}; Cache Storage ${JSON.stringify(cacheKeys)} holds exactly [${cachedPaths.join(' ')}] — no /api entry (control: the shell IS cached), no token in any body, all 200`);
 
   // unreachable: Orchestra off (serve ⇒ 502), then the stand-in gone (connection refused) — the page comes from the worker's cache
   /** Run `act` (a reload / navigation), then wait for a NEW page load (timeOrigin changed) that says « Orchestra injoignable » — the

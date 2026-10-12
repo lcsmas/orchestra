@@ -46,7 +46,14 @@ test('row 14 wiring: the boot roster is the REAL wakeRosterEntry, whose wakeable
   assert.match(ROSTER, /pauseRefusal\(ws, 'auto'\) === null &&/);
 });
 
-test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tray, Send now, Fix checks, Send review, the toolbar Restart and the phone composer — a new one is a new pause bypass', () => {
+test('#375 phone launch: a HUMAN act — the route passes origin human and dispatchSpawnRequest hands it to the agent start (a launch is listed below)', () => {
+  const spawn = read('workspaces.ts');
+  assert.match(body(spawn, 'export async function dispatchSpawnRequest', '// ---------- Add repo'), /startWorkspaceAgentHeadless\(ws\.id, input\.origin\)/, 'origin reaches the start');
+  assert.match(read('acces-mobile-routes.ts'), /dispatchSpawnRequest\(\{ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' \}\)/, 'the launch route says human');
+  assert.doesNotMatch(read('linear-tickets.ts'), /origin: 'human'/, 'control: the pinned-ticket click is unchanged (an agent\'s ticket spawn must stay AUTO)');
+});
+
+test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tray, Send now, Fix checks, Send review, the toolbar Restart, the phone composer and the phone launch — a new one is a new pause bypass', () => {
   const dir = path.join(process.cwd(), 'src', 'main');
   const found: Record<string, number> = {};
   for (const f of fs.readdirSync(dir)) {
@@ -57,7 +64,7 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
     if (n > 0) found[f] = n;
   }
   assert.deepEqual(found, {
-    'acces-mobile-routes.ts': 1, // /mobile/send on the PRIVATE fd-3 channel: the human typing on the phone (#338) — the composer's call, by decision
+    'acces-mobile-routes.ts': 2, // the PRIVATE fd-3 channel: /mobile/send (#338, the composer's call) + /mobile/launch (#375: the human starting a workspace on the phone — origin to the agent start), by decision
     'agent-sdk.ts': 1,          // the `origin === 'human'` tag that feeds the drain gate
     'api-handlers.ts': 5,       // composer + tray release + release-all + Fix checks + Send review
     'bus-pause.ts': 1,          // pauseRefusalWith: a human origin is never refused

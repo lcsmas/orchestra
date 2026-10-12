@@ -6,8 +6,9 @@
 import { PWA_ICONS } from './icons.ts';
 
 /** Everything the worker may cache. server.ts must serve each of these (server.test.ts pins it). */
-// conversation.js/.css too (#337): app.js needs conversation.js to even render « Orchestra injoignable » offline.
-export const SHELL_PATHS: readonly string[] = ['/', '/app.js', '/conversation.js', '/conversation.css', '/manifest.webmanifest', ...PWA_ICONS.map((i) => i.path)];
+// conversation.js/.css too (#337): app.js needs conversation.js to even render « Orchestra injoignable » offline; launch.js/.css (#375) likewise —
+// the shell's header carries the « + » and its route.
+export const SHELL_PATHS: readonly string[] = ['/', '/app.js', '/conversation.js', '/conversation.css', '/launch.js', '/launch.css', '/manifest.webmanifest', ...PWA_ICONS.map((i) => i.path)];
 
 export const SW_CACHE_NAME = 'orchestra-shell-v1';
 

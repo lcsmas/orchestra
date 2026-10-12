@@ -8,7 +8,11 @@ import { store } from './store';
 import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-sdk';
 import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
+import { dispatchSpawnRequest } from './workspaces';
+import { createMobileLauncher } from './acces-mobile-launch';
+import { log } from './logger';
 import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acces-mobile';
+import { projectMobileRepos } from '../shared/acces-mobile-launch';
 import { MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validWorkspaceId } from '../shared/acces-mobile-conversation';
 import type { RpcHandlers } from '../shared/acces-mobile-rpc';
 
@@ -30,6 +34,14 @@ function previewOfLive(ws: { id: string }): MobileWorkspaceRow['preview'] | unde
   return { kind: 'desktop', text: a.type === 'permission-request' ? `Permission : ${a.title ?? a.name}` : 'Dialogue à traiter sur le bureau' };
 }
 
+/** #375: the phone's launch = the desktop « + » click on a registered repo, the prompt as its first task: human defaults (workspace default
+ *  model + effort, the repo's Compte), top-level (no `from`, detached), structured view. `origin: 'human'` — the human's act, like the composer. */
+const launcher = createMobileLauncher({
+  repos: () => store.repos,
+  spawn: ({ repoPath, task }) => dispatchSpawnRequest({ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' }),
+  info: (line) => log.info(line),
+});
+
 export const mobileRpcHandlers: RpcHandlers = {
   async call(route, msg) {
     switch (route) {
@@ -43,6 +55,12 @@ export const mobileRpcHandlers: RpcHandlers = {
           ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),
         };
       }
+      case '/mobile/repos':
+        // The registered repos, every Compte — what the launch form offers (#375).
+        return { ok: true, repos: projectMobileRepos(store.repos, store.accounts) };
+      case '/mobile/launch':
+        // #375: a new workspace from the phone. The shape and the registered repo are decided in the launcher.
+        return launcher.launch(msg);
       case '/mobile/conversation': {
         // One workspace's conversation, folded + projected for the phone (account-aware history).
         const ws = liveWorkspace(msg.id);

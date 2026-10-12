@@ -1740,6 +1740,8 @@ export interface SpawnResult {
   note?: string;
   /** #286: the spawn was ACCEPTED but its start is HELD for low memory (the workspace exists, its brief is owed, no session process runs). */
   held?: { since: number };
+  /** #375: with `ok:false` + `id` (the child was KEPT, stopped): the start failure's own message, without the CLI `restart` advice in `error`. */
+  startError?: string;
 }
 
 /** The brief's model sentence, from the user's spawned-agent default model
@@ -1781,6 +1783,9 @@ export async function dispatchSpawnRequest(
      * Used when spawning from a pinned Linear ticket, whose branch must lead
      * with the issue key for the badge pipeline to recognise it. */
     branch?: string;
+    /** #375: 'human' for a launch typed by the human on the phone (the accès mobile) — the agent's start is a human act, as a composer send
+     *  (a pause bypass by decision, listed in pause-gates-wiring). Absent → today's behaviour (AUTO). */
+    origin?: PauseOrigin;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1823,6 +1828,17 @@ export async function dispatchSpawnRequest(
       error:
         'no repo: pass an explicit repoPath (this session owns no checkout to inherit — a repo ASSOCIATION only groups it in the sidebar and is deliberately not inherited; `orchestra adopt-repo` gives a coordinator a real checkout)',
     };
+  let created: { id: string; branch: string } | undefined;
+  // #227: a failed start KEEPS the child (stopped, task retained) — carry id+branch so the caller can restart it; `startError` is the bare cause.
+  const keptFailure = (id: string, branch: string, cause: string): SpawnResult => ({
+    ok: false,
+    id,
+    branch,
+    startError: cause,
+    error:
+      `the agent failed to start: ${cause}. Workspace ${branch} (${id}) was kept, stopped, ` +
+      `with its task retained — fix the cause, then restart it (\`orchestra restart ${id}\`).`,
+  });
   try {
     // `detached` skips only the parent nesting — `from` above still drives
     // repo inheritance, so a detached spawn need not name --repo explicitly.
@@ -1836,21 +1852,14 @@ export async function dispatchSpawnRequest(
       ...(effort ? { effort } : {}),
       branch: input.branch,
     }, input.defaultKind);
-    const started = await startWorkspaceAgentHeadless(ws.id);
-    if (!started.ok) {
-      // #227: not-ok, but the child is KEPT (stopped, task retained) — carry id+branch so the caller can restart it.
-      return {
-        ok: false,
-        id: ws.id,
-        branch: ws.branch,
-        error:
-          `the agent failed to start: ${started.error}. Workspace ${ws.branch} (${ws.id}) was kept, stopped, ` +
-          `with its task retained — fix the cause, then restart it (\`orchestra restart ${ws.id}\`).`,
-      };
-    }
+    created = { id: ws.id, branch: ws.branch };
+    const started = await startWorkspaceAgentHeadless(ws.id, input.origin);
+    if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
     return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}) };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'spawn failed' };
+    const msg = e instanceof Error ? e.message : 'spawn failed';
+    // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
+    return created ? keptFailure(created.id, created.branch, msg) : { ok: false, error: msg };
   }
 }
 

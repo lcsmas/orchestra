@@ -7,9 +7,11 @@ import { jsqrSource } from './jsqr-src.ts';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
+import { MOBILE_LAUNCH_TIMEOUT_MS, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
+import { LAUNCH_CSS, LAUNCH_JS } from './launch.ts';
 import { PWA_ICONS } from './icons.ts';
 import { SW_JS } from './sw.ts';
 
@@ -76,6 +78,8 @@ const STATIC: Record<string, { type: string; body: string | Buffer }> = {
   '/manifest.webmanifest': { type: 'application/manifest+json', body: MANIFEST_JSON },
   '/conversation.js': { type: 'text/javascript; charset=utf-8', body: CONVERSATION_JS },
   '/conversation.css': { type: 'text/css; charset=utf-8', body: CONVERSATION_CSS },
+  '/launch.js': { type: 'text/javascript; charset=utf-8', body: LAUNCH_JS },
+  '/launch.css': { type: 'text/css; charset=utf-8', body: LAUNCH_CSS },
   // loaded on demand by an UNPAIRED page (in-app QR pairing); not in the service worker's shell
   '/jsqr.js': { type: 'text/javascript; charset=utf-8', body: jsqrSource() },
   ...Object.fromEntries(PWA_ICONS.map((i) => [i.path, { type: 'image/png', body: i.png }])),
@@ -83,7 +87,7 @@ const STATIC: Record<string, { type: string; body: string | Buffer }> = {
 
 /** At most this many live streams at once (one per open phone page is the normal case). */
 export const MAX_STREAMS = 8;
-/** At most this many sends / answers waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1. */
+/** At most this many sends / answers / launches waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1, #375. */
 export const MAX_WRITES_IN_FLIGHT = 4;
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
@@ -129,8 +133,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    // GET everywhere; POST only for the state changes (« seen », send). Ids travel in the query string; only send has a body.
-    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send' || pathOnly === '/api/answer'))) return refuse(405, 'method');
+    // GET everywhere; POST only for the state changes (« seen », send, answer, launch). Ids travel in the query string; send / answer / launch have a body.
+    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send' || pathOnly === '/api/answer' || pathOnly === '/api/launch'))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
     const asset = STATIC[pathOnly];
@@ -153,7 +157,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       res.end(JSON.stringify(obj));
     };
     const relay = (route: string, body: Record<string, unknown>, timeoutMs?: number): void => {
-      const isWrite = route === '/mobile/send' || route === '/mobile/answer';
+      const isWrite = route === '/mobile/send' || route === '/mobile/answer' || route === '/mobile/launch';
       if (isWrite) {
         if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');
         writesInFlight++;
@@ -175,6 +179,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       return id && /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;
     };
     if (pathOnly === '/api/workspaces') return relay('/mobile/workspaces', {});
+    if (pathOnly === '/api/repos') return relay('/mobile/repos', {});
     if (pathOnly === '/api/conversation') {
       const id = wsId();
       return id ? relay('/mobile/conversation', { id }) : refuse(400, 'bad-id');
@@ -247,6 +252,15 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
           Object.values(answers).every((v) => Array.isArray(v) && v.length <= 50 && v.every((l) => typeof l === 'string' && l.length <= 2000));
         if (!okShape) return refuse(400, 'bad-answers');
         relay('/mobile/answer', { id, requestId, answers }, 15_000);
+      });
+    }
+    if (pathOnly === '/api/launch' && method === 'POST') {
+      // #375: start a workspace from the phone. Body read after identity + token; shape-checked here (a prompt is required), the registered
+      // repo is decided in main. Nothing but {repoPath, prompt} is relayed.
+      return readJson((body) => {
+        const parsed = parseMobileLaunch(body);
+        if (!parsed.ok) return refuse(400, 'bad-launch');
+        relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);
       });
     }
     if (pathOnly === '/api/stream') {

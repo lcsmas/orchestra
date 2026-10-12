@@ -94,7 +94,7 @@ test('refused asset requests never log the token or any header value (control: a
 });
 
 test('SHELL_PATHS: the worker only ever caches paths the server really serves, never /api, never itself', async () => {
-  assert.deepEqual([...SHELL_PATHS].sort(), ['/', '/app.js', '/apple-touch-icon.png', '/conversation.css', '/conversation.js', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest']);
+  assert.deepEqual([...SHELL_PATHS].sort(), ['/', '/app.js', '/apple-touch-icon.png', '/conversation.css', '/conversation.js', '/icon-192.png', '/icon-512.png', '/launch.css', '/launch.js', '/manifest.webmanifest']);
   await withServer(async (port) => {
     for (const p of SHELL_PATHS) assert.equal((await fetchRaw(port, p, ID)).status, 200, `shell path ${p} is served`);
     assert.equal((await fetchRaw(port, '/never-served.png', ID)).status, 404, 'control: an unknown path is a 404 (so the loop above can fail)');
@@ -241,6 +241,8 @@ const SHELL_NET: Net = {
   '/app.js': { status: 200, body: 'app v1' },
   '/conversation.js': { status: 200, body: 'conv v1' },
   '/conversation.css': { status: 200, body: 'conv css v1' },
+  '/launch.js': { status: 200, body: 'launch v1' },
+  '/launch.css': { status: 200, body: 'launch css v1' },
   '/manifest.webmanifest': { status: 200, body: '{}' },
   '/apple-touch-icon.png': { status: 200, body: 'png180' },
   '/icon-192.png': { status: 200, body: 'png192' },

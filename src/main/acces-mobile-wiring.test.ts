@@ -144,3 +144,37 @@ test('#338: a phone message takes the HUMAN composer path, never the agent-messa
   assert.match(sdk, /if \(!resolve\) return false; \/\/ already answered/, 'never applied twice');
   assert.match(sdk, /emitAnswerableResolved\(session, 'permission', requestId\);\n\s*return true;/, 'every surface is told');
 });
+
+test('#375: the launch is on the PRIVATE channel only, takes the desktop-click spawn path with human defaults, and is not reachable from any agent', () => {
+  const launchCase = /case '\/mobile\/launch':[\s\S]*?return launcher\.launch\(msg\);/.exec(routes)?.[0] ?? '';
+  assert.ok(launchCase, 'control: found the launch case');
+  assert.match(routes, /case '\/mobile\/repos':[\s\S]*?return \{ ok: true, repos: projectMobileRepos\(store\.repos, store\.accounts\) \};/, 'the repo list is the registered repos');
+  // THE desktop-click path (the pinned-ticket click's, CONTEXT.md « Spawned agent »): human default kind, top-level, no `from`, no model/branch/Compte from the phone
+  assert.match(routes, /spawn: \(\{ repoPath, task \}\) => dispatchSpawnRequest\(\{ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' \}\),/);
+  assert.match(routes, /repos: \(\) => store\.repos,/, 'the registered repos are the store\'s, read at launch time');
+  const spawnCall = /dispatchSpawnRequest\(\{[^}]*\}\)/.exec(routes)?.[0] ?? '';
+  assert.doesNotMatch(spawnCall, /\bfrom\b|parentId|model|effort|branch|baseBranch|accountId|host/, 'nothing but the repo and the task is chosen by the phone');
+  // never the hooks socket: no /mobile/launch|repos route there, and /spawn on the hooks socket does not know the phone's origin
+  assert.doesNotMatch(hooks, /\/mobile\/(launch|repos)/, 'no launch / repos route on the hooks socket');
+  assert.doesNotMatch(hooks, /origin: 'human'/, 'the hooks socket never hands a human origin to the spawn path');
+  const hooksSpawn = /route === '\/spawn'\) \{[\s\S]*?defaultKind: 'spawned',[\s\S]*?\}\),/.exec(hooks)?.[0] ?? '';
+  assert.ok(hooksSpawn.includes("defaultKind: 'spawned'"), 'control: found the hooks /spawn call (an agent\'s spawn stays the spawned kind)');
+  assert.doesNotMatch(hooksSpawn, /origin/, 'an agent\'s /spawn body can never carry the human origin into the spawn path');
+  assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin\);/, 'the origin reaches the agent start');
+  // a failed start KEEPS the child and the phone gets the bare cause + the id — also when the start THROWS after the workspace was persisted
+  const spawnSrc = read('src/main/workspaces.ts');
+  const dsr = spawnSrc.slice(spawnSrc.indexOf('export async function dispatchSpawnRequest'), spawnSrc.indexOf('// ---------- Add repo'));
+  assert.match(dsr, /startError: cause,/, 'SpawnResult.startError carries the bare cause (the launcher prefers it to the CLI advice)');
+  assert.match(dsr, /created = \{ id: ws\.id, branch: ws\.branch \};/, 'the persisted workspace is remembered…');
+  assert.match(dsr, /return created \? keptFailure\(created\.id, created\.branch, msg\) : \{ ok: false, error: msg \};/, '…so a throw after it still reports the kept child');
+  assert.match(dsr, /if \(!started\.ok\) return keptFailure\(ws\.id, ws\.branch, started\.error\);/);
+  // the launcher is Electron-free (node --test drives the REAL guards) and holds the three guards
+  const launcher = read('src/main/acces-mobile-launch.ts');
+  assert.doesNotMatch(launcher, /from 'electron'|from '\.\/(store|workspaces|agent-sdk)/, 'the launcher imports no Electron-bound module');
+  assert.match(launcher, /if \(!deps\.repos\(\)\.some\(\(r\) => r\.path === repoPath\)\) return Promise\.resolve\(\{ ok: false, code: 'unknown-repo'/);
+  assert.match(launcher, /const parsed = parseMobileLaunch\(raw\);/);
+  // the server (network-facing) exposes it behind identity + token only, as a write bounded in flight
+  const server = read('src/acces-mobile/server.ts');
+  assert.match(server, /pathOnly === '\/api\/launch'\)\)\) return refuse\(405, 'method'\)/, 'POST is allowed for launch');
+  assert.match(server, /const isWrite = route === '\/mobile\/send' \|\| route === '\/mobile\/answer' \|\| route === '\/mobile\/launch';/, 'a launch counts in the in-flight write bound');
+});

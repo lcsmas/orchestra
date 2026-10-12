@@ -17,8 +17,13 @@ PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
 WIRING = 'src/main/acces-mobile-wiring.test.ts'
-FEEDCORE = 'src/main/acces-mobile-feed-core.test.ts'
 CLOSERACE = 'src/acces-mobile/conversation-close-race.test.ts'
+FEEDCORE = 'src/main/acces-mobile-feed-core.test.ts'
+LAUNCHUI = 'src/acces-mobile/launch.test.ts'
+PAUSEW = 'src/main/pause-gates-wiring.test.ts'
+SLAUNCH = 'src/acces-mobile/server-launch.test.ts'
+MLAUNCH = 'src/main/acces-mobile-launch.test.ts'
+SHLAUNCH = 'src/shared/acces-mobile-launch.test.ts'
 MUTANTS = [
     # (id, file, original, replacement, expected) — expected 'RED' (must be killed) or 'EQUIV' (a second guard covers it)
     ('M1-no-allowed-login', 'src/acces-mobile/server.ts', "    if (!opts.allowedLogin) return refuse(403, 'no-allowed-login');\n", '', 'RED'),
@@ -166,6 +171,88 @@ MUTANTS = [
     ('N15-sorted-by-the-desktop-name', 'src/shared/acces-mobile.ts', "a.displayName.localeCompare(b.displayName) || ", "", 'RED', 'src/shared/acces-mobile.test.ts'),
     ('N16-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'RED', PL),
     ('N13-stand-in-full-name', 'src/acces-mobile/page.ts', "document.createTextNode((n.row.displayName || n.row.name) + ' ')", "document.createTextNode(n.row.name + ' ')", 'RED', PL),
+    ('N13-fold-owner-full-name', 'src/acces-mobile/page.ts', "name: byId[pid].displayName || byId[pid].name })", "name: byId[pid].name })", 'RED', PL),
+    # ── 2026-10-12 wave I: launch a workspace from the phone (#375) ──
+    ('LA1-launch-post-refused', 'src/acces-mobile/server.ts', " || pathOnly === '/api/launch'))) return refuse(405, 'method');", "))) return refuse(405, 'method');", 'RED', SLAUNCH),
+    ('LA2-launch-body-unvalidated', 'src/acces-mobile/server.ts', "        if (!parsed.ok) return refuse(400, 'bad-launch');\n        relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "        relay('/mobile/launch', body, MOBILE_LAUNCH_TIMEOUT_MS);", 'RED', SLAUNCH),
+    ('LA3-launch-relays-raw-keys', 'src/acces-mobile/server.ts', "relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "relay('/mobile/launch', { ...body, ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", 'RED', SLAUNCH),
+    ('LA4-launch-short-timeout', 'src/acces-mobile/server.ts', "relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "relay('/mobile/launch', { ...parsed.launch });", 'RED', SLAUNCH),
+    ('LA5-launch-not-an-in-flight-write', 'src/acces-mobile/server.ts', " || route === '/mobile/launch';\n      if (isWrite) {", ";\n      if (isWrite) {", 'RED', SLAUNCH),
+    ('LA13-prompt-optional', 'src/shared/acces-mobile-launch.ts', "  if (!prompt || prompt.length > MOBILE_LAUNCH_MAX_PROMPT) return", "  if (prompt.length > MOBILE_LAUNCH_MAX_PROMPT) return", 'RED', SHLAUNCH),
+    ('LA14-prompt-not-trimmed', 'src/shared/acces-mobile-launch.ts', "typeof b.prompt === 'string' ? b.prompt.trim() : ''", "typeof b.prompt === 'string' ? b.prompt : ''", 'RED', SHLAUNCH),
+    ('LA16-repo-path-nul', 'src/shared/acces-mobile-launch.ts', " || repoPath.includes('\\0'))", ")", 'RED', SHLAUNCH),
+    ('LA17-extra-keys-travel', 'src/shared/acces-mobile-launch.ts', "return { ok: true, launch: { repoPath, prompt } };", "return { ok: true, launch: { ...b, repoPath, prompt } as MobileLaunchRequest };", 'RED', SHLAUNCH),
+    ('LA18-repos-unsorted', 'src/shared/acces-mobile-launch.ts', "    .sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path));", "    ;", 'RED', SHLAUNCH),
+    ('LA19-repo-compte-ignored', 'src/shared/acces-mobile-launch.ts', "resolveWorkspaceAccountId(r.accountId, known)", "resolveWorkspaceAccountId(undefined, known)", 'RED', SHLAUNCH),
+    ('LA20-unregistered-repo-created', 'src/main/acces-mobile-launch.ts', "      if (!deps.repos().some((r) => r.path === repoPath)) return Promise.resolve({ ok: false, code: 'unknown-repo', error: 'unknown repo' });\n", "", 'RED', MLAUNCH),
+    ('LA21-repo-prefix-match', 'src/main/acces-mobile-launch.ts', "deps.repos().some((r) => r.path === repoPath)", "deps.repos().some((r) => repoPath.startsWith(r.path))", 'RED', MLAUNCH),
+    ('LA29-spawn-gets-more-than-repo-and-task', 'src/main/acces-mobile-launch.ts', "res = await deps.spawn({ repoPath, task: prompt });", "res = await deps.spawn({ repoPath, task: prompt, model: 'x' } as never);", 'RED', MLAUNCH),
+    ('LA30-start-failure-loses-the-id', 'src/main/acces-mobile-launch.ts', "return { ok: false, code: 'start-failed', id: res.id, ...(res.branch", "return { ok: false, code: 'start-failed', ...(res.branch", 'RED', MLAUNCH),
+    ('LA31-start-failure-reads-ok', 'src/main/acces-mobile-launch.ts', "    if (res.id && res.ok) {", "    if (res.id) {", 'RED', MLAUNCH),
+    ('LA32-main-trusts-the-server', 'src/main/acces-mobile-launch.ts', "      const parsed = parseMobileLaunch(raw);\n      if (!parsed.ok) return Promise.resolve({ ok: false, code: 'bad-request', error: parsed.error });\n      const { repoPath, prompt } = parsed.launch;", "      const { repoPath, prompt } = raw as { repoPath: string; prompt: string };", 'RED', MLAUNCH),
+    ('LA33-launch-route-on-hooks-socket', 'src/main/hooks-server.ts', "          } else if (route === '/accounts') {", "          } else if (route === '/mobile/launch') { send(200, {});\n          } else if (route === '/accounts') {", 'RED', WIRING),
+    ('LA34-launch-origin-auto', 'src/main/acces-mobile-routes.ts', "defaultKind: 'workspace', origin: 'human' })", "defaultKind: 'workspace' })", 'RED', PAUSEW),
+    ('LA35-launch-origin-not-forwarded', 'src/main/workspaces.ts', "const started = await startWorkspaceAgentHeadless(ws.id, input.origin);", "const started = await startWorkspaceAgentHeadless(ws.id);", 'RED', PAUSEW),
+    ('LA36-launch-as-spawned-agent', 'src/main/acces-mobile-routes.ts', "detached: true, defaultKind: 'workspace', origin: 'human' })", "detached: true, defaultKind: 'spawned', origin: 'human' })", 'RED', WIRING),
+    ('LA37-launch-picks-a-model', 'src/main/acces-mobile-routes.ts', "dispatchSpawnRequest({ repoPath, task, detached: true,", "dispatchSpawnRequest({ repoPath, task, model: 'opus', detached: true,", 'RED', WIRING),
+    ('LA38-repos-route-gone', 'src/main/acces-mobile-routes.ts', "      case '/mobile/repos':", "      case '/mobile/reposX':", 'RED', WIRING),
+    ('LA39-launch-sees-no-registered-repos', 'src/main/acces-mobile-routes.ts', "  repos: () => store.repos,", "  repos: () => [],", 'RED', WIRING),
+    ('LA41-agent-spawn-can-claim-human', 'src/main/hooks-server.ts', "                  defaultKind: 'spawned',\n                }),", "                  defaultKind: 'spawned',\n                  origin: msg.origin === 'human' ? 'human' : undefined,\n                }),", 'RED', WIRING),
+    # the phone's launch screen (launch.ts) + the shell's « + » / #new route (page.ts); launch.test.ts runs the REAL scripts in a vm
+    ('LU1-prompt-not-required', 'src/acces-mobile/launch.ts', "      go.disabled = st.busy || !st.sel || !ta.value.trim();", "      go.disabled = st.busy || !st.sel;", 'RED', LAUNCHUI),
+    ('LU2-repo-not-required', 'src/acces-mobile/launch.ts', "      go.disabled = st.busy || !st.sel || !ta.value.trim();", "      go.disabled = st.busy || !ta.value.trim();", 'RED', LAUNCHUI),
+    ('LU3a-busy-keeps-the-button-live', 'src/acces-mobile/launch.ts', "      go.disabled = st.busy || !st.sel || !ta.value.trim();", "      go.disabled = !st.sel || !ta.value.trim();", 'RED', LAUNCHUI),
+    ('LU3b-click-guard-without-busy', 'src/acces-mobile/launch.ts', "      if (st.busy || !st.sel || !prompt) return;", "      if (!st.sel || !prompt) return;", 'EQUIV', LAUNCHUI),  # the disabled button already ignores the tap
+    ('LU3c-never-busy', 'src/acces-mobile/launch.ts', "      st.busy = true; root.dataset.state = 'sending'; say(null); sync();", "      root.dataset.state = 'sending'; say(null); sync();", 'RED', LAUNCHUI),
+    ('LU6-draft-lost-on-close', 'src/acces-mobile/launch.ts', "      st.draft = ta.value;\n", "", 'RED', LAUNCHUI),
+    ('LU7-success-keeps-the-draft', 'src/acces-mobile/launch.ts', "              u.ta.value = ''; root.dataset.state = 'launched'; u.sync();", "              root.dataset.state = 'launched'; u.sync();", 'RED', LAUNCHUI),
+    ('LU8-success-does-not-open-the-conversation', 'src/acces-mobile/launch.ts', "            location.hash = 'w=' + encodeURIComponent(res.body.id); // the conversation opens: the agent picks the task up\n", "", 'RED', LAUNCHUI),
+    ('LU9-error-not-shown', 'src/acces-mobile/launch.ts', "            root.dataset.state = 'error'; u.say(f); u.sync();", "            root.dataset.state = 'error'; u.sync();", 'RED', LAUNCHUI),
+    ('LU10-body-carries-more', 'src/acces-mobile/launch.ts', "body: JSON.stringify({ repoPath: st.sel, prompt: prompt })", "body: JSON.stringify({ repoPath: st.sel, prompt: prompt, model: 'opus' })", 'RED', LAUNCHUI),
+    ('LU11-token-in-the-url', 'src/acces-mobile/launch.ts', "fetch('/api/repos', { headers: { Authorization: 'Bearer ' + token() }, cache: 'no-store' })", "fetch('/api/repos?t=' + token(), { headers: { Authorization: 'Bearer ' + token() }, cache: 'no-store' })", 'RED', LAUNCHUI),
+    ('LU12-repo-name-as-markup', 'src/acces-mobile/launch.ts', "rn.appendChild(el('b', null, r.name));", "var bb = el('b'); bb.innerHTML = r.name; rn.appendChild(bb);", 'RED', LAUNCHUI),
+    ('LU13-unpaired-still-fetches', 'src/acces-mobile/launch.ts', "    if (!token()) { location.hash = ''; return; } // unpaired: the list shows the pairing panel\n", "", 'RED', LAUNCHUI),
+    ('LU14-refused-token-no-repair', 'src/acces-mobile/launch.ts', "          if (f.repair) { location.hash = ''; }\n", "", 'RED', LAUNCHUI),
+    ('LU15-start-failure-offers-nothing', 'src/shared/acces-mobile-launch.ts', "return typeof b.id === 'string' && b.id ? { text, open: b.id } : { text };", "return { text };", 'RED', SHLAUNCH),
+    ('LU16-lost-reply-claims-nothing-created', 'src/shared/acces-mobile-launch.ts', "if (status === null) return { text: 'Réseau coupé : le workspace est peut-être créé. ' + lost };", "if (status === null) return { text: 'Réseau coupé : aucun workspace n’a été créé.' };", 'RED', SHLAUNCH),
+    ('LU17-bad-gateway-claims-nothing-created', 'src/shared/acces-mobile-launch.ts', "if (status >= 500) return { text: 'Orchestra injoignable : le workspace est peut-être créé. ' + lost };", "if (status >= 500) return { text: 'Orchestra injoignable : aucun workspace n’a été créé.' };", 'RED', SHLAUNCH),
+    ('LU20-no-new-route', 'src/acces-mobile/page.ts', "    } else if (location.hash === '#new' && launch) {", "    } else if (false) {", 'RED', LAUNCHUI),
+    ('LU21-plus-button-dead', 'src/acces-mobile/page.ts', "  document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });", "", 'RED', LAUNCHUI),
+    ('LU22-launch-meta-ignored', 'src/acces-mobile/page.ts', " || (launch && launch.meta(m2[1]));", ";", 'RED', LAUNCHUI),
+    ('LU23-launch-never-closed', 'src/acces-mobile/page.ts', "    else { conv.close(); if (launch) launch.close(); home.hidden = false; load(); }", "    else { conv.close(); home.hidden = false; load(); }", 'RED', LAUNCHUI),
+    ('LU24-list-not-hidden-behind-the-form', 'src/acces-mobile/page.ts', "conv.close(); home.hidden = true; launch.open(); }", "conv.close(); launch.open(); }", 'RED', LAUNCHUI),
+    ('LU25-launch-js-not-served', 'src/acces-mobile/server.ts', "  '/launch.js': { type: 'text/javascript; charset=utf-8', body: LAUNCH_JS },\n", "", 'RED', SLAUNCH),
+    ('LU26-launch-css-not-served', 'src/acces-mobile/server.ts', "  '/launch.css': { type: 'text/css; charset=utf-8', body: LAUNCH_CSS },\n", "", 'RED', SLAUNCH),
+    ('LU27-launch-not-in-offline-shell', 'src/acces-mobile/sw.ts', "'/launch.js', '/launch.css', '/manifest.webmanifest'", "'/manifest.webmanifest'", 'RED', PWA),
+    ('LA42-start-error-not-carried', 'src/main/workspaces.ts', "    startError: cause,\n", "", 'RED', WIRING),
+    ('LA43-throw-after-create-drops-the-id', 'src/main/workspaces.ts', "return created ? keptFailure(created.id, created.branch, msg) : { ok: false, error: msg };", "return { ok: false, error: msg };", 'RED', WIRING),
+    ('LU28-reopen-while-busy-shows-a-live-button', 'src/acces-mobile/launch.ts', "      go.disabled = st.busy || !st.sel || !ta.value.trim();", "      go.disabled = !st.sel || !ta.value.trim();", 'RED', LAUNCHUI),
+    ('LU29-answer-while-away-hijacks-the-page', 'src/acces-mobile/launch.ts', "            if (u) {\n              u.ta.value = '';", "            {\n              u = u || st.ui || { ta: { value: '' }, sync() {} };\n              u.ta.value = '';", 'RED', LAUNCHUI),
+    ('LU30-kept-workspace-keeps-the-draft', 'src/acces-mobile/launch.ts', "            if (f.open) u.ta.value = '';\n", "", 'RED', LAUNCHUI),
+    ('LU31-kept-workspace-unknown-to-the-header', 'src/acces-mobile/launch.ts', "          if (f.open) { st.launched = made({ id: f.open, branch: res.body && res.body.branch }); st.draft = ''; }", "          if (f.open) { st.draft = ''; }", 'RED', LAUNCHUI),
+    ('LU32-repos-401-not-repaired', 'src/acces-mobile/launch.ts', "if (r.status === 401) { location.hash = ''; return null; } return r.ok", "if (false) { location.hash = ''; return null; } return r.ok", 'RED', LAUNCHUI),
+    ('LU33-pick-while-busy', 'src/acces-mobile/launch.ts', "          if (st.busy) return; // the launch in flight is for THIS repo\n", "", 'RED', LAUNCHUI),
+    ('LU34-late-failure-lost', 'src/acces-mobile/launch.ts', "          st.error = f;\n          if (u) {", "          if (u) {", 'RED', LAUNCHUI),
+    ('LU35-gateway-5xx-claims-nothing-created', 'src/shared/acces-mobile-launch.ts', "  if (status >= 500) return { text: 'Orchestra injoignable : le workspace est peut-être créé. ' + lost };", "  if (status === 502) return { text: 'Orchestra injoignable : le workspace est peut-être créé. ' + lost };", 'RED', SHLAUNCH),
+    # conversation.js fetchConv: a refresh timer firing after the conversation was closed poisoned the screen (found by the #375 rig)
+    # the feed core: an EMPTY history (transcript not on disk yet) is re-read, bounded, with a changed version (#375)
+    ('CV1-refresh-fires-for-a-closed-conversation', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '', 'RED', CLOSERACE),
+    ('CV3-queued-refresh-survives-the-close', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '      if (!id) { inflight = false; return; }\n', 'RED', CLOSERACE),
+    ('CV4-abandoned-refresh-moves-the-throttle-clock', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n      lastFetch = Date.now();\n', '      lastFetch = Date.now();\n      if (!id) { inflight = false; again = false; return; }\n', 'RED', CLOSERACE),
+    ('CV5-stale-success-draws-into-the-next-conversation', 'src/acces-mobile/conversation.ts', "          if (id !== current) return;\n          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", "          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", 'RED', CLOSERACE),
+    ('CV6-late-failure-paints-the-next-conversation', 'src/acces-mobile/conversation.ts', '.catch(function () { if (id !== current) return; var stEl', '.catch(function () { var stEl', 'RED', CLOSERACE),
+    ('FH1-empty-history-trusted', 'src/main/acces-mobile-feed-core.ts', '  e.suspect = lagging || e.session.messages.length === 0;\n  if (e.suspect) scheduleEmptyHeal(id, e);\n  else e.emptyRetries = 0;\n', '  e.suspect = false;\n  e.emptyRetries = 0;\n', 'RED', FEEDCORE),
+    ('FH2-heal-announces-the-same-version', 'src/main/acces-mobile-feed-core.ts', '    e.version++; // a CHANGED version: the phone only refetches on a version it does not have\n', '', 'RED', FEEDCORE),
+    ('FH3-heal-unbounded', 'src/main/acces-mobile-feed-core.ts', 'if (e.emptyTimer || e.emptyRetries >= EMPTY_RETRY_MAX) return;', 'if (e.emptyTimer) return;', 'EQUIV', FEEDCORE),  # the retry budget is also checked at the read-time reload and on reloadPending: the timer's own check is the third guard
+    ('FH5-dropped-entry-keeps-its-timer', 'src/main/acces-mobile-feed-core.ts', '  if (e?.emptyTimer) clearTimeout(e.emptyTimer);\n', '', 'RED', FEEDCORE),
+    ('FH6-empty-conversation-never-re-read', 'src/main/acces-mobile-feed-core.ts', '(e.reloadPending || (e.suspect && e.session.messages.length === 0 && e.emptyRetries < EMPTY_RETRY_MAX))', '(e.reloadPending)', 'RED', FEEDCORE),
+    ('FH7-lagging-disk-replaces-the-live-fold', 'src/main/acces-mobile-feed-core.ts', '  const lagging = e.suspect && next.messages.length < e.session.messages.length;\n', '  const lagging = false;\n', 'RED', FEEDCORE),
+    ('FH8-turn-end-does-not-re-read-a-suspect-entry', 'src/main/acces-mobile-feed-core.ts', '(e.missedWhileLoading || e.suspect)) e.reloadPending = true;', '(e.missedWhileLoading)) e.reloadPending = true;', 'RED', FEEDCORE),
+    ('FH9-retry-timer-never-clears', 'src/main/acces-mobile-feed-core.ts', '    e.emptyTimer = null;\n    e.emptyRetries++;', '    e.emptyRetries++;', 'RED', FEEDCORE),
+    ('FH10-retry-budget-one', 'src/main/acces-mobile-feed-core.ts', 'export const EMPTY_RETRY_MAX = 5;', 'export const EMPTY_RETRY_MAX = 1;', 'RED', FEEDCORE),
+    ('FH11-re-read-mid-turn', 'src/main/acces-mobile-feed-core.ts', 'if (!e.loading && !running(id, e) && (e.reloadPending ||', 'if (!e.loading && (e.reloadPending ||', 'RED', FEEDCORE),
+    ('FH12-rejected-re-read-retries-forever', 'src/main/acces-mobile-feed-core.ts', '  e.reloadPending = lagging && e.emptyRetries < EMPTY_RETRY_MAX;\n', '  e.reloadPending = lagging;\n', 'RED', FEEDCORE),
+    ('LA40-launch-unattended-by-main', 'src/main/acces-mobile-routes.ts', "        return launcher.launch(msg);", "        return { ok: true };", 'RED', WIRING),
     ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
     # ── 2026-10-12 (#374): the phone and the desktop share ONE tool line (src/shared/tool-line.ts) ──
     ('T1-phone-tool-line-own-label', 'src/shared/acces-mobile-conversation.ts', "return { id: m.id, kind: 'tool', ...toolLine(m), at };", "return { id: m.id, kind: 'tool', label: m.toolUse.name, state: 'ok', at };", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
@@ -230,22 +317,6 @@ MUTANTS = [
     ('TT17-self-parent-guards-removed', 'src/shared/acces-mobile-tree.ts', "    parentOf.push(p !== undefined && p !== i ? p : -1);\n    if (p !== undefined && p !== i) kidsOf[p].push(i);", "    parentOf.push(p !== undefined ? p : -1);\n    if (p !== undefined) kidsOf[p].push(i);", 'EQUIV', TREE),
     # EQUIVALENT (documented, reviewer R373): differs only WITH duplicate ids, which cannot exist (store.ts upserts by id, ids are randomUUID())
     ('TT18-last-duplicate-wins', 'src/shared/acces-mobile-tree.ts', "if (first[rows[i].id] === undefined) first[rows[i].id] = i;", "first[rows[i].id] = i;", 'EQUIV', TREE),
-    ('CV1-refresh-fires-for-a-closed-conversation', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '', 'RED', CLOSERACE),
-    ('CV3-queued-refresh-survives-the-close', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '      if (!id) { inflight = false; return; }\n', 'RED', CLOSERACE),
-    ('CV4-abandoned-refresh-moves-the-throttle-clock', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n      lastFetch = Date.now();\n', '      lastFetch = Date.now();\n      if (!id) { inflight = false; again = false; return; }\n', 'RED', CLOSERACE),
-    ('CV5-stale-success-draws-into-the-next-conversation', 'src/acces-mobile/conversation.ts', "          if (id !== current) return;\n          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", "          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", 'RED', CLOSERACE),
-    ('CV6-late-failure-paints-the-next-conversation', 'src/acces-mobile/conversation.ts', '.catch(function () { if (id !== current) return; var stEl', '.catch(function () { var stEl', 'RED', CLOSERACE),
-    ('FH1-empty-history-trusted', 'src/main/acces-mobile-feed-core.ts', '  e.suspect = lagging || e.session.messages.length === 0;\n  if (e.suspect) scheduleEmptyHeal(id, e);\n  else e.emptyRetries = 0;\n', '  e.suspect = false;\n  e.emptyRetries = 0;\n', 'RED', FEEDCORE),
-    ('FH2-heal-announces-the-same-version', 'src/main/acces-mobile-feed-core.ts', '    e.version++; // a CHANGED version: the phone only refetches on a version it does not have\n', '', 'RED', FEEDCORE),
-    ('FH3-heal-unbounded', 'src/main/acces-mobile-feed-core.ts', 'if (e.emptyTimer || e.emptyRetries >= EMPTY_RETRY_MAX) return;', 'if (e.emptyTimer) return;', 'EQUIV', FEEDCORE),  # the retry budget is also checked at the read-time reload and on reloadPending: the timer's own check is the third guard
-    ('FH5-dropped-entry-keeps-its-timer', 'src/main/acces-mobile-feed-core.ts', '  if (e?.emptyTimer) clearTimeout(e.emptyTimer);\n', '', 'RED', FEEDCORE),
-    ('FH6-empty-conversation-never-re-read', 'src/main/acces-mobile-feed-core.ts', '(e.reloadPending || (e.suspect && e.session.messages.length === 0 && e.emptyRetries < EMPTY_RETRY_MAX))', '(e.reloadPending)', 'RED', FEEDCORE),
-    ('FH7-lagging-disk-replaces-the-live-fold', 'src/main/acces-mobile-feed-core.ts', '  const lagging = e.suspect && next.messages.length < e.session.messages.length;\n', '  const lagging = false;\n', 'RED', FEEDCORE),
-    ('FH8-turn-end-does-not-re-read-a-suspect-entry', 'src/main/acces-mobile-feed-core.ts', '(e.missedWhileLoading || e.suspect)) e.reloadPending = true;', '(e.missedWhileLoading)) e.reloadPending = true;', 'RED', FEEDCORE),
-    ('FH9-retry-timer-never-clears', 'src/main/acces-mobile-feed-core.ts', '    e.emptyTimer = null;\n    e.emptyRetries++;', '    e.emptyRetries++;', 'RED', FEEDCORE),
-    ('FH10-retry-budget-one', 'src/main/acces-mobile-feed-core.ts', 'export const EMPTY_RETRY_MAX = 5;', 'export const EMPTY_RETRY_MAX = 1;', 'RED', FEEDCORE),
-    ('FH11-re-read-mid-turn', 'src/main/acces-mobile-feed-core.ts', 'if (!e.loading && !running(id, e) && (e.reloadPending ||', 'if (!e.loading && (e.reloadPending ||', 'RED', FEEDCORE),
-    ('FH12-rejected-re-read-retries-forever', 'src/main/acces-mobile-feed-core.ts', '  e.reloadPending = lagging && e.emptyRetries < EMPTY_RETRY_MAX;\n', '  e.reloadPending = lagging;\n', 'RED', FEEDCORE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
@@ -293,6 +364,12 @@ E2E_MUTANTS = [
     ('E35-fold-line-not-indented', 'src/acces-mobile/conversation.ts', "padding:8px 20px 8px calc(var(--ind,20px) + 34px)", "padding:8px 20px 8px 54px", 'phone/tree-css-geometry'),
     ('E36-rail-gone-from-rows', 'src/acces-mobile/conversation.ts', ".v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", ".v1 .fold[data-depth],.v1 .fold-owner.stand{background-image", 'phone/tree-css-geometry'),
     ('E37-rail-size-unclamped', 'src/acces-mobile/conversation.ts', "background-size:calc(var(--d)*16px) 100%", "background-size:calc(var(--depth)*16px) 100%", 'phone/tree-css-geometry'),
+    ('E50-launch-takes-the-spawned-kind', 'src/main/acces-mobile-routes.ts', "detached: true, defaultKind: 'workspace', origin: 'human' })", "detached: true, defaultKind: 'spawned', origin: 'human' })", 'launch/repos-compte-and-workspace-defaults'),
+    ('E51-unregistered-repo-not-refused-by-the-launcher', 'src/main/acces-mobile-launch.ts', "      if (!deps.repos().some((r) => r.path === repoPath)) return Promise.resolve({ ok: false, code: 'unknown-repo', error: 'unknown repo' });\n", '', 'launch/unregistered-repo-refused'),
+    ('E52-launch-route-on-the-hooks-socket', 'src/main/hooks-server.ts', "          } else if (route === '/accounts') {", "          } else if (route === '/mobile/launch') { send(200, { ok: true, leaked: true });\n          } else if (route === '/accounts') {", 'launch/hooks-socket-has-no-launch-route'),
+    ('E53-launch-loses-the-prompt', 'src/main/acces-mobile-launch.ts', 'res = await deps.spawn({ repoPath, task: prompt });', "res = await deps.spawn({ repoPath, task: 'ignore le prompt du telephone' });", 'launch/creates-workspace'),
+    ('E54-prompt-optional-on-the-phone', 'src/acces-mobile/launch.ts', '      go.disabled = st.busy || !st.sel || !ta.value.trim();', '      go.disabled = st.busy || !st.sel;', 'launch/phone-prompt-and-repo-required'),
+    ('E55-plus-button-dead', 'src/acces-mobile/page.ts', "  document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });", '', 'launch/phone-form-lists-repos-with-compte'),
 ]
 
 def run_e2e(ids):

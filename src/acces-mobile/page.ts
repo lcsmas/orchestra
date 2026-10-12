@@ -16,6 +16,7 @@ export const INDEX_HTML = `<!doctype html>
 <meta name="theme-color" content="#1a1f26">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/conversation.css">
+<link rel="stylesheet" href="/launch.css">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <title>Orchestra</title>
@@ -23,7 +24,7 @@ export const INDEX_HTML = `<!doctype html>
 <body class="v1">
 <div id="home" class="col">
 <div class="top">
-<div class="tt"><h1>Workspaces</h1><span id="live" class="live off" data-live="off"><i></i><span id="liveText">hors ligne</span></span></div>
+<div class="tt"><h1>Workspaces</h1><span id="live" class="live off" data-live="off"><i></i><span id="liveText">hors ligne</span></span><button type="button" id="newBtn" class="new-btn" aria-label="Nouveau workspace">+</button></div>
 <div class="seg"><button type="button" id="segAll" class="on">Tout <b id="cntAll">0</b></button><button type="button" id="segMe">À traiter <b id="cntMe">0</b></button></div>
 <input type="checkbox" id="needsMe" hidden>
 <div id="appUpdate" class="update" role="status" hidden></div>
@@ -39,7 +40,9 @@ export const INDEX_HTML = `<!doctype html>
 <div id="list" class="scroll"></div>
 </div>
 <div id="conv" class="col" hidden></div>
+<div id="launch" class="col" hidden></div>
 <script src="/conversation.js"></script>
+<script src="/launch.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
@@ -270,14 +273,19 @@ export const APP_JS = `(function () {
   // as the fallback when the stream is down. #336: a re-scan over an open page is a hashchange too (same document) — re-pair,
   // then reopen the stream with the new token.
   var conv = window.OrchestraConversation;
+  var launch = window.OrchestraLaunch; // #375: the « Nouveau workspace » screen (launch.js) — absent in a shell without it
   function route() {
     var m2 = /^#w=([A-Za-z0-9-]{1,64})$/.exec(location.hash);
     var home = document.getElementById('home');
     if (m2) {
-      var w = last.filter(function (x) { return x.id === m2[1]; })[0];
+      // right after a launch the list has not refreshed yet: the launch screen knows the row it just made
+      var w = last.filter(function (x) { return x.id === m2[1]; })[0] || (launch && launch.meta(m2[1]));
+      if (launch) launch.close();
       home.hidden = true; conv.open(m2[1], w || { name: m2[1] }, last.filter(function (x) { return x.status === 'waiting' && x.id !== m2[1]; }).length);
-    } else { conv.close(); home.hidden = false; load(); }
+    } else if (location.hash === '#new' && launch) { conv.close(); home.hidden = true; launch.open(); }
+    else { conv.close(); if (launch) launch.close(); home.hidden = false; load(); }
   }
+  document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });
   window.addEventListener('hashchange', function () {
     if (pairFromHash()) {
       try { token = localStorage.getItem(KEY); } catch (e) {}
