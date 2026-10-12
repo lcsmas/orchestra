@@ -1,33 +1,27 @@
 // Which agent surface a workspace's `orchestra restart` targets.
 //
 // The CLI restart verb (issue #111) must relaunch a workspace's claude process
-// WITHOUT touching worktree/branch/commits, and it must handle BOTH agent
-// surfaces Orchestra runs:
+// WITHOUT touching worktree/branch/commits. Since the Agent view is the only
+// agent mode (#219/#230/#232) there is no live-PTY surface any more — the
+// classifier tells the SDK-session cases apart:
 //
-//   - PTY (terminal agent): a live `claude` TUI in a node-pty, driven by the
-//     renderer's TerminalView. Restart = stop the PTY + respawn it (main-side,
-//     since a socket call has no renderer). `--continue` keeps the conversation.
 //   - STRUCTURED (SDK session): a `claude` process driven by the Agent SDK
 //     (agent-sdk.ts). Restart = sdkStop + killKeeper + ensureSession, which
 //     resumes the same transcript. `--fresh` = sdkClear-equivalent (blank the
 //     resume id → a vierge session).
-//   - WAKE (#228, wave "Agent view only" #219): a STOPPED workspace that only
-//     ever ran the terminal agent (`hasInput`, no `sdkSessionId`). It restarts
-//     into the Agent view: the SDK wake path ADOPTS its newest terminal
-//     transcript as the resume id, then starts the session — no PTY is launched.
-//     (The `pty` mode survives only for a LIVE PTY, until the live-PTY cleanup.)
+//   - WAKE (#228): a STOPPED workspace that only ever ran the old terminal agent
+//     (`hasInput`, no `sdkSessionId`). It restarts into the Agent view: the SDK
+//     wake path ADOPTS its newest terminal transcript as the resume id, then
+//     starts the session.
+//   - UNKNOWN: nothing has ever run — refused diagnosably.
 //
-// The ticket flags gap #3: the UI Restart button gates on `isRunning(id)` =
-// PTY-only, so a STRUCTURED workspace silently falls through it. The CLI must
-// route each surface to its own restart path — and the SEPARATION of the pure
-// decision from the effectful dispatch is exactly what makes the T111.4
-// structured-mode gate testable without Electron: feed this function a
-// structured workspace and assert it does NOT resolve to 'pty'.
+// The SEPARATION of the pure decision from the effectful dispatch is what makes
+// the routing testable without Electron.
 //
 // This module is intentionally pure (no Electron, no fs, no process): the
-// effectful handler in src/main/restart-workspace.ts feeds it liveness probes
-// (`isRunning`, `sdkSessionLive`) and the persisted workspace record, then acts
-// on the verdict. Kept on the shared side so the runner reaches it directly.
+// effectful handler in src/main/restart-workspace.ts feeds it the liveness probe
+// (`sdkSessionLive`) and the persisted workspace record, then acts on the
+// verdict. Kept on the shared side so the runner reaches it directly.
 
 /** The subset of a persisted Workspace record the classifier reads. */
 export interface RestartWorkspaceView {
@@ -40,60 +34,51 @@ export interface RestartWorkspaceView {
   sdkSessionId?: string;
 }
 
-/** Live-process probes, read at the moment restart acts (never cached — a
+/** Live-process probe, read at the moment restart acts (never cached — a
  *  workspace's live surface can change between the CLI call and the dispatch). */
 export interface RestartLiveness {
-  /** A live PTY (terminal) `claude` process owns this workspace (pty.ts
-   *  `isRunning`). */
-  ptyLive: boolean;
   /** A live (non-stopping) structured SDK session owns this workspace
    *  (sdk-delivery.ts `sdkSessionLive`). */
   sdkLive: boolean;
 }
 
 /** The resolved restart surface. `'unknown'` = nothing has ever run for this
- *  workspace under either surface, so there is no process to relaunch and no
- *  conversation to preserve — the caller refuses DIAGNOSABLY rather than
- *  spawning a stray agent. */
-export type RestartMode = 'pty' | 'structured' | 'wake' | 'unknown';
+ *  workspace, so there is no process to relaunch and no conversation to
+ *  preserve — the caller refuses DIAGNOSABLY rather than spawning a stray
+ *  agent. */
+export type RestartMode = 'structured' | 'wake' | 'unknown';
 
 /** Decide which surface `orchestra restart <id>` targets.
  *
- *  Order matters — a LIVE process wins over persisted state, because that is the
+ *  Order matters — a LIVE session wins over persisted state, because that is the
  *  process the user means when they say "restart":
  *
- *   1. A live PTY → 'pty' (restart the running terminal agent).
- *   2. A live structured session → 'structured'.
- *   3. Stopped: fall back to persisted state. `sdkSessionId` defined (a real id
+ *   1. A live structured session → 'structured'.
+ *   2. Stopped: fall back to persisted state. `sdkSessionId` defined (a real id
  *      OR the `''` cleared marker) means the structured surface owns this
  *      workspace → 'structured' (resume it / clear it). Otherwise, `hasInput`
  *      with NO `sdkSessionId` is the legacy terminal-only workspace → 'wake'
  *      (#228: the SDK wake path adopts its terminal transcript, so it resumes in
- *      the Agent view instead of relaunching a PTY).
- *   4. Neither surface has ever run → 'unknown'.
+ *      the Agent view).
+ *   3. Nothing has ever run → 'unknown'.
  *
- *  A workspace cannot be BOTH live at once in practice (one agent per worktree),
- *  but if a caller ever passes both live, PTY wins deterministically — it is the
- *  visible foreground surface.
- *
- *  NOTE the deliberate asymmetry at step 3: a STOPPED structured workspace is
+ *  NOTE the deliberate asymmetry at step 2: a STOPPED structured workspace is
  *  identified by `sdkSessionId !== undefined`, not by liveness. `''` (the
  *  sdkClear marker) still counts as structured — the workspace's surface is
  *  structured even though its conversation was cleared, so a restart should
- *  re-open a structured session, not spawn a PTY. */
+ *  re-open a structured session. */
 export function classifyRestartMode(
   ws: RestartWorkspaceView,
   live: RestartLiveness,
 ): RestartMode {
-  if (live.ptyLive) return 'pty';
   if (live.sdkLive) return 'structured';
   // #178 seam (c): a PHANTOM id (non-undefined but with no on-disk transcript)
   // is DELIBERATELY still 'structured' — this classifier decides the SURFACE
   // that owns the workspace, not whether a resume is safe. Routing it structured
   // is CORRECT: the structured restart path (ensureSession, agent-sdk.ts seam a)
   // proactively drops the phantom id and starts FRESH, redelivering the opening
-  // prompt. Do NOT reroute a phantom to 'pty'/'unknown' here — that would send it
-  // down the terminal path and lose the structured fresh-start heal. The
+  // prompt. Do NOT reroute a phantom to 'unknown' here — that would refuse a
+  // restart the structured fresh-start heal can serve. The
   // resume-safety discriminator lives at the resume site, never here.
   if (ws.sdkSessionId !== undefined) return 'structured';
   if (ws.hasInput === true) return 'wake';
@@ -103,15 +88,12 @@ export function classifyRestartMode(
 /** The side effects the restart orchestration needs. Injected so the routing —
  *  the T111.4 gate class — is testable without Electron: a stub records WHICH
  *  effect fired for a given workspace, and the must-FAIL control mutates the
- *  routing (force it to always call `restartPty`) and asserts a structured
+ *  routing (force it to always call `restartWake`) and asserts a structured
  *  workspace is mishandled. */
 export interface RestartEffects {
   /** Structured (SDK) restart: sdkStop → killKeeper → ensureSession (default,
    *  resumes the transcript) or sdkClear (fresh). */
   restartStructured(fresh: boolean): Promise<void>;
-  /** PTY (terminal) restart: stop the live PTY (if any), respawn main-side with
-   *  `--continue` (default) or vierge (fresh). */
-  restartPty(fresh: boolean): Promise<void>;
   /** Legacy terminal-only restart (#228): adopt the terminal transcript through
    *  the SDK wake path, then restart the session in the Agent view (default), or
    *  clear it (fresh). Never launches a PTY. */
@@ -124,9 +106,9 @@ export interface RestartEffects {
  *  restart): the caller turns that into a diagnosable refusal.
  *
  *  This is the T111.4 gate class isolated: mutate this function to drop the
- *  `structured` branch (so it falls through to PTY) and a structured workspace
- *  is routed through `restartPty` — the must-FAIL control observes exactly that
- *  in restart-mode.test.ts. */
+ *  `structured` branch (so it falls through to the wake effect) and a structured
+ *  workspace is routed through `restartWake` — the must-FAIL control observes
+ *  exactly that in restart-mode.test.ts. */
 export async function routeRestart(
   mode: RestartMode,
   fresh: boolean,
@@ -139,12 +121,8 @@ export async function routeRestart(
     await effects.restartStructured(fresh);
     return 'structured';
   }
-  if (mode === 'wake') {
-    await effects.restartWake(fresh);
-    return 'wake';
-  }
-  await effects.restartPty(fresh);
-  return 'pty';
+  await effects.restartWake(fresh);
+  return 'wake';
 }
 
 /** The reply the `/restart` route answers and the CLI renders. `ok:false`

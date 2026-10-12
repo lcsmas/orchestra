@@ -1713,8 +1713,7 @@ module that consumes the seams below.
   ledger #261 row numbers): **1/2** composer = HUMAN → `sdkSend` commit-point gate `agent-sdk.ts:2954` (AUTO refused with no session/turn/
   error row/pending prompt) · **4** `recoverPendingPromptsInner` `:3546` (held *before* `keepOnlyPendingPrompts` drops the entries) ·
   **5/6/7** `dispatchRestartRequest` `restart-workspace.ts:80` (`trigger==='toolbar'` ⇒ human; refused before any stop) ·
-  **11** PTY opening brief, fire-time — `scheduleOpeningBrief` (`src/main/opening-brief-pty.ts`, called from the `pty:start` handler; arm `pty_brief` drives the real scheduler + gate, the wiring test pins the handler call and forbids any other `writePty(`) · **13** account-migrate resume
-  `workspaces.ts:2981` · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
+  **11** PTY opening brief, fire-time — `scheduleOpeningBrief` (`src/main/opening-brief-pty.ts`, called from the `pty:start` handler; arm `pty_brief` drives the real scheduler + gate, the wiring test pins the handler call and forbids any other `writePty(`) · **13** (account-migrate resume — DELETED with the PTY resume, #232; the migration starts no turn) · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
   **16** usage-limit auto-resume `prompt-queue.ts:235` (before budget, clear and re-mark) · **17** timer flush `:132` before the queue is
   cleared (“Send now” `force` = human) · **18/19** `dispatchMessageRequestUnmirrored` `workspaces.ts:3488` (parked in the inbox) ·
   **20/21** `dispatchSpawnRequest` `:1722` before the worktree exists (a human click has no `from`) · **23** inbox re-drive
@@ -1820,9 +1819,9 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write (and, #204, `run hold|resume`) THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
 | `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
 | `src/main/bus-run-anchor.ts` | **#166 PRODUCER GATE** `shouldBumpCoordinatorGeneration(anchor, runRowExists)` — pure: bump IFF `anchorIsOrchestrator && wsId===anchorId && runRowExists` (excludes members = never fence the live anchor; excludes first-start = stays gen 0). |
-| `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); `startAgentPty` opt `coordinatorReplacement` bumps before `extraEnv` + plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only); `markPtyRestartPending`/`consumePtyRestartPending` (the toolbar-live-PTY + branch-switch `pty:restart` routes); `switchWorkspaceBranch` marks pending. |
+| `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); `startAgentPty` opt `coordinatorReplacement` bumps before `extraEnv` + plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only; NO caller sets it since #232 — #233 deletes the launcher). The `markPtyRestartPending`/`consumePtyRestartPending` pending-replacement flag and the branch-switch agent `pty:restart` are gone (#232). |
 | `src/main/agent-sdk.ts` | **#166** `buildSdkEnv` plumbs `ORCHESTRA_COORDINATOR_GENERATION` (parity); `sdkRestart` bumps on both branches, non-fresh AFTER the mid-turn guard (a refused restart never bumps). |
-| `src/main/restart-workspace.ts` + `src/main/api-handlers.ts` | **#166** `restartPty` passes `coordinatorReplacement:true`; toolbar `restartAgent`+`ptyStart` mark/consume the pending-replacement flag. |
+| `src/main/restart-workspace.ts` + `src/main/api-handlers.ts` | **#166** the SDK restart (`sdkRestart` → `maybeBumpCoordinatorOnReplacement`) is the only coordinator-replacement bump since #232; the PTY restart effect and the toolbar live-PTY restart that marked/consumed a pending flag are gone. |
 
 ## Schema — `MIGRATIONS[5]`, `SCHEMA_VERSION 4 → 5`
 

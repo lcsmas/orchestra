@@ -59,8 +59,6 @@ export interface MigrateAccountResult {
   branch?: string;
   /** The account id the workspace is now pinned to, or null for default login. */
   accountId?: string | null;
-  /** True when the agent was running and was auto-resumed after the move. */
-  resumed?: boolean;
   error?: string;
 }
 

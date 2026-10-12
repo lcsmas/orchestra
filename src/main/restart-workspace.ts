@@ -6,20 +6,14 @@
 // but nothing in between, so an agent could not restart a peer (or itself) by
 // script.
 //
-// It routes BOTH agent surfaces (the ticket's gap #3 — the UI Restart button
-// gates on `isRunning(id)` = PTY-only and silently skips a structured session):
+// The Agent view is the only agent mode (#219/#230/#232), so a restart has two
+// routes (there is no PTY route any more):
 //
-//   - PTY (terminal agent): stop the live PTY (if any) and respawn it MAIN-SIDE
-//     via startAgentPty. A socket call has no renderer, so we cannot rely on the
-//     renderer-driven `pty:restart` broadcast the UI uses — startAgentPty is the
-//     same respawn account-migration / wake already use headlessly. Default
-//     resumes (`claude --continue`); `--fresh` launches vierge.
 //   - STRUCTURED (SDK session): sdkRestart, which reuses agent-sdk's internal
 //     restart recipe (sdkStop → killKeeper → ensureSession, resuming the
 //     transcript) for the default, and sdkClear for `--fresh`.
 //   - WAKE (#228): a stopped LEGACY terminal-only workspace (hasInput, no
 //     sdkSessionId) — sdkWakeRestart adopts its terminal transcript, then sdkRestart.
-//     Only a LIVE PTY still takes the PTY branch (removed with the live-PTY cleanup).
 //
 // The pure surface decision lives in src/shared/restart-mode.ts so it is
 // testable without Electron (classifyRestartMode); this module wires the live
@@ -32,8 +26,7 @@
 
 import { store } from './store';
 import { log } from './logger';
-import { isRunning, stopPty, getPtySize } from './pty';
-import { startAgentPty, clearBusRunStale, startWorkspaceAgentHeadless } from './workspaces';
+import { clearBusRunStale, startWorkspaceAgentHeadless } from './workspaces';
 import { sdkRestart, sdkWakeRestart } from './agent-sdk';
 import { sdkSessionLive, sdkFirstTurnFailed } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
@@ -49,21 +42,15 @@ import type { RestartTrigger } from '../shared/types';
 
 export type { RestartResult } from '../shared/restart-mode.ts';
 
-// A stopped PTY has no live winsize; a socket restart has no renderer to assert
-// one. Reuse the size the terminal last had (survives stopPty in pty.ts), else
-// a headless default — same fallback wakeAgentWithPrompt uses.
-const RESTART_FALLBACK_COLS = 120;
-const RESTART_FALLBACK_ROWS = 32;
-
 /** Restart the workspace's agent process. `id` is a workspace id; `fresh` maps
  *  to the CLI `--fresh` flag.
  *
  *  This is the THIN Electron adapter: it resolves the store record, the live
- *  probes (`isRunning`/`sdkSessionLive`), and the real side effects, then hands
- *  them to the PURE `resolveRestart` (src/shared) which owns every guard, the
- *  mode routing, and the error wrap — so all of that has a runtime arm without
- *  Electron (issue #111 F1, restart-mode.test.ts). Neither effect runs any git
- *  op → worktree/branch/commits untouched (T111.3). */
+ *  probe (`sdkSessionLive`), and the real side effects, then hands them to the
+ *  PURE `resolveRestart` (src/shared) which owns every guard, the mode routing,
+ *  and the error wrap — so all of that has a runtime arm without Electron
+ *  (issue #111 F1, restart-mode.test.ts). Neither effect runs any git op →
+ *  worktree/branch/commits untouched (T111.3). */
 export async function dispatchRestartRequest(input: {
   id?: string;
   fresh?: boolean;
@@ -77,7 +64,7 @@ export async function dispatchRestartRequest(input: {
   const ws = id ? (store.getWorkspace(id) ?? null) : null;
   const fresh = input.fresh === true;
   const trigger: RestartTrigger = input.trigger ?? 'cli';
-  // #226: sandbox agents are paused — refuse BEFORE the classifier so `--fresh` (sdkClear), a legacy hasInput/no-session ws (PTY route) and recordRestart's state write are all covered.
+  // #226: sandbox agents are paused — refuse BEFORE the classifier so `--fresh` (sdkClear), a legacy hasInput/no-session ws (wake route) and recordRestart's state write are all covered.
   const paused = sandboxPausedMessage(ws);
   if (paused) return { ok: false, error: paused };
   // #252 fleet PAUSE (ledger #261 rows 5/6/7): the toolbar Restart is a HUMAN act (allowed, un-pauses nothing); `orchestra restart`
@@ -88,7 +75,7 @@ export async function dispatchRestartRequest(input: {
   // #286 Admission: under low memory an AUTOMATIC restart of a fleet member WAITS — BEFORE the classifier and any stop, so a held restart never
   // stops a running session. The toolbar Restart is a human act and passes. The release re-enters here with `admitted`.
   if (!input.admitted && id && ws) {
-    const liveAtHold = isRunning(id) || sdkSessionLive(id);
+    const liveAtHold = sdkSessionLive(id);
     const gate = admissionGate({
       wsId: id,
       ws,
@@ -102,12 +89,12 @@ export async function dispatchRestartRequest(input: {
         const w = store.getWorkspace(id);
         // A member that was STOPPED when its restart was held and that a person has since started (the composer reaches `sdkSend` without
         // passing the two gates) needs no restart any more — it would be a redundant stop/start at recovery (review F4).
-        return !!w && !w.archived && (liveAtHold || !(isRunning(id) || sdkSessionLive(id)));
+        return !!w && !w.archived && (liveAtHold || !sdkSessionLive(id));
       },
     });
     if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('restart', gate.since) };
   }
-  const live = { ptyLive: id ? isRunning(id) : false, sdkLive: id ? sdkSessionLive(id) : false, sdkFailed: id ? sdkFirstTurnFailed(id) : false };
+  const live = { sdkLive: id ? sdkSessionLive(id) : false, sdkFailed: id ? sdkFirstTurnFailed(id) : false };
   // #227: a kept child whose SDK start failed owes its task and nothing ever ran (the classifier would say 'unknown'):
   // Restart retries THAT start, delivering the task once.
   const owed = !!(id && ws && restartOwesOpeningTask(ws, live));
@@ -126,23 +113,6 @@ export async function dispatchRestartRequest(input: {
       // wake path adopts its terminal transcript, then the session restarts in the
       // Agent view. No PTY is launched.
       restartWake: (f) => sdkWakeRestart(id!, { fresh: f, trigger }),
-      restartPty: async (f) => {
-        // Stop the live process (if any), then respawn main-side. When already
-        // stopped, isRunning is false and stopPty is a no-op — we just
-        // (re)launch. Reuse the last known size so an open terminal keeps its
-        // width across the out-of-band respawn.
-        if (isRunning(id!)) stopPty(id!);
-        const size = getPtySize(id!);
-        // #166 — a restart REPLACES the coordinator process on the same run, so
-        // bump the generation (startAgentPty gates the bump on the ws being its
-        // own orchestrator anchor; a member restart no-ops).
-        await startAgentPty(
-          ws!,
-          size?.cols ?? RESTART_FALLBACK_COLS,
-          size?.rows ?? RESTART_FALLBACK_ROWS,
-          { fresh: f, coordinatorReplacement: true },
-        );
-      },
     },
     onError: (mode, message) => log.warn(`restart: ${mode} restart failed for ${id}: ${message}`),
   });

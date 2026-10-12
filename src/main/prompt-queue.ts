@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { platform } from './platform';
 import { log } from './logger';
 import { store } from './store';
-import { isRunning, writePty } from './pty';
 import { wakeAgentWithPrompt } from './workspaces';
 import { sdkSessionLive } from './sdk-delivery';
 import { refreshAccountsNow } from './account-usage';
@@ -30,8 +29,8 @@ import { isSleeping, wakeHeldForMemory } from './admission-wake';
 // its workspace record (store.json → survives restarts); this module's flusher
 // watches the usage pollers' caches and delivers a workspace's queue as soon as
 // a snapshot fetched AFTER the newest queued prompt shows the account usable
-// again. Delivery reuses the peer-message path: typed into the live TUI, or
-// waking the stopped agent with `claude --continue`.
+// again. Delivery reuses the peer-message path: `wakeAgentWithPrompt` — the next
+// turn of a live SDK session, or waking the stopped agent (resuming its session).
 //
 // No network calls of its own — it only reads the two pollers' caches
 // (account-usage.ts ≥180s per account, usage.ts ~60s for the default login) and
@@ -150,9 +149,9 @@ export async function flushQueuedPrompts(
     return { ok: false, delivered: 0, error: 'held for memory (Admission) — the parked prompts stay queued' };
   }
 
-  // One turn, oldest-first. Joining beats submitting N separate turns: the
-  // live-TUI path would race Claude's own input handling on the later sends,
-  // and the wake path can only hand over a single opening prompt.
+  // One turn, oldest-first. Joining beats submitting N separate turns: a
+  // later send would race the first turn's start, and the wake path can only
+  // hand over a single opening prompt.
   const body = queue
     .map((p) => p.text)
     .join('\n\n')
@@ -175,24 +174,15 @@ export async function flushQueuedPrompts(
     broadcast(restored);
   };
 
-  if (isRunning(id)) {
-    // Type the body, then a SEPARATE carriage return a beat later so the TUI
-    // submits it as one turn — same trick as the peer-message live path.
-    writePty(id, body);
-    setTimeout(() => writePty(id, '\r'), 80);
-    return { ok: true, delivered: queue.length };
-  }
-
   try {
     if (await wakeAgentWithPrompt(id, body, opts.force ? { origin: 'human' } : undefined)) {
       // Insurance mirrored from dispatchMessageRequest: a woken agent that
       // dies almost immediately lost the injected prompt — restore the queue
-      // so the user still sees (and can re-send) it. A structured (SDK) session
-      // has no PTY, so isRunning is always false for it: treat a live SDK
-      // session as "still up" too, or the insurance would wrongly re-queue an
-      // already-delivered structured turn.
+      // so the user still sees (and can re-send) it. A live SDK session is
+      // "still up", or the insurance would wrongly re-queue an
+      // already-delivered turn.
       setTimeout(() => {
-        if (!isRunning(id) && !sdkSessionLive(id)) void requeue();
+        if (!sdkSessionLive(id)) void requeue();
       }, 5000);
       return { ok: true, delivered: queue.length };
     }
@@ -317,10 +307,8 @@ async function resumeUsageLimited(now: number, only?: string): Promise<void> {
     // That is strictly worse than never having shipped auto-resume.
     //
     // Reachable, not theoretical: `wakeAgentWithPrompt` returns false when
-    // `!ws || ws.archived || isRunning(id)`, and `isRunning` is a plain
-    // PTY-session check (`pty.ts`) — the candidate filter does NOT exclude a
-    // workspace with a coexisting terminal PTY, which is precisely the
-    // `driveStatus` configuration `markStoppedOnUsageLimit`'s own doc discusses.
+    // `!ws || ws.archived`, on a refused start (sandbox pause, fleet Pause) or when the SDK session
+    // fails to start.
     await clearStopReason(ws.id).catch(() => {});
     let woke = false;
     try {

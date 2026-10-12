@@ -42,7 +42,6 @@ import {
   startPty,
   writePty,
   readScrollback,
-  getPtySize,
 } from './pty';
 import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
@@ -1569,7 +1568,6 @@ export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin, ad
 async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitted = false): Promise<SdkStartResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-  if (isRunning(id)) return { ok: true };
   // #226: sandbox agents are paused — refuse before any start (a sandbox ws is never spawned today; no PTY fallback could mask it, #227).
   const paused = sandboxPausedMessage(ws);
   if (paused) return { ok: false, error: paused };
@@ -1590,7 +1588,7 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
       report: (text) => reportAdmissionFailure(id, text),
       stillOwed: () => {
         const w = store.getWorkspace(id);
-        return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id) && !isRunning(id);
+        return !!w && !w.archived && owesOpeningTask(w) && !sdkSessionLive(id);
       },
     });
     if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('spawn', gate.since) };
@@ -2052,18 +2050,7 @@ async function markWorkspaceStaleRun(ws: Workspace, newRunId: string): Promise<v
  */
 async function reconcileRunAfterReparent(
   oldAnchors: Map<string, string>,
-  opts: {
-    noRestart: boolean;
-    /** #171 — treat a LIVE raw-PTY session as un-restartable: mark it stale
-     *  (deferred) instead of restarting it. The structured restart has a
-     *  mid-turn guard (`sdkRestart` throws → {ok:false} → the stale fallback
-     *  below), but the PTY restart (`restartPty`) has NO working guard and would
-     *  kill a mid-turn TUI. A raw PTY exposes no turn state we can read, so we
-     *  cannot PROVE it idle — the arm-2 "never a mid-turn kill" contract forces
-     *  us to defer rather than gamble. Passed only by `promote` (the #171 fix);
-     *  attach/demote/adopt keep their established #142 auto-restart behavior. */
-    preferStaleForLivePty?: boolean;
-  },
+  opts: { noRestart: boolean },
 ): Promise<{ restarted: string[]; markedStale: string[] }> {
   const restarted: string[] = [];
   const markedStale: string[] = [];
@@ -2077,19 +2064,12 @@ async function reconcileRunAfterReparent(
     if (ws.host?.kind === 'sandbox') continue;
     try {
       const newAnchorId = resolveWaveRunId(ws);
-      const ptyLive = isRunning(ws.id);
       const candidate: ReparentCandidate = {
         oldAnchorId,
         newAnchorId,
-        live: ptyLive || sdkSessionLive(ws.id),
+        live: sdkSessionLive(ws.id),
       };
-      // #171 — under `preferStaleForLivePty` a live PTY is deferred, not
-      // restarted: force the `mark-stale` branch (only meaningful when the anchor
-      // actually changed AND a restart would otherwise fire, i.e. live + not
-      // already --no-restart). `decideReparentAction` still owns the noop /
-      // notice-only / structured-restart decisions.
-      const forceStale = opts.preferStaleForLivePty === true && ptyLive;
-      const action = decideReparentAction(candidate, opts.noRestart || forceStale);
+      const action = decideReparentAction(candidate, opts.noRestart);
       if (action.kind === 'noop') continue;
 
       // Every non-noop rewrites the notice for the NEW run FIRST — this is the
@@ -2223,13 +2203,9 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       startRunForPromoted(updated);
       log.info(`promoted worktree ${ws.branch} (${id}) to orchestrator (capability)`);
       // #171 — refresh the live session's run env now (see the pre-mutation
-      // snapshot above). preferStaleForLivePty: a working structured session's
-      // restart is refused (mid-turn guard → stale fallback) and a raw PTY is
-      // deferred — never a mid-turn kill (arm 2).
-      const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, {
-        noRestart: false,
-        preferStaleForLivePty: true,
-      });
+      // snapshot above). A working session's restart is refused (mid-turn guard →
+      // stale fallback) — never a mid-turn kill (arm 2).
+      const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
       return { ok: true, id, branch: updated.branch, kind: updated.kind, restarted, markedStale };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
@@ -2254,10 +2230,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     startRunForPromoted(updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     // #171 — refresh the live session's run env (see the pre-mutation snapshot).
-    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, {
-      noRestart: false,
-      preferStaleForLivePty: true,
-    });
+    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
     return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
@@ -2890,19 +2863,8 @@ export interface MigrateAccountResult {
   branch?: string;
   /** The account id the workspace is now pinned to, or null for default login. */
   accountId?: string | null;
-  /** True when the agent was running and was auto-resumed after the move. */
-  resumed?: boolean;
   error?: string;
 }
-
-/** Fallback PTY geometry for an agent auto-resumed after an account migration
- * (80×24 is the universal default). Only reached when the pre-stop size could
- * not be captured — normally the resume reuses the live session's winsize, so
- * an open terminal keeps its real width instead of snapping to 80 cols (the
- * renderer's refit only re-sends on container/focus changes, so it would not
- * heal a main-initiated respawn on an already-visible tab). */
-const MIGRATE_RESUME_COLS = 80;
-const MIGRATE_RESUME_ROWS = 24;
 
 /** Move a workspace's Claude Code conversation transcripts from one account's
  * config dir to another's, so `claude --continue` still resolves the session
@@ -2953,9 +2915,10 @@ async function moveWorkspaceTranscripts(
 /** Socket/IPC entry point for migrating a workspace to a different account (or
  * back to the default login with a null/empty `accountId`). Per the pinning
  * model, this must relocate the conversation, not just re-label: stop the agent
- * if it's running, move its transcripts into the target account's config dir,
- * re-pin `accountId`, sync the target account's inherited config, and — if the
- * agent was running — resume it with `--continue` under the new account.
+ * session if it's live, move its transcripts into the target account's config dir,
+ * re-pin `accountId` and sync the target account's inherited config. The next
+ * start of the Agent view session resumes `ws.sdkSessionId` from the relocated
+ * transcript under the new account (#232: no main-side auto-resume).
  *
  * Works for git workspaces AND scratch/orchestrator sessions (their pin drives
  * CLAUDE_CONFIG_DIR the same way; a never-run session simply has no transcript
@@ -2985,7 +2948,7 @@ export async function dispatchMigrateAccountRequest(input: {
   const targetAccountId = plan.targetAccountId;
   if (plan.kind === 'noop') {
     // Already on the target (both a real id or both default login) — no-op.
-    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, resumed: false };
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null };
   }
   const currentAccountId = ws.accountId ?? undefined;
 
@@ -3002,15 +2965,13 @@ export async function dispatchMigrateAccountRequest(input: {
     : defaultDir;
 
   try {
-    const wasRunning = isRunning(id);
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
     // start (buildSdkEnv), so it would keep running on the stale account and may
     // point at a transcript that moveWorkspaceTranscripts is about to move out
     // from under it. Stop it before the move; the next time the user opens the
     // structured view it starts fresh under the new account (resuming
     // ws.sdkSessionId from the now-relocated transcript). Structured sessions are
-    // reopened by the renderer on demand, so there is no main-side auto-resume to
-    // mirror the PTY one below.
+    // reopened by the renderer on demand, so there is no main-side auto-resume.
     const hadSdkSession = sdkSessionLive(id);
     if (hadSdkSession) {
       const keeperBefore = readTrackedKeeperPid(id);
@@ -3018,13 +2979,6 @@ export async function dispatchMigrateAccountRequest(input: {
       // #327: an account migration of a member WITH a kernel scope kills the old keeper and stops what the old-account session left in its scope (the next start opens a NEW scope generation).
       await stopMemberScopeIfAny(id, 'account-migration', () => killKeeperIf(id, keeperBefore, 'account-migration'));
     }
-    // Capture the live winsize before the stop: the resume below happens
-    // main-side (no renderer round-trip), and an already-visible terminal
-    // won't re-assert its size, so respawning at the old size is what keeps
-    // Claude's TUI drawing at the pane's real width.
-    const priorSize = wasRunning ? getPtySize(id) : null;
-    if (wasRunning) stopPty(id);
-
     // Move the conversation before re-pinning so a failure leaves the workspace
     // on its original account (with its history intact) rather than pinned to an
     // account whose config dir has no transcript.
@@ -3041,8 +2995,7 @@ export async function dispatchMigrateAccountRequest(input: {
     void refreshAccountsNow().catch(() => {});
 
     // Materialize the target account's inherited global config into its login
-    // dir so a non-resumed workspace is ready for its next manual launch (the
-    // resume path below also does this, but a stopped workspace won't hit it).
+    // dir so the workspace is ready for its next launch.
     if (targetAccount) {
       await syncAccountInheritance(targetAccount, { caller: 'migrate' }).catch((err) =>
         log.warn(`account-inherit: migrate-time sync failed for ${id}`, err),
@@ -3055,27 +3008,7 @@ export async function dispatchMigrateAccountRequest(input: {
     // #256: a trigger member of an auto-paused run changed account — force a fresh reading of its new account and re-evaluate the run NOW.
     void pauseAutoOnMigrate(id);
 
-    // Resume only if the agent was live when we stepped in — a workspace that
-    // was idle stays idle (the user/agent resumes it when ready), matching the
-    // "auto-stop → migrate → resume" contract without force-waking a cold one.
-    let resumed = false;
-    // #252 fleet PAUSE (ledger #261 row 13): the stop/move/re-pin above start no turn, but this RESUME does — skipped while paused.
-    const migratePaused = wasRunning ? pauseRefusal(updated, 'auto') : null;
-    if (migratePaused) log.info(`migrate: resume of ${id} skipped — ${migratePaused}`);
-    if (wasRunning && !migratePaused) {
-      try {
-        await startAgentPty(
-          updated,
-          priorSize?.cols ?? MIGRATE_RESUME_COLS,
-          priorSize?.rows ?? MIGRATE_RESUME_ROWS,
-        );
-        resumed = true;
-      } catch (err) {
-        log.warn(`migrate: resume failed for ${id}`, err);
-      }
-    }
-
-    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, resumed };
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
   }
@@ -3104,9 +3037,9 @@ export function dispatchAccountsListRequest(): AccountsListResult {
 // Agents already reach the main process over the same unix socket they use for
 // /spawn and /rename. These three routes let a running agent (a) discover the
 // other live agents, (b) read a peer's terminal transcript, and (c) hand a peer
-// a prompt. Delivery of a message is "live" when the target PTY is running (we
-// type it straight into the peer's Claude TUI, exactly like the spawn task
-// injection) and falls back to a durable per-workspace inbox file otherwise,
+// a prompt. Delivery of a message is "live" when the target has a live SDK
+// session (the text becomes its next turn), "started" when a stopped target is
+// woken with it, and falls back to a durable per-workspace inbox file otherwise,
 // which the peer drains into context on its next SessionStart.
 
 const INBOX_ROOT = path.join(os.homedir(), '.orchestra', 'inbox');
@@ -3177,7 +3110,6 @@ export interface PeerInfo {
   branch: string;
   repo: string;
   status: WorkspaceStatus;
-  running: boolean;
   lastTask?: string;
   /** The peer's agent-authored one-line status note (`orchestra status`) —
    * lets a coordinator scan swarm progress without `orchestra read`ing every
@@ -3219,7 +3151,6 @@ export async function dispatchPeersRequest(input: {
     branch: w.branch,
     repo: path.basename(w.repoPath),
     status: w.status,
-    running: isRunning(w.id),
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
     statusText: w.statusText,
     ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: HeldStartKind; since: number } } : {}),
@@ -3349,7 +3280,7 @@ export function dispatchReadRequest(input: { id: string; lines?: number }): Read
 
 export interface MessageResult {
   ok: boolean;
-  // 'live' — target was running, typed straight into its TUI.
+  // 'live' — target had a live SDK session; the message became its next turn.
   // 'started' — target was stopped, we woke it and handed it the message.
   // 'inbox' — fallback when waking failed; drained on the target's next session.
   delivery?: 'live' | 'started' | 'inbox';
@@ -3376,9 +3307,8 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * or a terminal-only workspace's newest on-disk transcript, the same session
  * `--continue` picks) so the woken agent keeps its context; a workspace that
  * never ran starts fresh with the prompt as its opening turn. There is NO
- * raw-PTY fallback (#227). Safe against the renderer's later `pty:start`, which
- * early-returns on `isRunning`. Returns false when the agent can't be woken
- * (missing / archived / a live PTY / the SDK session failed to start) so the
+ * raw-PTY fallback (#227). Returns false when the agent can't be woken
+ * (missing / archived / refused / the SDK session failed to start) so the
  * caller falls back (inbox, re-queue, error). Exported for the prompt-queue flusher, which delivers
  * usage-limit-parked prompts through the exact same live-or-wake path as peer
  * messages. */
@@ -3390,7 +3320,7 @@ export async function wakeAgentWithPrompt(
   opts?: { origin?: PauseOrigin },
 ): Promise<boolean> {
   const ws = store.getWorkspace(id);
-  if (!ws || ws.archived || isRunning(id)) return false;
+  if (!ws || ws.archived) return false;
   // #226: sandbox agents are paused — refuse here too (sdkStartAndDeliver swallows the funnel's refusal; there is no PTY fallback to mask it, #227).
   const paused = sandboxPausedMessage(ws);
   if (paused) {
@@ -3405,9 +3335,8 @@ export async function wakeAgentWithPrompt(
   }
   // A wake is a restore: drop the hibernated chip up front. Idempotent when not hibernated.
   clearHibernated(id);
-  // A live structured (SDK) session is the active agent even with no PTY: deliver
-  // the prompt as its next turn rather than spawning a raw `claude` PTY beside it.
-  // Returns true (delivered) so callers treat it exactly like a successful wake.
+  // A live structured (SDK) session is the active agent: deliver the prompt as its
+  // next turn. Returns true (delivered) so callers treat it exactly like a successful wake.
   if (await sdkDeliver(id, prompt, undefined, opts?.origin)) return true;
   // No live session — STRUCTURED-FIRST wake: start an SDK session (resuming the
   // prior conversation) and hand it the prompt as its opening turn, so the woken
@@ -3434,12 +3363,12 @@ async function wakeHeldMessageTarget(id: string): Promise<void> {
   await wakeAgentWithPrompt(id, HELD_MESSAGE_WAKE_PROMPT);
 }
 
-/** Deliver a prompt from one agent to another. If the target's PTY is running
- * the message is typed straight into its Claude TUI (live). If the target is
- * stopped we WAKE it — start its agent (resuming prior context) and hand it the
- * message as a live turn — so a delegated peer acts on the message right away.
- * Only if waking fails do we fall back to the durable inbox file, which the
- * target drains into context on its next SessionStart. */
+/** Deliver a prompt from one agent to another. If the target has a live SDK
+ * session the message becomes its next turn (live). If the target is stopped we
+ * WAKE it — start its agent (resuming prior context) and hand it the message as
+ * a live turn — so a delegated peer acts on the message right away. Only if
+ * waking fails do we fall back to the durable inbox file, which the target
+ * drains into context on its next SessionStart. */
 export async function dispatchMessageRequest(
   input: {
     from?: string;
@@ -3557,17 +3486,11 @@ async function dispatchMessageRequestUnmirrored(
   const fromWs = input.from ? store.getWorkspace(input.from) : undefined;
   const fromBranch = fromWs?.branch ?? 'external';
   const fromId = input.from ?? 'external';
-  // Normalize newlines: a bare \r submits Claude's TUI prematurely, so keep
-  // only \n inside the body and let the explicit carriage return below submit.
+  // Keep only \n inside the body (CR-strip) — the message becomes a user turn verbatim.
   const body = formatPeerMessage(fromBranch, fromId, text).replace(/\r/g, '');
 
-  // A workspace running in the STRUCTURED (SDK) view has no PTY, so isRunning()
-  // is false and the wake path below would spawn a stray second raw `claude`
-  // agent that never receives this message. Deliver to the live SDK session
-  // instead — it becomes that session's next turn, the same "live" semantics as
-  // typing into a running TUI. Checked first so a structured session always wins
-  // over a wake-spawn. (sdkDeliver reports false when no structured session is
-  // live, so the PTY path below is unchanged for terminal-mode workspaces.)
+  // A live structured (SDK) session takes the message as its next turn ("live"); checked first so
+  // a live session always wins over a wake. (sdkDeliver reports false when no session is live.)
   // Tag the delivery STRUCTURALLY (issue #56). We already know exactly who sent
   // it, so the structured view never has to guess from the text: the tag rides
   // onto the user-message event and renders as a compact collapsible row instead
@@ -3619,14 +3542,6 @@ async function dispatchMessageRequestUnmirrored(
     };
   }
 
-  if (isRunning(input.to)) {
-    // Type the message, then a SEPARATE carriage return a beat later, so the TUI
-    // submits it as one turn instead of treating the trailing newline as a pasted line.
-    writePty(input.to, body);
-    setTimeout(() => writePty(input.to, '\r'), 80);
-    return { ok: true, delivery: 'live', branch: target.branch };
-  }
-
   // #287 Admission: a stopped FLEET member's wake would START a process — under low memory it WAITS. The message is parked durably in the inbox (the existing
   // fallback, reported honestly as 'inbox') and the queue wakes the member when its turn comes; its inbox hook drains the block on that very prompt.
   if (await wakeHeldForMemory(target, () => wakeHeldMessageTarget(input.to), { site: 'message', reenters: false })) {
@@ -3638,16 +3553,14 @@ async function dispatchMessageRequestUnmirrored(
   try {
     if (await wakeAgentWithPrompt(input.to, body)) {
       // Insurance: if the woken agent exits almost immediately (e.g. a resume
-      // with --continue that finds no session and bails), the live inject was
-      // lost. Park it so the next successful start still delivers it. A healthy
-      // woken agent keeps running, so this is a no-op in the normal case. A
-      // structured (SDK) wake has no PTY — isRunning is always false for it —
-      // so also treat a live SDK session as "still up", or this insurance would
-      // double-deliver an already-queued structured turn via the inbox (same
-      // guard as the prompt-queue flusher's re-queue insurance).
+      // that finds no session and bails), the live inject was lost. Park it so
+      // the next successful start still delivers it. A healthy woken agent keeps
+      // its SDK session live, so this is a no-op in the normal case (and never
+      // double-delivers an already-queued turn via the inbox — same guard as
+      // the prompt-queue flusher's re-queue insurance).
       const to = input.to;
       setTimeout(() => {
-        if (!isRunning(to) && !sdkSessionLive(to)) void queueInbox(to, body);
+        if (!sdkSessionLive(to)) void queueInbox(to, body);
       }, 5000);
       return { ok: true, delivery: 'started', branch: target.branch };
     }
@@ -3865,34 +3778,33 @@ function sanitizeBranchName(raw: string): string {
 }
 
 /** Switch the workspace to an existing branch. The worktree dir stays put —
- * branch is just a property. On success, stops any running agent/nvim so they
- * respawn against the new branch's files (any in-memory state from the old
- * branch would be stale), then emits `pty:restart`. */
+ * branch is just a property. On success, stops the agent session and the nvim
+ * PTY so they restart against the new branch's files (any in-memory state from
+ * the old branch would be stale); nvim gets a `pty:restart`, the agent session
+ * restarts lazily on the next send. */
 export async function switchWorkspaceBranch(id: string, branch: string): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   if (ws.branch === branch) return ws;
 
-  // Run the git switch FIRST, while the agent/nvim PTYs are still alive. If it
+  // Run the git switch FIRST, while the agent session and nvim PTY are still alive. If it
   // fails — e.g. the branch is already checked out in another worktree, or the
   // working tree would be clobbered — we throw without tearing anything down,
   // so the live session keeps running and the BranchPicker surfaces the error.
-  // Stopping the PTYs before a switch that might fail leaves the pane attached
+  // Stopping nvim before a switch that might fail leaves the pane attached
   // to a dead process with no restart, which silently bricks terminal input.
   await switchWorktreeBranch(ws.worktreePath, branch);
 
-  // Switch landed — now recycle the PTYs so they respawn against the new branch.
+  // Switch landed — now recycle the nvim PTY so it respawns against the new branch.
   const nvimId = `${id}:nvim`;
-  const restartAgent = isRunning(id);
   const restartNvim = isRunning(nvimId);
-  stopPty(id);
   stopPty(nvimId);
   clearScrollback(id);
   // The STRUCTURED session is a live subprocess with the OLD branch baked into
-  // its env (ORCHESTRA_BRANCH) and its context — parity with the PTY restart
-  // above: stop it so the next send starts against the new branch. Lazy
-  // restart (the renderer's next send re-opens it) matches the SDK lifecycle
-  // everywhere else; without this the live session kept stale branch context.
+  // its env (ORCHESTRA_BRANCH) and its context: stop it so the next send starts
+  // against the new branch. Lazy restart (the renderer's next send re-opens it)
+  // matches the SDK lifecycle everywhere else; without this the live session
+  // kept stale branch context.
   await sdkStopIfLive(id);
 
   const repoName = path.basename(ws.repoPath);
@@ -3907,14 +3819,6 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
-  // #166 — a branch switch respawns the agent PTY: mark it a coordinator
-  // replacement so the ptyStart respawn bumps the generation (gated on the ws
-  // being its own orchestrator anchor). Only the real workspace id — the nvim
-  // PTY has no run row and gate G would no-op it anyway.
-  if (restartAgent) {
-    markPtyRestartPending(id);
-    platform.broadcast('pty:restart', id);
-  }
   if (restartNvim) platform.broadcast('pty:restart', nvimId);
   return updated;
 }
@@ -4308,8 +4212,8 @@ orchestra send --type status --to <peer-id> <your message...>
 The bus is durable, ack'd and re-driven — a message survives the peer being
 stopped, mid-turn, or restarted, which the old channel could not guarantee.
 
-\`orchestra message\` is the PRE-BUS channel (it types into the peer's live TUI /
-wakes it, with #57-class duplicate/drop faults). On a delivery-ON run it is
+\`orchestra message\` is the PRE-BUS channel (it hands the text to the peer's live
+session / wakes it, with #57-class duplicate/drop faults). On a delivery-ON run it is
 REFUSED for coordination and points you back here:
 
 \`\`\`bash
@@ -4518,9 +4422,10 @@ orchestra add-repo <absolute-repo-path>
 ## Migrate a workspace to another Claude account
 
 Each workspace runs its agent under a pinned account (a separate Claude Code
-config dir / login). Migrating stops the agent, relocates its conversation into
-the target account's config dir, re-pins it, and resumes the agent where it left
-off — so it is safe on a RUNNING session and \`claude --continue\` keeps working.
+config dir / login). Migrating stops the agent session, relocates its conversation
+into the target account's config dir and re-pins it. Nothing restarts the agent:
+its next message resumes the conversation under the new account — so migrating a
+RUNNING session interrupts its current turn.
 Works for git, scratch and orchestrator workspaces alike.
 
 \`\`\`bash
@@ -5275,10 +5180,9 @@ export async function startAgentPty(
     /** #166 — this launch REPLACES a live coordinator process on the same run
      *  (a restart/branch-switch respawn), so bump the coordinator generation
      *  before building the env so the successor presents the new one and the
-     *  old process's in-flight writes are fenced. Set ONLY by the restart routes
-     *  (restartPty effect; ptyStart when it consumes a pending-replacement mark);
-     *  a first open leaves it false and never bumps. The bump is still gated on
-     *  the workspace being its own orchestrator anchor. */
+     *  old process's in-flight writes are fenced. NO caller sets it since #232 (the
+     *  PTY restart routes are gone; the SDK restart bumps in agent-sdk.ts); the launcher is
+     *  deleted by #233. The bump is still gated on the workspace being its own orchestrator anchor. */
     coordinatorReplacement?: boolean;
   },
 ): Promise<void> {
@@ -5583,30 +5487,6 @@ function startRunForPromoted(newlyOrchestrator: Workspace): void {
   void startBusRunAndWriteNotice(newlyOrchestrator).catch((e) =>
     log.warn(`bus-run-anchor: promote run-start/notice failed for ${newlyOrchestrator.id}`, e),
   );
-}
-
-// #166 — pending PTY-restart replacements. A coordinator's PTY can be recycled
-// by a route that does NOT pass through `dispatchRestartRequest`: the toolbar
-// Restart on a LIVE pty (`restartAgent` → stopPty + broadcast 'pty:restart') and
-// a branch switch (`switchWorkspaceBranch` → broadcast 'pty:restart'). Both land
-// in the renderer's onPtyRestart → the `ptyStart` IPC handler → startAgentPty,
-// which is ALSO the first-open funnel and so cannot itself tell a replacement
-// from a first start. The broadcaster (trusted, main-side) records the intent
-// here; `ptyStart` consumes it and tells startAgentPty this launch REPLACES a
-// coordinator, so the generation bump fires on exactly the restart routes and
-// never on a first open (#134: enumerate every replacement entry point).
-const pendingPtyRestart = new Set<string>();
-/** Mark that this workspace's next `ptyStart` is a coordinator-replacement
- *  respawn (a 'pty:restart' the renderer will bounce back). Best-effort intent
- *  flag; the actual bump is still gated on the workspace being its own
- *  orchestrator anchor (see maybeBumpCoordinatorOnReplacement). */
-export function markPtyRestartPending(id: string): void {
-  pendingPtyRestart.add(id);
-}
-/** Consume the pending-replacement flag set by markPtyRestartPending. Returns
- *  true (and clears it) iff this ptyStart is a replacement respawn. */
-export function consumePtyRestartPending(id: string): boolean {
-  return pendingPtyRestart.delete(id);
 }
 
 /**

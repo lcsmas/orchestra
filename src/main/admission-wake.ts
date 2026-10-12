@@ -1,5 +1,5 @@
 // Admission for WAKES (#287, wave G ledger #295, epic #284) — the thin, platform-aware wrapper the wake sites call. The queue, the permit and the release order
-// live in admission.ts (`holdWake`); this file only answers "is this member a SLEEPING FLEET member?" from the real probes (no live SDK session, no PTY, a parent).
+// live in admission.ts (`holdWake`); this file only answers "is this member a SLEEPING FLEET member?" from the real probes (no live SDK session, a parent).
 //
 // A site calls `wakeHeldForMemory(ws, retry, {site})` BEFORE it starts anything: `true` = HELD — skip it and leave the durable pending state exactly as it is
 // (the bus lot, the parked prompts, the usage-limit marker, the inbox block, the pending prompts); the queue re-runs `retry` — the site's own normal path —
@@ -8,7 +8,6 @@
 
 import type { Workspace } from '../shared/types';
 import { canOrchestrate } from '../shared/types';
-import { isRunning } from './pty';
 import { sdkAwaitFirstTurn, sdkSessionLive } from './sdk-delivery';
 import { probeKeeper } from './keeper-client';
 import { store } from './store';
@@ -17,9 +16,9 @@ import { ADMISSION_WAKE_SETTLE_MS, holdWake, setAdmissionWakeSettle, wakeWouldBe
 // A wake release waits (bounded) for the started member's first turn so the next fresh reading includes its memory — wired HERE because admission.ts is platform-free.
 setAdmissionWakeSettle((id) => sdkAwaitFirstTurn(id, ADMISSION_WAKE_SETTLE_MS));
 
-/** No live SDK session and no PTY: a wake would START a process. */
+/** No live SDK session: a wake would START a process. */
 export function isSleeping(id: string): boolean {
-  return !isRunning(id) && !sdkSessionLive(id);
+  return !sdkSessionLive(id);
 }
 
 /** F1: the member's CLI is ALIVE in a detached keeper (an app relaunch leaves the in-memory session absent until its view opens): a wake only REATTACHES it — no new process,

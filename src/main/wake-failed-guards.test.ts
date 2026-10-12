@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// #227 — fix-checks / send-review must not answer "requested" for a prompt that went nowhere: when `wakeAgentWithPrompt` returns
-// false and no PTY is live they throw AGENT_WAKE_FAILED. api-handlers.ts imports Electron, so this pins the source shape; the
+// #227/#232 — fix-checks / send-review must not answer "requested" for a prompt that went nowhere: when `wakeAgentWithPrompt` returns
+// false they throw AGENT_WAKE_FAILED (no PTY to type into any more). api-handlers.ts imports Electron, so this pins the source shape; the
 // built-app rig clauses `wake/review-…` / `wake/fix-checks-…` (scripts/e2e-agent-view-removal.mjs) drive the behaviour.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(HERE, 'api-handlers.ts'), 'utf8');
@@ -19,13 +19,12 @@ function handlerBody(name: string): string {
 }
 
 for (const name of ['fixChecks', 'sendReviewToAgent']) {
-  test(`${name}: a failed wake with no live PTY throws AGENT_WAKE_FAILED BEFORE any typing into a PTY`, () => {
+  test(`${name}: a failed wake throws AGENT_WAKE_FAILED unconditionally — nothing is ever typed into a PTY (#232)`, () => {
     const body = handlerBody(name);
     const wake = body.indexOf('wakeAgentWithPrompt(');
-    const guard = body.indexOf('if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED)');
-    const write = body.indexOf('writePty(');
-    assert.ok(wake >= 0 && guard > wake, `${name}: the guard must follow the wake call`);
-    assert.ok(write > guard, `${name}: the guard must precede writePty (nothing is typed into a PTY that does not exist)`);
+    const guard = body.indexOf('throw new Error(AGENT_WAKE_FAILED)');
+    assert.ok(wake >= 0 && guard > wake, `${name}: the throw must follow the wake call`);
+    assert.ok(!/\bwritePty\(|\bisRunning\(/.test(body), `${name}: no live-PTY branch survives`);
   });
 }
 

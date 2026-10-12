@@ -248,8 +248,8 @@ rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux 
 - **`submitTaskWhenReady(...)`** — UNREFERENCED since #227 (deleted with the agent-PTY
   launcher by #233). Was the PTY fallback's task typing over the SessionStart sentinel.
 - **`wakeAgentWithPrompt(id, prompt)`** — the live-or-wake delivery used by peer
-  messages and the prompt-queue flusher. Order: live SDK session (`sdkDeliver`)
-  → live PTY (typed) happens in the callers → **structured wake**
+  messages, the prompt-queue flusher, fix-checks and send-review. Order: live SDK session (`sdkDeliver`)
+  → **structured wake**
   (`sdkStartAndDeliver`: lazy SDK session resuming `ws.sdkSessionId`, or — for a
   terminal-only workspace — the newest on-disk transcript, adopted as the resume
   id by agent-sdk's `sdkWake`, the same session `--continue` picks). **If the SDK
@@ -257,11 +257,12 @@ rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux 
   more**; every caller's existing fallback applies: `dispatchMessageRequest` → inbox,
   the prompt queue → `requeue()`, the usage-limit nudge → re-mark, and
   `git:fixChecks` / `git:sendReview` (`api-handlers.ts`) → throw `AGENT_WAKE_FAILED`
-  instead of typing into a PTY that does not exist and answering "requested".
-  Post-wake "did it survive"
+  instead of answering "requested" (#232: the old "type it into a live PTY" branch of
+  those two handlers, of `dispatchMessageRequest` and of the prompt-queue flush is gone —
+  none of them reads `isRunning` of an agent any more; a refused/unstartable wake is the
+  only "false"). Post-wake "did it survive"
   insurance checks (`dispatchMessageRequest`'s inbox park, prompt-queue's
-  re-queue) treat a live SDK session as "still up" (`sdkSessionLive`), since
-  `isRunning` is PTY-only and always false for a structured wake.
+  re-queue) ask `sdkSessionLive` only.
 - **The owed brief rides the FIRST send of ANY session start** (`agent-sdk.ts sdkSend`, the one
   chokepoint composer, wake, peer message, bus wake and `recoverPendingPrompts` all pass): a session
   created while the workspace owes its task snapshots `session.owedBrief` BEFORE `consume` can run;
@@ -273,7 +274,7 @@ rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux 
   or a typed message can no longer retire a brief nothing delivered. `wakeAgentWithPrompt` does not
   flip `hasInput` itself while a brief is owed.
 - **Restart of a kept child** — `dispatchRestartRequest` (`restart-workspace.ts`) checks
-  `owesOpeningTask(ws)` (and no live PTY/SDK session) BEFORE the classifier: nothing ever
+  `owesOpeningTask(ws)` (and no live SDK session) BEFORE the classifier: nothing ever
   ran, so `classifyRestartMode` would answer `unknown` ("Open it first"). It calls
   `startWorkspaceAgentHeadless` instead — still failing → `{ok:false,'restart failed: …'}` and a
   fresh error row; cause removed → the task is delivered as the opening turn and `hasInput`
@@ -316,7 +317,7 @@ fake memory source + recording seam; `RIG_REPO=<master>` is the must-FAIL run), 
 #### Wakes (#287, wave G ledger #295) — every automatic START of a SLEEPING fleet member waits too
 Held kind `'wake'` (`HeldStartKind`, rank 1 < spawn/restart rank 2: a held spawn/restart COVERS a wake of the same member — the wake is answered "held", its site registration is
 dropped, and what it was for reaches the running member afterwards through the site's OWN trigger: the next sweep ≤ 60 s / the next bus write, the 20 s prompt-queue tick, the inbox
-hook at the start). **Sleeping** = no PTY and no live SDK session (`isSleeping`, `src/main/admission-wake.ts`); a turn to a running member, a top-level workspace and a human act are
+hook at the start). **Sleeping** = no live SDK session (`isSleeping`, `src/main/admission-wake.ts`; the bus-wake roster's `sleeping` is the same predicate — #232); a turn to a running member, a top-level workspace and a human act are
 never held. A wake site calls `wakeHeldForMemory(ws, retry, {site, stillOwed?, reenters?})` BEFORE it starts anything: `true` = skip it and leave the durable pending state EXACTLY as it is.
 **One slot per member, one retry per SITE** (`'sweep' | 'flush' | 'resume' | 'message' | 'recovery'`; `wakeSites` in admission.ts): two sites holding the same member never overwrite each
 other; the entry stays queued while ANY site is owed (judged once, before the first retry). The queue (coordinators first, one at a time, fresh `sampleMemoryGuardNow()` +
@@ -332,7 +333,7 @@ wake-roster.ts) · **parked-prompt flush** (`flushQueuedPrompts`, prompt-queue.t
 auto-resume** (`resumeUsageLimited(now, only?)`: held before the budget, the marker clear and the re-mark; the release re-runs THIS member only) · **peer message to a stopped member**
 (`dispatchMessageRequest`: parked in the inbox, honest `delivery:'inbox'`; the queue wakes the member with a content-free prompt and the inbox HOOK drains the block at session start —
 nothing re-releases it; a failed park withdraws only the `'message'` site, `dropWakeSite`) · **view-open recovery** (`agentSdkHistory`, api-handlers.ts: pending prompts resent to a
-sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass the hold). NOT gated: watchdog `recycleSession`, account-migrate resume, Reprise starts
+sleeping member). A held-SPAWN child is no longer started by a bus message (it used to bypass the hold). NOT gated: watchdog `recycleSession`, Reprise starts
 (replace a running session / human or Pause lift), `--detached` spawns. **Keeper-resident members are never held** (review F1): after an app relaunch a member's CLI can live on in its
 detached keeper while the in-memory session is absent (reattach is lazy) — its wake only REATTACHES (no new process). `keeperResident` (admission-wake.ts: `probeKeeper` running AND
 `everStarted !== false` AND not `shuttingDown` — the never-started / dying cases are killed + respawned by the attach path, i.e. a real START, so they ARE held) is consulted only when the wake
@@ -416,15 +417,15 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | Handler | Line | Route | Purpose |
 |---|---|---|---|
 | `dispatchSpawnRequest` | `:932` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`). **A start that fails is reported, not masked (#227):** `ok:false` + `error` naming the reason and the kept child (`id`/`branch` also on the reply); the child stays stopped with its task, Restart retries. No PTY fallback. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. **Omitted → the user's *spawned-agent default model*** (`defaultKind: 'spawned'` from `/spawn` and sandbox spawn; the UI's spawn-from-ticket click passes `'workspace'`). `createWorkspace` freezes `modelForNewWorkspace(...)` onto every new record (`src/shared/model-defaults.ts`; settings in `store.getModelDefaults()`, edited from the sidebar's Default models modal `ModelDefaultsSettings.tsx`); launch paths resolve via `resolveLaunchModel` (`default` marker = account default, no `--model`). The reasoning effort mirrors it: `createWorkspace` freezes an explicit `/spawn` `effort` (`orchestra spawn --effort`), else `effortForNewWorkspace(store.getEffortDefaults(), defaultKind)`, onto `ws.sdkEffort` (`src/shared/effort-defaults.ts`; same modal; `default` = leave unset), and the PTY launch passes `--effort` when set (the SDK path already reads `ws.sdkEffort`). The model guard is a charset/length check only — a dead model id passes it and fails at the child's own launch — a CLI that exits, or errors its first turn, before producing output now makes spawn not-ok (#227 D7); one that only retries (`api_retry`, process alive) is ok + a "not confirmed" note. |
-| `dispatchPromoteRequest` | `:2010` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. **#171: promote is a re-anchoring op** — the promoted node stops resolving to its parent OPS/LEAD and becomes its OWN run, so it now `snapshotRunAnchors(id)` **before** the mutation and `reconcileRunAfterReparent(…, {noRestart:false, preferStaleForLivePty:true})` **after** (both routes), exactly like attach/demote. An idle live session is restarted so its rebuilt env re-reads `ORCHESTRA_RUN_ID` + generation (removing the manual `orchestra restart` the ticket hit 4×); a working structured session's restart is refused (mid-turn guard → `{ok:false}` → mark-stale) and a raw PTY is deferred (`preferStaleForLivePty` — the PTY restart has no working guard). Returns `restarted`/`markedStale` like the re-parent handlers. **#221:** promoting a child of a run-less PLAIN workspace also starts that workspace's MISSION run (coordinator = itself) and nests the child's run under it — the parent stays a plain workspace (see `bus.md` §#221). |
+| `dispatchPromoteRequest` | `:2010` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. **#171: promote is a re-anchoring op** — the promoted node stops resolving to its parent OPS/LEAD and becomes its OWN run, so it now `snapshotRunAnchors(id)` **before** the mutation and `reconcileRunAfterReparent(…, {noRestart:false})` **after** (both routes), exactly like attach/demote. An idle live session is restarted so its rebuilt env re-reads `ORCHESTRA_RUN_ID` + generation (removing the manual `orchestra restart` the ticket hit 4×); a working structured session's restart is refused (mid-turn guard → `{ok:false}` → mark-stale). (The old raw-PTY deferral, `preferStaleForLivePty`, left with the PTY restart — #232.) Returns `restarted`/`markedStale` like the re-parent handlers. **#221:** promoting a child of a run-less PLAIN workspace also starts that workspace's MISSION run (coordinator = itself) and nests the child's run under it — the parent stays a plain workspace (see `bus.md` §#221). |
 | `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
 | `dispatchAttachRequest` | `:1456` | `/attach` | Re-parent under a coordinator (`canOrchestrate`), or clear `parentId` to detach. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable and the old bare self-check was no longer sufficient. |
 | `dispatchSetRepoAssociationRequest` | `:1834` | `/setRepoAssociation` | File an `'orchestrator'`-KIND session under a repo's sidebar section (with its subtree), or clear it. Writes **`repoAssociation`, never `repoPath`** — see below. Refuses a git worktree (it already groups by its own repo) and any path not in `store.repos`. |
 | `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. NOT LANDED is not always a defect: deliberately-unmerged work (spikes) closes as INTENTIONALLY UNMERGED — the contracts forbid only the *silent* strand. **Exit codes** (`orchestra verify-landed`): `0` LANDED · `2` NOT LANDED · `1` could-not-check, so a close-out gate can distinguish unmerged work from a failed check — never gate on `$?` being nonzero alone. See `hooks-cli-socket.md`. |
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
-| `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
+| `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/repo/status[/files/+-/note] and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
-| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session, else typed into a running TUI), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
+| `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session — nothing is ever typed into a PTY, #232), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:722` | `/rename` | see Branch management. |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
 | `dispatchDeleteWorkspaceRequest` | `:1054` | `/deleteWorkspace` | Hard-delete. |
@@ -460,9 +461,9 @@ governed by the flags of the **innermost** run of its two parties).
   mid-turn guard, or any relaunch failure) it now DOWNGRADES to `markWorkspaceStaleRun`
   instead of only logging — so the live session is never left on the OLD run without
   an operator signal (the #171 promote symptom), and never killed mid-turn (arm 2:
-  "refused-or-deferred explicitly"). `preferStaleForLivePty` (promote only) additionally
-  forces a LIVE raw PTY down the mark-stale branch up front, because `restartPty` has
-  no working guard and a PTY exposes no turn state to prove it idle. `markWorkspaceStaleRun`
+  "refused-or-deferred explicitly"). The reconcile asks `sdkSessionLive` only (#232: the
+  old `preferStaleForLivePty` option, which forced a LIVE raw PTY down the mark-stale branch
+  because the PTY restart had no mid-turn guard, left with the PTY restart). `markWorkspaceStaleRun`
   is the shared marker+flag writer both the explicit `--no-restart` branch and this
   fallback call. Rig: `scripts/verify-promote-run-refresh.mjs` (`pnpm test:promote-refresh`)
   drives the SHIPPED `dispatchPromoteRequest` over a real bus and mutation-proves the
@@ -499,8 +500,9 @@ governed by the flags of the **innermost** run of its two parties).
   `.orchestra/.branch-renamed` sentinel holds the live count so the hook advances
   stage / self-disables mid-session before a pty restart refreshes the env.
 - **`switchWorkspaceBranch(id, branch, window)`** `:1454` — `git switch`, stop
-  agent+nvim PTYs, clear scrollback, set `hasInput:false` + `branchManuallySet`,
-  emit `pty:restart`.
+  the SDK session (`sdkStopIfLive`, lazy restart on the next send) and the nvim PTY, clear scrollback, set
+  `hasInput:false` + `branchManuallySet`, emit `pty:restart` for NVIM only (#232: no agent `pty:restart`
+  and no "pending coordinator replacement" mark — the SDK restart bumps the generation itself).
 
 ## Hooks installed per worktree
 `installOrchestraHooks(worktreePath)` — `workspaces.ts:2156`. Idempotent via a

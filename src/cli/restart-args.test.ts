@@ -118,8 +118,8 @@ test('restart <id>: posts id with fresh=false, exits 0', needsBuild, () => {
 
 test('#228 restart output names no surface: whatever mode the reply carries, no "terminal"/"structured"', needsBuild, () => {
   // One Agent view → the CLI no longer reports terminal vs structured. Drive it with each mode the
-  // server can answer (the old CLI printed `terminal` for anything but 'structured').
-  for (const mode of ['wake', 'structured', 'pty']) {
+  // server can answer (the old CLI printed `terminal` for anything but 'structured'; 'pty' is gone, #232).
+  for (const mode of ['wake', 'structured']) {
     const r = driveCli(['restart', 'ws-target'], `return { ok: true, mode: '${mode}', fresh: !!body.fresh };`);
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.stdout, 'Restarted ws-target (conversation preserved)\n', `mode=${mode}`);

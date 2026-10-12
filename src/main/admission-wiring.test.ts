@@ -40,9 +40,9 @@ test('spawn gate: inside startWorkspaceAgentOnce, AFTER the owed check and BEFOR
   assert.match(ws, /startWorkspaceAgentHeadless\(id: string, origin\?: PauseOrigin, admitted = false\)/);
 });
 
-test('spawn stillOwed: owed AND no live SDK session AND no running PTY AND not archived (the PTY half cannot be driven by the rig — it is pinned on text)', () => {
+test('spawn stillOwed: owed AND no live SDK session AND not archived', () => {
   const body = fn(ws, 'async function startWorkspaceAgentOnce(');
-  assert.match(body, /return !!w && !w\.archived && owesOpeningTask\(w\) && !sdkSessionLive\(id\) && !isRunning\(id\);/);
+  assert.match(body, /return !!w && !w\.archived && owesOpeningTask\(w\) && !sdkSessionLive\(id\);/);
 });
 
 test('spawn reply carries held; peers carry heldForMemory', () => {
@@ -101,8 +101,8 @@ test('F4 report: a failed release tells the coordinator — a bus `escalation` f
 
 test('F4 composer: the held restart is dropped when a member that was STOPPED at hold time has been started by a person (liveAtHold)', () => {
   const body = fn(restart, 'export async function dispatchRestartRequest(');
-  assert.match(body, /const liveAtHold = isRunning\(id\) \|\| sdkSessionLive\(id\);/);
-  assert.match(body, /return !!w && !w\.archived && \(liveAtHold \|\| !\(isRunning\(id\) \|\| sdkSessionLive\(id\)\)\);/);
+  assert.match(body, /const liveAtHold = sdkSessionLive\(id\);/);
+  assert.match(body, /return !!w && !w\.archived && \(liveAtHold \|\| !sdkSessionLive\(id\)\);/);
 });
 
 test('F1 the restart reply carries its note and the CLI prints it through the shared formatter; F3 /busStatus labels through heldStartLabel', () => {
@@ -179,14 +179,14 @@ test('#287 bus-wake: the hold branch follows decideWake\'s skip handling, preced
 
 test('#287 roster: fleetMember / sleeping / coordinator come from the real probes', () => {
   assert.match(roster, /fleetMember: !!ws\.parentId,/);
-  assert.match(roster, /sleeping: !isRunning\(ws\.id\) && !sdkSessionLive\(ws\.id\),/);
+  assert.match(roster, /sleeping: !sdkSessionLive\(ws\.id\),/);
   assert.match(roster, /coordinator: canOrchestrate\(ws\),/);
   assert.match(index, /setWakeRosterEntry\(\(id\) => \{\s*\n\s*const w = store\.getWorkspace\(id\);\s*\n\s*return w \? wakeRosterEntry\(w\) : null;/, 'the per-reader roster seam is wired (Admission re-checks one reader, not the whole roster)');
 });
 
-test('#287 admission-wake: "sleeping" = no PTY AND no live SDK session; a fleet member = has a parent; the default stillOwed re-checks both at release time', () => {
+test('#287 admission-wake: "sleeping" = no live SDK session; a fleet member = has a parent; the default stillOwed re-checks both at release time', () => {
   const aw = read('src/main/admission-wake.ts');
-  assert.match(aw, /return !isRunning\(id\) && !sdkSessionLive\(id\);/);
+  assert.match(aw, /return !sdkSessionLive\(id\);/);
   assert.match(aw, /fleetMember: !!ws\.parentId,/);
   assert.match(aw, /sleeping: isSleeping\(id\),/);
   assert.match(aw, /coordinator: canOrchestrate\(ws\),/, 'coordinators first holds for EVERY wake site (flush / resume / message / recovery all go through this wrapper), not only the sweep');

@@ -48,16 +48,16 @@ reads them transiently to query usage.
   (first wins); the AccountsSettings checkbox ("Default for scratch sessions")
   behaves radio-like. No flag → default login, as before.
 - **Migration** (existing workspace → another account): re-pinning alone breaks
-  `--continue` (its transcript lives in the *old* config dir), so migration
+  the resume (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
-  auto-stops the agent, `moveWorkspaceTranscripts` moves
+  stops the SDK session if one is live (`sdkStopIfLive`; for a scoped member the old keeper and scope too, #327), `moveWorkspaceTranscripts` moves
   `<old>/projects/<mangled-worktree>/*.jsonl` → the new account's config dir
-  (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId`,
-  `syncAccountInheritance(target)`, then resumes via `startAgentPty` if it was
-  running — at the winsize the PTY had before the stop (`getPtySize`, pty.ts),
-  not a blind 80×24: an already-visible terminal never re-asserts its size
-  after a main-initiated respawn, so a default geometry would leave Claude's
-  TUI drawing at half the pane width. Pure decision `planAccountMigration(current, rawTarget, known)`
+  (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId` and
+  `syncAccountInheritance(target)`. **There is no main-side resume (#232):** the Agent view's next
+  send/open starts a fresh session under the new account resuming `ws.sdkSessionId` from the relocated
+  transcript. (The old `startAgentPty` resume — at the winsize the PTY had before the stop — and the
+  `resumed` field of the reply / the CLI's `(resumed)` suffix are gone; the fleet-Pause row that skipped
+  that resume with them.) Pure decision `planAccountMigration(current, rawTarget, known)`
   (`accounts.ts`) returns `error`/`noop`/`migrate` (empty target = default login).
   Works for git workspaces AND scratch/orchestrator sessions (the pin drives
   `CLAUDE_CONFIG_DIR` identically; a never-run session just has no transcript to
@@ -334,9 +334,9 @@ off mid-task and had nothing queued.
   failure**. Without that re-mark a failed wake leaves the workspace outside the
   `lastStopReason === 'usage_limit'` candidate filter, so no later tick
   reconsiders it: frozen forever, with the ⏸ glyph gone so nothing on screen
-  says to look. Reachable — `wakeAgentWithPrompt` returns false when a terminal
-  PTY coexists (`isRunning`), which the filter does not exclude, AND (#227) when the
-  SDK session cannot start (there is no PTY fallback any more). `flushQueuedPrompts`
+  says to look. Reachable — `wakeAgentWithPrompt` returns false (#227/#232) when the
+  SDK session cannot start (there is no PTY fallback and no PTY check any more), on a sandbox pause or on a
+  fleet-Pause refusal. `flushQueuedPrompts`
   pairs the same ordering with `requeue()`; this path needs its own equivalent.
 - **Session death is a SECOND detection site.** `consume()`'s `finally`
   (`src/main/agent-sdk.ts`) builds its own `turn-end` and emits it directly,
@@ -357,8 +357,7 @@ off mid-task and had nothing queued.
   (`.ws-glyph-usagelimit`, muted rather than red — nothing is wrong and nobody
   is needed), and the tooltip reads `⏸ limit reached — resumes ~6pm`, dropping
   the ETA when the reset time is unknown rather than inventing one.
-- **Scope**: STRUCTURED (SDK) sessions only — the raw PTY path carries no
-  structured limit signal. A `/loop` wakeup armed before a limit hit is still
+- **Scope**: STRUCTURED (SDK) sessions — the only agent mode since #230. A `/loop` wakeup armed before a limit hit is still
   not re-armed at the reset (`src/main/loop-scan.ts`): declared OUT of v1.
 
 ## Auto Pause on a usage limit / auto Reprise (#256, wave E ledger #276 D6)
@@ -424,9 +423,9 @@ queue survives restarts) instead of burning turns on "limit reached" errors.
 - **Main** (`src/main/prompt-queue.ts`): `addQueuedPrompt` / `removeQueuedPrompt`
   / `flushQueuedPrompts` (clears the queue *before* delivery so a tick +
   "Send now" race can't double-send; failure paths re-queue). Delivery joins
-  the queue into ONE turn and reuses the peer-message path: `writePty` + `\r`
-  into a live TUI, else the exported `wakeAgentWithPrompt` (`workspaces.ts`)
-  with the same 5s died-immediately insurance. `startPromptQueueFlusher`
+  the queue into ONE turn and reuses the peer-message path: the exported
+  `wakeAgentWithPrompt` (`workspaces.ts`; a live SDK session takes it as its next turn, #232 — no typing into a PTY)
+  with the same 5s died-immediately insurance (`sdkSessionLive`). `startPromptQueueFlusher`
   ticks every 20s over pure cache reads (`getAccountUsage` / `getLastUsage` —
   no network of its own) and, once a blocked reset time passes, nudges
   `refreshAccountsNow` (throttled 120s per workspace) so the ≥180s account

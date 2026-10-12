@@ -86,7 +86,7 @@ import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
 import { applyToolEvent, type OpenTool } from '../shared/open-tools.ts';
 import { registerSdkDelivery, type SdkFirstTurnOutcome } from './sdk-delivery';
-import { owesOpeningTask } from '../shared/opening-task.ts';
+import { owesOpeningTask, refusedResumeClearValue } from '../shared/opening-task.ts';
 import { classifyTurnMessage, isIntentionalEnd } from '../shared/first-turn.ts';
 import { interleaveStartErrors } from '../shared/start-errors.ts';
 import { interleaveMemNotices, makeMemNotice, type MemNoticeEntry } from '../shared/mem-notice.ts';
@@ -1688,14 +1688,15 @@ async function consume(session: Session): Promise<void> {
     // failure surfaces HERE, not in sdkSend's catch where the original guard
     // lived (silent-failure audit H3). Clear the id on the positive signal only;
     // transient failures keep it so a later send resumes the same conversation.
-    // #230: an id an ADOPTION wrote clears to '' (not undefined — a hasInput ws would re-adopt the same transcript). Real refusal shape
+    // #232: a refused id clears to '' (never undefined — a hasInput ws would re-adopt the same transcript at the next first action; `refusedResumeClearValue` — a kept
+    // child still OWING its brief keeps `undefined`, so Restart re-delivers it). Real refusal shape
     // (MEASURED, SDK 0.3.241 + CLI 2.1.291): a `result/error_during_execution` message, then "returned an error result: No conversation found".
     if (isBadResumeError(message)) {
       const wsNow = store.getWorkspace(session.wsId);
       if (wsNow?.sdkSessionId) {
         const wasAdopted = session.adoptedResume !== undefined && wsNow.sdkSessionId === session.adoptedResume;
         if (wasAdopted) log.warn(`agent-sdk: ${session.wsId} adopted terminal transcript ${session.adoptedResume} did not resume (the CLI refused it) — cleared, the next start is fresh`);
-        void persistWorkspacePatch(session.wsId, { sdkSessionId: wasAdopted ? '' : undefined });
+        void persistWorkspacePatch(session.wsId, { sdkSessionId: refusedResumeClearValue(wsNow) });
       }
     }
   } finally {
@@ -3007,7 +3008,7 @@ export async function sdkSend(
     // internet-loss case this resume exists to survive (isBadResumeError guards it).
     const wsNow = store.getWorkspace(wsId);
     if (wsNow?.sdkSessionId && isBadResumeError(message)) {
-      await persistWorkspacePatch(wsId, { sdkSessionId: undefined }).catch(() => {});
+      await persistWorkspacePatch(wsId, { sdkSessionId: refusedResumeClearValue(wsNow) }).catch(() => {}); // #232: '' not undefined (see consume) — undefined lets the funnel re-adopt the refused transcript
     }
     throw err;
   }
@@ -3452,9 +3453,9 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
  *  resume id, so a structured wake continues the same conversation the old PTY
  *  wake's `claude --continue` would have — instead of silently starting blank.
  *  (`sdkSessionId === ''` is sdkClear's explicit "cleared" marker and starts
- *  fresh; an adopted id the CLI refuses ("No conversation found") is cleared to
- *  that marker by `consume` (`session.adoptedResume`, #230), so a corrupt
- *  transcript can't wedge future starts.) */
+ *  fresh; ANY id the CLI refuses ("No conversation found"), adopted or not, is
+ *  cleared to that marker by `consume` (#230/#232), so a corrupt transcript
+ *  can't wedge future starts or be re-adopted.) */
 export async function sdkWake(
   wsId: string,
   text: string,

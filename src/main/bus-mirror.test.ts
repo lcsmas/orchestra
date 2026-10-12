@@ -196,7 +196,7 @@ test('SOURCE BINDING — the source-binding guard can actually fail', () => {
 
 // ─── The stubbed harness that runs the REAL dispatch body ──────────────────
 
-type Fate = 'sdk-live' | 'sdk-parked' | 'pty-live' | 'woken' | 'inbox' | 'unknown-target';
+type Fate = 'sdk-live' | 'sdk-parked' | 'woken' | 'inbox' | 'unknown-target';
 
 interface RunResult {
   result: { ok: boolean; delivery?: 'live' | 'started' | 'inbox'; error?: string };
@@ -225,13 +225,11 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
     store: { getWorkspace: (_id: string) => target },
     formatPeerMessage: (branch: string, id: string, text: string) => `[${branch}/${id}] ${text}`,
     // 'started' → reportedDeliveryFor gives 'live'; 'dropped' → 'inbox' fallback;
-    // 'none' → fall through to the PTY / wake / inbox ladder.
+    // 'none' → fall through to the wake / inbox ladder.
     sdkDeliverConfirmed: async () =>
       fate === 'sdk-live' ? 'started' : fate === 'sdk-parked' ? 'dropped' : 'none',
     reportedDeliveryFor: (a: string) => (a === 'started' ? 'live' : a === 'none' ? null : 'inbox'),
     requiresInboxFallback: (a: string) => a === 'dropped' || a === 'timeout',
-    isRunning: () => fate === 'pty-live',
-    writePty: () => {},
     wakeAgentWithPrompt: async () => fate === 'woken',
     sdkSessionLive: () => true,
     queueInbox: async () => {
@@ -281,9 +279,6 @@ test('T116.3 — the old channel really produces all three outcomes, and each is
   const live = await runDispatch('sdk-live', db);
   assert.deepEqual(live.result, { ok: true, delivery: 'live', branch: 'target-branch' });
 
-  const ptyLive = await runDispatch('pty-live', db);
-  assert.equal(ptyLive.result.delivery, 'live', 'the PTY branch is also a live delivery');
-
   const woken = await runDispatch('woken', db);
   assert.equal(woken.result.delivery, 'started', 'a woken agent reports started');
 
@@ -297,14 +292,14 @@ test('T116.3 — the old channel really produces all three outcomes, and each is
   const withdrawn = await runDispatch('unknown-target', db);
   assert.equal(withdrawn.result.ok, false, 'an unknown target is a withdrawal');
 
-  // Five DELIVERED sends are mirrored; the sixth was REFUSED and is deliberately
+  // Four DELIVERED sends are mirrored; the fifth was REFUSED and is deliberately
   // NOT in the bus (review F1) — the old channel delivered nothing, so a row
   // here would be the bus asserting a message the authoritative channel refused.
   const outcomes = mirrorRecords(db, RUN).map((r) => r.outcome);
   assert.deepEqual(
     outcomes,
-    ['live', 'live', 'live', 'inbox', 'inbox'],
-    'the five DELIVERED sends are mirrored, in order, with the right outcomes',
+    ['live', 'live', 'inbox', 'inbox'],
+    'the four DELIVERED sends are mirrored, in order, with the right outcomes',
   );
   assert.deepEqual(
     [...new Set(outcomes)].sort(),
@@ -318,7 +313,7 @@ test('T116.3 — the old channel really produces all three outcomes, and each is
   assert.equal(outcomeFor(withdrawn.result), 'withdrawn');
   assert.equal(
     db.prepare('SELECT COUNT(*) AS n FROM messages').get().n,
-    5,
+    4,
     'and the REFUSED send wrote no messages row either',
   );
 });

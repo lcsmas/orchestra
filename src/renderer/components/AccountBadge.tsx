@@ -189,9 +189,10 @@ export function WorkspaceAccountBadge({
 
 // The clickable per-workspace account control: renders the usage badge, and on
 // click drops a small menu of every configured account plus the default login.
-// Picking one migrates THIS workspace — the main process auto-stops the agent,
-// relocates its conversation into the target account's config dir, re-pins it,
-// and resumes if it was running. Confirmed first (the agent restarts). The
+// Picking one migrates THIS workspace — the main process stops its agent session,
+// relocates its conversation into the target account's config dir and re-pins it;
+// nothing restarts it (the next message resumes under the new account, #232).
+// Confirmed first (a running turn is interrupted). The
 // badge repaints itself once the `accounts:workspaceAccounts` broadcast lands.
 function WorkspaceAccountMenu({
   workspaceId,
@@ -297,8 +298,8 @@ function WorkspaceAccountMenu({
       title: 'Migrate account',
       message:
         `Migrate this workspace to “${targetLabel}”?\n\n` +
-        `Its Claude conversation moves into that account and the agent restarts ` +
-        `(resuming where it left off if it was running).`,
+        `Its Claude conversation moves into that account. A running agent is stopped ` +
+        `and picks the conversation up again under the new account on your next message.`,
       confirmLabel: 'Migrate',
     });
     if (!ok) return;

@@ -307,46 +307,22 @@ test('#166 — sdkRestart (structured restart) bumps on both branches, past the 
   assert.equal(postGuardBumps, 3, 'the #179 fresh, stalled and ordinary bumps all fire past the refusal');
 });
 
-test('#166 — the two renderer-driven pty:restart routes mark a pending replacement', () => {
-  // restartAgent (toolbar, live PTY) and switchWorkspaceBranch broadcast
-  // pty:restart, which the renderer bounces to ptyStart — which then calls
-  // startAgentPty. Without a main-side marker that respawn could not tell itself
-  // from a first open (#134 under-wire). Both broadcasters must mark pending.
-  // Anchor on the HANDLER forms (`… : async`) — the bare `restartAgent:` /
-  // `ptyStart:` keys also appear in the channel-name map earlier in the file.
+test('#166/#232 — no agent-PTY restart route survives: the only coordinator-replacement bump is the SDK restart', () => {
+  // The PTY restart routes (toolbar Restart on a live PTY, branch switch -> pty:restart -> ptyStart, the CLI restartPty effect)
+  // needed a main-side "pending replacement" marker; with no live agent PTY they and the marker are gone (#232).
   const restartAgentStart = apiHandlersSrc.indexOf('restartAgent: async');
   assert.ok(restartAgentStart > 0, 'restartAgent handler not found');
-  const restartAgentBody = apiHandlersSrc.slice(
-    restartAgentStart,
-    apiHandlersSrc.indexOf('stopAgent: async', restartAgentStart),
-  );
-  assert.match(restartAgentBody, /markPtyRestartPending\(id\)/, 'toolbar live-PTY restart marks pending');
-  assert.match(restartAgentBody, /platform\.broadcast\('pty:restart', id\)/, 'and broadcasts pty:restart');
+  const restartAgentBody = apiHandlersSrc.slice(restartAgentStart, apiHandlersSrc.indexOf('stopAgent: async', restartAgentStart));
+  assert.doesNotMatch(restartAgentBody, /markPtyRestartPending|pty:restart|isRunning\(|stopPty\(/, 'the toolbar Restart has no live-PTY branch');
+  assert.match(restartAgentBody, /dispatchRestartRequest\(\{ id, fresh: false, trigger: 'toolbar' \}\)/, 'the toolbar Restart goes through the SDK restart dispatcher');
 
   const switchBody = fnBody(workspacesSrc, 'export async function switchWorkspaceBranch(');
-  assert.match(switchBody, /markPtyRestartPending\(id\)/, 'branch switch marks pending');
+  assert.doesNotMatch(switchBody, /markPtyRestartPending|broadcast\('pty:restart', id\)/, 'a branch switch no longer respawns an agent PTY');
+  assert.match(switchBody, /broadcast\('pty:restart', nvimId\)/, 'control: the nvim pane still restarts');
 
-  // ptyStart consumes the marker and passes it into startAgentPty.
-  const ptyStartStart = apiHandlersSrc.indexOf('ptyStart: async');
-  assert.ok(ptyStartStart > 0, 'ptyStart handler not found');
-  const ptyStartBody = apiHandlersSrc.slice(
-    ptyStartStart,
-    apiHandlersSrc.indexOf('ptyWrite: async', ptyStartStart),
-  );
-  assert.match(ptyStartBody, /consumePtyRestartPending\(id\)/, 'ptyStart consumes the pending flag');
-  assert.match(
-    ptyStartBody,
-    /startAgentPty\(ws, cols, rows, \{ coordinatorReplacement \}\)/,
-    'and threads it into startAgentPty',
-  );
-});
-
-test('#166 — the restartPty effect marks its startAgentPty a coordinatorReplacement', () => {
-  assert.match(
-    restartSrc,
-    /coordinatorReplacement: true/,
-    'the CLI/#142 restart PTY effect must flag the replacement',
-  );
-  // Negative control: the source actually contains the startAgentPty call it flags.
-  assert.match(restartSrc, /await startAgentPty\(/, 'restart-workspace calls startAgentPty');
+  assert.doesNotMatch(workspacesSrc, /markPtyRestartPending|consumePtyRestartPending/, 'the pending-replacement marker is gone');
+  assert.doesNotMatch(apiHandlersSrc, /markPtyRestartPending|consumePtyRestartPending/, 'ptyStart no longer consumes a marker');
+  assert.doesNotMatch(restartSrc, /startAgentPty|coordinatorReplacement/, 'restart-workspace launches no agent PTY');
+  // control: the SDK restart still bumps the generation (agent-sdk.ts sdkRestart -> maybeBumpCoordinatorOnReplacement).
+  assert.match(agentSdkSrc, /if \(restartingWs\) maybeBumpCoordinatorOnReplacement\(restartingWs\);/, 'the SDK restart bumps the coordinator generation');
 });

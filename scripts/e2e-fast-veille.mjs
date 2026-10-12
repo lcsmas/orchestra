@@ -190,7 +190,7 @@ const logText = () => { try { return fs.readFileSync(logger.getLogFile(), 'utf8'
 const veilleLines = (id) => logText().split('\n').filter((l) => l.includes(`hibernating `) && l.includes(`(${id})`));
 // Would the member be eligible if it had been idle forever, with Admission OPEN? True ⇒ only recency (or the guard under test) stands between it and Veille.
 const eligibleIfOld = (id, over = {}) => shouldHibernate(wsOf(id), {
-  now: Date.now(), lastActivityAt: 0, isActive: false, hasLivePty: false, hasLiveSdk: true, hasLiveRunPty: false,
+  now: Date.now(), lastActivityAt: 0, isActive: false, hasLiveSdk: true, hasLiveRunPty: false,
   hasLiveBackgroundTask: false, thresholdMs: resolveHibernateAfterMs(undefined), monotonicIdleMs: Number.MAX_SAFE_INTEGER, admissionHeld: false, liveReliquats: 0, reliquatDelayMs: 30 * MIN, ...over,
 });
 

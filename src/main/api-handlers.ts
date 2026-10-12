@@ -61,8 +61,6 @@ import {
   startAgentPty,
   switchWorkspaceBranch,
   unarchiveWorkspace,
-  markPtyRestartPending,
-  consumePtyRestartPending,
 } from './workspaces';
 import { buildScriptEnv, loginShellArgv, readScriptLog, setupLogPath } from './scripts';
 import {
@@ -880,12 +878,7 @@ export const apiHandlers: ApiHandlerTable = {
     // drop the hibernation chip and re-stamp activity — otherwise the next
     // sweep could see a freshly-woken agent as still idle and kill it again.
     clearHibernated(id);
-    // #166 — if this ptyStart is a coordinator-replacement respawn (a toolbar
-    // Restart on a live PTY, or a branch switch — both broadcast 'pty:restart'
-    // which the renderer bounces here), consume the flag so startAgentPty bumps
-    // the coordinator generation. A first open has no pending flag → no bump.
-    const coordinatorReplacement = consumePtyRestartPending(id);
-    await startAgentPty(ws, cols, rows, { coordinatorReplacement });
+    await startAgentPty(ws, cols, rows);
     // Preserve the attention signals (`waiting`, the auto-unread bell) across
     // restarts; only clear stale `running` state left over from a prior crash.
     if (ws.status === 'running') {
@@ -978,29 +971,11 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   restartAgent: async (id) => {
-    // #148 gap #3: the toolbar Restart button used to gate on `isRunning(id)`
-    // (PTY-only) and silently no-op for a STRUCTURED-only workspace. Route the
-    // structured surface through the same conversation-preserving restart the
-    // CLI / #142 use (sdkRestart), tagged `toolbar` so the neutral restart row's
-    // detail names the producer. A live PTY keeps the existing renderer-driven
-    // terminal-reset path (unchanged behaviour for the terminal agent).
-    if (isRunning(id)) {
-      // Mirror the branch-switch path: stop the agent PTY (the frontend's
-      // terminal just resets) and tell it to spawn a fresh PTY. `pty:start`
-      // picks `claude --continue` since ws.hasInput is true, which is what
-      // makes MCP/settings.json edits take effect.
-      stopPty(id);
-      // #166 — a live-PTY toolbar Restart respawns via the renderer's
-      // onPtyRestart → ptyStart; mark it a coordinator replacement so that
-      // respawn bumps the generation (gated on the ws being its own anchor).
-      markPtyRestartPending(id);
-      platform.broadcast('pty:restart', id);
-      return;
-    }
-    // No live PTY: dispatchRestartRequest classifies the surface (a live or
-    // persisted structured session → sdkRestart; a stopped legacy terminal-only
-    // workspace → sdkWakeRestart, #228). It refuses diagnosably when nothing has
-    // ever run.
+    // #148 gap #3 / #232: the toolbar Restart goes through the same conversation-preserving
+    // restart the CLI / #142 use, tagged `toolbar` so the neutral restart row's detail names
+    // the producer. dispatchRestartRequest classifies the surface (a live or persisted
+    // structured session → sdkRestart; a stopped legacy terminal-only workspace →
+    // sdkWakeRestart, #228). It refuses diagnosably when nothing has ever run.
     const { dispatchRestartRequest } = await import('./restart-workspace.ts');
     const res = await dispatchRestartRequest({ id, fresh: false, trigger: 'toolbar' });
     if (!res.ok) log.warn(`restartAgent: ${id} — ${res.error ?? 'unknown'}`);
@@ -1292,16 +1267,10 @@ export const apiHandlers: ApiHandlerTable = {
       `\nRead the failing logs with \`${logCmd}\` (run it in this worktree), ` +
       `fix the root cause, run the failing checks locally to prove the fix, then commit and push. ` +
       `Tell me what was broken and what you changed.`;
-    // Live SDK session or stopped agent: wakeAgentWithPrompt handles both
-    // (deliver-as-next-turn / structured-first wake). It returns false when a
-    // terminal PTY is live — then type it in.
-    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) { // #252: a human click (row 28)
-      // #227: false is a live PTY (typed in, unchanged — #232) OR an SDK session that would not start (no
-      // PTY to type into): never answer "requested" for a prompt that went nowhere.
-      if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED);
-      writePty(id, prompt);
-      setTimeout(() => writePty(id, '\r'), 80);
-    }
+    // Live SDK session or stopped agent: wakeAgentWithPrompt handles both (deliver-as-next-turn /
+    // structured-first wake). #227/#232: false = the SDK session would not start (no PTY to type into):
+    // never answer "requested" for a prompt that went nowhere.
+    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) throw new Error(AGENT_WAKE_FAILED); // #252: a human click (row 28)
     return { status: 'requested' as const };
   },
 
@@ -1349,14 +1318,8 @@ export const apiHandlers: ApiHandlerTable = {
     // #226: same as fixChecks — a paused sandbox agent cannot take the review; throw, never 'requested'.
     const paused = sandboxPausedMessage(ws);
     if (paused) throw new Error(paused);
-    // Exactly the fixChecks delivery seam: a live SDK session takes it as its
-    // next turn, a stopped agent gets a structured-first wake, and a live
-    // terminal PTY (where wakeAgentWithPrompt returns false) gets it typed in.
-    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) { // #252: a human click (row 28)
-      if (!isRunning(id)) throw new Error(AGENT_WAKE_FAILED); // #227 — see fixChecks
-      writePty(id, prompt);
-      setTimeout(() => writePty(id, '\r'), 80);
-    }
+    // Exactly the fixChecks delivery seam: a live SDK session takes it as its next turn, a stopped agent gets a structured-first wake.
+    if (!(await wakeAgentWithPrompt(id, prompt, { origin: 'human' }))) throw new Error(AGENT_WAKE_FAILED); // #252: a human click (row 28); #227/#232 — see fixChecks
     return { status: 'requested' as const };
   },
 

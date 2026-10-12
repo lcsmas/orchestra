@@ -27,7 +27,7 @@ test('the sweep module imports no filesystem/process-spawning module', () => {
   // Positive control FIRST: prove the file was actually read and this
   // assertion can see its contents, so a zero-match result below means
   // "absent", not "I read an empty/wrong file".
-  assert.match(sweepSource, /stopPty/, 'control: sweep source should mention stopPty');
+  assert.match(sweepSource, /sdkStopIfLive/, 'control: sweep source should mention sdkStopIfLive');
   assert.ok(sweepSource.length > 2000, 'control: sweep source should be substantial');
 
   for (const forbidden of [
