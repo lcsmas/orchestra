@@ -2,11 +2,6 @@ import { platform, orchestraHome } from './platform';
 import path from 'node:path';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { getHookSocketPath } from './hooks-server';
-import { agentCliBinDir } from './cli-shim';
-import { applyAgentTmpEnv } from './agent-tmpdir';
-import { getEventsDir } from './events-spool';
-import { reconcileExited } from './activity';
 import { log, scoped } from './logger';
 
 /** PTY-scoped logger. Terminal desync/garble bugs are historically the hardest
@@ -38,9 +33,6 @@ async function createTransport(
 interface Session {
   transport: SessionTransport;
   id: string;
-  /** Workspace id for agent PTYs (undefined for nvim/run PTYs). Surfaces the
-   *  $ORCHESTRA_WS_ID / $ORCHESTRA_EVENTS_DIR env the activity hooks write to. */
-  workspaceId?: string;
   /** True for sandbox-hosted sessions. The transport pid (if any) is then a
    *  container-side pid, so the resource sampler must not look it up in the
    *  local process table — it could match an unrelated local process. */
@@ -69,12 +61,6 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
-// Last winsize each session had, surviving stopPty. Main-initiated respawns of
-// a stopped session (account migration's resume, wakeAgentWithPrompt) reuse it
-// so an already-visible terminal — whose renderer only re-asserts size on
-// container/focus changes, never on an out-of-band respawn — keeps its real
-// width instead of snapping to a default geometry.
-const lastSizes = new Map<string, { cols: number; rows: number }>();
 
 // Per-workspace PTY logs live under the active ORCHESTRA_HOME, like every other
 // runtime artifact (logger.ts, the store, the ui-sock) — a dev instance
@@ -167,8 +153,8 @@ export function clearScrollback(id: string) {
 
 /** Ceiling on output retained while the window can't receive it. Beyond this,
  *  keep only the newest half: the screen is desynced either way at that point,
- *  and the remount path's repaint bounce (pty:repaint / pty:start on a live
- *  session) is what heals it — unbounded growth against a dead window is the
+ *  and the remount path's repaint bounce (`nvim:start` on a live
+ *  session, `repaintPty`) is what heals it — unbounded growth against a dead window is the
  *  only truly unrecoverable outcome. */
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 
@@ -233,18 +219,11 @@ export async function startPty(opts: {
   args: string[];
   cols: number;
   rows: number;
-  /** Workspace id to surface to Claude hooks via $ORCHESTRA_WS_ID. Omit for
-   * non-agent PTYs (nvim, etc.) that don't need to phone status home. */
-  workspaceId?: string;
   /** Extra env vars merged into the spawned process env (after process.env,
    * before TERM and the hook vars). Used by the run-script PTY to expose
    * `ORCHESTRA_PORT`, `ORCHESTRA_ROOT_PATH`, etc. */
   extraEnv?: Record<string, string>;
-  /** Inherited process.env keys to DROP before `extraEnv` applies — a pinned
-   * account's ambient auth vars (see ACCOUNT_AUTH_ENV_VARS). Local spawns only:
-   * a remote env starts from `extraEnv`, so there is nothing to drop. */
-  stripEnv?: string[];
-  /** Where the agent runs. Absent / `{kind:'local'}` → local node-pty (default).
+  /** Where the process runs. Absent / `{kind:'local'}` → local node-pty (default).
    * `{kind:'sandbox'}` → RemoteTransport over the connection to its endpoint;
    * `cwd` is then a sandbox-side path and the local existence check is skipped. */
   host?: WorkspaceHost;
@@ -263,14 +242,8 @@ export async function startPty(opts: {
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 
   const remote = opts.host?.kind === 'sandbox';
-  // For a local spawn the child inherits this machine's full environment and the
-  // host-local rendezvous paths (worktree root, spool dir, hook socket). For a
-  // remote spawn none of that applies: the host's process.env must NOT be
-  // shipped across the wire into the container (it would leak the host's
-  // environment/secrets), and the rendezvous paths are sandbox-side — the shim
-  // fills in ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR / ORCHESTRA_SOCK with the
-  // container's own paths. So we send only the workspace-specific extras the
-  // agent's hooks read (ORCHESTRA_BRANCH*, ORCHESTRA_WORKTREE = the sandbox cwd).
+  // A local spawn inherits this machine's full environment. A remote spawn must NOT: the host's
+  // process.env would leak its environment/secrets into the container, so only `extraEnv` is sent.
   // Advertise the renderer terminal's real capabilities. xterm.js renders
   // 24-bit colour and — via the renderer's sync-aware write queue
   // (term-write-queue.ts) — applies ?2026 synchronized-output frames
@@ -285,50 +258,16 @@ export async function startPty(opts: {
     COLORTERM: 'truecolor',
     CLAUDE_CODE_FORCE_SYNC_OUTPUT: '1',
   };
-  const inherited: Record<string, string> = { ...(process.env as Record<string, string>) };
-  for (const k of opts.stripEnv ?? []) delete inherited[k];
   const env: Record<string, string> = remote
     ? {
         ...(opts.extraEnv ?? {}),
         ...termCaps,
       }
     : {
-        ...inherited,
+        ...(process.env as Record<string, string>),
         ...(opts.extraEnv ?? {}),
         ...termCaps,
       };
-  if (opts.workspaceId) {
-    // Absolute worktree root for hook commands — the rename hook resolves its
-    // script via this so it survives the agent `cd`-ing into a subdirectory
-    // (relative paths broke once cwd != worktree root). For remote this is the
-    // sandbox-side cwd (/workspace), which is correct inside the container.
-    env.ORCHESTRA_WORKTREE = opts.cwd;
-    // Guarantee a bare `orchestra` resolves in the agent shell: the injected
-    // skills/hooks invoke the CLI directly, and the GUI's inherited login PATH
-    // can't be trusted to contain any shim dir (and has none at all on macOS).
-    // Prepend the orchestra-owned bin dir written by installAgentCliShim().
-    // On Windows the shim is orchestra.cmd, resolved via PATHEXT (default).
-    const binDir = agentCliBinDir();
-    env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
-  }
-  if (opts.workspaceId && !remote) {
-    // Surfaced to the activity hooks: the workspace id tags every appended
-    // event, and the spool dir is where the durable hook helper writes the
-    // JSONL that events-spool.ts tails. Independent of the socket below — the
-    // spool is the primary, can't-be-dropped activity path. (Remote: the shim
-    // sets these to the container's own paths.)
-    env.ORCHESTRA_WS_ID = opts.workspaceId;
-    env.ORCHESTRA_EVENTS_DIR = getEventsDir();
-    applyAgentTmpEnv(env, opts.workspaceId); // disk TMPDIR, not the tmpfs /tmp (src/shared/agent-tmpdir.ts)
-  }
-  const sock = getHookSocketPath();
-  if (sock && opts.workspaceId && !remote) {
-    // Still needed for the agent-driven /rename and /spawn round-trips, which
-    // require a synchronous reply the socket gives and a spool file can't.
-    // (Remote: the shim serves the in-container socket and sets ORCHESTRA_SOCK.)
-    env.ORCHESTRA_SOCK = sock;
-  }
-
   const cols = Math.max(20, opts.cols);
   const rows = Math.max(5, opts.rows);
   let transport: SessionTransport;
@@ -354,7 +293,6 @@ export async function startPty(opts: {
   const session: Session = {
     transport,
     id: opts.id,
-    workspaceId: opts.workspaceId,
     remote,
     disposables: [],
     stopped: false,
@@ -368,7 +306,6 @@ export async function startPty(opts: {
     echoUntil: 0,
   };
   sessions.set(opts.id, session);
-  lastSizes.set(opts.id, { cols, rows });
 
   session.disposables.push(
     transport.onData((data) => {
@@ -400,30 +337,8 @@ export async function startPty(opts: {
       if (!session.stopped && platform.canBroadcast()) {
         platform.broadcast('pty:exit', opts.id, exitCode);
       }
-      // Reconciliation floor: once the agent process is gone it can't be
-      // `running`, so self-heal the status (the stuck-green "working" dot) to
-      // `waiting` — the status can never outlive the process even if the spool
-      // dropped a stop. This fires for a natural exit AND for an in-session
-      // deliberate stop (agent:restart, branch-switch, manual stop): in both
-      // cases there is no live agent, so the dot must not keep reading as
-      // "working". The ONE exception is app shutdown (`shuttingDown`): store
-      // writes racing the quit are unreliable, and `store.load()` resets any
-      // persisted `running` to `idle` on the next launch anyway (the agent
-      // relaunches with `--continue` when the user first opens the workspace).
-      // Only agent PTYs carry a workspaceId; nvim/run PTYs have no status.
-      //
-      // `replacedByLive` guards the restart/branch-switch path: those stop the
-      // PTY and immediately re-spawn a fresh agent under the same id. If this
-      // (stale) exit handler runs after that re-spawn, the map already holds a
-      // DIFFERENT, live session — reconciling then would wrongly knock the new
-      // agent back to `waiting`. A natural exit still has this very session in
-      // the map (it's deleted just below), and a stopped-and-gone agent has no
-      // entry at all; both correctly reconcile.
-      const taken = sessions.get(opts.id);
-      const replacedByLive = taken !== undefined && taken !== session;
-      if (!shuttingDown && !replacedByLive && session.workspaceId && platform.canBroadcast()) {
-        reconcileExited(session.workspaceId);
-      }
+      // No status reconciliation: no PTY is an agent any more (#233) — the SDK session's exit floor
+      // (agent-sdk.ts consume() → reconcileExited) heals the dot.
       disposeSession(session);
       sessions.delete(opts.id);
     }),
@@ -494,7 +409,6 @@ export function resizePty(id: string, cols: number, rows: number) {
   plog.trace(`${id}: resize ${s.cols}x${s.rows} → ${c}x${r}`);
   s.cols = c;
   s.rows = r;
-  lastSizes.set(id, { cols: c, rows: r });
   try {
     s.transport.resize(c, r);
   } catch (e) {
@@ -540,48 +454,12 @@ export function stopPty(id: string) {
   }
 }
 
-// Set once the app is tearing down (before-quit / window-all-closed). It flips
-// the exit handler from "self-heal the status dot" to "preserve `running` as a
-// resume marker": an agent that was working when the app closed should come
-// back live on the next launch, so its `running` status must survive to disk
-// untouched. An in-session stop leaves this false, so the dot reconciles
-// normally and never sticks on green.
-let shuttingDown = false;
-
 export function stopAll() {
-  shuttingDown = true;
   for (const id of sessions.keys()) stopPty(id);
 }
 
 export function isRunning(id: string) {
   return sessions.has(id);
-}
-
-/** OS pid of a live session's spawned process, or undefined when the session
- *  isn't running (or is REMOTE — a sandbox session's pid is container-side and
- *  must never be resolved against the local process table, same caveat as
- *  {@link listPtySessions}).
- *
- *  Exists so a caller that kills a session can name the pid it killed IN THE
- *  LOG: an assertion of process death has to be made by recorded pid
- *  (`ps -p <pid>`), and a pid read AFTER the kill is already gone. The
- *  hibernation sweeper samples this immediately before `stopPty`. */
-export function getPtyPid(id: string): number | undefined {
-  const s = sessions.get(id);
-  if (!s || s.remote) return undefined;
-  return s.transport.pid;
-}
-
-/** Winsize for the session: the live session's if running, else the last size
- *  it had before stopping (the renderer keeps live sizes in sync with its
- *  xterm via resizePty). Null only for a session never started this app run.
- *  Lets a main-initiated (re)spawn — account migration's resume, waking a
- *  stopped agent — use the size the terminal actually has instead of a blind
- *  default. */
-export function getPtySize(id: string): { cols: number; rows: number } | null {
-  const s = sessions.get(id);
-  if (s) return { cols: s.cols, rows: s.rows };
-  return lastSizes.get(id) ?? null;
 }
 
 /** Snapshot of every live PTY session for the resource sampler: the pty id,

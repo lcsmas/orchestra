@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Removal-assertion E2E rig — wave "Agent view only" (#219), ticket #225.
 //
-// Boots a BUILT Orchestra (path = argv[2]) in an isolated ORCHESTRA_HOME under ~ (btrfs),
+// Boots a BUILT Orchestra (path = argv[2]) in an isolated ORCHESTRA_HOME on btrfs (default /var/tmp/avr-<uid>: SHORT on purpose, see keeperSocketBudget),
 // with a seeded store, inside the compositor scripts/e2e-contained-rig.sh started, and
 // reports two observables of the RUNNING app:
 //   (1) the workspace TAB LABELS actually rendered (DOM of `.toolbar .tabs .tab`),
@@ -106,22 +106,17 @@ const EXPECT = {
   // action causes it — composer send, `!cmd`, the MCP popover (baseline: the session starts BLANK while the history pane shows the old transcript).
   firstStartAdopts: { baseline: false, after: true },
   // #231: the agent terminal's renderer surface. Preload wrappers only the agent terminal used (repaint, stopped signal, clipboard image save), the stylesheet rules of the component, and the
-  // Unicode11 addon in the manifest + lockfile. (`ptyStart` / `stopAgent` are NOT here: kept until #233 for the #232 stray-PTY seam — asserted present in both modes.)
+  // Unicode11 addon in the manifest + lockfile. (`ptyStart` / `stopAgent` are asserted gone by `launcher_removed`, #233.)
   agentTerminalWrappers: { baseline: true, after: false },
   agentTerminalCss: { baseline: true, after: false },
   unicode11InManifest: { baseline: true, after: false },
   // The addon in the BUILT renderer bundle: false in BOTH modes — B5 (#230) unmounted Terminal.tsx, so on master it is unreachable and tree-shaken already;
   // this clause is a guard against a re-import, not a removal discriminator (its mutant is the proof it can fire).
   unicode11InBundle: { baseline: false, after: false },
-  // #232 — a STRAY agent PTY (what a pre-#230 Raw tab left behind; `ptyStart` is the one way left to conjure one, until #233 deletes the launcher) must be IGNORED by
-  // every seam that used to treat a live PTY as THE agent. Baseline = the pre-#232 build: the seam types into / restarts / reaps / reports the PTY.
-  strayTyped: { baseline: true, after: false },            // message / send-review / fix-checks / prompt-queue text typed into the stray PTY (after: it goes to the SDK session)
-  strayMessageDelivery: { baseline: 'live', after: 'started' },
-  strayKilledByRestart: { baseline: true, after: false },  // toolbar Restart stops the stray PTY (after: SDK restart; the stray PTY is left alone)
-  strayKilledByBranchSwitch: { baseline: true, after: false },
-  strayMigrationResumes: { baseline: true, after: false }, // migrate-account stops + relaunches a PTY and prints `(resumed)`
-  strayHibernated: { baseline: true, after: false },       // an idle workspace whose ONLY live process is the stray PTY is reaped by the Veille sweep
-  peersRunningKey: { baseline: true, after: false },       // `/peers` entries carry `running` (derived from the PTY probe)
+  // #233 — the agent-PTY launcher's preload surface (`window.orchestra.ptyStart` / `stopAgent`). Baseline = the pre-#233 build, which still exposes both.
+  launcherWrappers: { baseline: true, after: false },
+  // #233 — the retired SessionStart readiness-sentinel hook (`$ORCHESTRA_READY_FILE`) in an installed worktree's settings.local.json after the next hook (re)install.
+  readyHookInstalled: { baseline: true, after: false },
   // #232 (review #230 r3 F1 / gate LOW 3): a REFUSED SDK-born resume id clears to the '' marker (baseline: undefined → the funnel re-adopts the same refused transcript)
   refusedIdAfter: { baseline: undefined, after: '' },
   refusedIdReadopted: { baseline: true, after: false },
@@ -347,6 +342,23 @@ async function freePort() {
   });
 }
 
+/** #233 (OPS carry from the #231 re-gate): the app puts a workspace's keeper socket at `<boot home>/keepers/<wsId>.sock`; past 100 chars `keeperSocketPath`
+ *  (src/main/keeper-client.ts) falls back to `os.tmpdir()/okeeper-<hash of wsId ALONE>.sock` — SHARED by every boot (and every concurrent rig) that seeds the
+ *  same workspace id, so the second keeper collides with the first and an arm FAILs for a reason that is not the build. The seeded ids are fixed ('ws-avr-1', …); a
+ *  workspace the app creates carries a UUID, whose hash is unique and harmless. Pure, so `socket_guard_selftest` drives the shipped function. */
+const KEEPER_SOCKET_LIMIT = 100;
+function keeperSocketBudget(home, wsIds) {
+  const rows = [...new Set(wsIds)].map((id) => ({ id, len: path.join(home, 'keepers', `${id}.sock`).length })).sort((a, b) => b.len - a.len);
+  const worst = rows[0];
+  if (!worst || worst.len <= KEEPER_SOCKET_LIMIT) return { ok: true, clause: 'rig-base-keeper-socket-path', detail: `longest seeded keeper socket ${worst ? `${worst.len} chars (${worst.id})` : '(no seeded workspace)'} <= ${KEEPER_SOCKET_LIMIT}` };
+  return { ok: false, clause: 'rig-base-keeper-socket-path', detail: `the rig base is too long: <home>/keepers/${worst.id}.sock would be ${worst.len} chars (> ${KEEPER_SOCKET_LIMIT}), so the app would use the SHARED hashed socket os.tmpdir()/okeeper-<hash of "${worst.id}">.sock and boots (or concurrent rigs) seeding that id would collide — shorten E2E_RIG_BASE${process.env.E2E_RIG_BASE ? ` (now ${process.env.E2E_RIG_BASE.length} chars: ${process.env.E2E_RIG_BASE}) by at least ${worst.len - KEEPER_SOCKET_LIMIT} chars` : ''} (boot home=${home})` };
+}
+/** The workspace ids a boot with these options seeds (mirrors seedWorld; the driver refuses a too-long base from this BEFORE any boot, bootApp re-checks the real ids). */
+function seededIdsFor(opt = {}) {
+  return ['ws-avr-1', ...(opt.kinds ? ['ws-avr-scratch', 'ws-avr-orch'] : []), ...(opt.scratchNames ?? []).map((n) => `ws-${n}`),
+    ...(opt.sandbox ? ['gone', 'live', 'legacy', 'owed', 'adoptx'].map((t) => `ws-avr-sbx-${t}`) : [])];
+}
+
 /** The scratch account dir must live inside this boot's home and never be, contain or sit
  *  under a live config dir. Pure, so live_guard_selftest drives the shipped function. */
 function checkScratchConfig(configDir, live, home, { allowHome = false } = {}) {
@@ -472,7 +484,18 @@ function seedWorld(home, opt = {}) {
     baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id,
     ...(opt.legacy ? { hasInput: true } : {}), // #228: input typed into the terminal agent, NO sdkSessionId
     ...(opt.sdkBorn ? { hasInput: true, sdkSessionId: LEGACY_SESSION_ID } : {}), // #232: an SDK-born session id (NOT an adoption) whose transcript is on disk
+    ...(opt.removedField ? { heavyResumePending: true } : {}), // #233: a field the app no longer reads or writes (the heavy-resume gate's persisted flag) — the store must still LOAD it
   };
+  // #233: a worktree whose hooks were installed by an OLDER app: the retired SessionStart readiness-sentinel hook plus an unrelated user hook (which eviction must not touch).
+  let seededSettings = null;
+  if (opt.oldReadyHook) {
+    fs.mkdirSync(path.join(wtDir, '.claude'), { recursive: true });
+    seededSettings = JSON.stringify({ hooks: { SessionStart: [
+      { hooks: [{ type: 'command', command: '[ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true' }] },
+      { hooks: [{ type: 'command', command: 'echo AVR-USER-HOOK' }] },
+    ] } }, null, 2);
+    fs.writeFileSync(path.join(wtDir, '.claude', 'settings.local.json'), seededSettings);
+  }
   // #229 seeds. `commitsAhead`: N never-pushed commits on the seed branch → the app's own merge-state poll reports
   // unpushedAhead=N (no origin ref, so every commit ahead of base counts) — the "primed" input of the old Open PR button.
   for (let i = 1; i <= (opt.commitsAhead ?? 0); i++) {
@@ -545,7 +568,7 @@ function seedWorld(home, opt = {}) {
       `echo "gh: avr stub has no answer for: $*" >&2; exit 1\n`, { mode: 0o755 });
     fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$*" >> ${q('xdg-open.log')}\n`, { mode: 0o755 });
   }
-  return { fakeHome, repoDir, wtDir, ws, sbx, kinds, extras, account, account2, stubDir, stub, stubLog, legacyTranscript, storeFile: path.join(dir, 'store.json') };
+  return { fakeHome, repoDir, wtDir, ws, sbx, kinds, extras, account, account2, stubDir, stub, stubLog, legacyTranscript, seededSettings, storeFile: path.join(dir, 'store.json') };
 }
 
 async function bootApp(arm, opt = {}) {
@@ -553,7 +576,7 @@ async function bootApp(arm, opt = {}) {
   const missing = ['RIG_WAYLAND', 'SWAYSOCK', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR'].filter((k) => !process.env[k]);
   if (missing.length) throw new Error(`not launched via scripts/e2e-agent-view-removal.sh (missing ${missing.join(', ')})`);
   // `opt.resume` = boot the SAME home again (a second app run over the first run's store): nothing is re-seeded.
-  const home = opt.resume?.home ?? path.join(RIG.base, `${arm}-${Date.now().toString(36)}`);
+  const home = opt.resume?.home ?? path.join(opt.baseOverride ?? RIG.base, `${arm}-${Date.now().toString(36)}`);
   fs.mkdirSync(home, { recursive: true });
   const world = opt.resume?.world ?? seedWorld(home, opt);
   const port = await freePort();
@@ -576,6 +599,8 @@ async function bootApp(arm, opt = {}) {
   if (!pre.ok) throw new Error(`REFUSED before launch [${pre.clause}]: ${pre.detail}`);
   const hand = checkHandOff(env, [world.account, ...(world.account2 ? [world.account2] : [])], home);
   if (!hand.ok) throw new Error(`REFUSED before launch [${hand.clause}]: ${hand.detail}`);
+  const sock = keeperSocketBudget(home, [world.ws, ...(world.kinds ? [world.kinds.scratch, world.kinds.orch] : []), ...world.extras, ...(world.sbx ? Object.values(world.sbx) : [])].map((w) => w.id));
+  if (!sock.ok) throw new Error(`REFUSED before launch [${sock.clause}]: ${sock.detail}`);
 
   const liveBefore = Object.fromEntries(liveDirs().map((d) => [d, liveSnapshot(d)]));
   const log = fs.openSync(path.join(home, 'app.log'), opt.resume ? 'a' : 'w');
@@ -862,6 +887,11 @@ function resumeOf(argv) {
   return { resume: i >= 0, target, continue: argv.includes('--continue') };
 }
 const listWs = (app) => app.cdp.eval('window.orchestra.listWorkspaces()');
+/** #233: field `i` of /proc/<pid>/stat after the comm (1 = ppid). */
+const procStatField = (pid, i) => { try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'latin1'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[i]; } catch { return null; } };
+/** #233: the live SDK-SESSION processes of THIS boot that run the stub `claude` (cmdline names the stub AND the stream-json `--input-format` of a session — not the boot-time `--version` probe —,
+ *  environ carries this boot's ORCHESTRA_HOME) — the session CLI the keeper hosts. */
+const cliProcs = (app) => fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d)).map(Number).filter((pid) => { try { const c = procCmdline(pid); return c.includes(app.world.stub) && c.includes('--input-format') && procEnv(pid).ORCHESTRA_HOME === app.home; } catch { return false; } });
 /** Positive control for every arm that claims "a session did / did NOT start": the app installs `dist-electron/keeper.js` at boot; without it NO SDK session can
  *  start, so a "no session started" claim passes vacuously (review #228 F2: a vite-only build left `legacy_restart_fresh` fully green). */
 const keeperControl = (ctx) => { const f = path.join(ctx.app.home, 'bin', 'keeper.js'); return ctx.clause('env/keeper-runtime-installed', fs.existsSync(f), `${path.relative(ctx.app.home, f)} ${fs.existsSync(f) ? 'installed at boot' : 'ABSENT — no SDK session can start here, so every session-start claim below is unproven (build with pnpm run build:bundles)'}`); };
@@ -979,6 +1009,15 @@ const LOGGING_STUB = [
   // after stdin EOF: idle, but interruptibly (a foreground `sleep` would defer the TERM trap for an hour)
   'done', 'sleep 3600 &', 'SP=$!', 'wait $SP', '',
 ].join('\n');
+/** #233: LOGGING_STUB that STREAMS its reply like the real CLI — `stream_event` text deltas before the finalized assistant message (the Agent view renders text from the deltas; a
+ *  finalized `assistant` block alone adds no text row). Used where an arm asserts that a reply is RENDERED. */
+const REPLY_STUB = (() => {
+  const anchor = `    [ "$SLOW" = 1 ] || { echo '{"type":"assistant"`;
+  if (!LOGGING_STUB.includes(anchor)) throw new Error('REPLY_STUB: a LOGGING_STUB line moved — update the anchor');
+  const ev = (e) => JSON.stringify({ type: 'stream_event', session_id: 'avr-stub-sess', event: e });
+  const deltas = [ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }), ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'AVR-REPLY-233 streamed reply' } }), ev({ type: 'content_block_stop', index: 0 })];
+  return LOGGING_STUB.replace(anchor, () => `    [ "$SLOW" = 1 ] || { ${deltas.map((d) => `echo '${d}'; `).join('')}echo '{"type":"assistant"`);
+})();
 /** #230: a `claude` that REFUSES `--resume` the way the REAL one does (MEASURED 2026-10-12, CLI 2.1.291 + SDK 0.3.241, streaming input, missing or corrupt transcript):
  *  after the first user message, ONE `result/error_during_execution` line ("No conversation found with session ID: <id>") — replayed from
  *  scripts/fixtures/real-cli-refused-resume-2.1.291.jsonl, id rewritten — then exit 1; the SDK then throws "returned an error result: No conversation found". */
@@ -1083,56 +1122,6 @@ async function legacyFirstAction(ctx, arm, drive) {
   await runControl(ctx);
   noAgentPty(ctx, `${arm}/no-agent-pty`, await app.ptys());
 }
-
-
-// ── #232 helpers: a STRAY agent PTY and the stub's per-launch stdin sections ────────────────────────────────
-/** Like LOGGING_STUB (SDK stream-json replies) but ALSO appends `<pid> <argv>` to stub-argv.log and tags each launch header with its pid, so the stub's
- *  stdin log splits into one SECTION per launch: an SDK session's JSON turns vs what was TYPED into a stray agent PTY (a tty, no --input-format). */
-const SDK_ONLY_STUB = (() => {
-  // FUNCTION replacements: a string one would eat the `$$`. Every stdin line is tagged with its reader's pid: two stubs (a stray PTY and an SDK session) append to ONE file,
-  // so "the lines after the last header" mis-attributes a line a PTY stub reads while an SDK stub's header is the last one written (MEASURED: it hid a re-added PTY write).
-  const a = LOGGING_STUB.replace('echo AVR-STUB-CLAUDE "$@" >> "$LOG"', () => 'echo "$$ $*" >> "$D/stub-argv.log"\necho "AVR-STUB-CLAUDE pid=$$ $*" >> "$LOG"');
-  const t = a.replace(`printf '%s\\n' "$line" >> "$LOG"`, () => `printf 'AVR-LINE pid=%s %s\\n' "$$" "$line" >> "$LOG"`);
-  if (a === LOGGING_STUB || t === a) throw new Error('SDK_ONLY_STUB: a LOGGING_STUB line moved — update the replace anchors');
-  return t;
-})();
-/** Every launch the stub recorded with the text it READ afterwards: [{pid, argv, body, sdk}]. `sdk` = a stream-json SDK session (carries --input-format). */
-function stubLaunches(app) {
-  const out = []; const byPid = new Map();
-  for (const line of stubLogText(app).split('\n')) {
-    const h = line.match(/^AVR-STUB-CLAUDE pid=(\d+) ?(.*)$/);
-    if (h) { const l = { pid: Number(h[1]), argv: h[2], body: '' }; out.push(l); byPid.set(l.pid, l); continue; }
-    const m = line.match(/^AVR-LINE pid=(\d+) (.*)$/);
-    if (m && byPid.has(Number(m[1]))) byPid.get(Number(m[1])).body += `${m[2]}\n`;
-  }
-  return out.map((l) => ({ ...l, sdk: l.argv.includes('--input-format') }));
-}
-const agentPtyOf = async (app, wsId) => (await app.ptys()).find((p) => p.ptyId === wsId && p.kind === 'agent') ?? null;
-const pidAlive = (pid) => procStart(pid) !== null;
-/** Start (or find) the STRAY agent PTY of `wsId` through `ptyStart` — the one launcher left after #230 (#233 deletes it): the state a pre-#230 Raw tab left behind.
- *  Returns {pty, pid}: the PTY's listing and the PID of the stub `claude` it runs (matched through the stub's own launch header, not guessed). */
-async function ensureStray(ctx, wsId) {
-  const { app } = ctx;
-  if (!(await agentPtyOf(app, wsId))) {
-    await ipcSettle(app, `window.orchestra.ptyStart(${J(wsId)}, 80, 24)`);
-    await waitFor(`stray agent PTY ${wsId}`, () => agentPtyOf(app, wsId), 20000, 250);
-  }
-  const launch = await waitFor(`stub launch of the stray PTY ${wsId}`, async () => { const p = await agentPtyOf(app, wsId); return p ? stubLaunches(app).find((x) => !x.sdk && p.pids.includes(x.pid)) ?? null : null; }, 25000, 250);
-  return { pty: await agentPtyOf(app, wsId), pid: launch.pid };
-}
-/** Did `needle` reach the STRAY PTY (typed into it) / an SDK session (a stream-json turn)? Read off the stub's per-launch stdin sections. */
-const reachedPty = (app, needle, strayPids) => stubLaunches(app).some((l) => !l.sdk && strayPids.has(l.pid) && l.body.includes(needle));
-const reachedSdk = (app, needle) => stubLaunches(app).some((l) => l.sdk && l.body.includes(needle));
-/** POST a JSON body to a route of THIS boot's hooks socket (the transport `orchestra` uses) → parsed reply. */
-function socketPost(app, route, body = {}) {
-  const sock = fs.readFileSync(path.join(app.home, 'sock'), 'utf8').trim();
-  return new Promise((resolve, reject) => {
-    const req = http.request({ socketPath: sock, path: route, method: 'POST' }, (res) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(new Error(`${route}: bad JSON ${d.slice(0, 120)}`)); } }); });
-    req.on('error', reject); req.setTimeout(20000, () => req.destroy(new Error(`${route}: timeout`))); req.end(JSON.stringify(body));
-  });
-}
-const STRAY_PROBE = 'AVR-PROBE-232-typed-into-the-pty';
-const FIX_MARK = 'CI is failing on this branch';
 
 const otherTerminalsRun = async (ctx) => {
       const { app } = ctx; const w = app.world; const wsId = w.ws.id;
@@ -1533,6 +1522,47 @@ const ARMS = [
         settleKeepMarker(rd, 0);
         ctx.clause('keep-marker:survives-a-failing-run', keptOnFail && !fs.existsSync(path.join(rd, KEEP_MARKER)), `fail=2 -> marker kept=${keptOnFail}; fail=0 -> marker removed=${!fs.existsSync(path.join(rd, KEEP_MARKER))}`);
       } finally { fs.rmSync(base, { recursive: true, force: true }); }
+    },
+  },
+  {
+    name: 'socket_guard_selftest', boots: false, ticket: '#233',
+    doc: 'the rig-base guard can FAIL: a base whose <home>/keepers/<seeded ws id>.sock passes 100 chars is REFUSED (named, with the remedy) — by the pure check, by the REAL bootApp call site BEFORE any launch, and for the wrapper default itself; exactly 100 is accepted, a short base boots past the guard',
+    async run(ctx) {
+      // a home whose socket for a given id is exactly N chars: '/keepers/<id>.sock' adds 9 + id + 5
+      const homeFor = (id, total) => `/${'h'.repeat(total - 1 - (9 + id.length + 5))}`;
+      const at = (n, ids = ['ws-avr-1']) => keeperSocketBudget(homeFor(ids[0], n), ids);
+      const over = at(KEEPER_SOCKET_LIMIT + 1), edge = at(KEEPER_SOCKET_LIMIT);
+      ctx.clause('pure/over-the-limit-refused', !over.ok && over.clause === 'rig-base-keeper-socket-path' && /E2E_RIG_BASE/.test(over.detail) && /ws-avr-1/.test(over.detail), `socket path ${KEEPER_SOCKET_LIMIT + 1} chars -> ok=${over.ok} clause=${over.clause}; detail names E2E_RIG_BASE=${/E2E_RIG_BASE/.test(over.detail)} and the id=${/ws-avr-1/.test(over.detail)}`);
+      ctx.clause('pure/exactly-the-limit-accepted', edge.ok, `socket path ${KEEPER_SOCKET_LIMIT} chars -> ok=${edge.ok} (the guard is not a constant refusal; the app's own test is \`<= 100\`)`);
+      const long = keeperSocketBudget(homeFor('ws-avr-sbx-adoptx', KEEPER_SOCKET_LIMIT + 1), ['ws-avr-1', 'ws-avr-sbx-adoptx']);
+      const shortOnly = keeperSocketBudget(homeFor('ws-avr-sbx-adoptx', KEEPER_SOCKET_LIMIT + 1), ['ws-avr-1']);
+      ctx.clause('pure/the-longest-seeded-id-decides', !long.ok && /ws-avr-sbx-adoptx/.test(long.detail) && shortOnly.ok, `same home: ids [ws-avr-1, ws-avr-sbx-adoptx] -> ok=${long.ok} (names ${/ws-avr-sbx-adoptx/.test(long.detail) ? 'the long id' : '?'}); [ws-avr-1] alone -> ok=${shortOnly.ok}`);
+      // the REAL call site: bootApp refuses BEFORE launching anything (electron is forced to /bin/false as in refuse_live_handoff; a regression must never start a real app)
+      const bootTry = async (opt) => { try { const a = await bootApp('socket-guard', { ...opt, electron: '/bin/false' }); await a.close(); return 'BOOTED'; } catch (e) { return e.message; } };
+      const longBase = path.join(RIG.base, 'p'.repeat(KEEPER_SOCKET_LIMIT));
+      const m1 = await bootTry({ baseOverride: longBase });
+      const dirs = fs.existsSync(longBase) ? fs.readdirSync(longBase).filter((d) => d.startsWith('socket-guard-')) : [];
+      const spawned = dirs.some((d) => fs.existsSync(path.join(longBase, d, 'app.log')));
+      ctx.clause('bootApp/refuses-a-long-base-before-launch', /^REFUSED before launch \[rig-base-keeper-socket-path\]/.test(m1) && !spawned, `${m1.slice(0, 150)}; app.log created=${spawned}`);
+      const shortBase = path.join(RIG.rigDir || RIG.base, 's');
+      const m2 = await bootTry({ baseOverride: shortBase });
+      ctx.clause('bootApp/a-short-base-gets-past-the-guard', !/^REFUSED/.test(m2), `short base boot -> ${m2.slice(0, 150)} (anything but a REFUSED: the guard did not trip)`);
+      for (const d of [longBase, shortBase]) fs.rmSync(d, { recursive: true, force: true });
+      // the DRIVER's up-front refusal (main()): run this very file against a long ORCHESTRA_HOME — it must exit 1 naming the clause BEFORE any boot (no `IDENTITY  arm=` line, no app launched)
+      if (APP_DIR) {
+        const drvDir = path.join(RIG.rigDir || path.dirname(RIG.base), `driver-guard-${process.pid}`); fs.mkdirSync(drvDir, { recursive: true });   // its result file lands here, never in /tmp
+        const drv = spawnSync(process.execPath, [fileURLToPath(import.meta.url), APP_DIR, '--mode', MODE, '--arm', 'launcher_removed', ...(ALLOW_STALE ? ['--allow-stale'] : [])], { encoding: 'utf8', timeout: 60000,
+          env: { PATH: '/usr/bin:/bin', HOME: REAL_HOME, ORCHESTRA_HOME: path.join(RIG.base, 'q'.repeat(KEEPER_SOCKET_LIMIT)), CLAUDE_CONFIG_DIR: RIG.liveCfg, RIG_DIR: drvDir } });
+        fs.rmSync(drvDir, { recursive: true, force: true });
+        const o = `${drv.stdout}\n${drv.stderr}`;
+        ctx.clause('driver/refuses-a-long-base-before-any-boot', drv.status === 1 && /FAIL\s+preflight\/rig-base-keeper-socket-path/.test(o) && !/IDENTITY\s+arm=/.test(o), `driver rc=${drv.status} (want 1); names preflight/rig-base-keeper-socket-path=${/preflight\/rig-base-keeper-socket-path/.test(o)}; booted an arm=${/IDENTITY\s+arm=/.test(o)} (want false)`);
+      } else ctx.skip('driver/refuses-a-long-base-before-any-boot', 'no <app-dir> given');
+      // the wrapper DEFAULT must fit every booting arm (the old default under ~/.cache did not: every arm ran on the shared hashed socket)
+      const sh = readText(path.join(path.dirname(fileURLToPath(import.meta.url)), 'e2e-agent-view-removal.sh'));
+      const def = (sh.match(/E2E_RIG_BASE="\$\{E2E_RIG_BASE:-([^}]+)\}"/) ?? [])[1];
+      const base = def ? def.replace('$(id -u)', String(process.getuid())).replace('$HOME', REAL_HOME) : null;
+      const worst = base ? ARMS.filter((a) => a.boots).map((a) => ({ a: a.name, b: keeperSocketBudget(path.join(base, 'e2e64c-9999999', 'oh', `${a.name}-${'0'.repeat(8)}`), seededIdsFor(a.boot ?? {})) })).find((x) => !x.b.ok) : null;
+      ctx.clause('wrapper/default-base-fits-every-booting-arm', !!base && !worst, `wrapper default E2E_RIG_BASE=${def ?? '(not found)'} -> ${base ? `${base} (${base.length} chars)` : '?'}; ${worst ? `REFUSED for arm ${worst.a}: ${worst.b.detail.slice(0, 120)}` : 'every booting arm fits (7-digit pid, 8-char timestamp)'}`);
     },
   },
   {
@@ -2077,7 +2107,8 @@ const ARMS = [
         ctx.clause('view/start-error-rendered-once', rows === 1, `'${START_ERR}' text nodes in the page after reload=${rows} (persisted copy must not double a live row)`);
       }
       // ── a WAKE that cannot start: message → inbox, prompt queue → re-queued, review → refused ──
-      const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent(${JSON.stringify(child.id)})`); await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
+      const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent?.(${JSON.stringify(child.id)})`);   // optional call: #233 deleted the wrapper (a build with no agent PTY has nothing to stop)
+         await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
       await stopAndWait(); // baseline: kill the spawn-fallback PTY so the wake path is what runs; after: nothing to stop
       const msg = await runCli(app, ['message', child.id, MSG_TEXT]);
       const want = pick(EXPECT.messageDelivery);
@@ -2619,17 +2650,13 @@ const ARMS = [
   },
   {
     name: 'agent_terminal_removed', boots: true, ticket: '#231',
-    doc: 'the RUNNING app: the preload bridge no longer exposes the agent-terminal-only wrappers (ptyRepaint, onPtyStopped, saveClipboardImage) while the shared PTY wrappers + the Run/nvim/login ones stay, AND ptyStart / stopAgent are still exposed until #233 (the stray-PTY rig seam needs them); the loaded stylesheets no longer carry the component\'s rules (.terminal-pane / .term-scroll-thumb / .term-boot-* / .res-stop-btn) while the Run/Resources rules stay',
+    doc: 'the RUNNING app: the preload bridge no longer exposes the agent-terminal-only wrappers (ptyRepaint, onPtyStopped, saveClipboardImage) while the shared PTY wrappers + the Run/nvim/login ones stay, (ptyStart / stopAgent are asserted gone by launcher_removed, #233); the loaded stylesheets no longer carry the component\'s rules (.terminal-pane / .term-scroll-thumb / .term-boot-* / .res-stop-btn) while the Run/Resources rules stay',
     async run(ctx) {
       const { app } = ctx; const J = JSON.stringify;
       const REMOVED = ['ptyRepaint', 'onPtyStopped', 'saveClipboardImage'];
-      // KEPT ON PURPOSE until #233 (OPS ruling, review #231 F1): the stray-agent-PTY seam of the #232 arms creates a PTY via ptyStart and cleans it via stopAgent — a renderer has no other route.
-      // #233 removes both with the launcher (and flips these two clauses). Identical in both modes.
-      const UNTIL_233 = ['ptyStart', 'stopAgent'];
       const KEPT = ['ptyWrite', 'ptyResize', 'onPtyData', 'onPtyExit', 'onPtyRestart', 'restartAgent', 'nvimStart', 'runScriptStart', 'accountLoginStop'];
-      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J([...REMOVED, ...KEPT, ...UNTIL_233])}) r[k] = typeof o[k]; return r; })()`);
+      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J([...REMOVED, ...KEPT])}) r[k] = typeof o[k]; return r; })()`);
       ctx.clause('control/shared-wrappers-kept', KEPT.every((k) => types[k] === 'function'), `typeof window.orchestra.<k> for the shared + Run/nvim/login wrappers: ${KEPT.map((k) => `${k}=${types[k]}`).join(' ')}`);
-      for (const k of UNTIL_233) ctx.clause(`preload/${k}-wrapper-kept-until-233`, types[k] === 'function', `typeof window.orchestra.${k}=${types[k]} expected(both modes)=function (kept until #233 removes the launcher; the #232 stray-PTY arms need it)`);
       for (const k of REMOVED) ctx.clause(`preload/${k}-wrapper`, (types[k] === 'function') === pick(EXPECT.agentTerminalWrappers), `typeof window.orchestra.${k}=${types[k]} expected(${MODE})=${pick(EXPECT.agentTerminalWrappers) ? 'function' : 'undefined'}`);
       // Rules read off the LOADED stylesheets (CSSOM). CONTROL: the sheets were readable and still carry the rules Run/Resources use (`.res-agent-row`, xterm's own `.xterm`).
       const css = await app.cdp.eval(`(() => { const dead = [], live = { res: 0, xterm: 0 }; for (const ss of document.styleSheets) { let rs; try { rs = ss.cssRules; } catch { continue; }
@@ -2666,117 +2693,99 @@ const ARMS = [
     },
   },
   {
+    name: 'launcher_removed', boots: true, ticket: '#233', stubScript: 'reply', boot: { removedField: true },
+    doc: '#233: the agent-PTY launcher is gone from the RUNNING app — the preload bridge no longer exposes ptyStart / stopAgent (baseline: both), a store record still carrying the removed heavy-resume flag LOADS (the app boots, lists and renders the workspace), opening every tab creates no agent-kind PTY, and a real turn still runs in the Agent view (composer send -> the stub CLI answers -> the reply is rendered)',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id;
+      keeperControl(ctx);
+      const KEPT = ['ptyWrite', 'ptyResize', 'restartAgent', 'nvimStart', 'runScriptStart', 'accountLoginStop', 'agentSdkSend'];
+      const types = await app.cdp.eval(`(() => { const o = window.orchestra, r = {}; for (const k of ${J(['ptyStart', 'stopAgent', ...KEPT])}) r[k] = typeof o[k]; return r; })()`);
+      ctx.clause('control/shared-wrappers-kept', KEPT.every((k) => types[k] === 'function'), `typeof window.orchestra.<k> for the shared + Run/nvim/login + Agent-view wrappers: ${KEPT.map((k) => `${k}=${types[k]}`).join(' ')}`);
+      for (const k of ['ptyStart', 'stopAgent']) ctx.clause(`preload/${k}-wrapper`, (types[k] === 'function') === pick(EXPECT.launcherWrappers), `typeof window.orchestra.${k}=${types[k]} expected(${MODE})=${pick(EXPECT.launcherWrappers) ? 'function' : 'undefined'}`);
+      // a store carrying a field the app no longer knows must LOAD (no migration): the record is listed with the field untouched and the UI rendered it
+      const rec = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('store/record-with-the-removed-flag-loads', !!rec && rec.heavyResumePending === true && /loaded \d+ workspace/.test(appLog(app)), `listWorkspaces has ${wsId}=${!!rec}, heavyResumePending=${J(rec?.heavyResumePending)} (seeded true; the app neither reads nor drops it), boot log 'loaded N workspace(s)'=${/loaded \d+ workspace/.test(appLog(app))}`);
+      const labels = (await app.tabs()).map((t) => t.label);
+      ctx.clause('store/the-seeded-workspace-renders', labels.length >= 3 && labels.includes('Agent'), `tabs rendered for the seeded workspace=${J(labels)} (want the Agent tab among >= 3; identical in both modes — master already renders Agent·Run·Diff)`);
+      // no agent-kind PTY from any tab (the positive control — the Run tab creates its run PTY — fires first)
+      await runControl(ctx);
+      for (const l of (await app.tabs()).map((t) => t.label)) await app.clickTab(l).catch(() => {});
+      await sleep(ABSENCE_MS);
+      noAgentPty(ctx, 'tabs/no-agent-pty-from-any-tab', await app.ptys());
+      // a real turn in the Agent view: the stub CLI answers the stream-json turn, the reply is folded + rendered, hasInput flips (the wake adoption reads it)
+      await openAgentTab(app);
+      const sent = await composerSend(app, 'AVR-REAL-TURN-233 hello');
+      const got = await waitFor('the stub CLI received the turn', () => stubLogText(app).includes('AVR-REAL-TURN-233'), 40000, 250).catch(() => false);
+      ctx.clause('turn/the-cli-received-the-message', !!got && !!sent.pre?.includes('AVR-REAL-TURN-233'), `composer text pre=${J(oneLine(sent.pre, 40))}; the stub CLI's stdin holds the message=${!!got}`);
+      const shown = await waitFor('the reply rendered in the Agent view', () => app.cdp.eval(`(() => { for (const l of document.querySelectorAll('.av-message-list')) { const r = l.getBoundingClientRect(); if (r.width > 50 && r.height > 50 && l.innerText.includes('AVR-REPLY-233 streamed reply')) return true; } return null; })()`), 30000, 250).catch(() => false);
+      const dump = shown ? '' : await app.cdp.eval(`(() => { const l = [...document.querySelectorAll('.av-message-list')].map((e) => e.innerText.replace(/\\s+/g, ' ').slice(0, 200)); return JSON.stringify({ lists: l, bodyHas: document.body.innerText.includes('AVR-REPLY-233 streamed reply') }); })()`).catch((e) => `ERR ${e.message}`);
+      ctx.clause('turn/the-reply-is-rendered-in-the-agent-view', !!shown, `the stub's streamed reply 'AVR-REPLY-233 streamed reply' is inside the visible .av-message-list=${!!shown}${dump ? ` — ${dump}` : ''}`);
+      noAgentPty(ctx, 'turn/no-agent-pty-after-the-turn', await app.ptys());
+    },
+  },
+  {
+    name: 'ready_hook_retired', boots: true, ticket: '#233', stubScript: 'logging', boot: { oldReadyHook: true },
+    doc: '#233: a worktree whose hooks were installed by an older app (the SessionStart readiness-sentinel hook touching $ORCHESTRA_READY_FILE + an unrelated user hook) is rewritten on the next session start: the retired hook is EVICTED (baseline: it stays), the activity hooks are (re)installed, the user hook survives',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const f = path.join(w.wtDir, '.claude', 'settings.local.json');
+      keeperControl(ctx);
+      ctx.clause('seed/old-install-carries-the-ready-hook-and-a-user-hook', !!w.seededSettings && w.seededSettings.includes('ORCHESTRA_READY_FILE') && w.seededSettings.includes('AVR-USER-HOOK'), `seeded ${path.relative(w.wtDir, f)} (${(w.seededSettings ?? '').length} bytes) names ORCHESTRA_READY_FILE=${(w.seededSettings ?? '').includes('ORCHESTRA_READY_FILE')} and AVR-USER-HOOK=${(w.seededSettings ?? '').includes('AVR-USER-HOOK')}`);
+      await openAgentTab(app);
+      await composerSend(app, 'AVR-READY-HOOK-233 start the session');
+      const cmdsOf = () => { try { const j = JSON.parse(fs.readFileSync(f, 'utf8')); return Object.values(j.hooks ?? {}).flat().flatMap((e) => (e.hooks ?? []).map((h) => h.command ?? '')); } catch { return []; } };
+      // an activity hook command = `f=".../.orchestra/orchestra-hook.sh"; [ -f "$f" ] && bash "$f" <event> || true`
+      const hasEv = (cmds, e) => cmds.some((c) => c.includes('orchestra-hook.sh') && c.includes(`bash "$f" ${e} `));
+      const installed = await waitFor('the activity hooks installed into settings.local.json', () => (hasEv(cmdsOf(), 'submit') ? cmdsOf() : null), 45000, 250).catch(() => null);
+      const cmds = installed ?? cmdsOf();
+      ctx.clause('install/activity-hooks-installed', ['submit', 'stop', 'pretool', 'posttool'].every((e) => hasEv(cmds, e)), `hook commands installed: ${['submit', 'stop', 'pretool', 'posttool'].map((e) => `${e}=${hasEv(cmds, e)}`).join(' ')} (${cmds.length} commands)`);
+      ctx.clause('install/unrelated-user-hook-kept', cmds.includes('echo AVR-USER-HOOK'), `the unrelated SessionStart user hook is still present=${cmds.includes('echo AVR-USER-HOOK')} (eviction is by command, not by event)`);
+      const has = cmds.some((c) => c.includes('ORCHESTRA_READY_FILE'));
+      ctx.clause('install/ready-hook', has === pick(EXPECT.readyHookInstalled), `a command naming ORCHESTRA_READY_FILE is installed=${has} expected(${MODE})=${pick(EXPECT.readyHookInstalled)}`);
+    },
+  },
+  {
+    name: 'kept_by_content', boots: true, ticket: '#233', stubScript: 'logging',
+    doc: '#233 KEEP list, verified by CONTENT in the running app (identical in both modes): the SDK session\'s env owns the events spool; the installed hook script appends to the spool and the spool reader moves the status dot (submit -> running); a stop event carrying a transcript path persists the transcript-derived context tokens; a dead session\'s `running` dot is reconciled (the exit floor); no agent PTY exists at any point (hasInput\'s READ by the wake adoption is proven by the legacy_* arms)',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const wt = fs.realpathSync(w.wtDir);
+      keeperControl(ctx);
+      await openAgentTab(app);
+      await composerSend(app, 'AVR-KEPT-233 start the session');
+      const rootOf = (pids) => pids.find((p) => !pids.includes(Number(procStatField(p, 1)))) ?? pids[0];
+      const cli = await waitFor('the session CLI process (the stub claude carrying this boot\'s ORCHESTRA_HOME)', () => { const p = cliProcs(app); return p.length ? p : null; }, 45000, 250).catch(() => null);
+      const pid = cli ? rootOf(cli) : null;
+      const env = pid ? procEnv(pid) : {};
+      ctx.clause('env/the-sdk-session-owns-the-spool-and-the-identity', !!pid && env.ORCHESTRA_WS_ID === wsId && env.ORCHESTRA_WS_ID_IDENTITY === wsId && !!env.ORCHESTRA_EVENTS_DIR && !!env.ORCHESTRA_SOCK && !!env.ORCHESTRA_RUN_ID && (env.ORCHESTRA_WORKTREE ? fs.realpathSync(env.ORCHESTRA_WORKTREE) === wt : false), `CLI pid ${pid}: ORCHESTRA_WS_ID=${J(env.ORCHESTRA_WS_ID)} (want ${wsId}) _IDENTITY=${J(env.ORCHESTRA_WS_ID_IDENTITY)} EVENTS_DIR=${J(env.ORCHESTRA_EVENTS_DIR)} SOCK set=${!!env.ORCHESTRA_SOCK} RUN_ID=${J(env.ORCHESTRA_RUN_ID)} WORKTREE=${J(env.ORCHESTRA_WORKTREE)}`);
+      const script = path.join(w.wtDir, '.orchestra', 'orchestra-hook.sh');
+      ctx.clause('hook/the-installed-hook-script-exists-and-appends-to-the-spool', fs.existsSync(script) && fs.readFileSync(script, 'utf8').includes('flock'), `${path.relative(w.wtDir, script)} exists=${fs.existsSync(script)}, carries the locked spool append (flock)=${fs.existsSync(script) && fs.readFileSync(script, 'utf8').includes('flock')}`);
+      const runHook = (event, stdin = '') => spawnSync('bash', [script, event], { input: stdin, encoding: 'utf8', timeout: 20000, env: { PATH: '/usr/bin:/bin', HOME: w.fakeHome, ORCHESTRA_WS_ID: env.ORCHESTRA_WS_ID ?? '', ORCHESTRA_EVENTS_DIR: env.ORCHESTRA_EVENTS_DIR ?? '' } });
+      const statusOf = async () => (await listWs(app)).find((x) => x.id === wsId);
+      const h1 = runHook('submit');
+      const running = await waitFor('status running (spool reader -> applyAgentEvent)', async () => ((await statusOf())?.status === 'running' ? true : null), 20000, 200).catch(() => false);
+      ctx.clause('spool/a-submit-line-moves-the-dot-to-running', h1.status === 0 && !!running, `hook 'submit' rc=${h1.status}; ws.status after=${J((await statusOf())?.status)} (idle before: the stub CLI fires no hooks)`);
+      // transcript context-token computation: the last main-chain assistant turn's input + cache tokens, persisted at the turn end
+      const tr = path.join(app.home, 'ctx-transcript.jsonl');
+      fs.writeFileSync(tr, [JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }),
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1000, cache_creation_input_tokens: 345, cache_read_input_tokens: 20000, output_tokens: 5 } } })].join('\n') + '\n');
+      const h2 = runHook('stop', JSON.stringify({ hook_event_name: 'Stop', transcript_path: tr, session_crons: [] }));
+      const ctxTok = await waitFor('contextTokens persisted from the transcript', async () => { const x = await statusOf(); return x?.contextTokens === 21345 ? x : null; }, 20000, 200).catch(() => null);
+      ctx.clause('spool/a-stop-line-with-a-transcript-persists-the-context-tokens', h2.status === 0 && !!ctxTok, `hook 'stop' rc=${h2.status}; ws.contextTokens=${J((await statusOf())?.contextTokens)} (want 1000 + 345 + 20000 = 21345 from the transcript tail); status=${J((await statusOf())?.status)}`);
+      // exit reconciliation: a session that dies while the dot reads `running` is healed (idle) — the floor that survives the launcher
+      runHook('submit');
+      await waitFor('status running again', async () => ((await statusOf())?.status === 'running' ? true : null), 20000, 200).catch(() => null);
+      const before = (await statusOf())?.status; const ticks = pid ? procStart(pid) : null;
+      const same = !!pid && procStart(pid) === ticks && procEnv(pid).ORCHESTRA_HOME === app.home;
+      if (same) process.kill(pid, 'SIGKILL');
+      const healed = await waitFor('status left running after the session died', async () => { const x = await statusOf(); return x && x.status !== 'running' ? x : null; }, 30000, 250).catch(() => null);
+      ctx.clause('exit/a-dead-sessions-running-dot-is-reconciled', before === 'running' && same && !!healed, `status before the kill=${J(before)} (control: must be running), killed CLI pid ${pid} by identity (start ticks + this boot's ORCHESTRA_HOME)=${same}; status after=${J(healed?.status)} (want not running)`);
+      await runControl(ctx);
+      noAgentPty(ctx, 'no-agent-pty-at-any-point', await app.ptys());
+    },
+  },
+  {
     name: 'other_terminals_work_slow_profile', boots: true, ticket: '#230', boot: { slowProfileS: 4 },
     doc: 'other_terminals_work with every `bash -ilc` PTY (Run / nvim / login) spending 4 s in the login profile BEFORE it execs its program (the verifier race: a clause that read the PTY tree / the stub start log right after "pty-appears" saw neither): the bounded waits must ride it out. Deterministic instrument for the race; identical in both modes',
     run: otherTerminalsRun,
-  },
-  {
-    name: 'sdk_only_seams', boots: true, ticket: '#232', boot: { stubScript: SDK_ONLY_STUB, extraBranch: 'avr-other', account2: true },
-    doc: '#232: with a STRAY agent PTY alive on a workspace (`ptyStart` — what a pre-#230 Raw tab left; #233 deletes that launcher and this arm with it) every seam that used to treat a live PTY as THE agent ignores it: `orchestra message`, send-review, fix-checks and the prompt-queue flush deliver to the SDK session (baseline: typed into the PTY), the toolbar Restart / a branch switch / an account migration leave the PTY alone (baseline: stop it, `(resumed)`), `/peers` carries no `running` flag. Control: the same PTY IS typed into / reaped when asked directly',
-    async run(ctx) {
-      const { app } = ctx; const w = app.world; const wsId = w.ws.id; const typed = pick(EXPECT.strayTyped);
-      keeperControl(ctx);
-      const strayPids = new Set();
-      const stray = async () => { const r = await ensureStray(ctx, wsId); strayPids.add(r.pid); return r; };
-      // ── controls: the instruments can see ──
-      const s0 = await stray();
-      ctx.clause('stray/agent-pty-appears', !!s0.pty && s0.pty.kind === 'agent', `agent-kind PTY ${wsId} pid(stub)=${s0.pid} (${fmtP(await app.ptys())})`);
-      await app.cdp.eval(`window.orchestra.ptyWrite(${J(wsId)}, ${J(`${STRAY_PROBE}\r`)})`);
-      const probed = await waitFor('probe typed into the stray PTY reaches its stub', () => reachedPty(app, STRAY_PROBE, strayPids), 15000, 250).catch(() => false);
-      ctx.clause('stray/typing-into-the-pty-is-observable', !!probed && !reachedSdk(app, STRAY_PROBE), `a line typed straight into the PTY reached the stub's stdin (pty section=${!!probed}); no SDK session has it`);
-      // ── /peers: the `running` flag (derived from the PTY probe) is gone ──
-      const peers = await socketPost(app, '/peers', {});
-      const me = (peers.peers ?? []).find((x) => x.id === wsId);
-      ctx.clause('peers/entry-present', !!me && typeof me.status === 'string', `peer ${wsId} status=${J(me?.status)} (${(peers.peers ?? []).length} peer(s)) — control: the listing works`);
-      ctx.clause('peers/no-running-flag', ('running' in (me ?? {})) === pick(EXPECT.peersRunningKey), `peer entry keys=${J(Object.keys(me ?? {}))}; 'running' present=${'running' in (me ?? {})} (value ${J(me?.running)}) expected(${MODE})=${pick(EXPECT.peersRunningKey)}`);
-      // ── delivery: message / send-review / fix-checks / prompt queue ──
-      const landed = async (needle) => { await waitFor(`'${needle}' delivered somewhere`, () => reachedPty(app, needle, strayPids) || reachedSdk(app, needle), 25000, 250).catch(() => null); await sleep(600); return { pty: reachedPty(app, needle, strayPids), sdk: reachedSdk(app, needle) }; };
-      const deliveryClause = (name, r) => ctx.clause(name, r.pty === typed && r.sdk === !typed, `typed into the stray PTY=${r.pty} reached an SDK session=${r.sdk}; expected(${MODE}) pty=${typed} sdk=${!typed}`);
-      const msg = await runCli(app, ['message', wsId, MSG_TEXT]);
-      ctx.clause('message/delivery-word', msg.rc === 0 && msg.stdout.includes(`Delivered (${pick(EXPECT.strayMessageDelivery)})`), `expected(${MODE})=Delivered (${pick(EXPECT.strayMessageDelivery)}); rc=${msg.rc} stdout=${J(msg.stdout)} stderr=${J(msg.stderr.slice(0, 160))}`);
-      deliveryClause('message/where-the-text-landed', await landed(MSG_TEXT));
-      const rv = await ipcSettle(app, `window.orchestra.sendReviewToAgent(${J(wsId)}, ${J(REVIEW_TEXT)})`);
-      ctx.clause('review/answers-requested', rv.ok && rv.value?.status === 'requested', `sendReviewToAgent -> ${J(rv)}`);
-      deliveryClause('review/where-the-text-landed', await landed(REVIEW_TEXT));
-      const fx = await ipcSettle(app, `window.orchestra.fixChecks(${J(wsId)})`);
-      ctx.clause('fix-checks/answers-requested', fx.ok && fx.value?.status === 'requested', `fixChecks -> ${J(fx)}`);
-      deliveryClause('fix-checks/where-the-text-landed', await landed(FIX_MARK));
-      await app.cdp.eval(`window.orchestra.queuePrompt(${J(wsId)}, ${J(QUEUED_TEXT)})`);
-      const fl = await ipcSettle(app, `window.orchestra.flushQueuedPrompts(${J(wsId)})`);
-      ctx.clause('queue/flush-ok', fl.ok && fl.value?.ok === true, `flushQueuedPrompts -> ${J(fl)}`);
-      deliveryClause('queue/where-the-text-landed', await landed(QUEUED_TEXT));
-      // ── toolbar Restart ──
-      const sdkBefore = stubLaunches(app).filter((l) => l.sdk).length;
-      const pre = await stray();
-      const rs = await ipcSettle(app, `window.orchestra.restartAgent(${J(wsId)})`);
-      await sleep(3500);
-      const afterPty = await agentPtyOf(app, wsId);
-      ctx.clause('restart/handler-resolved', rs.ok, `restartAgent -> ${J(rs)}`);
-      ctx.clause('restart/stray-pty-fate', (!afterPty) === pick(EXPECT.strayKilledByRestart), `stray PTY (stub pid ${pre.pid}) after the toolbar Restart: ${afterPty ? `still listed, alive=${pidAlive(pre.pid)}` : 'GONE'}; expected(${MODE}) ${pick(EXPECT.strayKilledByRestart) ? 'stopped' : 'left alone'}`);
-      const sdkAfter = stubLaunches(app).filter((l) => l.sdk).length;
-      ctx.clause('restart/sdk-session-restarted', (sdkAfter > sdkBefore) === !pick(EXPECT.strayKilledByRestart), `SDK session launches ${sdkBefore} -> ${sdkAfter}; expected(${MODE}) ${pick(EXPECT.strayKilledByRestart) ? 'no SDK restart (the PTY branch took it)' : 'the SDK restart ran'}`);
-      // ── branch switch ──
-      const bs0 = await stray();
-      const sw = await ipcSettle(app, `window.orchestra.switchBranch(${J(wsId)}, 'avr-other')`);
-      await sleep(2500);
-      const bsRec = (await listWs(app)).find((x) => x.id === wsId);
-      ctx.clause('branch-switch/switched', sw.ok && bsRec?.branch === 'avr-other', `switchBranch -> ${J(sw)}; ws.branch=${J(bsRec?.branch)} (control: the switch itself works in both modes)`);
-      const bsPty = await agentPtyOf(app, wsId);
-      ctx.clause('branch-switch/stray-pty-fate', (!bsPty) === pick(EXPECT.strayKilledByBranchSwitch), `stray PTY (stub pid ${bs0.pid}) after the switch: ${bsPty ? `still listed, alive=${pidAlive(bs0.pid)}` : 'GONE'}; expected(${MODE}) ${pick(EXPECT.strayKilledByBranchSwitch) ? 'stopped (+ pty:restart)' : 'left alone'}`);
-      // ── account migration ──
-      const mg0 = await stray();
-      const mg = await runCli(app, ['migrate-account', wsId, 'rig-avr-2']);
-      await sleep(2500);
-      const mgRec = (await listWs(app)).find((x) => x.id === wsId);
-      ctx.clause('migrate/repinned', mg.rc === 0 && mgRec?.accountId === 'rig-avr-2', `migrate-account rc=${mg.rc} stdout=${J(mg.stdout)} stderr=${J(mg.stderr.slice(0, 160))}; ws.accountId=${J(mgRec?.accountId)} (control: the migration itself works in both modes)`);
-      ctx.clause('migrate/no-pty-resume-word', mg.stdout.includes('(resumed)') === pick(EXPECT.strayMigrationResumes), `stdout=${J(mg.stdout)}; '(resumed)' present=${mg.stdout.includes('(resumed)')} expected(${MODE})=${pick(EXPECT.strayMigrationResumes)}`);
-      const mgPty = await agentPtyOf(app, wsId);
-      const mgSame = !!mgPty && mgPty.pids.includes(mg0.pid) && pidAlive(mg0.pid);
-      ctx.clause('migrate/stray-pty-fate', mgSame === !pick(EXPECT.strayMigrationResumes), `stray PTY (stub pid ${mg0.pid}) after the migration: ${mgPty ? `listed, same stub alive=${mgSame}` : 'GONE'}; expected(${MODE}) ${pick(EXPECT.strayMigrationResumes) ? 'stopped and relaunched' : 'left untouched'}`);
-      // ── end: the app's listing, then the stray PTY stopped by the app's own verb ──
-      await app.cdp.eval(`window.orchestra.stopAgent(${J(wsId)})`).catch(() => {});
-    },
-  },
-  {
-    name: 'sdk_only_hibernate', boots: true, ticket: '#232',
-    boot: { stubScript: SDK_ONLY_STUB, scratchNames: ['hibactive', 'hibsdk', 'hibstray'], env: { ORCHESTRA_HIBERNATE_AFTER_MS: '3000', ORCHESTRA_HIBERNATE_SWEEP_MS: '1000' } },
-    doc: '#232: the Veille sweep asks the SDK session — an idle workspace whose live session is an SDK one STILL hibernates (control), a workspace with a live RUN terminal is STILL spared, and an idle workspace whose only live process is a STRAY agent PTY (`ptyStart`; #233 deletes the launcher and this arm) is no longer reaped (baseline: stopped + chip)',
-    async run(ctx) {
-      const { app } = ctx; const w = app.world; const J = JSON.stringify;
-      const wsId = w.ws.id, sdkId = 'ws-hibsdk', strayId = 'ws-hibstray', activeId = 'ws-hibactive';
-      keeperControl(ctx);
-      const log0 = appLog(app);
-      ctx.clause('hibernation/sweeper-armed-with-the-injected-threshold', /session hibernation on — idle threshold [^(]*\(3000ms\), sweep every [^(]*\(1000ms\)/.test(log0), `app log has 'session hibernation on … (3000ms) … (1000ms)': ${/\(3000ms\)/.test(log0)} (the env reached the sweeper — the sweep below is the instrument)`);
-      const strayPids = new Set();
-      // avr-1 is the ACTIVE workspace at boot: give it a live RUN terminal and an SDK session whose turn finishes while it is looked at (a seen turn leaves no auto-unread guard)
-      await runControl(ctx);
-      await ipcSettle(app, `window.orchestra.agentSdkSend(${J(wsId)}, 'AVR-HIB-AVR1 hello')`);
-      await sleep(2500);
-      await activateWorkspace(app, 'hibsdk');
-      await ipcSettle(app, `window.orchestra.agentSdkSend(${J(sdkId)}, 'AVR-HIB-SDK hello')`);
-      await sleep(2500);
-      await activateWorkspace(app, 'hibactive');
-      const s = await ensureStray(ctx, strayId); strayPids.add(s.pid);
-      const recs = async () => Object.fromEntries((await listWs(app)).map((x) => [x.id, x]));
-      const r0 = await recs();
-      ctx.clause('hibernation/subjects-are-quiet', ['idle'].includes(r0[wsId]?.status) && r0[sdkId]?.status === 'idle' && !r0[sdkId]?.autoUnread && !r0[wsId]?.autoUnread, `status avr-1=${r0[wsId]?.status} hibsdk=${r0[sdkId]?.status} autoUnread(avr-1,hibsdk)=${r0[wsId]?.autoUnread},${r0[sdkId]?.autoUnread} (an unseen turn would protect them and mask the sweep)`);
-      // the SDK sessions each subject runs (their stub pids), by cwd — to prove a hibernated one's process really ended
-      const sdkPids = (dir) => stubLaunches(app).filter((l) => l.sdk && cwdOfPid(l.pid) === fs.realpathSync(dir)).map((l) => l.pid);
-      const sdkOf = (id) => sdkPids(id === wsId ? w.wtDir : w.extras.find((e) => e.id === id).worktreePath);
-      // the pids are captured NOW: a dead process has no readable cwd, so re-deriving them after the sweep would silently return [] and "all ended" would pass vacuously
-      const livePids = { [wsId]: sdkOf(wsId), [sdkId]: sdkOf(sdkId) };
-      ctx.clause('hibernation/sdk-sessions-live-before', livePids[wsId].length > 0 && livePids[sdkId].length > 0 && livePids[wsId].every(pidAlive) && livePids[sdkId].every(pidAlive), `avr-1 SDK stub pids=${J(livePids[wsId])} hibsdk=${J(livePids[sdkId])} alive before the sweep`);
-      // positive control: the SDK-only workspace is hibernated (chip + process gone) — the sweep works on an idle SDK session in BOTH modes
-      const chip = await waitFor('hibsdk hibernated', async () => ((await recs())[sdkId]?.hibernatedAt ? true : null), 40000, 500).catch(() => false);
-      await sleep(3000); // the same passes judge the others; give the stray PTY's verdict (baseline) time to land
-      const r1 = await recs();
-      ctx.clause('hibernation/idle-sdk-workspace-hibernates', !!chip && !!r1[sdkId]?.hibernatedAt && livePids[sdkId].length > 0 && !livePids[sdkId].some(pidAlive), `hibsdk hibernatedAt=${J(r1[sdkId]?.hibernatedAt)}; its SDK stub pid(s) ${J(livePids[sdkId])} alive now=${J(livePids[sdkId].map(pidAlive))} (both modes: hibernated and the process ended)`);
-      ctx.clause('hibernation/live-run-terminal-still-spares', r1[wsId]?.hibernatedAt === undefined && (await app.ptys()).some((p) => p.ptyId === `${wsId}:run` && p.kind === 'run') && livePids[wsId].every(pidAlive), `avr-1 (idle, SDK session live, Run terminal live): hibernatedAt=${J(r1[wsId]?.hibernatedAt)}, run PTY listed=${(await app.ptys()).some((p) => p.ptyId === `${wsId}:run`)}, SDK stub pid(s) ${J(livePids[wsId])} alive=${J(livePids[wsId].map(pidAlive))} (both modes: spared)`);
-      const strayPty = await agentPtyOf(app, strayId);
-      const reaped = !strayPty || r1[strayId]?.hibernatedAt !== undefined;
-      ctx.clause('hibernation/stray-pty-only-workspace-fate', reaped === pick(EXPECT.strayHibernated), `hibstray (idle, inactive, ONLY a stray agent PTY, stub pid ${s.pid}): hibernatedAt=${J(r1[strayId]?.hibernatedAt)}, PTY ${strayPty ? `listed alive=${pidAlive(s.pid)}` : 'GONE'}; expected(${MODE}) ${pick(EXPECT.strayHibernated) ? 'reaped (the PTY counted as a live agent)' : 'left alone — nothing SDK-side is running, nothing to reclaim'}`);
-      await app.cdp.eval(`window.orchestra.stopAgent(${J(strayId)})`).catch(() => {});
-    },
   },
   {
     name: 'refused_id_not_readopted', boots: true, ticket: '#232', boot: { sdkBorn: true, stubScript: RESUME_FAIL_STUB },
@@ -2833,6 +2842,11 @@ async function main() {
   else if (ALLOW_STALE) pre.allowedStale('identity/dist-fresh', `${fresh.detail} [--allow-stale: proceeding on a STALE build — results are NOT a clean PASS]`);
   else pre.clause('identity/dist-fresh', false, fresh.detail);
   if (!fresh.ok && !ALLOW_STALE) return finish(sel);
+  // #233: a too-long rig base is refused ONCE, up front and by name — a boot arm takes minutes, and past the limit every one of them would run on the SHARED hashed keeper socket.
+  if (RIG.base) for (const arm of ARMS.filter((a) => a.boots && sel.includes(a.name))) {
+    const b = keeperSocketBudget(path.join(RIG.base, `${arm.name}-${'0'.repeat(Date.now().toString(36).length)}`), seededIdsFor(arm.boot ?? {}));
+    if (!b.ok) { pre.clause(b.clause, false, `arm ${arm.name}: ${b.detail}`); return finish(sel); }
+  }
   if (RIG.rigDir) { if (RIG_OWNER) fs.writeFileSync(path.join(RIG.rigDir, OWNER_MARKER), RIG_OWNER); fs.writeFileSync(path.join(RIG.rigDir, KEEP_MARKER), 'removed when this invocation ends with 0 FAIL'); }
   if (RIG.rigDir) {
     const pr = pruneStaleRigDirs(path.dirname(RIG.rigDir), RIG.rigDir);
@@ -2848,7 +2862,7 @@ async function main() {
     if (MODE === 'baseline' && arm.retiredBaseline) { ctx.skip('baseline/retired', `${arm.retiredBaseline}: its pre-change behaviour exists on no build of master; run --mode after (the arm's live contract)`); continue; }
     try {
       if (arm.boots) {
-        ctx.app = await bootApp(arm.name, { ...(arm.boot ?? {}), sdkLess: !!arm.sdkLess, ...(arm.stubScript === 'logging' ? { stubScript: LOGGING_STUB } : {}) });
+        ctx.app = await bootApp(arm.name, { ...(arm.boot ?? {}), sdkLess: !!arm.sdkLess, ...(arm.stubScript === 'logging' ? { stubScript: LOGGING_STUB } : arm.stubScript === 'reply' ? { stubScript: REPLY_STUB } : {}) });
         try {
           await identityAndIsolation(ctx, ctx.app);
           await ready(ctx.app);

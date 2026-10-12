@@ -1,5 +1,5 @@
 // Production wiring of the fleet-Pause host trap (#252 D1b): binds the injected TrapDeps of
-// src/main/pause-trap.ts to the real store, structured sessions, keepers, PTYs and /proc.
+// src/main/pause-trap.ts to the real store, structured sessions, keepers and /proc.
 // Kept apart from pause-trap.ts so that file (and its tests) never import Electron-coupled modules.
 
 import path from 'node:path';
@@ -10,7 +10,6 @@ import { pausedCarrierForWorkspace } from './bus-pause';
 import { setLiveTreeSource } from './pause-reprise';
 import { sdkAttachIfDetached, sdkHumanTurnInFlight, sdkInterruptForPause, sdkPauseActivity, sdkStopTaskForPause } from './agent-sdk';
 import { keeperPidState, keeperSocketPath, probeKeeper, readTrackedKeeperPid } from './keeper-client';
-import { getPtyPid, isRunning as isPtyRunning, writePty } from './pty';
 import { getInFlightTools } from './hibernation-activity';
 import { snapshotWorktree } from './pause-snapshot';
 import { pauseOrderFiles } from './pause-douce';
@@ -26,8 +25,6 @@ import { mergeInFlight } from '../shared/open-tools';
 import type { Workspace } from '../shared/types';
 import { createDockerApi, dockerApiForMember } from './docker-api.ts';
 
-/** Claude Code's interrupt key in the terminal UI. */
-const PTY_INTERRUPT = '\x1b';
 const SETTLE_MS = 400;
 const INTERRUPT_TIMEOUT_MS = 10_000;
 /** One `stop_task` control request (#282): a hung CLI must not stall the trap — a timeout falls back to the signal kill. */
@@ -75,7 +72,7 @@ export function pauseOrdersDir(): string {
   return path.join(path.dirname(getEventsDir()), 'pause-orders');
 }
 
-/** The member's proven keeper → CLI (structured) or its PTY child (terminal): `{error}` = UNKNOWN (never read as « none »), null = no live process. The Pause trap's `cliOf` AND the Veille's Reliquat stop (#326) resolve the session through it. */
+/** The member's proven keeper → CLI: `{error}` = UNKNOWN (never read as « none »), null = no live process. The Pause trap's `cliOf` AND the Veille's Reliquat stop (#326) resolve the session through it. */
 export async function cliOfMember(m: { wsId: string }) {
   const kill = realKillDeps();
   // Structured: keeper → CLI. The keeper's identity is argv-verified; the CLI must be ITS child.
@@ -94,13 +91,6 @@ export async function cliOfMember(m: { wsId: string }) {
     if (cli === 'gone' || cli === 'unreadable') return { error: `cli ${probe.pid} ${cli}` };
     if (cli.ppid !== keeperPid) return { error: `cli ${probe.pid} is not a child of keeper ${keeperPid}` };
     return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid };
-  }
-  // Agent PTY: the pty child IS the CLI.
-  const ptyPid = isPtyRunning(m.wsId) ? getPtyPid(m.wsId) : undefined;
-  if (ptyPid) {
-    const cli = kill.read(ptyPid);
-    if (cli === 'gone' || cli === 'unreadable') return { error: `pty ${ptyPid} ${cli}` };
-    return { cli: { pid: cli.pid, startTicks: cli.startTicks }, keeperPid: null };
   }
   return null;
 }
@@ -133,23 +123,21 @@ export function buildPauseTrapDeps(): TrapDeps {
     activityOf: async (m): Promise<MemberActivity> => {
       const sdk = sdkPauseActivity(m.wsId);
       const probe = sdk ? null : await probeKeeper(m.wsId).catch(() => null);
-      const ptyLive = isPtyRunning(m.wsId);
-      const surface: MemberActivity['surface'] = sdk || probe?.running ? 'sdk' : ptyLive ? 'pty' : 'none';
+      const surface: MemberActivity['surface'] = sdk || probe?.running ? 'sdk' : 'none';
       const now = Date.now();
-      // UNKNOWN is not NONE (#254): no session, no PTY and no probe answer — but a tracked keeper process IS alive (busy/stopped): its turn may well be running
-      const trackedKeeperPid = !sdk && !probe && !ptyLive ? readTrackedKeeperPid(m.wsId) : null;
+      // UNKNOWN is not NONE (#254): no session and no probe answer — but a tracked keeper process IS alive (busy/stopped): its turn may well be running
+      const trackedKeeperPid = !sdk && !probe ? readTrackedKeeperPid(m.wsId) : null;
       const keeperUnknown = keeperActivityUnknown({
         hasSession: !!sdk,
         probeAnswered: !!probe,
-        ptyLive,
         trackedKeeperPid,
         keeperPidState: trackedKeeperPid !== null ? keeperPidState(trackedKeeperPid, m.wsId) : null,
       });
       return {
         surface,
         ...(keeperUnknown ? { unknown: true } : {}),
-        turnRunning: sdk ? sdk.turnRunning : probe?.running ? probe.turnInFlight === true : ptyLive && m.status === 'running',
-        // a live SDK session's own open tool_use blocks are AUTHORITATIVE (hook-independent); the hook-fed liveness tracker only when there is none (terminal agent, surviving keeper)
+        turnRunning: sdk ? sdk.turnRunning : probe?.running ? probe.turnInFlight === true : false,
+        // a live SDK session's own open tool_use blocks are AUTHORITATIVE (hook-independent); the hook-fed liveness tracker only when there is none (surviving keeper)
         inFlightTools: mergeInFlight(
           sdk ? sdk.openTools.map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: t.sinceMs, input: t.input })) : null,
           getInFlightTools(m.wsId).map((t) => ({ tool: t.tool, toolUseId: t.toolUseId, sinceMs: now - t.startedAt, input: t.detail ?? null })),
@@ -158,15 +146,8 @@ export function buildPauseTrapDeps(): TrapDeps {
       };
     },
     interrupt: async (m): Promise<InterruptOutcome> => {
-      // Structured session (live, or a detached keeper mid-turn) first; else the agent PTY.
-      const sdk = await withTimeout(sdkInterruptForPause(m.wsId), INTERRUPT_TIMEOUT_MS, 'sdk interrupt');
-      if (sdk !== 'idle' && sdk !== 'no-session') return sdk;
-      if (isPtyRunning(m.wsId)) {
-        if (m.status !== 'running') return 'idle';
-        writePty(m.wsId, PTY_INTERRUPT);
-        return 'interrupted';
-      }
-      return sdk;
+      // Structured session (live, or a detached keeper mid-turn).
+      return withTimeout(sdkInterruptForPause(m.wsId), INTERRUPT_TIMEOUT_MS, 'sdk interrupt');
     },
     cliOf: (m) => cliOfMember(m),
     // The gate's own decision (live workspace tree, frozen switch on the carrier) — the observer and the gate cannot disagree.
@@ -195,12 +176,10 @@ export function buildPauseTrapDeps(): TrapDeps {
   };
 }
 
-/** The turn-start observer the app registers with activity.ts (rows 29/30). Structured sessions
- *  only: a PTY agent's human keystrokes also fire `submit`, and cannot be told from a cron turn. */
+/** The turn-start observer the app registers with activity.ts (rows 29/30). Structured sessions only. */
 export function makeTurnStartObserver(deps: TrapDeps): (wsId: string) => void {
   return (wsId) => {
     if (sdkPauseActivity(wsId) === null) return; // no live structured session ⇒ nothing the trap can own
-    if (isPtyRunning(wsId)) return; // a Raw terminal is attached: its human keystrokes fire `submit` too and cannot be told from a cron turn (D9, row 12)
     const ws = store.getWorkspace(wsId);
     if (!ws || ws.archived) return;
     void onTurnStart(deps, toMember(ws)).catch((e) => log.warn('pause-trap: turn-start observer failed', e));

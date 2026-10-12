@@ -1713,7 +1713,7 @@ module that consumes the seams below.
   ledger #261 row numbers): **1/2** composer = HUMAN → `sdkSend` commit-point gate `agent-sdk.ts:2954` (AUTO refused with no session/turn/
   error row/pending prompt) · **4** `recoverPendingPromptsInner` `:3546` (held *before* `keepOnlyPendingPrompts` drops the entries) ·
   **5/6/7** `dispatchRestartRequest` `restart-workspace.ts:80` (`trigger==='toolbar'` ⇒ human; refused before any stop) ·
-  **11** PTY opening brief, fire-time — `scheduleOpeningBrief` (`src/main/opening-brief-pty.ts`, called from the `pty:start` handler; arm `pty_brief` drives the real scheduler + gate, the wiring test pins the handler call and forbids any other `writePty(`) · **13** (account-migrate resume — DELETED with the PTY resume, #232; the migration starts no turn) · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
+  **11** (PTY opening brief — DELETED with the agent-PTY launcher, #233; the brief is the SDK start's opening turn, gated by rows 20/21/1) · **13** (account-migrate resume — DELETED with the PTY resume, #232; the migration starts no turn) · **14** `wakeRosterEntry` `wake-roster.ts:24` (`wakeable` — else the sweep re-fires every tick) ·
   **16** usage-limit auto-resume `prompt-queue.ts:235` (before budget, clear and re-mark) · **17** timer flush `:132` before the queue is
   cleared (“Send now” `force` = human) · **18/19** `dispatchMessageRequestUnmirrored` `workspaces.ts:3488` (parked in the inbox) ·
   **20/21** `dispatchSpawnRequest` `:1722` before the worktree exists (a human click has no `from`) · **23** inbox re-drive
@@ -1721,7 +1721,7 @@ module that consumes the seams below.
   `PAUSE_DRAIN_POLL_MS`; HUMAN entries — `session.humanTurns` — go first) · **25/26/27** `watchdogTick` top-of-loop skip
   `session-watchdog.ts:550` (no gate release, no recycle, no boot-wedge escalation; nothing mutated while paused) · **WAWP**
   `wakeAgentWithPrompt` `workspaces.ts:3305`. **HUMAN, allowed, un-pauses nothing**: 3 attach, 8 model switch, 9 `/status`·`!bash`·MCP,
-  10 `pty:start`, 12 keystrokes, 22 tray release, 28 Fix checks / Send review (the `ENUMERATION` arm of `pause-gates-wiring.test.ts`
+  10 (the terminal open — gone with the launcher, #233), 12 keystrokes, 22 tray release, 28 Fix checks / Send review (the `ENUMERATION` arm of `pause-gates-wiring.test.ts`
   pins the exact set of `'human'` origin sites — a new one is a new bypass). **TRAP (D1b)**: 29 CLI-internal scheduled turns, 30 a turn
   already running.
 - **SILENCE (row 15)**: the liveness **roster** (`buildLivenessRoster(store, waveRunId, isPaused)`, `bus-liveness-roster.ts`) sets `member.paused` from the
@@ -1819,7 +1819,7 @@ would-have-fenced event is recorded, so the OFF state is observable. Ships OFF.
 | `src/cli/bus-verbs.ts` + `src/cli/index.ts` | `fenced(ctx, verb, write)` runs the send/ack/gate-resolve write (and, #204, `run hold|resume`) THROUGH `fencedWrite` (one IMMEDIATE tx, F1); `--generation` / `$ORCHESTRA_COORDINATOR_GENERATION`; `busSwitch(db,runId,'fencing')` read at the boundary. |
 | `src/renderer/components/BusPane.tsx` | `data-run-generation` per run. |
 | `src/main/bus-run-anchor.ts` | **#166 PRODUCER GATE** `shouldBumpCoordinatorGeneration(anchor, runRowExists)` — pure: bump IFF `anchorIsOrchestrator && wsId===anchorId && runRowExists` (excludes members = never fence the live anchor; excludes first-start = stays gen 0). |
-| `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); `startAgentPty` opt `coordinatorReplacement` bumps before `extraEnv` + plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only; NO caller sets it since #232 — #233 deletes the launcher). The `markPtyRestartPending`/`consumePtyRestartPending` pending-replacement flag and the branch-switch agent `pty:restart` are gone (#232). |
+| `src/main/workspaces.ts` | **#166 PRODUCER** `maybeBumpCoordinatorOnReplacement(ws)` (gate → `bumpCoordinatorGeneration`, best-effort D1); the agent-PTY launcher's replacement bump + env plumbing was deleted with it (#233); `buildSdkEnv` plumbs `ORCHESTRA_COORDINATOR_GENERATION` (gen>0 only). The `markPtyRestartPending`/`consumePtyRestartPending` pending-replacement flag and the branch-switch agent `pty:restart` are gone (#232). |
 | `src/main/agent-sdk.ts` | **#166** `buildSdkEnv` plumbs `ORCHESTRA_COORDINATOR_GENERATION` (parity); `sdkRestart` bumps on both branches, non-fresh AFTER the mid-turn guard (a refused restart never bumps). |
 | `src/main/restart-workspace.ts` + `src/main/api-handlers.ts` | **#166** the SDK restart (`sdkRestart` → `maybeBumpCoordinatorOnReplacement`) is the only coordinator-replacement bump since #232; the PTY restart effect and the toolbar live-PTY restart that marked/consumed a pending flag are gone. |
 
@@ -2225,9 +2225,9 @@ gates it (`if (!queuedSubmit)`).** Two SDK submits are MID-turn, not boundaries,
 and must NOT clear (they would wipe a live tool of the running turn and mask a
 genuine hang): a PARKED prompt (`sdkSend` queued behind a running turn →
 `ev.queued`) and a keeper REATTACH (`session/attach` with `turnInFlight` →
-`submit`). `driveStatusFromEvent` derives `queuedSubmit` (true for both) and
-threads it; the terminal/spool path never queues a submit so it stays undefined
-(a real boundary → clears). Residual accepted-gap (N1): a phantom persists until
+`submit`). Its only producer was the SDK-side status drive, deleted by #233 (it was a no-op — gated on a
+coexisting agent PTY, which cannot exist since #230); the parameter and its gate stay as the pure turn-boundary seam, and the
+spool path never queues a submit so it stays undefined (a real boundary → clears). Residual accepted-gap (N1): a phantom persists until
 the NEXT genuine boundary if the member stays `running` via coalesced wakes.
 
 ## #199 residual (T6b) — a call can END without PostToolUse
@@ -2292,10 +2292,10 @@ into `LivenessMember.inFlightTools`.
 | File | #127 change |
 |---|---|
 | `src/main/hibernation-activity.ts` | `InFlightTool[]` tracker keyed by toolUseId + `noteToolStart`/`noteToolEnd`/`clearInFlightTools`/`getInFlightTools`; `forgetHibernationActivity` clears it. |
-| `src/main/agent-sdk.ts` | `driveStatusFromEvent` threads `ev.toolUseId` for tool-use/tool-result, and (#199) derives+passes `queuedSubmit` (true for a parked `ev.queued` user-message and for `session/attach`→submit) so a mid-turn submit does not clear a live tool. |
+| `src/main/agent-sdk.ts` | (history) the SDK-side status drive threaded `ev.toolUseId` and (#199) `queuedSubmit`; deleted by #233 — no SDK-side producer remains. |
 | `src/main/events-spool.ts` + hook (`workspaces.ts`) | hook mines `tool_use_id` into the jsonl; spool reads `toolUseId` and passes it to `applyAgentEvent`. |
 | `src/main/activity.ts` | `applyAgentEvent` takes `queuedSubmit`; calls start/end at pretool/posttool and `clearInFlightTools` at turn-END (`stop`/`stopfail`/`notify`/`session`) always, and at turn-START (`submit`, #199) **only when `!queuedSubmit`** (review-199 F1). |
-| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang, mid-turn-submit (review-199 F1 must-PASS: a live tool survives a queued submit + a blanket-clear contrast), and healthy controls; source-checks pinning the `!queuedSubmit`-gated clear, the `queuedSubmit` param, and the `driveStatusFromEvent` wiring (reddens on master / on a blanket-clear regression). |
+| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang, mid-turn-submit (review-199 F1 must-PASS: a live tool survives a queued submit + a blanket-clear contrast), and healthy controls; source-checks pinning the `!queuedSubmit`-gated clear and the `queuedSubmit` param (reddens on a blanket-clear regression; the producer-wiring pin went with the deleted status drive, #233). |
 | `src/shared/bus-liveness.ts` | `toolClassCeilingMs`, `hungCallForMs`, `resolveStall` (shared dedup/switch, extracted so the staleness & hung paths keep ONE copy), `hungCallEscalationBody`, `InFlightToolState`; `decideEscalation`'s `running` guard now checks the progress bound. |
 | `src/main/bus-liveness.ts` | roster carries `inFlightTools` (list); the hung-call body + log wording; `writeEscalation` takes the hung tool. |
 | `src/shared/bus-liveness.test.ts` | pure tests: ceiling, hung, build-alive, **F1 parallel-hang + most-overdue**, boundary `>=`, switch-OFF count, dedup, body. |
@@ -2466,7 +2466,8 @@ wins the walk (and its P4 gate opens); the field root-mission OPS row is not rep
 
 ## Where the run starts — `maybeStartRunAtAnchor` (`src/main/bus-run-anchor.ts`)
 
-`startAgentPty` resolves `resolveAnchorInfo(ws)` = `{ anchorId, anchorIsOrchestrator,
+`startBusRunAndWriteNotice` (the workspace-creation / promote chokepoints in `workspaces.ts`; the agent-PTY launcher that
+once also called it was deleted, #233) resolves `resolveAnchorInfo(ws)` = `{ anchorId, anchorIsOrchestrator,
 parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 
 - **Fires when a workspace BECOMES an orchestrator** (spawn-as-orchestrator: the

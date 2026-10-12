@@ -15,7 +15,7 @@ with the container's cwd (a cryptic spawn error). Until #220 — Reconcile sandb
 view — starting a sandbox-hosted workspace's agent through the **SDK, wake, restart, fix-checks / send-review and bus-wake**
 paths is refused with ONE message (`SANDBOX_PAUSED_MESSAGE`, `shared/sandbox-pause.ts`; pure decision
 `sandboxPausedMessage(ws)` = `ws.host.kind==='sandbox'`). **The one path once NOT refused was the Raw-tab PTY launcher**
-(`startAgentPty`, the host-aware one): since #230 nothing calls `pty:start` (no renderer component mounts an agent terminal), so it is unreachable from the UI and #233 deletes it.
+(the host-aware agent-PTY launcher): #230 stopped mounting it and #233 deleted it, so the pause now covers every agent start.
 Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED and its tests stay green.
 - **The funnel** — `agent-sdk.ts` `ensureSessionInner` throws it first thing after the workspace lookup (before the
   rewind cut, hibernation clear, env build and the `query()` spawn). `ensureSession` is the ONLY caller and that `query({`
@@ -114,7 +114,7 @@ correlation machinery.
 
 ## The shim — sandbox/shim/ (in-container half of Orchestra)
 `shim.ts` runs as the container's PID-1-ish process (image CMD) and does
-in-container exactly what the app does locally: spawns the agent PTY on a
+in-container what the app did locally before sandbox agents were paused (#226): spawns the agent PTY on a
 `spawn` frame (`startSession` `:143`; forces `ORCHESTRA_WS_ID`/`EVENTS_DIR`/
 `SOCK` env), tails the activity spool → `event` frames (`drainSpool` `:281`, a
 port of events-spool.ts via pure `parseSpoolChunk` `shim-core.ts:40`), and
@@ -176,7 +176,7 @@ dirs) + `claude-config/` (import only).
   container `~/.claude` (+`~/.claude.json`) per-entry best-effort
   (`installClaudeConfig` `shim-import.ts:123`), creds chmod 600. Remote spawns
   **strip `CLAUDE_CONFIG_DIR`** (a host path would shadow the seeded login) —
-  `workspaces.ts` startAgentPty.
+  this was done by the agent-PTY launcher that #233 deleted; the follow-up #220 re-owns it.
 - Shim `runImport` — `shim-import.ts:158`: clone bundle `--no-checkout` into
   the (empty) `/workspace`, checkout branch, repoint `origin`, overlay, seed
   config, persist an `ImportRecord` (`:90`). Failure wipes back to empty

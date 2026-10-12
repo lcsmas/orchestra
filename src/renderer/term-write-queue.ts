@@ -1,5 +1,5 @@
 /**
- * PTY→xterm write scheduler used by RunTerminal.tsx (and by the agent terminal until #231).
+ * PTY→xterm write scheduler used by RunTerminal.tsx.
  *
  * Solves two problems at once:
  *

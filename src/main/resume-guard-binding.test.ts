@@ -4,8 +4,8 @@
 // path that re-implements or omits the wire passes the logic test byte-identical
 // on the unfixed build). `agent-sdk.ts` / `workspaces.ts` cannot load under
 // `node --test` (the ./platform dir-import + extensionless-import traps in repo
-// memory), so this reads the SHIPPED source and asserts each of the four #178
-// seams is wired to the guard — each with a must-FAIL arm (a body that merely
+// memory), so this reads the SHIPPED source and asserts each of the #178
+// seams still shipped (the terminal `--continue` one went with the launcher, #233) is wired to the guard — each with a must-FAIL arm (a body that merely
 // mentions the symbol must not satisfy "actually wired").
 
 import { test } from 'node:test';
@@ -16,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const agentSdkSrc = readFileSync(path.join(here, 'agent-sdk.ts'), 'utf8');
-const workspacesSrc = readFileSync(path.join(here, 'workspaces.ts'), 'utf8');
 const restartModeSrc = readFileSync(path.join(here, '..', 'shared', 'restart-mode.ts'), 'utf8');
 const restartWorkspaceSrc = readFileSync(path.join(here, 'restart-workspace.ts'), 'utf8');
 const apiHandlersSrc = readFileSync(path.join(here, 'api-handlers.ts'), 'utf8');
@@ -90,39 +89,6 @@ test('seam (a): transcriptExistsFor probes the .jsonl on disk (the sdkWake discr
   assert.ok(
     callsUncommented(body, 'existsSync') && body.includes('.jsonl'),
     'transcriptExistsFor must existsSync the <dir>/<id>.jsonl — the proactive discriminator',
-  );
-});
-
-// ─── Seam (b): the terminal --continue gate — workspaces.ts (startAgentPty) ──
-
-test('seam (b): the PTY launch site gates --continue on shouldContinuePty + on-disk probe', () => {
-  // startAgentPty (the restart/open path) computes `resuming` via the guard, never on
-  // `ws.hasInput === true` alone. (#227 removed the SECOND site, the raw-PTY wake fallback: a wake
-  // that cannot start an SDK session now returns false instead of launching a PTY.)
-  const guardCalls = workspacesSrc.match(/shouldContinuePty\(/g) ?? [];
-  assert.ok(
-    guardCalls.length >= 1,
-    `the PTY seam must call shouldContinuePty, found ${guardCalls.length}`,
-  );
-  const probeCalls = workspacesSrc.match(/newestTranscriptExists\(ws\)/g) ?? [];
-  assert.ok(
-    probeCalls.length >= 1,
-    `the PTY seam must feed the on-disk newestTranscriptExists(ws) probe, found ${probeCalls.length}`,
-  );
-  // must-FAIL arm: the old `const resuming = ws.hasInput === true` (with or
-  // without the fresh clause) must be GONE from the launch site — it is the
-  // phantom `--continue` dead-end.
-  assert.ok(
-    !/const resuming = ws\.hasInput === true(?:\s*&&|;)/.test(workspacesSrc),
-    'the raw `resuming = ws.hasInput === true` gate must be replaced by shouldContinuePty',
-  );
-});
-
-test('seam (b): newestTranscriptExists reads the project dir for any .jsonl', () => {
-  const body = bodyOf(workspacesSrc, 'export function newestTranscriptExists');
-  assert.ok(
-    callsUncommented(body, 'readdirSync') && body.includes(".jsonl"),
-    'newestTranscriptExists must readdirSync the transcript dir and match .jsonl',
   );
 });
 

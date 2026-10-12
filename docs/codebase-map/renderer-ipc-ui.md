@@ -18,7 +18,7 @@ Bootstrap order matters; several steps run *before* the window:
 - **Strip process-local env** `:96` — `stripProcessLocalEnv(process.env)`
   (`src/shared/child-env.ts`) deletes `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD`/
   `ORCHESTRA_OZONE_RELAUNCHED` once the ozone step (their last legitimate
-  consumer) is done. Every child — agent PTYs, per-repo run/setup/archive
+  consumer) is done. Every child — the Run/nvim/login PTYs, per-repo run/setup/archive
   scripts, the SDK subprocess — inherits `process.env` wholesale, and an
   inherited `APPIMAGE` tells a child Electron "you are the packaged app": a
   workspace running `pnpm dev` on Orchestra itself re-exec'd the INSTALLED
@@ -29,7 +29,7 @@ Bootstrap order matters; several steps run *before* the window:
   `APPIMAGE` at import time for the two places that still need it (the relaunch
   above, the CLI shim).
 - **Shell env merge** `:95` — `$SHELL -ilc env` (via `shell-env`) so PATH/MCP
-  secrets reach agent PTYs and scripts even when launched from a desktop icon.
+  secrets reach agent sessions, terminals and scripts even when launched from a desktop icon.
 - **`ORCHESTRA_HOME`** `:128` — relocate userData + events spool (dev isolation);
   must run before `import {store}`.
 - **Window** `:253` — 1400×900, `contextIsolation:true`, `nodeIntegration:false`,
@@ -68,10 +68,9 @@ Bootstrap order matters; several steps run *before* the window:
 
 IPC handlers: the request/response BODIES live in the shared table
 `src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
-workspaces CRUD, sandbox, PTY (`ptyWrite` flips `hasInput` and applies the
-heavy-resume keystroke suppression; `ptyRepaint` / `saveClipboardImage` are no longer
-renderer-facing — retyped under `ExtraApiMethods`, unreachable until #233 deletes them;
-`ptyStart` / `stopAgent` keep their preload wrappers until #233, no renderer caller), git (stats poll piggybacks merge+branch refresh; findPR
+workspaces CRUD, sandbox, PTY (`ptyWrite` / `ptyResize` only — the Run, nvim and login terminals; the
+agent-PTY channels (start, repaint, stopped, agent stop, clipboard image save) and their handlers and
+preload wrappers were deleted with the launcher, #233), git (stats poll piggybacks merge+branch refresh; findPR
 piggybacks release detection), scripts, linear, accounts, usage, deps).
 index.ts wires the table to its historical channels in one loop over
 `METHOD_IPC_CHANNELS` (every registration still goes through the logging

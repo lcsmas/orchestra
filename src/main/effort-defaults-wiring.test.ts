@@ -25,9 +25,9 @@ test('createWorkspace freezes an explicit spawn --effort, else the default of it
   assert.match(workspaces, /\.\.\.\(newEffort \? \{ sdkEffort: newEffort \} : \{\}\)/);
 });
 
-test('the PTY launch passes the workspace effort (the SDK path already reads ws.sdkEffort)', () => {
-  assert.match(workspaces, /if \(ws\.sdkEffort\) claudeArgs\.push\('--effort', ws\.sdkEffort\)/);
+test('the SDK session start passes the workspace effort (the agent-PTY launcher that also did is gone, #233)', () => {
   assert.match(read('src/main/agent-sdk.ts'), /\.\.\.\(ws\.sdkEffort \? \{ effort: ws\.sdkEffort \} : \{\}\)/);
+  assert.doesNotMatch(workspaces, /claudeArgs/, 'no launcher builds a `claude` argv in workspaces.ts any more');
 });
 
 test('the setter normalizes the MERGED value, so a one-kind patch keeps the other kind', () => {

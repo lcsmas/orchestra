@@ -397,18 +397,13 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
  *  (`src/main/agent-sdk.ts`) keys on exactly that normalized value before
  *  calling this. Nothing here re-derives it from CLI text.
  *
- *  What this call adds is REACH. The same reason would otherwise travel only
- *  via `driveStatusFromEvent`, which is gated on `session.driveStatus` — TRUE
- *  only when a terminal PTY coexists. In the plain structured-view
- *  configuration the SDK's own shell hooks own the events spool instead, and
- *  they carry no reason field at all: MEASURED, 8 consecutive exhaustions in
- *  that configuration wrote no reason ANYWHERE, leaving only a `[WARN]` in the
- *  app log — verbatim the bug #69 reports. So `emitFrom` calls this OUTSIDE
- *  that gate, the same exemption `markLooping` takes and for the same reason:
- *  the gate exists to stop double-DRIVING the status dot, while this is a
- *  store field with its own no-change guard (`setStatus` returns
- *  `changed: false` when neither the status nor the reason moved), so the two
- *  paths overlap safely.
+ *  What this call adds is REACH: the SDK session's own shell hooks own the
+ *  events spool and carry no reason field at all — MEASURED, 8 consecutive
+ *  exhaustions wrote no reason ANYWHERE, leaving only a `[WARN]` in the app
+ *  log — verbatim the bug #69 reports. So `emitFrom` calls this directly.
+ *  It is a store field with its own no-change guard (`setStatus` returns
+ *  `changed: false` when neither the status nor the reason moved), so it
+ *  overlaps the spool path safely.
  *
  *  Status stays `idle` — a stopped session is idle; the REASON is the
  *  orthogonal axis, never a sixth `WorkspaceStatus`.
@@ -431,11 +426,9 @@ export async function markStoppedOnMaxTurns(id: string): Promise<void> {
  *  USAGE LIMIT (#74) — the reason that resolves by itself at the reset, and so
  *  the only one the app auto-resumes from.
  *
- *  Takes the same OUTSIDE-the-gate exemption and for the identical reason: in
- *  the plain structured-view configuration `driveStatusFromEvent` is gated on
- *  `session.driveStatus` (a coexisting PTY), so a limit death there would
- *  otherwise write the reason nowhere. That is precisely the field failure #74
- *  exists to fix — a coordinator died on the limit and NOTHING recorded why,
+ *  Called from `emitFrom` for the identical reason: the spool hooks carry no
+ *  reason, so a limit death would otherwise write the reason nowhere. That is
+ *  precisely the field failure #74 exists to fix — a coordinator died on the limit and NOTHING recorded why,
  *  so nothing could ever decide to restart it.
  *
  *  `resetsAtMs` is epoch MILLISECONDS and must already have been converted
@@ -984,10 +977,9 @@ export function applyAgentEvent(
   event: string,
   tool: string | undefined,
   transcript?: string,
-  /** Why the turn ended, when the caller knows (the SDK path — see
-   *  `sdkEventToStopReason`). The terminal/spool path passes nothing: Claude
-   *  Code's Stop hook carries no reason field, so those events keep their
-   *  previous behavior exactly. Only consulted for terminal events. */
+  /** Why the turn ended, when the caller knows. No caller passes one since #233 deleted the SDK-side
+   *  producer (the spool path never had one: Claude Code's Stop hook carries no reason field).
+   *  Only consulted for terminal events. */
   stopReason?: AgentStopReason,
   /** Loop level-signal from the Stop payload's `session_crons` (the CLI
    *  scheduler's own registry of pending ScheduleWakeup/CronCreate//loop
@@ -997,15 +989,15 @@ export function applyAgentEvent(
    *  turn-end events. */
   crons?: 'none' | 'some',
   /** The tool_use id for a `pretool`/`posttool`, when the caller has it (#127).
-   *  The SDK path passes `ev.toolUseId`; the spool path passes the id mined from
-   *  the hook payload, or `null` on an old hook. Used ONLY to pair a posttool
+   *  The spool path passes the id mined from the hook payload, or `null` on an
+   *  old hook; the sandbox bridge passes the wire id (#132). Used ONLY to pair a posttool
    *  with the exact in-flight call it ended, so a hung parallel sibling is not
    *  cleared by a fast call's posttool (review-127 F1). */
   toolUseId?: string | null,
   /** #199 (review-199 F1): for a `submit`, TRUE when this submit is NOT a genuine
-   *  new turn boundary — it is a PARKED prompt queued behind a running turn (SDK
-   *  `sdkSend` with `ev.queued`), or a keeper REATTACH to a turn already in flight
-   *  (`session/attach`). In those cases the CURRENT turn (and its live tool calls)
+   *  new turn boundary — it is a PARKED prompt queued behind a running turn, or a
+   *  keeper REATTACH to a turn already in flight. No caller passes it since #233
+   *  (its only producer was the deleted SDK-side status drive). In those cases the CURRENT turn (and its live tool calls)
    *  continues, so the turn-start clear MUST NOT run or it would wipe a live tool
    *  of the running turn and mask a genuine mid-call hang (#108 Q16). The terminal/
    *  spool path never queues a submit (UserPromptSubmit fires at a real prompt
@@ -1119,10 +1111,9 @@ export function applyAgentEvent(
       // synchronously). undefined = no opinion — never clear on absence.
       if (crons === 'none') void markLooping(id, false);
       else if (crons === 'some') void markLooping(id, true);
-      // `stopfail` is itself a reason signal: the terminal path routes Claude
-      // Code's StopFailure hook here and passes no explicit reason, so fall back
-      // to 'error' for it. That keeps the two paths agreeing without the spool
-      // hook needing a new field it cannot produce.
+      // `stopfail` is itself a reason signal: Claude Code's StopFailure hook
+      // lands here with no explicit reason, so fall back to 'error' for it
+      // without the spool hook needing a new field it cannot produce.
       fireFinished(id, stopReason ?? (event === 'stopfail' ? 'error' : undefined));
       break;
     case 'notify':
@@ -1165,7 +1156,7 @@ export function applyAgentEvent(
 
 /** Legacy Unix-socket entry point (hooks-server `/event` route). Pre-upgrade
  *  workspaces still POST bare `{id, event}` here until their hooks are
- *  rewritten on the next pty:start; they carry no per-tool detail. */
+ *  rewritten on the next session start; they carry no per-tool detail. */
 export function dispatchHookEvent(id: string, event: string): void {
   applyAgentEvent(id, event, undefined);
 }

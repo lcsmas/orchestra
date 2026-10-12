@@ -30,9 +30,9 @@ reads them transiently to query usage.
   existing OAuth login whenever `ANTHROPIC_API_KEY` is in its env (measured
   2026-09-09 with a capture proxy) — an rc export would silently hijack every
   login-dir account. Unpinned (default-login) sessions keep the ambient env
-  untouched. Applied on all three spawn paths: terminal PTYs via
-  `resolveRepoAgentEnv` + `resolveRepoAgentStripEnv` → `startPty({extraEnv, stripEnv})`
-  (`workspaces.ts`, `pty.ts`), SDK sessions in `buildSdkEnv` (`agent-sdk.ts`).
+  untouched. Applied by SDK sessions in `buildSdkEnv` (`agent-sdk.ts`) — the only agent launch
+  path since #233 (the terminal-PTY env resolvers and `startPty`'s strip-env option went with the
+  agent-PTY launcher).
   NOT applied to self-tune runs (`self-tune.ts` passes only `configDirEnv`).
   UI: the "Extra env" textarea in `AccountsSettings` (`KEY=value` lines,
   `parseEnvLines`/`formatEnvLines`).
@@ -55,7 +55,7 @@ reads them transiently to query usage.
   (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId` and
   `syncAccountInheritance(target)`. **There is no main-side resume (#232):** the Agent view's next
   send/open starts a fresh session under the new account resuming `ws.sdkSessionId` from the relocated
-  transcript. (The old `startAgentPty` resume — at the winsize the PTY had before the stop — and the
+  transcript. (The old PTY resume — at the winsize the PTY had before the stop — and the
   `resumed` field of the reply / the CLI's `(resumed)` suffix are gone; the fleet-Pause row that skipped
   that resume with them.) Pure decision `planAccountMigration(current, rawTarget, known)`
   (`accounts.ts`) returns `error`/`noop`/`migrate` (empty target = default login).
@@ -319,8 +319,7 @@ off mid-task and had nothing queued.
   the sibling of `markStoppedOnMaxTurns`, writing `lastStopReason:
   'usage_limit'` plus `Workspace.usageLimitResetsAt`; `clearStopReason(id)`
   drops it once resumed (without which every 20s tick would nudge again).
-  Both take the same outside-the-`driveStatus`-gate exemption `markLooping`
-  does, and for the same reason.
+  Both are called directly from `emitFrom` (the SDK's own hooks carry no reason field).
 - **Driver** (`src/main/prompt-queue.ts`): `resumeUsageLimited(now)` runs at the
   head of the existing flusher tick — same inputs, same cadence, and one place
   where the queue-vs-nudge precedence is decided. Candidates are sorted

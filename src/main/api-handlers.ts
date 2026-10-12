@@ -1,5 +1,4 @@
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { platform } from './platform';
 import { store } from './store';
@@ -58,7 +57,6 @@ import {
   getWorktreeSizes,
   renameWorkspaceBranch,
   runSetupScript,
-  startAgentPty,
   switchWorkspaceBranch,
   unarchiveWorkspace,
 } from './workspaces';
@@ -72,7 +70,7 @@ import {
   readScrollback,
   isRunning,
 } from './pty';
-import { clearHibernated, setActiveWorkspace } from './hibernation.ts';
+import { setActiveWorkspace } from './hibernation.ts';
 import { sampleResources } from './resources';
 import { getHookSocketPath } from './hooks-server';
 import {
@@ -104,7 +102,6 @@ import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
   detectAndUpdateReleaseState,
-  reconcileExited,
 } from './activity';
 import { snapshotSyncStates, syncOneRepo } from './repo-sync';
 import { addQueuedPrompt, removeQueuedPrompt, flushQueuedPrompts } from './prompt-queue';
@@ -167,7 +164,6 @@ import { markWorkspaceSeen } from './mark-seen.ts';
 import { wakeHeldForMemory } from './admission-wake';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { scheduleOpeningBrief } from './opening-brief-pty.ts';
 import type {
   Account,
   BrowserBounds,
@@ -244,11 +240,6 @@ export interface ExtraApiMethods {
    *  Diff tab was removed — Monaco was too heavy); kept as a served backend
    *  method behind the `git:diff` channel. */
   getDiff: (id: string) => Promise<DiffFile[]>;
-  /** #231: the agent-terminal channels whose renderer/preload wrappers are gone (no agent PTY any more);
-   *  these handlers stay UNREACHABLE until the launcher-deletion ticket (#233) deletes them with this block.
-   *  (`ptyStart` / `stopAgent` keep their wrappers until #233 — the rig's stray-PTY seam needs them.) */
-  ptyRepaint: (id: string, cols: number, rows: number) => Promise<void>;
-  saveClipboardImage: (mime: string, bytes: Uint8Array) => Promise<string | null>;
 }
 
 export type ApiHandlerTable = ServableApi & ExtraApiMethods;
@@ -323,13 +314,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   releaseInboxMessage: 'inbox:release',
   refuseInboxMessage: 'inbox:refuse',
   releaseAllInboxMessages: 'inbox:releaseAll',
-  ptyStart: 'pty:start',
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
-  ptyRepaint: 'pty:repaint',
-  saveClipboardImage: 'clipboard:saveImage',
   restartAgent: 'agent:restart',
-  stopAgent: 'agent:stop',
   agentSdkSend: 'agent:sdkSend',
   agentSdkRunBash: 'agent:sdkRunBash',
   agentSdkStatus: 'agent:sdkStatus',
@@ -857,118 +844,10 @@ export const apiHandlers: ApiHandlerTable = {
 
   // ---------- Terminal (pty) ----------
 
-  ptyStart: async (id, cols, rows) => {
-    const ws = store.getWorkspace(id);
-    if (!ws) throw new Error('workspace not found');
-    if (isRunning(id)) {
-      // Renderer remounted (HMR / reload) but the PTY is still alive. The
-      // fresh xterm canvas is blank and Claude has no reason to repaint on
-      // their own, so bounce the size to force a SIGWINCH-driven redraw.
-      repaintPty(id, cols, rows);
-      return;
-    }
-    // Spawn the agent PTY. The resume gate (`claude --continue` only when the
-    // user has actually submitted a prompt — ws.hasInput), hook install, and
-    // env setup all live in startAgentPty, shared with the account-migration
-    // resume. This is also where a workspace that was running before an app
-    // restart comes back to life — deliberately on first open, never at boot.
-    const resuming = ws.hasInput === true;
-    // The agent process is coming back (this is also the Terminal's
-    // press-any-key relaunch path, which resumes via `claude --continue`), so
-    // drop the hibernation chip and re-stamp activity — otherwise the next
-    // sweep could see a freshly-woken agent as still idle and kill it again.
-    clearHibernated(id);
-    await startAgentPty(ws, cols, rows);
-    // Preserve the attention signals (`waiting`, the auto-unread bell) across
-    // restarts; only clear stale `running` state left over from a prior crash.
-    if (ws.status === 'running') {
-      const updated: Workspace = { ...ws, status: 'idle' };
-      await store.upsertWorkspace(updated);
-      platform.broadcast('workspace:update', updated);
-    }
-    // First-ever spawn: pipe the initial task (if any) into the agent once it
-    // has had a moment to initialize its TUI.
-    if (!resuming && ws.lastTask) {
-      scheduleOpeningBrief(id, ws.lastTask, writePty); // #252 row 11: gated at fire time (src/main/opening-brief-pty.ts)
-    }
-  },
-
-  ptyWrite: async (id, data) => {
-    const submitted = data.includes('\r') || data.includes('\n');
-    // Heavy-resume gate (armed in startAgentPty when `claude --continue` is
-    // about to reload a large session). While armed, Claude Code is showing
-    // its compaction menu; a typed task + Enter would proceed the FULL resume
-    // and drain the usage pool. See the branch comments below.
-    const wsGate = store.getWorkspace(id);
-    if (wsGate?.heavyResumePending) {
-      // ESC is '\x1b'; arrows are '\x1b[A'… Any escape sequence here =
-      // deliberate menu navigation → disarm and let the input through.
-      if (data.includes('\x1b')) {
-        const updated = { ...wsGate, heavyResumePending: false };
-        await store.upsertWorkspace(updated);
-        platform.broadcast('workspace:update', updated);
-        return writePty(id, data);
-      }
-      if (submitted) {
-        // Blind submit into a heavy resume — suppress so it can't proceed the
-        // full-context resume. The user navigates CC's menu (arrow/Esc) to
-        // disarm, then their Enter answers the menu for real.
-        return;
-      }
-      // non-submit, non-escape keystroke (typing) — pass through harmlessly.
-      return writePty(id, data);
-    }
-    // Flip hasInput the first time the user actually submits something. This
-    // is what gates `claude --continue` on the next PTY start. Activity
-    // status itself flips from Claude's own UserPromptSubmit hook.
-    if (submitted) {
-      const ws = store.getWorkspace(id);
-      if (ws && !ws.hasInput) {
-        const updated = { ...ws, hasInput: true };
-        await store.upsertWorkspace(updated);
-        platform.broadcast('workspace:update', updated);
-      }
-    }
-    return writePty(id, data);
-  },
+  // Shared by the Run, nvim and account-login terminals — no agent PTY exists since #233 (the Agent view drives agents).
+  ptyWrite: async (id, data) => writePty(id, data),
 
   ptyResize: async (id, cols, rows) => resizePty(id, cols, rows),
-
-  // Force a full child repaint via a SIGWINCH bounce — the only reliable heal
-  // when a frontend terminal's state diverged from the child TUI's per-cell
-  // diff-render model (the "scattered words" garble).
-  ptyRepaint: async (id, cols, rows) => repaintPty(id, cols, rows),
-
-  // Clipboard image paste: spill the renderer-read image bytes to a temp file
-  // and return the path for a bracketed paste (Claude auto-attaches it).
-  saveClipboardImage: async (mime, bytes) => {
-    if (!bytes || bytes.byteLength === 0) return null;
-    const ext =
-      mime === 'image/jpeg'
-        ? 'jpg'
-        : mime === 'image/gif'
-          ? 'gif'
-          : mime === 'image/webp'
-            ? 'webp'
-            : 'png';
-    const dir = path.join(os.tmpdir(), 'orchestra-paste');
-    await fs.promises.mkdir(dir, { recursive: true });
-    // Prune stale spills so the temp dir doesn't grow unbounded. Best-effort —
-    // a file Claude is mid-read on is days younger than the cutoff anyway.
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    try {
-      for (const name of await fs.promises.readdir(dir)) {
-        const fp = path.join(dir, name);
-        const st = await fs.promises.stat(fp).catch(() => null);
-        if (st && st.mtimeMs < cutoff) await fs.promises.unlink(fp).catch(() => {});
-      }
-    } catch {
-      // ignore prune failures
-    }
-    const file = path.join(dir, `paste-${Date.now()}-${process.pid}.${ext}`);
-    await fs.promises.writeFile(file, Buffer.from(bytes));
-    return file;
-  },
 
   restartAgent: async (id) => {
     // #148 gap #3 / #232: the toolbar Restart goes through the same conversation-preserving
@@ -982,18 +861,6 @@ export const apiHandlers: ApiHandlerTable = {
     // #226: a paused sandbox agent must SURFACE the pause (the callers show the rejection), never a silent resolve.
     const paused = sandboxPausedMessage(store.getWorkspace(id));
     if (!res.ok && paused) throw new Error(paused);
-  },
-
-  stopAgent: async (id) => {
-    // The Resources page's per-agent stop: kill the agent PTY and do NOT
-    // respawn. stopPty disposes the transport listeners before killing, so
-    // the exit handler's reconciliation floor never fires on this path —
-    // reconcile the status dot here. `pty:stopped` lets the terminal show
-    // the stop and re-arm its lazy start.
-    if (!isRunning(id)) return;
-    stopPty(id);
-    reconcileExited(id);
-    platform.broadcast('pty:stopped', id);
   },
 
   // ---------- Structured agent view (Claude Agent SDK) ----------

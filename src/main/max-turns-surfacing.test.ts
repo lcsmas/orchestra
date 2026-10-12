@@ -60,75 +60,16 @@ function emitFromBody(code: string): string {
   // Positive control: the slice really is emitFrom, not an empty string that
   // would make every assertion below pass for free.
   assert.ok(body.length > 500, 'the emitFrom slice came back suspiciously short');
-  assert.match(body, /driveStatusFromEvent\(session, ev\)/, 'the emitFrom slice looks wrong');
+  assert.match(body, /emit\(session\.wsId, ev\)/, 'the emitFrom slice looks wrong');
   return body;
 }
 
-// ─── The defect, executed ───────────────────────────────────────────────────
-
-/** Model the ONE thing that decides whether the human learns a turn hit the
- *  limit. `driveStatus` is captured at spawn and is TRUE only when a terminal
- *  PTY coexists; the SDK's shell hooks (which own the spool otherwise) carry no
- *  reason field at all. */
-function reasonReachesTheHuman(opts: {
-  driveStatus: boolean;
-  /** Does the code write the reason outside the single-writer gate? */
-  writesOutsideGate: boolean;
-}): boolean {
-  let written = false;
-  // The fix: an unconditional write, guarded only by the event being a
-  // max_turns turn-end.
-  if (opts.writesOutsideGate) written = true;
-  // The pre-existing path, gated. Carries the reason only when driveStatus.
-  if (opts.driveStatus) written = true;
-  return written;
-}
-
-test('#69 UNFIXED: with no coexisting PTY the reason reaches nobody', () => {
-  // The plain structured-view configuration — how most sessions run.
-  assert.equal(
-    reasonReachesTheHuman({ driveStatus: false, writesOutsideGate: false }),
-    false,
-    'unfixed + no PTY: nothing writes the reason (the measured bug: 8 exhaustions, 0 reasons)',
-  );
-  // CONTROL: with a PTY the old code DID surface it. This is why the bug was
-  // easy to miss — and why a rig that happens to run with a PTY sees nothing
-  // wrong.
-  assert.equal(
-    reasonReachesTheHuman({ driveStatus: true, writesOutsideGate: false }),
-    true,
-    'control: the gated path works when a PTY coexists, so the defect is configuration-dependent',
-  );
-});
-
-test('#69 FIXED: the reason reaches the human in BOTH configurations', () => {
-  for (const driveStatus of [false, true]) {
-    assert.equal(
-      reasonReachesTheHuman({ driveStatus, writesOutsideGate: true }),
-      true,
-      `fixed: the reason is written regardless of driveStatus (driveStatus=${driveStatus})`,
-    );
-  }
-});
-
 // ─── Source-binding guards ──────────────────────────────────────────────────
 
-test('GUARD: the max_turns reason is written OUTSIDE the driveStatus gate', () => {
+test('GUARD: the max_turns reason is written by emitFrom', () => {
   const body = emitFromBody(codeOf(AGENT_SDK));
 
-  const markAt = body.indexOf('markStoppedOnMaxTurns(');
-  const gateAt = body.indexOf('driveStatusFromEvent(session, ev)');
-  assert.notEqual(markAt, -1, 'emitFrom must write the max_turns reason');
-  assert.notEqual(gateAt, -1, 'emitFrom should still call driveStatusFromEvent');
-  // Outside the gate = not inside driveStatusFromEvent, and reached on its own
-  // condition. Ordering is the observable proxy: the write precedes the gated
-  // call and is guarded by its own `if`.
-  assert.ok(
-    markAt < gateAt,
-    'the reason write must not depend on driveStatusFromEvent — that helper is gated on ' +
-      'session.driveStatus, TRUE only when a terminal PTY coexists, so in the plain ' +
-      'structured-view configuration the reason would reach nobody (the measured bug)',
-  );
+  assert.notEqual(body.indexOf('markStoppedOnMaxTurns('), -1, 'emitFrom must write the max_turns reason');
   assert.match(
     body,
     /ev\.type === 'turn-end' && ev\.stopReason === 'max_turns'/,

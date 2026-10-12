@@ -458,8 +458,8 @@ test('UNKNOWN is not NONE (production shape): an activity read flagged `unknown`
   assert.equal(out.summaries[0].escalated, null);
 });
 
-test('keeperActivityUnknown (V-F1): a TRACKED keeper that is alive (argv = its keeper, or unreadable) with no session, no PTY and no probe answer is UNKNOWN — every other combination is a real read', () => {
-  const base = { hasSession: false, probeAnswered: false, ptyLive: false, trackedKeeperPid: 4242, keeperPidState: 'keeper' as string | null };
+test('keeperActivityUnknown (V-F1): a TRACKED keeper that is alive (argv = its keeper, or unreadable) with no session and no probe answer is UNKNOWN — every other combination is a real read', () => {
+  const base = { hasSession: false, probeAnswered: false, trackedKeeperPid: 4242, keeperPidState: 'keeper' as string | null };
   assert.equal(keeperActivityUnknown(base), true, 'tracked + alive + silent ⇒ unknown');
   assert.equal(keeperActivityUnknown({ ...base, keeperPidState: 'unknown' }), true, 'alive with an UNREADABLE argv is unknown too (never "no keeper")');
   assert.equal(keeperActivityUnknown({ ...base, keeperPidState: 'gone' }), false, 'a dead keeper really is idle');
@@ -469,7 +469,6 @@ test('keeperActivityUnknown (V-F1): a TRACKED keeper that is alive (argv = its k
   assert.equal(keeperActivityUnknown({ ...base, trackedKeeperPid: null }), false, 'no tracked keeper pid ⇒ nothing to wait on, whatever a stale state says');
   assert.equal(keeperActivityUnknown({ ...base, probeAnswered: true }), false, 'the keeper answered: it is a real read');
   assert.equal(keeperActivityUnknown({ ...base, hasSession: true }), false, 'a live session reads itself');
-  assert.equal(keeperActivityUnknown({ ...base, ptyLive: true }), false, 'a live PTY reads itself');
 });
 
 test('OBSERVER: a turn that starts while a Pause douce is still WAITING is not interrupted (a keeper reattach mid-turn reads as a CLI-started turn); once escalated it is', async (t) => {

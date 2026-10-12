@@ -53,6 +53,9 @@ const { store } = await import(`${REPO}/src/main/store.ts`);
 await (await import('./neutral-memory-guard.mjs')).neutralizeMemoryGuard(REPO);   // #286: never read the HOST's real MemAvailable (the guard would hold auto starts below 6 GB)
 await store.load?.();
 const workspaces = await import(`${REPO}/src/main/workspaces.ts`);   // may load agent-sdk → register the fake seam AFTER
+// agent-sdk.ts registers the REAL seam at module load and restart-workspace.ts imports it: load it NOW, so a later lazy import cannot clobber the fake (#233: pty.ts
+// no longer drags hooks-server → agent-sdk in ahead of this point, so the load order stopped being an accident of the PTY import chain).
+await import(`${REPO}/src/main/restart-workspace.ts`);
 const delivery = await import(`${REPO}/src/main/sdk-delivery.ts`);
 const pty = await import(`${REPO}/src/main/pty.ts`);
 

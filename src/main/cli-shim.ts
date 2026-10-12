@@ -109,14 +109,14 @@ export function installCliShim(): void {
 // installCliShim() above is for a HUMAN typing `orchestra` in their own
 // terminal: it lands in a conventional user bin dir that may or may not be on
 // PATH (and is skipped entirely on macOS). That's too unreliable for the agent
-// PTYs, where the injected skills/hooks now invoke `orchestra <subcommand>`
+// sessions, where the injected skills/hooks now invoke `orchestra <subcommand>`
 // directly and the GUI's inherited login PATH can't be trusted to contain any
 // shim dir. So we ALSO drop a shim into a dir orchestra fully controls and then
-// prepend that dir to every agent PTY's PATH (see main/pty.ts) — guaranteeing a
+// prepend that dir to every agent session's PATH (see agent-sdk.ts buildSdkEnv) — guaranteeing a
 // bare `orchestra` resolves in the agent shell on every platform.
 
 /**
- * The orchestra-owned bin dir that main/pty.ts prepends to each agent PTY's
+ * The orchestra-owned bin dir that agent-sdk.ts buildSdkEnv prepends to each agent session's
  * PATH. Kept separate from the user-facing shim location so we never depend on
  * the user's login PATH for agent-driven CLI calls. Under the Orchestra home
  * root (honoring $ORCHESTRA_HOME) so an isolated instance — e.g. a dev build —

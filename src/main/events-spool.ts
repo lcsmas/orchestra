@@ -338,8 +338,8 @@ export function startEventsSpool(): void {
   } catch {
     /* best-effort */
   }
-  // No agent is running at startup (PTYs are spawned later, on the renderer's
-  // pty:start), so any spool file on disk is stale from a previous run — and a
+  // No agent is running at startup (SDK sessions start later, on first use),
+  // so any spool file on disk is stale from a previous run — and a
   // dead session's last status lives in store.json, not here. Clear the whole
   // events dir (spools, the `.seq` counters, and any rotated `.old` files) for
   // a clean slate; this is the one moment we can wipe with zero race risk. The

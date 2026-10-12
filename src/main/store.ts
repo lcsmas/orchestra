@@ -161,9 +161,8 @@ class Store {
     // `autoUnread` rather than on a `waiting` status, so a restored row shows
     // the bell instead of claiming an agent is blocked on an answer that no
     // live process is waiting for.
-    // Previously-running agents are NOT relaunched at startup: the agent
-    // spawns (with `claude --continue`) when the user first opens the
-    // workspace — see the pty:start path in TerminalView/startAgentPty.
+    // Previously-running agents are NOT relaunched at startup: the SDK session
+    // starts (resuming `sdkSessionId`) when the user first opens the workspace.
     let mutated = false;
     for (const ws of this.data.workspaces) {
       // Migrate the obsolete 'stalled' status from older orchestra versions

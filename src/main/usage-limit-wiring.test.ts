@@ -50,7 +50,7 @@ function emitFromBody(code: string): string {
   // Positive control: the slice really IS emitFrom, not an empty string that
   // would make every assertion below pass for free.
   assert.ok(body.length > 500, 'the emitFrom slice came back suspiciously short');
-  assert.match(body, /driveStatusFromEvent\(session, ev\)/, 'the emitFrom slice looks wrong');
+  assert.match(body, /emit\(session\.wsId, ev\)/, 'the emitFrom slice looks wrong');
   return body;
 }
 
@@ -103,23 +103,6 @@ test('GUARD: both producers set the structural `rejected` flag', () => {
 });
 
 // ─── The latch, and the turn-boundary reset ─────────────────────────────────
-
-test('GUARD: a limit-killed turn is marked OUTSIDE the driveStatus gate', () => {
-  const body = emitFromBody(codeOf(AGENT_SDK));
-  const markAt = body.indexOf('markStoppedOnUsageLimit(');
-  const gateAt = body.indexOf('driveStatusFromEvent(session, ev)');
-  assert.notEqual(markAt, -1, 'emitFrom must write the usage_limit reason');
-  assert.notEqual(gateAt, -1, 'emitFrom should still call driveStatusFromEvent');
-  // Identical reasoning to #69's guard: driveStatusFromEvent is gated on
-  // session.driveStatus, TRUE only when a terminal PTY coexists. In the plain
-  // structured-view configuration a gated write reaches nobody — measured, and
-  // the whole bug #69 reported. #74 inherits that hazard exactly.
-  assert.ok(
-    markAt < gateAt,
-    'the usage_limit write must not depend on driveStatusFromEvent — in the no-PTY ' +
-      'configuration the reason (and therefore auto-resume itself) would never fire',
-  );
-});
 
 test('GUARD: the latch is cleared at EVERY turn boundary', () => {
   const body = emitFromBody(codeOf(AGENT_SDK));
@@ -408,22 +391,20 @@ test('GUARD: a finished turn must NOT erase a usage_limit pause marker', () => {
 
 test('GUARD: the synthetic turn-end on session death also marks the limit', () => {
   const code = codeOf(AGENT_SDK);
-  // consume()'s finally builds its OWN turn-end and calls emit() +
-  // driveStatusFromEvent() directly — it does NOT go through emitFrom, where
+  // consume()'s finally builds its OWN turn-end and calls emit()
+  // directly — it does NOT go through emitFrom, where
   // the latch lives (emitFrom has exactly ONE call site, the stream loop).
   // So `rate_limit_event{rejected}` → subprocess dies before any `result`
   // would never be marked, never resumed: it satisfies every other gate in
   // the feature and simply never reaches them. Plausibly the ACTUAL wave-6
   // shape (the coordinator's CLI exited rather than returning a result).
-  // Anchor on the EMIT, not on driveStatusFromEvent: the mark is inserted
-  // BETWEEN them, so a window starting at the latter cannot contain it.
   const at = code.indexOf('emit(session.wsId, turnEnd)');
   assert.notEqual(at, -1, 'the synthetic turn-end path is gone — was it renamed?');
   const branch = code.slice(at, at + 700);
   // Control: the slice really spans this path, so the assertions below are not
   // being applied to some unrelated region of the file.
-  assert.match(branch, /driveStatusFromEvent\(session, turnEnd\)/,
-    'control: the slice must reach the status drive that closes this path');
+  assert.match(branch, /session\.rateLimitHit = undefined;\s*\}/,
+    'control: the slice must reach the end of this teardown branch');
   assert.match(
     branch,
     /markStoppedOnUsageLimit\(session\.wsId, session\.rateLimitHit\.resetsAtMs\)/,

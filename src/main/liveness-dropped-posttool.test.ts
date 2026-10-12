@@ -356,25 +356,3 @@ test('#199 source: turn-END arms still clear too (regression guard, not replaced
     );
   }
 });
-
-test('#199 source: driveStatusFromEvent computes queuedSubmit and PASSES it to applyAgentEvent', () => {
-  // The producer wiring: without this the parameter exists but is fed `undefined`
-  // for every SDK submit — a parked/reattach submit would fall through to the
-  // real-boundary branch and wipe a live tool (review-199 F1 re-opened). Pin that
-  // driveStatusFromEvent both DERIVES queuedSubmit (from ev.queued / session-attach)
-  // and passes it as applyAgentEvent's last argument (the turn-start-stamp R3
-  // lesson: a value can be computed and then dropped on the way through).
-  const SDK = path.join(process.cwd(), 'src', 'main', 'agent-sdk.ts');
-  const code = codeOf(SDK);
-  const fnIdx = code.indexOf('function driveStatusFromEvent(');
-  assert.notEqual(fnIdx, -1, 'driveStatusFromEvent not found — was it renamed?');
-  // Slice from the fn to the applyAgentEvent call it makes.
-  const applyIdx = code.indexOf('applyAgentEvent(', fnIdx);
-  assert.notEqual(applyIdx, -1, 'driveStatusFromEvent no longer calls applyAgentEvent');
-  const body = code.slice(fnIdx, code.indexOf(');', applyIdx) + 2);
-  assert.match(body, /const\s+queuedSubmit\s*=/, 'driveStatusFromEvent must derive queuedSubmit');
-  assert.match(body, /ev\.queued/, 'queuedSubmit must read ev.queued (the parked-prompt marker)');
-  // The call must pass queuedSubmit as an argument (not silently drop it).
-  const call = code.slice(applyIdx, code.indexOf(');', applyIdx));
-  assert.match(call, /queuedSubmit/, 'applyAgentEvent call must pass queuedSubmit through');
-});

@@ -435,17 +435,6 @@ export interface Workspace {
    * the app was closed is still unseen). Stored ABSENT rather than `false`, so
    * store.json doesn't accumulate a dead key on every workspace ever opened. */
   autoUnread?: boolean;
-  /** Set at spawn when `claude --continue` is about to resume a session whose
-   * most-recent transcript exceeds {@link HEAVY_RESUME_TOKEN_THRESHOLD} tokens.
-   * Claude Code shows an interactive "resume from summary / full / don't ask"
-   * menu for such sessions, but typing a normal task proceeds the FULL resume
-   * (loading the whole huge context, draining the usage pool). While this is
-   * true the `pty:write` handler suppresses submit keystrokes (Enter/newline)
-   * so a typed task can't blow past CC's menu; the flag clears the instant the
-   * user sends a navigation key (arrow/Esc) — i.e. they're consciously driving
-   * CC's own menu — or after a safety timeout. Purely a guard around CC's
-   * native gate; Orchestra never auto-answers the menu. */
-  heavyResumePending?: boolean;
   /** #142 — the workspace was re-parented (attach/detach/adopt/demote) with
    * `--no-restart`, so its LIVE session still holds the OLD run's
    * `$ORCHESTRA_RUN_ID` + the OLD frozen switch notice in memory: its bus sends
@@ -469,7 +458,7 @@ export interface Workspace {
    * hibernated agent never appears in the Needs-You inbox. Purely a quiet
    * sidebar affordance (the "zZ" chip) plus the timestamp its tooltip ages.
    *
-   * CLEARED on any restart/wake path (pty:start, sdkSend/sdkWake,
+   * CLEARED on any restart/wake path (sdkSend/sdkWake,
    * wakeAgentWithPrompt, workspace activation) so the chip disappears the
    * moment a process comes back. */
   hibernatedAt?: number;
@@ -882,7 +871,7 @@ export interface LinearIssueState {
  *  environment (a worktree / a scratch dir / a coordinator session), and every
  *  consumer branches on it via `isScratchLike`/`canOrchestrate`. Modelling a
  *  ticket as a fourth kind would silently enrol it in `pruneOrphanedWorkspaces`
- *  (reconciled against `git worktree list`), `startAgentPty`, `allocatePort`,
+ *  (reconciled against `git worktree list`), the agent session start, `allocatePort`,
  *  and the delete/archive/rename paths — none of which mean anything for a
  *  ticket. A separate collection cannot leak into any of them.
  *

@@ -8,7 +8,7 @@
 #              build and a candidate build to compare the SAME rig on both.
 # Containment (own sway, marker-verified, `env -i` allowlist) is e2e-contained-rig.sh's;
 # this wrapper only tells the driver which live config dir to PROTECT (the app runs on a
-# scratch account dir) and puts the rig dir on btrfs under ~ (never /tmp: the fs is part of the instrument).
+# scratch account dir) and puts the rig dir on btrfs (default /var/tmp/avr-<uid>, short and 0700; never /tmp: the fs is part of the instrument).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -33,10 +33,15 @@ CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 [[ -d "${CFG}" ]] || echo "[avr] WARN: config dir ${CFG} does not exist — nothing to protect there" >&2
 echo "[avr] live config dir to PROTECT (never used as the app's account): ${CFG}" >&2
 
-export E2E_RIG_BASE="${E2E_RIG_BASE:-$HOME/.cache/e2e-agent-view-removal}"
-mkdir -p "${E2E_RIG_BASE}"
+# SHORT on purpose (#233): the app puts a seeded workspace's keeper socket at <rig base>/e2e64c-<pid>/oh/<arm>-<ts>/keepers/<ws>.sock and a path past 100 chars falls back to a
+# SHARED hashed /tmp socket — the driver REFUSES such a base (rig-base-keeper-socket-path). /var/tmp is the same btrfs as ~ (the checks below still refuse tmpfs).
+export E2E_RIG_BASE="${E2E_RIG_BASE:-/var/tmp/avr-$(id -u)}"
+mkdir -p -m 700 "${E2E_RIG_BASE}"
+# /var/tmp is world-writable and the default name is predictable: the base must be OURS and closed to others (agent-tmpdir.ts holds the same rule for its /var/tmp root).
+[[ -O "${E2E_RIG_BASE}" && ! -L "${E2E_RIG_BASE}" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is not a directory owned by me (or is a symlink)" >&2; exit 2; }
+chmod 700 "${E2E_RIG_BASE}"
 FSTYPE="$(findmnt -no FSTYPE -T "${E2E_RIG_BASE}")"
-[[ "${FSTYPE}" != "tmpfs" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is on tmpfs — must be btrfs under ~" >&2; exit 2; }
+[[ "${FSTYPE}" != "tmpfs" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is on tmpfs — must be on a real disk filesystem (btrfs)" >&2; exit 2; }
 export CLAUDE_CONFIG_DIR_PIN="${CFG}"   # name kept: e2e-contained-rig.sh forwards it as the child's CLAUDE_CONFIG_DIR
 # Retention: the driver deletes a PASSED arm's bulky state and prunes only stale (>24 h), unreferenced e2e64c-* dirs
 # (sibling-safe; see pruneStaleRigDirs) — the wrapper itself deletes nothing.

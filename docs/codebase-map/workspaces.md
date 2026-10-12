@@ -151,8 +151,7 @@ Key per-record fields: `accountId` (pinned at creation, never changes —
 preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
 lock), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
-(sidebar pills), `contextTokens` (badge seed), `heavyResumePending` (suppresses
-blind Enter during a heavy `claude --continue` resume), `markedUnread`
+(sidebar pills), `contextTokens` (badge seed), `markedUnread`
 (manual come-back-later bookmark, toggled from the sidebar via
 `workspaces:setUnread`, auto-cleared on next selection), and **`host`**
 (`WorkspaceHost`, `types.ts:69` — absent = local node-pty; `{kind:'sandbox',
@@ -167,13 +166,13 @@ endpoint}` = agent lives in an always-on container, see
   (git.ts) → `installOrchestraHooks` → `store.allocatePort()` → build record,
   **pin repo's `accountId`** (~`:297`), record `parentId` only if parent exists
   (~`:302`) → persist + broadcast `workspace:update` → fire setup script async
-  (does NOT block) → does NOT spawn the PTY (renderer's `pty:start` does, once it
-  has terminal dimensions).
+  (does NOT block) → starts no agent (the SDK session starts lazily: first send, wake or spawn).
+  An old store record still carrying the removed heavy-resume flag loads untouched (#233: no migration, nothing reads or writes it).
 - **`createScratchWorkspace`** / **`createOrchestratorWorkspace`** —
   `workspaces.ts:403` / `:407` (both wrap `createScratchLikeWorkspace`, `:361`).
 
 ### Agent TMPDIR on disk (`src/main/agent-tmpdir.ts`, pure `src/shared/agent-tmpdir.ts`)
-Every LOCAL session (structured `buildSdkEnv` in `agent-sdk.ts`, terminal `startPty` in `pty.ts`) gets
+Every LOCAL agent session (`buildSdkEnv` in `agent-sdk.ts`; the Run / nvim / login terminals of `pty.ts` do not) gets
 `TMPDIR=/var/tmp/orch-<uid>-<6 hex of ORCHESTRA_HOME>/<12 hex of ws id>` + the marker `ORCHESTRA_AGENT_TMPDIR`
 (read by `tmp-guard.sh`, hooks-cli-socket.md). Why: `/tmp` is a tmpfs (RAM); the real CLI passes TMPDIR to Bash,
 and `os.tmpdir()`/`mktemp`/its own `claude-<uid>` dir follow it (measured, claude 2.1.291). Path ≤ 60 bytes
@@ -190,16 +189,12 @@ rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux 
   Failure never blocks creation; UI offers retry.
 
 ### Start agent
-- **`startAgentPty(ws, cols, rows, window)`** — `workspaces.ts:2299`. Heavy-resume
-  gate (sets `heavyResumePending` when resuming a >100k-token session),
-  orchestrator brief on first launch only, idempotent hook
-  reinstall, account-config sync, env build (`ORCHESTRA_BRANCH`,
-  `ORCHESTRA_BRANCH_AUTO`, `ORCHESTRA_KIND`, per-repo `CLAUDE_CONFIG_DIR`), then `startPty` with
-  `claude --dangerously-skip-permissions` (or `--continue` if `hasInput`).
-  **Sandbox-hosted** (`ws.host?.kind==='sandbox'`): skips the local hook
-  install, uses cwd `SANDBOX_WORKSPACE_DIR` (`/workspace`), and **strips
-  `CLAUDE_CONFIG_DIR`** (a host path would shadow the container's seeded
-  login); `startPty` routes to the remote transport via `ws.host`.
+- **There is no agent-PTY launcher (#233).** The launcher (heavy-resume gate and its persisted flag, the
+  `claude --continue` guard, the SessionStart ready-file sentinel, task typing + submit retries, the sandbox
+  `CLAUDE_CONFIG_DIR` strip) and its IPC channels (start, repaint, stopped, agent stop, clipboard image save)
+  were deleted; the Run script, nvim and account login are the only PTYs
+  (`pty.ts`), and every agent is an SDK session (`agent-sdk.ts` `ensureSessionInner`: hook install, account-config
+  sync, `buildSdkEnv`, `query()`).
 - **`startWorkspaceAgentHeadless(id)`** — `workspaces.ts` (used by spawn **and by
   Restart's retry**, below). Starts the delegated agent as an SDK session via the
   `sdk-delivery.ts` seam (`sdkStartAndDeliverResult` → agent-sdk's `sdkWake`/`sdkSend`),
@@ -245,8 +240,6 @@ rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux 
   `START_FAIL_WINDOW_MS` (10 min — a transient cause stops blocking once it is gone) even for a child that ran once; never a LIVE session — so
   Restart / a direct message retries, not every sweep. Restart takes the owed route for a stopped owed child AND for a live one whose OWN first
   turn failed (`restartOwesOpeningTask`, `live.sdkFailed` from the seam `firstTurnFailed`); a live hung start restarts normally.
-- **`submitTaskWhenReady(...)`** — UNREFERENCED since #227 (deleted with the agent-PTY
-  launcher by #233). Was the PTY fallback's task typing over the SessionStart sentinel.
 - **`wakeAgentWithPrompt(id, prompt)`** — the live-or-wake delivery used by peer
   messages, the prompt-queue flusher, fix-checks and send-review. Order: live SDK session (`sdkDeliver`)
   → **structured wake**
@@ -399,7 +392,7 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   processes). `store.load()` resets persisted `running` → `idle`; the agent's SDK
   session lazy-starts (resuming `sdkSessionId`) on the first send or wake for the
   workspace — since #230 nothing opens an agent PTY (no Terminal tab; the renderer
-  no longer mounts a terminal for the agent — `Terminal.tsx` is deleted, #231 — so `pty:start` is never called for an agent). A
+  no longer mounts a terminal for the agent — `Terminal.tsx` is deleted, #231 — and the launcher itself is gone, #233). A
   LEGACY terminal-only workspace (`hasInput`, no `sdkSessionId`) has its terminal
   transcript adopted as the resume id by `adoptTerminalTranscript` on wake, restart
   AND at the session-start funnel itself (`ensureSessionInner`, #230 / #228 review O1+F1), so any Agent-view action that starts the session first resumes it.

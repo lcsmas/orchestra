@@ -58,7 +58,7 @@ export interface TrapMember {
 }
 
 export interface MemberActivity {
-  surface: 'sdk' | 'pty' | 'none';
+  surface: 'sdk' | 'none';
   turnRunning: boolean;
   /** #254: the read could not tell (a tracked keeper is alive but did not answer the probe): `turnRunning` is then a guess. A Pause douce reads it as RUNNING (UNKNOWN is not NONE). */
   unknown?: boolean;

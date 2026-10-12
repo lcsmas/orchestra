@@ -26,7 +26,7 @@ const ARMS = [
   'spawn', 'message', 'wake', 'restart', 'flush', 'usage_resume',
   'send_funnel', 'drain', 'recover', 'redrive', 'tray', 'wake_live', 'restart_real',
   'roster', 'watchdog_boot', 'watchdog_escalate', 'watchdog_gate',
-  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'pty_brief', 'hang_selftest',
+  'off_identity', 'cli_cross_process', 'recover_mid', 'live_tree', 'hang_selftest',
 ];
 if (!ARMS.includes(ARM)) { console.error(`unknown arm: ${ARM} (expected: ${ARMS.join(', ')})`); process.exit(2); }
 
@@ -710,41 +710,6 @@ if (ARM === 'spawn') {
   busPause.setRunPause(db, 'ws-pp', true, 'ws-pp');                                           // pause the plain parent's own run
   const plain = rec('plainChild', (await msg('ws-pc', 'LT-4')).delivery);
   ok = before === 'live' && out.parentRunIdStillNull === true && attached === 'inbox' && out.o2Wakeable === false && detached === 'live' && plain === 'inbox';
-
-} else if (ARM === 'pty_brief') {
-  // row 11 — typing the opening brief into a freshly opened terminal agent is an AUTO turn start, gated at FIRE time. The REAL scheduler +
-  // the REAL gate over the real bus; only the pty writer is a recorder. (The Electron-bound handler just calls this function.)
-  await seedFleet();
-  const { scheduleOpeningBrief } = await import(`${REPO}/src/main/opening-brief-pty.ts`);
-  const writes = [];
-  const write = (id, data) => writes.push({ id, data });
-  pause();
-  scheduleOpeningBrief('ws-m1', 'BRIEF-PAUSED', write, 20);
-  scheduleOpeningBrief('ws-m3', 'BRIEF-DESCENDANT', write, 20);         // a member of a descendant run
-  scheduleOpeningBrief('ws-xm', 'BRIEF-OTHER-RUN', write, 20);          // control: an unrelated run IS typed
-  await sleep(300);
-  rec('whilePaused', writes.splice(0));
-  // fire time, not schedule time: scheduled while NOT paused, the pause lands before it fires
-  lift();
-  scheduleOpeningBrief('ws-m1', 'BRIEF-RACE', write, 200);
-  pause();
-  await sleep(450);
-  rec('pauseLandedBeforeFire', writes.splice(0));
-  lift();
-  scheduleOpeningBrief('ws-m1', 'BRIEF-LIFTED', write, 20);             // control: the lift types it
-  await sleep(250);
-  rec('afterLift', writes.splice(0));
-  // the DEFAULT delay (what the handler uses) is 1200 ms: nothing before 1000 ms, typed by 1600 ms
-  const t0 = Date.now();
-  scheduleOpeningBrief('ws-xm', 'BRIEF-DEFAULT', write);
-  await sleep(1000);
-  rec('defaultDelayAt1000', writes.length);
-  await sleep(600);
-  rec('defaultDelayAt1600', { writes: writes.splice(0), elapsedOk: Date.now() - t0 >= 1500 });
-  ok = JSON.stringify(out.whilePaused) === JSON.stringify([{ id: 'ws-xm', data: 'BRIEF-OTHER-RUN\n' }])
-    && out.pauseLandedBeforeFire.length === 0
-    && JSON.stringify(out.afterLift) === JSON.stringify([{ id: 'ws-m1', data: 'BRIEF-LIFTED\n' }])
-    && out.defaultDelayAt1000 === 0 && JSON.stringify(out.defaultDelayAt1600.writes) === JSON.stringify([{ id: 'ws-xm', data: 'BRIEF-DEFAULT\n' }]);
 
 } else if (ARM === 'hang_selftest') {
   // self-test of the rig's own safety net: an arm that never settles must still produce an `ok:false` JSON verdict + exit 1 (the deadline), never exit 13.

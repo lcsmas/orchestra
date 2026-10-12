@@ -145,11 +145,9 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('inbox:update', listener);
   },
 
-  ptyStart: (id, cols, rows) => ipcRenderer.invoke('pty:start', id, cols, rows),
   ptyWrite: (id, data) => ipcRenderer.invoke('pty:write', id, data),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke('pty:resize', id, cols, rows),
   restartAgent: (id) => ipcRenderer.invoke('agent:restart', id),
-  stopAgent: (id) => ipcRenderer.invoke('agent:stop', id),
   agentSdkSend: (wsId, text, images) => ipcRenderer.invoke('agent:sdkSend', wsId, text, images),
   agentSdkRunBash: (wsId, command) => ipcRenderer.invoke('agent:sdkRunBash', wsId, command),
   agentSdkStatus: (wsId) => ipcRenderer.invoke('agent:sdkStatus', wsId),

@@ -776,10 +776,9 @@ async function createMainWindow() {
   // here. Startup used to resume every one of them headlessly, which meant a
   // restart with many live workspaces immediately spawned that many `claude
   // --continue` processes, each reloading a full session. Instead the agent
-  // starts the first time the user opens the workspace: TerminalView only
-  // spawns its PTY once the tab is actually visible (fit dimensions gate),
-  // and `pty:start` → startAgentPty picks `--continue` from ws.hasInput, so
-  // the conversation still picks up where it left off — just on demand.
+  // starts the first time the user opens the workspace (its SDK session
+  // resumes the stored `sdkSessionId`), so the conversation still picks up
+  // where it left off — just on demand.
 
   // Base-branch sync: prime local state immediately (no network) so the
   // sidebar paints with whatever the on-disk refs say, then kick a real
@@ -1030,11 +1029,11 @@ if (!ORCHESTRA_CLI_MODE) {
       // only thing it does is pop a warning dialog when a tool is missing,
       // which is fine to surface a beat after the window opens.
       void checkDependencies().catch((e) => log.warn('checkDependencies failed', e));
-      // Agent-facing shim: written to a dir we prepend to every agent PTY's
-      // PATH (see main/pty.ts), so the CLI the injected skills/hooks call
+      // Agent-facing shim: written to a dir we prepend to every agent session's
+      // PATH (see agent-sdk.ts buildSdkEnv), so the CLI the injected skills/hooks call
       // resolves regardless of the user's login PATH or platform. MUST run
       // before createMainWindow(), after which the renderer can start agent
-      // PTYs at any moment — otherwise an early agent could get the PATH
+      // sessions at any moment — otherwise an early agent could get the PATH
       // entry before the shim file exists and fall through to the raw
       // binary (which launches the GUI on a bare `orchestra <subcmd>`).
       installAgentCliShim();

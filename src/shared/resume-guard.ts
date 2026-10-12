@@ -20,13 +20,14 @@
 // phantom id AFTER the resume already failed and the consume loop errored — the
 // field failure. This module is the PROACTIVE discriminator: at the moment a
 // resume is about to be attempted, prove the id is resumable (its transcript
-// exists) BEFORE handing it to `query({resume})` / `claude --continue`.
+// exists) BEFORE handing it to `query({resume})`. (The terminal `claude --continue`
+// seam went with the agent-PTY launcher, #233.)
 //
 // ── The discriminator: transcript-exists, not firstMessageSeen ───────────────
 //
 // The sound test is "does the on-disk transcript `.jsonl` for this id exist",
 // NOT the live-session `firstMessageSeen` flag — because these functions run at
-// ensureSession/startAgentPty time where there is NO live session to read a flag
+// ensureSession time where there is NO live session to read a flag
 // from. This is the EXACT discriminator `sdkWake` already uses to gate adopting
 // an id (agent-sdk.ts:2830-2833: `fs.existsSync(<dir>/<sessionId>.jsonl)`), so
 // the resume path and the adoption path now agree on one definition of
@@ -67,31 +68,6 @@ export function resolveResumeId(
   if (!sdkSessionId) return undefined; // undefined OR '' (cleared) → fresh
   if (!transcriptExists(sdkSessionId)) return undefined; // phantom id → fresh
   return sdkSessionId;
-}
-
-/** Decide whether a terminal (PTY) launch should pass `claude --continue` —
- *  issue #178 seam (b). SEPARATE discriminator from the structured seam: the
- *  terminal path keys on `hasInput` (the user submitted at least one prompt to
- *  the TUI), NOT on `sdkSessionId`, and `--continue` resumes the NEWEST
- *  transcript for the worktree rather than a named id.
- *
- *   - `hasInput` false → nothing was ever typed → fresh launch (unchanged).
- *   - `fresh` true → an explicit `--fresh` request → fresh launch (unchanged).
- *   - `hasInput` true but NO newest transcript on disk → a PHANTOM terminal
- *     workspace (the 15:35:08 exit-1): `--continue` would find no conversation.
- *     Start fresh instead of dead-ending.
- *   - `hasInput` true AND a newest transcript exists → `--continue` (unchanged).
- *
- *  `newestTranscriptExists` is the caller's fs probe: does ANY transcript
- *  `.jsonl` exist in the workspace's transcript dir (what `--continue` reads)? */
-export function shouldContinuePty(input: {
-  hasInput: boolean | undefined;
-  fresh: boolean;
-  newestTranscriptExists: boolean;
-}): boolean {
-  if (input.hasInput !== true) return false;
-  if (input.fresh) return false;
-  return input.newestTranscriptExists;
 }
 
 /** How a structured restart's mid-turn guard should treat the live session —

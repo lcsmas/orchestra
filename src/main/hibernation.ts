@@ -69,8 +69,7 @@ let unsubscribeGuard: (() => void) | null = null;
 
 // Last-activity tracking lives in ./hibernation-activity.ts (imported above):
 // `applyAgentEvent` (activity.ts) is the ONE funnel every agent lifecycle event
-// passes through — spool-tailed hook events for the terminal path AND
-// `driveStatusFromEvent` for the structured path — so stamping it there is the
+// passes through (the spool-tailed hook events) — so stamping it there is the
 // cheapest correct source. The store has no per-workspace activity timestamp
 // (statusTextAt is agent-authored prose, not lifecycle), and deriving one from
 // the spool files would re-read disk every sweep to recover data we already saw
@@ -124,7 +123,7 @@ function markHibernated(ws: Workspace, at: number): void {
 /** Clear `hibernatedAt` — the workspace has a process again (or is about to).
  *  Idempotent and cheap: a no-op when the field is already absent, so the
  *  restore paths can call it unconditionally. Exported for those call sites
- *  (pty:start, sdkSend/sdkWake, wakeAgentWithPrompt). */
+ *  (sdkSend/sdkWake, wakeAgentWithPrompt). */
 export function clearHibernated(wsId: string): void {
   // Every start/resume/wake/activate lands here — bump BEFORE the no-chip return so a
   // sweep whose teardown a wake overtook can tell (#198 D14/N1).

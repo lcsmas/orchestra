@@ -1,6 +1,6 @@
 import type { ITheme } from '@xterm/xterm';
 
-// xterm.js theme for RunTerminal.tsx (shared with the agent terminal until #231).
+// xterm.js theme for RunTerminal.tsx.
 //
 // background/foreground/cursor/selection match the app chrome. The 16 ANSI
 // colors are Ghostty's default palette (Tomorrow Night; ghostty-org/ghostty

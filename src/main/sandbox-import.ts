@@ -12,7 +12,7 @@
  *
  * On success the LOCAL worktree is retired (git worktree remove) and the
  * workspace record flips to host:{kind:'sandbox',endpoint} — from then on
- * pty:start streams to the container instead of spawning locally, and the
+ * its agent belongs in the container rather than locally (sandbox agents are paused since #226), and the
  * prune/delete paths know there is nothing local to reap.
  */
 
@@ -254,7 +254,6 @@ export async function importWorkspaceToSandbox(id: string, endpoint: string): Pr
     // /workspace — so never ask the container to `--continue` a conversation
     // it doesn't have.
     hasInput: false,
-    heavyResumePending: false,
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
@@ -454,7 +453,6 @@ export async function ejectWorkspaceFromSandbox(id: string): Promise<Workspace> 
       // the original path was reused, so let the next spawn decide from disk
       // rather than promising a resume.
       hasInput: false,
-      heavyResumePending: false,
     };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);

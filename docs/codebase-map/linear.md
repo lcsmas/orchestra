@@ -77,7 +77,7 @@ agents. Files: `src/main/linear-tickets.ts`, `src/shared/linear-tickets-queue.ts
 
 A ticket is **not** a `Workspace` and deliberately not a fourth `kind` — see the
 `PinnedTicket` doc comment (`types.ts`): a new kind would silently enrol tickets
-in `pruneOrphanedWorkspaces`, `startAgentPty`, `allocatePort` and the
+in `pruneOrphanedWorkspaces`, the agent session start, `allocatePort` and the
 delete/archive/rename paths, none of which mean anything for a ticket.
 
 - **Store**: `tickets?: PinnedTicket[]` (`store.ts`), with

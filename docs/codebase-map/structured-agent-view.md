@@ -43,7 +43,7 @@ then a completion — folded into ONE `local-command` `RenderMessage` keyed by
 `session.pendingLocalContext` and prepended to the NEXT real `sdkSend` as a
 `<local-command-stdout>` block, so the agent sees what the user ran (CC's
 mechanism). A bash run never starts a model turn — the fold leaves `running`/
-`turnStartedAt` untouched and `sdkEventToStatusEvent` maps `local-command`→null so
+`turnStartedAt` untouched and no status event is derived from it, so
 the status dot doesn't move. Sandbox workspaces surface a "not available" notice
 (bash runs on the local machine; the sandbox worktree lives in a remote container).
 
@@ -293,10 +293,10 @@ STALE `dist/` index.html+css across relaunches — clear `userData/Cache` (and
 before trusting a CSS assertion. Every op broadcasts a **`session/mcp`** full-list event
 (fold: wholesale replace of `AgentSession.mcpServers`, mirroring
 `session/remote-control`) plus an outcome notice, so toggling/reconnecting
-writes its own history into the transcript. `sdkEventToStatusEvent` maps
-`session/mcp` → null (the status dot never moves for MCP chatter). Guards in
+writes its own history into the transcript. The status dot never moves for MCP chatter
+(no status event is derived from `session/mcp`). Guards in
 `agent-events.test.ts` (init emits NO notices, toolCount, session/mcp fold,
-describeMcpServer, status-map null). Known gap: the op-outcome notices are
+describeMcpServer). Known gap: the op-outcome notices are
 Orchestra-side emissions (not CLI transcript lines), so the history backfill
 does not reconstruct them on reopen.
 
@@ -320,7 +320,7 @@ account's `CLAUDE_CONFIG_DIR`. **There is no raw-PTY spawn/wake fallback (#227):
 fails is reported — `sdkStartAndDeliverResult` returns `{ok:false,error}` (`sdkStartAndDeliver` is its boolean
 form), spawn answers not-ok with the kept child's id, a wake returns false so the callers' own fallbacks apply
 (inbox / re-queue / error), and the reason is an `error` event in the Agent view (`sdkSend`'s catch). The
-headless TUI typing/readiness/submit-retry helpers are unreferenced and go with #233. Start failures are
+headless TUI typing/readiness/submit-retry helpers were deleted with the agent-PTY launcher (#233). Start failures are
 also PERSISTED (`ws.sdkStartErrors`, `persistStartError`, capped 5): `sdkHistory` returns them as `error`
 events — interleaved by `at` into a transcript backfill, or on their own when the workspace has no
 transcript — and the renderer's `applyAgentHistory` drops a history error row the live fold already holds
@@ -428,16 +428,11 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   the band is the load-bearing clause, since `maxTurns: 999999999` passes every
   structural check while making the backstop useless.
   What IS broken is the surfacing: measured in the app, **8 consecutive
-  exhaustions in the no-PTY configuration wrote no reason anywhere**, leaving
-  only a `[WARN]` in the app log — verbatim the bug #69 reports. The reason
-  WOULD ride `driveStatusFromEvent → applyAgentEvent('stop', …, 'max_turns') →
-  fireFinished`, but that helper is gated on `session.driveStatus`, TRUE **only
-  when a terminal PTY coexists**; otherwise the SDK's own shell hooks own the
-  spool and they carry no reason field at all. So `emitFrom` calls
+  exhaustions wrote no reason anywhere**, leaving
+  only a `[WARN]` in the app log — verbatim the bug #69 reports: the SDK's own
+  shell hooks own the spool and carry no reason field at all. So `emitFrom` calls
   `markStoppedOnMaxTurns` (activity.ts) on a `turn-end` with
-  `stopReason === 'max_turns'`, deliberately **outside** that gate — the same
-  exemption `markLooping` takes, and for the same reason: the gate exists to
-  stop double-DRIVING the status dot, while this is a store field with its own
+  `stopReason === 'max_turns'` — a store field with its own
   no-change guard (`setStatus` returns `changed:false` when neither status nor
   reason moved), so the two paths overlap safely.
 - **Turn-lifecycle ledger close (consume())** — the loop's `catch`/`finally`
@@ -1078,49 +1073,24 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   cannot override it and `settingSources` is untouched. `buildSdkEnv` sets
   `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
   rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
-  plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR` ONLY when no terminal PTY is
-  running for the workspace** (`isPtyRunning(ws.id)`, sampled once at spawn). It returns
-  that decision as **`ownsSpool`** — the single-writer key for the **sidebar status dot**:
-    - **`ownsSpool=true`** (no coexisting PTY): the SDK subprocess got `ORCHESTRA_WS_ID`,
-      so ITS own shell lifecycle hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) fire
-      and write `submit`/`pretool`/`stop` spool lines that the tailer replays into
-      `applyAgentEvent` — the terminal path's mechanism, reused as-is.
-    - **`ownsSpool=false`** (a terminal/Raw PTY coexists, so `ORCHESTRA_WS_ID` is withheld —
-      **dead since #230**: no agent PTY is ever started now, #233 deletes this branch):
-      the SDK's hooks no-op, and that PTY is usually an **idle Raw tab** running no turns, so
-      NOBODY writes the running/tool/turn-end spool lines and the dot stuck `idle` while the
-      SDK worked (the reported bug — verified live: the PTY-coexist spool held only
-      `session/startup`). Here **the dot is driven directly from the SDK event stream:**
-      `emitFrom`/`sdkSend` call `driveStatusFromEvent` (agent-sdk.ts), which maps each
-      `AgentEvent` onto the same spool event via the pure `sdkEventToStatusEvent`
-      (agent-events.ts, unit-tested): `user-message`→`submit`, `tool-use`→`pretool`,
-      `tool-result`→`posttool`, `permission-request`/`user-dialog-request`/
-      `elicitation-request`→`notify` (#21), `turn-end`→`stop`.
-  So exactly ONE writer drives the dot per session (gate is `session.ownsSpool`, fixed at
-  spawn — NOT a per-event `isPtyRunning` read, which both missed the PTY-coexist case and
-  double-drove the no-PTY case). Remote/sandbox sessions never direct-drive (their dot comes
-  from the container's spool tail via sandbox-manager). Verified e2e on the built app: dot
-  flips `idle→running→waiting` in both the no-PTY and PTY-coexist cases, with the spool
-  never double-written. **Identity is decoupled
-  from that spool gate**: `buildSdkEnv` ALSO sets `ORCHESTRA_WS_ID_IDENTITY = ws.id`
+  plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR` for every LOCAL workspace** (the SDK session owns the
+  events spool, so ITS own shell lifecycle hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) fire and write
+  `submit`/`pretool`/`stop` spool lines that the tailer replays into `applyAgentEvent`). Remote/sandbox sessions
+  never claim the spool (their dot comes from the container's spool tail via sandbox-manager; paused, #226).
+  **Since #233 there is no agent PTY, so nothing shares the spool and there is no "drive status when a PTY
+  coexists" branch** — the old spool-ownership flag, the SDK-side status drive and the pure event→spool mapper it
+  used were deleted (they were already a no-op since #230; `buildSdkEnv` now returns just `{ env }`). **Identity
+  is decoupled from the spool**: `buildSdkEnv` ALSO sets `ORCHESTRA_WS_ID_IDENTITY = ws.id`
   **unconditionally**, and the CLI's `resolveSelfWorkspaceId` (`cli/index.ts`) falls
-  back to it when `ORCHESTRA_WS_ID` is withheld — so `orchestra rename`/`peers`/
-  `message`/`spawn` work in a structured session even while a PTY owns the spool
-  (previously the rename hook's `orchestra rename "$ORCHESTRA_WS_ID" …` collapsed to
-  one arg → `usage:` error). The spool hook (`ORCHESTRA_HOOK_SCRIPT`) gates only on
+  back to it when `ORCHESTRA_WS_ID` is absent. The spool hook (`ORCHESTRA_HOOK_SCRIPT`) gates only on
   `ORCHESTRA_WS_ID` and never reads the identity var; note `ORCHESTRA_EVENTS_DIR`
   alone can't decouple them since the hook defaults it to the same `getEventsDir()`
   path. An **orchestrator** workspace
   also gets its standing brief appended to the Claude Code system prompt on a FRESH
   session (`systemPrompt: {preset:'claude_code', append: ORCHESTRATOR_BRIEF}`, gated on
-  `!ws.sdkSessionId` so a resume doesn't duplicate it) — parity with the terminal path's
-  `--append-system-prompt`. When the consume loop ends/throws, a `reconcileExited(wsId)`
-  floor (guarded on no live PTY) self-heals a stuck `running` status dot, mirroring the
-  PTY exit handler. **Since #230 there is no Terminal tab and no agent PTY** (nothing
-  calls `pty:start`), so the SDK session always owns the spool and the gate is always
-  satisfied; the PTY-coexist branch survives only as dead code until #233. It used to be
-  that a live PTY kept ownership and the SDK session stayed spool-free — avoiding the
-  double-writer that corrupts the dot's per-`wsId` `seq` counter.
+  `!ws.sdkSessionId` so a resume doesn't duplicate it). When the consume loop ends/throws, a
+  `reconcileExited(wsId)` floor (kept by #233, now unconditional) self-heals a stuck `running` status dot — once the
+  SDK subprocess is gone the agent cannot be `running`.
 - **`src/renderer/agent-event-queue.ts`** (+ `.test.ts`) — pure RAF-batch queue; coalesces
   a frame of events and folds them in one `setState` (test asserts batched-fold ==
   sequential-fold). ~1600 events/commit under load; holds 60fps at 600+ messages.
@@ -1741,19 +1711,15 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   interactive tool call (AskUserQuestion, or an allow/deny permission prompt in a
   non-bypass mode) it calls `fireNeedsInput(wsId)` (activity.ts) to flip the
   sidebar dot to `waiting` (orange) + raise the "needs input" toast/chime,
-  matching the terminal path's Claude Code `Notification` hook. This is needed in
-  BOTH spool cases and does NOT overlap `driveStatusFromEvent`: the park event is
-  `emit()`ed directly from `makeCanUseTool`, never through `emitFrom` →
-  `driveStatusFromEvent`, so `sdkEventToStatusEvent`'s `permission-request→notify`
-  mapping is unreachable for a real park — and the SDK subprocess's own Claude
+  matching Claude Code's `Notification` hook. The park event is
+  `emit()`ed directly from `makeCanUseTool`, and the SDK subprocess's own Claude
   Code `Notification` hook does NOT fire for a programmatic `canUseTool` park
-  (verified e2e: on master alone the no-PTY dot stuck `running` with a pending
+  (verified e2e: the dot stuck `running` with a pending
   permission). So `fireNeedsInput` here is the sole driver of the parked-question
   dot. The parked promise is wrapped so EVERY exit (renderer reply via
   `sdkPermissionReply`, interrupt-abort, or the turn-end sweep in `consume()`)
   calls `resumeRunning(wsId)` — a guarded `waiting → running` flip (no-op unless
-  currently `waiting`, so it never resurrects an idle/stopped session or fights a
-  live PTY owner or `driveStatusFromEvent`'s own transitions).
+  currently `waiting`, so it never resurrects an idle/stopped session).
 - **Answerable dialogs & elicitations (#21)** — two MORE ways a live session
   blocks on the human, both of which used to hang it silently. Wired at the SAME
   single `query()` site as `canUseTool` (agent-sdk.ts), parked in their own maps,
@@ -1799,8 +1765,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
     primitives only — `AgentElicitationValue = string|number|boolean|string[]`,
     NOT `unknown`.
   - **Both drive the status dot** exactly like a permission: the bridges call
-    `fireNeedsInput` on park and `resumeRunning` on every exit, and
-    `sdkEventToStatusEvent` maps both new types to `notify` — without which the
+    `fireNeedsInput` on park and `resumeRunning` on every exit — without which the
     dot reads `running` (green) while the agent is in fact blocked.
   - **`consume()`'s turn-end sweep** resolves stragglers in all three maps
     (`cancelled` / `cancel`), since a turn cannot end with one still parked.
@@ -2239,13 +2204,8 @@ terminal path.
   `localStorage` (`orchestra:defaultAgentView`) is never read (no cleanup code). Rig arm
   `stored_terminal_pref` seeds that value and reloads the renderer.
 - **`buildSdkEnv`** (`agent-sdk.ts`) sets the identity plumbing
-  (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) and — when no terminal PTY is
-  running for the workspace (`isPtyRunning(ws.id)`) — the events-spool trigger
-  `ORCHESTRA_WS_ID`/`ORCHESTRA_EVENTS_DIR`, returning that decision as `ownsSpool`. That
-  flag is the single-writer key for the status dot (see the `driveStatusFromEvent`
-  discussion above): `ownsSpool=true` → the SDK's own hooks + the spool tailer drive it;
-  `ownsSpool=false` → the SDK direct-drives it. Phase 6's default-flip (no PTY when
-  structured is default) makes `ownsSpool` reliably true. The SDK session also inits its
+  (`ORCHESTRA_WORKTREE`/`ORCHESTRA_SOCK`/PATH shim) and, for a LOCAL workspace, the events-spool trigger
+  `ORCHESTRA_WS_ID`/`ORCHESTRA_EVENTS_DIR` (no agent PTY can share the spool since #233). The SDK session also inits its
   model from `ws.model`.
 
 ## Channel wiring (to add a new agent broadcast)

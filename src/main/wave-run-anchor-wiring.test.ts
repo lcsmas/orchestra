@@ -4,7 +4,7 @@
 // HONEST LIMITATION (same as spawn-default-model.test.ts): `workspaces.ts`
 // imports `./store`/`./platform`/the SDK chain and cannot be loaded under
 // `node --test`, so the PRESENCE of the wiring is asserted against source text,
-// not by calling `startAgentPty`. The behaviour of the pieces IS driven for
+// not by calling the launch paths. The behaviour of the pieces IS driven for
 // real (bus-run-anchor.test.ts drives `maybeStartRunAtAnchor`; bus-wake-run-
 // switch.test.ts drives the real accessor). What this file catches is the
 // realistic regression this ticket exists to prevent: the wiring being deleted
@@ -58,29 +58,19 @@ test('ALL-PATHS — the row+notice write lives at the common CREATION chokepoint
   // test below); the headless path must not be the ONLY writer.
 });
 
-test('ALL-PATHS — the structured SDK session env plumbs ORCHESTRA_RUN_ID (parity with the PTY path)', () => {
+test('ALL-PATHS — the structured SDK session env plumbs ORCHESTRA_RUN_ID', () => {
   // The G9-class second half: the structured session builds its env in
-  // agent-sdk.ts buildSdkEnv, NOT startAgentPty. Without ORCHESTRA_RUN_ID there,
+  // agent-sdk.ts buildSdkEnv. Without ORCHESTRA_RUN_ID there,
   // the default agent's CLI verbs resolve 'default'/host-, not the wave run.
   const body = fnBody(agentSdkSrc, 'async function buildSdkEnv(');
   assert.match(
     body,
     /env\.ORCHESTRA_RUN_ID = resolveWaveRunId\(ws\)/,
-    'the structured session env must carry the wave ORCHESTRA_RUN_ID (parity with startAgentPty extraEnv)',
+    'the structured session env must carry the wave ORCHESTRA_RUN_ID',
   );
 });
 
-// ─── P1 — startRun is called at the anchor, in startAgentPty ─────────────────
-
-/** The body of startAgentPty from its declaration to the `await startPty({`
- *  call — everything the seam wiring lives inside. */
-function startAgentPtyBody(): string {
-  const start = workspacesSrc.indexOf('export async function startAgentPty(');
-  assert.ok(start > 0, 'startAgentPty not found');
-  const end = workspacesSrc.indexOf('await startPty({', start);
-  assert.ok(end > start, 'startPty call not found — startAgentPty shape changed');
-  return workspacesSrc.slice(start, end);
-}
+// ─── P1 — startRun is called at the anchor, at the creation chokepoints ───────
 
 /** The body of a named function, decl → the next `\nexport ` / `\nasync function`
  *  / `\nfunction ` at column 0 (good enough for these single-function slices). */
@@ -92,18 +82,16 @@ function fnBody(src: string, decl: string): string {
   return after.slice(0, rel > 0 ? rel : 4000);
 }
 
-// The G9 regression: the run-start + notice were wired ONLY into startAgentPty
-// (the Raw-tab PTY path), but the DEFAULT spawn is
-// dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliver, which
-// never calls startAgentPty — so the feature was a NO-OP on the real AppImage.
+// The G9 regression: the run-start + notice were wired ONLY into the (since deleted, #233) agent-PTY launcher,
+// but the DEFAULT spawn is dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliver, which
+// never reached it — so the feature was a NO-OP on the real AppImage.
 // The fix wires it at the CREATION chokepoints. These guards assert THAT, each
-// with a negative control; a build that reverts to startAgentPty-only reddens
-// the two creation guards (the exact miss the original wiring test had).
+// with a negative control.
 
 test('G9 FIX — createWorkspace (the DEFAULT spawn chokepoint) starts the run + writes the notice, LOCAL-only (R3)', () => {
   const body = fnBody(workspacesSrc, 'export async function createWorkspace(');
-  // review-F2 R3 / LEAD D3: the call is guarded behind `!remote` (parity with
-  // startAgentPty) so a SANDBOX orchestrator makes no orphan HOST run row. The
+  // review-F2 R3 / LEAD D3: the call is guarded behind `!remote` so a SANDBOX
+  // orchestrator makes no orphan HOST run row. The
   // regex requires the `if (!remote)` guard on the same statement — an unguarded
   // `await startBusRunAndWriteNotice(ws, remote)` (the R3 defect) reddens it.
   assert.match(
@@ -111,7 +99,7 @@ test('G9 FIX — createWorkspace (the DEFAULT spawn chokepoint) starts the run +
     /if \(!remote\) await startBusRunAndWriteNotice\(ws, remote\)/,
     'createWorkspace must start the run + notice for LOCAL spawns, guarded !remote (R3)',
   );
-  // Negative control: the ORIGINAL G9 defect was the call living only in startAgentPty.
+  // Negative control: the ORIGINAL G9 defect was the call living only in the launcher.
   assert.ok(
     body.includes('startBusRunAndWriteNotice'),
     'the default-path chokepoint is unwired — the G9 no-op regression',
@@ -135,12 +123,6 @@ test('G9 FIX — startBusRunAndWriteNotice does BOTH the run-start and the notic
   );
 });
 
-test('P1 — startAgentPty also starts the run + notice (idempotent, upgrades pre-#134 workspaces)', () => {
-  const body = startAgentPtyBody();
-  assert.match(body, /const waveRunId = resolveAnchorInfo\(ws\)\.anchorId/, 'the wave run id is resolved for ORCHESTRA_RUN_ID');
-  assert.match(body, /await startBusRunAndWriteNotice\(ws, remote\)/, 'startAgentPty re-affirms the run+notice');
-});
-
 test('P1 D1 — resolveWaveRunId uses nearestOrchestratorId, NOT walkToRootId (the tree-root defect)', () => {
   const start = workspacesSrc.indexOf('export function resolveWaveRunId(');
   assert.ok(start > 0, 'resolveWaveRunId not found');
@@ -158,17 +140,6 @@ test('P1 D1 — /promote starts the run row (a promote does not relaunch the pty
   // Both success branches (capability + kind swap) must start the run.
   const hits = (body.match(/startRunForPromoted\(updated\)/g) ?? []).length;
   assert.equal(hits, 2, 'both promote success branches must start the OPS run row');
-});
-
-// ─── P2a — ORCHESTRA_RUN_ID is plumbed into extraEnv = the wave run id ────────
-
-test('P2a — ORCHESTRA_RUN_ID is set in startAgentPty extraEnv to waveRunId', () => {
-  const body = startAgentPtyBody();
-  assert.match(
-    body,
-    /ORCHESTRA_RUN_ID:\s*waveRunId/,
-    'ORCHESTRA_RUN_ID must be plumbed (was only a comment on master)',
-  );
 });
 
 // ─── P2b — the wake roster maps the real run id, not the hardcoded default ────
@@ -244,38 +215,13 @@ test('#166 — the bump effect calls the PURE gate then the real bump (no re-imp
   assert.ok(body.length > 0 && body.includes('getBus()'), 'the effect must read the boot bus');
 });
 
-test('#166 — startAgentPty bumps ONLY on a coordinatorReplacement launch, before the env', () => {
-  const body = startAgentPtyBody();
-  // The bump is gated on the explicit replacement opt (a first open leaves it
-  // false → no bump), and lives BEFORE the extraEnv object so the successor
-  // presents the new generation.
-  assert.match(
-    body,
-    /if \(!remote && opts\?\.coordinatorReplacement\) maybeBumpCoordinatorOnReplacement\(ws\)/,
-    'startAgentPty bumps only on a coordinatorReplacement launch',
-  );
-  const bumpIdx = body.indexOf('maybeBumpCoordinatorOnReplacement');
-  const envIdx = body.indexOf('ORCHESTRA_COORDINATOR_GENERATION');
-  assert.ok(bumpIdx > 0 && envIdx > bumpIdx, 'the bump must precede the env read (successor presents the new gen)');
-});
-
-test('#166 — startAgentPty extraEnv plumbs ORCHESTRA_COORDINATOR_GENERATION from coordinatorGeneration', () => {
-  const body = startAgentPtyBody();
-  assert.match(body, /coordinatorGeneration\(db, waveRunId\)/, 'the generation is read from the run row');
-  assert.match(
-    body,
-    /if \(gen > 0\) extraEnv\.ORCHESTRA_COORDINATOR_GENERATION = String\(gen\)/,
-    'the var is set ONLY when bumped past 0 (absent/0 = unfenced v1, coexistence-safe)',
-  );
-});
-
 test('#166 — buildSdkEnv (structured surface) plumbs ORCHESTRA_COORDINATOR_GENERATION too', () => {
   const body = fnBody(agentSdkSrc, 'async function buildSdkEnv(');
   assert.match(body, /coordinatorGeneration\(db, env\.ORCHESTRA_RUN_ID\)/, 'structured env reads the generation');
   assert.match(
     body,
     /if \(gen > 0\) env\.ORCHESTRA_COORDINATOR_GENERATION = String\(gen\)/,
-    'parity with the PTY path — set only when bumped past 0',
+    'set only when bumped past 0 (absent/0 = unfenced v1, coexistence-safe)',
   );
 });
 
@@ -312,7 +258,7 @@ test('#166/#232 — no agent-PTY restart route survives: the only coordinator-re
   // needed a main-side "pending replacement" marker; with no live agent PTY they and the marker are gone (#232).
   const restartAgentStart = apiHandlersSrc.indexOf('restartAgent: async');
   assert.ok(restartAgentStart > 0, 'restartAgent handler not found');
-  const restartAgentBody = apiHandlersSrc.slice(restartAgentStart, apiHandlersSrc.indexOf('stopAgent: async', restartAgentStart));
+  const restartAgentBody = apiHandlersSrc.slice(restartAgentStart, apiHandlersSrc.indexOf('agentSdkSend: async', restartAgentStart));
   assert.doesNotMatch(restartAgentBody, /markPtyRestartPending|pty:restart|isRunning\(|stopPty\(/, 'the toolbar Restart has no live-PTY branch');
   assert.match(restartAgentBody, /dispatchRestartRequest\(\{ id, fresh: false, trigger: 'toolbar' \}\)/, 'the toolbar Restart goes through the SDK restart dispatcher');
 
@@ -321,7 +267,7 @@ test('#166/#232 — no agent-PTY restart route survives: the only coordinator-re
   assert.match(switchBody, /broadcast\('pty:restart', nvimId\)/, 'control: the nvim pane still restarts');
 
   assert.doesNotMatch(workspacesSrc, /markPtyRestartPending|consumePtyRestartPending/, 'the pending-replacement marker is gone');
-  assert.doesNotMatch(apiHandlersSrc, /markPtyRestartPending|consumePtyRestartPending/, 'ptyStart no longer consumes a marker');
+  assert.doesNotMatch(apiHandlersSrc, /markPtyRestartPending|consumePtyRestartPending/, 'no handler consumes a marker');
   assert.doesNotMatch(restartSrc, /startAgentPty|coordinatorReplacement/, 'restart-workspace launches no agent PTY');
   // control: the SDK restart still bumps the generation (agent-sdk.ts sdkRestart -> maybeBumpCoordinatorOnReplacement).
   assert.match(agentSdkSrc, /if \(restartingWs\) maybeBumpCoordinatorOnReplacement\(restartingWs\);/, 'the SDK restart bumps the coordinator generation');

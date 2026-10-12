@@ -1,8 +1,8 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, stat, open, rename, copyFile, cp } from 'node:fs/promises';
-import { existsSync, readdirSync } from 'node:fs';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, copyFile, cp } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
@@ -10,7 +10,6 @@ import { store } from './store';
 import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
 import { stopMemberScopeIfAny } from './scope-stop-host';
 import { removeAgentTmpDir } from './agent-tmpdir';
-import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import {
   sdkDeliver,
   sdkDeliverConfirmed,
@@ -39,11 +38,9 @@ import {
   isRunning,
   stopPty,
   clearScrollback,
-  startPty,
-  writePty,
   readScrollback,
 } from './pty';
-import { accountAgentEnv, isApiKeyAccount, expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
@@ -53,7 +50,6 @@ import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
   getBus,
   send as sendBus,
-  coordinatorGeneration,
   bumpCoordinatorGeneration,
   expireOrphanedAsks,
 } from './bus.ts';
@@ -70,7 +66,6 @@ import {
   type RefreezeMissionOutcome,
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
-import { shouldContinuePty } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { activePauseFor } from './bus-pause.ts';
@@ -82,7 +77,6 @@ import {
   ACCOUNT_DEFAULT_MODEL,
   isValidModelArg,
   modelForNewWorkspace,
-  resolveLaunchModel,
   type ModelDefaultKind,
 } from '../shared/model-defaults.ts';
 import { effortForNewWorkspace, parseEffortArg } from '../shared/effort-defaults.ts';
@@ -109,7 +103,6 @@ import {
   deliverToTargets,
 } from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
-import { submitPlan } from '../shared/task-submit';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
@@ -127,7 +120,7 @@ import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
-import { canOrchestrate, isScratchLike, SANDBOX_WORKSPACE_DIR } from '../shared/types';
+import { canOrchestrate, isScratchLike } from '../shared/types';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -137,50 +130,6 @@ const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
 const SCRATCH_ROOT = path.join(os.homedir(), '.orchestra', 'scratch');
 
 const execFileP = promisify(execFile);
-
-/** Resolve the extra environment variables an agent PTY should get for a
- * workspace, from its source repo. The repo's assigned account
- * (`repo.accountId`) supplies a `CLAUDE_CONFIG_DIR`, injected so the spawned
- * `claude` logs in as that account (Claude Code reads & refreshes the OAuth
- * token in that dir). A missing/empty/dangling account, or a dir whose
- * template expands to nothing, injects nothing — the agent falls back to
- * Orchestra's default login.
- *
- * Returns `{}` when the repo has no account. */
-async function resolveRepoAgentEnv(ws: Workspace): Promise<Record<string, string>> {
-  const configDir = workspaceAccountConfigDir(ws, undefined);
-  if (!configDir) return {};
-  // The account's own `env` (templates expanded here, so `${ANTHROPIC_API_KEY}`
-  // resolves from the shell exports shellEnvSync merged at boot) rides along,
-  // plus the stored key for an apiKey-mode account.
-  const account = workspaceAccount(ws);
-  return {
-    CLAUDE_CONFIG_DIR: configDir,
-    ...(await accountAgentEnvWithKey(account)).set,
-  };
-}
-
-/** {@link accountAgentEnv} with the account's stored API key read from the
- * keystore — the key is never in store.json, so every spawn path resolves it
- * here rather than each reaching into secrets.ts. */
-async function accountAgentEnvWithKey(
-  account: Account | undefined,
-): Promise<{ set: Record<string, string>; strip: string[] }> {
-  const useKey = account && isApiKeyAccount(account);
-  const [apiKey, baseUrl] = useKey
-    ? await Promise.all([getAccountApiKey(account.id), getAccountBaseUrl(account.id)])
-    : [undefined, undefined];
-  return accountAgentEnv(account, os.homedir(), process.env, apiKey, baseUrl);
-}
-
-/** Inherited env keys to DROP before {@link resolveRepoAgentEnv} applies: the
- * ambient auth vars a pinned account does not re-supply, which would otherwise
- * override its login (ACCOUNT_AUTH_ENV_VARS). `[]` when no account is pinned,
- * so the default login keeps Orchestra's env untouched. */
-export async function resolveRepoAgentStripEnv(ws: Workspace): Promise<string[]> {
-  if (!workspaceAccountConfigDir(ws, undefined)) return [];
-  return (await accountAgentEnvWithKey(workspaceAccount(ws))).strip;
-}
 
 /** The {@link Account} a workspace is pinned to, or undefined (no pin / dangling). */
 export function workspaceAccount(ws: Workspace): Account | undefined {
@@ -205,145 +154,12 @@ export function workspaceAccountConfigDir(ws: Workspace, _repo: RepoEntry | unde
   return expandConfigDir(account.configDir, os.homedir(), process.env);
 }
 
-/** Token count at/above which a `claude --continue` resume is treated as
- * "heavy" — i.e. Claude Code will show its compaction menu and a typed task
- * could blow past it into a full-context resume. Set below CC's own ~140k
- * trigger so we never miss a session that will prompt. Env-overridable for
- * tuning without a rebuild. */
-const HEAVY_RESUME_TOKEN_THRESHOLD = (() => {
-  const n = Number(process.env.ORCHESTRA_HEAVY_RESUME_THRESHOLD);
-  return Number.isFinite(n) && n > 0 ? n : 100_000;
-})();
-
 /** Claude Code stores each conversation under
  * `<configDir>/projects/<mangled-cwd>/<sessionId>.jsonl`, where the cwd is
  * mangled by replacing every non-alphanumeric character with '-'. Exported for
  * the structured view's history backfill (agent-sdk.ts sdkHistory). */
 export function mangleProjectDir(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
-}
-
-/** Does ANY transcript `.jsonl` exist in this workspace's project dir — i.e.
- *  would `claude --continue` find a conversation to resume? (#178 seam b.)
- *  `--continue` resumes the newest `.jsonl` under the PINNED account config dir;
- *  `ws.hasInput` alone does NOT prove one still exists (a phantom terminal
- *  workspace `--continue`s into nothing — the field 15:35:08 exit-1). Sync
- *  (`readdirSync`) so the PTY launch sites stay straight-line; best-effort — a
- *  missing dir / read error → "none" → start fresh, the safe direction. */
-export function newestTranscriptExists(ws: Workspace): boolean {
-  try {
-    const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
-    const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
-    return readdirSync(dir).some((f) => f.endsWith('.jsonl'));
-  } catch {
-    return false;
-  }
-}
-
-/** Token count of the session that `claude --continue` will resume for this
- * workspace, or `null` if it can't be determined (→ caller treats as non-heavy
- * and does nothing — fail OPEN, never block a normal resume).
- *
- * `--continue` resumes the most-recently-modified transcript `.jsonl` in the
- * workspace's project dir (under its PINNED account config dir, NOT always
- * `~/.claude`). The count is the last assistant message's usage; trailing
- * `system`/summary lines can follow it, so we scan backwards. Files reach 10MB+,
- * so we tail-read the last chunk rather than loading the whole file. */
-async function newestResumeTokenCount(ws: Workspace): Promise<number | null> {
-  try {
-    const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
-    const dir = path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
-    let entries: string[];
-    try {
-      entries = (await readdir(dir)).filter((f) => f.endsWith('.jsonl'));
-    } catch {
-      return null; // no project dir yet (fresh) → not heavy
-    }
-    if (entries.length === 0) return null;
-    // newest by mtime = what `--continue` resumes
-    let newest: { file: string; mtime: number } | null = null;
-    for (const f of entries) {
-      try {
-        const s = await stat(path.join(dir, f));
-        if (!newest || s.mtimeMs > newest.mtime) newest = { file: f, mtime: s.mtimeMs };
-      } catch {
-        /* skip unreadable */
-      }
-    }
-    if (!newest) return null;
-    const fp = path.join(dir, newest.file);
-    const fh = await open(fp, 'r');
-    try {
-      const { size } = await fh.stat();
-      // Read up to the last 512KB — enough to contain the final assistant turn
-      // in any normal transcript without loading a multi-MB file.
-      const chunk = Math.min(size, 512 * 1024);
-      const buf = Buffer.alloc(chunk);
-      await fh.read(buf, 0, chunk, size - chunk);
-      const lines = buf.toString('utf8').split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (!line || line[0] !== '{') continue;
-        let e: unknown;
-        try {
-          e = JSON.parse(line);
-        } catch {
-          continue; // a partial first line from the chunk boundary
-        }
-        const obj = e as { type?: string; message?: { usage?: Record<string, number> } };
-        const u = obj?.message?.usage;
-        if (obj?.type === 'assistant' && u) {
-          return (
-            (u.input_tokens || 0) +
-            (u.cache_read_input_tokens || 0) +
-            (u.cache_creation_input_tokens || 0)
-          );
-        }
-      }
-      return null; // final assistant turn not in the tail → fail open
-    } finally {
-      await fh.close();
-    }
-  } catch (err) {
-    log.warn(`heavy-resume detection failed for ${ws.id}`, err);
-    return null; // fail open
-  }
-}
-
-/** Absolute path of the readiness sentinel for a workspace's agent. Orchestra
- * passes this path to the spawned `claude` as $ORCHESTRA_READY_FILE; a
- * SessionStart hook (HOOK_SESSION_START_READY_CMD) touches it the instant the
- * TUI is live. The injector waits for this file to appear before typing the
- * opening prompt, replacing a fragile fixed delay that dropped the submit
- * keystroke on concurrent spawns (two TUIs booting at once, one timer firing
- * before its input was ready). Keyed by workspace id, which is unique and
- * known on both sides without needing claude's own --session-id. */
-function readyFilePath(workspaceId: string): string {
-  return path.join(os.tmpdir(), `orchestra-ready-${workspaceId}`);
-}
-
-/** Poll for the readiness sentinel up to `timeoutMs`. Resolves true once the
- * file exists (TUI is up and accepting keystrokes), false on timeout so the
- * caller can fall back to the old fixed delay rather than hang forever. The
- * sentinel is removed before the agent starts (see startPty call sites), so a
- * stale file from a prior run can't short-circuit the wait. */
-async function waitForAgentReady(readyFile: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(readyFile)) return true;
-    await new Promise((r) => setTimeout(r, 60));
-  }
-  return false;
-}
-
-/** Remove a workspace's readiness sentinel — best-effort. Called before start
- * (clear any stale file) and after the prompt is submitted (tidy up). */
-async function clearReadyFile(workspaceId: string): Promise<void> {
-  try {
-    await rm(readyFilePath(workspaceId), { force: true });
-  } catch {
-    /* best-effort */
-  }
 }
 
 /**
@@ -589,23 +405,20 @@ export async function createWorkspace(
 
   // #134 — start the bus run at this workspace's anchor + write the frozen switch
   // notice, at CREATION (the common chokepoint for EVERY spawn path, incl. the
-  // default structured `sdkStartAndDeliver` that never calls startAgentPty). A
+  // default structured `sdkStartAndDeliver`). A
   // plain member under an orchestrator lazily creates the OPS run row here; a
   // plain standalone workspace no-ops. Best-effort, never blocks creation (D1).
   //
   // SKIPPED WHOLESALE for a sandbox workspace (review-F2 R3, LEAD D3): the bus is
   // the HOST's, and a remote member's run + notice belong to its container's bus,
   // not the host's — starting a host-side row here would leave an orphan run no
-  // host member reads. Parity with startAgentPty's own `if (!remote)` guard;
-  // passing `remote` to the helper only suppressed the NOTICE, not the run-start.
+  // host member reads. Passing `remote` to the helper only suppressed the NOTICE,
+  // not the run-start.
   const remote = input.host?.kind === 'sandbox';
   if (!remote) await startBusRunAndWriteNotice(ws, remote);
 
-  // Do NOT spawn the agent PTY here. The renderer's TerminalView will invoke
-  // `pty:start` once the terminal container has real dimensions, so the agent
-  // is spawned at the correct cols/rows instead of a fixed default that would
-  // mis-wrap its opening TUI frames. The `lastTask` stored on the workspace
-  // is piped in from the pty:start handler on the first-ever spawn.
+  // No agent is started here: the SDK session starts lazily (first send / wake / spawn),
+  // and the `lastTask` stored on the workspace is its opening turn.
   return ws;
 }
 
@@ -616,8 +429,8 @@ export async function createWorkspace(
  * plain directory the agent works in. Used when the user wants to start coding
  * something without first wiring up a git repo.
  *
- * Reuses the same infrastructure as a normal workspace from the PTY-spawn point
- * on (the renderer's `pty:start` doesn't care whether the cwd is a git worktree).
+ * Reuses the same infrastructure as a normal workspace from the session-start
+ * point on (the SDK session doesn't care whether the cwd is a git worktree).
  * `repoPath`/`baseBranch` are deliberately empty. `branchManuallySet` starts
  * false so the agent gets the auto-rename nudge and relabels the session to
  * reflect the work — same as a git workspace, except the "rename" is a pure
@@ -704,7 +517,7 @@ async function createScratchLikeWorkspace(
     status: 'idle',
     agent: 'claude',
     // An orchestrator's brief is injected silently as an appended system prompt
-    // by startAgentPty — NOT as a typed `lastTask` turn — so the session opens
+    // by the SDK session start (agent-sdk.ts) — NOT as a typed `lastTask` turn — so the session opens
     // with a clean prompt instead of a wall of pasted instructions.
     // Leave unlocked so ORCHESTRA_BRANCH_AUTO=1 and the rename nudge fires: the
     // agent relabels the session early, then refines the name once the work
@@ -728,7 +541,7 @@ async function createScratchLikeWorkspace(
   // badge sits on stale data until the next poll tick.
   void refreshAccountsNow().catch(() => {});
   // #134 — a scratch ORCHESTRATOR is its own wave anchor, so start its run + write
-  // the notice at creation (the structured session boots without startAgentPty).
+  // the notice at creation.
   // A plain scratch (kind 'scratch') no-ops in maybeStartRunAtAnchor (not an
   // orchestrator). Best-effort (D1).
   await startBusRunAndWriteNotice(ws);
@@ -1510,41 +1323,6 @@ async function unmarkOrchestratorWorktree(worktreePath: string): Promise<void> {
   }
 }
 
-// Default geometry for an agent PTY spawned headless (no visible terminal yet).
-// The renderer re-fits to the real pane size the first time the user opens the
-// workspace; until then the agent just needs a sane width to render its TUI.
-const HEADLESS_COLS = 120;
-const HEADLESS_ROWS = 32;
-
-// How long to wait for an agent's SessionStart readiness sentinel before giving
-// up and submitting the opening prompt anyway. Generous — a cold `claude` boot
-// can take several seconds, and waiting costs nothing once the sentinel lands.
-const READY_TIMEOUT_MS = 15_000;
-// Fallback delay used only when the sentinel never appears (e.g. a session not
-// started by orchestra, or a hook that failed to fire). Matches the proven
-// fixed-timer value the readiness signal replaces.
-const READY_FALLBACK_MS = 1_200;
-// Gap between writing the prompt text and the submit carriage return. A newline
-// in the same chunk reads as a pasted newline (never submits), so it must be a
-// separate write — and far enough behind the text that the TUI has committed
-// the paste to its input buffer first.
-const SUBMIT_CR_DELAY_MS = 150;
-// Submit confirmation: after sending '\r' we watch the workspace status, which
-// flips off `idle` the instant the agent's UserPromptSubmit hook fires. If it
-// hasn't flipped within this window the '\r' was dropped (a real failure mode
-// when several agents spawn at once and the main loop is saturated) — so we
-// re-send. Poll interval and max attempts bound the retry.
-const SUBMIT_CONFIRM_MS = 2_500;
-const SUBMIT_POLL_MS = 100;
-const SUBMIT_MAX_ATTEMPTS = 4;
-// If every '\r' in a round goes unconfirmed, the likelier explanation is that
-// the TASK TEXT never landed (an empty box submits forever without leaving
-// `idle`) rather than four dropped keystrokes in a row. Each extra round
-// re-types before retrying. Two rounds is deliberate: one recovery attempt,
-// then a loud error naming the manual fix — an unbounded loop against a wedged
-// TUI would retype indefinitely.
-const SUBMIT_TYPE_ROUNDS = 2;
-
 /** How long spawn / Restart wait for the child's first-turn outcome (#227 D6/D7); the env override is for tests. */
 const INIT_WAIT_MS = 20_000;
 function initWaitMs(): number {
@@ -1622,113 +1400,6 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
     platform.broadcast('workspace:update', updated);
   }
   return { ok: true };
-}
-
-// `submitTaskWhenReady` + `waitForSubmitConfirmed` are UNREFERENCED since #227; #233 deletes them.
-/** Submit `task` into a freshly-started agent's TUI once it signals readiness,
- * then flip `hasInput`. Waits for the readiness sentinel (deterministic), and
- * only if it never appears falls back to the proven fixed delay. The two-write
- * submit (text, then a SEPARATE '\r' a beat later) is unchanged: a trailing
- * newline in the same chunk is treated by Claude's TUI as a pasted newline and
- * never submits. */
-async function submitTaskWhenReady(id: string, task: string, readyFile: string): Promise<void> {
-  const ready = await waitForAgentReady(readyFile, READY_TIMEOUT_MS);
-  if (!ready) {
-    log.warn(`agent ${id} readiness sentinel timed out — falling back to fixed delay`);
-    await new Promise((r) => setTimeout(r, READY_FALLBACK_MS));
-  }
-  // The PTY may have died (agent quit, workspace deleted) while we waited.
-  if (!isRunning(id)) {
-    await clearReadyFile(id);
-    return;
-  }
-  // Type the prompt, then submit with a confirmed, retrying carriage return.
-  //
-  // TWO failures are possible and they need DIFFERENT remedies, which is why
-  // this is a nested loop rather than a flat '\r' retry:
-  //
-  //   1. The '\r' is dropped — text sits in the box, never sent. Resending
-  //      '\r' fixes it; re-typing would duplicate the task.
-  //   2. The TEXT never lands — the box is empty. Observed on a real spawn
-  //      whose agent sat at a pristine prompt (placeholder still showing) with
-  //      no idea it had been given a task. Here resending '\r' is useless: it
-  //      submits an empty box forever and every attempt "fails" identically,
-  //      so the flat loop burned its whole budget on a remedy that could not
-  //      work, then warned and gave up.
-  //
-  // We cannot read the agent's input box to tell these apart, so after
-  // exhausting the '\r' retries we assume case 2 and RE-TYPE. Duplication is
-  // the acceptable risk: a doubled prompt is visible and recoverable, while a
-  // silently empty agent looks exactly like a slow one and waits forever.
-  // The escalation itself lives in ../shared/task-submit (pure, unit-tested —
-  // this file imports Electron and cannot be). Walk its steps until the agent
-  // leaves `idle`.
-  let submitted = false;
-  let submits = 0;
-  for (const step of submitPlan({
-    maxSubmitAttempts: SUBMIT_MAX_ATTEMPTS,
-    typeRounds: SUBMIT_TYPE_ROUNDS,
-  })) {
-    if (!isRunning(id)) break;
-    if (step.kind === 'clear') {
-      log.warn(`agent ${id} still idle after ${submits} submits — re-typing the task`);
-      // Ctrl-U kills the input line, so a retype cannot concatenate onto a
-      // half-delivered prompt.
-      writePty(id, '\x15');
-      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
-      continue;
-    }
-    if (step.kind === 'type') {
-      writePty(id, task);
-      await new Promise((r) => setTimeout(r, SUBMIT_CR_DELAY_MS));
-      continue;
-    }
-    writePty(id, '\r');
-    submits++;
-    if (await waitForSubmitConfirmed(id, SUBMIT_CONFIRM_MS)) {
-      submitted = true;
-      break;
-    }
-    log.warn(`agent ${id} submit '\\r' not confirmed (attempt ${submits}) — resending`);
-  }
-  if (!submitted) {
-    // Loud, and actionable: name the recovery the coordinator can run by hand.
-    // This agent never took its prompt (its reader is wedged), so the recovery
-    // is the out-of-band ESCAPE — `orchestra send` would sit in a bus the agent
-    // is not draining. `--emergency` bypasses the #169 fleet-coordination refusal
-    // for exactly this liveness case.
-    log.error(
-      `agent ${id} NEVER ACCEPTED ITS OPENING PROMPT after ${SUBMIT_TYPE_ROUNDS} type rounds ` +
-        `x ${SUBMIT_MAX_ATTEMPTS} submits — it is sitting idle with no task. ` +
-        `Recover with: orchestra message --emergency ${id} "<the task>"`,
-    );
-  }
-  await clearReadyFile(id);
-  const fresh = store.getWorkspace(id);
-  if (fresh && !fresh.hasInput) {
-    const updated: Workspace = { ...fresh, hasInput: true };
-    void store.upsertWorkspace(updated).then(() => {
-      platform.broadcast('workspace:update', updated);
-    });
-  }
-}
-
-/** Wait until the agent's status leaves `idle` — set by its own
- * UserPromptSubmit hook (`submit` → `running`) the instant it accepts the
- * prompt. This is the authoritative "the '\r' registered" signal: a dropped
- * submit keystroke leaves the status at `idle`, so the caller knows to resend.
- * Resolves true on the transition, false on timeout. */
-async function waitForSubmitConfirmed(id: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const status = store.getWorkspace(id)?.status;
-    // Anything other than idle means the prompt was accepted and the turn
-    // started (running), already produced output (waiting), or errored — all of
-    // which prove the '\r' landed. A vanished workspace also ends the wait.
-    if (!status || status !== 'idle') return true;
-    await new Promise((r) => setTimeout(r, SUBMIT_POLL_MS));
-  }
-  return false;
 }
 
 export interface SpawnResult {
@@ -2069,7 +1740,7 @@ async function reconcileRunAfterReparent(
     if (!ws) continue;
     // A sandbox-hosted workspace keeps its hooks/notice in the container; the
     // local worktree write + local restart do not apply. Its own relaunch there
-    // re-derives the run, matching startAgentPty's `!remote` guard.
+    // re-derives the run.
     if (ws.host?.kind === 'sandbox') continue;
     try {
       const newAnchorId = resolveWaveRunId(ws);
@@ -2109,8 +1780,7 @@ async function reconcileRunAfterReparent(
 
       // action.kind === 'restart' — conversation-preserving relaunch re-reads
       // ORCHESTRA_RUN_ID (env is rebuilt from resolveWaveRunId at every launch).
-      // Dynamic import breaks the workspaces.ts ↔ restart-workspace.ts cycle
-      // (restart-workspace imports startAgentPty from here).
+      // Dynamic import breaks the workspaces.ts ↔ restart-workspace.ts import cycle.
       const { dispatchRestartRequest } = await import('./restart-workspace.ts');
       const res = await dispatchRestartRequest({ id: ws.id, fresh: false, trigger: 'reparent' });
       if (res.ok && res.held) {
@@ -2208,7 +1878,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       await markOrchestratorWorktree(ws.worktreePath, true);
       platform.broadcast('workspace:update', updated);
       // #134 (D1): a promote is a wave boundary — start the OPS's own run row now
-      // (the pty is not relaunched, so startAgentPty won't do it until a member).
+      // (the session is not relaunched, so nothing else would do it until a member starts).
       startRunForPromoted(updated);
       log.info(`promoted worktree ${ws.branch} (${id}) to orchestrator (capability)`);
       // #171 — refresh the live session's run env now (see the pre-mutation
@@ -3193,8 +2863,7 @@ export interface RunRefreezeResult {
  *
  * The store side of the verb — it lives HERE, not in the store-less CLI, because
  * the live-child gate needs ground truth the bus cannot see: whether any of the
- * mission's plain children is currently running a turn (`isRunning`, a live PTY/
- * SDK session). The mission run id IS its coordinator workspace id (see
+ * mission's plain children has a live SDK session (`sdkSessionLive`). The mission run id IS its coordinator workspace id (see
  * bus-run-anchor.ts: a top-level orchestrator's run id === its own ws id), so the
  * mission's children are exactly the workspaces transitively parented under it.
  *
@@ -3211,13 +2880,9 @@ export function dispatchRunRefreezeRequest(input: { runId?: string; only?: strin
     return { ok: false, error: 'bus is unavailable — cannot refreeze (no run row without a bus)' };
   }
   // The mission's children = every workspace transitively parented under its
-  // coordinator (the run id), minus the coordinator itself. "Live mid-turn" must
-  // cover BOTH launch surfaces — a PTY session (`isRunning`) AND a structured/SDK
-  // session (`sdkSessionLive`); `isRunning` alone is the #111 PTY-only blind spot,
-  // and the DEFAULT spawn is structured (no PTY), so a live SDK child would read
-  // NOT running and the freeze invariant would be violated. The disjunction lives
-  // in the platform-free `anyChildLive` (src/shared/refreeze-liveness.ts) so a test
-  // can drive the REAL predicate; here we only wire the two real probes.
+  // coordinator (the run id), minus the coordinator itself. "Live" = a live SDK session (the only
+  // agent surface since #233). The predicate lives in the platform-free `anyChildLive`
+  // (src/shared/refreeze-liveness.ts) so a test can drive it; here we only wire the real probe.
   const tree = collectWorkspaceTree(runId);
   if (input.only !== undefined) {
     // One switch on a PAUSED run (mission or vague): the coordinator counts too — nobody may be mid-turn.
@@ -3225,13 +2890,13 @@ export function dispatchRunRefreezeRequest(input: { runId?: string; only?: strin
     if (!key) return { ok: false, error: `unknown switch '${input.only}'` };
     const outcome = refreezeOneSwitch(db, runId, key, getLiveSwitches(), {
       paused: activePauseFor(db, runId) !== null,
-      hasLiveChild: anyChildLive(tree.map((w) => w.id), isRunning, sdkSessionLive),
+      hasLiveChild: anyChildLive(tree.map((w) => w.id), sdkSessionLive),
     });
     const frozen = outcome === 'refrozen-one' ? getRun(db, runId)?.flags : undefined;
     return { ok: true, outcome, runId, ...(frozen !== undefined ? { frozenFlags: serializeSwitches(frozen) } : {}) };
   }
   const children = tree.slice(1); // drop the coordinator root
-  const hasLiveChild = anyChildLive(children.map((w) => w.id), isRunning, sdkSessionLive);
+  const hasLiveChild = anyChildLive(children.map((w) => w.id), sdkSessionLive);
   const outcome = refreezeMissionRun(db, runId, getLiveSwitches(), { hasLiveChild });
   const frozen = outcome === 'refrozen' ? getRun(db, runId)?.flags : undefined;
   return {
@@ -3987,13 +3652,8 @@ const HOOK_SELF_MODIFY_CMD =
 const HOOK_BUS_SWITCHES_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
-// Touches the readiness sentinel the instant the TUI fires SessionStart, so the
-// task injector knows the prompt box is live and can submit deterministically
-// instead of guessing with a fixed delay. $ORCHESTRA_READY_FILE is set per-PTY
-// by orchestra; the guard makes it a no-op when absent (e.g. a session not
-// started by orchestra). `: >` truncates/creates the file atomically.
-const HOOK_SESSION_START_READY_CMD =
-  '[ -n "${ORCHESTRA_READY_FILE:-}" ] && : > "$ORCHESTRA_READY_FILE" || true';
+// #233: the SessionStart readiness-sentinel hook (touched $ORCHESTRA_READY_FILE for the PTY task injector) is retired — evicted from installed settings.
+const isRetiredReadyCmd = (cmd: string): boolean => cmd.includes('ORCHESTRA_READY_FILE');
 
 const RENAME_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Nudges the agent to progressively rename its
@@ -4066,7 +3726,7 @@ fi
 //
 // The bodies invoke the `orchestra` CLI rather than raw `curl --unix-socket`,
 // so the IPC interface is uniform with the rename hook and human terminal use.
-// The CLI resolves in the agent shell because main/pty.ts prepends the
+// The CLI resolves in the agent shell because agent-sdk.ts buildSdkEnv prepends the
 // orchestra-owned bin dir (installAgentCliShim) to PATH, and it reads
 // $ORCHESTRA_SOCK / $ORCHESTRA_WS_ID from the env to find the socket + identity.
 
@@ -5161,206 +4821,6 @@ function removeHookCommand(list: unknown[], match: (cmd: string) => boolean): un
   });
 }
 
-/** Spawn the Claude agent PTY for a workspace. Shared by the renderer-driven
- *  `pty:start` IPC handler and the account-migration auto-resume so both build
- *  the same env, install hooks, and pick `--continue` identically. Caller is
- *  responsible for the already-running guard (`isRunning(id)`) — this just
- *  spawns. There is deliberately NO startup caller: an agent that was running
- *  when Orchestra exited relaunches when the user first opens its workspace,
- *  not en masse at boot.
- *
- *  `resuming` gates `claude --continue`: only true once the user has actually
- *  submitted at least one prompt (`ws.hasInput`), since `--continue` fails with
- *  "No conversation found to continue" against a session that only ever printed
- *  its startup TUI. */
-export async function startAgentPty(
-  ws: Workspace,
-  cols: number,
-  rows: number,
-  opts?: {
-    /** Force a VIERGE launch: spawn `claude` WITHOUT `--continue` even though
-     *  `ws.hasInput` is set, so the terminal agent starts a blank conversation
-     *  (issue #111 `orchestra restart <id> --fresh`, PTY branch). Does NOT
-     *  persist `hasInput:false` — that flag records "the user has typed here"
-     *  and a future normal open must still resume; this only skips the resume
-     *  for THIS launch. Omitted / false → the normal resume-from-hasInput path,
-     *  byte-identical to before. */
-    fresh?: boolean;
-    /** #166 — this launch REPLACES a live coordinator process on the same run
-     *  (a restart/branch-switch respawn), so bump the coordinator generation
-     *  before building the env so the successor presents the new one and the
-     *  old process's in-flight writes are fenced. NO caller sets it since #232 (the
-     *  PTY restart routes are gone; the SDK restart bumps in agent-sdk.ts); the launcher is
-     *  deleted by #233. The bump is still gated on the workspace being its own orchestrator anchor. */
-    coordinatorReplacement?: boolean;
-  },
-): Promise<void> {
-  // #178 seam (b) — `--continue` ONLY when a transcript actually exists on disk.
-  // `hasInput` records that a prompt was once typed, but not that the newest
-  // transcript still exists; a phantom terminal workspace (`hasInput` true, no
-  // `.jsonl`) would `claude --continue` into nothing → "No conversation found to
-  // continue", exit 1 (the field 15:35:08). Gate on the on-disk probe too.
-  const resuming = shouldContinuePty({
-    hasInput: ws.hasInput,
-    fresh: opts?.fresh === true,
-    newestTranscriptExists: newestTranscriptExists(ws),
-  });
-  const claudeArgs = resuming
-    ? ['--continue', '--dangerously-skip-permissions']
-    : ['--dangerously-skip-permissions'];
-  // Model pin (spawn --model): passed on EVERY launch — fresh and resume — so
-  // the pin survives pty restarts instead of silently reverting to the login
-  // default. The SDK structured-session path mirrors this via options.model.
-  const launchModel = resolveLaunchModel(ws.model, store.getModelDefaults());
-  if (launchModel) claudeArgs.push('--model', launchModel);
-  // Same for effort (`claude --effort`); the SDK path mirrors it via options.effort.
-  if (ws.sdkEffort) claudeArgs.push('--effort', ws.sdkEffort);
-  // Heavy-resume gate: if `claude --continue` is about to reload a large
-  // session, Claude Code shows its compaction menu — but a typed task would
-  // proceed the FULL resume and drain the usage pool. Flag the workspace so
-  // the `pty:write` handler suppresses submit keystrokes until the user
-  // consciously drives CC's menu (a nav key clears it). Fail-open: detection
-  // returning null leaves the flag unset, so normal resumes are untouched.
-  if (resuming) {
-    const tokens = await newestResumeTokenCount(ws);
-    if (tokens != null && tokens >= HEAVY_RESUME_TOKEN_THRESHOLD) {
-      ws = { ...ws, heavyResumePending: true };
-      await store.upsertWorkspace(ws);
-      platform.broadcast('workspace:update', ws);
-      log.info(`heavy-resume gate armed for ${ws.id}: ~${tokens} tokens`);
-      // Safety auto-disarm: if our (deliberately low) threshold flagged a
-      // session that CC does NOT actually prompt for, submits must not be
-      // blocked forever. Clear the flag after a grace period; by then the menu
-      // (if any) has been answered, or there was none. The nav-key path in
-      // pty:write disarms sooner when the user does engage the menu.
-      const gateId = ws.id;
-      setTimeout(() => {
-        const cur = store.getWorkspace(gateId);
-        if (cur?.heavyResumePending) {
-          const cleared = { ...cur, heavyResumePending: false };
-          void store.upsertWorkspace(cleared);
-          platform.broadcast('workspace:update', cleared);
-        }
-      }, 90_000);
-    } else if (ws.heavyResumePending) {
-      // Clear a stale flag left over from a prior heavy resume that is no
-      // longer heavy (e.g. the session was compacted/cleared since).
-      ws = { ...ws, heavyResumePending: false };
-      await store.upsertWorkspace(ws);
-      platform.broadcast('workspace:update', ws);
-    }
-  }
-  // An orchestrator's standing brief shapes its behaviour without ever showing
-  // up as a typed user turn: inject it as an appended system prompt on the
-  // first launch only. On resume, Claude Code restores the original session's
-  // system prompt, so re-appending would duplicate it. Durable enforcement of
-  // the role (surviving compaction, resume, and mid-session promotion) is the
-  // orchestrator-instruction hook, re-fired on every prompt — this one-time
-  // brief is just the richer onboarding.
-  if (!resuming && ws.kind === 'orchestrator') {
-    claudeArgs.push('--append-system-prompt', orchestratorBrief(ws));
-  }
-  // Hook installation writes into the worktree's .claude/. For a local
-  // workspace that's this machine's worktree; for a sandbox workspace the
-  // worktree lives in the container, so the hooks are installed sandbox-side
-  // (baked/installed when the workspace is provisioned there), not from here.
-  const remote = ws.host?.kind === 'sandbox';
-  // Idempotent: upgrades workspaces created before the activity hook landed.
-  if (!remote) await installOrchestraHooks(ws.worktreePath);
-  // The run a workspace belongs to is its NEAREST ORCHESTRATOR (D1, ledger #135):
-  // an OPS/LEAD is its own run; a member obeys the OPS's. `waveRunId` is reused
-  // for the plumbed `$ORCHESTRA_RUN_ID` below.
-  const waveRunId = resolveAnchorInfo(ws).anchorId;
-  // #134 — start the run at the anchor + refresh the frozen notice. Idempotent
-  // (the run row is created at workspace CREATION now — see startBusRunAndWriteNotice
-  // — so this launch-time call is normally a no-op re-affirming it), which also
-  // upgrades workspaces created before #134 shipped. Best-effort (D1): never
-  // blocks a launch. Refreshed on every launch (unlike the hash-gated hook
-  // bundle) so a run boundary crossed since creation is picked up; within one run
-  // the frozen row makes the notice stable.
-  if (!remote) await startBusRunAndWriteNotice(ws, remote);
-  // #166 — when this launch REPLACES a live coordinator on the same run (a
-  // restart / branch-switch respawn), bump the coordinator generation NOW, after
-  // the run row exists (startBusRunAndWriteNotice above) and BEFORE the env is
-  // built below, so the successor presents the bumped generation and the old
-  // process's in-flight writes are fenced. First opens leave the flag false.
-  if (!remote && opts?.coordinatorReplacement) maybeBumpCoordinatorOnReplacement(ws);
-  // Materialize the pinned account's inherited global config into its login dir
-  // right before spawn, so the agent sees the user's settings/skills/MCP. Pinned
-  // account only (resolveRepoAgentEnv uses the same pin for CLAUDE_CONFIG_DIR).
-  if (ws.accountId) {
-    const account = store.accounts.find((a) => a.id === ws.accountId);
-    if (account) {
-      await syncAccountInheritance(account, { caller: 'spawn-pty' }).catch((err) =>
-        log.warn(`account-inherit: spawn-time sync failed for ${ws.id}`, err),
-      );
-    }
-  }
-  // Expose the current branch and auto-rename gate to hooks. The SessionStart
-  // hook reads ORCHESTRA_BRANCH_AUTO=1 to decide whether to inject the
-  // rename-instruction context, and ORCHESTRA_AUTO_RENAME_COUNT to pick the
-  // stage-appropriate wording. The gate stays on while a human hasn't pinned
-  // the name and the agent has auto-renames left (see `autoRenameActive`), so
-  // the instruction keeps re-surfacing across the two progressive renames and
-  // clears on the next pty:start once the budget is spent.
-  const extraEnv: Record<string, string> = {
-    // Per-repo env first so Orchestra's own vars below always take precedence.
-    ...(await resolveRepoAgentEnv(ws)),
-    ORCHESTRA_BRANCH: ws.branch,
-    ORCHESTRA_BRANCH_AUTO: autoRenameActive(ws) ? '1' : '0',
-    ORCHESTRA_AUTO_RENAME_COUNT: String(ws.autoRenameCount ?? 0),
-    // Read by the orchestrator-instruction hook (with the .orchestrator
-    // sentinel as the mid-session-promotion fallback) to gate the standing
-    // delegation reminder to orchestrator sessions only.
-    ORCHESTRA_KIND: ws.kind ?? 'worktree',
-    // #134 — the WAVE run id (tree anchor). Plumbed so the CLI bus verbs
-    // (`resolveBusIdentity`: run > $ORCHESTRA_RUN_ID > 'default'), the mirror
-    // (`mirrorRunId`), and `orchestra bus-status` all address the WAVE run this
-    // member belongs to, instead of the CLI's `default` fallback / the mirror's
-    // per-boot `host-…`. A member and its anchor share this id, so a member's
-    // `send`/`check`/`ack` land in the same run the anchor froze.
-    ORCHESTRA_RUN_ID: waveRunId,
-  };
-  // #166 — FENCING: present the wave run's current coordinator generation to the
-  // CLI bus verbs (`resolveFencing` reads $ORCHESTRA_COORDINATOR_GENERATION). Set
-  // ONLY when the run has been bumped past 0 — an absent var is the unfenced v1
-  // path (every write pre-fencing carried none), and a generation of 0 is the
-  // as-yet-unreplaced coordinator, indistinguishable from v1 for fencing. So gen
-  // 0 / no bus / no run row all leave the var ABSENT (coexistence-safe). Read
-  // AFTER any maybeBumpCoordinatorOnReplacement above so a replacement presents
-  // the new one. Best-effort: a bus read failure just omits the var.
-  if (!remote) {
-    try {
-      const db = getBus();
-      const gen = db ? coordinatorGeneration(db, waveRunId) : 0;
-      if (gen > 0) extraEnv.ORCHESTRA_COORDINATOR_GENERATION = String(gen);
-    } catch (e) {
-      log.warn(`bus-fencing: could not read coordinator generation for ${waveRunId}`, e);
-    }
-  }
-  // A pinned account's CLAUDE_CONFIG_DIR is a HOST path; shipped to a sandbox
-  // it points at nothing and would shadow the container's seeded ~/.claude
-  // (leaving the agent logged out). The import already packed the account's
-  // login/config INTO that ~/.claude, so remote agents always use the default
-  // location.
-  if (remote) delete extraEnv.CLAUDE_CONFIG_DIR;
-  await startPty({
-    id: ws.id,
-    // The sandbox mounts the worktree at the fixed /workspace path (the
-    // Dockerfile's WORKDIR); Claude keys its session by cwd, so this must match
-    // across runs. Local spawns use the real worktree path on this machine.
-    cwd: remote ? SANDBOX_WORKSPACE_DIR : ws.worktreePath,
-    command: 'claude',
-    args: claudeArgs,
-    cols,
-    rows,
-    workspaceId: ws.id,
-    extraEnv,
-    stripEnv: await resolveRepoAgentStripEnv(ws),
-    host: ws.host,
-  });
-}
-
 // Version sentinel for the hook bundle: a hash over every script body and
 // every hook command the installer writes. When this matches the stamp a
 // workspace already carries, installOrchestraHooks short-circuits — turning the
@@ -5397,7 +4857,6 @@ const HOOKS_VERSION = createHash('sha256')
       POSTTOOL_HOOK_EVENTS.join(','),
       HOOK_ACTIVITY_TOOLBATCH_CMD,
       HOOK_ACTIVITY_SESSION_CMD,
-      HOOK_SESSION_START_READY_CMD,
       HOOK_SESSION_START_RENAME_CMD,
       HOOK_COMMS_RESURFACE_CMD,
       HOOK_INBOX_DELIVER_CMD,
@@ -5465,21 +4924,20 @@ const busRunAnchorDeps = {
  * from every workspace-creation + promote + launch chokepoint so the run row and
  * the `.orchestra/bus-switches` notice exist REGARDLESS of the launch path.
  *
- * WHY AT CREATION, NOT ONLY startAgentPty (review-F1/VERIFY-F G9): the DEFAULT
- * spawn is `dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliverResult`
- * (the structured session), which NEVER calls `startAgentPty` (the Raw-tab PTY
- * path). Wiring only into `startAgentPty` made the whole feature a NO-OP on the
- * real AppImage — a spawned orchestrator got RUNS=0 / no notice, the exact canary
- * symptom the ticket exists to kill. `createWorkspace`/`createScratchLikeWorkspace`
- * are the common chokepoint for EVERY spawn, so the effects live here.
+ * WHY AT CREATION (review-F1/VERIFY-F G9): the DEFAULT spawn is
+ * `dispatchSpawnRequest → startWorkspaceAgentHeadless → sdkStartAndDeliverResult`
+ * (the structured session); wiring this into a launch function only made the
+ * whole feature a NO-OP on the real AppImage — a spawned orchestrator got
+ * RUNS=0 / no notice, the exact canary symptom the ticket exists to kill.
+ * `createWorkspace`/`createScratchLikeWorkspace` are the common chokepoint for
+ * EVERY spawn, so the effects live here.
  *
- * Idempotent (INSERT-OR-IGNORE + the notice re-write is stable per run), so the
- * later `startAgentPty` call on the same ws is a harmless no-op. Best-effort:
- * `maybeStartRunAtAnchor` never throws (D1) and the notice write swallows its own
- * errors; a bus/notice failure must never break workspace creation.
+ * Idempotent (INSERT-OR-IGNORE + the notice re-write is stable per run).
+ * Best-effort: `maybeStartRunAtAnchor` never throws (D1) and the notice write
+ * swallows its own errors; a bus/notice failure must never break workspace creation.
  *
  * `remote` (sandbox) skips the local worktree notice write — the hooks/worktree
- * live in the container — matching `startAgentPty`'s own `!remote` guard.
+ * live in the container.
  */
 async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise<void> {
   const anchor = resolveAnchorInfo(ws);
@@ -5858,10 +5316,7 @@ export async function installOrchestraHooks(
     sessionStartList = removeHookCommand(sessionStartList, isStaleRenameCmd);
     // Evict the retired full-prose capability advertisements (now skills).
     sessionStartList = removeHookCommand(sessionStartList, isRetiredCapabilityCmd);
-    // Readiness sentinel first, so the "TUI is live" signal fires as early as
-    // possible in the SessionStart fan-out rather than after the instruction
-    // prints.
-    upsertHookCommand(sessionStartList, HOOK_SESSION_START_READY_CMD);
+    sessionStartList = removeHookCommand(sessionStartList, isRetiredReadyCmd);
     // Activity spool line for session starts: a clear/compact source resets
     // the context-size badge that would otherwise stay stale until turn-end.
     upsertHookCommand(sessionStartList, HOOK_ACTIVITY_SESSION_CMD);

@@ -102,7 +102,7 @@ test('spawn / Restart retry: startWorkspaceAgentOnce answers the pause before th
 });
 
 test('toolbar Restart: restartAgent THROWS the pause on a paused ws (never a silent resolve) and its renderer callers tolerate the rejection', () => {
-  const h = API_HANDLERS.slice(API_HANDLERS.indexOf('restartAgent: async (id) =>'), API_HANDLERS.indexOf('stopAgent: async'));
+  const h = API_HANDLERS.slice(API_HANDLERS.indexOf('restartAgent: async (id) =>'), API_HANDLERS.indexOf('agentSdkSend: async'));
   assert.ok(h.length > 200, 'restartAgent handler not found');
   assert.match(h, /const paused = sandboxPausedMessage\(store\.getWorkspace\(id\)\);\s*\n\s*if \(!res\.ok && paused\) throw new Error\(paused\);/);
   before(h, 'await dispatchRestartRequest(', 'sandboxPausedMessage(store.getWorkspace(id))');

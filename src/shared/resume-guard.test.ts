@@ -16,7 +16,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   resolveResumeId,
-  shouldContinuePty,
   decideRestartGuard,
   SDK_CLEARED_MARKER,
 } from './resume-guard.ts';
@@ -101,43 +100,6 @@ test('resolveResumeId: REMOTE composition (F1) — a real remote id resumes desp
   // regardless of host, so a remote /clear or never-run session starts fresh.
   assert.equal(resolveResumeId(undefined, remoteProbe(true)), undefined);
   assert.equal(resolveResumeId('', remoteProbe(true)), undefined);
-});
-
-// ─── shouldContinuePty — terminal --continue gate (#178 seam b) ──────────────
-
-test('shouldContinuePty: hasInput + transcript exists → --continue (must-PASS)', () => {
-  assert.equal(
-    shouldContinuePty({ hasInput: true, fresh: false, newestTranscriptExists: true }),
-    true,
-  );
-});
-
-test('shouldContinuePty: hasInput but NO transcript → fresh, never --continue (must-FAIL today)', () => {
-  // The phantom terminal workspace: hasInput true, but --continue would find
-  // nothing → "No conversation found to continue", exit 1 (field 15:35:08).
-  assert.equal(
-    shouldContinuePty({ hasInput: true, fresh: false, newestTranscriptExists: false }),
-    false,
-    'a phantom terminal workspace must start fresh, not --continue into nothing',
-  );
-});
-
-test('shouldContinuePty: never-typed (hasInput false) → fresh; fresh:true → fresh', () => {
-  assert.equal(
-    shouldContinuePty({ hasInput: false, fresh: false, newestTranscriptExists: true }),
-    false,
-    'no prompt ever typed → a fresh launch regardless of stray transcripts',
-  );
-  assert.equal(
-    shouldContinuePty({ hasInput: true, fresh: true, newestTranscriptExists: true }),
-    false,
-    'an explicit --fresh request never resumes',
-  );
-  assert.equal(
-    shouldContinuePty({ hasInput: undefined, fresh: false, newestTranscriptExists: true }),
-    false,
-    'undefined hasInput is not "true" → fresh',
-  );
 });
 
 // ─── decideRestartGuard — the working-guard (#179 defect 1) ──────────────────

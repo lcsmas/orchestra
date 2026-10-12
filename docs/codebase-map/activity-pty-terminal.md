@@ -60,10 +60,9 @@ Event → status (`applyAgentEvent` `:471`):
   `fireFinished` uses to word the toast — an errored / turn-limited /
   interrupted turn still lands `idle` + `autoUnread` (the human is still
   needed — see the three attention states below) but must not announce itself
-  as "ready for review". Only the SDK path supplies it
-  (`sdkEventToStopReason`); Claude Code's Stop hook has no reason field, so the
-  spool path passes nothing and behaves exactly as before, except `stopfail`
-  which implies `error`. Status stays a 5-state machine — the reason is metadata
+  as "ready for review". No caller supplies one since #233 (its only producer, the SDK-side status drive,
+  was deleted; Claude Code's Stop hook has no reason field), so the spool path
+  passes nothing, except `stopfail` which implies `error`. Status stays a 5-state machine — the reason is metadata
   beside it, matching how the Messages API (`message_delta.stop_reason`) and
   Managed Agents (typed `stop_reason` on `session.status_idle`) both model
   turn-end.
@@ -211,16 +210,15 @@ silently and the human was the detector.
 - `markStoppedOnMaxTurns(id)` (`src/main/activity.ts`) records that a turn died
   on the SDK turn limit (`setStatus(id,'idle','max_turns')` — a stopped session
   is idle; the REASON is the orthogonal axis). Called from `emitFrom`
-  (agent-sdk.ts) OUTSIDE the `driveStatus` single-writer gate: that gate is TRUE
-  only when a terminal PTY coexists, and MEASURED, 8 consecutive exhaustions in
-  the no-PTY configuration wrote no reason anywhere — which is #69's whole bug.
+  (agent-sdk.ts) directly: the SDK's own spool hooks carry no reason field, and MEASURED, 8
+  consecutive exhaustions wrote no reason anywhere — which is #69's whole bug.
   An E2E may NOT seed `lastStopReason`; a seeded value proves only that the
   renderer renders a field.
 - `markStoppedOnUsageLimit(id, resetsAtMs)` (`src/main/activity.ts`) is the #74
   sibling for a turn killed by the account's USAGE LIMIT — the one reason that
   resolves by itself, and the only one the app auto-resumes from (see
-  [accounts-usage.md](accounts-usage.md)). Same outside-the-gate exemption and
-  the same rationale. It also writes `Workspace.usageLimitResetsAt` (epoch MS —
+  [accounts-usage.md](accounts-usage.md)). Called directly from `emitFrom` for the same
+  reason. It also writes `Workspace.usageLimitResetsAt` (epoch MS —
   the notice reports SECONDS; `resetsAtMsFromNotice` is the one conversion
   point). `clearStopReason(id)` is its counterpart, clearing ONLY a
   `usage_limit` marker once the resume driver has acted — without it every
@@ -398,8 +396,8 @@ cleared on interact — the "show until interact" model).
 `setStatus` `:37` **broadcasts the IPC before** the (fire-and-forget) store
 write — the dot must never wait on the serialized store. The `changed` flag
 gates side effects so a redundant `notify` after `stop` doesn't double-fire.
-`reconcileExited` `:339` (called from the PTY exit handler) force-flips a stuck
-`running` → `waiting` if the turn-end event never arrived — the dot can't outlive
+`reconcileExited` `:339` (called from the SDK session's end, `agent-sdk.ts` `consume()`) force-flips a stuck
+`running` → `idle` + bell if the turn-end event never arrived — the dot can't outlive
 the process.
 
 Also here (piggybacked on polls, cached by ref-SHA): `detectAndUpdateMergeState`
@@ -464,21 +462,23 @@ sub-ms); the file is the source of truth.
   NOTHING across a simulated relaunch while while-closed lines apply exactly
   once; a corrupt cursor degrades to one replay burst and self-repairs.
 
-## PTY — pty.ts (~422 lines)
-Manages agent sessions over a **transport seam**. PTY id = `<wsId>` (agent),
-`<wsId>:run`, or `<wsId>:nvim`. `createTransport(host, …)` `:21` picks the
+## PTY — pty.ts (~340 lines)
+Manages the **Run, nvim and account-login terminals** over a **transport seam** — no agent runs in a
+PTY since #233 (every agent is an SDK session). PTY id = `<wsId>:run`, `<wsId>:nvim`, or
+`account-login:<accountId>`. `createTransport(host, …)` `:21` picks the
 backend per session: absent/local host → node-pty
 (`transport/local-pty.ts`); `host.kind==='sandbox'` → a shared WebSocket to
 the container's shim (`transport/remote.ts` + `sandbox-manager.ts` — see
 [sandbox-transport.md](sandbox-transport.md)). Remote spawns skip the local
 cwd check and ship only `extraEnv` (never the host's `process.env`).
-`startPty(opts)` `:169` validates the worktree (local only), builds env
-(`TERM=xterm-256color` plus the terminal-capability vars `COLORTERM=truecolor`
-and `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` — Claude Code enables truecolor and
+`startPty(opts)` validates the worktree (local only), builds env
+(`process.env` + the caller's `extraEnv`, then `TERM=xterm-256color` plus the terminal-capability vars
+`COLORTERM=truecolor` and `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` — Claude Code enables truecolor and
 ?2026 synchronized-output frames from a terminal-identity allowlist that a
 bare xterm-256color doesn't match, so without these it renders 256-colour and
-flickers; the renderer's write queue is what makes 2026 frames actually
-atomic — plus the `ORCHESTRA_*` vars, PATH-prepended bin), spawns
+flickers (the login terminal runs `claude /login`); the renderer's write queue is what makes 2026 frames actually
+atomic; the per-workspace agent env — `ORCHESTRA_WS_ID`/`EVENTS_DIR`/`SOCK`/`WORKTREE`, the `orchestra` PATH shim,
+the agent TMPDIR — and the strip-env option went with the agent launcher, #233), spawns
 (min 20×5), logs every chunk to `~/.orchestra/logs/<id>.log` (≤2 MB, trimmed),
 and **coalesces output** before delivery: `queuePtyData` buffers into the
 `outBuf`, flushing at 8 ms or 64 KiB (`FLUSH_MS`/`FLUSH_BYTES`) — one tiny
@@ -493,30 +493,25 @@ with no recent input falls straight back to `FLUSH_MS`. If the window can't
 receive (`canSend` false — destroyed/being recreated), `flushPtyData` RETAINS
 `outBuf` for the next flush instead of dropping it (capped at 8 MiB, oldest
 half trimmed) — a silent drop permanently desyncs the renderer's xterm from
-the child's diff-render model. The `onExit` handler flushes the tail, emits `pty:exit`,
-and calls `reconcileExited` (guarded against a live replacement). `stopAll`
-sets `shuttingDown` so exit handlers preserve `running` as a resume marker.
+the child's diff-render model. The `onExit` handler flushes the tail and emits `pty:exit`; it no longer
+reconciles a status dot (#233: no PTY is an agent — the status floor is the SDK session's, `agent-sdk.ts`
+`consume()` → `reconcileExited`, kept). `stopAll` stops every session at quit.
 Other exports: `writePty`, `resizePty` (drops no-op resizes to avoid
 SIGWINCH churn), `repaintPty` (SIGWINCH bounce: cols−1 then back, restore
 guarded so a real resize landing inside the 40 ms window wins — the only
 reliable heal when xterm's buffer diverges from Claude's per-cell diff-render
-model, the "scattered words" garble; used by the `pty:start`/`nvim:start`/
-`accounts:loginStart` already-running remount paths and the renderer-invoked
-`pty:repaint` IPC), `stopPty`, `readScrollback` (last 256 KiB only),
-`clearScrollback`, `isRunning`, `getPtySize` (live session's winsize, falling
-back to a `lastSizes` map that survives `stopPty` — main-initiated respawns of
-a stopped session, i.e. account-migration resume,
-reuse it so an open terminal keeps its real width instead of snapping to a
-default 80×24 / 120×32; the renderer only re-asserts size on container/focus
-changes, never on an out-of-band respawn).
+model, the "scattered words" garble; used by the `nvim:start` /
+`accounts:loginStart` already-running remount paths), `stopPty`, `readScrollback` (last 256 KiB only),
+`clearScrollback`, `isRunning`, `listPtySessions`. (The size getter + its last-size map and the pid getter
+served only main-initiated agent respawns and the hibernation log — deleted with them, #233.)
 
 ### Removal rig — `scripts/e2e-agent-view-removal.{sh,mjs}` (#225, wave "Agent view only" #219)
 
 Boots a BUILT app (`<app-dir>` argument — point the SAME rig at a pre-change and a candidate
 build) under its own headless sway and reports (1) the rendered workspace tab labels
 (`.toolbar .tabs .tab` DOM) and (2) the live PTY sessions by kind (`sampleResources()`, see
-[resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (rig dir on btrfs under
-`~` via `E2E_RIG_BASE`, then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
+[resources.md](resources.md) § Reading the PTY listing). `.sh` = wrapper (rig dir on btrfs via `E2E_RIG_BASE`,
+default `/var/tmp/avr-<uid>` — SHORT on purpose, #233: see `socket_guard_selftest` below — then `e2e-contained-rig.sh`); `.mjs` = driver. Run:
 `scripts/e2e-agent-view-removal.sh <app-dir> [--mode baseline|after] [--arm a,b] [--list]`
 (`pnpm run test:agent-view-removal`, not in `pnpm test` — needs a compositor). **`--mode` defaults to `after`** (#230 flipped it: a silently ignored flag must run the STRICT mode); pass `--mode baseline` against a PRE-change checkout to prove every removal arm can fail. nvim + login PTYs are covered by `other_terminals_work` (#230).
 `parseArgs` (`.mjs` :120) is strict: any unrecognised `--*` (incl. `--mode=after`) or stray argument is rc 2 — as are an empty value (`--arm ''` would run every arm) and a repeated flag (last-wins would drop the first); a silently
@@ -540,25 +535,31 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   `ws.sdkSessionId===''`, no session started (baseline: a vierge PTY). Both need `dist-electron/keeper.js` (build with
   `pnpm run build:bundles`, which `test:agent-view-removal` now does): the wrapper ABORTs without it and each arm asserts
   `env/keeper-runtime-installed`, because without a keeper no session can start and every "no session" claim is vacuous.
-- **#232 arms — `sdk_only_seams` · `sdk_only_hibernate` · `refused_id_not_readopted`** (`EXPECT`: `strayTyped`, `strayMessageDelivery`,
-  `strayKilledByRestart`, `strayKilledByBranchSwitch`, `strayMigrationResumes`, `strayHibernated`, `peersRunningKey`, `refusedIdAfter`,
-  `refusedIdReadopted`; baseline = the pre-#232 build, i.e. master after #230). The first two conjure a STRAY agent PTY on a workspace
-  through `window.orchestra.ptyStart` (`ensureStray`; the launcher #233 deletes — those two arms go with it) and assert every seam that
-  used to treat a live PTY as THE agent now ignores it: `orchestra message`, `sendReviewToAgent`, `fixChecks` and the prompt-queue flush land in
-  an SDK session's stdin (baseline: typed into the PTY), the toolbar Restart / `switchBranch` / `orchestra migrate-account` leave the PTY alone
-  (baseline: stop it; `(resumed)`), `/peers` (raw socket POST, `socketPost`) carries no `running` key, and the Veille sweep (env
-  `ORCHESTRA_HIBERNATE_AFTER_MS=3000`, `…SWEEP_MS=1000`, three extra scratch workspaces from `boot.scratchNames`) still hibernates an idle SDK
-  workspace and still spares one with a live Run terminal, but no longer reaps a workspace whose only process is the stray PTY. The
-  instrument: `SDK_ONLY_STUB` (= `LOGGING_STUB` + pid-tagged launch headers + `stub-argv.log`) splits `stub-stdin.log` into one section per
-  launch (`stubLaunches`), so "typed into the PTY" (a launch without `--input-format`, whose pid is the PTY's) and "delivered to an SDK session"
-  (JSON turns) are told apart, with a typed probe as the positive control. `refused_id_not_readopted` (`boot: {sdkBorn:true}` = hasInput +
-  an SDK-born `sdkSessionId` whose transcript is on disk; `RESUME_FAIL_STUB` = the measured real refusal) is the permanent one: the refused
-  id must clear to `''` and the next send start fresh (baseline: undefined → `--resume=<same id>` again). `boot.extraBranch` / `boot.account2`
-  seed the branch-switch target and the migration target (a second SCRATCH account dir, guarded like the first).
+- **#232 arm — `refused_id_not_readopted`** (`EXPECT`: `refusedIdAfter`, `refusedIdReadopted`; baseline = the pre-#232 build). `boot: {sdkBorn:true}` =
+  hasInput + an SDK-born `sdkSessionId` whose transcript is on disk; `RESUME_FAIL_STUB` = the measured real refusal: the refused
+  id must clear to `''` and the next send start fresh (baseline: undefined → `--resume=<same id>` again). (The two #232 STRAY-agent-PTY arms
+  `sdk_only_seams` / `sdk_only_hibernate`, their launcher-based stray seam and the stub-launch sections went with the launcher, #233: a stray
+  agent PTY can no longer be conjured, so "every seam ignores it" is proven by the source pins in `sdk-only-wake-wiring.test.ts` and by
+  `launcher_removed` — no wrapper, no agent PTY from any tab.) `boot.extraBranch` / `boot.account2` seed a branch-switch / migration target.
+- **#233 arms** (`EXPECT`: `launcherWrappers`, `readyHookInstalled`; baseline = the pre-#233 build, master `ce414f4a`).
+  `socket_guard_selftest` (no boot): `keeperSocketBudget` — the app puts a seeded workspace's keeper socket at `<boot home>/keepers/<ws>.sock` and a path past
+  100 chars falls back to a SHARED `okeeper-<hash of the ws id alone>.sock`, so boots or concurrent rigs seeding the same id collide (a spurious FAIL) — refuses
+  such a base, named `rig-base-keeper-socket-path` with the remedy, ONCE up front in `main()` (per selected booting arm, from `seededIdsFor`) and again at the
+  real `bootApp` call site before any launch (UUID workspaces are not budgeted: their hash is unique); the arm drives the pure check (101 refused / exactly 100
+  accepted / the longest seeded id decides), the real `bootApp` with `baseOverride` (`/bin/false` as electron, no `app.log` created) and the wrapper's default base
+  against every booting arm. `launcher_removed`: the preload bridge exposes neither the start nor the agent-stop wrapper (baseline: both), a store record carrying the removed
+  heavy-resume flag (`boot.removedField`) LOADS and renders, no agent-kind PTY from any tab (Run positive control first), and a real turn runs in the Agent view
+  (`REPLY_STUB` = `LOGGING_STUB` + `stream_event` text deltas — the Agent view renders text from the deltas, a finalized `assistant` block adds none — and the reply is read from the visible `.av-message-list`). `ready_hook_retired`: a worktree whose
+  `.claude/settings.local.json` was written by an older app (`boot.oldReadyHook`: the readiness-sentinel hook + an unrelated user hook) is rewritten at the first
+  session start — the retired hook is evicted (baseline: stays), the activity hooks are installed, the user hook survives. `kept_by_content`: the KEEP list by
+  behaviour in the running app (identical in both modes) — the session CLI's environ owns the spool, the installed hook script run by hand moves the dot through the
+  real spool reader (`submit` → `running`), a `stop` line with a transcript path persists the transcript-derived `contextTokens`, a SIGKILLed session's `running` dot is
+  reconciled (the exit floor, process picked by pid + start ticks + this boot's ORCHESTRA_HOME). `hasInput`'s READ is proven by the `legacy_*` arms. PTY core / write-queue / WebGL stay proven by
+  `other_terminals_work` and `src/renderer/term-write-queue.test.ts`.
 - **Arms** (`ARMS` :1099): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`
-  (tally / retain / KEEP marker); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
+  (tally / retain / KEEP marker), `socket_guard_selftest` (#233); boot arms `observe`, `control_run_pty`, `tabs`, `open_tabs_agent_pty`,
   `agent_view_content` (events injected via `__injectAgentEvent`, rows asserted visible, screenshot read back off disk and
   asserted on DECODED pixels of the rows' own region vs a hidden-rows blank frame, plus a `grim` capture), and #229's
   `toolbar_no_pr` / `toolbar_with_pr` (`ARMS` entries carry `boot:` seed options → `seedWorld`: `commitsAhead` = N unpushed
@@ -627,7 +628,7 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   `agent_terminal_static` (no boot: the `@xterm/addon-unicode11` dependency in `package.json` + `pnpm-lock.yaml` — red on master — and two table fragments only
   the addon's minified code contains, scanned in `dist/assets/*.js` with a control that the dir really is the renderer bundle; the BUNDLE clause is green on
   master BY DESIGN (the orphaned `Terminal.tsx` was already tree-shaken) and only a re-import turns it red), `agent_terminal_removed` (the RUNNING app's
-  preload bridge has none of `ptyRepaint` / `onPtyStopped` / `saveClipboardImage`, while the shared + Run/nvim/login wrappers AND `ptyStart` / `stopAgent` (kept until #233) stay; the
+  preload bridge has none of the agent-terminal wrappers (repaint, stopped signal, clipboard image save — #231; start and agent stop — #233), while the shared + Run/nvim/login wrappers stay; the
   loaded stylesheets carry none of `.terminal-pane` / `.term-scroll-thumb` / `.term-boot-*` / `.res-stop-btn`, with a control that `.res-agent-row` and xterm.css rules are
   still there) and `resources_live_agent` (one live Agent-view session → the « Live agents » tile reads 1, the row has the « agent » chip, no stop control; a regression
   pin, green on master by design). Run / nvim / login still open and run their programs: the existing `other_terminals_work` arms.
@@ -706,7 +707,7 @@ long-idle agents and lets the existing resume paths bring them back.
 - **The sweeper** — `src/main/hibernation.ts` `startHibernationSweeper()` (wired
   in index.ts beside the other pollers, torn down in `shutdownSubsystems`) runs
   `sweepHibernation()` on an unref'd `setInterval`. Per eligible workspace:
-  `sdkStopIfLive` (the sdk-delivery seam; #232: no `stopPty`/`getPtyPid` any more — the only PTY probe left is `isRunning(\`<id>:run\`)` for the Run-terminal guard), then `markHibernated`
+  `sdkStopIfLive` (the sdk-delivery seam; #232: no PTY stop or pid read any more — the only PTY probe left is `isRunning(\`<id>:run\`)` for the Run-terminal guard), then `markHibernated`
   records `ws.hibernatedAt` and broadcasts `workspace:update` (mutation-site
   broadcast: persist in the background, broadcast immediately). **The stop is
   async, so a wake can land mid-teardown (#198 D14/N1):** `clearHibernated`
@@ -792,9 +793,8 @@ long-idle agents and lets the existing resume paths bring them back.
   because `formatIdleDuration` renders 5s and 55s identically as "<1m" and so
   cannot confirm an injection took.
 - **The log line** reads `hibernating <name> (<id>) — idle 5m sdk` (+ the Reliquat / fast-Veille
-  suffixes). It used to name the KILLED PTY's pid (`… pty pid=12345`, sampled via `getPtyPid` before
-  `stopPty`); with no agent PTY (#232) process death is asserted on the SDK stub's pid
-  (`ps -p`, rig arm `sdk_only_hibernate`); an absent registry entry or UI text proves only that the
+  suffixes). It used to name the KILLED PTY's pid (`… pty pid=12345`); with no agent PTY (#232/#233)
+  process death is asserted on the SDK stub's pid (`ps -p`); an absent registry entry or UI text proves only that the
   app's own bookkeeping changed.
 - **The sweep NEVER touches disk.** It acts only on state it owns — live
   process/session handles and store fields. `ORCHESTRA_HOME` relocates
@@ -808,8 +808,7 @@ long-idle agents and lets the existing resume paths bring them back.
   state. `hibernatedAt` carries the distinction, for the sidebar chip alone.
 - **Last activity** lives in `src/main/hibernation-activity.ts`, a
   DEPENDENCY-FREE leaf: `applyAgentEvent` (activity.ts) stamps `noteActivity`
-  for every lifecycle event — the one funnel both the spool-tailed terminal path
-  and the structured path's `driveStatusFromEvent` pass through — and activity.ts
+  for every lifecycle event — the one funnel the spool-tailed hook events pass through — and activity.ts
   cannot import hibernation.ts, which imports pty.ts, which imports activity.ts.
   In-memory only, which is the SAFE direction: after a restart the map is empty
   and the sweep falls back to an app-start floor — bounded below by the
@@ -821,8 +820,7 @@ long-idle agents and lets the existing resume paths bring them back.
   made 2 h after launch slept 1 s in, their brief undelivered.)
 - **Restore** rides the paths that already resume: `clearHibernated(id)` is
   called from `ensureSession` (agent-sdk.ts — the single funnel for every SDK
-  start/resume/wake, so no restore path can forget it), the `ptyStart` handler
-  (no renderer caller since #231; #233 deletes it),
+  start/resume/wake, so no restore path can forget it),
   `wakeAgentWithPrompt` (up front — its raw-PTY fallback is gone, #227), and workspace
   ACTIVATION. The renderer reports selection over the new
   `setActiveWorkspace` IPC (`workspaces:setActive`) — both so the sweeper never
@@ -841,17 +839,13 @@ long-idle agents and lets the existing resume paths bring them back.
 `.term-scroll-thumb*`, `.term-boot-*`, `@keyframes term-boot-in`), the `@xterm/addon-unicode11`
 dependency (manifest + lockfile; the BUILT bundle already lacked it after #230 — Vite drops an
 unimported module — so the bundle check is a re-import guard, not a removal proof) and the preload
-wrappers of channels only it called: `ptyRepaint` (`pty:repaint`), `onPtyStopped` (`pty:stopped`)
-and `saveClipboardImage` (`clipboard:saveImage`). **Two wrappers deliberately STAY until #233**:
-`ptyStart` (`pty:start`) and `stopAgent` (`agent:stop` — its only renderer caller was the Resources
-page's per-row stop button, deleted in #231, see [resources.md](resources.md)): the rig's stray-agent-PTY
-seam (#232 arms) can only create/clean a PTY through them; #233 deletes them with the launcher.
-**The main-process handlers stay** (`ptyRepaint`, `saveClipboardImage` in `api-handlers.ts`, retyped
-under `ExtraApiMethods` since they are no longer part of the renderer-facing `OrchestraAPI`; `ptyStart` /
-`stopAgent` remain ordinary `OrchestraAPI` members; the `pty:stopped` broadcast) — unreachable from the
-renderer until #233 deletes the launcher behind them. **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
+wrappers of channels only it called. **#233 deleted the launcher behind them**: the main-process handlers
+for the agent-PTY channels (start, repaint, agent stop, clipboard image save), the start / agent-stop preload wrappers
+and their `OrchestraAPI` members, the stopped broadcast and the heavy-resume / hasInput logic in the `ptyWrite` handler
+(`ptyWrite` is now a plain `writePty`). **Shared channels stay**: `ptyWrite` / `ptyResize` (invoke)
 and `onPtyData` / `onPtyExit` / `onPtyRestart` (push), used by Run, nvim and login. Rig arms
-`agent_terminal_static` + `agent_terminal_removed` (scripts/e2e-agent-view-removal.mjs) pin all of it.
+`agent_terminal_static` + `agent_terminal_removed` (scripts/e2e-agent-view-removal.mjs) pin the renderer side,
+`launcher_removed` / `ready_hook_retired` / `kept_by_content` the main side (below).
 
 ## Shared terminal plumbing (Run, nvim, login)
 

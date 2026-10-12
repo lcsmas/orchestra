@@ -32,10 +32,9 @@ test('createWorkspace freezes the default of its kind onto the record', () => {
   );
 });
 
-test('both launch paths go through resolveLaunchModel', () => {
-  assert.match(workspaces, /resolveLaunchModel\(ws\.model, store\.getModelDefaults\(\)\)/);
+test('the SDK session start goes through resolveLaunchModel (the agent-PTY launcher is gone, #233)', () => {
   assert.match(sdk, /model: resolveLaunchModel\(ws\.model, store\.getModelDefaults\(\)\)/);
-  assert.doesNotMatch(workspaces, /if \(ws\.model\) claudeArgs\.push/);
+  assert.doesNotMatch(workspaces, /if \(ws\.model\) claudeArgs\.push|claudeArgs/);
 });
 
 test('every dispatchSpawnRequest caller names its default kind', () => {

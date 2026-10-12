@@ -7,8 +7,8 @@
 // PARENT's ORCHESTRA_RUN_ID until a manual `orchestra restart` — the standing
 // remedy the ticket exists to remove.
 //
-// Both env builders (buildSdkEnv in agent-sdk.ts AND startAgentPty extraEnv in
-// workspaces.ts) stamp `ORCHESTRA_RUN_ID = resolveWaveRunId(ws)` at launch, so
+// The env builder (buildSdkEnv in agent-sdk.ts) stamps `ORCHESTRA_RUN_ID =
+// resolveWaveRunId(ws)` at launch, so
 // what a RELAUNCHED session's /proc env carries IS `resolveWaveRunId` against the
 // post-promote store. The ticket's arm 1 is: a LIVE promoted session's env reads
 // the NEW run WITHOUT a manual restart — i.e. promote must RESTART the live idle

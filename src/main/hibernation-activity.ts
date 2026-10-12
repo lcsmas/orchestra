@@ -35,9 +35,8 @@ export function __setMonotonicClockForTests(fn: (() => number) | null): void {
 let appStartedAt = Date.now();
 
 /** Stamp a workspace as active NOW. Called from `applyAgentEvent`
- *  (activity.ts) for EVERY agent lifecycle event — the one funnel both the
- *  spool-tailed terminal path and the structured path's `driveStatusFromEvent`
- *  pass through — and from the restore paths, so a woken agent is not
+ *  (activity.ts) for EVERY agent lifecycle event — the one funnel the
+ *  spool-tailed hook events pass through — and from the restore paths, so a woken agent is not
  *  immediately re-eligible on the next sweep. */
 export function noteActivity(wsId: string): void {
   lastActivity.set(wsId, Date.now());

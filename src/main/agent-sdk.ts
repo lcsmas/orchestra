@@ -68,11 +68,9 @@ import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
 import { applyAgentTmpEnv } from './agent-tmpdir';
 import { getHookSocketPath } from './hooks-server';
-import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
 import {
   reconcileExited,
-  applyAgentEvent,
   fireNeedsInput,
   resumeRunning,
   markLooping,
@@ -104,8 +102,6 @@ import {
   makeLocalCommand,
   shouldAutoApprovePermission,
   isBadResumeError,
-  sdkEventToStatusEvent,
-  sdkEventToStopReason,
   stamp,
   supportsCancelQueued,
   foldTaskEventForLiveness,
@@ -165,9 +161,8 @@ import {
 // ─── Structured-agent-view session manager ───────────────────────────────────
 //
 // One long-lived Claude Agent SDK `query()` per workspace drives the structured
-// agent view. Where the terminal path (pty.ts / startAgentPty) spawns the
-// interactive `claude` TUI and scrapes ANSI, this spawns the SAME agent loop as
-// a subprocess through the SDK and gets typed, structured messages back. We
+// agent view. This spawns the agent loop as a subprocess through the SDK and
+// gets typed, structured messages back (no TUI, no ANSI scraping). We
 // normalize each SDK message into Orchestra's own {@link AgentEvent} contract
 // (src/shared/agent-events.ts — pure + tested) and broadcast it on the
 // `agent:event` channel so the renderer can fold it into a live view.
@@ -186,9 +181,9 @@ import {
 //     (spike note 6), NOT thrown — the manager surfaces them and lets the user
 //     re-send. (Full auto-retry/backoff is a Phase-6 refinement; here we surface
 //     gracefully and keep the session alive.)
-//   • Env parity with the terminal spawn: same account CLAUDE_CONFIG_DIR, same
-//     hook install, same account-inheritance sync as startAgentPty, so the
-//     structured session behaves like the interactive one.
+//   • Env: the pinned account's CLAUDE_CONFIG_DIR, the hook install and the
+//     account-inheritance sync run at session start, so the session behaves
+//     like an interactive `claude` in the same worktree.
 //
 // Lifecycle: lazy — a session starts only when the renderer first sends a turn
 // (or explicitly starts one) to a workspace. It stays alive across turns until
@@ -334,20 +329,6 @@ interface Session {
   /** The SDK session id last persisted to `ws.sdkSessionId`, to avoid rewriting
    *  the store on every message (the id is stable across a session's turns). */
   persistedSessionId?: string;
-  /** Whether THIS session must drive the sidebar status dot itself from its event
-   *  stream (`driveStatusFromEvent`), captured once at spawn. True in exactly ONE
-   *  case — a LOCAL workspace where a terminal PTY already owned the events spool,
-   *  so `buildSdkEnv` withheld `ORCHESTRA_WS_ID`, the SDK's own shell hooks no-op,
-   *  and (the PTY being an idle Raw tab) nobody else moves the dot: the "SDK view
-   *  idle while working" bug. False when:
-   *    • no PTY coexists → the SDK got `ORCHESTRA_WS_ID`, its hooks write the spool
-   *      and the tailer drives the dot (direct-driving too would double-fire);
-   *    • the workspace is REMOTE → the container's spool tail drives it over the
-   *      wire (sandbox-manager `onEvent`), likewise not to be double-driven.
-   *  Fixed for the subprocess's life: a PTY starting/stopping later doesn't change
-   *  what env THIS subprocess was given. `= !remote && isPtyRunning(ws.id)` at
-   *  spawn, i.e. local-and-spool-withheld (see buildSdkEnv, which returns it). */
-  driveStatus: boolean;
   /** Background tasks this session owns, folded from its `task` events (same fold as
    *  the panel). Session-scoped so it dies with the CLI; read by the hibernation sweep. */
   bgTasks: Record<string, BackgroundTask>;
@@ -684,87 +665,8 @@ function resolveClaudeBinary(env: Record<string, string>): string | null {
   return null;
 }
 
-/** Drive the sidebar status dot from the SDK event stream.
- *
- *  WHY THIS EXISTS: in the terminal path the dot is fed by the durable events
- *  spool — shell hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) that
- *  Claude Code fires and that append `submit`/`pretool`/`posttool`/`stop` lines
- *  the tailer replays into `applyAgentEvent`. The Claude Agent SDK's `query()`
- *  runs turns programmatically (streaming-input generator) and does NOT fire
- *  those per-turn lifecycle hooks — verified on a live structured session whose
- *  spool held only the one `session/startup` line while the agent worked and
- *  spawned subagents, so the dot stayed `idle` the whole turn. (The exit case
- *  was already known-unreliable — see the `reconcileExited` floor in consume().)
- *  So a structured-only session must feed the SAME status state machine itself,
- *  mapping its own AgentEvents onto the spool events `applyAgentEvent` expects.
- *
- *  GATED on `session.driveStatus` — the SINGLE-WRITER invariant, fixed at spawn:
- *    • driveStatus=false, no PTY → the SDK got `ORCHESTRA_WS_ID`, so its OWN shell
- *      hooks write `submit`/`pretool`/`stop` to the spool and the tailer drives the
- *      dot. Direct-driving here too would DOUBLE-fire every transition (e.g. two
- *      turn-end chimes) — so we skip.
- *    • driveStatus=true (LOCAL + a coexisting PTY owns the spool) → the SDK's hooks
- *      are withheld (no `ORCHESTRA_WS_ID`) and no-op; that PTY is usually an idle Raw
- *      tab doing no turns, so NOBODY drives the dot and it sticks `idle` while the SDK
- *      works — the reported bug. Here direct-drive is the ONLY driver, so we run it.
- *    • driveStatus=false, REMOTE → the container's spool tail drives the dot over the
- *      wire (sandbox-manager `onEvent → applyAgentEvent`); we must not double-drive.
- *  Evaluating this per-event via `isPtyRunning` was wrong: a PTY that starts or stops
- *  after the SDK session began does not change what env THIS subprocess got, and the
- *  per-event read (a) skipped the whole PTY-coexist bug case and (b) double-drove the
- *  common no-PTY case (masked only by setStatus idempotency).
- *
- *  Transcript is passed `undefined`: `emitContext` no-ops without it, and the
- *  structured view's context badge is already driven by the SDK usage path
- *  (`agent:context`/TurnFooter), not the transcript-tail recompute. The pure
- *  event→spool-event mapping lives in `sdkEventToStatusEvent` (agent-events.ts)
- *  so it is unit-tested without Electron; the `tool` label (for `pretool`) is
- *  the only per-event datum threaded through here. */
-function driveStatusFromEvent(session: Session, ev: AgentEvent): void {
-  // Single-writer: only drive the dot when nothing else will (see doc above).
-  if (!session.driveStatus) return;
-  const spoolEvent = sdkEventToStatusEvent(ev);
-  if (!spoolEvent) return;
-  const tool = ev.type === 'tool-use' ? ev.name : undefined;
-  // #127: thread the tool_use id for pretool/posttool so the in-flight tracker
-  // pairs a posttool with the exact call it ended — a hung parallel sibling must
-  // survive a fast call's posttool (review-127 F1). Both AgentEvent types carry
-  // it; other event types have no id (undefined → treated as null downstream).
-  const toolUseId =
-    ev.type === 'tool-use' || ev.type === 'tool-result' ? ev.toolUseId : undefined;
-  // #199 (review-199 F1): a `submit` that is NOT a genuine turn boundary must not
-  // clear the in-flight tool list, or it wipes a live tool of the still-running
-  // turn and masks a genuine mid-call hang. Two SDK-path submits are mid-turn:
-  //  - a PARKED prompt (`ev.queued` on the user-message — sdkSend sets it when a
-  //    turn is in flight or the queue is non-empty);
-  //  - a keeper REATTACH (`session/attach` with `turnInFlight` maps to `submit`) —
-  //    the turn was already running, so any in-flight tool is the current turn's.
-  // Both → queuedSubmit=true. A fresh (non-parked) user-message is a real boundary.
-  const queuedSubmit =
-    spoolEvent === 'submit'
-      ? ev.type === 'user-message'
-        ? ev.queued === true
-        : true // session/attach → submit: a reattach, never a boundary
-      : undefined;
-  // Thread the turn-end reason through (undefined for every non-terminal event).
-  // The SDK path is the only one that HAS a reason — Claude Code's Stop hook
-  // carries no equivalent field — so this is where end_turn / interrupted /
-  // max_turns / error stop being collapsed into one indistinguishable `waiting`.
-  applyAgentEvent(
-    session.wsId,
-    spoolEvent,
-    tool,
-    undefined,
-    sdkEventToStopReason(ev),
-    undefined, // crons: SDK path has no session_crons signal
-    toolUseId,
-    queuedSubmit,
-  );
-}
-
-/** Normalize an SDK message and broadcast every event it produces, and (when this
- *  session must, i.e. its spool hooks are withheld) drive the sidebar status dot
- *  off the same stream — see driveStatusFromEvent for the single-writer gate. */
+/** Normalize an SDK message and broadcast every event it produces. The sidebar status dot is driven by
+ *  this session's own spool hooks (`ORCHESTRA_WS_ID`, see buildSdkEnv) and the tailer, never from here. */
 function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
   const emitted: AgentEvent[] = []; // what actually reached the view (consume reads the error row the normalizer already rendered — #227 D7)
   // A cleared session's tail must stay silent — the transcript was reset.
@@ -805,33 +707,22 @@ function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
     // INPUT, so it alone can catch `ScheduleWakeup({stop: true})` — the /loop
     // skill's own termination. The SET side ('ScheduleWakeup' fired at all)
     // rides the shared `pretool` chokepoint in activity.ts, which this event
-    // also reaches via driveStatusFromEvent/the spool; markLooping is
-    // idempotent, so the paths can overlap safely. Deliberately OUTSIDE the
-    // driveStatus single-writer gate: that gate exists to avoid double-DRIVING
-    // the status dot, but the loop flag is a store field with its own
-    // no-change guard.
+    // also reaches via the spool; markLooping is idempotent (the loop flag is
+    // a store field with its own no-change guard), so the paths can overlap safely.
     if (ev.type === 'tool-use' && ev.name === 'ScheduleWakeup') {
       void markLooping(session.wsId, ev.input?.stop !== true);
     }
     // #255 (review M2): remember WHAT the call is (the Bash command…) so a Pause interrupting it can name it in the Bilan de pause — the hook's `pretool` carries only the tool name.
     if (ev.type === 'tool-use') noteToolDetail(session.wsId, ev.toolUseId, applyToolEvent(session.openToolUses, ev));
     else applyToolEvent(session.openToolUses, ev);
-    // ── #69: the turn-limit REASON, outside the single-writer gate ──
+    // ── #69: the turn-limit REASON ──
     // MEASURED (docs/research/issue-69-maxturns-findings.md, third correction):
     // a turn that dies on `error_max_turns` is the ONLY thing #69 actually
-    // reports, and today nothing tells the human. `driveStatusFromEvent` below
-    // WOULD carry the reason — but it is gated on `session.driveStatus`, which
-    // is TRUE ONLY when a terminal PTY coexists. In the plain structured-view
-    // configuration (no PTY) the SDK's own shell hooks own the spool instead,
-    // and they carry no reason field at all: measured, 8 consecutive
-    // exhaustions wrote NO reason anywhere, leaving only the [WARN] in the app
-    // log — verbatim the bug in the issue.
-    //
-    // Written here, deliberately OUTSIDE the gate, for exactly the reason
-    // `markLooping` above is: that gate exists to stop double-DRIVING the
-    // status dot, whereas this is a store field with its own no-change guard
-    // (`setStatus` returns `changed:false` when neither status nor reason
-    // moved), so the two paths can overlap safely.
+    // reports, and the SDK's own shell hooks carry no reason field at all
+    // (8 consecutive exhaustions wrote NO reason anywhere, leaving only the
+    // [WARN] in the app log — verbatim the bug in the issue). Written here:
+    // a store field with its own no-change guard (`setStatus` returns
+    // `changed:false` when neither status nor reason moved).
     //
     // Note this is the BENIGN, self-recovering exhaustion — the queue keeps
     // being consumed (measured: 4 of 4 prompts ran, alternating exhaust/
@@ -881,7 +772,6 @@ function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
     // rejection survives into later turns and marks a perfectly healthy one as
     // limit-killed, which would auto-resume a session nobody stopped.
     if (ev.type === 'turn-end') session.rateLimitHit = undefined;
-    driveStatusFromEvent(session, ev);
     if (ev.type === 'task') session.bgTasks = foldTaskEventForLiveness(session.bgTasks, ev);
     if (ev.type === 'session/init') {
       // Feature-detection state for control requests. `system/init` repeats on
@@ -931,17 +821,10 @@ function tildePath(p: string): string {
   return home && p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p;
 }
 
-/** Build the SDK env for a workspace, matching startAgentPty's plumbing: the
- *  pinned account's CLAUDE_CONFIG_DIR (so the agent logs in as that account),
- *  with CLAUDE_CONFIG_DIR otherwise UNSET so a leftover value from Orchestra's
+/** Build the SDK subprocess env for a workspace: the pinned account's CLAUDE_CONFIG_DIR (so the agent
+ *  logs in as that account), with CLAUDE_CONFIG_DIR otherwise UNSET so a leftover value from Orchestra's
  *  own environment can't silently retarget the session (self-tune.ts:201-206). */
-/** Build the SDK subprocess env AND report whether this session must drive the
- *  status dot itself (`driveStatus`) — true ONLY for a LOCAL workspace where a
- *  terminal PTY already owns the spool, so `ORCHESTRA_WS_ID` is withheld, the SDK's
- *  own hooks no-op, and nobody else moves the dot. False otherwise (no PTY → SDK
- *  hooks + tailer drive it; remote → the container's spool tail drives it). The
- *  caller stores this on the Session for `driveStatusFromEvent` (see that function). */
-async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>; driveStatus: boolean }> {
+async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string> }> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string') env[k] = v;
@@ -949,14 +832,14 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   delete env.CLAUDE_CONFIG_DIR;
   // Orchestra-launched-from-Orchestra (or from any agent shell) inherits the
   // PARENT session's ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR through process.env.
-  // These are spool-ownership vars we assign deliberately below (only when
-  // `ownsSpool`), so a stale inherited value must NOT survive: the `orchestra`
+  // These are spool-ownership vars we assign deliberately below (local workspaces
+  // only), so a stale inherited value must NOT survive: the `orchestra`
   // CLI resolves the caller via ORCHESTRA_WS_ID FIRST (resolveSelfWorkspaceId),
   // so a leaked parent id makes `whoami`/`peers`/`rename`/`message`/`spawn`
   // resolve to the WRONG workspace (the parent's) — observed live as
   // `orchestra whoami` printing `id  <parent-id>` (→ empty record) from an
   // orchestrator's structured session. Delete them up front (like
-  // CLAUDE_CONFIG_DIR) so ONLY the explicit `if (ownsSpool)` assignment governs
+  // CLAUDE_CONFIG_DIR) so ONLY the explicit assignment below governs
   // them; identity always flows through ORCHESTRA_WS_ID_IDENTITY (set
   // unconditionally below). Mirrors the terminal path, which always overwrites
   // ORCHESTRA_WS_ID with this workspace's id (pty.ts) and so never leaks.
@@ -971,9 +854,8 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   const configDir = workspaceAccountConfigDir(ws, undefined);
   if (configDir) {
     env.CLAUDE_CONFIG_DIR = configDir;
-    // Account env parity with the terminal path (resolveRepoAgentEnv /
-    // resolveRepoAgentStripEnv): drop the ambient auth vars, inject the account's
-    // (including the stored key when the account authenticates with one).
+    // Drop the ambient auth vars, inject the account's (including the stored key
+    // when the account authenticates with one).
     const account = workspaceAccount(ws);
     const useKey = account && isApiKeyAccount(account);
     const [apiKey, baseUrl] = useKey
@@ -985,14 +867,13 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   }
   env.ORCHESTRA_BRANCH = ws.branch;
   env.ORCHESTRA_KIND = ws.kind ?? 'worktree';
-  // #134 — the WAVE run id (nearest-orchestrator anchor), PARITY with the
-  // terminal path's extraEnv (workspaces.ts startAgentPty). The STRUCTURED session
-  // is the DEFAULT spawn surface (sdkStartAndDeliver), so without this its CLI
+  // #134 — the WAVE run id (nearest-orchestrator anchor). The STRUCTURED session
+  // is the only agent surface (sdkStartAndDeliver), so without this its CLI
   // verbs (send/check/ack/ask/gate) and the mirror resolve ORCHESTRA_RUN_ID →
   // 'default'/host- instead of the wave — the same G9-class miss as the run row,
   // one env var over. Set unconditionally (independent of the spool gate below).
   env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);
-  // #166 — FENCING parity with startAgentPty: present the wave run's current
+  // #166 — FENCING: present the wave run's current
   // coordinator generation so this session's CLI bus verbs (`resolveFencing`
   // reads $ORCHESTRA_COORDINATOR_GENERATION) can be fenced. Set ONLY when bumped
   // past 0 — absent/0 is the unfenced v1 path (coexistence-safe). A structured
@@ -1005,7 +886,7 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   } catch (e) {
     log.warn(`agent-sdk: could not read coordinator generation for ${env.ORCHESTRA_RUN_ID}`, e);
   }
-  // Auto-rename gate parity with startAgentPty (workspaces.ts): the SessionStart
+  // Auto-rename gate: the SessionStart
   // /UserPromptSubmit rename-instruction hook hard-gates on
   // `ORCHESTRA_BRANCH_AUTO=1` and reads `ORCHESTRA_AUTO_RENAME_COUNT` to pick the
   // stage-appropriate wording. Without these the nudge self-suppresses (defaults
@@ -1015,48 +896,10 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   env.ORCHESTRA_BRANCH_AUTO = autoRenameActive(ws) ? '1' : '0';
   env.ORCHESTRA_AUTO_RENAME_COUNT = String(ws.autoRenameCount ?? 0);
 
-  // CLI-identity parity with startAgentPty, PLUS the activity spool when this SDK
-  // session is the SOLE driver of the workspace.
-  //
-  // ORCHESTRA_WS_ID USED TO BE DUAL-PURPOSE and that overload was a bug. The
-  // generated activity hook writes the durable events spool for any process
-  // where ORCHESTRA_WS_ID is set (`[ -n "$ORCHESTRA_WS_ID" ] || exit 0` — its
-  // ONLY gate), keyed by `<wsId>.jsonl` + a `<wsId>.seq` counter; the `orchestra`
-  // CLI ALSO read it for identity. The hazard is a COEXISTING terminal PTY for
-  // the SAME workspace: if both its hooks and this SDK session's hooks set the
-  // same WS_ID, they interleave writes to one spool with independent seq counters
-  // and corrupt the sidebar status dot. So the spool half MUST be gated on
-  // `isPtyRunning(ws.id)`.
-  //
-  // But gating identity ALONGSIDE the spool broke `orchestra rename`/`peers`/
-  // `message`/`spawn` in a structured session whenever a PTY happened to own the
-  // spool — the reported empty-`$ORCHESTRA_WS_ID` → `usage:` rename failure.
-  // Note ORCHESTRA_EVENTS_DIR cannot decouple them: the hook DEFAULTS it to the
-  // same getEventsDir() path when unset, so withholding it alone still lets the
-  // hook write. The fix is a dedicated identity var (ORCHESTRA_WS_ID_IDENTITY,
-  // set unconditionally below, never read by the hook), leaving ORCHESTRA_WS_ID
-  // to mean spool ownership only.
-  //
-  // The terminal PTY lazy-starts only when the user actually opens the Terminal
-  // tab (Terminal.tsx `allowStartRef`), so in a structured-view session there is
-  // usually NO PTY — and we can safely own the spool so the status dot works in
-  // the structured view too. We gate on `isPtyRunning(ws.id)` at session-start
-  // time: no live PTY → set WS_ID/EVENTS_DIR (the SDK session drives the dot);
-  // a PTY is already running → stay spool-free and let the PTY keep ownership.
-  // Worst case if the user opens the Terminal tab AFTER the SDK session started
-  // is a brief double-writer until one ends — no worse than the pre-existing
-  // behavior for a user who ran both, and avoided in the common (single-view)
-  // path. Full Phase 6 makes the two mutually exclusive by not starting the PTY
-  // at all when structured is the default; identity no longer depends on it.
+  // CLI identity (ORCHESTRA_WS_ID_IDENTITY, below) AND the activity spool (ORCHESTRA_WS_ID): the generated
+  // activity hook writes `<wsId>.jsonl` for any process where ORCHESTRA_WS_ID is set (its ONLY gate), so the
+  // SDK session owns the spool for a LOCAL workspace — no agent PTY can share it any more (#233).
   const remote = ws.host?.kind === 'sandbox';
-  // The SDK owns the spool (its own hooks + the tailer drive the dot) for a LOCAL
-  // workspace with no terminal PTY already writing the spool. Computed once so the
-  // env and the returned flag agree by construction. `driveStatus` (the SDK must
-  // drive the dot itself) is the inverse restricted to local: local AND a PTY owns
-  // the spool. Remote is neither — the container's spool tail drives it.
-  const spoolWithheldByPty = !remote && isPtyRunning(ws.id);
-  const ownsSpool = !remote && !spoolWithheldByPty;
-  const driveStatus = spoolWithheldByPty;
   if (!remote) {
     env.ORCHESTRA_WORKTREE = ws.worktreePath;
     applyAgentTmpEnv(env, ws.id); // disk TMPDIR, not the tmpfs /tmp (src/shared/agent-tmpdir.ts)
@@ -1074,19 +917,12 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
     // Without it, the rename-instruction hook's `orchestra rename
     // "$ORCHESTRA_WS_ID" ...` collapses to a single arg and prints `usage:`.
     env.ORCHESTRA_WS_ID_IDENTITY = ws.id;
-    // SPOOL OWNERSHIP, gated. The activity hook writes `<wsId>.jsonl` whenever
-    // ORCHESTRA_WS_ID is set (its ONLY gate; ORCHESTRA_EVENTS_DIR merely picks
-    // the dir and DEFAULTS to the same getEventsDir() path when unset — so
-    // withholding EVENTS_DIR alone does NOT stop the write). To keep the sidebar
-    // status dot single-writer we must withhold ORCHESTRA_WS_ID itself when a
-    // terminal PTY already owns the spool for this workspace; otherwise the SDK
-    // session claims it (drives the dot in the structured view too).
-    if (ownsSpool) {
-      env.ORCHESTRA_WS_ID = ws.id;
-      env.ORCHESTRA_EVENTS_DIR = getEventsDir();
-    }
+    // SPOOL OWNERSHIP: the activity hook writes `<wsId>.jsonl` whenever ORCHESTRA_WS_ID is set
+    // (ORCHESTRA_EVENTS_DIR merely picks the dir), so the SDK session claims both.
+    env.ORCHESTRA_WS_ID = ws.id;
+    env.ORCHESTRA_EVENTS_DIR = getEventsDir();
   }
-  return { env, driveStatus };
+  return { env };
 }
 
 /** The canUseTool bridge: park the call, emit a permission-request event, and
@@ -1142,7 +978,7 @@ function makeCanUseTool(session: Session) {
     emit(session.wsId, permissionEvent);
     // The agent is now blocked on the user: flip the sidebar dot to `waiting`
     // (orange) and — if the window is unfocused — raise the "needs input"
-    // toast/chime, matching the terminal path's Notification hook. The
+    // toast/chime, as Claude Code's Notification hook does. The
     // structured view's parked question rides a renderer-only `agent:event`
     // channel that never reaches the events spool, so activity.ts wouldn't
     // otherwise know the turn stopped to ask. Restored to `running` the moment
@@ -1532,9 +1368,8 @@ async function consume(session: Session): Promise<void> {
         // MEASURED, the cap is per-TURN and the session recovers on its own
         // (4 of 4 queued prompts ran, alternating exhaust/succeed). The turn
         // is already normalized to a `turn-end` with stopReason 'max_turns';
-        // what was missing was telling the HUMAN, which emitFrom now does
-        // outside the driveStatus gate. See the third correction in
-        // docs/research/issue-69-maxturns-findings.md.
+        // what was missing was telling the HUMAN, which emitFrom now does.
+        // See the third correction in docs/research/issue-69-maxturns-findings.md.
         releaseTurnGate(session);
         // #317: no getContextUsage() here — its count_tokens burst holds the NEXT prompt in the CLI
         // (rig: scripts/session-budget/turn-boundary.mjs). The gauge reads per-call usage; `/context` gives the breakdown.
@@ -1779,7 +1614,6 @@ async function consume(session: Session): Promise<void> {
         void markStoppedOnUsageLimit(session.wsId, session.rateLimitHit.resetsAtMs);
       }
       session.rateLimitHit = undefined;
-      driveStatusFromEvent(session, turnEnd);
     }
     // Release any waiter and drop the session; the renderer can restart it.
     session.stopping = true;
@@ -1794,17 +1628,12 @@ async function consume(session: Session): Promise<void> {
     // rival third session. Delete + reconcile only while WE still own the slot.
     if (sessions.get(session.wsId) === session) {
       sessions.delete(session.wsId);
-      // Status-dot reconciliation floor, mirroring the terminal PTY's exit
-      // handler (pty.ts reconcileExited): once the SDK subprocess is gone —
-      // natural end, interrupt, crash, or kill — the agent can't be `running`,
-      // so self-heal a dot the activity `stop` hook may not have flipped (a
-      // crash never fires it). Guard on no live PTY: if a terminal PTY owns the
-      // dot for this workspace, let ITS exit handler reconcile — knocking it to
-      // `waiting` here would fight a still-live terminal agent. reconcileExited
-      // itself no-ops unless status is currently `running`, so this is safe when
-      // the agent legitimately idled. Inside the identity guard: a live
-      // successor's dot must not be floored by the predecessor's teardown.
-      if (!isPtyRunning(session.wsId)) reconcileExited(session.wsId);
+      // Status-dot reconciliation floor: once the SDK subprocess is gone — natural end, interrupt, crash,
+      // or kill — the agent can't be `running`, so self-heal a dot the activity `stop` hook may not have
+      // flipped (a crash never fires it). reconcileExited itself no-ops unless status is currently
+      // `running`. Inside the identity guard: a live successor's dot must not be floored by the
+      // predecessor's teardown.
+      reconcileExited(session.wsId);
     }
   }
 }
@@ -1868,7 +1697,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // Validate the worktree BEFORE the SDK spawns `claude` there. The SDK's
   // spawnLocalProcess passes this as cwd; a missing/non-directory path throws a
   // cryptic `spawn ENOTDIR` deep in the SDK that our old silent catch hid ("send
-  // does nothing"). Mirror the terminal path (pty.ts) with a clear, actionable
+  // does nothing"). Throw a clear, actionable
   // error the caller surfaces. Remote worktrees live in the container — skip.
   if (!remote) {
     let ok = false;
@@ -1899,16 +1728,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
 
   // Honor the workspace's chosen permission mode (set by the Permissions
   // dropdown, persisted so a pre-session choice sticks). Defaults to BYPASS:
-  // Orchestra's whole model is autonomous agents in isolated worktrees — the
-  // terminal path runs claude with full permissions, and parity matters more
-  // than a per-tool prompt wall (explicit user decision, 2026-07-21).
+  // Orchestra's whole model is autonomous agents in isolated worktrees — full
+  // permissions matter more than a per-tool prompt wall (explicit user decision, 2026-07-21).
   const permissionMode: AgentPermissionMode = ws.sdkPermissionMode ?? 'bypassPermissions';
-  // Build the env BEFORE the session so `driveStatus` (whether THIS subprocess
-  // must drive the dot itself, because its hooks are withheld and nothing else
-  // will) can be captured on the session and read per-event by
-  // driveStatusFromEvent. isPtyRunning is sampled here, at spawn — stable for the
-  // subprocess's life.
-  const { env: sdkEnv, driveStatus } = await buildSdkEnv(ws);
+  const { env: sdkEnv } = await buildSdkEnv(ws);
   const session: Session = {
     wsId,
     // q is assigned right after — the generator/canUseTool close over `session`,
@@ -1938,7 +1761,6 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     pendingElicitations: new Map(),
     stopping: false,
     permissionMode,
-    driveStatus,
     bgTasks: {},
     openToolUses: new Map(),
     pendingLocalContext: [],
@@ -2106,7 +1928,6 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
               if (live && !live.cleared) {
                 const attachEv = stamp(live.ctx, { type: 'session/attach' as const, turnInFlight });
                 emit(wsId, attachEv);
-                driveStatusFromEvent(live, attachEv);
                 // #252 D1b: a turn this app never yielded is RUNNING in the reattached CLI — the same "CLI-started turn" as consume()'s
                 // detector (no app turnGate), so the pause interrupt must not read it as idle, and the observer must see it.
                 if (turnInFlight) {
@@ -2134,11 +1955,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // blank. The captured session id is persisted on `ws.sdkSessionId` as the
       // stream reports it (see consume()). Absent → a fresh session.
       ...(resumeId ? { resume: resumeId } : {}),
-      // Orchestrator brief parity with startAgentPty (workspaces.ts): an
+      // Orchestrator brief: an
       // orchestrator's standing delegation brief is appended to the Claude Code
       // system prompt on a FRESH session only — on resume the persisted session
-      // already carries it, so re-appending would duplicate it (mirrors the
-      // terminal path's `!resuming` gate). Keyed on the RESOLVED `resumeId`, not
+      // already carries it, so re-appending would duplicate it. Keyed on the RESOLVED `resumeId`, not
       // raw `ws.sdkSessionId`: a phantom-id fresh-start (#178) IS a fresh session
       // and must get the brief, so `!resumeId` (not `!ws.sdkSessionId`) is the
       // correct "is this fresh?" test. The `preset: 'claude_code'` keeps the full
@@ -3140,13 +2960,8 @@ export async function sdkSend(
   session.queue.push(msg);
   // Echo the prompt (text + images) to every attached UI — the SDK stream never
   // repeats plain user content, so this event is the transcript's only record.
-  // This echo (not a `normalizeSdkMessage` event) is also the `submit` signal
-  // for the status dot, so drive status off it directly: it flips the sidebar to
-  // `running` the instant the turn is queued, before the first SDK event lands —
-  // parity with the terminal path's UserPromptSubmit hook.
   const userMsg = makeUserMessage(session.ctx, text, images, rewindId, parked, peerOrigin);
   emit(session.wsId, userMsg);
-  driveStatusFromEvent(session, userMsg);
   // Publish the new queue depth so the tray appears the instant a prompt parks.
   if (parked) emitQueueUpdate(session);
   // Remember what we fed the generator so emitFrom can drop a stream replay of

@@ -25,8 +25,8 @@
 
 /** The subset of a persisted Workspace record the classifier reads. */
 export interface RestartWorkspaceView {
-  /** Set the first time the user submitted a prompt to the TERMINAL agent, so a
-   *  respawn picks `claude --continue`. See Workspace.hasInput. */
+  /** Set once a prompt was delivered to the agent (a legacy terminal-only workspace has it without an `sdkSessionId`:
+   *  the wake path adopts its terminal transcript). See Workspace.hasInput. */
   hasInput?: boolean;
   /** Last SDK session id. `undefined` = a structured session has NEVER run for
    *  this workspace; a string (a real id OR the `''` cleared marker) = the

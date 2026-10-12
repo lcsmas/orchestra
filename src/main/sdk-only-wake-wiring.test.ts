@@ -1,9 +1,8 @@
 // #232 (wave "Agent view only", #219) — source pins: wake, messages, the prompt queue, review/fix-checks, account
 // migration, peers, the branch switch, hibernation and the restart dispatcher reason about SDK sessions ONLY.
 // These files import Electron and cannot load under `node --test`, so each pin reads the shipped source.
-// The BEHAVIOUR is proven in the built app by scripts/e2e-agent-view-removal.mjs arms `sdk_only_*`
-// (a stray agent PTY is ignored by every one of these seams); an absence pin alone passes whether or not the
-// behaviour changed, so every pin below names the surviving control it must not break.
+// The BEHAVIOUR is proven in the built app by scripts/e2e-agent-view-removal.mjs (no agent PTY can exist after #233);
+// an absence pin alone passes whether or not the behaviour changed, so every pin below names the surviving control it must not break.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,13 +29,25 @@ function body(src: string, decl: string): string {
 }
 /** The code of `src` without // line comments (a comment naming a removed symbol must not fail an absence pin). */
 const code = (src: string) => src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-const LIVE_AGENT_PTY = /\bisRunning\(|\bwritePty\(|\bstopPty\(|\bgetPtySize\(|\bgetPtyPid\(|\bstartAgentPty\(/;
+const LIVE_AGENT_PTY = /\bisRunning\(|\bwritePty\(|\bstopPty\(/;
 
 test('CONTROL: the sources are the real files and the Run/nvim/Veille PTY probes still exist (the absence pins below are not vacuous)', () => {
   assert.ok(ws.length > 100_000 && api.length > 30_000 && hib.length > 5_000 && pq.length > 5_000 && rw.length > 2_000);
   assert.match(code(hib), /hasLiveRunPty: isRunning\(`\$\{ws\.id\}:run`\),/, 'hibernation keeps the RUN-terminal signal');
   assert.match(body(ws, 'export async function switchWorkspaceBranch('), /stopPty\(nvimId\);/, 'the branch switch still recycles the nvim PTY');
-  assert.match(api, /ptyStart: async \(id, cols, rows\) =>/, 'control: the launcher is still here for #233 to delete (not this ticket)');
+  assert.match(api, /ptyWrite: async \(id, data\) => writePty\(id, data\),/, 'control: the shared Run/nvim/login writer stays');
+  assert.doesNotMatch(code(api), /ptyStart|stopAgent|ptyRepaint|saveClipboardImage/, '#233: the agent-PTY launcher handlers are gone');
+  // #233: the PTY manager serves Run / nvim / login only; the SDK session owns the spool and the exit floor (control: reconcileExited is still called, unconditionally)
+  const pty = code(read('pty.ts')), sdk = code(read('agent-sdk.ts'));
+  assert.doesNotMatch(pty, /workspaceId|getPtyPid|getPtySize|lastSizes|stripEnv|reconcileExited/, 'pty.ts carries no per-workspace agent env, size/pid getters or status reconciliation');
+  assert.match(pty, /export function repaintPty\(/, 'control: the nvim/login remount repaint stays');
+  assert.doesNotMatch(sdk, /from '\.\/pty'|isPtyRunning|driveStatus/, 'agent-sdk.ts reads no PTY and has no PTY-coexist status drive');
+  assert.match(sdk, /sessions\.delete\(session\.wsId\);[\s\S]{0,900}\n\s+reconcileExited\(session\.wsId\);/, 'control: the exit floor still reconciles a dead session\'s dot, unconditionally');
+  assert.doesNotMatch(ws, /startAgentPty|startPty\(|HOOK_SESSION_START_READY_CMD|submitTaskWhenReady|heavyResume/, 'workspaces.ts has no launcher, ready-file hook, task typing or heavy-resume gate');
+  assert.match(ws, /removeHookCommand\(sessionStartList, isRetiredReadyCmd\)/, 'control: an installed worktree\'s retired readiness hook is evicted');
+  // refreeze: the live-child gate asks the SDK session only (the PTY probe parameter is gone), for the whole mission AND for the one-switch route
+  assert.match(ws, /anyChildLive\(tree\.map\(\(w\) => w\.id\), sdkSessionLive\)/, 'refreeze --only asks sdkSessionLive');
+  assert.match(ws, /anyChildLive\(children\.map\(\(w\) => w\.id\), sdkSessionLive\)/, 'refreeze (mission) asks sdkSessionLive');
 });
 
 test('message delivery: no typing into a live TUI — a live SDK session, a wake, or the inbox', () => {
@@ -75,7 +86,7 @@ test('fix checks / send review: a failed wake throws, with no PTY branch', () =>
 
 test('toolbar Restart: no live-PTY branch — straight to the restart dispatcher (sandbox pause thrown after)', () => {
   const at = api.indexOf('  restartAgent: async (id) =>');
-  const h = code(api.slice(at, api.indexOf('  stopAgent: async', at)));
+  const h = code(api.slice(at, api.indexOf('  agentSdkSend: async', at)));
   assert.doesNotMatch(h, LIVE_AGENT_PTY);
   assert.doesNotMatch(h, /pty:restart/);
   assert.match(h, /dispatchRestartRequest\(\{ id, fresh: false, trigger: 'toolbar' \}\)/);

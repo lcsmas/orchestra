@@ -17,8 +17,6 @@ import {
   clearPendingPermission,
   shouldAutoApprovePermission,
   isBadResumeError,
-  sdkEventToStatusEvent,
-  sdkEventToStopReason,
   describeMcpServer,
   firstHttpUrl,
   ASK_USER_QUESTION,
@@ -457,101 +455,6 @@ test('isBadResumeError: false for transient failures (id must be preserved)', ()
   assert.equal(isBadResumeError('The operation was aborted'), false);
   assert.equal(isBadResumeError('Claude Code process exited with code 1'), false);
   assert.equal(isBadResumeError(''), false);
-});
-
-// ─── sdkEventToStatusEvent (SDK-view "idle while working" regression guard) ──
-//
-// The terminal path's dot is fed by shell lifecycle hooks; the SDK runs turns
-// programmatically and never fires them, so the manager must drive status from
-// this mapping instead. Ground truth for the bug: a live structured session's
-// spool held only `session/startup` while the agent worked → dot stuck `idle`.
-
-const at = (type: string, extra: Record<string, unknown> = {}): AgentEvent =>
-  ({ seq: 0, at: 0, type, ...extra }) as unknown as AgentEvent;
-
-test('sdkEventToStatusEvent: a submitted turn → submit (→ running)', () => {
-  assert.equal(sdkEventToStatusEvent(at('user-message', { text: 'go' })), 'submit');
-});
-
-test('sdkEventToStatusEvent: tool-use → pretool, tool-result → posttool (stay running)', () => {
-  assert.equal(sdkEventToStatusEvent(at('tool-use', { name: 'Bash', toolUseId: 't', input: {} })), 'pretool');
-  assert.equal(sdkEventToStatusEvent(at('tool-result', { toolUseId: 't' })), 'posttool');
-});
-
-test('sdkEventToStatusEvent: a parked permission → notify (→ waiting for the user)', () => {
-  assert.equal(sdkEventToStatusEvent(at('permission-request', { requestId: 'r' })), 'notify');
-});
-
-test('sdkEventToStatusEvent: turn-end → stop (→ waiting)', () => {
-  assert.equal(sdkEventToStatusEvent(at('turn-end', { isError: false })), 'stop');
-});
-
-// ─── turn-end REASON (end_turn / interrupted / max_turns / error) ────────────
-//
-// The reason was computed by toStopReason() and shipped on the turn-end event
-// for the renderer, then dropped at the status boundary — so a turn that blew
-// its budget or died on an error was indistinguishable from a clean finish.
-// Both the Messages API (`message_delta.stop_reason`) and Managed Agents (typed
-// `stop_reason` on `session.status_idle`) model this as one idle state with a
-// typed reason beside it; these guard that Orchestra does the same.
-
-test('sdkEventToStatusEvent: an ERRORED turn-end → stopfail, not stop', () => {
-  // Both still land on `waiting` in applyAgentEvent — the distinction is the
-  // reason, which the finished-toast reads. A plain 'stop' here would announce
-  // a crashed turn as "ready for review".
-  assert.equal(sdkEventToStatusEvent(at('turn-end', { stopReason: 'error' })), 'stopfail');
-});
-
-test('sdkEventToStatusEvent: non-error turn-ends stay stop (only `error` diverges)', () => {
-  // max_turns / interrupted are real turn-ends, not failures of the turn
-  // machinery — they must not take the stopfail branch.
-  for (const stopReason of ['end_turn', 'max_turns', 'interrupted']) {
-    assert.equal(
-      sdkEventToStatusEvent(at('turn-end', { stopReason })),
-      'stop',
-      `${stopReason} must map to stop`,
-    );
-  }
-});
-
-test('sdkEventToStopReason: carries the reason for turn-end, undefined for everything else', () => {
-  assert.equal(sdkEventToStopReason(at('turn-end', { stopReason: 'max_turns' })), 'max_turns');
-  assert.equal(sdkEventToStopReason(at('turn-end', { stopReason: 'end_turn' })), 'end_turn');
-  // Non-terminal events must yield undefined — and the fixtures below deliberately
-  // CARRY a stopReason field so this discriminates on the event TYPE rather than
-  // on the field being absent. Without that, a broken implementation that just
-  // returned `ev.stopReason` unconditionally would pass (verified: it did — the
-  // first version of this test was vacuous under exactly that mutation).
-  assert.equal(sdkEventToStopReason(at('tool-use', { name: 'Bash', stopReason: 'error' })), undefined);
-  assert.equal(sdkEventToStopReason(at('user-message', { text: 'go', stopReason: 'max_turns' })), undefined);
-  assert.equal(sdkEventToStopReason(at('text-delta', { text: 'hi', stopReason: 'end_turn' })), undefined);
-});
-
-test('sdkEventToStopReason: a turn-end with no reason yields undefined, not a fabricated one', () => {
-  // The spool/terminal path has no reason field at all (Claude Code's Stop hook
-  // carries none). Undefined must flow through as "unknown", which the toast
-  // treats as the normal finish — never as an invented failure.
-  assert.equal(sdkEventToStopReason(at('turn-end', { isError: false })), undefined);
-});
-
-test('sdkEventToStatusEvent: pure-render events do NOT move status (→ null)', () => {
-  // These must map to null: firing a spool event for them would thrash the dot.
-  for (const type of [
-    'session/init',
-    'text-delta',
-    'thinking-start',
-    'tool-input-delta',
-    'block-start',
-    'block-stop',
-    'session/update',
-    'session/remote-control',
-    'error',
-    // A `!command` bash-mode run is LOCAL, not a model turn — it must never move
-    // the status dot (it's not "the agent working").
-    'local-command',
-  ]) {
-    assert.equal(sdkEventToStatusEvent(at(type)), null, `${type} must not move status`);
-  }
 });
 
 // ─── fold: local-command (bash mode `!command`) ──────────────────────────────
@@ -1048,13 +951,6 @@ test('fold: turn-end clears every parked answerable, not just permissions', () =
   // A turn cannot end with one still parked — main sweeps them on the same
   // `result` boundary, so a leftover card here would be unanswerable.
   assert.equal(afterTurn.pendingAnswerables.length, 0);
-});
-
-test('sdkEventToStatusEvent: dialogs/elicitations mark the agent as WAITING', () => {
-  // Without this the sidebar dot stays green while the session is in fact
-  // blocked on a human — the exact "looks busy, is stuck" symptom #21 removes.
-  assert.equal(sdkEventToStatusEvent(at('user-dialog-request', { requestId: 'd' })), 'notify');
-  assert.equal(sdkEventToStatusEvent(at('elicitation-request', { requestId: 'e' })), 'notify');
 });
 
 // ─── fold: turn-end accumulates cost, flips running off ──────────────────────
@@ -1746,17 +1642,6 @@ test('fold: session/mcp replaces the server list wholesale', () => {
   ]);
 });
 
-test('status map: session/mcp and mcp notices never move the status dot', () => {
-  assert.equal(
-    sdkEventToStatusEvent({ type: 'session/mcp', seq: 0, at: 1000, servers: [] }),
-    null,
-  );
-  assert.equal(
-    sdkEventToStatusEvent({ type: 'notice', kind: 'mcp', text: 'x connected', seq: 0, at: 1000 }),
-    null,
-  );
-});
-
 test('firstHttpUrl: finds the auth URL wherever the response hides it', () => {
   // Field-name-agnostic: the mcpAuthenticate response shape is an internal
   // contract, so the extractor must survive any of these.
@@ -2285,17 +2170,6 @@ test('fold: session/attach to an idle session is a no-op', () => {
   ]);
   assert.equal(s.running, false);
   assert.equal(s.turnStartedAt, undefined);
-});
-
-test('sdkEventToStatusEvent: mid-turn attach → submit (dot running); idle attach → null', () => {
-  assert.equal(
-    sdkEventToStatusEvent({ type: 'session/attach', seq: 0, at: 1, turnInFlight: true }),
-    'submit',
-  );
-  assert.equal(
-    sdkEventToStatusEvent({ type: 'session/attach', seq: 0, at: 1, turnInFlight: false }),
-    null,
-  );
 });
 
 // ── Oversized-memory banner ─────────────────────────────────────────────────

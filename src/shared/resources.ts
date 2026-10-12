@@ -41,8 +41,8 @@ export interface ProcStat {
 }
 
 /** What kind of PTY a session id denotes. Mirrors the id scheme in
- *  src/main/pty.ts: `<wsId>` = agent, `<wsId>:run`, `<wsId>:nvim`,
- *  `account-login:<accountId>`. */
+ *  src/main/pty.ts: `<wsId>:run`, `<wsId>:nvim`, `account-login:<accountId>`
+ *  (`<wsId>` = 'agent' is a legacy id no code starts any more, #233). */
 export type SessionKind = 'agent' | 'run' | 'nvim' | 'login' | 'sdk';
 
 /** Live resource figures for one PTY session's whole process tree. */
