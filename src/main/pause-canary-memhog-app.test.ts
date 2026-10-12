@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs harness module, no declaration file
-import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB, capDegradationsFromKeeperLog } from '../../scripts/pause-canary/memhog-app-facts.mjs';
+import { workerFromAppFacts, parseNoticeFile, capStateFromKeeperLog, appMemoryGuardSeed, memhogAppEnvelope, heavyTokensWhy, CAP_ON_START_GB, capDegradationsFromKeeperLog, neverPassUnderVoid } from '../../scripts/pause-canary/memhog-app-facts.mjs';
 // @ts-expect-error — plain .mjs harness module, no declaration file
 import { evaluateMemhogCycle } from '../../scripts/pause-canary/memhog-bars.mjs';
 import { appendMemNotice } from '../shared/mem-notice-file.ts';
@@ -276,4 +276,17 @@ test('the floor override exists ONLY for the labelled rehearsal (a positive cont
   assert.match(drive, /const FLOOR_TEST = REHEARSAL \? Number\(opt\('floor-gb', NaN\)\) : NaN;/);
   assert.match(drive, /const RUN_FLOOR_GB = Number\.isFinite\(FLOOR_TEST\) \? FLOOR_TEST : MH_APP \? 2 : MIN_AVAIL_GB;/);
   assert.match(run, /\.\.\.\(REHEARSAL \? \['floor-gb'\] : \[\]\)/);
+});
+
+test('review m5: a recorded void reason is NEVER a PASS — PASS becomes VOID whatever the moment of the trip; every other result is kept; the driver checks it after the last wait AND over the final results', () => {
+  assert.equal(neverPassUnderVoid('PASS', 'FLOOR: 1.2 GB < 2 GB'), 'VOID');
+  assert.equal(neverPassUnderVoid('PASS', null), 'PASS');
+  assert.equal(neverPassUnderVoid('PASS', ''), 'PASS', 'no reason, no void');
+  for (const r of ['FAIL', 'VOID', 'ERROR']) assert.equal(neverPassUnderVoid(r, 'FLOOR: x'), r, `${r} is kept`);
+  const drive = fs.readFileSync(new URL('../../scripts/pause-canary/drive.mjs', import.meta.url), 'utf8');
+  assert.match(drive, /stopIfVoid\(\);[^\n]*\n    result = neverPassUnderVoid\(allChecks\(\)\.every/);
+  // m-a (review of #324-fu): the reason is applied to THE exercise that just ran — never as a final pass over results that already PASSED (a void in `auto` must not turn douce / dure / reprise into VOID)
+  assert.match(drive, /const exRes = await runExercise\(ex\);\n  exRes\.result = neverPassUnderVoid\(exRes\.result, voidReason\);/);
+  assert.ok(!/for \(const r of results\) r\.result = neverPassUnderVoid/.test(drive), 'the global final loop is gone');
+  assert.match(drive, /if \(voidReason\) \{ emit\('PC-EXERCISE', \{ exercise: ex, result: 'VOID'/, 'an exercise started after a void is VOID with the reason, not run');
 });

@@ -404,3 +404,33 @@ test('review 4: a measured chain FAIL is never hidden by a VOID memhog drill; an
   assert.match(String(backstopWhy(worker(1, { session: ses({ cliAlive: undefined }) }))), /CLI dead/);
   assert.match(String(backstopWhy(worker(1, { session: undefined }))), /keeper dead, CLI dead/);
 });
+
+test('review m7: bar:hog_killed pins the kernel delta to what the hog tool reaped — a kill the tool does not own (a stray, a second episode) or one it missed is RED even when the notices and escalations match the delta', () => {
+  assert.deepEqual(redOf({}, {}), [], 'control: delta 1 == killed 1');
+  const stray = worker(2, { oomKillDelta: 2, memberKillRows: [`Command "x" killed: Plafond mémoire 0.25 GB reached`, `Command "x" killed: Plafond mémoire 0.25 GB reached`], coordMsgs: [1, 2].map(() => ({ kind: 'escalation', recipient: OPS, body: `w2 (aaaaaaaa-0000-4000-8000-000000000012): python3 swarm.py killed at the hard level (0.25 GB)` })), coordRead: 2 });
+  const d = evaluateMemhogCycle({ ...good(), workers: [worker(1), stray, worker(3)] }).find((c: Check) => c.id === 'bar:hog_killed')!;
+  assert.equal(d.ok, false);
+  assert.match(d.detail, /w2: the kernel counted oom_kill \+2 but the hog tool reaped killed=1/);
+  const missed = evaluateMemhogCycle({ ...good(), workers: [worker(1, { swarm: { children: 2, killed: 2, survived: 0 } }), worker(2), worker(3)] }).find((c: Check) => c.id === 'bar:hog_killed')!;
+  assert.match(missed.detail, /w1: .*killed=2/, 'the tool reaped 2 but the kernel counted 1');
+});
+
+test('review m7 (messages): the hog-killed reasons stay DISTINCT — an absent kernel reading says NOT MEASURED, a zero count against a reaped hog says so, a mismatch names both numbers', () => {
+  const why = (o: W) => evaluateMemhogCycle({ ...good(), workers: [worker(1, o), worker(2), worker(3)] }).find((c: Check) => c.id === 'bar:hog_killed')!.detail;
+  assert.match(why({ oomKillDelta: undefined }), /w1: NOT MEASURED \(no memory\.events reading\)/);
+  assert.match(why({ oomKillDelta: null }), /w1: NOT MEASURED \(no memory\.events reading\)/);
+  assert.match(why({ oomKillDelta: 0 }), /w1: the tool says killed=1 but the kernel counted oom_kill \+0/);
+  assert.match(why({ oomKillDelta: 2 }), /w1: the kernel counted oom_kill \+2 but the hog tool reaped killed=1/);
+  assert.match(why({ swarm: { children: 1, killed: 0, survived: 1 } }), /w1: hog NOT killed: killed=0 survived=1/);
+});
+
+test('parseSwarm (verifier NIT): a count must be PRESENT — an empty or non-numeric children / survived / killed count is « no result », never 0', () => {
+  assert.deepEqual(parseSwarm('swarm: children=1 survived=0 killed=1\n'), { children: 1, survived: 0, killed: 1 });
+  assert.deepEqual(parseSwarm('noise\nswarm: children=12 survived=3 killed=9 extra\n'), { children: 12, survived: 3, killed: 9 });
+  for (const bad of ['swarm: children= survived=0 killed=1', 'swarm: children=1 survived= killed=1', 'swarm: children=1 survived=0 killed=', 'swarm: children=1 survived=0 killed=\n', 'swarm: children=x survived=0 killed=1', 'swarm: children=1 survived=0', '', null, undefined]) {
+    assert.equal(parseSwarm(bad as string), null, JSON.stringify(bad));
+  }
+  // and the bar reads such a line as NOT MEASURED, not as a hog that survived or was killed
+  const why = evaluateMemhogCycle({ ...good(), workers: [worker(1, { swarm: parseSwarm('swarm: children=1 survived=0 killed=') }), worker(2), worker(3)] }).find((c: Check) => c.id === 'bar:hog_killed')!.detail;
+  assert.match(why, /w1: NOT MEASURED \(the hog tool printed no result\)/);
+});

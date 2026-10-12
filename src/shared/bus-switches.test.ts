@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 // #118 — the PURE switch module, tested directly (ledger #123, reviewer N3).
 //
 // bus-switches.ts is a 236-line pure module (no SQLite, no Electron) that had
@@ -32,6 +33,9 @@ import {
   countSwitchesOn,
   type BusSwitches,
   type BusMechanism,
+  liveSwitchesFromStore,
+  mergeExplicitSwitches,
+  saveLiveSwitches,
 } from './bus-switches.ts';
 
 // #129 — derive ALL_ON from the mechanism list so a new BusMechanism
@@ -386,6 +390,11 @@ test('#320 memoryCap: default OFF, wire name memory_cap round-trips, notice name
   const on = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, memoryCap: true }).find((l) => l.includes('memory_cap='));
   const off = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES }).find((l) => l.includes('memory_cap='));
   assert.match(on ?? '', /memory_cap=ON .*memory scope.*killed by the kernel/);
+  // #324 review m4 + F1: the ON line must not promise a scope to sessions that never get one — it names WHO gets it (every workspace WITH a coordinator, an OPS under the LEAD included) and who does not (only the top-level LEAD)
+  assert.match(on ?? '', /a workspace WITH a coordinator \(a worker, or an OPS under the LEAD\)/);
+  assert.match(on ?? '', /Only the top-level LEAD \(a workspace with no coordinator\), a human's session, a sandbox or an unsupported host runs in no scope/);
+  assert.ok(!/coordinator \(LEAD \/ OPS\)/.test(on ?? ''), 'F1: an OPS is NOT scope-less — it has a coordinator (the LEAD)');
+  assert.ok(!/FLEET MEMBER|ONLY if you are such a member|each of your session starts/.test(on ?? ''), 'the earlier wordings are gone');
   assert.match(on ?? '', /started before this was ON is not capped/);
   assert.match(off ?? '', /memory_cap=OFF .*no per-member memory limit/);
   assert.ok(!/bus is AUTHORITATIVE/.test(on ?? ''), 'memory_cap is not a bus mechanism — the generic wording would be false');
@@ -411,4 +420,55 @@ test('#324 memoryCap live default ON: an unset key reads ON, a human OFF wins, a
   assert.equal(normalizeSwitches({ delivery: true }).memoryCap, false, 'a row frozen without the key was frozen OFF');
   assert.equal(parseSwitches(undefined).memoryCap, false);
   assert.equal(freezeSwitches(normalizeLiveSwitches(undefined)).memoryCap, true, 'what the NEXT run freezes');
+});
+
+// ── #324 follow-up: m3 (a Settings save no longer freezes every default) and m6 (an unreadable store is all-OFF, pinned) ─────────────────────────
+test('#324 m6 liveSwitchesFromStore: a stored object is read with the live defaults; an UNREADABLE store is all-OFF — never the live defaults, never anything ON', () => {
+  assert.deepEqual(liveSwitchesFromStore(() => undefined), { ...LIVE_SWITCH_DEFAULTS });
+  assert.equal(liveSwitchesFromStore(() => ({ delivery: true })).delivery, true);
+  assert.equal(liveSwitchesFromStore(() => ({ memoryCap: false })).memoryCap, false, 'a human OFF wins');
+  const broken = liveSwitchesFromStore(() => { throw new Error('store unreadable'); });
+  for (const m of BUS_MECHANISMS) assert.equal(broken[m], false, `${m} must be OFF when the store cannot be read`);
+  assert.notDeepEqual(broken, liveSwitchesFromStore(() => undefined), 'control: the readable-empty store is NOT all-OFF (the instrument can tell them apart)');
+});
+
+test('#324 m3 mergeExplicitSwitches / saveLiveSwitches: only the keys the human has EVER set are persisted — an unset key keeps following its live default', async () => {
+  // the first save: ONE key changed, nothing else is written
+  assert.deepEqual(mergeExplicitSwitches({}, { delivery: true }), { delivery: true });
+  assert.deepEqual(mergeExplicitSwitches(undefined, { wake: false }), { wake: false });
+  // earlier choices (including an explicit OFF) survive a later save; unknown stored keys are dropped; a typo is OFF; undefined means « not changed »
+  assert.deepEqual(mergeExplicitSwitches({ pause: false, delivery: true, bogus: true }, { wake: true }), { delivery: true, wake: true, pause: false });
+  assert.deepEqual(mergeExplicitSwitches({ delivery: true }, { delivery: 'true', wake: undefined }), { delivery: false });
+  let stored: Record<string, boolean> = {};
+  const written: Array<Record<string, boolean>> = [];
+  const live = await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; written.push({ ...e }); }, { delivery: true });
+  assert.deepEqual(written, [{ delivery: true }], 'ONE key written, not ten (the old behaviour froze memoryCap:true / pause:true / dockerRelay:true at the value of the day)');
+  assert.equal(live.delivery, true);
+  assert.equal(live.memoryCap, true, 'the returned live set still carries the defaults');
+  assert.equal(liveSwitchesFromStore(() => stored).memoryCap, true, 'and so does a re-read');
+  // a human OFF is persisted as an explicit key and survives the next save
+  await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; }, { memoryCap: false });
+  assert.deepEqual(stored, { delivery: true, memoryCap: false });
+  await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; }, { wake: true });
+  assert.equal(stored.memoryCap, false, 'an earlier explicit OFF survives a later save of another key');
+  // a read error writes NOTHING
+  let wrote = false;
+  await assert.rejects(saveLiveSwitches(() => { throw new Error('boom'); }, async () => { wrote = true; }, { delivery: true }), /boom/);
+  assert.equal(wrote, false);
+});
+
+test('#324 m3 wiring: bus-settings.ts delegates to the pure read/save (the app wrappers hold no logic of their own)', () => {
+  const src = fs.readFileSync(new URL('../main/bus-settings.ts', import.meta.url), 'utf8');
+  assert.match(src, /liveSwitchesFromStore\(\(\) => store\.getBusSwitches\(\)\)/);
+  assert.match(src, /saveLiveSwitches\(\(\) => store\.getBusSwitches\(\), \(explicit\) => store\.setBusSwitches\(explicit\), next\)/);
+  assert.ok(!/normalizeLiveSwitches\(\{ \.\.\.getLiveSwitches\(\)/.test(src), 'the all-keys merge is gone');
+});
+
+test('#324-fu m-c: a reader that THROWS is all-OFF, but a store that loaded EMPTY (a store.json that failed to parse) reads the LIVE defaults — the two cases the old comment conflated', () => {
+  const empty = liveSwitchesFromStore(() => ({}));
+  assert.deepEqual(empty, { ...LIVE_SWITCH_DEFAULTS });
+  assert.equal(empty.memoryCap, true, 'an empty store reads the live default ON');
+  const throwing = liveSwitchesFromStore(() => { throw new Error('x'); });
+  assert.equal(throwing.memoryCap, false);
+  assert.notDeepEqual(empty, throwing);
 });

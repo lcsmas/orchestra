@@ -910,3 +910,40 @@ test('T324.2 — the EXPLICIT re-freeze (`orchestra run refreeze` = refreezeMiss
     cleanup(db, dir);
   }
 });
+
+test('T324.3 — a mission row whose STORED flags lack the key (frozen before the switch existed), hold garbage or null reads OFF and is re-frozen AUTOMATICALLY with memoryCap:false — never the live default; the explicit refreeze turns it ON', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const sw = (o: Partial<BusSwitches>): BusSwitches => ({ ...DEFAULT_BUS_SWITCHES, ...o });
+    const rawFlags = (id: string, flags: string | null) => db.prepare('UPDATE run_flags SET flags = ? WHERE run_id = ?').run(flags, id);
+    const stored = (id: string) => JSON.parse((db.prepare('SELECT flags FROM run_flags WHERE run_id = ?').get(id) as { flags: string }).flags) as Record<string, boolean>;
+    const live = sw({ delivery: true, wake: true, memoryCap: true });
+    // (a) the real shape of a pre-#320 row: four keys, no memoryCap
+    startRun(db, { id: 'old', kind: 'mission', coordinator: 'c' }, sw({}));
+    rawFlags('old', JSON.stringify({ delivery: true, wake: true, askGate: true, liveness: true }));
+    assert.equal(busSwitch(db, 'old', 'memory_cap'), false, 'control: the row reads OFF before the re-freeze');
+    assert.equal(refreezeRun(db, 'old', live, WAVE_REFREEZE_KEEPS_FROZEN), true);
+    assert.equal(stored('old').memoryCap, false, 'the automatic re-freeze WROTE memoryCap:false for a row without the key (a raw read that took the live default would write true)');
+    assert.equal(busSwitch(db, 'old', 'memory_cap'), false);
+    assert.equal(stored('old').delivery, true);
+    // (b) corrupted / null flags: unreadable = frozen OFF, kept OFF
+    startRun(db, { id: 'junk', kind: 'mission', coordinator: 'c' }, sw({}));
+    rawFlags('junk', '{not json');
+    assert.equal(refreezeRun(db, 'junk', live, WAVE_REFREEZE_KEEPS_FROZEN), true);
+    assert.equal(stored('junk').memoryCap, false);
+    startRun(db, { id: 'nul', kind: 'mission', coordinator: 'c' }, sw({}));
+    rawFlags('nul', 'null');
+    assert.equal(refreezeRun(db, 'nul', live, WAVE_REFREEZE_KEEPS_FROZEN), true);
+    assert.equal(stored('nul').memoryCap, false);
+    // (c) a mission with NO run_flags row: nothing inserted, nothing invented
+    db.prepare("INSERT INTO runs (id, kind, coordinator, parent_run_id, title, created_at) VALUES ('bare','mission','c',NULL,NULL,1)").run();
+    assert.equal(refreezeRun(db, 'bare', live, WAVE_REFREEZE_KEEPS_FROZEN), false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM run_flags WHERE run_id = 'bare'").get()!.n, 0);
+    // (d) the EXPLICIT path turns the same row ON
+    assert.equal(refreezeMissionRun(db, 'old', live, { hasLiveChild: false }), 'refrozen');
+    assert.equal(stored('old').memoryCap, true);
+    assert.equal(busSwitch(db, 'old', 'memory_cap'), true);
+  } finally {
+    cleanup(db, dir);
+  }
+});

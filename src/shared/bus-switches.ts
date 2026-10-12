@@ -90,7 +90,7 @@ export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
 /**
  * Default LIVE setting (what the next run freezes) for a mechanism the human never set.
  * Only `pause` (#258, canaries passed), `dockerRelay` and `memoryCap` (#324: the packaged Q11 canary PASSED on 2026-10-12, ledger #329) are ON; DEFAULT_BUS_SWITCHES stays
- * all-OFF because it is also the safe fallback (unreadable store, no run row, bus down). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
+ * all-OFF because it is also the safe fallback when the switches CANNOT BE READ AT ALL (a reader that throws, no run row, bus down). A store.json that fails to PARSE is not that case: the store loads EMPTY defaults, so the live defaults apply (the human's explicit OFFs are lost with the rest of the file — pre-existing). A run that FROZE `memoryCap` before this default existed keeps its row (a missing key was frozen OFF).
  */
 export const LIVE_SWITCH_DEFAULTS: BusSwitches = Object.freeze({
   ...DEFAULT_BUS_SWITCHES,
@@ -116,6 +116,40 @@ export function normalizeLiveSwitches(raw: unknown): BusSwitches {
     out[m] = src[m] === undefined ? LIVE_SWITCH_DEFAULTS[m] : src[m] === true;
   }
   return out;
+}
+
+/** The live switches as the app reads them: the stored (RAW) object normalized with LIVE_SWITCH_DEFAULTS; a reader that THROWS is all-OFF (the coexistence-safe fallback; a store.json that fails to parse is loaded EMPTY by store.ts and reads the live defaults instead — never every mechanism ON). */
+export function liveSwitchesFromStore(readRaw: () => unknown): BusSwitches {
+  try {
+    return normalizeLiveSwitches(readRaw());
+  } catch {
+    return { ...DEFAULT_BUS_SWITCHES };
+  }
+}
+
+/**
+ * What a Settings save PERSISTS (#324 review m3): the keys the human has EVER set — the stored ones plus the ones changed now. An unset key stays unset, so a later change of its live default still
+ * reaches it; writing all ten keys on the first save froze every default at the value of the day (a later flip never arrived). The store format is unchanged (the keys were always optional).
+ */
+export function mergeExplicitSwitches(raw: unknown, next: Partial<Record<string, unknown>>): Partial<Record<BusMechanism, boolean>> {
+  const src = (raw ?? {}) as Record<string, unknown>;
+  const out: Partial<Record<BusMechanism, boolean>> = {};
+  for (const m of BUS_MECHANISMS) {
+    if (next[m] !== undefined) out[m] = next[m] === true;
+    else if (src[m] !== undefined) out[m] = src[m] === true;
+  }
+  return out;
+}
+
+/** Persist a Settings change: read the RAW stored object, write only the explicit keys, return the resulting LIVE set. A read error propagates (nothing is written on a guess). */
+export async function saveLiveSwitches(
+  readRaw: () => unknown,
+  write: (explicit: Partial<Record<string, boolean>>) => Promise<void>,
+  next: Partial<Record<string, unknown>>,
+): Promise<BusSwitches> {
+  const explicit = mergeExplicitSwitches(readRaw(), next);
+  await write(explicit);
+  return normalizeLiveSwitches(explicit);
 }
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
@@ -324,7 +358,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'memoryCap') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — each of your session starts (spawn, restart, wake) runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and your session survives. Keep tests and rigs light; a session that started before this was ON is not capped.`
+          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a workspace WITH a coordinator (a worker, or an OPS under the LEAD) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. Only the top-level LEAD (a workspace with no coordinator), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
           : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;

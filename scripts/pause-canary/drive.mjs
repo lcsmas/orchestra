@@ -15,7 +15,7 @@ import { fleetSpec } from './ids.mjs';
 import { makeModel, markersOf } from './fleet.mjs';
 import { BARS, evaluateCycle, lostWorkOf, forbiddenRequests, holdWindows, holdWindowGaps, isMemberTool, renderTable } from './bars.mjs';
 import { evaluateMemhogCycle, summarizeMemhogCycle, readByCoordinator, evaluateSurvivors, backstopDelta } from './memhog-bars.mjs';
-import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB } from './memhog-app-facts.mjs';
+import { workerFromAppFacts, appMemoryGuardSeed, memhogAppEnvelope, CAP_ON_START_GB, neverPassUnderVoid } from './memhog-app-facts.mjs';
 import { alive, oomKillOf, scopeFactsOf, unitActive, unitsNow, scopeDirOfPid, backstopCountersFromDir, keeperLogText, killHogs, hostAvailGB } from './memhog-os.mjs';
 
 const argv = process.argv.slice(2);
@@ -568,7 +568,8 @@ async function runExercise(name) {
       const noRole = api.requests.filter((r) => r.tools > 0 && !r.role).length;   // the self-restart instrument keys on the role: a request it cannot attribute would be invisible to it
       check(cyc, 'every_main_request_has_a_role', noRole === 0 && api.requests.some((r) => r.tools > 0), `${api.requests.filter((r) => r.tools > 0).length} tool-carrying API requests so far, ${noRole} without a role`);
     }
-    result = allChecks().every((kk) => kk.ok) && cycles.length === CYCLES ? 'PASS' : 'FAIL';
+    stopIfVoid();   // review m5: a floor / host void recorded after the last wait must not be missed — it is thrown here and handled as a VOID (or a FAIL if a RED was already measured)
+    result = neverPassUnderVoid(allChecks().every((kk) => kk.ok) && cycles.length === CYCLES ? 'PASS' : 'FAIL', voidReason);
   } catch (e) {
     const partial = (why) => { if (curCyc && !cycles.includes(curCyc) && curCyc.checks.length) { if (!curCyc.checks.some((k) => k.id === 'cycle_aborted' || k.id === 'cycle_incomplete')) check(curCyc, 'cycle_incomplete', false, why); cycles.push(curCyc); emit('PC-CYCLE', { ...curCyc, aborted: true }); } };
     if (e instanceof VoidError) {
@@ -640,7 +641,9 @@ if (h0.availGB < MIN_AVAIL_GB || h0.load1 > MAX_LOAD) { voidReason = `host below
 const results = [];
 for (const ex of EXERCISES) {
   if (voidReason) { emit('PC-EXERCISE', { exercise: ex, result: 'VOID', cycles: 0, wanted: CYCLES, reason: voidReason }); results.push({ name: ex, result: 'VOID', cycles: [] }); continue; }
-  results.push(await runExercise(ex));
+  const exRes = await runExercise(ex);
+  exRes.result = neverPassUnderVoid(exRes.result, voidReason);   // review m5 / m-a: the void recorded DURING this exercise (a void from an earlier one skipped the loop above) — never the global reason applied to exercises that already PASSED
+  results.push(exRes);
 }
 clearInterval(sampler);
 if (floorGuard) clearInterval(floorGuard);
