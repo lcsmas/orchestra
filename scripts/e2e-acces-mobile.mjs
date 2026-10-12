@@ -359,6 +359,8 @@ try {
   phone = await Cdp.connect(ptarget.webSocketDebuggerUrl);
   await phone.send('Page.enable'); await phone.send('Network.enable');
   await phone.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  // an iPhone's notch / home bar: env(safe-area-inset-*) as on the device (the header once slid under the status bar — Lucas 2026-10-12)
+  await phone.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 47, bottom: 34 } });
   await phone.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' });
   const prePhone = await phone.eval(`location.href`);
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${ownerProxy.port}/#t=${TOKEN}` });
@@ -450,6 +452,10 @@ try {
   const SC = await phone.eval(`(() => { const se = document.scrollingElement; const last = [...document.querySelectorAll('#conv .conv-lines [data-kind]')].at(-1).getBoundingClientRect(); return { top: se.scrollTop, h: se.scrollHeight, vh: innerHeight, lastBottom: Math.round(last.bottom) }; })()`);
   const H = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent)`);
   clause('conv/history', H.length === 3 * HISTORY_COPIES && H[0] === 'user:Liste les fichiers du dépôt, s’il te plaît.' && /^tool:✓ Bash · List repository files$/.test(H[1]) && H[2] === 'assistant:Voici les fichiers : README.md et src/.' && H.at(-1) === H[2], `${H.length} phone lines, first 3 ${JSON.stringify(H.slice(0, 3))}`);
+  // Lucas 2026-10-12: « le header clash avec le haut de l’écran » — scrolled (it opens at the end), the sticky header must sit BELOW
+  // the status bar (47 px inset) and the strip above it must be covered; control: the inset is really in effect.
+  const SA = await phone.eval(`(() => { const h = document.querySelector('#conv .ch').getBoundingClientRect(); const b = getComputedStyle(document.body, '::before'); return { pad: getComputedStyle(document.querySelector('#conv')).paddingTop, headerTop: Math.round(h.top), cover: b.height, coverPos: b.position, coverBg: b.backgroundColor, scrolled: document.scrollingElement.scrollTop }; })()`);
+  clause('conv/header-below-status-bar', SA.pad === '47px' && SA.scrolled > 0 && SA.headerTop >= 47 && SA.cover === '47px' && SA.coverPos === 'fixed' && SA.coverBg !== 'rgba(0, 0, 0, 0)', `inset 47 in effect (padding ${SA.pad}); scrolled ${SA.scrolled}px ⇒ header top ${SA.headerTop}px; status-bar strip ${SA.cover} ${SA.coverPos} ${SA.coverBg}`);
   // Lucas 2026-10-12: « ce qui nous intéresse c'est la fin » — a long conversation opens scrolled to its last line
   clause('conv/opens-at-end', SC.h > 3 * SC.vh && SC.top > 0 && SC.top + SC.vh >= SC.h - 4 && SC.lastBottom <= SC.vh, `scrollTop ${SC.top} + viewport ${SC.vh} vs scrollHeight ${SC.h}; last line bottom ${SC.lastBottom}`);
   saveShot('phone-conversation-history.png', await phone.shot());

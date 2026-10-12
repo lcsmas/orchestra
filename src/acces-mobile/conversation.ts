@@ -384,6 +384,8 @@ export const CONVERSATION_CSS = `
 .v1{--surface:#1a1f26;--raised:#1f242c;--sunken:#14181e;--hair:#262d37;--hair2:#353b45;--hairf:rgba(255,255,255,.055);--text:#eef1f5;--dim:#8f99a9;--faint:#737e92;--accent:#6ea8ff;--ink:#081022;--amber:#ffb62e;--yellow:#ffc857;--green:#5bd68b;--red:#ff6b6b;--violet:#9d8fff;--teal:#4fd1c5;--work:#f0b90b;--mono:ui-monospace,"SF Mono",Menlo,monospace}
 *{box-sizing:border-box}
 html,body{margin:0;background:#1a1f26}
+/* the app draws under the iOS status bar (black-translucent): this strip keeps scrolled content (and the sticky header) out of it */
+body.v1::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:var(--surface);z-index:40;pointer-events:none}
 body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,system-ui,"Inter",sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
 .v1 button,.v1 input,.v1 textarea{font:inherit;color:inherit;background:none;border:0}
 .v1 button{cursor:pointer}
@@ -445,7 +447,7 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .g-idle::before{width:9px;height:9px;border-radius:50%;background:var(--dim);opacity:.55}
 .v1 .g-err::before{content:"×";color:var(--red);font-weight:700;font-size:18px;line-height:1}
 .v1 .g-stop::before{width:8px;height:8px;border-radius:2px;background:#5b6370}
-.v1 .ch{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:4px 16px 10px 8px;border-bottom:1px solid var(--hair);min-height:58px;background:var(--surface)}
+.v1 .ch{position:sticky;top:env(safe-area-inset-top);z-index:2;display:flex;align-items:center;gap:6px;padding:4px 16px 10px 8px;border-bottom:1px solid var(--hair);min-height:58px;background:var(--surface)}
 .v1 .back{color:var(--accent);font-size:30px;line-height:1;padding:0 8px}
 .v1 .bk{min-width:19px;height:19px;margin-left:-6px;border-radius:10px;background:var(--amber);color:#1a1100;font:700 11.5px/19px var(--mono);text-align:center}
 .v1 .ct{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
