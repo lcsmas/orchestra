@@ -63,6 +63,10 @@ MUTANTS = [
     ('K1-rpc-replies-crossed', 'src/shared/acces-mobile-rpc.ts', "      const c = calls.get(m.id);", "      const c = calls.get(Math.min(...calls.keys()));", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
     ('K2-rpc-streams-leak-on-close', 'src/shared/acces-mobile-rpc.ts', "    for (const [, off] of subs) off();\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
     ('K3-rpc-cancel-ignored', 'src/shared/acces-mobile-rpc.ts', "          subs.get(id)?.();\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
+    ('K5-rpc-no-utf8-decoder', 'src/shared/acces-mobile-rpc.ts', "    buf += typeof chunk === 'string' ? chunk : decoder.write(chunk);", "    buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
+    ('K6-rpc-calls-uncapped', 'src/shared/acces-mobile-rpc.ts', "        if (inFlight >= MAX_CALLS_IN_FLIGHT) return send({ id, result: { ok: false, error: 'busy' } });\n", "", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
+    ('K7-rpc-death-unreported', 'src/shared/acces-mobile-rpc.ts', "    streams.clear();\n    onDead?.();\n", "    streams.clear();\n", 'RED', 'src/shared/acces-mobile-rpc.test.ts'),
+    ('C10-ask-question-clipped', 'src/shared/acces-mobile-conversation.ts', "          question: typeof q.question === 'string' ? q.question : '',", "          question: typeof q.question === 'string' ? clip(q.question, 1000) : '',", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('K4-writes-uncapped', 'src/acces-mobile/server.ts', "        if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');", "        if (false) return refuse(429, 'too-many-writes');", 'RED'),
     ('M9-token-read-once', 'src/acces-mobile/server.ts', "    const expected = readTokenSafe();\n", "    const expected = ((globalThis as any).__t ??= readTokenSafe()) as string;\n", 'RED'),
     # ── #336: pairing URL / QR / regenerate / PWA ──

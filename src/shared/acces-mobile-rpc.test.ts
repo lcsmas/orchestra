@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { createRpcClient, serveRpc, type RpcHandlers, type RpcWire } from './acces-mobile-rpc.ts';
+import { createRpcClient, MAX_CALLS_IN_FLIGHT, MAX_LINE, serveRpc, type RpcHandlers, type RpcWire } from './acces-mobile-rpc.ts';
 
 function pair(): { a: RpcWire & { destroy(): void }; b: RpcWire & { destroy(): void } } {
   const ab = new PassThrough();
@@ -108,4 +108,46 @@ test('torn and foreign lines are dropped; the channel keeps working', async () =
   a.write('not json\n{"id":"x"}\n{"no":1}\n');
   const client = createRpcClient(a);
   assert.deepEqual(await client.call('/r', {}), { ok: 1 });
+});
+
+test('final review m2: a multi-byte character split across two reads arrives intact', async () => {
+  const { a, b } = pair();
+  const got: unknown[] = [];
+  serveRpc(b, { call: async (_r, body) => (got.push(body.text), { ok: true }), stream: () => null });
+  const line = Buffer.from(JSON.stringify({ id: 1, route: '/r', body: { text: 'Réponse 🎉 é' } }) + '\n', 'utf8');
+  const cut = line.indexOf(Buffer.from('🎉')) + 2; // inside the emoji's 4 bytes
+  (a as unknown as { write(c: Buffer): void }).write(line.subarray(0, cut));
+  await sleep(5);
+  (a as unknown as { write(c: Buffer): void }).write(line.subarray(cut));
+  await sleep(10);
+  assert.deepEqual(got, ['Réponse 🎉 é']);
+});
+
+test('final review m1: an over-long line kills the client ONCE and says so (the server then exits and main restarts it)', async () => {
+  const { a, b } = pair();
+  let dead = 0;
+  const client = createRpcClient(a, 5000, () => dead++);
+  const pending = client.call('/r', {});
+  b.write('x'.repeat(MAX_LINE + 10)); // main (or anything on the wire) sends a line that never ends within the cap
+  await assert.rejects(pending, /closed/);
+  assert.equal(dead, 1);
+  await assert.rejects(client.call('/again', {}), /closed/);
+  assert.equal(dead, 1, 'reported once');
+});
+
+test('final review m3: main answers at most MAX_CALLS_IN_FLIGHT calls of one server at once, then « busy »', async () => {
+  const { a, b } = pair();
+  const releases: (() => void)[] = [];
+  serveRpc(b, { call: () => new Promise((r) => releases.push(() => r({ ok: true }))), stream: () => null });
+  const client = createRpcClient(a);
+  const held = Array.from({ length: MAX_CALLS_IN_FLIGHT }, () => client.call('/slow', {}));
+  await sleep(20);
+  assert.deepEqual(await client.call('/one-more', {}), { ok: false, error: 'busy' });
+  releases.forEach((r) => r());
+  assert.ok((await Promise.all(held)).every((r) => (r as { ok: boolean }).ok));
+  releases.length = 0;
+  const after = client.call('/after', {});
+  await sleep(10);
+  releases.forEach((r) => r());
+  assert.deepEqual(await after, { ok: true }, 'slots free once answered');
 });

@@ -721,7 +721,8 @@ test('#338 review m1: at most MAX_WRITES_IN_FLIGHT sends/answers wait on main at
   try {
     const held = Array.from({ length: MAX_WRITES_IN_FLIGHT }, () => post(port, '/api/send?id=w1', JSONH, '{"text":"x"}'));
     while (reached < MAX_WRITES_IN_FLIGHT) await sleepMs(5);
-    assert.equal((await post(port, '/api/send?id=w1', JSONH, '{"text":"one too many"}')).status, 429);
+    const extra = await Promise.race([post(port, '/api/send?id=w1', JSONH, '{"text":"one too many"}'), sleepMs(2000).then(() => ({ status: 'queued instead of refused' }))]);
+    assert.equal(extra.status, 429);
     assert.equal(reached, MAX_WRITES_IN_FLIGHT, 'the refused one never reached main');
     assert.equal((await get(port, '/api/workspaces', AUTH)).status, 200, 'reads are not capped by writes');
     releases.shift()!();

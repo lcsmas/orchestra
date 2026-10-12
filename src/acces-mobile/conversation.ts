@@ -86,9 +86,9 @@ export const CONVERSATION_JS = `(function () {
     version = c.version;
   }
   // #339: answering an AskUserQuestion. The selection survives re-renders (every stream announcement redraws the screen).
-  var picks = {}; // requestId -> question -> { labels: [], other: '' }
+  var picks = Object.create(null); // requestId -> question -> { labels: [], other: '' } — no prototype: a question may be named anything
   function renderAskUser(box, a) {
-    var st = picks[a.requestId] || (picks[a.requestId] = {});
+    var st = picks[a.requestId] || (picks[a.requestId] = Object.create(null));
     a.questions.forEach(function (q) {
       var cur = st[q.question] || (st[q.question] = { labels: [], other: '' });
       if (q.header) box.appendChild(el('div', 'ask-h', q.header));
@@ -113,7 +113,7 @@ export const CONVERSATION_JS = `(function () {
     var submit = el('button', 'ask-submit', 'Répondre'); submit.type = 'button';
     var status = el('div', 'ask-status', st.__status || ''); status.setAttribute('role', 'status');
     function answers() {
-      var out = {}; var complete = true;
+      var out = Object.create(null); var complete = true;
       a.questions.forEach(function (q) {
         var cur = st[q.question]; var l = cur.labels.slice();
         if (cur.other.trim()) { if (q.multiSelect) l.push(cur.other.trim()); else l = [cur.other.trim()]; }

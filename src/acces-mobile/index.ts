@@ -33,7 +33,9 @@ try {
   fail('no main channel on fd 3');
 }
 channel.on('error', () => {});
-const rpc = createRpcClient(channel);
+// The channel unusable (main gone, or an over-long line) ⇒ exit: main sees the exit and restarts us; a server that outlived its
+// channel would answer 502 forever.
+const rpc = createRpcClient(channel, 5000, () => fail('main channel lost'));
 // The directory must be ours and closed to everyone else, or another user could pre-create / swap the socket path.
 const dir = path.dirname(sockPath);
 let st: fs.Stats;

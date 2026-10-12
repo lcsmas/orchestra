@@ -124,12 +124,13 @@ function askOf(a: AgentAnswerableEvent): PhoneAsk {
       questions: qs
         .filter((q): q is Record<string, unknown> => !!q && typeof q === 'object')
         .map((q) => ({
-          question: typeof q.question === 'string' ? clip(q.question, 1000) : '',
+          // The FULL text: main matches answers on the exact question / option text (final review m4); CSS wraps it on the phone.
+          question: typeof q.question === 'string' ? q.question : '',
           header: typeof q.header === 'string' ? oneLine(q.header, 40) : undefined,
           multiSelect: q.multiSelect === true,
           options: (Array.isArray(q.options) ? (q.options as unknown[]) : [])
             .filter((o): o is Record<string, unknown> => !!o && typeof o === 'object' && typeof (o as Record<string, unknown>).label === 'string')
-            .map((o) => ({ label: oneLine(o.label as string, 120), description: typeof o.description === 'string' ? oneLine(o.description, 200) : undefined })),
+            .map((o) => ({ label: o.label as string, description: typeof o.description === 'string' ? oneLine(o.description, 200) : undefined })),
         })),
     };
   }

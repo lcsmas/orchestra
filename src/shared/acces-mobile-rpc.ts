@@ -11,12 +11,19 @@ export interface RpcWire {
   on(event: 'close' | 'end', cb: () => void): unknown;
 }
 
-const MAX_LINE = 1_048_576;
+import { StringDecoder } from 'node:string_decoder';
+
+/** A conversation projection is ≤ 200 lines × 4000 chars before JSON escaping (which can multiply it): room to spare. */
+export const MAX_LINE = 8 * 1_048_576;
+/** Main answers at most this many calls of one server at once; beyond, `{ok:false, error:'busy'}` (final review m3). */
+export const MAX_CALLS_IN_FLIGHT = 32;
 
 function lineReader(onLine: (v: unknown) => void, onOverflow: () => void): (chunk: Buffer | string) => void {
   let buf = '';
+  // A multi-byte character split across two reads must not become U+FFFD (accents in a message, emoji) — final review m2.
+  const decoder = new StringDecoder('utf8');
   return (chunk) => {
-    buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    buf += typeof chunk === 'string' ? chunk : decoder.write(chunk);
     let i: number;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i);
@@ -42,7 +49,9 @@ export interface RpcClient {
   stream(route: string, onMsg: (m: unknown) => void, onEnd: () => void): () => void;
 }
 
-export function createRpcClient(wire: RpcWire, defaultTimeoutMs = 5000): RpcClient {
+/** `onDead` fires once when the channel is unusable (closed, or a line over MAX_LINE): the server process should then exit so main
+ *  restarts it — a client that stays dead while the process lives answers 502 forever (final review m1). */
+export function createRpcClient(wire: RpcWire, defaultTimeoutMs = 5000, onDead?: () => void): RpcClient {
   let next = 1;
   const calls = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   const streams = new Map<number, { onMsg: (m: unknown) => void; onEnd: () => void }>();
@@ -57,6 +66,7 @@ export function createRpcClient(wire: RpcWire, defaultTimeoutMs = 5000): RpcClie
     calls.clear();
     for (const [, s] of streams) s.onEnd();
     streams.clear();
+    onDead?.();
   };
   wire.on(
     'data',
@@ -122,6 +132,7 @@ export interface RpcHandlers {
 export function serveRpc(wire: RpcWire, handlers: RpcHandlers, onError?: (e: unknown) => void): () => void {
   const subs = new Map<number, () => void>();
   let closed = false;
+  let inFlight = 0;
   const send = (obj: unknown): void => {
     if (!closed) wire.write(JSON.stringify(obj) + '\n');
   };
@@ -152,13 +163,20 @@ export function serveRpc(wire: RpcWire, handlers: RpcHandlers, onError?: (e: unk
           return;
         }
         const body = m.body && typeof m.body === 'object' && !Array.isArray(m.body) ? (m.body as Record<string, unknown>) : {};
-        handlers.call(m.route, body).then(
-          (result) => send({ id, result }),
-          (e: unknown) => {
-            onError?.(e);
-            send({ id, result: { ok: false, error: e instanceof Error ? e.message : String(e) } });
-          },
-        );
+        if (inFlight >= MAX_CALLS_IN_FLIGHT) return send({ id, result: { ok: false, error: 'busy' } });
+        inFlight++;
+        handlers
+          .call(m.route, body)
+          .then(
+            (result) => send({ id, result }),
+            (e: unknown) => {
+              onError?.(e);
+              send({ id, result: { ok: false, error: e instanceof Error ? e.message : String(e) } });
+            },
+          )
+          .finally(() => {
+            inFlight--;
+          });
       },
       () => onError?.(new Error('rpc line overflow')),
     ),

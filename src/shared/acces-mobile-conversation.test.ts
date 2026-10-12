@@ -96,3 +96,15 @@ test('#339: an answerable-resolved event (from ANY surface) removes the ask from
   const other = { ...resolved, kind: 'elicitation' } as AgentEvent;
   assert.equal(projectConversation('w', foldEvent(withAsk, other), 2).asks.length, 1, 'kind + id must both match');
 });
+
+test('final review m4: an AskUserQuestion travels with its FULL question and option texts (main matches them exactly)', () => {
+  const longQ = 'Q'.repeat(1500) + ' ?';
+  const longLabel = 'option   with  spaces ' + 'L'.repeat(300);
+  const ask = { type: 'permission-request', seq: 2_000_000, at: 1, requestId: 'r', toolUseId: null, name: 'AskUserQuestion', input: { questions: [{ question: longQ, options: [{ label: longLabel }] }] } } as unknown as AgentEvent;
+  const a = projectConversation('w', foldEvent(folded(), ask), 1).asks[0];
+  assert.ok(a.kind === 'askUser');
+  if (a.kind === 'askUser') {
+    assert.equal(a.questions[0].question, longQ);
+    assert.equal(a.questions[0].options[0].label, longLabel);
+  }
+});
