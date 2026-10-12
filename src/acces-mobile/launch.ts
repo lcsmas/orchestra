@@ -3,20 +3,28 @@
 // A separate static asset (like conversation.ts) so the shell only routes to it. textContent only: repo names and error texts are data.
 // Class names the e2e rig reads are part of the contract: #launch, .nf-cancel, .nf-repo[data-path], .nf-task, .nf-go, .nf-err, [data-state].
 
-import { mobileLaunchFailure } from '../shared/acces-mobile-launch.ts';
+import { mobileLaunchFailure, mobileLaunchRequestId } from '../shared/acces-mobile-launch.ts';
 
 export const LAUNCH_JS = `(function () {
   'use strict';
   var KEY = 'orchestra.accesMobile.token';
   var LAST_REPO = 'orchestra.accesMobile.lastRepo';
-  // shared/acces-mobile-launch.ts (unit-tested) — self-contained, so its source is injected as is.
+  // shared/acces-mobile-launch.ts (unit-tested) — self-contained, so their source is injected as is.
   var failure = (${mobileLaunchFailure.toString()});
+  var requestIdFrom = (${mobileLaunchRequestId.toString()});
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
+  function newId() {
+    try { if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID(); } catch (e) {}
+    var a = new Uint8Array(16);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(a);
+    else for (var i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256);
+    return requestIdFrom(a);
+  }
   // State that outlives the screen: an accidental back-swipe must not lose a typed prompt (cleared only by a launch), and a request still in
   // flight when the human leaves must still land somewhere (st.busy / st.error), never in a detached form. st.ui = the screen open NOW.
-  var st = { repos: null, sel: '', draft: '', busy: false, error: null, launched: null, ui: null };
+  var st = { repos: null, sel: '', draft: '', pending: null, busy: false, error: null, launched: null, ui: null };
   var root = null;
 
   function open() {
@@ -108,9 +116,13 @@ export const LAUNCH_JS = `(function () {
     go.addEventListener('click', function () {
       var prompt = ta.value.trim();
       if (st.busy || !st.sel || !prompt) return;
+      // One request id per DISTINCT launch: a retry of the same repo + prompt keeps it (the server then answers with the workspace the
+      // first attempt made), another repo or prompt is another launch.
+      var fp = st.sel + '\\u0000' + prompt;
+      if (!st.pending || st.pending.fp !== fp) st.pending = { id: newId(), fp: fp };
       var repo = (st.repos || []).filter(function (r) { return r.path === st.sel; })[0] || { name: '', account: '' };
       st.busy = true; root.dataset.state = 'sending'; say(null); sync();
-      fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() }, body: JSON.stringify({ repoPath: st.sel, prompt: prompt }) })
+      fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() }, body: JSON.stringify({ repoPath: st.sel, prompt: prompt, requestId: st.pending.id }) })
         .then(function (r) { return (r.status === 200 ? r.json().catch(function () { return null; }) : Promise.resolve(null)).then(function (j) { return { status: r.status, body: j }; }); })
         .catch(function () { return { status: null, body: null }; })
         .then(function (res) {
@@ -118,7 +130,7 @@ export const LAUNCH_JS = `(function () {
           var u = st.ui; // the screen open NOW — null when the human left meanwhile (the result is then kept, never written into a detached form)
           var made = function (b) { return { id: String(b.id), name: b.branch || '', displayName: b.branch || '', group: repo.name, branch: b.branch || '', account: repo.account }; };
           if (res.status === 200 && res.body && res.body.ok === true && typeof res.body.id === 'string') {
-            st.launched = made(res.body); st.draft = ''; st.error = null;
+            st.launched = made(res.body); st.draft = ''; st.pending = null; st.error = null;
             if (u) {
               u.ta.value = ''; root.dataset.state = 'launched'; u.sync();
               location.hash = 'w=' + encodeURIComponent(res.body.id); // the conversation opens: the agent picks the task up

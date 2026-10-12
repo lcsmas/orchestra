@@ -19,11 +19,11 @@
 //                shell, and with the server off (502) or the stand-in gone (connection refused) the phone page is served from that
 //                cache and says « Orchestra injoignable » — then recovers by itself
 //   leak/*       no token in any request line the server saw, none in any log / file under ORCHESTRA_HOME
-//   launch/*     (#375) a workspace launched from the phone: the repos list, every auth refusal (no identity / colleague / forged header /
+//   launch/*     (#375/#376) a workspace launched from the phone: the repos list, every auth refusal (no identity / colleague / forged header /
 //                no or bad or query token) beside a passing launch, an UNREGISTERED real git repo refused with nothing created, an empty
 //                prompt refused, the REAL create (repo's Compte, the WORKSPACE default model + effort — not the spawned one —, top-level, a
-//                generated branch) whose first prompt reaches the REAL claude CLI (fake API), the hooks socket has no launch route; and the
-//                phone's own screen: « + », the repo cards, prompt + repo required, « Lancer » opens the conversation
+//                generated branch) whose first prompt reaches the REAL claude CLI (fake API), a double submit = one workspace, the 11th launch
+//                in a minute = 429 with nothing created, the hooks socket has no launch route
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -686,7 +686,7 @@ try {
   const repoPathA = world.repos[0].path, repoPathB = world.repos[1].path;
   const wsList = () => cdp.eval(`window.orchestra.listWorkspaces().then((l) => l.map((w) => ({ id: w.id, name: w.name, repoPath: w.repoPath, branch: w.branch, accountId: w.accountId, model: w.model, sdkEffort: w.sdkEffort, parentId: w.parentId, kind: w.kind, archived: !!w.archived, lastTask: w.lastTask, status: w.status })))`);
   const worktreesOf = (repo) => sh('git', ['-C', repo, 'worktree', 'list', '--porcelain'], { env: { PATH: process.env.PATH, HOME: world.fakeHome } }).split('\n').filter((l) => l.startsWith('worktree ')).length;
-  const lbody = (extra = {}) => JSON.stringify({ repoPath: repoPathA, prompt: `${LAUNCH_SENTINEL} fais le travail`, ...extra });
+  const lbody = (extra = {}) => JSON.stringify({ repoPath: repoPathA, prompt: `${LAUNCH_SENTINEL} fais le travail`, requestId: crypto.randomUUID(), ...extra });
   const wsBefore = await wsList(), wtBeforeA = worktreesOf(repoPathA), wtBeforeB = worktreesOf(repoPathB);
   const unchanged = async () => { const l = await wsList(); return l.length === wsBefore.length && worktreesOf(repoPathA) === wtBeforeA && worktreesOf(repoPathB) === wtBeforeB; };
 
@@ -703,10 +703,32 @@ try {
     ['launch/sec/query-token', () => proxyPost(ownerProxy.port, `/api/launch?t=${TOKEN}`, { 'Content-Type': 'application/json' }, lbody()), 401],
     ['launch/sec/get-is-not-a-launch', () => proxyGet(ownerProxy.port, '/api/launch', BEARER), 404],
     ['launch/empty-prompt-refused', () => proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ prompt: '   ' })), 400],
+    ['launch/no-request-id-refused', () => proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: 'x' })), 400],
   ]) {
     const r = await fn();
     clause(name, r.status === want && !/"ok":true/.test(r.body), `status ${r.status} (want ${want}), body ${r.body.length} bytes`);
   }
+  // #376: the 11th launch inside a minute ⇒ 429 and NOTHING is created. Run FIRST, in a burst, so ten launches really fall in ONE minute: launches
+  // main refuses (/etc is no registered repo) still count — they are launches — and cost nothing. The window is then waited out (61 s) so the
+  // real launches below (9 in all, < 10) are never capped by it. A 429 reads « bare »: no body, nothing relayed.
+  const okLaunches = () => seenLines.filter((l) => l.url.startsWith('/api/launch') && l.status === 200).length;
+  const burst = async () => {
+    const n0 = okLaunches(); let cap = null, tries = 0;
+    while (cap === null && tries++ < 15) {
+      const r = await proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ repoPath: '/etc' }));
+      if (r.status === 429) cap = r; else if (r.status !== 200) throw new Error(`cap burst: unexpected ${r.status}`);
+    }
+    return { cap, admitted: okLaunches() - n0 };
+  };
+  const tBurst = Date.now();
+  const b1 = await burst();
+  const validAfterCap = await proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody());
+  clause('launch/eleventh-in-a-minute-429', b1.admitted === 10 && b1.cap?.status === 429 && b1.cap.body === '' && validAfterCap.status === 429 && (await unchanged()), `${b1.admitted} launches answered before the 429 (cap 10/min), 429 body ${b1.cap?.body.length} bytes; a VALID launch right after ⇒ ${validAfterCap.status}; workspaces ${wsBefore.length} -> ${(await wsList()).length}`);
+  const readsStillOk = (await proxyGet(ownerProxy.port, '/api/workspaces', BEARER)).status;
+  clause('launch/cap-does-not-block-reads', readsStillOk === 200, `/api/workspaces while launches are capped: ${readsStillOk}`);
+  await sleep(Math.max(0, 61_000 - (Date.now() - tBurst)));
+  clause('launch/cap-window-rolls', (await proxyPost(ownerProxy.port, '/api/launch', JSONB, lbody({ repoPath: '/etc' }))).status === 200, 'a minute later the next launch is admitted again (a rolling window, not a lock)');
+
   // must-FAIL: a REAL git repo that is NOT registered, and a system path — refused by main, nothing created anywhere
   const unreg = path.join(world.d, 'repo-unregistered'); fs.mkdirSync(unreg, { recursive: true }); mustBeScratch('seed', unreg);
   git(unreg, ['init', '-q', '-b', 'main'], world.fakeHome); fs.writeFileSync(path.join(unreg, 'README.md'), '#\n'); git(unreg, ['add', '.'], world.fakeHome); git(unreg, ['commit', '-q', '-m', 'seed'], world.fakeHome);
@@ -717,9 +739,9 @@ try {
   clause('launch/refusals-create-nothing', await unchanged(), `${wsBefore.length} workspaces and ${wtBeforeA}+${wtBeforeB} worktrees before every refusal above, the same after`);
 
   // the REAL launch: the repo's Compte, the WORKSPACE default model + effort, top-level, a generated branch; the prompt reaches the CLI
-  const PROMPT1 = `${LAUNCH_SENTINEL} corrige la faute dans le titre`;
+  const R1 = crypto.randomUUID(), PROMPT1 = `${LAUNCH_SENTINEL} corrige la faute dans le titre`;
   const modelsBeforeLaunch = fakeApi.requests.filter((r) => r.type === 'model').length;
-  const launched = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT1 }));
+  const launched = await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT1, requestId: R1 }));
   const L1 = launched.status === 200 ? JSON.parse(launched.body) : { ok: false };
   const wsAfter = await wsList();
   const created = wsAfter.find((w) => w.id === L1.id);
@@ -730,6 +752,16 @@ try {
   clause('launch/first-prompt-reaches-the-session', !!promptReq && promptReq.model === 'claude-sonnet-4-5' && !!deskSeen && deskSeen.includes('corrige la faute'), `fake API model request #${promptReq?.seq} carries the prompt, model ${promptReq?.model}; desktop user message « ${String(deskSeen).slice(0, 60)} »`);
   const phoneRows = JSON.parse((await proxyGet(ownerProxy.port, '/api/workspaces', BEARER)).body).workspaces;
   clause('launch/shown-on-the-phone-list', phoneRows.some((r) => r.id === L1.id && r.group === 'orchestra-rig' && r.account === 'mc' && !r.parentId), `phone list row ${JSON.stringify(phoneRows.find((r) => r.id === L1.id))}`);
+
+  // #376: a double submit (two POSTs, the same request id, sent together) = ONE workspace, both answers carry its id
+  const R2 = crypto.randomUUID(), PROMPT2 = `${LAUNCH_SENTINEL} double tap`;
+  const dbl = await Promise.all([1, 2].map(() => proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT2, requestId: R2 }))));
+  const [DB1, DB2] = dbl.map((r) => (r.status === 200 ? JSON.parse(r.body) : { ok: false, status: r.status }));
+  const dupes = (await wsList()).filter((w) => w.lastTask === PROMPT2);
+  clause('launch/double-submit-one-workspace', DB1.ok === true && DB2.ok === true && DB1.id === DB2.id && dupes.length === 1 && dupes[0].id === DB1.id && dupes[0].accountId === 'acc-perso', `two POSTs, one request id ⇒ ${JSON.stringify([DB1, DB2])}; workspaces with that prompt: ${dupes.length}`);
+  const R3 = crypto.randomUUID(), PROMPT3 = `${LAUNCH_SENTINEL} second request id`;
+  const two = [await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: R3 })), await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: crypto.randomUUID() }))].map((r) => JSON.parse(r.body));
+  clause('launch/distinct-request-ids-distinct-workspaces', two[0].ok && two[1].ok && two[0].id !== two[1].id && (await wsList()).filter((w) => w.lastTask === PROMPT3).length === 2, `control for the double-submit arm: two request ids ⇒ ${JSON.stringify(two.map((t) => t.id))}`);
 
   // the hooks socket (every local agent can reach it) has NO launch / repos route: forged calls create nothing
   {
@@ -761,6 +793,7 @@ try {
   }
 
   // ── the phone's own screen (design A, ledger #377 D-Q1): « + » → #new → repo cards + prompt + « Lancer » → the conversation ──
+  const phoneLaunchLines = () => seenLines.filter((l) => l.who === 'owner' && l.url === '/api/launch' && l.ua.includes('iPhone'));
   const PAGE_PROMPT = `${LAUNCH_SENTINEL} lancé depuis l’écran du téléphone`;
   await phone.eval(`location.hash = ''; true`);
   await waitFor(() => phone.eval(`!document.getElementById('home').hidden && !!document.getElementById('newBtn')`), 10000, 'the list with its « + »');
@@ -820,9 +853,34 @@ try {
   clause('launch/phone-launch-opens-the-conversation', !!wsPage && (await wsList()).length === wsBeforePage + 1 && wsPage.lastTask === PAGE_PROMPT && wsPage.accountId === 'acc-mc' && C0.user.includes('lancé depuis l’écran du téléphone') && C0.title === wsPage.branch && /orchestra-rig/.test(C0.sub) && fakeApi.requests.filter((r) => r.type === 'model').slice(modelsBeforePage).some((r) => (r.marks || []).includes('launch')), `tapped « Lancer » ⇒ #w=${pageId.slice(0, 8)}…, header « ${C0.title} » / « ${C0.sub} », first user line « ${String(C0.user).slice(0, 50)} », desktop store +1 (${wsPage?.branch}), the fake API saw the prompt`);
   saveShot('phone-launch-conversation.png', await phone.shot());
 
+  // a double tap on « Lancer » (two trusted taps in the same breath) = ONE request, ONE workspace
+  const DBL_PROMPT = `${LAUNCH_SENTINEL} double tap sur le téléphone`;
+  await phone.eval(`location.hash = 'new'; true`);
+  await waitFor(() => phone.eval(`!document.getElementById('launch').hidden && document.querySelectorAll('#launch .nf-repo').length === 2`), 15000, 'the launch screen again');
+  const afterLaunchState = await phone.eval(`({ task: document.querySelector('#launch .nf-task').value, sel: document.querySelectorAll('#launch .nf-repo.sel').length })`);
+  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathB}"]`);
+  await typeIn(DBL_PROMPT);
+  const reqsBeforeDbl = phoneLaunchLines().length;
+  const goPos = await phone.eval(`(() => { const r = document.querySelector('#launch .nf-go').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  for (let k = 0; k < 2; k++) for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: goPos.x, y: goPos.y, ...extra });
+  await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden`), 90000, 'the conversation after the double tap');
+  const dblWs = (await wsList()).filter((w) => w.lastTask === DBL_PROMPT);
+  clause('launch/phone-double-tap-one-workspace', afterLaunchState.task === '' && afterLaunchState.sel === 0 && phoneLaunchLines().length === reqsBeforeDbl + 1 && dblWs.length === 1 && dblWs[0].accountId === 'acc-perso', `two taps ⇒ ${phoneLaunchLines().length - reqsBeforeDbl} request(s) from the phone, ${dblWs.length} workspace(s) with that prompt; a fresh form after the first launch (draft « ${afterLaunchState.task} », ${afterLaunchState.sel} repo picked)`);
   await phone.eval(`location.hash = ''; true`);
 
 
+  // the phone says it plainly when the cap is hit: fill the minute (fast refused launches), then tap « Lancer » for real
+  const b2 = await burst();
+  const wsBeforeCap2 = (await wsList()).length;
+  await phone.eval(`location.hash = 'new'; true`);
+  await waitFor(() => phone.eval(`!document.getElementById('launch').hidden && document.querySelectorAll('#launch .nf-repo').length === 2`), 15000, 'the launch screen for the 429 arm');
+  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathA}"]`);
+  await typeIn('un lancement de trop');
+  await phone.clickSel('#launch .nf-go');
+  const E429 = await waitFor(() => phone.eval(`(() => { const e = document.querySelector('#launch .nf-err'); return e && !e.hidden ? { text: e.textContent, hash: location.hash, draft: document.querySelector('#launch .nf-task').value, state: document.getElementById('launch').dataset.state, goDisabled: document.querySelector('#launch .nf-go').disabled } : null; })()`), 30000, 'the 429 message on the launch screen');
+  clause('launch/phone-429-says-so', b2.cap?.status === 429 && /10 par minute.*Aucun workspace n’a été créé/.test(E429.text) && E429.hash === '#new' && E429.draft === 'un lancement de trop' && E429.state === 'error' && E429.goDisabled === false && (await wsList()).length === wsBeforeCap2, `cap reached after ${b2.admitted} more launches; the phone shows « ${E429.text} »; still on #new with the draft kept, the button back; workspaces ${wsBeforeCap2} -> ${(await wsList()).length}`);
+  saveShot('phone-launch-429.png', await phone.shot());
+  await phone.eval(`location.hash = ''; true`);
   await cdp.eval(`window.orchestra.setModelDefaults({ workspace: 'claude-opus-4-8', spawned: 'claude-opus-4-8' }).then(() => window.orchestra.setEffortDefaults({ workspace: 'default', spawned: 'default' })).then(() => true)`);
 
   // settings dialog in the app: health, serve command; TRUSTED toggle off/on

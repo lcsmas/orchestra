@@ -7,7 +7,7 @@ import { jsqrSource } from './jsqr-src.ts';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
-import { MOBILE_LAUNCH_TIMEOUT_MS, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
+import { MOBILE_LAUNCH_TIMEOUT_MS, createLaunchLimiter, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
@@ -116,6 +116,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
   };
   let openStreams = 0;
   let writesInFlight = 0;
+  // #376: at most MOBILE_LAUNCH_PER_WINDOW launches per rolling minute, whoever asks (this process is the only caller of main's launch).
+  const launches = createLaunchLimiter(opts.now ?? (() => performance.now()));
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
@@ -160,6 +162,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       const isWrite = route === '/mobile/send' || route === '/mobile/answer' || route === '/mobile/launch';
       if (isWrite) {
         if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');
+        // #376: checked after the in-flight bound, so a launch refused for that reason does not spend the minute's budget.
+        if (route === '/mobile/launch' && !launches.take()) return refuse(429, 'launch-rate');
         writesInFlight++;
       }
       const done = (): void => {
@@ -255,8 +259,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       });
     }
     if (pathOnly === '/api/launch' && method === 'POST') {
-      // #375: start a workspace from the phone. Body read after identity + token; shape-checked here (a prompt is required), the registered
-      // repo is decided in main. Nothing but {repoPath, prompt} is relayed.
+      // #375: start a workspace from the phone. Body read after identity + token; shape-checked here (a prompt is required, a request id
+      // is required), the registered repo and the request-id repeat are decided in main. Nothing but {repoPath, prompt, requestId} is relayed.
       return readJson((body) => {
         const parsed = parseMobileLaunch(body);
         if (!parsed.ok) return refuse(400, 'bad-launch');

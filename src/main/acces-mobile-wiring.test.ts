@@ -145,7 +145,7 @@ test('#338: a phone message takes the HUMAN composer path, never the agent-messa
   assert.match(sdk, /emitAnswerableResolved\(session, 'permission', requestId\);\n\s*return true;/, 'every surface is told');
 });
 
-test('#375: the launch is on the PRIVATE channel only, takes the desktop-click spawn path with human defaults, and is not reachable from any agent', () => {
+test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-click spawn path with human defaults, and is not reachable from any agent', () => {
   const launchCase = /case '\/mobile\/launch':[\s\S]*?return launcher\.launch\(msg\);/.exec(routes)?.[0] ?? '';
   assert.ok(launchCase, 'control: found the launch case');
   assert.match(routes, /case '\/mobile\/repos':[\s\S]*?return \{ ok: true, repos: projectMobileRepos\(store\.repos, store\.accounts\) \};/, 'the repo list is the registered repos');
@@ -173,8 +173,9 @@ test('#375: the launch is on the PRIVATE channel only, takes the desktop-click s
   assert.doesNotMatch(launcher, /from 'electron'|from '\.\/(store|workspaces|agent-sdk)/, 'the launcher imports no Electron-bound module');
   assert.match(launcher, /if \(!deps\.repos\(\)\.some\(\(r\) => r\.path === repoPath\)\) return Promise\.resolve\(\{ ok: false, code: 'unknown-repo'/);
   assert.match(launcher, /const parsed = parseMobileLaunch\(raw\);/);
-  // the server (network-facing) exposes it behind identity + token only, as a write bounded in flight
+  // the server (network-facing) exposes it behind identity + token only, as a write bounded in flight and per minute
   const server = read('src/acces-mobile/server.ts');
   assert.match(server, /pathOnly === '\/api\/launch'\)\)\) return refuse\(405, 'method'\)/, 'POST is allowed for launch');
   assert.match(server, /const isWrite = route === '\/mobile\/send' \|\| route === '\/mobile\/answer' \|\| route === '\/mobile\/launch';/, 'a launch counts in the in-flight write bound');
+  assert.match(server, /if \(route === '\/mobile\/launch' && !launches\.take\(\)\) return refuse\(429, 'launch-rate'\);/, 'and in the per-minute cap');
 });

@@ -1,6 +1,6 @@
-// The phone's launch screen (#375 client side): the REAL LAUNCH_JS run in a vm against a small fake DOM + a scripted network.
-// What it pins: a prompt and a repo are required on the phone, a double tap is ONE request, the draft survives a back-swipe, a success
-// opens the conversation, every failure says what happened.
+// The phone's launch screen (#375/#376 client side): the REAL LAUNCH_JS run in a vm against a small fake DOM + a scripted network.
+// What it pins: a prompt and a repo are required on the phone, one request id per distinct launch (a retry keeps it, an edit changes it),
+// a double tap is ONE request, the draft survives a back-swipe, a success opens the conversation, every failure says what happened.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -146,7 +146,7 @@ test('open without a token goes back to the list (where the pairing panel is) an
   assert.equal(r.fetches.length, 0);
 });
 
-test('Lancer: ONE POST with exactly {repoPath, prompt (trimmed)}, JSON + bearer; the button shows the creation', async () => {
+test('Lancer: ONE POST with exactly {repoPath, prompt (trimmed), requestId}, JSON + bearer; the button shows the creation', async () => {
   const r = await filled({ replies: [{ status: 200, body: REPOS }, 'pending'] }, 'beta', '  corrige la faute \n');
   go(r).tap();
   assert.equal(go(r).textContent, ' Création…');
@@ -158,8 +158,9 @@ test('Lancer: ONE POST with exactly {repoPath, prompt (trimmed)}, JSON + bearer;
   assert.equal(post.init.headers.Authorization, `Bearer ${TOKEN}`);
   assert.equal(post.init.headers['Content-Type'], 'application/json');
   const body = JSON.parse(post.init.body!);
-  assert.deepEqual(Object.keys(body).sort(), ['prompt', 'repoPath'], 'no model / branch / Compte / parent from the phone');
+  assert.deepEqual(Object.keys(body).sort(), ['prompt', 'repoPath', 'requestId'], 'no model / branch / Compte / parent from the phone');
   assert.deepEqual([body.repoPath, body.prompt], ['/r/beta', 'corrige la faute']);
+  assert.match(body.requestId, /^[A-Za-z0-9_-]{16,64}$/);
 });
 
 test('must-FAIL: a double tap is ONE request while the first is in flight (control: a later retry is a request)', async () => {
@@ -172,6 +173,21 @@ test('must-FAIL: a double tap is ONE request while the first is in flight (contr
   await r.settle();
   go(r).tap();
   assert.equal(r.launches().length, 2, 'control: after the failure the next tap sends again');
+});
+
+test('a retry of the SAME launch keeps its request id (the server answers with the workspace the first try made); an edit is another launch', async () => {
+  const r = await filled({ replies: [{ status: 200, body: REPOS }, 'reject', { status: 502 }, 'reject', 'reject'] });
+  go(r).tap(); await r.settle();
+  go(r).tap(); await r.settle();
+  const [a, b] = r.launches().map((f) => JSON.parse(f.init.body!).requestId);
+  assert.equal(a, b, 'same repo + same prompt ⇒ same id');
+  r.root.one('nf-task').type_('fix the typo, and add a test');
+  go(r).tap(); await r.settle();
+  const c = JSON.parse(r.launches()[2].init.body!).requestId;
+  assert.notEqual(c, a, 'another prompt ⇒ another id (main refuses a reused id carrying another launch)');
+  r.root.all('nf-repo').find((x) => x.textContent.includes('beta'))!.tap();
+  go(r).tap(); await r.settle();
+  assert.notEqual(JSON.parse(r.launches()[3].init.body!).requestId, c, 'another repo ⇒ another id');
 });
 
 test('success: the conversation opens (#w=<id>), the draft is gone, and the screen knows the row it just made', async () => {
@@ -189,7 +205,7 @@ test('success: the conversation opens (#w=<id>), the draft is gone, and the scre
 
 test('a refusal keeps the draft and says what happened — « aucun workspace » only when main refused; the 429 names the cap', async () => {
   const cases: [Reply, RegExp][] = [
-    [{ status: 429 }, /Trop de lancements en cours.*Aucun workspace n’a été créé/],
+    [{ status: 429 }, /10 par minute.*Aucun workspace n’a été créé/],
     [{ status: 200, body: { ok: false, code: 'unknown-repo', error: 'unknown repo' } }, /Dépôt inconnu/],
     [{ status: 200, body: { ok: false, code: 'create-failed', error: 'fatal: boom' } }, /Création impossible : fatal: boom/],
     [{ status: 502 }, /peut-être créé/],
@@ -365,7 +381,7 @@ test('leaving the screen while a launch is in flight: coming back shows it in fl
   ko.pendings[0]({ status: 429 });
   await ko.settle();
   ko.api.open(); await ko.settle();
-  assert.match(err(ko).textContent, /Trop de lancements en cours/, 'the failure that arrived while away is on the form when the human returns');
+  assert.match(err(ko).textContent, /Trop de lancements \(10 par minute\)/, 'the failure that arrived while away is on the form when the human returns');
   assert.equal(go(ko).disabled, false, 'and the button is live again, the prompt kept');
   assert.equal(ko.root.one('nf-task').value, 'fix the typo');
   assert.equal(ko.root.one('nf-task').disabled, false);
