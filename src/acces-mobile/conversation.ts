@@ -224,7 +224,12 @@ export const CONVERSATION_JS = `(function () {
     var wait = Math.max(0, 1000 - (Date.now() - lastFetch));
     inflight = true;
     setTimeout(function () {
-      var id = current; lastFetch = Date.now();
+      var id = current;
+      // The human may have left the conversation while this timer waited: no fetch for « null », and the flag must be released (a stuck
+      // inflight made every later refresh return early — the next conversation opened stayed blank until a reload; #375 rig). Nothing was
+      // fetched, so the throttle clock is NOT moved (the next conversation's first paint must not wait for it) and a queued refresh is dropped.
+      if (!id) { inflight = false; again = false; return; }
+      lastFetch = Date.now();
       fetch('/api/conversation?id=' + encodeURIComponent(id), { headers: auth(), cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
@@ -233,7 +238,8 @@ export const CONVERSATION_JS = `(function () {
           if (c && c.ok) { stEl.textContent = ''; stEl.className = 'conv-state'; render(c); }
           else { stEl.textContent = c ? 'Workspace introuvable.' : 'Orchestra injoignable.'; stEl.className = 'conv-state offline'; }
         })
-        .catch(function () { var stEl = root.querySelector('.conv-state'); stEl.textContent = 'Orchestra injoignable.'; stEl.className = 'conv-state offline'; })
+        // a failure answered AFTER the screen was emptied (back, then offline) must not throw in its own handler: that skipped the inflight reset below
+        .catch(function () { if (id !== current) return; var stEl = root.querySelector('.conv-state'); stEl.textContent = 'Orchestra injoignable.'; stEl.className = 'conv-state offline'; })
         .then(function () { inflight = false; if (again) { again = false; fetchConv(); } });
     }, wait);
   }

@@ -17,6 +17,7 @@ PAIR = 'src/shared/acces-mobile-pairing.test.ts'
 QR = 'src/shared/qr.test.ts'
 TOKEN = 'src/main/acces-mobile-token.test.ts'
 WIRING = 'src/main/acces-mobile-wiring.test.ts'
+CLOSERACE = 'src/acces-mobile/conversation-close-race.test.ts'
 MUTANTS = [
     # (id, file, original, replacement, expected) — expected 'RED' (must be killed) or 'EQUIV' (a second guard covers it)
     ('M1-no-allowed-login', 'src/acces-mobile/server.ts', "    if (!opts.allowedLogin) return refuse(403, 'no-allowed-login');\n", '', 'RED'),
@@ -228,6 +229,11 @@ MUTANTS = [
     ('TT17-self-parent-guards-removed', 'src/shared/acces-mobile-tree.ts', "    parentOf.push(p !== undefined && p !== i ? p : -1);\n    if (p !== undefined && p !== i) kidsOf[p].push(i);", "    parentOf.push(p !== undefined ? p : -1);\n    if (p !== undefined) kidsOf[p].push(i);", 'EQUIV', TREE),
     # EQUIVALENT (documented, reviewer R373): differs only WITH duplicate ids, which cannot exist (store.ts upserts by id, ids are randomUUID())
     ('TT18-last-duplicate-wins', 'src/shared/acces-mobile-tree.ts', "if (first[rows[i].id] === undefined) first[rows[i].id] = i;", "first[rows[i].id] = i;", 'EQUIV', TREE),
+    ('CV1-refresh-fires-for-a-closed-conversation', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '', 'RED', CLOSERACE),
+    ('CV3-queued-refresh-survives-the-close', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n', '      if (!id) { inflight = false; return; }\n', 'RED', CLOSERACE),
+    ('CV4-abandoned-refresh-moves-the-throttle-clock', 'src/acces-mobile/conversation.ts', '      if (!id) { inflight = false; again = false; return; }\n      lastFetch = Date.now();\n', '      lastFetch = Date.now();\n      if (!id) { inflight = false; again = false; return; }\n', 'RED', CLOSERACE),
+    ('CV5-stale-success-draws-into-the-next-conversation', 'src/acces-mobile/conversation.ts', "          if (id !== current) return;\n          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", "          var stEl = root.querySelector('.conv-state');\n          if (c && c.ok)", 'RED', CLOSERACE),
+    ('CV6-late-failure-paints-the-next-conversation', 'src/acces-mobile/conversation.ts', '.catch(function () { if (id !== current) return; var stEl', '.catch(function () { var stEl', 'RED', CLOSERACE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]
