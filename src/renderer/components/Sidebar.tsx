@@ -27,7 +27,6 @@ import { BootStallBadge } from './BootStall';
 import { RowActionsPopover, useRowActionsPopover } from './RowActionsPopover';
 import { InboxBell } from './InboxBell';
 import { SoundSettings } from './SoundSettings';
-import { AgentViewSettings } from './AgentViewSettings';
 import { BusSwitchSettings } from './BusSwitchSettings';
 import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
@@ -52,6 +51,7 @@ import { PauseAwareGlyph, PauseRowActions, PauseRowBadge, PauseRowBar, PauseRowN
 import { WatchersStrip } from './WatchersStrip';
 import { PauseMenuHost } from './pause/PauseMenu';
 import { pauseDimClass } from '../../shared/pause-ui-view';
+import { SANDBOX_PAUSED_TICKET } from '../../shared/sandbox-pause';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -923,7 +923,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     }
   });
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
-  const [agentViewSettingsOpen, setAgentViewSettingsOpen] = useState(false);
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
@@ -1355,7 +1354,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       title: 'Import to sandbox',
       message: `Move "${name}" into an always-on sandbox?`,
       detail:
-        'The checkout (including uncommitted changes) is shipped to the sandbox container, and the local worktree is retired. The terminal then streams from the sandbox.',
+        `The checkout (including uncommitted changes) is shipped to the sandbox container, and the local worktree is retired. Sandbox agents are paused pending ${SANDBOX_PAUSED_TICKET}, so its agent cannot start there until then.`,
       placeholder: 'ws://sandbox-host:8787',
       initialValue: localStorage.getItem('orchestra.lastSandboxEndpoint') ?? '',
       confirmLabel: 'Import',
@@ -1860,18 +1859,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               <rect x="9" y="3" width="6" height="11" rx="3" />
               <path d="M5 11a7 7 0 0 0 14 0" />
               <line x1="12" y1="18" x2="12" y2="21" />
-            </svg>
-          </button>
-          <button
-            className="header-icon-btn"
-            onClick={() => setAgentViewSettingsOpen(true)}
-            title="Default agent view — terminal or structured (SDK) pane"
-            aria-label="Default agent view settings"
-          >
-            {/* two-panes glyph: choosing which agent surface opens by default */}
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <rect x="3" y="4" width="18" height="16" rx="2" />
-              <line x1="12" y1="4" x2="12" y2="20" />
             </svg>
           </button>
           <button
@@ -2654,9 +2641,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
-        {agentViewSettingsOpen && (
-          <AgentViewSettings onClose={() => setAgentViewSettingsOpen(false)} />
-        )}
         {busSwitchSettingsOpen && (
           <BusSwitchSettings onClose={() => setBusSwitchSettingsOpen(false)} />
         )}

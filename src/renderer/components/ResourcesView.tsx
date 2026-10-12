@@ -233,7 +233,7 @@ function AgentRowView({
         title: 'Stop agent?',
         message: `${name} is mid-turn. Stopping will kill the current response.`,
         detail:
-          'The agent process exits and frees its CPU/memory. Reopening the workspace (or pressing a key in its terminal) relaunches it with `claude --continue`.',
+          'The agent process exits and frees its CPU/memory.',
         tone: 'danger',
       });
       if (!ok) return;
@@ -510,8 +510,8 @@ export function AgentsTable({
     <>
           {rows.length === 0 && (
             <div className="res-empty">
-              No agent processes right now — open a workspace terminal and its
-              agent will appear here.
+              No agent processes right now — send a message in a workspace’s
+              Agent view and its agent will appear here.
             </div>
           )}
           {rows.length > 0 && (

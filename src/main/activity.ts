@@ -357,7 +357,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     platform.broadcast('agent:finished', id, focused);
     // Re-evaluate "is this branch in sync with base after a merge, or has
     // it diverged again?" each time the agent's turn ends. Agents drive the
-    // merge themselves via the Merge button's prompt, and may keep working
+    // merge themselves (there is no Merge button — #229), and may keep working
     // on the branch afterward — so the pill cycles on/off with each merge
     // and re-divergence rather than being a one-shot terminal state.
     void detectAndUpdateMergeState(id);

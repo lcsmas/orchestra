@@ -1,5 +1,5 @@
 // Whether the structured view's composer uses VIM KEYBINDINGS. A renderer-side
-// UI preference persisted in localStorage, mirroring `default-agent-view.ts`
+// UI preference persisted in localStorage, mirroring `voice-dictionary.ts`
 // (pure + dependency-free, so it is node-testable and readable from both the
 // composer and a settings surface).
 //

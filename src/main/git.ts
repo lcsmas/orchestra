@@ -481,8 +481,8 @@ function truncate(s: string, max = 300_000): string {
  *  base with no merge commit) — and when the fast-forward lands base exactly
  *  on the branch tip, it's also indistinguishable from a freshly-created
  *  workspace whose branch still equals base. To resolve that ambiguity we
- *  consult base's reflog: `git merge <branch>` (including the fast-forward
- *  Orchestra's own Merge button performs) writes a `merge <branch>:` entry
+ *  consult base's reflog: `git merge <branch>` (including a fast-forward
+ *  the agent performs) writes a `merge <branch>:` entry
  *  to the base ref, which is the one durable record that the merge happened.
  *  Reflog entries expire (~90 days), after which such a branch falls back to
  *  `stalePointer` — acceptable, since merged workspaces are archived long
@@ -551,7 +551,7 @@ export async function getBranchMergeState(
     //  1. A real merge commit on base's mainline folded the tip in
     //     (`branchTipWasMergedInto`). Only possible when refs differ.
     //  2. base's reflog records a `merge <branch>` — the durable trace a
-    //     fast-forward / rebase merge via the Merge button leaves behind.
+    //     fast-forward / rebase merge the agent performs leaves behind.
     //  3. The branch authored the commit it points at (`branchAuthoredItsTip`):
     //     its own reflog shows a `commit`/`rebase`/`cherry-pick`/… entry, not
     //     just a `branch: Created from …`. Since the tip is fully contained in

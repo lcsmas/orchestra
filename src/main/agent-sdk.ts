@@ -508,6 +508,8 @@ interface Session {
   /** How the claimed brief's FIRST TURN went (#227 D7): unset while undecided; 'ok' at the first non-error output; 'failed' on an errored turn
    *  (unwound: owed again). Init alone decides nothing — a bad --model / no auth inits, then errors. */
   briefOutcome?: 'ok' | 'failed';
+  /** #230 — the id this session RESUMED when it came from a terminal-transcript ADOPTION (not from a session that ever ran); see consume. */
+  adoptedResume?: string;
   /** #227 D7 — `sdkAwaitFirstTurn` callers waiting for this session's first turn outcome. */
   turnWaiters: Array<(o: SdkFirstTurnOutcome) => void>;
   turnSettled?: boolean;
@@ -1407,6 +1409,10 @@ function releaseTurnGate(session: Session): void {
   openNext?.();
 }
 
+/** #230: ws id → the terminal-transcript id an adoption last wrote, until the next session start stamps `session.adoptedResume`
+ *  (sdkWake/sdkWakeRestart adopt BEFORE ensureSession, whose own adoption is then a no-op). */
+const adoptedTranscripts = new Map<string, string>();
+
 /** Consume the SDK message stream for a session until it ends or throws. */
 async function consume(session: Session): Promise<void> {
   let endedByInterrupt = false;
@@ -1682,10 +1688,14 @@ async function consume(session: Session): Promise<void> {
     // failure surfaces HERE, not in sdkSend's catch where the original guard
     // lived (silent-failure audit H3). Clear the id on the positive signal only;
     // transient failures keep it so a later send resumes the same conversation.
+    // #230: an id an ADOPTION wrote clears to '' (not undefined — a hasInput ws would re-adopt the same transcript). Real refusal shape
+    // (MEASURED, SDK 0.3.241 + CLI 2.1.291): a `result/error_during_execution` message, then "returned an error result: No conversation found".
     if (isBadResumeError(message)) {
       const wsNow = store.getWorkspace(session.wsId);
       if (wsNow?.sdkSessionId) {
-        void persistWorkspacePatch(session.wsId, { sdkSessionId: undefined });
+        const wasAdopted = session.adoptedResume !== undefined && wsNow.sdkSessionId === session.adoptedResume;
+        if (wasAdopted) log.warn(`agent-sdk: ${session.wsId} adopted terminal transcript ${session.adoptedResume} did not resume (the CLI refused it) — cleared, the next start is fresh`);
+        void persistWorkspacePatch(session.wsId, { sdkSessionId: wasAdopted ? '' : undefined });
       }
     }
   } finally {
@@ -1822,7 +1832,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   const existing = sessions.get(wsId);
   if (existing && !existing.stopping) return existing;
 
-  const ws = store.getWorkspace(wsId);
+  let ws = store.getWorkspace(wsId);
   if (!ws) throw new Error(`unknown workspace: ${wsId}`);
 
   // #226: sandbox agents are PAUSED pending #220 — refuse at THE funnel every start/resume/wake
@@ -1843,6 +1853,11 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // means no restore path can forget to drop the chip.
   clearHibernated(wsId);
   turnOutcomes.delete(wsId); // #227 D6: a new session starts unsettled
+
+  // #230 (#228 O1/F1): a legacy terminal-only ws (hasInput, no sdkSessionId) adopts its terminal transcript at THIS funnel, so any first
+  // action (composer, `!cmd`, MCP popover) resumes it; after the sandbox refusal, and `ws` is re-read for resolveResumeId below.
+  await adoptTerminalTranscript(wsId);
+  ws = store.getWorkspace(wsId) ?? ws;
 
   // Env parity with the terminal spawn (installOrchestraHooks + account inheritance +
   // CLAUDE_CONFIG_DIR). `remote` is always false here while sandbox agents are PAUSED (#226,
@@ -1961,6 +1976,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   const resumeId = resolveResumeId(ws.sdkSessionId, (id) =>
     remote ? true : transcriptExistsFor(ws, id),
   );
+  // #230 F1: was the id we are about to resume the one an ADOPTION wrote (read once — the next start is judged on its own)?
+  const adoptedId = adoptedTranscripts.get(wsId);
+  adoptedTranscripts.delete(wsId);
+  session.adoptedResume = adoptedId !== undefined && resumeId === adoptedId ? adoptedId : undefined;
   if (!remote && ws.sdkSessionId && !resumeId && ws.sdkSessionId !== '') {
     log.warn(
       `agent-sdk: ${wsId} sdkSessionId ${ws.sdkSessionId} has no transcript on disk — ` +
@@ -3433,8 +3452,9 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
  *  resume id, so a structured wake continues the same conversation the old PTY
  *  wake's `claude --continue` would have — instead of silently starting blank.
  *  (`sdkSessionId === ''` is sdkClear's explicit "cleared" marker and starts
- *  fresh; a genuinely bad adopted id is cleared by sdkSend's isBadResumeError
- *  guard, so a corrupt transcript can't wedge future sends.) */
+ *  fresh; an adopted id the CLI refuses ("No conversation found") is cleared to
+ *  that marker by `consume` (`session.adoptedResume`, #230), so a corrupt
+ *  transcript can't wedge future starts.) */
 export async function sdkWake(
   wsId: string,
   text: string,
@@ -3449,7 +3469,7 @@ export async function sdkWake(
  *  `sdkSessionId` and no live session persists its newest on-disk transcript as
  *  the resume id. A no-op otherwise (an id, the `''` cleared marker, a live
  *  session, or no transcript on disk all leave the record untouched). */
-async function adoptTerminalTranscript(wsId: string): Promise<void> {
+async function adoptTerminalTranscript(wsId: string): Promise<string | undefined> {
   const ws = store.getWorkspace(wsId);
   if (ws?.worktreePath && ws.hasInput && ws.sdkSessionId === undefined && !sessions.has(wsId)) {
     // Newest session for THIS worktree under THIS workspace's account config
@@ -3461,10 +3481,14 @@ async function adoptTerminalTranscript(wsId: string): Promise<void> {
         fs.existsSync(path.join(dir, `${info.sessionId}.jsonl`)),
       )?.sessionId ?? '';
     if (adopted) {
-      log.info(`agent-sdk: wake ${wsId} adopting terminal transcript ${adopted} as resume id`);
+      // Neutral wording: this fires for every start that adopts (wake, restart, composer send, `!cmd`, the MCP popover), not only a wake.
+      log.info(`agent-sdk: ${wsId} adopting terminal transcript ${adopted} as resume id`);
+      adoptedTranscripts.set(wsId, adopted);
       await persistWorkspacePatch(wsId, { sdkSessionId: adopted });
+      return adopted;
     }
   }
+  return undefined;
 }
 
 /** Reattach to a DETACHED keeper session, if one is live for this workspace.

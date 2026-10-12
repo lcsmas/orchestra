@@ -1,4 +1,4 @@
-// Sandbox agents are PAUSED (wave "Agent view only", #219/#226; ADR 0003 text in #219).
+// Sandbox agents are PAUSED (wave "Agent view only", #219/#226; ADR 0007 text in #219).
 //
 // A sandbox-hosted workspace's agent runs in a container as a PTY `claude`; the Agent view
 // drives an SDK session that would run the CLI on THIS host with the container's working

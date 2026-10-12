@@ -22,7 +22,7 @@ The **?** button in the sidebar header opens the in-app feature guide any time.
 
 1. Click **Repo** and pick a local git repository. It appears as a section in the sidebar with a **+** button.
 2. Click **+** on the repo section. Orchestra cuts a new branch off the repo's base branch, creates a worktree for it under `~/.orchestra/worktrees/`, and starts a Claude Code agent there.
-3. Type your task into the agent's terminal. The branch starts with an auto-generated name; the agent renames it to something meaningful once it understands the work ([self-naming branches](workspaces.md#branch-naming)).
+3. Type your task into the Agent view's composer. The branch starts with an auto-generated name; the agent renames it to something meaningful once it understands the work ([self-naming branches](workspaces.md#branch-naming)).
 4. Watch the status dot: blue while the agent works, orange when it's waiting for you.
 5. Open the **Diff** tab to review the change as it grows — it refreshes live.
 6. Happy? Ask the agent to commit, push and open a PR against the base branch (`gh pr create`). Once it links the PR, a **PR #N** button appears in the toolbar and the sidebar tracks the PR from then on.
@@ -36,7 +36,7 @@ The **?** button in the sidebar header opens the in-app feature guide any time.
 
 ## If a repo needs setup
 
-Most real repos need `npm install` or similar before an agent can build. Configure per-repo **setup / run / archive scripts** via the gear icon on the repo header — setup runs automatically when each workspace is created (with a progress banner), run powers the [Run tab](workspaces.md#terminals), archive runs at cleanup. See [Workspaces & sessions](workspaces.md#per-repo-scripts).
+Most real repos need `npm install` or similar before an agent can build. Configure per-repo **setup / run / archive scripts** via the gear icon on the repo header — setup runs automatically when each workspace is created (with a progress banner), run powers the [Run tab](workspaces.md#agent-view--terminals), archive runs at cleanup. See [Workspaces & sessions](workspaces.md#per-repo-scripts).
 
 ## Next steps
 

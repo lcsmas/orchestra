@@ -7,7 +7,7 @@ Running many agents in parallel makes usage limits a first-class concern. Orches
 Add extra Claude accounts via the users icon in the sidebar header. Each account is a separate Claude Code login (its own config dir); the login flow opens in an isolated in-app browser window so it never disturbs your default browser session.
 
 - **Pin a workspace to an account** — each workspace runs its agent under a chosen login; the sidebar badge shows which.
-- **Migrate mid-conversation** — move an existing workspace to another account (`orchestra migrate-account <id> <accountId>`, or the UI menu). Orchestra stops the agent, relocates the conversation into the target login, and resumes it where it left off — `claude --continue` keeps working.
+- **Migrate mid-conversation** — move an existing workspace to another account (`orchestra migrate-account <id> <accountId>`, or the UI menu). Orchestra stops the agent, relocates the conversation into the target login, and resumes it where it left off.
 - **Inheritance** — alternate logins inherit your global `~/.claude` configuration (settings, skills, MCP servers) via symlinks/merges, so every account behaves like *your* Claude.
 
 **Use case:** a personal account and a work account; or two Max accounts so a heavy fan-out doesn't starve your interactive session.

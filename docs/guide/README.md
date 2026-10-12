@@ -5,7 +5,7 @@ Orchestra runs parallel Claude Code agents in isolated git worktrees — each on
 | Page | What it covers |
 |---|---|
 | [Getting started](getting-started.md) | Install, register a repo, first workspace, first PR |
-| [Workspaces & sessions](workspaces.md) | Worktree workspaces, scratch sessions, orchestrators, lifecycle, terminals, status |
+| [Workspaces & sessions](workspaces.md) | Worktree workspaces, scratch sessions, orchestrators, lifecycle, the Agent view & terminals, status |
 | [Multi-agent orchestration](multi-agent.md) | Agents spawning agents, peer comms, orchestrator fleets |
 | [Review & ship](review-and-ship.md) | Diff review, PR tracking, merge & release tracking, base sync |
 | [Accounts & usage](accounts-and-usage.md) | Multiple Claude logins, usage bars, the prompt queue |
@@ -16,7 +16,7 @@ Orchestra runs parallel Claude Code agents in isolated git worktrees — each on
 
 ## The elevator pitch
 
-The unit of work in Orchestra is a **workspace**: a git branch, checked out in its own worktree, with a live Claude Code agent working in it. Because every workspace has its own directory and its own `HEAD`, agents never trip over each other — you can have five features and two bug fixes in flight on the same repo at once, watch each agent's terminal live, review each branch's diff side by side, and turn any of them into a PR with one click.
+The unit of work in Orchestra is a **workspace**: a git branch, checked out in its own worktree, with a live Claude Code agent working in it. Because every workspace has its own directory and its own `HEAD`, agents never trip over each other — you can have five features and two bug fixes in flight on the same repo at once, watch each agent work live in its Agent view, review each branch's diff side by side, and ask the agent to open a PR when it's ready.
 
 Two ideas set Orchestra apart:
 

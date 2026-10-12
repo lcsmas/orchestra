@@ -4,7 +4,7 @@ Orchestra is diff-first: the point of parallel agents is that *you* stay in the 
 
 ## Diff review
 
-The **Diff** tab shows a side-by-side Monaco diff of the workspace against its base, refreshing every few seconds while the agent works. You don't wait for "done" to start reviewing — watch the change take shape, and steer the agent in the terminal when it drifts. Every sidebar row shows live +/− line counts so you can see at a glance which workspaces have real work in them.
+The **Diff** tab shows a side-by-side Monaco diff of the workspace against its base, refreshing every few seconds while the agent works. You don't wait for "done" to start reviewing — watch the change take shape, and steer the agent from the Agent view when it drifts. Every sidebar row shows live +/− line counts so you can see at a glance which workspaces have real work in them.
 
 ## Pull requests
 
@@ -27,6 +27,6 @@ Orchestra tracks each repo's base branch against `origin`: behind/ahead counts r
 ## Suggested flow
 
 1. Spawn workspaces per task; let agents work.
-2. Review diffs as they grow; steer in the terminal.
+2. Review diffs as they grow; steer from the Agent view.
 3. PR the winners; archive the rest (worktree + branch removed in one step).
 4. Watch merge and release pills to confirm work actually landed and shipped.

@@ -33,7 +33,7 @@ orchestra message <id> <text...>       # LEGACY channel (see below)
 
 On a fleet-bus mission (any run with the `delivery` switch ON — the default), coordination goes through the **bus** (`orchestra send`): messages are durable, ack'd and re-driven, so they survive the peer being stopped, mid-turn or restarted.
 
-`orchestra message` is the pre-bus channel (it types into the peer's live TUI or wakes it). It is **refused for coordination on a delivery-ON run** and points you at `orchestra send`. It still works for a run with delivery OFF (a legacy mission), and via `orchestra message --emergency <id> <text...>` for an out-of-band liveness poke when the peer's bus reader is wedged. Live/woken/inbox delivery semantics apply to the legacy channel; the recipient sees who sent it and can reply back.
+`orchestra message` is the pre-bus channel (it delivers into the peer's live Agent-view session or wakes it). It is **refused for coordination on a delivery-ON run** and points you at `orchestra send`. It still works for a run with delivery OFF (a legacy mission), and via `orchestra message --emergency <id> <text...>` for an out-of-band liveness poke when the peer's bus reader is wedged. Live/woken/inbox delivery semantics apply to the legacy channel; the recipient sees who sent it and can reply back.
 
 **Use cases:** a spawner checking on delegated work (`read`), follow-up instructions after review (`message`), an agent asking the workspace that owns a subsystem to make a change instead of touching it cross-worktree.
 

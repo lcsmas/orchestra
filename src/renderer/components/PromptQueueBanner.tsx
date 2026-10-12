@@ -10,12 +10,12 @@ interface Props {
 }
 
 /** Inline banner above the workspace pane, shown while the workspace's account
- * is over its usage limit (typing into the terminal would just burn the turn on
+ * is over its usage limit (sending from the composer would just burn the turn on
  * a "limit reached" error) — or while any prompts are still parked on the
  * queue. Offers a composer that queues prompts instead; the main-process
  * flusher (src/main/prompt-queue.ts) delivers the queue automatically once a
  * fresh usage reading shows the limit has reset. Same above-the-pane-row
- * placement as SetupBanner so the absolutely-positioned TerminalView can't
+ * placement as SetupBanner so the absolutely-positioned Agent view can't
  * eclipse it. */
 export function PromptQueueBanner({ workspace }: Props) {
   // Atomic selectors — same discipline as UsageBars: subscribe only to the
@@ -139,7 +139,7 @@ export function PromptQueueBanner({ workspace }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             // Enter queues; Shift+Enter inserts a newline — the same submit
-            // gesture as the agent TUI the user would otherwise be typing into.
+            // gesture as the Agent view composer the user would otherwise be typing into.
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               void onQueue();
