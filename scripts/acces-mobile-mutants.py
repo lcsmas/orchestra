@@ -163,6 +163,8 @@ E2E_MUTANTS = [
     ('E16-scan-never-pairs', 'src/acces-mobile/page.ts', "          stopScan(); adopt(tok);", "          stopScan();", 'pair/in-app-scan'),
     ('E17-camera-left-on', 'src/acces-mobile/page.ts', "          stopScan(); adopt(tok);", "          adopt(tok);", 'pair/in-app-scan'),
     ('E18-decoder-not-inlined', 'vite.acces-mobile.config.ts', "if (!id.endsWith('/src/acces-mobile/jsqr-src.ts')) return null;", "if (!id.endsWith('/nothing-matches.ts')) return null;", 'pair/'),
+    ('E19-header-sticks-under-status-bar', 'src/acces-mobile/conversation.ts', ".v1 .ch{position:sticky;top:env(safe-area-inset-top);z-index:2;", ".v1 .ch{position:sticky;top:0;z-index:2;", 'conv/header-below-status-bar'),
+    ('E20-status-bar-strip-gone', 'src/acces-mobile/conversation.ts', "body.v1::before{content:", "body.v1::after{content:", 'conv/header-below-status-bar'),
 ]
 
 def run_e2e(ids):
