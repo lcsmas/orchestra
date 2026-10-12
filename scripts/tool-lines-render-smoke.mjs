@@ -27,8 +27,9 @@ const outfile = path.join(repoRoot, 'node_modules', '.cache', 'tool-lines-smoke.
 const entryFile = path.join(repoRoot, 'node_modules', '.cache', 'tool-lines-entry.tsx');
 const entry = `
 import { ToolGroup } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/ToolGroup.tsx'))};
+import { ToolCard } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/agent/ToolCard.tsx'))};
 import { buildRenderItems } from ${JSON.stringify(path.join(repoRoot, 'src/shared/agent-render-items.ts'))};
-export { ToolGroup, buildRenderItems };
+export { ToolGroup, ToolCard, buildRenderItems };
 `;
 fs.mkdirSync(path.dirname(entryFile), { recursive: true });
 fs.writeFileSync(entryFile, entry);
@@ -47,7 +48,7 @@ await build({
 globalThis.self = globalThis;
 globalThis.window = { addEventListener: () => {}, removeEventListener: () => {} };
 globalThis.document = { addEventListener: () => {}, removeEventListener: () => {} };
-const { ToolGroup, buildRenderItems } = await import(`${outfile}?t=${Date.now()}`);
+const { ToolGroup, ToolCard, buildRenderItems } = await import(`${outfile}?t=${Date.now()}`);
 
 const text = (html) => html.replace(/<!-- -->/g, '');
 let failures = 0;
@@ -96,6 +97,13 @@ check('closed and open genuinely differ', open !== closed && open.length > close
 const openOk = render({ defaultOpenIds: ['t-ok'] });
 check('an ok Bash line opens to its card WITH the output shown (startOpen)', openOk.includes('av-tool-card') && openOk.includes('all green'), 'the card mounted closed: the click would need a second click');
 check('the ok line opened, the failed one did not', /av-tool-line-ok av-open/.test(openOk) && !/av-tool-line-error av-open/.test(openOk));
+
+console.log('\nThe opened card agrees with its line (ToolCard\'s running state is the shared rule — no result ⇒ running, even after block-stop):');
+const card = (m) => text(renderToString(React.createElement(ToolCard, { message: m })));
+const stopped = card(tool('t-run2', 'Bash', { command: 'sleep 9' })); // done:true (block stopped), NO result
+check('a tool with no result is « running » on its card (pending class + title), as on its line', stopped.includes('av-tool-status-pending') && stopped.includes('title="running"') && !stopped.includes('av-tool-status-ok'), stopped.slice(0, 200));
+const finished = card(tool('t-done2', 'Bash', { command: 'ls' }, { content: 'x' }));
+check('a tool with its result is « done » (ok class), not running', finished.includes('av-tool-status-ok') && finished.includes('title="done"') && !finished.includes('av-tool-status-pending'));
 
 console.log(`\n${failures === 0 ? 'PASS' : `FAIL (${failures})`}`);
 process.exit(failures === 0 ? 0 : 1);

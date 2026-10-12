@@ -760,7 +760,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   Pure logic in `src/shared/peer-messages.ts` (`isPeerMessage`, `peerSender`,
   `peerPreview`, `describePeerRun`, `peerOriginLabel`,
   `recognizeFormattedPeerMessage`), unit-tested in `peer-messages.test.ts`.
-  `buildRenderItems` (StructuredView.tsx) groups consecutive peer messages into a
+  `buildRenderItems` (`src/shared/agent-render-items.ts`) groups consecutive peer messages into a
   `peer-group` item rendered by `PeerMessageGroup.tsx` (built in ToolGroup's
   image; `.av-peer-run*` classes). Gate: `scripts/peer-rows-render-smoke.mjs`
   (collapsed + expanded + a human-turn CONTROL whose text mimics a peer
@@ -773,7 +773,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   neutral incl. "previous session ended" orphans / `event` for Monitor events),
   usage meta, and expanded-only `result` / `event` / `note`. A body that is not
   exactly one envelope with a summary returns null → the plain bubble stays.
-  `buildRenderItems` (StructuredView.tsx:1007) groups consecutive notices into a
+  `buildRenderItems` (`src/shared/agent-render-items.ts`) groups consecutive notices into a
   `task-notices` item → `TaskNoticeGroup.tsx` (lone notice = one row; ≥2 =
   "N task notices · K failed"; `.av-tnotice*`). Gates: `task-notices.test.ts`
   (incl. must-FAIL envelopes) + `scripts/task-notice-rows-render-smoke.mjs` in
@@ -812,7 +812,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `makeUserMessage` (the composer-prompt path, no `isMeta`), so it survives the
   backfill fold as a plain user line; a check/ack is a `tool` Bash card with the
   same `toolUse`/`toolResult` live and on disk. `buildRenderItems`
-  (StructuredView.tsx) runs a one-pass ack PRE-SCAN over the whole list
+  (`src/shared/agent-render-items.ts`) runs a one-pass ack PRE-SCAN over the whole list
   (`ackedLots`), then routes wake→`wake` item, check→`delivery` item, and drops
   the raw `ack` Bash card (the badge conveys it); an unparseable check falls
   through to a normal tool card. Gates: `scripts/bus-rows-render-smoke.mjs`
