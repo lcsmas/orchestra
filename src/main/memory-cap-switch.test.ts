@@ -110,8 +110,9 @@ test('#324 the default flip is for NEW runs only: a run that froze memory_cap OF
   // re-reading is stable, and a vague row is never re-frozen by a wave boundary (only a MISSION row is — D1b, existing semantics for every switch)
   assert.equal(refreezeRun(db, 'old-vague', normalizeLiveSwitches(undefined)), false, 'a vague (OPS) row is never re-frozen');
   assert.equal(busSwitch(db, 'old-vague', 'memory_cap'), false);
-  assert.equal(refreezeRun(db, 'old-mission', normalizeLiveSwitches(undefined)), true, 'a MISSION row re-freezes at a wave boundary to the live settings — the D1b rule that already applied to every switch (the documented caveat)');
-  assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), true);
+  assert.equal(refreezeRun(db, 'old-mission', normalizeLiveSwitches(undefined)), true, 'a MISSION row IS re-frozen at a wave boundary (D1b) — for every switch but memoryCap (LEAD Q17 option A)');
+  assert.equal(busSwitch(db, 'old-mission', 'memory_cap'), false, 'an already-open mission keeps launching its plain children UNCAPPED');
+  assert.equal(memoryCapSpecFor(args({ runId: 'old-mission' }), real), undefined);
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });

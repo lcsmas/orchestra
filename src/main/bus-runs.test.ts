@@ -851,3 +851,38 @@ test('one-switch: unknown run and missing flags row are refused, never late-inse
     cleanup(db, dir);
   }
 });
+
+// ═══ #324 (LEAD Q17, option A) — a mission RE-FREEZE never changes memoryCap ═══════════════════════════════════════
+test('T324.1 — refreezeRun and refreezeMissionRun take every live flip but KEEP the row\'s memoryCap, both ways; only a mission row is touched; no row is late-inserted', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const sw = (o: Partial<BusSwitches>): BusSwitches => ({ ...DEFAULT_BUS_SWITCHES, ...o });
+    startRun(db, { id: 'm-off', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: false }));
+    startRun(db, { id: 'm-on', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: true, delivery: true }));
+    startRun(db, { id: 'v-off', kind: 'vague', coordinator: 'c' }, sw({ memoryCap: false }));
+    // live now: delivery + wake ON, memoryCap ON for the first, then OFF for the second
+    assert.equal(refreezeRun(db, 'm-off', sw({ delivery: true, wake: true, memoryCap: true })), true);
+    assert.equal(runFlags(db, 'm-off').delivery, true, 'control: the other flips are taken');
+    assert.equal(runFlags(db, 'm-off').wake, true);
+    assert.equal(runFlags(db, 'm-off').memoryCap, false, 'a mission frozen OFF stays OFF when the live default is ON');
+    assert.equal(busSwitch(db, 'm-off', 'memory_cap'), false);
+    assert.equal(refreezeMissionRun(db, 'm-on', sw({ delivery: false, memoryCap: false }), { hasLiveChild: false }), 'refrozen');
+    assert.equal(runFlags(db, 'm-on').delivery, false, 'control: delivery followed the live setting');
+    assert.equal(runFlags(db, 'm-on').memoryCap, true, 'a mission frozen ON stays ON when the live setting is later turned off (admin path too)');
+    assert.equal(refreezeRun(db, 'v-off', sw({ memoryCap: true })), false, 'a vague row is never touched');
+    assert.equal(runFlags(db, 'v-off').memoryCap, false);
+    // no row ⇒ nothing is inserted, and the keep-frozen read of an absent row does not invent one
+    assert.equal(refreezeRun(db, 'ghost', sw({ memoryCap: true })), false);
+    assert.equal(getRun(db, 'ghost'), null);
+    // a run created AFTER the flip freezes the live default (startRun is unchanged)
+    startRun(db, { id: 'm-new', kind: 'mission', coordinator: 'c' }, sw({ memoryCap: true }));
+    assert.equal(runFlags(db, 'm-new').memoryCap, true);
+    // every OTHER key of a re-freeze equals the live value (the exclusion is exactly one key wide)
+    const live = sw({ delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true, pause: true, dockerRelay: true, memoryCap: true });
+    startRun(db, { id: 'm-all', kind: 'mission', coordinator: 'c' }, sw({}));
+    refreezeRun(db, 'm-all', live);
+    for (const m of BUS_MECHANISMS) assert.equal(runFlags(db, 'm-all')[m], m === 'memoryCap' ? false : true, m);
+  } finally {
+    cleanup(db, dir);
+  }
+});

@@ -149,6 +149,13 @@ export function startRun(
 }
 
 /**
+ * Switches a mission RE-FREEZE (D1b wave boundary AND the admin `run refreeze`) never changes: the row keeps the value it froze at creation. `memoryCap` (#324, LEAD Q17 option A): the Plafond mémoire
+ * default was flipped ON for runs CREATED after the flip — an already-open LEAD mission must not have it switched on under its running fleet by its next OPS launch. A run without a row stays
+ * un-updated (the UPDATE is a no-op), and a NEW run row freezes the live default as always.
+ */
+export const REFREEZE_KEEPS_FROZEN: readonly BusMechanism[] = ['memoryCap'];
+
+/**
  * RE-FREEZE a MISSION run's flags at a wave boundary (#134 D1a/D1b, ledger #135).
  *
  * The LEAD is the ONE permanent node; if its mission row froze once and never
@@ -172,7 +179,11 @@ export function startRun(
  * SEPARATE explicit path D1b requires — never fold re-freeze into `startRun`.
  */
 export function refreezeRun(db: BusDb, runId: string, liveSwitches: BusSwitches): boolean {
-  const frozen = freezeSwitches(liveSwitches);
+  // #324 (LEAD Q17, option A): a re-freeze takes the live settings for every switch EXCEPT those in REFREEZE_KEEPS_FROZEN, which keep the value the row froze at creation.
+  const current = getRun(db, runId)?.flags;
+  const merged: BusSwitches = { ...liveSwitches };
+  if (current) for (const m of REFREEZE_KEEPS_FROZEN) merged[m] = current[m] === true;
+  const frozen = freezeSwitches(merged);
   const info = db
     .prepare(
       `UPDATE run_flags SET flags = ?, frozen_at = ?
