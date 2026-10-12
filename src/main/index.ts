@@ -172,6 +172,7 @@ import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
+import { sweepAgentTmpDirs } from './agent-tmpdir';
 import { initBus, closeBus, busPath, getBus, send, expireAllOrphanedAsks } from './bus';
 import { registerBusPaneIpc, registerStaleRunSource } from './bus-pane';
 import { pushWatchersToRenderer, stopAllWatchers } from './watchers';
@@ -754,6 +755,8 @@ async function createMainWindow() {
   // never appear. Cheap (one `git worktree list` per repo); guarded against
   // pruning when a repo is merely unmounted. Best-effort — never block startup.
   await pruneOrphanedWorkspaces().catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
+  // Disk TMPDIRs of workspaces that no longer exist (deleted while the app was down). See agent-tmpdir.ts.
+  try { sweepAgentTmpDirs(store.workspaces.map((w) => w.id)); } catch (e) { log.warn('sweepAgentTmpDirs failed', e); }
 
   if (VITE_DEV_SERVER_URL) {
     await mainWindow.loadURL(VITE_DEV_SERVER_URL);

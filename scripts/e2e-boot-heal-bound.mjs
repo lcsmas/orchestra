@@ -31,6 +31,7 @@
 // `bounded` sees recycles GROW with ticks (unbounded) and escalations === 0 —
 // `ok:false`. The rig therefore reddens on the unfixed build.
 
+import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -53,10 +54,10 @@ if (!arm) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 
 // Guarded temp home (same discipline as the R2 rig): env-overridable, so refuse
 // any path outside the prefix before rm -rf.
-const PREFIX = '/tmp/boot-heal-197-';
-const tmpHomeRaw = path.join(process.env.WEDGE_HOME ?? '/tmp/boot-heal-197', ARM);
+const PREFIX = path.join(os.tmpdir(), 'boot-heal-197-');
+const tmpHomeRaw = path.join(process.env.WEDGE_HOME ?? path.join(os.tmpdir(), 'boot-heal-197'), ARM);
 const tmpHome = path.resolve(tmpHomeRaw);
-if (!tmpHome.startsWith(PREFIX) && tmpHome !== path.resolve('/tmp/boot-heal-197', ARM)) {
+if (!tmpHome.startsWith(PREFIX) && tmpHome !== path.resolve(os.tmpdir(), 'boot-heal-197', ARM)) {
   console.error(`[boot-heal] refusing to remove unexpected path: ${tmpHomeRaw}`);
   process.exit(2);
 }

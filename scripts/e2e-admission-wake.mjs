@@ -77,6 +77,7 @@ fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, '.orchestra', 'inbox'), { recursive: true });
 const rigLogLevel = process.env.RIG_LOG_LEVEL;
 for (const k of Object.keys(process.env)) if (/^(ORCHESTRA_|CLAUDE_CONFIG_DIR|CLAUDECODE|CLAUDE_CODE_)/.test(k)) delete process.env[k];
+process.env.ORCHESTRA_AGENT_TMP_BASE = 'off'; // a scratch home must not leave a /var/tmp/orch-* root (src/main/agent-tmpdir.ts)
 if (rigLogLevel) process.env.ORCHESTRA_LOG_LEVEL = rigLogLevel;
 process.env.ORCHESTRA_HOME = path.join(tmpHome, '.orchestra');
 process.env.HOME = tmpHome;

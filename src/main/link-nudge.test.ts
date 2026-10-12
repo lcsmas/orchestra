@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -49,8 +49,12 @@ interface Fixture {
   socketCalls: () => number;
 }
 
+const created: string[] = [];
+after(() => { for (const d of created) fs.rmSync(d, { recursive: true, force: true }); });
+
 function setup(opts: { branch: string; pr?: string; linear?: string }): Fixture {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-link-'));
+  created.push(dir);
   const repo = path.join(dir, 'worktree');
   fs.mkdirSync(path.join(repo, '.orchestra'), { recursive: true });
 

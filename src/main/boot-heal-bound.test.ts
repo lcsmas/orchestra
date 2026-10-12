@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +28,15 @@ const RIG = path.join(REPO, 'scripts', 'e2e-boot-heal-bound.mjs');
 const REGISTER = path.join(REPO, 'scripts', '.r2-register.mjs');
 
 function runArm(arm: string): Record<string, unknown> {
+  const home = path.join(os.tmpdir(), `boot-heal-197-unit-${arm}-${process.pid}`);
+  try {
+    return runArmIn(arm, home);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function runArmIn(arm: string, home: string): Record<string, unknown> {
   const out = execFileSync(
     process.execPath,
     ['--experimental-strip-types', '--import', REGISTER, RIG, arm],
@@ -34,7 +44,7 @@ function runArm(arm: string): Record<string, unknown> {
       encoding: 'utf8',
       timeout: 180_000,
       cwd: REPO,
-      env: { ...process.env, WEDGE_HOME: `/tmp/boot-heal-197-unit-${arm}-${process.pid}` },
+      env: { ...process.env, WEDGE_HOME: home },
       stdio: ['ignore', 'pipe', 'ignore'],
     },
   );

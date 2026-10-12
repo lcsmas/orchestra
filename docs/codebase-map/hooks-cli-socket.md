@@ -131,6 +131,13 @@ Scripts and the Claude Code events they fire on:
   `$HOME`'s btrfs use `mkHomeScratch()` (`src/shared/home-scratch.ts`,
   `~/.cache/orchestra-test/`). The command has no `|| true`
   (see the caveat above).
+- **`tmp-guard.sh`** — PreToolUse, same matcher, every workspace; script in
+  `src/shared/tmp-guard.ts` (its test runs that string). Inert unless the session has
+  a disk TMPDIR (`ORCHESTRA_AGENT_TMPDIR`, set by `src/main/agent-tmpdir.ts`). **Denies
+  (exit 2)** a call naming a NON-existent entry directly under `/tmp` (tmpfs = RAM on
+  Fedora: agents' literal `/tmp` rigs + leaking tests filled 14 GB of it, 2026-10-12) and
+  points at `$TMPDIR`. Existing `/tmp` entries, `/var/tmp`, `~/tmp`, `$TMPDIR/...` pass.
+  A script that writes `/tmp` by itself slips through — the TMPDIR covers `os.tmpdir()`/`mktemp`.
 - **`fieldguide-instruction.sh`** — SessionStart ONLY. Injects the parent
   orchestrator's **swarm field guide** (`<orchestra-home>/fieldguide/
   <orchestrator-id>.md`, written by the orchestrator per the `orchestra-spawn`

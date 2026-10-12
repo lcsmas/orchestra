@@ -101,6 +101,7 @@ const home = path.join(base, 'home');
 fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
 fs.mkdirSync(path.join(home, '.claude-scratch'), { recursive: true });
 for (const k of Object.keys(process.env)) if (/^(ORCHESTRA_|CLAUDE_CONFIG_DIR|CLAUDECODE|CLAUDE_CODE_)/.test(k)) delete process.env[k];
+process.env.ORCHESTRA_AGENT_TMP_BASE = 'off'; // a scratch home must not leave a /var/tmp/orch-* root (src/main/agent-tmpdir.ts)
 process.env.ORCHESTRA_HOME = home;
 process.env.HOME = home;
 process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude-scratch');

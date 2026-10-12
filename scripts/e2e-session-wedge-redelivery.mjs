@@ -18,6 +18,7 @@
 //                   observe a NON-removal, so an "inbox empty" elsewhere is a
 //                   real finding rather than a rig that deletes files.
 
+import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -48,8 +49,8 @@ if (!arm) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 // traversal that starts with the prefix but escapes it (F1) is caught here too.
 // Use the CANONICAL path for every subsequent op so the guarded value and the
 // deleted/created value are the same.
-const WEDGE_PREFIX = '/tmp/wedge90-';
-const tmpHomeRaw = path.join(process.env.WEDGE_HOME ?? '/tmp/wedge90-r2', ARM);
+const WEDGE_PREFIX = path.join(os.tmpdir(), 'wedge90-');
+const tmpHomeRaw = path.join(process.env.WEDGE_HOME ?? path.join(os.tmpdir(), 'wedge90-r2'), ARM);
 const tmpHome = path.resolve(tmpHomeRaw);
 if (!tmpHome.startsWith(WEDGE_PREFIX)) {
   console.error(

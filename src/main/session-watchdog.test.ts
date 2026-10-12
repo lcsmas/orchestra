@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Pure, Electron-free — importable bare here (verified) so the #180 behavioural
@@ -46,6 +47,15 @@ const RIG = path.join(REPO, 'scripts', 'e2e-session-wedge-redelivery.mjs');
 const REGISTER = path.join(REPO, 'scripts', '.r2-register.mjs');
 
 function runArm(arm: string): Record<string, unknown> {
+  const home = path.join(os.tmpdir(), `wedge90-unit-${arm}-${process.pid}`);
+  try {
+    return runArmIn(arm, home);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function runArmIn(arm: string, home: string): Record<string, unknown> {
   const out = execFileSync(
     process.execPath,
     ['--experimental-strip-types', '--import', REGISTER, RIG, arm],
@@ -53,7 +63,7 @@ function runArm(arm: string): Record<string, unknown> {
       encoding: 'utf8',
       timeout: 120_000,
       cwd: REPO,
-      env: { ...process.env, WEDGE_HOME: `/tmp/wedge90-unit-${arm}-${process.pid}` },
+      env: { ...process.env, WEDGE_HOME: home },
       stdio: ['ignore', 'pipe', 'ignore'],
     },
   );
@@ -414,7 +424,9 @@ test('flap rig and its register hook exist', () => {
   assert.ok(fs.existsSync(FLAP_RIG), `${FLAP_RIG} missing`);
 });
 
-test('#97: recycles WIDEN and the stand-down SURFACES to a human', () => {
+test('#97: recycles WIDEN and the stand-down SURFACES to a human', (t) => {
+  const flapHome = path.join(os.tmpdir(), `flap97-unit-${process.pid}`);
+  t.after(() => fs.rmSync(flapHome, { recursive: true, force: true }));
   const out = execFileSync(
     process.execPath,
     ['--experimental-strip-types', '--import', REGISTER, FLAP_RIG],
@@ -422,7 +434,7 @@ test('#97: recycles WIDEN and the stand-down SURFACES to a human', () => {
       encoding: 'utf8',
       timeout: 120_000,
       cwd: REPO,
-      env: { ...process.env, FLAP_HOME: `/tmp/flap97-unit-${process.pid}` },
+      env: { ...process.env, FLAP_HOME: flapHome },
       // stderr carries the rig's VACUITY/SURFACE guards; keep it off the parsed
       // channel but let the JSON come through stdout.
       stdio: ['ignore', 'pipe', 'ignore'],

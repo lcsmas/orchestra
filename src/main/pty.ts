@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { getHookSocketPath } from './hooks-server';
 import { agentCliBinDir } from './cli-shim';
+import { applyAgentTmpEnv } from './agent-tmpdir';
 import { getEventsDir } from './events-spool';
 import { reconcileExited } from './activity';
 import { log, scoped } from './logger';
@@ -318,6 +319,7 @@ export async function startPty(opts: {
     // sets these to the container's own paths.)
     env.ORCHESTRA_WS_ID = opts.workspaceId;
     env.ORCHESTRA_EVENTS_DIR = getEventsDir();
+    applyAgentTmpEnv(env, opts.workspaceId); // disk TMPDIR, not the tmpfs /tmp (src/shared/agent-tmpdir.ts)
   }
   const sock = getHookSocketPath();
   if (sock && opts.workspaceId && !remote) {

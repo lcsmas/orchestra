@@ -172,6 +172,17 @@ endpoint}` = agent lives in an always-on container, see
 - **`createScratchWorkspace`** / **`createOrchestratorWorkspace`** —
   `workspaces.ts:403` / `:407` (both wrap `createScratchLikeWorkspace`, `:361`).
 
+### Agent TMPDIR on disk (`src/main/agent-tmpdir.ts`, pure `src/shared/agent-tmpdir.ts`)
+Every LOCAL session (structured `buildSdkEnv` in `agent-sdk.ts`, terminal `startPty` in `pty.ts`) gets
+`TMPDIR=/var/tmp/orch-<uid>-<6 hex of ORCHESTRA_HOME>/<12 hex of ws id>` + the marker `ORCHESTRA_AGENT_TMPDIR`
+(read by `tmp-guard.sh`, hooks-cli-socket.md). Why: `/tmp` is a tmpfs (RAM); the real CLI passes TMPDIR to Bash,
+and `os.tmpdir()`/`mktemp`/its own `claude-<uid>` dir follow it (measured, claude 2.1.291). Path ≤ 60 bytes
+(`AGENT_TMPDIR_MAX_LEN`: headless Chromium core-dumps at 65 — its SingletonSocket must fit AF_UNIX). Root created
+0700 and refused unless ours (world-writable `/var/tmp`). Removed in `teardownWorkspace` / prune (empty root too);
+boot `sweepAgentTmpDirs` (`index.ts`, after prune) drops dirs of unknown ws (an empty store sweeps nothing).
+`ORCHESTRA_AGENT_TMP_BASE` = another base (rigs) or `off`; OFF under `node --test` unless a base is given, and the
+rigs that strip `ORCHESTRA_*` set `off` (else one root per scratch home). Linux only.
+
 ### Setup (repo workspaces only)
 - **`runSetupScript(id, window)`** — `workspaces.ts:583`. Sets `setupStatus`
   `pending→running→ok|failed`, runs via `runOneShot` (scripts.ts), captures last

@@ -2,13 +2,14 @@
 // the watchdog SILENTLY stands down forever? Drive 6 consecutive ticks against a
 // workspace whose status never leaves 'idle' (the field condition), and count
 // recycles + whether anything but a log line surfaces the stand-down.
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const RREPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 import fs from 'node:fs';
 // Home is isolated per-run so the unit-test harness can drive it in parallel
 // without colliding on one /tmp dir (default keeps the reviewer's manual path).
-const tmpHome=process.env.FLAP_HOME||'/tmp/rev90-flap'; fs.rmSync(tmpHome,{recursive:true,force:true});
+const tmpHome=process.env.FLAP_HOME||path.join(os.tmpdir(),'rev90-flap'); fs.rmSync(tmpHome,{recursive:true,force:true});
 fs.mkdirSync(`${tmpHome}/.orchestra/inbox`,{recursive:true});
 process.env.ORCHESTRA_HOME=tmpHome; process.env.HOME=tmpHome;
 const { initPlatform } = await import(`${RREPO}/src/main/platform/index.ts`);

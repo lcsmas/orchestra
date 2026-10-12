@@ -81,6 +81,7 @@ fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, '.orchestra'), { recursive: true });
 const dockerHostBefore = process.env.DOCKER_HOST;
 for (const k of Object.keys(process.env)) if (/^(ORCHESTRA_|CLAUDE_CONFIG_DIR|CLAUDECODE|CLAUDE_CODE_|DOCKER_HOST)/.test(k)) delete process.env[k];   // the REAL socket: a relay-inherited DOCKER_HOST must not leak in
+process.env.ORCHESTRA_AGENT_TMP_BASE = 'off'; // a scratch home must not leave a /var/tmp/orch-* root (src/main/agent-tmpdir.ts)
 process.env.ORCHESTRA_HOME = path.join(tmpHome, '.orchestra');
 process.env.HOME = tmpHome;
 process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude-scratch');

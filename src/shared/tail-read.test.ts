@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,8 +8,13 @@ import { scanTranscriptTailForLoop } from './loop-scan.ts';
 
 const NEEDLE = '"ScheduleWakeup"';
 
+const created: string[] = [];
+after(() => { for (const d of created) fs.rmSync(d, { recursive: true, force: true }); });
+
 function tmpFile(content: string | Buffer): string {
-  const p = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tail-read-')), 'f.jsonl');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tail-read-'));
+  created.push(dir);
+  const p = path.join(dir, 'f.jsonl');
   fs.writeFileSync(p, content);
   return p;
 }

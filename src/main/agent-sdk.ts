@@ -66,6 +66,7 @@ import { coalesceWakeOrderInto, wakeOrderRuns } from '../shared/bus-wake.ts';
 import { rollbackWakeForWithdrawnTurn } from './bus-wake';
 import { syncAccountInheritance } from './account-inherit';
 import { agentCliBinDir } from './cli-shim';
+import { applyAgentTmpEnv } from './agent-tmpdir';
 import { getHookSocketPath } from './hooks-server';
 import { isRunning as isPtyRunning } from './pty';
 import { getEventsDir } from './events-spool';
@@ -1056,6 +1057,7 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   const driveStatus = spoolWithheldByPty;
   if (!remote) {
     env.ORCHESTRA_WORKTREE = ws.worktreePath;
+    applyAgentTmpEnv(env, ws.id); // disk TMPDIR, not the tmpfs /tmp (src/shared/agent-tmpdir.ts)
     const binDir = agentCliBinDir();
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
     const sock = getHookSocketPath();

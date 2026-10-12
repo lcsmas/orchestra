@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -40,8 +40,12 @@ printf '{"seq":%s,"event":"%s","tool":"%s"}\\n' "$seq" "$event" "" >> "$spool"
 exit 0
 `;
 
+const created: string[] = [];
+after(() => { for (const d of created) fs.rmSync(d, { recursive: true, force: true }); });
+
 function setup(): { dir: string; script: string; env: NodeJS.ProcessEnv } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-hook-'));
+  created.push(dir);
   const script = path.join(dir, 'orchestra-hook.sh');
   fs.writeFileSync(script, HOOK, { mode: 0o755 });
   return {

@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -8,6 +8,7 @@ import { HOME_ROOT_GUARD_SCRIPT } from './home-root-guard.ts';
 
 // Runs the SHIPPED script string against a fake $HOME with known entries.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home-root-guard-'));
+after(() => fs.rmSync(root, { recursive: true, force: true }));
 const home = path.join(root, 'home');
 fs.mkdirSync(path.join(home, 'dev'), { recursive: true });
 fs.mkdirSync(path.join(home, '.orchestra'), { recursive: true });
