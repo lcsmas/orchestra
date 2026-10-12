@@ -760,13 +760,13 @@ try {
   // #376: a double submit (two POSTs, the same request id, sent together) = ONE workspace, both answers carry its id
   const R2 = crypto.randomUUID(), PROMPT2 = `${LAUNCH_SENTINEL} double tap`;
   await launchRoom(2);
-  const dbl = await Promise.all([1, 2].map(() => proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT2, requestId: R2 }))));
+  const dbl = await Promise.all([1, 2].map(() => proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT2, requestId: R2 }))));
   const [DB1, DB2] = dbl.map((r) => (r.status === 200 ? JSON.parse(r.body) : { ok: false, status: r.status }));
   const dupes = (await wsList()).filter((w) => w.lastTask === PROMPT2);
-  clause('launch/double-submit-one-workspace', DB1.ok === true && DB2.ok === true && DB1.id === DB2.id && dupes.length === 1 && dupes[0].id === DB1.id && dupes[0].accountId === 'acc-perso', `two POSTs, one request id ⇒ ${JSON.stringify([DB1, DB2])}; workspaces with that prompt: ${dupes.length}`);
+  clause('launch/double-submit-one-workspace', DB1.ok === true && DB2.ok === true && DB1.id === DB2.id && dupes.length === 1 && dupes[0].id === DB1.id && dupes[0].accountId === 'acc-mc', `two POSTs, one request id ⇒ ${JSON.stringify([DB1, DB2])}; workspaces with that prompt: ${dupes.length}`);
   const R3 = crypto.randomUUID(), PROMPT3 = `${LAUNCH_SENTINEL} second request id`;
   await launchRoom(2);
-  const two = [await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: R3 })), await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathB, prompt: PROMPT3, requestId: crypto.randomUUID() }))].map((r) => JSON.parse(r.body));
+  const two = [await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT3, requestId: R3 })), await proxyPost(ownerProxy.port, '/api/launch', JSONB, JSON.stringify({ repoPath: repoPathA, prompt: PROMPT3, requestId: crypto.randomUUID() }))].map((r) => JSON.parse(r.body));
   clause('launch/distinct-request-ids-distinct-workspaces', two[0].ok && two[1].ok && two[0].id !== two[1].id && (await wsList()).filter((w) => w.lastTask === PROMPT3).length === 2, `control for the double-submit arm: two request ids ⇒ ${JSON.stringify(two.map((t) => t.id))}`);
 
   // the hooks socket (every local agent can reach it) has NO launch / repos route: forged calls create nothing
@@ -866,7 +866,7 @@ try {
   await phone.eval(`location.hash = 'new'; true`);
   await waitFor(() => phone.eval(`!document.getElementById('launch').hidden && document.querySelectorAll('#launch .nf-repo').length === 2`), 15000, 'the launch screen again');
   const afterLaunchState = await phone.eval(`({ task: document.querySelector('#launch .nf-task').value, sel: document.querySelectorAll('#launch .nf-repo.sel').length })`);
-  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathB}"]`);
+  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathA}"]`);
   await typeIn(DBL_PROMPT);
   const reqsBeforeDbl = phoneLaunchLines().length;
   await launchRoom(1);
@@ -874,11 +874,12 @@ try {
   for (let k = 0; k < 2; k++) for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: goPos.x, y: goPos.y, ...extra });
   await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden`), 90000, 'the conversation after the double tap');
   const dblWs = (await wsList()).filter((w) => w.lastTask === DBL_PROMPT);
-  clause('launch/phone-double-tap-one-workspace', afterLaunchState.task === '' && afterLaunchState.sel === 0 && phoneLaunchLines().length === reqsBeforeDbl + 1 && dblWs.length === 1 && dblWs[0].accountId === 'acc-perso', `two taps ⇒ ${phoneLaunchLines().length - reqsBeforeDbl} request(s) from the phone, ${dblWs.length} workspace(s) with that prompt; a fresh form after the first launch (draft « ${afterLaunchState.task} », ${afterLaunchState.sel} repo picked)`);
+  clause('launch/phone-double-tap-one-workspace', afterLaunchState.task === '' && afterLaunchState.sel === 1 && phoneLaunchLines().length === reqsBeforeDbl + 1 && dblWs.length === 1 && dblWs[0].accountId === 'acc-mc', `two taps ⇒ ${phoneLaunchLines().length - reqsBeforeDbl} request(s) from the phone, ${dblWs.length} workspace(s) with that prompt; a fresh form after the first launch (draft « ${afterLaunchState.task} », ${afterLaunchState.sel} repo picked)`);
   await phone.eval(`location.hash = ''; true`);
 
 
   // the phone says it plainly when the cap is hit: fill the minute (fast refused launches), then tap « Lancer » for real
+  await sleep(62_000); // verifier: an EMPTY window first, so the ten admitted launches are all < 2 s old when « Lancer » is tapped (no slot can age out in between)
   const b2 = await burst();
   const wsBeforeCap2 = (await wsList()).length;
   await phone.eval(`location.hash = 'new'; true`);
