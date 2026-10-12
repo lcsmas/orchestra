@@ -540,7 +540,13 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   id must clear to `''` and the next send start fresh (baseline: undefined → `--resume=<same id>` again). (The two #232 STRAY-agent-PTY arms
   `sdk_only_seams` / `sdk_only_hibernate`, their launcher-based stray seam and the stub-launch sections went with the launcher, #233: a stray
   agent PTY can no longer be conjured, so "every seam ignores it" is proven by the source pins in `sdk-only-wake-wiring.test.ts` and by
-  `launcher_removed` — no wrapper, no agent PTY from any tab.) `boot.extraBranch` / `boot.account2` seed a branch-switch / migration target.
+  `launcher_removed` — no wrapper, no agent PTY from any tab. Their NO-STRAY healthy-path clauses are back as `sdk_seams` / `sdk_hibernate`, below.) `boot.extraBranch` / `boot.account2` seed a branch-switch / migration target.
+- **#233 follow-up arms — `sdk_seams` · `sdk_hibernate`** (review #233 F1; NO stray PTY, identical in both modes: they are controls, their rig TWIN mutants F03–F12 in `scripts/sdk-only-wake-mutants.mjs` are the proof).
+  `sdk_seams` (`LOGGING_STUB`, `boot: {extraBranch, account2}`) drives the healthy SDK seams of #232 in the built app: `orchestra message` to a stopped workspace answers `Delivered (started)` and the
+  text reaches the session CLI's stdin, to a live one `Delivered (live)`; `/peers` has no `running` key; send-review / fix-checks / the prompt-queue flush land in the session; the toolbar Restart of a healthy
+  workspace launches a NEW session CLI (`sdkLaunches` counts the `--input-format` headers of `stub-stdin.log`) and the old one ends; `switchBranch` moves the git checkout AND stops the live session;
+  `migrate-account` of a LIVE workspace stops its session before the transcript moves (pre-migrate CLI pid ended), re-pins, prints no `(resumed)` and launches nothing main-side (F08 twin). Three more KEEP clauses the verifier's own mutants found unpinned: `restart/a-live-successors-dot-is-not-floored` (the dot reads running when the Restart replaces the session — the predecessor's teardown must not floor it: the identity guard on the exit floor), `kept_by_content`'s `hook/seq-is-strictly-increasing` (the installed script run three times in a private events dir writes `seq` 1,2,3) and a source pin that `RunTerminal` imports, instantiates and loads `WebglAddon` (its try/catch falls back to the DOM renderer, so nothing functional sees it vanish). `sdk_hibernate` (`boot.scratchNames` + the `ORCHESTRA_HIBERNATE_*` env): an idle workspace whose session is an SDK one
+  hibernates (chip + its CLI ended, pids captured BEFORE the sweep) and one with a live Run terminal is spared.
 - **#233 arms** (`EXPECT`: `launcherWrappers`, `readyHookInstalled`; baseline = the pre-#233 build, master `ce414f4a`).
   `socket_guard_selftest` (no boot): `keeperSocketBudget` — the app puts a seeded workspace's keeper socket at `<boot home>/keepers/<ws>.sock` and a path past
   100 chars falls back to a SHARED `okeeper-<hash of the ws id alone>.sock`, so boots or concurrent rigs seeding the same id collide (a spurious FAIL) — refuses
@@ -554,8 +560,8 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   session start — the retired hook is evicted (baseline: stays), the activity hooks are installed, the user hook survives. `kept_by_content`: the KEEP list by
   behaviour in the running app (identical in both modes) — the session CLI's environ owns the spool, the installed hook script run by hand moves the dot through the
   real spool reader (`submit` → `running`), a `stop` line with a transcript path persists the transcript-derived `contextTokens`, a SIGKILLed session's `running` dot is
-  reconciled (the exit floor, process picked by pid + start ticks + this boot's ORCHESTRA_HOME). `hasInput`'s READ is proven by the `legacy_*` arms. PTY core / write-queue / WebGL stay proven by
-  `other_terminals_work` and `src/renderer/term-write-queue.test.ts`.
+  reconciled (the exit floor, process picked by pid + start ticks + this boot's ORCHESTRA_HOME). `hasInput`'s READ is proven by the `legacy_*` arms. PTY core and the write-queue stay proven by
+  `other_terminals_work` and `src/renderer/term-write-queue.test.ts`; the WebGL renderer only by a source pin (`RunTerminal` imports, instantiates and loads `WebglAddon` — headless sway has no GPU, and a try/catch falls back to the DOM renderer).
 - **Arms** (`ARMS` :1099): no-boot self-tests — each pins a guard/instrument with named mutants — `guard_selftest` (isolation
   guard), `pixel_selftest` (PNG decoder + painted-vs-blank predicate), `live_guard_selftest`, `live_verdict_selftest`,
   `refuse_live_handoff`, `prune_selftest`, `freshness_selftest`, `gate_selftest`, `args_selftest`, `wiring_selftest`

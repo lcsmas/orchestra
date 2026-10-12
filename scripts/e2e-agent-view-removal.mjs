@@ -887,6 +887,18 @@ function resumeOf(argv) {
   return { resume: i >= 0, target, continue: argv.includes('--continue') };
 }
 const listWs = (app) => app.cdp.eval('window.orchestra.listWorkspaces()');
+/** #233 follow-up: the SDK-session launches the LOGGING stub recorded (its stdin log opens each with `AVR-STUB-CLAUDE <argv>`; a session carries stream-json `--input-format`, the boot probe `--version` does not). */
+const sdkLaunches = (app) => stubLogText(app).split('\n').filter((l) => l.startsWith('AVR-STUB-CLAUDE') && l.includes('--input-format')).length;
+const pidAlive = (pid) => procStart(pid) !== null;
+const FIX_MARK = 'CI is failing on this branch';
+/** POST a JSON body to a route of THIS boot's hooks socket (the transport `orchestra` uses) → parsed reply. */
+function socketPost(app, route, body = {}) {
+  const sock = fs.readFileSync(path.join(app.home, 'sock'), 'utf8').trim();
+  return new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: sock, path: route, method: 'POST' }, (res) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(new Error(`${route}: bad JSON ${d.slice(0, 120)}`)); } }); });
+    req.on('error', reject); req.setTimeout(20000, () => req.destroy(new Error(`${route}: timeout`))); req.end(JSON.stringify(body));
+  });
+}
 /** #233: field `i` of /proc/<pid>/stat after the comm (1 = ppid). */
 const procStatField = (pid, i) => { try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'latin1'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[i]; } catch { return null; } };
 /** #233: the live SDK-SESSION processes of THIS boot that run the stub `claude` (cmdline names the stub AND the stream-json `--input-format` of a session — not the boot-time `--version` probe —,
@@ -2758,6 +2770,15 @@ const ARMS = [
       ctx.clause('env/the-sdk-session-owns-the-spool-and-the-identity', !!pid && env.ORCHESTRA_WS_ID === wsId && env.ORCHESTRA_WS_ID_IDENTITY === wsId && !!env.ORCHESTRA_EVENTS_DIR && !!env.ORCHESTRA_SOCK && !!env.ORCHESTRA_RUN_ID && (env.ORCHESTRA_WORKTREE ? fs.realpathSync(env.ORCHESTRA_WORKTREE) === wt : false), `CLI pid ${pid}: ORCHESTRA_WS_ID=${J(env.ORCHESTRA_WS_ID)} (want ${wsId}) _IDENTITY=${J(env.ORCHESTRA_WS_ID_IDENTITY)} EVENTS_DIR=${J(env.ORCHESTRA_EVENTS_DIR)} SOCK set=${!!env.ORCHESTRA_SOCK} RUN_ID=${J(env.ORCHESTRA_RUN_ID)} WORKTREE=${J(env.ORCHESTRA_WORKTREE)}`);
       const script = path.join(w.wtDir, '.orchestra', 'orchestra-hook.sh');
       ctx.clause('hook/the-installed-hook-script-exists-and-appends-to-the-spool', fs.existsSync(script) && fs.readFileSync(script, 'utf8').includes('flock'), `${path.relative(w.wtDir, script)} exists=${fs.existsSync(script)}, carries the locked spool append (flock)=${fs.existsSync(script) && fs.readFileSync(script, 'utf8').includes('flock')}`);
+      // the installed script's sequence counter: strictly increasing under the lock (a script without it writes `"seq":0` = "unsequenced, always apply" and the reader's dedup is lost silently). A PRIVATE events dir + a dummy ws id: the app's tailer never sees these lines.
+      const flockBin = ['/usr/bin/flock', '/bin/flock'].find((p) => fs.existsSync(p));
+      if (!flockBin) ctx.skip('hook/seq-is-strictly-increasing', 'no flock binary on this machine — the script degrades to an unsequenced append by design');
+      else {
+        const probeDir = path.join(app.home, 'hook-seq-probe'); fs.mkdirSync(probeDir, { recursive: true });
+        for (let i = 0; i < 3; i++) spawnSync('bash', [script, 'submit'], { encoding: 'utf8', timeout: 20000, env: { PATH: '/usr/bin:/bin', HOME: w.fakeHome, ORCHESTRA_WS_ID: 'seq-probe', ORCHESTRA_EVENTS_DIR: probeDir } });
+        const seqs = readText(path.join(probeDir, 'seq-probe.jsonl')).split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l).seq; } catch { return null; } });
+        ctx.clause('hook/seq-is-strictly-increasing', J(seqs) === J([1, 2, 3]), `three runs of the installed script -> "seq" values ${J(seqs)} (want [1,2,3]; flock=${flockBin})`);
+      }
       const runHook = (event, stdin = '') => spawnSync('bash', [script, event], { input: stdin, encoding: 'utf8', timeout: 20000, env: { PATH: '/usr/bin:/bin', HOME: w.fakeHome, ORCHESTRA_WS_ID: env.ORCHESTRA_WS_ID ?? '', ORCHESTRA_EVENTS_DIR: env.ORCHESTRA_EVENTS_DIR ?? '' } });
       const statusOf = async () => (await listWs(app)).find((x) => x.id === wsId);
       const h1 = runHook('submit');
@@ -2786,6 +2807,108 @@ const ARMS = [
     name: 'other_terminals_work_slow_profile', boots: true, ticket: '#230', boot: { slowProfileS: 4 },
     doc: 'other_terminals_work with every `bash -ilc` PTY (Run / nvim / login) spending 4 s in the login profile BEFORE it execs its program (the verifier race: a clause that read the PTY tree / the stub start log right after "pty-appears" saw neither): the bounded waits must ride it out. Deterministic instrument for the race; identical in both modes',
     run: otherTerminalsRun,
+  },
+  {
+    name: 'sdk_seams', boots: true, ticket: '#233-fu', stubScript: 'logging', boot: { extraBranch: 'avr-other', account2: true },
+    doc: '#233 follow-up (review #233 F1): the HEALTHY SDK seams of #232, driven in the built app with NO stray PTY (identical in both modes — the clauses are controls, their mutants are the proof): `orchestra message` to a stopped workspace is `Delivered (started)` and to a live one `Delivered (live)`, both landing in the CLI\'s stdin; send-review, fix-checks and the prompt-queue flush deliver to the SDK session; /peers carries no `running` key; the toolbar Restart of a healthy workspace launches a NEW session CLI; a branch switch really checks the branch out and stops the session; migrate-account of a live workspace stops its session, re-pins, prints no `(resumed)` and starts no main-side session',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world; const wsId = w.ws.id;
+      keeperControl(ctx);
+      const landed = async (needle, ms = 25000) => { await waitFor(`'${needle}' reached the CLI`, () => countIn(stubLogText(app), needle) >= 1, ms, 250).catch(() => null); await sleep(400); return countIn(stubLogText(app), needle); };
+      // ── message: a STOPPED workspace is woken (started), a LIVE one is delivered to (live) ──
+      ctx.clause('pre/no-session-yet', sdkLaunches(app) === 0, `SDK session launches before the first message=${sdkLaunches(app)}`);
+      const m1 = await runCli(app, ['message', wsId, MSG_TEXT]);
+      ctx.clause('message/stopped-workspace-is-woken', m1.rc === 0 && m1.stdout.includes('Delivered (started)'), `Delivered (started) wanted; rc=${m1.rc} stdout=${J(m1.stdout)} stderr=${J(m1.stderr.slice(0, 160))}`);
+      ctx.clause('message/text-reached-the-session', (await landed(MSG_TEXT)) === 1, `the message text is in the session CLI's stdin ${countIn(stubLogText(app), MSG_TEXT)}x (want 1)`);
+      const MSG2 = `${MSG_TEXT} again`;
+      const m2 = await runCli(app, ['message', wsId, MSG2]);
+      ctx.clause('message/live-session-is-delivered-to', m2.rc === 0 && m2.stdout.includes('Delivered (live)') && (await landed(MSG2)) === 1, `Delivered (live) wanted; rc=${m2.rc} stdout=${J(m2.stdout)}; text in stdin ${countIn(stubLogText(app), MSG2)}x`);
+      // ── /peers: no PTY-derived `running` flag ──
+      const peers = await socketPost(app, '/peers', {});
+      const me = (peers.peers ?? []).find((x) => x.id === wsId);
+      ctx.clause('peers/entry-present-without-a-running-flag', !!me && typeof me.status === 'string' && !('running' in me), `peer ${wsId} keys=${J(Object.keys(me ?? {}))} (${(peers.peers ?? []).length} peer(s); control: the listing works)`);
+      // ── review / fix-checks / prompt queue ──
+      const rv = await ipcSettle(app, `window.orchestra.sendReviewToAgent(${J(wsId)}, ${J(REVIEW_TEXT)})`);
+      ctx.clause('review/delivered-to-the-session', rv.ok && rv.value?.status === 'requested' && (await landed(REVIEW_TEXT)) === 1, `sendReviewToAgent -> ${J(rv)}; text in stdin ${countIn(stubLogText(app), REVIEW_TEXT)}x`);
+      const fx = await ipcSettle(app, `window.orchestra.fixChecks(${J(wsId)})`);
+      ctx.clause('fix-checks/delivered-to-the-session', fx.ok && fx.value?.status === 'requested' && (await landed(FIX_MARK)) >= 1, `fixChecks -> ${J(fx)}; prompt marker in stdin ${countIn(stubLogText(app), FIX_MARK)}x`);
+      await app.cdp.eval(`window.orchestra.queuePrompt(${J(wsId)}, ${J(QUEUED_TEXT)})`);
+      const fl = await ipcSettle(app, `window.orchestra.flushQueuedPrompts(${J(wsId)})`);
+      ctx.clause('queue/flush-delivers-to-the-session', fl.ok && fl.value?.ok === true && (await landed(QUEUED_TEXT)) === 1, `flushQueuedPrompts -> ${J(fl)}; text in stdin ${countIn(stubLogText(app), QUEUED_TEXT)}x`);
+      // ── toolbar Restart of a HEALTHY workspace: a NEW session CLI (the conversation is resumed or restarted, never a no-op) ──
+      await sleep(1500);
+      const before = sdkLaunches(app); const pidsBefore = cliProcs(app);
+      // the dot reads RUNNING (the installed hook script fired by hand, as in kept_by_content) when the Restart replaces the session: the predecessor's teardown must not floor its successor's dot
+      const env0 = pidsBefore[0] ? procEnv(pidsBefore[0]) : {};
+      const script0 = path.join(w.wtDir, '.orchestra', 'orchestra-hook.sh');
+      const h0 = spawnSync('bash', [script0, 'submit'], { encoding: 'utf8', timeout: 20000, env: { PATH: '/usr/bin:/bin', HOME: w.fakeHome, ORCHESTRA_WS_ID: env0.ORCHESTRA_WS_ID ?? '', ORCHESTRA_EVENTS_DIR: env0.ORCHESTRA_EVENTS_DIR ?? '' } });
+      const runningBefore = await waitFor('status running before the Restart', async () => (((await listWs(app)).find((x) => x.id === wsId)?.status === 'running') ? true : null), 20000, 200).catch(() => false);
+      const rs = await ipcSettle(app, `window.orchestra.restartAgent(${J(wsId)})`);
+      const relaunched = await waitFor('a NEW session CLI after the toolbar Restart', () => (sdkLaunches(app) > before ? true : null), 25000, 250).catch(() => false);
+      ctx.clause('restart/handler-resolved', rs.ok, `restartAgent -> ${J(rs)}`);
+      ctx.clause('restart/a-new-session-cli-is-launched', !!relaunched, `SDK session launches ${before} -> ${sdkLaunches(app)} (a Restart that returns without launching would leave the old CLI and the old env)`);
+      const oldGone = await waitFor('the pre-Restart session CLI ended', () => (pidsBefore.length > 0 && pidsBefore.every((p) => !pidAlive(p)) ? true : null), 15000, 250).catch(() => false);
+      ctx.clause('restart/the-old-session-cli-ended', !!oldGone, `pre-Restart CLI pid(s) ${J(pidsBefore)} alive now=${J(pidsBefore.map(pidAlive))}`);
+      await sleep(4000);   // the predecessor's consume loop has unwound by now: its end must have left the successor's dot alone
+      const stAfter = (await listWs(app)).find((x) => x.id === wsId)?.status;
+      ctx.clause('restart/a-live-successors-dot-is-not-floored', h0.status === 0 && !!runningBefore && !!relaunched && stAfter === 'running', `hook 'submit' rc=${h0.status}; status before the Restart=${runningBefore ? 'running' : '(never running)'}; after the successor CLI launched and the predecessor ended (+4 s)=${J(stAfter)} (want running: the exit floor only reconciles the session that still owns the slot)`);
+      // ── branch switch: the checkout really moves, and the live session is stopped (lazy restart on the new branch) ──
+      const live = cliProcs(app);
+      const sw = await ipcSettle(app, `window.orchestra.switchBranch(${J(wsId)}, 'avr-other')`);
+      const head = git(w.wtDir, ['rev-parse', '--abbrev-ref', 'HEAD'], w.fakeHome).trim();
+      const bsRec = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('branch-switch/the-checkout-moved', sw.ok && head === 'avr-other' && bsRec?.branch === 'avr-other', `switchBranch -> ${J(sw)}; git HEAD in the worktree=${J(head)}; ws.branch=${J(bsRec?.branch)}`);
+      const stopped = await waitFor('the session CLI stopped by the switch', () => (live.length > 0 && live.every((p) => !pidAlive(p)) ? true : null), 15000, 250).catch(() => false);
+      ctx.clause('branch-switch/the-live-session-is-stopped', !!stopped, `session CLI pid(s) before the switch ${J(live)} alive after=${J(live.map(pidAlive))}`);
+      // ── account migration WITH a live session (the switch above stopped the last one: wake it first): the session is stopped before the transcript moves, re-pinned, no `(resumed)`, no main-side relaunch ──
+      const m3 = await runCli(app, ['message', wsId, `${MSG_TEXT} before the migration`]);
+      const liveMg = await waitFor('a live session before the migration', () => { const p = cliProcs(app); return p.length ? p : null; }, 25000, 250).catch(() => []);
+      ctx.clause('migrate/pre-a-session-is-live', m3.rc === 0 && liveMg.length > 0, `message after the switch -> rc=${m3.rc} stdout=${J(m3.stdout)}; live session CLI pid(s) ${J(liveMg)} (control: the migration below acts on a live session)`);
+      await sleep(1500);
+      const launches0 = sdkLaunches(app);
+      const mg = await runCli(app, ['migrate-account', wsId, 'rig-avr-2']);
+      await sleep(2500);
+      const mgRec = (await listWs(app)).find((x) => x.id === wsId);
+      ctx.clause('migrate/repinned', mg.rc === 0 && mgRec?.accountId === 'rig-avr-2', `migrate-account rc=${mg.rc} stdout=${J(mg.stdout)} stderr=${J(mg.stderr.slice(0, 160))}; ws.accountId=${J(mgRec?.accountId)}`);
+      const mgStopped = await waitFor('the live session stopped by the migration', () => (liveMg.length > 0 && liveMg.every((p) => !pidAlive(p)) ? true : null), 15000, 250).catch(() => false);
+      ctx.clause('migrate/the-live-session-is-stopped-before-the-move', !!mgStopped, `session CLI pid(s) before the migration ${J(liveMg)} alive after=${J(liveMg.map(pidAlive))} (it captured the OLD account's config dir and its transcript is about to move)`);
+      ctx.clause('migrate/no-resume-word-and-no-main-side-relaunch', !mg.stdout.includes('(resumed)') && sdkLaunches(app) === launches0, `stdout=${J(mg.stdout)} '(resumed)' present=${mg.stdout.includes('(resumed)')}; SDK launches ${launches0} -> ${sdkLaunches(app)} (the next Agent-view send starts the session)`);
+      await runControl(ctx);
+      noAgentPty(ctx, 'no-agent-pty-at-any-point', await app.ptys());
+    },
+  },
+  {
+    name: 'sdk_hibernate', boots: true, ticket: '#233-fu', stubScript: 'logging',
+    boot: { scratchNames: ['hibactive', 'hibsdk'], env: { ORCHESTRA_HIBERNATE_AFTER_MS: '3000', ORCHESTRA_HIBERNATE_SWEEP_MS: '1000' } },
+    doc: '#233 follow-up (review #233 F1): the Veille sweep asks the SDK session, no stray PTY needed (identical in both modes): an idle workspace whose live session is an SDK one hibernates (chip set, its CLI ended) and a workspace with a live RUN terminal is spared',
+    async run(ctx) {
+      const { app } = ctx; const w = app.world;
+      const wsId = w.ws.id, sdkId = 'ws-hibsdk';
+      keeperControl(ctx);
+      const log0 = appLog(app);
+      ctx.clause('hibernation/sweeper-armed-with-the-injected-threshold', /session hibernation on — idle threshold [^(]*\(3000ms\), sweep every [^(]*\(1000ms\)/.test(log0), `app log has 'session hibernation on … (3000ms) … (1000ms)': ${/\(3000ms\)/.test(log0)} (the env reached the sweeper — the sweep below is the instrument)`);
+      // avr-1 is the ACTIVE workspace at boot: give it a live RUN terminal and an SDK session whose turn finishes while it is looked at (a seen turn leaves no auto-unread guard)
+      await runControl(ctx);
+      await ipcSettle(app, `window.orchestra.agentSdkSend(${J(wsId)}, 'AVR-HIB-AVR1 hello')`);
+      await sleep(2500);
+      await activateWorkspace(app, 'hibsdk');
+      await ipcSettle(app, `window.orchestra.agentSdkSend(${J(sdkId)}, 'AVR-HIB-SDK hello')`);
+      await sleep(2500);
+      await activateWorkspace(app, 'hibactive');
+      const recs = async () => Object.fromEntries((await listWs(app)).map((x) => [x.id, x]));
+      const r0 = await recs();
+      ctx.clause('hibernation/subjects-are-quiet', r0[wsId]?.status === 'idle' && r0[sdkId]?.status === 'idle' && !r0[sdkId]?.autoUnread && !r0[wsId]?.autoUnread, `status avr-1=${r0[wsId]?.status} hibsdk=${r0[sdkId]?.status} autoUnread(avr-1,hibsdk)=${r0[wsId]?.autoUnread},${r0[sdkId]?.autoUnread} (an unseen turn would protect them and mask the sweep)`);
+      // the session CLIs each subject runs, by cwd — captured NOW (a dead process has no readable cwd, so re-deriving after the sweep would silently return [] and "all ended" would pass vacuously)
+      const pidsIn = (dir) => cliProcs(app).filter((p) => cwdOfPid(p) === fs.realpathSync(dir));
+      const livePids = { [wsId]: pidsIn(w.wtDir), [sdkId]: pidsIn(w.extras.find((e) => e.id === sdkId).worktreePath) };
+      ctx.clause('hibernation/sdk-sessions-live-before', livePids[wsId].length > 0 && livePids[sdkId].length > 0, `avr-1 session CLI pid(s)=${J(livePids[wsId])} hibsdk=${J(livePids[sdkId])} alive before the sweep`);
+      const chip = await waitFor('hibsdk hibernated', async () => ((await recs())[sdkId]?.hibernatedAt ? true : null), 40000, 500).catch(() => false);
+      await sleep(3000); // the same passes judge avr-1: give a wrong verdict time to land
+      const r1 = await recs();
+      ctx.clause('hibernation/idle-sdk-workspace-hibernates', !!chip && !!r1[sdkId]?.hibernatedAt && livePids[sdkId].length > 0 && !livePids[sdkId].some(pidAlive), `hibsdk hibernatedAt=${J(r1[sdkId]?.hibernatedAt)}; its session CLI pid(s) ${J(livePids[sdkId])} alive now=${J(livePids[sdkId].map(pidAlive))} (hibernated and the process ended)`);
+      ctx.clause('hibernation/live-run-terminal-still-spares', r1[wsId]?.hibernatedAt === undefined && (await app.ptys()).some((p) => p.ptyId === `${wsId}:run` && p.kind === 'run') && livePids[wsId].length > 0 && livePids[wsId].every(pidAlive), `avr-1 (idle, session live, Run terminal live): hibernatedAt=${J(r1[wsId]?.hibernatedAt)}, run PTY listed=${(await app.ptys()).some((p) => p.ptyId === `${wsId}:run`)}, session CLI pid(s) ${J(livePids[wsId])} alive=${J(livePids[wsId].map(pidAlive))} (spared)`);
+      noAgentPty(ctx, 'no-agent-pty-at-any-point', await app.ptys());
+    },
   },
   {
     name: 'refused_id_not_readopted', boots: true, ticket: '#232', boot: { sdkBorn: true, stubScript: RESUME_FAIL_STUB },

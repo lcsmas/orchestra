@@ -22,7 +22,7 @@ const T = {
   wiring: 'src/main/sdk-only-wake-wiring.test.ts', refreeze: 'src/shared/refreeze-liveness.test.ts', trap: 'src/main/pause-trap-wiring.test.ts', effort: 'src/main/effort-defaults-wiring.test.ts',
   model: 'src/main/model-defaults-wiring.test.ts', spool: 'src/main/events-spool.test.ts', usage: 'src/main/usage-limit-wiring.test.ts',
 };
-const LAUNCH = 'launcher_removed', READY = 'ready_hook_retired', KEPT = 'kept_by_content', SOCK = 'socket_guard_selftest';
+const LAUNCH = 'launcher_removed', READY = 'ready_hook_retired', KEPT = 'kept_by_content', SOCK = 'socket_guard_selftest', SEAMS = 'sdk_seams';   // SEAMS: the #233 follow-up arm
 
 /** One mutant = one or more exact-once edits. `tests` = unit files that must go red ([] = rig-only); `rig` = {arm, clause} killed by a FAIL line containing `clause`. */
 const MUTANTS = [
@@ -51,6 +51,11 @@ const MUTANTS = [
   { id: 'R11_socket_guard_not_called_by_bootApp', clause: 'bootApp refuses a long base before launching', edits: [[RG, "  if (!sock.ok) throw new Error(`REFUSED before launch [${sock.clause}]: ${sock.detail}`);\n", ""]], tests: [], rig: { arm: SOCK, clause: 'bootApp/refuses-a-long-base-before-launch' } },
   { id: 'R12_wrapper_default_base_long_again', clause: 'the wrapper default base fits every booting arm', edits: [[RS, 'E2E_RIG_BASE="${E2E_RIG_BASE:-/var/tmp/avr-$(id -u)}"', 'E2E_RIG_BASE="${E2E_RIG_BASE:-$HOME/.cache/e2e-agent-view-removal}"']], tests: [], rig: { arm: SOCK, clause: 'wrapper/default-base-fits-every-booting-arm', noBuild: true } },
   { id: 'R13_driver_early_check_removed', clause: 'the driver refuses a long base once, up front', edits: [[RG, "    if (!b.ok) { pre.clause(b.clause, false, `arm ${arm.name}: ${b.detail}`); return finish(sel); }\n", ""]], tests: [], rig: { arm: SOCK, clause: 'driver/refuses-a-long-base-before-any-boot', noBuild: true } },
+  // ── the 3 KEEP clauses the verifier's own mutants found unpinned (ledger c/6133999354), pinned by the #233 follow-up ──
+  { id: 'R14_exit_floor_loses_its_identity_guard', clause: 'a live successor\'s dot is not floored by the predecessor\'s teardown', edits: [[AS, "    if (sessions.get(session.wsId) === session) {\n      sessions.delete(session.wsId);", "    {\n      sessions.delete(session.wsId);"]], tests: [], rig: { arm: SEAMS, clause: 'restart/a-live-successors-dot-is-not-floored' } },
+  { id: 'R15_hook_script_never_increments_seq', clause: 'the installed hook script numbers its spool lines', edits: [[WS, "    seq=\\$((cur + 1))", "    seq=\\$((cur + 0))"]], tests: [], rig: { arm: KEPT, clause: 'hook/seq-is-strictly-increasing' } },
+  { id: 'R17_run_terminal_never_loads_its_webgl_addon', clause: 'the Run terminal loads the WebGL addon into the terminal', edits: [['src/renderer/components/RunTerminal.tsx', "      term.loadAddon(webgl);\n", "      void webgl;\n"]], tests: [T.wiring] },
+  { id: 'R16_run_terminal_loses_its_webgl_renderer', clause: 'the Run terminal instantiates the WebGL addon', edits: [['src/renderer/components/RunTerminal.tsx', "      webgl = new WebglAddon();\n", "      webgl = null;\n"]], tests: [T.wiring] },
 ];
 
 // ── instrument checks that need no app ──
@@ -106,9 +111,10 @@ for (const m of MUTANTS) {
     const unitKilled = u ? u.status !== 0 && red.length > 0 : null;   // null = rig-only mutant
     let rigKilled = null, rigNote = '';
     if (m.rig && !noRig) { const g = rigRun(m.rig.arm, !!m.rig.noBuild); rigKilled = g.fails.some((c) => c.includes(m.rig.clause)); if (!g.last.startsWith('RIG-RESULT')) { rigKilled = false; rigNote = ` rig[${m.rig.arm}] INCONCLUSIVE — the rig produced no RIG-RESULT (${g.last}; rc ${g.rc}) — see ${BACKUP}`; } else rigNote = ` rig[${m.rig.arm}] ${rigKilled ? 'RED' : 'GREEN'} on '${m.rig.clause}' (${g.fails.length} FAIL: ${g.fails.slice(0, 3).join(', ')}) ${g.last.slice(0, 90)}`; }
-    const ok = (unitKilled === null || unitKilled) && (rigKilled === null || rigKilled) && !(unitKilled === null && rigKilled === null);
-    rows.push(`${ok ? 'KILLED  ' : 'SURVIVED'} ${m.id} — ${m.clause} — tests ${unitKilled === null ? 'n/a (rig-only)' : unitKilled ? `RED (${red.length}: ${red.slice(0, 2).join(' | ').slice(0, 110)})` : 'GREEN'}${rigNote}`);
-    ok ? killed++ : survived.push(m.id);
+    const skipped = unitKilled === null && noRig;   // a rig-only mutant under --no-rig cannot be judged: reported SKIPPED, never counted as a survivor
+    const ok = skipped || ((unitKilled === null || unitKilled) && (rigKilled === null || rigKilled) && !(unitKilled === null && rigKilled === null));
+    rows.push(`${skipped ? 'SKIPPED ' : ok ? 'KILLED  ' : 'SURVIVED'} ${m.id} — ${m.clause} — tests ${unitKilled === null ? 'n/a (rig-only)' : unitKilled ? `RED (${red.length}: ${red.slice(0, 2).join(' | ').slice(0, 110)})` : 'GREEN'}${rigNote}`);
+    if (skipped) { /* not counted */ } else if (ok) killed++; else survived.push(m.id);
   } finally {
     restore(files);
     for (const f of files) if (sha(f) !== before[f]) { console.error(`FATAL: ${f} differs after restore`); process.exit(3); }
@@ -118,5 +124,6 @@ for (const m of MUTANTS) {
 if (!noRig && rows.some((r) => r.includes('rig['))) execFileSync('pnpm', ['run', 'build:bundles'], { cwd: REPO, stdio: 'ignore', timeout: 600000 }); // leave dist/ built from the RESTORED tree
 const dirty = spawnSync('git', ['-C', REPO, 'diff', '--stat', '--', 'src', 'scripts']).stdout.toString().trim();
 console.log(`TREE: ${dirty ? `DIRTY\n${dirty}` : 'clean (git diff empty) — every file byte-exact restored'}`);
-console.log(`MUTATE-PTY-LAUNCHER: ${survived.length ? 'FAIL' : 'PASS'} (${killed}/${rows.length} killed${survived.length ? `; survived: ${survived.join(', ')}` : ''})`);
+const nSkipped = rows.filter((r) => r.startsWith('SKIPPED')).length;
+console.log(`MUTATE-PTY-LAUNCHER: ${survived.length ? 'FAIL' : 'PASS'} (${killed}/${rows.length - nSkipped} killed${nSkipped ? `, ${nSkipped} rig-only skipped (--no-rig)` : ''}${survived.length ? `; survived: ${survived.join(', ')}` : ''})`);
 process.exit(survived.length || dirty ? 1 : 0);

@@ -45,6 +45,11 @@ test('CONTROL: the sources are the real files and the Run/nvim/Veille PTY probes
   assert.match(sdk, /sessions\.delete\(session\.wsId\);[\s\S]{0,900}\n\s+reconcileExited\(session\.wsId\);/, 'control: the exit floor still reconciles a dead session\'s dot, unconditionally');
   assert.doesNotMatch(ws, /startAgentPty|startPty\(|HOOK_SESSION_START_READY_CMD|submitTaskWhenReady|heavyResume/, 'workspaces.ts has no launcher, ready-file hook, task typing or heavy-resume gate');
   assert.match(ws, /removeHookCommand\(sessionStartList, isRetiredReadyCmd\)/, 'control: an installed worktree\'s retired readiness hook is evicted');
+  // #233 KEEP: the Run terminal keeps its WebGL renderer (the try/catch falls back to the DOM renderer, so no functional test could see it vanish)
+  const runTerm = fs.readFileSync(path.join(here, '..', 'renderer', 'components', 'RunTerminal.tsx'), 'utf8');
+  assert.match(runTerm, /import \{ WebglAddon \} from '@xterm\/addon-webgl';/, 'RunTerminal imports the WebGL addon');
+  assert.match(code(runTerm), /webgl = new WebglAddon\(\);/, 'RunTerminal instantiates the WebGL addon (a removal would silently fall back to the DOM renderer)');
+  assert.match(code(runTerm), /term\.loadAddon\(webgl\);/, 'RunTerminal LOADS the WebGL addon into the terminal (instantiating it alone renders nothing)');
   // refreeze: the live-child gate asks the SDK session only (the PTY probe parameter is gone), for the whole mission AND for the one-switch route
   assert.match(ws, /anyChildLive\(tree\.map\(\(w\) => w\.id\), sdkSessionLive\)/, 'refreeze --only asks sdkSessionLive');
   assert.match(ws, /anyChildLive\(children\.map\(\(w\) => w\.id\), sdkSessionLive\)/, 'refreeze (mission) asks sdkSessionLive');
