@@ -374,6 +374,12 @@ MUTANTS = [
     ('FH7c-a-hot-read-of-the-same-shape-installs', 'src/main/acces-mobile-feed-core.ts', '(!hot && next.messages.length === have', '(next.messages.length === have', 'RED', FEEDCORE),
     ('FH7d-a-same-shape-quiet-read-never-installs', 'src/main/acces-mobile-feed-core.ts', ' || (!hot && next.messages.length === have && next.messages.every((m, i) => m.role === e.session.messages[i].role));', ';', 'RED', FEEDCORE),
     ('FH32-a-shorter-read-installs', 'src/main/acces-mobile-feed-core.ts', 'have === 0 || next.messages.length > have ||', 'have === 0 || next.messages.length > 0 ||', 'RED', FEEDCORE),
+    ('FH7e-the-shape-needs-only-some-row-to-match', 'src/main/acces-mobile-feed-core.ts', 'next.messages.every((m, i) => m.role === e.session.messages[i].role)', 'next.messages.some((m, i) => m.role === e.session.messages[i].role)', 'RED', FEEDCORE),
+    ('FH7f-the-shape-checks-only-the-first-row', 'src/main/acces-mobile-feed-core.ts', 'next.messages.every((m, i) => m.role === e.session.messages[i].role)', 'next.messages[0].role === e.session.messages[0].role', 'RED', FEEDCORE),
+    ('FH7g-the-shape-checks-only-the-last-row', 'src/main/acces-mobile-feed-core.ts', 'next.messages.every((m, i) => m.role === e.session.messages[i].role)', 'next.messages[next.messages.length - 1].role === e.session.messages[have - 1].role', 'RED', FEEDCORE),
+    ('FH7h-the-shape-ignores-user-rows', 'src/main/acces-mobile-feed-core.ts', 'm.role === e.session.messages[i].role', "(m.role === 'user' || m.role === e.session.messages[i].role)", 'RED', FEEDCORE),
+    ('FH42-a-shrink-does-not-bump-the-version', 'src/main/acces-mobile-feed-core.ts', "    }\n    e.version++;\n    if (event.type === 'turn-end'", "    }\n    if (e.session.messages.length >= before) e.version++;\n    if (event.type === 'turn-end'", 'RED', FEEDCORE),
+    ('FH7i-the-shape-skips-the-first-row', 'src/main/acces-mobile-feed-core.ts', 'next.messages.every((m, i) => m.role === e.session.messages[i].role)', 'next.messages.every((m, i) => i === 0 || m.role === e.session.messages[i].role)', 'RED', FEEDCORE),
 ]
 
 E2E = '--e2e' in sys.argv[1:]

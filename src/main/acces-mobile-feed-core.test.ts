@@ -942,3 +942,51 @@ test('#375 follow-up must-FAIL (third review): a tool result LOST during the fir
   ph.off();
 });
 
+// ---- the shape clause, pinned one index at a time (final re-check MINOR: only an all-indices-differ case was pinned) ----
+
+/** A conversation of alternating rows ('u' = user message, 'a' = one assistant text block) whose texts start with `tag`. Consecutive 'a' would merge: callers alternate. */
+const ROWS = (roles: ('u' | 'a')[], tag: string): AgentEvent[] =>
+  roles.flatMap((r, i) =>
+    r === 'u'
+      ? [{ type: 'user-message', text: `${tag}-u${i}`, rewindId: `${tag}-R${i}`, seq: 1_000_000 + i * 10, at: 1 }]
+      : [
+          { type: 'block-start', index: 100000 + i, kind: 'text', seq: 1_000_000 + i * 10, at: 1 },
+          { type: 'text-delta', index: 100000 + i, text: `${tag}-a${i}`, seq: 1_000_001 + i * 10, at: 1 },
+          { type: 'block-stop', index: 100000 + i, seq: 1_000_002 + i * 10, at: 1 },
+        ],
+  ) as unknown as AgentEvent[];
+
+for (const [name, fold, disk, install] of [
+  ['the SAME shape (richer text) installs — the control', 'auau', 'auau', true],
+  ['a different FIRST row only', 'auau', 'uuau', false],
+  ['a different MIDDLE row only', 'auau', 'auuu', false],
+  ['a different LAST row only', 'uaua', 'uauu', false],
+] as const) {
+  test(`#375 follow-up: equal length, quiet — ${name}`, async () => {
+    const r = rig(async () => (r.loads.length === 1 ? [] : ROWS([...disk] as ('u' | 'a')[], 'disk')), 10, undefined, 30);
+    const ph = phoneOf(r);
+    r.feed.noteActivity('w1');
+    await ph.open(); // empty first read
+    for (const e of ROWS([...fold] as ('u' | 'a')[], 'live')) r.broadcast('agent:event', 'w1', e); // the live conversation: 4 rows
+    r.broadcast('agent:event', 'w1', END(99)); // the turn ends: re-reads are allowed
+    assert.equal((await r.feed.getMobileConversation('w1')).lines.length, 4, 'control: the live fold has 4 rows');
+    await sleep(400); // hot and quiet reads of the equal-length disk
+    assert.ok(r.loads.length >= 3, `control: the disk was read hot and quiet (${r.loads.length})`);
+    const texts = ph.last()!.lines.map((l: { text?: string }) => l.text ?? '').join('|');
+    assert.equal(/disk-/.test(texts), install, `${install ? 'replaced by' : 'kept against'} the disk: ${texts}`);
+    ph.off();
+  });
+}
+
+test('#375 follow-up (reviewer-375c R-4): the phone is TOLD about a rewind — a shrink bumps the version, since the phone refetches only on a changed version', async () => {
+  const { FULL, second } = twoTurns();
+  const r = rig(async () => FULL, 5, undefined, 40);
+  const ph = phoneOf(r);
+  await sleep(80); // nothing recent: a quiet first read, no heal timer in the way
+  const c0 = await ph.open();
+  r.broadcast('agent:event', 'w1', REWIND(second));
+  await sleep(150); // no manual read: only the phone's own refetch on the announced version can show the shrink
+  assert.ok(ph.last()!.lines.length < c0.lines.length, `the phone refetched by itself: ${c0.lines.length} → ${ph.last()!.lines.length}`);
+  ph.off();
+});
+
