@@ -76,6 +76,9 @@
 .pause-bilan-act { text-align: right; white-space: nowrap; }
 
 .pause-explain-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* the body shrinks to the panel: a nowrap action label (« Libérer aussi ces N : <long branch> ») otherwise sets its min-content width and overflows the 288 px panel */
+.pause-explain-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pause-explain-actions .pause-btn { white-space: normal; text-align: left; max-width: 100%; }
 
 .pause-bilan-detail td { border-top: none; padding: 0 8px 6px 22px; }
 .pause-bilan-line { font-size: 11px; color: var(--text-dim); line-height: 1.5; }

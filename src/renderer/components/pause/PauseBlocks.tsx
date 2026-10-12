@@ -98,7 +98,7 @@ export function PauseExplain({ explain, code, onAction }: { explain: PauseUiExpl
   return (
     <div className={`pause-explain is-${explain.tone}`} data-pause-explain={explain.tone} data-pause-explain-code={code} role={explain.tone === 'error' ? 'alert' : 'status'}>
       <PauseIcon kind={explain.tone === 'error' ? 'ban' : 'info'} size={13} />
-      <div>
+      <div className="pause-explain-body">
         <b>{explain.title}</b>
         <span className="pause-explain-why">{explain.why}</span>
         {explain.actions && explain.actions.length > 0 && onAction ? (
