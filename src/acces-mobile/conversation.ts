@@ -6,6 +6,7 @@
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_ATTACH_MAX_COUNT } from '../shared/acces-mobile-conversation.ts';
+import { TOOL_GLYPH } from '../shared/tool-line.ts';
 
 export const CONVERSATION_JS = `(function () {
   'use strict';
@@ -72,7 +73,7 @@ export const CONVERSATION_JS = `(function () {
 
   // ---- conversation screen ----
   var root = null, current = null, meta = null, version = -1, inflight = false, again = false, lastFetch = 0, lastConv = null;
-  var STATE = { running: '…', ok: '✓', error: '✗' };
+  var STATE = ${JSON.stringify(TOOL_GLYPH)}; // the desktop's tool lines read the same map (shared/tool-line.ts)
   // Markdown → DOM, textContent only (the parser returns plain strings; nothing becomes markup). Links: http(s) only.
   function spansInto(parent, spans) {
     spans.forEach(function (s) {

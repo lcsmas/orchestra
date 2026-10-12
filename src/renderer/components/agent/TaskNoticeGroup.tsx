@@ -1,14 +1,9 @@
 import React, { useState } from 'react';
-import type { RenderMessage } from '../../../shared/types';
-import type { TaskNotice } from '../../../shared/task-notices';
+import type { TaskNotice, TaskNoticeItem } from '../../../shared/task-notices';
 import { describeTaskNoticeRun } from '../../../shared/task-notices';
 import { MarkdownView } from './MarkdownView';
 
-/** One parsed avis de tâche plus the message it came from. */
-export interface TaskNoticeItem {
-  message: RenderMessage;
-  notice: TaskNotice;
-}
+export type { TaskNoticeItem };
 
 interface Props {
   items: TaskNoticeItem[];

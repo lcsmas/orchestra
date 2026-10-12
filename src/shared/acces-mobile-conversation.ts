@@ -3,13 +3,17 @@
 // line, pending questions. No fs, no Electron: node --test drives it with real folded fixtures.
 
 import type { AgentAnswerableEvent, AgentImage, AgentSession, RenderMessage } from './types.ts';
+import { clip, oneLine, toolLabel, toolLine, type ToolState } from './tool-line.ts';
+
+// The label function lives in tool-line.ts (the desktop's render-item builder calls the same one — #374); re-exported for callers.
+export { toolLabel };
 
 export type PhoneLine =
   | { id: string; kind: 'user'; text: string; at?: number; attachments?: ('image' | 'pdf')[] }
   | { id: string; kind: 'assistant'; text: string; streaming: boolean; at?: number }
-  | { id: string; kind: 'tool'; label: string; state: 'running' | 'ok' | 'error'; at?: number }
+  | { id: string; kind: 'tool'; label: string; state: ToolState; at?: number }
   | { id: string; kind: 'notice'; text: string; error: boolean; at?: number }
-  | { id: string; kind: 'command'; label: string; state: 'running' | 'ok' | 'error'; at?: number };
+  | { id: string; kind: 'command'; label: string; state: ToolState; at?: number };
 
 /** A question the agent is blocked on. `askUser` = AskUserQuestion (answerable from the phone in #339); anything else is shown
  *  with « à traiter sur le bureau ». */
@@ -58,49 +62,6 @@ export function parseMobileAttachments(raw: unknown): { ok: true; images: AgentI
 }
 export const MAX_PHONE_TEXT = 4000;
 
-const clip = (s: string, n = MAX_PHONE_TEXT): string => (s.length > n ? `${s.slice(0, n)}…` : s);
-const oneLine = (s: string, n = 120): string => clip(s.replace(/\s+/g, ' ').trim(), n);
-
-/** The one thing worth reading about a tool call, per well-known tool; else the first string input. */
-export function toolLabel(name: string, input: Record<string, unknown> | undefined): string {
-  const s = (k: string): string | undefined => (typeof input?.[k] === 'string' ? (input[k] as string) : undefined);
-  const base = (p: string | undefined): string | undefined => (p ? p.split('/').filter(Boolean).slice(-2).join('/') : undefined);
-  let detail: string | undefined;
-  switch (name) {
-    case 'Bash':
-      detail = s('description') ?? s('command');
-      break;
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-    case 'MultiEdit':
-    case 'NotebookEdit':
-      detail = base(s('file_path') ?? s('notebook_path'));
-      break;
-    case 'Grep':
-    case 'Glob':
-      detail = s('pattern');
-      break;
-    case 'WebFetch':
-      detail = s('url');
-      break;
-    case 'WebSearch':
-      detail = s('query');
-      break;
-    case 'Task':
-    case 'Agent':
-      detail = s('description');
-      break;
-    case 'Skill':
-      detail = s('skill');
-      break;
-    default:
-      detail = input ? (Object.values(input).find((v) => typeof v === 'string') as string | undefined) : undefined;
-  }
-  const short = name.startsWith('mcp__') ? name.split('__').slice(1).join('.') : name;
-  return detail ? `${short} · ${oneLine(detail, 100)}` : short;
-}
-
 function textOf(m: RenderMessage): string {
   return typeof m.text === 'string' ? m.text : '';
 }
@@ -112,19 +73,18 @@ function lineOf(m: RenderMessage): PhoneLine | null {
       const t = textOf(m).trim();
       const atts = (m.images ?? []).map((i) => (i.mediaType === 'application/pdf' ? ('pdf' as const) : ('image' as const)));
       if (!t && !atts.length) return null;
-      const line: Extract<PhoneLine, { kind: 'user' }> = { id: m.id, kind: 'user', text: clip(t), at };
+      const line: Extract<PhoneLine, { kind: 'user' }> = { id: m.id, kind: 'user', text: clip(t, MAX_PHONE_TEXT), at };
       if (atts.length) line.attachments = atts;
       return line;
     }
     case 'assistant': {
       if (m.thinking) return null;
       const t = textOf(m).trim();
-      return t ? { id: m.id, kind: 'assistant', text: clip(t), streaming: m.done === false, at } : null;
+      return t ? { id: m.id, kind: 'assistant', text: clip(t, MAX_PHONE_TEXT), streaming: m.done === false, at } : null;
     }
     case 'tool': {
       if (!m.toolUse) return null;
-      const state = !m.toolResult ? 'running' : m.toolResult.isError ? 'error' : 'ok';
-      return { id: m.id, kind: 'tool', label: toolLabel(m.toolUse.name, m.toolUse.input), state, at };
+      return { id: m.id, kind: 'tool', ...toolLine(m), at };
     }
     case 'local-command': {
       const lc = m.localCommand;

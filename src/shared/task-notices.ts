@@ -8,6 +8,8 @@
 // turn that happens to contain the tag. Any body this parser does not fully
 // recognize returns null and keeps the ordinary bubble.
 
+import type { RenderMessage } from './types.ts';
+
 /** The badge `originLabel` (agent-events.ts) gives a task-notification turn. */
 export const TASK_NOTICE_ORIGIN = 'task notification';
 
@@ -38,6 +40,12 @@ export interface TaskNotice {
   taskIds: string[];
   /** True when the notice reports task(s) left unfinished by a previous session. */
   orphan: boolean;
+}
+
+/** One parsed avis de tâche plus the message it came from (the structured view's `task-notices` render item). */
+export interface TaskNoticeItem {
+  message: RenderMessage;
+  notice: TaskNotice;
 }
 
 export function isTaskNoticeMessage(m: { role?: string; origin?: string }): boolean {

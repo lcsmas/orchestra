@@ -28,18 +28,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { isPeerMessage } from '../../shared/peer-messages';
-import { isTaskNoticeMessage, parseTaskNotice } from '../../shared/task-notices';
+import { buildRenderItems, type RenderItem } from '../../shared/agent-render-items';
 import { createMeasurePassGuard } from '../../shared/measure-pass-guard';
-import {
-  isBusWakeMessage,
-  isCheckInvocation,
-  isAckInvocation,
-  ackedLotId,
-  parseCheckOutput,
-  foldDelivery,
-  type BusDelivery,
-} from '../../shared/bus-rows';
 import { scoped } from '../log';
 import { WorkspaceAccountBadge } from './AccountBadge';
 import { CmComposer, type CmComposerHandle } from './agent/CmComposer';
@@ -48,7 +38,6 @@ import { BootStallRow } from './BootStall';
 import { InboxTray } from './agent/InboxTray';
 import { AskRow } from './agent/AskRow';
 import type { HumanGateView } from '../../shared/human-gates';
-import type { TaskNoticeItem } from './agent';
 import { resolveInboxReDerive, type InboxBlock } from '../../shared/inbox-blocks';
 import { useVoiceDictation } from './agent/useVoiceDictation';
 import { McpPopover, McpIndicator } from './agent/McpPopover';
@@ -68,7 +57,6 @@ import {
   type AgentSkillInfo,
   type RenderMessage,
 } from '../../shared/types';
-import { computeTurnDivider, type TurnDivider } from '../../shared/message-time';
 // Design mode: the browser pane's element picker drops picks in the store; the
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
@@ -667,13 +655,11 @@ function MessageList({
     lastScrollTop.current = el.scrollTop;
   });
 
-  // Fold the flat message list into RENDER ITEMS: a run of consecutive `tool`
-  // messages collapses into ONE `tool-group` item (rendered by ToolGroup, which
-  // shows a "2 Read · 1 Bash" summary and expands to the individual cards). Every
-  // other message is its own item. Virtualization then windows over ITEMS, so a
-  // whole collapsed tool run is a single measured row — heights stay a pure
-  // function of item content. The group's id is stable (its first tool's id) so
-  // its expand/collapse state and height cache survive re-renders and scrolling.
+  // Fold the flat message list into RENDER ITEMS (shared/agent-render-items.ts): a run of consecutive `tool`
+  // messages becomes ONE `tool-group` item (rendered by ToolGroup: one line per tool, the phone's label + state).
+  // Every other message is its own item. Virtualization then windows over ITEMS, so a whole tool run is a single
+  // measured row — heights stay a pure function of item content. The group's id is stable (its first tool's id)
+  // so its height cache survives re-renders and scrolling.
   const items = buildRenderItems(messages);
 
   // Compute cumulative offsets from cached/estimated heights, then the visible
@@ -911,182 +897,14 @@ function MeasuredRow({
   );
 }
 
-// ── Render-item model ────────────────────────────────────────────────────────
-//
-// The transcript is a flat RenderMessage[]; we present it as RenderItem[] where a
-// run of consecutive `tool` messages becomes ONE `tool-group` item (collapsed by
-// default). A group's id is its first tool message's id — stable across renders,
-// so its measured height and expand state survive scrolling.
-
-type RenderItem =
-  | { kind: 'message'; id: string; message: RenderMessage; divider?: TurnDivider }
-  | { kind: 'tool-group'; id: string; tools: RenderMessage[] }
-  // A run of consecutive INTER-AGENT messages, collapsed to compact rows so
-  // fleet traffic doesn't drown the human's conversation (issue #56).
-  | { kind: 'peer-group'; id: string; messages: RenderMessage[] }
-  // A run of consecutive AVIS DE TÂCHE (the CLI's <task-notification> turns),
-  // parsed into quiet rows instead of raw-XML bubbles (#273).
-  | { kind: 'task-notices'; id: string; items: TaskNoticeItem[] }
-  // A bus WAKE ORDER — the synthetic "run the check command(s)…" prompt,
-  // rendered as a compact dedicated row instead of raw text (issue #145).
-  | { kind: 'wake'; id: string; message: RenderMessage; divider?: TurnDivider }
-  // A bus DELIVERY — an `orchestra check` lot, folded into a readable lot view
-  // with an ACKED/PENDING badge (issue #145).
-  | { kind: 'delivery'; id: string; delivery: BusDelivery };
-
-/** Tools that must NOT be folded into a collapsed group — they own a first-class,
- *  always-visible surface. TodoWrite is the live task list (Claude-Code shows it
- *  expanded, never buried); it renders as its own always-open ToolCard. */
-function isStandaloneTool(m: RenderMessage): boolean {
-  return m.role === 'tool' && m.toolUse?.name === 'TodoWrite';
-}
-
-function buildRenderItems(messages: RenderMessage[]): RenderItem[] {
-  const items: RenderItem[] = [];
-  let run: RenderMessage[] | null = null;
-  // BUS ACK PRE-PASS (issue #145). A delivery row's ACKED/PENDING badge flips
-  // when a LATER `orchestra ack <lot>` runs. Scan the whole transcript once up
-  // front to collect every acked lot id, so a `check` at position i renders
-  // ACKED as soon as its matching ack exists anywhere in the list — the same in
-  // live and backfill (both are `tool` Bash cards). Acked lots are then folded
-  // into `foldDelivery`; the ack tool cards themselves are dropped from the
-  // render (the badge conveys the outcome — a raw `orchestra ack` bash line is
-  // exactly the noise #145 removes).
-  // A FAILED ack (toolResult.isError — a stale-fence refusal, a wrong lot id)
-  // did NOT close the lot, so `ackedLotId` gates on !isError (REVIEW-145 F2):
-  // only a successful ack flips the badge to ACKED.
-  const ackedLots = new Set<number>();
-  for (const m of messages) {
-    const lot = ackedLotId(m as Parameters<typeof ackedLotId>[0]);
-    if (lot !== null) ackedLots.add(lot);
-  }
-  // TURN DIVIDER bookkeeping: each USER turn gets a divider above its bubble
-  // (time + day-on-change + idle gap ≥ 10 min). `prevAt` is the last stamped
-  // message of ANY role, so the gap measures real transcript silence, not just
-  // prompt-to-prompt distance. The divider rides INSIDE the user message's
-  // virtualized row (rendered by ItemSlot) so row heights stay a pure function
-  // of item content.
-  const nowMs = Date.now();
-  let prevAt: number | undefined;
-  // Consecutive peer deliveries group into ONE collapsed item, the same way a
-  // run of tools does — a wave of fleet messages reads as one quiet row.
-  let peerRun: RenderMessage[] | null = null;
-  const flushPeers = () => {
-    if (peerRun && peerRun.length > 0) {
-      items.push({ kind: 'peer-group', id: `pg:${peerRun[0].id}`, messages: peerRun });
-    }
-    peerRun = null;
-  };
-  // Consecutive avis de tâche group the same way (#273).
-  let noticeRun: TaskNoticeItem[] | null = null;
-  const flushNotices = () => {
-    if (noticeRun && noticeRun.length > 0) {
-      items.push({ kind: 'task-notices', id: `tn:${noticeRun[0].message.id}`, items: noticeRun });
-    }
-    noticeRun = null;
-  };
-  const flush = () => {
-    if (run && run.length > 0) {
-      items.push({ kind: 'tool-group', id: `tg:${run[0].id}`, tools: run });
-    }
-    run = null;
-  };
-  for (const m of messages) {
-    // Peer messages break a tool run and accumulate into their own run. Checked
-    // FIRST so a peer delivery never falls through to the user-bubble branch.
-    // `isPeerMessage` is structural (the origin tag) — a human turn, whatever
-    // its text, can never land here.
-    if (isPeerMessage(m)) {
-      flush();
-      flushNotices();
-      (peerRun ??= []).push(m);
-      if (m.at !== undefined) prevAt = m.at;
-      continue;
-    }
-    flushPeers();
-    // AVIS DE TÂCHE (#273): keyed on the structural origin badge; a body the
-    // parser does not fully recognize returns null and keeps the plain bubble.
-    if (isTaskNoticeMessage(m)) {
-      const notice = parseTaskNotice(m.text);
-      if (notice) {
-        flush();
-        (noticeRun ??= []).push({ message: m, notice });
-        if (m.at !== undefined) prevAt = m.at;
-        continue;
-      }
-    }
-    flushNotices();
-    // BUS WAKE (issue #145): a synthetic `role:'user'` prompt whose text is the
-    // wake order (marker-keyed via `isBusWakeMessage`, never body text — a human
-    // turn saying "lot pending" fails the structured shape and falls through to
-    // the ordinary user bubble below). Breaks a tool run like any user turn and
-    // carries its own turn divider.
-    if (isBusWakeMessage(m)) {
-      flush();
-      const divider =
-        m.at !== undefined ? computeTurnDivider(m.at, prevAt, nowMs) : undefined;
-      items.push({ kind: 'wake', id: m.id, message: m, ...(divider ? { divider } : {}) });
-      if (m.at !== undefined) prevAt = m.at;
-      continue;
-    }
-    // BUS ACK (issue #145): an `orchestra ack <lot>` Bash card folds away — its
-    // outcome is the delivery row's badge flip (collected in the pre-pass). Drop
-    // it from the render so no raw ack bash line survives. Checked BEFORE the
-    // tool-run branch so it never joins a collapsed tool group.
-    if (isAckInvocation(m as Parameters<typeof isAckInvocation>[0])) {
-      flush();
-      if (m.at !== undefined) prevAt = m.at;
-      continue;
-    }
-    // BUS DELIVERY (issue #145): an `orchestra check` Bash card whose result
-    // parses to the published CheckOutput shape folds into a first-class
-    // delivery row. Keyed on the CLI INVOCATION + a parseable result, never body
-    // text — a non-bus Bash card, or a check whose output is unparseable, falls
-    // through to the ordinary tool run. Same detection live and backfill (both
-    // are `tool` Bash cards with the same toolUse/toolResult).
-    if (isCheckInvocation(m as Parameters<typeof isCheckInvocation>[0])) {
-      const out = parseCheckOutput(m as Parameters<typeof parseCheckOutput>[0]);
-      if (out) {
-        flush();
-        items.push({
-          kind: 'delivery',
-          id: `bd:${m.id}`,
-          delivery: foldDelivery(out, ackedLots),
-        });
-        if (m.at !== undefined) prevAt = m.at;
-        continue;
-      }
-      // An unparseable check (an error, a truncated stream) is left as a normal
-      // tool card so the user still sees SOMETHING went wrong — fall through.
-    }
-    if (m.role === 'tool' && !isStandaloneTool(m)) {
-      (run ??= []).push(m);
-    } else {
-      // A standalone tool (TodoWrite) and any non-tool message both break the
-      // current run and render as their own item.
-      flush();
-      const divider =
-        m.role === 'user' && m.at !== undefined
-          ? computeTurnDivider(m.at, prevAt, nowMs)
-          : undefined;
-      items.push({ kind: 'message', id: m.id, message: m, ...(divider ? { divider } : {}) });
-    }
-    if (m.at !== undefined) prevAt = m.at;
-  }
-  flush();
-  flushPeers();
-  flushNotices();
-  return items;
-}
-
 // ── Item renderer (A3) ───────────────────────────────────────────────────────
 //
 // A `message` item routes through <AgentMessage> (markdown bubble / thinking /
-// lone tool card). A `tool-group` item routes through <ToolGroup>, which shows
-// the collapsed "2 Read · 1 Bash" summary and expands to individual ToolCards.
+// standalone TodoWrite card). A `tool-group` item routes through <ToolGroup>: one line per tool,
+// a click opens that tool's ToolCard.
 
 function ItemSlot({ item }: { item: RenderItem }) {
-  if (item.kind === 'tool-group') return <ToolGroup tools={item.tools} />;
+  if (item.kind === 'tool-group') return <ToolGroup rows={item.rows} />;
   if (item.kind === 'peer-group') return <PeerMessageGroup messages={item.messages} />;
   if (item.kind === 'task-notices') return <TaskNoticeGroup items={item.items} />;
   // Bus DELIVERY row (issue #145) — no turn divider (it is not a user turn).

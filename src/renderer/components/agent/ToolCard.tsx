@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import type { RenderMessage } from '../../../shared/types';
+import { toolState } from '../../../shared/tool-line';
 import { Collapsible } from './Collapsible';
 import { ToolDiff } from './ToolDiff';
 import { ToolIcon } from './tool-icons';
@@ -16,6 +17,8 @@ import {
 
 interface Props {
   message: RenderMessage;
+  /** Mount with the body open — the card a tool line opens on click (#374) must show its command/output, not another closed header. */
+  startOpen?: boolean;
 }
 
 /**
@@ -28,7 +31,7 @@ interface Props {
  * Memoized on the tool fields that affect output so a streaming delta elsewhere
  * doesn't re-render every card in the transcript.
  */
-function ToolCardImpl({ message }: Props) {
+function ToolCardImpl({ message, startOpen = false }: Props) {
   const tool = message.toolUse;
   const result = message.toolResult;
   const name = tool?.name ?? 'tool';
@@ -43,7 +46,7 @@ function ToolCardImpl({ message }: Props) {
 
   // A tool is "pending" until its result lands. TodoWrite/Task have no useful
   // result body; most others do.
-  const pending = !result && !message.done;
+  const pending = toolState(message) === 'running'; // the SAME rule as the tool line that opened this card (#374)
 
   const header = (
     <span className="av-tool-header-inner">
@@ -82,6 +85,7 @@ function ToolCardImpl({ message }: Props) {
   // Edit/Write (the diff IS the point), TodoWrite/Task (the list/brief is the
   // point), and any errored tool default to OPEN; the rest start collapsed.
   const defaultOpen =
+    startOpen ||
     name === 'Edit' ||
     name === 'Write' ||
     name === 'TodoWrite' ||

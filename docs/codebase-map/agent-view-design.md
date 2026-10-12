@@ -385,37 +385,27 @@ Collapsible (`Collapsible.tsx` — every tool card wraps one): `.av-collapsible`
 entrance-animated, not height-animated). Todo marks are drawn SVGs
 (`TodoMark` in ToolCard.tsx), colored via `currentColor` on `.av-todo-mark`.
 
-**Tool runs** (`ToolGroup.tsx`): EVERY run of consecutive `tool` messages —
-including a single tool — collapses into ONE quiet, muted, **borderless**
-one-line row (Claude-Code desktop style), **collapsed by default**, so tool
-detail recedes behind the assistant's prose. `.av-tool-run` (`.av-open`/
-`.av-closed`; borderless/transparent at rest, framed surface only when
-`.av-open`) > `.av-tool-run-header` (a `<button>`, but the COLLAPSED row is
-styled as a plain clickable LABEL — no fill box, no drop shadow, no hover
-background; only the text color brightens on hover. The app's base `button` rule
-in `styles.css` stamps every `<button>` with a `--shadow-sm` drop shadow +
-`button:hover` fill, so the header explicitly resets `box-shadow:none` and
-`:hover{background:none}` — otherwise it reads as a raised button, not CC-desktop
-label) > `.av-caret` + `.av-tool-run-label` (verb summary — "Created 5 files",
-"Used 6 tools", "Ran a command, used a tool", "Used a skill ship" — the verb text
-is the only glyph; there is NO per-tool icon strip on the collapsed row, the label
-carries the meaning, CC-desktop style. `describeToolRun` in `tool-util.ts` builds
-the verb; a single `Skill` run reads "Used a skill <name>" where the name comes
-from `skillName(input)` — the SDK carries it on the `skill` field, e.g.
-`{skill:'ship'}`) + `.av-tool-run-diff` (inline `.av-diff-add`/`.av-diff-del` red/green counts) +
-NO status dot in either direction — the `.av-tool-run-status*` classes are
-gone, so the row looks identical running, done, or failed; only an `.av-sr-only`
-"running" survives. (A failed tool likewise gets NO red label: a non-zero exit is
-routine and colouring the summary cries wolf, so the failure surfaces only on the
-expanded `.av-tool-errored` card.)
-Expanded body `.av-tool-run-body` holds the individual
-`.av-tool-card`s. The ONLY tool that renders as a standalone always-open card is
-TodoWrite (`isStandaloneTool` in StructuredView). (Replaced the older
-`.av-tool-group*` name-count row.)
+**Tool lines** (`ToolGroup.tsx`, #374): a run of consecutive `tool` messages — even a single
+tool — is ONE compact block `.av-tool-run` of ALWAYS-VISIBLE one-line rows, as on the phone:
+`.av-tool-line.av-tool-line-{running|ok|error}` (`data-state`, `data-tool-id`; `.av-open`/`.av-closed`)
+> `.av-tool-line-head` (a `<button>`, `aria-expanded`; styled as a plain label — the app's base `button`
+rule stamps a drop shadow + hover fill on every `<button>`, so `box-shadow:none` / `:hover{background:none}`
+are reset explicitly) > `.av-tool-line-glyph` (14 px, `role="img"` + `aria-label` running/done/failed;
+the glyph map is `TOOL_GLYPH` in `src/shared/tool-line.ts` — `…` running, `✓` ok, `✗` failed, the SAME
+map the phone page injects) + `.av-tool-line-label` (the phone's label from the SAME `toolLine`:
+`Bash · description`, `Edit · dir/file`, `Grep · pattern`, MCP `server.tool`; ellipsised, one line).
+Mono, faint at rest; ok glyph `--av-add`, running line `--av-tool-active`, **failed glyph AND label
+`--av-error`** (reverses the pre-#374 « a failed run is not red » rule: the phone shows failures at a
+glance and so does the desktop now). Click toggles `.av-tool-line-body` holding today's `ToolCard`
+(mounted `startOpen`, so the command/output/diff shows at once); a second click unmounts it. NO summary
+row (« Used N tools », « Created 5 files »), NO aggregate or per-line ±diff (the diff lives in the opened
+Edit/Write card only). The ONLY tool that renders as a standalone always-open card is TodoWrite
+(`isStandaloneTool` in `src/shared/agent-render-items.ts`). Gates: `scripts/tool-lines-render-smoke.mjs`
+(SSR) + `scripts/e2e-tool-lines.sh` (built app, headless sway, state + pixels + trusted clicks).
 
 **Peer message runs** (`PeerMessageGroup.tsx`, issue #56): a run of consecutive
-INTER-AGENT messages collapses to ONE quiet row, deliberately a sibling of
-`.av-tool-run` so the transcript gains no new visual vocabulary — same borderless
+INTER-AGENT messages collapses to ONE quiet row, deliberately in the idiom of
+the (pre-#374) collapsed tool run so the transcript gains no new visual vocabulary — same borderless
 clickable-label treatment, same base-`button` resets (the app's global button
 rule would otherwise make it read as a raised control), framed surface only when
 `.av-open`. `.av-peer-run` (`.av-open`/`.av-closed`) > `.av-peer-run-header`

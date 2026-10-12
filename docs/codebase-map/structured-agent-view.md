@@ -1023,8 +1023,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   the tool-card flicker bug. To keep tool ids stable, `block-start` for
   `tool_use` lifts the stream's `content_block.id`/`name` (normalizeStreamEvent
   + agent-transcript backfill) so the fold mints the message with its FINAL id
-  (`toolu_…`) and real name up front (the collapsed run label reads "Ran a
-  command…" while the input is still streaming), and the finalizing `tool-use`
+  (`toolu_…`) and real name up front (the tool line reads "Bash" while the input is still streaming, then "Bash · description"), and the finalizing `tool-use`
   fold matches by `toolUseId` and updates IN PLACE — it never rewrites an
   existing `id` (guarded by agent-events.test.ts id-stability tests; verified
   e2e: same DOM node across finalize). **Background-task normalization** (`normalizeTaskSystem`) maps the SDK
@@ -1127,9 +1126,10 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   sequential-fold). ~1600 events/commit under load; holds 60fps at 600+ messages.
 - **`src/renderer/components/StructuredView.tsx`** — always-mounted-per-workspace
   virtualized container + composer. It folds the flat `RenderMessage[]` into
-  **render items** (`buildRenderItems`): a run of consecutive `tool` messages
-  becomes ONE `tool-group` item, every other message its own item; virtualization
-  windows over items so a collapsed tool run is a single measured row. **A new
+  **render items** (`buildRenderItems`, now in **`src/shared/agent-render-items.ts`** so `node --test`
+  drives it — #374): a run of consecutive `tool` messages becomes ONE `tool-group` item whose `rows`
+  are the phone's tool lines (`{id, label, state, message}` from the shared `toolLine`), every other
+  message its own item; virtualization windows over items so a whole tool run is a single measured row. **A new
   row's FIRST height measurement flushes synchronously** (setState inside
   MeasuredRow's layout effect → re-render before paint): until measured, offsets
   use `ESTIMATED_ROW_H` (72px), and letting that estimate paint made the pinned
@@ -1350,25 +1350,21 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   instance when unchanged, so a `setState` can skip a render);
   `canBackgroundForegroundWork(session)` gates the Ctrl+B control on `running`.
   All three guards are mutation-tested (revert → named failures).
-- **`src/renderer/components/agent/ToolGroup.tsx`** — the aggregated tool run,
-  rendered in the **Claude-Code-desktop compact style**: EVERY tool run (even a
-  single tool) collapses to ONE quiet, muted, **borderless** one-line row —
-  chevron + deduped tool-icon strip + a **verb label** (`describeToolRun`) +
-  inline **red/green diff counts** (`aggregateDiff`) — and **no status dot** in
-  either direction: running/failed state is carried by the row's color class alone
-  (`av-tool-run-pending`/`-error`) plus a screen-reader-only state word. There is
-  no card frame at rest, so the row recedes behind the
-  assistant's prose; expanding reveals the individual `ToolCard`s inside a framed
-  `.av-tool-run-body`. The verb label groups by ACTION, not tool name — "Created
-  5 files", "Read 3 files", "Ran a command, used a tool", "Used 6 tools" (a
-  single create/read names the file: "Created types.ts"). `describeToolRun` /
-  `aggregateDiff` / `diffCounts` / `fileBase` are pure helpers in **`tool-util.ts`**
-  (unit-tested in `agent-components.test.ts`). A lone tool is NO LONGER a plain
-  `ToolCard` — the only exception is `isStandaloneTool` (TodoWrite), which
-  `buildRenderItems` breaks out as its own always-open `ToolCard`. The legacy
-  name-count `summarizeToolRun` ("2 Read · 1 Bash") is retained (exported, unused
-  by the UI) for any caller wanting the per-name breakdown. CSS: `.av-tool-run*`
-  (replaced the old `.av-tool-group*`).
+- **`src/renderer/components/agent/ToolGroup.tsx`** — the tool lines (#374): a run of tools is ONE
+  compact block of always-visible one-line rows — the phone's glyph (`…` running / `✓` ok / red `✗`
+  failed) + the phone's label (`Bash · description`, `Edit · dir/file`, `Grep · pattern`, MCP
+  `server.tool`). **ONE label function**: `src/shared/tool-line.ts` (`toolLabel` / `toolState` /
+  `toolLine` / `TOOL_GLYPH`) is called by the phone's `projectConversation` AND by `buildRenderItems`
+  (`ToolRow = {id, label, state, message}`); the phone page script injects the same `TOOL_GLYPH`;
+  `tool-line.test.ts` pins both, `agent-render-items.test.ts` proves desktop rows == phone tool lines on
+  the phone's captured transcript. A row click toggles its `ToolCard` (mounted `startOpen` — the
+  `startOpen` prop of `ToolCard`; open state is per-row `useState`, lost when the row scrolls out of the
+  virtualized window); no « Used N tools » summary, no ±diff on a line (`describeToolRun` /
+  `aggregateDiff` / `summarizeToolRun` / `diffCounts` / `fileBase` were deleted with it). State =
+  « no `toolResult` ⇒ running » (the phone's rule), not the old `!result && !done` — `ToolCard`'s pending tint/status word use the same `toolState`, so a line and the card it opens never disagree; a tool whose result never arrives (hard kill, truncated backfill) shows `…` for good, on the phone too. ToolGroup's memo is `toolRowsEqual` (`tool-util.ts`: id + label + state + `toolMessageEqual`, so a result landing flips the line — unit-tested, e2e `L8`). TodoWrite stays
+  standalone (`isStandaloneTool`). CSS: `.av-tool-run` (block) + `.av-tool-line*` — see
+  `agent-view-design.md`. Gates: `scripts/tool-lines-render-smoke.mjs` (in `test:render`) and
+  `scripts/e2e-tool-lines.sh` (built app, own headless sway; `--expect-red` on a master build).
 - **`src/renderer/components/agent/*`** — `MessageBubble` (renders text via
   `MarkdownView`; renders `null` when a message has no text and isn't thinking;
   **streaming assistant text reveals via a typewriter** — `useTypewriter` +

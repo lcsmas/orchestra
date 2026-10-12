@@ -163,6 +163,9 @@ MUTANTS = [
     ('N16-conversation-title-full-name', 'src/acces-mobile/conversation.ts', "meta.displayName || meta.name || id", "meta.name || id", 'RED', PL),
     ('N13-fold-owner-full-name', 'src/acces-mobile/page.ts', "name: byId[pid].displayName || byId[pid].name })", "name: byId[pid].name })", 'RED', PL),
     ('W2-refused-stream-not-told', 'src/acces-mobile/page.ts', "    if (m.t === 'down') { live(false); if (m.status === 401) load(); return; }", "    if (m.t === 'down') { live(false); return; }", 'RED', PWA),
+    # ── 2026-10-12 (#374): the phone and the desktop share ONE tool line (src/shared/tool-line.ts) ──
+    ('T1-phone-tool-line-own-label', 'src/shared/acces-mobile-conversation.ts', "return { id: m.id, kind: 'tool', ...toolLine(m), at };", "return { id: m.id, kind: 'tool', label: m.toolUse.name, state: 'ok', at };", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('T2-phone-glyph-map-forked', 'src/acces-mobile/conversation.ts', "var STATE = ${JSON.stringify(TOOL_GLYPH)};", 'var STATE = {"running":"…","ok":"✓","error":"✓"};', 'RED', 'src/shared/tool-line.test.ts'),
 ]
 
 E2E = '--e2e' in sys.argv[1:]

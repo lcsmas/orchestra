@@ -564,65 +564,38 @@ h6.av-md-h {
   transition: border-color 140ms var(--av-ease);
 }
 
-/* ── Tool run (Claude-Code desktop style) ────────────────────────────────────
-   A run of tool calls — even a single one — collapses into ONE quiet, muted
-   one-line row (<ToolGroup>): a chevron, a small tool-icon strip, a verb label
-   ("Created 5 files", "Used 6 tools", "Ran a command, used a tool"), an inline
-   red/green diff count, and a live dot while running. NO card frame at rest —
-   the row is borderless and low-contrast so it recedes behind the assistant's
-   prose; expanding reveals the individual ToolCards inside a framed body. */
+/* ── Tool lines (#374) ───────────────────────────────────────────────────────
+   A run of tool calls (<ToolGroup>) is ONE compact block of always-visible one-line rows, as on the phone: a state
+   glyph (… running / ✓ ok / red ✗ failed — the glyph map is shared/tool-line.ts) and the label from the same shared
+   function. Quiet at rest (borderless, faint, mono); the failure is the only loud one. A click opens the line's
+   ToolCard under it (a second click closes it). No summary row, no ±diff count on a line. */
 .av-tool-run {
-  margin: 1px 24px;
-  border: none; border-radius: 8px; background: none;
+  display: flex; flex-direction: column; gap: 1px;
+  margin: 2px 24px;
 }
-.av-tool-run.av-open {
-  margin: 4px 24px 8px;
-  border: 1px solid var(--av-hairline);
-  background: linear-gradient(180deg, var(--av-highlight), transparent 55%),
-    var(--av-surface-raised);
-  overflow: hidden;
-}
-/* Collapsed run reads as a plain clickable LABEL (Claude-Code-desktop style),
-   NOT a button: no fill box, no drop shadow, no chip radius — just muted text
-   that brightens on hover. The app's base `button` rule (styles.css) gives every
-   <button> a `--shadow-sm` drop shadow + a `button:hover` background fill; both
-   must be explicitly cancelled here or the row reads as a raised button. The
-   framed/box treatment applies ONLY once the run is open (below). */
-.av-tool-run-header {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 3px 8px; background: none; border: none; box-shadow: none;
+.av-tool-line-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px;
+  padding: 0 8px; background: none; border: none; border-radius: 6px; box-shadow: none;
   color: var(--av-text-faint);
-  font: inherit; font-size: var(--av-fs-small); text-align: left; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--av-fs-small); text-align: left; cursor: pointer;
   transition: color 120ms var(--av-ease);
 }
-.av-tool-run-header:hover { background: none; box-shadow: none; color: var(--av-text-dim); }
-.av-tool-run-header:active { transform: none; }
-.av-tool-run-header:focus-visible { outline: none; box-shadow: none; color: var(--av-text-dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--av-hairline-strong); }
-.av-tool-run.av-open > .av-tool-run-header { border-radius: 7px 7px 0 0; }
-.av-tool-run-label {
+/* The app's base `button` rule stamps a drop shadow + a hover fill on every <button>; a line is a label, not a button. */
+.av-tool-line-head:hover { background: none; box-shadow: none; color: var(--av-text-dim); }
+.av-tool-line-head:active { transform: none; }
+.av-tool-line-head:focus-visible { outline: none; box-shadow: none; color: var(--av-text-dim); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--av-hairline-strong); }
+.av-tool-line-glyph { flex: none; width: 14px; text-align: center; }
+.av-tool-line-label {
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-weight: 500; letter-spacing: 0.005em; color: inherit;
 }
-/* Inline diff counts (+134 −0), same red/green as ToolDiff. */
-.av-tool-run-diff {
-  flex: none; display: inline-flex; gap: 6px;
-  font-family: var(--font-mono); font-size: var(--av-fs-caption);
-  font-variant-numeric: tabular-nums;
-}
-/* No status dot on the collapsed row, in EITHER direction — the row looks the
-   same whether the run is going, done, or failed; only an .av-sr-only word
-   carries the state for screen readers.
-   A run containing a failed tool is likewise deliberately NOT coloured: a
-   non-zero exit is routine, and a red summary row cries wolf. The failure still
-   shows on the individual card once the run is expanded (`.av-tool-errored`). */
-/* Expanded body: the individual cards stack with a hairline between them. */
-.av-tool-run-body {
-  border-top: 1px solid var(--av-hairline-faint);
-  padding: 4px 4px 6px;
-  animation: av-reveal 180ms var(--av-ease-out);
-}
-@media (prefers-reduced-motion: reduce) { .av-tool-run-body { animation: none; } }
-.av-tool-run-body > .av-tool-card { margin: 4px 6px; }
+.av-tool-line-ok .av-tool-line-glyph { color: var(--av-add); }
+.av-tool-line-running .av-tool-line-head,
+.av-tool-line-running .av-tool-line-glyph { color: var(--av-tool-active); }
+.av-tool-line-error .av-tool-line-head,
+.av-tool-line-error .av-tool-line-glyph { color: var(--av-error); }
+/* An opened line shows its ToolCard (its own frame) beneath it, indented under the label. */
+.av-tool-line-body { margin: 2px 0 6px 22px; }
+.av-tool-line-body > .av-tool-card { margin: 0; }
 .av-collapsible:hover { border-color: var(--av-hairline-strong); }
 /* Opaque error tint (a translucent one would show whatever is behind the card). */
 .av-tool-errored > .av-collapsible {
@@ -3450,8 +3423,8 @@ h6.av-md-h {
    messages per wave; as full user bubbles they drowned the human's own
    conversation. They collapse to ONE quiet clickable label row instead.
 
-   Styled as a sibling of `.av-tool-run` on purpose — same "a run of things
-   that are not the conversation" idiom, so the transcript gains no new visual
+   Styled as the collapsed-run idiom on purpose (the tool lines used it before #374) — "a run of things
+   that are not the conversation", so the transcript gains no new visual
    vocabulary. Everything routes through --av-* tokens (no raw hex), and the
    same base-`button` resets apply: the app's global button rule stamps a drop
    shadow + hover fill that would make this read as a raised control. */

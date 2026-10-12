@@ -16,12 +16,9 @@ import {
   summarizeInput,
   truncate,
   todosFrom,
-  describeToolRun,
-  aggregateDiff,
-  fileBase,
   nonExecutionLabel,
   toolMessageEqual,
-  type ToolLike,
+  toolRowsEqual,
 } from './tool-util.ts';
 import {
   describeRewindPreview,
@@ -29,6 +26,7 @@ import {
   rewindPrefillText,
 } from './rewind-util.ts';
 import type { RenderMessage } from '../../../shared/types.ts';
+import { buildRenderItems, type ToolRow } from '../../../shared/agent-render-items.ts';
 import {
   MODEL_CHOICES,
   choiceCovers,
@@ -46,11 +44,6 @@ import {
   effortAtFraction,
   stepEffort,
 } from './effort-util.ts';
-
-/** Terse ToolLike builder for the run-summary tests. */
-function tl(name: string, input: Record<string, unknown> = {}): ToolLike {
-  return { name, input };
-}
 
 test('parseMarkdown splits fenced code from prose', () => {
   const blocks = parseMarkdown('intro\n\n```ts\nconst x = 1;\n```\n\nafter');
@@ -136,49 +129,25 @@ test('todosFrom parses and defaults a TodoWrite input', () => {
   assert.deepEqual(todosFrom({ todos: 'not-array' }), []);
 });
 
-test('describeToolRun uses claude.ai verb style', () => {
-  // All creates → "Created N files"; single create names the file.
-  assert.equal(
-    describeToolRun([tl('Write', { file_path: 'a.ts' }), tl('Edit', { file_path: 'b.ts' })]),
-    'Created 2 files',
-  );
-  assert.equal(describeToolRun([tl('Write', { file_path: 'src/types.ts' })]), 'Created types.ts');
-  // All reads.
-  assert.equal(describeToolRun([tl('Read'), tl('Read'), tl('Read')]), 'Read 3 files');
-  assert.equal(describeToolRun([tl('Read', { file_path: 'x/y.ts' })]), 'Read y.ts');
-  // Bash-only.
-  assert.equal(describeToolRun([tl('Bash')]), 'Ran a command');
-  assert.equal(describeToolRun([tl('Bash'), tl('Bash')]), 'Ran 2 commands');
-  // Bash + one other → the "Ran a command, used a tool" phrasing.
-  assert.equal(describeToolRun([tl('Bash'), tl('Read')]), 'Ran a command, used a tool');
-  // Skill → "Used a skill <name>" (single, named off `skill`); count when many.
-  assert.equal(describeToolRun([tl('Skill', { skill: 'ship' })]), 'Used a skill ship');
-  assert.equal(describeToolRun([tl('Skill', {})]), 'Used a skill');
-  assert.equal(
-    describeToolRun([tl('Skill', { skill: 'ship' }), tl('Skill', { skill: 'verify' })]),
-    'Used 2 skills',
-  );
-  // Mixed / unknown → plain tool count.
-  assert.equal(describeToolRun([tl('Read'), tl('Grep'), tl('Task')]), 'Used 3 tools');
-  assert.equal(describeToolRun([tl('Mystery')]), 'Used a tool');
-  assert.equal(describeToolRun([]), 'Used a tool');
-});
+// --- Tool lines (#374): ToolGroup's memo must see a line change state --------
 
-test('aggregateDiff sums added/removed lines across Edit/Write only', () => {
-  const run = [
-    tl('Write', { content: 'a\nb\nc' }), // +3 -0
-    tl('Edit', { old_string: 'x\ny', new_string: 'x\ny\nz\nw' }), // +4 -2
-    tl('Bash', { command: 'ls' }), // ignored
-  ];
-  assert.deepEqual(aggregateDiff(run), { added: 7, removed: 2 });
-  assert.deepEqual(aggregateDiff([tl('Read')]), { added: 0, removed: 0 });
-});
-
-test('fileBase returns the last path segment', () => {
-  assert.equal(fileBase('src/a/b.ts'), 'b.ts');
-  assert.equal(fileBase('b.ts'), 'b.ts');
-  assert.equal(fileBase(''), '');
-  assert.equal(fileBase('trailing/'), 'trailing');
+test('toolRowsEqual: a line whose result just landed (… → ✓) or failed is NOT equal; identical runs are', () => {
+  const input = { description: 'ls' }; // the finalized input is set once and compared by identity (toolMessageEqual)
+  const msg = (result?: { isError: boolean; content?: string }): RenderMessage => ({
+    id: 't1',
+    role: 'tool',
+    done: true,
+    toolUse: { toolUseId: 't1', name: 'Bash', inputJson: '', input },
+    ...(result ? { toolResult: { content: result.content ?? 'out', isError: result.isError } } : {}),
+  });
+  const rows = (m: RenderMessage): ToolRow[] => buildRenderItems([m]).flatMap((i) => (i.kind === 'tool-group' ? i.rows : []));
+  const running = rows(msg());
+  assert.equal(running[0].state, 'running');
+  assert.equal(toolRowsEqual(running, rows(msg())), true, 'same message content (fresh row objects) ⇒ equal: no needless re-render');
+  assert.equal(toolRowsEqual(running, rows(msg({ isError: false }))), false, 'running → ok must re-render');
+  assert.equal(toolRowsEqual(rows(msg({ isError: false })), rows(msg({ isError: true }))), false, 'ok → error must re-render');
+  assert.equal(toolRowsEqual(rows(msg({ isError: false, content: 'a' })), rows(msg({ isError: false, content: 'b' }))), false, 'an opened card must see a new output');
+  assert.equal(toolRowsEqual(running, []), false, 'run length changed');
 });
 
 // --- Model switcher (model-util) --------------------------------------------
