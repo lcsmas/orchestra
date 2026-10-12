@@ -153,3 +153,23 @@ test('the repeat table is bounded: the oldest settled id is forgotten past 256, 
   await r.launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(0) });
   assert.equal(r.spawned.length, 301, 'the oldest was evicted (memory is bounded without the server\'s cap)');
 });
+
+test('#375 F1 iii: onCreated is told the id of every workspace the launch made or KEPT — once, never for a refusal, a failed creation or a replay', async () => {
+  const told: string[] = [];
+  const results: MobileSpawnResult[] = [{ ok: true, id: 'ws-1' }, { ok: false, id: 'kept-2', branch: 'b', startError: 'no auth' }, { ok: false, error: 'fatal' }];
+  let n = 0;
+  const launcher = createMobileLauncher({ repos: () => [{ path: REPO }], spawn: async () => results[n++], onCreated: (id) => told.push(id) });
+  await launcher.launch({ repoPath: REPO, prompt: 'a', requestId: rid(1) });
+  await launcher.launch({ repoPath: REPO, prompt: 'a', requestId: rid(1) }); // replay of the same launch
+  await launcher.launch({ repoPath: REPO, prompt: 'b', requestId: rid(2) }); // start failed, workspace kept
+  await launcher.launch({ repoPath: REPO, prompt: 'c', requestId: rid(3) }); // creation failed: nothing exists
+  await launcher.launch({ repoPath: '/etc', prompt: 'd', requestId: rid(4) }); // unregistered repo
+  await launcher.launch({ repoPath: REPO, prompt: '', requestId: rid(5) }); // bad request
+  assert.deepEqual(told, ['ws-1', 'kept-2']);
+});
+
+test('#375 F1 iii: a throwing onCreated never changes the launch\'s outcome', async () => {
+  const launcher = createMobileLauncher({ repos: () => [{ path: REPO }], spawn: async () => ({ ok: true, id: 'ws-1', branch: 'b' }), onCreated: () => { throw new Error('feed down'); } });
+  assert.deepEqual(await launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(1) }), { ok: true, id: 'ws-1', branch: 'b' });
+});
+

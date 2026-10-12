@@ -604,3 +604,341 @@ test('#375 (known transient, pinned): a hot read that is LONGER than the live fo
   assert.ok(calls <= 1 + HEAL_RETRY_MAX, `bounded (${calls})`);
   ph.off();
 });
+
+// ---- #375 follow-up (reviewer-375b F1 iii + F3) ----
+
+test('#375 F1 iii: a launch SEEDS the feed — with no stream and no tap when the answer landed, the first read of the launched workspace is still hot and heals (control: unseeded, the stale read is trusted for good)', async () => {
+  const mk = () => {
+    let calls = 0;
+    const r = rig(async () => (++calls === 1 ? eventsOf(SAMPLE.slice(0, 1), 1_000_000) : eventsOf(SAMPLE, 1_000_000)), 10);
+    return { r, calls: () => calls };
+  };
+  const seeded = mk();
+  const control = mk();
+  seeded.r.feed.noteActivity('w1'); // the launch returned: nothing was listening, no event reached the feed
+  assert.deepEqual(kindsOf(await seeded.r.feed.getMobileConversation('w1')), ['user'], 'the first read is stale');
+  assert.deepEqual(kindsOf(await control.r.feed.getMobileConversation('w1')), ['user'], 'control: the same stale read');
+  await sleep(40); // the heal timer fired with nobody listening: the phone\'s next fetch (its stream coming back) is what reads again
+  assert.deepEqual(kindsOf(await seeded.r.feed.getMobileConversation('w1')), ['user', 'tool', 'assistant'], 'seeded ⇒ re-read ⇒ the answer');
+  assert.deepEqual(kindsOf(await control.r.feed.getMobileConversation('w1')), ['user'], 'control: never re-read');
+  assert.equal(control.calls(), 1);
+});
+
+test('#375 F1 iii: the activity note is bounded like the tap\'s own record', async () => {
+  const r = rig(async () => []);
+  for (let i = 0; i < 400; i++) r.feed.noteActivity(`ws-${i}`);
+  assert.ok(r.feed.mobileFeedState().activity <= 256, `tracked ${r.feed.mobileFeedState().activity}`);
+});
+
+test('#375 F3 (a): the skipped-heal count is renewed at a turn end — a long hot turn spends its skips, and a status that lags the END still gets asked again', async () => {
+  let ready = false;
+  let running = true;
+  const r = rig(async () => (ready ? eventsOf(SAMPLE, 1_000_000) : []), 10, () => running);
+  const ph = phoneOf(r);
+  await ph.open(); // empty ⇒ suspect, and the turn is running
+  await sleep(250); // the timer fires, the phone refetches, every refetch is skipped (running): the skips are spent
+  assert.equal(r.loads.length, 1, 'control: nothing was read mid-turn');
+  ready = true;
+  for (const e of eventsOf(SAMPLE.slice(1), 2_000_000)) r.broadcast('agent:event', 'w1', e); // the turn ends…
+  setTimeout(() => (running = false), 45); // …but the store keeps saying « running » for 45 ms
+  await sleep(400);
+  assert.deepEqual(kindsOf(ph.last()!), ['user', 'tool', 'assistant'], 'asked again after the turn end, until the status caught up');
+  ph.off();
+});
+
+test('#375 F3 (b): a heal timer that fires after the entry was TRUSTED does nothing — a trusted history is never re-read or announced', async () => {
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE, 1_000_000)), 80, undefined, 3);
+  const ph = phoneOf(r);
+  await ph.open(); // empty ⇒ suspect, a heal timer pending at 80 ms
+  for (const e of eventsOf(SAMPLE.slice(1), 2_000_000)) r.broadcast('agent:event', 'w1', e); // the turn end makes the phone read again at once (past the 3 ms window)
+  await sleep(40);
+  assert.deepEqual(kindsOf(ph.last()!), ['user', 'tool', 'assistant'], 'control: trusted by the turn-end read, before the pending timer fires');
+  const before = { loads: r.loads.length, told: ph.told.length };
+  await sleep(200); // the 80 ms timer has fired by now
+  assert.equal(r.loads.length, before.loads, 'no re-read of a trusted entry');
+  assert.equal(ph.told.length, before.told, 'and no announcement');
+  ph.off();
+});
+
+// ---- #375 follow-up: a rewind / a clear (verifier rewind-probe; reviewer: sdkRewind never truncates the transcript) and lost events ----
+
+/** Two turns on disk (the second one a copy with its own ids); `ONE` = the first turn alone. */
+function twoTurns() {
+  const copy2 = SAMPLE.map((l) => {
+    const o = JSON.parse(l);
+    if (typeof o.uuid === 'string') o.uuid = 'B' + o.uuid;
+    if (typeof o.parentUuid === 'string') o.parentUuid = 'B' + o.parentUuid;
+    return JSON.stringify(o);
+  });
+  const ONE = eventsOf(SAMPLE, 1_000_000);
+  const FULL = [...ONE, ...eventsOf(copy2, 2_000_000)];
+  const rewindIds = FULL.filter((e) => e.type === 'user-message').map((e) => (e as { rewindId?: string }).rewindId).filter((x): x is string => !!x);
+  assert.ok(rewindIds.length >= 2, 'control: both turns have a rewind target');
+  return { ONE, FULL, first: rewindIds[0], second: rewindIds.find((x) => x.startsWith('B'))! };
+}
+const REWIND = (rewindId: string) => ({ type: 'session/rewind', rewindId, seq: 10, at: 2 });
+const linesOf = async (events: AgentEvent[]) => (await createMobileFeed({ loadHistory: async () => events, onBroadcast: () => () => {}, announceMs: 5, pingMs: 60_000 }).getMobileConversation('t')).lines.length;
+
+for (const [diskAfter, pause] of [['rewritten', 0], ['untouched', 0], ['rewritten', 30], ['untouched', 30]] as const) {
+  test(`#375 follow-up must-FAIL (verifier): a HOT first read then a live REWIND (${pause} ms later; the heal timer ${pause ? 'has' : 'has not'} fired) — the stale disk never brings the rewound turn back, hot or quiet, whether the CLI later rewrites its file (${diskAfter}) or not`, async () => {
+    const { ONE, FULL, second } = twoTurns();
+    let disk = FULL;
+    const r = rig(async () => disk, 5, undefined, 500);
+    const off = r.feed.subscribeMobileFeed(() => {});
+    r.broadcast('agent:event', 'w1', { type: 'notice', kind: 'info', text: 'x', seq: 9, at: 1 }); // an agent event right before the first read ⇒ HOT
+    const c0 = await r.feed.getMobileConversation('w1');
+    await sleep(pause);
+    r.broadcast('agent:event', 'w1', REWIND(second)); // the human rewinds turn 2 on the desktop
+    await sleep(10);
+    const c1 = await r.feed.getMobileConversation('w1');
+    const loadsAtRewind = r.loads.length;
+    await sleep(300); // the heal timers would run against the stale disk, still inside the quiet window (a hot read)
+    const c2 = await r.feed.getMobileConversation('w1');
+    if (diskAfter === 'rewritten') disk = ONE;
+    await sleep(900); // the window closes: a quiet read would be offered
+    const c3 = await r.feed.getMobileConversation('w1');
+    assert.ok(c0.lines.length > c1.lines.length, `control: the rewind shrank the fold (${c0.lines.length} → ${c1.lines.length})`);
+    assert.equal(c2.lines.length, c1.lines.length, 'the stale hot re-reads did not bring the rewound turn back');
+    assert.equal(c3.lines.length, c1.lines.length, 'nor did the quiet one');
+    assert.equal(r.loads.length, loadsAtRewind, 'and a rewound conversation is not read at all any more');
+    off();
+  });
+}
+
+test('#375 follow-up: a QUIET first read then a rewind stays right (control for the rewind arm above)', async () => {
+  const { FULL, second } = twoTurns();
+  const r = rig(async () => FULL, 5, undefined, 80);
+  const off = r.feed.subscribeMobileFeed(() => {});
+  await sleep(120);
+  const c0 = await r.feed.getMobileConversation('w1');
+  r.broadcast('agent:event', 'w1', REWIND(second));
+  await sleep(400);
+  const c1 = await r.feed.getMobileConversation('w1');
+  assert.ok(c1.lines.length < c0.lines.length, `${c0.lines.length} → ${c1.lines.length}`);
+  assert.equal(r.loads.length, 1, 'one read');
+  off();
+});
+
+test('#375 follow-up: rewinding the FIRST turn empties the fold — a stale disk still holding it does not bring it back (an empty fold is no licence to install)', async () => {
+  const { FULL, first } = twoTurns();
+  const r = rig(async () => FULL, 5, undefined, 60);
+  const off = r.feed.subscribeMobileFeed(() => {});
+  r.broadcast('agent:event', 'w1', { type: 'notice', kind: 'info', text: 'x', seq: 9, at: 1 });
+  const c0 = await r.feed.getMobileConversation('w1');
+  r.broadcast('agent:event', 'w1', REWIND(first));
+  await sleep(300);
+  const c1 = await r.feed.getMobileConversation('w1');
+  assert.ok(c0.lines.length > 0 && c1.lines.length === 0, `${c0.lines.length} → ${c1.lines.length}`);
+  off();
+});
+
+test('#375 follow-up: a /clear empties the fold and the entry is final — the next turn folds onto the empty fold, nothing is read', async () => {
+  const { FULL } = twoTurns();
+  let cleared = false;
+  const r = rig(async () => (cleared ? [] : FULL), 5, undefined, 60); // sdkClear drops the session id: reads return []
+  const off = r.feed.subscribeMobileFeed(() => {});
+  r.broadcast('agent:event', 'w1', { type: 'notice', kind: 'info', text: 'x', seq: 9, at: 1 });
+  await r.feed.getMobileConversation('w1');
+  cleared = true;
+  r.broadcast('agent:event', 'w1', { type: 'session/clear', seq: 10, at: 2 });
+  const loads = r.loads.length;
+  assert.equal((await r.feed.getMobileConversation('w1')).lines.length, 0);
+  for (const e of eventsOf(SAMPLE, 3_000_000)) r.broadcast('agent:event', 'w1', e); // a new turn
+  await sleep(300);
+  assert.deepEqual(kindsOf(await r.feed.getMobileConversation('w1')), ['user', 'tool', 'assistant']);
+  assert.equal(r.loads.length, loads, 'and nothing was read');
+  off();
+});
+
+test('#375 follow-up: a rewind right after events were LOST during the first read — the stale lost-events flag must not schedule a read at the next turn end that brings the rewound turn back', async () => {
+  const { FULL, second } = twoTurns();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((res) => (release = res));
+  let calls = 0;
+  const r = rig(async () => {
+    if (++calls === 1) await gate;
+    return FULL;
+  }, 1000, undefined, 40); // no heal timer in the way: the phone does not refetch here
+  const off = r.feed.subscribeMobileFeed(() => {});
+  const first = r.feed.getMobileConversation('w1');
+  r.broadcast('agent:event', 'w1', { type: 'notice', kind: 'info', text: 'x', seq: 9, at: 1 }); // lost: the entry is loading
+  release();
+  await first; // the read owes a follow-up (missedWhileLoading, reloadPending) — nobody has asked for it yet
+  r.broadcast('agent:event', 'w1', REWIND(second)); // the human rewinds turn 2
+  const afterRewind = (await r.feed.getMobileConversation('w1')).lines.length;
+  const loads = r.loads.length;
+  r.broadcast('agent:event', 'w1', { type: 'turn-end', seq: 11, at: 3 }); // …and the session ends its turn
+  await sleep(200);
+  assert.equal((await r.feed.getMobileConversation('w1')).lines.length, afterRewind, 'the rewound turn did not come back');
+  assert.equal(r.loads.length, loads, 'and nothing was read');
+  assert.ok(afterRewind < (await linesOf(FULL)), 'control: the rewind shrank the fold');
+  off();
+});
+
+test('#375 follow-up: a rewind id that matches NOTHING (the fold does not shrink) does not freeze the entry — the heal goes on', async () => {
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? eventsOf(SAMPLE.slice(0, 1), 1_000_000) : eventsOf(SAMPLE, 1_000_000)), 10, undefined, 60);
+  const ph = phoneOf(r);
+  r.broadcast('agent:event', 'w1', { type: 'notice', kind: 'info', text: 'x', seq: 9, at: 1 });
+  await ph.open(); // hot, stale
+  r.broadcast('agent:event', 'w1', REWIND('no-such-rewind-id'));
+  await sleep(200);
+  assert.deepEqual(kindsOf(ph.last()!), ['user', 'tool', 'assistant'], 'the growing re-read was installed');
+  ph.off();
+});
+
+test('#375 follow-up: events LOST during a read do not let a shorter, lagging quiet disk remove what the live fold has since received', async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((res) => (release = res));
+  let calls = 0;
+  const r = rig(async () => {
+    if (++calls === 1) {
+      await gate;
+      return eventsOf(SAMPLE.slice(0, 1), 1_000_000); // the user line
+    }
+    return eventsOf(SAMPLE.slice(0, 2), 1_000_000); // a disk that stays one line behind: user + tool
+  }, 10, undefined, 40);
+  const ph = phoneOf(r);
+  const first = ph.open();
+  r.broadcast('agent:event', 'w1', eventsOf(SAMPLE.slice(1, 2), 2_000_000)[0]); // an event during the first read: lost
+  release();
+  await first;
+  for (const e of eventsOf(SAMPLE.slice(2), 3_000_000)) r.broadcast('agent:event', 'w1', e); // the answer arrives live
+  await sleep(500); // well past the quiet window: the lagging disk is offered quiet
+  assert.ok(calls >= 3, `control: the shorter disk was read (${calls} reads)`);
+  assert.ok(kindsOf(ph.last()!).includes('assistant'), `the answer is still there: ${kindsOf(ph.last()!).join(',')}`);
+  ph.off();
+});
+
+test('#375 follow-up: a read of EQUAL length but ANOTHER shape never replaces the fold — a lagging disk would remove the answer the live fold has (hot or quiet)', async () => {
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE.slice(0, 2), 1_000_000)), 10, undefined, 30); // then user + tool: one line behind
+  const ph = phoneOf(r);
+  await ph.open();
+  for (const e of eventsOf(SAMPLE.slice(1), 2_000_000)) r.broadcast('agent:event', 'w1', e); // live: tool + assistant (2 messages, no head)
+  await sleep(300); // hot and quiet reads of the 2-message disk
+  assert.ok(calls >= 3, `control: the equal-length disk was read hot and quiet (${calls} reads)`);
+  assert.deepEqual(kindsOf(ph.last()!), ['tool', 'assistant'], 'the fold kept the answer (its head is missing — an accepted gap)');
+  ph.off();
+});
+
+test('#375 follow-up: lost events alone do not delay the heal — a hot read that GROWS is installed at once (the slow-turn fix must not wait out the quiet window)', async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((res) => (release = res));
+  let calls = 0;
+  const r = rig(async () => {
+    if (++calls === 1) {
+      await gate;
+      return eventsOf(SAMPLE.slice(0, 1), 1_000_000); // the user line only
+    }
+    return eventsOf(SAMPLE, 1_000_000);
+  }, 10, undefined, 400);
+  const ph = phoneOf(r);
+  const first = ph.open();
+  for (const e of eventsOf(SAMPLE.slice(1), 2_000_000)) r.broadcast('agent:event', 'w1', e); // the answer arrives during the read: lost
+  release();
+  await first;
+  await sleep(150); // well inside the 400 ms quiet window
+  assert.deepEqual(kindsOf(ph.last()!), ['user', 'tool', 'assistant'], 'the growing hot read was installed, not held back until the window closed');
+  ph.off();
+});
+
+test('#375 follow-up: without a rewind or lost events a QUIET read that is SHORTER than the fold is still refused (live-only rows survive)', async () => {
+  let calls = 0;
+  const r = rig(async () => (++calls === 1 ? [] : eventsOf(SAMPLE.slice(1), 1_000_000)), 10, undefined, 30); // then a disk that lacks the first line, for good
+  const ph = phoneOf(r);
+  await ph.open();
+  for (const e of eventsOf(SAMPLE, 2_000_000)) r.broadcast('agent:event', 'w1', e); // the live turn, complete
+  await sleep(300); // past the quiet window: the shorter disk is offered quiet
+  assert.ok(calls >= 3, `control: the shorter disk was read hot and quiet (${calls} reads)`);
+  assert.deepEqual(kindsOf(ph.last()!), ['user', 'tool', 'assistant'], 'a shorter quiet read does not replace a fold nothing shrank');
+  ph.off();
+});
+
+test('#375 follow-up: a seed on a FULL table keeps the newcomer and drops the least recent (the seed must not evict itself)', async () => {
+  const r = rig(async () => eventsOf(SAMPLE.slice(0, 1), 1_000_000), 10, undefined, 5000);
+  const ph = phoneOf(r);
+  for (let i = 0; i < 256; i++) r.feed.noteActivity(`old-${i}`);
+  r.feed.noteActivity('w1'); // a launch seeds while 256 other workspaces are tracked
+  assert.ok(r.feed.mobileFeedState().activity <= 256, `tracked ${r.feed.mobileFeedState().activity}`);
+  await ph.open(); // stale first read of the launched workspace
+  await r.feed.getMobileConversation('old-0'); // the least recent seed was dropped: its stale read is trusted
+  await sleep(80);
+  assert.ok(ph.told.length >= 1, 'the newcomer is tracked ⇒ hot ⇒ the phone is told to read again');
+  assert.equal(r.loads.filter((x) => x === 'old-0').length, 1, 'the dropped one is read once and left alone');
+  ph.off();
+});
+
+// ---- same-shape repairs (third review BLOCKING: master installed an equal-length QUIET read; strictly-longer lost these) ----
+
+const H = (text: string) => [
+  { type: 'user-message', text: 'hi', rewindId: 'R1', seq: 1_000_000, at: 1 },
+  ...(text ? [{ type: 'block-start', index: 100000, kind: 'text', seq: 1_000_001, at: 2 }, { type: 'text-delta', index: 100000, text, seq: 1_000_002, at: 2 }, { type: 'block-stop', index: 100000, seq: 1_000_003, at: 2 }] : []),
+] as unknown as AgentEvent[];
+const END = (seq: number) => ({ type: 'turn-end', isError: false, stopReason: 'end_turn', numTurns: 1, costUsd: null, usage: null, resultText: null, sessionId: '', durationMs: null, seq, at: seq });
+const assistantText = (c: { lines: { kind: string; text?: string }[] }) => c.lines.find((l) => l.kind === 'assistant')?.text;
+
+test('#375 follow-up must-FAIL (third review BLOCKING): a launch returns MID text block — the live row holds only the tail; the equal-length QUIET disk read, richer, repairs it', async () => {
+  let disk: AgentEvent[] = H(''); // the transcript has the user line only when the phone opens
+  const r = rig(async () => disk, 10, undefined, 60);
+  const ph = phoneOf(r);
+  r.feed.noteActivity('w1'); // the launch seeds
+  await ph.open();
+  r.broadcast('agent:event', 'w1', { type: 'text-delta', index: 0, text: 'the rest of the first sentence.', seq: 4, at: 3 }); // block 0 started BEFORE the entry existed
+  r.broadcast('agent:event', 'w1', { type: 'block-stop', index: 0, seq: 5, at: 3 });
+  r.broadcast('agent:event', 'w1', END(6));
+  disk = H('Here is the first sentence, the rest of the first sentence.');
+  await sleep(600);
+  assert.equal(assistantText(ph.last()!), 'Here is the first sentence, the rest of the first sentence.', `the row was repaired from the disk (got ${JSON.stringify(assistantText(ph.last()!))})`);
+  ph.off();
+});
+
+test('#375 follow-up: a HOT read of the same shape never replaces the fold — a lagging disk row has LESS text than the live one; the quiet one, complete, does', async () => {
+  let disk: AgentEvent[] = H('');
+  const r = rig(async () => disk, 10, undefined, 500);
+  const ph = phoneOf(r);
+  r.feed.noteActivity('w1');
+  await ph.open();
+  r.broadcast('agent:event', 'w1', { type: 'text-delta', index: 0, text: 'the rest of the first sentence.', seq: 4, at: 3 });
+  r.broadcast('agent:event', 'w1', { type: 'block-stop', index: 0, seq: 5, at: 3 });
+  r.broadcast('agent:event', 'w1', END(6));
+  disk = H('the rest'); // the CLI has flushed only the start of the row so far
+  await sleep(200); // inside the quiet window: hot reads
+  assert.ok((r.loads.length) >= 2, `control: hot re-reads happened (${r.loads.length})`);
+  assert.equal(assistantText(ph.last()!), 'the rest of the first sentence.', 'a lagging hot read did not shorten the row');
+  disk = H('Here is the first sentence, the rest of the first sentence.');
+  await sleep(1200);
+  assert.equal(assistantText(ph.last()!), 'Here is the first sentence, the rest of the first sentence.');
+  ph.off();
+});
+
+test('#375 follow-up must-FAIL (third review): a tool result LOST during the first read is repaired by the equal-shape quiet disk read (the tool does not stay « running » for good)', async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((res) => (release = res));
+  let calls = 0;
+  const full = eventsOf(SAMPLE, 1_000_000);
+  const early = eventsOf(SAMPLE.slice(0, 2), 1_000_000); // user + tool call, no result yet
+  let disk = early;
+  const r = rig(async () => {
+    if (++calls === 1) {
+      await gate;
+      return early;
+    }
+    return disk;
+  }, 10, undefined, 60);
+  const ph = phoneOf(r);
+  const first = ph.open();
+  const live = eventsOf(SAMPLE, 2_000_000);
+  r.broadcast('agent:event', 'w1', live.find((e) => e.type === 'tool-result')); // lost: the entry is loading
+  release();
+  await first;
+  for (const e of live.filter((e) => (e.type === 'block-start' && (e as { kind?: string }).kind === 'text') || e.type === 'text-delta' || e.type === 'block-stop' || e.type === 'turn-end')) r.broadcast('agent:event', 'w1', e);
+  disk = full;
+  await sleep(700);
+  const states = (c: { lines: { kind: string; state?: string }[] }) => c.lines.filter((l) => l.kind === 'tool').map((l) => l.state);
+  const truth = states(await createMobileFeed({ loadHistory: async () => full, onBroadcast: () => () => {}, announceMs: 5, pingMs: 60_000 }).getMobileConversation('t'));
+  assert.deepEqual(states(ph.last()!), truth, 'the tool shows the state the transcript has');
+  ph.off();
+});
+

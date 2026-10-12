@@ -168,6 +168,9 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   assert.match(dsr, /created = \{ id: ws\.id, branch: ws\.branch \};/, 'the persisted workspace is remembered…');
   assert.match(dsr, /return created \? keptFailure\(created\.id, created\.branch, msg\) : \{ ok: false, error: msg \};/, '…so a throw after it still reports the kept child');
   assert.match(dsr, /if \(!started\.ok\) return keptFailure\(ws\.id, ws\.branch, started\.error\);/);
+  // #375 F1 iii: the launch seeds the phone feed with the workspace it made (the entry is created hot, stream or not)
+  assert.match(routes, /onCreated: \(id\) => noteMobileActivity\(id\),/, 'routes seed the feed from the launcher');
+  assert.match(read('src/main/acces-mobile-feed.ts'), /export const noteMobileActivity = feed\.noteActivity;/);
   // the launcher is Electron-free (node --test drives the REAL guards) and holds the three guards
   const launcher = read('src/main/acces-mobile-launch.ts');
   assert.doesNotMatch(launcher, /from 'electron'|from '\.\/(store|workspaces|agent-sdk)/, 'the launcher imports no Electron-bound module');

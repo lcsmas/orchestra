@@ -6,7 +6,7 @@
 import { appUpdateState } from './app-update-host';
 import { store } from './store';
 import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-sdk';
-import { getMobileConversation, subscribeMobileFeed } from './acces-mobile-feed';
+import { getMobileConversation, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
 import { dispatchSpawnRequest } from './workspaces';
 import { createMobileLauncher } from './acces-mobile-launch';
@@ -40,6 +40,7 @@ const launcher = createMobileLauncher({
   repos: () => store.repos,
   spawn: ({ repoPath, task }) => dispatchSpawnRequest({ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' }),
   info: (line) => log.info(line),
+  onCreated: (id) => noteMobileActivity(id), // the entry is created hot even when no stream was open at the answer
 });
 
 export const mobileRpcHandlers: RpcHandlers = {

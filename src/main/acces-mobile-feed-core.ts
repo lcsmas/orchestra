@@ -91,19 +91,32 @@ function announce(id: string, e: Entry): void {
   }, deps.announceMs ?? ANNOUNCE_MS);
 }
 
+/** Record that `id` just had activity: a read that starts within LAG_MS of it is hot (#375). */
+function noteActivity(id: string): void {
+  lastEventAt.delete(id);
+  lastEventAt.set(id, now());
+  if (lastEventAt.size > MAX_ACTIVITY) lastEventAt.delete(lastEventAt.keys().next().value as string);
+}
+
 function onTap(channel: string, args: unknown[]): void {
   if (channel === 'agent:event') {
     const [wsId, event] = args as [string, AgentEvent];
-    lastEventAt.delete(wsId);
-    lastEventAt.set(wsId, now());
-    if (lastEventAt.size > MAX_ACTIVITY) lastEventAt.delete(lastEventAt.keys().next().value as string);
+    noteActivity(wsId);
     const e = cache.get(wsId);
     if (!e) return;
     if (e.loading) {
       e.missedWhileLoading = true;
       return;
     }
+    const before = e.session.messages.length;
     e.session = foldEvent(e.session, event);
+    if (e.session.messages.length < before) {
+      // A rewind: the transcript is NOT truncated then (sdkRewind only parks a resume cut), so a read would bring the removed turns back — the
+      // live fold is final: never suspect, never re-read (a /clear is harmless here: sdkClear drops the session id, so reads return []).
+      e.suspect = false;
+      e.reloadPending = false;
+      e.missedWhileLoading = false;
+    }
     e.version++;
     if (event.type === 'turn-end' && (e.missedWhileLoading || e.suspect)) {
       e.reloadPending = true;
@@ -176,11 +189,13 @@ async function load(id: string, e: Entry): Promise<void> {
     next = emptySession(id);
   }
   // HOT = an agent event of this workspace came less than LAG_MS before the read started (or during it): the CLI flushes its transcript
-  // after emitting, so the read may lack the tail. The conversation only GROWS through a heal; an equal-length read counts only when not hot.
+  // after emitting, so the read may lack the tail. A read installs if LONGER than the fold, or — quiet only — of the SAME shape
+  // (equal length and roles: a partial text row or a lost tool result is repaired by the richer disk row). An equal-length read of another shape is a
+  // lagging disk: it must never remove what the live fold has.
   const last = lastEventAt.get(id);
   const hot = last !== undefined && last > startedAt - (deps.lagMs ?? LAG_MS);
   const have = e.session.messages.length;
-  const install = have === 0 || next.messages.length > have || (!hot && next.messages.length === have);
+  const install = have === 0 || next.messages.length > have || (!hot && next.messages.length === have && next.messages.every((m, i) => m.role === e.session.messages[i].role));
   if (install) e.session = next;
   e.version++;
   e.reloadPending = false;
@@ -259,5 +274,5 @@ function mobileFeedState(): { cached: string[]; listeners: number; tapped: boole
   return { cached: [...cache.keys()], listeners: listeners.size, tapped: !!untap, activity: lastEventAt.size };
 }
 
-return { getMobileConversation, subscribeMobileFeed, mobileFeedState, sweep };
+return { getMobileConversation, subscribeMobileFeed, mobileFeedState, noteActivity, sweep };
 }

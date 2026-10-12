@@ -24,6 +24,9 @@ export interface MobileLauncherDeps {
   spawn: (input: { repoPath: string; task: string }) => Promise<MobileSpawnResult>;
   now?: () => number;
   info?: (line: string) => void;
+  /** A workspace EXISTS for this launch (created, or kept after a failed start). The spawn returned after the first output, so its transcript
+   *  may still lack the tail: tell the phone feed (reads are hot even with no stream open). Never allowed to fail the launch (#375 review F1 iii). */
+  onCreated?: (id: string) => void;
 }
 
 /** `code` is what the phone words in French; `error` is the raw detail (logs, tests). `id` on a failure = the workspace was KEPT. */
@@ -53,6 +56,13 @@ export function createMobileLauncher(deps: MobileLauncherDeps): { launch(raw: un
       res = await deps.spawn({ repoPath, task: prompt });
     } catch (e) {
       return { ok: false, code: 'create-failed', error: e instanceof Error ? e.message : String(e) };
+    }
+    if (res.id) {
+      try {
+        deps.onCreated?.(res.id);
+      } catch {
+        /* a side effect of the launch never changes its outcome */
+      }
     }
     if (res.id && res.ok) {
       deps.info?.(`mobile launch: workspace ${res.id} created in ${repoPath.split('/').pop()} (${prompt.length} chars)`);
