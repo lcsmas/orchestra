@@ -44,7 +44,7 @@ const SECTIONS: HelpSection[] = [
     items: [
       { name: 'Spawn', desc: '`orchestra spawn --name impl-sidebar-lent-123 --task "…"` — new branch, new worktree, new agent, nested under the spawner. `--name` is required: `<rôle>-<objet>[-<ticket>]`, rôle = ops, impl, verif, review or explo. Spawned agents can spawn too.' },
       { name: 'Peer comms', desc: 'Agents list siblings (`orchestra peers`) and message each other — messages queue in an inbox if the peer is stopped.' },
-      { name: 'Naming', desc: 'A workspace you create names itself: it gets a placeholder name, then the agent renames its branch once it understands the task. A spawned agent is named by the agent that spawned it, and never renames itself; your own rename always wins.' },
+      { name: 'Naming', desc: 'A workspace you create names itself: it gets a placeholder name, then the agent renames its branch once it understands the task. A spawned agent is named by the agent that spawned it and is not asked to rename itself.' },
       { name: 'Attach / detach', desc: 'Re-parent any existing workspace under an orchestrator (or pop it back out) to organize a fleet after the fact.' },
     ],
   },

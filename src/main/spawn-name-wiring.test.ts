@@ -44,6 +44,9 @@ test('the AGENT route requires the name: dispatchAgentSpawnRequest checks it FIR
   assert.match(body, /defaultKind: 'spawned'/);
   assert.match(body, /branch: checked\.name/); // the SANITISED name, onto the existing explicit-branch input
   assert.match(body, /namedBy: input\.from/); // the spawner is the namer — also for --detached (no parentId)
+  // `origin` (a human pause bypass) can never ride the agent route: it is OUT of the wrapper's input type
+  const decl = workspacesSrc.slice(workspacesSrc.indexOf('export async function dispatchAgentSpawnRequest('), workspacesSrc.indexOf('): Promise<SpawnResult> {', workspacesSrc.indexOf('export async function dispatchAgentSpawnRequest(')));
+  assert.match(decl, /Omit<Parameters<typeof dispatchSpawnRequest>\[0\], 'defaultKind' \| 'branch' \| 'namedBy' \| 'origin'>/);
   assert.match(workspacesSrc, /import \{[^}]*\bcheckSpawnName\b[^}]*\} from '\.\.\/shared\/naming-policy\.ts';/, 'imported from the policy module');
 });
 

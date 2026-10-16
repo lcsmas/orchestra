@@ -459,7 +459,7 @@ export async function createWorkspace(
 const ORCHESTRATOR_BRIEF_HEAD =
   "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
   "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent with `orchestra spawn` (see the orchestra-spawn skill). " +
-  `Every spawn MUST carry \`--name\`: the child is named \`${NAME_CONVENTION}\` — you name it, it never renames itself, no wave codes in the name. `;
+  `Every spawn MUST carry \`--name\`: the child is named \`${NAME_CONVENTION}\` — you name it (the child is not asked to rename itself), no wave codes in the name. `;
 
 /** The repo paragraph, which differs by sub-state: a repo-less coordinator must
  * name a repo on every spawn, while one that has adopted a repo inherits it and
@@ -1550,7 +1550,7 @@ export async function dispatchSpawnRequest(
  *  becomes the child's branch (collisions suffix as for any explicit branch) and `from` becomes its namer — also for
  *  `--detached` (no `parentId`). A `/spawn` with no `from` is a human at a terminal: a human-created workspace, not pinned. */
 export async function dispatchAgentSpawnRequest(
-  input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy'> & { name?: string | null },
+  input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy' | 'origin'> & { name?: string | null },
 ): Promise<SpawnResult> {
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
@@ -3741,9 +3741,9 @@ branch) at spawn: \`${NAME_CONVENTION}\`. Put the OBJECT in the human's own
 words (what the child works on), never internal wave codes (\`h1\`, \`q9\`, \`g10\`,
 \`fu\`, \`r4\`); end with the ticket number when there is one. A spawn without
 \`--name\`, or whose name does not start with a rôle, is REFUSED and creates
-nothing. The child is never nudged to rename itself and cannot: it is YOUR name
-to change later (\`orchestra rename <id> <name>\`), and a human rename always
-wins. A name already taken is suffixed (\`-2\`, \`-3\`…) — the CLI prints the FINAL branch.
+nothing. The child is never nudged to rename itself: the name is YOURS to change
+later (\`orchestra rename <id> <name>\`). A name already taken is suffixed (\`-2\`,
+\`-3\`…) — the CLI prints the FINAL branch. Flat names only (no \`/\`), 79 characters max.
 
 Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
 \$ORCHESTRA_WS_ID from your env, and nests the new worktree under you):

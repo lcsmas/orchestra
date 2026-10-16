@@ -66,8 +66,8 @@ with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long bo
 
 Spawn a new worktree + agent, nested under the caller by default.
   --name <name>     the child's name (required): ${NAME_CONVENTION}.
-                    It becomes the child's branch and sidebar name; the child never renames
-                    itself (you can: 'rename'; a human rename wins). A name already taken is
+                    It becomes the child's branch and sidebar name; the child is not asked to
+                    rename itself (you can later: 'rename'). A name already taken is
                     suffixed (-2, -3…): the final branch is printed. No wave codes (h1, q9, fu…).
   --task <text>     the agent's brief (required)
   --repo <path>     repo to branch from (default: the caller's)

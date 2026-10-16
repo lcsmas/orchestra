@@ -54,6 +54,11 @@ const MUTANTS = [
   { id: 'M19_mobile_passes_namer (D4)', file: F.mobile, find: "detached: true, defaultKind: 'workspace', origin: 'human' }", to: "detached: true, defaultKind: 'workspace', origin: 'human', namedBy: 'x' }", tests: [T.wiring], expect: 'D4 — the HUMAN paths' },
   { id: 'M20_hook_gate_open', file: F.ws, find: '[ "\\${ORCHESTRA_BRANCH_AUTO:-0}" = "1" ] || exit 0', to: 'true', tests: [T.wiring], expect: 'end to end' },
   { id: 'M21_env_always_on', file: F.agentSdk, find: "env.ORCHESTRA_BRANCH_AUTO = nudgeActive(ws) ? '1' : '0';", to: "env.ORCHESTRA_BRANCH_AUTO = '1';", tests: [T.wiring, T.w381], expect: 'derives ORCHESTRA_BRANCH_AUTO' },
+  { id: 'M24_no_diacritic_fold', file: F.policy, find: "    .normalize('NFD')\n    .replace(/\\p{M}+/gu, '')\n", to: '\n', tests: [T.unit], expect: 'diacritics — must-PASS' },
+  { id: 'M25_slash_allowed', file: F.policy, find: "if (name.includes('/')) return", to: "if (false) return", tests: [T.unit], expect: 'flat' },
+  { id: 'M26_length_unbounded', file: F.policy, find: 'if (name.length > MAX_SPAWN_NAME) return', to: 'if (false) return', tests: [T.unit], expect: 'length' },
+  { id: 'M27_git_ref_unchecked', file: F.policy, find: 'if (/\\.\\.|\\.$|\\.lock$/.test(name)) return', to: 'if (false) return', tests: [T.unit], expect: 'git ref' },
+  { id: 'M28_origin_rides_agent_route', file: F.ws, find: "'defaultKind' | 'branch' | 'namedBy' | 'origin'>", to: "'defaultKind' | 'branch' | 'namedBy'>", tests: [T.wiring], expect: 'the AGENT route requires the name' },
   { id: 'M22_guide_drops_name', file: F.cliGuide, find: 'orchestra spawn --name <name> --task <text>', to: 'orchestra spawn --task <text>', tests: [T.wiring], expect: 'G10' },
   { id: 'M23_help_drops_convention', file: 'src/cli/help.ts', find: '(required): ${NAME_CONVENTION}.', to: '(required).', tests: [T.wiring], expect: 'G10' },
 ];
