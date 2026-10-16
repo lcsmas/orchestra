@@ -28,6 +28,8 @@ export interface MigrationInputs {
   /** Workspace ids that belong to a vague still running — see {@link activeVagueMemberIds}. */
   activeVagueMembers: ReadonlySet<string>;
   table: readonly TableRow[];
+  /** Optional git ref-format check (the script runs `git check-ref-format --branch`): an error string = git would refuse the name. */
+  refFormatError?: (name: string) => string | undefined;
 }
 
 export type RowAction =
@@ -60,7 +62,8 @@ export type RejectCode =
   | 'invalid-name'
   | 'stale-old'
   | 'duplicate-target'
-  | 'name-taken';
+  | 'name-taken'
+  | 'invalid-ref';
 
 export interface RejectedRow {
   /** Index in the table (0-based). */
@@ -96,10 +99,14 @@ export const ACTION_LABEL: Record<RowAction, string> = {
  * that has a parent (bus-run-anchor.ts: `parentRunId === null ? 'mission' : 'vague'`) — the anchor itself and
  * everything below it. "Live" is the app's own rule (`liveFleetRuns`, pause-memory.ts): the anchor is not archived
  * (nor sandbox-hosted) AND at least one live local workspace sits below it. Nothing writes `runs.closed_at`, so the
- * store is the whole truth; a vague closes when its OPS is archived/deleted or its last member is.
+ * store is the whole truth. The app has no "close" event, and archiving an orchestrator archives its WHOLE subtree
+ * (archiveWorkspace), after which the app refuses every rename — so the operator DECLARES a finished-but-live vague
+ * through `closed` (anchor ids): its members leave the set while they are still renamable. A top-level orchestrator is a
+ * mission (not a vague): its workers are never held — leave them out of the table to keep their names.
  */
 export function activeVagueMemberIds(
   workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'archived' | 'kind' | 'canOrchestrate' | 'host'>[],
+  closed: ReadonlySet<string> = new Set(),
 ): Set<string> {
   const byId = new Map(workspaces.map((w) => [w.id, w]));
   const live = (w: { archived?: boolean; host?: { kind: string } }): boolean => !w.archived && w.host?.kind !== 'sandbox';
@@ -118,7 +125,7 @@ export function activeVagueMemberIds(
   for (const w of workspaces) if (live(w)) for (const a of ancestors(w.id)) hasLiveBelow.add(a);
   const members = new Set<string>();
   for (const a of workspaces) {
-    if (!canOrchestrate(a) || !live(a) || !hasLiveBelow.has(a.id)) continue;
+    if (!canOrchestrate(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
     if (!a.parentId || !byId.has(a.parentId)) continue; // a top-level orchestrator runs a mission, not a vague
     members.add(a.id);
     for (const w of workspaces) if (ancestors(w.id).includes(a.id)) members.add(w.id);
@@ -136,11 +143,21 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
   const idCount = new Map<string, number>();
   for (const r of input.table) idCount.set(r.id, (idCount.get(r.id) ?? 0) + 1);
   const checks = input.table.map((r) => checkSpawnName(r.new));
+  // Only rows whose workspace is LIVE can be applied, so only they compete for a target name (a row of a pruned or archived workspace never lands).
   const targetCount = new Map<string, number>();
-  for (const c of checks) if (c.ok) targetCount.set(c.name, (targetCount.get(c.name) ?? 0) + 1);
+  input.table.forEach((r, i) => {
+    const c = checks[i];
+    const w = byId.get(r.id);
+    if (c.ok && w && !w.archived) targetCount.set(c.name, (targetCount.get(c.name) ?? 0) + 1);
+  });
   // Names a rename cannot land on: a branch of the repos, or the current branch of another LIVE workspace.
   const taken = new Set<string>([...input.remoteBranches, ...input.localBranches]);
   for (const w of input.workspaces) if (!w.archived) taken.add(w.branch);
+  // git refs are files: `a` cannot coexist with `a/b` (either way round), so a path-prefix clash counts as taken.
+  const clash = (to: string, own: string): string | undefined => {
+    for (const t of taken) if (t !== own && (t === to || t.startsWith(`${to}/`) || to.startsWith(`${t}/`))) return t;
+    return undefined;
+  };
 
   input.table.forEach((r, index) => {
     const reject = (code: RejectCode, detail: string): void => {
@@ -149,15 +166,23 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     const ws = byId.get(r.id);
     if (!ws) return reject('unknown-workspace', 'no workspace with this id in the store');
     if ((idCount.get(r.id) ?? 0) > 1) return reject('duplicate-row', 'the id appears more than once in the table');
-    if (ws.branchManuallySet === true) return reject('human-pinned', `a human named it (${ws.branch}) — a human rename wins for good`);
     const check = checks[index];
     if (!check.ok) return reject('invalid-name', check.error);
     const to = check.name;
+    // An ARCHIVED workspace is never renamed (the app refuses): its row is only checked for being well-formed, so it cannot block a run.
+    if (ws.archived) {
+      valid.set(r.id, { index, to });
+      return;
+    }
+    if (ws.branchManuallySet === true) return reject('human-pinned', `a human named it (${ws.branch}) — a human rename wins for good`);
     if (r.old !== undefined && r.old !== ws.branch && ws.branch !== to) {
       return reject('stale-old', `the table was validated against "${r.old}" but the workspace is now "${ws.branch}"`);
     }
+    const refError = input.refFormatError?.(to);
+    if (refError) return reject('invalid-ref', refError);
     if ((targetCount.get(to) ?? 0) > 1) return reject('duplicate-target', `another row targets the same name "${to}"`);
-    if (ws.branch !== to && taken.has(to)) return reject('name-taken', `"${to}" is already a branch or another workspace's name`);
+    const clashing = ws.branch === to ? undefined : clash(to, ws.branch);
+    if (clashing) return reject('name-taken', `"${to}" conflicts with the existing branch / workspace name "${clashing}"`);
     valid.set(r.id, { index, to });
   });
 
@@ -177,15 +202,18 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       rows.push({ ...base, action: 'untouched-archived', to, reason: 'archived: the app refuses to rename it' });
       continue;
     }
-    if (ws.branch === to) {
+    // Already carrying the name AND already parent-named: nothing left to do. Carrying the name but NOT parent-named (a self-chosen name, or a rename a
+    // pre-#383 app did not pin) stays a `rename` to the same name: the app persists the pin on a same-name rename (pinAdvancesGate) — a no-op for git.
+    if (ws.branch === to && ws.namedByParent) {
       rows.push({ ...base, action: 'done', to, reason: 'already named' });
       continue;
     }
-    // D2: the rename is applied AS the parent (self-asserted ORCHESTRA_WS_ID). `parentId` first, else the namer; either must still exist.
-    const asParent = [ws.parentId, ws.namedByParent].find((p): p is string => !!p && byId.has(p));
+    // D2: the rename is applied AS the parent (self-asserted ORCHESTRA_WS_ID): `parentId`, else the namer. The app compares ids only (decideRename), so a parent
+    // that has since left the store still names its child — an id that exists is preferred; with neither recorded there is nobody to name it.
+    const ids = [ws.parentId, ws.namedByParent].filter((p): p is string => !!p);
+    const asParent = ids.find((p) => byId.has(p)) ?? ids[0];
     if (!asParent) {
-      const why = ws.parentId || ws.namedByParent ? 'its parent/namer is no longer in the store' : 'no parentId/namedByParent recorded';
-      rows.push({ ...base, action: 'untouched-no-parent', to, reason: `${why} — rename it from the sidebar or re-attach it` });
+      rows.push({ ...base, action: 'untouched-no-parent', to, reason: 'no parentId/namedByParent recorded — rename it from the sidebar or re-attach it' });
       continue;
     }
     if (input.remoteBranches.has(ws.branch)) {
@@ -196,7 +224,9 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       rows.push({ ...base, action: 'skip-vague', to, reason: 'member of a vague still running — re-run at its close' });
       continue;
     }
-    rows.push({ ...base, action: 'rename', to, asParent, reason: `as ${asParent.slice(0, 8)}` });
+    const gone = byId.has(asParent) ? '' : ' (no longer in the store)';
+    const pinOnly = ws.branch === to ? ' · pin only, the name is already right' : '';
+    rows.push({ ...base, action: 'rename', to, asParent, reason: `as ${asParent.slice(0, 8)}${gone}${pinOnly}` });
   }
 
   const renames = rows
@@ -206,22 +236,26 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
 }
 
 /** The printable plan: one line per workspace that has something to say, then the rejected rows, then totals. */
-export function renderPlan(plan: MigrationPlan): string[] {
+export function renderPlan(plan: MigrationPlan, opts: { verbose?: boolean; allowGone?: boolean } = {}): string[] {
   const lines: string[] = [];
-  const quiet = new Set<RowAction>(['untouched-human', 'untouched-not-in-table', 'done']);
+  const quiet = new Set<RowAction>(opts.verbose ? [] : ['untouched-human', 'untouched-not-in-table', 'done']);
   for (const r of plan.rows) {
     if (quiet.has(r.action)) continue;
     const arrow = r.to ? `${r.branch} -> ${r.to}` : r.branch;
     lines.push(`PLAN  ${r.id.slice(0, 8)}  ${ACTION_LABEL[r.action].padEnd(34)}  ${arrow}  [${r.reason}]`);
   }
+  // `allowGone`: a row of a workspace that no longer exists (pruned after its merge) is reported, not an error.
+  const gone = (x: RejectedRow): boolean => !!opts.allowGone && x.code === 'unknown-workspace';
   for (const x of plan.rejected) {
-    lines.push(`REJECTED  row ${x.index + 1}  ${x.id.slice(0, 8)}  ${x.code}  "${x.new}"  [${x.detail}]`);
+    if (gone(x)) lines.push(`GONE  row ${x.index + 1}  ${x.id.slice(0, 8)}  "${x.new}"  [the workspace no longer exists — nothing to do]`);
+    else lines.push(`REJECTED  row ${x.index + 1}  ${x.id.slice(0, 8)}  ${x.code}  "${x.new}"  [${x.detail}]`);
   }
   const count = (a: RowAction): number => plan.rows.filter((r) => r.action === a).length;
   lines.push(
     `TOTAL  ${plan.rows.length} workspace(s): ${count('rename')} rename · ${count('skip-remote')} skip(origin) · ${count('skip-vague')} skip(vague) · ` +
       `${count('done')} done · ${count('untouched-no-parent')} no-parent · ${count('untouched-archived')} archived · ` +
-      `${count('untouched-human')} human-created · ${count('untouched-not-in-table')} not-in-table · ${plan.rejected.length} rejected row(s)`,
+      `${count('untouched-human')} human-created · ${count('untouched-not-in-table')} not-in-table · ${plan.rejected.filter((x) => !gone(x)).length} rejected row(s)` +
+      `${plan.rejected.some(gone) ? ` · ${plan.rejected.filter(gone).length} gone` : ''}`,
   );
   return lines;
 }

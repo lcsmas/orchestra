@@ -85,7 +85,7 @@ test('the full plan on the fixture store: one action per workspace, each with it
     h100: 'untouched-human',
     h200: 'untouched-not-in-table',
     d100: 'untouched-no-parent',
-    d200: 'untouched-no-parent',
+    d200: 'rename',
     a100: 'untouched-archived',
     n100: 'untouched-not-in-table',
     p100: 'rename',
@@ -128,15 +128,26 @@ test('a workspace both on origin AND in a running vague is reported as skip (bra
   assert.equal(actionOf(closed.rows, 'w1'), 'skip-remote', 'closing the vague does not free a pushed branch');
 });
 
-test('plan after the vague closes: exactly that vague\'s members become renames', () => {
+test('plan after the vague closes: the operator declares it over and exactly that vague\'s members become renames', () => {
   const store = fixtureStore();
   const before = planMigration(inputs({ workspaces: store }));
-  // The vague closes: its OPS is archived (the app's own liveness rule — nothing writes runs.closed_at).
-  const closed = store.map((w) => (w.id === OPS_RUNNING ? { ...w, archived: true } : w));
-  const after = planMigration(inputs({ workspaces: closed }));
+  // The app has no close event, and archiving an OPS archives its whole subtree (then no rename is possible): the operator DECLARES the vague over while its members are still live.
+  const declared = activeVagueMemberIds(store, new Set([OPS_RUNNING]));
+  assert.equal(declared.size, 0);
+  const after = planMigration(inputs({ workspaces: store, activeVagueMembers: declared }));
   const newly = renamedIds(after).filter((x) => !renamedIds(before).includes(x));
   assert.deepEqual(newly, [id('w1'), id('w2')].sort());
   assert.deepEqual(renamedIds(before).filter((x) => !renamedIds(after).includes(x)), [], 'nothing else changes');
+  // declaring something that is not a running vague (a LEAD, a worker, an unknown id) changes nothing
+  assert.deepEqual([...activeVagueMemberIds(store, new Set([LEAD, id('w1'), id('ffff')]))].sort(), [...activeVagueMemberIds(store)].sort());
+});
+
+test('after a CASCADE archive (what the app does to an archived OPS) the members are untouched (archived): rename BEFORE archiving', () => {
+  const store = fixtureStore().map((w) => (w.id === OPS_RUNNING || w.parentId === OPS_RUNNING ? { ...w, archived: true } : w));
+  const plan = planMigration(inputs({ workspaces: store }));
+  assert.equal(actionOf(plan.rows, 'w1'), 'untouched-archived');
+  assert.equal(actionOf(plan.rows, 'w2'), 'untouched-archived');
+  assert.ok(!renamedIds(plan).includes(id('w1')));
 });
 
 test('untouched (human-created): no recorded spawner and no row; a row for it is listed as no-parent, never renamed', () => {
@@ -146,12 +157,45 @@ test('untouched (human-created): no recorded spawner and no row; a row for it is
   assert.ok(!plan.renames.some((r) => r.id === id('h1') || r.id === id('d1')));
 });
 
-test('untouched (no parent to name it): no parentId/namedByParent, or a parent that left the store', () => {
+test('untouched (no parent to name it): no parentId and no namedByParent recorded', () => {
   const plan = planMigration(inputs());
   assert.equal(actionOf(plan.rows, 'd1'), 'untouched-no-parent');
-  assert.equal(actionOf(plan.rows, 'd2'), 'untouched-no-parent');
   assert.match(plan.rows.find((r) => r.id === id('d1'))!.reason, /no parentId\/namedByParent/);
+});
+
+test('a parent that has left the store still names its child (the app compares ids only): renamed AS the recorded id', () => {
+  const plan = planMigration(inputs());
+  assert.equal(actionOf(plan.rows, 'd2'), 'rename');
+  const step = plan.renames.find((r) => r.id === id('d2'))!;
+  assert.equal(step.asParent, id('dead'));
   assert.match(plan.rows.find((r) => r.id === id('d2'))!.reason, /no longer in the store/);
+  // an existing id is preferred when both are recorded and only one resolves
+  const store = fixtureStore().map((w) => (w.id === id('d2') ? { ...w, namedByParent: LEAD } : w));
+  assert.equal(planMigration(inputs({ workspaces: store })).renames.find((r) => r.id === id('d2'))!.asParent, LEAD);
+});
+
+test('already carrying the name: done only when ALSO parent-named; otherwise a pin-only rename to the same name', () => {
+  const same = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: NEW.w3 } : w));
+  const plan = planMigration(inputs({ workspaces: same }));
+  const step = plan.renames.find((r) => r.id === id('w3'))!;
+  assert.deepEqual([step.from, step.to, step.asParent], [NEW.w3, NEW.w3, OPS_CLOSED]);
+  assert.match(plan.rows.find((r) => r.id === id('w3'))!.reason, /pin only/);
+  const pinned = same.map((w) => (w.id === id('w3') ? { ...w, namedByParent: OPS_CLOSED } : w));
+  assert.equal(actionOf(planMigration(inputs({ workspaces: pinned })).rows, 'w3'), 'done');
+});
+
+test('an ARCHIVED workspace\'s row can never block a run (only well-formedness is checked) nor steal a live row\'s name', () => {
+  const store = fixtureStore().map((w) => (w.id === id('a1') ? { ...w, branchManuallySet: true } : w));
+  const rowsA = [
+    { id: id('a1'), old: 'stale-name', new: 'impl-meme-nom-7' }, // pinned + stale + same target as a live row
+    { id: id('w3'), new: 'impl-meme-nom-7' },
+  ];
+  const plan = planMigration(inputs({ workspaces: store, table: rowsA }));
+  assert.deepEqual(plan.rejected, []);
+  assert.equal(actionOf(plan.rows, 'a1'), 'untouched-archived');
+  assert.equal(actionOf(plan.rows, 'w3'), 'rename');
+  const bad = planMigration(inputs({ workspaces: store, table: [{ id: id('a1'), new: 'not-a-role' }] }));
+  assert.equal(bad.rejected[0].code, 'invalid-name', 'a malformed name is still a table error');
 });
 
 test('untouched (archived): the app refuses to rename an archived workspace', () => {
@@ -214,6 +258,30 @@ test("rejected rows: a stale 'old' (renamed since the table was validated), but 
   assert.equal(noOld.rejected.length, 0, "'old' is optional");
 });
 
+test('rejected rows: git refs are files — a target that is a path-prefix of an existing branch (or has one as prefix) is taken', () => {
+  const a = planMigration(inputs({ localBranches: new Set(['impl-fix/sub']), table: [{ id: id('w3'), new: 'impl-fix' }] }));
+  assert.equal(a.rejected[0].code, 'name-taken');
+  const b = planMigration(inputs({ remoteBranches: new Set(['impl-fix']), table: [{ id: id('w3'), new: 'impl-fix/sub' }] }));
+  assert.equal(b.rejected[0].code, 'name-taken');
+  const c = planMigration(inputs({ localBranches: new Set(['impl-fixer']), table: [{ id: id('w3'), new: 'impl-fix' }] }));
+  assert.equal(c.rejected.length, 0, 'a common string prefix without the slash is not a ref conflict');
+  // the workspace's OWN current branch never conflicts with its own rename (impl-fix/sub -> impl-fix frees the directory)
+  const own = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: 'impl-fix/sub' } : w));
+  const d = planMigration(inputs({ workspaces: own, localBranches: new Set(['impl-fix/sub']), table: [{ id: id('w3'), new: 'impl-fix' }] }));
+  assert.equal(d.rejected.length, 0);
+  assert.equal(d.renames[0]?.to, 'impl-fix');
+});
+
+test('rejected rows: a name git refuses (the injected ref-format check) is rejected at plan time, not mid-apply', () => {
+  const refFormatError = (n: string): string | undefined => (/\.\.|\.lock$|\/$/.test(n) ? `git refuses "${n}"` : undefined);
+  for (const bad of ['impl-fix..auth-9', 'impl-fix.lock', 'impl-fix/']) {
+    const plan = planMigration(inputs({ refFormatError, table: [{ id: id('w3'), new: bad }] }));
+    assert.equal(plan.rejected[0]?.code, 'invalid-ref', bad);
+    assert.equal(plan.renames.length, 0);
+  }
+  assert.equal(planMigration(inputs({ refFormatError, table: [{ id: id('w3'), new: 'impl-fix-9' }] })).rejected.length, 0);
+});
+
 test('idempotent: after a full apply the plan is empty; a second apply plans nothing either', () => {
   const store = fixtureStore();
   const validRows = rowsFor(Object.keys(NEW).filter((k) => k !== 'h2')); // h2's row is rejected by design
@@ -238,11 +306,10 @@ test('idempotent, vague close: re-running after the close plans exactly the defe
       return s ? { ...w, branch: s.to, namedByParent: s.asParent, formerBranch: s.from } : w;
     });
   store = apply(planMigration(inputs({ workspaces: store })));
-  store = store.map((w) => (w.id === OPS_RUNNING ? { ...w, archived: true } : w));
-  const closeRun = planMigration(inputs({ workspaces: store }));
+  const closeRun = planMigration(inputs({ workspaces: store, activeVagueMembers: activeVagueMemberIds(store, new Set([OPS_RUNNING])) }));
   assert.deepEqual(renamedIds(closeRun), [id('w1'), id('w2')].sort());
   store = apply(closeRun);
-  assert.deepEqual(planMigration(inputs({ workspaces: store })).renames, []);
+  assert.deepEqual(planMigration(inputs({ workspaces: store, activeVagueMembers: activeVagueMemberIds(store, new Set([OPS_RUNNING])) })).renames, []);
 });
 
 test('activeVagueMemberIds: a vague is a LIVE orchestrator with a parent and a live member below it', () => {
@@ -275,8 +342,22 @@ test('renderPlan: a line per actionable workspace, the rejected rows, and the to
   assert.match(text, /skip \(active vague\)/);
   assert.match(text, /untouched \(no parent to name it\)/);
   assert.match(text, /REJECTED  row \d+  h2000000  human-pinned/);
-  assert.match(text, /TOTAL  16 workspace\(s\): 4 rename/);
+  assert.match(text, /TOTAL  16 workspace\(s\): 5 rename/);
   assert.doesNotMatch(text, /untouched \(human-created\)/, 'quiet classes are counted in TOTAL, not listed');
+  const verbose = renderPlan(planMigration(inputs()), { verbose: true }).join('\n');
+  assert.match(verbose, /untouched \(human-created\)/);
+  assert.match(verbose, /untouched \(not in table\)/);
+});
+
+test('renderPlan allowGone: a row of a vanished workspace is reported as GONE and is not counted as rejected', () => {
+  const plan = planMigration(inputs({ table: [...rowsFor(['w3']), { id: id('ffff'), new: 'impl-fantome-9' }] }));
+  const strict = renderPlan(plan).join('\n');
+  assert.match(strict, /REJECTED  row 2  ffff0000  unknown-workspace/);
+  assert.match(strict, /1 rejected row\(s\)/);
+  const lax = renderPlan(plan, { allowGone: true }).join('\n');
+  assert.match(lax, /GONE  row 2  ffff0000/);
+  assert.doesNotMatch(lax, /REJECTED/);
+  assert.match(lax, /0 rejected row\(s\) · 1 gone/);
 });
 
 test('wiring: the planner validates names with the policy module (no second copy of the rôle rule)', () => {

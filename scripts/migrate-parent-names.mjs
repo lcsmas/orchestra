@@ -3,15 +3,18 @@
 //
 //   node --experimental-strip-types scripts/migrate-parent-names.mjs --table <table.json>           # DRY RUN (default): prints the plan, writes nothing
 //   node --experimental-strip-types scripts/migrate-parent-names.mjs --table <table.json> --apply   # applies, one result line per workspace
+//   options: --closed <ops-id>[,<ops-id>…]  declare a finished-but-live vague over (its members stop being held; do this BEFORE archiving: archiving an OPS archives its whole subtree and
+//                                           the app then refuses every rename) · --allow-gone  rows of workspaces that no longer exist print as GONE instead of refusing · --verbose  list every workspace
 //
 // TABLE = the human-validated old → new table, a JSON array: [{ "id": "<full workspace id>", "old": "<branch it was validated against>", "new": "<rôle>-<objet>[-<ticket>]" }].
 //   `old` is optional but recommended: a row whose workspace was renamed since is rejected as stale. `new` must pass naming-policy.checkSpawnName.
-// INPUTS (all READ-ONLY): the app's store.json (the CLI's own path rule — ORCHESTRA_HOME/userData/orchestra/store.json, see appStoreFile), `git ls-remote --heads origin` +
+// INPUTS (all READ-ONLY): the app's store.json (the CLI's own path rule — ORCHESTRA_HOME/userData/orchestra/store.json, see appStoreFile), `git ls-remote --heads` of EVERY remote +
 //   `git for-each-ref refs/heads` of each table workspace's repo, and the RUNNING VAGUES derived from the store with the app's own liveness rule (activeVagueMemberIds:
-//   a live OPS with a live member below it — nothing writes runs.closed_at, so the bus adds nothing and is never opened).
+//   a live OPS with a live member below it — nothing writes runs.closed_at, so the bus adds nothing and is never opened; a top-level orchestrator is a mission: its workers are not held).
 // APPLY goes ONLY through the installed app's CLI: `orchestra rename <id> <name>` with ORCHESTRA_WS_ID=<that workspace's parentId> (D2: a rename AS the parent, so the app records
 //   namedByParent + formerBranch, #383/#384) — never by editing store.json. Re-run it after each vague closes: it plans exactly that vague's members; after a full apply it plans nothing.
-// EXIT: 0 ok · 1 an `orchestra rename` failed · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set).
+//   After each rename the store is re-read: the workspace must show namedByParent=<the parent> and formerBranch=<the old name>, else the line is FAILED (an app older than #383/#384 renames but does not pin).
+// EXIT: 0 ok · 1 an `orchestra rename` failed or was not pinned · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set).
 // SAFETY: it targets the app of $ORCHESTRA_HOME (default: the live ~/.orchestra) and refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) — one home for the
 //   store it reads and the app it renames in. Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.
 
@@ -32,16 +35,22 @@ const die = (msg, code = 2) => {
 let tableFile = '';
 let apply = false;
 let dryRun = false;
+let verbose = false;
+let allowGone = false;
+const closedIds = [];
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--table') tableFile = argv[++i] ?? '';
   else if (a === '--apply') apply = true;
   else if (a === '--dry-run') dryRun = true;
+  else if (a === '--verbose') verbose = true;
+  else if (a === '--allow-gone') allowGone = true;
+  else if (a === '--closed') closedIds.push(...(argv[++i] ?? '').split(',').map((x) => x.trim()).filter(Boolean));
   else if (a === '-h' || a === '--help') {
-    out(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 19).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    out(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 24).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(0);
-  } else die(`unknown argument ${JSON.stringify(a)} — usage: --table <file> [--dry-run | --apply]`);
+  } else die(`unknown argument ${JSON.stringify(a)} — usage: --table <file> [--dry-run | --apply] [--closed <ops-id>,…] [--allow-gone] [--verbose]`);
 }
 if (apply && dryRun) die('--apply and --dry-run are exclusive');
 if (!tableFile) die('--table <file> is required (also for --dry-run: an empty table plans nothing). --apply never guesses a table.');
@@ -83,7 +92,7 @@ const git = (repo, ...args) => {
   if (r.error || r.status !== 0) die(`git ${args.join(' ')} failed in ${repo}: ${(r.error?.message ?? r.stderr ?? '').trim()}`);
   return r.stdout;
 };
-// Repos of the table's live, non-scratch workspaces. A repo without an `origin` remote has nothing on origin (a positive read of `git remote`); one whose ls-remote FAILS refuses.
+// Repos of the table's live, non-scratch workspaces. A remote whose ls-remote FAILS refuses (an unreadable remote is UNKNOWN, never "nothing pushed").
 const byId = new Map(workspaces.map((w) => [w.id, w]));
 const repos = new Set();
 for (const r of table) {
@@ -94,23 +103,41 @@ const remoteBranches = new Set();
 const localBranches = new Set();
 for (const repo of repos) {
   for (const b of git(repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads').split('\n')) if (b) localBranches.add(b);
-  if (!git(repo, 'remote').split('\n').includes('origin')) continue;
-  for (const line of git(repo, 'ls-remote', '--heads', 'origin').split('\n')) {
-    const m = /\trefs\/heads\/(.+)$/.exec(line);
-    if (m) remoteBranches.add(m[1]);
+  // EVERY remote (a repo whose remote is not called `origin` must not read as "nothing pushed"); a repo with no remote at all has nothing on a remote.
+  for (const remote of git(repo, 'remote').split('\n').filter(Boolean)) {
+    for (const line of git(repo, 'ls-remote', '--heads', remote).split('\n')) {
+      const m = /\trefs\/heads\/(.+)$/.exec(line);
+      if (m) remoteBranches.add(m[1]);
+    }
   }
 }
 
 // ── plan ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const plan = planMigration({ workspaces, remoteBranches, localBranches, activeVagueMembers: activeVagueMemberIds(workspaces), table });
+for (const id of closedIds) if (!byId.has(id)) die(`--closed ${id}: no workspace with this id in the store (a typo would leave its vague protected while you believe it is released)`);
+// git itself must accept the name (`a..b`, `x.lock`, a trailing `/` pass the naming policy and fail at `git branch -m`, mid-apply).
+const refFormatError = (name) => (spawnSync('git', ['check-ref-format', '--branch', name], { cwd: REPO, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).status === 0 ? undefined : `git refuses "${name}" as a branch name`);
+const plan = planMigration({ workspaces, remoteBranches, localBranches, activeVagueMembers: activeVagueMemberIds(workspaces, new Set(closedIds)), table, refFormatError });
 out(`# naming migration — ${apply ? 'APPLY' : 'DRY RUN'} — store=${storeFile} table=${tableFile}`);
-out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on origin · ${workspaces.length} workspace(s)`);
-for (const line of renderPlan(plan)) out(line);
-if (plan.rejected.length > 0) die(`${plan.rejected.length} rejected table row(s) — fix the table; nothing applied`);
+out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closedIds.length ? ` · closed vague(s) declared: ${closedIds.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
+for (const line of renderPlan(plan, { verbose, allowGone })) out(line);
+const blocking = plan.rejected.filter((x) => !(allowGone && x.code === 'unknown-workspace'));
+if (blocking.length > 0) die(`${blocking.length} rejected table row(s) — fix the table; nothing applied`);
 if (!apply) {
   out(`DRY-RUN  nothing written; ${plan.renames.length} rename(s) would be applied with --apply`);
   process.exit(0);
 }
+
+// What the app must have recorded for a parent-given name (#383 namedByParent, #384 formerBranch) — read back from the store, never assumed from rc 0.
+const readBack = (step, final) => {
+  try {
+    const w = JSON.parse(fs.readFileSync(storeFile, 'utf8')).workspaces.find((x) => x.id === step.id);
+    const ok = !!w && w.branch === final && w.namedByParent === step.asParent && (final === step.from || w.formerBranch === step.from);
+    return { ok, saw: w ? `branch=${w.branch} namedByParent=${w.namedByParent ?? '∅'} formerBranch=${w.formerBranch ?? '∅'}` : 'workspace not in the store' };
+  } catch (e) {
+    return { ok: false, saw: `store unreadable: ${e.message}` };
+  }
+};
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // ── apply: ONLY through the installed app's CLI, AS the parent ────────────────────────────────────────────────────────
 let failed = 0;
@@ -129,6 +156,16 @@ for (const step of plan.renames) {
       out("ABORTED  `orchestra` is not on PATH — nothing further attempted");
       break;
     }
+    continue;
+  }
+  let seen = readBack(step, final);
+  for (let i = 0; i < 12 && !seen.ok; i++) {
+    sleepSync(250); // the app awaits its store write before it answers; the poll only absorbs a slow disk
+    seen = readBack(step, final);
+  }
+  if (!seen.ok) {
+    failed++;
+    out(`FAILED   ${id8}  ${step.from} -> ${final}  [renamed, but NOT recorded as parent-named: ${seen.saw}; expected namedByParent=${step.asParent} formerBranch=${step.from} — is the running app older than #383/#384? re-run once it is updated]`);
     continue;
   }
   out(`APPLIED  ${id8}  ${step.from} -> ${final}${final === step.to ? '' : `  [the app changed the requested name ${step.to}]`}`);

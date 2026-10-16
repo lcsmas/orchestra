@@ -80,7 +80,10 @@ if (process.env.SHIM_FAIL_ID === wsid) { process.stderr.write('refused: named by
 const store = JSON.parse(fs.readFileSync(process.env.SHIM_STORE, 'utf8'));
 const w = store.workspaces.find((x) => x.id === wsid);
 const final = name + (process.env.SHIM_SUFFIX || '');
-w.formerBranch = w.branch; w.branch = final; w.namedByParent = process.env.ORCHESTRA_WS_ID;
+// SHIM_NO_PIN = an app older than #383/#384: it renames, but records neither the namer nor the former name.
+// SHIM_NO_NAMER / SHIM_NO_FORMER: an app that records only one of the two.
+if (!process.env.SHIM_NO_PIN) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = process.env.ORCHESTRA_WS_ID; }
+w.branch = final;
 fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store));
 process.stdout.write('Renamed to ' + final + '\\n');
 `,
@@ -261,6 +264,101 @@ test('the app suffixing a name is shown: the result line carries the FINAL name 
   const r = run(['--table', tableFile, '--apply'], { SHIM_SUFFIX: '-2' });
   assert.equal(r.rc, 0, r.out + r.err);
   assert.match(r.out, /APPLIED  w3000000  old-w3 -> review-fusion-comptes-240-2  \[the app changed the requested name review-fusion-comptes-240\]/);
+  resetStore();
+});
+
+test('--apply reads the store back: a rename the app did NOT record as parent-named is FAILED (rc 1), and a re-run after the app is updated heals it', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply'], { SHIM_NO_PIN: '1' });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed, but NOT recorded as parent-named: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅; expected namedByParent=/);
+  assert.doesNotMatch(r.out, /^APPLIED/m);
+  assert.match(r.out, /DONE  0\/2 renamed, 2 FAILED/);
+  // the app is updated: the same table now plans a pin-only rename (same name, not yet parent-named) and the store ends up recorded
+  const healed = run(['--table', tableFile, '--apply']);
+  assert.equal(healed.rc, 0, healed.out + healed.err);
+  assert.match(healed.out, /APPLIED  w3000000  review-fusion-comptes-240 -> review-fusion-comptes-240/);
+  assert.match(healed.out, /DONE  2\/2 renamed/);
+  const w3 = (JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> }).workspaces.find((w) => w.id === id('w3'))!;
+  assert.equal(w3.namedByParent, OPS_DONE);
+  assert.equal(run(['--table', tableFile, '--apply']).out.includes('DONE  0/0'), true, 'and now it is idempotent');
+  resetStore();
+});
+
+test('--apply reads BOTH fields back: a missing namedByParent alone, or a missing formerBranch alone, is FAILED', () => {
+  for (const [env, saw] of [[{ SHIM_NO_NAMER: '1' }, /namedByParent=∅ formerBranch=old-w3/], [{ SHIM_NO_FORMER: '1' }, /namedByParent=0b5c0000.* formerBranch=∅/]] as const) {
+    resetStore();
+    const r = run(['--table', tableFile, '--apply'], env);
+    assert.equal(r.rc, 1, r.out + r.err);
+    assert.match(r.out, /FAILED   w3000000/);
+    assert.match(r.out, saw);
+  }
+  resetStore();
+});
+
+test('--closed <ops-id>: the declared vague\'s members stop being held and are renamed; an unknown id refuses', () => {
+  resetStore();
+  const held = run(['--table', tableFile]);
+  assert.match(held.out, /skip \(active vague\)\s+old-w1/);
+  const r = run(['--table', tableFile, '--apply', '--closed', OPS_RUN]);
+  assert.equal(r.rc, 0, r.err + r.out);
+  assert.match(r.out, /closed vague\(s\) declared: 0b5a0000/);
+  assert.deepEqual(calls().map((c) => c.split('|')[3]).sort(), [id('w1'), id('w3'), id('w4')].sort());
+  assert.ok(calls().some((c) => c.startsWith(`${OPS_RUN}|${OPS_RUN}|rename|${id('w1')}|impl-vague-en-cours-1`)), 'w1 is renamed AS its OPS');
+  resetStore();
+  const bad = run(['--table', tableFile, '--apply', '--closed', id('ffff')]);
+  assert.equal(bad.rc, 2);
+  assert.match(bad.err, /--closed .*no workspace with this id/);
+  assert.deepEqual(calls(), []);
+  resetStore();
+});
+
+test('--allow-gone: the row of a workspace that no longer exists is GONE, not a refusal (re-run after a merged agent was pruned)', () => {
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify([...TABLE, { id: id('ffff'), old: 'old-ffff', new: 'impl-fantome-9' }]));
+  const strict = run(['--table', tableFile, '--apply']);
+  assert.equal(strict.rc, 2);
+  assert.deepEqual(calls(), []);
+  const lax = run(['--table', tableFile, '--apply', '--allow-gone']);
+  assert.equal(lax.rc, 0, lax.out + lax.err);
+  assert.match(lax.out, /GONE  row 6  ffff0000/);
+  assert.equal(calls().length, 2);
+  // allow-gone excuses ONLY vanished workspaces: any other rejected row still refuses
+  fs.writeFileSync(tableFile, JSON.stringify([...TABLE, { id: id('h1'), new: 'bad name' }]));
+  assert.equal(run(['--table', tableFile, '--apply', '--allow-gone']).rc, 2);
+  resetStore();
+});
+
+test('--verbose lists the human-created and not-in-table workspaces the default output only counts', () => {
+  resetStore();
+  const quiet = run(['--table', tableFile]).out;
+  const loud = run(['--table', tableFile, '--verbose']).out;
+  assert.doesNotMatch(quiet, /untouched \(human-created\)/);
+  assert.match(loud, /untouched \(human-created\)\s+old-h1/);
+  assert.match(loud, /untouched \(human-created\)\s+lead-main/);
+});
+
+test('a repo whose remote is not called origin still protects its pushed branches', () => {
+  resetStore();
+  const g = (...a: string[]): void => void execFileSync('git', ['-C', repo, ...a], { env: { PATH: gitDir, HOME: tmp }, stdio: 'pipe' });
+  g('remote', 'rename', 'origin', 'upstream');
+  try {
+    const r = run(['--table', tableFile]);
+    assert.equal(r.rc, 0, r.out + r.err);
+    assert.match(r.out, /skip \(branch on origin\)\s+old-w5/);
+  } finally {
+    g('remote', 'rename', 'upstream', 'origin');
+  }
+  resetStore();
+});
+
+test('a name git refuses (impl-x..y) is rejected at plan time, before any rename', () => {
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify([{ id: id('w3'), old: 'old-w3', new: 'impl-x..y' }, { id: id('w4'), old: 'old-w4', new: 'explo-timeout-cli' }]));
+  const r = run(['--table', tableFile, '--apply']);
+  assert.equal(r.rc, 2, r.out + r.err);
+  assert.match(r.out, /REJECTED  row 1  w3000000  invalid-ref/);
+  assert.deepEqual(calls(), []);
   resetStore();
 });
 
