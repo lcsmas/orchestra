@@ -68,6 +68,14 @@ const MUTANTS = [
   { id: 'M27', name: 'a deleted workspace keeps its session key', edits: [[WS, "  forgetSessionKey(id); // #379: a deleted workspace has no session to vouch for\n", '']], tests: [T.bind] },
   { id: 'M28', name: 'no /identity route on the host socket', edits: [[HS, "} else if (route === '/identity') {", "} else if (route === '/identity-off') {"]], tests: [T.bind] },
   { id: 'M29', name: 'the registration is logged WITH the key', edits: [[ 'src/main/session-identity-host.ts', 'slog.info(`session key registered for ${wsId}`);', 'slog.info(`session key registered for ${wsId}: ${key}`);' ]], tests: [T.bind] },
+  // ── review round 1 (LEAD c/6214838301) ──
+  { id: 'M32', name: 'MAJOR-1: the coordinator bump does not revoke the replaced key (the zombie reads the NEW generation until the successor spawns)', edits: [[WS, "    forgetSessionKey(ws.id); // #379: the replaced coordinator's key stops vouching AT the bump (same tick), else /identity hands it the NEW generation until the successor spawns\n", '']], tests: [T.bind], rig: PROMOTE },
+  { id: 'M33', name: 'MAJOR-2: the marker is looked up by cwd only (a session that cd\'d into a subdirectory sends into the stale run)', cli: true, edits: [
+      [SIS, "  for (const r of [env.ORCHESTRA_WORKSPACE_PATH, env.ORCHESTRA_WORKTREE]) if (r && r.trim()) roots.push(r.trim());\n", ''],
+      [SIS, "    if (path.dirname(d) === d) break;", "    break;"]], tests: [T.pure, T.cli] },
+  { id: 'M34', name: 'MINOR-4: a failed generation read answers an UNFENCED ok (fail-open)', edits: [[SIM, "    return { ok: false, code: 'unregistered', error: `identity: the coordinator generation of run ${runId} is unreadable` };", "    generation = 0;"]], tests: [T.host] },
+  { id: 'M35', name: 'MINOR-2: the registry reads inherited properties (`constructor` is a workspace)', edits: [[SIM, "    has: (wsId) => Object.hasOwn(sessions, wsId),", "    has: (wsId) => wsId in sessions,"]], tests: [T.host] },
+  { id: 'M36', name: 'MINOR-3: a keyed session with a silent host is still told to `orchestra restart`', cli: true, edits: [[RR, "(opts.hostDidNotAnswer\n      ?", "(false\n      ?"]], tests: [T.pure, T.cli] },
   // ── refreeze ──
   { id: 'M30', name: 'memory_cap is not on the one-switch re-freeze allow-list', edits: [[BR, "['dockerRelay', 'memoryCap']; // #379", "['dockerRelay']; // #379"]], tests: [T.runs, T.bind] },
 ];

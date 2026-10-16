@@ -44,7 +44,8 @@ export function dispatchIdentityRequest(msg: Record<string, unknown>): IdentityR
     },
     generationOf: (runId) => {
       const db = getBus();
-      return db ? coordinatorGeneration(db, runId) : 0;
+      if (!db) throw new Error('bus unavailable'); // → unregistered: the CLI keeps its baked generation (never an unfenced call)
+      return coordinatorGeneration(db, runId);
     },
   });
 }

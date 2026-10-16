@@ -4980,6 +4980,7 @@ export function maybeBumpCoordinatorOnReplacement(ws: Workspace): void {
     const runRowExists = getRun(db, anchor.anchorId) != null;
     if (!shouldBumpCoordinatorGeneration(anchor, runRowExists)) return;
     const gen = bumpCoordinatorGeneration(db, anchor.anchorId);
+    forgetSessionKey(ws.id); // #379: the replaced coordinator's key stops vouching AT the bump (same tick), else /identity hands it the NEW generation until the successor spawns
     log.info(`bus-fencing: coordinator generation for run ${anchor.anchorId} bumped to ${gen}`);
   } catch (e) {
     log.warn(`bus-fencing: coordinator-generation bump failed for ${ws.id}`, e);

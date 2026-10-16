@@ -144,7 +144,7 @@ test('reconcile: a keyed live session is host-resolved — marker FILE only, no 
 });
 
 test('a deleted workspace forgets its session key at every removal path (delete, bulk delete, prune)', () => {
-  assert.equal(workspaces.match(/forgetSessionKey\(/g)?.length, 3, 'three removal paths (the import line has no paren)');
+  assert.equal(workspaces.match(/forgetSessionKey\(/g)?.length, 4, 'three removal paths + the coordinator bump (MAJOR-1; the import line has no paren)');
   const del = bodyBetween(workspaces, 'export async function deleteWorkspace(id: string)', '\n}\n');
   assert.ok(del.includes('forgetSessionKey(id)'));
   const bulk = bodyBetween(workspaces, 'export async function deleteWorkspaces(', '\n}\n');
@@ -155,4 +155,13 @@ test('a deleted workspace forgets its session key at every removal path (delete,
 
 test('refreeze --only: memoryCap joins dockerRelay on the allow-list, and nothing else', () => {
   assert.ok(live(busRuns, "export const ONE_SWITCH_REFREEZABLE: readonly BusMechanism[] = ['dockerRelay', 'memoryCap'];"));
+});
+
+test('MAJOR-1 the coordinator bump revokes the replaced session\'s key in the same tick (else /identity hands the zombie the NEW generation)', () => {
+  const b = bodyBetween(workspaces, 'export function maybeBumpCoordinatorOnReplacement(', '\n}\n');
+  const bumpAt = b.indexOf('const gen = bumpCoordinatorGeneration(db, anchor.anchorId);');
+  const forgetAt = b.indexOf('forgetSessionKey(ws.id);');
+  assert.ok(bumpAt !== -1 && forgetAt > bumpAt, 'forgotten right after the bump (both synchronous: no await between them)');
+  assert.ok(!b.slice(bumpAt, forgetAt).includes('await'), 'no await between the bump and the revocation');
+  assert.ok(b.indexOf('shouldBumpCoordinatorGeneration(anchor, runRowExists)') < bumpAt, 'only when a bump really happens (a plain member restart keeps its key)');
 });

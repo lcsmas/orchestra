@@ -59,6 +59,7 @@ export function createSessionKeyRegistry(
     const parsed = JSON.parse(fsx.readFileSync(file, 'utf8')) as Partial<RegistryFile>;
     if (parsed && parsed.version === 1 && parsed.sessions && typeof parsed.sessions === 'object') {
       for (const [id, v] of Object.entries(parsed.sessions)) {
+        if (id === '__proto__') continue;
         if (v && typeof v.hash === 'string' && /^[0-9a-f]{64}$/.test(v.hash)) {
           sessions[id] = { hash: v.hash, issuedAt: typeof v.issuedAt === 'number' ? v.issuedAt : 0 };
         }
@@ -86,7 +87,7 @@ export function createSessionKeyRegistry(
       sessions = next;
     },
     forget(wsId): void {
-      if (!(wsId in sessions)) return;
+      if (!Object.hasOwn(sessions, wsId)) return;
       const { [wsId]: _gone, ...rest } = sessions;
       void _gone;
       try {
@@ -96,9 +97,9 @@ export function createSessionKeyRegistry(
       }
       sessions = rest;
     },
-    has: (wsId) => wsId in sessions,
+    has: (wsId) => Object.hasOwn(sessions, wsId),
     verify(wsId, key): KeyVerdict {
-      const entry = sessions[wsId];
+      const entry = Object.hasOwn(sessions, wsId) ? sessions[wsId] : undefined;
       if (!entry) return 'unregistered';
       // constant-time compare of the two digests; a malformed key can never match
       const presented = Buffer.from(hashSessionKey(typeof key === 'string' ? key : ''), 'hex');
@@ -112,7 +113,7 @@ export interface IdentityServiceDeps {
   registry: Pick<SessionKeyRegistry, 'verify'>;
   /** The workspace's CURRENT wave run (nearest orchestrator at or above it), or null when the workspace is unknown. */
   runIdFor(wsId: string): string | null;
-  /** The run's current coordinator generation (0 = unfenced). A throw reads as 0 (the unfenced v1 path). */
+  /** The run's current coordinator generation (0 = unfenced). THROW when it cannot be read (the service then cannot vouch). */
   generationOf(runId: string): number;
 }
 
@@ -139,11 +140,12 @@ export function resolveSessionIdentity(req: Record<string, unknown>, deps: Ident
   }
   const runId = deps.runIdFor(id);
   if (runId === null) return { ok: false, code: 'unregistered', error: `identity: unknown workspace ${id}` };
-  let generation = 0;
+  let generation: number;
   try {
     generation = deps.generationOf(runId);
   } catch {
-    generation = 0;
+    // the host cannot state the generation → it cannot vouch: the CLI keeps its baked one (never an unfenced call on a failed read)
+    return { ok: false, code: 'unregistered', error: `identity: the coordinator generation of run ${runId} is unreadable` };
   }
   return { ok: true, runId, generation: Number.isInteger(generation) && generation > 0 ? generation : null };
 }

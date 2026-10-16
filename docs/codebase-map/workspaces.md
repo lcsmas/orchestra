@@ -464,7 +464,7 @@ governed by the flags of the **innermost** run of its two parties).
   `orchestra spawn` → `orchestra promote` → `orchestra send` work in ONE turn. A keyless live session (a keeper born before #379) keeps the
   restart / mark-stale path below; a cold session stays `notice-only`. `buildSdkEnv` mints nothing — `ensureSessionInner` mints one key per
   session start and the keeper facade registers it only at a FRESH spawn (session-keeper.md); the three delete paths `forgetSessionKey`.
-  A keeper-DETACHED keyed CLI (app restarted, session not reattached: `readTrackedKeeperPid` alive) counts as live for this decision (no restart — that would be a wake). Rig: `verify-promote-run-refresh.mjs` arms H1–H7.
+  A keeper-DETACHED keyed CLI (app restarted, session not reattached: `readTrackedKeeperPid` alive) counts as live for this decision (no restart — that would be a wake). Rig: `verify-promote-run-refresh.mjs` arms H1–H8.
 - **#171 — restart refused/failed ⇒ mark-stale (not a silent warn)** (still the path for a KEYLESS live session).** When the
   reconcile's restart returns `{ok:false}` (a working structured session throws the
   mid-turn guard, or any relaunch failure) it now DOWNGRADES to `markWorkspaceStaleRun`

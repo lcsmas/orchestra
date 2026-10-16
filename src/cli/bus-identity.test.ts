@@ -106,20 +106,22 @@ async function startHost(
 const hostSaying = (reply: Record<string, unknown>) => (route: string): unknown => (route === '/identity' ? reply : {});
 const identityCalls = (h: { calls: Array<{ route: string }> }): number => h.calls.filter((c) => c.route === '/identity').length;
 
-function orchestra(rig: Rig, args: string[], o: { sock?: string; key?: string | null; generation?: number } = {}): Promise<Cli> {
+function orchestra(rig: Rig, args: string[], o: { sock?: string; key?: string | null; generation?: number; pathVar?: 'WORKSPACE_PATH' | 'WORKTREE' | 'none'; cwd?: string; runId?: string; ws?: string } = {}): Promise<Cli> {
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: rig.home,
     ORCHESTRA_HOME: rig.home,
-    ORCHESTRA_WS_ID: OPS,
-    ORCHESTRA_RUN_ID: OLD_RUN, // baked at spawn: the parent's run — stale after the promotion
-    ORCHESTRA_WORKSPACE_PATH: rig.worktree,
+    ORCHESTRA_WS_ID: o.ws ?? OPS,
+    ORCHESTRA_RUN_ID: o.runId ?? OLD_RUN, // baked at spawn: the parent's run — stale after the promotion
     ORCHESTRA_SOCK: o.sock ?? path.join(rig.home, 'no-such.sock'),
   };
+  // an agent session carries ORCHESTRA_WORKTREE; setup/run scripts carry ORCHESTRA_WORKSPACE_PATH (the default here, as before)
+  if ((o.pathVar ?? 'WORKSPACE_PATH') === 'WORKSPACE_PATH') env.ORCHESTRA_WORKSPACE_PATH = rig.worktree;
+  else if (o.pathVar === 'WORKTREE') env.ORCHESTRA_WORKTREE = rig.worktree;
   if (o.key !== null) env.ORCHESTRA_SESSION_KEY = o.key ?? KEY;
   if (o.generation !== undefined) env.ORCHESTRA_COORDINATOR_GENERATION = String(o.generation);
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [CLI, ...args], { env, cwd: rig.home, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.execPath, [CLI, ...args], { env, cwd: o.cwd ?? rig.home, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     p.stdout.on('data', (d) => (stdout += d));
@@ -293,4 +295,45 @@ test('verbs that never read the run do not ask the host (peers, whoami, status k
   const host = await startHost(t, hostSaying({ ok: true, runId: NEW_RUN, generation: null }));
   await orchestra(rig, ['peers'], { sock: host.sock });
   assert.equal(identityCalls(host), 0);
+});
+
+// ── MAJOR-2: the fallback's guard must hold from ANY directory of the worktree ──
+test('MAJOR-2 app closed + marker: a session that cd\'d into a SUBDIRECTORY is still refused (master: cwd-only lookup lets it send into the old run)', needsBuild, async (t) => {
+  const rig = freshRig(t);
+  seedRuns(rig.home);
+  writeMarker(rig, NEW_RUN);
+  const deep = path.join(rig.worktree, 'src', 'deep');
+  mkdirSync(deep, { recursive: true });
+  // a real session: ORCHESTRA_WORKTREE in the env (no ORCHESTRA_WORKSPACE_PATH), the Bash tool's cwd is a subdirectory
+  const viaEnv = await send(rig, 'subdir-env-379', { pathVar: 'WORKTREE', cwd: deep });
+  assert.equal(viaEnv.code, 1, `refused from <worktree>/src/deep via ORCHESTRA_WORKTREE: ${viaEnv.stdout}`);
+  assert.match(viaEnv.stderr, /stale run/);
+  assert.equal(rowRun(rig.home, 'subdir-env-379'), null);
+  // a keeper-surviving CLI whose env predates ORCHESTRA_WORKTREE: the ancestor walk finds the marker
+  const viaWalk = await send(rig, 'subdir-walk-379', { pathVar: 'none', cwd: deep });
+  assert.equal(viaWalk.code, 1, `refused by the ancestor walk: ${viaWalk.stdout}`);
+  assert.equal(rowRun(rig.home, 'subdir-walk-379'), null);
+});
+
+test('MINOR-3 a keyed session whose host is down is told to retry, not to run `orchestra restart`', needsBuild, async (t) => {
+  const rig = freshRig(t);
+  seedRuns(rig.home);
+  writeMarker(rig, NEW_RUN);
+  const r = await send(rig, 'retry-advice-379');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /host did not answer/);
+  assert.doesNotMatch(r.stderr, /orchestra restart/);
+  const keyless = await send(rig, 'keyless-advice-379', { key: null });
+  assert.match(keyless.stderr, /orchestra restart/, 'a keyless session keeps today\'s advice');
+});
+
+// ── MAJOR-1 (CLI side): when the host cannot vouch (the key was revoked at the coordinator bump) the baked generation is what the DB fence sees ──
+test('MAJOR-1 an unvouched COORDINATOR with a stale env generation is REJECTED by the DB fence (as on master), never given the new generation', needsBuild, async (t) => {
+  const rig = freshRig(t);
+  seedRuns(rig.home, { generation: 2, fencingOn: true });
+  const host = await startHost(t, hostSaying({ ok: false, code: 'unregistered', error: 'no key' }));
+  const r = await send(rig, 'zombie-gen-379', { sock: host.sock, generation: 1, runId: NEW_RUN });
+  assert.equal(r.code, 1, `fenced: ${r.stdout}`);
+  assert.match(r.stderr, /stale coordinator generation/);
+  assert.equal(rowRun(rig.home, 'zombie-gen-379'), null);
 });

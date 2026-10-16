@@ -99,9 +99,13 @@ const find = tokens.length
   ? spawnSync('find', [...live, '-maxdepth', '4', '(', ...tokens.flatMap((t, i) => [...(i ? ['-o'] : []), '-name', `*${t}*`]), ')'], { encoding: 'utf8' })
   : { stdout: '' };
 const traces = (find.stdout ?? '').split('\n').filter(Boolean);
-const homeOk = added.length === 0 && removed.length === 0;
+// A depth-1 listing of a dir shared with CONCURRENT live sessions is noisy (they add/remove their own telemetry): only an entry that carries this rig's own marks fails;
+// any other diff is reported as a NOTE (home_no_trace_of_this_run + the scratch guard + bwrap are the attributable checks).
+const RIG_MARKS = /session-keys\.json|keepers|bus\.sqlite|store\.json|orchestra-[0-9a-f]{12}\.sock|ws-(si|sup|att)-/;
+const rigAdded = added.filter((n) => RIG_MARKS.test(n) || tokens.some((t) => n.includes(t)));
+const homeOk = rigAdded.length === 0;
 const traceOk = traces.length === 0;
-console.log(`── hygiene\n  ${homeOk ? 'PASS' : 'FAIL'} home_listing_unchanged — ~/.claude* and ~/.orchestra* (depth <= 1, ${before.length} names)${homeOk ? '' : `: added ${JSON.stringify(added)} removed ${JSON.stringify(removed)}`}`);
+console.log(`── hygiene\n  ${homeOk ? 'PASS' : 'FAIL'} home_listing_unchanged — ~/.claude* and ~/.orchestra* (depth <= 1, ${before.length} names)${!homeOk ? `: the rig left ${JSON.stringify(rigAdded)}` : added.length || removed.length ? ` — NOTE unrelated to the rig (a concurrent live session): +${JSON.stringify(added)} -${JSON.stringify(removed)}` : ''}`);
 console.log(`  ${traceOk ? 'PASS' : 'FAIL'} home_no_trace_of_this_run — no entry named after this run's scratch root under the live dirs (depth <= 4)${traceOk ? '' : `: ${traces.join(', ')}`}`);
 if (!homeOk || !traceOk) bad++;
 console.log(`SESSION-IDENTITY: ${bad === 0 ? 'PASS' : 'FAIL'} (${arms.length} arm${arms.length === 1 ? '' : 's'}${mutants.length ? ` + ${mutants.length} mutant${mutants.length === 1 ? '' : 's'}` : ''}, ${((Date.now() - t0) / 1000).toFixed(0)} s, tree ${repo})`);

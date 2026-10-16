@@ -92,7 +92,7 @@ const entry = path.join(tmp, 'entry.ts');
 fs.writeFileSync(
   entry,
   `
-export { dispatchPromoteRequest, dispatchMessageRequest, dispatchResolveHandleRequest, resolveWaveRunId, writeBusSwitchState } from ${JSON.stringify(path.join(repoRoot, 'src/main/workspaces.ts'))};
+export { dispatchPromoteRequest, dispatchMessageRequest, dispatchResolveHandleRequest, resolveWaveRunId, writeBusSwitchState, maybeBumpCoordinatorOnReplacement } from ${JSON.stringify(path.join(repoRoot, 'src/main/workspaces.ts'))};
 export { store } from ${JSON.stringify(path.join(repoRoot, 'src/main/store.ts'))};
 export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/platform/index.ts'))};
 export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
@@ -101,6 +101,9 @@ export { registerSdkDelivery } from ${JSON.stringify(path.join(repoRoot, 'src/ma
 // #379 / ADR 0008 — the host identity service the CLI asks on every bus call: the REAL registry file (under the scratch ORCHESTRA_HOME) + the REAL /identity dispatcher over the real store + bus.
 export { registerSessionKey, hasSessionKey, dispatchIdentityRequest } from ${JSON.stringify(path.join(repoRoot, 'src/main/session-identity-host.ts'))};
 export { mintSessionKey } from ${JSON.stringify(path.join(repoRoot, 'src/main/session-identity.ts'))};
+// #379 MAJOR-1: the REAL host socket the built CLI talks to.
+export { startHooksServer, stopHooksServer, getHookSocketPath } from ${JSON.stringify(path.join(repoRoot, 'src/main/hooks-server.ts'))};
+export { bumpCoordinatorGeneration, coordinatorGeneration } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
 // The reconcile's restart wire. Stubbed via the resolve plugin below so the rig
 // RECORDS calls (and controls the {ok} result) instead of driving real claude.
 export { __restartCalls, __setRestartResult } from ${JSON.stringify(path.join(repoRoot, 'src/main/restart-workspace.ts'))};
@@ -454,6 +457,65 @@ mod.registerSessionKey(H7, mod.mintSessionKey());
 fs.writeFileSync(path.join(tmp, 'keepers', `${H7}.pid`), JSON.stringify({ pid: 2147483646 })); // not a live pid
 const h7 = await mod.dispatchPromoteRequest({ id: H7 });
 check('H7: a dead keeper pid is cold — notice-only, no marker file', h7.ok === true && !(h7.hostResolved ?? []).includes(H7) && !fs.existsSync(path.join(tmp, H7, '.orchestra', 'bus-run-stale')), JSON.stringify(h7));
+
+// ════════════════════════════════════════════════════════════════════════════
+// H8 — #379 review MAJOR-1: a REPLACED coordinator's key must stop vouching AT the generation bump. The real hooks server serves /identity to the BUILT CLI
+// over a real socket and the real bus; the zombie is the old session's CLI (key K1, baked generation 1) calling in the window before the successor spawns.
+// Without the revocation /identity hands it the NEW generation (2) and its send passes the fence; with it the host cannot vouch, the CLI keeps its baked 1 and
+// the DB fence rejects it (as on master). MUTATION: delete `forgetSessionKey(ws.id)` after the bump → the zombie send LANDS → H8 reddens.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#379 H8 — the coordinator bump revokes the replaced session key (zombie in the window is fenced, successor lands):');
+{
+  const { spawn: spawnProc, execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, [path.join(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.cli.config.ts'], { cwd: repoRoot, stdio: 'ignore' });
+  const CLI = path.join(repoRoot, 'dist-electron', 'cli.js');
+  process.env.XDG_RUNTIME_DIR = tmp; // the host socket stays inside the scratch home
+  await mod.startHooksServer();
+  const sock = mod.getHookSocketPath();
+  const OPS = 'ops-379-h8';
+  await mod.store.upsertWorkspace(ws(OPS, { canOrchestrate: true, parentId: LEAD_ID }));
+  mod.startRun(busDb, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD_ID }, { delivery: false, wake: false, askGate: false, liveness: false, fencing: true });
+  const cli = (args, env) => new Promise((resolve) => {
+    const p = spawnProc(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmp, ORCHESTRA_HOME: tmp, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: OPS, ORCHESTRA_RUN_ID: OPS, ORCHESTRA_WORKTREE: path.join(tmp, OPS), ...env }, cwd: tmp, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    p.stdout.on('data', (d) => (out += d)); p.stderr.on('data', (d) => (err += d));
+    const t = setTimeout(() => p.kill('SIGKILL'), 30000);
+    p.on('close', (code) => { clearTimeout(t); resolve({ code, out, err }); });
+  });
+  const send = (body, key, gen) => cli(['send', '--type', 'status', '--to', LEAD_ID, body], { ORCHESTRA_SESSION_KEY: key, ORCHESTRA_COORDINATOR_GENERATION: String(gen) });
+  const rows = (body) => busDb.prepare('SELECT COUNT(*) AS c FROM messages WHERE body = ?').get(body).c;
+  const opsWs = () => mod.store.getWorkspace(OPS);
+
+  mod.maybeBumpCoordinatorOnReplacement(opsWs()); // the 1st replacement: generation 0 → 1; the session below spawns AFTER it, so its env carries 1
+  check('H8-pre: the run is at generation 1', mod.coordinatorGeneration(busDb, OPS) === 1);
+  const K1 = mod.mintSessionKey();
+  mod.registerSessionKey(OPS, K1);
+  const ctl = await send('h8-control', K1, 1);
+  check('H8 control: the live coordinator (key K1, generation 1) sends fine — rc 0, row lands', ctl.code === 0 && rows('h8-control') === 1, `${ctl.code} ${ctl.err}`);
+
+  mod.maybeBumpCoordinatorOnReplacement(opsWs()); // the 2nd replacement: 1 → 2. The successor has NOT spawned yet (`restart --fresh` spawns nothing until the next send).
+  check('H8-pre: the bump happened (generation 2) and the replaced session\'s key is gone from the registry', mod.coordinatorGeneration(busDb, OPS) === 2 && !mod.hasSessionKey(OPS));
+  const zid = mod.dispatchIdentityRequest({ id: OPS, key: K1 });
+  check('H8: the host cannot vouch for the replaced key any more (never the new generation)', zid.ok === false && zid.code === 'unregistered', JSON.stringify(zid));
+  const zombie = await send('h8-zombie', K1, 1);
+  check('H8: THE zombie (K1, baked generation 1) is REJECTED by the DB fence — rc 1, no row (before the fix: rc 0, the row lands as the coordinator)', zombie.code === 1 && /stale coordinator generation/.test(zombie.err) && rows('h8-zombie') === 0, `${zombie.code} ${zombie.err.slice(0, 160)} rows=${rows('h8-zombie')}`);
+
+  const K2 = mod.mintSessionKey();
+  mod.registerSessionKey(OPS, K2); // the successor's fresh spawn
+  const succ = await send('h8-successor', K2, 2);
+  check('H8: the successor (K2) sends fine — rc 0, row lands', succ.code === 0 && rows('h8-successor') === 1, `${succ.code} ${succ.err}`);
+  const zombie2 = await send('h8-zombie-2', K1, 1);
+  check('H8: the zombie after the successor registered: refused (superseded), no row', zombie2.code === 1 && rows('h8-zombie-2') === 0, `${zombie2.code} ${zombie2.err.slice(0, 160)}`);
+
+  // control: a plain MEMBER's restart bumps nothing and keeps its key (only a coordinator replacement revokes)
+  const MEM = 'member-379-h8';
+  await mod.store.upsertWorkspace(ws(MEM, { parentId: OPS }));
+  mod.registerSessionKey(MEM, mod.mintSessionKey());
+  const before = mod.coordinatorGeneration(busDb, OPS);
+  mod.maybeBumpCoordinatorOnReplacement(mod.store.getWorkspace(MEM));
+  check('H8 control: a member restart bumps nothing and keeps its key', mod.coordinatorGeneration(busDb, OPS) === before && mod.hasSessionKey(MEM));
+  mod.stopHooksServer();
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // A3 — unchanged invariant: a member spawned AFTER promote anchors to the promoted

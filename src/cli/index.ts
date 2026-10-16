@@ -68,6 +68,7 @@ import {
   resolveHostIdentity,
   SessionSupersededError,
   staleMarkerBlocksSend,
+  staleMarkerPaths,
   supersededRefusalMessage,
   type IdentityResolution,
 } from '../shared/session-identity.ts';
@@ -287,26 +288,25 @@ function reparentSuffix(res: Record<string, unknown>): string {
   return out + '\n';
 }
 
-/** #142 — the `.orchestra/bus-run-stale` marker for the workspace the CLI runs
- *  in. The store-less bus verbs run with cwd = the worktree (Claude Code's cwd),
- *  so the marker lives at `<cwd>/.orchestra/bus-run-stale`. An explicit
- *  `$ORCHESTRA_WORKSPACE_PATH` (set for setup/run scripts) wins when present. */
-function staleRunMarkerFile(): string {
-  const base = process.env.ORCHESTRA_WORKSPACE_PATH || process.cwd();
-  return path.join(base, '.orchestra', 'bus-run-stale');
+/** #379 — the marker is looked up from the worktree root (env), then cwd + ancestors: never cwd alone (a `cd src/deep` session would slip past the guard). */
+function readStaleMarker(): string | null {
+  for (const file of staleMarkerPaths(process.env, process.cwd())) {
+    try {
+      return fs.readFileSync(file, 'utf8');
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
 }
 
 /** #142 — refuse a `send` while the marker says the session still holds the OLD run. Since #379 this is the FALLBACK's guard (the host's answer
  *  is the current run); a marker naming the run the env already carries does not block. Never reads the store (the CLI is store-less). */
 function refuseIfStaleRun(envRunId: string | undefined): void {
-  let body: string;
-  try {
-    body = fs.readFileSync(staleRunMarkerFile(), 'utf8');
-  } catch {
-    return; // no marker → not stale → proceed
-  }
+  const body = readStaleMarker();
+  if (body === null) return; // no marker → not stale → proceed
   const firstLine = staleMarkerBlocksSend(body, envRunId);
-  if (firstLine) fail(staleRunRefusalMessage(firstLine));
+  if (firstLine) fail(staleRunRefusalMessage(firstLine, { hostDidNotAnswer: hostIdentity?.source === 'env' && hostIdentity.why === 'unreachable' }));
 }
 
 /** #379 — the host's answer for THIS invocation (null until settled, and for verbs that never read the run). */

@@ -2,6 +2,8 @@
 // and uses the host's run + generation. Fallback (transitional, goes with #136): no key / host unreachable / unvouched → baked env + the `bus-run-stale` marker guard.
 // Host half: src/main/session-identity.ts. Map: docs/codebase-map/bus.md → Session identity.
 
+import path from 'node:path';
+
 export const SESSION_KEY_ENV = 'ORCHESTRA_SESSION_KEY';
 export const IDENTITY_ROUTE = '/identity';
 
@@ -120,4 +122,19 @@ export function staleMarkerBlocksSend(markerBody: string, envRunId: string | und
   const newRun = staleRunMarkerNewRun(markerBody);
   if (newRun !== null && envRunId && envRunId.trim() === newRun) return null;
   return firstLine;
+}
+
+/** Where the fallback looks for the stale marker, in order: `$ORCHESTRA_WORKSPACE_PATH` (setup/run scripts), `$ORCHESTRA_WORKTREE` (every agent session),
+ *  then the cwd and each of its ancestors — a Bash tool that `cd`'d into a subdirectory must not slip past the guard. The first marker that exists decides. */
+export function staleMarkerPaths(
+  env: { ORCHESTRA_WORKSPACE_PATH?: string; ORCHESTRA_WORKTREE?: string },
+  cwd: string,
+): string[] {
+  const roots: string[] = [];
+  for (const r of [env.ORCHESTRA_WORKSPACE_PATH, env.ORCHESTRA_WORKTREE]) if (r && r.trim()) roots.push(r.trim());
+  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+    roots.push(d);
+    if (path.dirname(d) === d) break;
+  }
+  return [...new Set(roots)].map((r) => path.join(r, '.orchestra', 'bus-run-stale'));
 }

@@ -167,10 +167,27 @@ test('service: no entry / unknown workspace / missing fields → unregistered (t
   assert.ok(!all.includes(hashSessionKey(k)), 'nor its hash');
 });
 
-test('service: a generation read that throws reads as unfenced, never as an error', (t) => {
+test('MINOR-4 service: a generation read that FAILS cannot vouch (unregistered → the CLI keeps its baked generation) — never an unfenced answer', (t) => {
   const { reg, deps } = service(t);
   const k = mintSessionKey();
   reg.register('ws-1', k);
   const r = resolveSessionIdentity({ id: 'ws-1', key: k }, { ...deps, generationOf: () => { throw new Error('bus down'); } });
-  assert.deepEqual(r, { ok: true, runId: 'run-NEW', generation: null });
+  assert.equal(r.ok, false);
+  assert.equal(r.ok === false && r.code, 'unregistered');
+  assert.ok(!JSON.stringify(r).includes(k));
+});
+
+test('MINOR-2 the registry reads OWN properties only: `constructor` / `__proto__` / `toString` are not workspaces', (t) => {
+  const reg = createSessionKeyRegistry(scratch(t));
+  const k = mintSessionKey();
+  reg.register('ws-1', k);
+  for (const id of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(reg.has(id), false, id);
+    assert.equal(reg.verify(id, k), 'unregistered', id); // master of the bug: verify('constructor', k) threw a TypeError
+    reg.forget(id); // no throw, no effect
+  }
+  assert.equal(reg.verify('ws-1', k), 'ok');
+  const { deps } = service(t);
+  const r = resolveSessionIdentity({ id: 'constructor', key: k }, { ...deps, registry: reg });
+  assert.equal(r.ok === false && r.code, 'unregistered');
 });

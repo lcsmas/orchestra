@@ -91,9 +91,12 @@ export function staleRunMarkerBody(newRunId: string): string {
 /** The one-line refusal the CLI `send` prints when the stale marker is present.
  *  Keyed on the marker's FIRST line so the message the human sees and the file
  *  the guard reads are the same string. */
-export function staleRunRefusalMessage(markerFirstLine: string): string {
+export function staleRunRefusalMessage(markerFirstLine: string, opts: { hostDidNotAnswer?: boolean } = {}): string {
   return (
     `refused: ${markerFirstLine.trim()}\n` +
-    `  run \`orchestra restart\` to re-derive this workspace's run and clear the block.`
+    (opts.hostDidNotAnswer
+      ? // #379: a keyed session whose host is down/slow is not stale — the host resolves its run while it answers; a restart is refused mid-turn anyway
+        `  the Orchestra host did not answer (app closed or busy) — retry in a moment; while it answers, this session's run is resolved by the host.`
+      : `  run \`orchestra restart\` to re-derive this workspace's run and clear the block.`)
   );
 }
