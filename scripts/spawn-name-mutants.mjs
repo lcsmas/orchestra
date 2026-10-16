@@ -20,6 +20,9 @@ const F = {
   linear: 'src/main/linear-tickets.ts',
   mobile: 'src/main/acces-mobile-routes.ts',
   cliGuide: 'docs/guide/cli.md',
+  lock: 'src/shared/keyed-lock.ts',
+  help: 'src/cli/help.ts',
+  readme: 'README.md',
 };
 const T = {
   unit: 'src/shared/naming-policy-spawn-name.test.ts',
@@ -27,7 +30,10 @@ const T = {
   cli: 'src/cli/spawn-name.test.ts',
   w381: 'src/main/naming-policy-wiring.test.ts',
   kinds: 'src/main/model-defaults-wiring.test.ts',
-  help: 'src/cli/help.test.ts',
+  helpTest: 'src/cli/help.test.ts',
+  race: 'src/main/spawn-name-race.test.ts',
+  pins: 'src/main/spawn-docs-pins.test.ts',
+  lockTest: 'src/shared/keyed-lock.test.ts',
 };
 const ALL = Object.values(T);
 
@@ -59,6 +65,26 @@ const MUTANTS = [
   { id: 'M26_length_unbounded', file: F.policy, find: 'if (name.length > MAX_SPAWN_NAME) return', to: 'if (false) return', tests: [T.unit], expect: 'length' },
   { id: 'M27_git_ref_unchecked', file: F.policy, find: 'if (/\\.\\.|\\.$|\\.lock$/.test(name)) return', to: 'if (false) return', tests: [T.unit], expect: 'git ref' },
   { id: 'M28_origin_rides_agent_route', file: F.ws, find: "'defaultKind' | 'branch' | 'namedBy' | 'origin'>", to: "'defaultKind' | 'branch' | 'namedBy'>", tests: [T.wiring], expect: 'the AGENT route requires the name' },
+  // ── #382 follow-up: refuse stray positionals, pin the docs promise, serialise branch allocation, refuse an exhausted exact name ──
+  { id: 'M30_cli_leftovers_ignored', file: F.cli, find: 'if (r5.length)\n        fail(', to: 'if (false)\n        fail(', rebuild: true, tests: [T.cli], expect: 'stray argument' },
+  { id: 'M31_cli_usage_without_name', file: F.cli, find: "'usage: orchestra spawn --name <name> --task <text>", to: "'usage: orchestra spawn --task <text>", rebuild: true, tests: [T.cli], expect: 'usage line with --name first' },
+  { id: 'M32_help_usage_without_name', file: F.help, find: 'detail: `usage: orchestra spawn --name <name> --task', to: 'detail: `usage: orchestra spawn --task', tests: [T.pins], expect: 'CLI help' },
+  { id: 'M33_brief_MUST_to_MAY', file: F.ws, find: 'Every spawn MUST carry', to: 'Every spawn MAY carry', tests: [T.pins], expect: 'orchestrator brief' },
+  { id: 'M34_brief_sentence_deleted', file: F.ws, find: "  `Every spawn MUST carry \\`--name\\`: the child is named \\`${NAME_CONVENTION}\\` — you name it (the child is not asked to rename itself), no wave codes in the name. `;", to: "  '';", tests: [T.pins], expect: 'orchestrator brief' },
+  { id: 'M35_skill_required_header_deleted', file: F.ws, find: '**Name the child — \\`--name\\` is REQUIRED.**', to: 'Name the child.', tests: [T.pins], expect: 'REQUIRED' },
+  { id: 'M36_skill_refusal_sentence', file: F.ws, find: 'is REFUSED and creates', to: 'is accepted and creates', tests: [T.pins], expect: 'REQUIRED' },
+  { id: 'M37_skill_placeholder_unquoted', file: F.ws, find: '--name "ops-<milestone-in-human-words>"', to: '--name ops-<milestone en mots humains>', tests: [T.pins], expect: 'valid shell' },
+  { id: 'M38_rename_skill_description_qualifier', file: F.ws, find: ' NOT for an agent spawned by another agent — its parent named it.', to: '', tests: [T.pins], expect: 'orchestra-rename skill' },
+  { id: 'M39_rename_skill_body_note', file: F.ws, find: 'If another agent spawned you, your branch was named by that agent', to: 'Your branch was named', tests: [T.pins], expect: 'orchestra-rename skill' },
+  { id: 'M40_readme_bullet_without_name', file: F.readme, find: '`orchestra spawn --name impl-sidebar-lent-123 --task "…"`', to: '`orchestra spawn --task "…"`', tests: [T.pins], expect: 'README' },
+  { id: 'M41_readme_cli_line_without_name', file: F.readme, find: 'orchestra spawn --name <name> --task <text> [--repo <path>]', to: 'orchestra spawn --task <text> [--repo <path>]', tests: [T.pins], expect: 'README' },
+  { id: 'M42_allocation_lock_removed', file: F.ws, find: 'const branchAllocation = createKeyedLock();', to: 'const branchAllocation = { run: <T>(_k: string, f: () => Promise<T>) => f() };', tests: [T.race, T.wiring], expect: 'race:' },
+  { id: 'M43_exact_name_never_refuses', file: F.ws, find: 'if (requested && !free && naming?.exactName) {', to: 'if (false) {', tests: [T.race, T.wiring], expect: 'exhausted' },
+  { id: 'M44_wrapper_drops_exactName', file: F.ws, find: "namedBy: input.from, exactName: true });", to: "namedBy: input.from });", tests: [T.race, T.wiring, T.kinds], expect: 'exhausted' },
+  { id: 'M45_dispatch_drops_exactName', file: F.ws, find: '{ namedBy: input.namedBy, exactName: input.exactName });', to: '{ namedBy: input.namedBy });', tests: [T.race, T.wiring], expect: 'exhausted' },
+  { id: 'M46_creation_outside_the_lock', file: F.ws, find: "    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);\n    return { branch, worktreePath };\n  });", to: "    return { branch, worktreePath };\n  });\n  await createWorktree(input.repoPath, branch, baseBranch, worktreePath);", tests: [T.race, T.wiring], expect: 'race:' },
+  { id: 'M47_lock_not_fifo', file: F.lock, find: '      await prev;\n', to: '', tests: [T.lockTest, T.race], expect: 'same key' },
+  { id: 'M48_lock_leaks_keys', file: F.lock, find: 'if (tails.get(key) === tail) tails.delete(key);', to: '', tests: [T.lockTest], expect: 'same key' },
   { id: 'M22_guide_drops_name', file: F.cliGuide, find: 'orchestra spawn --name <name> --task <text>', to: 'orchestra spawn --task <text>', tests: [T.wiring], expect: 'G10' },
   { id: 'M23_help_drops_convention', file: 'src/cli/help.ts', find: '(required): ${NAME_CONVENTION}.', to: '(required).', tests: [T.wiring], expect: 'G10' },
 ];

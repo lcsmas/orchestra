@@ -72,7 +72,7 @@ Spawn a new worktree + agent, nested under the caller by default.
                     It becomes the child's branch and sidebar name; the child is not asked to
                     rename itself (you can later: 'rename'). A name already taken is
                     suffixed (-2, -3…): the final branch is printed. No wave codes (h1, q9, fu…).
-  --task <text>     the agent's brief (required)
+  --task <text>     the agent's brief (required; quote it — a stray extra word is refused)
   --repo <path>     repo to branch from (default: the caller's)
   --base <branch>   base branch
   --model <model>   pin the agent's model (full wire id); omitted = the user's

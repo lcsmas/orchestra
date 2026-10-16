@@ -1319,10 +1319,16 @@ async function main(argv: string[]): Promise<void> {
       const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
       const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
       const { present: detached, rest: r5 } = takeBoolFlag(r4c, '--detached');
-      void r5;
       if (!task)
         fail(
           'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
+        );
+      // A stray token is never silently dropped: `--name impl-sidebar lent 123` used to become the permanent name `impl-sidebar` (rc 0), and
+      // `--task do a thing` the task `do`. Also catches `--name=x` / unknown options. Refused before the socket, nothing created.
+      if (r5.length)
+        fail(
+          `refusing to spawn: unexpected argument(s) ${r5.map((a) => JSON.stringify(a)).join(' ')} — quote any value that contains spaces, ` +
+            'and give an option its value as the NEXT word (--name impl-sidebar-lent-123, not --name=…).\nNothing was created.',
         );
       // #382 — the child's name is REQUIRED and checked HERE, before the socket: a refusal creates nothing (the
       // route re-checks, for an old CLI/skill that sends no name). The convention lives in naming-policy.ts.

@@ -102,6 +102,7 @@ import {
   deliverToTargets,
 } from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
+import { createKeyedLock } from '../shared/keyed-lock.ts';
 import {
   MAX_AUTO_RENAMES,
   NAME_CONVENTION,
@@ -306,13 +307,17 @@ export async function ensureRoot() {
   if (!existsSync(ORCHESTRA_ROOT)) await mkdir(ORCHESTRA_ROOT, { recursive: true });
 }
 
+/** Per-repo serialisation of branch allocation + worktree creation (see createWorkspace). */
+const branchAllocation = createKeyedLock();
+
 export async function createWorkspace(
   input: CreateWorkspaceInput,
   /** Which default model the workspace takes when `input.model` is absent:
    *  'spawned' only for `orchestra spawn` by an agent (see dispatchSpawnRequest). */
   defaultKind: ModelDefaultKind = 'workspace',
-  /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record. */
-  naming?: { namedBy?: string },
+  /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record.
+   *  `exactName` = the agent route: when the requested name and all its suffixes are taken, REFUSE instead of falling back to a random branch. */
+  naming?: { namedBy?: string; exactName?: boolean },
 ): Promise<Workspace> {
   await ensureRoot();
   // REJECT a falsy repoPath before anything touches git. This is the durable
@@ -347,16 +352,23 @@ export async function createWorkspace(
   // contract everywhere else. Falling back to the random name keeps every
   // existing caller byte-identical.
   const requested = input.branch ? sanitizeBranchName(input.branch) : '';
-  // No `current` branch to exempt — nothing exists yet — so pass ''.
-  const branch = requested
-    ? (await freeBranchName(input.repoPath, requested, '')) || randomBranchName()
-    : randomBranchName();
   const agent = input.agent ?? 'claude';
-  const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
-  const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
-
-  log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
-  await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+  // #382: "pick a free name" and "create that branch" are ONE step per repo — parallel spawns of the same name (a `review-<x>` fan-out) all
+  // saw it free and the losers died on git's "already exists". Serialised here, the next caller lists the branches after the previous created its own.
+  const { branch, worktreePath } = await branchAllocation.run(input.repoPath, async () => {
+    // No `current` branch to exempt — nothing exists yet — so pass ''.
+    const free = requested ? await freeBranchName(input.repoPath, requested, '') : '';
+    if (requested && !free && naming?.exactName) {
+      // Every other caller keeps the random fallback (pinned-Linear, accès mobile); an AGENT's name is its human label — never silently swapped.
+      throw new Error(`refusing to spawn: the name "${requested}" and all its suffixes (-2 … -99) are taken — pick another name. Nothing was created.`);
+    }
+    const branch = free || randomBranchName();
+    const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
+    const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
+    log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
+    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+    return { branch, worktreePath };
+  });
   await installOrchestraHooks(worktreePath);
 
   // Allocate a port up-front so it survives setup-script failure (the worktree
@@ -1471,6 +1483,9 @@ export async function dispatchSpawnRequest(
     /** #382: the id of the agent that NAMED the child (`/spawn --name`) → `namedByParent`: no rename nudge, parent-owned name.
      *  Set ONLY by {@link dispatchAgentSpawnRequest}; the human paths (pinned Linear, accès mobile) never pass it (#380 D4). */
     namedBy?: string;
+    /** #382: the agent route's name is EXACT — refuse (nothing created) instead of a random branch when it and its suffixes are all taken.
+     *  Set ONLY by {@link dispatchAgentSpawnRequest}; the human paths keep the random fallback byte-identical. */
+    exactName?: boolean;
     /** #375: 'human' for a launch typed by the human on the phone (the accès mobile) — the agent's start is a human act, as a composer send
      *  (a pause bypass by decision, listed in pause-gates-wiring). Absent → today's behaviour (AUTO). */
     origin?: PauseOrigin;
@@ -1539,7 +1554,7 @@ export async function dispatchSpawnRequest(
       model,
       ...(effort ? { effort } : {}),
       branch: input.branch,
-    }, input.defaultKind, { namedBy: input.namedBy });
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName });
     created = { id: ws.id, branch: ws.branch };
     const started = await startWorkspaceAgentHeadless(ws.id, input.origin);
     if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
@@ -1558,12 +1573,12 @@ export async function dispatchSpawnRequest(
  *  becomes the child's branch (collisions suffix as for any explicit branch) and `from` becomes its namer — also for
  *  `--detached` (no `parentId`). A `/spawn` with no `from` is a human at a terminal: a human-created workspace, not pinned. */
 export async function dispatchAgentSpawnRequest(
-  input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy' | 'origin'> & { name?: string | null },
+  input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy' | 'exactName' | 'origin'> & { name?: string | null },
 ): Promise<SpawnResult> {
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
   const { name: _name, ...rest } = input;
-  return dispatchSpawnRequest({ ...rest, defaultKind: 'spawned', branch: checked.name, namedBy: input.from });
+  return dispatchSpawnRequest({ ...rest, defaultKind: 'spawned', branch: checked.name, namedBy: input.from, exactName: true });
 }
 
 // ---------- Add repo ----------
@@ -3802,7 +3817,7 @@ For a piece that is itself several agents' worth of work, spawn it and then
 promote the NEW workspace so it can coordinate children of its own:
 
 \`\`\`bash
-orchestra spawn --name ops-<milestone en mots humains> --task "<milestone brief>"   # prints the new <workspace-id>
+orchestra spawn --name "ops-<milestone-in-human-words>" --task "<milestone brief>"   # prints the new <workspace-id>
 orchestra promote <workspace-id>               # keeps the name you gave it
 \`\`\`
 
