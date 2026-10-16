@@ -22,6 +22,8 @@ Orchestra cuts a fresh branch from the base, creates the worktree, starts a new 
 
 The spawned agent shares **no context** with the spawner — the task text must stand alone. That constraint is what makes the fan-out safe.
 
+**Who may rename a spawned agent (human > parent > child).** A spawned agent is named by its parent, so it cannot rename itself: `orchestra rename` on its own workspace is refused with "named by your parent (<name>) — ask them to run `orchestra rename`". The parent can rename its child at any time (`orchestra rename <child-id> <name>`) and the name sticks. A name you type in the sidebar over a parent's name is final: neither the parent nor the agent can change it ("named by the human"; even for an older agent nobody named, its parent can no longer rename it once you have). Workspaces you create yourself keep naming themselves.
+
 ## Peer communication
 
 Agents in sibling workspaces can coordinate:

@@ -13,7 +13,7 @@ import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/type
 // Value import (not `import type`): the .ts extension is required for value
 // imports reachable from the test runner — see the hibernation-activity note.
 import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
-import { decideRename, pinFields } from '../shared/naming-policy.ts';
+import { adoptedBranchPin, pinFields } from '../shared/naming-policy.ts';
 import { formerBranchPatch } from '../shared/former-branch.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
@@ -669,17 +669,16 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
   // already adopted the same name, in which case there's nothing left to do.
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived || fresh.branch === live) return;
-  // An out-of-band `git branch -m` is a human rename: the naming policy pins it.
-  const decision = decideRename(fresh, { kind: 'human' });
-  if (!decision.allow) return;
+  // An out-of-band `git branch -m` is adopted; what it pins is the naming policy's call (a human pin, except on a parent-named workspace).
+  const pin = adoptedBranchPin(fresh);
   const repoName = path.basename(fresh.repoPath);
   const updated: Workspace = {
     ...fresh,
     branch: live,
     name: `${repoName} · ${live}`,
-    ...pinFields(fresh, decision.pin),
+    ...pinFields(fresh, pin),
     // #384: an out-of-band rename of a parent-named workspace keeps the replaced name ("ex-…") like any other rename.
-    ...formerBranchPatch(fresh, fresh.branch, live, decision.pin.namedByParent),
+    ...formerBranchPatch(fresh, fresh.branch, live, pin.namedByParent),
   };
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.

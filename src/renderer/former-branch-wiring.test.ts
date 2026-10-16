@@ -61,6 +61,7 @@ test('renameWorkspaceBranch: the three name-changing writes spread formerBranchP
 test('activity.detectAndUpdateBranchName: an out-of-band `git branch -m` adoption records the replaced name too (D3: every ACTUAL name change)', () => {
   const start = activity.indexOf('export async function detectAndUpdateBranchName(');
   const body = activity.slice(start, activity.indexOf('\n}\n', start));
-  assert.match(body, /\.\.\.formerBranchPatch\(fresh, fresh\.branch, live, decision\.pin\.namedByParent\),/);
+  // #383: the adoption's pin is `adoptedBranchPin(fresh)` (no human decision any more), so the replaced name is recorded with `pin.namedByParent`
+  assert.match(body, /\.\.\.formerBranchPatch\(fresh, fresh\.branch, live, pin\.namedByParent\),/);
   assert.match(activity, /import \{ formerBranchPatch \} from '\.\.\/shared\/former-branch\.ts';/);
 });

@@ -85,7 +85,7 @@ async function dispatchRpc(
     case 'rename': {
       const p = payload as RpcRequestPayloads['rename'];
       if (typeof p.id === 'string' && typeof p.branch === 'string') {
-        return reply(await dispatchRenameRequest(p.id, p.branch));
+        return reply(await dispatchRenameRequest(p.id, p.branch, typeof p.from === 'string' ? p.from : undefined));
       }
       return { ok: false, error: 'missing id or branch' };
     }
