@@ -1026,7 +1026,7 @@ export async function renameWorkspaceBranch(
   const liveBranch = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
   if (newBranch === liveBranch) {
     if (pinAdvancesGate(ws, opts)) {
-      const updated = { ...ws, branch: liveBranch, ...gateFields };
+      const updated = { ...ws, branch: liveBranch, ...gateFields, ...formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent) };
       await store.upsertWorkspace(updated);
       platform.broadcast('workspace:update', updated);
       return updated;

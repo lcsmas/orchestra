@@ -72,10 +72,15 @@ test('a renamed peer prints `ex-<previous>` in an `ex` column right after the br
   assert.equal(at(lines[2]), at(lines[3]));
 });
 
-test('a LATER rename shows only the latest previous name (the field is replaced, not appended)', needsBuild, async (t) => {
-  const r = await peers(t, [peer('aaaa1111', 'impl-a-1', { formerBranch: 'impl-a-draft' })]);
-  assert.match(r.stdout, /ex-impl-a-draft/);
-  assert.doesNotMatch(r.stdout, /ex-.*ex-/);
+test('a long former name widens ONLY the ex column: id/branch/repo/status keep their offsets in every row', needsBuild, async (t) => {
+  const long = 'impl-' + 'x'.repeat(70);
+  const r = await peers(t, [peer('aaaa1111', 'impl-a-1', { formerBranch: long }), peer('bbbb2222', 'ops-b')]);
+  const lines = r.stdout.trimEnd().split('\n');
+  assert.equal(lines[2].split(/\s+/)[2], `ex-${long}`, 'the former name is printed verbatim, never truncated');
+  const col = (l: string, word: string) => l.indexOf(word);
+  assert.equal(col(lines[0], 'branch'), col(lines[2], 'impl-a-1'), 'branch column starts at the same offset on header and row');
+  assert.equal(col(lines[2], 'orchestra'), col(lines[0], 'repo'), 'repo column is aligned past the widened ex column');
+  assert.equal(col(lines[3], 'orchestra'), col(lines[0], 'repo'), 'the never-renamed row is padded to the same repo offset');
 });
 
 test('--stats keeps the ex column beside the branch and the stats columns after status', needsBuild, async (t) => {

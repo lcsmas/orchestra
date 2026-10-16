@@ -14,6 +14,7 @@ import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/type
 // imports reachable from the test runner — see the hibernation-activity note.
 import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
 import { decideRename, pinFields } from '../shared/naming-policy.ts';
+import { formerBranchPatch } from '../shared/former-branch.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
@@ -677,6 +678,8 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
     branch: live,
     name: `${repoName} · ${live}`,
     ...pinFields(fresh, decision.pin),
+    // #384: an out-of-band rename of a parent-named workspace keeps the replaced name ("ex-…") like any other rename.
+    ...formerBranchPatch(fresh, fresh.branch, live, decision.pin.namedByParent),
   };
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.

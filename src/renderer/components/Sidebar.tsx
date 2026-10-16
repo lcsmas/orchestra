@@ -2775,7 +2775,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </label>
                       <div className={`ws-dot ${w.status as WorkspaceStatus}`} />
                       <div className="ws-meta">
-                        <div className="ws-name">{w.branch}</div>
+                        <div className="ws-name" title={w.formerBranch ? withExLabel(w.branch, w.formerBranch) : undefined}>{w.branch}</div>
                         <div className="ws-sub">
                           {repoLabel(w.repoPath)} · {w.agent}
                         </div>

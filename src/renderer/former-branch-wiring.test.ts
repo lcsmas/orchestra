@@ -14,6 +14,7 @@ const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 const INLINE_EX = /`ex-\$\{|['"]ex-['"] *\+/;
 const sidebar = read('renderer/components/Sidebar.tsx');
 const ws = read('main/workspaces.ts');
+const activity = read('main/activity.ts');
 const cli = read('cli/index.ts');
 
 test('Sidebar: both row title paths go through withExLabel(…, w.formerBranch)', () => {
@@ -23,6 +24,10 @@ test('Sidebar: both row title paths go through withExLabel(…, w.formerBranch)'
   assert.equal(args.length, 2, 'each call passes w.formerBranch');
   assert.match(sidebar, /import \{ withExLabel \} from '\.\.\/\.\.\/shared\/former-branch';/);
   assert.doesNotMatch(sidebar, INLINE_EX, 'no inline copy of the "ex-" prefix: the shared module owns it');
+});
+
+test('Sidebar: the ARCHIVED row (a third render path) shows it only for a renamed workspace — an unrenamed archived row keeps its DOM', () => {
+  assert.match(sidebar, /<div className="ws-name" title=\{w\.formerBranch \? withExLabel\(w\.branch, w\.formerBranch\) : undefined\}>\{w\.branch\}<\/div>/);
 });
 
 test('Sidebar: the existing "(locked)" / "double-click to rename" tooltip text is kept on both paths', () => {
@@ -44,10 +49,18 @@ test('peers: the field rides PeerInfo → dispatchPeersRequest → CLI column (n
   assert.doesNotMatch(cli, INLINE_EX, 'the prefix lives in shared/former-branch.ts only');
 });
 
-test('renameWorkspaceBranch: both write paths (relabel + real rename) spread formerBranchPatch; the no-op branches do not', () => {
+test('renameWorkspaceBranch: the three name-changing writes spread formerBranchPatch; the no-op returns do not', () => {
   const start = ws.indexOf('export async function renameWorkspaceBranch(');
   const body = ws.slice(start, ws.indexOf('export interface RenameResult', start));
-  assert.equal((body.match(/\.\.\.formerBranchPatch\(/g) ?? []).length, 2, 'exactly the two name-changing writes');
+  assert.equal((body.match(/\.\.\.formerBranchPatch\(/g) ?? []).length, 3, 'the three name-changing writes: relabel, git rename, drift adoption');
+  assert.match(body, /\.\.\.formerBranchPatch\(ws, ws\.branch, liveBranch, opts\.namedByParent\)/, 'drift adoption: stored → live is a name change of the record');
   assert.match(body, /formerBranchPatch\(ws, ws\.branch, newBranch,/, 'scratch relabel: the stored label is the previous name');
   assert.match(body, /formerBranchPatch\(ws, liveBranch, newBranch,/, 'git rename: the LIVE branch is the previous name, not the drifted stored one');
+});
+
+test('activity.detectAndUpdateBranchName: an out-of-band `git branch -m` adoption records the replaced name too (D3: every ACTUAL name change)', () => {
+  const start = activity.indexOf('export async function detectAndUpdateBranchName(');
+  const body = activity.slice(start, activity.indexOf('\n}\n', start));
+  assert.match(body, /\.\.\.formerBranchPatch\(fresh, fresh\.branch, live, decision\.pin\.namedByParent\),/);
+  assert.match(activity, /import \{ formerBranchPatch \} from '\.\.\/shared\/former-branch\.ts';/);
 });

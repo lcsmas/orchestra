@@ -512,7 +512,10 @@ governed by the flags of the **innermost** run of its two parties).
   (`withExLabel`, both row paths). Gates: `former-branch.test.ts` (pure table),
   `former-branch-rig.test.ts` + `scripts/e2e-former-branch.mjs` (real worktrees, real
   store, fresh-process reload), `peers-former-branch.test.ts` (built CLI vs a socket stub),
-  `former-branch-wiring.test.ts`.
+  `former-branch-wiring.test.ts`. Three writes record: scratch relabel, git rename, and the DRIFT-adoption write
+  (requested name == live branch, stored name stale). The out-of-band reconciler
+  `detectAndUpdateBranchName` (`activity.ts`, a hand-run `git branch -m`) records too. NOT recorded, on purpose:
+  `switchWorkspaceBranch` (checks out a DIFFERENT branch — not a rename of this workspace) and a same-name no-op.
 - **Progressive auto-rename** — the agent gets **two** staged auto-renames: an early provisional name, then a
   refined name once the work is well-defined. `dispatchRenameRequest` (`:1060`) asks
   `decideRename(ws, {kind:'agent'})` — the rename counts only while the nudge is active. After the budget is spent

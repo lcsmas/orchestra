@@ -63,6 +63,7 @@ const mkWt = async (id, branch, extra = {}) => {
 const liveBranch = (wt) => git(wt, 'rev-parse', '--abbrev-ref', 'HEAD');
 const { renameWorkspaceBranch, dispatchPeersRequest } = await import(`${REPO}/src/main/workspaces.ts`);
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const out = { arm: ARM };
 
 if (ARM === 'table') {
@@ -107,6 +108,22 @@ if (ARM === 'table') {
   const wtD = await mkWt('D', 'stored-stale', { namedByParent: 'P' });
   git(wtD, 'branch', '-m', 'stored-stale', 'really-live');
   record('drifted', await renameWorkspaceBranch('D', 'impl-d-1', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtD) });
+
+  // 9. drift ADOPTION write: requested name == live branch, stored name stale (an out-of-band `git branch -m` the reconciler has not
+  //    visited yet) and a human pin advances the gate ⇒ the record's name changes stored→live, and that is recorded too
+  const wtE = await mkWt('E', 'e-old', { namedByParent: 'P' });
+  git(wtE, 'branch', '-m', 'e-old', 'e-live');
+  record('drift_adopt', await renameWorkspaceBranch('E', 'e-live', { manual: true, bumpAutoCount: false }), { live: liveBranch(wtE) });
+
+  // 10. the out-of-band reconciler (`git branch -m` by hand, adopted by detectAndUpdateBranchName): parent-named records, human-created does not
+  const { detectAndUpdateBranchName } = await import(`${REPO}/src/main/activity.ts`);
+  for (const [id, named] of [['F', true], ['G', false]]) {
+    const wt = await mkWt(id, `${id.toLowerCase()}-old`, named ? { namedByParent: 'P' } : {});
+    git(wt, 'branch', '-m', `${id.toLowerCase()}-old`, `${id.toLowerCase()}-new`);
+    await detectAndUpdateBranchName(id);
+    await sleep(400);
+    record(named ? 'oob_named' : 'oob_human', store.getWorkspace(id), { live: liveBranch(wt), pinned: store.getWorkspace(id).branchManuallySet });
+  }
 
   // the REAL /peers payload: a renamed workspace carries `formerBranch`, a never-renamed one carries no such key
   const peers = (await dispatchPeersRequest({ from: 'nobody' })).peers ?? [];

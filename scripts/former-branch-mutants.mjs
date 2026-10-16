@@ -19,7 +19,7 @@ function runTests() {
   return { rc: r.status, pass: num('pass'), fail: num('fail'), skipped: num('skipped'), failing: [...out.matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1]) };
 }
 
-const FB = 'src/shared/former-branch.ts', WS = 'src/main/workspaces.ts', CLI = 'src/cli/index.ts', SB = 'src/renderer/components/Sidebar.tsx';
+const FB = 'src/shared/former-branch.ts', WS = 'src/main/workspaces.ts', AC = 'src/main/activity.ts', CLI = 'src/cli/index.ts', SB = 'src/renderer/components/Sidebar.tsx';
 const MUTANTS = [
   { id: 'M1 same-name no-op records', file: FB, from: 'if (!before || before === after) return {};', to: 'if (!before) return {};' },
   { id: 'M2 human-created records (no parent-named gate)', file: FB, from: 'if (!ws.namedByParent && !namedByParentAfter) return {};', to: '' },
@@ -35,6 +35,9 @@ const MUTANTS = [
   { id: 'M12 /peers payload drops formerBranch', file: WS, from: '    ...(w.formerBranch ? { formerBranch: w.formerBranch } : {}),\n', to: '' },
   { id: 'M13 CLI prints no ex cell', file: CLI, from: '        ...(exCells ? { ex: exCells[i] } : {}),\n', to: '', cli: true },
   { id: 'M14 CLI ex column moved off the branch', file: CLI, from: "const idCols = exCells ? ['id', 'branch', 'ex', 'repo', 'status']", to: "const idCols = exCells ? ['id', 'branch', 'repo', 'status', 'ex']", cli: true },
+  { id: 'M17 out-of-band git rename is not recorded', file: AC, from: '    ...formerBranchPatch(fresh, fresh.branch, live, decision.pin.namedByParent),\n', to: '' },
+  { id: 'M18 drift adoption write is not recorded', file: WS, from: ' ...formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent) };', to: ' };' },
+  { id: 'M19 archived row loses the former name', file: SB, from: 'title={w.formerBranch ? withExLabel(w.branch, w.formerBranch) : undefined}', to: 'title={undefined}' },
   { id: 'M15 sidebar TREE path loses the former name', file: SB, from: '                      w.formerBranch,\n                    )}\n                    onDoubleClick={(e) => startRename(e, w)}\n                  >\n                    {w.branch}', to: '                      undefined,\n                    )}\n                    onDoubleClick={(e) => startRename(e, w)}\n                  >\n                    {w.branch}' },
   { id: 'M16 sidebar REPO path loses the former name', file: SB, from: '                            w.formerBranch,\n                          )}', to: '                            undefined,\n                          )}' },
 ];

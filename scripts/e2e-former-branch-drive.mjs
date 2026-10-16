@@ -109,7 +109,9 @@ const shimHash = () => { try { return md5(shimFile); } catch { return 'absent'; 
 
 // ── world ────────────────────────────────────────────────────────────────────
 const OLD = { c1: 'impl-nommage-draft-381', c1mid: 'impl-nommage-brouillon-381', c1new: 'impl-nommage-politique-381', d1: 'verif-ancien-nom-384-draft', d1new: 'verif-ancien-nom-384', h1: 'silver-moth', h1new: 'fix-checkout-typo' };
-const ID = { ops: 'ws-efb-ops', c1: 'ws-efb-c1', d1: 'ws-efb-d1', h1: 'ws-efb-h1' };
+const ID = { ops: 'ws-efb-ops', c1: 'ws-efb-c1', d1: 'ws-efb-d1', h1: 'ws-efb-h1', a1: 'ws-efb-a1', a2: 'ws-efb-a2' };
+// ARCHIVED rows (the third render path): a1 carries a former name, a2 never was renamed
+const ARCH = { a1: 'verif-archive-384', a1former: 'verif-archive-ancien-384', a2: 'impl-archive-plain-384' };
 
 function seedWorld(home) {
   const fakeHome = path.join(home, 'home'), repoDir = path.join(home, 'repo');
@@ -129,14 +131,16 @@ function seedWorld(home) {
   const c1 = mk('c1', { branch: OLD.c1, parentId: ID.ops, namedByParent: ID.ops });
   const d1 = mk('d1', { branch: OLD.d1, namedByParent: ID.ops });            // detached child: no parentId, still parent-named
   const h1 = mk('h1', { branch: OLD.h1 });                                    // human-created
-  for (const [k, p] of [['c1', c1], ['d1', d1], ['h1', h1]]) {
+  const a1 = mk('a1', { branch: ARCH.a1, archived: true, namedByParent: ID.ops, formerBranch: ARCH.a1former });
+  const a2 = mk('a2', { branch: ARCH.a2, archived: true, namedByParent: ID.ops });
+  for (const [k, p] of [['c1', c1], ['d1', d1], ['h1', h1], ['a1', a1], ['a2', a2]]) {
     const listed = git(repoDir, ['worktree', 'list', '--porcelain'], fakeHome);
     if (!listed.includes(`worktree ${fs.realpathSync(p.worktreePath)}`)) throw new Error(`seed worktree ${k} not registered`);
   }
   const repo = { path: repoDir, name: 'efb-repo', defaultBranch: 'main', scripts: {}, accountId: account.id };
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   const storeFile = path.join(dir, 'store.json');
-  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo], workspaces: [ops, c1, d1, h1], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo], workspaces: [ops, c1, d1, h1, a1, a2], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stubLog = path.join(home, 'stub-argv.log');
   fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\nsleep 3600\n`, { mode: 0o755 });
@@ -214,6 +218,14 @@ const storeWs = (app) => Object.fromEntries(JSON.parse(fs.readFileSync(app.world
 async function shot(app, name) { const r = await app.cdp.send('Page.captureScreenshot', { format: 'png' }, 20000); const f = path.join(app.home, `${name}.png`); fs.writeFileSync(f, Buffer.from(r.data, 'base64')); return f; }
 function grim(app, name) { const f = path.join(app.home, `${name}.png`); execFileSync('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: app.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG.wayland }, timeout: 15000 }); return f; }
 const SHOTS = [];
+/** Open the Archived section (trusted click) and read its rows' tooltips; null title = no `title` attribute at all. */
+async function archivedRows(app) {
+  const hit = await app.cdp.eval(`(() => { const b = document.querySelector('.archived-toggle'); if (!b) return null; const r = b.getBoundingClientRect(); return { cx: r.x + r.width / 2, cy: r.y + r.height / 2, open: b.getAttribute('aria-expanded') === 'true' }; })()`);
+  if (!hit) throw new Error('no .archived-toggle in the sidebar');
+  if (!hit.open) { await mouse(app, 'mouseMoved', hit.cx, hit.cy); await mouse(app, 'mousePressed', hit.cx, hit.cy, { clickCount: 1 }); await mouse(app, 'mouseReleased', hit.cx, hit.cy, { clickCount: 1 }); await sleep(200); }
+  await waitFor('archived rows rendered', () => app.cdp.eval(`document.querySelectorAll('.archived-list .ws-name').length >= 2`), 8000, 150);
+  return await app.cdp.eval(`[...document.querySelectorAll('.archived-list .ws-name')].map((e) => ({ text: e.textContent.trim(), title: e.getAttribute('title') }))`);
+}
 // ── main ─────────────────────────────────────────────────────────────────────
 async function main() {
   const missing = ['RIG_WAYLAND', 'SWAYSOCK', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR'].filter((k) => !process.env[k]);
@@ -236,8 +248,8 @@ async function main() {
     clause('identity/url', app.target.url.includes(APP_DIR) && !app.target.url.includes('app.asar'), app.target.url);
     const penv = procEnv(app.pid);
     clause('isolation/display', penv.WAYLAND_DISPLAY === RIG.wayland && penv.WAYLAND_DISPLAY !== 'wayland-1' && !('DISPLAY' in penv), `pid ${app.pid} WAYLAND_DISPLAY=${penv.WAYLAND_DISPLAY} DISPLAY=${penv.DISPLAY ?? '<absent>'}`);
-    const wsList = await waitFor('seeded workspaces loaded', async () => { const l = await app.cdp.eval('window.orchestra.listWorkspaces()'); return l.length >= 4 ? l : null; }, 20000, 250);
-    clause('seed/loaded', ['ops', 'c1', 'd1', 'h1'].every((k) => wsList.some((w) => w.id === ID[k])), wsList.map((w) => `${w.id}:${w.branch}`).join(' '));
+    const wsList = await waitFor('seeded workspaces loaded', async () => { const l = await app.cdp.eval('window.orchestra.listWorkspaces()'); return l.length >= 6 ? l : null; }, 20000, 250);
+    clause('seed/loaded', ['ops', 'c1', 'd1', 'h1', 'a1', 'a2'].every((k) => wsList.some((w) => w.id === ID[k])), wsList.map((w) => `${w.id}:${w.branch}`).join(' '));
 
     // ── PRE-state ──
     await waitFor('rows rendered', async () => (await rows(app)).some((r) => r.text === OLD.c1) && (await rows(app)).some((r) => r.text === OLD.d1), 20000, 250);
@@ -248,6 +260,7 @@ async function main() {
     const peersPre = cli(app, ID.ops, ['peers']);
     clause('pre/peers-no-ex-column', peersPre.code === 0 && !/\bex\b|ex-/.test(peersPre.stdout) && peersPre.stdout.includes(OLD.c1), `rc=${peersPre.code}\n${peersPre.stdout}`);
     SHOTS.push(['pre-rename', await shot(app, 'pre-rename')]);
+    const archClosed = await app.cdp.eval(`document.querySelectorAll('.archived-list .ws-name').length`);
 
     // ── renames ──
     // C1 (tree path), twice, by its PARENT through the socket: the LATEST previous name must win.
@@ -283,6 +296,14 @@ async function main() {
     clause('tooltip/repo-path', post.d1?.path === 'repo' && post.d1.title === tipD1, `title="${post.d1?.title}"`);
     clause('tooltip/human-created-has-no-ex', post.h1?.path === 'repo' && !post.h1.title.includes('ex-') && post.h1.title === `${OLD.h1new} — double-click to rename`, `title="${post.h1?.title}"`);
     clause('tooltip/kept-existing-text', post.c1?.title.includes('double-click to rename') && post.d1?.title.includes('(locked)'), 'tree keeps "double-click to rename", locked repo row keeps "(locked)"');
+
+    // ── POST-state: the ARCHIVED path (third render path) ──
+    const arch = await archivedRows(app);
+    const a1row = arch.find((r) => r.text === ARCH.a1), a2row = arch.find((r) => r.text === ARCH.a2);
+    note(`archived section closed -> open: ${archClosed} rows -> ${arch.length} rows`);
+    clause('tooltip/archived-path-renamed', archClosed === 0 && a1row?.title === `${ARCH.a1} · ex-${ARCH.a1former}`, `A1 title="${a1row?.title}"`);
+    clause('tooltip/archived-path-unrenamed-has-no-title', a2row && a2row.title === null, `A2 title=${JSON.stringify(a2row?.title)} (null = no title attribute: DOM unchanged for an unrenamed archived row)`);
+    SHOTS.push(['archived-open-renderer', await shot(app, 'archived-open-renderer')]);
 
     // ── POST-state: store.json, peers ──
     const st = storeWs(app);
@@ -323,6 +344,8 @@ async function main() {
     const re = { c1: await rowOf(app, OLD.c1new), d1: await rowOf(app, OLD.d1new), h1: await rowOf(app, OLD.h1new) };
     note(`tooltip after restart (C1): "${re.c1?.title}"`); note(`tooltip after restart (D1): "${re.d1?.title}"`);
     clause('restart/tooltips-persist', re.c1?.title === tipC1 && re.d1?.title === tipD1 && !re.h1?.title.includes('ex-'), `c1="${re.c1?.title}" d1="${re.d1?.title}" h1="${re.h1?.title}"`);
+    const archRe = await archivedRows(app);
+    clause('restart/archived-tooltip-persists', archRe.find((r) => r.text === ARCH.a1)?.title === `${ARCH.a1} · ex-${ARCH.a1former}` && archRe.find((r) => r.text === ARCH.a2)?.title === null, JSON.stringify(archRe));
     const peersRe = cli(app, ID.ops, ['peers']);
     clause('restart/peers-persist', peersRe.code === 0 && peersRe.stdout.includes(`ex-${OLD.c1mid}`) && peersRe.stdout.includes(`ex-${OLD.d1}`), `\n${peersRe.stdout}`);
     await mouse(app, 'mouseMoved', 5, 5); await sleep(300);

@@ -292,7 +292,7 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   it deliberately does not spread `ICON_PROPS` (`fill: none` + stroke would
   outline each band or render nothing). The PR icons are genuine lucide
   `git-pull-request` / `git-merge` / `git-pull-request-closed` shapes.
-- **Row tooltip shows `ex-<previous name>` (#384).** The `ws-name` `title` on BOTH row render paths (pinned spawn trees, repo sections) goes through the one helper `withExLabel(title, w.formerBranch)` (`shared/former-branch.ts`): the existing "(locked)" / "double-click to rename" text is kept and ` · ex-<previous>` appended only for a renamed workspace (`former-branch-wiring.test.ts` pins both call sites). The archived-row `.ws-name` has no tooltip.
+- **Row tooltip shows `ex-<previous name>` (#384).** The `ws-name` `title` on BOTH row render paths (pinned spawn trees, repo sections) goes through the one helper `withExLabel(title, w.formerBranch)` (`shared/former-branch.ts`): the existing "(locked)" / "double-click to rename" text is kept and ` · ex-<previous>` appended only for a renamed workspace (`former-branch-wiring.test.ts` pins both call sites). The archived-row `.ws-name` (a third render path) gets a `title` ONLY for a renamed workspace — an unrenamed archived row keeps its DOM unchanged. The mobile list and the structured-view header title still show the bare branch (out of #384's scope).
 - **`.ws-name` has a `min-width` floor** (7.5em, 5em under 1100px). With enough
   badges the branch name was shrinking to ~40px — a couple of characters, i.e.
   an unidentifiable row. The floor makes the BADGES yield space first; they are

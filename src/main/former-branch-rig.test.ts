@@ -15,7 +15,7 @@ const REGISTER = path.join(REPO, 'scripts', '.r2-register.mjs');
 // btrfs under the real home, not /tmp; per-process so concurrent suites never share a dir.
 const E2E_HOME = path.join(os.homedir(), '.cache', `e2e-former-branch-unit-${process.pid}`);
 
-type Case = { formerBranch?: string; branch: string; disk?: string; live?: string; broadcastFormer?: string };
+type Case = { formerBranch?: string; branch: string; disk?: string; live?: string; broadcastFormer?: string; pinned?: boolean };
 function runArm(arm: string): { arm: string; ok: boolean; cases?: Record<string, Case>; peers?: Record<string, { formerBranch?: string; hasKey: boolean }> } & Record<string, unknown> {
   let out = '';
   try {
@@ -70,6 +70,16 @@ test('rename-records-former table (real renameWorkspaceBranch, real worktrees)',
   assert.equal(c.scratch_same.formerBranch, 'lab-S1', 'scratch same-name no-op leaves it');
   // the stored branch had drifted: the recorded former is the LIVE branch the rename started from
   assert.equal(c.drifted.formerBranch, 'really-live');
+  // drift ADOPTION (requested == live, stored stale): the record's name changed stored→live and is recorded
+  assert.equal(c.drift_adopt.live, 'e-live', 'control: the out-of-band rename really happened');
+  assert.equal(c.drift_adopt.branch, 'e-live');
+  assert.equal(c.drift_adopt.formerBranch, 'e-old');
+  // the out-of-band reconciler (detectAndUpdateBranchName): parent-named records, human-created does not; both really adopted the new name + pinned
+  assert.equal(c.oob_named.branch, 'f-new', 'control: the reconciler adopted the out-of-band name');
+  assert.equal(c.oob_human.branch, 'g-new');
+  assert.equal(c.oob_named.formerBranch, 'f-old');
+  assert.equal(c.oob_named.disk, 'f-old');
+  assert.equal(c.oob_human.formerBranch, undefined, 'no ex- noise on a human-created workspace');
   // the real /peers payload (dispatchPeersRequest): renamed ⇒ carries the former name; never renamed ⇒ no key at all
   const p = r.peers!;
   assert.equal(p.A.formerBranch, 'impl-x-2', 'control: A was renamed three times — the payload carries the LATEST previous name');
