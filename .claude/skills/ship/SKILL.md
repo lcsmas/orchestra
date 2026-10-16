@@ -35,7 +35,7 @@ header documents every flag (`--to-master`, `--install`, `--notes-file`,
 
    ```bash
    git diff --name-only origin/master..HEAD | grep -E '^src/(renderer|preload)/|\.css$'
-   git diff -U0 origin/master..HEAD | grep -E '^\+' \
+   git diff -U0 origin/master..HEAD -- src/ | grep -E '^\+' \
      | grep -nE 'setInterval|setTimeout|execFile|spawn|simpleGit|useEffect'
    ```
 
