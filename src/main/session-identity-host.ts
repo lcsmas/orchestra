@@ -1,7 +1,4 @@
-// Production wiring of the session-identity service (#379, ADR 0008; logic: session-identity.ts). The one place
-// that binds the registry file, the store (a workspace's tree → its wave run) and the bus (its generation).
-// Everything an agent session needs from it is three calls: `registerSessionKey` (at a FRESH keeper spawn),
-// `hasSessionKey` (can the host answer this session?) and `dispatchIdentityRequest` (the `/identity` route).
+// Production wiring of the session-identity service (#379, ADR 0008; logic: session-identity.ts): registry file + store (tree → wave run) + bus (generation).
 
 import path from 'node:path';
 import { createSessionKeyRegistry, resolveSessionIdentity, type SessionKeyRegistry } from './session-identity.ts';

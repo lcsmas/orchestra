@@ -1,15 +1,6 @@
-// #379 / ADR 0008 — the PURE half of "the host resolves a session's bus identity on every CLI call".
-//
-// Today's CLI reads its run + coordinator generation from env baked at session start; a promotion
-// then leaves the live session on the OLD run (#171). Instead: each session gets a unique KEY at
-// start (`ORCHESTRA_SESSION_KEY`), the CLI sends `{id, key}` to the host's `/identity` route on
-// every bus call, and the host answers with the CURRENT run + generation — only to the workspace's
-// live session (a superseded session's key no longer matches → refused, #128 kept).
-// Host-side service: src/main/session-identity.ts; wiring: session-identity-host.ts.
-//
-// TRANSITIONAL FALLBACK (removed with #136, when a daemon answers whenever sessions live): no key,
-// host unreachable, or host cannot vouch → the env values + the `.orchestra/bus-run-stale` marker
-// guard (sends refused when the marker names a different run; check/ack always allowed).
+// #379 / ADR 0008 — pure half of "the host resolves a session's bus identity per CLI call": the CLI sends `{id, key}` (ORCHESTRA_SESSION_KEY) to `/identity`
+// and uses the host's run + generation. Fallback (transitional, goes with #136): no key / host unreachable / unvouched → baked env + the `bus-run-stale` marker guard.
+// Host half: src/main/session-identity.ts. Map: docs/codebase-map/bus.md → Session identity.
 
 export const SESSION_KEY_ENV = 'ORCHESTRA_SESSION_KEY';
 export const IDENTITY_ROUTE = '/identity';

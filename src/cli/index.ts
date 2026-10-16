@@ -296,12 +296,8 @@ function staleRunMarkerFile(): string {
   return path.join(base, '.orchestra', 'bus-run-stale');
 }
 
-/** #142 — refuse a bus `send` when this workspace was re-parented and its session still holds the OLD
- *  run id: the send would land in the stale run. Reads the marker (never the store — the CLI is
- *  store-less) and `fail()`s with its first line. #379: this is now the FALLBACK's guard only — it runs
- *  when the host did NOT resolve the identity (no key / host unreachable / cannot vouch), because the host's
- *  answer is the current run by construction. A marker naming the run this env ALREADY carries does not
- *  block (staleMarkerBlocksSend). A missing/unreadable marker is NOT stale, so a read error is swallowed. */
+/** #142 — refuse a `send` while the marker says the session still holds the OLD run. Since #379 this is the FALLBACK's guard (the host's answer
+ *  is the current run); a marker naming the run the env already carries does not block. Never reads the store (the CLI is store-less). */
 function refuseIfStaleRun(envRunId: string | undefined): void {
   let body: string;
   try {
@@ -317,9 +313,7 @@ function refuseIfStaleRun(envRunId: string | undefined): void {
 let hostIdentity: IdentityResolution | null = null;
 /** How long the identity lookup waits for the host before falling back to the baked env. */
 const IDENTITY_TIMEOUT_MS = 3000;
-/** The env the bus verbs read the run + coordinator generation from: the HOST's current answer over the
- *  values baked at session start (ADR 0008). Every ORCHESTRA_RUN_ID / ORCHESTRA_COORDINATOR_GENERATION
- *  read in this file goes through here (pinned by session-identity-binding.test.ts). */
+/** The env the bus verbs read run + generation from: the HOST's answer over the baked values (ADR 0008); no other raw read (pinned by the binding test). */
 function liveEnv(): NodeJS.ProcessEnv {
   return identityEnv(process.env, hostIdentity);
 }

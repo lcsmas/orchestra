@@ -1659,7 +1659,7 @@ export interface PromoteResult {
   /** #171 — ids marked 'stale run' because the live session was working: the env refresh is DEFERRED to the
    *  next idle `orchestra restart`, and bus sends are refused meanwhile. */
   markedStale?: string[];
-  /** #379 — ids whose live session is answered by the HOST per CLI call (ADR 0008): the new run took effect at their next call, no restart, not stale. */
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
   hostResolved?: string[];
   error?: string;
 }
@@ -1969,7 +1969,7 @@ export interface DemoteResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
-  /** #379 — ids whose live session is answered by the HOST per CLI call (ADR 0008): the new run took effect at their next call, no restart, not stale. */
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
   hostResolved?: string[];
   error?: string;
 }
@@ -2081,7 +2081,7 @@ export interface AttachResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
-  /** #379 — ids whose live session is answered by the HOST per CLI call (ADR 0008): the new run took effect at their next call, no restart, not stale. */
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
   hostResolved?: string[];
   error?: string;
 }
@@ -2191,7 +2191,7 @@ export interface AdoptRepoResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
-  /** #379 — ids whose live session is answered by the HOST per CLI call (ADR 0008): the new run took effect at their next call, no restart, not stale. */
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
   hostResolved?: string[];
   error?: string;
 }

@@ -33,10 +33,7 @@ export type ReparentAction =
    *  `--no-restart` → rewrite the notice, mark the workspace 'stale run', and
    *  refuse its bus sends until it restarts. */
   | { kind: 'mark-stale' }
-  /** #379 / ADR 0008 — anchor changed, a live session holds the old run, but the HOST resolves that session's
-   *  identity on every CLI call (it carries a registered session key): its next call already names the new run,
-   *  so NO restart and NO 'stale' state. Only the notice is rewritten and the marker FILE written — the guard
-   *  for the fallback window (app down: the session's baked env IS the old run). */
+  /** #379 / ADR 0008 — the HOST answers this live session's identity per CLI call: no restart, no 'stale' state; notice + marker FILE only (the app-down fallback guard). */
   | { kind: 'host-resolved' };
 
 /** The inputs the pure decision needs about ONE candidate. */

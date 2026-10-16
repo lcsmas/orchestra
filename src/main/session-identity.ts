@@ -1,11 +1,5 @@
-// #379 / ADR 0008 — the HOST half of "bus identity resolved by the host per CLI call": the session-key
-// registry + the `/identity` service. Node-only on purpose (no Electron, no store, no bus import — the
-// deps are injected; production wiring: session-identity-host.ts) so it moves unchanged into the future
-// host daemon (#136) and is on the #137 seam inventory as "pure Node". Pure half: ../shared/session-identity.ts.
-//
-// SECRECY: the key itself lives ONLY in the session's env (handed to the CLI at spawn); the host keeps its
-// SHA-256 (`<ORCHESTRA_HOME>/session-keys.json`, 0600). The key is never logged, never in a reply, never
-// in a Workspace record (those are broadcast and spread-copied — a stale copy would revert the hash).
+// #379 / ADR 0008 — host half of the per-call bus identity: the session-key registry + the `/identity` service. Node-only (deps injected; wiring: session-identity-host.ts)
+// so it moves unchanged into the host daemon (#136/#137). The key lives only in the session env; the host keeps its SHA-256 (0600) — never logged, never in a reply.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
