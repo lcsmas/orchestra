@@ -51,9 +51,22 @@ reads them transiently to query usage.
   the resume (its transcript lives in the *old* config dir), so migration
   relocates the conversation too. `dispatchMigrateAccountRequest` (`workspaces.ts`)
   stops the SDK session if one is live (`sdkStopIfLive`; for a scoped member the old keeper and scope too, #327), `moveWorkspaceTranscripts` moves
-  `<old>/projects/<mangled-worktree>/*.jsonl` → the new account's config dir
-  (per-file `rename`, EXDEV→copy+unlink), re-pins `ws.accountId` and
-  `syncAccountInheritance(target)`. **There is no main-side resume (#232):** the Agent view's next
+  `<old>/projects/<mangled-worktree>/*` → the new account's config dir, re-pins `ws.accountId` and
+  `syncAccountInheritance(target)`. **#240 — the move never deletes what it did not first move elsewhere:** the two dirs are compared
+  by IDENTITY (`sameDir`, `same-dir.ts`: a trailing slash, `~` vs absolute, a symlink alias, a shared `projects/` symlink, a bind mount are
+  all "the same dir" ⇒ nothing moves, nothing is removed; master compared strings, "moved" the dir onto itself and `rm -r`'d it), first on
+  the config dirs (`moveWorkspaceTranscripts`) then on the project dirs (`moveProjectTranscripts`, which also covers a shared `projects/`).
+  `src/main/transcript-move.ts` (pure node:fs, tested by `transcript-move.test.ts`): same filesystem ⇒ per-entry `rename` (atomic; a failure
+  renames back what THIS call moved); EXDEV ⇒ copy ALL to tmp names, verify (size + sha256), rename into place, then remove each source entry
+  only if it is a distinct object and unchanged since it was read (a live writer's growth keeps the entry + a warning); a same-named
+  destination entry is NEVER overwritten (source entry kept + warning); the source dir goes by non-recursive `rmdir` (a session that started
+  mid-move keeps its file). The `warnings` reach the log and the reply (`MigrateAccountResult.warnings`, absent = clean). **One migration per
+  workspace** (`migrationsInFlight`, taken with no `await` after the validation, released in a `finally`): a 2nd call answers
+  `ok:false` "already in progress" — two movers of one dir to DIFFERENT accounts would split the history, so the guard is the lock, not the
+  mover (which only converges two same-target movers). Proofs: `migrate-account-wiring.test.ts` (source pins), `pnpm run test:migrate-transcripts`
+  (REAL dispatch over scratch config dirs, `scripts/e2e-migrate-transcripts.mjs`, incl. a `unshare -Urm` bind mount; must-FAIL on master:
+  slash / tilde_default / symlink / shared_projects / bindmount, and the same-tick refusal), `test:migrate-transcripts-mutants`. Known gap:
+  a session START racing the move (it captures the old config dir) and a keeper alive WITHOUT a session in this process are not fenced/stopped by the migration (unchanged; `stopAgentSessionForMove` would make the stop fail-closed — not wired here, it would change the #327 scope-stop pins). **There is no main-side resume (#232):** the Agent view's next
   send/open starts a fresh session under the new account resuming `ws.sdkSessionId` from the relocated
   transcript. (The old PTY resume — at the winsize the PTY had before the stop — and the
   `resumed` field of the reply / the CLI's `(resumed)` suffix are gone; the fleet-Pause row that skipped

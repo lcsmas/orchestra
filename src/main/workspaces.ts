@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, copyFile, cp } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -106,6 +106,8 @@ import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
+import { sameDir } from './same-dir.ts';
+import { moveProjectTranscripts, type MoveReport } from './transcript-move.ts';
 import { refreshAccountsNow } from './account-usage';
 import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
@@ -2592,53 +2594,31 @@ export interface MigrateAccountResult {
   /** The account id the workspace is now pinned to, or null for default login. */
   accountId?: string | null;
   error?: string;
+  /** #240: transcripts kept/left in the old config dir (a same-named destination file, a changed source…). Absent = clean. */
+  warnings?: string[];
 }
 
 /** Move a workspace's Claude Code conversation transcripts from one account's
  * config dir to another's, so `claude --continue` still resolves the session
  * after the pin changes. Claude keys the session off the worktree cwd
  * (`projects/<mangled-cwd>/*.jsonl`), which never changes, so relocating those
- * files under `dstConfigDir` is what preserves continuity. Best-effort per file;
- * a genuine fs error propagates so a half-move surfaces instead of silently
- * losing history. A missing source project dir is fine (nothing recorded yet).
- * No-ops when src and dst resolve to the same dir. */
+ * files under `dstConfigDir` is what preserves continuity. #240: the two dirs are
+ * compared by IDENTITY (`sameDir`: symlink, trailing slash, bind mount…), never by
+ * string, and nothing is removed that was not first moved/verified elsewhere
+ * (`transcript-move.ts`). A genuine fs error propagates so a half-move surfaces
+ * instead of silently losing history; a missing source project dir is fine. */
 async function moveWorkspaceTranscripts(
   worktreePath: string,
   srcConfigDir: string,
   dstConfigDir: string,
-): Promise<void> {
-  if (srcConfigDir === dstConfigDir) return;
+): Promise<MoveReport> {
+  if (sameDir(srcConfigDir, dstConfigDir)) return { warnings: [] };
   const mangled = mangleProjectDir(worktreePath);
-  const srcDir = path.join(srcConfigDir, 'projects', mangled);
-  const dstDir = path.join(dstConfigDir, 'projects', mangled);
-  let entries: string[];
-  try {
-    entries = await readdir(srcDir);
-  } catch {
-    return; // no project dir under the source account → nothing to move
-  }
-  if (entries.length === 0) return;
-  await mkdir(dstDir, { recursive: true });
-  for (const name of entries) {
-    const from = path.join(srcDir, name);
-    const to = path.join(dstDir, name);
-    try {
-      await rename(from, to);
-    } catch (err) {
-      // Cross-device rename (EXDEV) — the two config dirs live on different
-      // filesystems. Fall back to copy + unlink so the move still completes.
-      if ((err as NodeJS.ErrnoException)?.code === 'EXDEV') {
-        await copyFile(from, to);
-        await rm(from, { force: true });
-      } else {
-        throw err;
-      }
-    }
-  }
-  // Drop the now-empty source project dir (best-effort — leftover files, e.g. a
-  // concurrently-written transcript, just leave it in place).
-  await rm(srcDir, { recursive: true, force: true }).catch(() => undefined);
+  return moveProjectTranscripts(path.join(srcConfigDir, 'projects', mangled), path.join(dstConfigDir, 'projects', mangled));
 }
+
+/** #240: workspaces with a migration in flight — a 2nd one is refused (two movers of one transcript dir race each other). */
+const migrationsInFlight = new Set<string>();
 
 /** Socket/IPC entry point for migrating a workspace to a different account (or
  * back to the default login with a null/empty `accountId`). Per the pinning
@@ -2692,6 +2672,9 @@ export async function dispatchMigrateAccountRequest(input: {
     ? expandConfigDir(targetAccount.configDir, os.homedir(), process.env) || defaultDir
     : defaultDir;
 
+  // #240: ONE migration per workspace — set synchronously (no await since the validation above), released in the `finally`.
+  if (migrationsInFlight.has(id)) return { ok: false, error: 'a migration of this workspace is already in progress' };
+  migrationsInFlight.add(id);
   try {
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
     // start (buildSdkEnv), so it would keep running on the stale account and may
@@ -2710,7 +2693,8 @@ export async function dispatchMigrateAccountRequest(input: {
     // Move the conversation before re-pinning so a failure leaves the workspace
     // on its original account (with its history intact) rather than pinned to an
     // account whose config dir has no transcript.
-    await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    const moveReport = await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    for (const w of moveReport.warnings) log.warn(`migrate ${id}: ${w}`);
 
     const updated: Workspace = { ...ws };
     if (targetAccountId) updated.accountId = targetAccountId;
@@ -2736,9 +2720,11 @@ export async function dispatchMigrateAccountRequest(input: {
     // #256: a trigger member of an auto-paused run changed account — force a fresh reading of its new account and re-evaluate the run NOW.
     void pauseAutoOnMigrate(id);
 
-    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null };
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, ...(moveReport.warnings.length ? { warnings: moveReport.warnings } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
+  } finally {
+    migrationsInFlight.delete(id);
   }
 }
 
