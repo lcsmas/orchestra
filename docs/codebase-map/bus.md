@@ -2851,5 +2851,8 @@ promoted member — `refreeze --only memory_cap` (paused vague) is the explicit 
 (CLI resolution + marker guard) · `src/cli/bus-identity.test.ts` (the BUILT CLI vs a fake host on a real unix socket; `ORCHESTRA_TEST_CLI=<master cli.js>` is the must-FAIL run: 8/14 red on master)
 · `src/main/session-identity-binding.test.ts` (source pins) · `scripts/verify-promote-run-refresh.mjs` arms H1–H7 (real `workspaces.ts` + real registry + real dispatcher) ·
 `scripts/e2e-keeper-session-key.mjs` (real keeper daemon: register-before-CLI, attach keeps, fresh replaces, failing registration blocks the spawn; `pnpm run test:session-key-keeper`) ·
-`scripts/session-identity-mutants.mjs` (31 in-place mutants, `pnpm run test:session-identity-mutants`).
+`scripts/session-identity-mutants.mjs` (31 in-place mutants, `pnpm run test:session-identity-mutants`) · **the real-session rig `scripts/session-identity/`** (`pnpm run test:session-identity`, ~13 s, bwrap net+pid
+containment, zero tokens: real `sdkSend` → keeper → real `claude` vs the fake API, the real hooks server, the built CLI as the agent's `orchestra`): arms `same_turn` (spawn → promote → send in ONE turn lands in the new run, no restart, key hash = registry,
+key in no file/request/output), `superseded` (old key refused by the host and the CLI after a fresh start), `app_closed` (`stopHooksServer()` → send refused by the marker, check allowed), `attach_keeps_key` (two app processes: the reattach keeps the live key); `--proof` = 7
+must-FAIL mutants, `--selftest` = every judge clause reddens, `--repo <tree>` = the master run (`same_turn` reds a1/b2/c/e1/e2: "stale run" refusal — the #171 symptom). Not covered: the packaged Electron app, sandbox/remote, a CLI-bundle mutant.
 
