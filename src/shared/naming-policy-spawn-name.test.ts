@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkSpawnName, NAME_CONVENTION, ROLES } from './naming-policy.ts';
+import { checkSpawnName, NAME_CONVENTION, nudgeActive, ROLES } from './naming-policy.ts';
 
 // #382 — the spawn-name check: required, sanitised, rôle-prefixed, with an object after the rôle, and a
 // refusal that restates the convention. One must-PASS and one must-FAIL arm per clause (mutated once each,
@@ -74,4 +74,20 @@ test('every refusal restates the convention verbatim', () => {
   assert.match(NAME_CONVENTION, /rôle/);
   assert.match(NAME_CONVENTION, /\[-<ticket>\]/);
   for (const role of ROLES) assert.ok(NAME_CONVENTION.includes(role), role);
+});
+
+// #382 — the nudge clause: a workspace named by its parent is never nudged to rename itself, whatever its counters say.
+
+test('nudgeActive — must-FAIL: a child named by its parent (counter 0, no human pin) gets no rename nudge', () => {
+  assert.equal(nudgeActive({ branchManuallySet: false, autoRenameCount: 0, namedByParent: 'parent-1' }), false);
+  assert.equal(nudgeActive({ branchManuallySet: false, namedByParent: 'parent-1', parentId: 'parent-1' }), false);
+  // a --detached child has no parentId: the namer id alone silences the nudge (D1, story 15)
+  assert.equal(nudgeActive({ branchManuallySet: false, namedByParent: 'spawner-1' }), false);
+});
+
+test('nudgeActive — must-PASS: a human-created workspace is nudged exactly as before, until two renames or a human pin', () => {
+  assert.equal(nudgeActive({ branchManuallySet: false }), true);
+  assert.equal(nudgeActive({ branchManuallySet: false, autoRenameCount: 1 }), true);
+  assert.equal(nudgeActive({ branchManuallySet: false, autoRenameCount: 2 }), false);
+  assert.equal(nudgeActive({ branchManuallySet: true, autoRenameCount: 0 }), false);
 });

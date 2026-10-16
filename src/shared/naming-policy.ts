@@ -26,9 +26,9 @@ export type NamingFields = Pick<Workspace, 'branchManuallySet' | 'autoRenameCoun
 // ── #381 (today's rule, no behaviour change) ────────────────────────────────
 
 /** Is the rename nudge still active? #381: `!branchManuallySet && (autoRenameCount ?? 0) < MAX_AUTO_RENAMES`
- *  (today's `autoRenameActive`). #382 adds `&& !namedByParent`. The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
+ *  (today's `autoRenameActive`), `&& !namedByParent` (#382: a child named by its parent is never nudged). The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
 export function nudgeActive(ws: NamingFields): boolean {
-  return !ws.branchManuallySet && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
+  return !ws.branchManuallySet && !ws.namedByParent && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
 }
 
 /** Naming fields of a freshly created workspace: `{ branchManuallySet: false }`, plus `namedByParent: namedBy` when

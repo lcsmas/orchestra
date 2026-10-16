@@ -104,6 +104,7 @@ import {
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import {
   MAX_AUTO_RENAMES,
+  checkSpawnName,
   decideRename,
   initialNaming,
   pinAdvancesGate,
@@ -308,6 +309,8 @@ export async function createWorkspace(
   /** Which default model the workspace takes when `input.model` is absent:
    *  'spawned' only for `orchestra spawn` by an agent (see dispatchSpawnRequest). */
   defaultKind: ModelDefaultKind = 'workspace',
+  /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record. */
+  naming?: { namedBy?: string },
 ): Promise<Workspace> {
   await ensureRoot();
   // REJECT a falsy repoPath before anything touches git. This is the durable
@@ -371,7 +374,7 @@ export async function createWorkspace(
     status: 'idle',
     agent,
     lastTask: input.task,
-    ...initialNaming(),
+    ...initialNaming({ namedBy: naming?.namedBy }),
     // Pin the repo's currently-assigned account at creation. The agent's
     // conversation will live in that account's CLAUDE_CONFIG_DIR, so the
     // workspace must keep using it even if the repo's account changes later.
@@ -1455,6 +1458,9 @@ export async function dispatchSpawnRequest(
      * Used when spawning from a pinned Linear ticket, whose branch must lead
      * with the issue key for the badge pipeline to recognise it. */
     branch?: string;
+    /** #382: the id of the agent that NAMED the child (`/spawn --name`) → `namedByParent`: no rename nudge, parent-owned name.
+     *  Set ONLY by {@link dispatchAgentSpawnRequest}; the human paths (pinned Linear, accès mobile) never pass it (#380 D4). */
+    namedBy?: string;
     /** #375: 'human' for a launch typed by the human on the phone (the accès mobile) — the agent's start is a human act, as a composer send
      *  (a pause bypass by decision, listed in pause-gates-wiring). Absent → today's behaviour (AUTO). */
     origin?: PauseOrigin;
@@ -1523,7 +1529,7 @@ export async function dispatchSpawnRequest(
       model,
       ...(effort ? { effort } : {}),
       branch: input.branch,
-    }, input.defaultKind);
+    }, input.defaultKind, { namedBy: input.namedBy });
     created = { id: ws.id, branch: ws.branch };
     const started = await startWorkspaceAgentHeadless(ws.id, input.origin);
     if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
@@ -1533,6 +1539,21 @@ export async function dispatchSpawnRequest(
     // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
     return created ? keptFailure(created.id, created.branch, msg) : { ok: false, error: msg };
   }
+}
+
+/** The AGENT spawn route — `/spawn` in hooks-server.ts and the sandbox wire's `spawn` rpc (#382). The name is REQUIRED here
+ *  and only here: keyed on the route, never on `defaultKind` (the pinned-Linear `--spawn` and the accès mobile reuse
+ *  {@link dispatchSpawnRequest} and stay byte-identical even when `from` is set — #380 D4). The check is the CLI's own
+ *  ({@link checkSpawnName}); an old CLI/skill that sends no `name` is refused here and NOTHING is created. The checked name
+ *  becomes the child's branch (collisions suffix as for any explicit branch) and `from` becomes its namer — also for
+ *  `--detached` (no `parentId`). A `/spawn` with no `from` is a human at a terminal: a human-created workspace, not pinned. */
+export async function dispatchAgentSpawnRequest(
+  input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy'> & { name?: string | null },
+): Promise<SpawnResult> {
+  const checked = checkSpawnName(input.name);
+  if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
+  const { name: _name, ...rest } = input;
+  return dispatchSpawnRequest({ ...rest, defaultKind: 'spawned', branch: checked.name, namedBy: input.from });
 }
 
 // ---------- Add repo ----------
