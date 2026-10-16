@@ -88,7 +88,7 @@ const world = (() => {
   const fakeEnv = { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' }; // a pinned account drops the inherited ANTHROPIC_* unless its env names them
   const accounts = [{ id: 'acc-rig', label: 'rig', configDir: cfg, env: fakeEnv }];
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
-  const workspaces = [{ ...base, id: 'ws-ops', name: 'rig-repo · ops-rig-parent', repoPath: repo, worktreePath: wt, branch: 'ops-rig-parent', status: 'idle', accountId: 'acc-rig', canOrchestrate: true, branchManuallySet: true }];
+  const workspaces = [{ ...base, id: 'ws-ops', name: `${path.basename(repo)} · ops-rig-parent`, repoPath: repo, worktreePath: wt, branch: 'ops-rig-parent', status: 'idle', accountId: 'acc-rig', canOrchestrate: true, branchManuallySet: true }];
   return { d, fakeHome, ohome, cfg, repo, wt, accounts, workspaces, repos: [{ path: repo, name: 'rig-repo', defaultBranch: 'main', accountId: 'acc-rig' }] };
 })();
 const storeDir = path.join(world.ohome, 'userData', 'orchestra'); fs.mkdirSync(storeDir, { recursive: true });
@@ -185,7 +185,7 @@ try {
   const childId = spM?.[1];
   await waitFor(async () => (await rowTexts()).includes('impl-x-1'), 20000, 'the sidebar row impl-x-1').catch(() => null);
   const rec = (await wsList()).find((w) => w.id === childId);
-  clause('named/record', rec && rec.branch === 'impl-x-1' && rec.parentId === 'ws-ops' && rec.namedByParent === 'ws-ops' && rec.branchManuallySet === false && rec.name === 'rig-repo · impl-x-1', JSON.stringify(rec));
+  clause('named/record', rec && rec.branch === 'impl-x-1' && rec.parentId === 'ws-ops' && rec.namedByParent === 'ws-ops' && rec.branchManuallySet === false && rec.name === `${path.basename(world.repo)} · impl-x-1`, JSON.stringify(rec));
   const wtChild = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === childId)?.worktreePath;
   clause('named/git-branch', branches().includes('impl-x-1') && gitIn(wtChild, ['rev-parse', '--abbrev-ref', 'HEAD'], world.fakeHome).trim() === 'impl-x-1', `repo branches ${branches().join(',')}; worktree HEAD ${gitIn(wtChild, ['rev-parse', '--abbrev-ref', 'HEAD'], world.fakeHome).trim()}`);
   const postRows = await rowTexts();
