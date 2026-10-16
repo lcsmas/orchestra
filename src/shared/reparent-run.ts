@@ -96,7 +96,7 @@ export function staleRunRefusalMessage(markerFirstLine: string, opts: { hostDidN
     `refused: ${markerFirstLine.trim()}\n` +
     (opts.hostDidNotAnswer
       ? // #379: a keyed session whose host is down/slow is not stale — the host resolves its run while it answers; a restart is refused mid-turn anyway
-        `  the Orchestra host did not answer (app closed or busy) — retry in a moment; while it answers, this session's run is resolved by the host.`
+        `  the Orchestra host did not answer — reopen Orchestra, or retry in a moment if it is busy; while it answers, this session's run is resolved by the host.`
       : `  run \`orchestra restart\` to re-derive this workspace's run and clear the block.`)
   );
 }

@@ -2,6 +2,7 @@
 // mutation per clause must make THAT clause (and only a named dependent set) FAIL — a clause that cannot fail proves nothing.
 //   node scripts/session-identity/run.mjs --selftest
 import { ARMS, judge } from './judge.mjs';
+import { classifyListingDiff } from './hygiene.mjs';
 
 const H = (c) => c.repeat(64);
 const ID = (pid) => ({ pid, start: String(1000 + pid) });
@@ -147,6 +148,22 @@ export function runSelftest() {
     }
     console.log(`  ${arm}: ${ids.length} clauses, each mutated and reddened${goodFail.length || missing.length ? ' — WITH PROBLEMS' : ''}`);
   }
+  // the home-listing policy: it must be able to FAIL (a removal of a live entry, a rig-marked addition) and must tolerate the known transients
+  const L = ['.claude', '.claude/settings.json', '.claude/projects', '.claude-mc', '.claude-mc/telemetry', '.orchestra', '.orchestra/bus.sqlite'];
+  const cases = [
+    ['identical listings', L, L, [], true],
+    ['a concurrent session removed its telemetry dir', L, L.filter((n) => n !== '.claude-mc/telemetry'), [], true],
+    ['a concurrent session added an unrelated file', L, [...L, '.claude-mc/ide'], [], true],
+    ['REMOVED a live config entry', L, L.filter((n) => n !== '.claude/settings.json'), [], false],
+    ['REMOVED a top-level live dir', L, L.filter((n) => n !== '.claude-mc' && n !== '.claude-mc/telemetry'), [], false],
+    ['the rig left its own session-keys.json', L, [...L, '.orchestra/session-keys.json'], [], false],
+    ['the rig left an entry named after its scratch root', L, [...L, '.claude/projects-si-run-abc123'], ['si-run-abc123'], false],
+  ];
+  for (const [label, b, a, tokens, want] of cases) {
+    const got = classifyListingDiff(b, a, tokens).ok;
+    if (got !== want) { bad++; console.log(`  FAIL hygiene/${label}: classified ok=${got}, want ${want}`); }
+  }
+  console.log(`  hygiene: ${cases.length} cases (${cases.filter((c) => !c[4]).length} must-FAIL, ${cases.filter((c) => c[4]).length} must-pass)`);
   console.log(`SESSION-IDENTITY selftest: ${bad === 0 ? 'PASS' : 'FAIL'}`);
   return bad === 0;
 }

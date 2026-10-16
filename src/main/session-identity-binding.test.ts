@@ -165,3 +165,12 @@ test('MAJOR-1 the coordinator bump revokes the replaced session\'s key in the sa
   assert.ok(!b.slice(bumpAt, forgetAt).includes('await'), 'no await between the bump and the revocation');
   assert.ok(b.indexOf('shouldBumpCoordinatorGeneration(anchor, runRowExists)') < bumpAt, 'only when a bump really happens (a plain member restart keeps its key)');
 });
+
+test('MINOR-B production wiring: the service reads the generation through the fail-closed busGenerationReader over the real bus handle — never an inline fallback to 0', () => {
+  assert.ok(live(identityHost, 'generationOf: busGenerationReader(getBus, coordinatorGeneration),'));
+  assert.ok(live(identityHost, "import { busGenerationReader, createSessionKeyRegistry, resolveSessionIdentity, type SessionKeyRegistry } from './session-identity.ts';"));
+  const dispatch = bodyBetween(identityHost, 'export function dispatchIdentityRequest(', '\n}\n');
+  assert.ok(!/return 0|generation: null|\bgetBus\(\)\s*\?/.test(dispatch), 'no inline 0 / unfenced fallback in the wiring');
+  const reader = bodyBetween(identity, 'export function busGenerationReader<D>(', '\n}\n');
+  assert.ok(live(reader, "if (!db) throw new Error('bus unavailable');"), 'the reader throws without a bus');
+});

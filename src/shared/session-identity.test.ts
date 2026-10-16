@@ -106,19 +106,21 @@ test('the refusal text for a replaced session names the rule, never a key', () =
   assert.ok(!msg.includes(KEY));
 });
 
-test('MAJOR-2 the marker is looked up from the worktree root, then cwd and EVERY ancestor — never cwd alone', () => {
+test('MAJOR-2 the marker is looked up from the env root(s); only WITHOUT any env root the cwd and EVERY ancestor are walked', () => {
   const marker = (d: string): string => path.join(d, '.orchestra', 'bus-run-stale');
-  const fromSub = staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/wt/src/deep');
-  assert.equal(fromSub[0], marker('/wt'), 'the session worktree env comes first');
-  assert.ok(fromSub.includes(marker('/wt/src/deep')) && fromSub.includes(marker('/wt/src')) && fromSub.includes(marker('/wt')) && fromSub.includes(marker('/')), 'cwd and each ancestor');
-  assert.deepEqual(staleMarkerPaths({ ORCHESTRA_WORKSPACE_PATH: '/script-ws', ORCHESTRA_WORKTREE: '/wt' }, '/x').slice(0, 2), [marker('/script-ws'), marker('/wt')], 'setup/run scripts: the explicit path wins, then the worktree');
-  assert.deepEqual(staleMarkerPaths({}, '/a/b').slice(0, 3), [marker('/a/b'), marker('/a'), marker('/')], 'no env at all: walk up from cwd');
-  assert.equal(new Set(staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/wt')).size, staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/wt').length, 'no duplicates');
+  // a session: ORCHESTRA_WORKTREE decides, from any cwd (a `cd src/deep` finds the worktree's marker) …
+  assert.deepEqual(staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/wt/src/deep'), [marker('/wt')]);
+  // … and a cwd inside a SIBLING worktree is NOT consulted (that worktree's marker is not this session's)
+  assert.deepEqual(staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/other-wt/src'), [marker('/wt')]);
+  assert.deepEqual(staleMarkerPaths({ ORCHESTRA_WORKSPACE_PATH: '/script-ws', ORCHESTRA_WORKTREE: '/wt' }, '/x'), [marker('/script-ws'), marker('/wt')], 'setup/run scripts: the explicit path, then the worktree');
+  assert.deepEqual(staleMarkerPaths({ ORCHESTRA_WORKTREE: '  ' }, '/a/b').slice(0, 3), [marker('/a/b'), marker('/a'), marker('/')], 'a blank root is no root');
+  assert.deepEqual(staleMarkerPaths({}, '/a/b').slice(0, 3), [marker('/a/b'), marker('/a'), marker('/')], 'no env at all (an old keeper): walk up from cwd');
+  assert.equal(new Set(staleMarkerPaths({ ORCHESTRA_WORKTREE: '/wt' }, '/wt')).size, 1, 'no duplicates');
 });
 
 test('MINOR-3 a keyed session whose host did not answer is told to retry, not to restart (a restart is refused mid-turn)', () => {
   const stale = staleRunRefusalMessage('stale run: x', { hostDidNotAnswer: true });
-  assert.match(stale, /host did not answer/);
+  assert.match(stale, /host did not answer — reopen Orchestra/);
   assert.doesNotMatch(stale, /orchestra restart/);
   assert.match(staleRunRefusalMessage('stale run: x'), /orchestra restart/, 'a keyless session keeps the restart advice');
 });

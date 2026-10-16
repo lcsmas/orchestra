@@ -76,6 +76,10 @@ const MUTANTS = [
   { id: 'M34', name: 'MINOR-4: a failed generation read answers an UNFENCED ok (fail-open)', edits: [[SIM, "    return { ok: false, code: 'unregistered', error: `identity: the coordinator generation of run ${runId} is unreadable` };", "    generation = 0;"]], tests: [T.host] },
   { id: 'M35', name: 'MINOR-2: the registry reads inherited properties (`constructor` is a workspace)', edits: [[SIM, "    has: (wsId) => Object.hasOwn(sessions, wsId),", "    has: (wsId) => wsId in sessions,"]], tests: [T.host] },
   { id: 'M36', name: 'MINOR-3: a keyed session with a silent host is still told to `orchestra restart`', cli: true, edits: [[RR, "(opts.hostDidNotAnswer\n      ?", "(false\n      ?"]], tests: [T.pure, T.cli] },
+  // ── follow-up #379-fu (re-review c/6215167129) ──
+  { id: 'M37', name: 'MINOR-A: the cwd ancestors are walked even when an env root is set (a sibling worktree\'s marker refuses this session)', cli: true, edits: [[SIS, "  if (roots.length === 0) {\n    for (let d", "  if (true) {\n    for (let d"]], tests: [T.pure, T.cli] },
+  { id: 'M38', name: 'MINOR-B: the generation reader returns 0 without a bus (fail-open)', edits: [[SIM, "    if (!db) throw new Error('bus unavailable');", "    if (!db) return 0;"]], tests: [T.host] },
+  { id: 'M39', name: 'MINOR-B: the host wiring bypasses the fail-closed reader', edits: [['src/main/session-identity-host.ts', "generationOf: busGenerationReader(getBus, coordinatorGeneration),", "generationOf: (r) => { const db = getBus(); return db ? coordinatorGeneration(db, r) : 0; },"]], tests: [T.bind] },
   // ── refreeze ──
   { id: 'M30', name: 'memory_cap is not on the one-switch re-freeze allow-list', edits: [[BR, "['dockerRelay', 'memoryCap']; // #379", "['dockerRelay']; // #379"]], tests: [T.runs, T.bind] },
 ];
