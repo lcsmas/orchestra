@@ -98,7 +98,7 @@ const MUTANTS = [
   { id: 'M56_slots_off_by_one', file: F.slotsSrc, find: 'n <= MAX_BRANCH_SUFFIX', to: 'n < MAX_BRANCH_SUFFIX', tests: [T.slots], expect: 'no options' },
   { id: 'M57_cli_valueless_option_swallowed', file: F.cli, find: "if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))", to: 'if (false)', rebuild: true, tests: [T.cli], expect: 'option without a value' },
   { id: 'M58_reservations_read_live_not_snapshotted', file: F.ws, find: '{ reserved: new Set(taken), avoidFolders', to: '{ reserved: taken, avoidFolders', tests: [T.race, T.wiring], expect: 'stale-listing:' },
-  { id: 'M59_cli_valueless_check_refuses_any_dashdash_value', file: F.cli, find: "args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])", to: "args[i + 1] === undefined || args[i + 1].startsWith('--')", rebuild: true, tests: [T.cli], expect: 'a value that starts with' },
+  { id: 'M59_cli_valueless_check_refuses_any_dashdash_value', file: F.cli, find: "args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])", to: "args[i + 1] === undefined || args[i + 1].startsWith('--')", rebuild: true, tests: [T.cli], expect: 'merely STARTS' },
   { id: 'M22_guide_drops_name', file: F.cliGuide, find: 'orchestra spawn --name <name> --task <text>', to: 'orchestra spawn --task <text>', tests: [T.wiring], expect: 'G10' },
   { id: 'M23_help_drops_convention', file: 'src/cli/help.ts', find: '(required): ${NAME_CONVENTION}.', to: '(required).', tests: [T.wiring], expect: 'G10' },
 ];

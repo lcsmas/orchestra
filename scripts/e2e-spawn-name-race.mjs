@@ -29,12 +29,23 @@ process.env.HOME = tmpHome;
 const stubBin = path.join(tmpHome, 'stub-bin'); fs.mkdirSync(stubBin, { recursive: true });
 fs.writeFileSync(path.join(stubBin, 'claude'), '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
 const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-// `git` shim, inert unless SPAWN_RACE_DELAY_NTH is set: the NTH `git branch -v` (simple-git's branchLocal = the branch LISTING) reads its refs FIRST, then
-// holds its answer back SPAWN_RACE_DELAY_MS — what a loaded event loop / a big repo does to a listing, made deterministic.
+// `git` shim (inert unless armed through env), what a loaded event loop / a big repo does to git, made deterministic:
+//  SPAWN_RACE_DELAY_NTH=<n>      the n-th `git branch -v` (simple-git's branchLocal = the branch LISTING) reads its refs FIRST, then holds its answer back SPAWN_RACE_DELAY_MS
+//  SPAWN_RACE_ADD_MARK=<file>    the FIRST `git branch <name> <base>` (createWorktree's ref creation — it precedes `worktree add`) touches <file> when it starts, then waits SPAWN_RACE_ADD_DELAY_MS before running
+//  SPAWN_RACE_AFTER_MARK=<dir>   the FIRST `git branch -v` that STARTS after that mark exists reads its refs, then holds its answer back SPAWN_RACE_DELAY_MS (claimed with an atomic mkdir)
 fs.writeFileSync(path.join(stubBin, 'git'), `#!/bin/sh
-if [ "$1" = "branch" ] && [ "$2" = "-v" ] && [ -n "$SPAWN_RACE_DELAY_NTH" ]; then
-  echo x >> "$SPAWN_RACE_COUNTER"; n=$(wc -l < "$SPAWN_RACE_COUNTER" | tr -d ' ')
-  if [ "$n" = "$SPAWN_RACE_DELAY_NTH" ]; then out=$(${REAL_GIT} "$@"); sleep "$(awk "BEGIN{print $SPAWN_RACE_DELAY_MS/1000}")"; printf '%s\n' "$out"; exit 0; fi
+[ -n "$SPAWN_RACE_LOG" ] && echo "$(date +%s.%N | cut -c7-14) pid=$$ $*" >> "$SPAWN_RACE_LOG"
+if [ "$1" = "branch" ] && [ "$2" != "-v" ] && [ "\${2#-}" = "$2" ] && [ -n "$SPAWN_RACE_ADD_MARK" ] && [ ! -e "$SPAWN_RACE_ADD_MARK" ]; then
+  : > "$SPAWN_RACE_ADD_MARK"; sleep "$(awk "BEGIN{print $SPAWN_RACE_ADD_DELAY_MS/1000}")"
+fi
+if [ "$1" = "branch" ] && [ "$2" = "-v" ]; then
+  if [ -n "$SPAWN_RACE_DELAY_NTH" ]; then
+    echo x >> "$SPAWN_RACE_COUNTER"; n=$(wc -l < "$SPAWN_RACE_COUNTER" | tr -d ' ')
+    if [ "$n" = "$SPAWN_RACE_DELAY_NTH" ]; then out=$(${REAL_GIT} "$@"); sleep "$(awk "BEGIN{print $SPAWN_RACE_DELAY_MS/1000}")"; printf '%s\n' "$out"; exit 0; fi
+  fi
+  if [ -n "$SPAWN_RACE_AFTER_MARK" ] && [ -e "$SPAWN_RACE_ADD_MARK" ] && mkdir "$SPAWN_RACE_AFTER_MARK" 2>/dev/null; then
+    out=$(${REAL_GIT} "$@"); sleep "$(awk "BEGIN{print $SPAWN_RACE_DELAY_MS/1000}")"; printf '%s\n' "$out"; exit 0
+  fi
 fi
 exec ${REAL_GIT} "$@"
 `, { mode: 0o755 });
@@ -145,24 +156,43 @@ if (ARM === 'released') {
   ok = failed.ok === false && after.ok === true && after.branch === 'impl-r' && out.records === 1 && JSON.stringify(out.branchesNow) === JSON.stringify(['impl-r']);
 }
 
-if (ARM === 'stale-listing' || ARM === 'slow-listing') {
-  const nth = ARM === 'stale-listing' ? '2' : '1';
-  const name = ARM === 'stale-listing' ? 'impl-tt' : 'impl-sl';
-  process.env.SPAWN_RACE_COUNTER = path.join(tmpHome, 'listing-counter');
-  fs.writeFileSync(process.env.SPAWN_RACE_COUNTER, '');
-  process.env.SPAWN_RACE_DELAY_NTH = nth; process.env.SPAWN_RACE_DELAY_MS = '1800';
-  const results = await Promise.all([agentSpawn(name), agentSpawn(name)]);
+if (ARM === 'slow-listing') {
+  // the FIRST pick's listing is slow (it is the first `branch -v` of the process: deterministic): the second pick must WAIT for it (the lock)
+  process.env.SPAWN_RACE_COUNTER = path.join(tmpHome, 'listing-counter'); fs.writeFileSync(process.env.SPAWN_RACE_COUNTER, '');
+  process.env.SPAWN_RACE_DELAY_NTH = '1'; process.env.SPAWN_RACE_DELAY_MS = '1500';
+  const results = await Promise.all([agentSpawn('impl-sl'), agentSpawn('impl-sl')]);
   delete process.env.SPAWN_RACE_DELAY_NTH;
   const got = results.map((r) => r.branch ?? null).sort();
   const listings = fs.readFileSync(process.env.SPAWN_RACE_COUNTER, 'utf8').split('\n').filter(Boolean).length;
-  Object.assign(out, {
-    results: results.map((r) => ({ ok: r.ok, branch: r.branch ?? null, error: (r.error ?? '').slice(0, 140) || null })), got, listings,
-    allOk: results.every((r) => r.ok === true), expectedSet: JSON.stringify(got) === JSON.stringify([name, `${name}-2`]),
-  });
-  ok = out.allOk && out.expectedSet && listings >= 2; // listings >= 2: the delayed listing really happened (the instrument fired)
+  Object.assign(out, { results: results.map((r) => ({ ok: r.ok, branch: r.branch ?? null, error: (r.error ?? '').slice(0, 140) || null })), got, listings,
+    allOk: results.every((r) => r.ok === true), expectedSet: JSON.stringify(got) === JSON.stringify(['impl-sl', 'impl-sl-2']) });
+  ok = out.allOk && out.expectedSet && listings >= 2;
+}
+
+if (ARM === 'stale-listing') {
+  // A's branch CREATION is slow (marker file at its start). B starts once it has begun: B's pick listing is the first `branch -v` after the mark — it READS its
+  // refs now (A's branch does not exist yet) and ANSWERS late, after A finished and released its reservation. Only a reservation SNAPSHOT taken before the listing
+  // still holds A's name; a live read of the set (or no reservation) hands B the same name → git "already used by worktree".
+  const mark = path.join(tmpHome, 'add-mark');
+  if (process.env.SPAWN_RACE_TRACE) process.env.SPAWN_RACE_LOG = path.join(tmpHome, 'shim.log');
+  process.env.SPAWN_RACE_ADD_MARK = mark; process.env.SPAWN_RACE_ADD_DELAY_MS = '700';
+  process.env.SPAWN_RACE_AFTER_MARK = path.join(tmpHome, 'after-mark'); process.env.SPAWN_RACE_DELAY_MS = '3500';
+  const A = agentSpawn('impl-tt');
+  const t0 = Date.now();
+  while (!fs.existsSync(mark) && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 10));
+  const markSeen = fs.existsSync(mark);
+  const B = agentSpawn('impl-tt');
+  const results = await Promise.all([A, B]);
+  for (const k of ['SPAWN_RACE_ADD_MARK', 'SPAWN_RACE_AFTER_MARK']) delete process.env[k];
+  const got = results.map((r) => r.branch ?? null).sort();
+  Object.assign(out, { results: results.map((r) => ({ ok: r.ok, branch: r.branch ?? null, error: (r.error ?? '').slice(0, 140) || null })), got, markSeen,
+    delayedListingFired: fs.existsSync(path.join(tmpHome, 'after-mark')),
+    allOk: results.every((r) => r.ok === true), expectedSet: JSON.stringify(got) === JSON.stringify(['impl-tt', 'impl-tt-2']) });
+  ok = out.allOk && out.expectedSet && markSeen && out.delayedListingFired; // the last two: the instrument really produced the interleaving
 }
 
 out.ok = ok;
 console.log(JSON.stringify(out));
+if (process.env.SPAWN_RACE_TRACE) { console.error(fs.readFileSync(path.join(tmpHome, 'shim.log'), 'utf8')); }
 fs.rmSync(tmpHome, { recursive: true, force: true });
 process.exit(ok ? 0 : 1);
