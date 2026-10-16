@@ -501,8 +501,8 @@ governed by the flags of the **innermost** run of its two parties).
 - **`Workspace.formerBranch` ("ex-…", #384)** — the name before the LATEST rename.
   `renameWorkspaceBranch` spreads `formerBranchPatch(ws, before, after,
   pin.namedByParent)` (`shared/former-branch.ts`, pure) into BOTH name-changing
-  writes (scratch relabel: `before` = stored label; git rename: `before` = the LIVE
-  branch, not a drifted stored one). Recorded only on an ACTUAL change of a
+  writes (`before` = the DISPLAYED name `ws.branch` in both — what ledgers and bus messages quote; a drifted live
+  branch nobody saw is NEVER recorded, and a request equal to the displayed name is no name change). Recorded only on an ACTUAL change of a
   workspace that is parent-named before (`namedByParent`) or after (`pin.namedByParent`
   — the rename pins it) — a human-created workspace's provisional self-renames
   record nothing (D3). A later rename REPLACES it; a same-name no-op and the

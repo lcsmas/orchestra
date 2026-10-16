@@ -54,8 +54,8 @@ test('renameWorkspaceBranch: the three name-changing writes spread formerBranchP
   const body = ws.slice(start, ws.indexOf('export interface RenameResult', start));
   assert.equal((body.match(/\.\.\.formerBranchPatch\(/g) ?? []).length, 3, 'the three name-changing writes: relabel, git rename, drift adoption');
   assert.match(body, /\.\.\.formerBranchPatch\(ws, ws\.branch, liveBranch, opts\.namedByParent\)/, 'drift adoption: stored → live is a name change of the record');
-  assert.match(body, /formerBranchPatch\(ws, ws\.branch, newBranch,/, 'scratch relabel: the stored label is the previous name');
-  assert.match(body, /formerBranchPatch\(ws, liveBranch, newBranch,/, 'git rename: the LIVE branch is the previous name, not the drifted stored one');
+  assert.equal((body.match(/formerBranchPatch\(ws, ws\.branch, newBranch,/g) ?? []).length, 2, 'relabel AND git rename: the DISPLAYED (stored) name is the previous name — never a drifted live branch nobody saw');
+  assert.doesNotMatch(body, /formerBranchPatch\(ws, liveBranch, newBranch/, 'm2: the live branch is not what is recorded');
 });
 
 test('activity.detectAndUpdateBranchName: an out-of-band `git branch -m` adoption records the replaced name too (D3: every ACTUAL name change)', () => {
@@ -63,4 +63,12 @@ test('activity.detectAndUpdateBranchName: an out-of-band `git branch -m` adoptio
   const body = activity.slice(start, activity.indexOf('\n}\n', start));
   assert.match(body, /\.\.\.formerBranchPatch\(fresh, fresh\.branch, live, decision\.pin\.namedByParent\),/);
   assert.match(activity, /import \{ formerBranchPatch \} from '\.\.\/shared\/former-branch\.ts';/);
+});
+
+test('orchestra-comms skill (generated, shipped to every agent): the `peers` legend and prose name the `ex` column', () => {
+  const a = ws.indexOf('const COMMS_SKILL = `');
+  const skill = ws.slice(a, ws.indexOf('const WORKSPACE_ADMIN_SKILL', a)).replace(/\\`/g, '`');
+  assert.ok(a !== -1 && skill.length > 3_000, 'COMMS_SKILL located');
+  assert.match(skill, /orchestra peers {12}# id {2}branch {2}\[ex\] {2}repo {2}status/, 'the legend lists the optional ex column between branch and repo');
+  assert.match(skill, /`ex` column \(`ex-<old name>`\)/, 'the prose says what ex-<old name> is for');
 });

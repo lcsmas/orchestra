@@ -69,7 +69,10 @@ const out = { arm: ARM };
 if (ARM === 'table') {
   const cases = {};
   // `disk` = what store.json holds right after THIS rename (not only the returned object).
-  const record = (name, ws, extra = {}) => { cases[name] = { formerBranch: ws.formerBranch, branch: ws.branch, disk: onDisk(ws.id)?.formerBranch, ...extra }; };
+  // `bc*` = the LAST `workspace:update` payload main broadcast for this workspace (what the renderer merges): its branch proves a broadcast
+  // really happened for THIS rename, its formerBranch is what the sidebar tooltip is built from.
+  const lastBroadcast = (id) => [...broadcasts].reverse().find((b) => b.channel === 'workspace:update' && b.args?.[0]?.id === id)?.args[0];
+  const record = (name, ws, extra = {}) => { const bc = lastBroadcast(ws.id); cases[name] = { formerBranch: ws.formerBranch, branch: ws.branch, disk: onDisk(ws.id)?.formerBranch, bcBranch: bc?.branch, bcFormer: bc?.formerBranch, ...extra }; };
 
   // 1-3. parent-named: first rename, second replaces, same-name no-op leaves it
   const wtA = await mkWt('A', 'lucky-willow', { namedByParent: 'P' });
@@ -104,10 +107,14 @@ if (ARM === 'table') {
   }
   record('scratch_same', await renameWorkspaceBranch('S1', 'explo-S1', { manual: false, bumpAutoCount: false }));
 
-  // 7. drifted STORED branch: HEAD was renamed out of band — the recorded former is the LIVE name
+  // 7. drifted STORED branch: HEAD was renamed out of band (reconciler not yet visited) — the recorded former is the DISPLAYED (stored) name,
+  //    never the live name nobody saw; and a request equal to the displayed name is NO name change (no `ex-` on an unchanged name)
   const wtD = await mkWt('D', 'stored-stale', { namedByParent: 'P' });
   git(wtD, 'branch', '-m', 'stored-stale', 'really-live');
   record('drifted', await renameWorkspaceBranch('D', 'impl-d-1', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtD) });
+  const wtK = await mkWt('K', 'k-shown', { namedByParent: 'P' });
+  git(wtK, 'branch', '-m', 'k-shown', 'k-live');
+  record('drift_same_displayed', await renameWorkspaceBranch('K', 'k-shown', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtK) });
 
   // 9. drift ADOPTION write: requested name == live branch, stored name stale (an out-of-band `git branch -m` the reconciler has not
   //    visited yet) and a human pin advances the gate ⇒ the record's name changes stored→live, and that is recorded too

@@ -15,7 +15,7 @@ const REGISTER = path.join(REPO, 'scripts', '.r2-register.mjs');
 // btrfs under the real home, not /tmp; per-process so concurrent suites never share a dir.
 const E2E_HOME = path.join(os.homedir(), '.cache', `e2e-former-branch-unit-${process.pid}`);
 
-type Case = { formerBranch?: string; branch: string; disk?: string; live?: string; broadcastFormer?: string; pinned?: boolean };
+type Case = { formerBranch?: string; branch: string; disk?: string; live?: string; broadcastFormer?: string; pinned?: boolean; bcBranch?: string; bcFormer?: string };
 function runArm(arm: string): { arm: string; ok: boolean; cases?: Record<string, Case>; peers?: Record<string, { formerBranch?: string; hasKey: boolean }> } & Record<string, unknown> {
   let out = '';
   try {
@@ -68,8 +68,13 @@ test('rename-records-former table (real renameWorkspaceBranch, real worktrees)',
   assert.equal(c.scratch_named.formerBranch, 'lab-S1');
   assert.equal(c.scratch_human.formerBranch, undefined);
   assert.equal(c.scratch_same.formerBranch, 'lab-S1', 'scratch same-name no-op leaves it');
-  // the stored branch had drifted: the recorded former is the LIVE branch the rename started from
-  assert.equal(c.drifted.formerBranch, 'really-live');
+  // the stored branch had drifted: the recorded former is the DISPLAYED (stored) name — what ledgers quote — not the never-shown live one
+  assert.equal(c.drifted.live, 'impl-d-1', 'control: git really renamed live → impl-d-1');
+  assert.equal(c.drifted.formerBranch, 'stored-stale');
+  // a request equal to the displayed name while live differs: git is realigned, the DISPLAYED name never changed ⇒ nothing recorded
+  assert.equal(c.drift_same_displayed.live, 'k-shown', 'control: git really renamed k-live → k-shown');
+  assert.equal(c.drift_same_displayed.branch, 'k-shown');
+  assert.equal(c.drift_same_displayed.formerBranch, undefined, 'no "ex-k-live" on a name that never changed');
   // drift ADOPTION (requested == live, stored stale): the record's name changed stored→live and is recorded
   assert.equal(c.drift_adopt.live, 'e-live', 'control: the out-of-band rename really happened');
   assert.equal(c.drift_adopt.branch, 'e-live');
@@ -80,10 +85,19 @@ test('rename-records-former table (real renameWorkspaceBranch, real worktrees)',
   assert.equal(c.oob_named.formerBranch, 'f-old');
   assert.equal(c.oob_named.disk, 'f-old');
   assert.equal(c.oob_human.formerBranch, undefined, 'no ex- noise on a human-created workspace');
+  // m1 — the `workspace:update` payload main BROADCASTS at every recording site carries the same former name the store got (a payload
+  // without it leaves the sidebar tooltip blank until a reload). Each pairs a branch (a broadcast really happened for THIS rename) with the field.
+  for (const [k, br, fb] of [['first', 'impl-x-1', 'lucky-willow'], ['scratch_named', 'explo-S1', 'lab-S1'], ['drift_adopt', 'e-live', 'e-old'], ['oob_named', 'f-new', 'f-old'], ['drifted', 'impl-d-1', 'stored-stale']] as const) {
+    assert.equal(c[k].bcBranch, br, `${k}: control — a workspace:update for THIS rename was broadcast`);
+    assert.equal(c[k].bcFormer, fb, `${k}: the broadcast payload carries the former name`);
+  }
+  assert.equal(c.oob_human.bcBranch, 'g-new', 'control: the reconciler broadcast for the human-created ws happened');
+  assert.equal(c.oob_human.bcFormer, undefined, 'and carries no former name');
   // the real /peers payload (dispatchPeersRequest): renamed ⇒ carries the former name; never renamed ⇒ no key at all
   const p = r.peers!;
   assert.equal(p.A.formerBranch, 'impl-x-2', 'control: A was renamed three times — the payload carries the LATEST previous name');
-  assert.equal(p.D.formerBranch, 'really-live');
+  assert.equal(p.D.formerBranch, 'stored-stale', 'the drifted ws: /peers carries the DISPLAYED former name');
+  assert.equal(p.K.hasKey, false, 'a request equal to the displayed name left no former name in /peers either');
   assert.equal(p.H.hasKey, false, 'a human-created workspace has no formerBranch key in /peers');
   assert.equal(p.U.formerBranch, 'calm-otter');
   assert.equal(r.ok, true);

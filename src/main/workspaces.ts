@@ -984,7 +984,7 @@ export async function ensureWorkspacePort(id: string): Promise<Workspace | undef
  * progressively refining its own name up to {@link MAX_AUTO_RENAMES}.
  *
  * #384: an ACTUAL name change of a parent-named workspace (before: `namedByParent`; after: `opts.namedByParent`)
- * records the replaced name in `formerBranch` ("ex-…"); see `formerBranchPatch`. */
+ * records the replaced DISPLAYED name (`ws.branch`) in `formerBranch` ("ex-…"); see `formerBranchPatch`. */
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
@@ -1045,8 +1045,9 @@ export async function renameWorkspaceBranch(
     branch: newBranch,
     name: workspaceDisplayName(ws, newBranch),
     ...gateFields,
-    // #384: keep the name this rename replaces ("ex-…" in peers / sidebar) — the LIVE branch, not the drifted stored one.
-    ...formerBranchPatch(ws, liveBranch, newBranch, opts.namedByParent),
+    // #384: keep the name this rename replaces ("ex-…" in peers / sidebar) — the DISPLAYED one (`ws.branch`, what ledgers and bus
+    // messages quote), not a drifted live branch nobody ever saw; a request equal to the displayed name is no name change at all.
+    ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
@@ -3845,7 +3846,7 @@ share your conversation. On a bus (delivery-ON) run, coordination goes through
 ## 1. List the other agents
 
 \`\`\`bash
-orchestra peers            # id  branch  repo  status
+orchestra peers            # id  branch  [ex]  repo  status   (ex = ex-<former name>, only when some peer was renamed)
 orchestra peers --stats    # + each git peer's committed diff vs its base (files/+/-)
 \`\`\`
 
@@ -3855,6 +3856,9 @@ when sizing up a swarm, not on every glance. Read the numbers as a
 coordination signal: a child whose diff dwarfs its siblings' for similar-sized
 tasks usually means duplicated scaffolding, not extra productivity — review its
 diff before merging it.
+
+A renamed workspace shows its previous name in an \`ex\` column (\`ex-<old name>\`)
+— use it to find a workspace that an old ledger or message still names.
 
 ## 2. Send a peer a message
 
