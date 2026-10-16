@@ -321,7 +321,7 @@ test('MINOR-3 a keyed session whose host is down is told to retry, not to run `o
   writeMarker(rig, NEW_RUN);
   const r = await send(rig, 'retry-advice-379');
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /host did not answer/);
+  assert.match(r.stderr, /host did not answer — reopen Orchestra/);
   assert.doesNotMatch(r.stderr, /orchestra restart/);
   const keyless = await send(rig, 'keyless-advice-379', { key: null });
   assert.match(keyless.stderr, /orchestra restart/, 'a keyless session keeps today\'s advice');
