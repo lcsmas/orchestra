@@ -157,8 +157,10 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   // never the hooks socket: no /mobile/launch|repos route there, and /spawn on the hooks socket does not know the phone's origin
   assert.doesNotMatch(hooks, /\/mobile\/(launch|repos)/, 'no launch / repos route on the hooks socket');
   assert.doesNotMatch(hooks, /origin: 'human'/, 'the hooks socket never hands a human origin to the spawn path');
-  const hooksSpawn = /route === '\/spawn'\) \{[\s\S]*?defaultKind: 'spawned',[\s\S]*?\}\),/.exec(hooks)?.[0] ?? '';
-  assert.ok(hooksSpawn.includes("defaultKind: 'spawned'"), 'control: found the hooks /spawn call (an agent\'s spawn stays the spawned kind)');
+  // #382: the agent's /spawn goes through dispatchAgentSpawnRequest, which names the spawned kind (and is the only caller that sets `namedBy`)
+  const hooksSpawn = /route === '\/spawn'\) \{[\s\S]*?dispatchAgentSpawnRequest\(\{[\s\S]*?\}\),/.exec(hooks)?.[0] ?? '';
+  assert.ok(hooksSpawn.includes('dispatchAgentSpawnRequest({'), 'control: found the hooks /spawn call (an agent\'s spawn takes the agent wrapper)');
+  assert.match(read('src/main/workspaces.ts'), /dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from \}\)/, 'the wrapper keeps an agent\'s spawn the spawned kind');
   assert.doesNotMatch(hooksSpawn, /origin/, 'an agent\'s /spawn body can never carry the human origin into the spawn path');
   assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin\);/, 'the origin reaches the agent start');
   // a failed start KEEPS the child and the phone gets the bare cause + the id — also when the start THROWS after the workspace was persisted
