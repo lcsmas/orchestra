@@ -27,14 +27,14 @@ export type NamingFields = Pick<Workspace, 'branchManuallySet' | 'autoRenameCoun
 
 /** Is the rename nudge still active? #381: `!branchManuallySet && (autoRenameCount ?? 0) < MAX_AUTO_RENAMES`
  *  (today's `autoRenameActive`). #382 adds `&& !namedByParent`. The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
-export function nudgeActive(_ws: NamingFields): boolean {
-  throw new Error('naming-policy.nudgeActive: STUB — implemented by #381');
+export function nudgeActive(ws: NamingFields): boolean {
+  return !ws.branchManuallySet && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
 }
 
 /** Naming fields of a freshly created workspace: `{ branchManuallySet: false }`, plus `namedByParent: namedBy` when
  *  an agent named it at spawn (#382). `createWorkspace` spreads this — no inline `branchManuallySet: false` stays. */
-export function initialNaming(_opts?: { namedBy?: string }): Pick<Workspace, 'branchManuallySet' | 'namedByParent'> {
-  throw new Error('naming-policy.initialNaming: STUB — implemented by #381');
+export function initialNaming(opts?: { namedBy?: string }): Pick<Workspace, 'branchManuallySet' | 'namedByParent'> {
+  return { branchManuallySet: false, ...(opts?.namedBy ? { namedByParent: opts.namedBy } : {}) };
 }
 
 // ── #382 (spawn-name check) ─────────────────────────────────────────────────
@@ -67,8 +67,23 @@ export type RenameDecision = { allow: true; pin: RenamePin } | { allow: false; e
  *  #381 = today's rule: `human` → `{manual:true, bumpAutoCount:false}`; any `agent` → `{manual:false,
  *  bumpAutoCount:nudgeActive(target)}`; never refused. #383 replaces the agent arm with the human > parent > child matrix. */
 export function decideRename(
-  _target: NamingFields & { id: string; branch: string },
-  _caller: RenameCaller,
+  target: NamingFields & { id: string; branch: string },
+  caller: RenameCaller,
 ): RenameDecision {
-  throw new Error('naming-policy.decideRename: STUB — implemented by #381 (today) / #383 (matrix)');
+  if (caller.kind === 'human') return { allow: true, pin: { manual: true, bumpAutoCount: false } };
+  return { allow: true, pin: { manual: false, bumpAutoCount: nudgeActive(target) } };
+}
+
+/** The Workspace fields an allowed rename writes for `pin` (spread into the renamed record). Today: `manual` ⇒
+ *  `branchManuallySet` stays/turns true; `bumpAutoCount` ⇒ `autoRenameCount + 1`; `namedByParent` ⇒ that id (#383).
+ *  ADDED by #381 (additive, not a signature change): `renameWorkspaceBranch` and the human pin sites share it. */
+export function pinFields(
+  ws: NamingFields,
+  pin: RenamePin,
+): Partial<Pick<Workspace, 'branchManuallySet' | 'autoRenameCount' | 'namedByParent'>> {
+  return {
+    branchManuallySet: pin.manual || ws.branchManuallySet,
+    ...(pin.bumpAutoCount ? { autoRenameCount: (ws.autoRenameCount ?? 0) + 1 } : {}),
+    ...(pin.namedByParent ? { namedByParent: pin.namedByParent } : {}),
+  };
 }
