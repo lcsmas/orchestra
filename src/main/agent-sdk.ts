@@ -54,7 +54,7 @@ import { notePauseHumanTurn, pauseRefusalById } from './pause-gate.ts';
 import { isPauseRefusal, type PauseOrigin } from '../shared/bus-pause.ts';
 import { newSessionDebugLogPath, sweepSessionDebugLogs } from './session-debug-log-fs';
 import { forkBranchName } from '../shared/fork-session';
-import { transcriptToEvents, HISTORY_SEQ_BASE } from '../shared/agent-transcript';
+import { transcriptToEvents, HISTORY_SEQ_BASE, rewindCutFromTranscript } from '../shared/agent-transcript';
 import { scopeSessionsToWorktree, type SessionCandidate } from '../shared/session-discovery';
 import {
   isPluginReloadFailure,
@@ -78,7 +78,7 @@ import {
   markStoppedOnUsageLimit,
   notifyTurnStart,
 } from './activity';
-import { makeKeeperSpawn, killKeeper, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { makeKeeperSpawn, killKeeper, killKeeperIf, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
 import { clearScopedMember, memberHasScope } from './scope-stop-host';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
@@ -617,17 +617,6 @@ function cursorFor(wsId: string): NormalizeContext {
   }
   return ctx;
 }
-
-/** Pending `resumeSessionAt` cuts, keyed by workspace — set by {@link sdkRewind}
- *  and consumed by the very next {@link ensureSession}.
- *
- *  A rewind can't truncate a RUNNING session: the cut is a `query()` START
- *  option, so the flow is stop-now / restart-truncated-later. Rather than
- *  eagerly respawning a subprocess the user may not need (they might rewind and
- *  walk away), the cut is parked here and applied lazily when the next send
- *  rebuilds the session — matching how `resume` itself is lazy. Consumed
- *  read-and-delete so it can never apply twice. */
-const rewindResumeAt = new Map<string, string>();
 
 /** Broadcast one normalized event to the renderer. */
 function emit(wsId: string, event: AgentEvent): void {
@@ -1659,12 +1648,13 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   const paused = sandboxPausedMessage(ws);
   if (paused) throw new Error(paused);
 
-  // A pending rewind cut, consumed EXACTLY ONCE by the restart it was queued
-  // for (see sdkRewind). Read-and-clear before any `await` below so a second
-  // concurrent ensureSession can't apply the same truncation twice — and so a
-  // later, unrelated resume never silently re-truncates the conversation.
-  const pendingRewindAt = rewindResumeAt.get(wsId);
-  rewindResumeAt.delete(wsId);
+  // A pending rewind cut (ws.sdkRewindCut, see sdkRewind), consumed EXACTLY ONCE.
+  // A rewind can't truncate a running session — the cut is a `query()` START
+  // option — so it is parked and applied lazily by the next start. Cleared
+  // before any `await` (the store updates in memory synchronously) so a later,
+  // unrelated resume never re-truncates the conversation.
+  const pendingRewindAt = ws.sdkRewindCut || undefined;
+  if (pendingRewindAt) void persistWorkspacePatch(wsId, { sdkRewindCut: undefined });
 
   // A structured session is about to (re)start — the single funnel for every
   // SDK start, resume and wake — so this workspace is no longer hibernated.
@@ -1975,7 +1965,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // Truncate the resumed conversation to just before the message the user
       // rewound to. Set for exactly ONE restart (consumed below) — a rewind
       // tears the session down and the next send rebuilds it with this cut.
-      ...(pendingRewindAt ? { resumeSessionAt: pendingRewindAt } : {}),
+      ...(pendingRewindAt && resumeId ? { resumeSessionAt: pendingRewindAt } : {}),
       // A large cap: real turns end on their own; this only backstops runaways.
       maxTurns: 200,
     },
@@ -2205,7 +2195,7 @@ export async function sdkHistory(wsId: string): Promise<AgentEvent[]> {
   // Pass the WORKSPACE's model: it is the only place the `[1m]` long-context
   // alias survives (the transcript records the base id), and without it the
   // gauge sizes a 1M session against 200k and reports >100%.
-  const transcriptEvents = transcriptToEvents(text, ctx, ws.model);
+  const transcriptEvents = transcriptToEvents(text, ctx, ws.model, ws.sdkRewindCut);
   // #148: interleave the persisted intentional-restart rows into the transcript
   // events by `at`. The exit(-1) that drives the LIVE restart row is never
   // written to the CLI transcript, so the backfill has nothing in `text` to key
@@ -5562,20 +5552,19 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
  *
  *  `rewindId` is the {@link AgentUserMessageEvent.rewindId} of the message being
  *  UNDONE: it and everything after it leave the conversation, and the files that
- *  turn touched are restored. `prevRewindId` is the uuid of the user message
- *  BEFORE it, or undefined when rewinding the very first turn.
+ *  turn touched are restored. `prevRewindId` (the user message BEFORE it) is only
+ *  a fallback for an unreadable transcript.
  *
- *  ## Why two ids
+ *  ## Two targets
  *
- *  The two SDK primitives take DIFFERENT targets, and conflating them is an
- *  off-by-one that silently keeps or drops a whole turn:
- *    • `rewindFiles(rewindId)` — restores files to their state AT that message,
- *      i.e. before its edits. Targets the message being undone.
- *    • `resumeSessionAt(uuid)` — keeps turns 1..N **inclusive** of the targeted
- *      message (measured, not inferred: docs/spikes/rewind-sdk-findings.md).
- *      So to DROP the target we must cut at its PREDECESSOR.
- *  Rewinding the first message therefore has no cut target at all — the next
- *  send starts a fresh session (`sdkSessionId: ''`, the explicit cleared marker).
+ *    • `rewindFiles(rewindId)` — restores files to their state AT that message.
+ *    • `resumeSessionAt(cut)` — keeps the chain up to and INCLUDING `cut`, so the
+ *      cut is the entry the undone prompt was appended to (its `parentUuid`, read
+ *      off the transcript): the previous turn's LAST entry, reply included.
+ *      Cutting at the previous user PROMPT dropped that prompt's reply — the model
+ *      then saw the old prompt merged with the new one (rig: `pnpm run test:rewind`;
+ *      docs/spikes/rewind-sdk-findings.md). A null parent = the first turn: the
+ *      next send starts a fresh session (`sdkSessionId: ''`, the cleared marker).
  *
  *  ## Ordering
  *
@@ -5593,9 +5582,10 @@ export async function sdkRewind(
   rewindId: string,
   prevRewindId?: string,
 ): Promise<AgentSessionRewindEvent> {
-  const session = sessions.get(wsId);
-
-  // 1. Files FIRST, while the session (and its checkpoints) are still alive.
+  // 1. Files FIRST, on a live query (`rewindFiles` is a control request). The
+  //    checkpoints are on disk and survive a stop, so a hibernated session is
+  //    woken for it rather than skipping the restore (rig arm `rewind-cold`).
+  const session = await wakeForRewind(wsId);
   let files: RewindFilesResult | undefined;
   let filesError: string | undefined;
   if (session && !session.stopping) {
@@ -5611,7 +5601,7 @@ export async function sdkRewind(
       filesError = err instanceof Error ? err.message : String(err);
     }
   } else {
-    filesError = 'The agent session was not running, so file changes were left as they are.';
+    filesError = 'The agent session could not be started, so file changes were left as they are.';
   }
   if (filesError) {
     log.info(`agent-sdk: rewind ${wsId}: files not restored — ${filesError}`);
@@ -5621,18 +5611,22 @@ export async function sdkRewind(
   //    subprocess can't append rows to a transcript we are about to truncate.
   if (session) {
     session.cleared = true;
+    const keeperBefore = readTrackedKeeperPid(wsId);
     await sdkStop(wsId);
+    // A graceful stop leaves the CLI exiting on the keeper's own clock; the next send then
+    // attached to that dying CLI (no cut applied) and its prompt died with it. Wait it out.
+    await killKeeperIf(wsId, keeperBefore, 'rewind');
   }
 
-  // 3. Park the conversation cut for the next lazy start (see rewindResumeAt).
-  //    No predecessor ⇒ the whole conversation goes: drop the resume id so the
-  //    next send opens a brand-new session rather than resuming the full one.
-  if (prevRewindId) {
-    rewindResumeAt.set(wsId, prevRewindId);
-  } else {
-    rewindResumeAt.delete(wsId);
-    await persistWorkspacePatch(wsId, { sdkSessionId: '' }).catch(() => {});
-  }
+  // 3. Park the conversation cut for the next lazy start (ws.sdkRewindCut),
+  //    read AFTER the stop so the target's line is on disk. No parent ⇒ the
+  //    whole conversation goes: the next send opens a brand-new session.
+  //    'keep' = the turn never reached the CLI: nothing on disk to drop.
+  const cut = await rewindCut(wsId, rewindId, prevRewindId);
+  await persistWorkspacePatch(
+    wsId,
+    cut === 'keep' ? { sdkRewindCut: undefined } : cut ? { sdkRewindCut: cut } : { sdkRewindCut: undefined, sdkSessionId: '' },
+  ).catch(() => {});
 
   const event: AgentSessionRewindEvent = {
     type: 'session/rewind',
@@ -5650,6 +5644,41 @@ export async function sdkRewind(
   // same way the consume loop's exit floor does.
   reconcileExited(wsId);
   return event;
+}
+
+/** The live session, started (resumed) if it was asleep — null when it cannot be
+ *  (paused fleet, no conversation yet, start failure): the restore is then skipped. */
+async function wakeForRewind(wsId: string): Promise<Session | null> {
+  const live = sessions.get(wsId);
+  if (live && !live.stopping) return live;
+  if (!store.getWorkspace(wsId)?.sdkSessionId) return null;
+  try {
+    return await ensureSession(wsId);
+  } catch (err) {
+    log.info(`agent-sdk: rewind ${wsId}: session not woken — ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/** Where {@link sdkRewind} resumes: the undone prompt's `parentUuid` on disk;
+ *  null = first turn (fresh session); 'keep' = the prompt is not on disk. An
+ *  unreadable transcript falls back to the pre-fix cut (the previous prompt),
+ *  which still drops the undone turns but also that prompt's reply. */
+async function rewindCut(wsId: string, rewindId: string, prevRewindId?: string): Promise<string | null | 'keep'> {
+  const ws = store.getWorkspace(wsId);
+  try {
+    if (!ws?.sdkSessionId) throw new Error('no session id');
+    const text = await fs.promises.readFile(path.join(transcriptDir(ws), `${ws.sdkSessionId}.jsonl`), 'utf8');
+    const r = rewindCutFromTranscript(text, rewindId);
+    if (!r.found) {
+      log.warn(`agent-sdk: rewind ${wsId}: ${rewindId} is not in the transcript — conversation left whole`);
+      return 'keep';
+    }
+    return r.cut;
+  } catch (err) {
+    log.warn(`agent-sdk: rewind ${wsId}: transcript unreadable (${err instanceof Error ? err.message : String(err)}) — cutting at the previous prompt`);
+    return prevRewindId ?? null;
+  }
 }
 
 /** **Resume from here** (#18) — fork this workspace's conversation at a chosen
@@ -5827,11 +5856,11 @@ export async function sdkRewindPreview(
   wsId: string,
   rewindId: string,
 ): Promise<RewindFilesResult> {
-  const session = sessions.get(wsId);
+  const session = await wakeForRewind(wsId);
   if (!session || session.stopping) {
     return {
       canRewind: false,
-      error: 'The agent session is not running, so file changes cannot be restored.',
+      error: 'The agent session could not be started, so file changes cannot be restored.',
     };
   }
   try {

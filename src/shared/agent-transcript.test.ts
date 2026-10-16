@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { transcriptToEvents, HISTORY_SEQ_BASE } from './agent-transcript.ts';
+import { transcriptToEvents, HISTORY_SEQ_BASE, rewindCutFromTranscript, rewoundUuids } from './agent-transcript.ts';
 import { foldEvents, emptySession, type NormalizeContext } from './agent-events.ts';
 import type { AgentEvent } from './types.ts';
 
@@ -646,4 +646,73 @@ test('transcript: a non-1m workspace model yields NO window, so tokens render', 
   assert.equal(s.contextUsage?.totalTokens, 50000);
   assert.equal(s.contextUsage?.maxTokens, null);
   assert.equal(s.contextUsage?.percentage, null);
+});
+
+// ---- Rewind: the cut and the abandoned branch. Shapes copied from real CLI 2.1.291 transcripts (rewind rig + the
+// owner's own sessions): a prompt is followed by attachments, the reply, then trailing attachments, each line
+// parented on the previous one. `resumeSessionAt` never truncates the file; the next prompt hangs off the cut.
+const U = (uuid: string, parentUuid: string | null, content: unknown) => ({ type: 'user', uuid, parentUuid, message: { role: 'user', content } });
+const A = (uuid: string, parentUuid: string | null, text: string) => ({ type: 'assistant', uuid, parentUuid, message: { role: 'assistant', content: [{ type: 'text', text }] } });
+const AT = (uuid: string, parentUuid: string) => ({ type: 'attachment', uuid, parentUuid, attachment: { type: 'total_tokens_reminder' } });
+const TOOL = (uuid: string, parentUuid: string) => ({ type: 'assistant', uuid, parentUuid, message: { role: 'assistant', content: [{ type: 'tool_use', id: `t-${uuid}`, name: 'Bash', input: {} }] } });
+const RESULT = (uuid: string, parentUuid: string, toolUuid: string) => U(uuid, parentUuid, [{ type: 'tool_result', tool_use_id: `t-${toolUuid}`, content: 'ok' }]);
+const THREE_TURNS = [
+  U('p1', null, 'PROMPT-1'), AT('p1a', 'p1'), A('r1', 'p1a', 'REPLY-1'), AT('r1a', 'r1'),
+  U('p2', 'r1a', 'PROMPT-2'), AT('p2a', 'p2'), TOOL('t2', 'p2a'), RESULT('x2', 't2', 't2'), A('r2', 'x2', 'REPLY-2'),
+  U('p3', 'r2', 'PROMPT-3'), A('r3', 'p3', 'REPLY-3'),
+];
+const userTexts = (jsonl: string) => transcriptToEvents(jsonl, ctx()).filter((e) => e.type === 'user-message').map((e) => (e as { text: string }).text);
+const allText = (jsonl: string) => JSON.stringify(transcriptToEvents(jsonl, ctx()));
+
+test('rewind cut: undoing turn 2 resumes at the LAST entry of turn 1 (its reply kept), not at prompt 1', () => {
+  const r = rewindCutFromTranscript(lines(THREE_TURNS), 'p2');
+  assert.deepEqual(r, { found: true, cut: 'r1a' });
+  assert.notEqual((r as { cut: string }).cut, 'p1', 'cutting at the previous PROMPT drops its reply (the pre-fix bug)');
+});
+
+test('rewind cut: the first turn has no cut (fresh session); a turn absent from the file is reported, never guessed', () => {
+  assert.deepEqual(rewindCutFromTranscript(lines(THREE_TURNS), 'p1'), { found: true, cut: null });
+  assert.deepEqual(rewindCutFromTranscript(lines(THREE_TURNS), 'never-sent'), { found: false });
+  // A tool_result frame and a child line naming the id as its PARENT are not the target line.
+  assert.deepEqual(rewindCutFromTranscript(lines(THREE_TURNS), 'p2a'), { found: false });
+});
+
+test('rewind history: after the fixed cut, the undone turns are not backfilled; the kept reply is', () => {
+  const jsonl = lines([...THREE_TURNS, U('pN', 'r1a', 'PROMPT-NEW'), A('rN', 'pN', 'REPLY-NEW')]);
+  assert.deepEqual(userTexts(jsonl), ['PROMPT-1', 'PROMPT-NEW']);
+  const t = allText(jsonl);
+  assert.ok(t.includes('REPLY-1') && t.includes('REPLY-NEW'));
+  assert.ok(!t.includes('REPLY-2') && !t.includes('REPLY-3'));
+  // Control: the very same file WITHOUT the fork backfills all three turns.
+  assert.deepEqual(userTexts(lines(THREE_TURNS)), ['PROMPT-1', 'PROMPT-2', 'PROMPT-3']);
+});
+
+test('rewind history: the pre-fix cut (new prompt hung off the previous PROMPT) shows what the model kept — that prompt without its reply', () => {
+  const jsonl = lines([...THREE_TURNS, U('pN', 'p1', 'PROMPT-NEW')]);
+  assert.deepEqual(userTexts(jsonl), ['PROMPT-1', 'PROMPT-NEW']);
+  assert.ok(!allText(jsonl).includes('REPLY-1'));
+});
+
+test('rewind history: rewinding the same turn twice drops BOTH abandoned branches', () => {
+  const jsonl = lines([...THREE_TURNS, U('pN1', 'r1a', 'PROMPT-NEW-1'), A('rN1', 'pN1', 'REPLY-NEW-1'), U('pN2', 'r1a', 'PROMPT-NEW-2')]);
+  assert.deepEqual(userTexts(jsonl), ['PROMPT-1', 'PROMPT-NEW-2']);
+});
+
+test('rewind history: forks that are NOT rewinds are left alone (resume after a kill mid-tool; parallel tool results)', () => {
+  // Measured in a real session: a CLI killed during a Bash call leaves a dangling tool_use; the resumed prompt hangs
+  // off the assistant BEFORE it. Not a rewind signature (neither the parent nor its first child is a typed prompt).
+  const killed = [U('p1', null, 'PROMPT-1'), A('a1', 'p1', 'Starting the rig.'), TOOL('t1', 'a1'), U('p2', 'a1', 'PROMPT-AFTER-KILL'), A('r2', 'p2', 'REPLY-2')];
+  assert.equal(rewoundUuids(killed as never).size, 0);
+  assert.deepEqual(userTexts(lines(killed)), ['PROMPT-1', 'PROMPT-AFTER-KILL']);
+  // Parallel tool calls: the attachment and the tool_result share a parent (5406 such pairs in 400 real files).
+  const parallel = [U('p1', null, 'PROMPT-1'), TOOL('t1', 'p1'), AT('at', 't1'), RESULT('x1', 't1', 't1'), A('r1', 'x1', 'REPLY-1'), U('p2', 'r1', 'PROMPT-2')];
+  assert.equal(rewoundUuids(parallel as never).size, 0);
+});
+
+test('rewind history: a cut parked but not yet applied (no send since the rewind) already hides the undone turns', () => {
+  const jsonl = lines(THREE_TURNS);
+  assert.deepEqual(transcriptToEvents(jsonl, ctx(), null, 'r1a').filter((e) => e.type === 'user-message').map((e) => (e as { text: string }).text), ['PROMPT-1']);
+  assert.ok(JSON.stringify(transcriptToEvents(jsonl, ctx(), null, 'r1a')).includes('REPLY-1'));
+  // A cut the (tail-windowed) text does not contain hides nothing rather than everything.
+  assert.deepEqual(transcriptToEvents(jsonl, ctx(), null, 'not-in-window').filter((e) => e.type === 'user-message').length, 3);
 });

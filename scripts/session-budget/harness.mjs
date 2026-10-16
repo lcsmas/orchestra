@@ -152,6 +152,11 @@ export function runSessionArm(o) {
   return runContained(o, 'session-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, profile: o.profile ?? {}, secondTurn: o.secondTurn ?? null }, '{"report"');
 }
 
+/** The rewind rig (`rewind.mjs`): Orchestra's real sdkSend → sdkRewind → sdkSend → sdkHistory under the same containment. */
+export function runRewindArm(o) {
+  return runContained(o, 'rewind-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, exitDelayMs: o.exitDelayMs ?? 0, cold: o.cold === true }, '{"rewind"');
+}
+
 /**
  * Host-dependent self-tests of the instruments themselves, run under the SAME containment as the arms (so they
  * cannot live in `pnpm run test`, which must not depend on bwrap or a real `claude`). Modes: `census` (the

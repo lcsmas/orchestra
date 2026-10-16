@@ -95,7 +95,7 @@ function readBody(req) {
   });
 }
 
-function summarizeModelBody(buf, markers = {}, keepAttachmentData = false) {
+function summarizeModelBody(buf, markers = {}, keepAttachmentData = false, keepMessages = false) {
   try {
     const text = buf.toString('utf8');
     const b = JSON.parse(text);
@@ -116,6 +116,8 @@ function summarizeModelBody(buf, markers = {}, keepAttachmentData = false) {
       attachments: (Array.isArray(b.messages) ? b.messages : []).flatMap((m) => (Array.isArray(m?.content) ? m.content : []))
         .filter((c) => c && (c.type === 'image' || c.type === 'document') && c.source?.type === 'base64')
         .map((c) => ({ type: c.type, media_type: c.source.media_type, bytes: String(c.source.data ?? '').length, ...(keepAttachmentData ? { data: c.source.data } : {}) })),
+      // The whole conversation as the model received it (rewind rig: what a truncating resume really kept).
+      ...(keepMessages ? { messages: Array.isArray(b.messages) ? b.messages : [] } : {}),
     };
   } catch {
     return { model: null, unparsable: true };
@@ -126,6 +128,7 @@ function summarizeModelBody(buf, markers = {}, keepAttachmentData = false) {
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
  * @param {(req: object) => ({text?: string, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
+ * @param {boolean} [opts.keepMessages]  keep each model request's full `messages` array on its record (`messages` then replaces the count)
  * @param {boolean} [opts.keepAttachmentData]  keep the base64 of image/document blocks in each request record (default: sizes only)
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
  * @param {number} [opts.proxyPort]  fixed port for the egress proxy (default: any free port) — needed when a process must be
@@ -158,7 +161,7 @@ export async function startFakeApi(opts = {}) {
       ua: String(req.headers['user-agent'] ?? '').slice(0, 60),
       beta: String(req.headers['anthropic-beta'] ?? ''),
     };
-    if (type === 'model' || type === 'count_tokens') Object.assign(rec, summarizeModelBody(body, opts.markers, opts.keepAttachmentData === true));
+    if (type === 'model' || type === 'count_tokens') Object.assign(rec, summarizeModelBody(body, opts.markers, opts.keepAttachmentData === true, opts.keepMessages === true));
     requests.push(rec);
     try { opts.onRequest?.(rec); } catch { /* observer errors never break the fake */ }
 

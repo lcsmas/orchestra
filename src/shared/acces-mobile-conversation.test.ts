@@ -65,6 +65,7 @@ test('only the last MAX_PHONE_LINES lines travel, and the cut is counted', () =>
   const many = Array.from({ length: MAX_PHONE_LINES + 30 }, (_, i) => {
     const d = JSON.parse(one);
     d.uuid = `u-${i}`;
+    d.parentUuid = i ? `u-${i - 1}` : null; // chained like a real transcript (siblings of one parent = a rewind fork)
     d.message.content = `message ${i}`;
     return JSON.stringify(d);
   }).join('\n');

@@ -34,6 +34,36 @@ export const MUTANTS = {
     find: /(        releaseTurnGate\(session\);\n)(?=        \/\/ #317)/g,
     replace: '$1        void session.q.getContextUsage().catch(() => {});\n',
   },
+  // Rewind rig (rewind.mjs): the pre-fix cut — resume at the PREVIOUS USER PROMPT, which drops that prompt's reply.
+  'rewind-cut-at-prev-prompt': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(    return )r\.cut;\n/g,
+    replace: '$1prevRewindId ?? null;\n',
+  },
+  // Rewind rig: a parked cut ignored by the backfill — a pane reopened before the next send shows the undone turns.
+  'rewind-history-ignores-pending-cut': {
+    file: '/src/shared/agent-transcript.ts',
+    find: /  if \(cutAt >= 0\) entries\.length = cutAt \+ 1;\n/g,
+    replace: '',
+  },
+  // Rewind rig: the pre-fix files path — a hibernated session is not woken, so nothing is restored.
+  'rewind-no-wake': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(async function wakeForRewind\([^)]*\)[^{]*\{\n)/g,
+    replace: '$1  if (!globalThis.__never) { const l = sessions.get(wsId); return l && !l.stopping ? l : null; }\n',
+  },
+  // Rewind rig: the pre-fix teardown — no wait for the gracefully-stopped CLI, so the next send can attach to it.
+  'rewind-no-keeper-wait': {
+    file: '/src/main/agent-sdk.ts',
+    find: /    await killKeeperIf\(wsId, keeperBefore, 'rewind'\);\n/g,
+    replace: '',
+  },
+  // Rewind rig: the pre-fix backfill — every line of the transcript, the branch a rewind abandoned included.
+  'rewind-history-keeps-dead-branch': {
+    file: '/src/shared/agent-transcript.ts',
+    find: /const rewound = rewoundUuids\(entries\);/g,
+    replace: 'const rewound = new Set<string>();',
+  },
   // #317 matrix: every network-capable control request, fired at the same turn-end spot — which ones hold the next prompt?
   ...Object.fromEntries([
     ['turn-end-supported-models', 'supportedModels()'],

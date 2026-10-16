@@ -75,16 +75,31 @@ also force `display: block !important`, since `.av-view:not(.active)` is
   the SDK's `sessionStore` option (Orchestra uses none).
 - **`query.rewindFiles(userMessageId, {dryRun})`** restores the files. It is a
   CONTROL REQUEST, so it needs the transport OPEN — `sdkRewind` therefore runs it
-  on the LIVE query FIRST and only then sets `session.cleared` + `sdkStop`
+  on a LIVE query FIRST and only then sets `session.cleared` + `sdkStop`
   (calling it after teardown throws `ProcessTransport is not ready for writing`).
-  The `dryRun` backs the confirmation popover's "Restores N files (+x/−y)" line.
-- **`options.resumeSessionAt: <uuid>`** truncates the resumed conversation. It
-  keeps turns **1..N inclusive** of its target (measured, not inferred), so
-  undoing message N means cutting at **N−1** — `previousRewindId`
-  (`rewind-util.ts`, unit-tested + mutation-tested) owns that off-by-one. No
-  predecessor ⇒ the first turn is being undone ⇒ `sdkSessionId: ''` and the next
-  send opens a fresh session. The cut is parked in `rewindResumeAt` and consumed
-  read-and-delete by the next `ensureSession`, so it can never apply twice.
+  The checkpoints live on disk and survive a stop, so a hibernated session is
+  WOKEN for it (`wakeForRewind`, preview and confirm alike) instead of skipping
+  the restore. The `dryRun` backs the popover's "Restores N files (+x/−y)" line.
+- **`options.resumeSessionAt: <uuid>`** keeps the chain up to and INCLUDING that
+  entry. The cut is therefore the undone prompt's **`parentUuid`** read off the
+  transcript (`rewindCutFromTranscript`) — the previous turn's LAST entry, reply
+  included. The old cut at the previous user PROMPT dropped that prompt's reply:
+  the model got the old prompt merged with the new one (15/15 real rewinds,
+  2026-10-15). Null parent ⇒ first turn ⇒ `sdkSessionId: ''`, fresh session.
+  The cut is persisted as **`ws.sdkRewindCut`** (survives a restart) and consumed
+  once by the next `ensureSession`, only when it actually resumes.
+- **The file is never truncated**: the next prompt forks off the cut, leaving
+  the undone turns as a dead branch. The backfill hides it
+  (`rewoundUuids`: a typed prompt whose parent — or that parent's first child —
+  is a typed prompt; parallel tool results and post-kill resumes are left alone),
+  and hides everything after a still-parked `sdkRewindCut`.
+- **Teardown waits for the old CLI** (`killKeeperIf` after `sdkStop`): a graceful
+  stop exits on the keeper's clock, and a send right after attached to that
+  dying, uncut CLI and lost its prompt (~5% at immediate send).
+- **Rig: `pnpm run test:rewind`** (`scripts/session-budget/rewind.mjs`, real
+  keeper + CLI vs the fake API): clauses `context` (what the model received),
+  `files`, `history`, `handoff` (keeper log), arms hot / slow-exit / cold, and a
+  must-FAIL mutant per fix; `--race N` measures the lost-prompt rate.
 
 **The rewind target is a uuid Orchestra MINTS ITSELF.** `SDKUserMessage.uuid` is
 an optional *input* the CLI persists verbatim to the transcript, so `sdkSend`

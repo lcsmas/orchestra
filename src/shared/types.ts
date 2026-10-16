@@ -175,6 +175,11 @@ export interface Workspace {
    *  RESUMES the prior conversation (query({ resume }) — the agent keeps its
    *  memory) instead of starting a blank session. */
   sdkSessionId?: string;
+  /** A rewind's pending `resumeSessionAt` cut (sdkRewind): the transcript entry the
+   *  next resume keeps up to. Persisted so an app restart neither loses it nor
+   *  backfills the undone turns (sdkHistory hides what follows it); consumed by
+   *  the next session start. */
+  sdkRewindCut?: string;
   /** Prompts SENT to the structured session whose turn has not completed yet
    *  (appended by sdkSend, cleared at turn-end). Insurance against the
    *  quit-right-after-send wedge: if the app quits before the CLI actually

@@ -111,7 +111,7 @@ function onTap(channel: string, args: unknown[]): void {
     const before = e.session.messages.length;
     e.session = foldEvent(e.session, event);
     if (e.session.messages.length < before) {
-      // A rewind: the transcript is NOT truncated then (sdkRewind only parks a resume cut), so a read would bring the removed turns back — the
+      // A rewind: the transcript is NOT truncated (sdkHistory hides the undone turns via ws.sdkRewindCut / the fork) — the
       // live fold is final: never suspect, never re-read (a /clear is harmless here: sdkClear drops the session id, so reads return []).
       e.suspect = false;
       e.reloadPending = false;

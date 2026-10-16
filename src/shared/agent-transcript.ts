@@ -87,6 +87,10 @@ interface TranscriptEnvelope {
    *  is camelCase (`uuid`, `parentUuid`, `sessionId`) where the live wire shape
    *  is snake_case (`session_id`) — two different serializations. */
   uuid?: string;
+  /** The chain entry this line was appended to. A rewind resumes at an earlier
+   *  entry, so the abandoned turns stay in the file as a dead branch — see
+   *  {@link rewoundUuids}. */
+  parentUuid?: string | null;
   /** ISO-8601 wall-clock time the line was written — the REAL historical time
    *  of the message. Recovered so backfilled bubbles/turn dividers show when
    *  the conversation actually happened, not when the workspace was reopened. */
@@ -138,6 +142,75 @@ interface TranscriptBlock {
   source?: { type?: string; media_type?: string; data?: string };
 }
 
+/** A prompt the human (or a peer) typed: a non-synthetic `user` line whose
+ *  content is text/images, never a tool_result frame. */
+function isTypedPrompt(e: TranscriptEnvelope): boolean {
+  if (e.type !== 'user' || e.isMeta === true || e.isCompactSummary === true) return false;
+  const c = e.message?.content;
+  if (typeof c === 'string') return c.trim() !== '';
+  return Array.isArray(c) && c.length > 0 && !c.some((b) => (b as TranscriptBlock)?.type === 'tool_result');
+}
+
+/** Uuids of the turns a REWIND abandoned. `resumeSessionAt` never truncates the
+ *  file: the next prompt is appended to an earlier chain entry X, and the turns
+ *  previously hanging off X stay on disk as a dead branch the model no longer
+ *  sees. Only the rewind signature counts — X is a typed prompt (the pre-fix cut)
+ *  or X's first child is (the fixed cut, `rewindCutFromTranscript`); other forks
+ *  (parallel tool results, a resume after a kill mid-tool) are left alone. */
+export function rewoundUuids(entries: readonly TranscriptEnvelope[]): Set<string> {
+  const byId = new Map<string, TranscriptEnvelope>();
+  const children = new Map<string, TranscriptEnvelope[]>();
+  const dead = new Set<string>();
+  for (const e of entries) {
+    if (e.isSidechain === true || typeof e.uuid !== 'string' || !e.uuid) continue;
+    const p = typeof e.parentUuid === 'string' && e.parentUuid ? e.parentUuid : null;
+    if (p && isTypedPrompt(e)) {
+      const earlier = children.get(p) ?? [];
+      const x = byId.get(p);
+      if (earlier.length > 0 && ((x && isTypedPrompt(x)) || isTypedPrompt(earlier[0]))) {
+        const stack = [...earlier];
+        while (stack.length) {
+          const k = stack.pop()!;
+          if (dead.has(k.uuid!)) continue;
+          dead.add(k.uuid!);
+          stack.push(...(children.get(k.uuid!) ?? []));
+        }
+      }
+    }
+    byId.set(e.uuid, e);
+    if (p) {
+      const list = children.get(p);
+      if (list) list.push(e);
+      else children.set(p, [e]);
+    }
+  }
+  return dead;
+}
+
+/** The `resumeSessionAt` cut that UNDOES user turn `rewindId`: the chain entry
+ *  its prompt was appended to, i.e. the LAST entry of the kept history, reply
+ *  included. Cutting at the previous user PROMPT instead keeps that prompt but
+ *  drops its reply (measured: the model then gets the old prompt merged with the
+ *  new one). `cut: null` = the first turn (nothing to keep); `found: false` = the
+ *  turn never reached the CLI's transcript. */
+export function rewindCutFromTranscript(
+  jsonl: string,
+  rewindId: string,
+): { found: false } | { found: true; cut: string | null } {
+  for (const raw of jsonl.split('\n')) {
+    if (!raw.includes(rewindId)) continue;
+    let e: TranscriptEnvelope;
+    try {
+      e = JSON.parse(raw) as TranscriptEnvelope;
+    } catch {
+      continue;
+    }
+    if (e?.uuid !== rewindId || e.type !== 'user' || e.isSidechain === true) continue;
+    return { found: true, cut: typeof e.parentUuid === 'string' && e.parentUuid ? e.parentUuid : null };
+  }
+  return { found: false };
+}
+
 /** Convert raw transcript JSONL text into an ordered AgentEvent list. Unparsable
  *  or irrelevant lines are skipped, never thrown on. Returns `[]` for a
  *  transcript with no renderable content. */
@@ -157,6 +230,9 @@ export function transcriptToEvents(
    *  worse than none. The transcript's own model id is the fallback when the
    *  caller has none. */
   workspaceModel?: string | null,
+  /** A rewind's parked cut (`ws.sdkRewindCut`): until the next start applies it,
+   *  the file still holds the undone turns AFTER this entry — hide them. */
+  pendingRewindCut?: string,
 ): AgentEvent[] {
   const out: AgentEvent[] = [];
   let blockIndex = HISTORY_INDEX_BASE;
@@ -227,18 +303,26 @@ export function transcriptToEvents(
     return true;
   };
 
+  const entries: TranscriptEnvelope[] = [];
   for (const raw of jsonl.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
-    let entry: TranscriptEnvelope;
     try {
-      entry = JSON.parse(line) as TranscriptEnvelope;
+      const e = JSON.parse(line) as TranscriptEnvelope;
+      if (e && typeof e === 'object') entries.push(e);
     } catch {
-      continue;
+      /* unparsable line: skipped */
     }
-    if (!entry || typeof entry !== 'object') continue;
+  }
+  // Turns a rewind abandoned are still on disk; the model no longer sees them, so neither does the pane.
+  const rewound = rewoundUuids(entries);
+  const cutAt = pendingRewindCut ? entries.findIndex((e) => e.uuid === pendingRewindCut) : -1;
+  if (cutAt >= 0) entries.length = cutAt + 1;
+
+  for (const entry of entries) {
     // Task-subagent lines share the file; only the main chain is our transcript.
     if (entry.isSidechain === true) continue;
+    if (typeof entry.uuid === 'string' && rewound.has(entry.uuid)) continue;
     if (typeof entry.timestamp === 'string') {
       const t = Date.parse(entry.timestamp);
       if (!Number.isNaN(t)) lineAt = t;

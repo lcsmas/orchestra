@@ -54,7 +54,15 @@ file after rewind: "ORIGINAL\n"
 **Mutation control**: a bogus uuid throws `Error: No file checkpoint found for
 this message.` — so the pass is discriminating, not vacuous.
 
-## Fact 3 — `resumeSessionAt` truncation is INCLUSIVE of the target turn
+## Fact 3 — SUPERSEDED 2026-10-15: `resumeSessionAt` keeps the chain up to the target ENTRY, not its turn
+
+Measured on CLI 2.1.291 by recording the request the model received (rig
+`pnpm run test:rewind`, no LLM judgement): `resumeSessionAt: <user uuid N>` keeps
+prompt N but NOT its reply — the next prompt is merged into it. The probe below
+was confounded: the model "recalled" BETA from the BETA prompt itself. Cut at the
+undone prompt's `parentUuid` instead (see `sdkRewind`). Original text kept below.
+
+## (superseded) Fact 3 — `resumeSessionAt` truncation is INCLUSIVE of the target turn
 
 This is the fact the API docs get wrong for our use: the `resumeSessionAt`
 docstring says "The message ID should be from `SDKAssistantMessage.uuid`", but a
@@ -131,3 +139,5 @@ removed that turn from the model's context — both halves, one operation.
   `query()` (which adds `settingSources`, hooks, MCP servers, `canUseTool`).
 - `skippedLinks` semantics (symlink/hard-link refusals) were never triggered.
 - Behavior after a compact boundary, and whether checkpoints survive it.
+- (2026-10-15) Checkpoints DO survive a session stop: `rewindFiles` on a resumed,
+  turn-less session restored the file (measured) — hence `wakeForRewind`.

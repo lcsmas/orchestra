@@ -22,18 +22,11 @@ export function describeRewindPreview(p: AgentRewindPreview | null): string {
 }
 
 /**
- * The rewind target's PREDECESSOR — the id the session must be truncated at.
- *
- * The two SDK primitives take different targets and conflating them is an
- * off-by-one that silently keeps or drops a whole turn:
- *   • `rewindFiles(rewindId)` restores files as of the message being undone;
- *   • `resumeSessionAt(uuid)` keeps turns 1..N **inclusive** of its target, so
- *     dropping message N means cutting at N−1 (measured — see
- *     docs/spikes/rewind-sdk-findings.md).
- *
- * Returns `undefined` when the target is the FIRST rewindable turn: there is
- * nothing to keep, so the caller starts a fresh session instead of resuming.
- * Also `undefined` when the id isn't in the transcript (nothing to do).
+ * The rewind target's PREDECESSOR prompt. Only a FALLBACK for main's cut: main
+ * resumes at the undone prompt's `parentUuid` read off the transcript (the
+ * previous turn's last entry); cutting at this prompt instead drops its reply
+ * (see sdkRewind, docs/spikes/rewind-sdk-findings.md). `undefined` for the first
+ * rewindable turn or an unknown id.
  */
 export function previousRewindId(
   messages: readonly RenderMessage[],
