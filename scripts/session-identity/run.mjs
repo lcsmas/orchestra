@@ -1,5 +1,5 @@
 // Session-identity rig driver (#379 / ADR 0008) — see README.md.
-//   node scripts/session-identity/run.mjs [--arm same_turn|superseded|app_closed|attach_keeps_key|all] [--repo <tree>]
+//   node scripts/session-identity/run.mjs [--arm same_turn|superseded|app_closed|attach_keeps_key|restart_window|all] [--repo <tree>]
 //                                         [--proof | --mutant <name>] [--keep] [--verbose] [--selftest]
 // Per arm: clause lines `  PASS|FAIL <id>` then `SESSION-IDENTITY <arm>: PASS|FAIL`; last line `SESSION-IDENTITY: PASS|FAIL`.
 // `--proof` adds the must-FAIL mutant runs (mutants.mjs): each must red EXACTLY its named clauses.

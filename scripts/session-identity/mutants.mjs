@@ -14,6 +14,8 @@ export const MUTANTS = {
   'attach-reregisters': { file: '/src/main/keeper-client.ts', find: /(              attachedTurnInFlight = ack\.turnInFlight === true;\n)/g, replace: '$1              beforeFreshSpawn?.();\n' },
   // Promote no longer writes the fallback's marker file: with the host down the CLI trusts its baked (old) run and the send lands in it.
   'no-marker-file': { file: '/src/main/workspaces.ts', find: /        await writeStaleRunMarkerFile\(ws, newAnchorId\);\n        hostResolved\.push\(ws\.id\);\n/g, replace: '        hostResolved.push(ws.id);\n' },
+  // MAJOR-1 of the review: the coordinator bump no longer revokes the replaced key — until the successor spawns, /identity hands the zombie the NEW generation.
+  'no-revoke-at-bump': { file: '/src/main/workspaces.ts', find: /    forgetSessionKey\(ws\.id\); \/\/ #379: the replaced coordinator's key[^\n]*\n/g, replace: '' },
   // The host logs the key it registers: the secret reaches the app log file (at rest).
   'key-logged': { file: '/src/main/session-identity-host.ts', find: /  slog\.info\(`session key registered for \$\{wsId\}`\);/g, replace: '  slog.info(`session key registered for ${wsId} ${key}`);' },
   // The host prints the key it registers: the secret reaches the process's stdout (not a file).
@@ -27,6 +29,7 @@ export const EXPECT = {
   'verify-accepts-any-key': { arm: 'superseded', red: ['h1_host_refuses_old_key', 'r1_old_send_refused', 'r2_old_check_refused', 'r3_old_send_wrote_no_row'] },
   'attach-reregisters': { arm: 'attach_keeps_key', red: ['b1_registry_unchanged_by_attach', 'b2_live_cli_still_holds_k1', 'c1_host_accepts_k1_after_attach', 'c3_hand_cli_k1_resolved_by_host', 'c4_reattached_session_send_lands'] },
   'no-marker-file': { arm: 'app_closed', red: ['p2_marker_names_new_run', 's1_send_refused_by_marker', 's2_refused_send_wrote_no_row'] },
+  'no-revoke-at-bump': { arm: 'restart_window', red: ['b3_key_revoked_at_bump', 'h1_host_cannot_vouch_in_window', 'z1_zombie_send_fenced', 'z2_zombie_wrote_no_row'] },
   'key-logged': { arm: 'same_turn', red: ['e2_key_not_at_rest'] },
   'key-printed': { arm: 'same_turn', red: ['e3_key_not_in_output'] },
 };

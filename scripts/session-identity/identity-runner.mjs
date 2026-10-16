@@ -101,6 +101,10 @@ const PLANS = {
     { marker: 'PROMPT-SUP-1', final: 'REPLY-SUP-1', steps: [] },
     { marker: 'PROMPT-SUP-2', final: 'REPLY-SUP-2', steps: [bash('toolu_sup_send', `orchestra send --type status --to ${LEAD} "new-session-379"`)] },
   ],
+  restart_window: [
+    { marker: 'PROMPT-RW-1', final: 'REPLY-RW-1', steps: [] },
+    { marker: 'PROMPT-RW-2', final: 'REPLY-RW-2', steps: [bash('toolu_rw_send', `orchestra send --type status --to ${LEAD} "successor-379"`)] },
+  ],
   attach_keeps_key: [
     { marker: 'PROMPT-ATT-1', final: 'REPLY-ATT-1', steps: [] },
     { marker: 'PROMPT-ATT-2', final: 'REPLY-ATT-2', steps: [bash('toolu_att_send', `orchestra send --type status --to ${LEAD} "attach-379"`)] },
@@ -343,7 +347,14 @@ if (!resuming) {
   g(['init', '-q', '-b', 'main']); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
   const now = Date.now();
   await store.upsertWorkspace({ id: LEAD, name: 'orchestrator · si lead', branch: 'si-lead', kind: 'orchestrator', repoPath: '', worktreePath: leadDir, status: 'idle', createdAt: now, hasInput: true });
-  await store.upsertWorkspace({ id: MEMBER, name: 'scratch · si member', branch: 'si-member', kind: 'scratch', repoPath: '', worktreePath: repoDir, parentId: LEAD, status: 'idle', createdAt: now, hasInput: true });
+  // restart_window: the member IS a coordinator (its own orchestrator anchor) whose run has `fencing` ON and was already replaced once (generation 1),
+  // so a session spawned now bakes generation 1 — what a 2nd replacement's zombie carries (master only fences from the 2nd replacement on).
+  const coordinator = arm === 'restart_window';
+  await store.upsertWorkspace({ id: MEMBER, name: coordinator ? 'orchestrator · si member' : 'scratch · si member', branch: 'si-member', kind: coordinator ? 'orchestrator' : 'scratch', repoPath: '', worktreePath: repoDir, parentId: LEAD, status: 'idle', createdAt: now, hasInput: true });
+  if (coordinator) {
+    busRuns.startRun(busRef.getBus(), { id: MEMBER, kind: 'vague', coordinator: MEMBER, parentRunId: LEAD }, { ...DEFAULT_BUS_SWITCHES, fencing: true });
+    busRef.bumpCoordinatorGeneration(busRef.getBus(), MEMBER);
+  }
 }
 await hooks.startHooksServer();
 facts.sock = hooks.getHookSocketPath();
@@ -457,6 +468,38 @@ try {
     // CONTROL (proves the hand rig reaches the live host): the NEW key with a deliberately WRONG env run must read the host's run, not the env's.
     facts.handNew = { check: await handCli(['check'], { ORCHESTRA_RUN_ID: 'ws-si-bogus-env-run', ORCHESTRA_WS_ID: MEMBER, [KEY_ENV]: facts.keyHolder }) };
     facts.leakExtra = { oldKeyInRegistry: fs.existsSync(REGISTRY) && fs.readFileSync(REGISTRY, 'utf8').includes(oldKey) };
+  } else if (arm === 'restart_window') {
+    await turn('PROMPT-RW-1 first session.');
+    const s1 = snapNow();
+    const cli1 = firstCli(s1);
+    const k1 = keyFacts(MEMBER, cli1?.pid);
+    facts.old = { ...k1.facts, cli: cli1 };
+    const oldKey = k1.key;
+    const gen = () => busRef.coordinatorGeneration(busRef.getBus(), MEMBER);
+    const pr = (r) => ({ ok: r.ok === true, code: r.code ?? null, runId: r.runId ?? null, transportError: r.transportError ?? null });
+    facts.genBefore = gen();
+    // `orchestra restart --fresh` — the production path (sdkRestart): bump the generation, stop the session, start NOTHING until the next send.
+    let restartErr = null;
+    for (let i = 0; i < 8; i++) {
+      try { await sdk.sdkRestart(MEMBER, { fresh: true }); restartErr = null; break; } catch (e) { restartErr = String(e?.message ?? e); await sleep(500); }
+    }
+    if (restartErr) throw new Error(`sdkRestart(fresh): ${restartErr}`);
+    facts.genAfterRestart = gen();
+    for (let i = 0; i < 60 && snapNow().procs.cli.length > 0; i++) await sleep(100); // the old CLI is dying: wait for it, never for a successor
+    facts.midCliCount = snapNow().procs.cli.length;
+    facts.registryEntryAfterBump = (() => { try { return Object.hasOwn(JSON.parse(fs.readFileSync(REGISTRY, 'utf8')).sessions ?? {}, MEMBER); } catch { return false; } })();
+    // INSIDE the window (the bump happened, the successor has not spawned): the replaced session's key — what a slow-to-die tool child still holds.
+    facts.hostOldWindow = pr(await hostPost(facts.sock, '/identity', { id: MEMBER, key: oldKey }));
+    const before = rowsLike('zombie-window-379').length;
+    const zSend = await handCli(['send', '--type', 'status', '--to', LEAD, 'zombie-window-379'], { ORCHESTRA_RUN_ID: k1.facts.envRunId, ORCHESTRA_WS_ID: k1.facts.envWsId, ORCHESTRA_COORDINATOR_GENERATION: k1.facts.envGeneration, [KEY_ENV]: oldKey });
+    facts.handOld = { send: zSend, rowsBefore: before, rowsAfter: rowsLike('zombie-window-379').length };
+    await turn('PROMPT-RW-2 successor sends.');
+    collectCommon('successor-379');
+    facts.new = { ...facts.env };
+    facts.distinctKeys = !!oldKey && !!facts.keyHolder && oldKey !== facts.keyHolder;
+    facts.registryHoldsOldHash = facts.new.registryHash === sha256(oldKey);
+    facts.registryHoldsNewHash = facts.new.registryHash === facts.new.keySha;
+    facts.hostOldAfter = pr(await hostPost(facts.sock, '/identity', { id: MEMBER, key: oldKey }));
   } else if (arm === 'attach_keeps_key' && phase === 'attach1') {
     await turn('PROMPT-ATT-1 first app instance.');
     const s1 = snapNow();

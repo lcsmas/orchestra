@@ -3,7 +3,7 @@
 // names the README and the must-FAIL runs refer to. A clause reads ONLY the facts it names, so a master failure is attributable.
 // `selftest.mjs` proves every clause can fail (a mutated copy of a known-good facts object reds exactly that clause).
 
-export const ARMS = ['same_turn', 'superseded', 'app_closed', 'attach_keeps_key'];
+export const ARMS = ['same_turn', 'superseded', 'app_closed', 'attach_keeps_key', 'restart_window'];
 
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const sameId = (a, b) => !!a && !!b && a.pid === b.pid && a.start === b.start;
@@ -87,6 +87,25 @@ function supersededArm(f) {
   ];
 }
 
+/** MAJOR-1 of the #379 review: a coordinator's `restart --fresh` bumps the generation and starts NO session; the replaced session's key must stop vouching AT the bump. */
+function restartWindowArm(f) {
+  const o = f.old ?? {};
+  const w = f.handOld ?? {};
+  return [
+    clause('a1_zombie_env_is_stale', o.keyLen === 64 && o.hashMatches === true && o.envRunId === f.memberId && o.envGeneration === '1',
+      `the first session's env: key length ${o.keyLen} (registry match ${o.hashMatches}), run ${o.envRunId} (want ${f.memberId}), generation ${o.envGeneration} (want '1' — baked after one earlier replacement)`),
+    clause('b1_generation_bumped', f.genBefore === 1 && f.genAfterRestart === 2, `coordinator generation ${f.genBefore} → ${f.genAfterRestart} (want 1 → 2: the production sdkRestart bump)`),
+    clause('b2_window_is_open', f.midCliCount === 0, `${f.midCliCount} CLI process(es) after the --fresh restart — the successor must not exist yet (the window the zombie lives in)`),
+    clause('b3_key_revoked_at_bump', f.registryEntryAfterBump === false, `session-keys.json still holds an entry for the member after the bump (the replaced key still vouches)`),
+    clause('h1_host_cannot_vouch_in_window', f.hostOldWindow?.ok === false && f.hostOldWindow?.code === 'unregistered', `host /identity for the replaced key inside the window: ${JSON.stringify(f.hostOldWindow)} (want unregistered — never the new generation)`),
+    clause('z1_zombie_send_fenced', w.send?.rc === 1 && /stale coordinator generation/i.test(w.send?.stderr ?? ''), `hand-run send with the replaced session's env (key, generation 1) inside the window: ${JSON.stringify(w.send)} (want rc 1 + 'stale coordinator generation')`),
+    clause('z2_zombie_wrote_no_row', w.rowsBefore === 0 && w.rowsAfter === 0, `rows for 'zombie-window-379': ${w.rowsBefore} → ${w.rowsAfter}`),
+    clause('n1_successor_send_lands', rcOk(tr(f, 'toolu_rw_send')) && (f.rows ?? []).length === 1 && f.rows[0].run_id === f.memberId, `successor's own send: ${JSON.stringify(tr(f, 'toolu_rw_send'))}, rows ${JSON.stringify(f.rows)} (want one in the member's own run ${f.memberId})`),
+    clause('n2_successor_key_registered', f.distinctKeys === true && f.registryHoldsNewHash === true && f.registryHoldsOldHash === false, `distinct keys=${f.distinctKeys}, registry holds new=${f.registryHoldsNewHash} old=${f.registryHoldsOldHash}`),
+    clause('r1_old_key_superseded_after_successor', f.hostOldAfter?.ok === false && f.hostOldAfter?.code === 'superseded', `host /identity for the replaced key after the successor registered: ${JSON.stringify(f.hostOldAfter)}`),
+  ];
+}
+
 function attachArm(f) {
   const p1 = f.phase1 ?? {}, e = f.env ?? {}, r0 = f.registryAtStart ?? {}, r1 = f.registryAtEnd ?? {};
   return [
@@ -112,6 +131,7 @@ export function judge(arm, f) {
     app_closed: () => promoteArm(f, 'ac'),
     superseded: () => supersededArm(f),
     attach_keeps_key: () => attachArm(f),
+    restart_window: () => restartWindowArm(f),
   };
   if (!arms[arm]) throw new Error(`unknown arm ${arm}`);
   return [...arms[arm](), ...common(f)];
