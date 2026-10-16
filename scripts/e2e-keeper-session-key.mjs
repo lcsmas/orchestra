@@ -6,8 +6,8 @@
 // exactly once per fresh CLI, and that a facade ATTACHING to a live keeper leaves the live CLI's key the live one.
 //
 // Arms (ONE per process):
-//   key_registered_before_cli — fresh start: hook runs ONCE, BEFORE the CLI's first byte; the CLI's key hash == the registry's;
-//                               verify(live key)=ok. MUTANT (facade never calls the hook): calls=0 → red.
+//   key_registered_before_cli — fresh start: hook runs ONCE and FINISHES (it is slow: 300 ms) BEFORE the CLI process starts; the CLI's key hash == the
+//                               registry's; verify(live key)=ok. MUTANTS: facade never calls the hook → calls=0; registers after the spawn frame → the CLI starts first.
 //   key_attach_keeps          — B attaches to A's live keeper+CLI with its OWN new key: hook NOT called, registry still vouches for A's
 //                               key (B's is 'superseded'), the CLI is the same pid with A's key hash. MUTANT (hook also on attach): red.
 //   key_replaced_on_fresh     — A's CLI dies (stdinEnd), B starts fresh: hook ran for B, A's key is now 'superseded', B's is 'ok'.
@@ -92,7 +92,15 @@ function open(label, key, hook) {
     () => { st.attached = true; },
     undefined,
     undefined,
-    () => { st.hookCalls++; st.hookAt = Date.now(); (hook ?? (() => registry.register(WS, key)))(); },
+    () => {
+      st.hookCalls++;
+      (hook ?? (() => registry.register(WS, key)))();
+      // SLOW registration (300 ms of busy wait): if the facade registers AFTER it wrote the `spawn` frame, the CLI (a separate process) is already
+      // running when the key becomes live — `hookDoneAt <= cli.startedAt` then fails. Registered-before-spawn holds the frame back until this returns.
+      const t0 = Date.now();
+      while (Date.now() - t0 < 300) { /* hold */ }
+      st.hookAt = Date.now();
+    },
   )(spawnOpts);
   h.stdout.on('data', (d) => { st.out += d.toString('utf8'); });
   h.on('error', (e) => st.errors.push(String(e?.message ?? e)));

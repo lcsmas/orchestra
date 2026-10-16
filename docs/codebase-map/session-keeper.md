@@ -57,6 +57,12 @@ completion, relaunch reattach + transcript, explicit-stop kill).
 - `ensureSession` (agent-sdk.ts) passes `spawnClaudeCodeProcess:
   makeKeeperSpawn(wsId)` for LOCAL sessions (sandbox/remote unchanged). The
   facade self-decides spawn-vs-attach via `helloAck.running`.
+- **The session key (#379, ADR 0008) is registered by the facade at a FRESH spawn, never at an attach.** `ensureSessionInner` mints a key per start and
+  puts it in the CLI env (`ORCHESTRA_SESSION_KEY`); `makeKeeperSpawn`'s 5th argument `beforeFreshSpawn` (agent-sdk passes `() => registerSessionKey(wsId, key)`)
+  runs right before the `spawn` frame of a fresh CLI (a throw fails the start — no CLI runs with an unregistered key). An attach reuses the surviving CLI,
+  whose own key's hash is already persisted (`<ORCHESTRA_HOME>/session-keys.json`) — the attaching start's new key is dropped unused, so reattaching never
+  supersedes a live CLI. The stale-keeper kill + relaunch path registers the NEW key (the old CLI is dead). Rig: `pnpm run test:session-key-keeper`
+  (`scripts/e2e-keeper-session-key.mjs`, real keeper). See bus.md → Session identity resolved by the HOST.
 - **Reattach is lazy** (no mass resume at startup — index.ts philosophy):
   opening a workspace's structured view fires `agentSdkHistory`
   (api-handlers.ts) → `sdkAttachIfDetached(wsId)` (agent-sdk.ts) → probe →

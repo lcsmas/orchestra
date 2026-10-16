@@ -36,7 +36,7 @@ const MUTANTS = [
   { id: 'M02', name: 'facade registers on an ATTACH too (a surviving CLI would be superseded by an unused key)', edits: [[KC, "          if (attached) onAttached?.(attachedPid, attachedTurnInFlight);", "          if (attached) { beforeFreshSpawn?.(); onAttached?.(attachedPid, attachedTurnInFlight); }"]], tests: [T.bind], rig: KEY('key_attach_keeps') },
   { id: 'M03', name: 'facade registers AFTER the spawn frame (the CLI could call before its key is live)', edits: [
       [KC, "            beforeFreshSpawn?.(); // #379: the new CLI's session key becomes the live one before the CLI exists (a throw fails this start loudly)\n", ''],
-      [KC, "            if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});", "            beforeFreshSpawn?.();\n            if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});"]], tests: [T.bind] },
+      [KC, "            if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});", "            beforeFreshSpawn?.();\n            if (cap?.limits) void reportCapState(wsId, cap).catch(() => {});"]], tests: [T.bind], rig: KEY('key_registered_before_cli') },
   // ── the session start ──
   { id: 'M04', name: 'ensureSessionInner mints a key but never hands it to the env', edits: [[SDK, 'await buildSdkEnv(ws, { sessionKey })', 'await buildSdkEnv(ws)']], tests: [T.bind, T.sbx] },
   { id: 'M05', name: 'buildSdkEnv lets an inherited (another workspace\'s) key through', edits: [[SDK, '  delete env[SESSION_KEY_ENV];\n', '']], tests: [T.bind] },
