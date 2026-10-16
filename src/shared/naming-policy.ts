@@ -43,8 +43,16 @@ export type SpawnNameCheck = { ok: true; name: string } | { ok: false; error: st
 
 /** Required; sanitised with {@link sanitizeBranchName}; must start with `<rôle>-` (rôle ∈ {@link ROLES}) and carry
  *  something after it; the error restates {@link NAME_CONVENTION}. Used by the CLI (before the socket) AND the /spawn route. */
-export function checkSpawnName(_raw: string | undefined | null): SpawnNameCheck {
-  throw new Error('naming-policy.checkSpawnName: STUB — implemented by #382');
+export function checkSpawnName(raw: string | undefined | null): SpawnNameCheck {
+  const refuse = (why: string): SpawnNameCheck => ({ ok: false, error: `${why} — expected ${NAME_CONVENTION}` });
+  const given = typeof raw === 'string' ? raw.trim() : '';
+  if (!given) return refuse('a spawn needs a name (--name): none given');
+  const name = sanitizeBranchName(given);
+  if (!name) return refuse(`name "${given}" has no usable character (letters, digits, . _ / - only)`);
+  const role = ROLES.find((r) => name.startsWith(`${r}-`));
+  if (!role) return refuse(`name "${name}" does not start with a rôle`);
+  if (!/[a-zA-Z0-9]/.test(name.slice(role.length + 1))) return refuse(`name "${name}" names the rôle but not the work`);
+  return { ok: true, name };
 }
 
 // ── #381 shape, #383 matrix (rename authority) ──────────────────────────────
