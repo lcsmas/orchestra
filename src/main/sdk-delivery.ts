@@ -26,7 +26,7 @@ export interface SdkDelivery {
   /** True iff the live session still owns a RUNNING background task (hibernation must not kill it). */
   hasBackgroundTask(wsId: string): boolean;
   /** Enqueue a text turn to a live structured session (becomes its next turn,
-   *  same "live" semantics as typing into a running TUI). Resolves when queued.
+   *  same "live" semantics as a message typed in the Agent view). Resolves when queued.
    *
    *  `peerOrigin` tags the turn as an INTER-AGENT delivery (issue #56). Peer
    *  messages reach a live session through this very seam, so without the tag
@@ -86,8 +86,8 @@ export function sdkHasBackgroundTasks(wsId: string): boolean {
   return impl?.hasBackgroundTask(wsId) ?? false;
 }
 
-/** Deliver a prompt to a live structured session. Returns false (caller falls
- *  back to the PTY path) when there is no live session to deliver to.
+/** Deliver a prompt to a live structured session. Returns false (caller wakes
+ *  the workspace, or parks the prompt) when there is no live session to deliver to.
  *
  *  Reports success on the QUEUE PUSH. Callers that surface a delivery status to
  *  a human or a peer must use {@link sdkDeliverConfirmed} instead — see issue

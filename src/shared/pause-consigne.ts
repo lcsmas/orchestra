@@ -140,7 +140,7 @@ export function killedCommands(b: BilanLike | null): Array<{ cmd: string; cwd: s
   return out;
 }
 
-/** One line per call the INTERRUPT aborted: `Bash: npm test`, or `Bash (command text not recorded)` for a terminal agent / a call whose input never reached the host. */
+/** One line per call the INTERRUPT aborted: `Bash: npm test`, or `Bash (command text not recorded)` for a call whose input never reached the host. */
 export function inFlightLines(b: BilanLike | null): string[] {
   return (b?.activity?.inFlightTools ?? []).map((t) => (t.input ? `${t.tool ?? '?'}: ${t.input}` : `${t.tool ?? '?'} (command text not recorded)`));
 }

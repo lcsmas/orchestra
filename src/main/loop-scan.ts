@@ -31,7 +31,7 @@ const lastScanned = new Map<string, number>();
 
 /** Resolve the workspace's transcript file: the pinned account's config dir
  *  (default ~/.claude) + mangled worktree path + the known SDK session id, or
- *  the newest .jsonl when the session id is unknown (terminal sessions). Same
+ *  the newest .jsonl when the session id is unknown (a legacy workspace that never ran an SDK session). Same
  *  resolution as `claude --continue` / agent-sdk's transcriptDir. */
 async function transcriptFileFor(ws: Workspace): Promise<string | null> {
   const base =

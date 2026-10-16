@@ -233,16 +233,12 @@ const USAGE = overview();
 /**
  * Resolve the caller's workspace id from an env bag (pure; exported for tests).
  *
- * ORCHESTRA_WS_ID is the primary identity source in a terminal PTY. But in a
- * structured-view (SDK) session it is spool-ownership-gated — buildSdkEnv
- * (agent-sdk.ts) withholds it whenever a terminal PTY already owns the activity
- * spool for this workspace, to avoid two writers corrupting the sidebar status
- * dot. When withheld, identity must still resolve, or `orchestra rename`/`peers`/
- * `message`/`spawn` break in the structured view (the empty-`$ORCHESTRA_WS_ID` →
- * `usage:` failure). ORCHESTRA_WS_ID_IDENTITY is set UNCONDITIONALLY by
- * buildSdkEnv and is never read by the spool hook, so it decouples identity from
- * spool ownership. Precedence: ORCHESTRA_WS_ID wins when both are present (they
- * agree; the PTY case sets only the former), else fall back to the identity var.
+ * ORCHESTRA_WS_ID is the primary identity source. The ORCHESTRA_WS_ID_IDENTITY fallback is KEPT
+ * for a keeper born BEFORE #233: while an agent PTY owned the activity spool, buildSdkEnv
+ * withheld ORCHESTRA_WS_ID, and a keeper-surviving CLI keeps that frozen env across an app
+ * upgrade — without the fallback its `orchestra rename`/`peers`/`message`/`spawn` fail with the
+ * empty-`$ORCHESTRA_WS_ID` → `usage:` error. buildSdkEnv still sets both (the spool hook never
+ * reads the identity var). ORCHESTRA_WS_ID wins when both are present (they agree).
  */
 export function resolveSelfWorkspaceId(env: {
   ORCHESTRA_WS_ID?: string;
@@ -1138,23 +1134,6 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
-    case 'read': {
-      const { value: lines, rest } = takeFlag(args, '--lines');
-      const id = rest[0];
-      if (!id) fail('usage: orchestra read <id> [--lines N]');
-      const body: Record<string, unknown> = { id };
-      if (lines !== undefined) {
-        const n = Number(lines);
-        if (!Number.isFinite(n)) fail('--lines must be a number');
-        body.lines = n;
-      }
-      const res = await request('/read', body);
-      if (!res.ok) fail(res.error ?? 'failed to read transcript');
-      if (res.branch) process.stdout.write(`# ${res.branch as string}\n`);
-      process.stdout.write(`${(res.transcript as string) ?? ''}\n`);
-      return;
-    }
-
     case 'message': {
       // THE BRANCH IS CHOSEN FROM args[0] ALONE, BEFORE ANY FLAG SCANNING.
       //
@@ -1537,7 +1516,7 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/promote', { id });
       if (!res.ok) fail(res.error ?? 'failed to promote workspace');
       // #171 — promote now refreshes the live session's run env (restart it, or
-      // — working / raw-PTY — mark it 'stale run' so it activates on the next
+      // — when working — mark it 'stale run' so it activates on the next
       // idle restart). reparentSuffix reports both, the same as attach/detach.
       process.stdout.write(
         `Promoted ${res.id as string}${res.branch ? ` (${res.branch as string})` : ''} to orchestrator` +
@@ -1909,7 +1888,7 @@ async function main(argv: string[]): Promise<void> {
 
     case 'status': {
       // Self-targeted by design: each agent narrates its OWN workspace. The id
-      // comes from the PTY/SDK env, so there is nothing to pass or mistype.
+      // comes from the session env, so there is nothing to pass or mistype.
       const stSplit = splitAtSeparator(args);
       const { present: clear, rest } = takeBoolFlag(stSplit.flagArgs, '--clear');
       const stBf = takeFlag(rest, '--body-file');

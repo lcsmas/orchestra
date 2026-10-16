@@ -115,10 +115,9 @@ function trimLogIfNeeded(logPath: string): number {
 }
 
 // How much of the tail to return from readScrollback. Callers (the renderer's
-// scrollback restore, the peer `/read` socket route) only ever show the last
+// scrollback restore of the Run / nvim / login terminals) only ever show the last
 // screenful-to-few-hundred lines, so loading the full 2 MB log just to slice
-// the end — and, for `/read`, ANSI-scrubbing all 2 MB of it — is wasted I/O and
-// CPU. 256 KB comfortably covers hundreds of lines of TUI output.
+// the end is wasted I/O and CPU. 256 KB comfortably covers hundreds of lines of TUI output.
 const SCROLLBACK_TAIL_BYTES = 256 * 1024;
 
 export function readScrollback(id: string): string {

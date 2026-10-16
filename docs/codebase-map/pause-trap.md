@@ -9,7 +9,7 @@ and processes** once `runs.paused_at` is set. Wave D ledger #261 (D4 = the destr
 
 `trapMember` (`src/main/pause-trap.ts:141`; members run in parallel, bounded by `deps.concurrency`, default 3) — every step records its own failure in the Bilan and the trap moves on:
 
-1. **Read what it is doing** (`activityOf`): surface (structured/pty/none), turn running, in-flight tool calls (a live SDK session's own open `tool_use` set — `Session.openToolUses`, folded by the pure `applyToolEvent`/`mergeInFlight` of `src/shared/open-tools.ts`, authoritative; the hook-fed tracker only when there is no SDK session; the command text comes with it), background tasks — BEFORE anything is interrupted.
+1. **Read what it is doing** (`activityOf`): surface (sdk/none/remote — `'pty'` left with the agent PTY, #378), turn running, in-flight tool calls (a live SDK session's own open `tool_use` set — `Session.openToolUses`, folded by the pure `applyToolEvent`/`mergeInFlight` of `src/shared/open-tools.ts`, authoritative; the hook-fed tracker only when there is no SDK session; the command text comes with it), background tasks — BEFORE anything is interrupted.
 2. **Snapshot** the worktree to `refs/orchestra/pause/<run>/<ws>/<ms>` (`snapshotWorktree`, `src/main/pause-snapshot.ts:297`): a
    TEMPORARY index (`GIT_INDEX_FILE`, seeded from a copy of the real one, rebuilt from HEAD if the copy is torn) → `git add -A` into it →
    `write-tree` → `commit-tree -p HEAD` → `update-ref`. The worktree, the REAL index, HEAD and every branch are byte-identical

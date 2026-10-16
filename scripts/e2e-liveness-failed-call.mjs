@@ -40,7 +40,6 @@ const ARMS = {
   parallel_batch_pending: { expect: 'escalate', at: 10 * MIN },
   subagent_batch_keeps_parent: { expect: 'escalate', at: 30 * MIN },
   empty_batch_no_fifo: { expect: 'escalate', at: 10 * MIN },
-  queued_submit_keeps_live: { expect: 'escalate', at: 10 * MIN },
   coalesced_next_turn: { expect: 'skip', at: 10 * MIN },
   healthy: { expect: 'skip', at: 10 * MIN },
   upgrade_reinstall: { expect: 'n/a', at: null, mustFailOnMaster: true },
@@ -99,7 +98,6 @@ initPlatform({
 const { store } = await import(`${REPO}/src/main/store.ts`);
 const { installOrchestraHooks } = await import(`${REPO}/src/main/workspaces.ts`);
 const spool = await import(`${REPO}/src/main/events-spool.ts`);
-const { applyAgentEvent } = await import(`${REPO}/src/main/activity.ts`);
 const tracker = await import(`${REPO}/src/main/hibernation-activity.ts`);
 const { decideEscalation } = await import(`${REPO}/src/shared/bus-liveness.ts`);
 
@@ -369,14 +367,6 @@ try {
       submit();
       fire('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'x' } });
       fire('PostToolBatch', { tool_calls: [] });
-      break;
-    case 'queued_submit_keeps_live':
-      // T6 review-199 F1: a PARKED prompt mid-turn (queuedSubmit) must not wipe a
-      // live tool of the running turn — through the real activity.ts gate.
-      submit();
-      pre('Bash', 'toolu_T6B_HUNG');
-      await drained();
-      applyAgentEvent(WS, 'submit', undefined, undefined, undefined, undefined, undefined, true);
       break;
     case 'coalesced_next_turn':
       // The D19 hypothesis as briefed: a phantom from turn N (posttool AND stop

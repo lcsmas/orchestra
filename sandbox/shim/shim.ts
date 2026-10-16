@@ -16,7 +16,7 @@
  *      the spool.
  *   3. Hook control plane (hooks-server.ts): serve a unix socket at
  *      $ORCHESTRA_SOCK speaking the same tiny HTTP the agent already POSTs to
- *      (/rename /spawn /peers /read /message). Each request becomes an `rpc`
+ *      (/rename /spawn /peers /message). Each request becomes an `rpc`
  *      frame sent to the host; the host runs the real dispatcher and answers
  *      with an `rpcReply`, which the shim returns as the HTTP response. The
  *      dispatchers (workspace creation, peer messaging, …) only make sense on
@@ -334,7 +334,7 @@ function drainSpool(id: string): void {
 
 // ─── Hook control-plane socket → rpc frames ─────────────────────────────────
 //
-// Sandbox-side mirror of hooks-server.ts. The agent POSTs the five routes to
+// Sandbox-side mirror of hooks-server.ts. The agent POSTs the four routes to
 // $ORCHESTRA_SOCK; we forward each as an `rpc` frame to the host (the only side
 // that can run the real dispatcher — it creates worktrees, messages peers,
 // renames branches) and return the host's `rpcReply` payload as the HTTP

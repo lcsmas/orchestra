@@ -109,13 +109,14 @@ test('routeFromUrl strips the leading slash', () => {
   assert.equal(routeFromUrl('peers'), 'peers');
 });
 
-test('the five control-plane routes are forwarded; others are not', () => {
-  for (const r of ['rename', 'spawn', 'peers', 'read', 'message']) {
+test('the four control-plane routes are forwarded; others are not (`read` retired with `orchestra read`)', () => {
+  for (const r of ['rename', 'spawn', 'peers', 'message']) {
     assert.equal(isForwarded(r), true, `${r} should forward`);
   }
   assert.equal(isForwarded('event'), false);
+  assert.equal(isForwarded('read'), false);
   assert.equal(isForwarded(''), false);
-  assert.equal(FORWARDED_ROUTES.size, 5);
+  assert.equal(FORWARDED_ROUTES.size, 4);
 });
 
 test('body caps match hooks-server.ts (1 MiB for spawn/message, 4 KiB otherwise)', () => {

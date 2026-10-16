@@ -283,7 +283,7 @@ function drain(id: string): void {
     // good (the dot stuck on `running`). Swallow per-line so one bad event can
     // never strand the events behind it.
     try {
-      applyAgentEvent(id, ev.event, tool, transcript, undefined, crons, toolUseId);
+      applyAgentEvent(id, ev.event, tool, transcript, crons, toolUseId);
     } catch (e) {
       log.error(`events-spool: applyAgentEvent failed for ${id} seq=${seq} event=${ev.event}`, e);
     }

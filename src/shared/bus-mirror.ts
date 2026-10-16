@@ -19,7 +19,7 @@
  *  acceptance 3 requires each one observed in a rig that PRODUCES it:
  *
  *   - `live`      the message became the target's turn (SDK turn started, or
- *                 typed into a running PTY, or a wake started the agent)
+ *                 a wake started the agent)
  *   - `inbox`     parked in the durable inbox file for the next SessionStart
  *   - `withdrawn` the old channel did NOT deliver at all (`ok: false`) —
  *                 unknown target, empty text, self-send, inbox write failed

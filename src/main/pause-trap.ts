@@ -388,7 +388,7 @@ export async function trapMember(deps: TrapDeps, db: BusDb, carrier: RunPauseInf
   else if ('error' in target) killed = null; // unproven ⇒ not complete (see above)
   else {
     try {
-      // #282: through the CLI only once the member's turn is PROVABLY over (the interrupt took effect / nothing ran) and for a STRUCTURED member (keeper → CLI; a PTY agent has no SDK session to ask):
+      // #282: through the CLI only once the member's turn is PROVABLY over (the interrupt took effect / nothing ran) and for a STRUCTURED member (keeper → CLI):
       // a foreground tool's shell carries a task id too, and stopping it under a live turn (the exempt pauser's other tool, a failed/skipped interrupt) would only continue that turn.
       // Read from THIS attempt's proven keeper, never the surface a retry carried over from an attempt that could not probe.
       const offerStop = !!deps.stopTask && target.keeperPid !== null && TURN_OVER.has(String(activity.interrupt));

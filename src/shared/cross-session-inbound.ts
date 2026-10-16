@@ -43,7 +43,7 @@
  * It is a DIFFERENT CHANNEL. `orchestra message` never touches the CLI peer
  * socket: `dispatchMessageRequest` (workspaces.ts) delivers via one of three
  * Orchestra-owned paths — an enqueued turn on the live SDK session
- * (`sdkDeliver`), a PTY write for terminal-mode workspaces, or the durable
+ * (`sdkDeliver`), a structured wake that hands the text over, or the durable
  * per-workspace inbox file drained by a SessionStart hook. In CODE, at
  * upstream `48bdbcb`, `SendMessage` / `crossSessionInbound` /
  * `messaging_socket` have zero hits under `src/` (positive control in the same

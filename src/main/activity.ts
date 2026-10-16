@@ -57,9 +57,8 @@ const alog = scoped('activity');
 // Claude Code's lifecycle hooks (installed per-workspace in
 // .claude/settings.local.json by workspaces.ts) append one JSON line per event
 // to a durable per-workspace spool file; events-spool.ts tails it and calls
-// `applyAgentEvent` here. (A legacy Unix-socket path still feeds
-// `dispatchHookEvent` for any pre-upgrade session whose hooks were not yet
-// rewritten — same handling, minus the per-tool detail.)
+// `applyAgentEvent` here. (The old Unix-socket `/event` POST that pre-upgrade hooks
+// sent was retired in #378: installOrchestraHooks evicts those curl hooks.)
 //
 // State is a clean function of those events:
 //   submit   → running
@@ -749,8 +748,9 @@ export async function detectAndUpdateReleaseState(id: string): Promise<void> {
 }
 
 /** Reconciliation floor for the status dot: the agent's process is gone, so it
- *  cannot possibly still be `running`. Called from the PTY exit handler. This
- *  is the durability backstop that makes a lost terminal event self-heal — even
+ *  cannot possibly still be `running`. Called when the SDK session ends
+ *  (agent-sdk.ts consume() / sdkStop). This is the durability backstop that
+ *  makes a lost hook event self-heal — even
  *  if a `stop`/`notify` line were never delivered, the dot can never outlive the
  *  process.
  *
@@ -968,19 +968,14 @@ export function notifyTurnStart(wsId: string): void {
 }
 
 /** Apply one lifecycle event to a workspace's status. Fed by the durable spool
- *  tailer (with the per-tool `tool` for pretool/posttool) and, for legacy
- *  sessions, by the Unix-socket route via `dispatchHookEvent`. `setStatus`
- *  only writes the store on a real transition, so the idempotent `running`
- *  re-assertions on every pretool are free. */
+ *  tailer (with the per-tool `tool` for pretool/posttool) and by the sandbox
+ *  bridge. `setStatus` only writes the store on a real transition, so the
+ *  idempotent `running` re-assertions on every pretool are free. */
 export function applyAgentEvent(
   id: string,
   event: string,
   tool: string | undefined,
   transcript?: string,
-  /** Why the turn ended, when the caller knows. No caller passes one since #233 deleted the SDK-side
-   *  producer (the spool path never had one: Claude Code's Stop hook carries no reason field).
-   *  Only consulted for terminal events. */
-  stopReason?: AgentStopReason,
   /** Loop level-signal from the Stop payload's `session_crons` (the CLI
    *  scheduler's own registry of pending ScheduleWakeup/CronCreate//loop
    *  tasks), reduced by the spool hook: 'none' = definitively nothing will
@@ -994,15 +989,6 @@ export function applyAgentEvent(
    *  with the exact in-flight call it ended, so a hung parallel sibling is not
    *  cleared by a fast call's posttool (review-127 F1). */
   toolUseId?: string | null,
-  /** #199 (review-199 F1): for a `submit`, TRUE when this submit is NOT a genuine
-   *  new turn boundary — it is a PARKED prompt queued behind a running turn, or a
-   *  keeper REATTACH to a turn already in flight. No caller passes it since #233
-   *  (its only producer was the deleted SDK-side status drive). In those cases the CURRENT turn (and its live tool calls)
-   *  continues, so the turn-start clear MUST NOT run or it would wipe a live tool
-   *  of the running turn and mask a genuine mid-call hang (#108 Q16). The terminal/
-   *  spool path never queues a submit (UserPromptSubmit fires at a real prompt
-   *  submission), so it leaves this undefined → a real boundary → clears. */
-  queuedSubmit?: boolean,
 ): void {
   alog.trace(`event ${event}${tool ? ` tool=${tool}` : ''} ws=${id}`);
   // Every lifecycle event — from either agent path — is "this workspace did
@@ -1022,18 +1008,13 @@ export function applyAgentEvent(
       // cannot span a turn boundary; the first event of a turn is this submit, so
       // no current-turn tool exists yet). Clearing here catches a DROPPED
       // posttool/stop that the turn-end arms missed, before its stale entry blows
-      // the tool ceiling and false-escalates as "hung mid-call".
-      //
-      // review-199 F1: this clear runs ONLY for a REAL turn boundary
-      // (`!queuedSubmit`). A PARKED prompt (SDK send queued behind a running turn)
-      // and a keeper REATTACH (`session/attach`, turn still in flight) both drive a
-      // `submit` MID-turn — the current turn and its live tools continue, so
-      // clearing would wipe a live tool of the running turn and mask a genuine
-      // mid-call hang (#108 Q16). The terminal/spool path never queues a submit, so
-      // it leaves `queuedSubmit` undefined → a real boundary → clears.
-      if (!queuedSubmit) clearInFlightTools(id);
+      // the tool ceiling and false-escalates as "hung mid-call". Every `submit` is
+      // a real boundary: UserPromptSubmit fires at a real prompt submission, and the
+      // SDK-side drive that once sent a MID-turn submit (a parked prompt / a keeper
+      // reattach) was deleted with the agent PTY (#233, #378).
+      clearInFlightTools(id);
       // #252 D1b (rows 29/30): a real turn START — the pause trap interrupts it when this member is paused.
-      if (!queuedSubmit) notifyTurnStart(id);
+      notifyTurnStart(id);
       // `null` clears any stop-reason marker (#69): the agent is taking a turn,
       // so whatever ended the LAST one is no longer the workspace's state. Done
       // on the running transition rather than on the next turn-end so the badge
@@ -1111,10 +1092,9 @@ export function applyAgentEvent(
       // synchronously). undefined = no opinion — never clear on absence.
       if (crons === 'none') void markLooping(id, false);
       else if (crons === 'some') void markLooping(id, true);
-      // `stopfail` is itself a reason signal: Claude Code's StopFailure hook
-      // lands here with no explicit reason, so fall back to 'error' for it
-      // without the spool hook needing a new field it cannot produce.
-      fireFinished(id, stopReason ?? (event === 'stopfail' ? 'error' : undefined));
+      // `stopfail` is itself a reason signal: Claude Code's StopFailure hook carries
+      // no reason field (a Stop does not either), so 'error' is derived from the event name.
+      fireFinished(id, event === 'stopfail' ? 'error' : undefined);
       break;
     case 'notify':
       emitTool(id, null);
@@ -1152,11 +1132,4 @@ export function applyAgentEvent(
       // happens, so name the unknown event rather than ignoring it silently.
       alog.warn(`unhandled agent event "${event}" (ws=${id}) — status unchanged`);
   }
-}
-
-/** Legacy Unix-socket entry point (hooks-server `/event` route). Pre-upgrade
- *  workspaces still POST bare `{id, event}` here until their hooks are
- *  rewritten on the next session start; they carry no per-tool detail. */
-export function dispatchHookEvent(id: string, event: string): void {
-  applyAgentEvent(id, event, undefined);
 }

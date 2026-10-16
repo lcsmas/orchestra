@@ -3,7 +3,7 @@
  *
  * One bidirectional connection between an Orchestra client and the always-on
  * sandbox carries everything that is local-only today: terminal I/O, activity
- * events, and the hook control plane (the five routes in hooks-server.ts). This
+ * events, and the hook control plane (the four routes in hooks-server.ts). This
  * module defines the message vocabulary and a streaming length-prefixed framing
  * so the same protocol rides over any byte stream — a websocket over TLS, a raw
  * mTLS socket, an SSH tunnel — without change. It is pure data: no Electron, no
@@ -18,7 +18,7 @@
  *  - `event` frames carry exactly what events-spool.ts extracts from a spool
  *    line ({event, tool?}) and feeds to applyAgentEvent — the spool's file tail
  *    is replaced by these frames inside the sandbox shim.
- *  - `rpc`/`rpcReply` tunnel the five hook routes. The agent inside the sandbox
+ *  - `rpc`/`rpcReply` tunnel the four hook routes. The agent inside the sandbox
  *    POSTs to a local socket the shim serves; the shim forwards the request as
  *    an `rpc` frame (sandbox→client), the client dispatches it to the same
  *    handlers hooks-server.ts uses today, and replies with `rpcReply`. A
@@ -40,10 +40,10 @@ export const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 // ─── Hook RPC routes ─────────────────────────────────────────────────────────
 
-/** The five control-plane routes hooks-server.ts serves today. The wire mirrors
+/** The four control-plane routes hooks-server.ts serves today. The wire mirrors
  *  them exactly so the client can dispatch an `rpc` frame to the existing
  *  handlers without translation. */
-export type RpcRoute = 'rename' | 'spawn' | 'peers' | 'read' | 'message';
+export type RpcRoute = 'rename' | 'spawn' | 'peers' | 'message';
 
 /** Request payloads, one per route — the fields each dispatcher reads. Optional
  *  fields mirror hooks-server.ts's `typeof === 'string'` guards (absent ⇒
@@ -52,7 +52,6 @@ export interface RpcRequestPayloads {
   rename: { id: string; branch: string };
   spawn: { from?: string; repoPath?: string; baseBranch?: string; task: string };
   peers: { from?: string };
-  read: { id: string; lines?: number };
   message: { from?: string; to: string; text: string; emergency?: boolean };
 }
 

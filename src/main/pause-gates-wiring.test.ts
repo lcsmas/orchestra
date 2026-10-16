@@ -268,7 +268,7 @@ test('docs: `orchestra --help` lists run as hold / pause / resume', () => {
 test('F5 → #255 (wave E): the texts describe the SHIPPED behaviour — `resume` starts a STRUCTURED Reprise (coordinators first, workers blocked until released); the plain lift of a stale pause still says only what really resumes', () => {
   const src = read('workspaces.ts');
   const skill = body(src, 'const COMMS_SKILL = `', 'const WORKSPACE_ADMIN_SKILL').replace(/\\`/g, '`');
-  const sect = skill.slice(skill.indexOf('## 7. Pause a run'));
+  const sect = skill.slice(skill.indexOf('## 6. Pause a run'));
   const help = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'help.ts'), 'utf8');
   const runHelp = body(help, "name: 'run',", "name: 'message'");
   const verbs = fs.readFileSync(path.join(process.cwd(), 'src', 'cli', 'bus-verbs.ts'), 'utf8');
@@ -279,11 +279,11 @@ test('F5 → #255 (wave E): the texts describe the SHIPPED behaviour — `resume
     assert.doesNotMatch(t, /Bilan|snapshot|interrupts the turn|kills tool|Nothing restarts on its own/i, 'plain lift output promises behaviour it does not have');
     assert.match(t, /Queued turns and pending bus mail resume now/);
   }
-  // Skill §7 and run --help describe the Pause trap AND the structured Reprise (#255 ships them in this tree).
-  assert.match(sect, /refs\/orchestra\/pause\/<run>\/<ws>\/<ts>/, 'skill §7 names the pause ref D1b ships');
-  assert.match(sect, /orchestra run status/, 'skill §7 documents the Bilan reader');
+  // Skill §6 and run --help describe the Pause trap AND the structured Reprise (#255 ships them in this tree).
+  assert.match(sect, /refs\/orchestra\/pause\/<run>\/<ws>\/<ts>/, 'skill §6 names the pause ref D1b ships');
+  assert.match(sect, /orchestra run status/, 'skill §6 documents the Bilan reader');
   assert.match(runHelp, /Bilan de pause/, 'run --help documents the Bilan');
-  assert.match(sect, /releases ONLY the coordinators/, 'skill §7 says who resume wakes');
+  assert.match(sect, /releases ONLY the coordinators/, 'skill §6 says who resume wakes');
   assert.match(sect, /orchestra run release <ws>/);
   assert.match(runHelp, /Nothing restarts on its own: the host releases ONLY the coordinators/, 'run --help says the same');
   assert.match(runHelp, /Every worker stays BLOCKED/);

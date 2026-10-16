@@ -43,7 +43,7 @@ const SECTIONS: HelpSection[] = [
       'Every agent is told it can delegate: one CLI call creates a sibling workspace whose agent starts working immediately. Ask one agent to parallelize a refactor and watch the sidebar fill up.',
     items: [
       { name: 'Spawn', desc: '`orchestra spawn --task "…"` — new branch, new worktree, new agent, nested under the spawner. Spawned agents can spawn too.' },
-      { name: 'Peer comms', desc: 'Agents list siblings (`orchestra peers`), read each other’s transcripts, and message each other — messages queue in an inbox if the peer is stopped.' },
+      { name: 'Peer comms', desc: 'Agents list siblings (`orchestra peers`) and message each other — messages queue in an inbox if the peer is stopped.' },
       { name: 'Self-naming branches', desc: 'Fresh branches get a placeholder name; the agent renames its branch once it understands the task.' },
       { name: 'Attach / detach', desc: 'Re-parent any existing workspace under an orchestrator (or pop it back out) to organize a fleet after the fact.' },
     ],

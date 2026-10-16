@@ -4,7 +4,7 @@
  *
  * The bug they caused: Orchestra ships as an AppImage, whose runtime exports
  * `APPIMAGE` (the .AppImage path), `APPDIR` (its FUSE mount), `ARGV0` and `OWD`
- * into the app's environment. Every child Orchestra spawns — agent PTYs, the
+ * into the app's environment. Every child Orchestra spawns — agent sessions, the
  * per-repo run/setup/archive scripts, the SDK subprocess — inherits the app's
  * environment wholesale, so those vars leaked into the workspace shell.
  *

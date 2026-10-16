@@ -76,14 +76,13 @@ export function parseSpoolChunk(prevBuffer: string, chunk: string): SpoolParseRe
   return { events, leftover, truncate: lastTerminal !== null && leftover === '' };
 }
 
-/** The five hook routes the shim forwards to the host as `rpc` frames. Anything
+/** The four hook routes the shim forwards to the host as `rpc` frames. Anything
  *  else (the default /event activity POST) is answered locally — activity rides
  *  the spool tail, not the socket, exactly as in hooks-server.ts. */
 export const FORWARDED_ROUTES: ReadonlySet<RpcRoute> = new Set<RpcRoute>([
   'rename',
   'spawn',
   'peers',
-  'read',
   'message',
 ]);
 

@@ -30,7 +30,7 @@ A workspace is an isolated execution environment for one Claude Code agent.
   [hooks-cli-socket.md](hooks-cli-socket.md)), both gated on `ORCHESTRA_KIND`
   env or the `.orchestra/.orchestrator` sentinel (`markOrchestratorWorktree`,
   written at creation and by `/promote` so a mid-session promotion picks it up
-  without a pty restart; `unmarkOrchestratorWorktree` removes it on `/demote`).
+  without a session restart; `unmarkOrchestratorWorktree` removes it on `/demote`).
   The sentinel's **contents** select the reminder wording: `dual` (written when
   a *worktree* is promoted) yields a dual-role reminder — coordinate children
   *and* keep doing this branch's own work — while anything else (`1`, and every
@@ -87,6 +87,13 @@ Three invariants that are not interchangeable:
 - **The transcript directory is carried across.** Both drivers key it on
   `mangleProjectDir(worktreePath)` (`agent-sdk.ts` `transcriptDir`), so moving
   the directory would orphan the conversation of the very session adopting.
+- **The agent's SDK session is stopped — and awaited — first (#378).**
+  `stopAgentSessionForMove` (`workspaces.ts`): snapshot the keeper tree → `sdkStopIfLive` → `killKeeper`
+  (awaits the CLI's death) → `killKeeperTree` (its background jobs) → fail closed (a live session or tracked
+  keeper afterwards throws, nothing moves). It forbids no launch (the next send restarts lazily) and is
+  NOT a `stopMemberScopeIfAny` site (`scope-stop-wiring` pins exactly 3). Sandbox import / eject
+  (`sandbox-import.ts`) use the same helper before staging / fetching. A self-adopt cuts the caller's own CLI;
+  the move completes. Gate: `scripts/e2e-stop-before-move.mjs` (must-FAIL on master d55d6737).
 
 After adoption `repoPath` supersedes any `repoAssociation` for grouping, `/spawn`
 inherits the repo (real ownership, unlike an association), and `/demote` becomes
@@ -154,7 +161,7 @@ lock), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
 (sidebar pills), `contextTokens` (badge seed), `markedUnread`
 (manual come-back-later bookmark, toggled from the sidebar via
 `workspaces:setUnread`, auto-cleared on next selection), and **`host`**
-(`WorkspaceHost`, `types.ts:69` — absent = local node-pty; `{kind:'sandbox',
+(`WorkspaceHost`, `types.ts:69` — absent = local; `{kind:'sandbox',
 endpoint}` = agent lives in an always-on container, see
 [sandbox-transport.md](sandbox-transport.md)).
 
@@ -335,9 +342,9 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
 `admission.test.ts` W1–W18, `admission-wiring.test.ts` `#287 …` pins (the recovery site is wiring-pinned only), `admission-mutants.mjs` W-series (`rig: 'wake'`).
 
 ### Archive / unarchive / delete
-- **`archiveWorkspace`** `:534` (soft: stop PTYs, keep worktree+logs),
+- **`archiveWorkspace`** `:534` (soft: stop the Run/nvim PTYs + the SDK session, keep the worktree),
   **`unarchiveWorkspace`** `:559`, **`deleteWorkspace`** `:450` (hard: runs the
-  per-repo archive script best-effort, clears scrollback+inbox, `removeWorktree`,
+  per-repo archive script best-effort, clears the leftover pre-#233 `logs/<id>.log` + inbox, `removeWorktree`,
   removes record, broadcasts `workspace:removed`). Directory removal is
   hard-confined to `ORCHESTRA_ROOT`/`SCRATCH_ROOT`. **Sandbox-hosted** records
   (`:491`) just detach — the container keeps its copy; nothing local to reap.
@@ -417,7 +424,6 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. NOT LANDED is not always a defect: deliberately-unmerged work (spikes) closes as INTENTIONALLY UNMERGED — the contracts forbid only the *silent* strand. **Exit codes** (`orchestra verify-landed`): `0` LANDED · `2` NOT LANDED · `1` could-not-check, so a close-out gate can distinguish unmerged work from a failed check — never gate on `$?` being nonzero alone. See `hooks-cli-socket.md`. |
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/repo/status[/files/+-/note] and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
-| `dispatchReadRequest` | `:1266` | `/read` | Peer branch + last ~80 transcript lines, ANSI-stripped. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session — nothing is ever typed into a PTY, #232), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:722` | `/rename` | see Branch management. |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
@@ -491,9 +497,9 @@ governed by the flags of the **innermost** run of its two parties).
   adopted by activity.ts, `switchWorkspaceBranch`); hard-stops the nudge for
   good. **`autoRenameCount`** tracks the agent's own progressive renames.
   `.orchestra/.branch-renamed` sentinel holds the live count so the hook advances
-  stage / self-disables mid-session before a pty restart refreshes the env.
+  stage / self-disables mid-session before a session restart refreshes the env.
 - **`switchWorkspaceBranch(id, branch, window)`** `:1454` — `git switch`, stop
-  the SDK session (`sdkStopIfLive`, lazy restart on the next send) and the nvim PTY, clear scrollback, set
+  the SDK session (`sdkStopIfLive`, lazy restart on the next send) and the nvim PTY, set
   `hasInput:false` + `branchManuallySet`, emit `pty:restart` for NVIM only (#232: no agent `pty:restart`
   and no "pending coordinator replacement" mark — the SDK restart bumps the generation itself).
 

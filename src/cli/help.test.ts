@@ -124,3 +124,21 @@ test('unknown command suggests and exits 1', needsBuild, () => {
   assert.equal(h.code, 1);
   assert.match(h.stderr, /did you mean: status/);
 });
+
+test('#378 `orchestra read` is retired: an unknown command, no help entry, nothing sent to the socket', needsBuild, () => {
+  assert.equal(COMMANDS.some((c) => c.name === 'read'), false, 'no help entry for `read`');
+  for (const args of [['read', 'some-id'], ['read', 'some-id', '--lines', '5']]) {
+    const r = run(args);
+    const trace = readdirSync(r.home);
+    rmSync(r.home, { recursive: true, force: true });
+    assert.equal(r.code, 1, args.join(' '));
+    assert.match(r.stderr, /unknown command: read\b/, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, /run 'orchestra --help'/);
+    assert.deepEqual(trace, [], 'nothing was written');
+  }
+  // control: a surviving workspace verb still dispatches (it reaches the dead socket instead of "unknown command")
+  const peers = run(['peers']);
+  rmSync(peers.home, { recursive: true, force: true });
+  assert.notEqual(peers.code, 0, 'peers cannot reach the dead socket');
+  assert.doesNotMatch(peers.stderr, /unknown command/);
+});

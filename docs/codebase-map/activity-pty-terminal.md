@@ -56,13 +56,13 @@ Event → status (`applyAgentEvent` `:471`):
 - `stop`/`stopfail` → **`idle` + `autoUnread`** via `fireFinished` (chime +
   "finished" toast if window unfocused; recomputes merge state; persists context
   tokens).
-  `applyAgentEvent` takes an optional `stopReason` (`AgentStopReason`) that
-  `fireFinished` uses to word the toast — an errored / turn-limited /
-  interrupted turn still lands `idle` + `autoUnread` (the human is still
+  `fireFinished(id, reason?)` (`AgentStopReason`) words the toast — an errored /
+  turn-limited / interrupted turn still lands `idle` + `autoUnread` (the human is still
   needed — see the three attention states below) but must not announce itself
-  as "ready for review". No caller supplies one since #233 (its only producer, the SDK-side status drive,
-  was deleted; Claude Code's Stop hook has no reason field), so the spool path
-  passes nothing, except `stopfail` which implies `error`. Status stays a 5-state machine — the reason is metadata
+  as "ready for review". `applyAgentEvent` has NO `stopReason` parameter (#378: its only
+  producer, the SDK-side status drive, was deleted by #233 and Claude Code's Stop hook has no
+  reason field): the reason is derived from the event name — `stopfail` ⇒ `error`, else none.
+  Its signature is `(id, event, tool, transcript?, crons?, toolUseId?)`. Status stays a 5-state machine — the reason is metadata
   beside it, matching how the Messages API (`message_delta.stop_reason`) and
   Managed Agents (typed `stop_reason` on `session.status_idle`) both model
   turn-end.

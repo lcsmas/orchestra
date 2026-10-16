@@ -37,14 +37,6 @@ List the other agent workspaces (never includes yourself — see 'whoami').
   --stats   also show each peer's committed diff vs its base`,
   },
   {
-    name: 'read',
-    group: 'Workspaces',
-    summary: "Print a workspace's transcript",
-    detail: `usage: orchestra read <id> [--lines N]
-
-Print a workspace's transcript (last N lines with --lines).`,
-  },
-  {
     name: 'whoami',
     group: 'Workspaces',
     summary: "Print THIS workspace's own record",

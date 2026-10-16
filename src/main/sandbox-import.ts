@@ -29,7 +29,7 @@ import { store } from './store';
 import { stopPty } from './pty';
 import { removeWorktree, detectRemoteUrl, createWorktree } from './git';
 import { log } from './logger';
-import { workspaceAccountConfigDir, installOrchestraHooks } from './workspaces';
+import { workspaceAccountConfigDir, installOrchestraHooks, stopAgentSessionForMove } from './workspaces';
 import { syncAccountInheritance } from './account-inherit';
 import { isScratchLike, type Workspace, type WorkspaceHost } from '../shared/types';
 import {
@@ -194,8 +194,9 @@ export async function importWorkspaceToSandbox(id: string, endpoint: string): Pr
   const importUrl = endpointToHttpUrl(endpoint, '/import'); // validates the endpoint
 
   // Quiesce the worktree so the payload is a consistent snapshot (an agent
-  // mid-edit during staging would tear the overlay).
-  stopPty(id);
+  // mid-edit during staging would tear the overlay): the SDK session is stopped
+  // and awaited (#378), then the Run/nvim terminals.
+  await stopAgentSessionForMove(id, 'sandbox-import');
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
 
@@ -395,8 +396,9 @@ export async function ejectWorkspaceFromSandbox(id: string): Promise<Workspace> 
   if (ws.host?.kind !== 'sandbox') throw new Error('workspace is not sandbox-hosted');
   const exportUrl = endpointToHttpUrl(ws.host.endpoint, '/export');
 
-  // Quiesce the remote session first — a mid-turn agent would tear the export.
-  stopPty(id);
+  // Quiesce first — a mid-turn agent would tear the export. No local SDK session can exist for a sandbox-hosted
+  // workspace while sandbox agents are paused (#226/#220), so this is a no-op today and stays correct once they return.
+  await stopAgentSessionForMove(id, 'sandbox-eject');
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
 

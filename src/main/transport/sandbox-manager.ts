@@ -42,7 +42,6 @@ import {
   dispatchRenameRequest,
   dispatchSpawnRequest,
   dispatchPeersRequest,
-  dispatchReadRequest,
   dispatchMessageRequest,
 } from '../workspaces';
 import { log } from '../logger';
@@ -109,13 +108,6 @@ async function dispatchRpc(
     case 'peers': {
       const p = payload as RpcRequestPayloads['peers'];
       return reply(await dispatchPeersRequest({ from: typeof p.from === 'string' ? p.from : undefined }));
-    }
-    case 'read': {
-      const p = payload as RpcRequestPayloads['read'];
-      if (typeof p.id === 'string') {
-        return reply(dispatchReadRequest({ id: p.id, lines: typeof p.lines === 'number' ? p.lines : undefined }));
-      }
-      return { ok: false, error: 'missing id' };
     }
     case 'message': {
       const p = payload as RpcRequestPayloads['message'];
@@ -331,7 +323,7 @@ export async function getSandboxConnection(endpoint: string): Promise<SandboxCon
   const ready = open.then(() => log.info(`sandbox connection open: ${endpoint}`));
 
   const conn = new SandboxConnection(adaptSocket(ws), {
-    // #132: thread the wire tool_use id into applyAgentEvent's 7th slot (the same
+    // #132: thread the wire tool_use id into applyAgentEvent's 6th slot (the same
     // chokepoint the local spool path uses) so the #127 tracker keys a remote
     // posttool by id, not just tool name. undefined → null → id-less FIFO. The
     // positional mapping lives in the platform-free `applyRemoteAgentEvent` so the

@@ -3,7 +3,7 @@
  * survives `stripProcessLocalEnv(process.env)` in index.ts.
  *
  * `APPIMAGE` has to be deleted from `process.env` early (it must not leak into
- * agent PTYs / run scripts — see shared/child-env.ts), but two things in the
+ * agent sessions / run scripts — see shared/child-env.ts), but two things in the
  * main process still legitimately need the path: the ozone relaunch (re-exec
  * the AppImage while its FUSE mount is alive) and the `orchestra` CLI shim
  * (the only stable single-file re-invocation target on Linux).

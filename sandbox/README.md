@@ -40,8 +40,8 @@ to do locally have a network between them and the agent; the shim does all three
    hooks append one event line per lifecycle event) and emits one `event` frame
    per line. (Mirrors `events-spool.ts`.)
 3. **Hook control plane** — it serves the unix socket at `$ORCHESTRA_SOCK` that
-   the agent POSTs to, forwarding the five routes (`rename` `spawn` `peers`
-   `read` `message`) to the host as `rpc` frames and returning the host's
+   the agent POSTs to, forwarding the four routes (`rename` `spawn` `peers`
+   `message`) to the host as `rpc` frames and returning the host's
    `rpcReply` as the HTTP response. (Mirrors `hooks-server.ts`.)
 4. **Provisioning (admin HTTP, same port)** — `GET /healthz` reports liveness +
    whether `/workspace` is provisioned; `POST /import` receives the one-way

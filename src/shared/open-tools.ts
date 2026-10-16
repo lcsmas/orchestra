@@ -33,7 +33,7 @@ export function applyToolEvent(open: Map<string, OpenTool>, ev: ToolEventLike, n
 }
 
 /** The in-flight list a Bilan records. A live SDK session object is AUTHORITATIVE (its stream saw every call open and close): the hook-fed tracker is read ONLY when there is
- *  no SDK session (a terminal agent, a keeper that survived an app restart) — merging both strands a hook entry whose `tool_result` hook was dropped and duplicates id-less ones. */
+ *  no SDK session (a keeper that survived an app restart) — merging both strands a hook entry whose `tool_result` hook was dropped and duplicates id-less ones. */
 export function mergeInFlight<T>(sdkSide: readonly T[] | null, hookSide: readonly T[]): T[] {
   return sdkSide !== null ? [...sdkSide] : [...hookSide];
 }
