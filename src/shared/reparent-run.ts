@@ -32,7 +32,9 @@ export type ReparentAction =
   /** Anchor changed, a live session holds the old run, and the caller passed
    *  `--no-restart` → rewrite the notice, mark the workspace 'stale run', and
    *  refuse its bus sends until it restarts. */
-  | { kind: 'mark-stale' };
+  | { kind: 'mark-stale' }
+  /** #379 / ADR 0008 — the HOST answers this live session's identity per CLI call: no restart, no 'stale' state; notice + marker FILE only (the app-down fallback guard). */
+  | { kind: 'host-resolved' };
 
 /** The inputs the pure decision needs about ONE candidate. */
 export interface ReparentCandidate {
@@ -44,6 +46,9 @@ export interface ReparentCandidate {
    *  cold workspace re-reads the env at its next launch, so it never needs a
    *  restart or a stale marker. */
   live: boolean;
+  /** #379 — does the host hold a session key for this workspace (so it answers its live session's identity per call)?
+   *  Absent = false (a keyless session: a pre-#379 keeper, or a start whose key could not be registered). */
+  hostAnswers?: boolean;
 }
 
 /**
@@ -64,6 +69,8 @@ export function decideReparentAction(
 ): ReparentAction {
   if (candidate.oldAnchorId === candidate.newAnchorId) return { kind: 'noop' };
   if (!candidate.live) return { kind: 'notice-only' };
+  // #379: whatever `--no-restart` says, a session the host can answer needs neither the restart nor the stale state.
+  if (candidate.hostAnswers) return { kind: 'host-resolved' };
   return noRestart ? { kind: 'mark-stale' } : { kind: 'restart' };
 }
 
@@ -84,9 +91,12 @@ export function staleRunMarkerBody(newRunId: string): string {
 /** The one-line refusal the CLI `send` prints when the stale marker is present.
  *  Keyed on the marker's FIRST line so the message the human sees and the file
  *  the guard reads are the same string. */
-export function staleRunRefusalMessage(markerFirstLine: string): string {
+export function staleRunRefusalMessage(markerFirstLine: string, opts: { hostDidNotAnswer?: boolean } = {}): string {
   return (
     `refused: ${markerFirstLine.trim()}\n` +
-    `  run \`orchestra restart\` to re-derive this workspace's run and clear the block.`
+    (opts.hostDidNotAnswer
+      ? // #379: a keyed session whose host is down/slow is not stale — the host resolves its run while it answers; a restart is refused mid-turn anyway
+        `  the Orchestra host did not answer (app closed or busy) — retry in a moment; while it answers, this session's run is resolved by the host.`
+      : `  run \`orchestra restart\` to re-derive this workspace's run and clear the block.`)
   );
 }

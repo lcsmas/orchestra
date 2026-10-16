@@ -38,7 +38,7 @@ test('SDK funnel: ensureSessionInner refuses a paused sandbox workspace before A
   const b = body(AGENT_SDK, 'async function ensureSessionInner(');
   assert.match(b, /const paused = sandboxPausedMessage\(ws\);\s*\n\s*if \(paused\) throw new Error\(paused\);/);
   // rewind-cut consumption, hibernation clear, env build (+ hook install) and the query() spawn all come after
-  for (const later of ['persistWorkspacePatch(wsId, { sdkRewindCut: undefined })', 'clearHibernated(wsId)', 'installOrchestraHooks(', 'await buildSdkEnv(ws)', 'query({'])
+  for (const later of ['persistWorkspacePatch(wsId, { sdkRewindCut: undefined })', 'clearHibernated(wsId)', 'installOrchestraHooks(', 'await buildSdkEnv(ws, { sessionKey })', 'query({'])
     before(b, 'sandboxPausedMessage(ws)', later);
 });
 

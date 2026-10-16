@@ -250,7 +250,7 @@ export function refreezeMissionRun(
 
 /** Switches a PAUSED run may re-freeze one at a time: each is read only when a member's session STARTS
  *  (keeper spawn), so flipping it on a paused run changes no in-flight turn. Every other switch stays freeze-once. */
-export const ONE_SWITCH_REFREEZABLE: readonly BusMechanism[] = ['dockerRelay'];
+export const ONE_SWITCH_REFREEZABLE: readonly BusMechanism[] = ['dockerRelay', 'memoryCap']; // #379/ADR 0008: memoryCap joins (the scope is decided at a member's session start)
 
 export type RefreezeOneSwitchOutcome =
   | 'no-run'

@@ -441,7 +441,8 @@ governed by the flags of the **innermost** run of its two parties).
 
 - **The pure decision** — `src/shared/reparent-run.ts` `decideReparentAction`:
   anchor UNCHANGED → `noop`; anchor changed + no live session → `notice-only`
-  (the next launch re-reads the env); + live + restart allowed → `restart`;
+  (the next launch re-reads the env); + live + **the host holds a session key for it (#379)** → `host-resolved`
+  (whatever `--no-restart` says); + live + restart allowed → `restart`;
   + live + `--no-restart` → `mark-stale`. Unit-tested (`reparent-run.test.ts`).
 - **The effectful reconcile** — `reconcileRunAfterReparent(oldAnchors, {noRestart})`
   (`workspaces.ts`, near the admin handlers). Each handler `snapshotRunAnchors(root)`
@@ -455,7 +456,16 @@ governed by the flags of the **innermost** run of its two parties).
   workspace (D1). Wired into `dispatchAttachRequest` (both branches),
   `dispatchDemoteRequest` (the detached children), `dispatchAdoptRepoRequest` (the
   moved worktree path), and **`dispatchPromoteRequest` (#171, both routes)**.
-- **#171 — restart refused/failed ⇒ mark-stale (not a silent warn).** When the
+- **#379 / ADR 0008 — `host-resolved`: a promotion takes effect at the next CLI call.** A LIVE session whose workspace has a registered
+  session key (`hasSessionKey`, `session-identity-host.ts`; the candidate's `hostAnswers`) has its bus identity answered by the HOST on every
+  CLI call (`/identity`, bus.md → Session identity), so the reconcile rewrites the notice and writes the **marker file only**
+  (`writeStaleRunMarkerFile` — the app-down fallback's guard, ignored while the host answers): **no restart, no `busRunStale` pane state**,
+  and the id is reported in the result's `hostResolved` (promote/attach/detach/demote/adopt; the CLI prints it). This is what makes
+  `orchestra spawn` → `orchestra promote` → `orchestra send` work in ONE turn. A keyless live session (a keeper born before #379) keeps the
+  restart / mark-stale path below; a cold session stays `notice-only`. `buildSdkEnv` mints nothing — `ensureSessionInner` mints one key per
+  session start and the keeper facade registers it only at a FRESH spawn (session-keeper.md); the three delete paths `forgetSessionKey`.
+  A keeper-DETACHED keyed CLI (app restarted, session not reattached: `readTrackedKeeperPid` alive) counts as live for this decision (no restart — that would be a wake). Rig: `verify-promote-run-refresh.mjs` arms H1–H8.
+- **#171 — restart refused/failed ⇒ mark-stale (not a silent warn)** (still the path for a KEYLESS live session).** When the
   reconcile's restart returns `{ok:false}` (a working structured session throws the
   mid-turn guard, or any relaunch failure) it now DOWNGRADES to `markWorkspaceStaleRun`
   instead of only logging — so the live session is never left on the OLD run without

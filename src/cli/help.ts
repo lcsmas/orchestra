@@ -224,7 +224,7 @@ effect. Read-only.`,
     name: 'run',
     group: 'Fleet bus',
     summary: "Admin: re-freeze a mission run's switches; hold / pause / resume a run",
-    detail: `usage: orchestra run refreeze [--run <id>] [--only docker_relay]
+    detail: `usage: orchestra run refreeze [--run <id>] [--only docker_relay|memory_cap]
        orchestra run hold [--run <id>] [--as <handle>]
        orchestra run pause [--hard] [--run <id>] [--as <handle>]
        orchestra run confirm pause [--run <id>] [--as <handle>]
@@ -237,7 +237,7 @@ effect. Read-only.`,
             For a FLAT orchestrator whose mission never picks up a switch flip.
             Refused on a non-mission run, or while any child is live mid-turn.
             Never creates a run row.
-            --only docker_relay: re-freeze ONE switch on a paused run, mission or
+            --only docker_relay|memory_cap: re-freeze ONE switch on a paused run, mission or
             vague (a vague frozen before that switch existed). Only switches read
             at session start are allowed; every other switch stays as frozen.
   hold      Put the run on HOLD: liveness stops escalating every member of it

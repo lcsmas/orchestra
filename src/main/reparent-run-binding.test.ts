@@ -122,7 +122,8 @@ test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a
   );
   // #232 must-FAIL arm: liveness is the SDK session ONLY — no agent-PTY probe, no force-stale
   // (a working session's mid-turn guard is the one deferral; a cold session restarts or is notice-only).
-  assert.ok(callsUncommented(body, 'live: sdkSessionLive(ws.id),'), 'the reparent candidate is live iff its SDK session is');
+  assert.ok(callsUncommented(body, 'const sdkLive = sdkSessionLive(ws.id);'), 'the reparent candidate is live iff its SDK session is …');
+  assert.ok(callsUncommented(body, 'live: sdkLive || detachedKeyed,'), '… or (#379) a keeper-detached CLI the host holds a key for — never a PTY probe');
   assert.ok(!/isRunning\(/.test(body) && !/forceStale|ptyLive/.test(body), 'reconcileRunAfterReparent must not reason about a live agent PTY (#232)');
 });
 
@@ -172,7 +173,9 @@ test('reconcileRunAfterReparent restarts conversation-preserving (fresh:false)',
     'reconcile must mark-stale via the shared helper',
   );
   const helper = bodyOf(workspacesSrc, 'async function markWorkspaceStaleRun');
-  assert.ok(helper.includes('staleRunMarkerBody('), 'mark-stale must write the CLI marker');
+  // #379: the marker FILE write is its own helper (a host-resolved session gets the file without the pane flag); mark-stale = file + flag.
+  assert.ok(callsUncommented(helper, 'writeStaleRunMarkerFile(ws, newRunId)'), 'mark-stale must write the CLI marker (via the file helper)');
+  assert.ok(bodyOf(workspacesSrc, 'async function writeStaleRunMarkerFile').includes('staleRunMarkerBody('), 'the file helper writes the CLI marker body');
   assert.ok(helper.includes('busRunStale: true'), 'mark-stale must set the pane flag');
 });
 
@@ -210,9 +213,10 @@ test('the CLI send REFUSES a stale-run workspace, and only send', () => {
   })();
   // REVIEW-142 F3: reject a COMMENTED-OUT call — `includes()` alone passes on
   // `// refuseIfStaleRun();`. Require a real, uncommented call line.
+  // #379: the guard is the FALLBACK's — it runs only when the host did NOT resolve the identity (the host's answer is the current run).
   assert.ok(
-    callsUncommented(sendCase, 'refuseIfStaleRun()'),
-    'send must actually CALL the stale-run guard (not a commented-out line)',
+    callsUncommented(sendCase, "if (hostIdentity?.source !== 'host') refuseIfStaleRun(liveEnv().ORCHESTRA_RUN_ID);"),
+    'send must actually CALL the stale-run guard (not a commented-out line), on the fallback path only',
   );
   // must-FAIL arm: the guard reads the MARKER file, not the store (the CLI is
   // store-less) — a guard that tried the store would be a no-op in the CLI.
@@ -221,7 +225,7 @@ test('the CLI send REFUSES a stale-run workspace, and only send', () => {
     'the guard must key on the .orchestra/bus-run-stale marker',
   );
   // The refusal must run BEFORE opening the bus (no bus handle for a refused send).
-  const refuseIdx = sendCase.indexOf('refuseIfStaleRun()');
+  const refuseIdx = sendCase.indexOf('refuseIfStaleRun(liveEnv()');
   const openIdx = sendCase.indexOf('openBusForVerb()');
   assert.ok(refuseIdx !== -1 && openIdx !== -1 && refuseIdx < openIdx,
     'refusal must precede openBusForVerb');

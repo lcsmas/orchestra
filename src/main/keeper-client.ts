@@ -1136,6 +1136,8 @@ export function makeKeeperSpawn(
   dockerRelay?: DockerRelaySpec,
   /** #320: launch the keeper (when this start has to launch one) in its own scope with these limits. Absent = today's launch, byte for byte. */
   memoryCap?: MemoryCapLaunch,
+  /** #379: runs (sync, may throw → the start fails) right BEFORE the `spawn` frame of a FRESH CLI — never on an attach. agent-sdk registers the session key here. */
+  beforeFreshSpawn?: () => void,
 ): (opts: SdkSpawnOptions) => KeeperSpawnedProcess {
   return (opts: SdkSpawnOptions): KeeperSpawnedProcess => {
     const ev = new EventEmitter();
@@ -1331,6 +1333,7 @@ export function makeKeeperSpawn(
             wireSocket(sock);
             await helloOn(sock);
             if (cap?.limits) noteScopeLaunch(wsId, cap, launchedAt);
+            beforeFreshSpawn?.(); // #379: the new CLI's session key becomes the live one before the CLI exists (a throw fails this start loudly)
             sock.write(
               encodeKeeperFrame({
                 t: 'spawn',

@@ -825,6 +825,30 @@ test('one-switch: refused while a member is live mid-turn — flags untouched', 
   }
 });
 
+test('#379 one-switch: a paused vague frozen with memory_cap OFF takes it ON; every other key unchanged; only the allow-list moves', () => {
+  const { db, dir } = tmpDb();
+  try {
+    seedVague(db, 'wave-mc', { ...DEFAULT_BUS_SWITCHES, delivery: true, dockerRelay: false, memoryCap: false });
+    const before = runFlags(db, 'wave-mc');
+    const live: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: false, dockerRelay: true, memoryCap: true };
+    assert.equal(refreezeOneSwitch(db, 'wave-mc', 'memoryCap', live, PAUSED_IDLE), 'refrozen-one');
+    const after = runFlags(db, 'wave-mc');
+    assert.equal(after.memoryCap, true, 'the one key took its live value');
+    for (const m of BUS_MECHANISMS) if (m !== 'memoryCap') assert.equal(after[m], before[m], `${m} must stay as frozen`);
+    assert.equal(busSwitch(db, 'wave-mc', 'memory_cap'), true, 'the switch read path sees it');
+    // refused when not paused / a member is mid-turn, and the flag stays put
+    seedVague(db, 'wave-mc2', { ...DEFAULT_BUS_SWITCHES, memoryCap: false });
+    assert.equal(refreezeOneSwitch(db, 'wave-mc2', 'memoryCap', live, { paused: false, hasLiveChild: false }), 'not-paused');
+    assert.equal(refreezeOneSwitch(db, 'wave-mc2', 'memoryCap', live, { paused: true, hasLiveChild: true }), 'live-child');
+    assert.equal(runFlags(db, 'wave-mc2').memoryCap, false);
+    // and it can also be turned OFF explicitly (the live value is the authority, not "only ever ON")
+    assert.equal(refreezeOneSwitch(db, 'wave-mc', 'memoryCap', { ...live, memoryCap: false }, PAUSED_IDLE), 'refrozen-one');
+    assert.equal(runFlags(db, 'wave-mc').memoryCap, false);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
 test('one-switch: a switch read mid-wave (delivery, wake, pause…) is never re-frozen', () => {
   const { db, dir } = tmpDb();
   try {
