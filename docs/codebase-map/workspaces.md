@@ -563,23 +563,27 @@ governed by the flags of the **innermost** run of its two parties).
 
 ### One-shot migration of parent-given names (#385, spec #380)
 `scripts/migrate-parent-names.mjs --table <t.json> [--apply] [--closed <ops-id>,…] [--allow-gone] [--verbose]` renames EXISTING spawned agents to the
-`<rôle>-<objet>[-<ticket>]` convention. The pure planner `planMigration` (`src/shared/naming-migration.ts:137`) takes the store's workspaces, the branches on
+`<rôle>-<objet>[-<ticket>]` convention. The pure planner `planMigration` (`src/shared/naming-migration.ts:140`) takes the store's workspaces, the branches on
 every remote (+ local), the ids of a running vague and the human-validated table `[{id, old?, new}]`, and returns one action per workspace — `rename`,
 `skip-remote` (branch on a remote), `skip-vague`, `done` (named AND parent-named), or `untouched-*` (human-created = no recorded spawner; no parent to name
-it; archived — `dispatchRenameRequest` answers "unknown workspace"; not in table) — plus REJECTED rows (unknown id, duplicate row/target, refused by `decideRename` (a human-pinned name),
-`checkSpawnName` failure (which also refuses git-invalid refs and `/`), stale `old`, name taken — also as a ref path-prefix: the app would silently suffix it; an ARCHIVED workspace's row
-only has to be well-formed). A parent that left the store still names its child (`decideRename` compares ids only). A running vague = `activeVagueMemberIds`
-(`:107`), the app's own `liveFleetRuns` rule read off the store (a live OPS with a parent and a live member below; nothing writes `runs.closed_at`, the bus is
-never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close event and archiving an OPS archives its WHOLE subtree
-(`archiveWorkspace`), after which no rename is possible — so the operator declares a finished-but-live vague with `--closed <ops-id>` BEFORE archiving.
-The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`; any unreadable input = rc 2, never an empty set), is a dry run
-unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only rows of workspaces that no longer exist), and
-applies each step ONLY as `orchestra rename <id> <name>` with `ORCHESTRA_WS_ID=<parentId, else namedByParent>` (D2) — it never writes `store.json`. After each
-rename it RE-READS the store and requires the VALIDATED name, `namedByParent == parent` and `formerBranch == old name`, and looks once more after the run (the app's
-rename is not serialised: a live legacy child's own rename can win the race, or the git lock can refuse; an app older than #383/#384 renames without pinning) —
-anything else is FAILED, rc 1. The re-run picks those up: the name is ours without the pin → a pin-only same-name rename; the child's name won → a rename (a legacy
-child that renamed ITSELF is not a stale row; one parent-named differently since is); a lock error → the rename again. Idempotent: after a full apply `renames` is empty. Gates: `naming-migration(.script).test.ts`, mutants
-`scripts/naming-migration-mutants.mjs`, built-app drive `scripts/e2e-migrate-parent-names.sh`.
+it; archived — `dispatchRenameRequest` answers "unknown workspace"; not in table) — plus REJECTED rows (unknown id, duplicate row/target, refused by
+`decideRename` (a human-pinned name — asked of the real policy, as the parent, or as a hypothetical parent when none is recorded; a workspace already named
+and parent-named stays `done`), `checkSpawnName` failure (which also refuses git-invalid refs and `/`), stale `old` (only when parent-named differently since;
+a child that renamed ITSELF, or whose former name is `old`, is not stale), name taken — also as a ref path-prefix: the app would silently suffix it; an ARCHIVED
+workspace's row only has to be well-formed). A parent that left the store still names its child (`decideRename` compares ids only). A running vague =
+`activeVagueMemberIds` (`src/shared/naming-migration.ts:107`), the app's own `liveFleetRuns` rule read off the store (a live OPS with a parent and a live
+member below; nothing writes `runs.closed_at`, the bus is never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close
+event and archiving an OPS archives its WHOLE subtree (`archiveWorkspace`), after which no rename is possible — so the operator declares a finished-but-live
+vague with `--closed <ops-id>` BEFORE archiving. The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`; any unreadable
+input = rc 2, never an empty set), is a dry run unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only rows of
+workspaces that no longer exist), and applies each step ONLY as `orchestra rename <id> <name>` with `ORCHESTRA_WS_ID=<parentId, else namedByParent>` (D2) — it
+never writes `store.json`. After each rename it RE-READS the store and the worktree's git HEAD (read-only) and requires the VALIDATED name, `namedByParent` (the
+EXISTING namer when there is one — `decideRename` keeps it — else the parent acted as), a former name, and git on the target, and looks once more after the run
+(the app's rename is not serialised: a live legacy child's own rename can win the race, or the git lock can refuse; an app older than #383/#384 renames without
+pinning) — anything else is FAILED, rc 1. The re-run picks those up: the name is ours without the pin → a pin-only same-name rename; the child's name won → a
+rename; a lock error → the rename again; the app suffixed it → the target decides (name-taken, or the rename lands once the clash is gone). Idempotent: after a
+full apply `renames` is empty. Gates: `naming-migration(.script).test.ts`, mutants `scripts/naming-migration-mutants.mjs`, built-app drive
+`scripts/e2e-migrate-parent-names.sh`.
 
 ## Hooks installed per worktree
 `installOrchestraHooks(worktreePath)` — `workspaces.ts:2156`. Idempotent via a

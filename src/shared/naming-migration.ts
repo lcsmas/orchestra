@@ -8,7 +8,7 @@ import { checkSpawnName, decideRename } from './naming-policy.ts';
 /** The Workspace fields the planner reads. */
 export type MigrationWorkspace = Pick<
   Workspace,
-  'id' | 'branch' | 'parentId' | 'namedByParent' | 'branchManuallySet' | 'archived' | 'kind' | 'canOrchestrate' | 'host'
+  'id' | 'branch' | 'parentId' | 'namedByParent' | 'formerBranch' | 'branchManuallySet' | 'archived' | 'kind' | 'canOrchestrate' | 'host'
 >;
 
 /** One row of the human-validated table. `old` (optional, recommended) is the branch the human validated the row
@@ -49,6 +49,8 @@ export interface PlanRow {
   to?: string;
   /** `rename` only: the workspace id the script asserts as ORCHESTRA_WS_ID (D2: the spawner / namer). */
   asParent?: string;
+  /** `rename` only: who the store must show as `namedByParent` afterwards (the existing namer when there is one — decideRename keeps it — else `asParent`). */
+  expectNamer?: string;
   /** One line for the human. */
   reason: string;
 }
@@ -74,8 +76,9 @@ export interface RejectedRow {
 export interface MigrationPlan {
   rows: PlanRow[];
   rejected: RejectedRow[];
-  /** The steps to apply, in store order — exactly the `rename` rows. Empty after a full apply. */
-  renames: Array<{ id: string; from: string; to: string; asParent: string }>;
+  /** The steps to apply, in store order — exactly the `rename` rows. Empty after a full apply. `expectNamer` = who the app will record as the namer after it:
+   *  the EXISTING namer when there is one (decideRename keeps it), else the parent the rename is applied as. */
+  renames: Array<{ id: string; from: string; to: string; asParent: string; expectNamer: string }>;
 }
 
 /** The label a human reads for an action (the ticket's vocabulary). */
@@ -123,12 +126,15 @@ export function activeVagueMemberIds(
   const members = new Set<string>();
   for (const a of workspaces) {
     if (!canOrchestrate(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
-    if (!a.parentId || !byId.has(a.parentId)) continue; // a top-level orchestrator runs a mission, not a vague
+    if (!a.parentId) continue; // a top-level orchestrator runs a mission, not a vague (an OPS whose parent left the store stays a vague: held is the safe side)
     members.add(a.id);
     for (const w of workspaces) if (ancestors(w.id).includes(a.id)) members.add(w.id);
   }
   return members;
 }
+
+/** The id asked of decideRename for a workspace with no recorded spawner (cannot collide with a real workspace id). */
+const HYPOTHETICAL_PARENT = 'naming-migration:hypothetical-parent';
 
 /** Plan the migration. Pure and idempotent: feed it the store AFTER an apply and `renames` is empty. */
 export function planMigration(input: MigrationInputs): MigrationPlan {
@@ -177,14 +183,21 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       valid.set(r.id, { index, to });
       return;
     }
-    // The app's own verdict on THIS rename by THIS caller (a human-pinned name is refused to the parent; never re-derived from the pin fields here).
+    // Already carrying the name AND parent-named: settled — whatever happened to it since (even a human pin to the same name) must not make a re-run refuse.
+    const settled = ws.branch === to && !!ws.namedByParent;
+    // Otherwise the app's own verdict on THIS rename by THIS caller (never re-derived from the pin fields here). With no recorded spawner the question is asked of a
+    // hypothetical parent: "were it parent-renamed, would the app refuse?" — a human-pinned name is refused to a parent, so a pinned row is a table error either way.
     const asParentId = parentOf(ws);
-    const decision = asParentId ? decideRename(ws, { kind: 'agent', id: asParentId }) : undefined;
-    if (decision && !decision.allow) return reject('refused-by-policy', decision.error);
+    if (!settled) {
+      const caller = asParentId ?? HYPOTHETICAL_PARENT;
+      const decision = decideRename(asParentId ? ws : { ...ws, parentId: caller }, { kind: 'agent', id: caller });
+      if (!decision.allow) return reject('refused-by-policy', decision.error);
+    }
     // `old` is a cross-check, the id is the identity. A legacy child that is NOT parent-named renames ITSELF while its nudge is active (and may win a race against this very
-    // run), so its name drifting from `old` is expected and the row still applies. Once someone parent-named it differently the table is outdated: that refuses.
+    // run), so its name drifting from `old` is expected and the row still applies. Once someone parent-named it differently the table is outdated: that refuses — unless the
+    // app recorded `old` as the former name, i.e. the rename that moved it was OURS (the app suffixed the name): then the target decides (name-taken below).
     const drifted = r.old !== undefined && r.old !== ws.branch && ws.branch !== to;
-    if (drifted && ws.namedByParent) {
+    if (drifted && ws.namedByParent && ws.formerBranch !== r.old) {
       return reject('stale-old', `the table was validated against "${r.old}" but it has been parent-named "${ws.branch}" since`);
     }
     if ((targetCount.get(to) ?? 0) > 1) return reject('duplicate-target', `another row targets the same name "${to}"`);
@@ -231,12 +244,12 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     const gone = byId.has(asParent) ? '' : ' (no longer in the store)';
     const pinOnly = ws.branch === to ? ' · pin only, the name is already right' : '';
     const drift = row.drift !== undefined ? ` · it renamed itself since the table (was "${row.drift}")` : '';
-    rows.push({ ...base, action: 'rename', to, asParent, reason: `as ${asParent.slice(0, 8)}${gone}${pinOnly}${drift}` });
+    rows.push({ ...base, action: 'rename', to, asParent, expectNamer: ws.namedByParent || asParent, reason: `as ${asParent.slice(0, 8)}${gone}${pinOnly}${drift}` });
   }
 
   const renames = rows
     .filter((r) => r.action === 'rename')
-    .map((r) => ({ id: r.id, from: r.branch, to: r.to!, asParent: r.asParent! }));
+    .map((r) => ({ id: r.id, from: r.branch, to: r.to!, asParent: r.asParent!, expectNamer: r.expectNamer! }));
   return { rows, rejected, renames };
 }
 

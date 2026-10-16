@@ -23,6 +23,7 @@ let home = '';
 let storeFile = '';
 let callsLog = '';
 let tableFile = '';
+let wtW3 = '';
 const gitDir = path.dirname(execFileSync('which', ['git'], { encoding: 'utf8' }).trim());
 
 function fixtureWorkspaces(): Array<Record<string, unknown>> {
@@ -32,7 +33,8 @@ function fixtureWorkspaces(): Array<Record<string, unknown>> {
     w('0b5a', { branch: 'wave-g-ops', parentId: LEAD, canOrchestrate: true }),
     w('w1', { parentId: OPS_RUN }), // running vague
     w('0b5c', { branch: 'wave-c-ops', parentId: LEAD, canOrchestrate: true, archived: true }),
-    w('w3', { parentId: OPS_DONE }),
+    w('w3', { parentId: OPS_DONE, worktreePath: wtW3 }), // a REAL worktree: the read-back also checks git HEAD
+    w('w6', { parentId: LEAD, namedByParent: OPS_DONE }), // re-parented by `attach`: parentId and the namer differ
     w('w4', { parentId: LEAD }),
     w('w5', { parentId: LEAD }), // old-w5 is pushed to origin
     w('h1'), // human-created
@@ -46,6 +48,7 @@ const TABLE = [
   { id: id('w5'), old: 'old-w5', new: 'impl-branche-poussee-5' },
   { id: id('d1'), old: 'old-d1', new: 'impl-sans-parent-6' },
 ];
+const TABLE_W6 = [{ id: id('w6'), old: 'old-w6', new: 'impl-reparente-6' }];
 
 before(() => {
   tmp = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'nm385-'));
@@ -65,6 +68,8 @@ before(() => {
   g(repo, 'commit', '--allow-empty', '-m', 'init');
   g(repo, 'remote', 'add', 'origin', path.join(tmp, 'origin.git'));
   g(repo, 'branch', 'old-w5');
+  wtW3 = path.join(tmp, 'wt-w3');
+  g(repo, 'worktree', 'add', '-q', '-b', 'old-w3', wtW3, 'master');
   g(repo, 'push', '-q', 'origin', 'master', 'old-w5');
   fs.mkdirSync(path.dirname(storeFile), { recursive: true });
   fs.writeFileSync(storeFile, JSON.stringify({ workspaces: fixtureWorkspaces() }, null, 2));
@@ -74,6 +79,7 @@ before(() => {
   fs.writeFileSync(
     path.join(bin, 'shim.mjs'),
     `import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 const [verb, wsid, name] = process.argv.slice(2);
 fs.appendFileSync(process.env.SHIM_LOG, [process.env.ORCHESTRA_WS_ID, process.env.ORCHESTRA_WS_ID_IDENTITY, verb, wsid, name].join('|') + '\\n');
 const LATE_FILE = process.env.SHIM_STORE + '.late';
@@ -91,7 +97,10 @@ if (process.env.SHIM_CHILD_WINS === wsid) { w.branch = 'child-chose-this'; fs.wr
 // (the script is sequential: read-back of this one is over by then), no timer involved.
 // SHIM_NO_PIN = an app older than #383/#384: it renames, but records neither the namer nor the former name.
 // SHIM_NO_NAMER / SHIM_NO_FORMER: an app that records only one of the two.
-if (!process.env.SHIM_NO_PIN) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = process.env.ORCHESTRA_WS_ID; }
+// decideRename keeps an EXISTING namer (else it pins the caller); SHIM_FORMER_OTHER: the child's own rename landed between the snapshot and ours, so the app saw ANOTHER name.
+if (!process.env.SHIM_NO_PIN) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = process.env.SHIM_FORMER_OTHER ? 'child-name-seen' : w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = w.namedByParent || process.env.ORCHESTRA_WS_ID; }
+// a real worktree gets its branch really renamed (SHIM_GIT_LAGS: the record moved, git did not)
+if (w.worktreePath && w.branch !== final && !process.env.SHIM_GIT_LAGS) execFileSync('git', ['-C', w.worktreePath, 'branch', '-m', final], { stdio: 'ignore' });
 w.branch = final;
 fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store));
 if (process.env.SHIM_LATE_ID === wsid) fs.writeFileSync(LATE_FILE, '1');
@@ -102,7 +111,12 @@ process.stdout.write('Renamed to ' + final + '\\n');
 });
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+function realignGit(): void {
+  const cur = spawnSync('git', ['-C', wtW3, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8', env: { PATH: gitDir, HOME: tmp } }).stdout.trim();
+  if (cur && cur !== 'old-w3') execFileSync('git', ['-C', wtW3, 'branch', '-m', 'old-w3'], { env: { PATH: gitDir, HOME: tmp }, stdio: 'pipe' });
+}
 function resetStore(): void {
+  realignGit();
   fs.writeFileSync(storeFile, JSON.stringify({ workspaces: fixtureWorkspaces() }, null, 2));
   fs.writeFileSync(tableFile, JSON.stringify(TABLE, null, 2));
   fs.rmSync(callsLog, { force: true });
@@ -236,10 +250,8 @@ test('idempotent end to end: the second --apply plans and runs nothing; the skip
   assert.match(r.out, /DONE  0\/0 renamed/);
   assert.match(r.out, /skip \(branch on origin\)/);
   assert.equal(fs.readFileSync(storeFile, 'utf8'), afterFirst);
-  // the vague closes (its OPS is archived): the re-run plans exactly that vague's member
-  const store = JSON.parse(afterFirst) as { workspaces: Array<Record<string, unknown>> };
-  fs.writeFileSync(storeFile, JSON.stringify({ workspaces: store.workspaces.map((w) => (w.id === OPS_RUN ? { ...w, archived: true } : w)) }));
-  const close = run(['--table', tableFile, '--apply']);
+  // the vague closes (declared, while its member is live — archiving an OPS archives the whole subtree): the re-run plans exactly that vague's member
+  const close = run(['--table', tableFile, '--apply', '--closed', OPS_RUN]);
   assert.equal(close.rc, 0, close.err + close.out);
   assert.deepEqual(calls(), [`${OPS_RUN}|${OPS_RUN}|rename|${id('w1')}|impl-vague-en-cours-1`]);
   resetStore();
@@ -283,7 +295,7 @@ test('--apply reads the store back: a rename the app did NOT record as parent-na
   resetStore();
   const r = run(['--table', tableFile, '--apply'], { SHIM_NO_PIN: '1' });
   assert.equal(r.rc, 1, r.out + r.err);
-  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅; expected branch=review-fusion-comptes-240 namedByParent=/);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅( git HEAD=review-fusion-comptes-240)?; expected branch=review-fusion-comptes-240 namedByParent=/);
   assert.doesNotMatch(r.out, /^APPLIED/m);
   assert.match(r.out, /DONE  0\/2 renamed, 2 FAILED/);
   // the app is updated: the same table now plans a pin-only rename (same name, not yet parent-named) and the store ends up recorded
@@ -398,6 +410,38 @@ test('a name git refuses (impl-x..y) is rejected at plan time (by the naming pol
   assert.equal(r.rc, 2, r.out + r.err);
   assert.match(r.out, /REJECTED  row 1  w3000000  invalid-name/);
   assert.deepEqual(calls(), []);
+  resetStore();
+});
+
+test('the namer the app keeps is the one expected: parentId P + an existing namer N -> the rename is acted as P, the store ends with N, APPLIED (not a false FAILED)', () => {
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify(TABLE_W6));
+  const r = run(['--table', tableFile, '--apply']);
+  assert.equal(r.rc, 0, r.out + r.err);
+  assert.match(r.out, /APPLIED  w6000000  old-w6 -> impl-reparente-6/);
+  assert.deepEqual(calls(), [`${LEAD}|${LEAD}|rename|${id('w6')}|impl-reparente-6`]);
+  const w6 = (JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> }).workspaces.find((w) => w.id === id('w6'))!;
+  assert.equal(w6.namedByParent, OPS_DONE);
+  resetStore();
+});
+
+test('a former name the app saw (the child renamed itself between the snapshot and ours) is accepted; a missing one is not', () => {
+  resetStore();
+  const ok = run(['--table', tableFile, '--apply'], { SHIM_FORMER_OTHER: '1' });
+  assert.equal(ok.rc, 0, ok.out + ok.err);
+  assert.match(ok.out, /DONE  2\/2 renamed/);
+  resetStore();
+});
+
+test('the worktree\'s git HEAD is read back too: a record that moved while git did not is FAILED', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply'], { SHIM_GIT_LAGS: '1' });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed .*branch=review-fusion-comptes-240 namedByParent=0b5c0000.* git HEAD=old-w3;/);
+  resetStore(); // (detect-only: a record that moved while git did not is for the operator — the app's reconciler would adopt git's name)
+  const ok = run(['--table', tableFile, '--apply']);
+  assert.equal(ok.rc, 0, ok.out + ok.err);
+  assert.equal(spawnSync('git', ['-C', wtW3, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8', env: { PATH: gitDir, HOME: tmp } }).stdout.trim(), 'review-fusion-comptes-240', 'the real worktree branch was renamed by the (fake) app');
   resetStore();
 });
 

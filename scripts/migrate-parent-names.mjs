@@ -7,13 +7,14 @@
 //                                           the app then refuses every rename) · --allow-gone  rows of workspaces that no longer exist print as GONE instead of refusing · --verbose  list every workspace
 //
 // TABLE = the human-validated old → new table, a JSON array: [{ "id": "<full workspace id>", "old": "<branch it was validated against>", "new": "<rôle>-<objet>[-<ticket>]" }].
-//   `old` is optional but recommended: a row whose workspace was renamed since is rejected as stale. `new` must pass naming-policy.checkSpawnName.
+//   `old` is optional but recommended: a row whose workspace was PARENT-named differently since is rejected as stale (a legacy child that renamed ITSELF is not). `new` must pass naming-policy.checkSpawnName.
 // INPUTS (all READ-ONLY): the app's store.json (the CLI's own path rule — ORCHESTRA_HOME/userData/orchestra/store.json, see appStoreFile), `git ls-remote --heads` of EVERY remote +
 //   `git for-each-ref refs/heads` of each table workspace's repo, and the RUNNING VAGUES derived from the store with the app's own liveness rule (activeVagueMemberIds:
 //   a live OPS with a live member below it — nothing writes runs.closed_at, so the bus adds nothing and is never opened; a top-level orchestrator is a mission: its workers are not held).
 // APPLY goes ONLY through the installed app's CLI: `orchestra rename <id> <name>` with ORCHESTRA_WS_ID=<that workspace's parentId> (D2: a rename AS the parent, so the app records
 //   namedByParent + formerBranch, #383/#384) — never by editing store.json. Re-run it after each vague closes: it plans exactly that vague's members; after a full apply it plans nothing.
-//   After each rename the store is re-read: the workspace must show namedByParent=<the parent> and formerBranch=<the old name>, else the line is FAILED (an app older than #383/#384 renames but does not pin).
+//   After each rename the store (and the worktree's git HEAD, read-only) is re-read: the workspace must show the VALIDATED name, namedByParent (the existing namer, else the parent) and a former
+//   name, else the line is FAILED (an app older than #383/#384 renames but does not pin; a child's own rename can race ours). A row is stale only when the workspace was PARENT-named differently since.
 // EXIT: 0 ok · 1 an `orchestra rename` failed or was not pinned · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set).
 // SAFETY: it targets the app of $ORCHESTRA_HOME (default: the live ~/.orchestra) and refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) — one home for the
 //   store it reads and the app it renames in. Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.
@@ -60,6 +61,7 @@ if (process.env.ORCHESTRA_SOCK) {
 
 const { planMigration, renderPlan, activeVagueMemberIds } = await import(pathToFileURL(path.join(REPO, 'src/shared/naming-migration.ts')).href);
 const { appStoreFile } = await import(pathToFileURL(path.join(REPO, 'src/cli/index.ts')).href);
+const { isScratchLike } = await import(pathToFileURL(path.join(REPO, 'src/shared/types.ts')).href);
 
 // ── read the inputs (fail closed: an unreadable input is a refusal, never an empty set) ──────────────────────────────
 const storeFile = appStoreFile(process.env);
@@ -125,18 +127,26 @@ if (!apply) {
   process.exit(0);
 }
 
-// What the app must have recorded for a parent-given name — read back from the store, never assumed from rc 0 or from the CLI's own "Renamed to": the VALIDATED name (not a
-// suffixed one, not the child's own rename that raced ours), the namer (#383) and the former name (#384).
+// What the app must have recorded for a parent-given name — read back from the store AND git, never assumed from rc 0 or from the CLI's own "Renamed to": the VALIDATED name
+// (not a suffixed one, not the child's own rename that raced ours), the namer (#383: the EXISTING namer is kept, else the parent we acted as), a former name (#384: whatever the
+// app saw before our rename — a child's own rename can land in between, so only "some former name other than the target"), and the worktree's real branch (read-only: a record
+// that shows the target while git HEAD holds another name would be adopted back by the app's reconciler, as a human pin).
+const gitHead = (w) => {
+  if (!w.worktreePath || isScratchLike(w) || w.host?.kind === 'sandbox' || !fs.existsSync(path.join(w.worktreePath, '.git'))) return undefined; // no git branch to compare
+  const r = spawnSync('git', ['-C', w.worktreePath, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  return r.status === 0 ? r.stdout.trim() : `<unreadable: ${(r.stderr || r.error?.message || '').trim().slice(0, 80)}>`;
+};
 const readBack = (step) => {
   try {
     const w = JSON.parse(fs.readFileSync(storeFile, 'utf8')).workspaces.find((x) => x.id === step.id);
-    const ok = !!w && w.branch === step.to && w.namedByParent === step.asParent && (step.to === step.from || w.formerBranch === step.from);
-    return { ok, saw: w ? `branch=${w.branch} namedByParent=${w.namedByParent ?? '∅'} formerBranch=${w.formerBranch ?? '∅'}` : 'workspace not in the store' };
+    const head = w ? gitHead(w) : undefined;
+    const ok = !!w && w.branch === step.to && w.namedByParent === step.expectNamer && (step.to === step.from || (!!w.formerBranch && w.formerBranch !== step.to)) && (head === undefined || head === step.to);
+    return { ok, saw: w ? `branch=${w.branch} namedByParent=${w.namedByParent ?? '∅'} formerBranch=${w.formerBranch ?? '∅'}${head === undefined ? '' : ` git HEAD=${head}`}` : 'workspace not in the store' };
   } catch (e) {
     return { ok: false, saw: `store unreadable: ${e.message}` };
   }
 };
-const expected = (step) => `expected branch=${step.to} namedByParent=${step.asParent}${step.to === step.from ? '' : ` formerBranch=${step.from}`}`;
+const expected = (step) => `expected branch=${step.to} namedByParent=${step.expectNamer}${step.to === step.from ? '' : ' formerBranch=<the name it had>'} and the worktree on ${step.to}`;
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // ── apply: ONLY through the installed app's CLI, AS the parent ────────────────────────────────────────────────────────

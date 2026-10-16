@@ -97,11 +97,12 @@ test('the full plan on the fixture store: one action per workspace, each with it
 test('rename: applied AS the spawner (parentId first, else the namer), with the validated name', () => {
   const plan = planMigration(inputs());
   const by = Object.fromEntries(plan.renames.map((r) => [r.id, r]));
-  assert.deepEqual(by[id('w3')], { id: id('w3'), from: 'old-w3', to: 'review-fusion-comptes-240', asParent: OPS_CLOSED });
+  assert.deepEqual(by[id('w3')], { id: id('w3'), from: 'old-w3', to: 'review-fusion-comptes-240', asParent: OPS_CLOSED, expectNamer: OPS_CLOSED });
   assert.equal(by[id('w4')].asParent, LEAD);
   assert.equal(by[id('p1')].asParent, LEAD, 'a detached child has no parentId: the namer is the identity');
   assert.equal(by[id('p1')].to, 'impl-detache-nomme-4');
   assert.equal(by[id('b1')].asParent, OPS_CLOSED, 'both recorded: parentId wins over namedByParent');
+  assert.equal(by[id('b1')].expectNamer, LEAD, 'decideRename KEEPS the existing namer: the store must end with it, not with the parent we acted as');
 });
 
 test('skip (branch on origin): a pushed branch is listed and not renamed; a branch NOT on origin is', () => {
@@ -217,11 +218,21 @@ test('rejected rows: a human-pinned target is refused BY THE APP\'S OWN decideRe
   assert.match(r.detail, /named by the human/);
   assert.equal(actionOf(plan.rows, 'h2'), 'row-rejected');
   assert.ok(!plan.renames.some((x) => x.id === id('h2')));
-  // the verdict is the policy's: a legacy human-pinned workspace with NO recorded spawner is not a rejected row — nobody could rename it anyway
+  // a human-pinned workspace with NO recorded spawner is a table error too (the question is asked of a hypothetical parent), not a quiet untouched row
   const lone = fixtureStore().map((w) => (w.id === id('d1') ? { ...w, branchManuallySet: true } : w));
   const p2 = planMigration(inputs({ workspaces: lone }));
-  assert.equal(p2.rejected.some((x) => x.id === id('d1')), false);
-  assert.equal(actionOf(p2.rows, 'd1'), 'untouched-no-parent');
+  assert.equal(p2.rejected.find((x) => x.id === id('d1'))?.code, 'refused-by-policy');
+  assert.equal(actionOf(p2.rows, 'd1'), 'row-rejected');
+});
+
+test('a migrated workspace that a human pins LATER (even to the same name) is still `done`: the re-run must not refuse forever', () => {
+  const applied = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: NEW.w3, namedByParent: OPS_CLOSED, formerBranch: 'old-w3', branchManuallySet: true } : w));
+  const plan = planMigration(inputs({ workspaces: applied, table: rowsFor(['w3']) }));
+  assert.deepEqual(plan.rejected, []);
+  assert.equal(actionOf(plan.rows, 'w3'), 'done');
+  // but a pinned workspace that does NOT carry the target name is still refused
+  const pinnedOther = applied.map((w) => (w.id === id('w3') ? { ...w, branch: 'impl-humain-1' } : w));
+  assert.equal(planMigration(inputs({ workspaces: pinnedOther, table: rowsFor(['w3']) })).rejected[0]?.code, 'refused-by-policy');
 });
 
 test('rejected rows: an invalid name (no rôle prefix, empty, sanitised to nothing)', () => {
@@ -269,6 +280,20 @@ test("rejected rows: a stale 'old' only once the workspace was PARENT-named diff
   assert.match(plan.rows.find((r) => r.id === id('w3'))!.reason, /renamed itself since the table \(was "old-w3"\)/);
   const noOld = planMigration(inputs({ table: [{ id: id('w3'), new: 'impl-x-1' }] }));
   assert.equal(noOld.rejected.length, 0, "'old' is optional");
+});
+
+test('re-plan after the app SUFFIXED our name: our own earlier rename (formerBranch == old) is not a stale row; the target then decides', () => {
+  const suffixed = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: `${NEW.w3}-2`, namedByParent: OPS_CLOSED, formerBranch: 'old-w3' } : w));
+  // the target is taken by the branch that made the app suffix: a name-taken row, not stale-old
+  const taken = planMigration(inputs({ workspaces: suffixed, localBranches: new Set([NEW.w3]), table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] }));
+  assert.equal(taken.rejected[0]?.code, 'name-taken');
+  // the other branch is gone: the re-run lands it
+  const freed = planMigration(inputs({ workspaces: suffixed, table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] }));
+  assert.deepEqual(freed.rejected, []);
+  assert.deepEqual(freed.renames.map((r) => [r.from, r.to]), [[`${NEW.w3}-2`, NEW.w3]]);
+  // parent-named by someone ELSE since (no formerBranch == old): still stale
+  const other = suffixed.map((w) => (w.id === id('w3') ? { ...w, formerBranch: 'something-else' } : w));
+  assert.equal(planMigration(inputs({ workspaces: other, table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] })).rejected[0]?.code, 'stale-old');
 });
 
 test('re-plan after a failed run: lost pin -> a pin-only rename; the child won with its own name -> a rename; a git-lock error (nothing changed) -> the rename again', () => {
@@ -355,6 +380,9 @@ test('activeVagueMemberIds: a vague is a LIVE orchestrator with a parent and a l
   ];
   assert.deepEqual([...activeVagueMemberIds(plain)].sort(), [...activeVagueMemberIds(base)].sort());
   // a dangling parent / a cycle must not hang or throw
+  // an OPS whose parent has left the store is still a vague (the app keeps the run a vague): held is the safe side
+  const orphanOps = [ws('o1', { parentId: id('gone'), canOrchestrate: true }), ws('o2', { parentId: id('o1') })];
+  assert.deepEqual([...activeVagueMemberIds(orphanOps)].sort(), [id('o1'), id('o2')].sort());
   const cyc = [ws('c1', { parentId: id('c2'), canOrchestrate: true }), ws('c2', { parentId: id('c1'), canOrchestrate: true })];
   assert.doesNotThrow(() => activeVagueMemberIds(cyc));
 });
