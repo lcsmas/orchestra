@@ -110,6 +110,8 @@
     "test:bus-notice": "node scripts/verify-bus-startup-notice.mjs",
     "test:reparent-notice": "node scripts/verify-reparent-run-notice.mjs",
     "test:promote-refresh": "node scripts/verify-promote-run-refresh.mjs",
+    "test:session-key-keeper": "pnpm run build:keeper && for a in key_registered_before_cli key_attach_keeps key_replaced_on_fresh key_register_failure; do node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/e2e-keeper-session-key.mjs $a | tail -1 || exit 1; done",
+    "test:session-identity-mutants": "pnpm run build:cli && node scripts/session-identity-mutants.mjs",
     "test:restart-row-shot": "node scripts/restart-row-screenshot.mjs",
     "test:ctx-scroll-shot": "node scripts/context-panel-scroll-screenshot.mjs",
     "build:bus-abi": "node scripts/build-bus-abi.mjs",

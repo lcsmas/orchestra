@@ -42,6 +42,11 @@
 //        and, for the promote path, converges with the D1b mission re-freeze — so it
 //        is NOT independently flag-observable here; the RESTART is the load-bearing
 //        arm-1 clause, and that is what RD/R1 pin. See the nomination's F1 answer.)
+//   H1..H5 (#379 / ADR 0008) — a LIVE session the HOST answers per call (it holds a registered session key): promote
+//        takes effect with NO restart and NO stale state — `hostResolved`, the marker FILE only (the app-down fallback guard),
+//        and the host's /identity answer flips parent-run → own-run in the same turn. A keyless live session (R1/R2) keeps the
+//        restart / mark-stale path. MUTATION: dropping `hostAnswers` from the reconcile candidate (or the host-resolved branch)
+//        → the keyed node is restarted/marked stale → H1/H2 redden.
 //   A3 (unchanged invariant) — a member spawned AFTER promote anchors to the
 //        promoted node's run natively (no reconcile) — resolveWaveRunId only.
 //
@@ -93,6 +98,9 @@ export { initPlatform } from ${JSON.stringify(path.join(repoRoot, 'src/main/plat
 export { initBus, getBus, closeBus } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus.ts'))};
 export { startRun, getRun } from ${JSON.stringify(path.join(repoRoot, 'src/main/bus-runs.ts'))};
 export { registerSdkDelivery } from ${JSON.stringify(path.join(repoRoot, 'src/main/sdk-delivery.ts'))};
+// #379 / ADR 0008 — the host identity service the CLI asks on every bus call: the REAL registry file (under the scratch ORCHESTRA_HOME) + the REAL /identity dispatcher over the real store + bus.
+export { registerSessionKey, hasSessionKey, dispatchIdentityRequest } from ${JSON.stringify(path.join(repoRoot, 'src/main/session-identity-host.ts'))};
+export { mintSessionKey } from ${JSON.stringify(path.join(repoRoot, 'src/main/session-identity.ts'))};
 // The reconcile's restart wire. Stubbed via the resolve plugin below so the rig
 // RECORDS calls (and controls the {ok} result) instead of driving real claude.
 export { __restartCalls, __setRestartResult } from ${JSON.stringify(path.join(repoRoot, 'src/main/restart-workspace.ts'))};
@@ -353,6 +361,81 @@ check(
   'RD: resolveWaveRunId(child) flipped grandparent→promoted-parent (the run its relaunch stamps)',
   mod.resolveWaveRunId(mod.store.getWorkspace(RD_CHILD)) === RD_PARENT && rdChildPre !== RD_PARENT,
 );
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// H — #379 / ADR 0008: a live session the HOST answers per call needs NO restart and is NEVER stale.
+// The keyed nodes below carry a registered session key exactly as a fresh keeper spawn registers it.
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n#379 H1 — a KEYED live idle node: promote = host-resolved (no restart, no stale), the host answers the NEW run at once:');
+const H1 = 'keyed-node-379';
+await mod.store.upsertWorkspace(ws(H1, { parentId: LEAD_ID }));
+liveSet.add(H1);
+const k1 = mod.mintSessionKey();
+mod.registerSessionKey(H1, k1);
+const h1Pre = mod.dispatchIdentityRequest({ id: H1, key: k1 });
+check('H1-pre: before the promote the host answers the PARENT\'s run (what the env baked at spawn also says)', h1Pre.ok === true && h1Pre.runId === LEAD_ID, JSON.stringify(h1Pre));
+mod.__restartCalls.length = 0;
+mod.__setRestartResult({ ok: true, mode: 'structured', fresh: false });
+const h1 = await mod.dispatchPromoteRequest({ id: H1 });
+check('H1: promote ok', h1.ok === true, JSON.stringify(h1));
+check('H1: NO restart was attempted for the keyed node (master/keyless: R1 restarts it)', !mod.__restartCalls.some((c) => c.id === H1), JSON.stringify(mod.__restartCalls));
+check('H1: reported in hostResolved — not restarted, not markedStale', (h1.hostResolved ?? []).includes(H1) && !(h1.restarted ?? []).includes(H1) && !(h1.markedStale ?? []).includes(H1), JSON.stringify(h1));
+check('H1: NOT flagged busRunStale in the store (no "stale" pane state for a session the host answers)', !mod.store.getWorkspace(H1).busRunStale);
+const h1Marker = path.join(tmp, H1, '.orchestra', 'bus-run-stale');
+check('H1: the marker FILE exists (the app-down fallback guard) and names the NEW run', fs.existsSync(h1Marker) && /^new run: keyed-node-379$/m.test(fs.readFileSync(h1Marker, 'utf8')), fs.existsSync(h1Marker) ? fs.readFileSync(h1Marker, 'utf8') : 'absent');
+const h1Post = mod.dispatchIdentityRequest({ id: H1, key: k1 });
+check('H1: THE promise — the SAME key now gets the NEW run (same turn, no restart)', h1Post.ok === true && h1Post.runId === H1, JSON.stringify(h1Post));
+
+console.log('\n#379 H2 — a keyed WORKING session (a restart would be refused mid-turn): still host-resolved — the restart is not even tried:');
+const H2 = 'keyed-working-379';
+await mod.store.upsertWorkspace(ws(H2, { parentId: LEAD_ID }));
+liveSet.add(H2);
+const k2 = mod.mintSessionKey();
+mod.registerSessionKey(H2, k2);
+mod.__restartCalls.length = 0;
+mod.__setRestartResult({ ok: false, error: 'restart failed: The agent is working — interrupt it first, then restart.' });
+const h2 = await mod.dispatchPromoteRequest({ id: H2 });
+check('H2: promote ok', h2.ok === true, JSON.stringify(h2));
+check('H2: no restart attempt, not markedStale (R2: the keyless working session IS marked stale)', !mod.__restartCalls.some((c) => c.id === H2) && !(h2.markedStale ?? []).includes(H2) && (h2.hostResolved ?? []).includes(H2), JSON.stringify({ calls: mod.__restartCalls, h2 }));
+check('H2: no busRunStale flag; the host answers its own run', !mod.store.getWorkspace(H2).busRunStale && mod.dispatchIdentityRequest({ id: H2, key: k2 }).runId === H2);
+
+console.log('\n#379 H3 — the descendants of a promoted keyed node re-anchor at their next call too (child → promoted parent):');
+const H3_PARENT = 'h3-parent-379';
+const H3_CHILD = 'h3-child-379';
+await mod.store.upsertWorkspace(ws(H3_PARENT, { parentId: LEAD_ID }));
+await mod.store.upsertWorkspace(ws(H3_CHILD, { parentId: H3_PARENT }));
+liveSet.add(H3_PARENT);
+liveSet.add(H3_CHILD);
+const k3p = mod.mintSessionKey();
+const k3c = mod.mintSessionKey();
+mod.registerSessionKey(H3_PARENT, k3p);
+mod.registerSessionKey(H3_CHILD, k3c);
+check('H3-pre: the child\'s host answer is the grandparent run', mod.dispatchIdentityRequest({ id: H3_CHILD, key: k3c }).runId === LEAD_ID);
+mod.__restartCalls.length = 0;
+mod.__setRestartResult({ ok: true, mode: 'structured', fresh: false });
+const h3 = await mod.dispatchPromoteRequest({ id: H3_PARENT });
+check('H3: parent AND child host-resolved, nothing restarted', (h3.hostResolved ?? []).includes(H3_PARENT) && (h3.hostResolved ?? []).includes(H3_CHILD) && mod.__restartCalls.length === 0, JSON.stringify({ h3, calls: mod.__restartCalls }));
+check('H3: the child\'s host answer flipped grandparent → promoted parent', mod.dispatchIdentityRequest({ id: H3_CHILD, key: k3c }).runId === H3_PARENT);
+
+console.log('\n#379 H4 — a REPLACED session is refused (#128): a new key supersedes the old one, which the host stops answering:');
+const k1b = mod.mintSessionKey();
+mod.registerSessionKey(H1, k1b); // a fresh keeper spawn for H1
+const h4Old = mod.dispatchIdentityRequest({ id: H1, key: k1 });
+check('H4: the OLD key is refused (superseded)', h4Old.ok === false && h4Old.code === 'superseded', JSON.stringify(h4Old));
+check('H4: the NEW key is answered', mod.dispatchIdentityRequest({ id: H1, key: k1b }).ok === true);
+const h4Other = mod.dispatchIdentityRequest({ id: H2, key: k1b });
+check('H4: a key never opens ANOTHER workspace', h4Other.ok === false && h4Other.code === 'superseded', JSON.stringify(h4Other));
+check('H4: the reply never carries a key', !JSON.stringify([h4Old, h4Other]).includes(k1) && !JSON.stringify([h4Old, h4Other]).includes(k1b));
+
+console.log('\n#379 H5 — a COLD keyed node (no live session) is notice-only: no marker file, no restart:');
+const H5 = 'keyed-cold-379';
+await mod.store.upsertWorkspace(ws(H5, { parentId: LEAD_ID }));
+mod.registerSessionKey(H5, mod.mintSessionKey()); // a key from a session that is no longer live
+mod.__restartCalls.length = 0;
+const h5 = await mod.dispatchPromoteRequest({ id: H5 });
+check('H5: promote ok; not host-resolved, not restarted, not stale', h5.ok === true && !(h5.hostResolved ?? []).includes(H5) && !(h5.restarted ?? []).includes(H5) && !(h5.markedStale ?? []).includes(H5) && mod.__restartCalls.length === 0, JSON.stringify(h5));
+check('H5: no marker file for a cold node (its next launch re-reads the env)', !fs.existsSync(path.join(tmp, H5, '.orchestra', 'bus-run-stale')));
 
 // ════════════════════════════════════════════════════════════════════════════
 // A3 — unchanged invariant: a member spawned AFTER promote anchors to the promoted
