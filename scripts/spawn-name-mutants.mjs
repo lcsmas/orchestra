@@ -36,7 +36,7 @@ const MUTANTS = [
   { id: 'M01_required_name', file: F.policy, find: "if (!given) return refuse('a spawn needs a name (--name): none given');", to: "if (given === '\\u0000') return refuse('a spawn needs a name (--name): none given');", tests: [T.unit], expect: 'required — must-FAIL' },
   { id: 'M02_role_prefix_loose', file: F.policy, find: 'name.startsWith(`${r}-`)', to: 'name.startsWith(r)', tests: [T.unit], expect: 'rôle prefix — must-FAIL' },
   { id: 'M03_object_not_required', file: F.policy, find: "if (!/[a-zA-Z0-9]/.test(name.slice(role.length + 1)))", to: "if (false)", tests: [T.unit], expect: 'object — must-FAIL' },
-  { id: 'M04_not_sanitised', file: F.policy, find: 'const name = sanitizeBranchName(given);', to: 'const name = given;', tests: [T.unit], expect: 'sanitisation' },
+  { id: 'M04_not_sanitised', file: F.policy, find: 'const name = sanitizeBranchName(folded);', to: 'const name = folded;', tests: [T.unit], expect: 'sanitisation' },
   { id: 'M05_convention_not_restated', file: F.policy, find: '`${why} — expected ${NAME_CONVENTION}`', to: '`${why}`', tests: [T.unit, T.cli], expect: 'restates the convention' },
   { id: 'M06_nudge_ignores_namer', file: F.policy, find: ' && !ws.namedByParent &&', to: ' &&', tests: [T.unit, T.wiring], expect: 'nudgeActive — must-FAIL' },
   { id: 'M07_wrapper_skips_check', file: F.ws, find: "if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };", to: '', tests: [T.wiring], expect: 'the AGENT route requires the name' },
