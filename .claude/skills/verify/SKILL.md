@@ -165,6 +165,22 @@ assert presence/absence of `.help-view` / `.insights-view`, their mutual
 exclusion (opening one closes the other), close via `×`, and reopen from the
 sidebar header buttons.
 
+## Idle CPU — when the diff adds periodic work
+
+When the change adds a timer, poll, `spawn`/`execFile`/`simpleGit` or
+`useEffect` that runs repeatedly, state its cadence and what its cost scales with
+(size it at ~20 workspaces and a 50-release history; existing cadences: 8 s stats
+poll, 12 s PR poll, 2 s Resources tick), then let the launched instance sit idle
+a minute with several workspaces and read the main process:
+
+```bash
+ps -o pcpu= -p <main-pid> | awk '{print ($1 > 10) ? "HOT: profile" : "OK: " $1 "%"}'
+```
+
+Idle is ~0–5 %. On `HOT`, `kill -USR1 <main-pid>` opens the inspector on
+`127.0.0.1:9229`; a short CPU profile names the offender. Sustained double-digit
+idle CPU, or a stream of short-lived `git`/`gh`/`du` children, blocks the release.
+
 ## Done when
 
 Every line below holds, and each one is reported with the value that proves it.
@@ -192,6 +208,8 @@ rather than omitted:
       distinct. Duplicate hashes mean a drive step no-opped.
 - [ ] Overlay/popover surfaces additionally have a `getBoundingClientRect()`
       assertion showing the element fully inside the viewport.
+- [ ] If the diff adds periodic work: each hit's cadence + scaling factor, and
+      the measured idle main-process CPU %.
 - [ ] The instance you launched and its compositor are stopped, killed by
       resolved pid.
 - [ ] The report names, per surface, which half proved what — so a reader can
