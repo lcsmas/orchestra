@@ -8,6 +8,7 @@ import {
   decideRename,
   initialNaming,
   nudgeActive,
+  pinAdvancesGate,
   pinFields,
   sanitizeBranchName,
   type NamingFields,
@@ -136,12 +137,27 @@ describe('pinFields — what an allowed rename writes', () => {
   });
 });
 
+describe('pinAdvancesGate — does a same-name rename still have to persist its pin?', () => {
+  const rows: Array<[string, Partial<NamingFields>, { manual: boolean; bumpAutoCount: boolean }, boolean]> = [
+    ['first human pin ⇒ persist', {}, { manual: true, bumpAutoCount: false }, true],
+    ['human pin on an already-pinned name ⇒ nothing to persist', { branchManuallySet: true }, { manual: true, bumpAutoCount: false }, false],
+    ['counted agent rename ⇒ persist (the counter moves)', { autoRenameCount: 0 }, { manual: false, bumpAutoCount: true }, true],
+    ['counted agent rename on a pinned name ⇒ persist (the counter still moves)', { branchManuallySet: true }, { manual: false, bumpAutoCount: true }, true],
+    ['on-demand agent rename ⇒ nothing to persist', { autoRenameCount: 2 }, { manual: false, bumpAutoCount: false }, false],
+  ];
+  for (const [clause, fields, pin, expected] of rows) {
+    it(clause, () => assert.equal(pinAdvancesGate(ws(fields), pin), expected));
+  }
+});
+
 describe('sanitizeBranchName (moved verbatim from workspaces.ts)', () => {
   const rows: Array<[string, string, string]> = [
     ['trims and dashes whitespace runs', '  fix  the   bug ', 'fix-the-bug'],
     ['drops characters outside the allow-list', 'feat/x!@#$%^&*()y', 'feat/xy'],
     ['keeps dot, underscore, slash, dash', 'a.b_c/d-e', 'a.b_c/d-e'],
     ['caps at 80 chars', 'x'.repeat(100), 'x'.repeat(80)],
+    ['keeps upper-case letters', 'Fix-ABC', 'Fix-ABC'],
+    ['keeps digits', 'v2-0-9', 'v2-0-9'],
     ['empty stays empty', '   ', ''],
     ['accents are dropped, not transliterated', 'éa', 'a'],
   ];

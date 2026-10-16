@@ -106,6 +106,7 @@ import {
   MAX_AUTO_RENAMES,
   decideRename,
   initialNaming,
+  pinAdvancesGate,
   pinFields,
   sanitizeBranchName,
   type RenamePin,
@@ -994,7 +995,7 @@ export async function renameWorkspaceBranch(
     if (newBranch === ws.branch) {
       // No name change, but a manual/auto action may still need to advance the
       // gate (e.g. a UI relabel to the same name, or an idempotent auto-rename).
-      if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
+      if (pinAdvancesGate(ws, opts)) {
         const updated = { ...ws, ...gateFields };
         await store.upsertWorkspace(updated);
         platform.broadcast('workspace:update', updated);
@@ -1019,7 +1020,7 @@ export async function renameWorkspaceBranch(
   // name only when HEAD is detached/unreadable.
   const liveBranch = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
   if (newBranch === liveBranch) {
-    if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {
+    if (pinAdvancesGate(ws, opts)) {
       const updated = { ...ws, branch: liveBranch, ...gateFields };
       await store.upsertWorkspace(updated);
       platform.broadcast('workspace:update', updated);

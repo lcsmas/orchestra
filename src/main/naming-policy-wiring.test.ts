@@ -8,15 +8,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p: string) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
-const workspacesSrc = read('src/main/workspaces.ts');
-const agentSdkSrc = read('src/main/agent-sdk.ts');
-const apiHandlersSrc = read('src/main/api-handlers.ts');
-const activitySrc = read('src/main/activity.ts');
-const hooksSrc = read('src/main/hooks-server.ts');
-const sandboxMgrSrc = read('src/main/transport/sandbox-manager.ts');
+const workspacesSrc = code(read('src/main/workspaces.ts'));
+const agentSdkSrc = code(read('src/main/agent-sdk.ts'));
+const apiHandlersSrc = code(read('src/main/api-handlers.ts'));
+const activitySrc = code(read('src/main/activity.ts'));
+const hooksSrc = code(read('src/main/hooks-server.ts'));
+const sandboxMgrSrc = code(read('src/main/transport/sandbox-manager.ts'));
 const policySrc = read('src/shared/naming-policy.ts');
 
 /** Body of a top-level function: from its signature to the next column-0 `}`. */
@@ -28,9 +29,20 @@ function body(src: string, signature: string): string {
   return src.slice(at, end);
 }
 
-/** Source without comments (whole-line `//`, trailing-free block comments) so prose that NAMES the rule never trips the detector. */
+/** Source with every comment blanked to spaces (layout kept), found through the TS AST/trivia — a regex stripper swallows code
+ *  after a `/*` inside a `//` comment or a shell template string, and a commented-out wiring line must not satisfy a positive assertion. */
 function code(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const sf = ts.createSourceFile('x.ts', src, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const ranges = new Map<number, number>();
+  const visit = (n: ts.Node): void => {
+    for (const r of ts.getLeadingCommentRanges(src, n.pos) ?? []) ranges.set(r.pos, r.end);
+    for (const r of ts.getTrailingCommentRanges(src, n.end) ?? []) ranges.set(r.pos, r.end);
+    for (const c of n.getChildren(sf)) visit(c);
+  };
+  visit(sf);
+  const out = src.split('');
+  for (const [p, e] of ranges) for (let i = p; i < e; i++) if (out[i] !== '\n') out[i] = ' ';
+  return out.join('');
 }
 
 /** Every non-test file under src/main, relative path → comment-free code. */
@@ -55,6 +67,7 @@ const INLINE_COPIES: Array<[string, RegExp]> = [
   ['the retired gate `autoRenameActive`', /\bautoRenameActive\b/],
   ['a literal rename pin (`manual: true|false`)', /\bmanual\s*:\s*(true|false)\b/],
   ['a locally derived counter bump (`bumpAutoCount =|:`)', /\bbumpAutoCount\s*[:=]/],
+  ['a re-derived pin predicate (`opts.manual`)', /\bopts\.manual\b/],
   ['a local definition of a moved symbol', /\b(?:const|function)\s+(?:MAX_AUTO_RENAMES|sanitizeBranchName)\b/],
 ];
 const inlineCopiesIn = (src: string): string[] => INLINE_COPIES.filter(([, re]) => re.test(code(src))).map(([d]) => d);
@@ -70,13 +83,16 @@ test('DETECTOR CONTROL: each inline-copy pattern fires on a planted copy and sta
   const planted: Array<[string, string]> = [
     [INLINE_COPIES[0][0], 'const ws = { id, branchManuallySet: false };'],
     [INLINE_COPIES[0][0], 'updated = { ...ws, branchManuallySet: true };'],
+    [INLINE_COPIES[0][0], '// glob /tmp/*.jsonl  (a block-comment opener inside a line comment)\nconst a = { branchManuallySet: false };'],
+    [INLINE_COPIES[0][0], 'const t = `ls /*)`;\nconst a = { branchManuallySet: false };\n/* real comment */'],
     [INLINE_COPIES[1][0], 'return (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;'],
     [INLINE_COPIES[2][0], 'if ((ws.autoRenameCount ?? 0) < 2) nudge();'],
     [INLINE_COPIES[3][0], 'env.ORCHESTRA_BRANCH_AUTO = autoRenameActive(ws) ? "1" : "0";'],
     [INLINE_COPIES[4][0], 'renameWorkspaceBranch(id, b, { manual: true });'],
     [INLINE_COPIES[5][0], 'const bumpAutoCount = !ws.branchManuallySet;'],
-    [INLINE_COPIES[6][0], 'export const MAX_AUTO_RENAMES = 2;'],
-    [INLINE_COPIES[6][0], 'function sanitizeBranchName(raw: string) { return raw; }'],
+    [INLINE_COPIES[6][0], 'if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) { persist(); }'],
+    [INLINE_COPIES[7][0], 'export const MAX_AUTO_RENAMES = 2;'],
+    [INLINE_COPIES[7][0], 'function sanitizeBranchName(raw: string) { return raw; }'],
   ];
   for (const [detector, src] of planted)
     assert.ok(inlineCopiesIn(src).includes(detector), `detector "${detector}" missed: ${src}`);
@@ -86,7 +102,10 @@ test('DETECTOR CONTROL: each inline-copy pattern fires on a planted copy and sta
     '// the rule: branchManuallySet: false and autoRenameCount < MAX_AUTO_RENAMES live in naming-policy',
     '/** `manual: true` is the human pin */',
     'const gateFields = pinFields(ws, opts);',
-    'if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {',
+    'if (pinAdvancesGate(ws, opts)) {',
+    '// if ((opts.manual && !ws.branchManuallySet) || opts.bumpAutoCount) {  (prose)',
+    'const ok = 1; // branchManuallySet: false (trailing prose)',
+    'const re = /\\/\\*[\\s\\S]*?\\*\\//g; const y = 1; // regex with a comment opener inside',
     'env.ORCHESTRA_BRANCH_AUTO = nudgeActive(ws) ? "1" : "0";',
   ];
   for (const src of clean) assert.deepEqual(inlineCopiesIn(src), [], `false positive on: ${src}`);
@@ -109,7 +128,7 @@ test('workspaces.ts takes MAX_AUTO_RENAMES / sanitizeBranchName / the decisions 
   const m = workspacesSrc.match(/import \{([^}]*)\} from '\.\.\/shared\/naming-policy\.ts';/);
   assert.ok(m, 'workspaces.ts imports ../shared/naming-policy.ts');
   const names = m![1].split(',').map((s) => s.trim().replace(/^type\s+/, '')).filter(Boolean).sort();
-  assert.deepEqual(names, ['MAX_AUTO_RENAMES', 'RenamePin', 'decideRename', 'initialNaming', 'pinFields', 'sanitizeBranchName']);
+  assert.deepEqual(names, ['MAX_AUTO_RENAMES', 'RenamePin', 'decideRename', 'initialNaming', 'pinAdvancesGate', 'pinFields', 'sanitizeBranchName']);
 });
 
 test('spawn: createWorkspace (the one git-workspace creation path, spawn included) takes its naming fields from initialNaming()', () => {
@@ -145,6 +164,7 @@ test('renameWorkspaceBranch: the written gate fields come from the decided pin (
   const b = body(workspacesSrc, 'export async function renameWorkspaceBranch(');
   assert.match(b, /opts: RenamePin,/);
   assert.match(b, /const gateFields = pinFields\(ws, opts\);/);
+  assert.equal([...b.matchAll(/if \(pinAdvancesGate\(ws, opts\)\) \{/g)].length, 2, 'both same-name short-circuits (scratch-like + git) ask the policy whether the pin changes anything');
 });
 
 test('nudge gate: ORCHESTRA_BRANCH_AUTO reads nudgeActive from the module', () => {

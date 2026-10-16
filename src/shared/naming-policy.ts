@@ -74,6 +74,13 @@ export function decideRename(
   return { allow: true, pin: { manual: false, bumpAutoCount: nudgeActive(target) } };
 }
 
+/** Does `pin` change anything on `ws`? A rename to the SAME name still has to persist the pin when it does (a first human
+ *  pin, or a counted agent rename) — `renameWorkspaceBranch`'s same-name short-circuit asks this. ADDED by #381 (additive);
+ *  #383 extends it when `namedByParent` can change. */
+export function pinAdvancesGate(ws: NamingFields, pin: RenamePin): boolean {
+  return (pin.manual && !ws.branchManuallySet) || pin.bumpAutoCount;
+}
+
 /** The Workspace fields an allowed rename writes for `pin` (spread into the renamed record). Today: `manual` ⇒
  *  `branchManuallySet` stays/turns true; `bumpAutoCount` ⇒ `autoRenameCount + 1`; `namedByParent` ⇒ that id (#383).
  *  ADDED by #381 (additive, not a signature change): `renameWorkspaceBranch` and the human pin sites share it. */
