@@ -190,7 +190,7 @@ test('skip (active vague) names the anchors holding the member, so `--closed` ca
   const holders = vagueHolders(store);
   assert.deepEqual(holders.get(id('w1')), [OPS_RUNNING]);
   const plan = planMigration(inputs({ workspaces: store, vagueHolders: holders }));
-  assert.match(plan.rows.find((r) => r.id === id('w1'))!.reason, /held by 0b5a0000 — each must be closed/);
+  assert.match(plan.rows.find((r) => r.id === id('w1'))!.reason, /held by 0b5a0000-0000-4000-8000-000000000000 — each must be closed/);
   // a member below TWO vagues (its parent's and its namer's) lists both
   const two = [...store, ws('a2', { parentId: LEAD, canOrchestrate: true }), ws('wk', { parentId: OPS_RUNNING, namedByParent: id('a2') }), ws('wz', { parentId: id('a2') })];
   assert.deepEqual([...(vagueHolders(two).get(id('wk')) ?? [])].sort(), [OPS_RUNNING, id('a2')].sort());

@@ -577,14 +577,14 @@ path-prefix: the app would silently suffix it; an ARCHIVED workspace's row only 
 read off the store (a live OPS with a parent and a live member below — through `parentId` OR the namer, so a `--detached` verifier is held too; nothing writes
 `runs.closed_at`, the bus is never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close event and archiving an OPS
 archives its WHOLE subtree (`archiveWorkspace`), after which no rename is possible — so the operator declares a finished-but-live vague with `--closed <ops-id>`
-BEFORE archiving (the `skip-vague` PLAN line says so and names the holding anchors: a member below two vagues needs both closed); a table row of an archived workspace is a WARN and an apply with one is not green unless `--allow-gone`.
+BEFORE archiving (the `skip-vague` PLAN line says so and prints the FULL id of every holding anchor — a member below two vagues needs both closed; `--closed` takes a full id or a unique prefix of 6+ characters, an ambiguous one lists the candidates); a table row of an archived workspace is a WARN and an apply with one is not green unless `--allow-gone`.
 The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`/`symbolic-ref`; any unreadable input = rc 2, never an empty set), is a
-dry run unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only rows of workspaces that no longer exist), and with
-`ORCHESTRA_HOME` unset (= the LIVE default home) refuses `--apply` unless `--live` (checked before anything is read; the header names the home, store and socket
-pointer it acts on). It PREFLIGHTS the app (the verdict prints in a dry run; only `--apply` refuses): the startup banner of `<home>/logs/orchestra.log` (the whole
+dry run unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only rows of workspaces that no longer exist), and when
+the RESOLVED `ORCHESTRA_HOME` is the LIVE default home (unset, explicit, relative or through a symlink) refuses `--apply` unless `--live` (checked before anything is read; the
+header names the home, store and socket pointer it acts on). It PREFLIGHTS the app (the verdict prints in a dry run; only `--apply` refuses): the startup banner of `<home>/logs/orchestra.log` (the whole
 file, the instance running on THIS home) must be a live process whose version is at least the checkout's (a release installed but the app not restarted renames
-WITHOUT pinning); older, a suffixed build of the same number, unknown (the log rotates at 5 MB) or dead refuses rc 2 unless `--assume-app-current` attests the
-restart. The floor is the CHECKOUT's version, so run the script from the checkout of the release that ships #383/#384 (a pre-release branch carries an older number;
+WITHOUT pinning); older or a suffixed build of the same number refuses rc 2 ALWAYS; unknown (the log rotates at 5 MB) or dead refuses rc 2 unless `--assume-app-current` attests the
+restart (it never overrides a banner that reads older). The floor is the CHECKOUT's version, so run the script from the checkout of the release that ships #383/#384 (a pre-release branch carries an older number;
 the canary below bounds a miss to one row). It applies each step ONLY as `orchestra rename <id> <name>` with `ORCHESTRA_WS_ID=<parentId, else namedByParent>` (D2) — it never writes `store.json`. After each
 rename it RE-READS the store and the worktree's git HEAD (read-only) and requires the VALIDATED name, `namedByParent` (the EXISTING namer when there is one —
 `decideRename` keeps it — else the parent acted as), a former name, and git on the target. A CLI error alone (the git lock) is a FAILED row and the others go on — but a timeout (state UNKNOWN) or two CLI errors in a row stop the run; a

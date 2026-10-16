@@ -272,7 +272,7 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     }
     if (renames && input.activeVagueMembers.has(ws.id)) {
       const by = input.vagueHolders?.get(ws.id);
-      const holders = by && by.length > 0 ? ` (held by ${by.map((x) => x.slice(0, 8)).join(', ')} — each must be closed)` : '';
+      const holders = by && by.length > 0 ? ` (held by ${by.join(', ')} — each must be closed)` : '';
       rows.push({
         ...base,
         action: 'skip-vague',

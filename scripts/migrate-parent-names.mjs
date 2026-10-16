@@ -1,28 +1,31 @@
 #!/usr/bin/env node
 // One-shot migration of spawned agents' names to the parent-given convention (#385, vague #380).
 //
-//   node --experimental-strip-types scripts/migrate-parent-names.mjs --table <table.json>           # DRY RUN (default): prints the plan, writes nothing
+//   node --experimental-strip-types scripts/migrate-parent-names.mjs --table <table.json> [--dry-run]  # DRY RUN (the default; --dry-run says so): prints the plan, writes nothing
 //   node --experimental-strip-types scripts/migrate-parent-names.mjs --table <table.json> --apply   # applies, one result line per workspace
 //   options: --closed <ops-id>[,<ops-id>…]  declare a finished-but-live vague over (its members stop being held) — BEFORE archiving it: archiving an OPS archives its whole subtree and the app then
 //                                           refuses every rename · --allow-gone  rows of workspaces that no longer exist (GONE) or are archived (ARCHIVED) are history, not an error / a WARN ·
-//                                           --assume-app-current  attest that the running app was restarted on the build this script comes from (the preflight below) · --verbose  list every workspace
+//                                           --assume-app-current  attest that the running app was restarted on the build this script comes from, WHEN its version cannot be read (the preflight
+//                                           below; a banner that reads older is never overridden) · --live  required for --apply when the home resolves to the LIVE ~/.orchestra · --verbose  list every workspace
+//   --closed takes the full OPS id (the skip-vague line prints it) or a unique prefix of 6+ characters.
 //
 // TABLE = the human-validated old → new table, a JSON array: [{ "id": "<full workspace id>", "old": "<branch it was validated against>", "new": "<rôle>-<objet>[-<ticket>]" }].
-//   `old` is optional but recommended: a row whose workspace was PARENT-named differently since is rejected as stale (a legacy child that renamed ITSELF is not). `new` must pass naming-policy.checkSpawnName.
+//   `old` is REQUIRED (it is what tells a lost former name from a never-renamed workspace when a run is repeated): a row without it refuses the run; a row whose workspace was PARENT-named differently since
+//   is rejected as stale (a legacy child that renamed ITSELF is not). `new` must pass naming-policy.checkSpawnName.
 // INPUTS (all READ-ONLY): the app's store.json (the CLI's own path rule — ORCHESTRA_HOME/userData/orchestra/store.json, see appStoreFile), `git ls-remote --heads` of EVERY remote +
 //   `git for-each-ref refs/heads` of each table workspace's repo, and the RUNNING VAGUES derived from the store with the app's own liveness rule (activeVagueMemberIds:
 //   a live OPS with a live member below it — nothing writes runs.closed_at, so the bus adds nothing and is never opened; a top-level orchestrator is a mission: its workers are not held).
 // PREFLIGHT: the RUNNING app must be at least as new as this checkout (a release installed but the app not restarted renames WITHOUT pinning or recording the former name). Read-only: the startup
-//   banner in <home>/logs/orchestra.log, of a live process. Older, unknown (the log rotates at 5 MB) or dead refuses (rc 2) unless --assume-app-current. The plan also skips what it cannot know: a
-//   worktree whose live HEAD differs from the store (or is unreadable), and a branch another live workspace has as its baseBranch (renaming it would dangle that workspace's Diff).
+//   banner in <home>/logs/orchestra.log, of a live process. Older refuses (rc 2) always; unknown (the log rotates at 5 MB) or dead refuses unless --assume-app-current. The plan also skips what it cannot know: a
+//   worktree whose live HEAD differs from the store (or is unreadable / not a worktree we can see), and a branch another live workspace has as its baseBranch (renaming it would dangle that workspace's Diff).
 // APPLY goes ONLY through the installed app's CLI: `orchestra rename <id> <name>` with ORCHESTRA_WS_ID=<that workspace's parentId> (D2: a rename AS the parent, so the app records
 //   namedByParent + formerBranch, #383/#384) — never by editing store.json. Re-run it after each vague closes: it plans exactly that vague's members; after a full apply it plans nothing.
 //   After each rename the store (and the worktree's git HEAD, read-only) is re-read: the workspace must show the VALIDATED name, namedByParent (the existing namer, else the parent) and a former
 //   name. The FIRST row is the canary: a rename the CLI answered "Renamed to" but the store does not show recorded ABORTS the run at that row (nothing after it is touched; rc 1; re-run after fixing
-//   the cause). A CLI error alone (the git lock) is a FAILED row and the others go on. A pin-only re-run whose former name is unrecoverable is FORMER-LOST (rc 1), never a green APPLIED.
+//   the cause). A CLI error alone (the git lock) is a FAILED row and the others go on — but a timeout (state UNKNOWN) or two CLI errors in a row stop the run. A pin-only re-run whose former name is unrecoverable is FORMER-LOST (rc 1), never a green APPLIED.
 //   A row is stale only when the workspace was PARENT-named differently since.
-// EXIT: 0 ok · 1 an `orchestra rename` failed / was not pinned / FORMER-LOST / the run ABORTED / an archived row WARN · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set, the app preflight).
-// SAFETY: it targets the app of $ORCHESTRA_HOME (default: the live ~/.orchestra) and refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) — one home for the
+// EXIT: 0 ok · 1 an `orchestra rename` failed / was not pinned / FORMER-LOST / the run ABORTED / an archived row WARN · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set, the live home without --live, the app preflight).
+// SAFETY: it targets the app of $ORCHESTRA_HOME (default: the live ~/.orchestra; --apply there needs --live, however the home is spelled) and refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) — one home for the
 //   store it reads and the app it renames in. Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.
 
 import fs from 'node:fs';
@@ -60,7 +63,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--live') liveTarget = true;
   else if (a === '--closed') closedIds.push(...(argv[++i] ?? '').split(',').map((x) => x.trim()).filter(Boolean));
   else if (a === '-h' || a === '--help') {
-    out(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 30).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+    const lines = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1); // after the shebang: the leading `//` block ONLY
+    out(lines.slice(0, lines.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(0);
   } else die(`unknown argument ${JSON.stringify(a)} — usage: --table <file> [--dry-run | --apply] [--closed <ops-id>,…] [--allow-gone] [--assume-app-current] [--live] [--verbose]`);
 }
@@ -70,11 +74,14 @@ if (process.env.ORCHESTRA_SOCK) {
   die('ORCHESTRA_SOCK is set (an agent PTY, or a stray export) — this script targets the app of ORCHESTRA_HOME; unset ORCHESTRA_SOCK and set ORCHESTRA_HOME to the app you mean');
 }
 
-// ORCHESTRA_HOME unset = the LIVE default home (~/.orchestra): a mutation there is the live fleet. Reads are fine; --apply needs the explicit word.
+const realPath = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+// The LIVE home (~/.orchestra) is the live fleet, however it is spelled: unset, explicit, relative, or through a symlink — the gate keys on the RESOLVED path. Reads are fine; --apply needs the explicit word.
 const homeUnset = !process.env.ORCHESTRA_HOME;
 const home = process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
-if (apply && homeUnset && !liveTarget) {
-  die(`ORCHESTRA_HOME is unset: --apply would act on the LIVE default app and store (${home}, socket pointer ${path.join(home, 'sock')}). Set ORCHESTRA_HOME to a scratch home, or pass --live to confirm that the live fleet is the target.`);
+const liveHome = realPath(path.join(os.homedir(), '.orchestra'));
+const isLiveHome = realPath(home) === liveHome;
+if (apply && isLiveHome && !liveTarget) {
+  die(`${homeUnset ? 'ORCHESTRA_HOME is unset' : `ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME} resolves to the live default home`}: --apply would act on the LIVE default app and store (${home}, socket pointer ${path.join(home, 'sock')}). Set ORCHESTRA_HOME to a scratch home, or pass --live to confirm that the live fleet is the target.`);
 }
 
 const { planMigration, renderPlan, activeVagueMemberIds, vagueHolders } = await import(pathToFileURL(path.join(REPO, 'src/shared/naming-migration.ts')).href);
@@ -148,17 +155,25 @@ for (const r of table) {
   if (h !== undefined) liveHeads.set(w.id, h);
 }
 
-for (const id of closedIds) if (!byId.has(id)) die(`--closed ${id}: no workspace with this id in the store (a typo would leave its vague protected while you believe it is released)`);
-const realPath = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+// --closed takes the FULL id (the skip-vague hint prints it) or a UNIQUE prefix of at least 6 characters; ambiguity lists the candidates.
+const resolveClosed = (arg) => {
+  if (byId.has(arg)) return arg;
+  if (arg.length < 6) die(`--closed ${arg}: no workspace with this id, and too short to be an id prefix (6 characters minimum)`);
+  const matches = workspaces.filter((w) => w.id.startsWith(arg));
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length === 0) die(`--closed ${arg}: no workspace with this id (or id prefix) in the store (a typo would leave its vague protected while you believe it is released)`);
+  die(`--closed ${arg}: ambiguous — ${matches.length} workspaces start with it, give more characters:\n${matches.map((w) => `  ${w.id}  ${w.branch}`).join('\n')}`);
+};
+const closed = closedIds.map(resolveClosed);
 const plannerWorkspaces = workspaces.map((w) => (typeof w.repoPath === 'string' && w.repoPath ? { ...w, repoPath: realPath(w.repoPath) } : w)); // the same repo under two spellings is ONE repo
-const holders = vagueHolders(workspaces, new Set(closedIds));
+const holders = vagueHolders(workspaces, new Set(closed));
 const plan = planMigration({ workspaces: plannerWorkspaces, remoteBranches, localBranches, activeVagueMembers: new Set(holders.keys()), vagueHolders: holders, table, liveHeads });
 out(`# naming migration — ${apply ? 'APPLY' : 'DRY RUN'} — store=${storeFile} table=${tableFile}`);
 const pointerFile = path.join(home, 'sock');
 let pointerTarget = '(missing)';
 try { pointerTarget = fs.readFileSync(pointerFile, 'utf8').trim() || '(empty)'; } catch { /* not running, or another home */ }
-out(`# acting on: ${homeUnset ? `the LIVE default home ${home} (ORCHESTRA_HOME unset)` : `ORCHESTRA_HOME=${home}`} · store=${storeFile} · socket pointer ${pointerFile} -> ${pointerTarget}`);
-out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closedIds.length ? ` · closed vague(s) declared: ${closedIds.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
+out(`# acting on: ${isLiveHome ? `the LIVE default home ${home} (${homeUnset ? 'ORCHESTRA_HOME unset' : `ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME}`})` : `ORCHESTRA_HOME=${home}`} · store=${storeFile} · socket pointer ${pointerFile} -> ${pointerTarget}`);
+out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closed.length ? ` · closed vague(s) declared: ${closed.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
 for (const line of renderPlan(plan, { verbose, allowGone })) out(line);
 const blocking = plan.rejected.filter((x) => !(allowGone && x.code === 'unknown-workspace'));
 if (blocking.length > 0) die(`${blocking.length} rejected table row(s) — fix the table; nothing applied`);
@@ -202,15 +217,17 @@ const readRunningApp = () => {
 const checkoutVersion = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
 const running = readRunningApp();
 let appVerdict;
-if (!running) appVerdict = { ok: false, text: 'the running app\'s version is UNKNOWN (no startup banner in its log — it rotates at 5 MB)' };
-else if (!aliveProcess(running.pid)) appVerdict = { ok: false, text: `the last startup banner (v${running.version}, pid ${running.pid}) is of a process that is no longer running — the version of the app that answers is UNKNOWN` };
-else if (olderThan(running.version, checkoutVersion)) appVerdict = { ok: false, text: `the running app is v${running.version} (pid ${running.pid}) but this checkout is v${checkoutVersion}: it predates the rename pin / former name — restart Orchestra on the new build` };
-else appVerdict = { ok: true, text: `running app v${running.version} (pid ${running.pid}) >= checkout v${checkoutVersion}` };
-out(`# app: ${appVerdict.text}${appVerdict.ok ? '' : assumeAppCurrent ? ' — OVERRIDDEN by --assume-app-current' : ''}`);
-if (!appVerdict.ok && !assumeAppCurrent && apply) die(`${appVerdict.text}. Restart the app on the build this script comes from and re-run, or pass --assume-app-current to attest that you did. Nothing applied.`);
+if (!running) appVerdict = { ok: false, kind: 'unknown', text: 'the running app\'s version is UNKNOWN (no startup banner in its log — it rotates at 5 MB)' };
+else if (!aliveProcess(running.pid)) appVerdict = { ok: false, kind: 'unknown', text: `the last startup banner (v${running.version}, pid ${running.pid}) is of a process that is no longer running — the version of the app that answers is UNKNOWN` };
+else if (olderThan(running.version, checkoutVersion)) appVerdict = { ok: false, kind: 'older', text: `the running app is v${running.version} (pid ${running.pid}) but this checkout is v${checkoutVersion}: it predates the rename pin / former name — restart Orchestra on the new build` };
+else appVerdict = { ok: true, kind: 'ok', text: `running app v${running.version} (pid ${running.pid}) >= checkout v${checkoutVersion}` };
+// --assume-app-current attests a restart where the version CANNOT be read (rotated log, no banner, dead pid); it never overrides a banner that READS older.
+const refused = !appVerdict.ok && (appVerdict.kind === 'older' || !assumeAppCurrent);
+out(`# app: ${appVerdict.text}${appVerdict.ok ? '' : appVerdict.kind === 'older' ? (assumeAppCurrent ? ' — --assume-app-current does NOT override a version that reads older' : '') : assumeAppCurrent ? ' — OVERRIDDEN by --assume-app-current' : ''}`);
+if (refused && apply) die(`${appVerdict.text}. ${appVerdict.kind === 'older' ? 'Restart the app on the build this script comes from and re-run (--assume-app-current does not override a version that reads older)' : 'Restart the app on the build this script comes from and re-run, or pass --assume-app-current to attest that you did'}. Nothing applied.`);
 
 if (!apply) {
-  out(`DRY-RUN  nothing written; ${plan.renames.length} rename(s) would be applied with --apply${warnings ? `; ${warnings} WARN` : ''}${!appVerdict.ok && !assumeAppCurrent ? '; the app preflight above would REFUSE --apply' : ''}`);
+  out(`DRY-RUN  nothing written; ${plan.renames.length} rename(s) would be applied with --apply${warnings ? `; ${warnings} WARN` : ''}${refused ? '; the app preflight above would REFUSE --apply' : ''}`);
   process.exit(0);
 }
 

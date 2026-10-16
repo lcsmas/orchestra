@@ -107,7 +107,7 @@ if (process.env.SHIM_CHILD_WINS === wsid) { if (w.worktreePath) execFileSync('gi
 // SHIM_NO_PIN = an app older than #383/#384: it renames, but records neither the namer nor the former name.
 // SHIM_NO_NAMER / SHIM_NO_FORMER: an app that records only one of the two.
 // decideRename keeps an EXISTING namer (else it pins the caller); SHIM_FORMER_OTHER: the child's own rename landed between the snapshot and ours, so the app saw ANOTHER name.
-if (!process.env.SHIM_NO_PIN) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = process.env.SHIM_FORMER_OTHER ? 'child-name-seen' : w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = w.namedByParent || process.env.ORCHESTRA_WS_ID; }
+if (!process.env.SHIM_NO_PIN && !(process.env.SHIM_NO_PIN_ID || '').split(',').includes(wsid)) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = process.env.SHIM_FORMER_OTHER ? 'child-name-seen' : w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = process.env.SHIM_WRONG_NAMER ? 'impostor' : (w.namedByParent || process.env.ORCHESTRA_WS_ID); }
 // a real worktree gets its branch really renamed (SHIM_GIT_LAGS: the record moved, git did not)
 if (w.worktreePath && w.branch !== final && !process.env.SHIM_GIT_LAGS) execFileSync('git', ['-C', w.worktreePath, 'branch', '-m', final], { stdio: 'ignore' });
 w.branch = final;
@@ -508,11 +508,38 @@ test('PREFLIGHT: the running app must be at least as new as this checkout — ol
     writeBanner(PKG_VERSION, Number(dead));
     assert.match(run(['--table', tableFile, '--apply']).err, /no longer running — the version of the app that answers is UNKNOWN/);
     assert.deepEqual(calls(), []);
+    // --assume-app-current attests a restart where the version CANNOT be read — it never overrides a banner that READS older
     writeBanner(older);
-    const attested = run(['--table', tableFile, '--apply', '--assume-app-current']);
-    assert.equal(attested.rc, 0, attested.out + attested.err);
-    assert.match(attested.out, /OVERRIDDEN by --assume-app-current/);
+    const stillOlder = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(stillOlder.rc, 2, stillOlder.out + stillOlder.err);
+    assert.match(stillOlder.err, /does not override a version that reads older/);
+    assert.match(stillOlder.out, /does NOT override a version that reads older/);
+    assert.doesNotMatch(stillOlder.out, /OVERRIDDEN/);
+    assert.deepEqual(calls(), []);
+    writeBanner(PKG_VERSION, Number(dead));
+    const deadAttested = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(deadAttested.rc, 0, deadAttested.out + deadAttested.err);
+    assert.match(deadAttested.out, /OVERRIDDEN by --assume-app-current/);
     assert.equal(calls().length, 2);
+    resetStore();
+    fs.rmSync(path.join(home, 'logs'), { recursive: true, force: true });
+    const noBannerAttested = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(noBannerAttested.rc, 0, noBannerAttested.out + noBannerAttested.err);
+    assert.match(noBannerAttested.out, /OVERRIDDEN by --assume-app-current/);
+    resetStore();
+    // two banners in the log (the app restarted): the LAST one is the app that answers
+    const logFile = path.join(home, 'logs', 'orchestra.log');
+    const banner = (v: string, pid = process.pid): string => `2026-10-16T10:00:00.000Z INFO  === Orchestra ${v} (electron) starting === pid=${pid} platform=linux electron=33.4.11 node=20.18.3 logLevel=info home=${home}\n`;
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.writeFileSync(logFile, banner(older) + banner(PKG_VERSION));
+    const upgraded = run(['--table', tableFile, '--apply']);
+    assert.equal(upgraded.rc, 0, 'older then current: the app was restarted on the new build — ' + upgraded.out + upgraded.err);
+    resetStore();
+    fs.writeFileSync(logFile, banner(PKG_VERSION) + banner(older));
+    const downgraded = run(['--table', tableFile, '--apply']);
+    assert.equal(downgraded.rc, 2, 'current then older: the app that answers is the older one');
+    assert.match(downgraded.err, new RegExp(`the running app is v${older.replace(/\./g, '\\.')} `));
+    assert.deepEqual(calls(), []);
     resetStore();
     writeBanner(newer);
     assert.match(run(['--table', tableFile]).out, new RegExp(`# app: running app v${newer.replace(/\./g, '\\.')} \\(pid \\d+\\) >= checkout`));
@@ -681,6 +708,104 @@ test('a happy-path apply is asserted on the STORE too: the namer AND the former 
   const by = Object.fromEntries((JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> }).workspaces.map((w) => [String(w.id), w]));
   assert.deepEqual([by[id('w3')].branch, by[id('w3')].namedByParent, by[id('w3')].formerBranch], ['review-fusion-comptes-240', OPS_DONE, 'old-w3']);
   assert.deepEqual([by[id('w4')].branch, by[id('w4')].namedByParent, by[id('w4')].formerBranch], ['explo-timeout-cli', LEAD, 'old-w4']);
+  resetStore();
+});
+
+test('--closed: the skip-vague line prints the FULL OPS id; --closed takes it or a unique prefix (6+ chars); an ambiguous prefix lists the candidates', () => {
+  resetStore();
+  const dry = run(['--table', tableFile]);
+  assert.match(dry.out, new RegExp(`skip \\(active vague\\)\\s+old-w1 -> impl-vague-en-cours-1\\s+\\[member of a vague still running \\(held by ${OPS_RUN} — each must be closed\\) — re-run with`));
+  for (const arg of [OPS_RUN, OPS_RUN.slice(0, 8), OPS_RUN.slice(0, 6)]) {
+    resetStore();
+    const r = run(['--table', tableFile, '--apply', '--closed', arg]);
+    assert.equal(r.rc, 0, `${arg}: ${r.out}${r.err}`);
+    assert.ok(calls().some((c) => c.includes(`|${id('w1')}|`)), `${arg}: w1 was released`);
+  }
+  // a second workspace sharing the first 6 characters makes the 6-character prefix ambiguous (and the full id still exact)
+  resetStore();
+  const store = JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> };
+  const twin = '0b5a0000-0000-4000-8000-000000000001';
+  fs.writeFileSync(storeFile, JSON.stringify({ workspaces: [...store.workspaces, { id: twin, branch: 'old-twin', repoPath: repo, name: 'twin' }] }));
+  const amb = run(['--table', tableFile, '--apply', '--closed', '0b5a00']);
+  assert.equal(amb.rc, 2);
+  assert.match(amb.err, /--closed 0b5a00: ambiguous — 2 workspaces start with it/);
+  assert.ok(amb.err.includes(`  ${OPS_RUN}  wave-g-ops`) && amb.err.includes(`  ${twin}  old-twin`), 'both candidates are listed with their ids');
+  assert.deepEqual(calls(), []);
+  assert.equal(run(['--table', tableFile, '--apply', '--closed', OPS_RUN]).rc, 0, 'the full id is never ambiguous');
+  resetStore();
+  const short = run(['--table', tableFile, '--apply', '--closed', '0b5a0']);
+  assert.equal(short.rc, 2);
+  assert.match(short.err, /too short to be an id prefix \(6 characters minimum\)/);
+  resetStore();
+});
+
+test('the --live gate keys on the RESOLVED home: an explicit, relative or symlinked spelling of ~/.orchestra is the live home too', () => {
+  resetStore();
+  const liveHome = path.join(tmp, '.orchestra'); // $HOME is the scratch dir: this IS "the live default home" of the fake user
+  fs.mkdirSync(liveHome, { recursive: true });
+  const link = path.join(tmp, 'link-to-live');
+  fs.symlinkSync(liveHome, link);
+  try {
+    for (const spelling of [liveHome, link, `${liveHome}/../.orchestra`]) {
+      const r = run(['--table', tableFile, '--apply'], { ORCHESTRA_HOME: spelling });
+      assert.equal(r.rc, 2, `${spelling}: ${r.out}${r.err}`);
+      assert.match(r.err, /resolves to the live default home: --apply would act on the LIVE default app and store/);
+      assert.equal(r.out, '');
+    }
+    // a relative spelling (cwd = the fake $HOME)
+    const rel = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', SCRIPT, '--table', tableFile, '--apply'], {
+      encoding: 'utf8', cwd: tmp, env: { PATH: `${bin}:${gitDir}:/usr/bin:/bin`, HOME: tmp, TMPDIR: tmp, ORCHESTRA_HOME: '.orchestra', SHIM_NODE: process.execPath, SHIM_LOG: callsLog, SHIM_STORE: storeFile },
+    });
+    assert.equal(rel.status, 2, rel.stdout + rel.stderr);
+    assert.match(rel.stderr, /ORCHESTRA_HOME=\.orchestra resolves to the live default home/);
+    assert.deepEqual(calls(), []);
+    // --live passes the gate (then stops: no store under that home), and a scratch home is not the live one
+    const live = run(['--table', tableFile, '--apply', '--live'], { ORCHESTRA_HOME: link });
+    assert.doesNotMatch(live.err, /would act on the LIVE/);
+    assert.match(live.err, /cannot read the store/);
+    assert.equal(run(['--table', tableFile, '--apply']).rc, 0, 'the scratch home of every other test is not live');
+  } finally {
+    fs.rmSync(link, { force: true });
+    fs.rmSync(liveHome, { recursive: true, force: true });
+    resetStore();
+  }
+});
+
+test('--help prints exactly the header — which matches the script: old REQUIRED, --live, every flag the script parses — and none of the source after it', () => {
+  const r = run(['--help']);
+  assert.equal(r.rc, 0);
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const flags = [...src.matchAll(/a === '(--[a-z-]+)'/g)].map((m) => m[1]).filter((f) => f !== '--help');
+  assert.ok(flags.length >= 8, `parsed flags found: ${flags.join(' ')}`);
+  for (const f of flags) assert.ok(r.out.includes(f), `--help documents ${f}`);
+  assert.match(r.out, /`old` is REQUIRED/);
+  assert.doesNotMatch(r.out, /optional but recommended/);
+  assert.match(r.out, /--live +required for --apply when the home resolves to the LIVE/);
+  assert.doesNotMatch(r.out, /^(import|const|let|for|if) /m, 'no leaked source line');
+  assert.ok(r.out.trimEnd().endsWith('Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.'), 'the output ends with the last header line');
+  assert.equal(run(['-h']).out, r.out);
+});
+
+test('the canary stops the run at the FIRST unrecorded row WHEREVER it is (not only when it is row 1): later rows are never sent', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply', '--closed', OPS_RUN], { SHIM_NO_PIN_ID: id('w3') }); // rows in store order: w1 (released vague member), w3, w4
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /APPLIED  w1000000/);
+  assert.match(r.out, /FAILED   w3000000/);
+  assert.match(r.out, /ABORTED  at w3000000: .* 1 row\(s\) NOT attempted\./);
+  assert.doesNotMatch(r.out, /w4000000  old-w4 -> explo-timeout-cli\n/);
+  assert.deepEqual(calls().map((c) => c.split('|')[3]), [id('w1'), id('w3')], 'w4 was never sent');
+  assert.match(r.out, /DONE  1\/3 renamed, 1 FAILED, 1 not attempted, 1 skipped \(see PLAN\) — ABORTED/);
+  resetStore();
+});
+
+test('the read-back requires THE expected namer, not just some namer: a row pinned to anybody else is FAILED and stops the run', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply'], { SHIM_WRONG_NAMER: '1' });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed .*namedByParent=impostor /);
+  assert.match(r.out, /ABORTED  at w3000000/);
+  assert.equal(calls().length, 1);
   resetStore();
 });
 
