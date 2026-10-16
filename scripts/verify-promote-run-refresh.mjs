@@ -437,6 +437,24 @@ const h5 = await mod.dispatchPromoteRequest({ id: H5 });
 check('H5: promote ok; not host-resolved, not restarted, not stale', h5.ok === true && !(h5.hostResolved ?? []).includes(H5) && !(h5.restarted ?? []).includes(H5) && !(h5.markedStale ?? []).includes(H5) && mod.__restartCalls.length === 0, JSON.stringify(h5));
 check('H5: no marker file for a cold node (its next launch re-reads the env)', !fs.existsSync(path.join(tmp, H5, '.orchestra', 'bus-run-stale')));
 
+console.log('\n#379 H6 — a keeper-DETACHED keyed CLI (app restarted, session not reattached) is host-resolved too — marker file, no restart:');
+const H6 = 'keyed-detached-379';
+await mod.store.upsertWorkspace(ws(H6, { parentId: LEAD_ID })); // NOT in liveSet: no app-side session
+mod.registerSessionKey(H6, mod.mintSessionKey());
+fs.mkdirSync(path.join(tmp, 'keepers'), { recursive: true });
+fs.writeFileSync(path.join(tmp, 'keepers', `${H6}.pid`), JSON.stringify({ pid: process.pid })); // a tracked keeper that is ALIVE (this process)
+mod.__restartCalls.length = 0;
+const h6 = await mod.dispatchPromoteRequest({ id: H6 });
+check('H6: promote ok; host-resolved, nothing restarted, not stale', h6.ok === true && (h6.hostResolved ?? []).includes(H6) && !(h6.restarted ?? []).includes(H6) && !(h6.markedStale ?? []).includes(H6) && mod.__restartCalls.length === 0, JSON.stringify(h6));
+check('H6: the marker FILE exists (the app may quit again before the CLI is reattached)', fs.existsSync(path.join(tmp, H6, '.orchestra', 'bus-run-stale')));
+// …and a key WITHOUT a live keeper (H5's shape, plus a DEAD keeper pid) stays cold
+const H7 = 'keyed-deadkeeper-379';
+await mod.store.upsertWorkspace(ws(H7, { parentId: LEAD_ID }));
+mod.registerSessionKey(H7, mod.mintSessionKey());
+fs.writeFileSync(path.join(tmp, 'keepers', `${H7}.pid`), JSON.stringify({ pid: 2147483646 })); // not a live pid
+const h7 = await mod.dispatchPromoteRequest({ id: H7 });
+check('H7: a dead keeper pid is cold — notice-only, no marker file', h7.ok === true && !(h7.hostResolved ?? []).includes(H7) && !fs.existsSync(path.join(tmp, H7, '.orchestra', 'bus-run-stale')), JSON.stringify(h7));
+
 // ════════════════════════════════════════════════════════════════════════════
 // A3 — unchanged invariant: a member spawned AFTER promote anchors to the promoted
 // node's run natively (no reconcile) — the fix must not disturb this.

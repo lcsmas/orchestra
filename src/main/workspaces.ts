@@ -1769,12 +1769,17 @@ async function reconcileRunAfterReparent(
     if (ws.host?.kind === 'sandbox') continue;
     try {
       const newAnchorId = resolveWaveRunId(ws);
+      const sdkLive = sdkSessionLive(ws.id);
+      const hostKey = hasSessionKey(ws.id);
+      // #379: a keeper-DETACHED CLI (app restarted, session not yet reattached) is alive with a registered key too — the host answers it, so it
+      // gets the same treatment as a live one (marker file for the fallback, no restart: a restart of a detached session would be a wake).
+      const detachedKeyed = !sdkLive && hostKey && readTrackedKeeperPid(ws.id) !== null;
       const candidate: ReparentCandidate = {
         oldAnchorId,
         newAnchorId,
-        live: sdkSessionLive(ws.id),
+        live: sdkLive || detachedKeyed,
         // #379: a live session carrying a registered key is answered by the HOST on its next CLI call (ADR 0008).
-        hostAnswers: hasSessionKey(ws.id),
+        hostAnswers: hostKey,
       };
       const action = decideReparentAction(candidate, opts.noRestart);
       if (action.kind === 'noop') continue;

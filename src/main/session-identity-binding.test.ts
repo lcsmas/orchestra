@@ -131,7 +131,8 @@ test('CLI send: the marker guard is the FALLBACK\'s — it runs before any bus i
 
 test('reconcile: a keyed live session is host-resolved — marker FILE only, no restart attempt, no stale flag', () => {
   const rec = bodyBetween(workspaces, 'async function reconcileRunAfterReparent(', '\n}\n');
-  assert.ok(live(rec, 'hostAnswers: hasSessionKey(ws.id),'), 'the candidate carries whether the host holds a key for the workspace');
+  assert.ok(live(rec, 'const hostKey = hasSessionKey(ws.id);') && live(rec, 'hostAnswers: hostKey,'), 'the candidate carries whether the host holds a key for the workspace');
+  assert.ok(live(rec, 'const detachedKeyed = !sdkLive && hostKey && readTrackedKeeperPid(ws.id) !== null;') && live(rec, 'live: sdkLive || detachedKeyed,'), 'a keeper-detached keyed CLI is as live as a session for the host');
   const branch = bodyBetween(rec, "if (action.kind === 'host-resolved') {", "if (action.kind === 'mark-stale') {");
   assert.ok(live(branch, 'await writeStaleRunMarkerFile(ws, newAnchorId);'), 'the fallback guard is armed (the app may go away)');
   assert.ok(live(branch, 'hostResolved.push(ws.id);'));

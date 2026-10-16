@@ -122,7 +122,8 @@ test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a
   );
   // #232 must-FAIL arm: liveness is the SDK session ONLY — no agent-PTY probe, no force-stale
   // (a working session's mid-turn guard is the one deferral; a cold session restarts or is notice-only).
-  assert.ok(callsUncommented(body, 'live: sdkSessionLive(ws.id),'), 'the reparent candidate is live iff its SDK session is');
+  assert.ok(callsUncommented(body, 'const sdkLive = sdkSessionLive(ws.id);'), 'the reparent candidate is live iff its SDK session is …');
+  assert.ok(callsUncommented(body, 'live: sdkLive || detachedKeyed,'), '… or (#379) a keeper-detached CLI the host holds a key for — never a PTY probe');
   assert.ok(!/isRunning\(/.test(body) && !/forceStale|ptyLive/.test(body), 'reconcileRunAfterReparent must not reason about a live agent PTY (#232)');
 });
 
