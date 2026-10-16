@@ -124,17 +124,19 @@ export function staleMarkerBlocksSend(markerBody: string, envRunId: string | und
   return firstLine;
 }
 
-/** Where the fallback looks for the stale marker, in order: `$ORCHESTRA_WORKSPACE_PATH` (setup/run scripts), `$ORCHESTRA_WORKTREE` (every agent session),
- *  then the cwd and each of its ancestors — a Bash tool that `cd`'d into a subdirectory must not slip past the guard. The first marker that exists decides. */
+/** Where the fallback looks for the stale marker: the env roots (`$ORCHESTRA_WORKSPACE_PATH` for setup/run scripts, `$ORCHESTRA_WORKTREE` for every agent session) when set —
+ *  never the cwd then (a session sitting in a SIBLING worktree must not read that worktree's marker); only without any env root (an old keeper) the cwd and each ancestor. */
 export function staleMarkerPaths(
   env: { ORCHESTRA_WORKSPACE_PATH?: string; ORCHESTRA_WORKTREE?: string },
   cwd: string,
 ): string[] {
   const roots: string[] = [];
   for (const r of [env.ORCHESTRA_WORKSPACE_PATH, env.ORCHESTRA_WORKTREE]) if (r && r.trim()) roots.push(r.trim());
-  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
-    roots.push(d);
-    if (path.dirname(d) === d) break;
+  if (roots.length === 0) {
+    for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+      roots.push(d);
+      if (path.dirname(d) === d) break;
+    }
   }
   return [...new Set(roots)].map((r) => path.join(r, '.orchestra', 'bus-run-stale'));
 }

@@ -29,3 +29,5 @@ of the run's scratch root) and `SESSION-IDENTITY: PASS|FAIL`. Needs `build/bus-a
 `verify-accepts-any-key`, `attach-reregisters`, `no-marker-file`, `key-logged`, `key-printed`.
 Must-FAIL on pristine master: `same_turn` reds `a1`, `b2`, `c_row_in_new_run`, `e1`, `e2` (no key, the send is refused by the stale marker).
 NOT covered: the packaged Electron app, sandbox/remote sessions, a CLI-side mutant (the CLI bundle is not load-mutated; master stands in).
+
+Hygiene (`hygiene.mjs`, selftested): the live `~/.claude*`/`~/.orchestra*` listing FAILS on an added entry carrying the rig's marks and on ANY removed entry except the known transients (`telemetry`, `sessions`, `session-env`, `shell-snapshots`); other diffs are NOTEs (concurrent live sessions share those dirs).

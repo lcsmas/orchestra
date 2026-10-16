@@ -149,3 +149,12 @@ export function resolveSessionIdentity(req: Record<string, unknown>, deps: Ident
   }
   return { ok: true, runId, generation: Number.isInteger(generation) && generation > 0 ? generation : null };
 }
+
+/** The `generationOf` dep over a (possibly absent) bus handle: with NO bus it THROWS — the service then cannot vouch and the CLI keeps its baked generation (never an unfenced answer). */
+export function busGenerationReader<D>(getDb: () => D | null, read: (db: D, runId: string) => number): (runId: string) => number {
+  return (runId) => {
+    const db = getDb();
+    if (!db) throw new Error('bus unavailable');
+    return read(db, runId);
+  };
+}

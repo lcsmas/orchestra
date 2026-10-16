@@ -1,7 +1,7 @@
 // Production wiring of the session-identity service (#379, ADR 0008; logic: session-identity.ts): registry file + store (tree → wave run) + bus (generation).
 
 import path from 'node:path';
-import { createSessionKeyRegistry, resolveSessionIdentity, type SessionKeyRegistry } from './session-identity.ts';
+import { busGenerationReader, createSessionKeyRegistry, resolveSessionIdentity, type SessionKeyRegistry } from './session-identity.ts';
 import { orchestraHome } from './platform/index.ts';
 import { getBus, coordinatorGeneration } from './bus.ts';
 import { nearestOrchestratorId } from './wave-run-id.ts';
@@ -42,10 +42,6 @@ export function dispatchIdentityRequest(msg: Record<string, unknown>): IdentityR
       const ws = store.getWorkspace(id);
       return ws ? nearestOrchestratorId(ws, (x) => store.getWorkspace(x)) : null;
     },
-    generationOf: (runId) => {
-      const db = getBus();
-      if (!db) throw new Error('bus unavailable'); // → unregistered: the CLI keeps its baked generation (never an unfenced call)
-      return coordinatorGeneration(db, runId);
-    },
+    generationOf: busGenerationReader(getBus, coordinatorGeneration), // no bus → throws → unregistered (never an unfenced call)
   });
 }

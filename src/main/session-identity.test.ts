@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  busGenerationReader,
   createSessionKeyRegistry,
   hashSessionKey,
   mintSessionKey,
@@ -189,5 +190,22 @@ test('MINOR-2 the registry reads OWN properties only: `constructor` / `__proto__
   assert.equal(reg.verify('ws-1', k), 'ok');
   const { deps } = service(t);
   const r = resolveSessionIdentity({ id: 'constructor', key: k }, { ...deps, registry: reg });
+  assert.equal(r.ok === false && r.code, 'unregistered');
+});
+
+test('MINOR-B the production generation reader is FAIL-CLOSED: no bus handle → it throws → the service answers unregistered (never an unfenced ok)', (t) => {
+  let db: { gen: number } | null = null;
+  const read = busGenerationReader(() => db, (d, run) => (run === 'run-NEW' ? d.gen : 0));
+  assert.throws(() => read('run-NEW'), /bus unavailable/);
+  db = { gen: 3 };
+  assert.equal(read('run-NEW'), 3);
+  // end to end through the service: the SAME reader wired as production wires it
+  const reg = createSessionKeyRegistry(scratch(t));
+  const k = mintSessionKey();
+  reg.register('ws-1', k);
+  const deps = { registry: reg, runIdFor: () => 'run-NEW', generationOf: read };
+  assert.deepEqual(resolveSessionIdentity({ id: 'ws-1', key: k }, deps), { ok: true, runId: 'run-NEW', generation: 3 });
+  db = null;
+  const r = resolveSessionIdentity({ id: 'ws-1', key: k }, deps);
   assert.equal(r.ok === false && r.code, 'unregistered');
 });

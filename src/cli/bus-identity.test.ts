@@ -321,7 +321,7 @@ test('MINOR-3 a keyed session whose host is down is told to retry, not to run `o
   writeMarker(rig, NEW_RUN);
   const r = await send(rig, 'retry-advice-379');
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /host did not answer/);
+  assert.match(r.stderr, /host did not answer — reopen Orchestra/);
   assert.doesNotMatch(r.stderr, /orchestra restart/);
   const keyless = await send(rig, 'keyless-advice-379', { key: null });
   assert.match(keyless.stderr, /orchestra restart/, 'a keyless session keeps today\'s advice');
@@ -336,4 +336,23 @@ test('MAJOR-1 an unvouched COORDINATOR with a stale env generation is REJECTED b
   assert.equal(r.code, 1, `fenced: ${r.stdout}`);
   assert.match(r.stderr, /stale coordinator generation/);
   assert.equal(rowRun(rig.home, 'zombie-gen-379'), null);
+});
+
+test('MINOR-A a session whose env root is CLEAN is not refused because its cwd sits in a SIBLING worktree that has a stale marker', needsBuild, async (t) => {
+  const rig = freshRig(t);
+  seedRuns(rig.home);
+  // OTHER worktree: stale marker; OWN worktree (rig.worktree, the env root): no marker
+  const sibling = path.join(rig.home, 'sibling-wt');
+  mkdirSync(path.join(sibling, '.orchestra'), { recursive: true });
+  writeFileSync(path.join(sibling, '.orchestra', 'bus-run-stale'), `stale run: the sibling's marker\nnew run: ${NEW_RUN}\n`);
+  const deep = path.join(sibling, 'src');
+  mkdirSync(deep, { recursive: true });
+  const r = await send(rig, 'sibling-cwd-379', { pathVar: 'WORKTREE', cwd: deep });
+  assert.equal(r.code, 0, `refused by a sibling worktree's marker (pre-fix: the cwd ancestor walk): ${r.stderr}`);
+  assert.equal(rowRun(rig.home, 'sibling-cwd-379'), OLD_RUN);
+  // control: the session's OWN marker still refuses from the same cwd
+  writeMarker(rig, NEW_RUN);
+  const own = await send(rig, 'sibling-cwd-own-379', { pathVar: 'WORKTREE', cwd: deep });
+  assert.equal(own.code, 1, own.stdout);
+  assert.match(own.stderr, /stale run/);
 });
