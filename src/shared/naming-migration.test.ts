@@ -38,6 +38,7 @@ function fixtureStore(): MigrationWorkspace[] {
     ws('a1', { parentId: LEAD, archived: true }),
     ws('n1', { parentId: LEAD }), // spawned, not in the table
     ws('p1', { namedByParent: LEAD }), // detached, already parent-named once
+    ws('b1', { parentId: OPS_CLOSED, namedByParent: LEAD }), // both recorded: the spawner is asserted first
   ];
 }
 const NEW: Record<string, string> = {
@@ -51,6 +52,7 @@ const NEW: Record<string, string> = {
   d2: 'impl-parent-supprime-2',
   a1: 'impl-archive-3',
   p1: 'impl-detache-nomme-4',
+  b1: 'impl-les-deux-5',
 };
 const rowsFor = (keys: string[] = Object.keys(NEW)): TableRow[] => keys.map((k) => ({ id: id(k), old: `old-${k}`, new: NEW[k] }));
 
@@ -87,6 +89,7 @@ test('the full plan on the fixture store: one action per workspace, each with it
     a100: 'untouched-archived',
     n100: 'untouched-not-in-table',
     p100: 'rename',
+    b100: 'rename',
   });
   assert.deepEqual(plan.rejected, []);
 });
@@ -98,6 +101,7 @@ test('rename: applied AS the spawner (parentId first, else the namer), with the 
   assert.equal(by[id('w4')].asParent, LEAD);
   assert.equal(by[id('p1')].asParent, LEAD, 'a detached child has no parentId: the namer is the identity');
   assert.equal(by[id('p1')].to, 'impl-detache-nomme-4');
+  assert.equal(by[id('b1')].asParent, OPS_CLOSED, 'both recorded: parentId wins over namedByParent');
 });
 
 test('skip (branch on origin): a pushed branch is listed and not renamed; a branch NOT on origin is', () => {
@@ -115,6 +119,13 @@ test('skip (active vague): the members of a running vague wait; a closed vague a
   assert.equal(actionOf(plan.rows, 'w2'), 'skip-vague');
   assert.equal(actionOf(plan.rows, 'w3'), 'rename'); // its OPS is archived
   assert.equal(actionOf(plan.rows, 'w4'), 'rename'); // under the LEAD: a mission, not a vague
+});
+
+test('a workspace both on origin AND in a running vague is reported as skip (branch on origin): the permanent reason wins', () => {
+  const plan = planMigration(inputs({ remoteBranches: new Set(['old-w1']) }));
+  assert.equal(actionOf(plan.rows, 'w1'), 'skip-remote');
+  const closed = planMigration(inputs({ remoteBranches: new Set(['old-w1']), activeVagueMembers: new Set() }));
+  assert.equal(actionOf(closed.rows, 'w1'), 'skip-remote', 'closing the vague does not free a pushed branch');
 });
 
 test('plan after the vague closes: exactly that vague\'s members become renames', () => {
@@ -245,6 +256,13 @@ test('activeVagueMemberIds: a vague is a LIVE orchestrator with a parent and a l
   // a sandbox-hosted member is not a live LOCAL member
   const sandboxed = base.map((w) => (w.parentId === OPS_RUNNING ? { ...w, host: { kind: 'sandbox', endpoint: 'x' } as const } : w));
   assert.equal(activeVagueMemberIds(sandboxed).size, 0);
+  // a plain (non-orchestrator) workspace with a parent and a live child is not a vague anchor
+  const plain = [
+    ...base,
+    ws('pp', { parentId: LEAD }),
+    ws('pc', { parentId: id('pp') }),
+  ];
+  assert.deepEqual([...activeVagueMemberIds(plain)].sort(), [...activeVagueMemberIds(base)].sort());
   // a dangling parent / a cycle must not hang or throw
   const cyc = [ws('c1', { parentId: id('c2'), canOrchestrate: true }), ws('c2', { parentId: id('c1'), canOrchestrate: true })];
   assert.doesNotThrow(() => activeVagueMemberIds(cyc));
@@ -257,7 +275,7 @@ test('renderPlan: a line per actionable workspace, the rejected rows, and the to
   assert.match(text, /skip \(active vague\)/);
   assert.match(text, /untouched \(no parent to name it\)/);
   assert.match(text, /REJECTED  row \d+  h2000000  human-pinned/);
-  assert.match(text, /TOTAL  15 workspace\(s\): 3 rename/);
+  assert.match(text, /TOTAL  16 workspace\(s\): 4 rename/);
   assert.doesNotMatch(text, /untouched \(human-created\)/, 'quiet classes are counted in TOTAL, not listed');
 });
 
