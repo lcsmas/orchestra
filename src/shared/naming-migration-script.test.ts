@@ -625,7 +625,7 @@ test('ORCHESTRA_HOME unset = the LIVE default: --apply refuses (before the store
   resetStore();
   const refused = run(['--table', tableFile, '--apply'], { ORCHESTRA_HOME: '' });
   assert.equal(refused.rc, 2, refused.out + refused.err);
-  assert.match(refused.err, /ORCHESTRA_HOME is unset: --apply would act on the LIVE default app and store .*\.orchestra, socket pointer .*\.orchestra\/sock\). .*--live/);
+  assert.match(refused.err, /ORCHESTRA_HOME is unset: --apply would act on the LIVE default app \(home .*\.orchestra, socket pointer .*\.orchestra\/sock; its store is the XDG one\)\. .*--live/);
   assert.equal(refused.out, '', 'nothing was read or planned');
   assert.deepEqual(calls(), []);
   const confirmed = run(['--table', tableFile, '--apply', '--live'], { ORCHESTRA_HOME: '' });
@@ -739,33 +739,46 @@ test('--closed: the skip-vague line prints the FULL OPS id; --closed takes it or
   resetStore();
 });
 
-test('the --live gate keys on the RESOLVED home: an explicit, relative or symlinked spelling of ~/.orchestra is the live home too', () => {
+test('the live home is refused OUTRIGHT under any explicit spelling (the live app runs without ORCHESTRA_HOME, so its store is not under that home) — only an UNSET ORCHESTRA_HOME + --live acts on it', () => {
   resetStore();
   const liveHome = path.join(tmp, '.orchestra'); // $HOME is the scratch dir: this IS "the live default home" of the fake user
   fs.mkdirSync(liveHome, { recursive: true });
   const link = path.join(tmp, 'link-to-live');
   fs.symlinkSync(liveHome, link);
+  const copy = path.join(tmp, 'copied-live-home'); // `cp -r ~/.orchestra`: a different directory, the LIVE app's socket pointer
+  fs.mkdirSync(copy, { recursive: true });
+  fs.writeFileSync(path.join(liveHome, 'sock'), '/run/user/1000/orchestra-live.sock\n');
+  fs.writeFileSync(path.join(copy, 'sock'), '/run/user/1000/orchestra-live.sock\n');
   try {
-    for (const spelling of [liveHome, link, `${liveHome}/../.orchestra`]) {
-      const r = run(['--table', tableFile, '--apply'], { ORCHESTRA_HOME: spelling });
-      assert.equal(r.rc, 2, `${spelling}: ${r.out}${r.err}`);
-      assert.match(r.err, /resolves to the live default home: --apply would act on the LIVE default app and store/);
-      assert.equal(r.out, '');
+    for (const spelling of [liveHome, `${liveHome}/`, link, `${liveHome}/../.orchestra`]) {
+      for (const extra of [[], ['--apply'], ['--apply', '--live']]) {
+        const r = run(['--table', tableFile, ...extra], { ORCHESTRA_HOME: spelling });
+        assert.equal(r.rc, 2, `${spelling} ${extra.join(' ')}: ${r.out}${r.err}`);
+        assert.match(r.err, /is the live default home spelled explicitly: the live app runs WITHOUT ORCHESTRA_HOME, so its store is NOT under this home \(it is the XDG one\)/);
+        assert.equal(r.out, '', 'nothing was read or planned');
+      }
     }
     // a relative spelling (cwd = the fake $HOME)
-    const rel = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', SCRIPT, '--table', tableFile, '--apply'], {
+    const rel = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', SCRIPT, '--table', tableFile, '--apply', '--live'], {
       encoding: 'utf8', cwd: tmp, env: { PATH: `${bin}:${gitDir}:/usr/bin:/bin`, HOME: tmp, TMPDIR: tmp, ORCHESTRA_HOME: '.orchestra', SHIM_NODE: process.execPath, SHIM_LOG: callsLog, SHIM_STORE: storeFile },
     });
     assert.equal(rel.status, 2, rel.stdout + rel.stderr);
-    assert.match(rel.stderr, /ORCHESTRA_HOME=\.orchestra resolves to the live default home/);
+    assert.match(rel.stderr, /ORCHESTRA_HOME=\.orchestra is the live default home spelled explicitly/);
+    // a copied home that carries the live app's socket pointer is the live app too (its store copy is stale)
+    for (const extra of [[], ['--apply', '--live']]) {
+      const r = run(['--table', tableFile, ...extra], { ORCHESTRA_HOME: copy });
+      assert.equal(r.rc, 2, r.out + r.err);
+      assert.match(r.err, /carries the LIVE app's socket pointer: the live app runs WITHOUT ORCHESTRA_HOME/);
+    }
     assert.deepEqual(calls(), []);
-    // --live passes the gate (then stops: no store under that home), and a scratch home is not the live one
-    const live = run(['--table', tableFile, '--apply', '--live'], { ORCHESTRA_HOME: link });
-    assert.doesNotMatch(live.err, /would act on the LIVE/);
+    // the way to act on the live app: UNSET + --live (passes the gate; the fake HOME has no store, so it stops there), and a scratch home is not the live one
+    const live = run(['--table', tableFile, '--apply', '--live'], { ORCHESTRA_HOME: '' });
+    assert.doesNotMatch(live.err, /would act on the LIVE|spelled explicitly/);
     assert.match(live.err, /cannot read the store/);
     assert.equal(run(['--table', tableFile, '--apply']).rc, 0, 'the scratch home of every other test is not live');
   } finally {
     fs.rmSync(link, { force: true });
+    fs.rmSync(copy, { recursive: true, force: true });
     fs.rmSync(liveHome, { recursive: true, force: true });
     resetStore();
   }
@@ -777,10 +790,14 @@ test('--help prints exactly the header — which matches the script: old REQUIRE
   const src = fs.readFileSync(SCRIPT, 'utf8');
   const flags = [...src.matchAll(/a === '(--[a-z-]+)'/g)].map((m) => m[1]).filter((f) => f !== '--help');
   assert.ok(flags.length >= 8, `parsed flags found: ${flags.join(' ')}`);
+  assert.ok(r.out.includes('-h/--help'), '--help documents itself');
+  // the other direction: every --flag the header mentions is a flag the script parses (or the node/git option it quotes)
+  const documented = [...new Set([...r.out.matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0]))].filter((f) => !['--experimental-strip-types', '--heads', '--help'].includes(f));
+  for (const f of documented) assert.ok(flags.includes(f), `the header documents ${f} but the script does not parse it`);
   for (const f of flags) assert.ok(r.out.includes(f), `--help documents ${f}`);
   assert.match(r.out, /`old` is REQUIRED/);
   assert.doesNotMatch(r.out, /optional but recommended/);
-  assert.match(r.out, /--live +required for --apply when the home resolves to the LIVE/);
+  assert.match(r.out, /--live +required for --apply when ORCHESTRA_HOME is UNSET \(= the LIVE ~\/\.orchestra; an explicit spelling of it is refused/);
   assert.doesNotMatch(r.out, /^(import|const|let|for|if) /m, 'no leaked source line');
   assert.ok(r.out.trimEnd().endsWith('Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.'), 'the output ends with the last header line');
   assert.equal(run(['-h']).out, r.out);
@@ -806,6 +823,69 @@ test('the read-back requires THE expected namer, not just some namer: a row pinn
   assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed .*namedByParent=impostor /);
   assert.match(r.out, /ABORTED  at w3000000/);
   assert.equal(calls().length, 1);
+  resetStore();
+});
+
+test('the script header and the codebase map say the same about --allow-gone: it excuses the rows that can never apply (GONE or ARCHIVED), never a rejected row', () => {
+  const header = fs.readFileSync(SCRIPT, 'utf8').split('\n').filter((l) => l.startsWith('//')).join('\n');
+  const map = fs.readFileSync(path.join(REPO, 'docs', 'codebase-map', 'workspaces.md'), 'utf8');
+  assert.match(header, /--allow-gone +rows of workspaces that no longer exist \(GONE\) or are archived \(ARCHIVED\)/);
+  assert.match(map, /`--allow-gone` excuses only the rows that can never apply — a workspace that no longer exists is GONE, an archived one is ARCHIVED rather than a WARN — never a rejected row/);
+});
+
+test('PREFLIGHT edges: a banner whose home is spelled through a symlink or contains a space still matches (an OLDER one stays refused); a suffixed build and an older banner in the rotated .1 are older; dry-run is truthful for unknown+flag', () => {
+  const older = PKG_VERSION.replace(/(\d+)$/, (n) => String(Math.max(0, Number(n) - 1)));
+  const link = path.join(tmp, 'link-to-home');
+  fs.symlinkSync(home, link);
+  const logs = path.join(home, 'logs');
+  try {
+    resetStore();
+    writeBanner(older, process.pid, link);
+    const viaLink = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(viaLink.rc, 2, 'an older banner under a symlinked spelling of the home is still OLDER, and the flag does not override it: ' + viaLink.out + viaLink.err);
+    assert.match(viaLink.err, /does not override a version that reads older/);
+    // a home whose path contains a space (the banner line carries it to the end of the line)
+    const spaced = path.join(tmp, 'a home with spaces');
+    fs.mkdirSync(path.join(spaced, 'userData', 'orchestra'), { recursive: true });
+    fs.copyFileSync(storeFile, path.join(spaced, 'userData', 'orchestra', 'store.json'));
+    fs.mkdirSync(path.join(spaced, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(spaced, 'logs', 'orchestra.log'), `2026-10-16T10:00:00.000Z INFO  === Orchestra ${older} (electron) starting === pid=${process.pid} platform=linux electron=33.4.11 node=20.18.3 logLevel=info home=${spaced}\n`);
+    const sp = run(['--table', tableFile, '--apply', '--assume-app-current'], { ORCHESTRA_HOME: spaced });
+    assert.equal(sp.rc, 2, sp.out + sp.err);
+    assert.match(sp.err, /does not override a version that reads older/);
+    // a suffixed build of the SAME number + the flag, and an older banner only in the rotated file
+    writeBanner(`${PKG_VERSION}-rc.1`);
+    assert.equal(run(['--table', tableFile, '--apply', '--assume-app-current']).rc, 2);
+    fs.renameSync(path.join(logs, 'orchestra.log'), path.join(logs, 'orchestra.log.1'));
+    writeBanner(older);
+    fs.renameSync(path.join(logs, 'orchestra.log'), path.join(logs, 'orchestra.log.1'));
+    fs.writeFileSync(path.join(logs, 'orchestra.log'), 'no banner in the current file\n');
+    const rotated = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(rotated.rc, 2, 'the older banner of the rotated file is read, and it reads older: ' + rotated.out + rotated.err);
+    assert.deepEqual(calls(), []);
+    // dry-run truth table: unknown + flag = would NOT refuse; unknown without = would; older with the flag = would
+    fs.rmSync(logs, { recursive: true, force: true });
+    assert.doesNotMatch(run(['--table', tableFile, '--assume-app-current']).out, /would REFUSE/);
+    assert.match(run(['--table', tableFile]).out, /would REFUSE --apply/);
+    writeBanner(older);
+    assert.match(run(['--table', tableFile, '--assume-app-current']).out, /would REFUSE --apply/);
+  } finally {
+    fs.rmSync(link, { force: true });
+    fs.rmSync(path.join(tmp, 'a home with spaces'), { recursive: true, force: true });
+    writeBanner();
+    fs.rmSync(path.join(logs, 'orchestra.log.1'), { force: true });
+    resetStore();
+  }
+});
+
+test('--closed naming something that is not a running vague\'s OPS says so (a NOTE: it releases nothing, and can only hold more)', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--closed', id('w1')]);
+  assert.equal(r.rc, 0, r.out + r.err);
+  assert.match(r.out, /NOTE  --closed w1000000 is not the OPS of a running vague/);
+  assert.match(r.out, /skip \(active vague\)\s+old-w1/, 'and w1 is still held');
+  const real = run(['--table', tableFile, '--closed', OPS_RUN]);
+  assert.doesNotMatch(real.out, /NOTE  --closed/);
   resetStore();
 });
 

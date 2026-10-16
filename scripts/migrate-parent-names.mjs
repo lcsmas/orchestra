@@ -6,7 +6,7 @@
 //   options: --closed <ops-id>[,<ops-id>…]  declare a finished-but-live vague over (its members stop being held) — BEFORE archiving it: archiving an OPS archives its whole subtree and the app then
 //                                           refuses every rename · --allow-gone  rows of workspaces that no longer exist (GONE) or are archived (ARCHIVED) are history, not an error / a WARN ·
 //                                           --assume-app-current  attest that the running app was restarted on the build this script comes from, WHEN its version cannot be read (the preflight
-//                                           below; a banner that reads older is never overridden) · --live  required for --apply when the home resolves to the LIVE ~/.orchestra · --verbose  list every workspace
+//                                           below; a banner that reads older is never overridden) · --live  required for --apply when ORCHESTRA_HOME is UNSET (= the LIVE ~/.orchestra; an explicit spelling of it is refused: the live app runs without ORCHESTRA_HOME, so its store is the XDG one) · --verbose  list every workspace · -h/--help  this text · -h/--help  this text
 //   --closed takes the full OPS id (the skip-vague line prints it) or a unique prefix of 6+ characters.
 //
 // TABLE = the human-validated old → new table, a JSON array: [{ "id": "<full workspace id>", "old": "<branch it was validated against>", "new": "<rôle>-<objet>[-<ticket>]" }].
@@ -74,14 +74,22 @@ if (process.env.ORCHESTRA_SOCK) {
   die('ORCHESTRA_SOCK is set (an agent PTY, or a stray export) — this script targets the app of ORCHESTRA_HOME; unset ORCHESTRA_SOCK and set ORCHESTRA_HOME to the app you mean');
 }
 
-const realPath = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-// The LIVE home (~/.orchestra) is the live fleet, however it is spelled: unset, explicit, relative, or through a symlink — the gate keys on the RESOLVED path. Reads are fine; --apply needs the explicit word.
+const realPath = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+// The LIVE home (~/.orchestra) is the live fleet, however it is spelled — the gate keys on the RESOLVED path (and on the socket pointer a copied home may carry). Reads are fine; --apply needs the explicit word.
+// But the live packaged app runs WITHOUT ORCHESTRA_HOME: its store is the XDG one, not <home>/userData — so an EXPLICIT spelling of the live home (or a home whose socket pointer is the live app's)
+// would plan from one store and rename in another app: refused outright, --live or not. Unset ORCHESTRA_HOME is the only way to act on the live app.
 const homeUnset = !process.env.ORCHESTRA_HOME;
 const home = process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
 const liveHome = realPath(path.join(os.homedir(), '.orchestra'));
-const isLiveHome = realPath(home) === liveHome;
+const pointerOf = (h) => { try { return fs.readFileSync(path.join(h, 'sock'), 'utf8').trim(); } catch { return ''; } };
+const dirIsLive = realPath(home) === liveHome;
+const pointerIsLive = !dirIsLive && pointerOf(home) !== '' && pointerOf(home) === pointerOf(liveHome);
+const isLiveHome = dirIsLive || pointerIsLive;
+if (!homeUnset && isLiveHome) {
+  die(`ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME} ${pointerIsLive ? "carries the LIVE app's socket pointer" : 'is the live default home spelled explicitly'}: the live app runs WITHOUT ORCHESTRA_HOME, so its store is NOT under this home (it is the XDG one) and this script would plan from one store and rename in the live app. Unset ORCHESTRA_HOME (and pass --live with --apply) to act on the live app, or point it at a scratch home.`);
+}
 if (apply && isLiveHome && !liveTarget) {
-  die(`${homeUnset ? 'ORCHESTRA_HOME is unset' : `ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME} resolves to the live default home`}: --apply would act on the LIVE default app and store (${home}, socket pointer ${path.join(home, 'sock')}). Set ORCHESTRA_HOME to a scratch home, or pass --live to confirm that the live fleet is the target.`);
+  die(`ORCHESTRA_HOME is unset: --apply would act on the LIVE default app (home ${home}, socket pointer ${path.join(home, 'sock')}; its store is the XDG one). Set ORCHESTRA_HOME to a scratch home, or pass --live to confirm that the live fleet is the target.`);
 }
 
 const { planMigration, renderPlan, activeVagueMemberIds, vagueHolders } = await import(pathToFileURL(path.join(REPO, 'src/shared/naming-migration.ts')).href);
@@ -166,6 +174,7 @@ const resolveClosed = (arg) => {
 };
 const closed = closedIds.map(resolveClosed);
 const plannerWorkspaces = workspaces.map((w) => (typeof w.repoPath === 'string' && w.repoPath ? { ...w, repoPath: realPath(w.repoPath) } : w)); // the same repo under two spellings is ONE repo
+const runningAnchors = new Set([...vagueHolders(workspaces).values()].flat());
 const holders = vagueHolders(workspaces, new Set(closed));
 const plan = planMigration({ workspaces: plannerWorkspaces, remoteBranches, localBranches, activeVagueMembers: new Set(holders.keys()), vagueHolders: holders, table, liveHeads });
 out(`# naming migration — ${apply ? 'APPLY' : 'DRY RUN'} — store=${storeFile} table=${tableFile}`);
@@ -175,6 +184,8 @@ try { pointerTarget = fs.readFileSync(pointerFile, 'utf8').trim() || '(empty)'; 
 out(`# acting on: ${isLiveHome ? `the LIVE default home ${home} (${homeUnset ? 'ORCHESTRA_HOME unset' : `ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME}`})` : `ORCHESTRA_HOME=${home}`} · store=${storeFile} · socket pointer ${pointerFile} -> ${pointerTarget}`);
 out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closed.length ? ` · closed vague(s) declared: ${closed.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
 for (const line of renderPlan(plan, { verbose, allowGone })) out(line);
+// A --closed that names no running vague's OPS (a member, an archived workspace, a vague already over) releases nothing — it can only HOLD more, so it is a NOTE, not an error.
+for (const id of closed) if (!runningAnchors.has(id)) out(`NOTE  --closed ${id.slice(0, 8)} is not the OPS of a running vague (a member, an archived workspace, or a vague already over): it releases nothing`);
 const blocking = plan.rejected.filter((x) => !(allowGone && x.code === 'unknown-workspace'));
 if (blocking.length > 0) die(`${blocking.length} rejected table row(s) — fix the table; nothing applied`);
 // A table row of an ARCHIVED workspace can never apply (the app refuses to rename it; archiving an OPS archives its whole subtree). Say so — and in --apply it is not a green run
@@ -209,7 +220,7 @@ const readRunningApp = () => {
       continue;
     }
     // the LAST banner of an instance running on THIS home (another home's instance sharing the log dir is not the app we will talk to)
-    const mine = [...text.matchAll(/=== Orchestra (\d+\.\d+\.\d+\S*) \([^)]*\) starting === pid=(\d+)[^\n]*?home=(\S+)/g)].filter((m) => path.resolve(m[3]) === path.resolve(home));
+    const mine = [...text.matchAll(/=== Orchestra (\d+\.\d+\.\d+\S*) \([^)]*\) starting === pid=(\d+)[^\n]*?home=([^\n]+)/g)].filter((m) => realPath(m[3].trim()) === realPath(home));
     if (mine.length > 0) return { version: mine[mine.length - 1][1], pid: Number(mine[mine.length - 1][2]) };
   }
   return null;
