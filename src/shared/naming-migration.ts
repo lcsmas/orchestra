@@ -3,7 +3,7 @@
 // (store, git, running vagues) and applies each `rename` step through the installed app's CLI — never by editing store.json.
 import type { Workspace } from './types.ts';
 import { canOrchestrate } from './types.ts';
-import { checkSpawnName } from './naming-policy.ts';
+import { checkSpawnName, decideRename } from './naming-policy.ts';
 
 /** The Workspace fields the planner reads. */
 export type MigrationWorkspace = Pick<
@@ -28,8 +28,6 @@ export interface MigrationInputs {
   /** Workspace ids that belong to a vague still running — see {@link activeVagueMemberIds}. */
   activeVagueMembers: ReadonlySet<string>;
   table: readonly TableRow[];
-  /** Optional git ref-format check (the script runs `git check-ref-format --branch`): an error string = git would refuse the name. */
-  refFormatError?: (name: string) => string | undefined;
 }
 
 export type RowAction =
@@ -58,12 +56,11 @@ export interface PlanRow {
 export type RejectCode =
   | 'unknown-workspace'
   | 'duplicate-row'
-  | 'human-pinned'
+  | 'refused-by-policy' // decideRename refuses the parent (a human-pinned name, ...): the app would refuse the rename too
   | 'invalid-name'
   | 'stale-old'
   | 'duplicate-target'
-  | 'name-taken'
-  | 'invalid-ref';
+  | 'name-taken';
 
 export interface RejectedRow {
   /** Index in the table (0-based). */
@@ -150,12 +147,18 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     const w = byId.get(r.id);
     if (c.ok && w && !w.archived) targetCount.set(c.name, (targetCount.get(c.name) ?? 0) + 1);
   });
+  // D2: the rename is applied AS the parent (self-asserted ORCHESTRA_WS_ID): `parentId`, else the namer. The app compares ids only (decideRename), so a parent that has since
+  // left the store still names its child — an id that exists is preferred; with neither recorded there is nobody to name it.
+  const parentOf = (w: MigrationWorkspace): string | undefined => {
+    const ids = [w.parentId, w.namedByParent].filter((p): p is string => !!p);
+    return ids.find((p) => byId.has(p)) ?? ids[0];
+  };
   // Names a rename cannot land on: a branch of the repos, or the current branch of another LIVE workspace.
   const taken = new Set<string>([...input.remoteBranches, ...input.localBranches]);
   for (const w of input.workspaces) if (!w.archived) taken.add(w.branch);
-  // git refs are files: `a` cannot coexist with `a/b` (either way round), so a path-prefix clash counts as taken.
+  // git refs are files: `a` cannot coexist with `a/b`. A target is flat (checkSpawnName refuses `/`), so only an existing `to/...` branch can clash.
   const clash = (to: string, own: string): string | undefined => {
-    for (const t of taken) if (t !== own && (t === to || t.startsWith(`${to}/`) || to.startsWith(`${t}/`))) return t;
+    for (const t of taken) if (t !== own && (t === to || t.startsWith(`${to}/`))) return t;
     return undefined;
   };
 
@@ -174,15 +177,16 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       valid.set(r.id, { index, to });
       return;
     }
-    if (ws.branchManuallySet === true) return reject('human-pinned', `a human named it (${ws.branch}) — a human rename wins for good`);
+    // The app's own verdict on THIS rename by THIS caller (a human-pinned name is refused to the parent; never re-derived from the pin fields here).
+    const asParentId = parentOf(ws);
+    const decision = asParentId ? decideRename(ws, { kind: 'agent', id: asParentId }) : undefined;
+    if (decision && !decision.allow) return reject('refused-by-policy', decision.error);
     // `old` is a cross-check, the id is the identity. A legacy child that is NOT parent-named renames ITSELF while its nudge is active (and may win a race against this very
     // run), so its name drifting from `old` is expected and the row still applies. Once someone parent-named it differently the table is outdated: that refuses.
     const drifted = r.old !== undefined && r.old !== ws.branch && ws.branch !== to;
     if (drifted && ws.namedByParent) {
       return reject('stale-old', `the table was validated against "${r.old}" but it has been parent-named "${ws.branch}" since`);
     }
-    const refError = input.refFormatError?.(to);
-    if (refError) return reject('invalid-ref', refError);
     if ((targetCount.get(to) ?? 0) > 1) return reject('duplicate-target', `another row targets the same name "${to}"`);
     const clashing = ws.branch === to ? undefined : clash(to, ws.branch);
     if (clashing) return reject('name-taken', `"${to}" conflicts with the existing branch / workspace name "${clashing}"`);
@@ -211,10 +215,7 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       rows.push({ ...base, action: 'done', to, reason: 'already named' });
       continue;
     }
-    // D2: the rename is applied AS the parent (self-asserted ORCHESTRA_WS_ID): `parentId`, else the namer. The app compares ids only (decideRename), so a parent
-    // that has since left the store still names its child — an id that exists is preferred; with neither recorded there is nobody to name it.
-    const ids = [ws.parentId, ws.namedByParent].filter((p): p is string => !!p);
-    const asParent = ids.find((p) => byId.has(p)) ?? ids[0];
+    const asParent = parentOf(ws);
     if (!asParent) {
       rows.push({ ...base, action: 'untouched-no-parent', to, reason: 'no parentId/namedByParent recorded — rename it from the sidebar or re-attach it' });
       continue;

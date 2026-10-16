@@ -210,12 +210,18 @@ test('rejected rows: an unknown workspace id', () => {
   assert.deepEqual(renamedIds(plan), [id('w3')], 'the valid row is still planned (the SCRIPT refuses to apply on any rejection)');
 });
 
-test('rejected rows: a human-pinned target (a human rename wins for good)', () => {
+test('rejected rows: a human-pinned target is refused BY THE APP\'S OWN decideRename (a human rename wins for good)', () => {
   const plan = planMigration(inputs());
   const r = plan.rejected.find((x) => x.id === id('h2'))!;
-  assert.equal(r.code, 'human-pinned');
+  assert.equal(r.code, 'refused-by-policy');
+  assert.match(r.detail, /named by the human/);
   assert.equal(actionOf(plan.rows, 'h2'), 'row-rejected');
   assert.ok(!plan.renames.some((x) => x.id === id('h2')));
+  // the verdict is the policy's: a legacy human-pinned workspace with NO recorded spawner is not a rejected row — nobody could rename it anyway
+  const lone = fixtureStore().map((w) => (w.id === id('d1') ? { ...w, branchManuallySet: true } : w));
+  const p2 = planMigration(inputs({ workspaces: lone }));
+  assert.equal(p2.rejected.some((x) => x.id === id('d1')), false);
+  assert.equal(actionOf(p2.rows, 'd1'), 'untouched-no-parent');
 });
 
 test('rejected rows: an invalid name (no rôle prefix, empty, sanitised to nothing)', () => {
@@ -278,11 +284,11 @@ test('re-plan after a failed run: lost pin -> a pin-only rename; the child won w
   assert.equal(planMigration(inputs({ table: rowsFor(['w3', 'w4']) })).renames.length, 2, 'untouched old names plan the rename again');
 });
 
-test('rejected rows: git refs are files — a target that is a path-prefix of an existing branch (or has one as prefix) is taken', () => {
+test('rejected rows: git refs are files — a target that is a path-prefix of an existing branch is taken', () => {
   const a = planMigration(inputs({ localBranches: new Set(['impl-fix/sub']), table: [{ id: id('w3'), new: 'impl-fix' }] }));
   assert.equal(a.rejected[0].code, 'name-taken');
-  const b = planMigration(inputs({ remoteBranches: new Set(['impl-fix']), table: [{ id: id('w3'), new: 'impl-fix/sub' }] }));
-  assert.equal(b.rejected[0].code, 'name-taken');
+  const b = planMigration(inputs({ table: [{ id: id('w3'), new: 'impl-fix/sub' }] }));
+  assert.equal(b.rejected[0].code, 'invalid-name', 'a target is flat: checkSpawnName refuses "/" before any clash is possible');
   const c = planMigration(inputs({ localBranches: new Set(['impl-fixer']), table: [{ id: id('w3'), new: 'impl-fix' }] }));
   assert.equal(c.rejected.length, 0, 'a common string prefix without the slash is not a ref conflict');
   // the workspace's OWN current branch never conflicts with its own rename (impl-fix/sub -> impl-fix frees the directory)
@@ -292,14 +298,12 @@ test('rejected rows: git refs are files — a target that is a path-prefix of an
   assert.equal(d.renames[0]?.to, 'impl-fix');
 });
 
-test('rejected rows: a name git refuses (the injected ref-format check) is rejected at plan time, not mid-apply', () => {
-  const refFormatError = (n: string): string | undefined => (/\.\.|\.lock$|\/$/.test(n) ? `git refuses "${n}"` : undefined);
-  for (const bad of ['impl-fix..auth-9', 'impl-fix.lock', 'impl-fix/']) {
-    const plan = planMigration(inputs({ refFormatError, table: [{ id: id('w3'), new: bad }] }));
-    assert.equal(plan.rejected[0]?.code, 'invalid-ref', bad);
+test('rejected rows: a name git refuses is rejected at plan time by the naming policy (checkSpawnName), not mid-apply', () => {
+  for (const bad of ['impl-fix..auth-9', 'impl-fix.lock', 'impl-fix-9.']) {
+    const plan = planMigration(inputs({ table: [{ id: id('w3'), new: bad }] }));
+    assert.equal(plan.rejected[0]?.code, 'invalid-name', bad);
     assert.equal(plan.renames.length, 0);
   }
-  assert.equal(planMigration(inputs({ refFormatError, table: [{ id: id('w3'), new: 'impl-fix-9' }] })).rejected.length, 0);
 });
 
 test('idempotent: after a full apply the plan is empty; a second apply plans nothing either', () => {
@@ -361,7 +365,7 @@ test('renderPlan: a line per actionable workspace, the rejected rows, and the to
   assert.match(text, /skip \(branch on origin\)/);
   assert.match(text, /skip \(active vague\)/);
   assert.match(text, /untouched \(no parent to name it\)/);
-  assert.match(text, /REJECTED  row \d+  h2000000  human-pinned/);
+  assert.match(text, /REJECTED  row \d+  h2000000  refused-by-policy/);
   assert.match(text, /TOTAL  16 workspace\(s\): 5 rename/);
   assert.doesNotMatch(text, /untouched \(human-created\)/, 'quiet classes are counted in TOTAL, not listed');
   const verbose = renderPlan(planMigration(inputs()), { verbose: true }).join('\n');
@@ -382,6 +386,7 @@ test('renderPlan allowGone: a row of a vanished workspace is reported as GONE an
 
 test('wiring: the planner validates names with the policy module (no second copy of the rôle rule)', () => {
   const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'naming-migration.ts'), 'utf8');
-  assert.match(src, /import \{ checkSpawnName \} from '\.\/naming-policy\.ts'/);
+  assert.match(src, /import \{ checkSpawnName, decideRename \} from '\.\/naming-policy\.ts'/);
+  assert.doesNotMatch(src, /\.branchManuallySet|\.autoRenameCount/, 'the human pin is never read here: the verdict is decideRename\'s');
   assert.doesNotMatch(src, /ROLES|\bops\b.*\bimpl\b.*\bverif\b/, 'the rôle list lives in naming-policy.ts only');
 });

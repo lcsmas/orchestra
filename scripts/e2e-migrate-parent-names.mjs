@@ -1,6 +1,8 @@
 // #385 — scripts/migrate-parent-names.mjs against a BUILT Orchestra (argv[2] = app dir), inside the contained rig's own headless sway, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR.
-// World: a repo-less orchestrator PARENT, two spawned children under it (C1 not pushed, C2 whose branch is on a local `origin`), one human-created workspace H.
-// Flow: dry-run (writes nothing) → `--apply` through the REAL built CLI (dist-electron/cli.js, ORCHESTRA_WS_ID=<parent>) → the store, git and the sidebar are read back → a second `--apply` plans nothing.
+// World: a repo-less orchestrator PARENT; under it C1 (legacy spawned child, not pushed), C2 (branch on a local `origin`), C3 (ALREADY parent-named: `namedByParent`), C4 (human-pinned), an OPS (a promoted
+// worktree, a running vague) with one member W; and one human-created workspace H.
+// Flow: dry-run (writes nothing) → `--apply` through the REAL built CLI (dist-electron/cli.js, ORCHESTRA_WS_ID=<parent>) → the store, git, the sidebar and `orchestra peers` are read back → a plain-shell rename of the
+// parent-named child is REFUSED (why the script impersonates the parent) → a second `--apply` plans nothing → `--closed <ops>` releases the vague and its member is renamed AS the OPS → a human-pinned row refuses the run.
 // Oracles: store.json (branch / namedByParent / formerBranch / branchManuallySet) · `git branch --show-current` in the worktree · the sidebar DOM (`.ws-name` text + title) · a renderer screenshot per state ·
 // the real `orchestra peers`. Positive controls: app identity (target url ⊇ app dir, served bundle md5 == dist file), scratch env read out of the running app, app present in MY sway, live ~/.claude* untouched.
 //
@@ -81,12 +83,19 @@ function seedWorld(armDir) {
   git(repoDir, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repoDir, 'README.md'), '# mig385 seed repo\n'); git(repoDir, ['add', '.'], fakeHome); git(repoDir, ['commit', '-q', '-m', 'seed'], fakeHome);
   git(repoDir, ['remote', 'add', 'origin', originDir], fakeHome); git(repoDir, ['push', '-q', 'origin', 'main'], fakeHome);
   const account = { id: 'rig-mig385', label: 'rig (scratch config dir)', configDir: cfg };
-  const ids = { parent: randomUUID(), c1: randomUUID(), c2: randomUUID(), human: randomUUID() };
+  const ids = { parent: randomUUID(), c1: randomUUID(), c2: randomUUID(), human: randomUUID(), c3: randomUUID(), c4: randomUUID(), ops: randomUUID(), w: randomUUID() };
   const wsRec = (id, branch, extra = {}) => ({ id, name: `repo · ${branch}`, repoPath: repoDir, worktreePath: path.join(wtDir, branch), branch, baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id, setupStatus: 'ok', hasInput: false, ...extra });
-  for (const b of ['old-child-one', 'old-child-two', 'old-human']) git(repoDir, ['worktree', 'add', '-q', '-b', b, path.join(wtDir, b), 'main'], fakeHome);
+  for (const b of ['old-child-one', 'old-child-two', 'old-human', 'impl-deja-nomme-1', 'old-pinned', 'old-ops-vague', 'old-vague-member']) git(repoDir, ['worktree', 'add', '-q', '-b', b, path.join(wtDir, b), 'main'], fakeHome);
   git(repoDir, ['push', '-q', 'origin', 'old-child-two'], fakeHome); // C2's branch is ON origin → the script must skip it
   const parent = { id: ids.parent, name: 'orchestrator · ops-parent', kind: 'orchestrator', canOrchestrate: true, repoPath: '', worktreePath: scratchDir, branch: 'ops-parent', baseBranch: '', createdAt: Date.now() - 1000, status: 'idle', agent: 'claude', accountId: account.id, hasInput: false };
-  const workspaces = [parent, wsRec(ids.c1, 'old-child-one', { parentId: ids.parent }), wsRec(ids.c2, 'old-child-two', { parentId: ids.parent }), wsRec(ids.human, 'old-human')];
+  const workspaces = [parent,
+    wsRec(ids.c1, 'old-child-one', { parentId: ids.parent }),
+    wsRec(ids.c2, 'old-child-two', { parentId: ids.parent }),
+    wsRec(ids.c3, 'impl-deja-nomme-1', { parentId: ids.parent, namedByParent: ids.parent }), // born through `spawn --name`: already parent-named
+    wsRec(ids.c4, 'old-pinned', { parentId: ids.parent, branchManuallySet: true }), // a human typed this name
+    wsRec(ids.ops, 'old-ops-vague', { parentId: ids.parent, canOrchestrate: true }), // a promoted worktree = an OPS = a running vague…
+    wsRec(ids.w, 'old-vague-member', { parentId: ids.ops }), // …with one member
+    wsRec(ids.human, 'old-human')];
   const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'mig385-repo', defaultBranch: 'main', accountId: account.id }], workspaces, accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
@@ -136,10 +145,13 @@ async function main() {
     { id: ids.c1, old: 'old-child-one', new: 'impl-enfant-un-385' },
     { id: ids.c2, old: 'old-child-two', new: 'impl-enfant-deux-385' },
     { id: ids.human, old: 'old-human', new: 'impl-humain-trois-385' },
+    { id: ids.c3, old: 'impl-deja-nomme-1', new: 'impl-deja-nomme-2' },
+    { id: ids.w, old: 'old-vague-member', new: 'impl-membre-vague-385' },
   ], null, 2));
   mustBeScratch('table', table);
-  const migrate = (...extra) => {
-    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', path.join(APP_DIR, 'scripts', 'migrate-parent-names.mjs'), '--table', table, ...extra], { encoding: 'utf8', env: scriptEnv, timeout: 120_000 });
+  const migrate = (...extra) => migrateWith(table, ...extra);
+  const migrateWith = (tableFile, ...extra) => {
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', path.join(APP_DIR, 'scripts', 'migrate-parent-names.mjs'), '--table', tableFile, ...extra], { encoding: 'utf8', env: scriptEnv, timeout: 120_000 });
     return { rc: r.status, out: r.stdout, err: r.stderr };
   };
   const rows = () => cdp.eval(`[...document.querySelectorAll('.ws-name')].map((e) => ({ text: e.textContent.trim(), title: e.getAttribute('title') || '' }))`);
@@ -147,7 +159,7 @@ async function main() {
     const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); return (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null; }, 60000, 'the app page target');
     clause('ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     cdp = await Cdp.connect(target.webSocketDebuggerUrl); await cdp.send('Page.enable');
-    await waitFor(async () => (await rows()).length >= 4, 60000, 'the 4 seeded workspaces in the sidebar');
+    await waitFor(async () => (await rows()).length >= 8, 60000, 'the 8 seeded workspaces in the sidebar');
     const srcs = await cdp.eval(`[...document.querySelectorAll('script[src]')].map((s) => s.src)`); const bundle = srcs.find((s) => /assets\/index-.*\.js/.test(s));
     const onDisk = bundle && path.join(APP_DIR, 'dist', bundle.split('/dist/')[1]);
     const frameId = (await cdp.send('Page.getResourceTree')).frameTree.frame.id; const rc_ = await cdp.send('Page.getResourceContent', { frameId, url: bundle });
@@ -169,18 +181,23 @@ async function main() {
     // ── P1: dry-run writes nothing ──
     const dry = migrate();
     await sleep(1500);
-    clause('P1/dry-run-plans-and-writes-nothing', dry.rc === 0 && /DRY RUN/.test(dry.out) && /rename\s+old-child-one -> impl-enfant-un-385/.test(dry.out) && /skip \(branch on origin\)\s+old-child-two/.test(dry.out) && /untouched \(no parent to name it\)\s+old-human/.test(dry.out) && storeRaw() === raw0,
+    clause('P1/dry-run-plans-and-writes-nothing', dry.rc === 0 && /DRY RUN/.test(dry.out) && /rename\s+old-child-one -> impl-enfant-un-385/.test(dry.out) && /skip \(branch on origin\)\s+old-child-two/.test(dry.out) && /untouched \(no parent to name it\)\s+old-human/.test(dry.out) && /rename\s+impl-deja-nomme-1 -> impl-deja-nomme-2/.test(dry.out) && /skip \(active vague\)\s+old-vague-member/.test(dry.out) && storeRaw() === raw0,
       `rc ${dry.rc}; plan lines ${dry.out.split('\n').filter((l) => l.startsWith('PLAN')).length}; store.json byte-identical: ${storeRaw() === raw0}`);
 
     // ── P2: --apply through the real CLI ──
     const ap = migrate('--apply');
-    clause('P2/apply-ran', ap.rc === 0 && new RegExp(`APPLIED  ${ids.c1.slice(0, 8)}  old-child-one -> impl-enfant-un-385`).test(ap.out) && /DONE  1\/1 renamed/.test(ap.out), `rc ${ap.rc}; ${ap.out.split('\n').filter((l) => /^(APPLIED|FAILED|DONE)/.test(l)).join(' | ')}${ap.err ? ` | stderr: ${ap.err.slice(0, 200)}` : ''}`);
+    clause('P2/apply-ran', ap.rc === 0 && new RegExp(`APPLIED  ${ids.c1.slice(0, 8)}  old-child-one -> impl-enfant-un-385`).test(ap.out) && /DONE  2\/2 renamed/.test(ap.out), `rc ${ap.rc}; ${ap.out.split('\n').filter((l) => /^(APPLIED|FAILED|DONE)/.test(l)).join(' | ')}${ap.err ? ` | stderr: ${ap.err.slice(0, 200)}` : ''}`);
     const s1 = await waitFor(() => { const s = store(); return s[ids.c1].branch === 'impl-enfant-un-385' ? s : null; }, 15000, 'C1 renamed in store.json');
     const c1 = s1[ids.c1];
     clause('P3/store-parent-named-not-human-pinned', c1.namedByParent === ids.parent && c1.branchManuallySet !== true, `C1 branch ${s0[ids.c1].branch} -> ${c1.branch}; namedByParent ${s0[ids.c1].namedByParent ?? '∅'} -> ${c1.namedByParent}; branchManuallySet ${s0[ids.c1].branchManuallySet ?? '∅'} -> ${c1.branchManuallySet ?? '∅'}`);
     clause('P3/store-former-branch-recorded', c1.formerBranch === 'old-child-one', `formerBranch ${s0[ids.c1].formerBranch ?? '∅'} -> ${c1.formerBranch}`);
     clause('P3/git-branch-really-renamed', sh('git', ['-C', c1.worktreePath, 'branch', '--show-current']).trim() === 'impl-enfant-un-385', `git -C ${path.basename(c1.worktreePath)} branch --show-current → ${sh('git', ['-C', c1.worktreePath, 'branch', '--show-current']).trim()}`);
     clause('P3/skipped-and-untouched-workspaces-unchanged', s1[ids.c2].branch === 'old-child-two' && !s1[ids.c2].namedByParent && s1[ids.human].branch === 'old-human' && !s1[ids.human].namedByParent, `C2 (on origin) ${s1[ids.c2].branch}; human ${s1[ids.human].branch}`);
+
+    const c3 = await waitFor(() => { const w = store()[ids.c3]; return w.branch === 'impl-deja-nomme-2' ? w : null; }, 15000, 'C3 renamed in store.json');
+    clause('P3/already-parent-named-keeps-its-pin-and-gains-the-former-name', c3.namedByParent === ids.parent && c3.branchManuallySet !== true && c3.formerBranch === 'impl-deja-nomme-1' && (c3.autoRenameCount ?? 0) === (s0[ids.c3].autoRenameCount ?? 0),
+      `C3 branch ${s0[ids.c3].branch} -> ${c3.branch}; namedByParent ${s0[ids.c3].namedByParent} -> ${c3.namedByParent} (kept); formerBranch ${s0[ids.c3].formerBranch ?? '∅'} -> ${c3.formerBranch}; autoRenameCount ${s0[ids.c3].autoRenameCount ?? '∅'} -> ${c3.autoRenameCount ?? '∅'} (no counter bump)`);
+    clause('P3/vague-member-held-while-its-vague-runs', s1[ids.w].branch === 'old-vague-member' && !s1[ids.w].namedByParent && s1[ids.c4].branch === 'old-pinned', `W (member of the running vague) ${s1[ids.w].branch}; human-pinned C4 ${s1[ids.c4].branch}`);
 
     // ── P4: the sidebar shows it ──
     const r1 = await waitFor(async () => { const r = await rows(); return r.some((x) => x.text === 'impl-enfant-un-385') ? r : null; }, 15000, 'the sidebar row to show the new name');
@@ -194,14 +211,35 @@ async function main() {
     const peerLine = (peers.stdout || '').split('\n').find((l) => l.includes(ids.c1));
     clause('P5/peers-shows-ex-name', peers.status === 0 && !!peerLine && /impl-enfant-un-385/.test(peerLine) && /ex-old-child-one/.test(peerLine), `peers rc ${peers.status}; C1 line ${JSON.stringify(peerLine ?? null)}${peers.stderr ? ` stderr ${peers.stderr.slice(0, 160)}` : ''}`);
 
+    // ── P5b: why the script impersonates the parent — a plain-shell human is an UNKNOWN caller and is refused on a parent-named child (#383); the same call AS the parent lands ──
+    const naming = (w) => JSON.stringify([w.branch, w.namedByParent, w.formerBranch, w.branchManuallySet]);
+    const same3 = () => naming(store()[ids.c3]) === naming(c3);
+    const plain = spawnSync(path.join(world.stubDir, 'orchestra'), ['rename', ids.c3, 'impl-direct-du-shell-9'], { encoding: 'utf8', env: scriptEnv, timeout: 60000 });
+    clause('P5b/plain-shell-rename-of-a-parent-named-child-is-refused', plain.status !== 0 && /named by your parent/.test(`${plain.stderr}${plain.stdout}`) && same3(), `rc ${plain.status}; ${JSON.stringify((plain.stderr || plain.stdout).trim().slice(0, 160))}; C3 naming fields unchanged: ${same3()}`);
+
     // ── P6: idempotent ──
     const raw1 = storeRaw();
     const again = migrate('--apply');
     await sleep(1500);
-    clause('P6/second-apply-plans-nothing', again.rc === 0 && /DONE  0\/0 renamed/.test(again.out) && !/^APPLIED/m.test(again.out) && storeRaw() === raw1, `rc ${again.rc}; ${again.out.split('\n').filter((l) => /^(TOTAL|DONE)/.test(l)).join(' | ')}; store.json byte-identical: ${storeRaw() === raw1}`);
+    clause('P6/second-apply-plans-nothing', again.rc === 0 && /DONE  0\/0 renamed/.test(again.out) && !/^APPLIED/m.test(again.out) && /skip \(active vague\)\s+old-vague-member/.test(again.out) && storeRaw() === raw1, `rc ${again.rc}; ${again.out.split('\n').filter((l) => /^(TOTAL|DONE)/.test(l)).join(' | ')}; store.json byte-identical: ${storeRaw() === raw1}`);
+
+    // ── P7: the vague is over (the operator declares it, while its members are still live) → exactly its member is renamed, AS its OPS ──
+    const close = migrate('--apply', '--closed', ids.ops);
+    clause('P7/closed-vague-member-renamed-as-its-ops', close.rc === 0 && new RegExp(`APPLIED  ${ids.w.slice(0, 8)}  old-vague-member -> impl-membre-vague-385`).test(close.out) && /DONE  1\/1 renamed/.test(close.out), `rc ${close.rc}; ${close.out.split('\n').filter((l) => /^(APPLIED|FAILED|DONE|PLAN)/.test(l)).join(' | ')}`);
+    const sw = await waitFor(() => { const w = store()[ids.w]; return w.branch === 'impl-membre-vague-385' ? w : null; }, 15000, 'W renamed in store.json');
+    clause('P7/member-pinned-to-its-ops-with-former-name', sw.namedByParent === ids.ops && sw.formerBranch === 'old-vague-member' && sw.branchManuallySet !== true, `W branch old-vague-member -> ${sw.branch}; namedByParent -> ${sw.namedByParent} (the OPS ${ids.ops.slice(0, 8)}); formerBranch ${sw.formerBranch}`);
+    const f7 = saveShot(`${LABEL}-p7-after-close-renderer.png`, await cdp.shot());
+
+    // ── P8: a human-pinned target is never renamed: the whole run refuses and the store stays byte-identical ──
+    const pinnedTable = path.join(armDir, 'pinned-table.json');
+    fs.writeFileSync(pinnedTable, JSON.stringify([{ id: ids.c4, old: 'old-pinned', new: 'impl-epingle-par-un-humain-9' }], null, 2));
+    const rawPinned = storeRaw();
+    const pin = migrateWith(pinnedTable, '--apply');
+    await sleep(1000);
+    clause('P8/human-pinned-row-refuses-the-run', pin.rc === 2 && /REJECTED  row 1  .*refused-by-policy.*named by the human/.test(pin.out) && !/^APPLIED/m.test(pin.out) && storeRaw() === rawPinned, `rc ${pin.rc}; ${pin.out.split('\n').filter((l) => /^REJECTED/.test(l)).join(' | ')}; store.json byte-identical: ${storeRaw() === rawPinned}`);
 
     clause('ctl/no-duplicate-captures', new Set(shots.map((s) => s.md5)).size === shots.length, `${shots.length} captures: ${shots.map((s) => `${path.basename(s.file)}=${s.md5.slice(0, 8)}`).join(', ')}`);
-    console.log(`  shots: ${[f0, f1].join(', ')}`);
+    console.log(`  shots: ${[f0, f1, f7].join(', ')}`);
   } catch (e) {
     clause('rig/completed', false, `ABORTED: ${e.stack || e}`);
   } finally {

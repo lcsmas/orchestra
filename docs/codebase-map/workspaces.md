@@ -566,8 +566,8 @@ governed by the flags of the **innermost** run of its two parties).
 `<rôle>-<objet>[-<ticket>]` convention. The pure planner `planMigration` (`src/shared/naming-migration.ts:137`) takes the store's workspaces, the branches on
 every remote (+ local), the ids of a running vague and the human-validated table `[{id, old?, new}]`, and returns one action per workspace — `rename`,
 `skip-remote` (branch on a remote), `skip-vague`, `done` (named AND parent-named), or `untouched-*` (human-created = no recorded spawner; no parent to name
-it; archived — `dispatchRenameRequest` answers "unknown workspace"; not in table) — plus REJECTED rows (unknown id, duplicate row/target, human-pinned,
-`checkSpawnName` / git ref-format failure, stale `old`, name taken — also as a ref path-prefix: the app would silently suffix it; an ARCHIVED workspace's row
+it; archived — `dispatchRenameRequest` answers "unknown workspace"; not in table) — plus REJECTED rows (unknown id, duplicate row/target, refused by `decideRename` (a human-pinned name),
+`checkSpawnName` failure (which also refuses git-invalid refs and `/`), stale `old`, name taken — also as a ref path-prefix: the app would silently suffix it; an ARCHIVED workspace's row
 only has to be well-formed). A parent that left the store still names its child (`decideRename` compares ids only). A running vague = `activeVagueMemberIds`
 (`:107`), the app's own `liveFleetRuns` rule read off the store (a live OPS with a parent and a live member below; nothing writes `runs.closed_at`, the bus is
 never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close event and archiving an OPS archives its WHOLE subtree

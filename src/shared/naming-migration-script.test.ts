@@ -391,12 +391,12 @@ test('a repo whose remote is not called origin still protects its pushed branche
   resetStore();
 });
 
-test('a name git refuses (impl-x..y) is rejected at plan time, before any rename', () => {
+test('a name git refuses (impl-x..y) is rejected at plan time (by the naming policy), before any rename', () => {
   resetStore();
   fs.writeFileSync(tableFile, JSON.stringify([{ id: id('w3'), old: 'old-w3', new: 'impl-x..y' }, { id: id('w4'), old: 'old-w4', new: 'explo-timeout-cli' }]));
   const r = run(['--table', tableFile, '--apply']);
   assert.equal(r.rc, 2, r.out + r.err);
-  assert.match(r.out, /REJECTED  row 1  w3000000  invalid-ref/);
+  assert.match(r.out, /REJECTED  row 1  w3000000  invalid-name/);
   assert.deepEqual(calls(), []);
   resetStore();
 });

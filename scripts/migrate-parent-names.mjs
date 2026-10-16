@@ -114,9 +114,7 @@ for (const repo of repos) {
 
 // ── plan ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 for (const id of closedIds) if (!byId.has(id)) die(`--closed ${id}: no workspace with this id in the store (a typo would leave its vague protected while you believe it is released)`);
-// git itself must accept the name (`a..b`, `x.lock`, a trailing `/` pass the naming policy and fail at `git branch -m`, mid-apply).
-const refFormatError = (name) => (spawnSync('git', ['check-ref-format', '--branch', name], { cwd: REPO, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).status === 0 ? undefined : `git refuses "${name}" as a branch name`);
-const plan = planMigration({ workspaces, remoteBranches, localBranches, activeVagueMembers: activeVagueMemberIds(workspaces, new Set(closedIds)), table, refFormatError });
+const plan = planMigration({ workspaces, remoteBranches, localBranches, activeVagueMembers: activeVagueMemberIds(workspaces, new Set(closedIds)), table });
 out(`# naming migration — ${apply ? 'APPLY' : 'DRY RUN'} — store=${storeFile} table=${tableFile}`);
 out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closedIds.length ? ` · closed vague(s) declared: ${closedIds.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
 for (const line of renderPlan(plan, { verbose, allowGone })) out(line);
