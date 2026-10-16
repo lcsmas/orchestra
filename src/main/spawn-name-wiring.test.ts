@@ -44,7 +44,7 @@ test('the AGENT route requires the name: dispatchAgentSpawnRequest checks it FIR
   assert.match(body, /defaultKind: 'spawned'/);
   assert.match(body, /branch: checked\.name/); // the SANITISED name, onto the existing explicit-branch input
   assert.match(body, /namedBy: input\.from/); // the spawner is the namer — also for --detached (no parentId)
-  assert.ok(workspacesSrc.includes("import { checkSpawnName, initialNaming,"), 'imported from the policy module');
+  assert.match(workspacesSrc, /import \{[^}]*\bcheckSpawnName\b[^}]*\} from '\.\.\/shared\/naming-policy\.ts';/, 'imported from the policy module');
 });
 
 test('hooks-server /spawn and the sandbox wire both go through dispatchAgentSpawnRequest, with the wire `name`', () => {
