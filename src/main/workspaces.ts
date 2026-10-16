@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, copyFile, cp } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, copyFile, cp, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -103,6 +103,7 @@ import {
 } from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import { createKeyedLock } from '../shared/keyed-lock.ts';
+import { freeBranchSlot, type BranchSlotOptions } from '../shared/branch-slots.ts';
 import {
   MAX_AUTO_RENAMES,
   NAME_CONVENTION,
@@ -307,8 +308,10 @@ export async function ensureRoot() {
   if (!existsSync(ORCHESTRA_ROOT)) await mkdir(ORCHESTRA_ROOT, { recursive: true });
 }
 
-/** Per-repo serialisation of branch allocation + worktree creation (see createWorkspace). */
+/** Per-repo serialisation of the branch NAME pick (see createWorkspace) — short: one `git branch` listing + a reservation, never a checkout. */
 const branchAllocation = createKeyedLock();
+/** Names picked by creations whose `git worktree add` has not finished, per repo: the next pick sees them as taken. */
+const reservedBranches = new Map<string, Set<string>>();
 
 export async function createWorkspace(
   input: CreateWorkspaceInput,
@@ -353,22 +356,34 @@ export async function createWorkspace(
   // existing caller byte-identical.
   const requested = input.branch ? sanitizeBranchName(input.branch) : '';
   const agent = input.agent ?? 'claude';
-  // #382: "pick a free name" and "create that branch" are ONE step per repo — parallel spawns of the same name (a `review-<x>` fan-out) all
-  // saw it free and the losers died on git's "already exists". Serialised here, the next caller lists the branches after the previous created its own.
-  const { branch, worktreePath } = await branchAllocation.run(input.repoPath, async () => {
+  // #382: "pick a free name" is serialised per repo AND the pick is RESERVED until the branch exists, so parallel spawns of one name (a `review-<x>`
+  // fan-out) get distinct names instead of dying on git's "already exists" — while the slow part, `git worktree add`, stays parallel (a lock around
+  // the checkout would serialise a fan-out and let one hung checkout block every spawn in the repo). Keyed on the REAL path: a repo registered under
+  // two spellings (symlink) is still one repo.
+  const repoKey = await realpath(input.repoPath).catch(() => input.repoPath);
+  let reserved = reservedBranches.get(repoKey);
+  if (!reserved) reservedBranches.set(repoKey, (reserved = new Set()));
+  const taken = reserved;
+  const branch = await branchAllocation.run(repoKey, async () => {
     // No `current` branch to exempt — nothing exists yet — so pass ''.
-    const free = requested ? await freeBranchName(input.repoPath, requested, '') : '';
+    const free = requested ? await freeBranchName(input.repoPath, requested, '', { reserved: taken, avoidFolders: naming?.exactName === true }) : '';
     if (requested && !free && naming?.exactName) {
       // Every other caller keeps the random fallback (pinned-Linear, accès mobile); an AGENT's name is its human label — never silently swapped.
       throw new Error(`refusing to spawn: the name "${requested}" and all its suffixes (-2 … -99) are taken — pick another name. Nothing was created.`);
     }
-    const branch = free || randomBranchName();
-    const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
-    const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
-    log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
-    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
-    return { branch, worktreePath };
+    const chosen = free || randomBranchName();
+    taken.add(chosen); // visible to the next pick BEFORE the lock is released
+    return chosen;
   });
+  const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const worktreePath = path.join(ORCHESTRA_ROOT, `${repoName}-${safeBranch}-${id.slice(0, 8)}`);
+
+  log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
+  try {
+    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+  } finally {
+    taken.delete(branch); // created ⇒ git now holds the name; failed ⇒ the name is free again
+  }
   await installOrchestraHooks(worktreePath);
 
   // Allocate a port up-front so it survives setup-script failure (the worktree
@@ -3441,16 +3456,9 @@ async function clearInbox(id: string): Promise<void> {
  * as-is when free (or when it equals the workspace's own current branch, which
  * is a no-op rather than a collision); otherwise a numeric suffix is appended
  * (-2, -3, …). Empty string if `desired` is empty or no slot is found. */
-async function freeBranchName(repoPath: string, desired: string, current: string): Promise<string> {
+async function freeBranchName(repoPath: string, desired: string, current: string, opts?: BranchSlotOptions): Promise<string> {
   if (!desired) return '';
-  const existing = new Set(await listBranches(repoPath));
-  existing.delete(current);
-  if (!existing.has(desired)) return desired;
-  for (let n = 2; n < 100; n++) {
-    const candidate = `${desired}-${n}`;
-    if (!existing.has(candidate)) return candidate;
-  }
-  return '';
+  return freeBranchSlot(await listBranches(repoPath), desired, current, opts); // shared/branch-slots.ts: the suffix rule, pure + tested
 }
 
 /** Switch the workspace to an existing branch. The worktree dir stays put —

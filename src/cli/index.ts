@@ -1323,6 +1323,13 @@ async function main(argv: string[]): Promise<void> {
         fail(
           'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
         );
+      // A value option with no value (last on the line) or whose "value" is the NEXT option was swallowed by the parser: `--repo` last silently
+      // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. (`--name` has its own, convention-restating refusal.)
+      for (const f of ['--task', '--repo', '--base', '--model', '--effort']) {
+        const i = args.indexOf(f);
+        if (i !== -1 && (args[i + 1] === undefined || args[i + 1].startsWith('--')))
+          fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
+      }
       // A stray token is never silently dropped: `--name impl-sidebar lent 123` used to become the permanent name `impl-sidebar` (rc 0), and
       // `--task do a thing` the task `do`. Also catches `--name=x` / unknown options. Refused before the socket, nothing created.
       if (r5.length)

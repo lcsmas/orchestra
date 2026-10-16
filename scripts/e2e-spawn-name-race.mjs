@@ -4,7 +4,10 @@
 //               `a branch named … already exists`; control: the same N spawned one by one give the same set
 //   exhausted   the requested name AND -2 … -99 all taken ⇒ the agent route REFUSES (nothing created); controls: -99 still free ⇒ ok `-99`;
 //               a HUMAN path (no exactName: pinned-Linear / mobile shape) keeps today's random-branch fallback
-// Run: node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs <race|exhausted>
+//   alias       the SAME repo registered under two spellings (a symlink): parallel same-name spawns split across both still all succeed (lock keyed on the real path)
+//   folder      a branch `impl-z/sub` exists ⇒ the agent route's `impl-z` suffixes to `impl-z-2` (git cannot hold both) instead of failing on git
+//   released    a spawn whose `git worktree add` FAILS releases its reserved name: the next spawn of that name gets the bare name, not `-2`
+// Run: node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs <race|exhausted|alias|folder|released>
 // Prints ONE JSON verdict line `{arm, ok, ...}` last; exit 0 iff ok. Scratch home under ~/.cache (the fs is part of the instrument).
 import path from 'node:path';
 import fs from 'node:fs';
@@ -14,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'race';
-if (!['race', 'exhausted'].includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
+if (!['race', 'exhausted', 'alias', 'folder', 'released'].includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 const tmpHome = path.join(process.env.SPAWN_RACE_HOME ?? path.join(os.homedir(), '.cache', 'e2e-spawn-name-race'), `${ARM}-${process.pid}`);
 fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, '.orchestra'), { recursive: true });
@@ -96,6 +99,37 @@ if (ARM === 'exhausted') {
   ok = out.lastSlot.ok === true && out.lastSlot.branch === 'impl-y-99'
     && out.refused.ok === false && /all its suffixes/.test(out.refused.error ?? '') && /Nothing was created/.test(out.refused.error ?? '') && out.refused.id === null
     && out.nothingCreated && out.human.ok === true && out.human.randomShape;
+}
+
+if (ARM === 'alias') {
+  const link = path.join(tmpHome, 'repo-link');
+  fs.symlinkSync(repoDir, link);
+  await store.addRepo({ path: link, name: 'repo-link', defaultBranch: 'main' });
+  const results = await Promise.all([repoDir, link, repoDir, link].map((repoPath) => agentSpawn('impl-al', { repoPath })));
+  const got = results.map((r) => r.branch ?? null).sort();
+  Object.assign(out, {
+    results: results.map((r) => ({ ok: r.ok, branch: r.branch ?? null, error: r.error ?? null })), got,
+    allOk: results.every((r) => r.ok === true), distinct: new Set(got).size === 4,
+    expectedSet: JSON.stringify(got) === JSON.stringify(['impl-al', 'impl-al-2', 'impl-al-3', 'impl-al-4']),
+  });
+  ok = out.allOk && out.distinct && out.expectedSet;
+}
+
+if (ARM === 'folder') {
+  git(repoDir, ['branch', 'impl-z/sub']);
+  const r = await agentSpawn('impl-z');
+  // control: no folder conflict ⇒ the bare name (the avoidance does not suffix names that are free)
+  const plain = await agentSpawn('impl-w');
+  Object.assign(out, { folder: { ok: r.ok, branch: r.branch ?? null, error: r.error ?? null }, plain: { ok: plain.ok, branch: plain.branch ?? null } });
+  ok = r.ok === true && r.branch === 'impl-z-2' && plain.ok === true && plain.branch === 'impl-w';
+}
+
+if (ARM === 'released') {
+  const failed = await agentSpawn('impl-r', { baseBranch: 'no-such-base' });          // `git worktree add -b impl-r <path> no-such-base` fails
+  const after = await agentSpawn('impl-r');
+  const wsAfterFail = store.workspaces.filter((w) => w.branch === 'impl-r' || w.branch === 'impl-r-2').length;
+  Object.assign(out, { failed: { ok: failed.ok, error: (failed.error ?? '').slice(0, 120) }, after: { ok: after.ok, branch: after.branch ?? null }, records: wsAfterFail, branchesNow: branches().filter((b) => b.startsWith('impl-r')) });
+  ok = failed.ok === false && after.ok === true && after.branch === 'impl-r' && out.records === 1 && JSON.stringify(out.branchesNow) === JSON.stringify(['impl-r']);
 }
 
 out.ok = ok;

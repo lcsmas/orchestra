@@ -92,16 +92,26 @@ test('createWorkspace records the namer through the policy module, not an inline
   assert.doesNotMatch(body, /namedByParent:/); // no inline copy of the field
 });
 
-test('createWorkspace picks a free branch AND creates it under ONE per-repo lock (parallel same-name spawns must suffix, not fail on git)', () => {
+test('createWorkspace: the branch-NAME pick is serialised per REAL repo path and RESERVED until the branch exists; the checkout runs OUTSIDE the lock', () => {
   assert.match(workspacesSrc, /import \{ createKeyedLock \} from '\.\.\/shared\/keyed-lock\.ts';/);
+  assert.match(workspacesSrc, /import \{ freeBranchSlot, type BranchSlotOptions \} from '\.\.\/shared\/branch-slots\.ts';/);
   assert.match(workspacesSrc, /const branchAllocation = createKeyedLock\(\);/);
+  assert.match(workspacesSrc, /const reservedBranches = new Map<string, Set<string>>\(\);/);
   const body = bodyOf(workspacesSrc, 'export async function createWorkspace(');
-  const locked = /branchAllocation\.run\(input\.repoPath, async \(\) => \{([\s\S]*?)\n  \}\);/.exec(body)?.[1] ?? '';
-  assert.ok(locked, 'control: found the locked section');
-  assert.match(locked, /freeBranchName\(input\.repoPath, requested, ''\)/, 'the free-name lookup is INSIDE the lock');
-  assert.match(locked, /await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath\);/, 'and so is the branch creation');
-  assert.match(locked, /if \(requested && !free && naming\?\.exactName\) \{[\s\S]*?throw new Error\(/, 'an exact name with every slot taken REFUSES');
-  assert.doesNotMatch(body.replace(locked, ''), /await createWorktree\(/, 'no creation outside the lock');
+  assert.match(body, /const repoKey = await realpath\(input\.repoPath\)\.catch\(\(\) => input\.repoPath\);/, 'keyed on the REAL path (a symlinked registration is the same repo)');
+  const picked = /branchAllocation\.run\(repoKey, async \(\) => \{([\s\S]*?)\n  \}\);/.exec(body)?.[1] ?? '';
+  assert.ok(picked, 'control: found the locked section');
+  assert.match(picked, /freeBranchName\(input\.repoPath, requested, '', \{ reserved: taken, avoidFolders: naming\?\.exactName === true \}\)/, 'the pick sees in-flight names and (agent route) git folder conflicts');
+  assert.match(picked, /taken\.add\(chosen\);/, 'the pick is RESERVED before the lock is released');
+  assert.match(picked, /if \(requested && !free && naming\?\.exactName\) \{[\s\S]*?throw new Error\(/, 'an exact name with every slot taken REFUSES');
+  assert.doesNotMatch(picked, /createWorktree/, 'the slow checkout is NOT under the lock (a fan-out stays parallel; a hung checkout blocks only itself)');
+  assert.match(body, /try \{\s*await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath\);\s*\} finally \{\s*taken\.delete\(branch\);/, 'created or failed, the reservation is released');
+});
+
+test('freeBranchName delegates to the pure picker (one suffix rule for rename, human spawns and agent spawns)', () => {
+  const fb = bodyOf(workspacesSrc, 'async function freeBranchName(');
+  assert.match(fb, /return freeBranchSlot\(await listBranches\(repoPath\), desired, current, opts\);/);
+  assert.doesNotMatch(fb, /for \(let n = 2/, 'no second copy of the suffix loop');
 });
 
 test('the CLI checks the name BEFORE the first socket call of the spawn case', () => {
@@ -110,7 +120,7 @@ test('the CLI checks the name BEFORE the first socket call of the spawn case', (
   const sock = spawnCase.indexOf("request('/spawn'");
   assert.ok(check !== -1 && sock !== -1 && check < sock, 'checkSpawnName must precede request(/spawn)');
   assert.match(spawnCase, /name: named\.name/); // the SANITISED name is what is sent
-  assert.doesNotMatch(spawnCase, /ROLES|startsWith\(/); // no inline copy of the rôle rule
+  assert.doesNotMatch(spawnCase, /\bROLES\b|startsWith\(`/); // no inline copy of the rôle rule (a role-prefix test builds its needle from a template; `startsWith('--')` is the option parser's)
 });
 
 test('no inline copy of the rôle rule outside the policy module', () => {

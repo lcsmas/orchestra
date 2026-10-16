@@ -183,3 +183,24 @@ test('spawn without --task prints the usage line with --name first (the usage a 
   assert.match(r.stderr, /^usage: orchestra spawn --name <name> --task <text> \[--repo <path>\]/);
   assert.deepEqual(r.seen, []);
 });
+
+// …and a value option that has no value is refused too (review MINOR: `--repo` last silently spawned in the caller's repo).
+const VALUELESS: Array<[string, string[], RegExp]> = [
+  ['--repo last', ['spawn', '--name', 'impl-x-1', '--task', 't', '--repo'], /--repo needs a value \(got nothing\)/],
+  ['--base last', ['spawn', '--name', 'impl-x-1', '--task', 't', '--base'], /--base needs a value/],
+  ['--model followed by another option', ['spawn', '--name', 'impl-x-1', '--task', 't', '--model', '--detached'], /--model needs a value \(got "--detached"\)/],
+  ['--task followed by another option', ['spawn', '--name', 'impl-x-1', '--task', '--detached'], /--task needs a value \(got "--detached"\)/],
+];
+for (const [label, args, shown] of VALUELESS) {
+  test(`spawn refused — option without a value (${label}): rc 1, named, nothing created, zero requests`, needsBuild, (t) => {
+    const home = freshHome(t);
+    const dead = cli(home, path.join(home, 'dead.sock'), args);
+    assert.equal(dead.code, 1, dead.stderr);
+    assert.match(dead.stderr, shown);
+    assert.match(dead.stderr, /Nothing was created/);
+    assert.doesNotMatch(dead.stderr, /could not reach Orchestra socket/);
+    const live = viaStub(home, args, { ok: true, id: 'ws-new', branch: 'b-new' });
+    assert.equal(live.code, 1);
+    assert.deepEqual(live.seen, []);
+  });
+}

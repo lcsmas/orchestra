@@ -240,7 +240,7 @@ and prints a `N of M target(s) failed: <ids>` summary to stderr. The positional
 single-target form is unchanged, byte for byte, including its `Delivered (<kind>).`
 line, which agents and scripts already parse), `spawn
 --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]`
-(`--name` is REQUIRED (#382): a stray word (`--name impl-sidebar lent 123`, `--name=x`, an unknown option) is REFUSED before the socket — never silently dropped; `checkSpawnName` runs in the CLI BEFORE any socket I/O — a missing/unknown-rôle name exits 1 with `NAME_CONVENTION` restated and nothing created; it is sent as `name`, and the printed `Spawned <id> on branch <branch>` is the FINAL (collision-suffixed) branch; `--model` pins the agent's model — alias or full id; `--detached`
+(`--name` is REQUIRED (#382): a stray word (`--name impl-sidebar lent 123`, `--name=x`, an unknown option) and a value option with no value (`--repo` last, `--model --detached`) are REFUSED before the socket — never silently dropped; `checkSpawnName` runs in the CLI BEFORE any socket I/O — a missing/unknown-rôle name exits 1 with `NAME_CONVENTION` restated and nothing created; it is sent as `name`, and the printed `Spawned <id> on branch <branch>` is the FINAL (collision-suffixed) branch; `--model` pins the agent's model — alias or full id; `--detached`
 creates the workspace parentless — its own top-level section), `rename <id> <branch>`,
 `reload-skills [<id>|--all] [--plugins]` (make an out-of-band skill/plugin
 install visible to sessions that are ALREADY RUNNING, without the restart that
