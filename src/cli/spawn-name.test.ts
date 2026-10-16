@@ -204,3 +204,12 @@ for (const [label, args, shown] of VALUELESS) {
     assert.deepEqual(live.seen, []);
   });
 }
+
+test('spawn: a value that merely STARTS with `--` is still a value (a brief beginning `--- notes` is not an option)', needsBuild, (t) => {
+  const home = freshHome(t);
+  for (const task of ['--- notes for the child', '-- see the ticket', '--fix the thing']) {
+    const r = viaStub(home, ['spawn', '--name', 'impl-x-1', '--task', task], { ok: true, id: 'ws-new', branch: 'impl-x-1' });
+    assert.equal(r.code, 0, `${task}: ${r.stderr}`);
+    assert.equal(r.seen[0].body.task, task);
+  }
+});

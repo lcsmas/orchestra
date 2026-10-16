@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 //  · alias: one repo registered under two spellings (symlink) is still ONE repo for the lock (keyed on the real path).
 //  · folder: a branch `impl-z/sub` makes `impl-z` impossible for git ⇒ the agent route suffixes (`impl-z-2`) instead of failing.
 //  · released: a spawn whose checkout FAILS releases its reserved name (the next spawn gets the bare name, not `-2`).
+//  · stale-listing / slow-listing: a `git` shim holds one pick's branch LISTING back (what a loaded event loop does) — a pick whose listing predates a finished
+//    spawn's branch must still see that spawn's name (reservations are SNAPSHOTTED before the listing await); a slow first pick must make the second wait (the lock).
 // The must-FAIL arm of each clause is the in-place mutant in scripts/spawn-name-mutants.mjs (lock removed / exactName dropped).
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -93,5 +95,21 @@ test('released: a spawn whose `git worktree add` fails frees its reserved name �
   assert.deepEqual(r.after, { ok: true, branch: 'impl-r' });
   assert.equal(r.records, 1);
   assert.deepEqual(r.branchesNow, ['impl-r']);
+  assert.equal(r.ok, true);
+});
+
+test('stale-listing: the 2nd pick READS its refs, then answers after the 1st spawn finished and released its reservation — still 2 distinct names', () => {
+  const r = runArm('stale-listing');
+  assert.ok(r.listings >= 2, 'control: the delayed listing really happened (the instrument fired)');
+  assert.deepEqual(r.results.map((x: { ok: boolean }) => x.ok), [true, true], JSON.stringify(r.results));
+  assert.deepEqual(r.got, ['impl-tt', 'impl-tt-2']);
+  assert.equal(r.ok, true);
+});
+
+test('slow-listing: the 1st pick\'s listing is slow — the 2nd pick waits for it and still gets a distinct name (the pick is atomic across the listing await)', () => {
+  const r = runArm('slow-listing');
+  assert.ok(r.listings >= 2, 'control: the delayed listing really happened (the instrument fired)');
+  assert.deepEqual(r.results.map((x: { ok: boolean }) => x.ok), [true, true], JSON.stringify(r.results));
+  assert.deepEqual(r.got, ['impl-sl', 'impl-sl-2']);
   assert.equal(r.ok, true);
 });

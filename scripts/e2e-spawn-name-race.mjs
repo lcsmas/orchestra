@@ -7,7 +7,10 @@
 //   alias       the SAME repo registered under two spellings (a symlink): parallel same-name spawns split across both still all succeed (lock keyed on the real path)
 //   folder      a branch `impl-z/sub` exists ⇒ the agent route's `impl-z` suffixes to `impl-z-2` (git cannot hold both) instead of failing on git
 //   released    a spawn whose `git worktree add` FAILS releases its reserved name: the next spawn of that name gets the bare name, not `-2`
-// Run: node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs <race|exhausted|alias|folder|released>
+//   stale-listing   2 parallel same-name spawns where the 2nd pick's `git branch -v` READS its refs, then answers late — after the 1st spawn finished
+//               and released its reservation (a git shim holds the answer back): still 2 distinct names (the reservations are snapshotted BEFORE the listing)
+//   slow-listing    the 1st pick's listing is slow: the 2nd pick must wait for it (the lock) and still get a distinct name
+// Run: node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs <race|exhausted|alias|folder|released|stale-listing|slow-listing>
 // Prints ONE JSON verdict line `{arm, ok, ...}` last; exit 0 iff ok. Scratch home under ~/.cache (the fs is part of the instrument).
 import path from 'node:path';
 import fs from 'node:fs';
@@ -17,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARM = process.argv[2] ?? 'race';
-if (!['race', 'exhausted', 'alias', 'folder', 'released'].includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
+if (!['race', 'exhausted', 'alias', 'folder', 'released', 'stale-listing', 'slow-listing'].includes(ARM)) { console.error(`unknown arm: ${ARM}`); process.exit(2); }
 const tmpHome = path.join(process.env.SPAWN_RACE_HOME ?? path.join(os.homedir(), '.cache', 'e2e-spawn-name-race'), `${ARM}-${process.pid}`);
 fs.rmSync(tmpHome, { recursive: true, force: true });
 fs.mkdirSync(path.join(tmpHome, '.orchestra'), { recursive: true });
@@ -25,6 +28,16 @@ process.env.ORCHESTRA_HOME = path.join(tmpHome, '.orchestra');
 process.env.HOME = tmpHome;
 const stubBin = path.join(tmpHome, 'stub-bin'); fs.mkdirSync(stubBin, { recursive: true });
 fs.writeFileSync(path.join(stubBin, 'claude'), '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+// `git` shim, inert unless SPAWN_RACE_DELAY_NTH is set: the NTH `git branch -v` (simple-git's branchLocal = the branch LISTING) reads its refs FIRST, then
+// holds its answer back SPAWN_RACE_DELAY_MS — what a loaded event loop / a big repo does to a listing, made deterministic.
+fs.writeFileSync(path.join(stubBin, 'git'), `#!/bin/sh
+if [ "$1" = "branch" ] && [ "$2" = "-v" ] && [ -n "$SPAWN_RACE_DELAY_NTH" ]; then
+  echo x >> "$SPAWN_RACE_COUNTER"; n=$(wc -l < "$SPAWN_RACE_COUNTER" | tr -d ' ')
+  if [ "$n" = "$SPAWN_RACE_DELAY_NTH" ]; then out=$(${REAL_GIT} "$@"); sleep "$(awk "BEGIN{print $SPAWN_RACE_DELAY_MS/1000}")"; printf '%s\n' "$out"; exit 0; fi
+fi
+exec ${REAL_GIT} "$@"
+`, { mode: 0o755 });
 process.env.PATH = `${stubBin}:/usr/local/bin:/usr/bin:/bin`;
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
@@ -130,6 +143,23 @@ if (ARM === 'released') {
   const wsAfterFail = store.workspaces.filter((w) => w.branch === 'impl-r' || w.branch === 'impl-r-2').length;
   Object.assign(out, { failed: { ok: failed.ok, error: (failed.error ?? '').slice(0, 120) }, after: { ok: after.ok, branch: after.branch ?? null }, records: wsAfterFail, branchesNow: branches().filter((b) => b.startsWith('impl-r')) });
   ok = failed.ok === false && after.ok === true && after.branch === 'impl-r' && out.records === 1 && JSON.stringify(out.branchesNow) === JSON.stringify(['impl-r']);
+}
+
+if (ARM === 'stale-listing' || ARM === 'slow-listing') {
+  const nth = ARM === 'stale-listing' ? '2' : '1';
+  const name = ARM === 'stale-listing' ? 'impl-tt' : 'impl-sl';
+  process.env.SPAWN_RACE_COUNTER = path.join(tmpHome, 'listing-counter');
+  fs.writeFileSync(process.env.SPAWN_RACE_COUNTER, '');
+  process.env.SPAWN_RACE_DELAY_NTH = nth; process.env.SPAWN_RACE_DELAY_MS = '1800';
+  const results = await Promise.all([agentSpawn(name), agentSpawn(name)]);
+  delete process.env.SPAWN_RACE_DELAY_NTH;
+  const got = results.map((r) => r.branch ?? null).sort();
+  const listings = fs.readFileSync(process.env.SPAWN_RACE_COUNTER, 'utf8').split('\n').filter(Boolean).length;
+  Object.assign(out, {
+    results: results.map((r) => ({ ok: r.ok, branch: r.branch ?? null, error: (r.error ?? '').slice(0, 140) || null })), got, listings,
+    allOk: results.every((r) => r.ok === true), expectedSet: JSON.stringify(got) === JSON.stringify([name, `${name}-2`]),
+  });
+  ok = out.allOk && out.expectedSet && listings >= 2; // listings >= 2: the delayed listing really happened (the instrument fired)
 }
 
 out.ok = ok;

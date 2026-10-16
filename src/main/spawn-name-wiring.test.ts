@@ -101,7 +101,7 @@ test('createWorkspace: the branch-NAME pick is serialised per REAL repo path and
   assert.match(body, /const repoKey = await realpath\(input\.repoPath\)\.catch\(\(\) => input\.repoPath\);/, 'keyed on the REAL path (a symlinked registration is the same repo)');
   const picked = /branchAllocation\.run\(repoKey, async \(\) => \{([\s\S]*?)\n  \}\);/.exec(body)?.[1] ?? '';
   assert.ok(picked, 'control: found the locked section');
-  assert.match(picked, /freeBranchName\(input\.repoPath, requested, '', \{ reserved: taken, avoidFolders: naming\?\.exactName === true \}\)/, 'the pick sees in-flight names and (agent route) git folder conflicts');
+  assert.match(picked, /freeBranchName\(input\.repoPath, requested, '', \{ reserved: new Set\(taken\), avoidFolders: naming\?\.exactName === true \}\)/, 'the pick sees a SNAPSHOT (taken before the listing await) of in-flight names, and (agent route) git folder conflicts');
   assert.match(picked, /taken\.add\(chosen\);/, 'the pick is RESERVED before the lock is released');
   assert.match(picked, /if \(requested && !free && naming\?\.exactName\) \{[\s\S]*?throw new Error\(/, 'an exact name with every slot taken REFUSES');
   assert.doesNotMatch(picked, /createWorktree/, 'the slow checkout is NOT under the lock (a fan-out stays parallel; a hung checkout blocks only itself)');
@@ -120,7 +120,7 @@ test('the CLI checks the name BEFORE the first socket call of the spawn case', (
   const sock = spawnCase.indexOf("request('/spawn'");
   assert.ok(check !== -1 && sock !== -1 && check < sock, 'checkSpawnName must precede request(/spawn)');
   assert.match(spawnCase, /name: named\.name/); // the SANITISED name is what is sent
-  assert.doesNotMatch(spawnCase, /\bROLES\b|startsWith\(`/); // no inline copy of the rôle rule (a role-prefix test builds its needle from a template; `startsWith('--')` is the option parser's)
+  assert.doesNotMatch(spawnCase, /\bROLES\b|startsWith\((?:`|['"](?:ops|impl|verif|review|explo))/); // no inline copy of the rôle rule, templated or literal (`startsWith('--')` is the option parser's)
 });
 
 test('no inline copy of the rôle rule outside the policy module', () => {

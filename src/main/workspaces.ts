@@ -366,7 +366,9 @@ export async function createWorkspace(
   const taken = reserved;
   const branch = await branchAllocation.run(repoKey, async () => {
     // No `current` branch to exempt — nothing exists yet — so pass ''.
-    const free = requested ? await freeBranchName(input.repoPath, requested, '', { reserved: taken, avoidFolders: naming?.exactName === true }) : '';
+    // `new Set(taken)` is a SNAPSHOT taken BEFORE the listing's await: any in-flight name is in the snapshot or already in the listing. Passing the live
+    // set instead lets a creation that finishes DURING the listing delete its reservation before this pick reads it, while the listing predates its branch.
+    const free = requested ? await freeBranchName(input.repoPath, requested, '', { reserved: new Set(taken), avoidFolders: naming?.exactName === true }) : '';
     if (requested && !free && naming?.exactName) {
       // Every other caller keeps the random fallback (pinned-Linear, accès mobile); an AGENT's name is its human label — never silently swapped.
       throw new Error(`refusing to spawn: the name "${requested}" and all its suffixes (-2 … -99) are taken — pick another name. Nothing was created.`);

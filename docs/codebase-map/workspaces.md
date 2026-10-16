@@ -175,7 +175,7 @@ endpoint}` = agent lives in an always-on container, see
   names of creations still in flight (`reservedBranches`) as taken, and the pick is RESERVED before the lock is released —
   so parallel same-name spawns get distinct names; the lock covers only that pick, **never the checkout**: `createWorktree`
   (git.ts) runs outside it (a fan-out stays parallel, a hung checkout blocks only itself) and releases the reservation
-  in a `finally`. `naming.exactName` (agent route only) also treats a branch folder (`impl-z` vs an existing `impl-z/sub`)
+  in a `finally` (the pick takes a SNAPSHOT of the reservations BEFORE its branch listing awaits — a creation finishing during the listing cannot make its name vanish from both). Known limit: the rename and adopt-repo paths also call `freeBranchName` but do not consult `reservedBranches` (a millisecond window; #383's seam). `naming.exactName` (agent route only) also treats a branch folder (`impl-z` vs an existing `impl-z/sub`)
   as taken and REFUSES when the name and every suffix are taken, instead of the random fallback → `installOrchestraHooks` → `store.allocatePort()` → build record,
   **pin repo's `accountId`** (~`:297`), record `parentId` only if parent exists
   (~`:302`) → persist + broadcast `workspace:update` → fire setup script async

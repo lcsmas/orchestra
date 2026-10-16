@@ -1323,11 +1323,13 @@ async function main(argv: string[]): Promise<void> {
         fail(
           'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
         );
-      // A value option with no value (last on the line) or whose "value" is the NEXT option was swallowed by the parser: `--repo` last silently
-      // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. (`--name` has its own, convention-restating refusal.)
+      // A value option with no value (last on the line) or whose "value" is exactly the NEXT option was swallowed by the parser: `--repo` last silently
+      // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. A value that merely STARTS with `--` (a brief
+      // beginning `--- notes`) is still a value. (`--name` has its own, convention-restating refusal.)
+      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--detached'];
       for (const f of ['--task', '--repo', '--base', '--model', '--effort']) {
         const i = args.indexOf(f);
-        if (i !== -1 && (args[i + 1] === undefined || args[i + 1].startsWith('--')))
+        if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))
           fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
       }
       // A stray token is never silently dropped: `--name impl-sidebar lent 123` used to become the permanent name `impl-sidebar` (rc 0), and
