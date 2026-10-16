@@ -61,18 +61,25 @@ const results = [], shots = [];
 function clause(name, ok, detail) { results.push({ name, ok: !!ok }); console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} — ${detail}`); }
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); console.log(`  shot ${f} md5 ${md5(buf)}`); return f; }
 
-// ── live-config fingerprint (G8): the files a rig could rewrite. projects/ and ~/.orchestra change under siblings and are NOT hashed. ──
+// ── live-config fingerprint (G8): what an app boot against a fake HOME would STRIP — the symlinks/files/skills/MCP entries of each ~/.claude*.
+// STRUCTURE, not content: LESSONS.md and .claude.json are rewritten by sibling sessions all day (a content hash fails for a reason that is not the rig).
+// ~/.orchestra and projects/ are not fingerprinted for the same reason. `info` (content md5s) is printed, never judged. ──
 function liveFingerprint() {
-  const out = {};
+  const verdict = {}, info = {};
   for (const d of LIVE.filter((l) => path.basename(l).startsWith('.claude'))) {
-    for (const f of ['CLAUDE.md', 'settings.json', 'LESSONS.md', '.claude.json']) {
+    const n = path.basename(d);
+    for (const f of ['CLAUDE.md', 'settings.json', 'LESSONS.md']) {
       const p = path.join(d, f);
-      try { out[`${path.basename(d)}/${f}`] = md5(fs.readFileSync(p)); } catch { out[`${path.basename(d)}/${f}`] = 'absent'; }
+      try {
+        const st = fs.lstatSync(p);
+        verdict[`${n}/${f}`] = st.isSymbolicLink() ? `symlink -> ${fs.readlinkSync(p)}` : `file`;
+        try { info[`${n}/${f}`] = md5(fs.readFileSync(p)); } catch { info[`${n}/${f}`] = 'unreadable'; }
+      } catch { verdict[`${n}/${f}`] = 'absent'; }
     }
-    try { out[`${path.basename(d)}/skills`] = fs.readdirSync(path.join(d, 'skills')).sort().join(','); } catch { out[`${path.basename(d)}/skills`] = 'absent'; }
-    try { out[`${path.basename(d)}/top`] = fs.readdirSync(d).filter((n) => !['projects', 'todos', 'statsig', 'shell-snapshots', 'session-env', 'sessions', 'file-history', 'cache', 'backups', 'history.jsonl', 'telemetry', 'plugins', 'ide', 'debug', 'paste-cache', 'tasks', 'usage-data', 'mcp-needs-auth-cache.json', 'stats-cache.json'].includes(n)).sort().join(','); } catch { /* */ }
+    try { const sk = path.join(d, 'skills'); verdict[`${n}/skills`] = `${fs.lstatSync(sk).isSymbolicLink() ? `symlink -> ${fs.readlinkSync(sk)}` : 'dir'}: ${fs.readdirSync(sk).sort().join(',')}`; } catch { verdict[`${n}/skills`] = 'absent'; }
+    try { verdict[`${n}/mcpServers`] = Object.keys(JSON.parse(fs.readFileSync(path.join(d, '.claude.json'), 'utf8')).mcpServers ?? {}).sort().join(','); } catch { verdict[`${n}/mcpServers`] = 'no .claude.json'; }
   }
-  return out;
+  return { verdict, info };
 }
 const liveBefore = liveFingerprint();
 
@@ -140,6 +147,11 @@ function cliPids(wsId) {
 const branchAutoOf = (pid) => environOf(pid).find((x) => x.startsWith('ORCHESTRA_BRANCH_AUTO='))?.split('=')[1];
 const modelReqs = () => fakeApi.requests.filter((r) => r.type === 'model');
 const withMark = (m) => modelReqs().filter((r) => r.marks?.includes(m));
+/** The MAIN (tool-carrying) requests carrying a mark: the title-generator side call (tool-less, lands first) carries no hook context, so a "no instruction" verdict
+ *  must rest on a MAIN request, and a control's "yes" is read on it too. */
+const mainWithMark = (m) => withMark(m).filter((r) => r.tools > 0);
+const instr = (r) => r.marks.includes('nudge') || r.marks.includes('refine') || r.marks.includes('autoBranch');
+const table = (m) => withMark(m).map((r) => `${r.model}/tools=${r.tools}/${instr(r) ? 'INSTRUCTION' : 'clean'}`).join(' ; ');
 
 try {
   const target = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${cdpPort}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'app page target');
@@ -205,25 +217,25 @@ try {
   clause('named/detached-keeps-the-namer', sp3.code === 0 && rec3 && rec3.branch === 'explo-detached-y' && rec3.parentId === null && rec3.namedByParent === 'ws-ops', JSON.stringify(rec3));
 
   // ── no rename instruction: first prompt ──
-  await waitFor(() => withMark('child').length > 0, 90000, 'the child\'s first model request');
+  await waitFor(() => mainWithMark('child').length > 0, 90000, 'the child\'s first MAIN model request');
   const pidsChild = await waitFor(() => { const p = cliPids(childId); return p.length ? p : null; }, 30000, 'the child CLI process');
-  const nudgeOnChild = modelReqs().filter((r) => r.marks?.includes('child') && (r.marks.includes('nudge') || r.marks.includes('refine') || r.marks.includes('autoBranch')));
-  clause('nudge/child-first-prompt-no-instruction', withMark('child').length > 0 && nudgeOnChild.length === 0, `${withMark('child').length} request(s) carry the child's brief; ${nudgeOnChild.length} carry a rename instruction`);
+  const nudgeOnChild = withMark('child').filter(instr);
+  clause('nudge/child-first-prompt-no-instruction', mainWithMark('child').length > 0 && nudgeOnChild.length === 0, `${mainWithMark('child').length} MAIN + ${withMark('child').length - mainWithMark('child').length} side request(s) carry the child's brief; ${nudgeOnChild.length} carry a rename instruction [${table('child')}]`);
   clause('nudge/child-env-branch-auto-0', pidsChild.every((p) => branchAutoOf(p) === '0'), `claude pid(s) ${pidsChild.join(',')} ORCHESTRA_BRANCH_AUTO=${pidsChild.map(branchAutoOf).join(',')}`);
 
   // CONTROL: a human-created workspace IS nudged (the instrument can say yes)
   const ctl = await cdp.eval(`window.orchestra.createWorkspace(${JSON.stringify({ repoPath: world.repo })}).then((x) => ({ id: x.id, branch: x.branch, namedByParent: x.namedByParent ?? null }))`);
   await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(ctl.id)}, ${JSON.stringify(`${CTL} — reply ok and stop.`)})`);
-  await waitFor(() => withMark('ctl').length > 0, 90000, 'the control\'s first model request');
-  const ctlNudged = withMark('ctl').filter((r) => r.marks.includes('nudge'));
+  await waitFor(() => mainWithMark('ctl').length > 0, 90000, 'the control\'s first MAIN model request');
+  const ctlNudged = mainWithMark('ctl').filter((r) => r.marks.includes('nudge'));
   const pidsCtl = await waitFor(() => { const p = cliPids(ctl.id); return p.length ? p : null; }, 30000, 'the control CLI process');
-  clause('nudge/control-human-created-IS-nudged', ctl.namedByParent === null && ctlNudged.length > 0 && pidsCtl.every((p) => branchAutoOf(p) === '1'), `control ${ctl.branch}: ${ctlNudged.length}/${withMark('ctl').length} request(s) carry « Rename it NOW »; BRANCH_AUTO=${pidsCtl.map(branchAutoOf).join(',')}`);
+  clause('nudge/control-human-created-IS-nudged', ctl.namedByParent === null && ctlNudged.length > 0 && pidsCtl.every((p) => branchAutoOf(p) === '1'), `control ${ctl.branch}: ${ctlNudged.length}/${mainWithMark('ctl').length} MAIN request(s) carry « Rename it NOW »; BRANCH_AUTO=${pidsCtl.map(branchAutoOf).join(',')} [${table('ctl')}]`);
 
   // second prompt (UserPromptSubmit again)
   await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(childId)}, ${JSON.stringify(`${CHILD2} — second prompt, reply ok and stop.`)})`);
-  await waitFor(() => withMark('child2').length > 0, 90000, 'the child\'s second-prompt request');
-  const nudge2 = withMark('child2').filter((r) => r.marks.includes('nudge') || r.marks.includes('refine') || r.marks.includes('autoBranch'));
-  clause('nudge/child-second-prompt-no-instruction', nudge2.length === 0, `${withMark('child2').length} request(s) carry the second prompt; ${nudge2.length} carry a rename instruction`);
+  await waitFor(() => mainWithMark('child2').length > 0, 90000, 'the child\'s second-prompt MAIN request');
+  const nudge2 = withMark('child2').filter(instr);
+  clause('nudge/child-second-prompt-no-instruction', mainWithMark('child2').length > 0 && nudge2.length === 0, `${mainWithMark('child2').length} MAIN request(s) carry the second prompt; ${nudge2.length} carry a rename instruction [${table('child2')}]`);
   const ctl2 = await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(ctl.id)}, 'control second prompt')`).then(() => true).catch(() => false);
   void ctl2;
 
@@ -237,15 +249,17 @@ try {
   const newPids = await waitFor(() => { const p = cliPids(childId); return p.length && !p.some((x) => oldPids.includes(x)) ? p : null; }, 60000, 'a new child CLI process after restart').catch(() => null);
   clause('promote/restarted-session-still-branch-auto-0', !!newPids && newPids.every((p) => branchAutoOf(p) === '0'), `restart rc ${rs.code} «${rs.stdout.trim().slice(0, 100)}»; old pids ${oldPids.join(',')} -> new ${newPids?.join(',')} BRANCH_AUTO=${newPids?.map(branchAutoOf).join(',')}`);
   await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(childId)}, ${JSON.stringify(`${CHILD3} — third prompt after promote + restart, reply ok and stop.`)})`);
-  await waitFor(() => withMark('child3').length > 0, 90000, 'the child\'s third-prompt request');
-  const nudge3 = withMark('child3').filter((r) => r.marks.includes('nudge') || r.marks.includes('refine') || r.marks.includes('autoBranch'));
-  clause('promote/after-restart-no-instruction', nudge3.length === 0, `${withMark('child3').length} request(s) after promote+restart carry the brief; ${nudge3.length} carry a rename instruction`);
+  await waitFor(() => mainWithMark('child3').length > 0, 90000, 'the child\'s third-prompt MAIN request');
+  const nudge3 = withMark('child3').filter(instr);
+  clause('promote/after-restart-no-instruction', mainWithMark('child3').length > 0 && nudge3.length === 0, `${mainWithMark('child3').length} MAIN request(s) after promote+restart carry the prompt; ${nudge3.length} carry a rename instruction [${table('child3')}]`);
   await sleep(600);
   saveShot('03-sidebar-after-promote.png', await cdp.shot());
 
   // ── no live contact (G8) ──
   const liveAfter = liveFingerprint();
-  clause('ctl/live-config-untouched', JSON.stringify(liveAfter) === JSON.stringify(liveBefore), `${Object.keys(liveBefore).length} fingerprinted entries (CLAUDE.md/settings.json/LESSONS.md/.claude.json md5, skills + top-level listing of each ~/.claude*) identical before/after`);
+  const diffKeys = Object.keys({ ...liveBefore.verdict, ...liveAfter.verdict }).filter((k) => liveBefore.verdict[k] !== liveAfter.verdict[k]);
+  const infoDiff = Object.keys({ ...liveBefore.info, ...liveAfter.info }).filter((k) => liveBefore.info[k] !== liveAfter.info[k]);
+  clause('ctl/live-config-untouched', diffKeys.length === 0, `${Object.keys(liveBefore.verdict).length} structural entries (symlink/file kind + link target of CLAUDE.md/settings.json/LESSONS.md, skills listing, mcpServers keys of each ~/.claude*) ${diffKeys.length ? `CHANGED: ${diffKeys.map((k) => `${k}: «${liveBefore.verdict[k]}» -> «${liveAfter.verdict[k]}»`).join('; ')}` : 'identical before/after'}; informational content md5 changes (siblings write these): [${infoDiff.join(', ')}]`);
   const dupes = shots.map((s) => s.md5).filter((m, i, a) => a.indexOf(m) !== i);
   clause('ctl/screenshots-distinct', dupes.length === 0, shots.map((s) => `${path.basename(s.file)}=${s.md5}`).join('  '));
   const failed = results.filter((r) => !r.ok);
