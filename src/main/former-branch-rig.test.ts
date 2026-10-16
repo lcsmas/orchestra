@@ -16,7 +16,7 @@ const REGISTER = path.join(REPO, 'scripts', '.r2-register.mjs');
 const E2E_HOME = path.join(os.homedir(), '.cache', `e2e-former-branch-unit-${process.pid}`);
 
 type Case = { formerBranch?: string; branch: string; disk?: string; live?: string; broadcastFormer?: string };
-function runArm(arm: string): { arm: string; ok: boolean; cases?: Record<string, Case> } & Record<string, unknown> {
+function runArm(arm: string): { arm: string; ok: boolean; cases?: Record<string, Case>; peers?: Record<string, { formerBranch?: string; hasKey: boolean }> } & Record<string, unknown> {
   let out = '';
   try {
     out = execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', REGISTER, RIG, arm], {
@@ -70,6 +70,12 @@ test('rename-records-former table (real renameWorkspaceBranch, real worktrees)',
   assert.equal(c.scratch_same.formerBranch, 'lab-S1', 'scratch same-name no-op leaves it');
   // the stored branch had drifted: the recorded former is the LIVE branch the rename started from
   assert.equal(c.drifted.formerBranch, 'really-live');
+  // the real /peers payload (dispatchPeersRequest): renamed ⇒ carries the former name; never renamed ⇒ no key at all
+  const p = r.peers!;
+  assert.equal(p.A.formerBranch, 'impl-x-2', 'control: A was renamed three times — the payload carries the LATEST previous name');
+  assert.equal(p.D.formerBranch, 'really-live');
+  assert.equal(p.H.hasKey, false, 'a human-created workspace has no formerBranch key in /peers');
+  assert.equal(p.U.formerBranch, 'calm-otter');
   assert.equal(r.ok, true);
 });
 

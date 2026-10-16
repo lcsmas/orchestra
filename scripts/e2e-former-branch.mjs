@@ -61,7 +61,7 @@ const mkWt = async (id, branch, extra = {}) => {
   return worktreePath;
 };
 const liveBranch = (wt) => git(wt, 'rev-parse', '--abbrev-ref', 'HEAD');
-const { renameWorkspaceBranch } = await import(`${REPO}/src/main/workspaces.ts`);
+const { renameWorkspaceBranch, dispatchPeersRequest } = await import(`${REPO}/src/main/workspaces.ts`);
 
 const out = { arm: ARM };
 
@@ -73,24 +73,24 @@ if (ARM === 'table') {
   // 1-3. parent-named: first rename, second replaces, same-name no-op leaves it
   const wtA = await mkWt('A', 'lucky-willow', { namedByParent: 'P' });
   broadcasts.length = 0;
-  record('first', await renameWorkspaceBranch('A', 'impl-x-1', { manual: false }), { live: liveBranch(wtA) });
+  record('first', await renameWorkspaceBranch('A', 'impl-x-1', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtA) });
   const firstBroadcast = broadcasts.filter((b) => b.channel === 'workspace:update').pop();
   cases.first.broadcastFormer = firstBroadcast?.args?.[0]?.formerBranch;
-  record('second', await renameWorkspaceBranch('A', 'impl-x-2', { manual: false }), { live: liveBranch(wtA) });
-  record('same_name', await renameWorkspaceBranch('A', 'impl-x-2', { manual: false }), { live: liveBranch(wtA) });
-  record('same_name_human', await renameWorkspaceBranch('A', 'impl-x-2', { manual: true }), { live: liveBranch(wtA) });
-  record('human_rename', await renameWorkspaceBranch('A', 'impl-x-3', { manual: true }), { live: liveBranch(wtA) });
+  record('second', await renameWorkspaceBranch('A', 'impl-x-2', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtA) });
+  record('same_name', await renameWorkspaceBranch('A', 'impl-x-2', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtA) });
+  record('same_name_human', await renameWorkspaceBranch('A', 'impl-x-2', { manual: true, bumpAutoCount: false }), { live: liveBranch(wtA) });
+  record('human_rename', await renameWorkspaceBranch('A', 'impl-x-3', { manual: true, bumpAutoCount: false }), { live: liveBranch(wtA) });
 
   // 4. human-created workspace: the two provisional self-renames record NOTHING
   await mkWt('H', 'silver-moth');
   record('human_created_1', await renameWorkspaceBranch('H', 'fix-typo', { manual: false, bumpAutoCount: true }));
   record('human_created_2', await renameWorkspaceBranch('H', 'fix-typo-refined', { manual: false, bumpAutoCount: true }));
   // …and a human sidebar rename of a human-created workspace records nothing either
-  record('human_created_ui', await renameWorkspaceBranch('H', 'fix-typo-ui', { manual: true }));
+  record('human_created_ui', await renameWorkspaceBranch('H', 'fix-typo-ui', { manual: true, bumpAutoCount: false }));
 
   // 5. pin-on-rename: unnamed before, parent-named AFTER (#383/#385) ⇒ recorded
   await mkWt('U', 'calm-otter');
-  record('pin_on_rename', await renameWorkspaceBranch('U', 'impl-u-1', { manual: false, namedByParent: 'P' }));
+  record('pin_on_rename', await renameWorkspaceBranch('U', 'impl-u-1', { manual: false, bumpAutoCount: false, namedByParent: 'P' }));
 
   // 6. scratch-like relabel (no git branch): parent-named records, human-created does not
   for (const [id, named] of [['S1', true], ['S2', false]]) {
@@ -99,20 +99,23 @@ if (ARM === 'table') {
       worktreePath: path.join(tmpHome, 'wt', id), status: 'idle', createdAt: Date.now(), hasInput: false,
       ...(named ? { namedByParent: 'P' } : {}),
     });
-    record(named ? 'scratch_named' : 'scratch_human', await renameWorkspaceBranch(id, `explo-${id}`, { manual: false }));
+    record(named ? 'scratch_named' : 'scratch_human', await renameWorkspaceBranch(id, `explo-${id}`, { manual: false, bumpAutoCount: false }));
   }
-  record('scratch_same', await renameWorkspaceBranch('S1', 'explo-S1', { manual: false }));
+  record('scratch_same', await renameWorkspaceBranch('S1', 'explo-S1', { manual: false, bumpAutoCount: false }));
 
   // 7. drifted STORED branch: HEAD was renamed out of band — the recorded former is the LIVE name
   const wtD = await mkWt('D', 'stored-stale', { namedByParent: 'P' });
   git(wtD, 'branch', '-m', 'stored-stale', 'really-live');
-  record('drifted', await renameWorkspaceBranch('D', 'impl-d-1', { manual: false }), { live: liveBranch(wtD) });
+  record('drifted', await renameWorkspaceBranch('D', 'impl-d-1', { manual: false, bumpAutoCount: false }), { live: liveBranch(wtD) });
 
-  Object.assign(out, { cases });
+  // the REAL /peers payload: a renamed workspace carries `formerBranch`, a never-renamed one carries no such key
+  const peers = (await dispatchPeersRequest({ from: 'nobody' })).peers ?? [];
+  const peersById = Object.fromEntries(peers.map((p) => [p.id, { formerBranch: p.formerBranch, hasKey: 'formerBranch' in p }]));
+  Object.assign(out, { cases, peers: peersById });
   out.ok = true;
 } else if (ARM === 'persist_write') {
   await mkWt('A', 'lucky-willow', { namedByParent: 'P' });
-  const ws = await renameWorkspaceBranch('A', 'impl-persist-1', { manual: false });
+  const ws = await renameWorkspaceBranch('A', 'impl-persist-1', { manual: false, bumpAutoCount: false });
   Object.assign(out, { formerBranch: ws.formerBranch, onDisk: onDisk('A')?.formerBranch, home: tmpHome });
   out.ok = ws.formerBranch === 'lucky-willow' && onDisk('A')?.formerBranch === 'lucky-willow';
 } else if (ARM === 'persist_read') {
