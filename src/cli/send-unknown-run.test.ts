@@ -206,7 +206,8 @@ test('#142 stale-marker refusal still fires (no #155 clobber), even with a valid
     ORCHESTRA_HOME: home,
     HOME: home,
     ORCHESTRA_WS_ID: 'tester-155',
-    ORCHESTRA_RUN_ID: ANCHOR,
+    // #379: a STALE session's env names the OLD run; a marker naming the run the env already carries does not block (src/shared/session-identity.ts).
+    ORCHESTRA_RUN_ID: 'stale-old-run-155',
     ORCHESTRA_WORKSPACE_PATH: wt,
   };
   let out: CliOutcome;

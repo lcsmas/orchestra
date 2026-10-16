@@ -60,6 +60,26 @@ test('anchor changed + LIVE + --no-restart → mark-stale (G4 refusal path)', ()
   assert.deepEqual(decideReparentAction(LIVE(), true), { kind: 'mark-stale' });
 });
 
+// ── #379 / ADR 0008 — a session the HOST answers per call needs neither the restart nor the stale state ──
+
+test('#379 anchor changed + LIVE + a host key → host-resolved, whatever --no-restart says (no restart, no stale)', () => {
+  // must-FAIL for a mutant that drops the hostAnswers branch: a working promoted OPS would again be restarted (refused mid-turn) → marked stale (#171).
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: true }), false), { kind: 'host-resolved' });
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: true }), true), { kind: 'host-resolved' });
+});
+
+test('#379 hostAnswers never overrides the earlier gates: unchanged anchor stays noop, a COLD workspace stays notice-only', () => {
+  // must-FAIL for a mutant that tests hostAnswers FIRST: a cold or unmoved workspace would be reported host-resolved (and get a marker file for nothing).
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: true, oldAnchorId: 'r', newAnchorId: 'r' }), false), { kind: 'noop' });
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: true, live: false }), false), { kind: 'notice-only' });
+});
+
+test('#379 a keyless live session (pre-#379 keeper) keeps today\'s restart / mark-stale behaviour', () => {
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: false }), false), { kind: 'restart' });
+  assert.deepEqual(decideReparentAction(LIVE({ hostAnswers: false }), true), { kind: 'mark-stale' });
+  assert.deepEqual(decideReparentAction(LIVE(), false), { kind: 'restart' }, 'absent = keyless');
+});
+
 // ── The marker + refusal wording (G4) ────────────────────────────────────────
 
 test('the stale marker names the NEW run and prescribes restart', () => {

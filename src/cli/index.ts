@@ -63,6 +63,14 @@ import {
   wantsCommandHelp,
 } from './help.ts';
 import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
+import {
+  identityEnv,
+  resolveHostIdentity,
+  SessionSupersededError,
+  staleMarkerBlocksSend,
+  supersededRefusalMessage,
+  type IdentityResolution,
+} from '../shared/session-identity.ts';
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 
@@ -135,7 +143,11 @@ function getSocketPath(): string {
 }
 
 /** POST `body` as JSON to `route` over the Unix socket and parse the JSON reply. */
-function request(route: string, body: Record<string, unknown>): Promise<OrchestraResponse> {
+function request(
+  route: string,
+  body: Record<string, unknown>,
+  opts: { timeoutMs?: number } = {},
+): Promise<OrchestraResponse> {
   const socketPath = getSocketPath();
   const payload = JSON.stringify(body);
   return new Promise((resolve, reject) => {
@@ -176,6 +188,8 @@ function request(route: string, body: Record<string, unknown>): Promise<Orchestr
     req.on('error', (err) => {
       reject(new Error(`could not reach Orchestra socket at ${socketPath}: ${err.message}`));
     });
+    // A hung host must not hang a bus verb (#379: the identity lookup falls back to env after this).
+    if (opts.timeoutMs) req.setTimeout(opts.timeoutMs, () => req.destroy(new Error(`no answer within ${opts.timeoutMs} ms`)));
     req.end(payload);
   });
 }
@@ -259,7 +273,11 @@ function selfWorkspaceId(): string | undefined {
 function reparentSuffix(res: Record<string, unknown>): string {
   const restarted = Array.isArray(res.restarted) ? (res.restarted as string[]) : [];
   const stale = Array.isArray(res.markedStale) ? (res.markedStale as string[]) : [];
+  // #379: a live session the HOST answers per call — the new run is in effect at its next CLI call, nothing to restart.
+  const hostResolved = Array.isArray(res.hostResolved) ? (res.hostResolved as string[]) : [];
   let out = '';
+  if (hostResolved.length)
+    out += `\n  new run in effect at the next CLI call (resolved by the host, no restart): ${hostResolved.join(', ')}`;
   if (restarted.length)
     out += `\n  restarted to pick up the new run: ${restarted.join(', ')}`;
   if (stale.length)
@@ -278,21 +296,47 @@ function staleRunMarkerFile(): string {
   return path.join(base, '.orchestra', 'bus-run-stale');
 }
 
-/** #142 — refuse a bus `send` when this workspace was re-parented with
- *  `--no-restart`: its live session still holds the OLD run id, so the send would
- *  land in the stale run. Reads the marker (never the store — the CLI is
- *  store-less) and `fail()`s with its first line. A missing/unreadable marker is
- *  NOT stale (the common, non-refused case), so a read error is swallowed. */
-function refuseIfStaleRun(): void {
-  let firstLine: string | undefined;
+/** #142 — refuse a bus `send` when this workspace was re-parented and its session still holds the OLD
+ *  run id: the send would land in the stale run. Reads the marker (never the store — the CLI is
+ *  store-less) and `fail()`s with its first line. #379: this is now the FALLBACK's guard only — it runs
+ *  when the host did NOT resolve the identity (no key / host unreachable / cannot vouch), because the host's
+ *  answer is the current run by construction. A marker naming the run this env ALREADY carries does not
+ *  block (staleMarkerBlocksSend). A missing/unreadable marker is NOT stale, so a read error is swallowed. */
+function refuseIfStaleRun(envRunId: string | undefined): void {
+  let body: string;
   try {
-    const body = fs.readFileSync(staleRunMarkerFile(), 'utf8');
-    firstLine = body.split('\n', 1)[0];
+    body = fs.readFileSync(staleRunMarkerFile(), 'utf8');
   } catch {
     return; // no marker → not stale → proceed
   }
+  const firstLine = staleMarkerBlocksSend(body, envRunId);
   if (firstLine) fail(staleRunRefusalMessage(firstLine));
 }
+
+/** #379 — the host's answer for THIS invocation (null until settled, and for verbs that never read the run). */
+let hostIdentity: IdentityResolution | null = null;
+/** How long the identity lookup waits for the host before falling back to the baked env. */
+const IDENTITY_TIMEOUT_MS = 3000;
+/** The env the bus verbs read the run + coordinator generation from: the HOST's current answer over the
+ *  values baked at session start (ADR 0008). Every ORCHESTRA_RUN_ID / ORCHESTRA_COORDINATOR_GENERATION
+ *  read in this file goes through here (pinned by session-identity-binding.test.ts). */
+function liveEnv(): NodeJS.ProcessEnv {
+  return identityEnv(process.env, hostIdentity);
+}
+/** Ask the host who this session is (a keyless session or an unreachable host resolves to the env fallback);
+ *  a SUPERSEDED session is refused here — it must not read or write the bus (#128). */
+async function settleHostIdentity(): Promise<void> {
+  try {
+    hostIdentity = await resolveHostIdentity(process.env, (route, body) =>
+      request(route, body, { timeoutMs: IDENTITY_TIMEOUT_MS }),
+    );
+  } catch (e) {
+    if (e instanceof SessionSupersededError) fail(supersededRefusalMessage(e.message));
+    throw e;
+  }
+}
+/** The verbs whose run/generation come from the identity (everything that reads `$ORCHESTRA_RUN_ID`). */
+const HOST_IDENTITY_VERBS: ReadonlySet<string> = new Set(['send', 'check', 'ack', 'ask', 'token', 'gate', 'run', 'bus-status']);
 
 /** Pull `--flag value` out of args, returning the value and the leftover args. */
 function takeFlag(args: string[], flag: string): { value?: string; rest: string[] } {
@@ -997,7 +1041,7 @@ async function resolveFencing(
   runId: string,
   generationFlag: string | undefined,
 ): Promise<{ generation: number | null; fencingOn: boolean }> {
-  const raw = generationFlag ?? process.env.ORCHESTRA_COORDINATOR_GENERATION;
+  const raw = generationFlag ?? liveEnv().ORCHESTRA_COORDINATOR_GENERATION;
   let generation: number | null = null;
   if (raw !== undefined && raw.trim() !== '') {
     const n = Number(raw);
@@ -1056,7 +1100,7 @@ function busIdentityOrFail(flags: { run?: string; as?: string }): {
   runId: string;
   handle: string;
 } {
-  const id = resolveBusIdentity(flags, process.env);
+  const id = resolveBusIdentity(flags, liveEnv());
   if (!id) {
     fail(
       'orchestra: cannot tell who you are on the bus — set $ORCHESTRA_WS_ID (automatic inside an ' +
@@ -1086,6 +1130,9 @@ async function main(argv: string[]): Promise<void> {
     process.stdout.write(text);
     return;
   }
+
+  // #379 / ADR 0008: the bus verbs' run + generation come from the HOST (per call), not from the env baked at session start.
+  if (HOST_IDENTITY_VERBS.has(command)) await settleHostIdentity();
 
   switch (command) {
     case 'peers': {
@@ -1661,7 +1708,7 @@ async function main(argv: string[]): Promise<void> {
       // under stale (reading old mail is never blocked; only new sends are —
       // ledger #146 D1 condition 3). If #144 later moves `send` into a shared
       // module, this gate moves with it (ledger #146 D1).
-      refuseIfStaleRun();
+      if (hostIdentity?.source !== 'host') refuseIfStaleRun(liveEnv().ORCHESTRA_RUN_ID); // #379: the fallback's guard — the host's answer IS the current run
       const sendSplit = splitAtSeparator(args);
       const t = takeFlag(sendSplit.flagArgs, '--type');
       const to = takeFlag(t.rest, '--to');
@@ -1919,7 +1966,7 @@ async function main(argv: string[]): Promise<void> {
         // what did it record per member (snapshot ref, dirty tree, commands killed). STORE-LESS.
         const stJson = takeBoolFlag(args.slice(1), '--json');
         const stRun = takeFlag(stJson.rest, '--run');
-        const stTarget = stRun.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const stTarget = stRun.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
         const { db: stDb } = await openBusForVerb();
         try {
           const busPause = await import('../main/bus-pause.ts');
@@ -1952,10 +1999,10 @@ async function main(argv: string[]): Promise<void> {
           // #255 — the member's reprise accusé. STORE-LESS; keyed on the caller's workspace id (works after the run went active). Never fenced: a member is not a coordinator.
           const cfAs = takeFlag(args.slice(2), '--as');
           if (cfAs.rest.length > 0) fail(`orchestra run confirm reprise: unexpected argument ${JSON.stringify(cfAs.rest[0])} — usage: orchestra run confirm reprise [--as <handle>]`);
-          const cfActor = resolveBusIdentity({ as: cfAs.value }, process.env)?.handle ?? '';
+          const cfActor = resolveBusIdentity({ as: cfAs.value }, liveEnv())?.handle ?? '';
           const cf = await openBusForVerb();
           try {
-            const cfRun = process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+            const cfRun = liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
             verbRunConfirmReprise(busCtx(cf.db, cf.bus, { runId: cfRun, handle: cfActor }, { generation: null, fencingOn: false }), cf.runPause);
           } finally {
             cf.db.close();
@@ -1966,8 +2013,8 @@ async function main(argv: string[]): Promise<void> {
         if (args[1] !== 'pause') fail('usage: orchestra run confirm pause [--run <id>] [--as <handle>] | orchestra run confirm reprise [--as <handle>]');
         const cfRun = takeFlag(args.slice(2), '--run');
         const cfAs = takeFlag(cfRun.rest, '--as');
-        const cfActor = resolveBusIdentity({ as: cfAs.value }, process.env)?.handle ?? '';
-        const cfEnvRun = cfRun.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || '';
+        const cfActor = resolveBusIdentity({ as: cfAs.value }, liveEnv())?.handle ?? '';
+        const cfEnvRun = cfRun.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || '';
         const { db: cfDb, bus: cfBus } = await openBusForVerb();
         try {
           const busPause = await import('../main/bus-pause.ts');
@@ -2004,8 +2051,8 @@ async function main(argv: string[]): Promise<void> {
         const holdRunArg = takeFlag(holdGen.rest, '--run');
         const holdAsArg = takeFlag(holdRunArg.rest, '--as');
         const holdTarget =
-          holdRunArg.value?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
-        const holdActor = resolveBusIdentity({ as: holdAsArg.value }, process.env)?.handle ?? '';
+          holdRunArg.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const holdActor = resolveBusIdentity({ as: holdAsArg.value }, liveEnv())?.handle ?? '';
         // #252/#254 — `pause` takes the SAME flags as hold/resume plus `--hard` (Pause dure); without it the pause is DOUCE.
         const hardFlag = takeBoolFlag(holdAsArg.rest, '--hard');
         // #255 — `release <ws>… | --all`: the positionals are workspace ids.
@@ -2067,7 +2114,7 @@ async function main(argv: string[]): Promise<void> {
       const { value: onlyFlag } = takeFlag(afterRun, '--only');
       // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
       // admin re-freezing a specific mission from outside its wave passes --run.
-      const targetRun = runFlag?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+      const targetRun = runFlag?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
       const res = await request('/runRefreeze', { runId: targetRun, ...(onlyFlag ? { only: onlyFlag } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to refreeze run');
       const outcome = res.outcome as string | undefined;
@@ -2097,7 +2144,7 @@ async function main(argv: string[]): Promise<void> {
           return;
         }
         case 'not-refreezable':
-          fail(`orchestra run refreeze: '${onlyFlag}' is frozen for the run's life — only a switch read at session start may be re-frozen (docker_relay)`);
+          fail(`orchestra run refreeze: '${onlyFlag}' is frozen for the run's life — only a switch read at session start may be re-frozen (docker_relay, memory_cap)`);
         // eslint-disable-next-line no-fallthrough
         case 'not-paused':
           fail(`orchestra run refreeze --only: run ${echoed} is not paused — pause it first (orchestra run pause), then re-freeze, then resume`);
@@ -2145,7 +2192,7 @@ async function main(argv: string[]): Promise<void> {
       // this surface. We pass it to the app so it can read THAT run's frozen row.
       const { value: runFlag, rest: bsRest } = takeFlag(args, '--run');
       const displayRunId =
-        runFlag?.trim() || process.env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        runFlag?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
       void bsRest;
       const res = await request('/busStatus', { runId: displayRunId });
       if (!res.ok) fail(res.error ?? 'failed to read bus status');

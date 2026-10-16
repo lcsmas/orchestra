@@ -79,6 +79,9 @@ import {
   notifyTurnStart,
 } from './activity';
 import { makeKeeperSpawn, killKeeper, killKeeperIf, probeKeeper, readTrackedKeeperPid, keeperPidState } from './keeper-client';
+import { mintSessionKey } from './session-identity.ts';
+import { registerSessionKey } from './session-identity-host.ts';
+import { SESSION_KEY_ENV } from '../shared/session-identity.ts';
 import { clearScopedMember, memberHasScope } from './scope-stop-host';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
@@ -813,7 +816,7 @@ function tildePath(p: string): string {
 /** Build the SDK subprocess env for a workspace: the pinned account's CLAUDE_CONFIG_DIR (so the agent
  *  logs in as that account), with CLAUDE_CONFIG_DIR otherwise UNSET so a leftover value from Orchestra's
  *  own environment can't silently retarget the session (self-tune.ts:201-206). */
-async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string> }> {
+async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): Promise<{ env: Record<string, string> }> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string') env[k] = v;
@@ -831,6 +834,9 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   // CLAUDE_CONFIG_DIR) so ONLY the explicit assignment below governs them.
   delete env.ORCHESTRA_WS_ID;
   delete env.ORCHESTRA_EVENTS_DIR;
+  // #379: the session key is minted per SESSION START (ensureSessionInner) and handed in; an inherited one (Orchestra launched from an agent
+  // shell) would be ANOTHER workspace's secret — never let it through. Every other caller (probe, /status, `!cmd`) gets no key.
+  delete env[SESSION_KEY_ENV];
   // Same hygiene for the hook socket: a stale inherited path must not leak
   // into a child whose own assignment below is the source of truth. (The
   // value set below is durable across app restarts — hooks-server binds a
@@ -899,6 +905,9 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
     // (ORCHESTRA_EVENTS_DIR merely picks the dir), so the SDK session claims both.
     env.ORCHESTRA_WS_ID = ws.id;
     env.ORCHESTRA_EVENTS_DIR = getEventsDir();
+    // #379 / ADR 0008: the session's key — the CLI sends it with its workspace id on every bus call and the HOST answers with the
+    // current run + generation (a promotion takes effect at the next call). Local sessions only; the host learns it at a fresh keeper spawn.
+    if (opts.sessionKey) env[SESSION_KEY_ENV] = opts.sessionKey;
   }
   return { env };
 }
@@ -1710,7 +1719,10 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // Orchestra's whole model is autonomous agents in isolated worktrees — full
   // permissions matter more than a per-tool prompt wall (explicit user decision, 2026-07-21).
   const permissionMode: AgentPermissionMode = ws.sdkPermissionMode ?? 'bypassPermissions';
-  const { env: sdkEnv } = await buildSdkEnv(ws);
+  // #379: a NEW key for every session start; it only becomes THE live key if this start actually spawns a CLI (the facade registers it at a
+  // fresh keeper spawn) — an attach to a surviving keeper keeps that CLI's own key, and this one is dropped unused.
+  const sessionKey = remote ? undefined : mintSessionKey();
+  const { env: sdkEnv } = await buildSdkEnv(ws, { sessionKey });
   const session: Session = {
     wsId,
     // q is assigned right after — the generator/canUseTool close over `session`,
@@ -1917,7 +1929,9 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
             }, dockerRelaySpecFor(sdkEnv.ORCHESTRA_RUN_ID, remote, ws),
             // #320: a FLEET MEMBER's keeper starts in its own memory scope when its run froze `memory_cap` ON. Read at THIS session start; a keeper
             // that is already running is attached to as it is (the facade only launches a keeper when none lives) — running sessions are never migrated.
-            memoryCapSpecFor({ wsId, runId: sdkEnv.ORCHESTRA_RUN_ID, ws, remote, settings: store.getMemoryGuardSettings() })) as never,
+            memoryCapSpecFor({ wsId, runId: sdkEnv.ORCHESTRA_RUN_ID, ws, remote, settings: store.getMemoryGuardSettings() }),
+            // #379: registered by the facade just before it sends the `spawn` frame (a fresh CLI), never on an attach — the superseded session's key stops matching there.
+            sessionKey ? () => registerSessionKey(wsId, sessionKey) : undefined) as never,
           }),
       // The workspace's model (frozen at creation / picked in the dropdown);
       // undefined = account default. `sdkSetModel`
