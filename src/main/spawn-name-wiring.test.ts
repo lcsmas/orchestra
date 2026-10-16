@@ -44,9 +44,10 @@ test('the AGENT route requires the name: dispatchAgentSpawnRequest checks it FIR
   assert.match(body, /defaultKind: 'spawned'/);
   assert.match(body, /branch: checked\.name/); // the SANITISED name, onto the existing explicit-branch input
   assert.match(body, /namedBy: input\.from/); // the spawner is the namer — also for --detached (no parentId)
+  assert.match(body, /exactName: true/); // the agent's name is EXACT: exhausted suffixes refuse, never a silent random branch
   // `origin` (a human pause bypass) can never ride the agent route: it is OUT of the wrapper's input type
   const decl = workspacesSrc.slice(workspacesSrc.indexOf('export async function dispatchAgentSpawnRequest('), workspacesSrc.indexOf('): Promise<SpawnResult> {', workspacesSrc.indexOf('export async function dispatchAgentSpawnRequest(')));
-  assert.match(decl, /Omit<Parameters<typeof dispatchSpawnRequest>\[0\], 'defaultKind' \| 'branch' \| 'namedBy' \| 'origin'>/);
+  assert.match(decl, /Omit<Parameters<typeof dispatchSpawnRequest>\[0\], 'defaultKind' \| 'branch' \| 'namedBy' \| 'exactName' \| 'origin'>/);
   assert.match(workspacesSrc, /import \{[^}]*\bcheckSpawnName\b[^}]*\} from '\.\.\/shared\/naming-policy\.ts';/, 'imported from the policy module');
 });
 
@@ -80,7 +81,7 @@ test('D4 — the HUMAN paths reusing dispatchSpawnRequest pass NO name and NO na
 test('D4 — dispatchSpawnRequest itself never demands a name: the requirement is NOT keyed on defaultKind', () => {
   const body = bodyOf(workspacesSrc, 'export async function dispatchSpawnRequest(');
   assert.doesNotMatch(body, /checkSpawnName/);
-  assert.match(body, /\{ namedBy: input\.namedBy \}/); // forwarded only when the agent route set it
+  assert.match(body, /\{ namedBy: input\.namedBy, exactName: input\.exactName \}/); // forwarded only when the agent route set them
   assert.doesNotMatch(body, /namedBy: input\.from/); // dispatchSpawnRequest never invents a namer from `from`
 });
 
@@ -91,13 +92,35 @@ test('createWorkspace records the namer through the policy module, not an inline
   assert.doesNotMatch(body, /namedByParent:/); // no inline copy of the field
 });
 
+test('createWorkspace: the branch-NAME pick is serialised per REAL repo path and RESERVED until the branch exists; the checkout runs OUTSIDE the lock', () => {
+  assert.match(workspacesSrc, /import \{ createKeyedLock \} from '\.\.\/shared\/keyed-lock\.ts';/);
+  assert.match(workspacesSrc, /import \{ freeBranchSlot, type BranchSlotOptions \} from '\.\.\/shared\/branch-slots\.ts';/);
+  assert.match(workspacesSrc, /const branchAllocation = createKeyedLock\(\);/);
+  assert.match(workspacesSrc, /const reservedBranches = new Map<string, Set<string>>\(\);/);
+  const body = bodyOf(workspacesSrc, 'export async function createWorkspace(');
+  assert.match(body, /const repoKey = await realpath\(input\.repoPath\)\.catch\(\(\) => input\.repoPath\);/, 'keyed on the REAL path (a symlinked registration is the same repo)');
+  const picked = /branchAllocation\.run\(repoKey, async \(\) => \{([\s\S]*?)\n  \}\);/.exec(body)?.[1] ?? '';
+  assert.ok(picked, 'control: found the locked section');
+  assert.match(picked, /freeBranchName\(input\.repoPath, requested, '', \{ reserved: new Set\(taken\), avoidFolders: naming\?\.exactName === true \}\)/, 'the pick sees a SNAPSHOT (taken before the listing await) of in-flight names, and (agent route) git folder conflicts');
+  assert.match(picked, /taken\.add\(chosen\);/, 'the pick is RESERVED before the lock is released');
+  assert.match(picked, /if \(requested && !free && naming\?\.exactName\) \{[\s\S]*?throw new Error\(/, 'an exact name with every slot taken REFUSES');
+  assert.doesNotMatch(picked, /createWorktree/, 'the slow checkout is NOT under the lock (a fan-out stays parallel; a hung checkout blocks only itself)');
+  assert.match(body, /try \{\s*await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath\);\s*\} finally \{\s*taken\.delete\(branch\);/, 'created or failed, the reservation is released');
+});
+
+test('freeBranchName delegates to the pure picker (one suffix rule for rename, human spawns and agent spawns)', () => {
+  const fb = bodyOf(workspacesSrc, 'async function freeBranchName(');
+  assert.match(fb, /return freeBranchSlot\(await listBranches\(repoPath\), desired, current, opts\);/);
+  assert.doesNotMatch(fb, /for \(let n = 2/, 'no second copy of the suffix loop');
+});
+
 test('the CLI checks the name BEFORE the first socket call of the spawn case', () => {
   const spawnCase = cliSrc.slice(cliSrc.indexOf("case 'spawn': {"), cliSrc.indexOf("case 'rename': {"));
   const check = spawnCase.indexOf('checkSpawnName(rawName)');
   const sock = spawnCase.indexOf("request('/spawn'");
   assert.ok(check !== -1 && sock !== -1 && check < sock, 'checkSpawnName must precede request(/spawn)');
   assert.match(spawnCase, /name: named\.name/); // the SANITISED name is what is sent
-  assert.doesNotMatch(spawnCase, /ROLES|startsWith\(/); // no inline copy of the rôle rule
+  assert.doesNotMatch(spawnCase, /\bROLES\b|startsWith\((?:`|['"](?:ops|impl|verif|review|explo))/); // no inline copy of the rôle rule, templated or literal (`startsWith('--')` is the option parser's)
 });
 
 test('no inline copy of the rôle rule outside the policy module', () => {

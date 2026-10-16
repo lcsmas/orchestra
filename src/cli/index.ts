@@ -1319,10 +1319,25 @@ async function main(argv: string[]): Promise<void> {
       const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
       const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
       const { present: detached, rest: r5 } = takeBoolFlag(r4c, '--detached');
-      void r5;
       if (!task)
         fail(
           'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
+        );
+      // A value option with no value (last on the line) or whose "value" is exactly the NEXT option was swallowed by the parser: `--repo` last silently
+      // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. A value that merely STARTS with `--` (a brief
+      // beginning `--- notes`) is still a value. (`--name` has its own, convention-restating refusal.)
+      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--detached'];
+      for (const f of ['--task', '--repo', '--base', '--model', '--effort']) {
+        const i = args.indexOf(f);
+        if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))
+          fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
+      }
+      // A stray token is never silently dropped: `--name impl-sidebar lent 123` used to become the permanent name `impl-sidebar` (rc 0), and
+      // `--task do a thing` the task `do`. Also catches `--name=x` / unknown options. Refused before the socket, nothing created.
+      if (r5.length)
+        fail(
+          `refusing to spawn: unexpected argument(s) ${r5.map((a) => JSON.stringify(a)).join(' ')} — quote any value that contains spaces, ` +
+            'and give an option its value as the NEXT word (--name impl-sidebar-lent-123, not --name=…).\nNothing was created.',
         );
       // #382 — the child's name is REQUIRED and checked HERE, before the socket: a refusal creates nothing (the
       // route re-checks, for an old CLI/skill that sends no name). The convention lives in naming-policy.ts.

@@ -139,3 +139,77 @@ test('an app that refuses (old CLI shape reaching the route) has its error print
   assert.ok(r.stderr.includes(error), r.stderr);
   assert.doesNotMatch(r.stdout, /Spawned/);
 });
+
+// #382 follow-up (review m1): a stray token is REFUSED, never silently dropped. `--name impl-sidebar lent 123` used to be rc 0 with the
+// permanent name `impl-sidebar` (and `--task do a thing` the task `do`). Same two instruments as the refusals above.
+const STRAY: Array<[string, string[], RegExp]> = [
+  ['an unquoted name with spaces', ['spawn', '--name', 'impl-sidebar', 'lent', '123', '--task', 't'], /"lent" "123"/],
+  ['an unquoted task', ['spawn', '--name', 'impl-x-1', '--task', 'do', 'a', 'thing'], /"a" "thing"/],
+  ['--name=value form', ['spawn', '--name=impl-x-1', '--task', 't'], /"--name=impl-x-1"/],
+  ['an unknown option', ['spawn', '--name', 'impl-x-1', '--task', 't', '--bogus'], /"--bogus"/],
+];
+for (const [label, args, shown] of STRAY) {
+  test(`spawn refused — stray argument (${label}): rc 1, the leftovers named, nothing created, the dead socket never reached`, needsBuild, (t) => {
+    const home = freshHome(t);
+    const r = cli(home, path.join(home, 'dead.sock'), args);
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /unexpected argument\(s\)/);
+    assert.match(r.stderr, shown);
+    assert.match(r.stderr, /Nothing was created/);
+    assert.doesNotMatch(r.stderr, /could not reach Orchestra socket/); // refused BEFORE the socket
+    assert.equal(r.stdout, '');
+  });
+  test(`spawn refused — stray argument (${label}): zero requests reach a live socket`, needsBuild, (t) => {
+    const home = freshHome(t);
+    const r = viaStub(home, args, { ok: true, id: 'ws-new', branch: 'b-new' });
+    assert.equal(r.code, 1, r.stderr);
+    assert.deepEqual(r.seen, []);
+    assert.doesNotMatch(r.stdout, /Spawned/);
+  });
+}
+
+test('spawn: a QUOTED multi-word task is one argument and still accepted (the control of the stray-argument refusal)', needsBuild, (t) => {
+  const home = freshHome(t);
+  const r = viaStub(home, ['spawn', '--name', 'impl-x-1', '--task', 'do a thing with spaces', '--model', 'opus'], { ok: true, id: 'ws-new', branch: 'impl-x-1' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen.length, 1);
+  assert.equal(r.seen[0].body.task, 'do a thing with spaces');
+});
+
+test('spawn without --task prints the usage line with --name first (the usage a refused caller reads)', needsBuild, (t) => {
+  const home = freshHome(t);
+  const r = viaStub(home, ['spawn', '--name', 'impl-x-1'], { ok: true });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /^usage: orchestra spawn --name <name> --task <text> \[--repo <path>\]/);
+  assert.deepEqual(r.seen, []);
+});
+
+// …and a value option that has no value is refused too (review MINOR: `--repo` last silently spawned in the caller's repo).
+const VALUELESS: Array<[string, string[], RegExp]> = [
+  ['--repo last', ['spawn', '--name', 'impl-x-1', '--task', 't', '--repo'], /--repo needs a value \(got nothing\)/],
+  ['--base last', ['spawn', '--name', 'impl-x-1', '--task', 't', '--base'], /--base needs a value/],
+  ['--model followed by another option', ['spawn', '--name', 'impl-x-1', '--task', 't', '--model', '--detached'], /--model needs a value \(got "--detached"\)/],
+  ['--task followed by another option', ['spawn', '--name', 'impl-x-1', '--task', '--detached'], /--task needs a value \(got "--detached"\)/],
+];
+for (const [label, args, shown] of VALUELESS) {
+  test(`spawn refused — option without a value (${label}): rc 1, named, nothing created, zero requests`, needsBuild, (t) => {
+    const home = freshHome(t);
+    const dead = cli(home, path.join(home, 'dead.sock'), args);
+    assert.equal(dead.code, 1, dead.stderr);
+    assert.match(dead.stderr, shown);
+    assert.match(dead.stderr, /Nothing was created/);
+    assert.doesNotMatch(dead.stderr, /could not reach Orchestra socket/);
+    const live = viaStub(home, args, { ok: true, id: 'ws-new', branch: 'b-new' });
+    assert.equal(live.code, 1);
+    assert.deepEqual(live.seen, []);
+  });
+}
+
+test('spawn: a value that merely STARTS with `--` is still a value (a brief beginning `--- notes` is not an option)', needsBuild, (t) => {
+  const home = freshHome(t);
+  for (const task of ['--- notes for the child', '-- see the ticket', '--fix the thing']) {
+    const r = viaStub(home, ['spawn', '--name', 'impl-x-1', '--task', task], { ok: true, id: 'ws-new', branch: 'impl-x-1' });
+    assert.equal(r.code, 0, `${task}: ${r.stderr}`);
+    assert.equal(r.seen[0].body.task, task);
+  }
+});

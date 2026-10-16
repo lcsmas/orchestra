@@ -43,6 +43,6 @@ test('every dispatchSpawnRequest caller names its default kind', () => {
   // #382: both agent routes (hooks /spawn, the sandbox wire) go through dispatchAgentSpawnRequest, which is where 'spawned' is named.
   assert.match(read('src/main/hooks-server.ts'), /dispatchAgentSpawnRequest\(/);
   assert.match(read('src/main/transport/sandbox-manager.ts'), /dispatchAgentSpawnRequest\(/);
-  assert.match(workspaces, /return dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from \}\);/);
+  assert.match(workspaces, /return dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from, exactName: true \}\);/);
   assert.match(read('src/main/linear-tickets.ts'), /defaultKind: from \? 'spawned' : 'workspace'/);
 });

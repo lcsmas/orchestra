@@ -160,7 +160,7 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   // #382: the agent's /spawn goes through dispatchAgentSpawnRequest, which names the spawned kind (and is the only caller that sets `namedBy`)
   const hooksSpawn = /route === '\/spawn'\) \{[\s\S]*?dispatchAgentSpawnRequest\(\{[\s\S]*?\}\),/.exec(hooks)?.[0] ?? '';
   assert.ok(hooksSpawn.includes('dispatchAgentSpawnRequest({'), 'control: found the hooks /spawn call (an agent\'s spawn takes the agent wrapper)');
-  assert.match(read('src/main/workspaces.ts'), /dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from \}\)/, 'the wrapper keeps an agent\'s spawn the spawned kind');
+  assert.match(read('src/main/workspaces.ts'), /dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from, exactName: true \}\)/, 'the wrapper keeps an agent\'s spawn the spawned kind');
   assert.doesNotMatch(hooksSpawn, /origin/, 'an agent\'s /spawn body can never carry the human origin into the spawn path');
   assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin\);/, 'the origin reaches the agent start');
   // a failed start KEEPS the child and the phone gets the bare cause + the id — also when the start THROWS after the workspace was persisted
