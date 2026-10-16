@@ -88,3 +88,18 @@ test('applyAgentEvent: no stopReason / queuedSubmit parameter, and every caller 
   assert.match(code(read('src', 'main', 'transport', 'sandbox-connection.ts')), /apply\(session, event, tool, undefined, undefined, toolUseId \?\? null\);/);
   assert.match(code(activity), /fireFinished\(id, event === 'stopfail' \? 'error' : undefined\);/, 'control: stopfail still derives the error reason from the event name');
 });
+
+// LEAD addition to #378 (human request): every generated coordination text names the host-enforced stop, so no agent asks a fleet to stop by message.
+test('the orchestrator brief, both role reminders and the comms skill say: stop/pause a wave or fleet with `orchestra run pause` [--hard], never a message', () => {
+  const LINE = 'To stop or pause a wave or a fleet: `orchestra run pause` (soft) or `orchestra run pause --hard` — never a message asking it to stop.';
+  const plain = ws.replace(/\\`/g, '`'); // the reminders and the skill live in template literals with escaped backticks
+  const brief = plain.slice(plain.indexOf('Track the agents you spawn with'), plain.indexOf('Follow-up work in an area a child agent already owns'));
+  assert.ok(brief.length > 200, 'positive control: the brief slice is the real paragraph');
+  assert.ok(brief.includes(LINE), 'the orchestrator brief carries the line');
+  const reminders = plain.slice(plain.indexOf('Standing role reminder — you are an ORCHESTRATOR *and*'), plain.indexOf('\nfi\nexit 0'));
+  assert.equal(reminders.split(LINE).length - 1, 2, 'both the dual-role and the pure-coordinator reminder carry the line');
+  const skill = plain.slice(plain.indexOf('const COMMS_SKILL = `'), plain.indexOf('const WORKSPACE_ADMIN_SKILL'));
+  assert.ok(skill.includes('To stop or pause a wave or a fleet: `orchestra run pause` (soft) or `orchestra run pause --hard` (§6) — never a message asking it to stop.'), 'the comms skill carries the line (pointing at §6)');
+  assert.match(skill, /## 6\. Pause a run \(host-enforced\)/, 'control: the §6 it points at exists');
+  assert.ok(ws.includes('run pause --hard') && /orchestra run pause \[--hard\]/.test(read('src', 'cli', 'help.ts')), 'control: the verb the line names exists in the CLI help');
+});

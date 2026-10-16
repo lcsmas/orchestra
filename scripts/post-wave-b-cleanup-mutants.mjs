@@ -67,6 +67,11 @@ const MUTANTS = [
   { id: 'C13_anyTranscriptExists_back', clause: 'anyTranscriptExists is gone', edits: [[SDK, "/** Run `fn` with `CLAUDE_CONFIG_DIR` pinned", "function anyTranscriptExists(ws: Workspace): boolean { return !!ws; }\n\n/** Run `fn` with `CLAUDE_CONFIG_DIR` pinned"]], tests: [T.dead] },
   { id: 'C14_sandbox_workspace_dir_back', clause: 'SANDBOX_WORKSPACE_DIR is gone', edits: [[TYPES, "/** Cross-machine ownership state for one sandbox endpoint", "export const SANDBOX_WORKSPACE_DIR = '/workspace';\n\n/** Cross-machine ownership state for one sandbox endpoint"]], tests: [T.dead] },
   { id: 'C15_branch_switch_clears_an_agent_log', clause: 'a branch switch clears no agent log', edits: [[WS, "  stopPty(nvimId);\n  // The STRUCTURED session", "  stopPty(nvimId);\n  clearScrollback(id);\n  // The STRUCTURED session"]], tests: [T.dead] },
+  // ── LEAD addition: every generated coordination text names the host-enforced stop ──
+  { id: 'L01_brief_drops_the_stop_line', clause: 'the orchestrator brief names `orchestra run pause`', edits: [[WS, "  'To stop or pause a wave or a fleet: `orchestra run pause` (soft) or `orchestra run pause --hard` — never a message asking it to stop. ' +\n", ""]], tests: [T.dead] },
+  { id: 'L02_dual_reminder_drops_the_stop_line', clause: 'the dual-role reminder names `orchestra run pause`', edits: [[WS, "alongside your own work. To stop or pause a wave or a fleet: \\`orchestra run pause\\` (soft) or \\`orchestra run pause --hard\\` — never a message asking it to stop. And close the loop", "alongside your own work. And close the loop"]], tests: [T.dead] },
+  { id: 'L03_pure_reminder_drops_the_stop_line', clause: 'the coordinator reminder names `orchestra run pause`', edits: [[WS, "reporting to the user. To stop or pause a wave or a fleet: \\`orchestra run pause\\` (soft) or \\`orchestra run pause --hard\\` — never a message asking it to stop. And close the loop", "reporting to the user. And close the loop"]], tests: [T.dead] },
+  { id: 'L04_comms_skill_drops_the_stop_line', clause: 'the comms skill names `orchestra run pause`', edits: [[WS, "To stop or pause a wave or a fleet: \\`orchestra run pause\\` (soft) or \\`orchestra run pause --hard\\` (§6) — never a message asking it to stop.\n\n", ""]], tests: [T.dead] },
 ];
 
 // ── instrument checks that need no run ──
