@@ -50,7 +50,7 @@ export type RpcRoute = 'rename' | 'spawn' | 'peers' | 'message';
  *  undefined). The shim copies the agent's POST body into the matching shape. */
 export interface RpcRequestPayloads {
   rename: { id: string; branch: string };
-  spawn: { from?: string; repoPath?: string; baseBranch?: string; task: string };
+  spawn: { from?: string; repoPath?: string; baseBranch?: string; task: string; name?: string };
   peers: { from?: string };
   message: { from?: string; to: string; text: string; emergency?: boolean };
 }

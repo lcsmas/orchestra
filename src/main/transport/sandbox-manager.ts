@@ -40,7 +40,7 @@ import type { RpcRoute, RpcRequestPayloads, RpcReplyPayload } from '../../shared
 import { applyAgentEvent } from '../activity';
 import {
   dispatchRenameRequest,
-  dispatchSpawnRequest,
+  dispatchAgentSpawnRequest,
   dispatchPeersRequest,
   dispatchMessageRequest,
 } from '../workspaces';
@@ -93,13 +93,14 @@ async function dispatchRpc(
       const p = payload as RpcRequestPayloads['spawn'];
       if (typeof p.task === 'string') {
         return reply(
-          await dispatchSpawnRequest({
+          // #382: the same agent-spawn rule as hooks-server's /spawn (name required, namer recorded).
+          await dispatchAgentSpawnRequest({
             from: typeof p.from === 'string' ? p.from : undefined,
             repoPath: typeof p.repoPath === 'string' ? p.repoPath : undefined,
             baseBranch: typeof p.baseBranch === 'string' ? p.baseBranch : undefined,
             task: p.task,
             agent: 'claude',
-            defaultKind: 'spawned',
+            name: typeof p.name === 'string' ? p.name : undefined,
           }),
         );
       }

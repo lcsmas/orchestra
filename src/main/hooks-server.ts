@@ -7,7 +7,7 @@ import {
   dispatchRenameRequest,
   dispatchSetBaseRequest,
   dispatchLinkRequest,
-  dispatchSpawnRequest,
+  dispatchAgentSpawnRequest,
   dispatchPeersRequest,
   dispatchResolveHandleRequest,
   dispatchMessageRequest,
@@ -279,7 +279,8 @@ export async function startHooksServer(): Promise<void> {
             if (typeof msg.task === 'string') {
               send(
                 200,
-                await dispatchSpawnRequest({
+                // #382: the agent route — `name` REQUIRED (an old CLI/skill sends none → refused, nothing created).
+                await dispatchAgentSpawnRequest({
                   from: typeof msg.from === 'string' ? msg.from : undefined,
                   repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
                   baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
@@ -288,7 +289,7 @@ export async function startHooksServer(): Promise<void> {
                   detached: msg.detached === true,
                   model: typeof msg.model === 'string' ? msg.model : undefined,
                   effort: typeof msg.effort === 'string' ? msg.effort : undefined,
-                  defaultKind: 'spawned',
+                  name: typeof msg.name === 'string' ? msg.name : undefined,
                 }),
               );
             } else {

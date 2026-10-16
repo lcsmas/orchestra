@@ -16,7 +16,7 @@ The CLI is bundled inside the app (the binary doubles as the CLI when invoked as
 orchestra peers                                    # list the other agent workspaces (id, branch, repo, status; `ex-<old name>` beside a renamed one)
 orchestra message <id> <text...>                   # LEGACY peer channel; refused on a delivery-ON bus run
          [--emergency]                             #   (--emergency, leading token: out-of-band liveness poke)
-orchestra spawn --task <text>                      # spawn a new worktree + agent
+orchestra spawn --name <name> --task <text>        # spawn a new worktree + agent; --name is REQUIRED (convention below)
          [--repo <path>] [--base <branch>] [--detached]
 orchestra rename <id> <branch>                     # rename a workspace's branch (drives the real git branch)
 orchestra promote <id>                             # promote a scratch session into an orchestrator
@@ -29,6 +29,9 @@ orchestra migrate-account <id> <accountId>         # move a workspace to another
 orchestra migrate-account <id> --default           # …or back to the default login
 orchestra --help                                   # usage for all commands
 ```
+
+**`spawn --name`** (required, checked by the CLI before it touches the socket and again by the app): `<rôle>-<objet en mots humains>[-<ticket>] — rôle ∈ ops | impl | verif | review | explo (ex. impl-politique-nommage-381)`. The name becomes the child's git branch and its sidebar name — the object in the human's own words, no wave codes (`h1`, `q9`, `fu`…). A missing name, or one that does not start with a rôle, is refused and nothing is created. A name already taken is suffixed (`-2`, `-3`…); the CLI prints the final branch. The spawner names the child, and the child is never asked to rename itself (the spawner can still change the name with `orchestra rename`).
+
 
 Every response is JSON of shape `{ ok: true, ... }` or `{ ok: false, error }`; the CLI exits 0 on success and 1 (with the error on stderr) otherwise — safe to script against.
 

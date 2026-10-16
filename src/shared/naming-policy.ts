@@ -26,9 +26,9 @@ export type NamingFields = Pick<Workspace, 'branchManuallySet' | 'autoRenameCoun
 // ── #381 (today's rule, no behaviour change) ────────────────────────────────
 
 /** Is the rename nudge still active? #381: `!branchManuallySet && (autoRenameCount ?? 0) < MAX_AUTO_RENAMES`
- *  (today's `autoRenameActive`). #382 adds `&& !namedByParent`. The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
+ *  (today's `autoRenameActive`), `&& !namedByParent` (#382: a child named by its parent is never nudged). The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
 export function nudgeActive(ws: NamingFields): boolean {
-  return !ws.branchManuallySet && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
+  return !ws.branchManuallySet && !ws.namedByParent && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
 }
 
 /** Naming fields of a freshly created workspace: `{ branchManuallySet: false }`, plus `namedByParent: namedBy` when
@@ -41,10 +41,32 @@ export function initialNaming(opts?: { namedBy?: string }): Pick<Workspace, 'bra
 
 export type SpawnNameCheck = { ok: true; name: string } | { ok: false; error: string };
 
-/** Required; sanitised with {@link sanitizeBranchName}; must start with `<rôle>-` (rôle ∈ {@link ROLES}) and carry
- *  something after it; the error restates {@link NAME_CONVENTION}. Used by the CLI (before the socket) AND the /spawn route. */
-export function checkSpawnName(_raw: string | undefined | null): SpawnNameCheck {
-  throw new Error('naming-policy.checkSpawnName: STUB — implemented by #382');
+/** Longest accepted spawn name: {@link sanitizeBranchName} cuts at 80, and a silently cut name loses its `-<ticket>` tail. */
+const MAX_SPAWN_NAME = 79;
+
+/** Required; diacritics folded (`réglages` → `reglages`, never dropped), then sanitised with {@link sanitizeBranchName}; must
+ *  start with `<rôle>-` (rôle ∈ {@link ROLES}) and carry something after it; flat (no `/`), under {@link MAX_SPAWN_NAME}
+ *  characters and a valid git branch name; every error restates {@link NAME_CONVENTION}. Used by the CLI (before the
+ *  socket) AND the /spawn route. */
+export function checkSpawnName(raw: string | undefined | null): SpawnNameCheck {
+  const refuse = (why: string): SpawnNameCheck => ({ ok: false, error: `${why} — expected ${NAME_CONVENTION}` });
+  const given = typeof raw === 'string' ? raw.trim() : '';
+  if (!given) return refuse('a spawn needs a name (--name): none given');
+  // The convention asks for words in the human's language: sanitizeBranchName would DROP an accented letter (réglages → rglages),
+  // and an NFC vs NFD input would then differ. Fold first (NFD + strip marks, plus the few letters that do not decompose).
+  const folded = given
+    .normalize('NFD')
+    .replace(/\p{M}+/gu, '')
+    .replace(/[œŒæÆß]/g, (c) => ({ œ: 'oe', Œ: 'Oe', æ: 'ae', Æ: 'Ae', ß: 'ss' })[c] ?? c);
+  const name = sanitizeBranchName(folded);
+  if (!name) return refuse(`name "${given}" has no usable character (letters, digits, . _ - only)`);
+  const role = ROLES.find((r) => name.startsWith(`${r}-`));
+  if (!role) return refuse(`name "${name}" does not start with a rôle`);
+  if (!/[a-zA-Z0-9]/.test(name.slice(role.length + 1))) return refuse(`name "${name}" names the rôle but not the work`);
+  if (name.includes('/')) return refuse(`name "${name}" contains "/" — a spawn name is flat, no folders`);
+  if (name.length > MAX_SPAWN_NAME) return refuse(`name "${name.slice(0, 40)}…" is too long (${MAX_SPAWN_NAME} characters max — a cut name would lose its ticket)`);
+  if (/\.\.|\.$|\.lock$/.test(name)) return refuse(`name "${name}" is not a valid git branch name (no "..", no trailing "." or ".lock")`);
+  return { ok: true, name };
 }
 
 // ── #381 shape, #383 matrix (rename authority) ──────────────────────────────

@@ -7,10 +7,12 @@ The headline feature: **agents can spawn other agents.** Every Orchestra agent l
 Any agent (or you, from a shell) can run:
 
 ```bash
-orchestra spawn --task "full self-contained instructions for the new agent"
+orchestra spawn --name impl-politique-nommage-381 --task "full self-contained instructions for the new agent"
 ```
 
-Orchestra cuts a fresh branch from the base, creates the worktree, starts a new agent, hands it the task, and nests it under the spawner in the sidebar. Flags: `--repo <path>` targets another registered repo, `--base <branch>` picks the base, `--detached` makes it a top-level workspace instead of nesting.
+Orchestra cuts a fresh branch from the base, creates the worktree, starts a new agent, hands it the task, and nests it under the spawner in the sidebar. Flags: `--name <name>` (required) names the child, `--repo <path>` targets another registered repo, `--base <branch>` picks the base, `--detached` makes it a top-level workspace instead of nesting.
+
+**Naming.** The spawner names its child: `<rôle>-<objet en mots humains>[-<ticket>] — rôle ∈ ops | impl | verif | review | explo (ex. impl-politique-nommage-381)`. The name is the child's branch and its sidebar name, so write the object in the human's own words (no wave codes like `h1` or `q9`) and end with the ticket number when there is one. A spawn without `--name`, or with a name that does not start with a rôle, is refused and nothing is created; a name already taken is suffixed and the final branch is printed. The child is never asked to rename itself, and its spawner can change the name later (`orchestra rename`). Workspaces you create yourself keep naming themselves, and so do the ones started from a pinned Linear ticket or the mobile access.
 
 **Use cases:**
 

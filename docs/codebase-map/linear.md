@@ -120,7 +120,7 @@ takes an optional `from` (the calling workspace id) and passes
 `parentId: input.detached ? undefined : input.from`
 (`main/workspaces.ts:1353`). So the two entry points differ deliberately:
 `orchestra linear add --spawn` forwards the caller's id and the new workspace
-nests under it (matching `orchestra spawn`), while the renderer's
+nests under it (matching `orchestra spawn`; but it passes no `--name`/`namedBy` and keeps its key-first branch and nudge — the required spawn name is keyed on the `/spawn` route, #382 / #380 D4), while the renderer's
 `spawnFromTicket` button (`main/api-handlers.ts:928`) passes no `from` and the
 workspace stays top-level — there is no calling agent to nest under. Before
 v0.5.184 the CLI path hardcoded `detached: true`, so an orchestrator's

@@ -1075,7 +1075,7 @@ async function spawnChild(ctx, task = SPAWN_TASK, extra = []) {
   const { app } = ctx;
   const known = new Set((await listWs(app)).map((w) => w.id));
   const t0 = Date.now();
-  const r = await runCli(app, ['spawn', '--task', task, '--repo', app.world.repoDir, '--detached', ...extra]);
+  const r = await runCli(app, ['spawn', '--name', 'impl-rig-spawn', '--task', task, '--repo', app.world.repoDir, '--detached', ...extra]);
   r.ms = Date.now() - t0;
   const fresh = (await listWs(app)).filter((w) => !known.has(w.id));
   return { r, fresh, child: fresh[0] ?? null };

@@ -66,6 +66,7 @@ import {
 import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
+import { checkSpawnName } from '../shared/naming-policy.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -1316,12 +1317,17 @@ async function main(argv: string[]): Promise<void> {
       const { value: base, rest: r3 } = takeFlag(r2, '--base');
       const { value: model, rest: r4 } = takeFlag(r3, '--model');
       const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
-      const { present: detached, rest: r5 } = takeBoolFlag(r4b, '--detached');
+      const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
+      const { present: detached, rest: r5 } = takeBoolFlag(r4c, '--detached');
       void r5;
       if (!task)
         fail(
-          'usage: orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
+          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
         );
+      // #382 — the child's name is REQUIRED and checked HERE, before the socket: a refusal creates nothing (the
+      // route re-checks, for an old CLI/skill that sends no name). The convention lives in naming-policy.ts.
+      const named = checkSpawnName(rawName);
+      if (!named.ok) fail(`refusing to spawn: ${named.error}\nNothing was created.`);
       // Catch the intent/flag mismatch mechanically. Nesting is the default, so
       // an agent briefing a child as "standalone"/"independent"/"separate" while
       // omitting --detached silently gets the OPPOSITE of what was asked, and
@@ -1339,7 +1345,7 @@ async function main(argv: string[]): Promise<void> {
       }
       // `from` is always sent (it also drives repo inheritance server-side);
       // `detached` tells the server to skip only the parent nesting.
-      const body: Record<string, unknown> = { task, from: selfWorkspaceId() };
+      const body: Record<string, unknown> = { task, from: selfWorkspaceId(), name: named.name };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;

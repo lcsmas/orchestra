@@ -128,12 +128,13 @@ test('workspaces.ts takes MAX_AUTO_RENAMES / sanitizeBranchName / the decisions 
   const m = workspacesSrc.match(/import \{([^}]*)\} from '\.\.\/shared\/naming-policy\.ts';/);
   assert.ok(m, 'workspaces.ts imports ../shared/naming-policy.ts');
   const names = m![1].split(',').map((s) => s.trim().replace(/^type\s+/, '')).filter(Boolean).sort();
-  assert.deepEqual(names, ['MAX_AUTO_RENAMES', 'RenamePin', 'decideRename', 'initialNaming', 'pinAdvancesGate', 'pinFields', 'sanitizeBranchName']);
+  // #382 adds checkSpawnName (dispatchAgentSpawnRequest) and NAME_CONVENTION (the generated spawn skill + orchestrator brief).
+  assert.deepEqual(names, ['MAX_AUTO_RENAMES', 'NAME_CONVENTION', 'RenamePin', 'checkSpawnName', 'decideRename', 'initialNaming', 'pinAdvancesGate', 'pinFields', 'sanitizeBranchName']);
 });
 
 test('spawn: createWorkspace (the one git-workspace creation path, spawn included) takes its naming fields from initialNaming()', () => {
   const b = body(workspacesSrc, 'export async function createWorkspace(');
-  assert.match(b, /\.\.\.initialNaming\(\),/);
+  assert.match(b, /\.\.\.initialNaming\(\{ namedBy: naming\?\.namedBy \}\),/); // #382: the namer rides in; absent = today's `initialNaming()` record
   // dispatchSpawnRequest has no creation site of its own: it reaches the policy through createWorkspace.
   assert.match(body(workspacesSrc, 'export async function dispatchSpawnRequest('), /await createWorkspace\(\{/);
   assert.equal([...code(workspacesSrc).matchAll(/createdAt: Date\.now\(\)/g)].length, 2, 'exactly two Workspace-record creation sites (git + scratch-like)');
