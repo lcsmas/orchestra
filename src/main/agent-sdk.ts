@@ -28,6 +28,7 @@ import { getAccountApiKey, getAccountBaseUrl } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease, isProofOfLifeMessage, shouldRedriveInbox } from '../shared/session-wedge.ts';
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
+import { nudgeActive } from '../shared/naming-policy.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
@@ -41,7 +42,6 @@ import {
   workspaceAccount,
   workspaceAccountConfigDir,
   mangleProjectDir,
-  autoRenameActive,
   orchestratorBrief,
   createWorkspace,
   resolveWaveRunId,
@@ -877,9 +877,9 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   // `ORCHESTRA_BRANCH_AUTO=1` and reads `ORCHESTRA_AUTO_RENAME_COUNT` to pick the
   // stage-appropriate wording. Without these the nudge self-suppresses (defaults
   // to 0/off) even once the `'local'` hooks load — so a structured session's
-  // branch would never get auto-renamed. autoRenameActive() is the single source
+  // branch would never get auto-renamed. nudgeActive() (naming-policy) is the single source
   // of truth (a human-pinned name or a spent rename budget turns it off).
-  env.ORCHESTRA_BRANCH_AUTO = autoRenameActive(ws) ? '1' : '0';
+  env.ORCHESTRA_BRANCH_AUTO = nudgeActive(ws) ? '1' : '0';
   env.ORCHESTRA_AUTO_RENAME_COUNT = String(ws.autoRenameCount ?? 0);
 
   // The activity hook writes `<wsId>.jsonl` for any process where ORCHESTRA_WS_ID is set (its ONLY gate), so the SDK

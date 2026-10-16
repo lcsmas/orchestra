@@ -164,6 +164,7 @@ import { markWorkspaceSeen } from './mark-seen.ts';
 import { wakeHeldForMemory } from './admission-wake';
 import { normalizeEffortDefaults } from '../shared/effort-defaults.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { decideRename } from '../shared/naming-policy.ts';
 import type {
   Account,
   BrowserBounds,
@@ -812,7 +813,14 @@ export const apiHandlers: ApiHandlerTable = {
     return requireWorkspace(id);
   },
 
-  renameBranch: (id, newBranch) => renameWorkspaceBranch(id, newBranch, { manual: true }),
+  // The sidebar rename is the HUMAN caller of the naming policy: it pins the name (and stops the nudge) for everyone.
+  renameBranch: async (id, newBranch) => {
+    const ws = store.getWorkspace(id);
+    if (!ws) throw new Error('workspace not found');
+    const decision = decideRename(ws, { kind: 'human' });
+    if (!decision.allow) throw new Error(decision.error);
+    return renameWorkspaceBranch(id, newBranch, decision.pin);
+  },
 
   reorderWorkspaces: (orderedIds) => store.reorderWorkspaces(orderedIds),
 

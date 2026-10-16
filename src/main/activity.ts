@@ -13,6 +13,7 @@ import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/type
 // Value import (not `import type`): the .ts extension is required for value
 // imports reachable from the test runner — see the hibernation-activity note.
 import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
+import { decideRename, pinFields } from '../shared/naming-policy.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
 // here would close an import cycle, since it imports pty.ts which imports this
 // file. The .ts extension is required for VALUE imports reachable from the
@@ -667,12 +668,15 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
   // already adopted the same name, in which case there's nothing left to do.
   const fresh = store.getWorkspace(id);
   if (!fresh || fresh.archived || fresh.branch === live) return;
+  // An out-of-band `git branch -m` is a human rename: the naming policy pins it.
+  const decision = decideRename(fresh, { kind: 'human' });
+  if (!decision.allow) return;
   const repoName = path.basename(fresh.repoPath);
   const updated: Workspace = {
     ...fresh,
     branch: live,
     name: `${repoName} · ${live}`,
-    branchManuallySet: true,
+    ...pinFields(fresh, decision.pin),
   };
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.

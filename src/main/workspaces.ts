@@ -102,6 +102,14 @@ import {
   deliverToTargets,
 } from '../shared/broadcast-targets.ts';
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
+import {
+  MAX_AUTO_RENAMES,
+  decideRename,
+  initialNaming,
+  pinFields,
+  sanitizeBranchName,
+  type RenamePin,
+} from '../shared/naming-policy.ts';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
@@ -362,7 +370,7 @@ export async function createWorkspace(
     status: 'idle',
     agent,
     lastTask: input.task,
-    branchManuallySet: false,
+    ...initialNaming(),
     // Pin the repo's currently-assigned account at creation. The agent's
     // conversation will live in that account's CLAUDE_CONFIG_DIR, so the
     // workspace must keep using it even if the repo's account changes later.
@@ -523,7 +531,7 @@ async function createScratchLikeWorkspace(
     // agent relabels the session early, then refines the name once the work
     // scope is clear; after those two progressive auto-renames the nudge retires
     // (tracked via autoRenameCount + the .branch-renamed sentinel).
-    branchManuallySet: false,
+    ...initialNaming(),
     // No repo to take an account from — pin the account flagged as the scratch
     // default (if any) at creation, same lifetime rule as a repo workspace's
     // pin: the conversation lives in that account's CLAUDE_CONFIG_DIR, so the
@@ -957,20 +965,6 @@ export async function ensureWorkspacePort(id: string): Promise<Workspace | undef
 
 // ---------- Branch rename ----------
 
-/** The agent may auto-rename its own branch this many times before the nudge
- * self-retires: once for an early provisional name, once to refine it after the
- * work is well-defined. See {@link Workspace.autoRenameCount}. */
-export const MAX_AUTO_RENAMES = 2;
-
-/** Whether orchestra should still nudge the agent to auto-rename this workspace.
- * True only while a human hasn't pinned the name AND the agent hasn't used up
- * its two progressive auto-renames. This is the single source of truth for the
- * `ORCHESTRA_BRANCH_AUTO` env flag and for `dispatchRenameRequest`'s decision to
- * bump the counter (vs. treat the rename as an on-demand, user-asked one). */
-export function autoRenameActive(ws: Workspace): boolean {
-  return !ws.branchManuallySet && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
-}
-
 /** Rename the branch on a workspace. The worktree dir stays put and the
  * agent keeps running — `git branch -m` is purely a ref rename, so HEAD,
  * CWD, and open files are unaffected. The agent's TUI banner may show a
@@ -984,22 +978,15 @@ export function autoRenameActive(ws: Workspace): boolean {
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
-  opts: { manual: boolean; bumpAutoCount?: boolean },
+  opts: RenamePin,
 ): Promise<Workspace> {
   const ws = store.getWorkspace(id);
   if (!ws) throw new Error('workspace not found');
   const newBranch = sanitizeBranchName(rawNewBranch);
   if (!newBranch) throw new Error('invalid branch name');
-  // Fields that change how the rename nudge behaves next time. A human rename
-  // (`manual`) pins the branch via branchManuallySet and stops the nudge for
-  // good. An agent auto-rename (`bumpAutoCount`) instead advances the
-  // progressive-rename counter, so the agent keeps getting nudged until it has
-  // used up its MAX_AUTO_RENAMES refinements. The two are mutually exclusive in
-  // practice (manual renames come from the UI; auto from the socket).
-  const gateFields = {
-    branchManuallySet: opts.manual || ws.branchManuallySet,
-    ...(opts.bumpAutoCount ? { autoRenameCount: (ws.autoRenameCount ?? 0) + 1 } : {}),
-  };
+  // Fields that change how the rename nudge behaves next time — what `opts` (the
+  // naming-policy decision's pin) writes: a human pin or an agent counter bump.
+  const gateFields = pinFields(ws, opts);
   // A scratch session has no git branch — its "branch" is just a display label.
   // Relabel it in place (no `git branch -m`, no name collisions to dodge).
   // Orchestrators relabel the same way.
@@ -1075,10 +1062,12 @@ export async function dispatchRenameRequest(
 ): Promise<RenameResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-  // Only count this rename against the progressive-rename budget while the nudge
-  // is still active. An on-demand rename after the budget is spent (or after a
-  // human pinned the name) still lands, but doesn't advance the counter.
-  const bumpAutoCount = autoRenameActive(ws);
+  // The naming policy decides what this agent rename pins: it counts against the
+  // progressive-rename budget only while the nudge is still active — an on-demand
+  // rename after the budget is spent (or after a human pinned the name) lands too.
+  const decision = decideRename(ws, { kind: 'agent' });
+  if (!decision.allow) return { ok: false, error: decision.error };
+  const { pin } = decision;
   try {
     let updated: Workspace;
     // A scratch session has no branch namespace to dedupe against, so skip the
@@ -1086,7 +1075,7 @@ export async function dispatchRenameRequest(
     if (isScratchLike(ws)) {
       const target = sanitizeBranchName(rawNewBranch);
       if (!target) return { ok: false, error: 'invalid branch name' };
-      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount });
+      updated = await renameWorkspaceBranch(id, target, pin);
     } else {
       // Suffix against the live branch (not the possibly-stale stored name) so a
       // name that collides with an existing branch still lands, and so a request
@@ -1095,14 +1084,14 @@ export async function dispatchRenameRequest(
       const live = (await getCurrentBranch(ws.worktreePath)) || ws.branch;
       const target = await freeBranchName(ws.repoPath, sanitizeBranchName(rawNewBranch), live);
       if (!target) return { ok: false, error: 'invalid branch name' };
-      updated = await renameWorkspaceBranch(id, target, { manual: false, bumpAutoCount });
+      updated = await renameWorkspaceBranch(id, target, pin);
     }
     // Record the new auto-rename count in a worktree sentinel so the in-session
     // nudge picks up the fresh stage immediately — before the next pty restart
     // refreshes ORCHESTRA_AUTO_RENAME_COUNT in the env. The hook reads this to
     // pick stage-appropriate wording and to self-disable once the budget is
     // spent. Only meaningful for counted (auto) renames.
-    if (bumpAutoCount) await writeRenameProgress(ws.worktreePath, updated.autoRenameCount ?? 0);
+    if (pin.bumpAutoCount) await writeRenameProgress(ws.worktreePath, updated.autoRenameCount ?? 0);
     return { ok: true, branch: updated.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'rename failed' };
@@ -3414,11 +3403,6 @@ async function freeBranchName(repoPath: string, desired: string, current: string
   return '';
 }
 
-function sanitizeBranchName(raw: string): string {
-  // Keep the same allow-list used when creating worktree paths.
-  return raw.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9._/-]/g, '').slice(0, 80);
-}
-
 /** Switch the workspace to an existing branch. The worktree dir stays put —
  * branch is just a property. On success, stops the agent session and the nvim
  * PTY so they restart against the new branch's files (any in-memory state from
@@ -3448,15 +3432,17 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
   // kept stale branch context.
   await sdkStopIfLive(id);
 
+  // The user explicitly chose this branch — a human pin (naming policy): never
+  // auto-rename it, even if the workspace was still in its initial "awaiting first prompt" state.
+  const decision = decideRename(ws, { kind: 'human' });
+  if (!decision.allow) throw new Error(decision.error);
   const repoName = path.basename(ws.repoPath);
   const updated: Workspace = {
     ...ws,
     branch,
     name: `${repoName} · ${branch}`,
     hasInput: false,
-    // The user explicitly chose this branch — never auto-rename it, even if
-    // the workspace was still in its initial "awaiting first prompt" state.
-    branchManuallySet: true,
+    ...pinFields(ws, decision.pin),
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
