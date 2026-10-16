@@ -212,7 +212,8 @@ export async function startHooksServer(): Promise<void> {
         try {
           if (route === '/rename') {
             if (typeof msg.id === 'string' && typeof msg.branch === 'string') {
-              send(200, await dispatchRenameRequest(msg.id, msg.branch));
+              // `from` = the caller's ORCHESTRA_WS_ID (as /spawn); absent (old CLI, plain shell) = unknown caller (#383).
+              send(200, await dispatchRenameRequest(msg.id, msg.branch, typeof msg.from === 'string' ? msg.from : undefined));
             } else {
               send(200, { ok: false, error: 'missing id or branch' });
             }

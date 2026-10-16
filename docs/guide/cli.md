@@ -19,6 +19,8 @@ orchestra message <id> <text...>                   # LEGACY peer channel; refuse
 orchestra spawn --name <name> --task <text>        # spawn a new worktree + agent; --name is REQUIRED (convention below)
          [--repo <path>] [--base <branch>] [--detached]
 orchestra rename <id> <branch>                     # rename a workspace's branch (drives the real git branch)
+                                                   #   a spawned agent can't rename itself (its parent named it): ask the parent;
+                                                   #   the parent can, any time; a name the human typed in the sidebar is final
 orchestra promote <id>                             # promote a scratch session into an orchestrator
 orchestra attach <id> <parentId>                   # nest an existing workspace under an orchestrator
 orchestra detach <id>                              # pop a workspace back out to its own section

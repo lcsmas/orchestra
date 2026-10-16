@@ -54,7 +54,6 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
   }
   assert.deepEqual(found, {
     'acces-mobile-routes.ts': 2, // the PRIVATE fd-3 channel: /mobile/send (#338, the composer's call) + /mobile/launch (#375: the human starting a workspace on the phone — origin to the agent start), by decision
-    'activity.ts': 1,           // NOT a pause origin: `decideRename(…, { kind: 'human' })` — the naming-policy caller of an out-of-band `git branch -m` (#381)
     'agent-sdk.ts': 1,          // the `origin === 'human'` tag that feeds the drain gate
     'api-handlers.ts': 6,       // composer + tray release + release-all + Fix checks + Send review (5 pause origins) + the sidebar rename's naming-policy `{ kind: 'human' }` (#381, not a pause origin)
     'bus-pause.ts': 1,          // pauseRefusalWith: a human origin is never refused

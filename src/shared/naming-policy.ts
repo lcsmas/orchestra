@@ -85,22 +85,64 @@ export interface RenamePin {
 
 export type RenameDecision = { allow: true; pin: RenamePin } | { allow: false; error: string };
 
+/** Facts the policy cannot read off the target: the DISPLAY NAME of the namer (the caller looks it up from
+ *  `parentId ?? namedByParent`), put in the refusal so the child knows whom to ask. Additive optional arg (#383). */
+export interface RenameContext {
+  parentName?: string;
+}
+
+/** Why a rename is refused — the texts the child / parent / other agent reads (CLI prints them verbatim). */
+export function namedByParentRefusal(parentName?: string): string {
+  return `named by your parent${parentName ? ` (${parentName})` : ''} — ask them to run \`orchestra rename\``;
+}
+export const NAMED_BY_HUMAN_REFUSAL = 'named by the human — the name is pinned, only the human can change it';
+
 /** `target` = the workspace being renamed (its `id` + naming fields + `parentId` + display `branch`).
- *  #381 = today's rule: `human` → `{manual:true, bumpAutoCount:false}`; any `agent` → `{manual:false,
- *  bumpAutoCount:nudgeActive(target)}`; never refused. #383 replaces the agent arm with the human > parent > child matrix. */
+ *  Authority human > parent > child (#383, D5 — behaviour frozen in ledger #387). Target states: U unnamed (no
+ *  `namedByParent`, no human pin: human-created or legacy agent), P named by parent (`namedByParent`), H human-pinned
+ *  (`branchManuallySet`). "Parent" = `caller.id` is the target's `parentId` or its `namedByParent` (a `--detached`
+ *  child has no `parentId`); an absent/empty caller id is an UNKNOWN caller, never a parent.
+ *   · human            → always allowed; pins `manual`; `namedByParent` untouched (not in the pin).
+ *   · H + `namedByParent` set, or H + the target's parent (D6) → agent refused ("named by the human"): a human rename
+ *     pins for everyone, parent included.
+ *   · H, no `namedByParent`, caller not the parent → human-created / legacy workspace: allowed as today (nudge off, no bump).
+ *   · P + parent       → allowed, stays P, no counter bump.   · P + self/other/unknown → refused (ask your parent).
+ *   · U + parent       → allowed, pins P (`namedByParent` = caller id), no counter bump.
+ *   · U + self/other/unknown → allowed exactly as today: counter bump while {@link nudgeActive}. */
 export function decideRename(
   target: NamingFields & { id: string; branch: string },
   caller: RenameCaller,
+  ctx: RenameContext = {},
 ): RenameDecision {
   if (caller.kind === 'human') return { allow: true, pin: { manual: true, bumpAutoCount: false } };
+  const namer = target.namedByParent || undefined;
+  const isParent = !!caller.id && (caller.id === target.parentId || caller.id === namer);
+  if (target.branchManuallySet) {
+    if (namer || isParent) return { allow: false, error: NAMED_BY_HUMAN_REFUSAL };
+    return { allow: true, pin: { manual: false, bumpAutoCount: nudgeActive(target) } };
+  }
+  if (namer) {
+    if (isParent) return { allow: true, pin: { manual: false, bumpAutoCount: false, namedByParent: namer } };
+    return { allow: false, error: namedByParentRefusal(ctx.parentName) };
+  }
+  if (isParent) return { allow: true, pin: { manual: false, bumpAutoCount: false, namedByParent: caller.id } };
   return { allow: true, pin: { manual: false, bumpAutoCount: nudgeActive(target) } };
 }
 
+/** What an OUT-OF-BAND `git branch -m` pins (activity.ts `detectAndUpdateBranchName` adopts the live branch whoever ran it). The name
+ *  already changed in git, so it is adopted — but a rename that bypassed `/rename` must not confer the HUMAN's authority on a
+ *  parent-named workspace (a refused child could `git branch -m` and lock its parent out): P and not yet human-pinned → no pin, the
+ *  parent can still rename it (the human uses the sidebar). Anywhere else: today's — a human pin. Additive export (#383). */
+export function adoptedBranchPin(target: NamingFields): RenamePin {
+  if (target.namedByParent && !target.branchManuallySet) return { manual: false, bumpAutoCount: false };
+  return { manual: true, bumpAutoCount: false };
+}
+
 /** Does `pin` change anything on `ws`? A rename to the SAME name still has to persist the pin when it does (a first human
- *  pin, or a counted agent rename) — `renameWorkspaceBranch`'s same-name short-circuit asks this. ADDED by #381 (additive);
- *  #383 extends it when `namedByParent` can change. */
+ *  pin, a counted agent rename, or — #383 — a parent's first pin: `namedByParent` differs from the stored one) —
+ *  `renameWorkspaceBranch`'s same-name short-circuit asks this. ADDED by #381 (additive). */
 export function pinAdvancesGate(ws: NamingFields, pin: RenamePin): boolean {
-  return (pin.manual && !ws.branchManuallySet) || pin.bumpAutoCount;
+  return (pin.manual && !ws.branchManuallySet) || pin.bumpAutoCount || (!!pin.namedByParent && pin.namedByParent !== ws.namedByParent);
 }
 
 /** The Workspace fields an allowed rename writes for `pin` (spread into the renamed record). Today: `manual` ⇒

@@ -1060,26 +1060,29 @@ export interface RenameResult {
   error?: string;
 }
 
-/** Handle a rename request coming from the agent via the hooks-server socket.
+/** Handle a rename request from an agent via the hooks-server socket (or the sandbox rpc); `from` = the caller's
+ * ORCHESTRA_WS_ID. The naming policy decides (#383, human > parent > child): a spawned agent named by its parent
+ * cannot rename itself, the parent can, a human pin binds everyone; an unnamed workspace keeps today's rule.
  *
- * Unlike a UI rename this never pins `branchManuallySet`; instead each agent
- * rename advances `autoRenameCount` while the progressive-rename nudge is still
- * active, giving the agent two staged auto-renames (early provisional name →
- * refined name once the work is well-defined) before the nudge retires. Renames
- * are *never* refused for being "already set": once the nudge has retired the
- * agent can still rename on demand (e.g. the user explicitly asks) — it just
- * stops being prompted to. Returns a structured result so the agent's socket
- * call can tell success from failure. */
+ * Never pins `branchManuallySet` (that is the human's); an allowed rename either advances `autoRenameCount` while the
+ * progressive-rename nudge is active (early provisional name → refined name), or pins `namedByParent` (a parent's
+ * rename), or — nudge retired — lands on demand. Returns a structured result so the agent's socket call can tell
+ * success from failure; a refusal is `{ok:false, error}` with nothing written. */
 export async function dispatchRenameRequest(
   id: string,
   rawNewBranch: string,
+  from?: string,
 ): Promise<RenameResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-  // The naming policy decides what this agent rename pins: it counts against the
-  // progressive-rename budget only while the nudge is still active — an on-demand
-  // rename after the budget is spent (or after a human pinned the name) lands too.
-  const decision = decideRename(ws, { kind: 'agent' });
+  // #383 — WHO may rename WHAT (human > parent > child) is decided ONLY by the naming policy. `from` = the caller's
+  // ORCHESTRA_WS_ID, self-asserted like every socket route (absent = unknown caller, e.g. an old CLI). A refusal
+  // returns before any git/store write; the message names the namer (`parentId ?? namedByParent`) so the child knows
+  // whom to ask. An allowed rename counts against the progressive-rename budget only while the nudge is active.
+  const parentName = [ws.parentId, ws.namedByParent]
+    .map((pid) => (pid ? store.getWorkspace(pid)?.branch : undefined))
+    .find(Boolean);
+  const decision = decideRename(ws, { kind: 'agent', id: from }, { parentName });
   if (!decision.allow) return { ok: false, error: decision.error };
   const { pin } = decision;
   try {
@@ -1106,6 +1109,9 @@ export async function dispatchRenameRequest(
     // pick stage-appropriate wording and to self-disable once the budget is
     // spent. Only meaningful for counted (auto) renames.
     if (pin.bumpAutoCount) await writeRenameProgress(ws.worktreePath, updated.autoRenameCount ?? 0);
+    // A parent-named child is never nudged again: spend the sentinel budget so a LIVE session's hook (its env still
+    // says ORCHESTRA_BRANCH_AUTO=1 until restart) retires on the next prompt instead of asking the child to rename.
+    else if (pin.namedByParent) await writeRenameProgress(ws.worktreePath, MAX_AUTO_RENAMES);
     return { ok: true, branch: updated.branch };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'rename failed' };
@@ -4225,6 +4231,16 @@ orchestra rename "\$ORCHESTRA_WS_ID" "<new-branch-name>"
 Prints \`Renamed to <final-name>\` on success, or an error if the name was refused
 (e.g. already taken). Examples: fix-checkout-typo, add-stripe-webhook-retry,
 route-demande-accessoire.
+
+## Who may rename (human > parent > child)
+
+A spawned agent is named by its PARENT and cannot rename itself: the command is
+refused with "named by your parent (<name>) — ask them to run
+\`orchestra rename\`" — do not retry, ask the parent. A parent renames its child
+at any time with \`orchestra rename <child-id> <name>\` and the name sticks (the
+child cannot overwrite it). A name the human typed in the sidebar over a parent's
+name is final: neither the parent nor the agent can change it ("named by the
+human"). A workspace nobody named still renames itself.
 `;
 
 const STATUS_SKILL = `---

@@ -62,7 +62,7 @@ describe('initialNaming', () => {
   });
 });
 
-describe('decideRename — today\'s rule, never refused', () => {
+describe('decideRename — today\'s rule on an unnamed workspace (no parent/namer in play)', () => {
   // [clause, target fields, caller, expected pin]
   const rows: Array<[string, Partial<NamingFields>, Parameters<typeof decideRename>[1], { manual: boolean; bumpAutoCount: boolean }]> = [
     ['human rename pins, no counter bump', {}, { kind: 'human' }, { manual: true, bumpAutoCount: false }],
@@ -80,10 +80,7 @@ describe('decideRename — today\'s rule, never refused', () => {
     it(clause, () => assert.deepEqual(decideRename(ws(fields), caller), { allow: true, pin }));
   }
 
-  it('the target\'s own parent renaming it is NOT special yet (#383 owns that) — same as any agent', () => {
-    const d = decideRename(ws({ parentId: 'p1', autoRenameCount: 0 }), { kind: 'agent', id: 'p1' });
-    assert.deepEqual(d, { allow: true, pin: { manual: false, bumpAutoCount: true } });
-  });
+  // The target's own parent renaming it is special since #383 — see rename-authority.test.ts (the full caller × pin-state grid).
 
   it('the agent arm reads nudgeActive: a decision never counts a rename the nudge would not', () => {
     for (const fields of [{}, { autoRenameCount: 1 }, { autoRenameCount: 2 }, { branchManuallySet: true }] as Partial<NamingFields>[]) {

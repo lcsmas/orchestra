@@ -49,7 +49,7 @@ export type RpcRoute = 'rename' | 'spawn' | 'peers' | 'message';
  *  fields mirror hooks-server.ts's `typeof === 'string'` guards (absent ⇒
  *  undefined). The shim copies the agent's POST body into the matching shape. */
 export interface RpcRequestPayloads {
-  rename: { id: string; branch: string };
+  rename: { id: string; branch: string; from?: string };
   spawn: { from?: string; repoPath?: string; baseBranch?: string; task: string; name?: string };
   peers: { from?: string };
   message: { from?: string; to: string; text: string; emergency?: boolean };

@@ -1373,7 +1373,8 @@ async function main(argv: string[]): Promise<void> {
       const id = args[0];
       const branch = args[1];
       if (!id || !branch) fail('usage: orchestra rename <id> <branch>');
-      const res = await request('/rename', { id, branch });
+      // `from` = the caller (#383 authority human > parent > child). A plain shell has none -> an unknown caller.
+      const res = await request('/rename', { id, branch, from: selfWorkspaceId() });
       if (!res.ok) fail(res.error ?? 'failed to rename workspace');
       process.stdout.write(`Renamed to ${res.branch as string}\n`);
       return;
