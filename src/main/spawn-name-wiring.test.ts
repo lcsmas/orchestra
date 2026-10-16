@@ -149,7 +149,7 @@ test('the spawn skill and the orchestrator brief carry --name and the convention
 test('G10 — every doc that teaches `orchestra spawn` shows --name (and the guides the convention verbatim)', () => {
   for (const f of ['docs/guide/cli.md', 'docs/guide/multi-agent.md']) {
     const s = read(f);
-    assert.ok(s.includes('--name'), `${f} lacks --name`);
+    assert.match(s, /^orchestra spawn --name /m, `${f} lacks the \`orchestra spawn --name\` command line`);
     assert.ok(s.includes(NAME_CONVENTION), `${f} lacks the convention verbatim`);
   }
   assert.match(read('README.md'), /orchestra spawn --name /);
