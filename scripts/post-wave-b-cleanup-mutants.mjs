@@ -31,9 +31,9 @@ const RIG = (arm) => ({ arm });
 const MUTANTS = [
   // ── strand 1: stop the real session before the move ──
   { id: 'S01_adopt_stops_only_a_pty', clause: 'adopt-repo stops the SDK session (the agent PTY is gone)', edits: [[WS, "await stopAgentSessionForMove(id, 'adopt-repo');", 'stopPty(id);']], tests: [T.move], rig: { ...RIG('adopt_live'), clause: 'the agent session is NOT live after the adopt' } },
-  { id: 'S02_adopt_stops_after_the_copy', clause: 'adopt-repo stops the session BEFORE copying .claude/.orchestra (mutant: stops only after the hooks install, ≥ one heartbeat later)', edits: [
+  { id: 'S02_adopt_stops_after_the_copy', clause: 'adopt-repo stops the session BEFORE copying .claude/.orchestra (mutant: stops 120 ms after the copy)', edits: [
       [WS, "    await stopAgentSessionForMove(id, 'adopt-repo');\n", ''],
-      [WS, "    await installOrchestraHooks(newWorktreePath);\n", "    await installOrchestraHooks(newWorktreePath);\n    await stopAgentSessionForMove(id, 'adopt-repo');\n"]], tests: [T.move], rig: { ...RIG('adopt_live'), clause: 'no agent write after the snapshot' } },
+      [WS, "    await installOrchestraHooks(newWorktreePath);\n", "    await installOrchestraHooks(newWorktreePath);\n    await new Promise((r) => setTimeout(r, 120)); // the late stop: the agent keeps writing meanwhile\n    await stopAgentSessionForMove(id, 'adopt-repo');\n"]], tests: [T.move], rig: { ...RIG('adopt_live'), clause: 'no agent write after the snapshot' } },
   { id: 'S03_helper_never_stops_the_session', clause: 'the helper stops the SDK session', edits: [[WS, "  await sdkStopIfLive(id);\n  await killKeeper(id, reason);", "  await killKeeper(id, reason);"]], tests: [T.move], rig: { ...RIG('adopt_live'), clause: 'the agent session is NOT live after the adopt' } },
   { id: 'S04_helper_does_not_fail_closed', clause: 'a session/keeper still alive aborts the move', edits: [[WS, "  if (sdkSessionLive(id) || readTrackedKeeperPid(id) !== null) {", "  if (false) {"]], tests: [T.move] },
   { id: 'S05_helper_does_not_await_the_keeper', clause: 'the helper awaits the keeper/CLI death', edits: [[WS, "  await killKeeper(id, reason); // a session that answered the interrupt closes gracefully on the keeper's own clock; this awaits the death\n", ""]], tests: [T.move] },
