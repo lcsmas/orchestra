@@ -100,7 +100,8 @@ test('released: a spawn whose `git worktree add` fails frees its reserved name �
 
 test('stale-listing: the 2nd pick READS its refs, then answers after the 1st spawn finished and released its reservation — still 2 distinct names', () => {
   const r = runArm('stale-listing');
-  assert.ok(r.listings >= 2, 'control: the delayed listing really happened (the instrument fired)');
+  assert.equal(r.markSeen, true, 'control: the 1st spawn reached its (held) branch creation — the interleaving was set up');
+  assert.equal(r.delayedListingFired, true, 'control: the 2nd pick\'s listing really read its refs early and answered late (the instrument fired)');
   assert.deepEqual(r.results.map((x: { ok: boolean }) => x.ok), [true, true], JSON.stringify(r.results));
   assert.deepEqual(r.got, ['impl-tt', 'impl-tt-2']);
   assert.equal(r.ok, true);
