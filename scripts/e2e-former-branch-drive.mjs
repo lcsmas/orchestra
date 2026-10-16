@@ -253,11 +253,15 @@ async function main() {
     // C1 (tree path), twice, by its PARENT through the socket: the LATEST previous name must win.
     let r1 = cli(app, ID.ops, ['rename', ID.c1, OLD.c1mid]);
     clause('rename/c1-first', r1.code === 0 && /Renamed to/.test(r1.stdout), `rc=${r1.code} ${r1.stdout.trim()} ${r1.stderr.trim()}`);
-    await waitFor('c1 title shows first former', async () => (await rowOf(app, OLD.c1mid))?.title.includes(`ex-${OLD.c1}`), 10000, 200);
-    const midTitle = (await rowOf(app, OLD.c1mid)).title;
+    // SOFT waits: a build without the feature must produce a named FAIL here (and every later clause), not abort the drive.
+    const soft = async (what, fn, ms = 8000) => { try { await waitFor(what, fn, ms, 200); return true; } catch { return false; } };
+    await waitFor('c1 renamed (row)', () => rowOf(app, OLD.c1mid), 10000, 200);
+    clause('tooltip/c1-first-former-appears', await soft('c1 title shows first former', async () => (await rowOf(app, OLD.c1mid))?.title.includes(`ex-${OLD.c1}`)), `title="${(await rowOf(app, OLD.c1mid))?.title}"`);
+    const midTitle = (await rowOf(app, OLD.c1mid))?.title ?? '';
     let r2 = cli(app, ID.ops, ['rename', ID.c1, OLD.c1new]);
     clause('rename/c1-second', r2.code === 0 && /Renamed to/.test(r2.stdout), `rc=${r2.code} ${r2.stdout.trim()} ${r2.stderr.trim()}`);
-    await waitFor('c1 title shows latest former', async () => (await rowOf(app, OLD.c1new))?.title.includes(`ex-${OLD.c1mid}`), 10000, 200);
+    await waitFor('c1 renamed again (row)', () => rowOf(app, OLD.c1new), 10000, 200);
+    clause('tooltip/c1-latest-former-appears', await soft('c1 title shows latest former', async () => (await rowOf(app, OLD.c1new))?.title.includes(`ex-${OLD.c1mid}`)), `title="${(await rowOf(app, OLD.c1new))?.title}"`);
     // D1 (repo path), by the HUMAN in the sidebar.
     await uiRename(app, OLD.d1, OLD.d1new);
     await waitFor('d1 renamed', () => rowOf(app, OLD.d1new), 10000, 200);
