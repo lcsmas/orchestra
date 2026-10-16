@@ -46,6 +46,7 @@ let dryRun = false;
 let verbose = false;
 let allowGone = false;
 let assumeAppCurrent = false;
+let liveTarget = false;
 const closedIds = [];
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
@@ -56,11 +57,12 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--verbose') verbose = true;
   else if (a === '--allow-gone') allowGone = true;
   else if (a === '--assume-app-current') assumeAppCurrent = true;
+  else if (a === '--live') liveTarget = true;
   else if (a === '--closed') closedIds.push(...(argv[++i] ?? '').split(',').map((x) => x.trim()).filter(Boolean));
   else if (a === '-h' || a === '--help') {
     out(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 30).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
     process.exit(0);
-  } else die(`unknown argument ${JSON.stringify(a)} — usage: --table <file> [--dry-run | --apply] [--closed <ops-id>,…] [--allow-gone] [--assume-app-current] [--verbose]`);
+  } else die(`unknown argument ${JSON.stringify(a)} — usage: --table <file> [--dry-run | --apply] [--closed <ops-id>,…] [--allow-gone] [--assume-app-current] [--live] [--verbose]`);
 }
 if (apply && dryRun) die('--apply and --dry-run are exclusive');
 if (!tableFile) die('--table <file> is required (also for --dry-run: an empty table plans nothing). --apply never guesses a table.');
@@ -68,7 +70,14 @@ if (process.env.ORCHESTRA_SOCK) {
   die('ORCHESTRA_SOCK is set (an agent PTY, or a stray export) — this script targets the app of ORCHESTRA_HOME; unset ORCHESTRA_SOCK and set ORCHESTRA_HOME to the app you mean');
 }
 
-const { planMigration, renderPlan, activeVagueMemberIds } = await import(pathToFileURL(path.join(REPO, 'src/shared/naming-migration.ts')).href);
+// ORCHESTRA_HOME unset = the LIVE default home (~/.orchestra): a mutation there is the live fleet. Reads are fine; --apply needs the explicit word.
+const homeUnset = !process.env.ORCHESTRA_HOME;
+const home = process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
+if (apply && homeUnset && !liveTarget) {
+  die(`ORCHESTRA_HOME is unset: --apply would act on the LIVE default app and store (${home}, socket pointer ${path.join(home, 'sock')}). Set ORCHESTRA_HOME to a scratch home, or pass --live to confirm that the live fleet is the target.`);
+}
+
+const { planMigration, renderPlan, activeVagueMemberIds, vagueHolders } = await import(pathToFileURL(path.join(REPO, 'src/shared/naming-migration.ts')).href);
 const { appStoreFile } = await import(pathToFileURL(path.join(REPO, 'src/cli/index.ts')).href);
 const { isScratchLike } = await import(pathToFileURL(path.join(REPO, 'src/shared/types.ts')).href);
 
@@ -87,8 +96,8 @@ try {
   table = JSON.parse(fs.readFileSync(tableFile, 'utf8'));
   if (!Array.isArray(table)) throw new Error('the table must be a JSON array');
   table.forEach((r, i) => {
-    const ok = r && typeof r === 'object' && typeof r.id === 'string' && typeof r.new === 'string' && (r.old === undefined || typeof r.old === 'string');
-    if (!ok) throw new Error(`row ${i + 1}: expected { "id": string, "old"?: string, "new": string }`);
+    const ok = r && typeof r === 'object' && typeof r.id === 'string' && typeof r.new === 'string' && typeof r.old === 'string' && r.old !== '';
+    if (!ok) throw new Error(`row ${i + 1}: expected { "id": string, "old": string, "new": string } — "old" is REQUIRED: it is what tells a lost former name from a never-renamed workspace when a run is repeated`);
   });
 } catch (e) {
   die(`cannot read the table ${tableFile}: ${e.message}`);
@@ -124,9 +133,10 @@ for (const repo of repos) {
 }
 
 // ── plan ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-// The worktree's REAL branch (read-only; the app renames THIS one, not the store's `branch`). undefined = no git branch to read; null = it could not be read.
+// The worktree's REAL branch (read-only; the app renames THIS one, not the store's `branch`). undefined = no git branch to read; null = UNKNOWN (unreadable / not a worktree we can see).
 const gitHead = (w) => {
-  if (!w.worktreePath || isScratchLike(w) || w.host?.kind === 'sandbox' || !fs.existsSync(path.join(w.worktreePath, '.git'))) return undefined;
+  if (isScratchLike(w) || !w.worktreePath) return undefined; // no git branch to read (a git workspace record always carries its worktreePath)
+  if (w.host?.kind === 'sandbox' || !fs.existsSync(path.join(w.worktreePath, '.git'))) return null; // a worktree we cannot see: UNKNOWN (a plain directory inside another repo would send `git branch -m` to the WRONG repo)
   const r = spawnSync('git', ['-C', w.worktreePath, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8', timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
   return r.status === 0 ? r.stdout.trim() : null;
 };
@@ -139,8 +149,15 @@ for (const r of table) {
 }
 
 for (const id of closedIds) if (!byId.has(id)) die(`--closed ${id}: no workspace with this id in the store (a typo would leave its vague protected while you believe it is released)`);
-const plan = planMigration({ workspaces, remoteBranches, localBranches, activeVagueMembers: activeVagueMemberIds(workspaces, new Set(closedIds)), table, liveHeads });
+const realPath = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const plannerWorkspaces = workspaces.map((w) => (typeof w.repoPath === 'string' && w.repoPath ? { ...w, repoPath: realPath(w.repoPath) } : w)); // the same repo under two spellings is ONE repo
+const holders = vagueHolders(workspaces, new Set(closedIds));
+const plan = planMigration({ workspaces: plannerWorkspaces, remoteBranches, localBranches, activeVagueMembers: new Set(holders.keys()), vagueHolders: holders, table, liveHeads });
 out(`# naming migration — ${apply ? 'APPLY' : 'DRY RUN'} — store=${storeFile} table=${tableFile}`);
+const pointerFile = path.join(home, 'sock');
+let pointerTarget = '(missing)';
+try { pointerTarget = fs.readFileSync(pointerFile, 'utf8').trim() || '(empty)'; } catch { /* not running, or another home */ }
+out(`# acting on: ${homeUnset ? `the LIVE default home ${home} (ORCHESTRA_HOME unset)` : `ORCHESTRA_HOME=${home}`} · store=${storeFile} · socket pointer ${pointerFile} -> ${pointerTarget}`);
 out(`# ORCHESTRA_HOME=${process.env.ORCHESTRA_HOME || '(unset → the live default home)'} · ${repos.size} repo(s) read · ${remoteBranches.size} branch(es) on a remote · ${workspaces.length} workspace(s)${closedIds.length ? ` · closed vague(s) declared: ${closedIds.map((x) => x.slice(0, 8)).join(',')}` : ''}`);
 for (const line of renderPlan(plan, { verbose, allowGone })) out(line);
 const blocking = plan.rejected.filter((x) => !(allowGone && x.code === 'unknown-workspace'));
@@ -154,17 +171,21 @@ const warnings = allowGone ? 0 : archivedRows.length;
 // PREFLIGHT: the RUNNING app must be at least as new as the checkout this script comes from (a release installed but the app not restarted renames WITHOUT pinning or recording the
 // former name). Read-only: the app's startup banner in <home>/logs (the log rotates at 5 MB: an unreadable banner is UNKNOWN, and UNKNOWN refuses like OLDER does) — the human
 // who restarted the app after installing says so with --assume-app-current.
-const numericVersion = (v) => v.split('-')[0].split('.').map((x) => Number(x));
-const olderThan = (a, b) => { const x = numericVersion(a), y = numericVersion(b); for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0); return false; };
+const parseVersion = (v) => { const m = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(v); return m ? { n: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] } : null; };
+// older = strictly older by number; at equal numbers a suffixed build (-rc.1, +build7) is older than the plain one. (Both operands come out of a \d+.\d+.\d+ match — the banner regex, package.json — so parsing cannot fail.)
+const olderThan = (a, b) => {
+  const x = parseVersion(a), y = parseVersion(b);
+  for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] < y.n[i];
+  return x.pre !== '' && y.pre === '';
+};
 const aliveProcess = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const readRunningApp = () => {
-  const home = process.env.ORCHESTRA_HOME || path.join(os.homedir(), '.orchestra');
   for (const f of [path.join(home, 'logs', 'orchestra.log'), path.join(home, 'logs', 'orchestra.log.1')]) {
     let text;
     try {
       const size = fs.statSync(f).size;
+      const len = Math.min(size, 16 * 1024 * 1024); // the log rotates at 5 MB: the whole file, so a banner is never cut off
       const fd = fs.openSync(f, 'r');
-      const len = Math.min(size, 4 * 1024 * 1024);
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, size - len);
       fs.closeSync(fd);
@@ -172,8 +193,9 @@ const readRunningApp = () => {
     } catch {
       continue;
     }
-    const all = [...text.matchAll(/=== Orchestra (\d+\.\d+\.\d+\S*) \([^)]*\) starting === pid=(\d+)/g)];
-    if (all.length > 0) return { version: all[all.length - 1][1], pid: Number(all[all.length - 1][2]) };
+    // the LAST banner of an instance running on THIS home (another home's instance sharing the log dir is not the app we will talk to)
+    const mine = [...text.matchAll(/=== Orchestra (\d+\.\d+\.\d+\S*) \([^)]*\) starting === pid=(\d+)[^\n]*?home=(\S+)/g)].filter((m) => path.resolve(m[3]) === path.resolve(home));
+    if (mine.length > 0) return { version: mine[mine.length - 1][1], pid: Number(mine[mine.length - 1][2]) };
   }
   return null;
 };
@@ -185,10 +207,10 @@ else if (!aliveProcess(running.pid)) appVerdict = { ok: false, text: `the last s
 else if (olderThan(running.version, checkoutVersion)) appVerdict = { ok: false, text: `the running app is v${running.version} (pid ${running.pid}) but this checkout is v${checkoutVersion}: it predates the rename pin / former name — restart Orchestra on the new build` };
 else appVerdict = { ok: true, text: `running app v${running.version} (pid ${running.pid}) >= checkout v${checkoutVersion}` };
 out(`# app: ${appVerdict.text}${appVerdict.ok ? '' : assumeAppCurrent ? ' — OVERRIDDEN by --assume-app-current' : ''}`);
-if (!appVerdict.ok && !assumeAppCurrent) die(`${appVerdict.text}. Restart the app on the build this script comes from and re-run, or pass --assume-app-current to attest that you did. Nothing applied.`);
+if (!appVerdict.ok && !assumeAppCurrent && apply) die(`${appVerdict.text}. Restart the app on the build this script comes from and re-run, or pass --assume-app-current to attest that you did. Nothing applied.`);
 
 if (!apply) {
-  out(`DRY-RUN  nothing written; ${plan.renames.length} rename(s) would be applied with --apply${warnings ? `; ${warnings} WARN` : ''}`);
+  out(`DRY-RUN  nothing written; ${plan.renames.length} rename(s) would be applied with --apply${warnings ? `; ${warnings} WARN` : ''}${!appVerdict.ok && !assumeAppCurrent ? '; the app preflight above would REFUSE --apply' : ''}`);
   process.exit(0);
 }
 
@@ -217,12 +239,14 @@ let failed = 0;
 let aborted = false;
 let formerLost = 0;
 let attempted = 0;
+let consecutiveCliErrors = 0;
+const renameTimeoutMs = Number(process.env.MIGRATE_RENAME_TIMEOUT_MS) || 60_000; // (an env knob only so a test need not wait a minute)
 const applied = [];
 for (const step of plan.renames) {
   attempted++;
   const r = spawnSync('orchestra', ['rename', step.id, step.to], {
     encoding: 'utf8',
-    timeout: 60_000,
+    timeout: renameTimeoutMs,
     env: { ...process.env, ORCHESTRA_WS_ID: step.asParent, ORCHESTRA_WS_ID_IDENTITY: step.asParent },
   });
   const id8 = step.id.slice(0, 8);
@@ -235,8 +259,16 @@ for (const step of plan.renames) {
       aborted = true;
       break;
     }
+    // A timeout leaves the row's state UNKNOWN (git may have moved, the store not yet); two CLI errors in a row mean the app keeps failing: either way stop, the run is idempotent.
+    consecutiveCliErrors++;
+    if (r.error?.code === 'ETIMEDOUT' || consecutiveCliErrors >= 2) {
+      out(`ABORTED  at ${id8}: ${r.error?.code === 'ETIMEDOUT' ? `the app did not answer within ${renameTimeoutMs} ms — the row's state is UNKNOWN` : 'two rename errors in a row — the app keeps failing'}; ${plan.renames.length - attempted} row(s) NOT attempted. Look at the app, then re-run: the run is idempotent.`);
+      aborted = true;
+      break;
+    }
     continue;
   }
+  consecutiveCliErrors = 0;
   let seen = readBack(step);
   for (let i = 0; i < 12 && !seen.ok; i++) {
     sleepSync(250); // the app awaits its store write before it answers; the poll only absorbs a slow disk
@@ -272,5 +304,6 @@ if (applied.length > 0) {
   }
 }
 const notAttempted = plan.renames.length - attempted;
-out(`DONE  ${applied.length - lost}/${plan.renames.length} renamed${failed ? `, ${failed} FAILED` : ''}${formerLost ? ` (${formerLost} FORMER-LOST)` : ''}${notAttempted ? `, ${notAttempted} not attempted` : ''}${warnings ? `, ${warnings} WARN` : ''}${aborted ? ' — ABORTED' : ''}`);
+const skipped = plan.rows.filter((r) => r.action.startsWith('skip-')).length;
+out(`DONE  ${applied.length - lost}/${plan.renames.length} renamed${failed ? `, ${failed} FAILED` : ''}${formerLost ? ` (${formerLost} FORMER-LOST)` : ''}${notAttempted ? `, ${notAttempted} not attempted` : ''}${skipped ? `, ${skipped} skipped (see PLAN)` : ''}${warnings ? `, ${warnings} WARN` : ''}${aborted ? ' — ABORTED' : ''}`);
 process.exit(failed || warnings ? 1 : 0);

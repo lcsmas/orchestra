@@ -27,6 +27,8 @@ export interface MigrationInputs {
   localBranches: ReadonlySet<string>;
   /** Workspace ids that belong to a vague still running — see {@link activeVagueMemberIds}. */
   activeVagueMembers: ReadonlySet<string>;
+  /** Optional: member id -> the running-vague anchors holding it ({@link vagueHolders}); only used to NAME the holders in the skip-vague reason. */
+  vagueHolders?: ReadonlyMap<string, readonly string[]>;
   table: readonly TableRow[];
   /** The branch each LIVE git worktree is really on right now (the script reads HEAD): the app renames THAT branch, not the store's `branch`. A workspace whose entry differs from
    *  `branch` — or is `null` (HEAD unreadable) — is UNKNOWN and is not planned. Absent entry = no git branch to read (scratch-like, sandbox, no worktree): the store is all there is. */
@@ -118,6 +120,15 @@ export function activeVagueMemberIds(
   workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'canOrchestrate' | 'host'>[],
   closed: ReadonlySet<string> = new Set(),
 ): Set<string> {
+  return new Set(vagueHolders(workspaces, closed).keys());
+}
+
+/** Same rule as {@link activeVagueMemberIds}, but each held member maps to the running-vague anchors that hold it (a workspace can hang below two: its parent's vague and
+ *  its namer's) — `--closed` must release every one of them. */
+export function vagueHolders(
+  workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'canOrchestrate' | 'host'>[],
+  closed: ReadonlySet<string> = new Set(),
+): Map<string, string[]> {
   const byId = new Map(workspaces.map((w) => [w.id, w]));
   const live = (w: { archived?: boolean; host?: { kind: string } }): boolean => !w.archived && w.host?.kind !== 'sandbox';
   // A workspace hangs below its PARENT and below its NAMER: a `--detached` verifier has no parentId, only the namer that spawned it, and a sibling gating it by name is the very case the hold is for.
@@ -133,14 +144,15 @@ export function activeVagueMemberIds(
   };
   const hasLiveBelow = new Set<string>();
   for (const w of workspaces) if (live(w)) for (const a of ancestors(w.id)) hasLiveBelow.add(a);
-  const members = new Set<string>();
+  const holders = new Map<string, string[]>();
+  const hold = (member: string, anchor: string): void => void holders.set(member, [...(holders.get(member) ?? []), anchor]);
   for (const a of workspaces) {
     if (!canOrchestrate(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
     if (!a.parentId) continue; // a top-level orchestrator runs a mission, not a vague (an OPS whose parent left the store stays a vague: held is the safe side)
-    members.add(a.id);
-    for (const w of workspaces) if (ancestors(w.id).has(a.id)) members.add(w.id);
+    hold(a.id, a.id);
+    for (const w of workspaces) if (ancestors(w.id).has(a.id)) hold(w.id, a.id);
   }
-  return members;
+  return holders;
 }
 
 /** The id asked of decideRename for a workspace with no recorded spawner (cannot collide with a real workspace id). */
@@ -247,25 +259,29 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     if (input.liveHeads?.has(ws.id)) {
       const head = input.liveHeads.get(ws.id);
       if (head !== ws.branch) {
-        const why = head === null ? 'its HEAD could not be read' : `the store says "${ws.branch}" but the worktree is on "${head}"`;
+        const why = head === null ? 'its HEAD could not be read (no readable local worktree)' : `the store says "${ws.branch}" but the worktree is on "${head}"`;
         rows.push({ ...base, action: 'skip-live-head', to, reason: `${why} — UNKNOWN, nothing planned (the app's reconciler adopts the live branch; re-run after it caught up)` });
         continue;
       }
     }
-    if (input.remoteBranches.has(ws.branch)) {
+    // A PIN-ONLY step (the name already is the target) changes no name: nothing on a remote, no sibling gating by name and no baseBranch can break, so only a name change is held.
+    const renames = ws.branch !== to;
+    if (renames && input.remoteBranches.has(ws.branch)) {
       rows.push({ ...base, action: 'skip-remote', to, reason: `"${ws.branch}" exists on origin` });
       continue;
     }
-    if (input.activeVagueMembers.has(ws.id)) {
+    if (renames && input.activeVagueMembers.has(ws.id)) {
+      const by = input.vagueHolders?.get(ws.id);
+      const holders = by && by.length > 0 ? ` (held by ${by.map((x) => x.slice(0, 8)).join(', ')} — each must be closed)` : '';
       rows.push({
         ...base,
         action: 'skip-vague',
         to,
-        reason: 'member of a vague still running — re-run with `--closed <its OPS id>`, declared BEFORE archiving (archiving the OPS archives its whole subtree and nothing can be renamed after)',
+        reason: `member of a vague still running${holders} — re-run with \`--closed <its OPS id>\`, declared BEFORE archiving (archiving the OPS archives its whole subtree and nothing can be renamed after)`,
       });
       continue;
     }
-    const dependent = input.workspaces.find((o) => o.id !== ws.id && !o.archived && !!o.baseBranch && o.baseBranch === ws.branch && o.repoPath === ws.repoPath);
+    const dependent = !renames ? undefined : input.workspaces.find((o) => o.id !== ws.id && !o.archived && !!o.baseBranch && o.baseBranch === ws.branch && o.repoPath === ws.repoPath);
     if (dependent) {
       rows.push({ ...base, action: 'skip-base', to, reason: `"${dependent.branch}" (${dependent.id.slice(0, 8)}) has this branch as its baseBranch: renaming would dangle its Diff/stats — \`orchestra set-base\` it first, or rename once it is gone` });
       continue;

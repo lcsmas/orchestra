@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   activeVagueMemberIds,
+  vagueHolders,
   planMigration,
   renderPlan,
   type MigrationInputs,
@@ -173,6 +174,27 @@ test('skip (a baseBranch): renaming a branch that another LIVE workspace of the 
   assert.equal(actionOf(plan.rows, 'w3'), 'rename');
   assert.equal(actionOf(planMigration(inputs({ workspaces: withDependent({ archived: true }), table: rowsFor(['w4']) })).rows, 'w4'), 'rename', 'an ARCHIVED dependent does not hold it');
   assert.equal(actionOf(planMigration(inputs({ workspaces: withDependent({ repoPath: '/r/b' }), table: rowsFor(['w4']) })).rows, 'w4'), 'rename', 'another repo\'s branch of the same name is not a dependent');
+});
+
+test('a PIN-ONLY step changes no name: it is not held by a remote branch, a running vague or a baseBranch dependent (only a name change can break those)', () => {
+  const store = [...fixtureStore().map((w) => (w.id === id('w1') ? { ...w, branch: NEW.w1 } : w.id === id('w4') ? { ...w, branch: NEW.w4 } : w.id === id('w5') ? { ...w, branch: NEW.w5 } : w)), ws('dep', { parentId: LEAD, baseBranch: NEW.w4 })];
+  const plan = planMigration(inputs({ workspaces: store, remoteBranches: new Set([NEW.w5]), table: [{ id: id('w1'), old: 'old-w1', new: NEW.w1 }, { id: id('w4'), old: 'old-w4', new: NEW.w4 }, { id: id('w5'), old: 'old-w5', new: NEW.w5 }] }));
+  assert.deepEqual(plan.renames.map((r) => [r.id, r.from === r.to]).sort(), [[id('w1'), true], [id('w4'), true], [id('w5'), true]].sort(), 'w1 (vague member), w4 (a dependent\'s base), w5 (on origin): all pin-only, none held');
+  // the SAME rows with a name change are held, each for its own reason
+  const held = planMigration(inputs({ workspaces: [...fixtureStore(), ws('dep', { parentId: LEAD, baseBranch: 'old-w4' })], table: rowsFor(['w1', 'w4', 'w5']) }));
+  assert.deepEqual(['w1', 'w4', 'w5'].map((n) => actionOf(held.rows, n)), ['skip-vague', 'skip-base', 'skip-remote']);
+});
+
+test('skip (active vague) names the anchors holding the member, so `--closed` can release every one', () => {
+  const store = fixtureStore();
+  const holders = vagueHolders(store);
+  assert.deepEqual(holders.get(id('w1')), [OPS_RUNNING]);
+  const plan = planMigration(inputs({ workspaces: store, vagueHolders: holders }));
+  assert.match(plan.rows.find((r) => r.id === id('w1'))!.reason, /held by 0b5a0000 — each must be closed/);
+  // a member below TWO vagues (its parent's and its namer's) lists both
+  const two = [...store, ws('a2', { parentId: LEAD, canOrchestrate: true }), ws('wk', { parentId: OPS_RUNNING, namedByParent: id('a2') }), ws('wz', { parentId: id('a2') })];
+  assert.deepEqual([...(vagueHolders(two).get(id('wk')) ?? [])].sort(), [OPS_RUNNING, id('a2')].sort());
+  assert.equal(vagueHolders(two, new Set([OPS_RUNNING])).get(id('wk'))?.length, 1, '--closed one of them: the other still holds');
 });
 
 test('a PIN-ONLY step whose former name is unrecoverable is marked: the table says it came from `old`, the app recorded no former name', () => {
