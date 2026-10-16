@@ -24,6 +24,13 @@ let storeFile = '';
 let callsLog = '';
 let tableFile = '';
 let wtW3 = '';
+const PKG_VERSION = (JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')) as { version: string }).version;
+/** The app's startup banner (logger.ts) — the script's preflight reads the RUNNING app's version from it. */
+function writeBanner(version: string = PKG_VERSION, pid: number = process.pid): void {
+  const dir = path.join(home, 'logs');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'orchestra.log'), `2026-10-16T10:00:00.000Z INFO  === Orchestra ${version} (electron) starting === pid=${pid} platform=linux electron=33.4.11 node=20.18.3 logLevel=info home=${home}\n`);
+}
 const gitDir = path.dirname(execFileSync('which', ['git'], { encoding: 'utf8' }).trim());
 
 function fixtureWorkspaces(): Array<Record<string, unknown>> {
@@ -72,6 +79,7 @@ before(() => {
   g(repo, 'worktree', 'add', '-q', '-b', 'old-w3', wtW3, 'master');
   g(repo, 'push', '-q', 'origin', 'master', 'old-w5');
   fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+  writeBanner();
   fs.writeFileSync(storeFile, JSON.stringify({ workspaces: fixtureWorkspaces() }, null, 2));
   fs.writeFileSync(tableFile, JSON.stringify(TABLE, null, 2));
   // The fake app: records "<ORCHESTRA_WS_ID>|<ORCHESTRA_WS_ID_IDENTITY>|<args>" and, like the real one, moves the workspace's branch in the (fixture) store.
@@ -92,7 +100,7 @@ const store = JSON.parse(fs.readFileSync(process.env.SHIM_STORE, 'utf8'));
 const w = store.workspaces.find((x) => x.id === wsid);
 const final = name + (process.env.SHIM_SUFFIX || '');
 // SHIM_CHILD_WINS: the app answers "Renamed to <name>" but the child's own rename was written last (no pin). SHIM_LATE_ID: see below.
-if (process.env.SHIM_CHILD_WINS === wsid) { w.branch = 'child-chose-this'; fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store)); process.stdout.write('Renamed to ' + name + '\\n'); process.exit(0); }
+if (process.env.SHIM_CHILD_WINS === wsid) { if (w.worktreePath) execFileSync('git', ['-C', w.worktreePath, 'branch', '-m', 'child-chose-this'], { stdio: 'ignore' }); w.branch = 'child-chose-this'; fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store)); process.stdout.write('Renamed to ' + name + '\\n'); process.exit(0); }
 // SHIM_LATE_ID: the child's own rename lands AFTER our read-back of that workspace and before the run ends — deterministically: it is applied at the START of the NEXT rename call
 // (the script is sequential: read-back of this one is over by then), no timer involved.
 // SHIM_NO_PIN = an app older than #383/#384: it renames, but records neither the namer nor the former name.
@@ -288,24 +296,32 @@ test('the app suffixing the validated name is a FAILURE (rc 1): the store must s
   assert.equal(r.rc, 1, r.out + r.err);
   assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240-2"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240-2 /);
   assert.doesNotMatch(r.out, /^APPLIED/m);
+  assert.match(r.out, /ABORTED  at w3000000/);
+  assert.equal(calls().length, 1, 'the canary row stopped the run: w4 was never sent to the app');
   resetStore();
 });
 
-test('--apply reads the store back: a rename the app did NOT record as parent-named is FAILED (rc 1), and a re-run after the app is updated heals it', () => {
+test('an app that does not record the pin ABORTS the run at the first row (canary); the re-run after the app is updated lands the rest and reports FORMER-LOST for the canary (rc 1, never a green heal)', () => {
   resetStore();
   const r = run(['--table', tableFile, '--apply'], { SHIM_NO_PIN: '1' });
   assert.equal(r.rc, 1, r.out + r.err);
   assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅( git HEAD=review-fusion-comptes-240)?; expected branch=review-fusion-comptes-240 namedByParent=/);
+  assert.match(r.out, /ABORTED  at w3000000: .* 1 row\(s\) NOT attempted\./);
   assert.doesNotMatch(r.out, /^APPLIED/m);
-  assert.match(r.out, /DONE  0\/2 renamed, 2 FAILED/);
-  // the app is updated: the same table now plans a pin-only rename (same name, not yet parent-named) and the store ends up recorded
+  assert.match(r.out, /DONE  0\/2 renamed, 1 FAILED, 1 not attempted — ABORTED/);
+  assert.equal(calls().length, 1, 'one workspace sent to the app, not two');
+  const stored = (): Record<string, Record<string, unknown>> => Object.fromEntries((JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> }).workspaces.map((w) => [String(w.id), w]));
+  assert.equal(stored()[id('w4')].branch, 'old-w4', 'the row after the canary was not touched');
+  // the app is updated: w3 already carries the name, so it is a pin-only step — its former name is gone for good; w4 lands normally
   const healed = run(['--table', tableFile, '--apply']);
-  assert.equal(healed.rc, 0, healed.out + healed.err);
-  assert.match(healed.out, /APPLIED  w3000000  review-fusion-comptes-240 -> review-fusion-comptes-240/);
-  assert.match(healed.out, /DONE  2\/2 renamed/);
-  const w3 = (JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> }).workspaces.find((w) => w.id === id('w3'))!;
-  assert.equal(w3.namedByParent, OPS_DONE);
-  assert.equal(run(['--table', tableFile, '--apply']).out.includes('DONE  0/0'), true, 'and now it is idempotent');
+  assert.equal(healed.rc, 1, 'FORMER-LOST is not green');
+  assert.match(healed.out, /FORMER-LOST  w3000000  old-w3 -> review-fusion-comptes-240  \[the pin is recorded, but the former name "old-w3" is not/);
+  assert.match(healed.out, /APPLIED  w4000000  old-w4 -> explo-timeout-cli/);
+  assert.doesNotMatch(healed.out, /APPLIED  w3000000/);
+  assert.match(healed.out, /DONE  1\/2 renamed, 1 FAILED \(1 FORMER-LOST\)/);
+  assert.equal(stored()[id('w3')].namedByParent, OPS_DONE);
+  assert.equal(stored()[id('w3')].formerBranch, undefined, 'unrecordable');
+  assert.equal(run(['--table', tableFile, '--apply']).out.includes('DONE  0/0'), true, 'the pin is there now: the third run plans nothing');
   resetStore();
 });
 
@@ -316,6 +332,8 @@ test('--apply reads BOTH fields back: a missing namedByParent alone, or a missin
     assert.equal(r.rc, 1, r.out + r.err);
     assert.match(r.out, /FAILED   w3000000/);
     assert.match(r.out, saw);
+    assert.match(r.out, /ABORTED  at w3000000/);
+    assert.equal(calls().length, 1);
   }
   resetStore();
 });
@@ -325,14 +343,16 @@ test('a LIVE child whose own rename wins the race (our name never lands) is FAIL
   const r = run(['--table', tableFile, '--apply'], { SHIM_CHILD_WINS: id('w3') });
   assert.equal(r.rc, 1, r.out + r.err);
   assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=child-chose-this namedByParent=∅/);
-  assert.match(r.out, /APPLIED  w4000000/);
-  assert.match(r.out, /DONE  1\/2 renamed, 1 FAILED/);
-  // the store now says "child-chose-this" while the table was validated against "old-w3": the id is the identity, the row is picked up again
+  assert.match(r.out, /ABORTED  at w3000000/);
+  assert.doesNotMatch(r.out, /APPLIED/, 'the canary row stopped the run before w4');
+  assert.match(r.out, /DONE  0\/2 renamed, 1 FAILED, 1 not attempted — ABORTED/);
+  // the store now says "child-chose-this" while the table was validated against "old-w3": the id is the identity, the row is picked up again (with the row the run never reached)
   const again = run(['--table', tableFile, '--apply']);
   assert.equal(again.rc, 0, again.out + again.err);
   assert.match(again.out, /PLAN  w3000000  rename\s+child-chose-this -> review-fusion-comptes-240  \[as 0b5c0000 · it renamed itself since the table \(was "old-w3"\)\]/);
   assert.match(again.out, /APPLIED  w3000000  child-chose-this -> review-fusion-comptes-240/);
-  assert.match(again.out, /DONE  1\/1 renamed/);
+  assert.match(again.out, /APPLIED  w4000000  old-w4 -> explo-timeout-cli/);
+  assert.match(again.out, /DONE  2\/2 renamed/);
   assert.equal(run(['--table', tableFile, '--apply']).out.includes('DONE  0/0'), true);
   resetStore();
 });
@@ -442,6 +462,99 @@ test('the worktree\'s git HEAD is read back too: a record that moved while git d
   const ok = run(['--table', tableFile, '--apply']);
   assert.equal(ok.rc, 0, ok.out + ok.err);
   assert.equal(spawnSync('git', ['-C', wtW3, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8', env: { PATH: gitDir, HOME: tmp } }).stdout.trim(), 'review-fusion-comptes-240', 'the real worktree branch was renamed by the (fake) app');
+  resetStore();
+});
+
+test('PREFLIGHT: the running app must be at least as new as this checkout — older, unknown (no banner) or a dead process refuses (rc 2, nothing sent); --assume-app-current attests; newer is fine', () => {
+  const older = PKG_VERSION.replace(/(\d+)$/, (n) => String(Math.max(0, Number(n) - 1)));
+  const newer = PKG_VERSION.replace(/(\d+)$/, (n) => String(Number(n) + 1));
+  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout.trim(); // a pid that existed and is gone
+  try {
+    resetStore();
+    writeBanner(older);
+    for (const args of [['--table', tableFile], ['--table', tableFile, '--apply']]) {
+      const r = run(args);
+      assert.equal(r.rc, 2, `${args.join(' ')}: ${r.out}${r.err}`);
+      assert.match(r.err, new RegExp(`the running app is v${older.replace(/\./g, '\\.')} .* this checkout is v${PKG_VERSION.replace(/\./g, '\\.')}`));
+      assert.match(r.out, /# app: the running app is v/);
+    }
+    assert.deepEqual(calls(), [], 'nothing was sent to an app that predates the pin');
+    fs.rmSync(path.join(home, 'logs'), { recursive: true, force: true });
+    assert.match(run(['--table', tableFile, '--apply']).err, /version is UNKNOWN \(no startup banner/);
+    writeBanner(PKG_VERSION, Number(dead));
+    assert.match(run(['--table', tableFile, '--apply']).err, /no longer running — the version of the app that answers is UNKNOWN/);
+    assert.deepEqual(calls(), []);
+    writeBanner(older);
+    const attested = run(['--table', tableFile, '--apply', '--assume-app-current']);
+    assert.equal(attested.rc, 0, attested.out + attested.err);
+    assert.match(attested.out, /OVERRIDDEN by --assume-app-current/);
+    assert.equal(calls().length, 2);
+    resetStore();
+    writeBanner(newer);
+    assert.match(run(['--table', tableFile]).out, new RegExp(`# app: running app v${newer.replace(/\./g, '\\.')} \\(pid \\d+\\) >= checkout`));
+  } finally {
+    writeBanner();
+    resetStore();
+  }
+});
+
+test('a table row of an ARCHIVED workspace can never apply: WARN, and an apply is not green (rc 1) unless --allow-gone says the rows are history', () => {
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify([...TABLE, { id: OPS_DONE, old: 'wave-c-ops', new: 'ops-vague-ancienne-1' }]));
+  const dry = run(['--table', tableFile]);
+  assert.equal(dry.rc, 0, dry.out + dry.err);
+  assert.match(dry.out, /WARN  0b5c0000  wave-c-ops  \[its table row can never apply/);
+  assert.match(dry.out, /DRY-RUN .*; 1 WARN/);
+  const ap = run(['--table', tableFile, '--apply']);
+  assert.equal(ap.rc, 1, ap.out + ap.err);
+  assert.match(ap.out, /DONE  2\/2 renamed, 1 WARN/);
+  assert.equal(calls().length, 2, 'the live rows were still applied');
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify([...TABLE, { id: OPS_DONE, old: 'wave-c-ops', new: 'ops-vague-ancienne-1' }]));
+  const lax = run(['--table', tableFile, '--apply', '--allow-gone']);
+  assert.equal(lax.rc, 0, lax.out + lax.err);
+  assert.match(lax.out, /ARCHIVED  0b5c0000  wave-c-ops/);
+  assert.doesNotMatch(lax.out, /WARN/);
+  resetStore();
+});
+
+test('the worktree\'s LIVE branch is read BEFORE planning: a store that disagrees with HEAD is UNKNOWN and that row is skipped, with its reason', () => {
+  resetStore();
+  execFileSync('git', ['-C', wtW3, 'branch', '-m', 'live-w3'], { env: { PATH: gitDir, HOME: tmp }, stdio: 'pipe' });
+  try {
+    const r = run(['--table', tableFile, '--apply']);
+    assert.equal(r.rc, 0, r.out + r.err);
+    assert.match(r.out, /skip \(live branch differs\)\s+old-w3 -> review-fusion-comptes-240\s+\[the store says "old-w3" but the worktree is on "live-w3"/);
+    assert.deepEqual(calls().map((c) => c.split('|')[3]), [id('w4')], 'only w4 was sent to the app');
+  } finally {
+    resetStore();
+  }
+});
+
+test('an UNREADABLE worktree HEAD is UNKNOWN too: that row is skipped with the reason, nothing is sent for it', () => {
+  resetStore();
+  const dotGit = path.join(wtW3, '.git');
+  const original = fs.readFileSync(dotGit, 'utf8');
+  fs.writeFileSync(dotGit, 'gitdir: /nonexistent/nowhere\n');
+  try {
+    const r = run(['--table', tableFile, '--apply']);
+    assert.equal(r.rc, 0, r.out + r.err);
+    assert.match(r.out, /skip \(live branch differs\)\s+old-w3 -> review-fusion-comptes-240\s+\[its HEAD could not be read/);
+    assert.deepEqual(calls().map((c) => c.split('|')[3]), [id('w4')]);
+  } finally {
+    fs.writeFileSync(dotGit, original);
+    resetStore();
+  }
+});
+
+test('a rename whose old name is another LIVE workspace\'s baseBranch is skipped (its Diff/stats would dangle)', () => {
+  resetStore();
+  const store = JSON.parse(fs.readFileSync(storeFile, 'utf8')) as { workspaces: Array<Record<string, unknown>> };
+  fs.writeFileSync(storeFile, JSON.stringify({ workspaces: store.workspaces.map((w) => (w.id === id('h1') ? { ...w, baseBranch: 'old-w4' } : w)) }));
+  const r = run(['--table', tableFile, '--apply']);
+  assert.equal(r.rc, 0, r.out + r.err);
+  assert.match(r.out, /skip \(a baseBranch\)\s+old-w4 -> explo-timeout-cli\s+\["old-h1" \(h1000000\) has this branch as its baseBranch/);
+  assert.deepEqual(calls().map((c) => c.split('|')[3]), [id('w3')]);
   resetStore();
 });
 

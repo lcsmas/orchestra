@@ -129,6 +129,72 @@ test('a workspace both on origin AND in a running vague is reported as skip (bra
   assert.equal(actionOf(closed.rows, 'w1'), 'skip-remote', 'closing the vague does not free a pushed branch');
 });
 
+test('skip (active vague) says HOW the close is declared and that it must happen BEFORE archiving (the PLAN line carries it)', () => {
+  const plan = planMigration(inputs());
+  const r = plan.rows.find((x) => x.id === id('w1'))!;
+  assert.equal(r.action, 'skip-vague');
+  assert.match(r.reason, /--closed <its OPS id>/);
+  assert.match(r.reason, /BEFORE archiving/);
+  assert.match(renderPlan(plan).join('\n'), /skip \(active vague\)\s+old-w1 -> .*--closed <its OPS id>.*BEFORE archiving/);
+});
+
+test('a --detached member (no parentId, only the NAMER) of a running vague is held too; a live detached member also keeps its OPS running', () => {
+  const store = [...fixtureStore(), ws('md', { namedByParent: OPS_RUNNING })];
+  const held = activeVagueMemberIds(store);
+  assert.ok(held.has(id('md')), 'the namer edge counts as membership');
+  assert.equal(actionOf(planMigration(inputs({ workspaces: store, table: [{ id: id('md'), new: 'verif-detache-1' }] })).rows, 'md'), 'skip-vague');
+  // the vague is running BECAUSE of the detached member alone
+  const onlyDetached = [ws('1ead', { id: LEAD, kind: 'orchestrator' }), ws('0b5a', { id: OPS_RUNNING, parentId: LEAD, canOrchestrate: true }), ws('md', { namedByParent: OPS_RUNNING })];
+  assert.deepEqual([...activeVagueMemberIds(onlyDetached)].sort(), [OPS_RUNNING, id('md')].sort());
+  assert.equal(activeVagueMemberIds(onlyDetached, new Set([OPS_RUNNING])).size, 0, '--closed releases it');
+});
+
+test('skip (live branch differs): the app renames the worktree\'s LIVE branch — a mismatch, or an unreadable HEAD, is UNKNOWN and not planned', () => {
+  const heads = (m: Record<string, string | null>): ReadonlyMap<string, string | null> => new Map(Object.entries(m).map(([k, v]) => [id(k), v]));
+  const ok = planMigration(inputs({ liveHeads: heads({ w3: 'old-w3', w4: 'old-w4' }) }));
+  assert.equal(actionOf(ok.rows, 'w3'), 'rename');
+  const off = planMigration(inputs({ liveHeads: heads({ w3: 'live-w3', w4: null }) }));
+  assert.equal(actionOf(off.rows, 'w3'), 'skip-live-head');
+  assert.match(off.rows.find((r) => r.id === id('w3'))!.reason, /store says "old-w3" but the worktree is on "live-w3"/);
+  assert.equal(actionOf(off.rows, 'w4'), 'skip-live-head');
+  assert.match(off.rows.find((r) => r.id === id('w4'))!.reason, /HEAD could not be read/);
+  assert.ok(!renamedIds(off).includes(id('w3')) && !renamedIds(off).includes(id('w4')));
+  assert.equal(actionOf(planMigration(inputs()).rows, 'w3'), 'rename', 'no liveHeads entry = nothing to read (scratch-like): the store is all there is');
+  // a settled row is `done` whatever HEAD says (nothing would be renamed)
+  const settled = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: NEW.w3, namedByParent: OPS_CLOSED } : w));
+  assert.equal(actionOf(planMigration(inputs({ workspaces: settled, table: rowsFor(['w3']), liveHeads: heads({ w3: 'something-else' }) })).rows, 'w3'), 'done');
+});
+
+test('skip (a baseBranch): renaming a branch that another LIVE workspace of the same repo has as its baseBranch would dangle its Diff/stats', () => {
+  const withDependent = (extra: Partial<MigrationWorkspace>): MigrationWorkspace[] => [...fixtureStore().map((w) => ({ ...w, repoPath: '/r/a' })), ws('dep', { parentId: LEAD, repoPath: '/r/a', baseBranch: 'old-w4', ...extra })];
+  const plan = planMigration(inputs({ workspaces: withDependent({}), table: rowsFor(['w3', 'w4']) }));
+  assert.equal(actionOf(plan.rows, 'w4'), 'skip-base');
+  assert.match(plan.rows.find((r) => r.id === id('w4'))!.reason, /has this branch as its baseBranch/);
+  assert.equal(actionOf(plan.rows, 'w3'), 'rename');
+  assert.equal(actionOf(planMigration(inputs({ workspaces: withDependent({ archived: true }), table: rowsFor(['w4']) })).rows, 'w4'), 'rename', 'an ARCHIVED dependent does not hold it');
+  assert.equal(actionOf(planMigration(inputs({ workspaces: withDependent({ repoPath: '/r/b' }), table: rowsFor(['w4']) })).rows, 'w4'), 'rename', 'another repo\'s branch of the same name is not a dependent');
+});
+
+test('a PIN-ONLY step whose former name is unrecoverable is marked: the table says it came from `old`, the app recorded no former name', () => {
+  const store = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: NEW.w3 } : w)); // renamed by an earlier run on an app that recorded nothing
+  const plan = planMigration(inputs({ workspaces: store, table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] }));
+  assert.equal(plan.renames[0].formerLost, 'old-w3');
+  assert.match(plan.rows[plan.rows.findIndex((r) => r.id === id('w3'))].reason, /former name "old-w3" is not recorded and cannot be/);
+  // not lost: no `old` given, or it is the target itself (a conforming name from birth), or the app did record a former name, or the name has to change anyway
+  const clean = (t: TableRow, w: Partial<MigrationWorkspace> = {}): unknown => planMigration(inputs({ workspaces: store.map((x) => (x.id === id('w3') ? { ...x, ...w } : x)), table: [t] })).renames[0]?.formerLost;
+  assert.equal(clean({ id: id('w3'), new: NEW.w3 }), undefined);
+  assert.equal(clean({ id: id('w3'), old: NEW.w3, new: NEW.w3 }), undefined);
+  assert.equal(clean({ id: id('w3'), old: 'old-w3', new: NEW.w3 }, { formerBranch: 'old-w3' }), undefined);
+  assert.equal(planMigration(inputs({ table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] })).renames[0].formerLost, undefined);
+});
+
+test('a human-pinned row ALREADY at the target name is REJECTED, not planned (the app would refuse the pin at apply)', () => {
+  const typed = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: NEW.w3, branchManuallySet: true } : w)); // a human typed the target name themselves, no namer
+  const plan = planMigration(inputs({ workspaces: typed, table: [{ id: id('w3'), old: 'old-w3', new: NEW.w3 }] }));
+  assert.equal(plan.rejected[0]?.code, 'refused-by-policy');
+  assert.deepEqual(plan.renames, []);
+});
+
 test('plan after the vague closes: the operator declares it over and exactly that vague\'s members become renames', () => {
   const store = fixtureStore();
   const before = planMigration(inputs({ workspaces: store }));

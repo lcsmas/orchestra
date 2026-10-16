@@ -181,7 +181,7 @@ async function main() {
     // ── P1: dry-run writes nothing ──
     const dry = migrate();
     await sleep(1500);
-    clause('P1/dry-run-plans-and-writes-nothing', dry.rc === 0 && /DRY RUN/.test(dry.out) && /rename\s+old-child-one -> impl-enfant-un-385/.test(dry.out) && /skip \(branch on origin\)\s+old-child-two/.test(dry.out) && /untouched \(no parent to name it\)\s+old-human/.test(dry.out) && /rename\s+impl-deja-nomme-1 -> impl-deja-nomme-2/.test(dry.out) && /skip \(active vague\)\s+old-vague-member/.test(dry.out) && storeRaw() === raw0,
+    clause('P1/dry-run-plans-and-writes-nothing', dry.rc === 0 && /DRY RUN/.test(dry.out) && /rename\s+old-child-one -> impl-enfant-un-385/.test(dry.out) && /skip \(branch on origin\)\s+old-child-two/.test(dry.out) && /untouched \(no parent to name it\)\s+old-human/.test(dry.out) && /rename\s+impl-deja-nomme-1 -> impl-deja-nomme-2/.test(dry.out) && /skip \(active vague\)\s+old-vague-member.*--closed <its OPS id>.*BEFORE archiving/.test(dry.out) && new RegExp(`# app: running app v${pkgVersion} \\(pid ${app.pid}\\) >= checkout v${pkgVersion}`).test(dry.out) && storeRaw() === raw0,
       `rc ${dry.rc}; plan lines ${dry.out.split('\n').filter((l) => l.startsWith('PLAN')).length}; store.json byte-identical: ${storeRaw() === raw0}`);
 
     // ── P2: --apply through the real CLI ──
