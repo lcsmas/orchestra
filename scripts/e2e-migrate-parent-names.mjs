@@ -153,6 +153,9 @@ async function main() {
     const frameId = (await cdp.send('Page.getResourceTree')).frameTree.frame.id; const rc_ = await cdp.send('Page.getResourceContent', { frameId, url: bundle });
     const served = Buffer.from(rc_.content, rc_.base64Encoded ? 'base64' : 'utf8');
     clause('ctl/app-identity-bundle', !!onDisk && fs.existsSync(onDisk) && md5(served) === md5(fs.readFileSync(onDisk)), `renderer bundle ${path.basename(bundle || '?')} served md5 ${md5(served)} == dist file; package.json version ${JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version}; dist-electron/main.js md5 ${md5(fs.readFileSync(path.join(APP_DIR, 'dist-electron', 'main.js')))}`);
+    const pkgVersion = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version;
+    const shownVersion = await cdp.eval(`[...document.querySelectorAll('*')].map((e) => e.children.length === 0 ? e.textContent.trim() : '').find((t) => /^v\\d+\\.\\d+\\.\\d+$/.test(t)) || null`);
+    clause('ctl/app-identity-version', shownVersion === `v${pkgVersion}`, `version shown by the RUNNING app ${shownVersion} vs package.json (what was built) v${pkgVersion}`);
     const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0'); const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
     clause('ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND, `app environ ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
     clause('ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} in my sway's get_tree`);
