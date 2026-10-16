@@ -25,7 +25,7 @@ The spawned agent shares **no context** with the spawner — the task text must 
 Agents in sibling workspaces can coordinate:
 
 ```bash
-orchestra peers                        # who else is running (id, branch, repo, status)
+orchestra peers                        # who else is running (id, branch, repo, status; `ex-<old name>` beside a renamed one)
 orchestra send --type status --to <id> <text...>   # message a peer on the bus (durable, ack'd)
 orchestra message <id> <text...>       # LEGACY channel (see below)
 ```

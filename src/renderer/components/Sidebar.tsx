@@ -52,6 +52,7 @@ import { WatchersStrip } from './WatchersStrip';
 import { PauseMenuHost } from './pause/PauseMenu';
 import { pauseDimClass } from '../../shared/pause-ui-view';
 import { SANDBOX_PAUSED_TICKET } from '../../shared/sandbox-pause';
+import { withExLabel } from '../../shared/former-branch';
 
 interface Props {
   onNewFromRepo: () => void;
@@ -1686,13 +1687,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 ) : (
                   <div
                     className="ws-name ws-name-tight"
-                    title={
+                    title={withExLabel(
                       depth === 0
                         ? variant === 'orchestrator'
                           ? `${w.branch} — orchestrator · double-click to rename`
                           : `${w.branch} — scratch session (not tracked by git) · double-click to rename`
-                        : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`
-                    }
+                        : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`,
+                      w.formerBranch,
+                    )}
                     onDoubleClick={(e) => startRename(e, w)}
                   >
                     {w.branch}
@@ -2419,11 +2421,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       ) : (
                         <div
                           className="ws-name"
-                          title={
+                          title={withExLabel(
                             w.branchManuallySet
                               ? `${w.branch} (locked)`
-                              : `${w.branch} — double-click to rename`
-                          }
+                              : `${w.branch} — double-click to rename`,
+                            w.formerBranch,
+                          )}
                           onDoubleClick={(e) => startRename(e, w)}
                         >
                           {w.branch}

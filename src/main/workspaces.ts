@@ -111,6 +111,7 @@ import {
   sanitizeBranchName,
   type RenamePin,
 } from '../shared/naming-policy.ts';
+import { formerBranchPatch } from '../shared/former-branch.ts';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
@@ -975,7 +976,10 @@ export async function ensureWorkspacePort(id: string): Promise<Workspace | undef
  * out-of-band branch change): it sets `branchManuallySet` and hard-stops the
  * nudge. An agent renaming itself via the socket passes `manual:false` and
  * instead bumps `autoRenameCount` in `dispatchRenameRequest`, so it can keep
- * progressively refining its own name up to {@link MAX_AUTO_RENAMES}. */
+ * progressively refining its own name up to {@link MAX_AUTO_RENAMES}.
+ *
+ * #384: an ACTUAL name change of a parent-named workspace (before: `namedByParent`; after: `opts.namedByParent`)
+ * records the replaced name in `formerBranch` ("ex-…"); see `formerBranchPatch`. */
 export async function renameWorkspaceBranch(
   id: string,
   rawNewBranch: string,
@@ -1008,6 +1012,7 @@ export async function renameWorkspaceBranch(
       branch: newBranch,
       name: workspaceDisplayName(ws, newBranch),
       ...gateFields,
+      ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
     };
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
@@ -1035,6 +1040,8 @@ export async function renameWorkspaceBranch(
     branch: newBranch,
     name: workspaceDisplayName(ws, newBranch),
     ...gateFields,
+    // #384: keep the name this rename replaces ("ex-…" in peers / sidebar) — the LIVE branch, not the drifted stored one.
+    ...formerBranchPatch(ws, liveBranch, newBranch, opts.namedByParent),
   };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
@@ -2778,6 +2785,8 @@ export interface PeerInfo {
   /** The peer's agent-authored one-line status note (`orchestra status`) —
    * lets a coordinator scan swarm progress from `peers` alone. Absent when the peer never set one (or cleared it). */
   statusText?: string;
+  /** The name before the latest rename (#384) — the CLI prints it as `ex-<previous>`. Absent = never renamed. */
+  formerBranch?: string;
   /** #286 Admission: this member's automatic start is HELD for low memory (since-when) — a stall to NOT mistake for a hang. */
   heldForMemory?: { kind: HeldStartKind; since: number };
   /** Committed diff vs the workspace's base (three-dot shortstat). Present
@@ -2816,6 +2825,7 @@ export async function dispatchPeersRequest(input: {
     status: w.status,
     lastTask: w.lastTask ? w.lastTask.slice(0, 200) : undefined,
     statusText: w.statusText,
+    ...(w.formerBranch ? { formerBranch: w.formerBranch } : {}),
     ...(heldStartFor(w.id) ? { heldForMemory: heldStartFor(w.id) as { kind: HeldStartKind; since: number } } : {}),
   }));
   if (input.stats) {

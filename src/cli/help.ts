@@ -34,6 +34,9 @@ export const COMMANDS: CommandHelp[] = [
     detail: `usage: orchestra peers [--stats]
 
 List the other agent workspaces (never includes yourself — see 'whoami').
+A renamed workspace shows its previous name as 'ex-<previous>' (an 'ex' column
+beside the branch; absent while no peer was renamed) — an old ledger or message
+reference still finds it.
   --stats   also show each peer's committed diff vs its base`,
   },
   {

@@ -13,7 +13,7 @@ The CLI is bundled inside the app (the binary doubles as the CLI when invoked as
 ## Commands
 
 ```bash
-orchestra peers                                    # list the other agent workspaces (id, branch, repo, status)
+orchestra peers                                    # list the other agent workspaces (id, branch, repo, status; `ex-<old name>` beside a renamed one)
 orchestra message <id> <text...>                   # LEGACY peer channel; refused on a delivery-ON bus run
          [--emergency]                             #   (--emergency, leading token: out-of-band liveness poke)
 orchestra spawn --task <text>                      # spawn a new worktree + agent

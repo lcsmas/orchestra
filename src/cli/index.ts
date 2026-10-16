@@ -50,6 +50,7 @@ import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunVi
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
 import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
 import { formatReliquatsLine, formatRoomLine, type MemberMemoryReport } from '../shared/member-memory.ts';
+import { peersExColumn } from '../shared/former-branch.ts';
 import { formatWatchersLines, type WatchersStatus } from '../shared/watcher-status.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
 import { formatDockerHoldsLine, type DockerHoldView } from '../shared/docker-hold.ts';
@@ -99,6 +100,8 @@ interface PeerInfo {
   lastTask?: string;
   /** Agent-authored one-line status note (`orchestra status`), if any. */
   statusText?: string;
+  /** #384: the name before the latest rename — printed as `ex-<previous>`; absent = never renamed. */
+  formerBranch?: string;
   /** #286: this member's automatic start is HELD for low memory (since-when). */
   heldForMemory?: { kind: string; since: number };
   /** Present only when `--stats` was requested; null = not computable. */
@@ -1102,9 +1105,13 @@ async function main(argv: string[]): Promise<void> {
       // when at least one peer set one — a permanently-empty column would just
       // widen the table for everyone.
       const anyNote = peers.some((p) => p.statusText);
-      const rows = peers.map((p) => ({
+      // #384: an `ex` column (`ex-<previous name>`) beside the branch — only when some peer was renamed, so a fleet
+      // without renames prints byte-identical to before; a never-renamed peer's cell stays blank.
+      const exCells = peersExColumn(peers);
+      const rows = peers.map((p, i) => ({
         id: p.id,
         branch: p.branch,
+        ...(exCells ? { ex: exCells[i] } : {}),
         repo: p.repo,
         // #286: a member whose automatic start is held for memory says so, with since-when — a stall to NOT mistake for a hang.
         status: p.heldForMemory ? `${p.status} · ${p.heldForMemory.kind} HELD for memory since ${new Date(p.heldForMemory.since).toISOString().slice(11, 19)}Z` : p.status,
@@ -1126,9 +1133,8 @@ async function main(argv: string[]): Promise<void> {
             }
           : {}),
       }));
-      const baseColumns = stats
-        ? ['id', 'branch', 'repo', 'status', 'files', '+/-']
-        : ['id', 'branch', 'repo', 'status'];
+      const idCols = exCells ? ['id', 'branch', 'ex', 'repo', 'status'] : ['id', 'branch', 'repo', 'status'];
+      const baseColumns = stats ? [...idCols, 'files', '+/-'] : idCols;
       const columns = anyNote ? [...baseColumns, 'note'] : baseColumns;
       process.stdout.write(`${table(rows, columns)}\n`);
       return;

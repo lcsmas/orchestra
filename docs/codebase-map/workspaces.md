@@ -423,7 +423,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchSetRepoAssociationRequest` | `:1834` | `/setRepoAssociation` | File an `'orchestrator'`-KIND session under a repo's sidebar section (with its subtree), or clear it. Writes **`repoAssociation`, never `repoPath`** — see below. Refuses a git worktree (it already groups by its own repo) and any path not in `store.repos`. |
 | `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. NOT LANDED is not always a defect: deliberately-unmerged work (spikes) closes as INTENTIONALLY UNMERGED — the contracts forbid only the *silent* strand. **Exit codes** (`orchestra verify-landed`): `0` LANDED · `2` NOT LANDED · `1` could-not-check, so a close-out gate can distinguish unmerged work from a failed check — never gate on `$?` being nonzero alone. See `hooks-cli-socket.md`. |
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
-| `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/repo/status[/files/+-/note] and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
+| `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/[ex/]repo/status[/files/+-/note] — the `ex` column (`ex-<previous name>`, `PeerInfo.formerBranch`, #384) exists only when some peer was renamed — and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session — nothing is ever typed into a PTY, #232), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:1060` | `/rename` | see Branch management (the pin comes from `decideRename`, `naming-policy.ts`). |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
@@ -497,6 +497,22 @@ governed by the flags of the **innermost** run of its two parties).
   gate fields are `pinFields(ws, pin)`: `manual` (human UI edit) pins `branchManuallySet`; `bumpAutoCount` (agent
   auto-rename) instead increments `autoRenameCount`. Callers: `api-handlers.ts` `renameBranch`
   (`decideRename(ws, {kind:'human'})`) and `dispatchRenameRequest`. `freeBranchName` dedupes collisions with `-2..-99`.
+- **`Workspace.formerBranch` ("ex-…", #384)** — the name before the LATEST rename.
+  `renameWorkspaceBranch` spreads `formerBranchPatch(ws, before, after,
+  pin.namedByParent)` (`shared/former-branch.ts`, pure) into BOTH name-changing
+  writes (scratch relabel: `before` = stored label; git rename: `before` = the LIVE
+  branch, not a drifted stored one). Recorded only on an ACTUAL change of a
+  workspace that is parent-named before (`namedByParent`) or after (`pin.namedByParent`
+  — the rename pins it) — a human-created workspace's provisional self-renames
+  record nothing (D3). A later rename REPLACES it; a same-name no-op and the
+  `gateFields`-only branches leave it; the patch is `{}` (never `formerBranch:
+  undefined` — `workspace:update` is a merge). Persisted whole by `store.upsertWorkspace`
+  (store.json is `JSON.stringify(data)`, no field whitelist). Read by `dispatchPeersRequest`
+  (`PeerInfo.formerBranch` → the CLI `ex` column) and the sidebar tooltip
+  (`withExLabel`, both row paths). Gates: `former-branch.test.ts` (pure table),
+  `former-branch-rig.test.ts` + `scripts/e2e-former-branch.mjs` (real worktrees, real
+  store, fresh-process reload), `peers-former-branch.test.ts` (built CLI vs a socket stub),
+  `former-branch-wiring.test.ts`.
 - **Progressive auto-rename** — the agent gets **two** staged auto-renames: an early provisional name, then a
   refined name once the work is well-defined. `dispatchRenameRequest` (`:1060`) asks
   `decideRename(ws, {kind:'agent'})` — the rename counts only while the nudge is active. After the budget is spent
