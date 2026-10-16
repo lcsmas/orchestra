@@ -82,9 +82,15 @@ test('dispatchRenameRequest builds an AGENT caller from `from` and asks the poli
   }
   // the decision's pin (not a re-derivation) is what gets applied, at BOTH call sites (scratch relabel + git branch)
   assert.equal(body.split('renameWorkspaceBranch(id, target, pin)').length - 1, 2);
-  // the policy gets the namer's name for the message, looked up from parentId then namedByParent
-  assert.match(body, /\[ws\.parentId, ws\.namedByParent\]/);
+  // the policy gets the namer's name for the message: resolved by the policy's own `namerName` from the STORE's branch (verifier F1: pinned — a
+  // lookup that returns undefined must not stay green), BEFORE the decision, and handed to it as ctx
+  assert.match(body, /const parentName = namerName\(ws, \(pid\) => store\.getWorkspace\(pid\)\?\.branch\);/);
+  assert.ok(body.indexOf('const parentName = namerName(') > 0 && body.indexOf('const parentName = namerName(') < body.indexOf('decideRename('), 'the name is resolved before the decision');
   assert.match(body, /\{ parentName \}/);
+  assert.doesNotMatch(body, /\.map\(/, 'no inline lookup of the namer in the dispatch');
+  // negative controls: the verifier\'s mutant and the pre-F1 inline lookup must not satisfy the matcher
+  assert.doesNotMatch('const parentName = namerName(ws, (pid) => undefined);', /store\.getWorkspace\(pid\)\?\.branch/);
+  assert.doesNotMatch('const parentName = [ws.parentId].map((pid) => undefined).find(Boolean);', /namerName\(/);
 });
 
 test('NO inline authority copy in dispatchRenameRequest (the policy module is the only place)', () => {

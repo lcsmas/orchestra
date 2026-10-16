@@ -5,6 +5,7 @@
 //   ws-rd-kid    a spawned child NAMED BY ITS PARENT      (parentId + namedByParent = ws-rd-par)        -> state P
 //   ws-rd-legacy a legacy spawned child, nobody named it  (parentId only, autoRenameCount 2)            -> state U
 //   ws-rd-legacy2 same, but the HUMAN renames it from the sidebar (D6: its parent is then refused too)
+//   ws-rd-orphan  parent-named by a workspace that no longer exists (a DANGLING namedByParent): the refusal says to rename it from the sidebar
 //   ws-rd-human  a human-created workspace                (no parent)                                    -> state U (human-created)
 // plus a REAL `orchestra spawn --name` (the real claude CLI against #382's local FAKE Anthropic API — zero tokens): the child is born parent-named,
 // then drives the BUILT CLI (dist-electron/cli.js, ORCHESTRA_WS_ID = the caller) and the sidebar (TRUSTED double-click + typing) and
@@ -27,6 +28,8 @@ const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) 
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
 const EXPECT_RED = argv.includes('--expect-red');
+// delta arm for a follow-up on a build that ALREADY carries #383: exactly these clause ids (prefix before '/', e.g. A18) must be RED, every other clause GREEN
+const RED_ONLY = flag('--expect-red-only', null)?.split(',').filter(Boolean) ?? null;
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing');
@@ -75,8 +78,8 @@ class Cdp {
 }
 
 // ── seed: a real repo + 4 REGISTERED worktrees (prune deletes what it cannot verify), the PINNED scratch account, a stub `claude` ──
-const IDS = { par: 'ws-rd-par', kid: 'ws-rd-kid', legacy: 'ws-rd-legacy', legacy2: 'ws-rd-legacy2', human: 'ws-rd-human' };
-const START = { par: 'ops-rename-drive', kid: 'impl-drive-kid-1', legacy: 'legacy-agent-x', legacy2: 'legacy-agent-y', human: 'witty-falcon' };
+const IDS = { par: 'ws-rd-par', kid: 'ws-rd-kid', legacy: 'ws-rd-legacy', legacy2: 'ws-rd-legacy2', orphan: 'ws-rd-orphan', human: 'ws-rd-human' };
+const START = { par: 'ops-rename-drive', kid: 'impl-drive-kid-1', legacy: 'legacy-agent-x', legacy2: 'legacy-agent-y', orphan: 'impl-orphan-x-1', human: 'witty-falcon' };
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir, path.join(armDir, 'wt')]) fs.mkdirSync(d, { recursive: true });
@@ -97,6 +100,7 @@ function seedWorld(armDir) {
     if (k === 'par') wss.push({ ...base, canOrchestrate: true });
     else if (k === 'kid') wss.push({ ...base, parentId: IDS.par, namedByParent: IDS.par });
     else if (k === 'legacy' || k === 'legacy2') wss.push({ ...base, parentId: IDS.par, autoRenameCount: 2 });
+    else if (k === 'orphan') wss.push({ ...base, namedByParent: 'ws-rd-gone-parent' }); // a DANGLING namer: the workspace that named it was deleted (no parentId either)
     else wss.push(base);
   }
   const list = git(repoDir, ['worktree', 'list', '--porcelain'], fakeHome);
@@ -137,7 +141,7 @@ async function main() {
     const target = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the app page target');
     clause('ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     cdp = await Cdp.connect(target.webSocketDebuggerUrl); await cdp.send('Page.enable');
-    await waitFor(() => cdp.eval(`document.querySelectorAll('.ws-name').length >= 5`), 60000, 'the 5 seeded sidebar rows');
+    await waitFor(() => cdp.eval(`document.querySelectorAll('.ws-name').length >= 6`), 60000, 'the 6 seeded sidebar rows');
     const bundle = (await cdp.eval(`[...document.querySelectorAll('script[src]')].map((s) => s.src)`)).find((s) => /assets\/index-.*\.js/.test(s));
     const onDisk = path.join(APP_DIR, 'dist', bundle.split('/dist/')[1]);
     const frameId = (await cdp.send('Page.getResourceTree')).frameTree.frame.id;
@@ -286,6 +290,14 @@ async function main() {
     const a14 = rename(IDS.par, IDS.legacy, 'review-legacy-parent-restored'); const a14n = await snap('legacy');
     const a14c = rename(IDS.legacy, IDS.legacy, 'child-again-after-git'); const a14cn = await snap('legacy');
     clause('A14/parent-still-in-charge-after-out-of-band-rename', a14.rc === 0 && a14n.git === 'review-legacy-parent-restored' && a14c.rc !== 0 && /named by your parent/.test(a14c.err) && a14cn.git === 'review-legacy-parent-restored', `parent rename: rc=${a14.rc} ${oob} -> ${a14n.git}; child again: rc=${a14c.rc} stderr=${JSON.stringify(a14c.err.trim())}; branch stays ${a14cn.git}`);
+    // ── A18 / K8 (follow-up): a DANGLING namer — nobody to \"ask them\": the refusal says where the rename CAN be done, and the human can ──
+    const preOrph = await snap('orphan');
+    const a18 = rename(IDS.orphan, IDS.orphan, 'orphan-picks-its-own'); const a18n = await snap('orphan');
+    clause('A18/dangling-namer-refusal-points-to-the-sidebar', a18.rc !== 0 && /named by your parent, who no longer exists — it can be renamed from the sidebar/.test(a18.err) && !/ask them/.test(a18.err) && a18n.git === preOrph.git && a18n.store.namedByParent === 'ws-rd-gone-parent',
+      `rc=${a18.rc} stderr=${JSON.stringify(a18.err.trim())}; branch ${preOrph.git} -> ${a18n.git}; namedByParent ${a18n.store.namedByParent}`);
+    const typed3 = await sidebarRename(START.orphan, 'impl-orphan-x-human-typed');
+    const k8s = await settle('orphan', (w) => w.branch === 'impl-orphan-x-human-typed' && w.branchManuallySet === true, 'sidebar rename of the orphan');
+    clause('K8/dangling-namer-child-is-renamable-from-the-sidebar', typed3 === 'impl-orphan-x-human-typed' && gitBranch('orphan') === 'impl-orphan-x-human-typed' && k8s.branchManuallySet === true && k8s.namedByParent === 'ws-rd-gone-parent', `typed "${typed3}"; ${preOrph.git} -> ${gitBranch('orphan')}; manual=${k8s.branchManuallySet} namer kept=${k8s.namedByParent}`);
     await full('04-final');
     fs.mkdirSync(OUT, { recursive: true });
     fs.writeFileSync(path.join(OUT, `${LABEL}-states.json`), JSON.stringify({ pre, rows: await rows(), final: Object.fromEntries(Object.keys(IDS).map((k) => [k, store(k)])), version: ver }, null, 2));
@@ -333,7 +345,13 @@ fs.writeFileSync(path.join(OUT, `${LABEL}-result.json`), JSON.stringify({ app: A
 const isA = (c) => /^A\d+\//.test(c.clause);
 const aRed = results.filter((c) => isA(c) && !c.ok), aAll = results.filter(isA), otherRed = results.filter((c) => !isA(c) && !c.ok);
 let verdict, rc;
-if (EXPECT_RED) ({ verdict, rc } = otherRed.length === 0 && aAll.length > 0 && aRed.length === aAll.length ? { verdict: `EXPECTED-RED CONFIRMED: ${aRed.length}/${aAll.length} authority clauses red (${aRed.map((c) => c.clause.split('/')[0]).join(', ')}), every keeper/control green`, rc: 0 } : { verdict: `EXPECTED-RED NOT MET: authority red ${aRed.length}/${aAll.length}; keeper/control red: ${otherRed.map((c) => c.clause).join('; ') || 'none'}`, rc: 1 });
+if (RED_ONLY) {
+  const idOf = (c) => c.clause.split('/')[0];
+  const red = results.filter((c) => !c.ok), expectedRed = results.filter((c) => RED_ONLY.includes(idOf(c)));
+  const missing = RED_ONLY.filter((id) => !results.some((c) => idOf(c) === id));
+  const wrong = red.filter((c) => !RED_ONLY.includes(idOf(c))), notRed = expectedRed.filter((c) => c.ok);
+  ({ verdict, rc } = missing.length === 0 && wrong.length === 0 && notRed.length === 0 && expectedRed.length > 0 ? { verdict: `DELTA CONFIRMED: exactly ${expectedRed.map(idOf).join(', ')} RED (the follow-up's clauses), every other clause GREEN (${results.length - expectedRed.length}/${results.length})`, rc: 0 } : { verdict: `DELTA NOT MET: unexpected red [${wrong.map((c) => c.clause).join('; ') || 'none'}]; expected-red but green [${notRed.map((c) => c.clause).join('; ') || 'none'}]; missing ids [${missing.join(',') || 'none'}]`, rc: 1 });
+} else if (EXPECT_RED) ({ verdict, rc } = otherRed.length === 0 && aAll.length > 0 && aRed.length === aAll.length ? { verdict: `EXPECTED-RED CONFIRMED: ${aRed.length}/${aAll.length} authority clauses red (${aRed.map((c) => c.clause.split('/')[0]).join(', ')}), every keeper/control green`, rc: 0 } : { verdict: `EXPECTED-RED NOT MET: authority red ${aRed.length}/${aAll.length}; keeper/control red: ${otherRed.map((c) => c.clause).join('; ') || 'none'}`, rc: 1 });
 else ({ verdict, rc } = results.every((c) => c.ok) && dup === 0 ? { verdict: `ALL GREEN: ${results.length} clauses (${aAll.length} authority, ${results.length - aAll.length} keeper/control), 0 duplicate captures`, rc: 0 } : { verdict: `RED: ${results.filter((c) => !c.ok).map((c) => c.clause).join('; ')}${dup ? `; ${dup} duplicate capture(s)` : ''}`, rc: 1 });
 console.log(`\nVERDICT: ${verdict}`);
 process.exit(rc);

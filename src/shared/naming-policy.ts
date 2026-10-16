@@ -85,15 +85,32 @@ export interface RenamePin {
 
 export type RenameDecision = { allow: true; pin: RenamePin } | { allow: false; error: string };
 
-/** Facts the policy cannot read off the target: the DISPLAY NAME of the namer (the caller looks it up from
- *  `parentId ?? namedByParent`), put in the refusal so the child knows whom to ask. Additive optional arg (#383). */
+/** Facts the policy cannot read off the target: the DISPLAY NAME of the namer (the caller resolves it with {@link namerName}), put in the
+ *  refusal so the child knows whom to ask. Absent = the namer cannot be resolved (it was deleted: a dangling `namedByParent`). */
 export interface RenameContext {
   parentName?: string;
 }
 
-/** Why a rename is refused — the texts the child / parent / other agent reads (CLI prints them verbatim). */
+/** Display name (the branch) of the workspace that named `target` — its parent first, else its namer (a `--detached` child has no
+ *  `parentId`). `lookup` is the store read (id → branch). An id that does not resolve, or resolves to a blank name, falls through to the
+ *  next; none resolving → `undefined` (a DANGLING namer — the refusal then says to rename from the sidebar). Pure: the store read is injected. */
+export function namerName(
+  target: Pick<NamingFields, 'parentId' | 'namedByParent'>,
+  lookup: (id: string) => string | undefined,
+): string | undefined {
+  for (const id of [target.parentId, target.namedByParent]) {
+    const name = id ? lookup(id) : undefined;
+    if (name && name.trim()) return name;
+  }
+  return undefined;
+}
+
+/** Why a rename is refused — the texts the child / parent / other agent reads (CLI prints them verbatim). With the namer's name: "ask them".
+ *  Without (the namer no longer exists): nobody can be asked, so say where the rename CAN be done — the sidebar. */
 export function namedByParentRefusal(parentName?: string): string {
-  return `named by your parent${parentName ? ` (${parentName})` : ''} — ask them to run \`orchestra rename\``;
+  return parentName
+    ? `named by your parent (${parentName}) — ask them to run \`orchestra rename\``
+    : 'named by your parent, who no longer exists — it can be renamed from the sidebar';
 }
 export const NAMED_BY_HUMAN_REFUSAL = 'named by the human — the name is pinned, only the human can change it';
 

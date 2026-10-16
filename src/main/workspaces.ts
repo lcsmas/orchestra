@@ -110,6 +110,7 @@ import {
   checkSpawnName,
   decideRename,
   initialNaming,
+  namerName,
   pinAdvancesGate,
   pinFields,
   sanitizeBranchName,
@@ -1108,9 +1109,7 @@ export async function dispatchRenameRequest(
   // ORCHESTRA_WS_ID, self-asserted like every socket route (absent = unknown caller, e.g. an old CLI). A refusal
   // returns before any git/store write; the message names the namer (`parentId ?? namedByParent`) so the child knows
   // whom to ask. An allowed rename counts against the progressive-rename budget only while the nudge is active.
-  const parentName = [ws.parentId, ws.namedByParent]
-    .map((pid) => (pid ? store.getWorkspace(pid)?.branch : undefined))
-    .find(Boolean);
+  const parentName = namerName(ws, (pid) => store.getWorkspace(pid)?.branch);
   const decision = decideRename(ws, { kind: 'agent', id: from }, { parentName });
   if (!decision.allow) return { ok: false, error: decision.error };
   const { pin } = decision;
@@ -4261,7 +4260,8 @@ route-demande-accessoire.
 
 A spawned agent is named by its PARENT and cannot rename itself: the command is
 refused with "named by your parent (<name>) — ask them to run
-\`orchestra rename\`" — do not retry, ask the parent. A parent renames its child
+\`orchestra rename\`" — do not retry, ask the parent (if it says the parent no longer
+exists, only the human can rename you, from the sidebar). A parent renames its child
 at any time with \`orchestra rename <child-id> <name>\` and the name sticks (the
 child cannot overwrite it). A name the human typed in the sidebar over a parent's
 name is final: neither the parent nor the agent can change it ("named by the

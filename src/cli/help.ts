@@ -91,8 +91,8 @@ Rename a workspace's git branch (do not also run 'git branch -m').
 
 Who may rename (human > parent > child): the name of a spawned agent is given by
 its parent, so the agent cannot rename ITSELF (refused: "named by your parent
-(<name>) — ask them to run \`orchestra rename\`") — the parent can, any time, and
-the name sticks. A name the human typed in the sidebar over a parent-named agent
+(<name>) — ask them to run \`orchestra rename\`"; if that parent no longer exists the
+refusal says to rename it from the sidebar) — the parent can, any time, and the name sticks. A name the human typed in the sidebar over a parent-named agent
 is final for everyone ("named by the human"). A workspace nobody named (a
 human-created one) still renames itself. Your identity is sent as ORCHESTRA_WS_ID.`,
   },

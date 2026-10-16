@@ -8,6 +8,7 @@ import {
   NAMED_BY_HUMAN_REFUSAL,
   decideRename,
   namedByParentRefusal,
+  namerName,
   adoptedBranchPin,
   nudgeActive,
   pinAdvancesGate,
@@ -148,11 +149,20 @@ describe('decideRename — the refusal text (what the child reads)', () => {
     assert.match(d.error, /named by your parent \(ops-nommage-parent-380\)/);
     assert.match(d.error, /ask them to run `orchestra rename`/);
   });
-  it('P refusal without a resolvable parent name drops the parenthesis, keeps the instruction', () => {
-    const d = decideRename(target(STATES.P), CALLERS.self);
-    assert.ok(!d.allow);
-    if (d.allow) return;
-    assert.match(d.error, /^named by your parent — ask them to run `orchestra rename`$/);
+  it('P refusal with a DANGLING namer (no resolvable name) does not send the child to someone who no longer exists: it says where the rename CAN be done', () => {
+    for (const ctx of [undefined, {}, { parentName: undefined }, { parentName: '' }]) {
+      const d = decideRename(target(STATES.P), CALLERS.self, ctx);
+      assert.ok(!d.allow);
+      if (d.allow) return;
+      assert.equal(d.error, 'named by your parent, who no longer exists — it can be renamed from the sidebar');
+      assert.match(d.error, /sidebar/);
+      assert.doesNotMatch(d.error, /ask them/);
+    }
+  });
+  it('the named and the dangling refusals are different texts (a name present must never fall back to the sidebar line)', () => {
+    assert.notEqual(namedByParentRefusal('ops-x'), namedByParentRefusal(undefined));
+    assert.match(namedByParentRefusal('ops-x'), /ask them to run `orchestra rename`/);
+    assert.doesNotMatch(namedByParentRefusal('ops-x'), /sidebar/);
   });
   it('H refusal says "named by the human" — and does not send the child to its parent', () => {
     const d = decideRename(target(STATES.H), CALLERS.self);
@@ -357,5 +367,42 @@ describe('adoptedBranchPin — what an out-of-band `git branch -m` pins (a child
     assert.equal(rec.branchManuallySet, undefined, 'no human pin minted');
     assert.deepEqual(decideRename(rec, CALLERS.parent), pinP(PARENT), 'the parent can still rename it');
     assert.equal(decideRename(rec, CALLERS.self, { parentName: 'ops' }).allow, false, 'and the child is still refused');
+  });
+});
+
+describe('namerName — the namer\'s display name the refusal carries (parentId first, else namedByParent)', () => {
+  const branches: Record<string, string | undefined> = { 'par-id': 'ops-the-parent', 'namer-id': 'impl-the-namer', blank: '   ', empty: '' };
+  const lookup = (id: string): string | undefined => branches[id];
+  const rows: Array<[string, Pick<NamingFields, 'parentId' | 'namedByParent'>, string | undefined]> = [
+    ['parent resolvable → its branch', { parentId: 'par-id', namedByParent: 'par-id' }, 'ops-the-parent'],
+    ['parent AND a different namer resolvable → the parent (the current authority) first', { parentId: 'par-id', namedByParent: 'namer-id' }, 'ops-the-parent'],
+    ['detached child (no parentId): the namer\'s branch', { namedByParent: 'namer-id' }, 'impl-the-namer'],
+    ['parent deleted, namer resolvable → falls through to the namer', { parentId: 'gone', namedByParent: 'namer-id' }, 'impl-the-namer'],
+    ['both deleted → undefined (a dangling namer)', { parentId: 'gone', namedByParent: 'also-gone' }, undefined],
+    ['detached and the namer deleted → undefined', { namedByParent: 'gone' }, undefined],
+    ['a blank branch is no name: falls through', { parentId: 'blank', namedByParent: 'namer-id' }, 'impl-the-namer'],
+    ['an empty branch and nothing else → undefined', { parentId: 'empty' }, undefined],
+    ['no parent, no namer → undefined', {}, undefined],
+    ['empty-string ids are not ids (never looked up)', { parentId: '', namedByParent: '' }, undefined],
+  ];
+  for (const [clause, fields, expected] of rows) it(clause, () => assert.equal(namerName(fields, lookup), expected));
+  it('the lookup is only asked for ids the target actually has', () => {
+    const asked: string[] = [];
+    namerName({ parentId: 'par-id', namedByParent: undefined }, (id) => (asked.push(id), branches[id]));
+    assert.deepEqual(asked, ['par-id']);
+    asked.length = 0;
+    namerName({ parentId: undefined, namedByParent: 'namer-id' }, (id) => (asked.push(id), branches[id]));
+    assert.deepEqual(asked, ['namer-id']);
+  });
+  it('feeds the refusal end to end: the name found by namerName is the one the child reads (verifier F1: a lookup that returns undefined must change the text)', () => {
+    const rec = target({ parentId: 'par-id', namedByParent: 'par-id' });
+    const withName = decideRename(rec, CALLERS.self, { parentName: namerName(rec, lookup) });
+    const without = decideRename(rec, CALLERS.self, { parentName: namerName(rec, () => undefined) });
+    assert.ok(!withName.allow && !without.allow);
+    if (!withName.allow && !without.allow) {
+      assert.match(withName.error, /\(ops-the-parent\)/);
+      assert.doesNotMatch(without.error, /ops-the-parent/);
+      assert.notEqual(withName.error, without.error);
+    }
   });
 });
