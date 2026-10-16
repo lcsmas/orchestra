@@ -508,6 +508,15 @@ export interface Workspace {
    * The env var `ORCHESTRA_BRANCH_AUTO` is `1` only while this is < 2 AND
    * `branchManuallySet` is false. Absent on pre-upgrade records → treated as 0. */
   autoRenameCount?: number;
+  /** Id of the agent that NAMED this workspace (its spawner at `orchestra spawn --name`, or the parent that later
+   * renamed it) — the "named by parent" pin of #380, distinct from {@link branchManuallySet} (the human pin).
+   * Truthy ⇒ the rename nudge is off and the child cannot self-rename (naming-policy.ts). Absent on human-created
+   * workspaces and every pre-#380 record. The id (not a boolean) so a `--detached` child, which has no `parentId`,
+   * still knows its namer. */
+  namedByParent?: string;
+  /** The branch name this workspace carried before its latest rename (parent rename or migration) — shown as
+   * "ex-…" in `orchestra peers` and the sidebar tooltip (#380/#384). Absent = never renamed. Persisted. */
+  formerBranch?: string;
   /** Id of the {@link Account} this workspace's agent logs in as, snapshotted
    * from its repo's `accountId` at creation. Pinned for the workspace's life:
    * Claude Code stores conversation history inside the account's
