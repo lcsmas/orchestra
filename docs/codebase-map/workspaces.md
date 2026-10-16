@@ -500,9 +500,10 @@ governed by the flags of the **innermost** run of its two parties).
   (`decideRename(ws, {kind:'human'})`) and `dispatchRenameRequest`. `freeBranchName` dedupes collisions with `-2..-99`.
 - **`Workspace.formerBranch` ("ex-…", #384)** — the name before the LATEST rename.
   `renameWorkspaceBranch` spreads `formerBranchPatch(ws, before, after,
-  pin.namedByParent)` (`shared/former-branch.ts`, pure) into BOTH name-changing
-  writes (`before` = the DISPLAYED name `ws.branch` in both — what ledgers and bus messages quote; a drifted live
-  branch nobody saw is NEVER recorded, and a request equal to the displayed name is no name change). Recorded only on an ACTUAL change of a
+  pin.namedByParent)` (`shared/former-branch.ts`, pure) into each name-changing
+  write (`before` = the DISPLAYED name `ws.branch` everywhere — what ledgers and bus messages quote; a drifted live
+  branch nobody saw is NEVER recorded; a request equal to the displayed name while live differs realigns git but
+  changes no displayed name, so records nothing). Recorded only on an ACTUAL change of a
   workspace that is parent-named before (`namedByParent`) or after (`pin.namedByParent`
   — the rename pins it) — a human-created workspace's provisional self-renames
   record nothing (D3). A later rename REPLACES it; a same-name no-op and the

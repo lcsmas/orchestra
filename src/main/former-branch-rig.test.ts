@@ -75,6 +75,8 @@ test('rename-records-former table (real renameWorkspaceBranch, real worktrees)',
   assert.equal(c.drift_same_displayed.live, 'k-shown', 'control: git really renamed k-live → k-shown');
   assert.equal(c.drift_same_displayed.branch, 'k-shown');
   assert.equal(c.drift_same_displayed.formerBranch, undefined, 'no "ex-k-live" on a name that never changed');
+  assert.equal(c.drift_same_displayed.bcBranch, 'k-shown', 'control: the realigning rename was broadcast');
+  assert.equal(c.drift_same_displayed.bcFormer, undefined, 'and its payload carries no former name');
   // drift ADOPTION (requested == live, stored stale): the record's name changed stored→live and is recorded
   assert.equal(c.drift_adopt.live, 'e-live', 'control: the out-of-band rename really happened');
   assert.equal(c.drift_adopt.branch, 'e-live');
