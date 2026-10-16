@@ -1316,7 +1316,7 @@ async function main(argv: string[]): Promise<void> {
       void r5;
       if (!task)
         fail(
-          'usage: orchestra spawn --name <rôle>-<objet>[-<ticket>] --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
+          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
         );
       // #382 — the child's name is REQUIRED and checked HERE, before the socket: a refusal creates nothing (the
       // route re-checks, for an old CLI/skill that sends no name). The convention lives in naming-policy.ts.

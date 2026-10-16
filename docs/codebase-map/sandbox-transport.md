@@ -37,6 +37,7 @@ Everything below (shim, transport, manager, import/eject/backups) is UNCHANGED a
   `agent-sdk.ts` `sdkClear` (UI `/clear` + `restart --fresh`) throws so a paused ws keeps its `sdkSessionId` (the UI's `agentSdkClear` caller only
   `console.error`s the rejection — nothing is rendered for a refused `/clear`);
   the composer (`StructuredView.tsx` `submit`) RESTORES the typed text + images when `agentSdkSend` rejects (any refused start, not only the pause).
+- **Spawn name (#382)** — the wire's `spawn` rpc carries `name`; `dispatchRpc('spawn')` calls `dispatchAgentSpawnRequest` (same required-name rule as `/spawn`). Dormant while sandbox agents are paused; kept compiling and in step so the rule has one implementation.
 - **Not reachable** — `orchestra spawn` cannot yield a sandbox workspace: `dispatchSpawnRequest` → `createWorkspace` never passes
   `host` (only `importWorkspaceToSandbox` flips it; the `workspaces:create` IPC accepts it but the renderer never sends it).
   A live local session survives an import flip (`ensureSessionInner`'s `existing` early-return precedes the guard) — not a start.

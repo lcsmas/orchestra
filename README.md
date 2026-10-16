@@ -33,7 +33,7 @@ If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that 
 - **Resume on restart** — agents that were running when Orchestra quit come back live, resuming their conversation
 
 ### Multi-agent orchestration
-- **Spawn** — any agent creates a sibling workspace + agent with `orchestra spawn --task "…"`
+- **Spawn** — any agent creates a sibling workspace + agent with `orchestra spawn --name impl-sidebar-lent-123 --task "…"` (the spawner names the child: `<rôle>-<objet>[-<ticket>]`)
 - **Peer comms** — agents list siblings and message each other; messages to a stopped agent queue in an inbox delivered on its next start
 - **Attach / detach** — re-parent any existing workspace under an orchestrator (or pop it back out)
 
@@ -117,7 +117,7 @@ Orchestra ships an `orchestra` command that talks to a running app over its loca
 ```bash
 orchestra peers                                       # list the other agent workspaces (id, branch, repo, status)
 orchestra message <id> <text...>                      # legacy peer channel; on a bus (delivery-ON) run use `orchestra send` instead
-orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]   # spawn a new worktree + agent
+orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--detached]   # spawn a new worktree + agent (--name: <rôle>-<objet>[-<ticket>])
 orchestra rename <id> <branch>                         # rename a workspace's branch
 orchestra promote <id>                                 # promote a scratch session into an orchestrator
 orchestra attach <id> <parentId>                       # nest an existing workspace under an orchestrator

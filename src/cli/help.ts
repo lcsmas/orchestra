@@ -1,5 +1,6 @@
 // CLI help registry: one entry per top-level verb dispatched in index.ts main().
 // help.test.ts fails if a `case` in main() has no entry here (or vice versa).
+import { NAME_CONVENTION } from '../shared/naming-policy.ts';
 
 export interface CommandHelp {
   name: string;
@@ -61,14 +62,13 @@ with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long bo
     name: 'spawn',
     group: 'Workspaces',
     summary: 'Spawn a new worktree + agent',
-    detail: `usage: orchestra spawn --name <rôle>-<objet>[-<ticket>] --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]
+    detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]
 
 Spawn a new worktree + agent, nested under the caller by default.
-  --name <name>     the child's name (required): <rôle>-<objet en mots humains>[-<ticket>],
-                    rôle ∈ ops | impl | verif | review | explo — e.g. impl-politique-nommage-381.
+  --name <name>     the child's name (required): ${NAME_CONVENTION}.
                     It becomes the child's branch and sidebar name; the child never renames
-                    itself (you can: 'rename'). A name already taken is suffixed (-2, -3…): the
-                    final branch is printed. No wave codes (h1, q9, fu…) in it.
+                    itself (you can: 'rename'; a human rename wins). A name already taken is
+                    suffixed (-2, -3…): the final branch is printed. No wave codes (h1, q9, fu…).
   --task <text>     the agent's brief (required)
   --repo <path>     repo to branch from (default: the caller's)
   --base <branch>   base branch

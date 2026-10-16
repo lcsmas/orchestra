@@ -104,6 +104,7 @@ import {
 import { workspaceDisplayName } from '../shared/workspace-name.ts';
 import {
   MAX_AUTO_RENAMES,
+  NAME_CONVENTION,
   checkSpawnName,
   decideRename,
   initialNaming,
@@ -457,7 +458,8 @@ export async function createWorkspace(
  * session-start hooks. */
 const ORCHESTRATOR_BRIEF_HEAD =
   "You are an orchestrator. Your job is to coordinate work across other agents rather than edit code yourself. " +
-  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent with `orchestra spawn` (see the orchestra-spawn skill). ";
+  "Break the user's goal into independent pieces and delegate each to a fresh worktree+agent with `orchestra spawn` (see the orchestra-spawn skill). " +
+  `Every spawn MUST carry \`--name\`: the child is named \`${NAME_CONVENTION}\` — you name it, it never renames itself, no wave codes in the name. `;
 
 /** The repo paragraph, which differs by sub-state: a repo-less coordinator must
  * name a repo on every spawn, while one that has adopted a repo inherits it and
@@ -3734,15 +3736,24 @@ or top-level** → \`--detached\`. (Careful: "standalone" also describes a
 self-contained BRIEF, as in the paragraph above. What matters is whether the
 user described the WORKSPACE that way, not the task.)
 
+**Name the child — \`--name\` is REQUIRED.** You give it its sidebar name (and git
+branch) at spawn: \`${NAME_CONVENTION}\`. Put the OBJECT in the human's own
+words (what the child works on), never internal wave codes (\`h1\`, \`q9\`, \`g10\`,
+\`fu\`, \`r4\`); end with the ticket number when there is one. A spawn without
+\`--name\`, or whose name does not start with a rôle, is REFUSED and creates
+nothing. The child is never nudged to rename itself and cannot: it is YOUR name
+to change later (\`orchestra rename <id> <name>\`), and a human rename always
+wins. A name already taken is suffixed (\`-2\`, \`-3\`…) — the CLI prints the FINAL branch.
+
 Run this exact command (the \`orchestra\` CLI reads \$ORCHESTRA_SOCK /
 \$ORCHESTRA_WS_ID from your env, and nests the new worktree under you):
 
 \`\`\`bash
 # nested under me (default) — I am tracking this child's work
-orchestra spawn --task "<full self-contained instructions for the new agent>"
+orchestra spawn --name impl-politique-nommage-381 --task "<full self-contained instructions for the new agent>"
 
 # top-level — the user asked for a standalone/independent/separate workspace
-orchestra spawn --detached --task "<full self-contained instructions>"
+orchestra spawn --detached --name explo-lenteur-sidebar --task "<full self-contained instructions>"
 \`\`\`
 
 The CLI REFUSES the spawn when the task text asks for a standalone agent but
@@ -3754,9 +3765,9 @@ own section (\`orchestra attach <id> <parentId>\` nests it back). Neither
 interrupts the running agent; verify via the workspace's \`parentId\` rather than
 trusting the command output.
 
-On success it prints \`Spawned <workspace-id> on branch <branch>\` once the
-worktree exists and its agent has started; otherwise it prints an error and
-exits non-zero.
+On success it prints \`Spawned <workspace-id> on branch <branch>\` (the FINAL name)
+once the worktree exists and its agent has started; otherwise it prints an error
+and exits non-zero.
 
 Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
@@ -3780,8 +3791,8 @@ For a piece that is itself several agents' worth of work, spawn it and then
 promote the NEW workspace so it can coordinate children of its own:
 
 \`\`\`bash
-orchestra spawn --task "<milestone brief>"   # prints the new <workspace-id>
-orchestra promote <workspace-id>
+orchestra spawn --name ops-<milestone en mots humains> --task "<milestone brief>"   # prints the new <workspace-id>
+orchestra promote <workspace-id>               # keeps the name you gave it
 \`\`\`
 
 Its branch becomes the milestone's integration branch, the agents IT spawns
@@ -4178,12 +4189,14 @@ orchestra link --clear --linear      # drop the Linear link
 
 const RENAME_SKILL = `---
 name: orchestra-rename
-description: Rename THIS workspace's auto-generated git branch to a meaningful name. Use as soon as the work the conversation is about becomes clear, so the branch reflects the actual task.
+description: Rename THIS workspace's auto-generated git branch to a meaningful name. Use as soon as the work the conversation is about becomes clear, so the branch reflects the actual task. NOT for an agent spawned by another agent — its parent named it.
 ---
 
 # Rename this workspace's branch
 
-A fresh Orchestra workspace starts on an auto-generated branch name (e.g.
+If another agent spawned you, your branch was named by that agent (it starts with a
+rôle: \`ops-\`, \`impl-\`, \`verif-\`, \`review-\` or \`explo-\`): leave it, and ask your parent if
+the scope changed. Otherwise: a fresh Orchestra workspace starts on an auto-generated branch name (e.g.
 \`radiant-fox\`). Rename it to a short kebab-case name (3-6 words) that reflects
 the actual work, the moment that work is clear. Orchestra renames the real git
 branch for you — do NOT run \`git branch -m\` yourself.
