@@ -564,7 +564,7 @@ governed by the flags of the **innermost** run of its two parties).
 ### One-shot migration of parent-given names (#385, spec #380)
 `scripts/migrate-parent-names.mjs --table <t.json> [--apply] [--closed <ops-id>,…] [--allow-gone] [--assume-app-current] [--live] [--verbose]` (every table row needs `id`, `old` and `new`: `old` is what tells a lost former name from a never-renamed workspace on a repeated run) renames EXISTING spawned agents
 to the `<rôle>-<objet>[-<ticket>]` convention; it runs ONCE on the live fleet, so every anomaly stops it on the safe side. The pure planner `planMigration`
-(`src/shared/naming-migration.ts:ANCHOR_PLAN`) takes the store's workspaces, the branches on every remote (+ local), the worktrees' LIVE heads, the ids of a running
+(`src/shared/naming-migration.ts:162`) takes the store's workspaces, the branches on every remote (+ local), the worktrees' LIVE heads, the ids of a running
 vague and the human-validated table `[{id, old?, new}]`, and returns one action per workspace — `rename`, `skip-remote` (branch on a remote), `skip-vague`,
 `skip-live-head` (the worktree is on another branch than the store says, or HEAD is unreadable / the worktree cannot be seen / a sandbox host: the app renames the LIVE branch, so UNKNOWN is not planned),
 `skip-base` (another live workspace of the repo — the same repo under two spellings is one — has this branch as its `baseBranch`: its Diff/stats would dangle; a pin-only step changes no name and is held by none of `skip-remote` / `skip-vague` / `skip-base`), `done` (named AND parent-named), or
@@ -573,7 +573,7 @@ REJECTED rows (unknown id, duplicate row/target, refused by `decideRename` (a hu
 parent when none is recorded; a workspace already named and parent-named stays `done`), `checkSpawnName` failure (which also refuses git-invalid refs and `/`),
 stale `old` (only when parent-named differently since; a child that renamed ITSELF, or whose former name is `old`, is not stale), name taken — also as a ref
 path-prefix: the app would silently suffix it; an ARCHIVED workspace's row only has to be well-formed). A parent that left the store still names its child
-(`decideRename` compares ids only). A running vague = `activeVagueMemberIds` (`src/shared/naming-migration.ts:ANCHOR_VAGUE`), the app's own `liveFleetRuns` rule
+(`decideRename` compares ids only). A running vague = `activeVagueMemberIds` (`src/shared/naming-migration.ts:119`), the app's own `liveFleetRuns` rule
 read off the store (a live OPS with a parent and a live member below — through `parentId` OR the namer, so a `--detached` verifier is held too; nothing writes
 `runs.closed_at`, the bus is never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close event and archiving an OPS
 archives its WHOLE subtree (`archiveWorkspace`), after which no rename is possible — so the operator declares a finished-but-live vague with `--closed <ops-id>`

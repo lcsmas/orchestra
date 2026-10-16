@@ -326,6 +326,17 @@ test('an app that does not record the pin ABORTS the run at the first row (canar
   resetStore();
 });
 
+test('the TARGET name is read back on its own, not only through git: a suffixed name on a workspace WITHOUT a worktree is FAILED and stops the run', () => {
+  resetStore();
+  fs.writeFileSync(tableFile, JSON.stringify([TABLE[2]])); // w4: no worktree, so only the store can tell
+  const r = run(['--table', tableFile, '--apply'], { SHIM_SUFFIX: '-2' });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w4000000  old-w4 -> explo-timeout-cli  \[renamed \(the CLI said "explo-timeout-cli-2"\) but the store does NOT show a parent-named explo-timeout-cli: branch=explo-timeout-cli-2 /);
+  assert.match(r.out, /ABORTED  at w4000000/);
+  assert.doesNotMatch(r.out, /^APPLIED/m);
+  resetStore();
+});
+
 test('--apply reads BOTH fields back: a missing namedByParent alone, or a missing formerBranch alone, is FAILED', () => {
   for (const [env, saw] of [[{ SHIM_NO_NAMER: '1' }, /namedByParent=∅ formerBranch=old-w3/], [{ SHIM_NO_FORMER: '1' }, /namedByParent=0b5c0000.* formerBranch=∅/]] as const) {
     resetStore();
