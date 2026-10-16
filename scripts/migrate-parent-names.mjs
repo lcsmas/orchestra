@@ -127,20 +127,25 @@ if (!apply) {
   process.exit(0);
 }
 
-// What the app must have recorded for a parent-given name (#383 namedByParent, #384 formerBranch) — read back from the store, never assumed from rc 0.
-const readBack = (step, final) => {
+// What the app must have recorded for a parent-given name — read back from the store, never assumed from rc 0 or from the CLI's own "Renamed to": the VALIDATED name (not a
+// suffixed one, not the child's own rename that raced ours), the namer (#383) and the former name (#384).
+const readBack = (step) => {
   try {
     const w = JSON.parse(fs.readFileSync(storeFile, 'utf8')).workspaces.find((x) => x.id === step.id);
-    const ok = !!w && w.branch === final && w.namedByParent === step.asParent && (final === step.from || w.formerBranch === step.from);
+    const ok = !!w && w.branch === step.to && w.namedByParent === step.asParent && (step.to === step.from || w.formerBranch === step.from);
     return { ok, saw: w ? `branch=${w.branch} namedByParent=${w.namedByParent ?? '∅'} formerBranch=${w.formerBranch ?? '∅'}` : 'workspace not in the store' };
   } catch (e) {
     return { ok: false, saw: `store unreadable: ${e.message}` };
   }
 };
+const expected = (step) => `expected branch=${step.to} namedByParent=${step.asParent}${step.to === step.from ? '' : ` formerBranch=${step.from}`}`;
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // ── apply: ONLY through the installed app's CLI, AS the parent ────────────────────────────────────────────────────────
+// The app's rename is not serialised: a legacy child renaming itself at the same moment can win with its own name and no pin, or the git lock can refuse. Both read back as FAILED
+// (rc 1) and the next run plans them again (a name that is not ours is re-planned as a rename, a name that is ours without the pin as a pin-only rename).
 let failed = 0;
+const applied = [];
 for (const step of plan.renames) {
   const r = spawnSync('orchestra', ['rename', step.id, step.to], {
     encoding: 'utf8',
@@ -158,17 +163,31 @@ for (const step of plan.renames) {
     }
     continue;
   }
-  let seen = readBack(step, final);
+  let seen = readBack(step);
   for (let i = 0; i < 12 && !seen.ok; i++) {
     sleepSync(250); // the app awaits its store write before it answers; the poll only absorbs a slow disk
-    seen = readBack(step, final);
+    seen = readBack(step);
   }
   if (!seen.ok) {
     failed++;
-    out(`FAILED   ${id8}  ${step.from} -> ${final}  [renamed, but NOT recorded as parent-named: ${seen.saw}; expected namedByParent=${step.asParent} formerBranch=${step.from} — is the running app older than #383/#384? re-run once it is updated]`);
+    out(`FAILED   ${id8}  ${step.from} -> ${step.to}  [renamed (the CLI said "${final}") but the store does NOT show a parent-named ${step.to}: ${seen.saw}; ${expected(step)} — a rename by the workspace itself racing ours, an app older than #383/#384, or the app suffixing the name; re-run to plan it again]`);
     continue;
   }
-  out(`APPLIED  ${id8}  ${step.from} -> ${final}${final === step.to ? '' : `  [the app changed the requested name ${step.to}]`}`);
+  applied.push(step);
+  out(`APPLIED  ${id8}  ${step.from} -> ${step.to}`);
 }
-out(`DONE  ${plan.renames.length - failed}/${plan.renames.length} renamed${failed ? `, ${failed} FAILED` : ''}`);
+// A racing rename by the child can land AFTER our read-back: look once more, after the dust settles, at everything reported APPLIED.
+let lost = 0;
+if (applied.length > 0) {
+  sleepSync(1500);
+  for (const step of applied) {
+    const seen = readBack(step);
+    if (!seen.ok) {
+      lost++;
+      failed++;
+      out(`FAILED   ${step.id.slice(0, 8)}  ${step.from} -> ${step.to}  [LOST after the APPLIED line: ${seen.saw}; ${expected(step)} — re-run to plan it again]`);
+    }
+  }
+}
+out(`DONE  ${applied.length - lost}/${plan.renames.length} renamed${failed ? `, ${failed} FAILED` : ''}`);
 process.exit(failed ? 1 : 0);

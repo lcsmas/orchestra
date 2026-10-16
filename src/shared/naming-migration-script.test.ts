@@ -76,15 +76,25 @@ before(() => {
     `import fs from 'node:fs';
 const [verb, wsid, name] = process.argv.slice(2);
 fs.appendFileSync(process.env.SHIM_LOG, [process.env.ORCHESTRA_WS_ID, process.env.ORCHESTRA_WS_ID_IDENTITY, verb, wsid, name].join('|') + '\\n');
+const LATE_FILE = process.env.SHIM_STORE + '.late';
+if (process.env.SHIM_LATE_ID && wsid !== process.env.SHIM_LATE_ID && fs.existsSync(LATE_FILE)) {
+  const st = JSON.parse(fs.readFileSync(process.env.SHIM_STORE, 'utf8')); const lw = st.workspaces.find((x) => x.id === process.env.SHIM_LATE_ID);
+  lw.branch = 'child-won-late'; delete lw.namedByParent; fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(st)); fs.rmSync(LATE_FILE);
+}
 if (process.env.SHIM_FAIL_ID === wsid) { process.stderr.write('refused: named by the human\\n'); process.exit(1); }
 const store = JSON.parse(fs.readFileSync(process.env.SHIM_STORE, 'utf8'));
 const w = store.workspaces.find((x) => x.id === wsid);
 const final = name + (process.env.SHIM_SUFFIX || '');
+// SHIM_CHILD_WINS: the app answers "Renamed to <name>" but the child's own rename was written last (no pin). SHIM_LATE_ID: see below.
+if (process.env.SHIM_CHILD_WINS === wsid) { w.branch = 'child-chose-this'; fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store)); process.stdout.write('Renamed to ' + name + '\\n'); process.exit(0); }
+// SHIM_LATE_ID: the child's own rename lands AFTER our read-back of that workspace and before the run ends — deterministically: it is applied at the START of the NEXT rename call
+// (the script is sequential: read-back of this one is over by then), no timer involved.
 // SHIM_NO_PIN = an app older than #383/#384: it renames, but records neither the namer nor the former name.
 // SHIM_NO_NAMER / SHIM_NO_FORMER: an app that records only one of the two.
 if (!process.env.SHIM_NO_PIN) { if (w.branch !== final && !process.env.SHIM_NO_FORMER) w.formerBranch = w.branch; if (!process.env.SHIM_NO_NAMER) w.namedByParent = process.env.ORCHESTRA_WS_ID; }
 w.branch = final;
 fs.writeFileSync(process.env.SHIM_STORE, JSON.stringify(store));
+if (process.env.SHIM_LATE_ID === wsid) fs.writeFileSync(LATE_FILE, '1');
 process.stdout.write('Renamed to ' + final + '\\n');
 `,
   );
@@ -96,6 +106,7 @@ function resetStore(): void {
   fs.writeFileSync(storeFile, JSON.stringify({ workspaces: fixtureWorkspaces() }, null, 2));
   fs.writeFileSync(tableFile, JSON.stringify(TABLE, null, 2));
   fs.rmSync(callsLog, { force: true });
+  fs.rmSync(`${storeFile}.late`, { force: true });
 }
 /** Run the script with a scrubbed environment (allowlist) — never the caller's ORCHESTRA_SOCK / HOME. */
 function run(args: string[], env: Record<string, string> = {}): { rc: number; out: string; err: string } {
@@ -259,11 +270,12 @@ test('`orchestra` missing from PATH: FAILED + ABORTED, rc 1, not a crash', () =>
   resetStore();
 });
 
-test('the app suffixing a name is shown: the result line carries the FINAL name and says it changed', () => {
+test('the app suffixing the validated name is a FAILURE (rc 1): the store must show the TARGET name', () => {
   resetStore();
   const r = run(['--table', tableFile, '--apply'], { SHIM_SUFFIX: '-2' });
-  assert.equal(r.rc, 0, r.out + r.err);
-  assert.match(r.out, /APPLIED  w3000000  old-w3 -> review-fusion-comptes-240-2  \[the app changed the requested name review-fusion-comptes-240\]/);
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240-2"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240-2 /);
+  assert.doesNotMatch(r.out, /^APPLIED/m);
   resetStore();
 });
 
@@ -271,7 +283,7 @@ test('--apply reads the store back: a rename the app did NOT record as parent-na
   resetStore();
   const r = run(['--table', tableFile, '--apply'], { SHIM_NO_PIN: '1' });
   assert.equal(r.rc, 1, r.out + r.err);
-  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed, but NOT recorded as parent-named: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅; expected namedByParent=/);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=review-fusion-comptes-240 namedByParent=∅ formerBranch=∅; expected branch=review-fusion-comptes-240 namedByParent=/);
   assert.doesNotMatch(r.out, /^APPLIED/m);
   assert.match(r.out, /DONE  0\/2 renamed, 2 FAILED/);
   // the app is updated: the same table now plans a pin-only rename (same name, not yet parent-named) and the store ends up recorded
@@ -293,6 +305,33 @@ test('--apply reads BOTH fields back: a missing namedByParent alone, or a missin
     assert.match(r.out, /FAILED   w3000000/);
     assert.match(r.out, saw);
   }
+  resetStore();
+});
+
+test('a LIVE child whose own rename wins the race (our name never lands) is FAILED, and the re-run plans it again and lands it', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply'], { SHIM_CHILD_WINS: id('w3') });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[renamed \(the CLI said "review-fusion-comptes-240"\) but the store does NOT show a parent-named review-fusion-comptes-240: branch=child-chose-this namedByParent=∅/);
+  assert.match(r.out, /APPLIED  w4000000/);
+  assert.match(r.out, /DONE  1\/2 renamed, 1 FAILED/);
+  // the store now says "child-chose-this" while the table was validated against "old-w3": the id is the identity, the row is picked up again
+  const again = run(['--table', tableFile, '--apply']);
+  assert.equal(again.rc, 0, again.out + again.err);
+  assert.match(again.out, /PLAN  w3000000  rename\s+child-chose-this -> review-fusion-comptes-240  \[as 0b5c0000 · it renamed itself since the table \(was "old-w3"\)\]/);
+  assert.match(again.out, /APPLIED  w3000000  child-chose-this -> review-fusion-comptes-240/);
+  assert.match(again.out, /DONE  1\/1 renamed/);
+  assert.equal(run(['--table', tableFile, '--apply']).out.includes('DONE  0/0'), true);
+  resetStore();
+});
+
+test('a child rename that lands AFTER the read-back is caught by the settle pass: LOST after the APPLIED line, rc 1', () => {
+  resetStore();
+  const r = run(['--table', tableFile, '--apply'], { SHIM_LATE_ID: id('w3') });
+  assert.equal(r.rc, 1, r.out + r.err);
+  assert.match(r.out, /APPLIED  w3000000  old-w3 -> review-fusion-comptes-240/, 'it looked fine at read-back time');
+  assert.match(r.out, /FAILED   w3000000  old-w3 -> review-fusion-comptes-240  \[LOST after the APPLIED line: branch=child-won-late namedByParent=∅/);
+  assert.match(r.out, /DONE  1\/2 renamed, 1 FAILED/);
   resetStore();
 });
 

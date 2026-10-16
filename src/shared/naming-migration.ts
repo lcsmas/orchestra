@@ -137,7 +137,7 @@ export function activeVagueMemberIds(
 export function planMigration(input: MigrationInputs): MigrationPlan {
   const byId = new Map(input.workspaces.map((w) => [w.id, w]));
   const rejected: RejectedRow[] = [];
-  const valid = new Map<string, { index: number; to: string }>(); // workspace id → its accepted row
+  const valid = new Map<string, { index: number; to: string; drift?: string }>(); // workspace id → its accepted row (+ the `old` it drifted from, if any)
 
   // Table-level facts used by the per-row checks.
   const idCount = new Map<string, number>();
@@ -175,15 +175,18 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
       return;
     }
     if (ws.branchManuallySet === true) return reject('human-pinned', `a human named it (${ws.branch}) — a human rename wins for good`);
-    if (r.old !== undefined && r.old !== ws.branch && ws.branch !== to) {
-      return reject('stale-old', `the table was validated against "${r.old}" but the workspace is now "${ws.branch}"`);
+    // `old` is a cross-check, the id is the identity. A legacy child that is NOT parent-named renames ITSELF while its nudge is active (and may win a race against this very
+    // run), so its name drifting from `old` is expected and the row still applies. Once someone parent-named it differently the table is outdated: that refuses.
+    const drifted = r.old !== undefined && r.old !== ws.branch && ws.branch !== to;
+    if (drifted && ws.namedByParent) {
+      return reject('stale-old', `the table was validated against "${r.old}" but it has been parent-named "${ws.branch}" since`);
     }
     const refError = input.refFormatError?.(to);
     if (refError) return reject('invalid-ref', refError);
     if ((targetCount.get(to) ?? 0) > 1) return reject('duplicate-target', `another row targets the same name "${to}"`);
     const clashing = ws.branch === to ? undefined : clash(to, ws.branch);
     if (clashing) return reject('name-taken', `"${to}" conflicts with the existing branch / workspace name "${clashing}"`);
-    valid.set(r.id, { index, to });
+    valid.set(r.id, { index, to, ...(drifted ? { drift: r.old } : {}) });
   });
 
   const rejectedIds = new Set(rejected.map((x) => x.id));
@@ -226,7 +229,8 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     }
     const gone = byId.has(asParent) ? '' : ' (no longer in the store)';
     const pinOnly = ws.branch === to ? ' · pin only, the name is already right' : '';
-    rows.push({ ...base, action: 'rename', to, asParent, reason: `as ${asParent.slice(0, 8)}${gone}${pinOnly}` });
+    const drift = row.drift !== undefined ? ` · it renamed itself since the table (was "${row.drift}")` : '';
+    rows.push({ ...base, action: 'rename', to, asParent, reason: `as ${asParent.slice(0, 8)}${gone}${pinOnly}${drift}` });
   }
 
   const renames = rows

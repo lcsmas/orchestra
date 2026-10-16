@@ -575,8 +575,10 @@ never opened; a top-level orchestrator is a mission, its workers are not held). 
 The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`; any unreadable input = rc 2, never an empty set), is a dry run
 unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only rows of workspaces that no longer exist), and
 applies each step ONLY as `orchestra rename <id> <name>` with `ORCHESTRA_WS_ID=<parentId, else namedByParent>` (D2) — it never writes `store.json`. After each
-rename it RE-READS the store and requires `namedByParent == parent` and `formerBranch == old name` (an app older than #383/#384 renames without pinning: FAILED,
-rc 1; the re-run plans a pin-only same-name rename). Idempotent: after a full apply `renames` is empty. Gates: `naming-migration(.script).test.ts`, mutants
+rename it RE-READS the store and requires the VALIDATED name, `namedByParent == parent` and `formerBranch == old name`, and looks once more after the run (the app's
+rename is not serialised: a live legacy child's own rename can win the race, or the git lock can refuse; an app older than #383/#384 renames without pinning) —
+anything else is FAILED, rc 1. The re-run picks those up: the name is ours without the pin → a pin-only same-name rename; the child's name won → a rename (a legacy
+child that renamed ITSELF is not a stale row; one parent-named differently since is); a lock error → the rename again. Idempotent: after a full apply `renames` is empty. Gates: `naming-migration(.script).test.ts`, mutants
 `scripts/naming-migration-mutants.mjs`, built-app drive `scripts/e2e-migrate-parent-names.sh`.
 
 ## Hooks installed per worktree

@@ -251,11 +251,31 @@ test('rejected rows: collisions — duplicate target, duplicate row, an existing
   assert.equal(archivedBranch.rejected.length, 0, 'an ARCHIVED workspace does not hold its old name');
 });
 
-test("rejected rows: a stale 'old' (renamed since the table was validated), but not an already-applied row", () => {
-  const stale = planMigration(inputs({ table: [{ id: id('w3'), old: 'something-else', new: 'impl-x-1' }] }));
+test("rejected rows: a stale 'old' only once the workspace was PARENT-named differently; a legacy child that renamed ITSELF still applies", () => {
+  const parentNamed = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: 'impl-par-le-parent-1', namedByParent: OPS_CLOSED } : w));
+  const stale = planMigration(inputs({ workspaces: parentNamed, table: [{ id: id('w3'), old: 'old-w3', new: 'impl-x-1' }] }));
   assert.equal(stale.rejected[0].code, 'stale-old');
+  // the legacy child renamed itself (nudge) between the validation and the run — e.g. it WON a race against a previous run: the id is the identity, the row applies
+  const drifted = fixtureStore().map((w) => (w.id === id('w3') ? { ...w, branch: 'child-chose-this' } : w));
+  const plan = planMigration(inputs({ workspaces: drifted, table: [{ id: id('w3'), old: 'old-w3', new: 'impl-x-1' }] }));
+  assert.deepEqual(plan.rejected, []);
+  assert.deepEqual(plan.renames.map((r) => [r.from, r.to]), [['child-chose-this', 'impl-x-1']]);
+  assert.match(plan.rows.find((r) => r.id === id('w3'))!.reason, /renamed itself since the table \(was "old-w3"\)/);
   const noOld = planMigration(inputs({ table: [{ id: id('w3'), new: 'impl-x-1' }] }));
   assert.equal(noOld.rejected.length, 0, "'old' is optional");
+});
+
+test('re-plan after a failed run: lost pin -> a pin-only rename; the child won with its own name -> a rename; a git-lock error (nothing changed) -> the rename again', () => {
+  const store = fixtureStore().map((w) =>
+    w.id === id('w3') ? { ...w, branch: NEW.w3 } // our name landed, the pin was lost
+      : w.id === id('w4') ? { ...w, branch: 'child-chose-this' } // the child's own rename won
+        : w);
+  const plan = planMigration(inputs({ workspaces: store, table: rowsFor(['w3', 'w4']) }));
+  assert.deepEqual(plan.rejected, []);
+  const by = Object.fromEntries(plan.renames.map((r) => [r.id, r]));
+  assert.equal(by[id('w3')].from, by[id('w3')].to, 'pin only');
+  assert.deepEqual([by[id('w4')].from, by[id('w4')].to], ['child-chose-this', NEW.w4]);
+  assert.equal(planMigration(inputs({ table: rowsFor(['w3', 'w4']) })).renames.length, 2, 'untouched old names plan the rename again');
 });
 
 test('rejected rows: git refs are files — a target that is a path-prefix of an existing branch (or has one as prefix) is taken', () => {
