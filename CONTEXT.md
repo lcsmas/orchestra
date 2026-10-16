@@ -27,7 +27,7 @@ _Avoid_: ops-agent, wave lead, supervisor
 
 **Worker**:
 An agent doing one ticket of a vague in its own worktree (implementer,
-verifier, reviewer).
+verifier, reviewer, explorer).
 _Avoid_: child, sub-agent, impl
 
 ### Bus
@@ -228,6 +228,18 @@ by a human click is not a spawned agent, even when the click goes through the
 same spawn path (e.g. spawning from a pinned Linear ticket), nor one the human
 launches from the accès mobile.
 _Avoid_: child (only meaningful under an orchestrator), worker (a fleet role)
+
+**Nom d'espace** (workspace name):
+The name a human reads to recognise a workspace. A spawned agent's name is
+given by the agent that spawned it, never by itself; any other workspace names
+itself. A human rename overrides both, for good. Shape for a spawned agent:
+its **rôle**, then the object in the human's own words, then the ticket.
+_Avoid_: branch name (an implementation detail), label, title
+
+**Rôle** (role):
+What a spawned agent is there to do, the first word of its name: `ops`,
+`impl`, `verif`, `review`, or `explo` (research, spike).
+_Avoid_: kind, type
 
 **Default model**:
 The model a new workspace is pinned to when nobody names one. There are two:
