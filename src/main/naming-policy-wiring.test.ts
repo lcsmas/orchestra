@@ -96,8 +96,8 @@ const SANCTIONED_READS: Array<[file: string, statement: string, why: string, occ
   ['src/main/workspaces.ts', 'formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent)', '#384: drift adoption'],
   ['src/main/workspaces.ts', 'else if (pin.namedByParent) await writeRenameProgress(ws.worktreePath, MAX_AUTO_RENAMES)', '#383: a parent pin retires a live child\'s nudge sentinel'],
 ];
-/** Files that may read `.namedByParent` as a whole: the former-name rule (#384) keys on the pin by design. */
-const NAMER_READ_FILES = new Set(['src/shared/former-branch.ts']);
+/** Files that may read `.namedByParent` as a whole: the former-name rule (#384) keys on the pin by design; the migration planner (#385) reads it as DATA (who to act as, "already parent-named", the namer the app keeps) — every verdict still comes from `decideRename`. */
+const NAMER_READ_FILES = new Set(['src/shared/former-branch.ts', 'src/shared/naming-migration.ts']);
 
 /** Descriptions of every detector that fires on `src` as if it lived in `file` (sanctioned statements of THAT file removed first). */
 function inlineCopiesIn(src: string, file = 'src/main/planted.ts'): string[] {
