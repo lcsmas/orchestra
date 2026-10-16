@@ -121,7 +121,7 @@ They diverge exactly on a promoted worktree, and that divergence *is* the
 feature. Flipping such a worktree's `kind` instead would make `isScratchLike`
 true and silently strip its git identity: `teardownWorkspace` (`:566`) returns
 early and never calls `removeWorktree` (the git worktree **leaks**),
-`renameWorkspaceBranch` (`:823`) stops running `git branch -m` (label desyncs
+`renameWorkspaceBranch` (`:978`) stops running `git branch -m` (label desyncs
 from the real branch), and both frontends hide Diff/Run/PR/merge/branch-picker.
 
 ### Repo ASSOCIATION ≠ `repoPath`
@@ -157,7 +157,7 @@ same change (`activity.ts` merge-state / branch-name / release-state and
 Key per-record fields: `accountId` (pinned at creation, never changes —
 preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
-lock), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
+lock; written only via `naming-policy.ts`), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
 (sidebar pills), `contextTokens` (badge seed), `markedUnread`
 (manual come-back-later bookmark, toggled from the sidebar via
 `workspaces:setUnread`, auto-cleared on next selection), and **`host`**
@@ -425,7 +425,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 | `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via the `canOrchestrate` helper, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/repo/status[/files/+-/note] and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session — nothing is ever typed into a PTY, #232), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
-| `dispatchRenameRequest` | `:722` | `/rename` | see Branch management. |
+| `dispatchRenameRequest` | `:1059` | `/rename` | see Branch management (the pin comes from `decideRename`, `naming-policy.ts`). |
 | `dispatchAddRepoRequest` | `:1024` | `/addRepo` | Register repo. |
 | `dispatchDeleteWorkspaceRequest` | `:1054` | `/deleteWorkspace` | Hard-delete. |
 
@@ -482,23 +482,31 @@ governed by the flags of the **innermost** run of its two parties).
 
 ## Branch management
 - `randomBranchName` ~`:249` (1024 adjective-noun combos).
-- **`renameWorkspaceBranch(id, newBranch, {manual, bumpAutoCount}, window)`**
-  `:664` — scratch: relabel only; worktree: `git branch -m` (via git.ts
-  `renameWorktreeBranch`). `manual` (human UI edit / out-of-band) pins
-  `branchManuallySet`; `bumpAutoCount` (agent auto-rename) instead increments
-  `autoRenameCount`. `freeBranchName` dedupes collisions with `-2..-99`.
-- **Progressive auto-rename** — the agent gets **two** staged auto-renames
-  (`MAX_AUTO_RENAMES`, `:730`): an early provisional name, then a refined name
-  once the work is well-defined. `autoRenameActive(ws)` (`:738`) — `!branch­ManuallySet && autoRenameCount < 2` — is the single gate for the
-  `ORCHESTRA_BRANCH_AUTO` env flag and for whether `dispatchRenameRequest`
-  (`:754`) counts a rename. After the budget is spent the nudge retires, but the
-  agent can still rename on demand (no more hard "already set" refusal).
-- **`branchManuallySet`** = human-pinned (UI edit, out-of-band `git branch -m`
-  adopted by activity.ts, `switchWorkspaceBranch`); hard-stops the nudge for
+- **The naming rule is ONE pure module — `src/shared/naming-policy.ts`** (#381, no Electron
+  import; vague #380 grows it). `nudgeActive(ws)` (`:30`) — `!branchManuallySet && autoRenameCount < MAX_AUTO_RENAMES`
+  (`:16`, =2) — is the single gate for the `ORCHESTRA_BRANCH_AUTO` env flag (`buildSdkEnv`, `agent-sdk.ts:882`) and the
+  `${MAX_AUTO_RENAMES}` baked into the nudge hook script. `initialNaming()` (`:36`) is what
+  `createWorkspace` / `createScratchLikeWorkspace` spread for a fresh record (`branchManuallySet:false`).
+  `decideRename(target, caller)` (`:69`) says what a rename pins: `{kind:'human'}` → `manual` pin, no counter;
+  `{kind:'agent'}` → `bumpAutoCount = nudgeActive(target)`, never refused (today's rule; #383 adds the
+  parent/child matrix). `pinFields(ws, pin)` (`:80`) is what an allowed rename writes. A source-reading wiring test
+  (`src/main/naming-policy-wiring.test.ts`) fails on any inline copy in `src/main`.
+- **`renameWorkspaceBranch(id, newBranch, pin: RenamePin, window)`** `:978` — scratch: relabel only; worktree:
+  `git branch -m` (via git.ts `renameWorktreeBranch`). The caller passes the policy's decided `pin`; the written
+  gate fields are `pinFields(ws, pin)`: `manual` (human UI edit) pins `branchManuallySet`; `bumpAutoCount` (agent
+  auto-rename) instead increments `autoRenameCount`. Callers: `api-handlers.ts` `renameBranch`
+  (`decideRename(ws, {kind:'human'})`) and `dispatchRenameRequest`. `freeBranchName` dedupes collisions with `-2..-99`.
+- **Progressive auto-rename** — the agent gets **two** staged auto-renames: an early provisional name, then a
+  refined name once the work is well-defined. `dispatchRenameRequest` (`:1059`) asks
+  `decideRename(ws, {kind:'agent'})` — the rename counts only while the nudge is active. After the budget is spent
+  the nudge retires, but the agent can still rename on demand (no more hard "already set" refusal).
+- **`branchManuallySet`** = human-pinned (UI edit, out-of-band `git branch -m` adopted by
+  `detectAndUpdateBranchName` in activity.ts, `switchWorkspaceBranch` — all three pin through
+  `decideRename(…, {kind:'human'})` + `pinFields`); hard-stops the nudge for
   good. **`autoRenameCount`** tracks the agent's own progressive renames.
   `.orchestra/.branch-renamed` sentinel holds the live count so the hook advances
   stage / self-disables mid-session before a session restart refreshes the env.
-- **`switchWorkspaceBranch(id, branch, window)`** `:1454` — `git switch`, stop
+- **`switchWorkspaceBranch(id, branch, window)`** `:3411` — `git switch`, stop
   the SDK session (`sdkStopIfLive`, lazy restart on the next send) and the nvim PTY, set
   `hasInput:false` + `branchManuallySet`, emit `pty:restart` for NVIM only (#232: no agent `pty:restart`
   and no "pending coordinator replacement" mark — the SDK restart bumps the generation itself).

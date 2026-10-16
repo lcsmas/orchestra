@@ -1087,7 +1087,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   highest-priority "flag settings" layer, so a stale value in the user's `settings.json`
   cannot override it and `settingSources` is untouched. `buildSdkEnv` sets
   `ORCHESTRA_BRANCH`/`KIND` **plus `ORCHESTRA_BRANCH_AUTO`/`AUTO_RENAME_COUNT`** (the
-  rename-hook's gate/stage vars, from `autoRenameActive(ws)`), the spool-free identity
+  rename-hook's gate/stage vars, from `nudgeActive(ws)`, `naming-policy.ts`), the spool-free identity
   plumbing, and **sets `ORCHESTRA_WS_ID`/`EVENTS_DIR` for every LOCAL workspace** (the SDK session owns the
   events spool, so ITS own shell lifecycle hooks (UserPromptSubmit/PreToolUse/PostToolUse/Stop) fire and write
   `submit`/`pretool`/`stop` spool lines that the tailer replays into `applyAgentEvent`). Remote/sandbox sessions

@@ -87,7 +87,7 @@ Scripts and the Claude Code events they fire on:
   early provisional name on the first prompt; stage 1 (after one auto-rename)
   pushes to refine it once the work is well-defined. Stage comes from the
   `.branch-renamed` sentinel count (fresher than `ORCHESTRA_AUTO_RENAME_COUNT`
-  env); self-disables once the count hits `MAX_AUTO_RENAMES` (=2). See
+  env); self-disables once the count hits `MAX_AUTO_RENAMES` (=2, `naming-policy.ts`; the env gate is `nudgeActive`). See
   [workspaces.md](workspaces.md) "Branch management".
 - **`comms-resurface.sh`** (~`:1844`) — UserPromptSubmit. Queries `/peers`; prints
   the one-line `orchestra-comms` reminder only if peers exist (silent when solo).
