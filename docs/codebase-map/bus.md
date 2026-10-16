@@ -2219,15 +2219,12 @@ coalesced-wake amplifier keeps the member `running` across turns) strands a Bash
 that ages past its 600s ceiling and false-escalates against a healthy member
 (wave 198, 7× incl. seq 1711 — escalated as "hung 10m" 5s before a `#187 DONE`).
 A genuinely hung mid-call turn never reaches a new `submit` (it is stuck), so the
-ceiling still catches it (#108 Q16 preserved). **review-199 F1: the turn-START
-clear runs ONLY for a GENUINE boundary — `applyAgentEvent`'s `queuedSubmit`
-gates it (`if (!queuedSubmit)`).** Two SDK submits are MID-turn, not boundaries,
-and must NOT clear (they would wipe a live tool of the running turn and mask a
-genuine hang): a PARKED prompt (`sdkSend` queued behind a running turn →
-`ev.queued`) and a keeper REATTACH (`session/attach` with `turnInFlight` →
-`submit`). Its only producer was the SDK-side status drive, deleted by #233 (it was a no-op — gated on a
-coexisting agent PTY, which cannot exist since #230); the parameter and its gate stay as the pure turn-boundary seam, and the
-spool path never queues a submit so it stays undefined (a real boundary → clears). Residual accepted-gap (N1): a phantom persists until
+ceiling still catches it (#108 Q16 preserved). **review-199 F1 (history):** a PARKED
+prompt (`sdkSend` queued behind a running turn) and a keeper REATTACH drove a `submit` MID-turn, which must
+NOT clear (it would wipe a live tool of the running turn and mask a genuine hang), so `applyAgentEvent`
+carried a `queuedSubmit` flag. Its only producer was the SDK-side status drive, deleted by #233 — **#378
+removed the flag**: every `submit` is a real boundary (UserPromptSubmit fires at a real prompt submission)
+and the arm clears unconditionally. Residual accepted-gap (N1): a phantom persists until
 the NEXT genuine boundary if the member stays `running` via coalesced wakes.
 
 ## #199 residual (T6b) — a call can END without PostToolUse
@@ -2292,10 +2289,10 @@ into `LivenessMember.inFlightTools`.
 | File | #127 change |
 |---|---|
 | `src/main/hibernation-activity.ts` | `InFlightTool[]` tracker keyed by toolUseId + `noteToolStart`/`noteToolEnd`/`clearInFlightTools`/`getInFlightTools`; `forgetHibernationActivity` clears it. |
-| `src/main/agent-sdk.ts` | (history) the SDK-side status drive threaded `ev.toolUseId` and (#199) `queuedSubmit`; deleted by #233 — no SDK-side producer remains. |
+| `src/main/agent-sdk.ts` | (history) the SDK-side status drive threaded `ev.toolUseId` and (#199) `queuedSubmit`; deleted by #233 — no SDK-side producer remains (the `queuedSubmit` parameter itself went in #378). |
 | `src/main/events-spool.ts` + hook (`workspaces.ts`) | hook mines `tool_use_id` into the jsonl; spool reads `toolUseId` and passes it to `applyAgentEvent`. |
-| `src/main/activity.ts` | `applyAgentEvent` takes `queuedSubmit`; calls start/end at pretool/posttool and `clearInFlightTools` at turn-END (`stop`/`stopfail`/`notify`/`session`) always, and at turn-START (`submit`, #199) **only when `!queuedSubmit`** (review-199 F1). |
-| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang, mid-turn-submit (review-199 F1 must-PASS: a live tool survives a queued submit + a blanket-clear contrast), and healthy controls; source-checks pinning the `!queuedSubmit`-gated clear and the `queuedSubmit` param (reddens on a blanket-clear regression; the producer-wiring pin went with the deleted status drive, #233). |
+| `src/main/activity.ts` | `applyAgentEvent(id, event, tool, transcript?, crons?, toolUseId?)`; calls start/end at pretool/posttool and `clearInFlightTools` at turn-END (`stop`/`stopfail`/`notify`/`session`) and at turn-START (`submit`, #199) — always (the review-199 F1 `queuedSubmit` gate left with its only producer, #378). |
+| `src/main/liveness-dropped-posttool.test.ts` | **NEW (#199)**: drives a dropped-posttool + new-turn spool through the real tracker into the real policy (must-FAIL: phantom Bash escalates); the genuine-hang and healthy controls; source-checks pinning the unconditional submit-arm clear and the absence of `queuedSubmit`/`stopReason` parameters (#378; the mid-turn-submit arm and the producer-wiring pin went with the deleted status drive, #233). |
 | `src/shared/bus-liveness.ts` | `toolClassCeilingMs`, `hungCallForMs`, `resolveStall` (shared dedup/switch, extracted so the staleness & hung paths keep ONE copy), `hungCallEscalationBody`, `InFlightToolState`; `decideEscalation`'s `running` guard now checks the progress bound. |
 | `src/main/bus-liveness.ts` | roster carries `inFlightTools` (list); the hung-call body + log wording; `writeEscalation` takes the hung tool. |
 | `src/shared/bus-liveness.test.ts` | pure tests: ceiling, hung, build-alive, **F1 parallel-hang + most-overdue**, boundary `>=`, switch-OFF count, dedup, body. |
@@ -2512,15 +2509,13 @@ explicit operator path:
   main, NOT the store-less CLI, because the live-child gate needs the store's
   liveness probes — the bus cannot see a plain child's turn state. The mission run
   id **is** its coordinator ws id, so its children are `collectWorkspaceTree(runId)`
-  minus the root; `hasLiveChild = anyChildLive(childIds, isRunning, sdkSessionLive)`
-  — the disjunction covers BOTH surfaces (PTY + structured/SDK). `isRunning` alone
-  is the #111 restart blind spot (its `sessions` map is PTY-only), and the DEFAULT
-  spawn is structured, so it would miss a live SDK child (REVIEW-156 HIGH). The
-  disjunction lives in the platform-free **`anyChildLive`
+  minus the root; `hasLiveChild = anyChildLive(childIds, sdkSessionLive)` — a child is
+  live only as an SDK session since #233 (no agent PTY exists; the old `isRunning`
+  disjunct was the #111 PTY-only blind spot and left with the PTY). The
+  predicate lives in the platform-free **`anyChildLive`
   (`src/shared/refreeze-liveness.ts`)** so a test drives the REAL predicate — a
-  literal-into-the-pure-fn arm can't (REVIEW-156 MED, gate 4): the STRUCTURED-child
-  arm reddens the instant the `sdkSessionLive` disjunct is dropped while the PTY arm
-  stays green (`src/shared/refreeze-liveness.test.ts`).
+  literal-into-the-pure-fn arm can't (REVIEW-156 MED, gate 4)
+  (`src/shared/refreeze-liveness.test.ts`).
 - **The gate (`refreezeMissionRun`, `src/main/bus-runs.ts`):** a typed outcome —
   `no-run` | `not-mission` (re-asserts `refreezeRun`'s `kind='mission'` guard with a
   reason) | `live-child` (refused mid-turn, the freeze invariant) | `refrozen` |

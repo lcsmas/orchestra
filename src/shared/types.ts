@@ -36,12 +36,6 @@ export type WorkspaceHost =
   | { kind: 'local' }
   | { kind: 'sandbox'; endpoint: string };
 
-/** The fixed path a sandbox mounts the worktree at — the agent image's WORKDIR.
- * Claude Code keys its session/history by the absolute cwd, so this MUST be
- * stable across runs for `claude --continue` to resume the prior session, and it
- * must match the container's `/workspace` convention (sandbox/Dockerfile). */
-export const SANDBOX_WORKSPACE_DIR = '/workspace';
-
 /** Cross-machine ownership state for one sandbox endpoint, as last broadcast
  * by its shim: several machines may be attached, exactly one — the driver —
  * may type. `isDriver` is from THIS machine's perspective; the renderer shows
@@ -59,7 +53,7 @@ export interface QueuedPrompt {
   /** Random id so the UI can remove one entry without index races. */
   id: string;
   /** The prompt text, verbatim (newlines allowed; carriage returns are
-   * stripped at delivery so the TUI doesn't submit early). */
+   * stripped at delivery). */
   text: string;
   /** Epoch ms when the prompt was queued. Auto-flush requires a usage snapshot
    * FETCHED AFTER this instant that shows the account un-limited — so a stale
@@ -151,17 +145,15 @@ export interface Workspace {
    * treated as no parent — the child falls back to its own repo section. */
   parentId?: string;
   /** Where the agent runs — local machine (default when absent) or a sandbox
-   * reached over the wire. See {@link WorkspaceHost}. The local node-pty path is
-   * the default for every existing workspace; only an explicitly sandbox-hosted
-   * workspace uses the RemoteTransport. */
+   * reached over the wire (sandbox agents are paused, ADR 0007 / #220). See
+   * {@link WorkspaceHost}. Local is the default for every existing workspace. */
   host?: WorkspaceHost;
   /** Model this workspace's agent runs on (a Claude Code model arg: an alias
    * like `haiku`/`sonnet`/`opus` or a full model id). Set at creation by
    * `/spawn`'s `model` param (`orchestra spawn --model`); absent = the login's
-   * default model, the behaviour of every pre-existing workspace. The pty path
-   * passes it as `claude --model` on every launch (fresh AND resume, so the
-   * pin survives restarts); the SDK structured-session path must equally init
-   * its `query()` `options.model` from this field. The economics lever: worker
+   * default model, the behaviour of every pre-existing workspace. The SDK
+   * session inits its `query()` `options.model` from this field on every start
+   * (fresh AND resume, so the pin survives restarts). The economics lever: worker
    * agents consume most of a swarm's tokens, so orchestrators plan on a strong
    * model and spawn leaves on a cheaper one. */
   model?: string;
@@ -169,8 +161,7 @@ export interface Workspace {
    *  Persisted so the Permissions dropdown sticks and the mode applies even when
    *  picked BEFORE the first message starts the session (the session reads it in
    *  ensureSession). Defaults to 'bypassPermissions' when unset — Orchestra runs
-   *  autonomous agents in isolated worktrees, matching the terminal path which
-   *  runs claude with full permissions (see agent-sdk.ts ensureSession). */
+   *  autonomous agents in isolated worktrees (see agent-sdk.ts ensureSession). */
   sdkPermissionMode?: AgentPermissionMode;
   /** Structured-view reasoning-effort level chosen for this workspace's SDK
    *  session (the deck bar's Effort slider). Persisted so the choice sticks and
@@ -633,8 +624,8 @@ export interface Workspace {
    * useless while Claude is rate-limited — a typed prompt would just error the
    * turn away). The main-process flusher (src/main/prompt-queue.ts) watches the
    * account's usage windows and auto-delivers the whole queue as one turn once
-   * a post-queue usage snapshot shows the limit has reset — typing it into the
-   * live TUI, or waking the agent (`claude --continue`) when it's stopped.
+   * a post-queue usage snapshot shows the limit has reset — delivering it to the
+   * live session, or waking the agent when it's stopped.
    * Persisted in store.json so a queue survives app restarts. Absent/empty on
    * every record predating this field. */
   queuedPrompts?: QueuedPrompt[];
@@ -1091,7 +1082,7 @@ export type AgentStopReason =
 /** Token accounting for one turn, lifted verbatim from the SDK result's
  *  `usage`. `cacheCreationInputTokens`/`cacheReadInputTokens` are the prompt-
  *  cache split; the renderer sums them for a context-size read the same way the
- *  PTY-scraping `agent:context` event does today. All counts are for the single
+ *  transcript-derived `agent:context` event does. All counts are for the single
  *  turn the {@link AgentTurnEndEvent} closes, not cumulative. */
 export interface TokenUsage {
   inputTokens: number;

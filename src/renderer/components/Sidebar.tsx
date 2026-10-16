@@ -862,7 +862,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [version, setVersion] = useState('');
   const [archivedOpen, setArchivedOpen] = useState(false);
   // "Fix broken checks" (Orca-style): confirm, then main hands the failing
-  // run's pointers to this workspace's agent (live SDK turn / live PTY / wake).
+  // run's pointers to this workspace's agent (live SDK turn / wake).
   const onFixChecks = async (w: Workspace) => {
     const ok = await dialog.confirm({
       title: `CI is failing on ${w.branch}`,

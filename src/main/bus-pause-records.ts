@@ -25,12 +25,13 @@ export interface PauseOriginProc {
 export const PAUSE_ORIGIN_WS = '__pause_origin__';
 
 export interface BilanActivity {
-  surface: 'sdk' | 'pty' | 'none' | 'remote';
+  /** `'pty'` left with the agent PTY (#233, #378): no stored row carries it, and `run status` reads only `'none'`. */
+  surface: 'sdk' | 'none' | 'remote';
   memberRun?: string;
   status?: string;
   turnRunning?: boolean;
   interrupt?: 'interrupted' | 'idle' | 'no-session' | 'attached-then-interrupted' | 'failed' | 'unresponsive' | 'exempt' | 'skipped';
-  /** `input`: a one-line summary of the call's input (the Bash command) — what the interrupt ABORTED (#255 M2); null/absent = not recorded (terminal agent). */
+  /** `input`: a one-line summary of the call's input (the Bash command) — what the interrupt ABORTED (#255 M2); null/absent = not recorded (a row written before the field existed). */
   inFlightTools?: Array<{ tool: string | null; toolUseId: string | null; sinceMs: number | null; input?: string | null }>;
   bgTasks?: Array<{ id: string; type?: string; description: string; status: string }>;
   lastTask?: string;

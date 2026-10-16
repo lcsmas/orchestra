@@ -839,10 +839,7 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   // resolve to the WRONG workspace (the parent's) — observed live as
   // `orchestra whoami` printing `id  <parent-id>` (→ empty record) from an
   // orchestrator's structured session. Delete them up front (like
-  // CLAUDE_CONFIG_DIR) so ONLY the explicit assignment below governs
-  // them; identity always flows through ORCHESTRA_WS_ID_IDENTITY (set
-  // unconditionally below). Mirrors the terminal path, which always overwrites
-  // ORCHESTRA_WS_ID with this workspace's id (pty.ts) and so never leaks.
+  // CLAUDE_CONFIG_DIR) so ONLY the explicit assignment below governs them.
   delete env.ORCHESTRA_WS_ID;
   delete env.ORCHESTRA_EVENTS_DIR;
   // Same hygiene for the hook socket: a stale inherited path must not leak
@@ -896,9 +893,8 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
   env.ORCHESTRA_BRANCH_AUTO = autoRenameActive(ws) ? '1' : '0';
   env.ORCHESTRA_AUTO_RENAME_COUNT = String(ws.autoRenameCount ?? 0);
 
-  // CLI identity (ORCHESTRA_WS_ID_IDENTITY, below) AND the activity spool (ORCHESTRA_WS_ID): the generated
-  // activity hook writes `<wsId>.jsonl` for any process where ORCHESTRA_WS_ID is set (its ONLY gate), so the
-  // SDK session owns the spool for a LOCAL workspace — no agent PTY can share it any more (#233).
+  // The activity hook writes `<wsId>.jsonl` for any process where ORCHESTRA_WS_ID is set (its ONLY gate), so the SDK
+  // session owns the spool for a LOCAL workspace — no agent PTY can share it any more (#233) — and CLI identity rides both vars.
   const remote = ws.host?.kind === 'sandbox';
   if (!remote) {
     env.ORCHESTRA_WORKTREE = ws.worktreePath;
@@ -907,15 +903,8 @@ async function buildSdkEnv(ws: Workspace): Promise<{ env: Record<string, string>
     env.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir;
     const sock = getHookSocketPath();
     if (sock) env.ORCHESTRA_SOCK = sock;
-    // CLI IDENTITY, always. `orchestra rename`/`peers`/`message`/`spawn` resolve
-    // the caller's workspace via selfWorkspaceId() (cli/index.ts), which reads
-    // ORCHESTRA_WS_ID first and falls back to ORCHESTRA_WS_ID_IDENTITY. We set
-    // the identity var UNCONDITIONALLY here so those commands work in a
-    // structured session even when the spool gate below withholds
-    // ORCHESTRA_WS_ID — the spool hook (workspaces.ts ORCHESTRA_HOOK_SCRIPT)
-    // never reads the identity var, so this cannot cause a double-writer.
-    // Without it, the rename-instruction hook's `orchestra rename
-    // "$ORCHESTRA_WS_ID" ...` collapses to a single arg and prints `usage:`.
+    // CLI identity: selfWorkspaceId() (cli/index.ts) reads ORCHESTRA_WS_ID, then ORCHESTRA_WS_ID_IDENTITY. The fallback var is
+    // KEPT (#378) for a keeper born before #233, whose frozen env withheld ORCHESTRA_WS_ID while an agent PTY owned the spool.
     env.ORCHESTRA_WS_ID_IDENTITY = ws.id;
     // SPOOL OWNERSHIP: the activity hook writes `<wsId>.jsonl` whenever ORCHESTRA_WS_ID is set
     // (ORCHESTRA_EVENTS_DIR merely picks the dir), so the SDK session claims both.
@@ -1813,7 +1802,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // which, in the packaged app, is a bundled chunk inside app.asar. Spawning
   // through the asar (a file, not a directory) fails with `spawn ENOTDIR`,
   // invisible in dev where there is no asar. Drive the user's real `claude`
-  // (the same binary the terminal path spawns from PATH) instead; only fall
+  // (the same binary the user's shell runs from PATH) instead; only fall
   // back to the SDK default when none is on PATH (dev-friendly).
   const claudeBin = resolveClaudeBinary(sdkEnv);
   // In-process browser tools: give the agent an embedded Browser pane it can
@@ -1857,7 +1846,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // reminder, field-guide, activity spool) into
       // `<worktree>/.claude/settings.local.json` — the SDK's `'local'` setting
       // source (sdk.d.ts: "'local' - Local settings (.claude/settings.local.json)").
-      // The terminal path spawns `claude` with NO source restriction, so it
+      // A bare `claude` has NO source restriction, so it
       // loads all three by default and those hooks fire. Passing only
       // ['user','project'] here silently EXCLUDED the file every Orchestra hook
       // lives in — so in structured mode the branch was never auto-renamed, peer
@@ -1941,7 +1930,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
             memoryCapSpecFor({ wsId, runId: sdkEnv.ORCHESTRA_RUN_ID, ws, remote, settings: store.getMemoryGuardSettings() })) as never,
           }),
       // The workspace's model (frozen at creation / picked in the dropdown);
-      // undefined = account default. Same resolver as the pty path. `sdkSetModel`
+      // undefined = account default. `sdkSetModel`
       // switches it live.
       model: resolveLaunchModel(ws.model, store.getModelDefaults()),
       // Start on the workspace's chosen reasoning effort (the deck bar's Effort
@@ -2023,21 +2012,6 @@ function transcriptDir(ws: Workspace): string {
 function transcriptExistsFor(ws: Workspace, sessionId: string): boolean {
   try {
     return fs.existsSync(path.join(transcriptDir(ws), `${sessionId}.jsonl`));
-  } catch {
-    return false;
-  }
-}
-
-/** Does ANY transcript `.jsonl` exist in `ws`'s transcript dir — i.e. would
- *  `claude --continue` find a conversation to resume? The terminal-seam (#178
- *  seam b) discriminator: `hasInput` alone does not prove the newest transcript
- *  still exists, so a phantom terminal workspace `--continue`s into nothing (the
- *  15:35:08 exit-1). Best-effort: a missing dir / probe error → "none". */
-function anyTranscriptExists(ws: Workspace): boolean {
-  try {
-    return fs
-      .readdirSync(transcriptDir(ws))
-      .some((name) => name.endsWith('.jsonl'));
   } catch {
     return false;
   }
@@ -3652,7 +3626,7 @@ export async function sdkRunBash(wsId: string, command: string): Promise<void> {
     }, BASH_TIMEOUT_MS);
     try {
       // `-l -c` so the user's login shell config (aliases, PATH) is honored,
-      // matching what the terminal path gives them. stdin closed (bash mode is
+      // matching the user's own shell. stdin closed (bash mode is
       // non-interactive).
       child = spawn(shell, ['-l', '-c', cmd], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
@@ -5797,9 +5771,9 @@ export async function sdkFork(
   //     the renderer treats as "nothing to backfill" with no error, because the
   //     failure notice only fires on a THROW.
   //  2. The fork would be the NEWEST session in the SOURCE's project dir, so
-  //     the SOURCE's own `claude --continue` (terminal agent) and
+  //     a `claude --continue` run in the SOURCE worktree and
   //     `newestResumeTokenCount` would resume the FORK's branch — breaking the
-  //     "original stays intact" premise on the terminal path.
+  //     "original stays intact" premise.
   //
   // Moving it fixes both at once. Measured: after the move the primary lookup
   // hits, `listSessions({dir: forkWorktree})` goes 0 -> 1, the source's dir no
@@ -5901,8 +5875,8 @@ export function sdkStopMany(wsIds: readonly string[]): void {
 
 // Register the delivery seam so the lifecycle dispatchers in workspaces.ts /
 // prompt-queue.ts can route a peer message, a usage-limit-parked prompt, or an
-// account migration to a LIVE structured session — instead of blindly spawning a
-// raw `claude` PTY (a stray second agent that never receives the message). The
+// account migration to a LIVE structured session — instead of blindly starting a
+// second session (a stray agent that never receives the message). The
 // seam breaks the import cycle (workspaces.ts can't import agent-sdk.ts back).
 // `send` maps to sdkSend (enqueues a live turn); the echo it emits also renders
 // the delivered text in the structured transcript, exactly like a typed turn.

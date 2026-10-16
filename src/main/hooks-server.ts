@@ -3,7 +3,6 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { dispatchHookEvent } from './activity';
 import {
   dispatchRenameRequest,
   dispatchSetBaseRequest,
@@ -11,7 +10,6 @@ import {
   dispatchSpawnRequest,
   dispatchPeersRequest,
   dispatchResolveHandleRequest,
-  dispatchReadRequest,
   dispatchMessageRequest,
   dispatchBroadcastMessageRequest,
   dispatchAddRepoRequest,
@@ -65,7 +63,7 @@ import { orchestraHome } from './platform';
 // activity tracking is driven 1:1 by Claude's own events instead of by
 // scraping the PTY or sampling /proc.
 //
-// The socket path is exposed to spawned PTYs via ORCHESTRA_SOCK; the workspace
+// The socket path is exposed to agent sessions via ORCHESTRA_SOCK; the workspace
 // id rides on ORCHESTRA_WS_ID. The hook command is env-guarded so it's a
 // silent no-op when claude is run outside orchestra.
 
@@ -242,7 +240,7 @@ export async function startHooksServer(): Promise<void> {
             // orchestra restart <id> [--fresh]: relaunch the workspace's claude
             // process so a fresh boot re-reads CLAUDE.md/settings, WITHOUT
             // touching worktree/branch/commits (issue #111). The surface routing
-            // (SDK session, legacy terminal-only wake #228, live PTY) lives in
+            // (SDK session, legacy terminal-only wake #228) lives in
             // restart-workspace.ts (classifyRestartMode). `fresh` maps
             // to --fresh (vierge / sdkClear-equivalent).
             if (typeof msg.id === 'string') {
@@ -308,18 +306,6 @@ export async function startHooksServer(): Promise<void> {
             // #144 — id+name of every live workspace, for the CLI `send --to`
             // canonicalizer. Read-only, no caller context needed.
             send(200, dispatchResolveHandleRequest());
-          } else if (route === '/read') {
-            if (typeof msg.id === 'string') {
-              send(
-                200,
-                dispatchReadRequest({
-                  id: msg.id,
-                  lines: typeof msg.lines === 'number' ? msg.lines : undefined,
-                }),
-              );
-            } else {
-              send(200, { ok: false, error: 'missing id' });
-            }
           } else if (route === '/message') {
             // THREE shapes on one route (issue #86). The discrimination is pure
             // and lives in `shared/broadcast-targets.ts` so it is actually
@@ -622,10 +608,7 @@ export async function startHooksServer(): Promise<void> {
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());
           } else {
-            // Default route handles activity events: /event or anything else.
-            if (typeof msg.id === 'string' && typeof msg.event === 'string') {
-              dispatchHookEvent(msg.id, msg.event);
-            }
+            // Unknown route (incl. the retired `/event` activity POST — activity rides the spool, #378): answered empty, as ever.
             send(200, {});
           }
         } catch (e) {

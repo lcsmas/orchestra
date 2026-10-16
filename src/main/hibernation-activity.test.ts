@@ -117,7 +117,7 @@ test('#132 acceptance (remote same-tool, wire toolUseId): the HUNG (oldest) same
   // remote tool events). On a REMOTE session two parallel calls of the SAME tool
   // where the OLDER hangs: because the sandbox wire now carries a DISTINCT
   // tool_use id per call (threaded EventFrame → parseSpoolChunk → shim emit →
-  // onEvent → applyAgentEvent's 7th slot), ending the FAST call BY ITS ID removes
+  // onEvent → applyAgentEvent's 6th slot), ending the FAST call BY ITS ID removes
   // exactly that call — the hung oldest is untouched and still escalates.
   // This is the FLIP of the old F3-residual disclosure: same scenario, distinct
   // ids, opposite (correct) survivor.

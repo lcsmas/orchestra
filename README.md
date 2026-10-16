@@ -34,7 +34,7 @@ If you've seen [Conductor](https://conductor.build) on macOS, Orchestra is that 
 
 ### Multi-agent orchestration
 - **Spawn** — any agent creates a sibling workspace + agent with `orchestra spawn --task "…"`
-- **Peer comms** — agents list siblings, read each other's transcripts, and message each other; messages to a stopped agent queue in an inbox delivered on its next start
+- **Peer comms** — agents list siblings and message each other; messages to a stopped agent queue in an inbox delivered on its next start
 - **Attach / detach** — re-parent any existing workspace under an orchestrator (or pop it back out)
 
 ### Review & ship
@@ -116,7 +116,6 @@ Orchestra ships an `orchestra` command that talks to a running app over its loca
 
 ```bash
 orchestra peers                                       # list the other agent workspaces (id, branch, repo, status)
-orchestra read <id> [--lines N]                       # print a workspace's transcript (default 80 lines)
 orchestra message <id> <text...>                      # legacy peer channel; on a bus (delivery-ON) run use `orchestra send` instead
 orchestra spawn --task <text> [--repo <path>] [--base <branch>] [--detached]   # spawn a new worktree + agent
 orchestra rename <id> <branch>                         # rename a workspace's branch

@@ -80,14 +80,14 @@ test('sdkInterruptForPause never touches an idle session and NEVER drops the que
   assert.ok(!body.includes('emit('), 'never fabricates an event for a missing session (unlike sdkInterrupt)');
 });
 
-test('activity.ts: the `submit` chokepoint notifies only a REAL turn boundary (not a parked prompt or a reattach)', () => {
+test('activity.ts: the `submit` chokepoint notifies every turn start (every `submit` is a real boundary since #233 — no parked-prompt / reattach flag, #378)', () => {
   const code = codeOf('src/main/activity.ts');
   const submit = code.slice(at(code, "case 'submit':"));
   const arm = submit.slice(0, submit.indexOf('break;'));
-  assert.ok(arm.includes('if (!queuedSubmit) notifyTurnStart(id);'));
+  assert.ok(/\n\s+notifyTurnStart\(id\);/.test(arm) && !arm.includes('queuedSubmit'));
 });
 
-test('the host observer stands down for anything without a live structured session (PTY keystrokes also fire `submit`)', () => {
+test('the host observer stands down for anything without a live structured session (a CLI turn with no live structured session also fires `submit`)', () => {
   const code = codeOf('src/main/pause-trap-host.ts');
   const obs = code.slice(at(code, 'export function makeTurnStartObserver('));
   assert.ok(at(obs, 'if (sdkPauseActivity(wsId) === null) return;') < at(obs, 'void onTurnStart('));

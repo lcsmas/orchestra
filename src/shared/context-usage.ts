@@ -17,7 +17,7 @@
 //      which sums the input components of the last main-chain assistant turn.
 //      An INFERENCE from what the API billed, not the CLI's own figure — but
 //      the only source that works with no live `Query` at all (detached keeper
-//      sessions, history panes, PTY-driven agents).
+//      sessions, history panes).
 //
 //   4. `turn-end` — the per-turn inference on `AgentTurnEndEvent`
 //      (`contextUsedTokens`/`contextWindow`), derived from what the last API

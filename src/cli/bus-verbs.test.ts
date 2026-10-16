@@ -168,10 +168,9 @@ test('resolveBusIdentity: flag beats env, env beats default', () => {
     runId: DEFAULT_RUN_ID,
     handle: 'h2',
   });
-  // The SDK-session fallback: ORCHESTRA_WS_ID is spool-ownership-gated and can
-  // be withheld while ORCHESTRA_WS_ID_IDENTITY is always set (see
-  // resolveSelfWorkspaceId in index.ts). Without this the bus verbs would be
-  // unusable from exactly the sessions #117 wakes.
+  // The fallback for a keeper born before #233: ORCHESTRA_WS_ID could be withheld there while
+  // ORCHESTRA_WS_ID_IDENTITY was always set (see resolveSelfWorkspaceId in index.ts).
+  // Without it the bus verbs would be unusable from such a surviving session.
   assert.deepEqual(resolveBusIdentity({}, { ORCHESTRA_WS_ID_IDENTITY: 'h3' }), {
     runId: DEFAULT_RUN_ID,
     handle: 'h3',

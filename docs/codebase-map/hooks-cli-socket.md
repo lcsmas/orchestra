@@ -18,14 +18,13 @@ A minimal HTTP daemon on a Unix domain socket (POSIX:
 **Routes** — all POST, all reply `{ ok: boolean, ... }` (per-route body size
 limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 `dispatch*Request` exported from `workspaces.ts` (see
-[workspaces.md](workspaces.md)):
+[workspaces.md](workspaces.md)). An UNKNOWN route — incl. the retired `/event` activity POST and `/read` (#378) — answers an empty `200 {}`:
 
 | Route | Required body | Response |
 |---|---|---|
 | `/rename` | `id`, `branch` | `{ ok, branch? }` |
 | `/spawn` | `task` (+ optional `repoPath`,`baseBranch`,`from`,`detached`,`model`,`effort` — `detached:true` skips parent nesting; `from` still drives repo inheritance; `model` pins the agent's model, passed as `claude --model` on every launch; `effort` pins `ws.sdkEffort`, validated by `parseEffortArg` — unknown levels are refused) | `{ ok, id?, branch?, error?, note? }` — **`note` = ok with a caveat (D6/D7: no first-turn outcome seen within the 20 s wait); `ok:false` with `id`/`branch` set = the child was created but its SDK session failed to start (#227): kept stopped, task retained, no PTY fallback; `error` names the reason and the id, `orchestra restart <id>` retries** |
 | `/peers` | — (+ `stats?: true` — adds each git peer's committed three-dot diff vs base as `diff: {files,insertions,deletions}\|null`; one git subprocess per peer, so opt-in — the comms-resurface hook hits `/peers` on every prompt) | `{ ok, peers?: PeerInfo[] }` — `PeerInfo` is `{id,branch,repo,status,lastTask?,statusText?,heldForMemory?,diff?}`; **#232 dropped the PTY-derived `running` flag** (nothing printed it) |
-| `/read` | `id` (+ `lines?`) | `{ ok, branch?, transcript? }` |
 | `/message` | `to`, `text` (+ `from`) | `{ ok, delivery?: 'live'\|'started'\|'inbox' }` — **`'live'` is a PROVEN claim, not an optimistic one (issue #57 fault b):** it is returned only once the message actually became the target's turn (`sdkDeliverConfirmed` awaits the delivery watcher; see `structured-agent-view.md`). A turn discarded before running (Escape, session end, tray cancel, stop) or still unconfirmed after `DELIVERY_START_TIMEOUT_MS` falls back to the durable inbox and reports **`'inbox'`** — it previously reported `'live'` on the queue push alone and never corrected it, which is how senders lost messages silently. The CLI prints this verbatim as `Delivered (<delivery>).` **#232: nothing is ever typed into a PTY** — a live SDK session, else a structured wake (`started`), else the inbox. |
 | `/message` (broadcast) | `to: string[]` **or** `children: true` (+ `from`, `text`) | `{ ok, results?: [{id, ok, branch?, delivery?, error?}] }` — issue #86. **Three shapes share this one route** and are discriminated by the TYPE of `to`: a `string` takes the original single-target path above and answers the original `{ok,delivery,branch}` shape (so an older CLI against a newer app is byte-for-byte unaffected); an ARRAY, or `children:true`, takes `dispatchBroadcastMessageRequest` and answers `results` instead — a per-target report cannot be squeezed into one `delivery` field without lying about which target it describes. `children:true` resolves the caller's **DIRECT children only**, never the descendant subtree (a subtree broadcast is a foot-gun mid-wave), SERVER-SIDE — `/peers` deliberately omits `parentId`, and client-side enumeration would race the store. A missing `from` with `children:true`, and an empty child set, are both NAMED refusals (`{ok:false,error}` with no `results`), never a silent success: a halt that reached nobody must not exit 0. Each target goes through the SAME `dispatchMessageRequest` as the single form, so `live`/`started`/`inbox` keep their exact meanings — INCLUDING the #169 fleet-coordination refusal: a broadcast is NOT a bypass by virtue of its shape (F3 / LEAD ruling D-W8-1). `dispatchBroadcastMessageRequest` threads the caller's explicit `emergency` flag through per target, so on a delivery-ON fleet a plain `--to <peer>`/`--children` of coordination text is REFUSED just like a positional send, and ONLY `--emergency --to`/`--children` (the #86 group-stop) bypasses and lands. Without an explicit `--emergency`, a halt of coordination text reaches nobody by design — the safe direction, since arbitrary coordination must not dodge the bus via `--to`; dispatch is CONCURRENT (`allSettled`, results re-ordered back into the caller's order): each delivery awaits a 10s bounded turn-start, so sequential dispatch would make those bounds ADD UP and a 7-target halt would not attempt target #7 until T+60s — and a hung agent, the thing you broadcast *about*, is exactly what consumes the full bound. Every target is attempted (no abort-on-first-failure — the point of a broadcast halt is that it reaches everyone), a THROWN target becomes its own failure row rather than sinking the report, and `ok` is the AND of all targets so a partial failure is a failure. A non-string member of the `to` array is REFUSED, never silently dropped. |
 | `/addRepo` | `path` | `{ ok, repo? }` |
@@ -213,12 +212,12 @@ more: the Run / nvim / login terminals are not agents.)
 Standalone Node HTTP client (no npm deps) that POSTs to the socket. Reads
 `$ORCHESTRA_SOCK`/pointer for the socket and, for self-identity (sent as `from`),
 `$ORCHESTRA_WS_ID` with a fallback to `$ORCHESTRA_WS_ID_IDENTITY`
-(`resolveSelfWorkspaceId`) — the latter is set unconditionally by the SDK session's
-`buildSdkEnv` so identity survives even when the spool gate withholds
-`$ORCHESTRA_WS_ID` in a structured-view session. Exit 0 on `{ok:true}`, 1 otherwise
+(`resolveSelfWorkspaceId`) — the latter is still set by the SDK session's
+`buildSdkEnv` and the fallback is KEPT (#378) for a keeper born before #233, whose
+frozen env withheld `$ORCHESTRA_WS_ID` while an agent PTY owned the spool. Exit 0 on `{ok:true}`, 1 otherwise
 (error to stderr).
 Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base),
-`read <id> [--lines N]`, `message [--emergency] <id> <text…>`
+`message [--emergency] <id> <text…>`
 (**#169 P4 — `message` is the LEGACY channel**: `dispatchMessageRequest` refuses
 a single-target send when the target's anchored run has the `delivery` switch ON,
 returning an error that names `orchestra send`; the pure decision is

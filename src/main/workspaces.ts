@@ -38,7 +38,6 @@ import {
   isRunning,
   stopPty,
   clearScrollback,
-  readScrollback,
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
 import { sanitizeStatusText } from '../shared/status-text.ts';
@@ -474,8 +473,9 @@ export function orchestratorBrief(
   orchestratorRepoParagraph(ws) +
   'Because THIS session is an orchestrator, spawn children WITHOUT `--detached` so they nest under you in the sidebar — `--detached` is only for spawning from a plain (non-orchestrator) scratch session and would pop the child out top-level. If a child was spawned detached by mistake, repair it with `orchestra attach <child-id> ' +
   "<this-session's-id>`. " +
-  'Track the agents you spawn with `orchestra peers`, read their progress with `orchestra read <id>`, and follow up with `orchestra send --type status --to <id> <text>` on a bus (delivery-ON) run (`orchestra message` is the legacy channel — #169 refuses it for coordination on a delivery-ON run and points at `orchestra send`; it survives for delivery-OFF runs and via `orchestra message --emergency <id>` for an out-of-band poke). ' +
-  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to report to you (`orchestra send --type status --to <your-id>` on a bus run) on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra read <id>`. ' +
+  'Track the agents you spawn with `orchestra peers` (status + the one-line status note each child sets), and follow up with `orchestra send --type status --to <id> <text>` on a bus (delivery-ON) run (`orchestra message` is the legacy channel — #169 refuses it for coordination on a delivery-ON run and points at `orchestra send`; it survives for delivery-OFF runs and via `orchestra message --emergency <id>` for an out-of-band poke). ' +
+  'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to report to you (`orchestra send --type status --to <your-id>` on a bus run) on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra peers`. ' +
+  'To stop or pause a wave or a fleet: `orchestra run pause` (soft) or `orchestra run pause --hard` — never a message asking it to stop. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child (`orchestra send` on a bus run) — route it to the owner however small it looks. " +
   'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
   spawnedModelBriefLine(store.getModelDefaults().spawned) +
@@ -588,11 +588,10 @@ export async function archiveWorkspace(id: string): Promise<void> {
     if (ws.archived) continue;
     forgetWorkspaceProbes(ws.id);
     log.info(`archiving workspace ${ws.branch} (${ws.id})`);
-    // Soft archive: stop the agent but keep the workspace record (flagged
-    // archived), the worktree, and the scrollback log. The sidebar hides
+    // Soft archive: stop the Run/nvim terminals (the agent session is stopped below) but keep the
+    // workspace record (flagged archived) and the worktree. The sidebar hides
     // archived workspaces from the main list and surfaces them under a
     // dedicated Archived section where they can be restored or hard-deleted.
-    stopPty(ws.id);
     stopPty(`${ws.id}:run`);
     stopPty(`${ws.id}:nvim`);
     // Tear down the embedded browser panel as well. Its content is a native
@@ -651,6 +650,20 @@ async function stopStructuredSession(id: string): Promise<void> {
   await stopMemberScopeIfAny(id, 'workspace-deleted'); // #327: only a member WITH a kernel scope: its Reliquats killed by identity, then ITS units stopped (never another member's)
 }
 
+/** #378: before an operation MOVES an agent's files (adopt-repo, sandbox import/eject) stop its SDK session and WAIT until
+ *  the keeper, the CLI and the agent's background jobs are gone — the agent PTY these moves used to stop no longer exists
+ *  (ADR 0007), so without this a mid-turn agent kept writing during the move. Unlike a delete it forbids no launch (the next
+ *  send restarts the session lazily) and it FAILS CLOSED: a session or keeper still alive afterwards throws, so the move never starts. */
+export async function stopAgentSessionForMove(id: string, reason: string): Promise<void> {
+  const tree = snapshotKeeperTree(id); // BEFORE the stop: an interrupted CLI orphans its background jobs
+  await sdkStopIfLive(id);
+  await killKeeper(id, reason); // a session that answered the interrupt closes gracefully on the keeper's own clock; this awaits the death
+  await killKeeperTree(id, tree, reason);
+  if (sdkSessionLive(id) || readTrackedKeeperPid(id) !== null) {
+    throw new Error(`could not stop the agent session of ${id} — nothing was moved`);
+  }
+}
+
 /** Tear down everything a delete owns EXCEPT the store record and the renderer
  *  broadcast: stop PTYs, run the archive script, remove the worktree/dir, drop
  *  scrollback + inbox. Split out so bulk delete can reap N worktrees and then
@@ -663,10 +676,9 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   forgetHibernationActivity(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   await stopStructuredSession(id);
-  // Hard delete: stop agent, run user's archive script (best-effort), remove
-  // the git worktree from disk, drop the scrollback log. Archive script runs
-  // BEFORE worktree removal so it can still see the files / cwd.
-  stopPty(id);
+  // Hard delete: the agent session is stopped above; now the Run/nvim terminals, then the user's archive script (best-effort),
+  // the git worktree and the leftover `logs/<id>.log` (the pre-#233 agent-PTY log — nothing writes it now). The archive script
+  // runs BEFORE worktree removal so it can still see the files / cwd.
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
   removeAgentTmpDir(id);
@@ -863,7 +875,6 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       // Orphaned: git no longer tracks this worktree. Tear the record down. The session stop runs in the
       // BACKGROUND (a kill can take seconds and this runs before first paint); launches are refused at once.
       pendingStops.push(stopStructuredSession(ws.id).then(() => removeAgentTmpDir(ws.id)));
-      stopPty(ws.id);
       stopPty(`${ws.id}:run`);
       stopPty(`${ws.id}:nvim`);
       clearScrollback(ws.id);
@@ -1639,8 +1650,7 @@ export interface PromoteResult {
   /** #171 — ids whose live session was restarted (conversation-preserving) to
    *  pick up the promoted node's NEW run id + coordinator generation. */
   restarted?: string[];
-  /** #171 — ids marked 'stale run' because the live session was working (or a
-   *  raw PTY that could not be proven idle): the env refresh is DEFERRED to the
+  /** #171 — ids marked 'stale run' because the live session was working: the env refresh is DEFERRED to the
    *  next idle `orchestra restart`, and bus sends are refused meanwhile. */
   markedStale?: string[];
   error?: string;
@@ -1900,12 +1910,12 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       : ws.name;
     const updated: Workspace = { ...ws, kind: 'orchestrator', name };
     await store.upsertWorkspace(updated);
-    // The promoting agent's pty was spawned with ORCHESTRA_KIND=scratch, so the
+    // The promoting agent's session was started with ORCHESTRA_KIND=scratch, so the
     // sentinel is what makes the standing delegation reminder kick in on its
-    // very next prompt — no pty restart required.
+    // very next prompt — no session restart required.
     await markOrchestratorWorktree(ws.worktreePath);
     platform.broadcast('workspace:update', updated);
-    // #134 (D1): wave boundary — start the run row now (pty not relaunched).
+    // #134 (D1): wave boundary — start the run row now (session not restarted).
     startRunForPromoted(updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     // #171 — refresh the live session's run env (see the pre-mutation snapshot).
@@ -2174,7 +2184,7 @@ export interface AdoptRepoResult {
  * The agent's transcript directory is keyed by the mangled worktree path, so the
  * conversation would be orphaned by the move — it is carried across explicitly,
  * along with `.claude/` and `.orchestra/`, so an adopting session keeps its
- * history. PTYs are stopped first because their cwd is about to stop existing.
+ * history. The agent's SDK session and the Run/nvim PTYs are stopped first (#378).
  * Idempotent. Never throws; answers `{ ok }`. */
 export async function dispatchAdoptRepoRequest(input: {
   id?: string;
@@ -2234,8 +2244,9 @@ export async function dispatchAdoptRepoRequest(input: {
       `orchestrator-${repoName}-${sanitizeBranchName(branch)}-${id.slice(0, 8)}`,
     );
 
-    // The agent's cwd is about to stop existing — stop it before moving.
-    stopPty(id);
+    // The agent's cwd is about to change — stop its SDK session (awaited, fail closed: nothing moves under a live
+    // agent; a self-adopt cuts the caller's own CLI, the move completes) and the Run/nvim terminals.
+    await stopAgentSessionForMove(id, 'adopt-repo');
     stopPty(`${id}:run`);
     stopPty(`${id}:nvim`);
 
@@ -2505,7 +2516,7 @@ export interface WhoamiResult {
   /** Agent-reported PR URLs, empty when unlinked. Same live-read rationale as
    * `parentId`: they are mutable at any moment (`orchestra link`), so the
    * link-instruction hook must ask for them each fire rather than trust a value
-   * baked into the pty env at spawn. */
+   * baked into the session env at start. */
   linkedPrUrls?: string[];
   /** Agent-reported Linear issue key, or null when unlinked. */
   linkedLinearKey?: string | null;
@@ -2714,33 +2725,17 @@ export function dispatchAccountsListRequest(): AccountsListResult {
 // ---------- Inter-agent communication ----------
 //
 // Agents already reach the main process over the same unix socket they use for
-// /spawn and /rename. These three routes let a running agent (a) discover the
-// other live agents, (b) read a peer's terminal transcript, and (c) hand a peer
-// a prompt. Delivery of a message is "live" when the target has a live SDK
-// session (the text becomes its next turn), "started" when a stopped target is
-// woken with it, and falls back to a durable per-workspace inbox file otherwise,
-// which the peer drains into context on its next SessionStart.
+// /spawn and /rename. These routes let a running agent (a) discover the other
+// live agents and (b) hand a peer a prompt. Delivery of a message is "live" when
+// the target has a live SDK session (the text becomes its next turn), "started"
+// when a stopped target is woken with it, and falls back to a durable
+// per-workspace inbox file otherwise, which the peer drains into context on its
+// next SessionStart.
 
 const INBOX_ROOT = path.join(os.homedir(), '.orchestra', 'inbox');
 
 function inboxPathFor(id: string): string {
   return path.join(INBOX_ROOT, `${id}.txt`);
-}
-
-// Strip ANSI/VT escape sequences (CSI, OSC, single-char escapes) so a peer
-// reading another agent's scrollback gets plain text instead of raw terminal
-// control bytes. Deliberately broad — a read is informational, not byte-exact.
-// Built from \u001b/\u009b string escapes so no raw control bytes live in source.
-const ANSI_RE = new RegExp(
-  // OSC: ESC ] ... terminated by BEL or ST (ESC \\)
-  '[\\u001b\\u009b]\\][^\\u0007\\u001b]*(?:\\u0007|\\u001b\\\\)' +
-    // CSI and other escape sequences
-    '|[\\u001b\\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-ntqry=><]',
-  'g',
-);
-
-function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, '').replace(/\r/g, '');
 }
 
 export interface StatusResult {
@@ -2791,8 +2786,7 @@ export interface PeerInfo {
   status: WorkspaceStatus;
   lastTask?: string;
   /** The peer's agent-authored one-line status note (`orchestra status`) —
-   * lets a coordinator scan swarm progress without `orchestra read`ing every
-   * child. Absent when the peer never set one (or cleared it). */
+   * lets a coordinator scan swarm progress from `peers` alone. Absent when the peer never set one (or cleared it). */
   statusText?: string;
   /** #286 Admission: this member's automatic start is HELD for low memory (since-when) — a stall to NOT mistake for a hang. */
   heldForMemory?: { kind: HeldStartKind; since: number };
@@ -2926,32 +2920,6 @@ export function dispatchResolveHandleRequest(): {
   };
 }
 
-export interface ReadResult {
-  ok: boolean;
-  branch?: string;
-  transcript?: string;
-  error?: string;
-}
-
-// Cap how much of a peer's transcript a single read returns. The scrollback log
-// is itself capped at 2 MB; we tail the last N lines after stripping ANSI.
-const READ_DEFAULT_LINES = 80;
-const READ_MAX_LINES = 400;
-
-/** Return the tail of a peer agent's terminal transcript, ANSI-stripped. */
-export function dispatchReadRequest(input: { id: string; lines?: number }): ReadResult {
-  const ws = store.getWorkspace(input.id);
-  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-  const want = Math.max(1, Math.min(input.lines ?? READ_DEFAULT_LINES, READ_MAX_LINES));
-  const cleaned = stripAnsi(readScrollback(input.id));
-  // Drop trailing blank lines (TUI repaints leave a tail of them) so `lines`
-  // counts real content, then tail the last N and collapse blank runs.
-  const lines = cleaned.split('\n');
-  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-  const tail = lines.slice(-want).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { ok: true, branch: ws.branch, transcript: tail };
-}
-
 export interface MessageResult {
   ok: boolean;
   // 'live' — target had a live SDK session; the message became its next turn.
@@ -2981,7 +2949,7 @@ function formatPeerMessage(fromBranch: string, fromId: string, text: string): st
  * or a terminal-only workspace's newest on-disk transcript, the same session
  * `--continue` picks) so the woken agent keeps its context; a workspace that
  * never ran starts fresh with the prompt as its opening turn. There is NO
- * raw-PTY fallback (#227). Returns false when the agent can't be woken
+ * other launch path (#227). Returns false when the agent can't be woken
  * (missing / archived / refused / the SDK session failed to start) so the
  * caller falls back (inbox, re-queue, error). Exported for the prompt-queue flusher, which delivers
  * usage-limit-parked prompts through the exact same live-or-wake path as peer
@@ -3014,7 +2982,7 @@ export async function wakeAgentWithPrompt(
   if (await sdkDeliver(id, prompt, undefined, opts?.origin)) return true;
   // No live session — STRUCTURED-FIRST wake: start an SDK session (resuming the
   // prior conversation) and hand it the prompt as its opening turn, so the woken
-  // agent runs in the structured view instead of respawning the raw TUI.
+  // agent runs in the Agent view.
   if (await sdkStartAndDeliver(id, prompt, opts?.origin)) {
     // An OWED brief rides first and flips hasInput itself once the CLI's first non-error output lands (agent-sdk `consume`, #227 D7).
     if (!ws.hasInput && !owesOpeningTask(ws)) {
@@ -3116,7 +3084,7 @@ export async function dispatchMessageRequest(
   // place and handed to both paths. The mirror stores this PAYLOAD, not the
   // delivered RENDERING — the delivery path re-wraps it via formatPeerMessage
   // (attribution + CR-strip), by design, since the bus is the source of truth
-  // for the message, not the TUI transcript (review F6). What F5 keeps aligned
+  // for the message, not the transcript (review F6). What F5 keeps aligned
   // is the CAP: two copies of `trim().slice(0, MESSAGE_MAX_CHARS)` would drift
   // the day either moves.
   const body = input.text.trim().slice(0, MESSAGE_MAX_CHARS);
@@ -3473,7 +3441,6 @@ export async function switchWorkspaceBranch(id: string, branch: string): Promise
   const nvimId = `${id}:nvim`;
   const restartNvim = isRunning(nvimId);
   stopPty(nvimId);
-  clearScrollback(id);
   // The STRUCTURED session is a live subprocess with the OLD branch baked into
   // its env (ORCHESTRA_BRANCH) and its context: stop it so the next send starts
   // against the new branch. Lazy restart (the renderer's next send re-opens it)
@@ -3548,7 +3515,7 @@ const HOOK_ACTIVITY_SESSION_CMD = activityHookCmd('session');
 // worktree. Inlining the multi-line instruction in a single JSON-encoded
 // hook command requires brutal quote-escaping, and a script file is far
 // easier to read and modify. Resolved against $ORCHESTRA_WORKTREE (the
-// absolute worktree root, set on the pty env) rather than a relative path, so
+// absolute worktree root, set on the session env) rather than a relative path, so
 // it still works after the agent `cd`s into a subdirectory — the relative form
 // raised "No such file or directory" on every prompt once cwd left the root.
 // The -f guard + `|| true` make a genuinely-missing script a silent no-op
@@ -3834,17 +3801,17 @@ Children read it as background context; only you write it.
 
 const COMMS_SKILL = `---
 name: orchestra-comms
-description: Coordinate with the OTHER agents running in sibling Orchestra workspaces — list them, read a peer's transcript, or send a peer a prompt. Use when the user asks you to coordinate agents, or to follow up on work you delegated to a spawned agent.
+description: Coordinate with the OTHER agents running in sibling Orchestra workspaces — list them or send a peer a prompt. Use when the user asks you to coordinate agents, or to follow up on work you delegated to a spawned agent.
 ---
 
 # Talk to sibling agents
 
-Other agents may be running in sibling workspaces. You can discover them, read
-what they have been doing, and hand one a message. A few \`orchestra\` CLI
+Other agents may be running in sibling workspaces. You can discover them and
+hand one a message. A few \`orchestra\` CLI
 commands (each reads \$ORCHESTRA_SOCK / \$ORCHESTRA_WS_ID from your env, so they
 already know who you are). Keep any message self-contained — the peer does not
 share your conversation. On a bus (delivery-ON) run, coordination goes through
-\`orchestra send\` (§3); \`orchestra message\` is the legacy channel.
+\`orchestra send\` (§2); \`orchestra message\` is the legacy channel.
 
 ## 1. List the other agents
 
@@ -3857,19 +3824,12 @@ Prints a table (yourself excluded), or \`No peer workspaces.\` when you are
 alone. \`--stats\` costs one git subprocess per peer, so use it deliberately —
 when sizing up a swarm, not on every glance. Read the numbers as a
 coordination signal: a child whose diff dwarfs its siblings' for similar-sized
-tasks usually means duplicated scaffolding, not extra productivity — read its
-transcript before merging it.
+tasks usually means duplicated scaffolding, not extra productivity — review its
+diff before merging it.
 
-## 2. Read a peer's recent transcript
+## 2. Send a peer a message
 
-\`\`\`bash
-orchestra read <peer-id>
-\`\`\`
-
-Prints the peer's branch then its last ~80 lines of transcript. Pass
-\`--lines <n>\` (max 400) for more.
-
-## 3. Send a peer a message
+To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` (§6) — never a message asking it to stop.
 
 On a bus-adopted mission (any run whose \`delivery\` switch is ON — the fleet-bus
 default now), FLEET COORDINATION GOES THROUGH THE BUS:
@@ -3897,7 +3857,7 @@ It still works in two cases, and only these:
   \`--emergency\` MUST be the leading token (anything after \`<peer-id>\` is the
   message body, verbatim).
 
-## 4. Verify a delegated branch actually landed
+## 3. Verify a delegated branch actually landed
 
 A peer's "done"/"merged" report is a claim, not a state — agents keep
 committing after they report (review feedback lands late), and nothing fails
@@ -3922,7 +3882,7 @@ forbade merging (a spike, an experiment, evidence-gathering) — recorded as
 such at close-out, never assumed. NOT LANDED with no declared disposition
 means the work has silently stranded: chase it before closing.
 
-## 5. Identify yourself
+## 4. Identify yourself
 
 \`\`\`bash
 orchestra whoami
@@ -3933,7 +3893,7 @@ orchestrate, its parent orchestrator (if any), repo and base branch. Useful
 before tree decisions — e.g. if \`parent\` is set and you are an orchestrator,
 you are already a sub-orchestrator: don't create another level.
 
-## 6. Neutral merge arbitration
+## 5. Neutral merge arbitration
 
 When TWO children's branches conflict, do not let either child resolve the
 conflict — each is invested in its own reading of the seam, and the winner is
@@ -3943,7 +3903,7 @@ names both branches, the conflicting files, and each child's stated intent,
 and it owns the resolution. Both children then review the arbiter's merge of
 their own seam.
 
-## 7. Pause a run (host-enforced)
+## 6. Pause a run (host-enforced)
 
 \`\`\`bash
 orchestra run pause [--hard] [--run <id>] [--as <handle>]  # PAUSE DOUCE (default) / PAUSE DURE (--hard) of the run + every descendant run
@@ -4289,7 +4249,7 @@ while [ "\$tmp" != "\${tmp#*\\"id\\":}" ]; do
   tmp="\${tmp#*\\"id\\":}"
 done
 [ "\$n" -gt 0 ] || exit 0
-echo "[orchestra] \$n other agent(s) are running in sibling workspaces. Use the \\\`orchestra-comms\\\` skill to list them, read a peer's transcript, or send one a prompt — when the user asks you to coordinate agents or to follow up on delegated work."
+echo "[orchestra] \$n other agent(s) are running in sibling workspaces. Use the \\\`orchestra-comms\\\` skill to list them or send one a prompt — when the user asks you to coordinate agents or to follow up on delegated work."
 exit 0
 `;
 
@@ -4323,11 +4283,11 @@ sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
 # work it exists to do. Only the pure-coordinator text is absolute.
 if [ "\$(cat "\$sentinel" 2>/dev/null)" = "dual" ]; then
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`, \`orchestra read <id>\`) alongside your own work. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`) alongside your own work. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 else
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`, \`orchestra read <id>\`), reviewing their results, and reporting to the user. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` on a bus (delivery-ON) run — \`orchestra message\` is the legacy channel, refused for coordination on a delivery-ON run per #169, surviving only for delivery-OFF runs and \`--emergency\`); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`), reviewing their results, and reporting to the user. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 fi
 exit 0
@@ -4947,7 +4907,7 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
 }
 
 /** #134 — start the run row when a workspace BECOMES an orchestrator via
- * `/promote` (D1, wave boundary). A promote does NOT relaunch the pty, so this
+ * `/promote` (D1, wave boundary). A promote does NOT restart the session, so this
  * creates the OPS's own run row immediately, freezing the live switches then, and
  * refreshes the notice. Best-effort. */
 function startRunForPromoted(newlyOrchestrator: Workspace): void {

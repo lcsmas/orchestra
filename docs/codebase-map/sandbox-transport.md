@@ -68,7 +68,7 @@ The shim has **no auth** — private networks only (documented in
 | `SandboxConnection` | `sandbox-connection.ts:90` | One per endpoint, shared by all its sessions (multiplex key = frame `session` = workspace id). Routes `data`/`exit` → registered `SessionSink`s, `event` → activity, `rpc` → hook dispatchers, `control` → ownership UI. |
 | `EXIT_CONNECTION_LOST` | `sandbox-connection.ts:311` | −1 exit synthesized when a connection is abandoned. |
 | `getSandboxConnection` | `sandbox-manager.ts:331` | Lazy, cached per endpoint; 10s dial timeout (`:211`). Sends `hello` after open. |
-| `dispatchRpc` | `sandbox-manager.ts:77` | Mirrors hooks-server's route table (rename/spawn/peers/read/message) for remote agents. |
+| `dispatchRpc` | `sandbox-manager.ts:77` | Mirrors hooks-server's route table (rename/spawn/peers/message) for remote agents (`read` retired with `orchestra read`, #378). |
 | `closeAllSandboxConnections` | `sandbox-manager.ts:384` | Shutdown; aborts reconnect loops. |
 
 ### Reconnect/backoff (item D)
@@ -118,7 +118,7 @@ in-container what the app did locally before sandbox agents were paused (#226): 
 `spawn` frame (`startSession` `:143`; forces `ORCHESTRA_WS_ID`/`EVENTS_DIR`/
 `SOCK` env), tails the activity spool → `event` frames (`drainSpool` `:281`, a
 port of events-spool.ts via pure `parseSpoolChunk` `shim-core.ts:40`), and
-serves the `$ORCHESTRA_SOCK` unix socket forwarding the five hook routes as
+serves the `$ORCHESTRA_SOCK` unix socket forwarding the four hook routes as
 `rpc` frames (`startHookSocket` `:380`). One HTTP server on
 `ORCHESTRA_SHIM_PORT` (default 8787) carries WS upgrades + the admin plane
 (`startWsServer` `:538`): `GET /healthz`, `POST /import`, `GET /export`.
@@ -138,8 +138,8 @@ it being dropped in transit. The thread:
 | spool parse | `shim-core.ts:66` (`SpoolEvent.toolUseId?` `:18`) | mines `toolUseId` from the spool line (was dropped) |
 | shim emit | `shim.ts:322` | puts `ev.toolUseId` on the emitted `event` frame |
 | client onEvent | `sandbox-connection.ts:65` (sig, 4th arg) / `:289` (call) | surfaces `f.toolUseId` |
-| bridge | `applyRemoteAgentEvent` `sandbox-connection.ts:127` (platform-free, exported) | maps the wire fields onto `applyAgentEvent`'s 7th slot; `sandbox-manager` and the E2E test both call it (no positional-slot drift) |
-| manager | `sandbox-manager.ts:339` | calls `applyRemoteAgentEvent(applyAgentEvent, …)` → 7th slot (`activity.ts:977`) → `noteToolStart`/`noteToolEnd` (`hibernation-activity.ts:89`/`:117`) |
+| bridge | `applyRemoteAgentEvent` `sandbox-connection.ts:127` (platform-free, exported) | maps the wire fields onto `applyAgentEvent`'s 6th slot (#378: the `stopReason` slot left); `sandbox-manager` and the E2E test both call it (no positional-slot drift) |
+| manager | `sandbox-manager.ts:339` | calls `applyRemoteAgentEvent(applyAgentEvent, …)` → 6th slot (`activity.ts`, `applyAgentEvent`) → `noteToolStart`/`noteToolEnd` (`hibernation-activity.ts:89`/`:117`) |
 
 Absent id (old shim / no id on the line) → `undefined` → `null` → the tracker's
 id-less name-scoped FIFO, identical to the local legacy-hook path. This path is
@@ -163,7 +163,8 @@ untracked-not-ignored files, and the gitignored `.orchestra`/`.claude` hook
 dirs) + `claude-config/` (import only).
 
 **Import (host → container), one-way with fail-safes:**
-- Host `importWorkspaceToSandbox` — `sandbox-import.ts:188`. Quiesce PTYs →
+- Host `importWorkspaceToSandbox` — `sandbox-import.ts:188`. Quiesce (`stopAgentSessionForMove` — the SDK
+  session stopped and awaited, #378 — then the Run/nvim PTYs) →
   `stageImportPayload` (`:54`) → POST → **retire local worktree to
   `~/.orchestra/trash/<name>-<ts>`** (rename + `git worktree prune`; never
   `rm -rf` — gitignored files like `.env` survive) → flip record to
@@ -195,7 +196,7 @@ dirs) + `claude-config/` (import only).
   after import and on a 30-min timer (`startSandboxAutoBackup` `:370`,
   `ORCHESTRA_SANDBOX_BACKUP_MINUTES`).
 - `ejectWorkspaceFromSandbox` — `sandbox-import.ts:397` ("Return to this
-  machine"): export (saved as one more backup) → force-fetch bundle branch →
+  machine"): quiesce (same helper — a no-op while sandbox agents are paused, #226) → export (saved as one more backup) → force-fetch bundle branch →
   recreate worktree at the ORIGINAL path when free (conversation continuity) →
   overlay → reinstall hooks → `host` back to local. Import is fully reversible.
 

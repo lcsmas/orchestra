@@ -211,7 +211,7 @@ test('#132: an event frame carrying a wire toolUseId hands it to onEvent (4th ar
 // ─── #132 end-to-end: real EventFrame → SandboxConnection → applyRemoteAgentEvent
 //     → REAL #127 tracker. This is the arm the per-hop tests (parseSpoolChunk,
 //     onEvent 4th-arg) cannot be: it drives the wire delivery THROUGH the bridge
-//     that maps toolUseId onto applyAgentEvent's 7th slot and asserts the tracker
+//     that maps toolUseId onto applyAgentEvent's 6th slot and asserts the tracker
 //     outcome — so it FAILS on any master where the wire drops the id, unlike a
 //     tracker-only test that would pass byte-identically on master.
 //
@@ -229,7 +229,7 @@ const E2E_WS = 'ws-e2e-132';
 /** An `apply` that mirrors activity.ts's pretool/posttool arms onto the REAL
  *  #127 tracker. Only these two arms touch the in-flight list, so a faithful
  *  copy of just them exercises the exact attribution path. */
-const trackerApply: ApplyAgentEvent = (session, event, tool, _t, _s, _c, toolUseId) => {
+const trackerApply: ApplyAgentEvent = (session, event, tool, _t, _c, toolUseId) => {
   if (event === 'pretool') noteToolStart(session, tool ?? null, toolUseId ?? null);
   else if (event === 'posttool') noteToolEnd(session, toolUseId ?? null, tool ?? null);
 };

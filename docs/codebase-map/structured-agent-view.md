@@ -1082,7 +1082,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   used were deleted (they were already a no-op since #230; `buildSdkEnv` now returns just `{ env }`). **Identity
   is decoupled from the spool**: `buildSdkEnv` ALSO sets `ORCHESTRA_WS_ID_IDENTITY = ws.id`
   **unconditionally**, and the CLI's `resolveSelfWorkspaceId` (`cli/index.ts`) falls
-  back to it when `ORCHESTRA_WS_ID` is absent. The spool hook (`ORCHESTRA_HOOK_SCRIPT`) gates only on
+  back to it when `ORCHESTRA_WS_ID` is absent — **KEPT on purpose (#378)** for a keeper born BEFORE #233, whose
+  frozen env withheld `ORCHESTRA_WS_ID` while an agent PTY owned the spool (a keeper-surviving CLI keeps its env across an
+  app upgrade; none was alive on the maintainer's host on 2026-10-16 — removable once that population is known empty). The spool hook (`ORCHESTRA_HOOK_SCRIPT`) gates only on
   `ORCHESTRA_WS_ID` and never reads the identity var; note `ORCHESTRA_EVENTS_DIR`
   alone can't decouple them since the hook defaults it to the same `getEventsDir()`
   path. An **orchestrator** workspace

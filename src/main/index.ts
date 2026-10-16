@@ -111,7 +111,7 @@ if (!ORCHESTRA_CLI_MODE && process.platform === 'linux') {
 
 // The ozone decision above is the LAST consumer of this process's own
 // packaging/bootstrap vars, so drop them now — before anything can spawn a
-// child. Everything Orchestra spawns (agent PTYs, per-repo run/setup/archive
+// child. Everything Orchestra spawns (agent sessions, per-repo run/setup/archive
 // scripts, the SDK subprocess) inherits `process.env` wholesale, and an
 // inherited `APPIMAGE` makes a child Electron believe it is the packaged app:
 // a workspace whose run script starts a DEV Electron build re-execs the
@@ -127,8 +127,8 @@ if (!ORCHESTRA_CLI_MODE) {
 // Electron without sourcing the user's shell rc, so the process inherits only
 // the bare graphical-session environment: PATH lacks agent binaries like
 // `claude`/`nvim`, AND exported secrets (e.g. MCP DB creds sourced from
-// ~/.zshrc) are missing. Since the agent pty execs `claude` directly (no shell,
-// see startPty), whatever is absent here never reaches the agent's MCP servers.
+// ~/.zshrc) are missing. Since the agent's `claude` is exec'd directly (no shell,
+// see the keeper / SDK spawn), whatever is absent here never reaches the agent's MCP servers.
 // Capture the full login+interactive shell environment once, before anything
 // spawns a child process, and merge it onto process.env. shell-env runs
 // `$SHELL -ilc env` (sourcing .zshrc), strips ANSI, and returns every export;
@@ -395,7 +395,7 @@ async function createMainWindow() {
   // may not brick a working app, so agents/keepers/PTYs stay reachable even
   // with no bus. Do not "fix" this back to a fatal pre-window open.
   // Load-bearing consequence: initBus() now runs alongside a LIVE renderer that
-  // can start agent PTYs, so the moment a later ticket (#115–#121) makes a
+  // can start agent sessions, so the moment a later ticket (#115–#121) makes a
   // subsystem READ the bus, that reader must tolerate `getBus() === null`.
   //
   // Still a real gate, not a best-effort shrug: it CONSTRUCTS a Database
@@ -455,8 +455,8 @@ async function createMainWindow() {
     }
   }
 
-  // Hook server must be ready before any PTY spawns: spawned claude inherits
-  // ORCHESTRA_SOCK from the env set on the pty.spawn call, and that value is
+  // Hook server must be ready before any agent session starts: its claude inherits
+  // ORCHESTRA_SOCK from buildSdkEnv (and the Run/nvim PTYs from their spawn env), and that value is
   // read from getHookSocketPath() which only returns non-null after listen().
   await startHooksServer();
   // Accès mobile (#334, ADR 0006): starts the phone server process only if the human turned it on — needs the socket (just bound) + the store.
@@ -644,8 +644,8 @@ async function createMainWindow() {
   // « Nouvelle version installée »: the installed AppImage replaced on disk ⇒ the app (and the phone) say a relaunch picks it up.
   startAppUpdate();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
-  // the conversation survives (terminal `--continue`, SDK sdkSessionId) so a
-  // hibernated agent restores on the next keystroke/send/activation.
+  // the conversation survives (SDK sdkSessionId) so a
+  // hibernated agent restores on the next send/activation.
   // Veille and Reliquats (#326): an idle member with live Reliquats waits the Reliquat delay (Garde mémoire setting), then its Veille stops + lists them. Registered BEFORE the first sweep.
   setVeilleReliquatPort(productionVeilleReliquatPort());
   startHibernationSweeper();

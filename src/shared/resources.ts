@@ -48,7 +48,7 @@ export type SessionKind = 'agent' | 'run' | 'nvim' | 'login' | 'sdk';
 /** Live resource figures for one PTY session's whole process tree. */
 export interface SessionResourceStat {
   ptyId: string;
-  /** Workspace id for agent PTYs; derived from the id for run/nvim PTYs;
+  /** Workspace id (the pty id itself for the legacy `agent` kind); derived from the id for run/nvim PTYs;
    *  null for account-login PTYs. */
   workspaceId: string | null;
   kind: SessionKind;
@@ -312,8 +312,7 @@ export function aggregateSession(
 
 /**
  * Keeper-HOSTED structured agents (D-pick4 A, #293): their CLI lives in a detached keeper, not under a PTY, so the PTY listing never saw them. One synthetic `<wsId>:sdk` session per
- * LIVE keeper root, aggregated exactly like a PTY session over the page's own process table. The keeper is detached, so its tree is normally DISJOINT from every PTY tree — a workspace with BOTH a
- * terminal agent and a structured session shows both (the keeper's CLI + MCP memory is real). Only a keeper that actually sits INSIDE a PTY root's tree (`ptyRootPids`) is skipped: that PTY
+ * LIVE keeper root, aggregated exactly like a PTY session over the page's own process table. The keeper is detached, so its tree is DISJOINT from every PTY tree (the Run / nvim / login terminals). Defensively, a keeper that actually sits INSIDE a PTY root's tree (`ptyRootPids`) is skipped: that PTY
  * row already counts it. A keeper whose tree is empty (its pid left the table between the listing and the scan) yields no row.
  */
 export function aggregateKeeperSessions(

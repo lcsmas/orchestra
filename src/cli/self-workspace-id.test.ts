@@ -2,20 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveSelfWorkspaceId } from './index.ts';
 
-// Regression: a structured-view (SDK) session whose ORCHESTRA_WS_ID was withheld
-// by the spool-ownership gate (a terminal PTY already owned the spool) still
-// needs a resolvable identity, or `orchestra rename "$ORCHESTRA_WS_ID" ...`
-// collapses to one arg and prints `usage:`. buildSdkEnv sets
-// ORCHESTRA_WS_ID_IDENTITY unconditionally for exactly this fallback.
+// Regression: a keeper born before #233 kept a frozen env whose ORCHESTRA_WS_ID was withheld
+// (an agent PTY owned the spool) — its `orchestra rename "$ORCHESTRA_WS_ID" ...` would collapse
+// to one arg and print `usage:`. buildSdkEnv still sets ORCHESTRA_WS_ID_IDENTITY for that fallback (#378).
 
-test('prefers ORCHESTRA_WS_ID when set (terminal PTY / non-gated SDK session)', () => {
+test('prefers ORCHESTRA_WS_ID when set (every session born since #233)', () => {
   assert.equal(
     resolveSelfWorkspaceId({ ORCHESTRA_WS_ID: 'ws-primary', ORCHESTRA_WS_ID_IDENTITY: 'ws-fallback' }),
     'ws-primary',
   );
 });
 
-test('falls back to ORCHESTRA_WS_ID_IDENTITY when WS_ID is withheld by the spool gate', () => {
+test('falls back to ORCHESTRA_WS_ID_IDENTITY when WS_ID is absent (a keeper born before #233)', () => {
   assert.equal(
     resolveSelfWorkspaceId({ ORCHESTRA_WS_ID: undefined, ORCHESTRA_WS_ID_IDENTITY: 'ws-fallback' }),
     'ws-fallback',
