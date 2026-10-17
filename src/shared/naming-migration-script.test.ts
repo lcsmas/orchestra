@@ -797,7 +797,9 @@ test('--help prints exactly the header — which matches the script: old REQUIRE
   for (const f of flags) assert.ok(r.out.includes(f), `--help documents ${f}`);
   assert.match(r.out, /`old` is REQUIRED/);
   assert.doesNotMatch(r.out, /optional but recommended/);
-  assert.match(r.out, /--live +required for --apply when ORCHESTRA_HOME is UNSET \(= the LIVE ~\/\.orchestra; an explicit spelling of it is refused/);
+  assert.match(r.out, /--live +required for --apply when ORCHESTRA_HOME is UNSET \(= the LIVE ~\/\.orchestra\); an EXPLICIT spelling of the live home, or a home carrying the live socket pointer, is refused outright \(rc 2\) even with --live/);
+  assert.match(r.out, /SAFETY: it targets the app of \$ORCHESTRA_HOME\. The documented live run is ORCHESTRA_HOME UNSET \+ --live .*any EXPLICIT spelling of the live\n +home .* is refused outright \(rc 2\), EVEN WITH --live\./s);
+  assert.equal(r.out.split('-h/--help  this text').length - 1, 1, '-h/--help is documented ONCE');
   assert.doesNotMatch(r.out, /^(import|const|let|for|if) /m, 'no leaked source line');
   assert.ok(r.out.trimEnd().endsWith('Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.'), 'the output ends with the last header line');
   assert.equal(run(['-h']).out, r.out);
@@ -824,6 +826,15 @@ test('the read-back requires THE expected namer, not just some namer: a row pinn
   assert.match(r.out, /ABORTED  at w3000000/);
   assert.equal(calls().length, 1);
   resetStore();
+});
+
+test('the live-home rule reads the same in the header, --help and the codebase map: UNSET + --live is the live run; an explicit spelling is refused EVEN WITH --live', () => {
+  const help = run(['--help']).out;
+  const map = fs.readFileSync(path.join(REPO, 'docs', 'codebase-map', 'workspaces.md'), 'utf8');
+  assert.match(help, /EVEN WITH --live/);
+  assert.match(help, /ORCHESTRA_HOME UNSET \+ --live/);
+  assert.match(map, /ORCHESTRA_HOME` UNSET \(= `~\/\.orchestra`\) refuses `--apply` unless `--live`/);
+  assert.match(map, /is refused outright \(rc 2\), EVEN WITH `--live`/);
 });
 
 test('the script header and the codebase map say the same about --allow-gone: it excuses the rows that can never apply (GONE or ARCHIVED), never a rejected row', () => {

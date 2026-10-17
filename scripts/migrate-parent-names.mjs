@@ -6,7 +6,7 @@
 //   options: --closed <ops-id>[,<ops-id>…]  declare a finished-but-live vague over (its members stop being held) — BEFORE archiving it: archiving an OPS archives its whole subtree and the app then
 //                                           refuses every rename · --allow-gone  rows of workspaces that no longer exist (GONE) or are archived (ARCHIVED) are history, not an error / a WARN ·
 //                                           --assume-app-current  attest that the running app was restarted on the build this script comes from, WHEN its version cannot be read (the preflight
-//                                           below; a banner that reads older is never overridden) · --live  required for --apply when ORCHESTRA_HOME is UNSET (= the LIVE ~/.orchestra; an explicit spelling of it is refused: the live app runs without ORCHESTRA_HOME, so its store is the XDG one) · --verbose  list every workspace · -h/--help  this text · -h/--help  this text
+//                                           below; a banner that reads older is never overridden) · --live  required for --apply when ORCHESTRA_HOME is UNSET (= the LIVE ~/.orchestra); an EXPLICIT spelling of the live home, or a home carrying the live socket pointer, is refused outright (rc 2) even with --live · --verbose  list every workspace · -h/--help  this text
 //   --closed takes the full OPS id (the skip-vague line prints it) or a unique prefix of 6+ characters.
 //
 // TABLE = the human-validated old → new table, a JSON array: [{ "id": "<full workspace id>", "old": "<branch it was validated against>", "new": "<rôle>-<objet>[-<ticket>]" }].
@@ -25,8 +25,9 @@
 //   the cause). A CLI error alone (the git lock) is a FAILED row and the others go on — but a timeout (state UNKNOWN) or two CLI errors in a row stop the run. A pin-only re-run whose former name is unrecoverable is FORMER-LOST (rc 1), never a green APPLIED.
 //   A row is stale only when the workspace was PARENT-named differently since.
 // EXIT: 0 ok · 1 an `orchestra rename` failed / was not pinned / FORMER-LOST / the run ABORTED / an archived row WARN · 2 refused (usage, unreadable input, git unreadable, ANY rejected table row, ORCHESTRA_SOCK set, the live home without --live, the app preflight).
-// SAFETY: it targets the app of $ORCHESTRA_HOME (default: the live ~/.orchestra; --apply there needs --live, however the home is spelled) and refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) — one home for the
-//   store it reads and the app it renames in. Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.
+// SAFETY: it targets the app of $ORCHESTRA_HOME. The documented live run is ORCHESTRA_HOME UNSET + --live (the live app runs without ORCHESTRA_HOME: its store is the XDG one); any EXPLICIT spelling of the live
+//   home — explicit, relative, symlinked, or a copy carrying the live socket pointer — is refused outright (rc 2), EVEN WITH --live. It also refuses to run when $ORCHESTRA_SOCK is set (an agent PTY always has it) —
+//   one home for the store it reads and the app it renames in. Tests and drives use a fixture store under a scratch ORCHESTRA_HOME.
 
 import fs from 'node:fs';
 import os from 'node:os';

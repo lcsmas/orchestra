@@ -159,6 +159,7 @@ const MUTANTS = [
   M('S74_banner_home_compared_textually', SC, '.filter((m) => realPath(m[3].trim()) === realPath(home))', '.filter((m) => m[3] === home)'),
   M('S75_closed_noop_not_noted', SC, 'if (!runningAnchors.has(id)) out(', 'if (false) out('),
   M('S76_banner_home_stops_at_a_space', SC, 'home=([^\\n]+)/g)]', 'home=(\\S+)/g)]'),
+  M('S77_help_forgets_even_with_live', SC, 'EVEN WITH --live', 'with --live ok'),
   M('S25_verbose_not_passed', SC, 'renderPlan(plan, { verbose, allowGone })', 'renderPlan(plan, { allowGone })'),
   M('S26_allow_gone_not_passed', SC, 'renderPlan(plan, { verbose, allowGone })', 'renderPlan(plan, { verbose })'),
 ];

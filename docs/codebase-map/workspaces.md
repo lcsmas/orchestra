@@ -581,7 +581,7 @@ BEFORE archiving (the `skip-vague` PLAN line says so and prints the FULL id of e
 The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`/`symbolic-ref`; any unreadable input = rc 2, never an empty set), is a
 dry run unless `--apply`, refuses when `ORCHESTRA_SOCK` is set or ANY row is rejected (`--allow-gone` excuses only the rows that can never apply — a workspace that no longer exists is GONE, an archived one is ARCHIVED rather than a WARN — never a rejected row), and on the LIVE
 fleet: `ORCHESTRA_HOME` UNSET (= `~/.orchestra`) refuses `--apply` unless `--live`; any EXPLICIT spelling of the live home (explicit, relative, symlinked) or a home carrying
-the live app's socket pointer is refused outright — the live packaged app runs WITHOUT `ORCHESTRA_HOME`, so its store is the XDG one, not `<home>/userData` (checked before
+the live app's socket pointer is refused outright (rc 2), EVEN WITH `--live` — the live packaged app runs WITHOUT `ORCHESTRA_HOME`, so its store is the XDG one, not `<home>/userData` (checked before
 anything is read; the header names the home, store and socket pointer it acts on). A `--closed` that names no running vague's OPS prints a NOTE (it releases nothing). It PREFLIGHTS the app (the verdict prints in a dry run; only `--apply` refuses): the startup banner of `<home>/logs/orchestra.log` (the whole
 file, the instance running on THIS home) must be a live process whose version is at least the checkout's (a release installed but the app not restarted renames
 WITHOUT pinning); older or a suffixed build of the same number refuses rc 2 ALWAYS; unknown (the log rotates at 5 MB) or dead refuses rc 2 unless `--assume-app-current` attests the
