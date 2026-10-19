@@ -1,12 +1,13 @@
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, copyFile, cp, realpath } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, cp, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
+import { hasSessionKey, forgetSessionKey } from './session-identity-host.ts';
 import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
 import { stopMemberScopeIfAny } from './scope-stop-host';
 import { removeAgentTmpDir } from './agent-tmpdir';
@@ -120,6 +121,8 @@ import { formerBranchPatch } from '../shared/former-branch.ts';
 import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
 import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
+import { sameDir } from './same-dir.ts';
+import { moveProjectTranscripts, type MoveReport } from './transcript-move.ts';
 import { refreshAccountsNow } from './account-usage';
 import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
@@ -826,6 +829,7 @@ export async function deleteWorkspace(id: string): Promise<void> {
   await teardownWorkspace(ws);
   await store.removeWorkspace(id);
   expireBusAsksForDeleted(id);
+  forgetSessionKey(id); // #379: a deleted workspace has no session to vouch for
   platform.broadcast('workspace:removed', id);
 }
 
@@ -852,7 +856,10 @@ export async function deleteWorkspaces(
   }
   if (removed.length === 0) return;
   await store.removeWorkspaces(removed);
-  for (const id of removed) expireBusAsksForDeleted(id);
+  for (const id of removed) {
+    expireBusAsksForDeleted(id);
+    forgetSessionKey(id); // #379
+  }
   platform.broadcast('workspaces:removed', removed);
 }
 
@@ -939,6 +946,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
 
       await store.removeWorkspace(ws.id);
       expireBusAsksForDeleted(ws.id);
+      forgetSessionKey(ws.id); // #379
       platform.broadcast('workspace:removed', ws.id);
     }
   }
@@ -1711,6 +1719,8 @@ export interface PromoteResult {
   /** #171 — ids marked 'stale run' because the live session was working: the env refresh is DEFERRED to the
    *  next idle `orchestra restart`, and bus sends are refused meanwhile. */
   markedStale?: string[];
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
+  hostResolved?: string[];
   error?: string;
 }
 
@@ -1762,6 +1772,13 @@ function snapshotRunAnchors(rootId: string): Map<string, string> {
   return snap;
 }
 
+/** The marker FILE alone (no store flag, no pane state). #379: a host-resolved session gets only this — the guard the CLI's
+ *  FALLBACK reads when the host cannot answer; while the host answers it is ignored. Cleared with the restart (`clearBusRunStale`). */
+async function writeStaleRunMarkerFile(ws: Workspace, newRunId: string): Promise<void> {
+  await mkdir(path.join(ws.worktreePath, '.orchestra'), { recursive: true });
+  await writeFile(staleRunMarkerPath(ws.worktreePath), staleRunMarkerBody(newRunId));
+}
+
 /** #142/#171 — mark a workspace 'stale run': write the `.orchestra/bus-run-stale`
  *  marker (so the store-less CLI refuses bus sends that would land in the OLD
  *  run) BEFORE flipping the store flag (so a reader that sees the flag can always
@@ -1770,8 +1787,7 @@ function snapshotRunAnchors(rootId: string): Map<string, string> {
  *  restart is refused/deferred. `newRunId` is the run named in the marker body —
  *  the run the session will adopt at its next idle `orchestra restart`. */
 async function markWorkspaceStaleRun(ws: Workspace, newRunId: string): Promise<void> {
-  await mkdir(path.join(ws.worktreePath, '.orchestra'), { recursive: true });
-  await writeFile(staleRunMarkerPath(ws.worktreePath), staleRunMarkerBody(newRunId));
+  await writeStaleRunMarkerFile(ws, newRunId);
   const updated: Workspace = { ...ws, busRunStale: true };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
@@ -1799,9 +1815,10 @@ async function markWorkspaceStaleRun(ws: Workspace, newRunId: string): Promise<v
 async function reconcileRunAfterReparent(
   oldAnchors: Map<string, string>,
   opts: { noRestart: boolean },
-): Promise<{ restarted: string[]; markedStale: string[] }> {
+): Promise<{ restarted: string[]; markedStale: string[]; hostResolved: string[] }> {
   const restarted: string[] = [];
   const markedStale: string[] = [];
+  const hostResolved: string[] = [];
   for (const [wsId, oldAnchorId] of oldAnchors) {
     const ws = store.getWorkspace(wsId);
     // The workspace vanished mid-op (deleted concurrently) — nothing to reconcile.
@@ -1812,10 +1829,17 @@ async function reconcileRunAfterReparent(
     if (ws.host?.kind === 'sandbox') continue;
     try {
       const newAnchorId = resolveWaveRunId(ws);
+      const sdkLive = sdkSessionLive(ws.id);
+      const hostKey = hasSessionKey(ws.id);
+      // #379: a keeper-DETACHED CLI (app restarted, session not yet reattached) is alive with a registered key too — the host answers it, so it
+      // gets the same treatment as a live one (marker file for the fallback, no restart: a restart of a detached session would be a wake).
+      const detachedKeyed = !sdkLive && hostKey && readTrackedKeeperPid(ws.id) !== null;
       const candidate: ReparentCandidate = {
         oldAnchorId,
         newAnchorId,
-        live: sdkSessionLive(ws.id),
+        live: sdkLive || detachedKeyed,
+        // #379: a live session carrying a registered key is answered by the HOST on its next CLI call (ADR 0008).
+        hostAnswers: hostKey,
       };
       const action = decideReparentAction(candidate, opts.noRestart);
       if (action.kind === 'noop') continue;
@@ -1839,6 +1863,14 @@ async function reconcileRunAfterReparent(
       maybeStartRunAtAnchor(busRunAnchorDeps, reparentAnchor);
 
       if (action.kind === 'notice-only') continue;
+
+      if (action.kind === 'host-resolved') {
+        // ADR 0008: no restart, no 'stale' pane state — the session's next bus call asks the host and gets the new run.
+        // The marker FILE is still written: if the app goes away the CLI falls back to its baked env (the OLD run).
+        await writeStaleRunMarkerFile(ws, newAnchorId);
+        hostResolved.push(ws.id);
+        continue;
+      }
 
       if (action.kind === 'mark-stale') {
         await markWorkspaceStaleRun(ws, newAnchorId);
@@ -1882,7 +1914,7 @@ async function reconcileRunAfterReparent(
       log.warn(`reparent-run: reconcile failed for ${wsId}`, e);
     }
   }
-  return { restarted, markedStale };
+  return { restarted, markedStale, hostResolved };
 }
 
 /** #142 — the workspaces currently in the 'stale run' state (re-parented with
@@ -1952,8 +1984,8 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       // #171 — refresh the live session's run env now (see the pre-mutation
       // snapshot above). A working session's restart is refused (mid-turn guard →
       // stale fallback) — never a mid-turn kill (arm 2).
-      const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
-      return { ok: true, id, branch: updated.branch, kind: updated.kind, restarted, markedStale };
+      const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
+      return { ok: true, id, branch: updated.branch, kind: updated.kind, restarted, markedStale, hostResolved };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
     }
@@ -1977,8 +2009,8 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     startRunForPromoted(updated);
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     // #171 — refresh the live session's run env (see the pre-mutation snapshot).
-    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
-    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale };
+    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
+    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale, hostResolved };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
   }
@@ -1997,6 +2029,8 @@ export interface DemoteResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
+  hostResolved?: string[];
   error?: string;
 }
 
@@ -2079,7 +2113,7 @@ export async function dispatchDemoteRequest(input: {
     );
     // #142 — the coordinator is gone from the tree; reconcile every detached
     // child's run (re-derive → notice → restart / mark-stale).
-    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
     return {
       ok: true,
       id,
@@ -2088,6 +2122,7 @@ export async function dispatchDemoteRequest(input: {
       detachedChildren: children.map((c) => c.id),
       restarted,
       markedStale,
+      hostResolved,
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'demote failed' };
@@ -2106,6 +2141,8 @@ export interface AttachResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
+  hostResolved?: string[];
   error?: string;
 }
 
@@ -2154,8 +2191,8 @@ export async function dispatchAttachRequest(input: {
     await store.upsertWorkspace(updated);
     platform.broadcast('workspace:update', updated);
     log.info(`detached ${ws.branch} (${id}) from its parent`);
-    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
-    return { ok: true, id, parentId: null, branch: ws.branch, restarted, markedStale };
+    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+    return { ok: true, id, parentId: null, branch: ws.branch, restarted, markedStale, hostResolved };
   }
 
   if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
@@ -2187,8 +2224,8 @@ export async function dispatchAttachRequest(input: {
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
-  const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
-  return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale };
+  const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+  return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale, hostResolved };
 }
 
 // ---------- Associate an orchestrator with a repo (sidebar grouping only) ----------
@@ -2214,6 +2251,8 @@ export interface AdoptRepoResult {
   restarted?: string[];
   /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
   markedStale?: string[];
+  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
+  hostResolved?: string[];
   error?: string;
 }
 
@@ -2358,7 +2397,7 @@ export async function dispatchAdoptRepoRequest(input: {
     const adoptAnchor = resolveAnchorInfo(updated);
     await writeBusSwitchState(newWorktreePath, adoptAnchor.anchorId, adoptAnchor.anchorIsOrchestrator);
     maybeStartRunAtAnchor(busRunAnchorDeps, adoptAnchor);
-    const { restarted, markedStale } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
+    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
     return {
       ok: true,
       id,
@@ -2368,6 +2407,7 @@ export async function dispatchAdoptRepoRequest(input: {
       previousDir: oldDir,
       restarted,
       markedStale,
+      hostResolved,
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'adopt failed' };
@@ -2612,53 +2652,31 @@ export interface MigrateAccountResult {
   /** The account id the workspace is now pinned to, or null for default login. */
   accountId?: string | null;
   error?: string;
+  /** #240: transcripts kept/left in the old config dir (a same-named destination file, a changed source…). Absent = clean. */
+  warnings?: string[];
 }
 
 /** Move a workspace's Claude Code conversation transcripts from one account's
  * config dir to another's, so `claude --continue` still resolves the session
  * after the pin changes. Claude keys the session off the worktree cwd
  * (`projects/<mangled-cwd>/*.jsonl`), which never changes, so relocating those
- * files under `dstConfigDir` is what preserves continuity. Best-effort per file;
- * a genuine fs error propagates so a half-move surfaces instead of silently
- * losing history. A missing source project dir is fine (nothing recorded yet).
- * No-ops when src and dst resolve to the same dir. */
+ * files under `dstConfigDir` is what preserves continuity. #240: the two dirs are
+ * compared by IDENTITY (`sameDir`: symlink, trailing slash, bind mount…), never by
+ * string, and nothing is removed that was not first moved/verified elsewhere
+ * (`transcript-move.ts`). A genuine fs error propagates so a half-move surfaces
+ * instead of silently losing history; a missing source project dir is fine. */
 async function moveWorkspaceTranscripts(
   worktreePath: string,
   srcConfigDir: string,
   dstConfigDir: string,
-): Promise<void> {
-  if (srcConfigDir === dstConfigDir) return;
+): Promise<MoveReport> {
+  if (sameDir(srcConfigDir, dstConfigDir)) return { warnings: [] };
   const mangled = mangleProjectDir(worktreePath);
-  const srcDir = path.join(srcConfigDir, 'projects', mangled);
-  const dstDir = path.join(dstConfigDir, 'projects', mangled);
-  let entries: string[];
-  try {
-    entries = await readdir(srcDir);
-  } catch {
-    return; // no project dir under the source account → nothing to move
-  }
-  if (entries.length === 0) return;
-  await mkdir(dstDir, { recursive: true });
-  for (const name of entries) {
-    const from = path.join(srcDir, name);
-    const to = path.join(dstDir, name);
-    try {
-      await rename(from, to);
-    } catch (err) {
-      // Cross-device rename (EXDEV) — the two config dirs live on different
-      // filesystems. Fall back to copy + unlink so the move still completes.
-      if ((err as NodeJS.ErrnoException)?.code === 'EXDEV') {
-        await copyFile(from, to);
-        await rm(from, { force: true });
-      } else {
-        throw err;
-      }
-    }
-  }
-  // Drop the now-empty source project dir (best-effort — leftover files, e.g. a
-  // concurrently-written transcript, just leave it in place).
-  await rm(srcDir, { recursive: true, force: true }).catch(() => undefined);
+  return moveProjectTranscripts(path.join(srcConfigDir, 'projects', mangled), path.join(dstConfigDir, 'projects', mangled));
 }
+
+/** #240: workspaces with a migration in flight — a 2nd one is refused (two movers of one transcript dir race each other). */
+const migrationsInFlight = new Set<string>();
 
 /** Socket/IPC entry point for migrating a workspace to a different account (or
  * back to the default login with a null/empty `accountId`). Per the pinning
@@ -2712,6 +2730,9 @@ export async function dispatchMigrateAccountRequest(input: {
     ? expandConfigDir(targetAccount.configDir, os.homedir(), process.env) || defaultDir
     : defaultDir;
 
+  // #240: ONE migration per workspace — set synchronously (no await since the validation above), released in the `finally`.
+  if (migrationsInFlight.has(id)) return { ok: false, error: 'a migration of this workspace is already in progress' };
+  migrationsInFlight.add(id);
   try {
     // A structured (SDK) session captured the OLD account's CLAUDE_CONFIG_DIR at
     // start (buildSdkEnv), so it would keep running on the stale account and may
@@ -2730,7 +2751,8 @@ export async function dispatchMigrateAccountRequest(input: {
     // Move the conversation before re-pinning so a failure leaves the workspace
     // on its original account (with its history intact) rather than pinned to an
     // account whose config dir has no transcript.
-    await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    const moveReport = await moveWorkspaceTranscripts(ws.worktreePath, srcConfigDir, dstConfigDir);
+    for (const w of moveReport.warnings) log.warn(`migrate ${id}: ${w}`);
 
     const updated: Workspace = { ...ws };
     if (targetAccountId) updated.accountId = targetAccountId;
@@ -2756,9 +2778,11 @@ export async function dispatchMigrateAccountRequest(input: {
     // #256: a trigger member of an auto-paused run changed account — force a fresh reading of its new account and re-evaluate the run NOW.
     void pauseAutoOnMigrate(id);
 
-    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null };
+    return { ok: true, id, branch: ws.branch, accountId: targetAccountId ?? null, ...(moveReport.warnings.length ? { warnings: moveReport.warnings } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'migrate failed' };
+  } finally {
+    migrationsInFlight.delete(id);
   }
 }
 
@@ -5018,6 +5042,7 @@ export function maybeBumpCoordinatorOnReplacement(ws: Workspace): void {
     const runRowExists = getRun(db, anchor.anchorId) != null;
     if (!shouldBumpCoordinatorGeneration(anchor, runRowExists)) return;
     const gen = bumpCoordinatorGeneration(db, anchor.anchorId);
+    forgetSessionKey(ws.id); // #379: the replaced coordinator's key stops vouching AT the bump (same tick), else /identity hands it the NEW generation until the successor spawns
     log.info(`bus-fencing: coordinator generation for run ${anchor.anchorId} bumped to ${gen}`);
   } catch (e) {
     log.warn(`bus-fencing: coordinator-generation bump failed for ${ws.id}`, e);

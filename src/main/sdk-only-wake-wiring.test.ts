@@ -139,7 +139,9 @@ test('promote / attach / detach: the reparent reconcile asks the SDK session onl
   const r = code(body(ws, 'async function reconcileRunAfterReparent('));
   assert.doesNotMatch(r, LIVE_AGENT_PTY);
   assert.doesNotMatch(code(ws), /preferStaleForLivePty/);
-  assert.match(r, /live: sdkSessionLive\(ws\.id\),/);
+  // #379: liveness is the SDK session, or a keeper-DETACHED CLI the host holds a key for — never an agent-PTY probe
+  assert.match(r, /const sdkLive = sdkSessionLive\(ws\.id\);/);
+  assert.match(r, /live: sdkLive \|\| detachedKeyed,/);
 });
 
 test('hibernation: the sweep asks the SDK session for the agent and the Run PTY for the guard — no agent PTY signal, no stopPty/getPtyPid', () => {

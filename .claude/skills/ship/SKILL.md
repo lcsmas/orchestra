@@ -5,171 +5,77 @@ description: Ship the current branch's work — rebase onto master, commit, push
 
 # Ship orchestra
 
-Take the work on the current orchestra worktree branch all the way out: rebase
-it onto master, commit, push, land it on master, cut a patch release, and swap
-the local launcher to the freshly built AppImage.
+Take the work on the current worktree branch all the way out: rebase it onto
+master, land it on master, cut a patch release, and swap the local launcher to
+the freshly built AppImage.
 
-The release script (`scripts/release.sh`) is worktree-safe: it tags the CURRENT
-branch, because master is checked out in another worktree. Its header block
-documents every flag (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
-`--ci-only`) and their interactions — read it there rather than from a copy.
+Shipping does not verify the work: it **checks that the evidence exists**. UI and
+idle-CPU verification belong to finishing the work (the `verify` skill);
+`scripts/release.sh` re-runs the gates that the rebase can break. Its
+header documents every flag (`--to-master`, `--install`, `--notes-file`,
+`--dry-run`, `--ci-only`) — read it there.
 
 ## Steps
 
-1. **Commit any pending work.** The release refuses to run on a dirty tree.
+1. **Commit pending work.** The release refuses a dirty tree. Commit what
+   `git status --short` lists, with the repo's `Co-Authored-By` trailer.
+   Done when `git status --short` prints nothing.
 
-   ```bash
-   git status --short
-   ```
-
-   Stage and commit anything it lists, ending the message with the repo's
-   `Co-Authored-By` trailer. Done when `git status --short` prints nothing.
-
-2. **Rebase onto the latest master.** `--to-master` requires the branch to be a
-   clean fast-forward ahead of `origin/master`, so rebase first.
+2. **Rebase onto the latest master.** `--to-master` needs a clean fast-forward.
 
    ```bash
    git fetch origin && git rebase origin/master
    ```
 
-   Done when `git status` reports no rebase in progress and
-   `git merge-base --is-ancestor origin/master HEAD` exits 0. If a conflict
-   can't be resolved cleanly, stop and surface it to the user.
+   Done when `git merge-base --is-ancestor origin/master HEAD` exits 0. A
+   conflict you can't resolve cleanly: stop and surface it to the user.
 
-3. **Typecheck now; the release gate runs the full suite.** Run
-   `[ -d node_modules ] || pnpm install` and `npx tsc --noEmit` (~5 s) now, so a
-   type error surfaces before the UI and perf steps. Do NOT run the suite:
-   `release.sh` runs `tsc`, then `pnpm run test` (0 fail, **0 skipped**), then
-   `pnpm run build:bus-abi` itself, before anything is tagged or pushed (#207;
-   `scripts/release-gate.sh`). A refusal names the failed check and leaves the
-   repo untouched: fix it and re-run step 7. The gate is bypassable only with
-   `--skip-release-gate "<reason>"`, recorded in the notes, the bump commit and
-   the tag — never use it to get past a red suite.
-
-4. **Drive the changed UI surface — state AND pixels.** Typecheck and tests are
-   structurally blind to the defects that actually reach users: a composition
-   bug where every source is individually correct (a placeholder `''` masking a
-   persisted value, so the store is right and the display never moves), a CSS
-   rule that black-screens the app, an element that exists in the DOM and paints
-   nothing. All of those pass a green suite.
-
-   Let the diff decide, rather than your read of it:
+3. **Check the verification evidence — don't produce it here.** Let the diff
+   name the surfaces:
 
    ```bash
-   git diff --name-only origin/master..HEAD \
-     | grep -E '^src/(renderer|preload)/|\.css$|^src/main/' \
-     && echo "VISIBLE-SURFACE: run verify" \
-     || echo "NO-SURFACE: record the exemption"
+   git diff --name-only origin/master..HEAD | grep -E '^src/(renderer|preload)/|\.css$'
+   git diff -U0 origin/master..HEAD -- src/ | grep -E '^\+' \
+     | grep -nE 'setInterval|setTimeout|execFile|spawn|simpleGit|useEffect'
    ```
 
-   On `VISIBLE-SURFACE`, run the `verify` skill and produce BOTH artifacts:
+   Done when, for this branch's work, you can cite:
+   - **per matched UI file**: a `verify` report (a `pre-state -> post-state`
+     assertion + a screenshot path you read). A `src/main/`-only change with a
+     visible effect needs one too; otherwise one line saying why not.
+   - **per hot-path hit**: its cadence and what its cost scales with; an idle-CPU
+     reading from the `verify` skill if any hit polls or spawns.
 
-   - **State assertions** over the real user path, driven with trusted CDP
-     input. Assert the CHANGE — capture pre-state and require it to differ —
-     rather than a state that may already have been true.
-   - **A screenshot** of the changed surface, saved to a stated path. This is
-     the only thing that catches "rendered nothing".
+   A report made before the rebase still counts unless master's new commits
+   touch the same UI files — compare the first command's output with
+   `git diff --name-only $(git merge-base ORIG_HEAD origin/master)..origin/master`.
+   Missing or stale evidence: stop, run the `verify` skill, then come back. A
+   caveat ("not e2e-verified") is not evidence.
 
-   CSS-only edits take this same path, and are the highest-risk category for it:
-   they cannot fail a typecheck and rarely fail a build, yet a bad selector can
-   leave the app unusable.
-
-   On `NO-SURFACE` (pure logic, CLI, main-process plumbing with no visible
-   result), write the exemption into the release report naming the files the
-   command matched, so the skip is a claim the reviewer can check.
-
-   **Done when** the release report contains, for each matched surface, a
-   `pre-state -> post-state` assertion showing a difference AND a screenshot
-   path that you have read — or, for `NO-SURFACE`, the written exemption. A
-   caveat fails this test: "not e2e-verified" shipped a user-facing regression
-   here in v0.5.153 that a ~10-minute drive caught in one run for v0.5.154.
-   Disclosure leaves the obligation open.
-
-5. **Stress-test performance before releasing.** A change can pass typecheck
-   and tests and still melt the app at scale — work that runs per workspace ×
-   per poll × per release adds up to a pegged main process. Two parts, both
-   cheap; treat a failure like a failing test:
-
-   - **Enumerate the hot paths the diff adds.** Let the diff name them:
-
-     ```bash
-     git diff -U0 origin/master..HEAD \
-       | grep -E '^\+' \
-       | grep -nE 'setInterval|setTimeout|execFile|spawn|simpleGit|useEffect'
-     ```
-
-     Account for every hit: state, per hit, what its cadence is and what its
-     per-tick cost scales with. The existing cadences are the renderer's 8s
-     stats poll, the 12s PR poll, and the Resources page's 2s tick. A cost that
-     scales with the number of workspaces, releases, commits, or files gets
-     cached or batched before shipping — size it at ~20 live workspaces and a
-     50-release history, not 2 and 5. **Done when** every line the command
-     printed has a stated cadence and scaling factor, or the command printed
-     nothing.
-
-   - **Measure the built app idle.** Launch the release build (the `verify`
-     skill's isolated-`ORCHESTRA_HOME` harness works) with several workspaces,
-     let it sit for a minute, then let the number decide:
-
-     ```bash
-     ps -o pcpu= -p <main-pid> | awk '{print ($1 > 10) ? "HOT: profile" : "OK: " $1 "%"}'
-     ```
-
-     An idle main process sits at ~0–5% CPU. On `HOT`, profile before shipping:
-     `kill -USR1 <main-pid>` opens the Node inspector on `127.0.0.1:9229`; a
-     short CPU profile names the offender. Sustained double-digit idle CPU, or
-     a stream of short-lived `git`/`gh`/`du` children, is a release blocker.
-     **Done when** the report carries the measured percentage.
-
-6. **Write the release description.** Compose a short, human-readable changelog
-   of what's in this release and write it to a temp file. Base it on the commits
-   that this release adds on top of `origin/master`:
+4. **Write the release notes** from the commits this release adds:
 
    ```bash
    git log origin/master..HEAD --pretty='%s%n%n%b' --reverse
    ```
 
-   (Run this *before* the rebase folds the branch onto master, or use the commit
-   range from step 2's rebase.) Turn that into a few bullet points grouped by
-   theme — focus on user-facing changes, not the version-bump commit. Write it as
-   Markdown to a scratch file, e.g.:
+   A few user-facing bullets grouped by theme, written to
+   `"$TMPDIR/orchestra-release-notes.md"` (the worktree's tmp guard blocks a
+   literal `/tmp/…` path). Done when every non-chore commit is
+   represented; a branch of trivial commits earns one line.
+
+5. **Release, land on master, install locally.**
 
    ```bash
-   cat > /tmp/orchestra-release-notes.md <<'EOF'
-   ## What's new
-
-   - Short, user-facing summary of each notable change
-   - …
-   EOF
+   pnpm run release patch --to-master --install --notes-file "$TMPDIR/orchestra-release-notes.md"
    ```
 
-   Done when every non-chore commit the `git log` printed is represented by a
-   bullet, and the file exists at the path you pass in step 7. A branch of only
-   trivial commits earns a one-line summary.
+   `patch` is the default; use `minor`/`major`/`X.Y.Z` when the user asks.
+   The script first runs `tsc`, the full suite (0 fail, **0 skipped**) and
+   `build:bus-abi` (#207, `scripts/release-gate.sh`); any refusal leaves the
+   repo untouched — fix and re-run. `--skip-release-gate "<reason>"` is never
+   a way past a red suite. A "not an ancestor" refusal usually means a sibling
+   moved master: redo step 2, then this step.
 
-7. **Release + land on master + install locally.** One command does the push,
-   the master fast-forward, the tag/build, the local install, and attaches your
-   description to the GitHub release:
-
-   ```bash
-   pnpm run release patch --to-master --install --notes-file /tmp/orchestra-release-notes.md
-   ```
-
-   `patch` is the default bump; use `minor`/`major`/`X.Y.Z` when the user asks
-   for one.
-
-8. **Report back.** Show the new version/tag. The local AppImage is already
-   swapped — tell the user to **relaunch Orchestra** to pick it up. CI then adds
-   the x64/arm64 AppImages to the GitHub release a few minutes later.
-
-## Notes
-
-- Flag semantics (`--to-master`, `--install`, `--notes-file`, `--dry-run`,
-  `--ci-only`) live in the header comment of `scripts/release.sh`. Read them
-  there.
-- The script preflights gh auth, a clean tree, branch-up-to-date, that
-  `origin/master` fast-forwards to HEAD, and then the tsc + full-suite gate. Each of those aborts before anything is
-  tagged or pushed, so a failure at this stage is safe to read and fix — and a
-  "not an ancestor" rejection is usually just a sibling agent having moved
-  master mid-run: re-run `git fetch origin && git rebase origin/master` and
-  release again.
+6. **Report back**: the new version/tag, the evidence cited in step 3, and tell
+   the user to **relaunch Orchestra** (the local AppImage is already swapped).
+   CI adds the x64/arm64 AppImages to the GitHub release a few minutes later.

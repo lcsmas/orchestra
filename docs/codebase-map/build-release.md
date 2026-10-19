@@ -221,8 +221,9 @@ release via `softprops/action-gh-release` — **appends** to a release the local
 ## Bundled skills (.claude/skills/, version-controlled)
 `.gitignore` ignores `.claude/*` but **un-ignores** `.claude/skills/` so these
 ship with the repo:
-- **ship** — drives `release.sh` (rebase → notes → `release patch --to-master
-  --install`). See the `/ship` skill for the full sequence.
+- **ship** — drives `release.sh` (rebase → evidence check → notes → `release
+  patch --to-master --install`). It checks that `verify` evidence (UI drive,
+  idle CPU) exists for the diff rather than producing it.
 - **orchestra-spawn / -comms / -repos / -promote / -attach / -rename** — the
   agent capability skills also installed per-worktree (see
   [hooks-cli-socket.md](hooks-cli-socket.md)).

@@ -54,6 +54,7 @@ import { classifyMessageRoute } from '../shared/broadcast-targets.ts';
 import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
+import { dispatchIdentityRequest } from './session-identity-host.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
 
@@ -609,6 +610,10 @@ export async function startHooksServer(): Promise<void> {
             }
           } else if (route === '/accounts') {
             send(200, dispatchAccountsListRequest());
+          } else if (route === '/identity') {
+            // #379 / ADR 0008: a session's CURRENT run + generation, resolved by the host on every bus CLI call
+            // (`{id, key}` → `{ok, runId, generation}`; a replaced session's key → `superseded`). Never logs/echoes the key.
+            send(200, dispatchIdentityRequest(msg));
           } else {
             // Unknown route (incl. the retired `/event` activity POST — activity rides the spool, #378): answered empty, as ever.
             send(200, {});

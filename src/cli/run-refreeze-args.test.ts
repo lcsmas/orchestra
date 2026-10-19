@@ -218,6 +218,19 @@ test('run refreeze --only docker_relay: POSTs only, prints the one switch ON, ex
   assert.match(r.stdout, /Re-froze docker_relay on paused run wave6: ON/);
 });
 
+test('#379 run refreeze --only memory_cap: forwarded, prints the one switch, exits 0', needsBuild, () => {
+  const r = driveCli(['run', 'refreeze', '--run', 'wave7', '--only', 'memory_cap'], `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ delivery: true, memoryCap: true }) };`);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.seen[0].only, 'memory_cap', '--only is forwarded to the route');
+  assert.match(r.stdout, /Re-froze memory_cap on paused run wave7: ON/);
+});
+
+test('#379 the not-refreezable refusal names both session-start switches', needsBuild, () => {
+  const r = driveCli(['run', 'refreeze', '--run', 'w', '--only', 'delivery'], `return { ok: true, outcome: 'not-refreezable', runId: body.runId };`);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /docker_relay, memory_cap/);
+});
+
 test('run refreeze without --only sends no only field (mission path unchanged)', needsBuild, () => {
   const r = driveCli(['run', 'refreeze', '--run', 'mission-x'], REFROZEN);
   assert.equal(r.seen[0].only, undefined);

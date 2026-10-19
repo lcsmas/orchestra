@@ -63,6 +63,11 @@ _Avoid_: answer, feedback, verdict
 A question one agent parks on the bus for another and waits on without a running process; answered by a message, never by a timeout. CLI verb: `ask`.
 _Avoid_: blocking call, prompt, request
 
+**Session key**:
+The secret a session gets in its env at each fresh start (`ORCHESTRA_SESSION_KEY`); with its workspace id it lets the CLI ask the host,
+on every bus call, which run it is in now — so a promotion shows at the next call. Only the live session's key is answered; the host keeps its hash.
+_Avoid_: token (a capability token is a different thing, #129), password
+
 **Digest**:
 An OPS's synthesis of a vague's state for the LEAD (and the human).
 _Avoid_: report, status update, recap
