@@ -74,6 +74,8 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(sock, r));
 
 const env = { ...process.env, ORCHESTRA_SOCK: sock };
+// The invoking session's own key would add an /identity call (#379); the stub counts calls, so never inherit it.
+delete env.ORCHESTRA_SESSION_KEY;
 if (wsId) env.ORCHESTRA_WS_ID = wsId;
 else { delete env.ORCHESTRA_WS_ID; delete env.ORCHESTRA_WS_ID_IDENTITY; }
 if (runIdEnv) env.ORCHESTRA_RUN_ID = runIdEnv;
