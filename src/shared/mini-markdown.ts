@@ -5,16 +5,21 @@
 
 export type MdSpan =
   | { t: 'text'; text: string }
-  | { t: 'b'; text: string }
-  | { t: 'i'; text: string }
+  | { t: 'b'; spans: MdSpan[] }
+  | { t: 'i'; spans: MdSpan[] }
   | { t: 'code'; text: string }
   | { t: 'a'; text: string; href: string };
+
+/** A list item: its text (continuation lines kept as `\n`) and the lists indented under it. */
+export type MdItem = { spans: MdSpan[]; sub: MdList[] };
+/** `start` only when an ordered list does not begin at 1. */
+export type MdList = { t: 'ul' | 'ol'; start?: number; items: MdItem[] };
 
 export type MdBlock =
   | { t: 'p'; spans: MdSpan[] }
   | { t: 'h'; level: number; spans: MdSpan[] }
   | { t: 'code'; text: string }
-  | { t: 'ul' | 'ol'; items: MdSpan[][] }
+  | MdList
   | { t: 'quote'; spans: MdSpan[] }
   | { t: 'table'; rows: MdSpan[][][] }
   | { t: 'hr' };
@@ -43,7 +48,7 @@ export function parseMarkdown(src: string): MdBlock[] {
         const end = text.indexOf(c + c, i + 2);
         if (end > i + 2) {
           flush();
-          out.push({ t: 'b', text: text.slice(i + 2, end) });
+          out.push({ t: 'b', spans: inline(text.slice(i + 2, end)) });
           i = end + 2;
           continue;
         }
@@ -56,7 +61,7 @@ export function parseMarkdown(src: string): MdBlock[] {
           const after = end >= 0 ? text[end + 1] : undefined;
           if (end > i + 1 && text[end - 1] !== ' ' && (c === '*' || after === undefined || !/[A-Za-z0-9]/.test(after))) {
             flush();
-            out.push({ t: 'i', text: text.slice(i + 1, end) });
+            out.push({ t: 'i', spans: inline(text.slice(i + 1, end)) });
             i = end + 1;
             continue;
           }
@@ -71,6 +76,20 @@ export function parseMarkdown(src: string): MdBlock[] {
             flush();
             out.push({ t: 'a', text: text.slice(i + 1, close), href });
             i = end + 1;
+            continue;
+          }
+        }
+      }
+      if (c === 'h' && (i === 0 || !/[A-Za-z0-9]/.test(text[i - 1]))) {
+        // a bare URL is a link too; trailing punctuation (and an unbalanced ')') stays text
+        const m = /^https?:\/\/[^\s<>`]+/.exec(text.slice(i));
+        if (m) {
+          let url = m[0].replace(/[.,;:!?'"*_]+$/, '');
+          while (url.endsWith(')') && url.split('(').length < url.split(')').length) url = url.slice(0, -1);
+          if (/^https?:\/\/\S+$/.test(url) && url.length > 8) {
+            flush();
+            out.push({ t: 'a', text: url, href: url });
+            i += url.length;
             continue;
           }
         }
@@ -90,6 +109,46 @@ export function parseMarkdown(src: string): MdBlock[] {
     para = [];
   };
   let i = 0;
+  // One list from lines[i]: items at its indent; a deeper item nests under the last item; an indented non-item line continues the
+  // last item (kept as \n — « - point » then « → why »); blank lines between items do not split the list (split ones restarted at 1).
+  const itemRe = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+  const indentOf = (l: string): number => (/^\s*/.exec(l) as RegExpExecArray)[0].replace(/\t/g, '    ').length;
+  function list(): MdList {
+    const first = itemRe.exec(lines[i]) as RegExpExecArray;
+    const ordered = /\d/.test(first[2]);
+    const base = indentOf(lines[i]);
+    const out: MdList = { t: ordered ? 'ol' : 'ul', items: [] };
+    if (ordered && parseInt(first[2], 10) !== 1) out.start = parseInt(first[2], 10);
+    const raw: string[] = [];
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) {
+        let j = i;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const next = j < lines.length ? itemRe.exec(lines[j]) : null;
+        const ind = next ? indentOf(lines[j]) : -1;
+        if (next && (ind > base || (ind === base && /\d/.test(next[2]) === ordered))) {
+          i = j;
+          continue;
+        }
+        break;
+      }
+      const m = itemRe.exec(line);
+      const ind = indentOf(line);
+      if (m && ind === base) {
+        if (/\d/.test(m[2]) !== ordered) break; // another kind at the same level is another list
+        out.items.push({ spans: [], sub: [] });
+        raw.push(m[3]);
+        i++;
+        continue;
+      }
+      if (ind <= base || /^\s*(```|~~~)/.test(line)) break;
+      if (m) out.items[out.items.length - 1].sub.push(list());
+      else raw[raw.length - 1] += '\n' + lines[i++].trim();
+    }
+    out.items.forEach((it, k) => (it.spans = inline(raw[k])));
+    return out;
+  }
   while (i < lines.length) {
     const line = lines[i];
     const fence = /^\s*(```|~~~)/.exec(line);
@@ -127,20 +186,9 @@ export function parseMarkdown(src: string): MdBlock[] {
       blocks.push({ t: 'quote', spans: inline(body.join('\n')) });
       continue;
     }
-    const ul = /^\s*[-*+]\s+/;
-    const ol = /^\s*\d+[.)]\s+/;
-    if (ul.test(line) || ol.test(line)) {
+    if (itemRe.test(line)) {
       endPara();
-      const kind = ul.test(line) ? 'ul' : 'ol';
-      const re = kind === 'ul' ? ul : ol;
-      const items: MdSpan[][] = [];
-      while (i < lines.length && re.test(lines[i])) {
-        let item = lines[i++].replace(re, '');
-        // a continuation line indented under the item belongs to it
-        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !ul.test(lines[i]) && !ol.test(lines[i])) item += '\n' + lines[i++].trim();
-        items.push(inline(item));
-      }
-      blocks.push({ t: kind, items });
+      blocks.push(list());
       continue;
     }
     if (/^\s*\|.*\|\s*$/.test(line)) {

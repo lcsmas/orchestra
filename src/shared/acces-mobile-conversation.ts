@@ -60,7 +60,10 @@ export function parseMobileAttachments(raw: unknown): { ok: true; images: AgentI
   }
   return { ok: true, images };
 }
-export const MAX_PHONE_TEXT = 4000;
+/** One message is sent whole up to this (4000 cut real answers mid-sentence on the phone); the projection as a whole keeps the newest
+ *  lines within MAX_PHONE_CHARS, so its JSON stays far under the RPC line cap (`MAX_LINE`). */
+export const MAX_PHONE_TEXT = 100_000;
+export const MAX_PHONE_CHARS = 1_500_000;
 
 function textOf(m: RenderMessage): string {
   return typeof m.text === 'string' ? m.text : '';
@@ -132,7 +135,13 @@ export function projectConversation(id: string, session: AgentSession, version: 
     const l = lineOf(m);
     if (l) all.push(l);
   }
-  const lines = all.length > MAX_PHONE_LINES ? all.slice(-MAX_PHONE_LINES) : all;
+  let from = Math.max(0, all.length - MAX_PHONE_LINES);
+  for (let k = all.length - 1, chars = 0; k >= from; k--) {
+    const l = all[k];
+    chars += 'text' in l ? l.text.length : l.label.length;
+    if (chars > MAX_PHONE_CHARS) from = k + 1;
+  }
+  const lines = from ? all.slice(from) : all;
   const seen = new Set<string>();
   const asks: PhoneAsk[] = [];
   for (const a of [...session.pendingAnswerables, ...session.pendingPermissions]) {

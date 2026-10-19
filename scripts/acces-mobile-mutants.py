@@ -131,6 +131,16 @@ MUTANTS = [
     ('D1-md-any-link-scheme', 'src/shared/mini-markdown.ts', "          if (/^https?:\\/\\/\\S+$/.test(href)) {", "          if (href) {", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D2-md-snake-case-italic', 'src/shared/mini-markdown.ts', "        if (c === '*' || !/[A-Za-z0-9]/.test(before)) {", "        if (true) {", 'RED', 'src/shared/mini-markdown.test.ts'),
     ('D3-md-table-separator-kept', 'src/shared/mini-markdown.ts', "        if (cells.every((x) => /^:?-+:?$/.test(x))) continue;", "        if (false) continue;", 'RED', 'src/shared/mini-markdown.test.ts'),
+    # ── 2026-10-19 iPhone: long answers cut at 4000, lists without bullets / nesting / « → » lines ──
+    ('D4-md-blank-splits-list', 'src/shared/mini-markdown.ts', "          i = j;\n          continue;", "          break;", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D5-md-list-flat', 'src/shared/mini-markdown.ts', "      if (m) out.items[out.items.length - 1].sub.push(list());", "      if (m) break;", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D6-md-continuation-joined', 'src/shared/mini-markdown.ts', "raw[raw.length - 1] += '\\n' + lines[i++].trim();", "raw[raw.length - 1] += ' ' + lines[i++].trim();", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D7-md-bold-flat', 'src/shared/mini-markdown.ts', "out.push({ t: 'b', spans: inline(text.slice(i + 2, end)) });", "out.push({ t: 'b', spans: [{ t: 'text', text: text.slice(i + 2, end) }] });", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D8-md-no-autolink', 'src/shared/mini-markdown.ts', "      if (c === 'h' && (i === 0", "      if (false && (i === 0", 'RED', 'src/shared/mini-markdown.test.ts'),
+    ('D9-md-no-bullets', 'src/acces-mobile/conversation.ts', " .v1 .md ul{list-style:disc}", "", 'RED', 'src/acces-mobile/page-css.test.ts'),
+    ('D10-md-li-collapses', 'src/acces-mobile/conversation.ts', ".v1 .md li{white-space:pre-wrap} ", "", 'RED', 'src/acces-mobile/page-css.test.ts'),
+    ('C11-text-clipped-4000', 'src/shared/acces-mobile-conversation.ts', "export const MAX_PHONE_TEXT = 100_000;", "export const MAX_PHONE_TEXT = 4000;", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
+    ('C12-no-char-budget', 'src/shared/acces-mobile-conversation.ts', "    if (chars > MAX_PHONE_CHARS) from = k + 1;", "    if (false) from = k + 1;", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     # ── 2026-10-12: files attached on the phone (images + PDFs) ──
     ('A1-any-media-type', 'src/shared/acces-mobile-conversation.ts', "    if (typeof mediaType !== 'string' || !MOBILE_ATTACH_TYPES.includes(mediaType)) return", "    if (typeof mediaType !== 'string') return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),
     ('A2-no-count-cap', 'src/shared/acces-mobile-conversation.ts', "  if (raw.length > MOBILE_ATTACH_MAX_COUNT) return", "  if (false) return", 'RED', 'src/shared/acces-mobile-conversation.test.ts'),

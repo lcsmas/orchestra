@@ -78,14 +78,20 @@ export const CONVERSATION_JS = `(function () {
   function spansInto(parent, spans) {
     spans.forEach(function (s) {
       var n;
-      if (s.t === 'b') n = el('strong', null, s.text);
-      else if (s.t === 'i') n = el('em', null, s.text);
+      if (s.t === 'b') n = spansInto(el('strong'), s.spans || []);
+      else if (s.t === 'i') n = spansInto(el('em'), s.spans || []);
       else if (s.t === 'code') n = el('code', null, s.text);
       else if (s.t === 'a' && /^https?:\\/\\//.test(s.href)) { n = el('a', null, s.text); n.href = s.href; n.target = '_blank'; n.rel = 'noopener noreferrer'; }
       else n = document.createTextNode(s.text);
       parent.appendChild(n);
     });
     return parent;
+  }
+  function mdList(b) {
+    var n = el(b.t);
+    if (b.start) n.start = b.start;
+    b.items.forEach(function (it) { var li = spansInto(el('li'), it.spans); (it.sub || []).forEach(function (x) { li.appendChild(mdList(x)); }); n.appendChild(li); });
+    return n;
   }
   function md(text) {
     var frag = document.createDocumentFragment();
@@ -96,7 +102,7 @@ export const CONVERSATION_JS = `(function () {
       if (b.t === 'p') n = spansInto(el('p'), b.spans);
       else if (b.t === 'h') n = spansInto(el('p', 'mdh mdh' + Math.min(b.level, 4)), b.spans);
       else if (b.t === 'code') { n = el('pre'); n.appendChild(el('code', null, b.text)); }
-      else if (b.t === 'ul' || b.t === 'ol') { n = el(b.t); b.items.forEach(function (it) { n.appendChild(spansInto(el('li'), it)); }); }
+      else if (b.t === 'ul' || b.t === 'ol') n = mdList(b);
       else if (b.t === 'quote') n = spansInto(el('blockquote'), b.spans);
       else if (b.t === 'table') { var wrap = el('div', 'mdt'); var t = el('table'); b.rows.forEach(function (r, ri) { var tr = el('tr'); r.forEach(function (c) { tr.appendChild(spansInto(el(ri === 0 ? 'th' : 'td'), c)); }); t.appendChild(tr); }); wrap.appendChild(t); n = wrap; }
       else if (b.t === 'hr') n = el('hr');
@@ -404,7 +410,7 @@ export const CONVERSATION_CSS = `
 html,body{margin:0;background:#1a1f26}
 /* the app draws under the iOS status bar (black-translucent): this strip keeps scrolled content (and the sticky header) out of it */
 body.v1::before{content:"";position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:var(--surface);z-index:40;pointer-events:none}
-body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,system-ui,"Inter",sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,system-ui,"Inter",sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .v1 button,.v1 input,.v1 textarea{font:inherit;color:inherit;background:none;border:0}
 .v1 button{cursor:pointer}
 .v1 [hidden]{display:none!important}
@@ -490,7 +496,9 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .md>*+*{margin-top:8px}
 .v1 .md p{white-space:pre-wrap}
 .v1 .md .mdh{font-weight:680;letter-spacing:-.01em;color:var(--text)} .v1 .md .mdh1{font-size:19px} .v1 .md .mdh2{font-size:17.5px} .v1 .md .mdh3,.v1 .md .mdh4{font-size:16px}
-.v1 .md ul,.v1 .md ol{margin:0;padding-left:22px} .v1 .md li+li{margin-top:3px}
+.v1 .md ul,.v1 .md ol{margin:0;padding-left:22px} .v1 .md ul{list-style:disc} .v1 .md ol{list-style:decimal} .v1 .md li ul{list-style:circle}
+.v1 .md li{white-space:pre-wrap} .v1 .md li+li,.v1 .md li>ul,.v1 .md li>ol{margin-top:4px} .v1 .md li::marker{color:var(--dim)}
+.v1 .md>.mdh:not(:first-child){margin-top:16px}
 .v1 .md code{font:13px var(--mono);padding:1.5px 5px;border-radius:5px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.07)}
 .v1 .md pre{margin:0;padding:10px 12px;border-radius:10px;background:var(--sunken);border:1px solid var(--hair);overflow-x:auto}
 .v1 .md pre code{padding:0;border:0;background:none;font-size:12.5px;white-space:pre}

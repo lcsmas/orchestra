@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transcriptToEvents } from './agent-transcript.ts';
 import { emptySession, foldEvent, foldEvents } from './agent-events.ts';
-import { MAX_PHONE_LINES, MOBILE_ATTACH_MAX_COUNT, parseMobileAttachments, projectConversation, toolLabel, validWorkspaceId } from './acces-mobile-conversation.ts';
+import { MAX_PHONE_CHARS, MAX_PHONE_LINES, MAX_PHONE_TEXT, MOBILE_ATTACH_MAX_COUNT, parseMobileAttachments, projectConversation, toolLabel, validWorkspaceId } from './acces-mobile-conversation.ts';
 import type { AgentEvent, AgentSession } from './types.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -74,6 +74,28 @@ test('only the last MAX_PHONE_LINES lines travel, and the cut is counted', () =>
   assert.equal(c.truncated, 30);
   const last = c.lines.at(-1);
   assert.equal(last?.kind === 'user' && last.text, `message ${MAX_PHONE_LINES + 29}`, 'the newest line is kept');
+});
+
+test('a long answer travels WHOLE (4000 cut it mid-sentence on the iPhone); the projection keeps the newest within MAX_PHONE_CHARS', () => {
+  const one = SAMPLE.split('\n')[0];
+  const mk = (n: number, len: number) =>
+    Array.from({ length: n }, (_, i) => {
+      const d = JSON.parse(one);
+      d.uuid = `u-${i}`;
+      d.parentUuid = i ? `u-${i - 1}` : null;
+      d.message.content = `${i}:` + 'x'.repeat(len);
+      return JSON.stringify(d);
+    }).join('\n');
+  const long = projectConversation('ws-1', folded(mk(1, 12_000)), 1);
+  assert.equal(long.lines[0].kind === 'user' && long.lines[0].text.length, 12_002, 'a 12 000-char message is not clipped');
+  assert.ok(MAX_PHONE_TEXT * 2 <= MAX_PHONE_CHARS);
+  const per = 60_000;
+  const big = projectConversation('ws-1', folded(mk(40, per)), 1);
+  const kept = Math.floor(MAX_PHONE_CHARS / (per + 3));
+  assert.equal(big.lines.length, kept, 'only what fits in the budget');
+  assert.equal(big.truncated, 40 - kept, 'the cut is counted');
+  const last = big.lines.at(-1);
+  assert.ok(last?.kind === 'user' && last.text.startsWith('39:'), 'the newest line is kept');
 });
 
 test('toolLabel: the one useful detail per tool, MCP names shortened', () => {

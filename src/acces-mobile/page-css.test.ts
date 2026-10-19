@@ -82,3 +82,10 @@ test('tree layout (#373): a hairline rail at EVERY ancestor\'s glyph centre, one
     assert.deepEqual(rails, centres, `depth ${depth}: every hairline sits under an ancestor's glyph centre`);
   }
 });
+
+test('Markdown lists (iPhone 2026-10-19): the list reset of `.v1 ul` does not erase the bullets; an item keeps its « → » line breaks', () => {
+  assert.equal(decl('.v1 ul')['list-style'], 'none', 'the reset this rule must beat');
+  assert.equal(decl('.v1 .md ul')['list-style'], 'disc');
+  assert.equal(decl('.v1 .md ol')['list-style'], 'decimal');
+  assert.equal(decl('.v1 .md li')['white-space'], 'pre-wrap');
+});
