@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship the current branch's work — rebase onto master, commit, push, fast-forward master, release a patch, and install the build locally. Use when the user asks to ship, release, or publish their orchestra work.
+description: Ship the current branch's work — rebase onto master, commit, push, fast-forward master, release a patch, and install the build locally. Use when the user asks to ship, release, or publish — AND, unasked, as the last step of any finished, verified work in a top-level workspace (not one spawned by another agent or in a fleet; see CLAUDE.md "Auto-ship").
 ---
 
 # Ship orchestra

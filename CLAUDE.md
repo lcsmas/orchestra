@@ -66,6 +66,11 @@ whole map instead of hand-editing.
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
   checks out master). It refuses to tag unless `npx tsc --noEmit` and the full suite
   (0 fail, 0 skipped) pass — the #207 gate. See `docs/codebase-map/build-release.md`.
+- **Auto-ship: when your work is finished and verified, run the `ship` skill
+  yourself — the user does not say "ship".** This is the standing ask for this repo.
+  Exceptions: you were spawned by another agent or are a fleet member (your parent /
+  coordinator integrates and ships); the user said not to ship; or the ship stops
+  (conflict, red gate, missing evidence) — then report why instead.
 
 ## Conventions
 
