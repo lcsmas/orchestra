@@ -560,7 +560,11 @@ export const CONVERSATION_JS = `(function () {
     arBtn.addEventListener('click', function () { if (!ar.open) { ar = { open: true }; drawArchive(); } });
     head.appendChild(arBtn);
     root.appendChild(head);
-    root.appendChild(el('div', 'conv-ar'));
+    // A sheet over the screen, not a block in the page: a conversation opens scrolled to its END, so a panel under the header was
+    // thousands of pixels above the human (Lucas 2026-10-21). A tap on the dimmed backdrop cancels.
+    var arSlot = el('div', 'conv-ar'); arSlot.setAttribute('role', 'dialog');
+    arSlot.addEventListener('click', function (e) { if (e && e.target === arSlot && ar.open && !ar.busy) { ar = { open: false }; drawArchive(); } });
+    root.appendChild(arSlot);
     root.appendChild(el('div', 'conv-state', ''));
     var lines = el('div', 'conv-lines stream'); root.appendChild(lines);
     var running = el('div', 'conv-running working'); running.hidden = true;
@@ -719,8 +723,8 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .conv-archive{flex:none;height:30px;padding:0 10px;border-radius:8px;border:1px solid var(--hair2);color:var(--dim);font-size:13px;font-weight:600}
 .v1 .conv-archive:disabled{opacity:.45}
 .v1 .conv-ar:empty{display:none}
-.v1 .conv-ar{padding:12px 16px 0}
-.v1 .ar-pop{padding:12px 14px;border-radius:14px;border:1px solid var(--hair2);background:var(--raised);display:flex;flex-direction:column;gap:6px}
+.v1 .conv-ar{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;padding:0 10px calc(10px + env(safe-area-inset-bottom));background:rgba(0,0,0,.55)}
+.v1 .ar-pop{width:100%;max-width:520px;box-sizing:border-box;box-shadow:0 -8px 30px rgba(0,0,0,.45);padding:14px 16px;border-radius:14px;border:1px solid var(--hair2);background:var(--raised);display:flex;flex-direction:column;gap:6px}
 .v1 .ar-t{font-size:15px;font-weight:650}
 .v1 .ar-b,.v1 .ar-below{font-size:13.5px;line-height:1.4;color:var(--dim)}
 .v1 .ar-run{font-size:13.5px;color:var(--amber)}

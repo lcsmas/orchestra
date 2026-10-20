@@ -1050,6 +1050,22 @@ try {
   // on the desktop; a TRUSTED « Archiver » then « Archiver » on the phone archives the three like the sidebar does, the phone is back on
   // its list without them, the desktop moves off the archived pane, the worktree dirs stay. Must-FAIL: an already archived id is refused.
   {
+    // Lucas 2026-10-21: the confirmation must show where the human IS — a long conversation opens scrolled to its end, and the
+    // panel drawn in the page flow under the header was off-screen at the top. am-unread = the 120-line history; then « Annuler ».
+    await phone.eval(`location.hash = 'w=ws-am-unread'; true`);
+    await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length > 100`), 20000, 'the long conversation');
+    await sleep(600);
+    const atEnd = await phone.eval(`(() => { const se = document.scrollingElement; return se.scrollTop > 0 && se.scrollTop + innerHeight >= se.scrollHeight - 4; })()`);
+    await tapSel('#conv .conv-archive');
+    await waitFor(() => phone.eval(`!!document.querySelector('#conv .ar-pop')`), 5000, 'the archive confirmation');
+    await sleep(300);
+    const VP = await phone.eval(`(() => { const r = document.querySelector('#conv .ar-pop').getBoundingClientRect(), g = document.querySelector('#conv .ar-go').getBoundingClientRect(); const hit = document.elementFromPoint(g.left + g.width / 2, g.top + g.height / 2); return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight, goHit: !!hit && hit.closest('.ar-go') !== null }; })()`);
+    saveShot('phone-archive-confirm-long.png', await phone.shot());
+    await tapSel('#conv .ar-cancel');
+    const closed = await waitFor(() => phone.eval(`!document.querySelector('#conv .ar-pop')`), 5000, 'closed').then(() => true, () => false);
+    const stillLive = (await wsList()).find((w) => w.id === 'ws-am-unread')?.archived === false;
+    clause('archive/confirm-visible-in-a-long-conversation', atEnd && VP.top >= 0 && VP.bottom <= VP.vh && VP.goHit && closed && stillLive, `opened at the end ${atEnd}; tap « Archiver » ⇒ panel y ${VP.top}…${VP.bottom} in a ${VP.vh} px viewport, its « Archiver » hittable ${VP.goHit}; « Annuler » closed it ${closed}, am-unread still live ${stillLive}`);
+
     const SUB = ['ws-am-sub', 'ws-am-deep', 'ws-am-deeper'];
     const subDir = (await wsList()).find((w) => w.id === 'ws-am-sub') && JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-sub').worktreePath;
     // the desktop's pane, read from what it RENDERS (the build exposes no store getter): the header's branch chip, or the Welcome screen

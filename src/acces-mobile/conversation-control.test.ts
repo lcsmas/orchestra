@@ -325,3 +325,19 @@ test('archive must-FAIL: a refusal, a 401 or a lost network is said, the panel s
     assert.equal(p.reqs.length, 2, `${how}: a retry sends a second archive`);
   }
 });
+
+test('archive: the confirmation is a sheet — a tap on its backdrop cancels (nothing sent); a tap inside the panel does not (control); busy ⇒ the backdrop does nothing', async () => {
+  const p = run(conv(false, [USER('u1', 'go', 'r1')]));
+  await p.settle();
+  const slot = p.q('conv-ar')!;
+  p.q('conv-archive')!.click();
+  slot.dispatchEvent({ type: 'click', target: p.q('ar-pop') } as never);
+  assert.ok(p.q('ar-pop'), 'control: a tap inside the panel keeps it');
+  slot.dispatchEvent({ type: 'click', target: slot } as never);
+  assert.equal(p.q('ar-pop'), null, 'the backdrop cancels');
+  assert.equal(p.reqs.length, 0);
+  p.q('conv-archive')!.click();
+  p.q('ar-go')!.click();
+  slot.dispatchEvent({ type: 'click', target: slot } as never);
+  assert.equal(p.q('ar-pop')!.dataset.state, 'busy', 'an archive in flight is not hidden by a stray tap');
+});
