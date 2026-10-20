@@ -252,6 +252,12 @@ async function getMobileConversation(id: string): Promise<PhoneConversation> {
   return projectConversation(id, view, e.version);
 }
 
+/** The folded messages the phone sees for `id` (loaded like a read) — a phone rewind resolves its target against THIS fold. */
+async function foldedMessages(id: string): Promise<AgentSession['messages']> {
+  await getMobileConversation(id);
+  return cache.get(id)?.session.messages ?? [];
+}
+
 function running(id: string, e: Entry): boolean {
   return deps.isRunning ? deps.isRunning(id) : e.session.running;
 }
@@ -274,5 +280,5 @@ function mobileFeedState(): { cached: string[]; listeners: number; tapped: boole
   return { cached: [...cache.keys()], listeners: listeners.size, tapped: !!untap, activity: lastEventAt.size };
 }
 
-return { getMobileConversation, subscribeMobileFeed, mobileFeedState, noteActivity, sweep };
+return { getMobileConversation, foldedMessages, subscribeMobileFeed, mobileFeedState, noteActivity, sweep };
 }

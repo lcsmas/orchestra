@@ -5,8 +5,8 @@
 
 import { appUpdateState } from './app-update-host';
 import { store } from './store';
-import { sdkAnswerAskUserQuestion, sdkLiveAnswerables, sdkSend } from './agent-sdk';
-import { getMobileConversation, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
+import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend } from './agent-sdk';
+import { getMobileConversation, mobileFoldedMessages, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
 import { dispatchSpawnRequest } from './workspaces';
 import { createMobileLauncher } from './acces-mobile-launch';
@@ -14,6 +14,7 @@ import { log } from './logger';
 import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acces-mobile';
 import { projectMobileRepos } from '../shared/acces-mobile-launch';
 import { MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validWorkspaceId } from '../shared/acces-mobile-conversation';
+import { createMobileControls } from './acces-mobile-control';
 import type { RpcHandlers } from '../shared/acces-mobile-rpc';
 
 function liveWorkspace(id: unknown) {
@@ -41,6 +42,16 @@ const launcher = createMobileLauncher({
   spawn: ({ repoPath, task }) => dispatchSpawnRequest({ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' }),
   info: (line) => log.info(line),
   onCreated: (id) => noteMobileActivity(id), // the entry is created hot even when no stream was open at the answer
+});
+
+/** Interrupt + rewind: the desktop's own calls (neither takes a pause origin), behind main's guards. */
+const controls = createMobileControls({
+  liveId: (id) => liveWorkspace(id)?.id,
+  fold: mobileFoldedMessages,
+  isRunning: (id) => store.getWorkspace(id)?.status === 'running',
+  interrupt: sdkInterrupt,
+  preview: sdkRewindPreview,
+  rewind: sdkRewind,
 });
 
 export const mobileRpcHandlers: RpcHandlers = {
@@ -101,6 +112,14 @@ export const mobileRpcHandlers: RpcHandlers = {
           return { ok: false, error: 'answers must map each question to a list of labels' };
         return sdkAnswerAskUserQuestion(ws.id, msg.requestId, answers as Record<string, string[]>);
       }
+      case '/mobile/interrupt':
+        // The desktop's ■ / Esc — the SAME sdkInterrupt (acces-mobile-control.ts).
+        return controls.interrupt(msg);
+      case '/mobile/rewind-preview':
+        return controls.preview(msg);
+      case '/mobile/rewind':
+        // The desktop bubble's ↺ — the SAME sdkRewind; target, mid-turn refusal and fallback cut decided in acces-mobile-control.ts.
+        return controls.rewind(msg);
       default:
         return { ok: false, error: 'unknown route' };
     }

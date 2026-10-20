@@ -8,7 +8,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
 import { MOBILE_LAUNCH_TIMEOUT_MS, createLaunchLimiter, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
-import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments } from '../shared/acces-mobile-conversation.ts';
+import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validRewindId } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 import { LAUNCH_CSS, LAUNCH_JS } from './launch.ts';
@@ -89,6 +89,10 @@ const STATIC: Record<string, { type: string; body: string | Buffer }> = {
 export const MAX_STREAMS = 8;
 /** At most this many sends / answers / launches waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1, #375. */
 export const MAX_WRITES_IN_FLIGHT = 4;
+/** The only paths a POST may reach. Every other method / path pair is a 405. */
+const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind']);
+/** Main routes bounded by MAX_WRITES_IN_FLIGHT (they act on an agent session — a rewind preview may wake one). */
+const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind']);
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
 export function tokenMatches(presented: string, expected: string): boolean {
@@ -135,8 +139,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    // GET everywhere; POST only for the state changes (« seen », send, answer, launch). Ids travel in the query string; send / answer / launch have a body.
-    if (method !== 'GET' && !(method === 'POST' && (pathOnly === '/api/seen' || pathOnly === '/api/send' || pathOnly === '/api/answer' || pathOnly === '/api/launch'))) return refuse(405, 'method');
+    // GET everywhere; POST only for the state changes (« seen », send, answer, launch, interrupt, rewind). Ids travel in the query string; send / answer / launch have a body.
+    if (method !== 'GET' && !(method === 'POST' && POST_PATHS.has(pathOnly))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
     const asset = STATIC[pathOnly];
@@ -159,7 +163,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       res.end(JSON.stringify(obj));
     };
     const relay = (route: string, body: Record<string, unknown>, timeoutMs?: number): void => {
-      const isWrite = route === '/mobile/send' || route === '/mobile/answer' || route === '/mobile/launch';
+      const isWrite = WRITE_ROUTES.has(route);
       if (isWrite) {
         if (writesInFlight >= MAX_WRITES_IN_FLIGHT) return refuse(429, 'too-many-writes');
         // #376: checked after the in-flight bound, so a launch refused for that reason does not spend the minute's budget.
@@ -266,6 +270,20 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
         if (!parsed.ok) return refuse(400, 'bad-launch');
         relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);
       });
+    }
+    if (pathOnly === '/api/interrupt' && method === 'POST') {
+      // Stop the running turn — the desktop's ■ / Esc. No body.
+      const id = wsId();
+      return id ? relay('/mobile/interrupt', { id }, 15_000) : refuse(400, 'bad-id');
+    }
+    if ((pathOnly === '/api/rewind' || pathOnly === '/api/rewind-preview') && method === 'POST') {
+      // Rewind to a user turn (the desktop bubble's ↺): the target is checked against the conversation in main. No body. A rewind restores
+      // files, stops the session and waits its keeper out: give it time.
+      const id = wsId();
+      const rewindId = query.get('rewind');
+      if (!id) return refuse(400, 'bad-id');
+      if (!validRewindId(rewindId)) return refuse(400, 'bad-rewind-id');
+      return pathOnly === '/api/rewind' ? relay('/mobile/rewind', { id, rewindId }, 60_000) : relay('/mobile/rewind-preview', { id, rewindId }, 30_000);
     }
     if (pathOnly === '/api/stream') {
       if (!opts.upstreamStream) return refuse(404, 'not-found');

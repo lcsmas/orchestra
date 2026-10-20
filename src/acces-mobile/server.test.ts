@@ -746,3 +746,49 @@ test('#338 review m1: at most MAX_WRITES_IN_FLIGHT sends/answers wait on main at
     await new Promise((r) => server.close(() => r(null)));
   }
 });
+
+test('interrupt + rewind: relayed to main as POST with identity + token; ids validated; never on GET; counted as writes', { timeout: 15_000 }, async () => {
+  const seen: { route: string; body: Record<string, unknown>; timeoutMs?: number }[] = [];
+  const releases: (() => void)[] = [];
+  let hold = false;
+  const server = createAccesMobileServer({
+    allowedLogin: LOGIN,
+    readToken: () => TOKEN,
+    upstream: (route, body, timeoutMs) => {
+      seen.push({ route, body, timeoutMs });
+      return hold ? new Promise((r) => releases.push(() => r({ ok: true }))) : Promise.resolve({ ok: true });
+    },
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    assert.equal((await get(port, '/api/interrupt?id=w1', AUTH, 'POST')).status, 200, 'control: interrupt');
+    assert.equal((await get(port, '/api/rewind-preview?id=w1&rewind=8f3c-11aa', AUTH, 'POST')).status, 200, 'control: preview');
+    assert.equal((await get(port, '/api/rewind?id=w1&rewind=8f3c-11aa', AUTH, 'POST')).status, 200, 'control: rewind');
+    assert.deepEqual(seen, [
+      { route: '/mobile/interrupt', body: { id: 'w1' }, timeoutMs: 15_000 },
+      { route: '/mobile/rewind-preview', body: { id: 'w1', rewindId: '8f3c-11aa' }, timeoutMs: 30_000 },
+      { route: '/mobile/rewind', body: { id: 'w1', rewindId: '8f3c-11aa' }, timeoutMs: 60_000 },
+    ]);
+    assert.equal((await get(port, '/api/interrupt?id=w1', ID, 'POST')).status, 401, 'interrupt needs the token');
+    assert.equal((await get(port, '/api/rewind?id=w1&rewind=r', { 'Tailscale-User-Login': 'colleague@x', Authorization: `Bearer ${TOKEN}` }, 'POST')).status, 403, 'colleague');
+    assert.equal((await get(port, '/api/interrupt?id=../x', AUTH, 'POST')).status, 400, 'bad id');
+    assert.equal((await get(port, '/api/rewind?id=w1', AUTH, 'POST')).status, 400, 'no rewind target');
+    assert.equal((await get(port, '/api/rewind?id=w1&rewind=a%2Fb', AUTH, 'POST')).status, 400, 'bad rewind target');
+    assert.equal((await get(port, '/api/rewind-preview?id=w1&rewind=' + 'a'.repeat(101), AUTH, 'POST')).status, 400, 'over-long rewind target');
+    assert.equal((await get(port, '/api/interrupt?id=w1', AUTH)).status, 404, 'GET is not an interrupt');
+    assert.equal((await get(port, '/api/rewind?id=w1&rewind=r', AUTH)).status, 404, 'GET is not a rewind');
+    assert.equal(seen.length, 3, 'no refused request reached main');
+    // the in-flight write bound covers them (a rewind preview may wake a session)
+    hold = true;
+    const held = Array.from({ length: MAX_WRITES_IN_FLIGHT }, () => get(port, '/api/rewind?id=w1&rewind=r', AUTH, 'POST'));
+    while (seen.length < 3 + MAX_WRITES_IN_FLIGHT) await sleepMs(5);
+    const extra = await Promise.race([get(port, '/api/interrupt?id=w1', AUTH, 'POST'), sleepMs(2000).then(() => ({ status: 'queued instead of refused' }))]);
+    assert.equal(extra.status, 429, 'one write too many');
+    releases.forEach((r) => r());
+    await Promise.all(held);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(() => r(null)));
+  }
+});

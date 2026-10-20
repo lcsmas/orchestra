@@ -71,6 +71,7 @@ import { getHookSocketPath } from './hooks-server';
 import { getEventsDir } from './events-spool';
 import {
   reconcileExited,
+  settleInterruptedTurn,
   fireNeedsInput,
   resumeRunning,
   markLooping,
@@ -1314,6 +1315,9 @@ async function consume(session: Session): Promise<void> {
         // reset the flag: it must not linger and mislabel/suppress a FUTURE
         // turn's genuine error as interrupt fallout. (emitFrom already ran for
         // this result, so its suppression saw the flag still set.)
+        // The CLI fires no Stop hook for a user interrupt (its transcript has no stop_hook_summary after « [Request interrupted
+        // by user] »), so this result is the ONLY turn end the dot hears of — without it the row stayed `running` for good.
+        if (session.interruptRequested) settleInterruptedTurn(session.wsId);
         session.interruptRequested = false;
         // The turn ran to a boundary — the pending-prompt insurance (sdkSend)
         // has served its purpose; drop it so a later reopen can't replay.

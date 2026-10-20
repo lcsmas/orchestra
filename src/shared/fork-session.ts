@@ -60,7 +60,7 @@ import type { RenderMessage } from './types.ts';
  * `upToMessageId` is a FULL copy in the SDK, which is the opposite of the
  * user's intent and would silently fork the entire conversation.
  *
- * Deliberately mirrors `previousRewindId` in the renderer's `rewind-util.ts`:
+ * Deliberately mirrors `previousRewindId` in `shared/rewind-target.ts`:
  * both encode "walk back to the nearest earlier id-carrying message", because
  * assistant rows, tool rows and un-idd turns (externally-originated or
  * pre-feature history) sit between user turns and are not valid cut points.

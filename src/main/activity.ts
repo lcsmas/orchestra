@@ -780,6 +780,14 @@ export function reconcileExited(id: string): void {
   void setStatus(id, 'idle');
 }
 
+/** A turn the human interrupted is over: `running` → `idle`. The CLI fires no Stop hook on an interrupt, so nothing else moves the
+ *  dot. No bell, toast or chime — the human stopped it themselves. A no-op unless `running` (a Stop that did come already settled it). */
+export function settleInterruptedTurn(id: string): void {
+  const ws = store.getWorkspace(id);
+  if (!ws || ws.archived || ws.status !== 'running') return;
+  void setStatus(id, 'idle', finishedStopReason(id, 'interrupted'));
+}
+
 /** Restore `running` after a parked interactive tool call is answered (the
  *  structured/SDK path's inverse of {@link fireNeedsInput}). The agent stopped
  *  to ask; once the user replies it resumes work, so the dot must go back to

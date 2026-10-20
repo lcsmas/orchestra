@@ -24,6 +24,8 @@
 //                prompt refused, the REAL create (repo's Compte, the WORKSPACE default model + effort — not the spawned one —, top-level, a
 //                generated branch) whose first prompt reaches the REAL claude CLI (fake API), a double submit = one workspace, the 11th launch
 //                in a minute = 429 with nothing created, the hooks socket has no launch route
+//   control/*    interrupt + rewind from the phone: a trusted « ■ Arrêter » ends a REAL turn the slow fake model holds; a trusted « ↺ Revenir
+//                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -243,7 +245,8 @@ const world = (() => {
   for (let k = 0; k < HISTORY_COPIES; k++) {
     for (const l of sampleLines) {
       // re-mint every id per copy (uuid, message id, tool ids) so 40 copies are 40 distinct exchanges, structure untouched
-      copies.push(l.replace(/("uuid":"|"parentUuid":"|"id":"|"tool_use_id":"|"sourceToolAssistantUUID":")([^"]+)"/g, (_m, key, id) => `${key}${id}-c${k}"`).replace(/"toolu_[^"]+":/g, (m) => m.replace('":', `-c${k}":`)));
+      // the fixture writes `"key": "value"` (a space): without `\s*` nothing was re-minted, the 40 copies shared one uuid and the history read lost every user line
+      copies.push(l.replace(/("uuid":\s*"|"parentUuid":\s*"|"id":\s*"|"tool_use_id":\s*"|"sourceToolAssistantUUID":\s*")([^"]+)"/g, (_m, key, id) => `${key}${id}-c${k}"`).replace(/"toolu_[^"]+":/g, (m) => m.replace('":', `-c${k}":`)));
     }
   }
   fs.writeFileSync(path.join(histDir, `${HISTORY_SESSION}.jsonl`), copies.join('\n') + '\n');
@@ -516,7 +519,11 @@ try {
   // bell clears (the phone's « seen » is the desktop's).
   const unreadBefore = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-unread').autoUnread;
   await phone.eval(`window.__noReload = 1; document.querySelector('li[data-id="ws-am-unread"]').click(); true`);
-  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length === ${3 * HISTORY_COPIES}`), 20000, 'the history on the phone');
+  await waitFor(() => phone.eval(`document.querySelectorAll('#conv .conv-lines [data-kind]').length === ${3 * HISTORY_COPIES}`), 20000, 'the history on the phone').catch(async (e) => {
+    const d = await phone.eval(`fetch('/api/conversation?id=ws-am-unread', { headers: { Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') } }).then((r) => r.json()).then((c) => ({ dom: document.querySelectorAll('#conv .conv-lines [data-kind]').length, state: (document.querySelector('#conv .conv-state') || {}).textContent, hash: location.hash, convId: document.querySelector('#conv')?.dataset.id, api: { ok: c.ok, n: (c.lines || []).length, kinds: [...new Set((c.lines || []).map((l) => l.kind))], err: c.error, firstUser: (c.lines || []).find((l) => l.kind === 'user') } }))`).catch((x) => String(x));
+    console.log(`  diag conv/history: ${JSON.stringify(d)}`);
+    throw e;
+  });
   await sleep(300);
   const SC = await phone.eval(`(() => { const se = document.scrollingElement; const last = [...document.querySelectorAll('#conv .conv-lines [data-kind]')].at(-1).getBoundingClientRect(); return { top: se.scrollTop, h: se.scrollHeight, vh: innerHeight, lastBottom: Math.round(last.bottom) }; })()`);
   const H = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind]')].map((e) => e.dataset.kind + ':' + e.textContent)`);
@@ -635,6 +642,56 @@ try {
   const deskImgs = await cdp.eval(`(() => { const m = (window.__readAgentSession('ws-am-idle')?.messages ?? []).filter((x) => x.role === 'user' && String(x.text ?? '').startsWith('Voici une photo')).at(-1); return m ? (m.images || []).map((i) => i.mediaType) : null; })()`);
   clause('attach/shown-on-both-surfaces', B.chip === '🖼 1 image · 📄 1 PDF' && B.tray === 0 && B.state === 'sent' && JSON.stringify(deskImgs) === JSON.stringify(['image/jpeg', 'application/pdf']), `phone bubble « ${B.chip} », tray ${B.tray}, state ${B.state}; desktop user message attachments ${JSON.stringify(deskImgs)}`);
   saveShot('phone-attachments-sent.png', await phone.shot());
+
+  // Interrupt + rewind from the phone (Lucas 2026-10-20 « je veux pouvoir rewind et interrupt sur mon téléphone »): a REAL turn held by a
+  // slow fake model is stopped by a TRUSTED tap on « ■ Arrêter »; then a TRUSTED « ↺ Revenir ici » on that turn undoes it — the prompt is back
+  // in the field, both surfaces drop it, and the NEXT model request no longer carries it while the turn before it is still there.
+  const LONG = 'Tour long à arrêter REWIND-SENTINELLE-91c2';
+  fakeOpts.markers.undone = 'REWIND-SENTINELLE-91c2'; fakeOpts.markers.kept = 'Voici une photo et un PDF';
+  const tapIn = async (sel) => { await phone.eval(`document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: 'center' }); true`); await sleep(150); await tapSel(sel); };
+  fakeOpts.replyDelayMs = 45000;
+  const beforeLong = fakeApi.requests.length;
+  await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', ${JSON.stringify(LONG)}).then(() => true)`);
+  await waitFor(() => fakeApi.requests.slice(beforeLong).some((r) => r.type === 'model' && (r.marks ?? []).includes('undone')) || false, 60000, 'the long turn reached the model');
+  await waitFor(() => phone.eval(`!document.querySelector('#conv .conv-running').hidden`), 20000, 'the phone shows the turn running');
+  await sleep(2000);
+  const stillRunning = await phone.eval(`({ bar: !document.querySelector('#conv .conv-running').hidden, rw: document.querySelectorAll('#conv .msg-rw').length })`);
+  saveShot('phone-interrupt-running.png', await phone.shot());
+  const tStop = Date.now();
+  await tapIn('#conv .conv-stop');
+  const stopped = await waitFor(() => phone.eval(`document.querySelector('#conv .conv-running').hidden`), 20000, 'the bar gone after the stop').then(() => Date.now() - tStop, () => null);
+  if (stopped === null) {
+    const d = await phone.eval(`({ btn: document.querySelector('#conv .conv-stop').textContent, disabled: document.querySelector('#conv .conv-stop').disabled, msg: document.querySelector('#conv .conv-stop-msg').textContent })`);
+    const desk = await cdp.eval(`(() => { const s = window.__readAgentSession('ws-am-idle'); return s ? { running: s.running, last: s.messages.slice(-3).map((m) => m.role + ':' + String(m.text ?? '').slice(0, 30)) } : null; })()`).catch((e) => String(e));
+    console.log(`  diag control/interrupt: phone ${JSON.stringify(d)}; stand-in lines ${JSON.stringify(seenLines.filter((l) => String(l).includes('interrupt')))}; desktop ${JSON.stringify(desk)}; store ${JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-idle').status}`);
+    await waitFor(() => phone.eval(`document.querySelector('#conv .conv-running').hidden`), 60000, 'the slow turn over by itself').catch(() => null);
+  }
+  fakeOpts.replyDelayMs = 0;
+  const deskStatus = await cdp.eval(`(window.__orchestraGetState?.().workspaces || []).find((w) => w.id === 'ws-am-idle')?.status ?? 'n/a'`).catch(() => 'n/a');
+  const longReply = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].filter((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)})).length`);
+  clause('control/interrupt-from-phone', stillRunning.bar && stillRunning.rw === 0 && stopped !== null && stopped < 15000 && deskStatus !== 'running' && longReply === 3, `running 2 s with the bar shown (no ↺ mid-turn: ${stillRunning.rw}); trusted ■ ⇒ turn over in ${stopped} ms (the fake model holds its answer 45 s); desktop status ${deskStatus}; replies still 3 (${longReply})`);
+  // rewind the stopped turn
+  const longRw = await phone.eval(`(() => { const u = [...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].find((e) => e.textContent === ${JSON.stringify(LONG)}); let n = u && u.nextElementSibling; return n && n.classList.contains('msg-rw') ? n.dataset.rewind : null; })()`);
+  await tapIn(`#conv .msg-rw[data-rewind="${longRw}"]`);
+  await waitFor(() => phone.eval(`!!document.querySelector('#conv .rw-pop') && document.querySelector('#conv .rw-files').textContent !== 'Vérification des fichiers…'`), 30000, 'the rewind confirmation with its files preview');
+  const pop = await phone.eval(`({ files: document.querySelector('#conv .rw-files').textContent, err: (document.querySelector('#conv .rw-err') || {}).textContent || '' })`);
+  saveShot('phone-rewind-confirm.png', await phone.shot());
+  await tapIn('#conv .rw-go');
+  await waitFor(() => phone.eval(`!document.querySelector('#conv .rw-pop') && document.querySelector('#conv .rw-note').textContent !== ''`), 60000, 'the rewind done on the phone');
+  await waitFor(() => phone.eval(`![...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].some((e) => e.textContent === ${JSON.stringify(LONG)})`), 20000, 'the undone turn gone from the phone').catch(() => null);
+  const RW = await phone.eval(`({ input: document.querySelector('.conv-input').value, note: document.querySelector('#conv .rw-note').textContent, users: [...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].map((e) => e.textContent.slice(0, 40)) })`);
+  const deskUsers = await cdp.eval(`(window.__readAgentSession('ws-am-idle')?.messages ?? []).filter((m) => m.role === 'user').map((m) => String(m.text ?? '').slice(0, 40))`);
+  saveShot('phone-rewind-done.png', await phone.shot());
+  clause('control/rewind-from-phone', !!longRw && RW.input === LONG && !RW.users.some((u) => u.startsWith('Tour long')) && RW.users.at(-1)?.startsWith('Voici une photo') && !deskUsers.some((u) => u.startsWith('Tour long')) && deskUsers.at(-1)?.startsWith('Voici une photo'), `↺ on « ${LONG.slice(0, 20)}… » (${longRw}); preview « ${pop.files} »${pop.err ? ' err ' + pop.err : ''}; field ⇒ « ${RW.input.slice(0, 30)} »; note « ${RW.note} »; phone users ${JSON.stringify(RW.users)}; desktop users ${JSON.stringify(deskUsers)}`);
+  // the model's side: the next turn is resumed at the cut — the undone prompt is NOT in it, the turn before it IS
+  await phone.eval(`(() => { const t = document.querySelector('.conv-input'); t.value = ''; t.dispatchEvent(new Event('input')); t.focus(); return true; })()`);
+  await phone.send('Input.insertText', { text: 'Après le retour en arrière' });
+  const beforeAfter = fakeApi.requests.length;
+  await tapIn('.conv-send');
+  const RA = await waitFor(() => fakeApi.requests.slice(beforeAfter).find((r) => r.type === 'model' && r.tools > 0) || false, 60000, 'the model request after the rewind');
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="assistant"]')].filter((e) => e.textContent.includes(${JSON.stringify(FAKE_REPLY)})).length >= 4`), 60000, 'the reply after the rewind');
+  clause('control/rewind-reaches-the-model', !RA.marks.includes('undone') && RA.marks.includes('kept'), `model request #${RA.seq} after the rewind: marks ${JSON.stringify(RA.marks)} (undone sentinel absent, the previous turn present), ${RA.messages} messages`);
+  delete fakeOpts.markers.undone; delete fakeOpts.markers.kept;
 
   // #339 round 1 — the real CLI parks an AskUserQuestion; the PHONE answers it; the card leaves both surfaces; a 2nd answer is refused.
   wantAsk = 1;

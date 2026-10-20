@@ -2,7 +2,8 @@
 // static asset so the shell (page.ts) only routes to it. Rendering is textContent-only: agent and user text can contain anything,
 // it must never become markup. The stream is read with fetch() (EventSource cannot send the bearer header, and the token must
 // never travel in a URL). Class names the e2e rig and tests read (conv-lines, [data-kind], ask-opt[data-label], ask-submit,
-// conv-input, conv-send, conv-compose[data-state], conv-send-error) are part of the contract — the V1 classes ride beside them.
+// conv-input, conv-send, conv-compose[data-state], conv-send-error, conv-stop, msg-rw, rw-pop[data-state], rw-go, rw-cancel, rw-note) are part of the
+// contract — the V1 classes ride beside them.
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_ATTACH_MAX_COUNT } from '../shared/acces-mobile-conversation.ts';
@@ -139,6 +140,15 @@ export const CONVERSATION_JS = `(function () {
       else row = el('div', 'notice' + (l.error ? ' error' : ''), l.text);
       row.dataset.kind = l.kind; row.dataset.id = l.id;
       list.appendChild(row);
+      // Rewind (the desktop bubble's ↺): offered on a turn that has a target, never mid-turn (main refuses it too).
+      if (l.kind === 'user' && l.rewindId && !c.running) {
+        if (rw.id === l.rewindId) list.appendChild(rewindPanel(l.rewindId));
+        else {
+          var rb = el('button', 'msg-rw', '↺ Revenir ici'); rb.type = 'button'; rb.dataset.rewind = l.rewindId;
+          rb.addEventListener('click', function () { openRewind(l.rewindId); });
+          list.appendChild(rb);
+        }
+      }
     });
     var asks = root.querySelector('.conv-asks'); asks.textContent = '';
     c.asks.forEach(function (a) {
@@ -151,7 +161,10 @@ export const CONVERSATION_JS = `(function () {
       }
       asks.appendChild(box);
     });
+    if (c.running && rw.id && !rw.busy) rw = { id: null }; // a turn started: the confirmation would be refused anyway
     var running = root.querySelector('.conv-running'); running.hidden = !c.running;
+    if (!c.running) { stopping = false; running.querySelector('.conv-stop-msg').textContent = ''; }
+    var stopBtn = running.querySelector('.conv-stop'); stopBtn.disabled = stopping; stopBtn.textContent = stopping ? 'Arrêt…' : '■ Arrêter';
     var pill = root.querySelector('.pill');
     var waiting = c.asks.length > 0;
     pill.className = 'pill ' + (waiting ? 'wait' : c.running ? 'run' : 'idle');
@@ -222,6 +235,89 @@ export const CONVERSATION_JS = `(function () {
     });
     sync();
     box.appendChild(submit); box.appendChild(said);
+  }
+
+  // ---- interrupt: the desktop's ■ / Esc. The bar shows while a turn runs; it hides itself when the turn ends. ----
+  var stopping = false;
+  function interrupt(id, bar) {
+    if (stopping) return;
+    stopping = true; bar.querySelector('.conv-stop').disabled = true; bar.querySelector('.conv-stop').textContent = 'Arrêt…';
+    var said = bar.querySelector('.conv-stop-msg'); said.textContent = '';
+    fetch('/api/interrupt?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : { ok: false, error: r.status === 401 ? 'Jeton refusé.' : r.status === 429 ? 'Trop d’actions en cours, réessaie.' : 'Orchestra injoignable : l’arrêt n’est peut-être pas parti.' }; })
+      .then(null, function () { return { ok: false, error: 'Réseau coupé : l’arrêt n’est peut-être pas parti.' }; })
+      .then(function (res) {
+        if (id !== current) return;
+        if (res && res.ok) { fetchConv(); return; } // the bar hides itself when the turn end arrives
+        stopping = false; said.textContent = (res && res.error) || 'Échec de l’arrêt.';
+        var b = bar.querySelector('.conv-stop'); b.disabled = false; b.textContent = '■ Arrêter';
+      });
+  }
+
+  // ---- rewind: undo a user turn and everything after it, restore the files it touched, its text back in the field ----
+  var rw = { id: null }; // { id, preview, busy, error } — survives the re-renders every stream announcement causes
+  var composerTa = null, rwNote = null;
+  function rwPost(path, rewindId) {
+    return fetch('/api/' + path + '?id=' + encodeURIComponent(current) + '&rewind=' + encodeURIComponent(rewindId), { method: 'POST', headers: auth() })
+      .then(function (r) {
+        if (r.status === 401) return { ok: false, error: 'Jeton refusé : re-scanne le QR code.' };
+        if (r.status === 429) return { ok: false, error: 'Trop d’actions en cours, réessaie dans un instant.' };
+        if (!r.ok) return { ok: false, error: 'Orchestra injoignable : vérifie la conversation avant de réessayer.' };
+        return r.json();
+      });
+  }
+  function describePreview(p) {
+    if (!p) return 'Vérification des fichiers…';
+    if (!p.canRewind) return 'Les fichiers resteront tels quels (pas d’instantané pour ce message).';
+    var n = (p.filesChanged || []).length;
+    if (!n) return 'Aucun fichier à restaurer.';
+    return 'Restaure ' + n + ' fichier' + (n > 1 ? 's' : '') + ' (+' + (p.insertions || 0) + '/−' + (p.deletions || 0) + ').';
+  }
+  function openRewind(rewindId) {
+    var id = current;
+    rw = { id: rewindId, preview: null, busy: false, error: '' };
+    if (rwNote) rwNote.textContent = '';
+    if (lastConv) render(lastConv);
+    rwPost('rewind-preview', rewindId)
+      .then(null, function () { return { ok: false, error: 'Réseau coupé.' }; })
+      .then(function (res) {
+        if (id !== current || rw.id !== rewindId || rw.busy) return;
+        rw.preview = (res && res.ok && res.preview) || { canRewind: false };
+        if (!(res && res.ok)) rw.error = (res && res.error) || '';
+        if (lastConv) render(lastConv);
+      });
+  }
+  function rewindPanel(rewindId) {
+    var box = el('div', 'rw-pop'); box.dataset.state = rw.busy ? 'busy' : rw.error ? 'error' : 'confirm'; box.dataset.rewind = rewindId;
+    box.appendChild(el('b', 'rw-t', 'Revenir à ce message ?'));
+    box.appendChild(el('p', 'rw-b', 'Ce message et tout ce qui suit sont retirés de la conversation ; son texte revient dans le champ pour le modifier et le renvoyer.'));
+    box.appendChild(el('p', 'rw-files', describePreview(rw.preview)));
+    if (rw.error) box.appendChild(el('p', 'rw-err', rw.error));
+    var act = el('div', 'rw-act');
+    var no = el('button', 'rw-cancel', 'Annuler'); no.type = 'button'; no.disabled = rw.busy;
+    no.addEventListener('click', function () { rw = { id: null }; if (lastConv) render(lastConv); });
+    var go = el('button', 'rw-go', rw.busy ? 'Retour…' : 'Revenir ici'); go.type = 'button'; go.disabled = rw.busy;
+    go.addEventListener('click', function () { confirmRewind(rewindId); });
+    act.appendChild(no); act.appendChild(go); box.appendChild(act);
+    return box;
+  }
+  function confirmRewind(rewindId) {
+    if (rw.busy) return;
+    var id = current;
+    rw.busy = true; rw.error = ''; if (lastConv) render(lastConv);
+    rwPost('rewind', rewindId)
+      .then(null, function () { return { ok: false, error: 'Réseau coupé : vérifie la conversation avant de réessayer.' }; })
+      .then(function (res) {
+        if (id !== current) return;
+        if (res && res.ok) {
+          rw = { id: null };
+          // Edit-and-retry, like the desktop: the undone prompt returns to the field (never over a draft the human is typing).
+          if (composerTa && res.text && !composerTa.value.trim()) { composerTa.value = res.text; composerTa.dispatchEvent(new Event('input')); }
+          if (rwNote) rwNote.textContent = res.filesError ? 'Conversation rembobinée. Fichiers laissés tels quels — ' + res.filesError : 'Conversation rembobinée.';
+        } else { rw.busy = false; rw.error = (res && res.error) || 'Échec du retour en arrière.'; }
+        if (lastConv) render(lastConv);
+        fetchConv();
+      });
   }
 
   function fetchConv() {
@@ -297,7 +393,7 @@ export const CONVERSATION_JS = `(function () {
     var fld = el('div', 'fld');
     var file = el('input', 'conv-file'); file.type = 'file'; file.multiple = true; file.accept = 'image/*,application/pdf'; file.hidden = true;
     var add = el('button', 'conv-attach att', '+'); add.type = 'button'; add.setAttribute('aria-label', 'Joindre une image ou un PDF');
-    var ta = el('textarea', 'conv-input'); ta.rows = 1; ta.placeholder = 'Message à l’agent…'; ta.maxLength = 32000;
+    var ta = el('textarea', 'conv-input'); composerTa = ta; ta.rows = 1; ta.placeholder = 'Message à l’agent…'; ta.maxLength = 32000;
     var btn = el('button', 'conv-send send', '↑'); btn.type = 'submit'; btn.setAttribute('aria-label', 'Envoyer');
     var atts = [];
     function canSend() { return !!ta.value.trim() || atts.length > 0; }
@@ -371,7 +467,7 @@ export const CONVERSATION_JS = `(function () {
   }
 
   function open(id, row, othersWaiting) {
-    current = id; meta = row || { name: id }; version = -1;
+    current = id; meta = row || { name: id }; version = -1; rw = { id: null }; stopping = false;
     root = document.getElementById('conv');
     root.textContent = '';
     var head = el('div', 'ch');
@@ -388,15 +484,21 @@ export const CONVERSATION_JS = `(function () {
     root.appendChild(head);
     root.appendChild(el('div', 'conv-state', ''));
     var lines = el('div', 'conv-lines stream'); root.appendChild(lines);
-    var running = el('div', 'conv-running working', 'L’agent travaille…'); running.hidden = true; root.appendChild(running);
+    var running = el('div', 'conv-running working'); running.hidden = true;
+    running.appendChild(el('span', 'conv-run-t', 'L’agent travaille…'));
+    var stop = el('button', 'conv-stop', '■ Arrêter'); stop.type = 'button'; stop.setAttribute('aria-label', 'Arrêter le tour en cours');
+    stop.addEventListener('click', function () { interrupt(id, running); });
+    running.appendChild(stop); running.appendChild(el('span', 'conv-stop-msg', ''));
+    root.appendChild(running);
     root.appendChild(el('div', 'conv-asks'));
+    rwNote = el('div', 'rw-note', ''); rwNote.setAttribute('role', 'status'); root.appendChild(rwNote);
     root.appendChild(composer(id));
     root.dataset.id = id;
     root.hidden = false;
     fetch('/api/seen?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() }).catch(function () {});
     fetchConv();
   }
-  function close() { current = null; lastConv = null; version = -1; if (root) { root.hidden = true; root.textContent = ''; } }
+  function close() { current = null; lastConv = null; version = -1; rw = { id: null }; stopping = false; composerTa = null; rwNote = null; if (root) { root.hidden = true; root.textContent = ''; } }
 
   window.OrchestraConversation = { open: open, close: close, onStream: onStream, connect: connect };
 })();
@@ -513,7 +615,22 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .tl .tg{width:14px;text-align:center;flex:none}
 .v1 .tl.ok .tg{color:var(--green)} .v1 .tl.running .tg,.v1 .tl.running{color:var(--work)} .v1 .tl.error,.v1 .tl.error .tg{color:var(--red)}
 .v1 .notice{font:12.5px var(--mono);color:var(--faint)} .v1 .notice.error{color:var(--red)}
-.v1 .working{margin:0 20px 8px;font-size:13.5px;color:var(--work)}
+.v1 .working{margin:0 20px 8px;font-size:13.5px;color:var(--work);display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.v1 .conv-stop{margin-left:auto;height:34px;padding:0 14px;border-radius:17px;border:1px solid rgba(255,107,107,.5);background:rgba(255,107,107,.1);color:var(--red);font-weight:650;font-size:14px}
+.v1 .conv-stop:disabled{opacity:.5}
+.v1 .conv-stop-msg{flex-basis:100%;color:var(--red);font-size:13px} .v1 .conv-stop-msg:empty{display:none}
+.v1 .msg-rw{align-self:flex-end;margin-top:-10px;padding:4px 2px;font:12px var(--mono);color:var(--faint)}
+.v1 .rw-pop{align-self:flex-end;max-width:92%;margin-top:-6px;padding:12px 14px;border-radius:14px;border:1px solid var(--hair2);background:var(--raised);display:flex;flex-direction:column;gap:6px}
+.v1 .rw-t{font-size:15px;font-weight:650}
+.v1 .rw-b,.v1 .rw-files{font-size:13.5px;line-height:1.4;color:var(--dim)}
+.v1 .rw-files{color:var(--text)}
+.v1 .rw-err{font-size:13.5px;color:var(--red)}
+.v1 .rw-act{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.v1 .rw-act button{height:36px;padding:0 14px;border-radius:10px;font-weight:620;font-size:14px}
+.v1 .rw-cancel{border:1px solid var(--hair2)}
+.v1 .rw-go{background:var(--accent);color:var(--ink)}
+.v1 .rw-act button:disabled{opacity:.45}
+.v1 .rw-note{margin:0 20px 8px;font-size:13px;color:var(--dim)} .v1 .rw-note:empty{display:none}
 .v1 .conv-asks:empty{display:none}
 .v1 .conv-asks{padding:0 20px 12px;display:flex;flex-direction:column;gap:12px}
 .v1 .ask{border:1px solid rgba(255,182,46,.55);background:rgba(255,200,87,.06);border-radius:16px;padding:14px}

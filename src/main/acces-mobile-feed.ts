@@ -18,6 +18,7 @@ const feed = createMobileFeed({
 });
 
 export const getMobileConversation = feed.getMobileConversation;
+export const mobileFoldedMessages = feed.foldedMessages;
 export const subscribeMobileFeed = feed.subscribeMobileFeed;
 export const mobileFeedState = feed.mobileFeedState;
 export const noteMobileActivity = feed.noteActivity;

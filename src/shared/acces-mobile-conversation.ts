@@ -9,7 +9,9 @@ import { clip, oneLine, toolLabel, toolLine, type ToolState } from './tool-line.
 export { toolLabel };
 
 export type PhoneLine =
-  | { id: string; kind: 'user'; text: string; at?: number; attachments?: ('image' | 'pdf')[] }
+  /** `rewindId`: the turn can be rewound from the phone (the desktop bubble's rewind target); absent on a queued prompt or a turn
+   *  with no id (externally originated, pre-feature history). */
+  | { id: string; kind: 'user'; text: string; at?: number; attachments?: ('image' | 'pdf')[]; rewindId?: string }
   | { id: string; kind: 'assistant'; text: string; streaming: boolean; at?: number }
   | { id: string; kind: 'tool'; label: string; state: ToolState; at?: number }
   | { id: string; kind: 'notice'; text: string; error: boolean; at?: number }
@@ -78,6 +80,7 @@ function lineOf(m: RenderMessage): PhoneLine | null {
       if (!t && !atts.length) return null;
       const line: Extract<PhoneLine, { kind: 'user' }> = { id: m.id, kind: 'user', text: clip(t, MAX_PHONE_TEXT), at };
       if (atts.length) line.attachments = atts;
+      if (m.rewindId && !m.queued) line.rewindId = m.rewindId;
       return line;
     }
     case 'assistant': {
@@ -150,6 +153,11 @@ export function projectConversation(id: string, session: AgentSession, version: 
     asks.push(askOf(a));
   }
   return { ok: true, id, version, running: session.running, truncated: all.length - lines.length, lines, asks };
+}
+
+/** A rewind target as the phone sends it back (a Claude Code message uuid): never let anything else reach sdkRewind. */
+export function validRewindId(id: unknown): id is string {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id);
 }
 
 /** Workspace ids are uuids (or the legacy short ids): never let anything else reach a route. */

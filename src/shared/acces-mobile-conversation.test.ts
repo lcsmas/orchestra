@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transcriptToEvents } from './agent-transcript.ts';
 import { emptySession, foldEvent, foldEvents } from './agent-events.ts';
-import { MAX_PHONE_CHARS, MAX_PHONE_LINES, MAX_PHONE_TEXT, MOBILE_ATTACH_MAX_COUNT, parseMobileAttachments, projectConversation, toolLabel, validWorkspaceId } from './acces-mobile-conversation.ts';
+import { MAX_PHONE_CHARS, MAX_PHONE_LINES, MAX_PHONE_TEXT, MOBILE_ATTACH_MAX_COUNT, parseMobileAttachments, projectConversation, toolLabel, validRewindId, validWorkspaceId } from './acces-mobile-conversation.ts';
 import type { AgentEvent, AgentSession } from './types.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -163,4 +163,18 @@ test('a user turn with attachments reads on the phone with them counted (even wi
     { text: '', attachments: ['image'] },
     { text: 'texte seul', attachments: undefined },
   ]);
+});
+
+test('rewind from the phone: a user line carries its rewind target (the on-disk uuid); a queued prompt and an id-less turn carry none', () => {
+  const c = projectConversation('ws-1', folded(), 1);
+  const u = c.lines[0];
+  assert.equal(u.kind === 'user' && u.rewindId, '4c2d2bdc-c15c-44d0-bf26-87ff9b00ad7c', 'the history turn is a rewind target (envelope uuid)');
+  const ev = (over: Record<string, unknown>) => ({ type: 'user-message', seq: 1, at: 1, text: 'x', ...over }) as unknown as AgentEvent;
+  let s = foldEvent(emptySession('w'), ev({ seq: 1, text: 'sent', rewindId: 'r-sent' }));
+  s = foldEvent(s, ev({ seq: 2, text: 'parked', rewindId: 'r-parked', queued: true }));
+  s = foldEvent(s, ev({ seq: 3, text: 'from a peer' }));
+  const lines = projectConversation('w', s, 1).lines.map((l) => (l.kind === 'user' ? [l.text, l.rewindId] : [l.kind]));
+  assert.deepEqual(lines, [['sent', 'r-sent'], ['parked', undefined], ['from a peer', undefined]]);
+  assert.ok(validRewindId('4c2d2bdc-c15c-44d0-bf26-87ff9b00ad7c') && validRewindId('r_1'));
+  for (const bad of ['', 'a/b', '../x', 'a b', 'a'.repeat(101), 42, null, undefined]) assert.equal(validRewindId(bad), false, String(bad));
 });
