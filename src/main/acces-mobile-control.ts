@@ -1,4 +1,4 @@
-// Interrupt + rewind from the phone: the desktop's ■ and the user bubble's ↺, reached over the PRIVATE fd-3 channel only. Electron-free
+// Interrupt + rewind + archive from the phone: the desktop's ■, the user bubble's ↺ and the sidebar's archive, reached over the PRIVATE fd-3 channel only. Electron-free
 // (every effect injected) so node --test drives the guards main applies whatever the server already checked.
 
 import { validRewindId } from '../shared/acces-mobile-conversation.ts';
@@ -15,6 +15,8 @@ export interface MobileControlDeps {
   interrupt: (id: string) => Promise<void>;
   preview: (id: string, rewindId: string) => Promise<AgentRewindPreview>;
   rewind: (id: string, rewindId: string, prevRewindId?: string) => Promise<AgentSessionRewindEvent>;
+  /** The desktop's archive (api-handlers `archiveWorkspace`): session stopped, the whole subtree archived, worktree kept. */
+  archive: (id: string) => Promise<void>;
 }
 
 export type MobileControlResult = { ok: false; error: string } | { ok: true; preview?: AgentRewindPreview; text?: string; filesError?: string };
@@ -60,5 +62,16 @@ export function createMobileControls(deps: MobileControlDeps) {
     }
   }
 
-  return { interrupt, preview, rewind };
+  async function archive(msg: Record<string, unknown>): Promise<MobileControlResult> {
+    const id = deps.liveId(msg.id);
+    if (!id) return { ok: false, error: 'unknown or archived workspace' };
+    try {
+      await deps.archive(id);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  return { interrupt, preview, rewind, archive };
 }

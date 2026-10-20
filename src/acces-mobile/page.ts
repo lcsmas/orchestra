@@ -281,9 +281,19 @@ export const APP_JS = `(function () {
       // right after a launch the list has not refreshed yet: the launch screen knows the row it just made
       var w = last.filter(function (x) { return x.id === m2[1]; })[0] || (launch && launch.meta(m2[1]));
       if (launch) launch.close();
-      home.hidden = true; conv.open(m2[1], w || { name: m2[1] }, last.filter(function (x) { return x.status === 'waiting' && x.id !== m2[1]; }).length);
+      home.hidden = true; conv.open(m2[1], w || { name: m2[1] }, last.filter(function (x) { return x.status === 'waiting' && x.id !== m2[1]; }).length, below(m2[1]));
     } else if (location.hash === '#new' && launch) { conv.close(); home.hidden = true; launch.open(); }
     else { conv.close(); if (launch) launch.close(); home.hidden = false; load(); }
+  }
+  // The listed rows under \`id\` (parentId = nearest listed ancestor): what an archive takes with it. Cycle-safe (a walk stops at a repeat).
+  function below(id) {
+    var by = {}; last.forEach(function (x) { by[x.id] = x; });
+    return last.filter(function (x) {
+      if (x.id === id) return false;
+      var seen = {}, p = x.parentId;
+      while (p && by[p] && !seen[p]) { if (p === id) return true; seen[p] = 1; p = by[p].parentId; }
+      return false;
+    }).length;
   }
   document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });
   window.addEventListener('hashchange', function () {

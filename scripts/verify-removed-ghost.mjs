@@ -70,6 +70,15 @@ if (wired) {
   out.cName = useStore.getState().workspaces.find((w) => w.id === 'C')?.name;
   out.ok = out.before.join() === 'A,B,C' && out.afterRemoved.join() === 'C' &&
     out.afterStale.join() === 'C,D' && out.cName === 'live-update';
+  // Archived ELSEWHERE (the phone) while shown here: the desktop moves to the next open workspace, like its own archive.
+  handlers.onWorkspaceUpdate(ws('E'));
+  useStore.setState({ activeId: 'C', openHistory: ['E', 'C', 'D'] }); // E first: a fallback run for ANY archive would leave C
+  handlers.onWorkspaceUpdate(ws('C', { status: 'running' }));
+  out.activeAfterLiveUpdate = useStore.getState().activeId;      // control: a plain update keeps the pane
+  handlers.onWorkspaceUpdate(ws('D', { archived: true }));
+  out.activeAfterOtherArchived = useStore.getState().activeId;   // control: another workspace archived keeps the pane
+  handlers.onWorkspaceUpdate(ws('C', { archived: true }));
+  out.activeAfterArchived = useStore.getState().activeId;        // E: the most recent still-live one
 } else out.ok = false;
 console.log(JSON.stringify(out));
 process.exit(0);

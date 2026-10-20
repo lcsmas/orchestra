@@ -142,3 +142,14 @@ test('tree (#373): a second tap closes a fold again, and only that fold', async 
   page.fold('root')!.click();
   assert.deepEqual(page.rows().map((l) => l.dataset.id), ['root'], 'root closed');
 });
+
+test('archive: the conversation is told how many listed agents sit under the row (what the archive takes with it) — the whole subtree, cycle-safe', async () => {
+  const page = await drawList([...vague(), row('loop1', { parentId: 'loop2' }), row('loop2', { parentId: 'loop1' }), row('alone')]);
+  const below = (id: string) => page.open(id)[3];
+  assert.equal(below('root'), 5, 'sub w1 w2 top deep');
+  assert.equal(below('sub'), 3, 'w1 w2 deep');
+  assert.equal(below('w2'), 1);
+  assert.equal(below('deep'), 0, 'a leaf');
+  assert.equal(below('alone'), 0, 'control: an unrelated row');
+  assert.equal(below('loop1'), 1, 'a parent cycle ends (loop2 only)');
+});

@@ -844,11 +844,12 @@ window.orchestra.onWorkspaceUpdate((w) => {
     // touching activeId, so a background spawn never steals the user's focus);
     // patch in place when already present.
     const exists = s.workspaces.some((x) => x.id === w.id);
-    return {
-      workspaces: exists
-        ? s.workspaces.map((x) => (x.id === w.id ? { ...x, ...w } : x))
-        : [...s.workspaces, w],
-    };
+    const workspaces = exists
+      ? s.workspaces.map((x) => (x.id === w.id ? { ...x, ...w } : x))
+      : [...s.workspaces, w];
+    // Archived elsewhere (the phone) while shown here: move on like the sidebar's own archive does, not to an empty pane.
+    if (w.archived && s.activeId === w.id) return { workspaces, activeId: pickFallbackActive(workspaces, s.openHistory, w.id) };
+    return { workspaces };
   });
 
   if (linksChanged) {

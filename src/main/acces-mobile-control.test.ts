@@ -18,6 +18,7 @@ function rig(over: Partial<MobileControlDeps> = {}) {
     interrupt: async (id) => void calls.push(['interrupt', id]),
     preview: async (id, r) => (calls.push(['preview', id, r]), { canRewind: true, filesChanged: ['a'] }),
     rewind: async (id, r, prev) => (calls.push(['rewind', id, r, prev]), { type: 'session/rewind', seq: 1, at: 1, rewindId: r }),
+    archive: async (id) => void calls.push(['archive', id]),
     ...over,
   });
   return { c, calls, setRunning: (v: boolean) => (running = v) };
@@ -63,4 +64,13 @@ test('preview: only for a turn of the fold; allowed mid-turn (a dry run)', async
   assert.deepEqual(await r.c.preview({ id: 'w1', rewindId: 'r1' }), { ok: true, preview: { canRewind: true, filesChanged: ['a'] } });
   assert.deepEqual(await r.c.preview({ id: 'w1', rewindId: 'nope' }), { ok: false, error: REWIND_GONE });
   assert.deepEqual(r.calls, [['preview', 'w1', 'r1']]);
+});
+
+test('archive: the live workspace is archived; unknown / archived / malformed ⇒ refused, nothing called; a throw is a refusal, never a false ok', async () => {
+  const r = rig();
+  assert.deepEqual(await r.c.archive({ id: 'w1' }), { ok: true }, 'control');
+  for (const id of ['gone', undefined, 42, '../x']) assert.deepEqual(await r.c.archive({ id }), { ok: false, error: 'unknown or archived workspace' }, String(id));
+  assert.deepEqual(r.calls, [['archive', 'w1']]);
+  const broken = rig({ archive: async () => { throw new Error('store write failed'); } });
+  assert.deepEqual(await broken.c.archive({ id: 'w1' }), { ok: false, error: 'store write failed' });
 });

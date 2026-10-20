@@ -191,15 +191,15 @@ test('interrupt + rewind from the phone: the private channel only, the desktop\'
   assert.match(routes, /case '\/mobile\/interrupt':\n[^\n]*\n\s*return controls\.interrupt\(msg\);/);
   assert.match(routes, /case '\/mobile\/rewind-preview':\n\s*return controls\.preview\(msg\);/);
   assert.match(routes, /case '\/mobile\/rewind':\n[^\n]*\n\s*return controls\.rewind\(msg\);/);
-  assert.match(routes, /const controls = createMobileControls\(\{\n\s*liveId: \(id\) => liveWorkspace\(id\)\?\.id,\n\s*fold: mobileFoldedMessages,\n\s*isRunning: \(id\) => store\.getWorkspace\(id\)\?\.status === 'running',\n\s*interrupt: sdkInterrupt,\n\s*preview: sdkRewindPreview,\n\s*rewind: sdkRewind,\n\s*\}\);/, 'the desktop\'s calls (api-handlers agentSdkInterrupt / agentSdkRewind), archived refused');
+  assert.match(routes, /const controls = createMobileControls\(\{\n\s*liveId: \(id\) => liveWorkspace\(id\)\?\.id,\n\s*fold: mobileFoldedMessages,\n\s*isRunning: \(id\) => store\.getWorkspace\(id\)\?\.status === 'running',\n\s*interrupt: sdkInterrupt,\n\s*preview: sdkRewindPreview,\n\s*rewind: sdkRewind,\n(?:\s*\/\/.*\n)?\s*archive: \(id\) => \{/, 'the desktop\'s calls (api-handlers agentSdkInterrupt / agentSdkRewind), archived refused');
   assert.match(read('src/main/api-handlers.ts'), /agentSdkRewind: async \(wsId, rewindId, prevRewindId\) =>\n\s*sdkRewind\(wsId, rewindId, prevRewindId\),/, 'control: the desktop calls the same sdkRewind');
   assert.match(read('src/main/acces-mobile-feed.ts'), /export const mobileFoldedMessages = feed\.foldedMessages;/);
   assert.doesNotMatch(hooks, /\/mobile\/(interrupt|rewind)/, 'not on the hooks socket any agent can reach');
   const control = read('src/main/acces-mobile-control.ts');
   assert.doesNotMatch(control, /from 'electron'|from '\.\/(store|workspaces|agent-sdk)/, 'Electron-free: node --test drives the real guards');
   const server = read('src/acces-mobile/server.ts');
-  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/interrupt', '\/api\/rewind-preview', '\/api\/rewind'\]\)/);
-  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/interrupt', '\/mobile\/rewind-preview', '\/mobile\/rewind'\]\)/);
+  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/interrupt', '\/api\/rewind-preview', '\/api\/rewind'(?:, '[^']+')*\]\)/);
+  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/interrupt', '\/mobile\/rewind-preview', '\/mobile\/rewind'(?:, '[^']+')*\]\)/);
 });
 
 test('an interrupted turn leaves `running`: the CLI fires no Stop hook on a user interrupt, so the result boundary settles the dot (rig control/interrupt-from-phone)', () => {
@@ -207,4 +207,16 @@ test('an interrupted turn leaves `running`: the CLI fires no Stop hook on a user
   assert.match(sdk, /if \(session\.interruptRequested\) settleInterruptedTurn\(session\.wsId\);\n\s*session\.interruptRequested = false;/, 'read BEFORE the flag is reset, at the result');
   const activity = read('src/main/activity.ts');
   assert.match(activity, /export function settleInterruptedTurn\(id: string\): void \{\n\s*const ws = store\.getWorkspace\(id\);\n\s*if \(!ws \|\| ws\.archived \|\| ws\.status !== 'running'\) return;\n\s*void setStatus\(id, 'idle', finishedStopReason\(id, 'interrupted'\)\);/, 'running → idle only, no bell / toast');
+});
+
+test('archive from the phone: the private channel only, the desktop\'s own calls (api-handlers archiveWorkspace = sdkStopMany + archiveWorkspace)', () => {
+  const routes = read('src/main/acces-mobile-routes.ts');
+  const server = read('src/acces-mobile/server.ts');
+  const api = read('src/main/api-handlers.ts');
+  assert.match(routes, /case '\/mobile\/archive':\n[^\n]*\n\s*return controls\.archive\(msg\);/);
+  assert.match(routes, /archive: \(id\) => \{\n\s*sdkStopMany\(\[id\]\);\n\s*return archiveWorkspace\(id\);\n\s*\},/, 'the phone\'s archive = the sidebar\'s');
+  assert.match(api, /archiveWorkspace: \(id\) => \{\n\s*sdkStopMany\(\[id\]\);[\s\S]*?return archiveWorkspace\(id\);/, 'the desktop handler it mirrors (if this moves, move the phone with it)');
+  assert.doesNotMatch(hooks, /\/mobile\/archive/, 'not on the hooks socket any agent can reach');
+  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/archive'\]\)/);
+  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/archive'\]\)/);
 });

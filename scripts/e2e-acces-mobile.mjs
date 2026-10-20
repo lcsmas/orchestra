@@ -28,6 +28,8 @@
 //                a trusted tap fills « /<name> », no match ⇒ hidden; the desktop-only clear / mcp / status are not offered
 //   control/*    interrupt + rewind from the phone: a trusted « ■ Arrêter » ends a REAL turn the slow fake model holds; a trusted « ↺ Revenir
 //                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
+//   archive/*    a trusted « Archiver » + confirm on the phone archives a coordinator AND its subtree like the sidebar (worktrees kept),
+//                the phone is back on its list without them, the desktop leaves the archived pane; an archived / unknown id is refused
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -1040,6 +1042,47 @@ try {
   const polled = await phone.eval(`document.querySelectorAll('li[data-id]').length`);
   const launchedRows = (await wsList()).length - wsBefore.length; // the launch/* arms above made these workspaces: the phone lists them too
   clause('perf/idle-cpu', mainPct < 10 && srvPct < 5 && polled === 3 + launchedRows, `over ${secs.toFixed(0)} s with the phone streaming + polling: main ${mainPct.toFixed(1)}% CPU, server ${srvPct.toFixed(2)}% CPU (phone lists ${polled}: 3 seeded + ${launchedRows} launched)`);
+
+  // Archive from the phone (Lucas 2026-10-20 « archiver un workspace depuis mon iPhone »): am-sub (am-deep › am-deeper under it) is SHOWN
+  // on the desktop; a TRUSTED « Archiver » then « Archiver » on the phone archives the three like the sidebar does, the phone is back on
+  // its list without them, the desktop moves off the archived pane, the worktree dirs stay. Must-FAIL: an already archived id is refused.
+  {
+    const SUB = ['ws-am-sub', 'ws-am-deep', 'ws-am-deeper'];
+    const subDir = (await wsList()).find((w) => w.id === 'ws-am-sub') && JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.find((w) => w.id === 'ws-am-sub').worktreePath;
+    // the desktop's pane, read from what it RENDERS (the build exposes no store getter): the header's branch chip, or the Welcome screen
+    const deskPane = `(() => { const t = document.querySelector('.main .toolbar .title'); return { title: t ? t.textContent : null, welcome: !!document.querySelector('.main > .empty h2') }; })()`;
+    const sideRows = `[...document.querySelectorAll('aside.sidebar .ws-name')].filter((e) => /\\bam-(sub|deep|deeper)$/.test(e.textContent.trim())).length`;
+    await cdp.eval(`window.__orchestraSetState({ activeId: 'ws-am-sub' }); true`);
+    const deskBefore = await waitFor(async () => { const d = await cdp.eval(deskPane); return d.title === 'am-sub' ? d : null; }, 10000, 'the desktop showing am-sub').catch(() => null);
+    const sideBefore = await cdp.eval(sideRows);
+    await phone.eval(`location.hash = 'w=ws-am-sub'; true`);
+    await waitFor(() => phone.eval(`!!document.querySelector('#conv .conv-archive') && !document.getElementById('conv').hidden`), 15000, 'am-sub conversation on the phone');
+    await tapSel('#conv .conv-archive');
+    await waitFor(() => phone.eval(`!!document.querySelector('#conv .ar-pop')`), 5000, 'the archive confirmation');
+    const AC = await phone.eval(`({ state: document.querySelector('#conv .ar-pop').dataset.state, t: document.querySelector('#conv .ar-t').textContent, below: (document.querySelector('#conv .ar-below') || {}).textContent || '' })`);
+    saveShot('phone-archive-confirm.png', await phone.shot());
+    const storeAfterTap = JSON.parse(fs.readFileSync(path.join(storeDir, 'store.json'), 'utf8')).workspaces.filter((w) => SUB.includes(w.id) && w.archived).length;
+    await tapSel('#conv .ar-go');
+    await waitFor(() => phone.eval(`location.hash === '' && !document.getElementById('home').hidden`), 30000, 'back on the list after the archive');
+    await waitFor(async () => (await wsList()).filter((w) => SUB.includes(w.id) && w.archived).length === 3, 15000, 'the three archived in main').catch(() => null);
+    const main = (await wsList()).filter((w) => SUB.includes(w.id)).map((w) => `${w.id}:${w.archived}`);
+    const listApi = JSON.parse((await req(SOCK, '/api/workspaces', AUTH)).body || '{}');
+    const apiIds = (listApi.workspaces || []).map((w) => w.id);
+    await waitFor(() => phone.eval(`document.querySelectorAll('li[data-id]').length >= 3`), 15000, 'the list redrawn').catch(() => null);
+    for (const f of ['ws-am-coord']) await phone.eval(`(() => { const f = document.querySelector('li.fold[data-fold="${f}"]'); if (f && !f.textContent.startsWith('▾')) f.click(); return true; })()`);
+    const PL = await phone.eval(`({ ids: [...document.querySelectorAll('li[data-id]')].map((l) => l.dataset.id), fold: (document.querySelector('li.fold[data-fold="ws-am-coord"]') || {}).textContent || '' })`);
+    const deskAfter = await waitFor(async () => { const d = await cdp.eval(deskPane); return d.title !== 'am-sub' ? d : null; }, 10000, 'the desktop off am-sub').catch(() => null);
+    const liveBranches = (await wsList()).filter((w) => !w.archived).map((w) => w.branch);
+    const deskRowsLeft = await cdp.eval(sideRows);
+    saveShot('phone-archive-done.png', await phone.shot());
+    clause('archive/from-phone', !!deskBefore && AC.state === 'confirm' && AC.below === 'Les 2 agents sous lui sont archivés aussi.' && storeAfterTap === 0 && main.every((m) => m.endsWith(':true')) && main.length === 3 && !SUB.some((id) => apiIds.includes(id)) && !SUB.some((id) => PL.ids.includes(id)) && PL.ids.includes('ws-am-coord') && !!subDir && fs.existsSync(subDir), `confirm « ${AC.t} » / « ${AC.below} » (nothing archived before « Archiver »: ${storeAfterTap}); main ${main.join(' ')}; phone api lists none of them ${!SUB.some((id) => apiIds.includes(id))}; phone list ${PL.ids.join(',')} (coord fold « ${PL.fold} »); worktree kept ${!!subDir && fs.existsSync(subDir)}`);
+    clause('archive/desktop-leaves-archived-pane', !!deskAfter && !deskAfter.welcome && !!deskAfter.title && liveBranches.some((b) => deskAfter.title.includes(b)) && !/am-(sub|deep)/.test(deskAfter.title) && sideBefore > 0 && deskRowsLeft === 0, `desktop pane ${JSON.stringify(deskBefore)} -> ${JSON.stringify(deskAfter)} (a live workspace's branch: ${liveBranches.find((b) => deskAfter?.title?.includes(b))}); sidebar rows named am-sub/am-deep/am-deeper ${sideBefore} -> ${deskRowsLeft}`);
+    const again = JSON.parse((await reqPost(SOCK, '/api/archive?id=ws-am-sub', AUTH, '')).body || '{}');
+    const unknown = JSON.parse((await reqPost(SOCK, '/api/archive?id=ws-nope', AUTH, '')).body || '{}');
+    const noTok = (await reqPost(SOCK, '/api/archive?id=ws-am-coord', ID, '')).status;
+    const coordLive = (await wsList()).find((w) => w.id === 'ws-am-coord')?.archived === false;
+    clause('archive/refusals', again.ok === false && /archived/.test(again.error) && unknown.ok === false && noTok === 401 && coordLive, `already archived ⇒ ${JSON.stringify(again)}; unknown ⇒ ${JSON.stringify(unknown)}; no token ⇒ ${noTok}; am-coord still live ${coordLive}`);
+  }
 
   // ───────────── #336: pairing QR, regenerate, PWA install, unreachable ─────────────
   const KEY = 'orchestra.accesMobile.token';

@@ -42,11 +42,14 @@ export async function drawList(rows: Row[]) {
   let stream: ((m: unknown) => void) | null = null;
   const els: Record<string, El> = {};
   const get = (id: string): El => (els[id] ??= new El());
+  const listeners: Record<string, () => void> = {};
+  const opened: unknown[][] = [];
+  const location = { hash: '', pathname: '/' };
   const sandbox = {
-    location: { hash: '', pathname: '/' },
+    location,
     window: {
-      addEventListener: () => {},
-      OrchestraConversation: { open: () => {}, close: () => {}, onStream: (h: (m: unknown) => void) => { stream = h; }, connect: () => {} },
+      addEventListener: (t: string, h: () => void) => { listeners[t] = h; },
+      OrchestraConversation: { open: (...a: unknown[]) => { opened.push(a); }, close: () => {}, onStream: (h: (m: unknown) => void) => { stream = h; }, connect: () => {} },
     },
     history: { replaceState: () => {} },
     localStorage: { getItem: () => TOKEN, setItem: () => {} },
@@ -72,6 +75,8 @@ export async function drawList(rows: Row[]) {
     /** What the live stream does when the list changes: the page refetches and redraws (the fold state must survive). */
     refresh: async (next?: Row[]) => { if (next) current = next; stream?.({ t: 'workspaces' }); await settle(); await settle(); },
     needsMe: () => { get('needsMe').checked = true; get('needsMe').on.change?.(); },
+    /** A tap on a row (hash route): the arguments the page hands the conversation screen. */
+    open: (id: string) => { location.hash = '#w=' + id; listeners.hashchange?.(); return opened[opened.length - 1]; },
   };
 }
 

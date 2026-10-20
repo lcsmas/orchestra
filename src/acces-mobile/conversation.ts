@@ -2,7 +2,7 @@
 // static asset so the shell (page.ts) only routes to it. Rendering is textContent-only: agent and user text can contain anything,
 // it must never become markup. The stream is read with fetch() (EventSource cannot send the bearer header, and the token must
 // never travel in a URL). Class names the e2e rig and tests read (conv-lines, [data-kind], ask-opt[data-label], ask-submit,
-// conv-input, conv-send, conv-compose[data-state], conv-send-error, conv-stop, msg-rw, rw-pop[data-state], rw-go, rw-cancel, rw-note, conv-ac, ac-row[data-name]) are part of the
+// conv-input, conv-send, conv-compose[data-state], conv-send-error, conv-stop, msg-rw, rw-pop[data-state], rw-go, rw-cancel, rw-note, conv-ac, ac-row[data-name], conv-archive, ar-pop[data-state], ar-go, ar-cancel, ar-err) are part of the
 // contract — the V1 classes ride beside them.
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
@@ -169,6 +169,7 @@ export const CONVERSATION_JS = `(function () {
     var running = root.querySelector('.conv-running'); running.hidden = !c.running;
     if (!c.running) { stopping = false; running.querySelector('.conv-stop-msg').textContent = ''; }
     var stopBtn = running.querySelector('.conv-stop'); stopBtn.disabled = stopping; stopBtn.textContent = stopping ? 'Arrêt…' : '■ Arrêter';
+    drawArchive();
     var pill = root.querySelector('.pill');
     var waiting = c.asks.length > 0;
     pill.className = 'pill ' + (waiting ? 'wait' : c.running ? 'run' : 'idle');
@@ -321,6 +322,48 @@ export const CONVERSATION_JS = `(function () {
         } else { rw.busy = false; rw.error = (res && res.error) || 'Échec du retour en arrière.'; }
         if (lastConv) render(lastConv);
         fetchConv();
+      });
+  }
+
+  // ---- archive: the desktop sidebar's archive (session stopped, subtree archived, worktree kept), behind a confirmation ----
+  var ar = { open: false }; // { open, busy, error } — survives the re-renders
+  var arBelow = 0; // agents under this one in the list: archived with it
+  function drawArchive() {
+    var slot = root && root.querySelector('.conv-ar');
+    if (!slot) return;
+    slot.textContent = '';
+    var btn = root.querySelector('.conv-archive'); if (btn) btn.disabled = !!ar.open;
+    if (!ar.open) return;
+    var box = el('div', 'ar-pop'); box.dataset.state = ar.busy ? 'busy' : ar.error ? 'error' : 'confirm';
+    box.appendChild(el('b', 'ar-t', 'Archiver ce workspace ?'));
+    box.appendChild(el('p', 'ar-b', 'La session de l’agent est arrêtée ; le worktree et la branche sont gardés. Il se restaure depuis le bureau.'));
+    if (arBelow > 0) box.appendChild(el('p', 'ar-below', arBelow === 1 ? 'L’agent sous lui est archivé aussi.' : 'Les ' + arBelow + ' agents sous lui sont archivés aussi.'));
+    if (lastConv && lastConv.running) box.appendChild(el('p', 'ar-run', 'L’agent travaille : son tour en cours sera interrompu.'));
+    if (ar.error) box.appendChild(el('p', 'ar-err', ar.error));
+    var act = el('div', 'rw-act');
+    var no = el('button', 'ar-cancel', 'Annuler'); no.type = 'button'; no.disabled = !!ar.busy;
+    no.addEventListener('click', function () { ar = { open: false }; drawArchive(); });
+    var go = el('button', 'ar-go', ar.busy ? 'Archivage…' : 'Archiver'); go.type = 'button'; go.disabled = !!ar.busy;
+    go.addEventListener('click', confirmArchive);
+    act.appendChild(no); act.appendChild(go); box.appendChild(act);
+    slot.appendChild(box);
+  }
+  function confirmArchive() {
+    if (ar.busy) return;
+    var id = current;
+    ar.busy = true; ar.error = ''; drawArchive();
+    fetch('/api/archive?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() })
+      .then(function (r) {
+        if (r.status === 401) return { ok: false, error: 'Jeton refusé : re-scanne le QR code.' };
+        if (r.status === 429) return { ok: false, error: 'Trop d’actions en cours, réessaie dans un instant.' };
+        if (!r.ok) return { ok: false, error: 'Orchestra injoignable : le workspace est peut-être archivé, vérifie la liste.' };
+        return r.json();
+      })
+      .then(null, function () { return { ok: false, error: 'Réseau coupé : le workspace est peut-être archivé, vérifie la liste.' }; })
+      .then(function (res) {
+        if (id !== current) return;
+        if (res && res.ok) { location.hash = ''; return; } // back to the list, which no longer has it
+        ar.busy = false; ar.error = (res && res.error) || 'Échec de l’archivage.'; drawArchive();
       });
   }
 
@@ -498,8 +541,8 @@ export const CONVERSATION_JS = `(function () {
     return form;
   }
 
-  function open(id, row, othersWaiting) {
-    current = id; meta = row || { name: id }; version = -1; rw = { id: null }; stopping = false;
+  function open(id, row, othersWaiting, below) {
+    current = id; meta = row || { name: id }; version = -1; rw = { id: null }; stopping = false; ar = { open: false }; arBelow = below > 0 ? below : 0;
     root = document.getElementById('conv');
     root.textContent = '';
     var head = el('div', 'ch');
@@ -513,7 +556,11 @@ export const CONVERSATION_JS = `(function () {
     if (meta.account) cs.appendChild(acct(meta.account));
     ct.appendChild(cs); head.appendChild(ct);
     head.appendChild(el('span', 'pill idle', 'inactif'));
+    var arBtn = el('button', 'conv-archive', 'Archiver'); arBtn.type = 'button'; arBtn.setAttribute('aria-label', 'Archiver ce workspace');
+    arBtn.addEventListener('click', function () { if (!ar.open) { ar = { open: true }; drawArchive(); } });
+    head.appendChild(arBtn);
     root.appendChild(head);
+    root.appendChild(el('div', 'conv-ar'));
     root.appendChild(el('div', 'conv-state', ''));
     var lines = el('div', 'conv-lines stream'); root.appendChild(lines);
     var running = el('div', 'conv-running working'); running.hidden = true;
@@ -530,7 +577,7 @@ export const CONVERSATION_JS = `(function () {
     fetch('/api/seen?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() }).catch(function () {});
     fetchConv();
   }
-  function close() { current = null; lastConv = null; version = -1; rw = { id: null }; stopping = false; composerTa = null; rwNote = null; if (root) { root.hidden = true; root.textContent = ''; } }
+  function close() { current = null; lastConv = null; version = -1; rw = { id: null }; stopping = false; ar = { open: false }; arBelow = 0; composerTa = null; rwNote = null; if (root) { root.hidden = true; root.textContent = ''; } }
 
   window.OrchestraConversation = { open: open, close: close, onStream: onStream, connect: connect };
 })();
@@ -662,6 +709,17 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .rw-cancel{border:1px solid var(--hair2)}
 .v1 .rw-go{background:var(--accent);color:var(--ink)}
 .v1 .rw-act button:disabled{opacity:.45}
+.v1 .conv-archive{flex:none;height:30px;padding:0 10px;border-radius:8px;border:1px solid var(--hair2);color:var(--dim);font-size:13px;font-weight:600}
+.v1 .conv-archive:disabled{opacity:.45}
+.v1 .conv-ar:empty{display:none}
+.v1 .conv-ar{padding:12px 16px 0}
+.v1 .ar-pop{padding:12px 14px;border-radius:14px;border:1px solid var(--hair2);background:var(--raised);display:flex;flex-direction:column;gap:6px}
+.v1 .ar-t{font-size:15px;font-weight:650}
+.v1 .ar-b,.v1 .ar-below{font-size:13.5px;line-height:1.4;color:var(--dim)}
+.v1 .ar-run{font-size:13.5px;color:var(--amber)}
+.v1 .ar-err{font-size:13.5px;color:var(--red)}
+.v1 .ar-cancel{border:1px solid var(--hair2)}
+.v1 .ar-go{background:var(--red);color:#1a0505}
 .v1 .rw-note{margin:0 20px 8px;font-size:13px;color:var(--dim)} .v1 .rw-note:empty{display:none}
 .v1 .conv-asks:empty{display:none}
 .v1 .conv-asks{padding:0 20px 12px;display:flex;flex-direction:column;gap:12px}

@@ -808,3 +808,28 @@ test('interrupt + rewind: relayed to main as POST with identity + token; ids val
     await new Promise((r) => server.close(() => r(null)));
   }
 });
+
+test('archive: relayed to main as POST with identity + token, the id validated, never on GET, counted as a write', { timeout: 15_000 }, async () => {
+  const seen: { route: string; body: Record<string, unknown>; timeoutMs?: number }[] = [];
+  const server = createAccesMobileServer({
+    allowedLogin: LOGIN,
+    readToken: () => TOKEN,
+    upstream: (route, body, timeoutMs) => (seen.push({ route, body, timeoutMs }), Promise.resolve({ ok: true })),
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const ok = await get(port, '/api/archive?id=w1', AUTH, 'POST');
+    assert.equal(ok.status, 200, 'control');
+    assert.deepEqual(seen, [{ route: '/mobile/archive', body: { id: 'w1' }, timeoutMs: 30_000 }]);
+    assert.equal((await get(port, '/api/archive?id=w1', ID, 'POST')).status, 401, 'needs the token');
+    assert.equal((await get(port, '/api/archive?id=w1', { 'Tailscale-User-Login': 'colleague@x', Authorization: `Bearer ${TOKEN}` }, 'POST')).status, 403, 'colleague');
+    assert.equal((await get(port, '/api/archive?id=../x', AUTH, 'POST')).status, 400, 'bad id');
+    assert.equal((await get(port, '/api/archive', AUTH, 'POST')).status, 400, 'no id');
+    assert.equal((await get(port, '/api/archive?id=w1', AUTH)).status, 404, 'GET is not an archive');
+    assert.equal(seen.length, 1, 'no refused request reached main');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(() => r(null)));
+  }
+});

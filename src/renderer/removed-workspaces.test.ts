@@ -48,3 +48,14 @@ test('★ the REAL renderer store: a stale workspace:update after workspace(s):r
   assert.equal(r.cName, 'live-update');
   assert.equal(r.ok, true);
 });
+
+test('★ the REAL renderer store: the shown workspace archived elsewhere (the phone) ⇒ the pane moves to the next open live workspace', () => {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const out = execFileSync(process.execPath, [path.join(repo, 'scripts', 'verify-removed-ghost.mjs')], {
+    encoding: 'utf8', timeout: 120_000, cwd: repo, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const r = JSON.parse(out.trim().split('\n').filter(Boolean).pop()!) as Record<string, unknown>;
+  assert.equal(r.activeAfterLiveUpdate, 'C', 'control: a status update keeps the pane');
+  assert.equal(r.activeAfterOtherArchived, 'C', 'control: another workspace archived keeps the pane');
+  assert.equal(r.activeAfterArchived, 'E', 'the next in open history that is still live');
+});

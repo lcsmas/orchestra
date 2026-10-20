@@ -5,11 +5,11 @@
 
 import { appUpdateState } from './app-update-host';
 import { store } from './store';
-import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands } from './agent-sdk';
+import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands, sdkStopMany } from './agent-sdk';
 import { mergeSlashItems, PHONE_EXCLUDED } from '../shared/slash-menu';
 import { getMobileConversation, mobileFoldedMessages, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
-import { dispatchSpawnRequest } from './workspaces';
+import { archiveWorkspace, dispatchSpawnRequest } from './workspaces';
 import { createMobileLauncher } from './acces-mobile-launch';
 import { log } from './logger';
 import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acces-mobile';
@@ -45,7 +45,7 @@ const launcher = createMobileLauncher({
   onCreated: (id) => noteMobileActivity(id), // the entry is created hot even when no stream was open at the answer
 });
 
-/** Interrupt + rewind: the desktop's own calls (neither takes a pause origin), behind main's guards. */
+/** Interrupt + rewind + archive: the desktop's own calls (none takes a pause origin), behind main's guards. */
 const controls = createMobileControls({
   liveId: (id) => liveWorkspace(id)?.id,
   fold: mobileFoldedMessages,
@@ -53,6 +53,11 @@ const controls = createMobileControls({
   interrupt: sdkInterrupt,
   preview: sdkRewindPreview,
   rewind: sdkRewind,
+  // the desktop's archive, verbatim (api-handlers.ts `archiveWorkspace`)
+  archive: (id) => {
+    sdkStopMany([id]);
+    return archiveWorkspace(id);
+  },
 });
 
 export const mobileRpcHandlers: RpcHandlers = {
@@ -127,6 +132,9 @@ export const mobileRpcHandlers: RpcHandlers = {
       case '/mobile/rewind':
         // The desktop bubble's ↺ — the SAME sdkRewind; target, mid-turn refusal and fallback cut decided in acces-mobile-control.ts.
         return controls.rewind(msg);
+      case '/mobile/archive':
+        // The sidebar's archive — the SAME calls (acces-mobile-control.ts): an orchestrator takes its subtree, the worktree is kept.
+        return controls.archive(msg);
       default:
         return { ok: false, error: 'unknown route' };
     }

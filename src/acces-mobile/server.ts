@@ -90,9 +90,9 @@ export const MAX_STREAMS = 8;
 /** At most this many sends / answers / launches waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1, #375. */
 export const MAX_WRITES_IN_FLIGHT = 4;
 /** The only paths a POST may reach. Every other method / path pair is a 405. */
-const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind']);
+const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind', '/api/archive']);
 /** Main routes bounded by MAX_WRITES_IN_FLIGHT (they act on an agent session — a rewind preview may wake one). */
-const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind']);
+const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind', '/mobile/archive']);
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
 export function tokenMatches(presented: string, expected: string): boolean {
@@ -139,7 +139,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    // GET everywhere; POST only for the state changes (« seen », send, answer, launch, interrupt, rewind). Ids travel in the query string; send / answer / launch have a body.
+    // GET everywhere; POST only for the state changes (« seen », send, answer, launch, interrupt, rewind, archive). Ids travel in the query string; send / answer / launch have a body.
     if (method !== 'GET' && !(method === 'POST' && POST_PATHS.has(pathOnly))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
@@ -279,6 +279,11 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       // Stop the running turn — the desktop's ■ / Esc. No body.
       const id = wsId();
       return id ? relay('/mobile/interrupt', { id }, 15_000) : refuse(400, 'bad-id');
+    }
+    if (pathOnly === '/api/archive' && method === 'POST') {
+      // Archive the workspace (and its subtree) — the desktop sidebar's archive. No body. Stopping a session + its keeper takes seconds.
+      const id = wsId();
+      return id ? relay('/mobile/archive', { id }, 30_000) : refuse(400, 'bad-id');
     }
     if ((pathOnly === '/api/rewind' || pathOnly === '/api/rewind-preview') && method === 'POST') {
       // Rewind to a user turn (the desktop bubble's ↺): the target is checked against the conversation in main. No body. A rewind restores

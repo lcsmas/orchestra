@@ -75,7 +75,7 @@ const ANSWER = (id: string): Line => ({ id, kind: 'assistant', text: 'ok', strea
 
 interface Req { url: string; method: string; auth: string; answer: (status: number, body: unknown) => void; fail: () => void }
 
-function run(first: ReturnType<typeof conv>) {
+function run(first: ReturnType<typeof conv>, below = 0) {
   const root = new El();
   const reqs: Req[] = [];
   let projection = first;
@@ -95,7 +95,7 @@ function run(first: ReturnType<typeof conv>) {
       hidden: false,
     },
     localStorage: { getItem: () => TOKEN, setItem() {} },
-    location: { hash: '' },
+    location: { hash: '#w=w1' },
     Event: class {
       type: string;
       constructor(t: string) {
@@ -126,8 +126,8 @@ function run(first: ReturnType<typeof conv>) {
     },
   };
   vm.runInNewContext(CONVERSATION_JS, sandbox);
-  const api = (sandbox.window as { OrchestraConversation: { open(id: string, row: unknown, n: number): void } }).OrchestraConversation;
-  api.open('w1', { name: 'w1' }, 0);
+  const api = (sandbox.window as { OrchestraConversation: { open(id: string, row: unknown, n: number, below?: number): void } }).OrchestraConversation;
+  api.open('w1', { name: 'w1' }, 0, below);
   const settle = async () => {
     for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r));
   };
@@ -136,6 +136,7 @@ function run(first: ReturnType<typeof conv>) {
   return {
     root,
     reqs,
+    hash: () => (sandbox.location as { hash: string }).hash,
     settle,
     q,
     qa,
@@ -256,4 +257,71 @@ test('rewind must-FAIL: a refusal keeps the panel open with the reason (control:
   assert.equal(p.q('rw-err')!.textContent, 'L’agent travaille : arrête-le avant de revenir en arrière.');
   assert.equal(p.q('rw-go')!.disabled, false, 'retry possible');
   assert.equal(p.q('conv-input')!.value, '', 'nothing put back in the field');
+});
+
+test('archive: the header button opens a confirmation, nothing is sent until « Archiver »; Annuler closes it (control)', async () => {
+  const p = run(conv(false, [USER('u1', 'go', 'r1')]));
+  await p.settle();
+  assert.equal(p.q('ar-pop'), null, 'closed at open');
+  p.q('conv-archive')!.click();
+  assert.equal(p.q('ar-pop')!.dataset.state, 'confirm');
+  assert.equal(p.q('ar-t')!.textContent, 'Archiver ce workspace ?');
+  assert.equal(p.q('ar-below'), null, 'no agent below: nothing said about a subtree');
+  assert.equal(p.q('ar-run'), null, 'idle: no interruption warning');
+  assert.equal(p.reqs.length, 0, 'the header tap sends nothing');
+  p.q('ar-cancel')!.click();
+  assert.equal(p.q('ar-pop'), null);
+  assert.equal(p.reqs.length, 0, 'cancel sends nothing');
+  assert.equal(p.hash(), '#w=w1', 'still on the conversation');
+});
+
+test('archive: confirm ⇒ ONE POST /api/archive with the token; success ⇒ back to the list', async () => {
+  const p = run(conv(false, [USER('u1', 'go', 'r1')]));
+  await p.settle();
+  p.q('conv-archive')!.click();
+  p.q('ar-go')!.click();
+  assert.deepEqual([p.reqs[0].url, p.reqs[0].method, p.reqs[0].auth], ['/api/archive?id=w1', 'POST', `Bearer ${TOKEN}`]);
+  assert.equal(p.q('ar-pop')!.dataset.state, 'busy');
+  assert.equal(p.q('ar-go')!.disabled, true);
+  p.q('ar-go')!.click();
+  assert.equal(p.reqs.length, 1, 'a double tap sends one archive');
+  p.reqs[0].answer(200, { ok: true });
+  await p.settle();
+  assert.equal(p.hash(), '', 'back to the list');
+});
+
+test('archive: the confirmation says what goes with it — the agents below, a running turn interrupted', async () => {
+  const p = run(conv(true, [USER('u1', 'go')]), 3);
+  await p.settle();
+  p.q('conv-archive')!.click();
+  assert.equal(p.q('ar-below')!.textContent, 'Les 3 agents sous lui sont archivés aussi.');
+  assert.equal(p.q('ar-run')!.textContent, 'L’agent travaille : son tour en cours sera interrompu.');
+  const one = run(conv(false, [USER('u1', 'go')]), 1);
+  await one.settle();
+  one.q('conv-archive')!.click();
+  assert.equal(one.q('ar-below')!.textContent, 'L’agent sous lui est archivé aussi.');
+});
+
+test('archive must-FAIL: a refusal, a 401 or a lost network is said, the panel stays and a retry is possible; never a false return to the list', async () => {
+  for (const [how, said] of [
+    ['refused', 'unknown or archived workspace'],
+    ['401', 'Jeton refusé : re-scanne le QR code.'],
+    ['502', 'Orchestra injoignable : le workspace est peut-être archivé, vérifie la liste.'],
+    ['offline', 'Réseau coupé : le workspace est peut-être archivé, vérifie la liste.'],
+  ] as const) {
+    const p = run(conv(false, [USER('u1', 'go')]));
+    await p.settle();
+    p.q('conv-archive')!.click();
+    p.q('ar-go')!.click();
+    if (how === 'refused') p.reqs[0].answer(200, { ok: false, error: said });
+    else if (how === '401') p.reqs[0].answer(401, null);
+    else if (how === '502') p.reqs[0].answer(502, null);
+    else p.reqs[0].fail();
+    await p.settle();
+    assert.equal(p.q('ar-pop')!.dataset.state, 'error', how);
+    assert.equal(p.q('ar-err')!.textContent, said, how);
+    assert.equal(p.hash(), '#w=w1', `${how}: stays on the conversation`);
+    p.q('ar-go')!.click();
+    assert.equal(p.reqs.length, 2, `${how}: a retry sends a second archive`);
+  }
 });
