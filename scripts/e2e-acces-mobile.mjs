@@ -618,8 +618,9 @@ try {
   const skApi = await phone.eval(`fetch('/api/skills?id=ws-am-idle', { headers: { Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') } }).then((r) => r.json())`);
   const skNames = (skApi.items ?? []).map((i) => i.name);
   const cliBuiltins = (skApi.items ?? []).filter((i) => i.source === 'builtin' && i.name !== 'compact').map((i) => i.name);
-  clause('skills/list', skApi.ok && skNames.includes('rig-project-skill') && skNames.includes('rig-user-skill') && skNames.includes('compact') && cliBuiltins.length > 0 && !['clear', 'mcp', 'status'].some((n) => skNames.includes(n)),
-    `${skNames.length} items; project ${skNames.includes('rig-project-skill')}, user ${skNames.includes('rig-user-skill')}, CLI built-ins ${JSON.stringify(cliBuiltins.slice(0, 6))}; desktop-only present ${JSON.stringify(['clear', 'mcp', 'status'].filter((n) => skNames.includes(n)))}`);
+  const skSrc = (n) => (skApi.items ?? []).find((i) => i.name === n)?.source;
+  clause('skills/list', skApi.ok && skSrc('rig-project-skill') === 'project' && skSrc('rig-user-skill') === 'user' && skNames.includes('compact') && cliBuiltins.length > 0 && !['clear', 'mcp', 'status'].some((n) => skNames.includes(n)),
+    `${skNames.length} items; rig-project-skill source ${skSrc('rig-project-skill')}, rig-user-skill source ${skSrc('rig-user-skill')}, CLI built-ins ${JSON.stringify(cliBuiltins.slice(0, 6))}; desktop-only present ${JSON.stringify(['clear', 'mcp', 'status'].filter((n) => skNames.includes(n)))}`);
   await phone.send('Input.insertText', { text: 'rig-p' });
   await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-ac .ac-row')].map((r) => r.dataset.name).join(',') === 'rig-project-skill'`), 10000, 'the filtered menu');
   const skMenu = await phone.eval(`({ rows: [...document.querySelectorAll('#conv .conv-ac .ac-row')].map((r) => r.textContent), box: (() => { const a = document.querySelector('#conv .conv-ac').getBoundingClientRect(), f = document.querySelector('#conv .fld').getBoundingClientRect(); return { acBottom: Math.round(a.bottom), fldTop: Math.round(f.top), h: Math.round(a.height) }; })() })`);
@@ -637,6 +638,30 @@ try {
   // errors are never a false « sent »: an archived workspace is refused with a reason
   const arch = await phone.eval(`fetch('/api/send?id=ws-am-archived', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ text: 'x' }) }).then((r) => r.json())`);
   clause('send/archived-refused', arch.ok === false && /archived/.test(arch.error), JSON.stringify(arch));
+
+  // skills/desktop-*: the DESKTOP composer's `/` menu now reads the same shared merge/filter (src/shared/slash-menu.ts) — trusted typing
+  // into the visible CodeMirror composer of am-idle (selected through the store hook; the selection is not under test).
+  // the prior selection is restored after the arm: an ACTIVE am-idle is « seen » the moment it waits, voiding the later En attente arms
+  const deskPrev = await cdp.eval(`(() => { let p = null; window.__orchestraSetState((s) => { p = s.activeId; return {}; }); return p; })()`);
+  await cdp.eval(`window.__orchestraSetState({ activeId: 'ws-am-idle', page: 'workspaces', insightsOpen: false, helpOpen: false }); true`);
+  const cmBox = await waitFor(() => cdp.eval(`(() => { for (const e of document.querySelectorAll('.cm-content')) { const r = e.getBoundingClientRect(); if (r.width > 50 && r.height > 5) return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; } return null; })()`), 20000, 'the desktop composer');
+  await cdp.click(cmBox.x, cmBox.y);
+  const deskAc = () => cdp.eval(`(() => { const a = document.querySelector('.av-ac'); if (!a) return null; const r = a.getBoundingClientRect(); return { rows: [...a.querySelectorAll('.av-ac-item')].map((i) => i.querySelector('.av-ac-name').textContent + '|' + i.querySelector('.av-ac-source').textContent), inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.height > 0 }; })()`);
+  const deskPre = await deskAc();
+  await cdp.send('Input.insertText', { text: '/rig-' });
+  // the menu first draws from the CLI's list, then the on-disk scan lands (sources project / user) — wait for the scan
+  const deskRig = await waitFor(async () => { const a = await deskAc(); return a && a.rows.some((r) => r.endsWith('|project')) ? a : false; }, 15000, 'the desktop skills menu with the on-disk scan').catch(() => deskAc());
+  saveShot('desktop-skills-menu.png', await cdp.shot());
+  await cdp.eval(`(() => { const v = window.__cmComposerView; v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: '' } }); return true; })()`);
+  await cdp.send('Input.insertText', { text: '/c' });
+  await sleep(400);
+  const deskC = await deskAc();
+  await cdp.eval(`(() => { const v = window.__cmComposerView; v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: '' } }); return true; })()`);
+  await sleep(300);
+  const deskAfter = await deskAc();
+  await cdp.eval(`window.__orchestraSetState({ activeId: ${JSON.stringify(deskPrev)} }); true`);
+  clause('skills/desktop-menu', deskPre === null && JSON.stringify(deskRig?.rows) === JSON.stringify(['/rig-project-skill|project', '/rig-user-skill|user']) && deskRig.inView && deskC?.rows.includes('/clear|builtin') && deskC.rows.includes('/compact|builtin') && deskAfter === null,
+    `menu absent -> « /rig- » ${JSON.stringify(deskRig)}; « /c » ${JSON.stringify(deskC?.rows)}; cleared -> ${JSON.stringify(deskAfter)}; selection restored to ${deskPrev}`);
 
   // Lucas 2026-10-12 « je ne peux pas coller des fichiers »: a photo (3000×2000) and a PDF PICKED on the phone (the file input the
   // + button opens), plus a PASTED screenshot removed again with a trusted tap, reach the MODEL as image / document blocks — the
