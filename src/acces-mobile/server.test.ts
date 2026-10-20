@@ -833,3 +833,39 @@ test('archive: relayed to main as POST with identity + token, the id validated, 
     await new Promise((r) => server.close(() => r(null)));
   }
 });
+
+test('relaunch: POST with identity + token, no body relayed, never on GET, counted as a write', { timeout: 15_000 }, async () => {
+  const seen: { route: string; body: Record<string, unknown>; timeoutMs?: number }[] = [];
+  const releases: (() => void)[] = [];
+  let hold = false;
+  const server = createAccesMobileServer({
+    allowedLogin: LOGIN,
+    readToken: () => TOKEN,
+    upstream: (route, body, timeoutMs) => {
+      seen.push({ route, body, timeoutMs });
+      return hold ? new Promise((r) => releases.push(() => r({ ok: true }))) : Promise.resolve({ ok: true });
+    },
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const okRes = await get(port, '/api/relaunch?x=1', AUTH, 'POST');
+    assert.equal(okRes.status, 200, 'control: relaunch');
+    assert.deepEqual(seen, [{ route: '/mobile/relaunch', body: {}, timeoutMs: 15_000 }], 'nothing from the query reaches main');
+    assert.equal((await get(port, '/api/relaunch', ID, 'POST')).status, 401, 'needs the token');
+    assert.equal((await get(port, '/api/relaunch', { ...AUTH, Authorization: 'Bearer nope' }, 'POST')).status, 401, 'bad token');
+    assert.equal((await get(port, '/api/relaunch', { 'Tailscale-User-Login': 'colleague@x', Authorization: `Bearer ${TOKEN}` }, 'POST')).status, 403, 'colleague');
+    assert.equal((await get(port, '/api/relaunch', AUTH)).status, 404, 'GET is not a relaunch');
+    assert.equal(seen.length, 1, 'no refused request reached main');
+    hold = true;
+    const held = Array.from({ length: MAX_WRITES_IN_FLIGHT }, () => get(port, '/api/interrupt?id=w1', AUTH, 'POST'));
+    while (seen.length < 1 + MAX_WRITES_IN_FLIGHT) await sleepMs(5);
+    const extra = await Promise.race([get(port, '/api/relaunch', AUTH, 'POST'), sleepMs(2000).then(() => ({ status: 'queued instead of refused' }))]);
+    assert.equal(extra.status, 429, 'one write too many');
+    releases.forEach((r) => r());
+    await Promise.all(held);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(() => r(null)));
+  }
+});

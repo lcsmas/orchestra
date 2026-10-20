@@ -46,3 +46,13 @@ export const RELAUNCH_SCRIPT = 'i=0; while kill -0 "$1" 2>/dev/null && [ "$i" -l
 export function relaunchArgv(pid: number, target: string): string[] {
   return ['-c', RELAUNCH_SCRIPT, 'orchestra-relaunch', String(pid), target];
 }
+
+/** Why a relaunch is refused, or null. `requireUpdate` = the desktop banner (only for a newer install); the phone relaunches the
+ *  installed app whatever its version (Lucas 2026-10-20). Checked BEFORE quitting: a refused relaunch must leave the app running. */
+export type RelaunchRefusal = { ok: false; code: 'no-installed-app' | 'no-update' | 'not-executable'; error: string };
+export function relaunchRefusal(i: { target: string; requireUpdate: boolean; update: AppUpdateState; executable: boolean }): RelaunchRefusal | null {
+  if (!i.target) return { ok: false, code: 'no-installed-app', error: 'pas d’app installée à relancer (build de développement)' };
+  if (i.requireUpdate && i.update.kind !== 'installed') return { ok: false, code: 'no-update', error: 'aucune nouvelle version installée' };
+  if (!i.executable) return { ok: false, code: 'not-executable', error: `l’app installée est introuvable ou non exécutable (${i.target})` };
+  return null;
+}

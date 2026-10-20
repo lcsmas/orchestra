@@ -184,6 +184,8 @@ export interface MobileWorkspaceList {
   workspaces: MobileWorkspaceRow[];
   /** A newer Orchestra is installed on the computer (the running one keeps the old code until relaunched) — the phone says so. */
   appUpdate?: { version: string | null };
+  /** The running app: after a phone relaunch, a changed `startedAt` is what proves a NEW app answers. */
+  app?: { version: string; startedAt: number };
 }
 
 /** Rank inside the list: en attente (blocked on the human) first, then non lu, then the rest. */

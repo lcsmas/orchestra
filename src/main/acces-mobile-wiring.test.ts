@@ -202,6 +202,22 @@ test('interrupt + rewind from the phone: the private channel only, the desktop\'
   assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/interrupt', '\/mobile\/rewind-preview', '\/mobile\/rewind'(?:, '[^']+')*\]\)/);
 });
 
+test('relaunch from the phone (Lucas 2026-10-20): the private channel only, the desktop banner\'s relaunch (any version), answer before quit, a write', () => {
+  assert.match(routes, /case '\/mobile\/relaunch':\n(?:\s*\/\/[^\n]*\n)*\s*return relaunchApp\(\{ requireUpdate: false, quitDelayMs: 500, by: 'phone' \}\);/);
+  assert.match(routes, /app: appIdentity\(\),/, 'the list carries the running app: the phone tells a NEW app from a stream blip');
+  assert.doesNotMatch(hooks, /\/mobile\/relaunch/, 'not on the hooks socket any agent can reach');
+  const host = read('src/main/app-update-host.ts');
+  assert.match(host, /export function relaunchInstalled\(\)[^\n]*\{\n\s*return relaunchApp\(\{ requireUpdate: true, quitDelayMs: 0, by: 'desktop' \}\);/, 'control: the desktop banner keeps « only a newer install »');
+  // every refusal is decided before the relaunch script is spawned and before anything quits
+  const fn = host.slice(host.indexOf('export function relaunchApp('), host.indexOf('export function relaunchInstalled('));
+  assert.ok(fn.indexOf('if (refusal)') > 0 && fn.indexOf('if (refusal)') < fn.indexOf("spawn('/bin/sh'") && fn.indexOf("spawn('/bin/sh'") < fn.indexOf('app.quit()'), 'refuse → spawn → quit, in that order');
+  assert.match(fn, /if \(o\.quitDelayMs > 0\) setTimeout\(\(\) => app\.quit\(\), o\.quitDelayMs\);/);
+  const server = read('src/acces-mobile/server.ts');
+  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/relaunch'/);
+  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/relaunch'/, 'in the in-flight write bound');
+  assert.match(server, /if \(pathOnly === '\/api\/relaunch' && method === 'POST'\) \{\n[^\n]*\n\s*return relay\('\/mobile\/relaunch', \{\}, 15_000\);/, 'no body relayed');
+});
+
 test('an interrupted turn leaves `running`: the CLI fires no Stop hook on a user interrupt, so the result boundary settles the dot (rig control/interrupt-from-phone)', () => {
   const sdk = read('src/main/agent-sdk.ts');
   assert.match(sdk, /if \(session\.interruptRequested\) settleInterruptedTurn\(session\.wsId\);\n\s*session\.interruptRequested = false;/, 'read BEFORE the flag is reset, at the result');
@@ -217,6 +233,6 @@ test('archive from the phone: the private channel only, the desktop\'s own calls
   assert.match(routes, /archive: \(id\) => \{\n\s*sdkStopMany\(\[id\]\);\n\s*return archiveWorkspace\(id\);\n\s*\},/, 'the phone\'s archive = the sidebar\'s');
   assert.match(api, /archiveWorkspace: \(id\) => \{\n\s*sdkStopMany\(\[id\]\);[\s\S]*?return archiveWorkspace\(id\);/, 'the desktop handler it mirrors (if this moves, move the phone with it)');
   assert.doesNotMatch(hooks, /\/mobile\/archive/, 'not on the hooks socket any agent can reach');
-  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/archive'\]\)/);
-  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/archive'\]\)/);
+  assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/archive'(?:, '[^']+')*\]\)/);
+  assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/archive'(?:, '[^']+')*\]\)/);
 });

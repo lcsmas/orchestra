@@ -4,7 +4,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { decideAppUpdate, parseVersionSidecar, relaunchArgv, appUpdateTitle, identityKey } from './app-update.ts';
+import { decideAppUpdate, parseVersionSidecar, relaunchArgv, appUpdateTitle, identityKey, relaunchRefusal } from './app-update.ts';
 
 const A = { ino: 10, size: 1000, mtimeMs: 1 };
 const B = { ino: 11, size: 2000, mtimeMs: 2 };
@@ -69,4 +69,15 @@ test('relaunch script: waits until the quitting app is GONE, then execs the inst
   } finally {
     fs.rmSync(d, { recursive: true, force: true });
   }
+});
+
+test('relaunch refusal: the phone relaunches whatever the version, the desktop banner only a newer install; never a missing / non-executable target', () => {
+  const NONE = { kind: 'none' } as const, NEW = { kind: 'installed', version: '0.5.400', key: 'k' } as const;
+  const ok = { target: '/opt/Orchestra.AppImage', executable: true };
+  assert.equal(relaunchRefusal({ ...ok, requireUpdate: false, update: NONE }), null, 'control: the phone, same version');
+  assert.equal(relaunchRefusal({ ...ok, requireUpdate: false, update: NEW }), null, 'the phone, newer install');
+  assert.equal(relaunchRefusal({ ...ok, requireUpdate: true, update: NEW }), null, 'the desktop banner, newer install');
+  assert.equal(relaunchRefusal({ ...ok, requireUpdate: true, update: NONE })?.code, 'no-update');
+  assert.equal(relaunchRefusal({ ...ok, target: '', requireUpdate: false, update: NONE })?.code, 'no-installed-app', 'a dev build has nothing to exec');
+  assert.equal(relaunchRefusal({ ...ok, executable: false, requireUpdate: false, update: NEW })?.code, 'not-executable');
 });

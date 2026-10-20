@@ -90,9 +90,9 @@ export const MAX_STREAMS = 8;
 /** At most this many sends / answers / launches waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1, #375. */
 export const MAX_WRITES_IN_FLIGHT = 4;
 /** The only paths a POST may reach. Every other method / path pair is a 405. */
-const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind', '/api/archive']);
+const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind', '/api/archive', '/api/relaunch']);
 /** Main routes bounded by MAX_WRITES_IN_FLIGHT (they act on an agent session — a rewind preview may wake one). */
-const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind', '/mobile/archive']);
+const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind', '/mobile/archive', '/mobile/relaunch']);
 
 /** Constant-time compare on fixed-length digests (lengths never leak, unequal lengths never throw). */
 export function tokenMatches(presented: string, expected: string): boolean {
@@ -139,7 +139,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (typeof login !== 'string' || login === '') return refuse(403, 'no-identity');
     if (!sameLogin(login, opts.allowedLogin)) return refuse(403, 'wrong-identity');
 
-    // GET everywhere; POST only for the state changes (« seen », send, answer, launch, interrupt, rewind, archive). Ids travel in the query string; send / answer / launch have a body.
+    // GET everywhere; POST only for the state changes (« seen », send, answer, launch, interrupt, rewind, archive, relaunch). Ids travel in the query string; send / answer / launch have a body.
     if (method !== 'GET' && !(method === 'POST' && POST_PATHS.has(pathOnly))) return refuse(405, 'method');
 
     // 2) The static shell: no data in it, identity is enough (a navigation cannot carry a bearer header).
@@ -274,6 +274,10 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
         if (!parsed.ok) return refuse(400, 'bad-launch');
         relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);
       });
+    }
+    if (pathOnly === '/api/relaunch' && method === 'POST') {
+      // « Relancer Orchestra » (the desktop banner's relaunch, any version). No body; main refuses before quitting or answers then quits.
+      return relay('/mobile/relaunch', {}, 15_000);
     }
     if (pathOnly === '/api/interrupt' && method === 'POST') {
       // Stop the running turn — the desktop's ■ / Esc. No body.

@@ -776,6 +776,13 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .pair[hidden]{display:none}
 .v1 .update{margin:10px 0 2px;padding:9px 12px;border-radius:12px;background:rgba(110,168,255,.10);box-shadow:inset 3px 0 0 var(--accent);color:var(--text);font-size:13.5px;line-height:1.4}
 .v1 .update[hidden]{display:none}
+.v1 .update{display:flex;align-items:center;gap:10px} .v1 .update span{flex:1}
+.v1 .update .upd-go,.v1 .rl .btn2{min-height:36px;padding:0 14px;border-radius:10px;background:var(--raised);border:1px solid var(--hair2);color:var(--text);font-weight:600;flex:none}
+.v1 .rl-btn{width:36px;height:36px;margin-left:12px;border-radius:50%;display:grid;place-items:center;background:var(--raised);border:1px solid var(--hair2);color:var(--text);font:400 20px/1 var(--mono);flex:none}
+.v1 .rl{margin:10px 0 2px;padding:10px 12px;border-radius:12px;background:var(--raised);box-shadow:inset 3px 0 0 var(--accent);font-size:13.5px;line-height:1.4}
+.v1 .rl[data-state="error"],.v1 .rl[data-state="late"]{box-shadow:inset 3px 0 0 var(--red)}
+.v1 .rl[data-state="done"]{box-shadow:inset 3px 0 0 var(--green)}
+.v1 .rl-acts{display:flex;gap:8px;justify-content:flex-end;margin-top:8px} .v1 .rl-acts .btn{margin-top:0;height:36px}
 .v1 .scan video{width:100%;max-height:70vh;object-fit:cover;border-radius:16px}
 .v1 .scan p{color:#ddd;font-size:15px;text-align:center}
 .v1 .toast{margin:0 0 8px;padding:10px 13px;border-radius:12px;background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.45);color:#f1c9c9;font-size:13.5px;line-height:1.3}

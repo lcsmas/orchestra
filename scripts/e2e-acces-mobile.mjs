@@ -26,6 +26,8 @@
 //                in a minute = 429 with nothing created, the hooks socket has no launch route
 //   skills/*     the composer's `/` menu: project + user skills and the CLI's built-ins from the REAL route, trusted typing filters,
 //                a trusted tap fills « /<name> », no match ⇒ hidden; the desktop-only clear / mcp / status are not offered
+//   relaunch/*   « Relancer Orchestra » from the phone: the ↻ asks first (« Annuler » relaunches nothing), « Relancer » = a REAL quit + exec
+//                of the installed app with no newer install; the open phone page says « relancé » once a NEW app answers
 //   control/*    interrupt + rewind from the phone: a trusted « ■ Arrêter » ends a REAL turn the slow fake model holds; a trusted « ↺ Revenir
 //                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
 //   archive/*    a trusted « Archiver » + confirm on the phone archives a coordinator AND its subtree like the sidebar (worktrees kept),
@@ -1258,9 +1260,12 @@ try {
   // the relaunched app gets its OWN debug port: right after the old app exits its port can still be held (Chromium: « bind() failed:
   // Address already in use » — rig-only, production opens no debug port)
   const cdpPort2 = await freePort();
+  // the port and the old pid are read from files when the fake runs: the phone's relaunch (relaunch/*) reuses the same installed file
+  const portFile = path.join(world.d, 'next-cdp.port');
+  fs.writeFileSync(portFile, String(cdpPort2));
   const installFake = (version) => {
     const tmp = `${INSTALLED}.tmp`;
-    fs.writeFileSync(tmp, `#!/bin/sh\n# fake installed Orchestra ${version}\nOLD=$(cat '${path.join(world.d, 'app.pid')}')\nif kill -0 "$OLD" 2>/dev/null; then echo "old-alive $#" > '${relaunchRecord}'; else echo "old-gone $#" > '${relaunchRecord}'; fi\necho $$ > '${app2PidFile}'\nexport ORCHESTRA_DEBUG_PORT=${cdpPort2}\nexec '${path.join(APP_DIR, 'node_modules/electron/dist/electron')}' '${APP_DIR}' --ozone-platform=wayland >> '${path.join(world.d, 'app2.log')}' 2>&1\n`, { mode: 0o755 });
+    fs.writeFileSync(tmp, `#!/bin/sh\n# fake installed Orchestra ${version}\nOLD=$(cat '${path.join(world.d, 'app.pid')}')\nif kill -0 "$OLD" 2>/dev/null; then echo "old-alive $#" > '${relaunchRecord}'; else echo "old-gone $#" > '${relaunchRecord}'; fi\necho $$ > '${app2PidFile}'\nexport ORCHESTRA_DEBUG_PORT=$(cat '${portFile}')\nexec '${path.join(APP_DIR, 'node_modules/electron/dist/electron')}' '${APP_DIR}' --ozone-platform=wayland >> '${path.join(world.d, 'app2.log')}' 2>&1\n`, { mode: 0o755 });
     const st = fs.statSync(tmp);
     fs.writeFileSync(`${INSTALLED}.version.tmp`, `${version} ${st.ino} ${st.size}\n`); fs.renameSync(`${INSTALLED}.version.tmp`, `${INSTALLED}.version`);
     fs.renameSync(tmp, INSTALLED);
@@ -1277,7 +1282,8 @@ try {
   await phone.send('Page.reload');
   const P1 = await waitFor(() => phone.eval(`(() => { const u = document.getElementById('appUpdate'); return u && !u.hidden ? u.textContent : null; })()`), 20000, 'the phone banner').catch(() => null);
   saveShot('phone-app-update.png', await phone.shot());
-  clause('update/phone-banner', phoneBefore === false && /Nouvelle version d’Orchestra installée \(v0\.5\.999\)/.test(P1 ?? '') && !(await phone.eval(`!!document.querySelector('#appUpdate button')`)), `phone before: shown=${phoneBefore}; after: « ${P1} » (no relaunch button on the phone)`);
+  const phoneGo = await phone.eval(`(() => { const b = document.querySelector('#appUpdate button.upd-go'); return b ? b.textContent : null; })()`);
+  clause('update/phone-banner', phoneBefore === false && /Nouvelle version d’Orchestra installée \(v0\.5\.999\)/.test(P1 ?? '') && phoneGo === 'Relancer', `phone before: shown=${phoneBefore}; after: « ${P1} », its button « ${phoneGo} »`);
   // a trusted click that must land ON the control: the Accès mobile dialog left open by regen/* would swallow it (« Done » closes it)
   const clickDesk = async (sel) => {
     const c = await cdp.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, on: !!(hit && hit.closest(${JSON.stringify(sel)})) }; })()`);
@@ -1305,6 +1311,54 @@ try {
   const serverBack = await waitFor(() => serverPids(TOKEN_FILE).length > 0 && sockConnects(SOCK), 30000, 'the phone server back').catch(() => false);
   clause('update/relaunch', rec === 'old-gone 0' && appPid !== oldPid && booted && bannerAfter === null && !!serverBack, `trusted « Relancer » ⇒ old app ${oldPid} exited, the installed app started after it (« ${rec} »), new app ${appPid} booted=${booted}, banner after boot ${JSON.stringify(bannerAfter)}, phone server back=${!!serverBack}`);
   try { process.kill(appPid, 0); } catch { throw new Error('the relaunched app is not running'); }
+
+  // « Relancer Orchestra » FROM THE PHONE (Lucas 2026-10-20): the header's ↻ ⇒ a confirmation (« Annuler » relaunches nothing), then
+  // « Relancer » ⇒ the same quit + exec as the desktop — here with NO newer install (the phone relaunches whatever the version) —; the
+  // phone page, never reloaded, says « relancé » once a NEW app (another startedAt) answers it through serve.
+  const tapOn = async (sel) => {
+    const c = await phone.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: 'center', behavior: 'instant' }); const r = e.getBoundingClientRect(); const x = r.left + r.width / 2, y = r.top + r.height / 2; const hit = document.elementFromPoint(x, y); return { x, y, on: !!(hit && hit.closest(${JSON.stringify(sel)})) }; })()`);
+    if (!c?.on) throw new Error(`the tap on ${sel} would not land on it (${JSON.stringify(c)})`);
+    for (const [type, extra] of [['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) await phone.send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, ...extra });
+    await sleep(250);
+  };
+  const appInfo = async () => { const r = await req(SOCK, '/api/workspaces', { ...ID, Authorization: `Bearer ${NEW}` }); try { return JSON.parse(r.body).app ?? null; } catch { return null; } };
+  const rlPanel = `(() => { const p = document.getElementById('relaunch'); return { state: p.dataset.state, hidden: p.hidden, msg: document.getElementById('rlMsg').textContent }; })()`;
+  const cdpPort3 = await freePort();
+  fs.writeFileSync(portFile, String(cdpPort3));
+  fs.writeFileSync(path.join(world.d, 'app.pid'), String(appPid));
+  for (const f of [relaunchRecord, app2PidFile]) { try { fs.unlinkSync(f); } catch {} }
+  await phone.eval(`location.hash = ''; true`);
+  await waitFor(() => phone.eval(`document.getElementById('live').dataset.live === 'on' && !document.getElementById('home').hidden`), 30000, 'the phone back online after the desktop relaunch');
+  const info1 = await appInfo();
+  const noBanner = await phone.eval(`document.getElementById('appUpdate').hidden`);
+  const loadedAt = await phone.eval(`performance.timeOrigin`);
+  const pidA = appPid;
+  await tapOn('#relaunchBtn');
+  const confirm = await phone.eval(rlPanel);
+  saveShot('phone-relaunch-confirm.png', await phone.shot());
+  await tapOn('#rlCancel');
+  await sleep(3000);
+  const afterCancel = await phone.eval(rlPanel);
+  let aliveAfterCancel = true; try { process.kill(pidA, 0); } catch { aliveAfterCancel = false; }
+  clause('relaunch/confirm-first', noBanner === true && confirm.state === 'confirm' && !confirm.hidden && /les agents continuent/.test(confirm.msg) && afterCancel.hidden && aliveAfterCancel && !fs.existsSync(relaunchRecord) && (await appInfo())?.startedAt === info1?.startedAt,
+    `no newer install (banner hidden=${noBanner}); trusted ↻ ⇒ « ${confirm.state} » « ${confirm.msg.slice(0, 60)}… »; « Annuler » ⇒ hidden=${afterCancel.hidden}, 3 s later app ${pidA} alive=${aliveAfterCancel}, fake installed app ran=${fs.existsSync(relaunchRecord)}`);
+  await tapOn('#relaunchBtn');
+  await tapOn('#rlGo');
+  const waiting = await phone.eval(rlPanel);
+  cdp?.close(); cdp = null;
+  await waitFor(() => { try { process.kill(pidA, 0); return false; } catch { return true; } }, 30000, 'the old app gone (phone relaunch)');
+  const rec3 = await waitFor(() => (fs.existsSync(relaunchRecord) ? fs.readFileSync(relaunchRecord, 'utf8').trim() : null), 30000, 'the installed app started (phone relaunch)');
+  appPid = Number(await waitFor(() => (fs.existsSync(app2PidFile) ? fs.readFileSync(app2PidFile, 'utf8').trim() : null), 10000, 'the new app pid (phone relaunch)'));
+  const target3 = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${cdpPort3}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the phone-relaunched app page').catch(() => null);
+  if (target3) { cdp = await Cdp.connect(target3.webSocketDebuggerUrl); await cdp.send('Page.enable'); }
+  const booted3 = target3 ? await waitFor(() => cdp.eval(`!!document.querySelector('[data-am-open]')`), 60000, 'the phone-relaunched app UI').catch(() => false) : false;
+  const done = await waitFor(async () => { const p = await phone.eval(rlPanel); return p.state === 'done' ? p : null; }, 90000, 'the phone says « relancé »').catch(async () => phone.eval(rlPanel));
+  saveShot('phone-relaunch-done.png', await phone.shot());
+  const info2 = await appInfo();
+  const sameDoc = (await phone.eval(`performance.timeOrigin`)) === loadedAt;
+  clause('relaunch/from-phone', waiting.state === 'wait' && rec3 === 'old-gone 0' && appPid !== pidA && booted3 && done.state === 'done' && done.msg === `Orchestra relancé (v${info2?.version}).` && !!info2 && info2.startedAt !== info1?.startedAt && sameDoc,
+    `trusted ↻ then « Relancer » ⇒ « ${waiting.state} »; old app ${pidA} exited, the installed app started after it (« ${rec3} »), new app ${appPid} booted=${booted3}; the open phone page (not reloaded: ${sameDoc}) says « ${done.msg} »; startedAt ${info1?.startedAt} → ${info2?.startedAt}`);
+  try { process.kill(appPid, 0); } catch { throw new Error('the phone-relaunched app is not running'); }
 
   // app crash ⇒ the server exits (no orphan listening)
   cdp?.close(); cdp = null;

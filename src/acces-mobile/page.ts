@@ -24,10 +24,11 @@ export const INDEX_HTML = `<!doctype html>
 <body class="v1">
 <div id="home" class="col">
 <div class="top">
-<div class="tt"><h1>Workspaces</h1><span id="live" class="live off" data-live="off"><i></i><span id="liveText">hors ligne</span></span><button type="button" id="newBtn" class="new-btn" aria-label="Nouveau workspace">+</button></div>
+<div class="tt"><h1>Workspaces</h1><span id="live" class="live off" data-live="off"><i></i><span id="liveText">hors ligne</span></span><button type="button" id="relaunchBtn" class="rl-btn" aria-label="Relancer Orchestra">↻</button><button type="button" id="newBtn" class="new-btn" aria-label="Nouveau workspace">+</button></div>
 <div class="seg"><button type="button" id="segAll" class="on">Tout <b id="cntAll">0</b></button><button type="button" id="segMe">À traiter <b id="cntMe">0</b></button></div>
 <input type="checkbox" id="needsMe" hidden>
 <div id="appUpdate" class="update" role="status" hidden></div>
+<div id="relaunch" class="rl" data-state="idle" role="status" hidden><p id="rlMsg"></p><div class="rl-acts"><button type="button" id="rlGo" class="btn">Relancer</button><button type="button" id="rlCancel" class="btn2">Annuler</button></div></div>
 </div>
 <div id="state">Chargement…</div>
 <div id="pair" class="pair" hidden>
@@ -255,10 +256,14 @@ export const APP_JS = `(function () {
       })
       .then(function (j) {
         if (!j || !j.ok) return;
-        // A newer Orchestra installed on the computer: say so (relaunching it is done there — a failed relaunch would cut this phone off).
+        // A newer Orchestra installed on the computer: say so, with « Relancer » (the same confirmation as the header's ↻).
         var upd = document.getElementById('appUpdate'), u = j.appUpdate;
-        upd.hidden = !u;
-        upd.textContent = u ? 'Nouvelle version d’Orchestra installée' + (u.version ? ' (v' + u.version + ')' : '') + ' : relance-la sur l’ordinateur pour l’avoir ici.' : '';
+        upd.hidden = !u; upd.textContent = ''; update = u || null;
+        if (u) {
+          upd.appendChild(el('span', null, 'Nouvelle version d’Orchestra installée' + (u.version ? ' (v' + u.version + ')' : '') + '.'));
+          var go = el('button', 'btn2 upd-go', 'Relancer'); go.type = 'button'; go.addEventListener('click', rlOpen); upd.appendChild(go);
+        }
+        rlSeen(j.app);
         last = j.workspaces; render();
       })
       .catch(function () { setState('Orchestra injoignable.'); });
@@ -295,6 +300,62 @@ export const APP_JS = `(function () {
       return false;
     }).length;
   }
+  // « Relancer Orchestra » (Lucas 2026-10-20): the desktop banner's quit + exec of the installed app. Confirmed first (the phone is cut
+  // off while it restarts, and cannot restart an app that fails to start); then « relancé » only once a NEW app answers — its
+  // \`app.startedAt\` differs from the one seen before the tap (a stream blip is not a relaunch); past 2 min it says so, still waiting.
+  var rlEl = document.getElementById('relaunch'), rlMsg = document.getElementById('rlMsg');
+  var rlGo = document.getElementById('rlGo'), rlCancel = document.getElementById('rlCancel');
+  var update = null, appNow = null, rl = { state: 'idle', from: null, at: 0, poll: null, hide: null };
+  function rlShow(state, msg) {
+    rl.state = state; rlEl.dataset.state = state; rlEl.hidden = state === 'idle'; rlMsg.textContent = msg || '';
+    rlGo.hidden = !(state === 'confirm' || state === 'error'); rlGo.disabled = false; rlGo.textContent = state === 'error' ? 'Réessayer' : 'Relancer';
+    rlCancel.hidden = state === 'busy'; rlCancel.textContent = state === 'confirm' || state === 'error' ? 'Annuler' : 'OK';
+  }
+  function rlStop() { if (rl.poll) clearInterval(rl.poll); if (rl.hide) clearTimeout(rl.hide); rl.poll = null; rl.hide = null; }
+  function rlOpen() {
+    if (rl.state === 'busy' || rl.state === 'wait' || rl.state === 'late') return;
+    rlStop();
+    rlShow('confirm', 'Relancer Orchestra' + (update && update.version ? ' en v' + update.version : '') + ' ? L’app quitte puis redémarre : le téléphone perd la connexion une trentaine de secondes, les agents continuent. Si elle ne redémarre pas, seul l’ordinateur pourra la relancer.');
+  }
+  function rlWait(lost) {
+    rl.at = Date.now();
+    rlShow('wait', (lost ? 'Réponse perdue : Orchestra redémarre peut-être. ' : 'Orchestra redémarre… ') + 'Le téléphone se reconnecte tout seul.');
+    rl.poll = setInterval(function () {
+      if (rl.state === 'wait' && Date.now() - rl.at > 120000) rlShow('late', 'Orchestra n’a pas répondu depuis 2 min : la relance a peut-être échoué. Vérifie sur l’ordinateur — le téléphone continue d’attendre.');
+      load();
+    }, 3000);
+  }
+  /** Every list answer: a NEW app (another startedAt than before the tap) ends the wait. */
+  function rlSeen(a) {
+    if (a && typeof a.startedAt === 'number') appNow = a;
+    if ((rl.state !== 'wait' && rl.state !== 'late') || !appNow || appNow.startedAt === rl.from) return;
+    rlStop();
+    rlShow('done', 'Orchestra relancé (v' + appNow.version + ').');
+    rl.hide = setTimeout(function () { if (rl.state === 'done') rlShow('idle'); }, 8000);
+  }
+  function rlRun() {
+    if (rl.state !== 'confirm' && rl.state !== 'error') return;
+    rl.from = appNow ? appNow.startedAt : null;
+    rlShow('busy', 'Relance…');
+    fetch('/api/relaunch', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 401) { rlShow('idle'); load(); return null; }
+        if (r.status === 429) { rlShow('error', 'Trop de demandes en cours : réessaie dans un instant.'); return null; }
+        if (r.status === 502) { rlWait(true); return null; } // main's channel closed: maybe the quit
+        if (!r.ok) { rlShow('error', 'Relance refusée (' + r.status + ') : rien n’a été relancé.'); return null; }
+        return r.json();
+      })
+      .then(function (j) {
+        if (!j) return;
+        if (j.ok) rlWait(false);
+        else rlShow('error', 'Relance impossible : ' + (j.error || 'refusée') + '. Orchestra tourne toujours.');
+      })
+      .catch(function () { if (rl.state === 'busy') rlWait(true); });
+  }
+  rlShow('idle');
+  document.getElementById('relaunchBtn').addEventListener('click', rlOpen);
+  rlGo.addEventListener('click', rlRun);
+  rlCancel.addEventListener('click', function () { rlStop(); rlShow('idle'); });
   document.getElementById('newBtn').addEventListener('click', function () { location.hash = 'new'; });
   window.addEventListener('hashchange', function () {
     if (pairFromHash()) {

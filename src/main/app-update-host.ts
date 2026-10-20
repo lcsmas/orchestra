@@ -10,7 +10,7 @@ import { platform } from './platform';
 import { scoped } from './logger';
 import { createWatcher } from './watchers';
 import { createAppUpdateMonitor, type AppUpdateMonitor } from './app-update';
-import { relaunchArgv, type AppUpdateState } from '../shared/app-update';
+import { relaunchArgv, relaunchRefusal, type AppUpdateState } from '../shared/app-update';
 
 const log = scoped('app-update');
 export const APP_UPDATE_PULL_CHANNEL = 'appUpdate:state';
@@ -80,17 +80,46 @@ export function stopAppUpdate(): void {
   stopWatch = null;
 }
 
-/** Quit, then the installed app starts once this process is gone. Refused when nothing new is installed. */
-export function relaunchInstalled(): { ok: boolean; error?: string } {
-  if (!INSTALLED_APP || appUpdateState().kind !== 'installed') return { ok: false, error: 'no newer installed app' };
+/** This process: what the phone shows after a relaunch, and how it knows a NEW app answers (startedAt changed — not a stream blip). */
+const STARTED_AT = Date.now();
+export function appIdentity(): { version: string; startedAt: number } {
+  return { version: app.getVersion(), startedAt: STARTED_AT };
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+let relaunchingAt = 0;
+/** Quit, then the installed app starts once this process is gone. Every refusal is decided BEFORE anything quits. A second request
+ *  while one is under way answers ok without a second relaunch script. `quitDelayMs`: the phone's answer must leave before the quit. */
+export function relaunchApp(o: { requireUpdate: boolean; quitDelayMs: number; by: string }): { ok: boolean; code?: string; error?: string } {
+  const refusal = relaunchRefusal({ target: INSTALLED_APP, requireUpdate: o.requireUpdate, update: appUpdateState(), executable: !!INSTALLED_APP && isExecutableFile(INSTALLED_APP) });
+  if (refusal) {
+    log.info(`relaunch refused (${o.by}): ${refusal.code}`);
+    return refusal;
+  }
+  if (relaunchingAt && Date.now() - relaunchingAt < 60_000) return { ok: true };
   try {
     spawn('/bin/sh', relaunchArgv(process.pid, INSTALLED_APP), { detached: true, stdio: 'ignore', env: process.env }).unref();
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-  log.info(`relaunching into ${INSTALLED_APP}`);
-  setImmediate(() => app.quit());
+  relaunchingAt = Date.now();
+  log.info(`relaunching into ${INSTALLED_APP} (${o.by})`);
+  if (o.quitDelayMs > 0) setTimeout(() => app.quit(), o.quitDelayMs);
+  else setImmediate(() => app.quit());
   return { ok: true };
+}
+
+/** The desktop banner's « Relancer »: only when a newer app is installed. */
+export function relaunchInstalled(): { ok: boolean; error?: string } {
+  return relaunchApp({ requireUpdate: true, quitDelayMs: 0, by: 'desktop' });
 }
 
 /** Called ONCE at module scope from index.ts. */

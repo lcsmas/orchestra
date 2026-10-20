@@ -163,6 +163,16 @@ MUTANTS = [
     ('U3-relaunch-does-not-wait', 'src/shared/app-update.ts', "while kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 600 ]; do", "while false; do", 'RED', 'src/shared/app-update.test.ts'),
     ('U4-push-on-every-check', 'src/main/app-update.ts', "      if (appUpdateStateKey(next) === appUpdateStateKey(state)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
     ('U5-mid-swap-hides-the-banner', 'src/main/app-update.ts', "      if (next.kind === 'none' && state.kind === 'installed' && !deps.stat(deps.path)) return;\n", "", 'RED', 'src/main/app-update.test.ts'),
+    # ── 2026-10-20: « Relancer Orchestra » from the phone ──
+    ('RL1-blip-is-a-relaunch', 'src/acces-mobile/page.ts', "|| !appNow || appNow.startedAt === rl.from) return;", "|| !appNow) return;", 'RED', 'src/acces-mobile/page-relaunch.test.ts'),
+    ('RL2-double-tap-two-relaunches', 'src/acces-mobile/page.ts', "if (rl.state !== 'confirm' && rl.state !== 'error') return;\n", "", 'RED', 'src/acces-mobile/page-relaunch.test.ts'),
+    ('RL3-lost-reply-is-an-error', 'src/acces-mobile/page.ts', ".catch(function () { if (rl.state === 'busy') rlWait(true); });", ".catch(function () { rlShow('error', 'x'); });", 'RED', 'src/acces-mobile/page-relaunch.test.ts'),
+    ('RL4-never-late', 'src/acces-mobile/page.ts', "Date.now() - rl.at > 120000", "Date.now() - rl.at > 1200000", 'RED', 'src/acces-mobile/page-relaunch.test.ts'),
+    ('RL5-no-confirmation', 'src/acces-mobile/page.ts', "document.getElementById('relaunchBtn').addEventListener('click', rlOpen);", "document.getElementById('relaunchBtn').addEventListener('click', function () { rlOpen(); rlRun(); });", 'RED', 'src/acces-mobile/page-relaunch.test.ts'),
+    ('RL6-phone-needs-an-update', 'src/main/acces-mobile-routes.ts', "requireUpdate: false, quitDelayMs: 500", "requireUpdate: true, quitDelayMs: 500", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('RL7-quit-before-the-answer', 'src/main/acces-mobile-routes.ts', "quitDelayMs: 500", "quitDelayMs: 0", 'RED', 'src/main/acces-mobile-wiring.test.ts'),
+    ('RL8-relaunch-not-a-write', 'src/acces-mobile/server.ts', ", '/mobile/relaunch']);", "]);", 'RED', 'src/acces-mobile/server.test.ts'),
+    ('RL9-non-executable-target-execd', 'src/shared/app-update.ts', "if (!i.executable) return", "if (false) return", 'RED', 'src/shared/app-update.test.ts'),
     ('W1-silent-stream-kept', 'src/acces-mobile/conversation.ts', "      if (Date.now() - lastByte > STALL_MS) {", "      if (false) {", 'RED', 'src/acces-mobile/conversation-stream.test.ts'),
     # ── 2026-10-12 wave I (#372): the phone list shows the name without its repo prefix ──
     ('N1-repo-prefix-not-cut', 'src/shared/acces-mobile.ts', "[...(base ? [`${base} · `] : []), 'scratch · ', 'orchestrator · ']", "['scratch · ', 'orchestrator · ']", 'RED', 'src/shared/acces-mobile.test.ts'),
@@ -424,6 +434,8 @@ E2E_MUTANTS = [
     ('E25-list-renders-the-full-name', 'src/acces-mobile/page.ts', "r1.appendChild(el('b', null, w.displayName || w.name));", "r1.appendChild(el('b', null, w.name));", 'phone/no-repo-prefix'),
     ('E26-waiting-row-without-repo-chip', 'src/acces-mobile/page.ts', "    if (withRepo) r2.appendChild(el('span', 'repo', w.group));\n", "", 'phone/waiting-row-keeps-repo-chip'),
     ('E27-projection-without-displayName', 'src/shared/acces-mobile.ts', "      displayName: mobileDisplayName(ws),\n", "      displayName: ws.name,\n", 'phone/no-repo-prefix'),
+    ('E59-phone-relaunch-skips-confirm', 'src/acces-mobile/page.ts', "document.getElementById('relaunchBtn').addEventListener('click', rlOpen);", "document.getElementById('relaunchBtn').addEventListener('click', function () { rlOpen(); rlRun(); });", 'relaunch/confirm-first'),
+    ('E60-phone-relaunch-needs-update', 'src/main/acces-mobile-routes.ts', "requireUpdate: false, quitDelayMs: 500", "requireUpdate: true, quitDelayMs: 500", 'relaunch/from-phone'),
     ('E23-phone-not-told', 'src/main/acces-mobile-routes.ts', "          ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),\n", "", 'update/phone-banner'),
     # ── 2026-10-12 wave I (#373): the whole agent tree ──
     ('E28-indent-css-gone', 'src/acces-mobile/conversation.ts', ".v1 .row.child{padding-left:var(--ind);background-color:rgba(255,255,255,.015)}", ".v1 .row.child{padding-left:42px;background-color:rgba(255,255,255,.015)}", 'phone/tree-indent-one-step-per-level'),

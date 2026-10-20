@@ -3,7 +3,7 @@
 // HUMAN's origin (a fleet-pause bypass by decision), so it must be reachable only from the process that checked the Tailscale
 // identity + token (#338 review M1).
 
-import { appUpdateState } from './app-update-host';
+import { appIdentity, appUpdateState, relaunchApp } from './app-update-host';
 import { store } from './store';
 import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands, sdkStopMany } from './agent-sdk';
 import { mergeSlashItems, PHONE_EXCLUDED } from '../shared/slash-menu';
@@ -70,6 +70,7 @@ export const mobileRpcHandlers: RpcHandlers = {
         return {
           ok: true,
           workspaces: projectMobileWorkspaces(store.workspaces, store.repos, store.accounts, previewOfLive),
+          app: appIdentity(),
           ...(update.kind === 'installed' ? { appUpdate: { version: update.version } } : {}),
         };
       }
@@ -124,6 +125,10 @@ export const mobileRpcHandlers: RpcHandlers = {
           return { ok: false, error: 'answers must map each question to a list of labels' };
         return sdkAnswerAskUserQuestion(ws.id, msg.requestId, answers as Record<string, string[]>);
       }
+      case '/mobile/relaunch':
+        // « Relancer Orchestra » from the phone: the desktop banner's quit + exec of the installed app, whatever its version. The quit
+        // waits 500 ms so this answer reaches the phone first; the phone then waits for a NEW app (`app.startedAt`) to answer.
+        return relaunchApp({ requireUpdate: false, quitDelayMs: 500, by: 'phone' });
       case '/mobile/interrupt':
         // The desktop's ■ / Esc — the SAME sdkInterrupt (acces-mobile-control.ts).
         return controls.interrupt(msg);
