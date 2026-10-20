@@ -14,16 +14,18 @@ export class El {
   hidden = false;
   checked = false;
   value = '';
-  on: Record<string, () => void> = {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on: Record<string, (e?: any) => void> = {};
   private own = '';
   constructor(tag = 'div') { this.tag = tag; }
   get textContent(): string { return this.own + this.children.map((c) => c.textContent).join(''); }
   set textContent(v: string) { this.own = String(v); this.children = []; }
   appendChild(c: El): El { this.children.push(c); return c; }
-  addEventListener(t: string, h: () => void): void { this.on[t] = h; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  addEventListener(t: string, h: (e?: any) => void): void { this.on[t] = h; }
   setAttribute(name: string, v: string): void { this.attrs[name] = v; }
   attrs: Record<string, string> = {};
-  style = { props: {} as Record<string, string>, setProperty(k: string, v: string) { this.props[k] = v; } };
+  style: { props: Record<string, string>; setProperty(k: string, v: string): void; transform?: string; transition?: string } = { props: {}, setProperty(k: string, v: string) { this.props[k] = v; } };
   click(): void { this.on.click?.(); }
   has(cls: string): boolean { return this.className.split(/\s+/).includes(cls); }
 }
@@ -37,6 +39,8 @@ export interface Row {
 export const row = (id: string, over: Partial<Row> = {}): Row => ({ id, name: id, displayName: id, branch: `b-${id}`, group: 'orchestra', account: 'mc', status: 'idle', unread: false, at: 0, ...over });
 
 /** Run the real page against `rows` (what /api/workspaces answers) and return the DOM it drew, plus a way to tap and re-render. */
+export interface Post { url: string; auth: string; answer: (status: number, body: unknown) => void; fail: () => void }
+
 export async function drawList(rows: Row[]) {
   let current = rows;
   let stream: ((m: unknown) => void) | null = null;
@@ -44,6 +48,7 @@ export async function drawList(rows: Row[]) {
   const get = (id: string): El => (els[id] ??= new El());
   const listeners: Record<string, () => void> = {};
   const opened: unknown[][] = [];
+  const posts: Post[] = [];
   const location = { hash: '', pathname: '/' };
   const sandbox = {
     location,
@@ -54,7 +59,10 @@ export async function drawList(rows: Row[]) {
     history: { replaceState: () => {} },
     localStorage: { getItem: () => TOKEN, setItem: () => {} },
     document: { getElementById: get, createElement: (tag: string) => new El(tag), createTextNode: (t: string) => { const e = new El('#text'); e.textContent = t; return e; } },
-    fetch: () => Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, workspaces: current }) }),
+    fetch: (url: string, init: { method?: string; headers?: Record<string, string> } = {}) =>
+      init.method === 'POST'
+        ? new Promise((res, rej) => posts.push({ url, auth: init.headers?.Authorization ?? '', answer: (status, body) => res({ ok: status >= 200 && status < 300, status, json: async () => body }), fail: () => rej(new TypeError('Load failed')) }))
+        : Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, workspaces: current }) }),
     setInterval: () => 0,
     navigator: { standalone: false, serviceWorker: { register: () => Promise.resolve() } },
   };
@@ -75,6 +83,18 @@ export async function drawList(rows: Row[]) {
     /** What the live stream does when the list changes: the page refetches and redraws (the fold state must survive). */
     refresh: async (next?: Row[]) => { if (next) current = next; stream?.({ t: 'workspaces' }); await settle(); await settle(); },
     needsMe: () => { get('needsMe').checked = true; get('needsMe').on.change?.(); },
+    posts,
+    setRows: (next: Row[]) => { current = next; },
+    location,
+    /** A finger on the row: down at (x0, y0), moved through each [dx, dy], up. Returns how many touchmoves called preventDefault. */
+    swipe: (li: El, moves: [number, number][], x0 = 300, y0 = 100) => {
+      let prevented = 0;
+      const t = (x: number, y: number) => ({ touches: [{ clientX: x, clientY: y }], cancelable: true, preventDefault: () => { prevented++; } });
+      li.on.touchstart?.(t(x0, y0));
+      for (const [dx, dy] of moves) li.on.touchmove?.(t(x0 + dx, y0 + dy));
+      li.on.touchend?.({ touches: [] });
+      return prevented;
+    },
     /** A tap on a row (hash route): the arguments the page hands the conversation screen. */
     open: (id: string) => { location.hash = '#w=' + id; listeners.hashchange?.(); return opened[opened.length - 1]; },
   };

@@ -164,6 +164,62 @@ export const APP_JS = `(function () {
   // finishing one after another made a separate « Non lu » section pure noise (Lucas, 2026-10-12).
   function needs(w) { return w.status === 'waiting'; }
   var open = Object.create(null); // node id -> its fold is open (kept across list refreshes: render() never resets it)
+  // Swipe left on a row ⇒ « Archiver » (the header button's archive, without its confirmation: the swipe + the tap ARE the two steps).
+  // One row open at a time; the open row, a request in flight and a refusal survive render() like the folds.
+  var SWIPE_W = 92, swiped = null, swBusy = Object.create(null), swErr = Object.create(null), swTapGuard = 0, swDrag = false, swLate = false;
+  function swClose() { if (swiped === null) return false; swiped = null; render(); return true; }
+  function archiveRow(id) {
+    if (swBusy[id]) return;
+    swBusy[id] = true; delete swErr[id]; render();
+    fetch('/api/archive?id=' + encodeURIComponent(id), { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
+      .then(function (r) {
+        if (r.status === 401) return { ok: false, error: 'Jeton refusé : re-scanne le QR code.' };
+        if (r.status === 429) return { ok: false, error: 'Trop d’actions en cours, réessaie dans un instant.' };
+        if (!r.ok) return { ok: false, error: 'Orchestra injoignable : le workspace est peut-être archivé.' };
+        return r.json();
+      })
+      .then(null, function () { return { ok: false, error: 'Réseau coupé : le workspace est peut-être archivé.' }; })
+      .then(function (res) {
+        delete swBusy[id];
+        if (res && res.ok) {
+          if (swiped === id) swiped = null;
+          last = last.filter(function (x) { return x.id !== id; }); // gone at once; the refetch brings its archived subtree out too
+          render(); load(); return;
+        }
+        swErr[id] = (res && res.error) || 'Échec de l’archivage.'; render();
+      });
+  }
+  /** Touch tracking on one row: horizontal ⇒ the row follows the finger (0…-SWIPE_W); vertical ⇒ the page scrolls, nothing moves. */
+  function swipeable(li, id) {
+    var x0 = 0, y0 = 0, base = 0, dx = 0, mode = null; // null = undecided, 'x' = swiping, 'y' = scrolling
+    li.addEventListener('touchstart', function (e) {
+      var t = e.touches && e.touches[0]; if (!t) return;
+      x0 = t.clientX; y0 = t.clientY; dx = 0; mode = null; base = swiped === id ? -SWIPE_W : 0;
+    }, { passive: true });
+    li.addEventListener('touchmove', function (e) {
+      var t = e.touches && e.touches[0]; if (!t || mode === 'y') return;
+      var mx = t.clientX - x0, my = t.clientY - y0;
+      if (mode === null) {
+        if (Math.abs(my) > 10 && Math.abs(my) >= Math.abs(mx)) { mode = 'y'; return; }
+        if (Math.abs(mx) < 10) return;
+        if (swiped !== null && swiped !== id) { swiped = null; render(); } // opening this one closes the other (BEFORE the drag holds renders)
+        mode = 'x'; swDrag = true;
+      }
+      if (e.cancelable) e.preventDefault();
+      dx = mx;
+      li.style.transition = 'none';
+      li.style.transform = 'translateX(' + Math.max(-SWIPE_W - 24, Math.min(0, base + dx)) + 'px)';
+    }, { passive: false });
+    function end() {
+      if (mode !== 'x') return;
+      mode = null; swDrag = false; swLate = false; swTapGuard = Date.now();
+      li.style.transition = ''; li.style.transform = '';
+      swiped = base + dx < -SWIPE_W / 2 ? id : null;
+      render();
+    }
+    li.addEventListener('touchend', end);
+    li.addEventListener('touchcancel', end);
+  }
 
   /** Indentation = one step per tree level: data-depth for the tests, --depth for the stylesheet (any depth). */
   function level(li, depth) { li.dataset.depth = String(depth); li.style.setProperty('--depth', String(depth)); return li; }
@@ -171,7 +227,19 @@ export const APP_JS = `(function () {
     var waiting = w.status === 'waiting';
     var li = level(el('li', 'row ' + (waiting ? 'big waiting' : w.unread ? 'unread' : 'small') + (depth ? ' child' : '')), depth);
     li.dataset.id = w.id; li.dataset.status = w.status; if (w.unread) li.dataset.unread = '1';
-    li.addEventListener('click', function () { location.hash = 'w=' + encodeURIComponent(w.id); });
+    li.addEventListener('click', function () {
+      if (Date.now() - swTapGuard < 400) return; // the click a swipe can leave behind
+      if (swClose()) return; // a tap while a row is open closes it (iOS) — it does not open a conversation
+      location.hash = 'w=' + encodeURIComponent(w.id);
+    });
+    if (swiped === w.id) li.className += ' swiped';
+    swipeable(li, w.id);
+    var sw = el('button', 'sw-archive'); sw.type = 'button'; sw.dataset.id = w.id; sw.disabled = !!swBusy[w.id];
+    sw.setAttribute('aria-label', 'Archiver ' + (w.displayName || w.name));
+    sw.appendChild(el('span', 'sw-t', swBusy[w.id] ? 'Archivage…' : swErr[w.id] ? 'Réessayer' : 'Archiver'));
+    var nb = below(w.id); if (nb > 0) sw.appendChild(el('span', 'sw-n', '+' + nb + ' agent' + (nb > 1 ? 's' : '')));
+    sw.addEventListener('click', function (e) { if (e && e.stopPropagation) e.stopPropagation(); archiveRow(w.id); });
+    li.appendChild(sw);
     li.appendChild(el('div', 'g ' + (waiting ? 'g-wait' : w.unread ? 'g-unread' : (GLYPH[w.status] || 'g-idle'))));
     var rb = el('div', 'rb');
     var r1 = el('div', 'r1'); r1.appendChild(el('b', null, w.displayName || w.name)); r1.appendChild(el('time', null, ago(w.at))); rb.appendChild(r1);
@@ -184,6 +252,7 @@ export const APP_JS = `(function () {
     if (w.preview && (waiting || w.preview.kind === 'status')) {
       var pv = el('div', 'pv'); pv.appendChild(el('em', null, PV[w.preview.kind] || '')); pv.appendChild(el('span', null, w.preview.text)); rb.appendChild(pv);
     }
+    if (swErr[w.id]) rb.appendChild(el('div', 'sw-err', swErr[w.id]));
     li.appendChild(rb);
     return li;
   }
@@ -221,6 +290,7 @@ export const APP_JS = `(function () {
   }
 
   function render() {
+    if (swDrag) { swLate = true; return; } // a refresh mid-swipe would replace the row under the finger: drawn at touchend
     var me = last.filter(needs);
     cntAll.textContent = String(last.length); cntMe.textContent = String(me.length); cntMe.className = me.length ? 'hot' : '';
     segAll.className = needsMe.checked ? '' : 'on'; segMe.className = needsMe.checked ? 'on' : '';

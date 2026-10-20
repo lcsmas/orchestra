@@ -32,6 +32,7 @@
 //                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
 //   archive/*    a trusted « Archiver » + confirm on the phone archives a coordinator AND its subtree like the sidebar (worktrees kept),
 //                the phone is back on its list without them, the desktop leaves the archived pane; an archived / unknown id is refused
+//                swipe: TRUSTED touches — a vertical drag scrolls, a left swipe reveals « Archiver » (no sideways scroll), its tap archives
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -1084,6 +1085,48 @@ try {
     const noTok = (await reqPost(SOCK, '/api/archive?id=ws-am-coord', ID, '')).status;
     const coordLive = (await wsList()).find((w) => w.id === 'ws-am-coord')?.archived === false;
     clause('archive/refusals', again.ok === false && /archived/.test(again.error) && unknown.ok === false && noTok === 401 && coordLive, `already archived ⇒ ${JSON.stringify(again)}; unknown ⇒ ${JSON.stringify(unknown)}; no token ⇒ ${noTok}; am-coord still live ${coordLive}`);
+  }
+
+  // Swipe left to archive (Lucas 2026-10-20): TRUSTED touches (Input.dispatchTouchEvent, touch emulation on) on a workspace the
+  // launch arms made — a real session behind it. A vertical drag on the row is a scroll (must-FAIL: nothing opens, nothing archived);
+  // a left swipe reveals « Archiver » inside the viewport with no sideways scroll; a touch tap on it archives in main, the row leaves
+  // the list, no conversation opens.
+  {
+    await phone.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    const seeded = new Set(world.workspaces.map((w) => w.id));
+    const target = (await wsList()).find((w) => !seeded.has(w.id) && !w.archived && !w.parentId);
+    await phone.eval(`location.hash = ''; true`);
+    await waitFor(() => phone.eval(`!!document.querySelector('li.row[data-id=${JSON.stringify(target?.id ?? 'none')}]')`), 15000, 'the launched row on the phone list');
+    const rowSel = `li.row[data-id="${target.id}"]`;
+    const rectOf = (sel) => phone.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, r: r.right }; })()`);
+    const drag = async (from, steps) => {
+      await phone.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] });
+      for (const [x, y] of steps) { await phone.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] }); await sleep(16); }
+      await phone.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await sleep(400); // the snap transition (.2 s)
+    };
+    let R = await rectOf(rowSel);
+    const cy = R.y + R.h / 2;
+    const scrolled = `(document.scrollingElement.scrollTop + document.getElementById('list').scrollTop)`;
+    const top0 = await phone.eval(scrolled);
+    await drag({ x: 300, y: cy }, [[299, cy - 15], [298, cy - 40], [297, cy - 70], [296, cy - 110]]);
+    const V = await phone.eval(`({ swiped: !!document.querySelector(${JSON.stringify(rowSel + '.swiped')}), hash: location.hash, scrolled: ${scrolled} - ${top0} })`);
+    R = await rectOf(rowSel);
+    const cy2 = R.y + R.h / 2;
+    await drag({ x: 330, y: cy2 }, [[318, cy2 + 1], [290, cy2 + 2], [250, cy2 + 2], [215, cy2 + 3]]);
+    const S = await phone.eval(`(() => { const li = document.querySelector(${JSON.stringify(rowSel)}); const b = li.querySelector('.sw-archive').getBoundingClientRect(); const se = document.scrollingElement; return { swiped: li.classList.contains('swiped'), rowLeft: li.getBoundingClientRect().left, btn: { l: Math.round(b.left), r: Math.round(b.right), w: Math.round(b.width) }, vw: innerWidth, sideScroll: se.scrollWidth > se.clientWidth || document.getElementById('list').scrollLeft !== 0, text: li.querySelector('.sw-archive').textContent, hash: location.hash }; })()`);
+    saveShot('phone-swipe-open.png', await phone.shot());
+    const b = await phone.eval(`(() => { const r = document.querySelector(${JSON.stringify(rowSel + ' .sw-archive')}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await phone.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: b.x, y: b.y }] });
+    await phone.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const gone = await waitFor(() => phone.eval(`!document.querySelector(${JSON.stringify(rowSel)})`), 30000, 'the swiped row gone').then(() => true, () => false);
+    const archived = await waitFor(async () => (await wsList()).find((w) => w.id === target.id)?.archived === true, 15000, 'archived in main').then(() => true, () => false);
+    const after = await phone.eval(`({ hash: location.hash, rows: document.querySelectorAll('li.row').length })`);
+    saveShot('phone-swipe-archived.png', await phone.shot());
+    await phone.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    clause('archive/swipe-vertical-is-a-scroll', !V.swiped && V.hash === '' && V.scrolled > 30 && (await wsList()).some((w) => w.id === target.id), `a 110 px upward drag on ${target.branch}: the page scrolled ${V.scrolled} px, swiped ${V.swiped}, hash « ${V.hash} », still listed`);
+    clause('archive/swipe-reveals-archiver', S.swiped && Math.round(S.rowLeft) === -92 && S.btn.w === 92 && S.btn.r <= S.vw && S.btn.l >= S.vw - 93 && !S.sideScroll && S.text === 'Archiver' && S.hash === '', `left swipe ⇒ row at x ${Math.round(S.rowLeft)}, button ${JSON.stringify(S.btn)} in a ${S.vw} px viewport, sideways scroll ${S.sideScroll}, « ${S.text} », hash « ${S.hash} »`);
+    clause('archive/swipe-tap-archives', gone && archived && after.hash === '', `touch tap on « Archiver » ⇒ row gone ${gone}, ${target.branch} archived in main ${archived}, conversation opened: ${after.hash !== ''} (${after.rows} rows left)`);
   }
 
   // ───────────── #336: pairing QR, regenerate, PWA install, unreachable ─────────────

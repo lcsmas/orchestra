@@ -153,3 +153,98 @@ test('archive: the conversation is told how many listed agents sit under the row
   assert.equal(below('alone'), 0, 'control: an unrelated row');
   assert.equal(below('loop1'), 1, 'a parent cycle ends (loop2 only)');
 });
+
+// ───────────────────────── swipe left to archive (Lucas 2026-10-20) ─────────────────────────
+
+const btn = (li: { children: unknown[] }) => first(li as never, (e) => e.has('sw-archive'))!;
+const LEFT: [number, number][] = [[-12, 1], [-50, 2], [-80, 2]];
+
+test('swipe: a left swipe past half the button opens the row (the page does not scroll sideways, no conversation opens); a short one snaps back (control)', async () => {
+  const page = await drawList([row('a'), row('b')]);
+  assert.equal(page.swipe(page.row('a')!, [[-12, 0], [-30, 0]]), 2, 'horizontal moves are taken from the browser');
+  assert.ok(!page.row('a')!.has('swiped'), 'control: 30 px < 46 px snaps back');
+  assert.ok(page.swipe(page.row('a')!, LEFT) > 0);
+  assert.ok(page.row('a')!.has('swiped'), 'open');
+  assert.equal(btn(page.row('a')!).textContent, 'Archiver');
+  assert.equal(page.location.hash, '', 'no conversation opened');
+  assert.equal(page.posts.length, 0, 'the swipe alone archives nothing');
+});
+
+test('swipe must-FAIL: a vertical move is a scroll — nothing moves, nothing is prevented; a right swipe on a closed row does nothing', async () => {
+  const page = await drawList([row('a')]);
+  assert.equal(page.swipe(page.row('a')!, [[-4, 15], [-30, 60]]), 0, 'the browser keeps the scroll');
+  assert.ok(!page.row('a')!.has('swiped'));
+  page.swipe(page.row('a')!, [[20, 0], [80, 0]]);
+  assert.ok(!page.row('a')!.has('swiped'));
+});
+
+test('swipe: « Archiver » ⇒ ONE POST /api/archive with the token; the row goes at once and the list is refetched', async () => {
+  const page = await drawList([row('a'), row('b')]);
+  page.swipe(page.row('a')!, LEFT);
+  btn(page.row('a')!).click();
+  assert.equal(page.posts.length, 1);
+  assert.deepEqual([page.posts[0].url, page.posts[0].auth], ['/api/archive?id=a', 'Bearer ' + 't'.repeat(43)]);
+  assert.equal(btn(page.row('a')!).textContent, 'Archivage…');
+  assert.equal(btn(page.row('a')!).disabled, true, 'no second request while the first runs');
+  btn(page.row('a')!).click();
+  assert.equal(page.posts.length, 1, 'a double tap sends one archive');
+  assert.equal(page.location.hash, '', 'the button tap does not open the conversation');
+  page.setRows([row('b')]);
+  page.posts[0].answer(200, { ok: true });
+  await page.settle(); await page.settle();
+  assert.deepEqual(page.rows().map((l) => l.dataset.id), ['b']);
+});
+
+test('swipe must-FAIL: a refusal / 401 / lost network keeps the row, open, with the reason and « Réessayer » (a retry sends again)', async () => {
+  for (const [how, said] of [
+    ['refused', 'unknown or archived workspace'],
+    ['401', 'Jeton refusé : re-scanne le QR code.'],
+    ['offline', 'Réseau coupé : le workspace est peut-être archivé.'],
+  ] as const) {
+    const page = await drawList([row('a')]);
+    page.swipe(page.row('a')!, LEFT);
+    btn(page.row('a')!).click();
+    if (how === 'refused') page.posts[0].answer(200, { ok: false, error: said });
+    else if (how === '401') page.posts[0].answer(401, null);
+    else page.posts[0].fail();
+    await page.settle(); await page.settle();
+    const li = page.row('a')!;
+    assert.ok(li && li.has('swiped'), `${how}: still listed and open`);
+    assert.equal(first(li, (e) => e.has('sw-err'))?.textContent, said, how);
+    assert.equal(btn(li).textContent, 'Réessayer');
+    btn(li).click();
+    assert.equal(page.posts.length, 2, `${how}: retry`);
+  }
+});
+
+test('swipe: one row open at a time; a tap on the open row closes it instead of opening the conversation; the open row survives a list refresh', async () => {
+  const page = await drawList([row('a'), row('b')]);
+  page.swipe(page.row('a')!, LEFT);
+  const b = page.row('b')!;
+  const t = (x: number) => ({ touches: [{ clientX: x, clientY: 100 }], cancelable: true, preventDefault() {} });
+  b.on.touchstart(t(300)); b.on.touchmove(t(280));
+  assert.ok(!page.row('a')!.has('swiped'), 'a closes as soon as b starts moving');
+  b.on.touchmove(t(200)); b.on.touchend({ touches: [] });
+  assert.deepEqual(page.rows().filter((l) => l.has('swiped')).map((l) => l.dataset.id), ['b'], 'opening b closed a');
+  await page.refresh();
+  assert.ok(page.row('b')!.has('swiped'), 'kept across a stream refresh');
+  await new Promise((r) => setTimeout(r, 450)); // past the post-swipe click guard
+  page.row('a')!.click();
+  assert.equal(page.location.hash, '', 'the tap closed b, it opened nothing');
+  assert.ok(!page.row('b')!.has('swiped'));
+  page.row('a')!.click();
+  assert.equal(page.location.hash, 'w=a', 'control: with nothing open a tap opens the conversation');
+});
+
+test('swipe: a coordinator says how many agents go with it; a refresh during the drag waits for the finger to lift', async () => {
+  const page = await drawList(vague());
+  assert.equal(btn(page.row('root')!).textContent, 'Archiver+5 agents');
+  const li = page.row('root')!;
+  const t = (x: number) => ({ touches: [{ clientX: x, clientY: 100 }], cancelable: true, preventDefault() {} });
+  li.on.touchstart(t(300)); li.on.touchmove(t(280)); li.on.touchmove(t(230));
+  await page.refresh();
+  assert.equal(page.row('root'), li, 'the dragged row is still the one on screen');
+  li.on.touchend({ touches: [] });
+  assert.notEqual(page.row('root'), li, 'drawn at touchend');
+  assert.ok(page.row('root')!.has('swiped'));
+});

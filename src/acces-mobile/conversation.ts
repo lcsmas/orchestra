@@ -639,6 +639,13 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .acct{font:10.5px/1 var(--mono);padding:3px 6px;border-radius:5px;border:1px solid var(--hair2);color:var(--dim);flex:none}
 .v1 .a-perso{color:var(--teal);border-color:rgba(79,209,197,.4);background:rgba(79,209,197,.08)}
 .v1 .a-mc{color:var(--violet);border-color:rgba(157,143,255,.42);background:rgba(157,143,255,.09)}
+.v1 #list ul{overflow:hidden} /* the swipe's « Archiver » waits beyond the row's right edge: never a sideways scroll */
+.v1 .row{position:relative;touch-action:pan-y;transition:transform .2s ease}
+.v1 .row.swiped{transform:translateX(-92px)}
+.v1 .sw-archive{position:absolute;top:0;bottom:0;left:100%;width:92px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:var(--red);color:#1a0505;font-weight:650;font-size:14px}
+.v1 .sw-archive:disabled{opacity:.6}
+.v1 .sw-n{font:500 11px var(--mono)}
+.v1 .sw-err{margin-top:6px;font-size:13px;color:var(--red)}
 .v1 li[data-depth]{--d:min(var(--depth),8);--ind:calc(20px + var(--d)*16px)} /* #373: one 16px step per tree level (clamped at 8: a very deep tree keeps its text width) */
 .v1 .row.child,.v1 .fold[data-depth],.v1 .fold-owner.stand{background-image:repeating-linear-gradient(to right,transparent 0 15px,var(--hair2) 15px 16px);background-repeat:no-repeat;background-position:16px 0;background-size:calc(var(--d)*16px) 100%} /* a hairline at each ancestor's glyph */
 .v1 .row.child{padding-left:var(--ind);background-color:rgba(255,255,255,.015)}
