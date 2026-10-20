@@ -559,6 +559,22 @@ function openStream(port: number, headers: Record<string, string>): Promise<{ st
   });
 }
 
+test('skills: GET /api/skills relays the validated id to main; bad id 400, no token 401, never reached main', { timeout: 15_000 }, async () => {
+  const r = streamRig();
+  const port = await r.listen();
+  try {
+    assert.equal((await get(port, '/api/skills?id=4a6ad23b-ebee', AUTH)).status, 200, 'control');
+    assert.deepEqual(r.calls.at(-1), { route: '/mobile/skills', body: { id: '4a6ad23b-ebee' } });
+    assert.equal((await get(port, '/api/skills?id=../etc', AUTH)).status, 400);
+    assert.equal((await get(port, '/api/skills', AUTH)).status, 400);
+    assert.equal((await get(port, '/api/skills?id=abc', ID)).status, 401);
+    assert.equal((await get(port, '/api/skills?id=abc', AUTH, 'POST')).status, 405);
+    assert.equal(r.calls.length, 1, 'no refused request reached main');
+  } finally {
+    await r.close();
+  }
+});
+
 test('conversation + seen relay to main with a validated id; seen is the only POST', { timeout: 15_000 }, async () => {
   const r = streamRig();
   const port = await r.listen();

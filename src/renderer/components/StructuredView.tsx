@@ -61,6 +61,7 @@ import {
 // composer drains them into its draft + attachments (see the Composer's
 // design-pick effect). appendPickToDraft is the pure formatter (shared/, tested).
 import { appendPickToDraft } from '../../shared/design-mode';
+import { DESKTOP_ALWAYS, filterSlashItems, mergeSlashItems, slashQuery, type SlashItem } from '../../shared/slash-menu';
 import { isAttachableMediaType, isPdfMediaType } from '../../shared/attachments';
 import { PdfChip } from './agent/PdfChip';
 import { shouldRequestHistory } from '../history-backfill';
@@ -1072,33 +1073,7 @@ function ContextStrip({
 
 // ── Composer ─────────────────────────────────────────────────────────────────
 
-/** The input is exactly a slash-command prefix ("/", "/shi") — the only state
- *  in which the skills autocomplete shows. */
-const SLASH_PREFIX = /^\/([A-Za-z0-9_-]*)$/;
-
-/** One autocomplete row: an on-disk skill, or a built-in CLI slash command
- *  (from `session/init`'s `slash_commands` — /compact, /usage, …), or the
- *  Orchestra-side /clear. */
-interface AcItem {
-  name: string;
-  description: string;
-  source: AgentSkillInfo['source'] | 'builtin';
-}
-
-/** Descriptions for the built-ins worth explaining; the rest show bare. */
-const BUILTIN_DESC: Record<string, string> = {
-  clear: 'Start a fresh conversation (clears the transcript)',
-  compact: 'Compact the conversation to free context',
-  usage: 'Show plan usage / rate-limit status',
-  mcp: 'Manage MCP servers — status, enable/disable, reconnect',
-};
-
-/** Commands Orchestra guarantees regardless of what the CLI reports. `clear`
- *  is handled Orchestra-side (agentSdkClear); `mcp` likewise (it opens the MCP
- *  manager popover on submit — never sent to the model); `compact` is sent to
- *  the CLI, which executes it as a built-in and reports back via
- *  status/compact events. */
-const ALWAYS_COMMANDS = ['clear', 'compact', 'mcp'];
+// The `/` autocomplete's merge / filter live in shared/slash-menu.ts (the phone uses the same).
 
 /** Stable empty list for the inbox selector — see the note at its use site. */
 const EMPTY_BLOCKS: InboxBlock[] = [];
@@ -1472,30 +1447,14 @@ function Composer({
   // Escape dismisses the popover until the slash-prefix changes again.
   const [acDismissed, setAcDismissed] = useState(false);
 
-  const slash = SLASH_PREFIX.exec(text);
-  const acQuery = slash?.[1]?.toLowerCase() ?? null;
+  const acQuery = slashQuery(text);
   // Merge on-disk skills with the CLI's built-in slash commands (reported at
   // session/init) plus the always-available /clear + /compact, so typed
   // built-ins are discoverable — CC-desktop parity. Skills win a name clash.
-  const acItems: AcItem[] = (() => {
-    if (acQuery === null || acDismissed) return [];
-    const items: AcItem[] = [...(skills ?? [])];
-    const have = new Set(items.map((s) => s.name.toLowerCase()));
-    for (const name of [...ALWAYS_COMMANDS, ...(session?.slashCommands ?? [])]) {
-      const clean = name.replace(/^\//, '');
-      if (!clean || have.has(clean.toLowerCase())) continue;
-      have.add(clean.toLowerCase());
-      items.push({ name: clean, description: BUILTIN_DESC[clean] ?? '', source: 'builtin' });
-    }
-    return items
-      .filter((s) => s.name.toLowerCase().includes(acQuery))
-      .sort((a, b) => {
-        const ap = a.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
-        const bp = b.name.toLowerCase().startsWith(acQuery) ? 0 : 1;
-        return ap - bp || a.name.localeCompare(b.name);
-      })
-      .slice(0, 8);
-  })();
+  const acItems: SlashItem[] =
+    acQuery === null || acDismissed
+      ? []
+      : filterSlashItems(mergeSlashItems(skills ?? [], session?.slashCommands, DESKTOP_ALWAYS), acQuery, 8);
   const acOpen = acQuery !== null && acItems.length > 0;
 
   const acActive = acQuery !== null;

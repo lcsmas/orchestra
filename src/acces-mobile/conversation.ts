@@ -2,17 +2,21 @@
 // static asset so the shell (page.ts) only routes to it. Rendering is textContent-only: agent and user text can contain anything,
 // it must never become markup. The stream is read with fetch() (EventSource cannot send the bearer header, and the token must
 // never travel in a URL). Class names the e2e rig and tests read (conv-lines, [data-kind], ask-opt[data-label], ask-submit,
-// conv-input, conv-send, conv-compose[data-state], conv-send-error, conv-stop, msg-rw, rw-pop[data-state], rw-go, rw-cancel, rw-note) are part of the
+// conv-input, conv-send, conv-compose[data-state], conv-send-error, conv-stop, msg-rw, rw-pop[data-state], rw-go, rw-cancel, rw-note, conv-ac, ac-row[data-name]) are part of the
 // contract — the V1 classes ride beside them.
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_ATTACH_MAX_COUNT } from '../shared/acces-mobile-conversation.ts';
 import { TOOL_GLYPH } from '../shared/tool-line.ts';
+import { filterSlashItems, slashQuery } from '../shared/slash-menu.ts';
 
 export const CONVERSATION_JS = `(function () {
   'use strict';
   // The Markdown parser (shared/mini-markdown.ts, unit-tested) — self-contained, so its source can be injected as is.
   var mdParse = (${parseMarkdown.toString()});
+  // The \`/\` menu's prefix test + filter (shared/slash-menu.ts — the desktop composer's own, unit-tested).
+  var slashQuery = (${slashQuery.toString()});
+  var filterSlash = (${filterSlashItems.toString()});
   var KEY = 'orchestra.accesMobile.token';
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function auth() { return { Authorization: 'Bearer ' + token() }; }
@@ -435,9 +439,37 @@ export const CONVERSATION_JS = `(function () {
       if (!cd.getData('text/plain')) ev.preventDefault();
       addFiles(files);
     });
-    ta.addEventListener('input', function () { syncBtn(); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
+    // The skills autocomplete: the desktop's \`/\` menu. The list is re-fetched each time the menu opens (a skill added since
+    // shows); the last list stays shown while it loads; an older, slower answer never wins. A tap fills \`/<name> \`.
+    var ac = el('div', 'conv-ac ac'); ac.hidden = true; ac.setAttribute('role', 'listbox');
+    var acItems = null, acGen = 0, acWasOpen = false;
+    function drawAc() {
+      var q = slashQuery(ta.value);
+      if (q === null) { ac.hidden = true; acWasOpen = false; return; }
+      if (!acWasOpen) {
+        acWasOpen = true;
+        var gen = ++acGen;
+        fetch('/api/skills?id=' + encodeURIComponent(id), { headers: auth(), cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (res) { if (gen !== acGen) return; acItems = res && res.ok && Array.isArray(res.items) ? res.items : (acItems || []); drawAc(); })
+          .catch(function () { if (gen === acGen && !acItems) { acItems = []; drawAc(); } });
+      }
+      var rows = filterSlash(acItems || [], q, 8);
+      ac.textContent = '';
+      ac.hidden = !rows.length;
+      rows.forEach(function (it) {
+        var b = el('button', 'ac-row'); b.type = 'button'; b.dataset.name = it.name; b.setAttribute('role', 'option');
+        b.appendChild(el('span', 'ac-name', '/' + it.name));
+        if (it.description) b.appendChild(el('span', 'ac-desc', it.description));
+        b.addEventListener('click', function () {
+          ta.value = '/' + it.name + ' '; ac.hidden = true; ta.focus(); ta.dispatchEvent(new Event('input'));
+        });
+        ac.appendChild(b);
+      });
+    }
+    ta.addEventListener('input', function () { syncBtn(); drawAc(); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
     fld.appendChild(add); fld.appendChild(ta); fld.appendChild(btn);
-    form.appendChild(err); form.appendChild(tray); form.appendChild(fld); form.appendChild(file);
+    form.appendChild(err); form.appendChild(tray); form.appendChild(ac); form.appendChild(fld); form.appendChild(file);
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var text = ta.value.trim();
@@ -457,7 +489,7 @@ export const CONVERSATION_JS = `(function () {
           return r.json();
         })
         .then(function (res) {
-          if (res && res.ok) { ta.value = ''; atts = []; drawTray(); syncBtn(); form.dataset.state = 'sent'; fetchConv(); }
+          if (res && res.ok) { ta.value = ''; atts = []; drawTray(); syncBtn(); drawAc(); form.dataset.state = 'sent'; fetchConv(); }
           else { err.textContent = (res && res.error) || 'Échec de l’envoi.'; form.dataset.state = 'error'; }
         })
         .catch(function () { err.textContent = 'Réseau coupé : le message n’est peut-être pas parti, vérifie la conversation.'; form.dataset.state = 'error'; })
@@ -660,6 +692,12 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .send{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--hair2);color:var(--faint);flex:none;font-weight:700}
 .v1 .send.on{background:var(--accent);color:var(--ink)}
 .v1 .send:disabled{opacity:.5}
+.v1 .ac{display:flex;flex-direction:column;max-height:min(42vh,320px);overflow-y:auto;-webkit-overflow-scrolling:touch;margin:0 0 8px;border-radius:14px;background:var(--raised);border:1px solid var(--hair2)}
+.v1 .ac-row{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-height:44px;padding:9px 14px;text-align:left;border-bottom:1px solid var(--hairf)}
+.v1 .ac-row:last-child{border-bottom:0}
+.v1 .ac-row:active{background:var(--sunken)}
+.v1 .ac-name{font:600 14px/1.3 var(--mono);color:var(--accent)}
+.v1 .ac-desc{font-size:13px;line-height:1.3;color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .v1 .atts{display:flex;gap:8px;overflow-x:auto;padding:0 0 8px}
 .v1 .conv-att{position:relative;flex:none;height:64px;min-width:64px;border-radius:12px;overflow:hidden;background:var(--raised);border:1px solid var(--hair2);display:grid;place-items:center}
 .v1 .conv-att img{height:64px;width:auto;max-width:128px;object-fit:cover;display:block}

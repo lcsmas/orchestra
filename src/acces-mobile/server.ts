@@ -192,6 +192,10 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       const id = wsId();
       return id ? relay('/mobile/conversation', { id }) : refuse(400, 'bad-id');
     }
+    if (pathOnly === '/api/skills') {
+      const id = wsId();
+      return id ? relay('/mobile/skills', { id }) : refuse(400, 'bad-id');
+    }
     if (pathOnly === '/api/seen' && method === 'POST') {
       const id = wsId();
       return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');

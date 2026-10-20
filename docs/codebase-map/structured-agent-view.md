@@ -950,7 +950,9 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   `/compact` (and any built-in) is sent through — the CLI executes it and the
   new status/compact-boundary/command-output events render the result. The
   composer autocomplete merges on-disk skills with `session.slashCommands`
-  (now captured from init, along with `session.mcpServers`).
+  (now captured from init, along with `session.mcpServers`); the merge / filter /
+  prefix test live in `src/shared/slash-menu.ts`, shared with the phone's `/` menu
+  (`acces-mobile.md` « Skills autocomplete »).
 - **CC-desktop parity in the UI** — `ContextGauge` in TurnFooter
   (`TurnFooter.tsx:172`; "N% used" + a small progress bar, amber ≥75% used /
   red ≥90%; since #16 it is a BUTTON opening the breakdown panel when the

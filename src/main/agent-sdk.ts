@@ -456,6 +456,8 @@ interface Session {
    *  "msg_lifecycle_v1"]`. Undefined until the first init lands — treat that
    *  as "no capabilities", never as "assume supported". */
   capabilities?: string[];
+  /** `session/init`'s `slash_commands`, latched like `capabilities` — the phone's `/` menu reads it (sdkSlashCommands). */
+  slashCommands?: string[];
   /** `claude_code_version` from the latest `system/init`. The process keeps the
    *  binary it was spawned from (keeper survives app restarts), so this can lag
    *  the `claude` on PATH — see {@link sdkListModels}. */
@@ -772,6 +774,7 @@ function emitFrom(session: Session, msg: SdkMessage): AgentEvent[] {
       // reconnect/keeper-reattach can land on a different CLI build than the
       // one that started the session.
       session.capabilities = ev.capabilities ?? [];
+      if (ev.slashCommands) session.slashCommands = ev.slashCommands; // the phone's `/` menu (sdkSlashCommands)
       emitMemoryWarning(session, ev);
     }
   }
@@ -3864,6 +3867,11 @@ export function sdkPermissionReply(
 }
 
 /** #337 review: what the agent is waiting on RIGHT NOW (parked, unanswered), or null when the workspace has no live session. */
+/** The CLI's slash commands for `wsId`'s live session (last `session/init`); undefined without a session or before its init. */
+export function sdkSlashCommands(wsId: string): string[] | undefined {
+  return sessions.get(wsId)?.slashCommands;
+}
+
 export function sdkLiveAnswerables(wsId: string): AgentAnswerableEvent[] | null {
   const session = sessions.get(wsId);
   return session ? [...session.liveAnswerables.values()] : null;

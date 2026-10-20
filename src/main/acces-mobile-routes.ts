@@ -5,7 +5,8 @@
 
 import { appUpdateState } from './app-update-host';
 import { store } from './store';
-import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend } from './agent-sdk';
+import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands } from './agent-sdk';
+import { mergeSlashItems, PHONE_EXCLUDED } from '../shared/slash-menu';
 import { getMobileConversation, mobileFoldedMessages, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
 import { dispatchSpawnRequest } from './workspaces';
@@ -77,6 +78,12 @@ export const mobileRpcHandlers: RpcHandlers = {
         // One workspace's conversation, folded + projected for the phone (account-aware history).
         const ws = liveWorkspace(msg.id);
         return ws ? getMobileConversation(ws.id) : { ok: false, error: 'unknown workspace' };
+      }
+      case '/mobile/skills': {
+        // The composer's `/` menu: the desktop's list (on-disk skills + the CLI's built-ins), minus the desktop-only intercepts.
+        const ws = liveWorkspace(msg.id);
+        if (!ws) return { ok: false, error: 'unknown workspace' };
+        return { ok: true, items: mergeSlashItems(await sdkListSkills(ws.id), sdkSlashCommands(ws.id), ['compact'], PHONE_EXCLUDED) };
       }
       case '/mobile/seen': {
         // The SAME « seen » as the desktop (clears non lu, resolves en attente) — mark-seen.ts.

@@ -24,6 +24,8 @@
 //                prompt refused, the REAL create (repo's Compte, the WORKSPACE default model + effort — not the spawned one —, top-level, a
 //                generated branch) whose first prompt reaches the REAL claude CLI (fake API), a double submit = one workspace, the 11th launch
 //                in a minute = 429 with nothing created, the hooks socket has no launch route
+//   skills/*     the composer's `/` menu: project + user skills and the CLI's built-ins from the REAL route, trusted typing filters,
+//                a trusted tap fills « /<name> », no match ⇒ hidden; the desktop-only clear / mcp / status are not offered
 //   control/*    interrupt + rewind from the phone: a trusted « ■ Arrêter » ends a REAL turn the slow fake model holds; a trusted « ↺ Revenir
 //                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
 // Usage: scripts/e2e-acces-mobile.sh <app-dir> [--out <dir>]
@@ -233,6 +235,10 @@ const world = (() => {
     if (!fs.existsSync(path.join(repo, '.git'))) { git(repo, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repo, 'README.md'), '#\n'); git(repo, ['add', '.'], fakeHome); git(repo, ['commit', '-q', '-m', 'seed'], fakeHome); }
     const wt = path.join(d, 'wt', name); git(repo, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome); wts.push(wt);
   }
+  // skills/*: a PROJECT skill in am-idle's worktree and a USER skill in its account (mc)'s config dir — the phone's `/` menu lists both.
+  const seedSkill = (dir, name, desc) => { fs.mkdirSync(path.join(dir, name), { recursive: true }); fs.writeFileSync(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${desc}\n---\n# ${name}\n`); };
+  seedSkill(path.join(wts[1], '.claude', 'skills'), 'rig-project-skill', 'A project skill seeded by the rig. Second sentence.');
+  seedSkill(path.join(cfgA, 'skills'), 'rig-user-skill', 'A user skill seeded by the rig.');
   // A pinned account DROPS the inherited ANTHROPIC_* (workspaces.ts accountAgentEnv) unless its own env sets them: point mc at the
   // fake API through ${...} templates expanded from the app's env.
   const fakeEnv = { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' };
@@ -603,6 +609,31 @@ try {
   const S = await phone.eval(`({ state: document.querySelector('.conv-compose').dataset.state, input: document.querySelector('.conv-input').value, err: document.querySelector('.conv-send-error').textContent })`);
   clause('send/phone-to-fleet-member', S.state === 'sent' && S.input === '' && !S.err, `composer state ${S.state}, input cleared ${S.input === ''}; model requests ${beforeSend} -> ${fakeApi.requests.filter((r) => r.type === 'model').length}; reply shown`);
   saveShot('phone-conversation-sent.png', await phone.shot());
+
+  // skills/*: the `/` menu on the phone — TRUSTED typing, the REAL /api/skills (on-disk skills of THIS workspace + the CLI's built-ins
+  // latched from the live session's init), a trusted tap fills the field. The desktop-only intercepts (clear / mcp / status) are absent.
+  await phone.eval(`document.querySelector('.conv-input').focus(); true`);
+  await phone.send('Input.insertText', { text: '/' });
+  await waitFor(() => phone.eval(`!document.querySelector('#conv .conv-ac').hidden && document.querySelectorAll('#conv .conv-ac .ac-row').length > 0`), 15000, 'the skills menu');
+  const skApi = await phone.eval(`fetch('/api/skills?id=ws-am-idle', { headers: { Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') } }).then((r) => r.json())`);
+  const skNames = (skApi.items ?? []).map((i) => i.name);
+  const cliBuiltins = (skApi.items ?? []).filter((i) => i.source === 'builtin' && i.name !== 'compact').map((i) => i.name);
+  clause('skills/list', skApi.ok && skNames.includes('rig-project-skill') && skNames.includes('rig-user-skill') && skNames.includes('compact') && cliBuiltins.length > 0 && !['clear', 'mcp', 'status'].some((n) => skNames.includes(n)),
+    `${skNames.length} items; project ${skNames.includes('rig-project-skill')}, user ${skNames.includes('rig-user-skill')}, CLI built-ins ${JSON.stringify(cliBuiltins.slice(0, 6))}; desktop-only present ${JSON.stringify(['clear', 'mcp', 'status'].filter((n) => skNames.includes(n)))}`);
+  await phone.send('Input.insertText', { text: 'rig-p' });
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-ac .ac-row')].map((r) => r.dataset.name).join(',') === 'rig-project-skill'`), 10000, 'the filtered menu');
+  const skMenu = await phone.eval(`({ rows: [...document.querySelectorAll('#conv .conv-ac .ac-row')].map((r) => r.textContent), box: (() => { const a = document.querySelector('#conv .conv-ac').getBoundingClientRect(), f = document.querySelector('#conv .fld').getBoundingClientRect(); return { acBottom: Math.round(a.bottom), fldTop: Math.round(f.top), h: Math.round(a.height) }; })() })`);
+  saveShot('phone-skills-menu.png', await phone.shot());
+  await tapSel('#conv .conv-ac .ac-row');
+  const skPick = await phone.eval(`({ input: document.querySelector('.conv-input').value, hidden: document.querySelector('#conv .conv-ac').hidden, focused: document.activeElement === document.querySelector('.conv-input') })`);
+  clause('skills/filter-and-pick', skMenu.rows.length === 1 && skMenu.rows[0] === '/rig-project-skillA project skill seeded by the rig.' && skMenu.box.acBottom <= skMenu.box.fldTop && skMenu.box.h > 0 && skPick.input === '/rig-project-skill ' && skPick.hidden && skPick.focused,
+    `typed « /rig-p » ⇒ ${JSON.stringify(skMenu.rows)} above the field ${JSON.stringify(skMenu.box)}; trusted tap ⇒ field ${JSON.stringify(skPick.input)}, menu hidden ${skPick.hidden}, focus kept ${skPick.focused}`);
+  await phone.eval(`(() => { const t = document.querySelector('.conv-input'); t.value = ''; t.dispatchEvent(new Event('input')); t.focus(); return true; })()`);
+  await phone.send('Input.insertText', { text: '/zz-no-such-skill' });
+  await sleep(500);
+  const skNone = await phone.eval(`({ hidden: document.querySelector('#conv .conv-ac').hidden, msg: document.querySelector('#conv .conv-lines').textContent.includes('zz-no-such-skill') })`);
+  clause('skills/no-match-hidden', skNone.hidden && !skNone.msg, `« /zz-no-such-skill » ⇒ menu hidden ${skNone.hidden}, nothing sent ${!skNone.msg}`);
+  await phone.eval(`(() => { const t = document.querySelector('.conv-input'); t.value = ''; t.dispatchEvent(new Event('input')); return true; })()`);
   // errors are never a false « sent »: an archived workspace is refused with a reason
   const arch = await phone.eval(`fetch('/api/send?id=ws-am-archived', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('orchestra.accesMobile.token') }, body: JSON.stringify({ text: 'x' }) }).then((r) => r.json())`);
   clause('send/archived-refused', arch.ok === false && /archived/.test(arch.error), JSON.stringify(arch));
