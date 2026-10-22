@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, MAX_WRITES_IN_FLIGHT, type Upstream } from './server.ts';
 import { createMobileLauncher } from '../main/acces-mobile-launch.ts';
 import { MOBILE_LAUNCH_PER_WINDOW, MOBILE_LAUNCH_TIMEOUT_MS, MOBILE_LAUNCH_WINDOW_MS } from '../shared/acces-mobile-launch.ts';
-import { MOBILE_SEND_MAX_BODY } from '../shared/acces-mobile-conversation.ts';
+import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY } from '../shared/acces-mobile-conversation.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -122,7 +122,7 @@ test('must-FAIL: no token ⇒ 401, bad token ⇒ 401, the token in the query str
   }
 });
 
-test('launch: POST only with a JSON body ≤ 128 KB; a GET is not a launch; a refused body never reaches main', { timeout: 15_000 }, async () => {
+test('launch: POST only with a JSON body ≤ the attachment cap (a send\'s); a GET is not a launch; a refused body never reaches main', { timeout: 15_000 }, async () => {
   const r = await rig();
   try {
     assert.equal((await postLaunch(r.port, JSONH, launchBody(1))).status, 200, 'control');
@@ -131,9 +131,14 @@ test('launch: POST only with a JSON body ≤ 128 KB; a GET is not a launch; a re
     assert.equal((await postLaunch(r.port, { ...AUTH, 'Content-Type': 'text/plain' }, launchBody(3))).status, 415, 'not JSON');
     assert.equal((await postLaunch(r.port, JSONH, 'not json')).status, 400);
     assert.equal((await postLaunch(r.port, JSONH, '[]')).status, 400, 'an array is not a launch');
-    const big = await postLaunch(r.port, JSONH, JSON.stringify({ repoPath: REPO, prompt: 'x'.repeat(MOBILE_SEND_MAX_BODY), requestId: rid(4) }));
-    assert.equal(big.status, 413, 'the 128 KB body cap (the attachment cap is /api/send only)');
-    assert.equal(r.calls.length, 1);
+    // A phone photo is far above the 128 KB of a plain write: the launch takes a send's attachment cap.
+    const photo = { mediaType: 'image/jpeg', dataBase64: 'A'.repeat(4 * Math.ceil(MOBILE_SEND_MAX_BODY / 3)) };
+    assert.equal((await postLaunch(r.port, JSONH, launchBody(4, { attachments: [photo] }))).status, 200, 'a > 128 KB launch with a picture passes');
+    assert.deepEqual(r.calls[1].body, { repoPath: REPO, prompt: 'fix the typo', requestId: rid(4), attachments: [photo] }, 'the files are relayed with the launch');
+    const huge = { mediaType: 'image/jpeg', dataBase64: 'A'.repeat(4 * Math.ceil(MOBILE_ATTACH_MAX_BODY / 3)) };
+    assert.equal((await postLaunch(r.port, JSONH, launchBody(5, { attachments: [huge] }))).status, 413, 'the attachment cap');
+    assert.equal((await postLaunch(r.port, JSONH, launchBody(6, { attachments: [{ mediaType: 'text/html', dataBase64: 'PGI+' }] }))).status, 400, 'a bad file refuses the launch');
+    assert.equal(r.calls.length, 2);
   } finally {
     await r.close();
   }
@@ -240,6 +245,23 @@ test('launch counts in the in-flight write bound shared with send/answer: at mos
     assert.equal(last.status, 429, 'the 11th ADMITTED launch');
   } finally {
     releases.splice(0).forEach((f) => f());
+    await r.close();
+  }
+});
+
+test('skills for a repo: GET /api/skills?repo= relays {repoPath} (the launch form\'s `/` menu); empty / NUL repo ⇒ 400; no token ⇒ 401', { timeout: 15_000 }, async () => {
+  const r = await rig({ upstream: async (route, body) => (r0.calls.push({ route, body }), { ok: true, items: [{ name: 'ship' }] }) });
+  const r0 = r;
+  try {
+    const ok = await call(r.port, 'GET', `/api/skills?repo=${encodeURIComponent(REPO)}`, AUTH);
+    assert.equal(ok.status, 200);
+    assert.deepEqual(JSON.parse(ok.body), { ok: true, items: [{ name: 'ship' }] });
+    assert.deepEqual(r.calls, [{ route: '/mobile/skills', body: { repoPath: REPO } }]);
+    assert.equal((await call(r.port, 'GET', '/api/skills?repo=', AUTH)).status, 400);
+    assert.equal((await call(r.port, 'GET', '/api/skills?repo=%2Fa%00b', AUTH)).status, 400);
+    assert.equal((await call(r.port, 'GET', `/api/skills?repo=${encodeURIComponent(REPO)}`, ID)).status, 401);
+    assert.equal(r.calls.length, 1);
+  } finally {
     await r.close();
   }
 });

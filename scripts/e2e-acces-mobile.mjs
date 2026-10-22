@@ -23,7 +23,8 @@
 //                no or bad or query token) beside a passing launch, an UNREGISTERED real git repo refused with nothing created, an empty
 //                prompt refused, the REAL create (repo's Compte, the WORKSPACE default model + effort — not the spawned one —, top-level, a
 //                generated branch) whose first prompt reaches the REAL claude CLI (fake API), a double submit = one workspace, the 11th launch
-//                in a minute = 429 with nothing created, the hooks socket has no launch route
+//                in a minute = 429 with nothing created, the hooks socket has no launch route; the phone form's `/` menu lists the picked
+//                repo's skills and a picked PDF + a pasted screenshot ride the launched agent's FIRST model request
 //   skills/*     the composer's `/` menu: project + user skills and the CLI's built-ins from the REAL route, trusted typing filters,
 //                a trusted tap fills « /<name> », no match ⇒ hidden; the desktop-only clear / mcp / status are not offered
 //   relaunch/*   « Relancer Orchestra » from the phone: the ↻ asks first (« Annuler » relaunches nothing), « Relancer » = a REAL quit + exec
@@ -994,6 +995,44 @@ try {
   const dblWs = (await wsList()).filter((w) => w.lastTask === DBL_PROMPT);
   clause('launch/phone-double-tap-one-workspace', afterLaunchState.task === '' && afterLaunchState.sel === 1 && phoneLaunchLines().length === reqsBeforeDbl + 1 && dblWs.length === 1 && dblWs[0].accountId === 'acc-mc', `two taps ⇒ ${phoneLaunchLines().length - reqsBeforeDbl} request(s) from the phone, ${dblWs.length} workspace(s) with that prompt; a fresh form after the first launch (draft « ${afterLaunchState.task} », ${afterLaunchState.sel} repo picked)`);
   await phone.eval(`location.hash = ''; true`);
+  // Lucas 2026-10-22 « je peux pas paste de document quand je crée un workspace, ni l'autocomplete »: the launch form carries the
+  // conversation composer's parts — the `/` menu lists the PICKED repo's skills (its Compte's user skill, from the REAL route), and a PDF
+  // picked + a screenshot pasted ride the launched agent's FIRST model request (byte-exact) and show on its first bubble.
+  const FILES_PROMPT = `${LAUNCH_SENTINEL} lancé avec un PDF et une capture`;
+  await phone.eval(`location.hash = 'new'; true`);
+  await waitFor(() => phone.eval(`!document.getElementById('launch').hidden && document.querySelectorAll('#launch .nf-repo').length === 2`), 15000, 'the launch screen (files + skills)');
+  await phone.clickSel(`#launch .nf-repo[data-path="${repoPathA}"]`);
+  await clearTask('');
+  await typeIn('/rig-u');
+  await waitFor(() => phone.eval(`!document.querySelector('#launch .conv-ac').hidden && [...document.querySelectorAll('#launch .conv-ac .ac-row')].map((r) => r.dataset.name).join(',') === 'rig-user-skill'`), 15000, 'the launch form `/` menu with the repo Compte user skill');
+  const LM = await phone.eval(`(() => { const a = document.querySelector('#launch .conv-ac').getBoundingClientRect(), t = document.querySelector('#launch .nf-task').getBoundingClientRect(); return { rows: [...document.querySelectorAll('#launch .conv-ac .ac-row')].map((r) => r.textContent), h: a.height, above: a.bottom <= t.top + 1 }; })()`);
+  saveShot('phone-launch-skills.png', await phone.shot());
+  await phone.clickSel('#launch .conv-ac .ac-row');
+  const LP = await phone.eval(`({ v: document.querySelector('#launch .nf-task').value, hidden: document.querySelector('#launch .conv-ac').hidden })`);
+  clause('launch/phone-skills-menu', LM.rows.length === 1 && LM.rows[0] === '/rig-user-skillA user skill seeded by the rig.' && LM.h > 0 && LM.above && LP.v === '/rig-user-skill ' && LP.hidden, `« /rig-u » on repo orchestra-rig (Compte mc) ⇒ ${JSON.stringify(LM.rows)} (${Math.round(LM.h)} px, above the field ${LM.above}); a trusted tap ⇒ « ${LP.v} », menu hidden ${LP.hidden}`);
+  await clearTask('');
+  await typeIn(FILES_PROMPT);
+  const { root: lRoot } = await phone.send('DOM.getDocument', { depth: -1 });
+  const { nodeId: lFile } = await phone.send('DOM.querySelector', { nodeId: lRoot.nodeId, selector: '#launch .conv-file' });
+  await phone.send('DOM.setFileInputFiles', { nodeId: lFile, files: [pdfPath] });
+  await waitFor(() => phone.eval(`document.querySelectorAll('#launch .conv-att').length === 1`), 20000, 'the picked PDF in the launch tray');
+  await phone.eval(`(() => { const b = atob(${JSON.stringify(PNG.sync.write(tiny).toString('base64'))}); const u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); const dt = new DataTransfer(); dt.items.add(new File([u], 'capture.png', { type: 'image/png' })); const ta = document.querySelector('#launch .nf-task'); ta.focus(); ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
+  await waitFor(() => phone.eval(`document.querySelectorAll('#launch .conv-att').length === 2 && !document.querySelector('#launch .nf-go').disabled`), 20000, 'the pasted screenshot in the launch tray, « Lancer » ready');
+  const LT = await phone.eval(`({ kinds: [...document.querySelectorAll('#launch .conv-att')].map((a) => a.dataset.kind), task: document.querySelector('#launch .nf-task').value })`);
+  saveShot('phone-launch-files.png', await phone.shot());
+  const beforeFiles = fakeApi.requests.length;
+  await launchRoom(1);
+  await phone.clickSel('#launch .nf-go');
+  await waitFor(() => phone.eval(`/^#w=/.test(location.hash) && !document.getElementById('conv').hidden`), 90000, 'the conversation of the workspace launched with files');
+  const filesId = (await phone.eval(`location.hash`)).slice(3);
+  const LR = await waitFor(() => fakeApi.requests.slice(beforeFiles).find((r) => r.type === 'model' && (r.marks ?? []).includes('launch') && (r.attachments ?? []).some((a) => a.type === 'document')) || false, 90000, 'the launched agent\'s model request carrying the files');
+  const lDoc = LR.attachments.find((a) => a.type === 'document'), lImg = LR.attachments.find((a) => a.type === 'image');
+  await waitFor(() => phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].some((e) => e.textContent.includes('lancé avec un PDF'))`), 60000, 'the first user line of the files launch');
+  const LB = await phone.eval(`(() => { const u = [...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].find((e) => e.textContent.includes('lancé avec un PDF')); return (u.querySelector('.msg-atts') || {}).textContent || null; })()`);
+  const wsFiles = (await wsList()).find((w) => w.id === filesId);
+  clause('launch/phone-files-reach-the-first-turn', JSON.stringify(LT.kinds) === JSON.stringify(['pdf', 'image']) && LT.task === FILES_PROMPT && LR.attachments.length === 2 && lDoc?.media_type === 'application/pdf' && lDoc.data === pdfBytes.toString('base64') && lImg?.media_type === 'image/png' && lImg.data === PNG.sync.write(tiny).toString('base64') && wsFiles?.lastTask === FILES_PROMPT && wsFiles.accountId === 'acc-mc' && LB === '🖼 1 image · 📄 1 PDF',
+    `tray ${JSON.stringify(LT.kinds)}; model request #${LR.seq} (marks ${JSON.stringify(LR.marks)}): ${JSON.stringify(LR.attachments.map((a) => ({ type: a.type, media_type: a.media_type, bytes: a.bytes })))}, PDF byte-exact ${lDoc?.data === pdfBytes.toString('base64')}, screenshot byte-exact ${lImg?.data === PNG.sync.write(tiny).toString('base64')}; desktop store lastTask « ${String(wsFiles?.lastTask).slice(0, 40)} » Compte ${wsFiles?.accountId}; phone bubble « ${LB} »`);
+  saveShot('phone-launch-files-conversation.png', await phone.shot());
 
 
   // the phone says it plainly when the cap is hit: fill the minute (fast refused launches), then tap « Lancer » for real

@@ -6,21 +6,19 @@
 // contract — the V1 classes ride beside them.
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
-import { MOBILE_ATTACH_MAX_BODY, MOBILE_ATTACH_MAX_COUNT } from '../shared/acces-mobile-conversation.ts';
 import { TOOL_GLYPH } from '../shared/tool-line.ts';
-import { filterSlashItems, slashQuery } from '../shared/slash-menu.ts';
+import { COMPOSER_KIT_JS } from './composer-kit.ts';
 
 export const CONVERSATION_JS = `(function () {
   'use strict';
   // The Markdown parser (shared/mini-markdown.ts, unit-tested) — self-contained, so its source can be injected as is.
   var mdParse = (${parseMarkdown.toString()});
-  // The \`/\` menu's prefix test + filter (shared/slash-menu.ts — the desktop composer's own, unit-tested).
-  var slashQuery = (${slashQuery.toString()});
-  var filterSlash = (${filterSlashItems.toString()});
   var KEY = 'orchestra.accesMobile.token';
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function auth() { return { Authorization: 'Bearer ' + token() }; }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  // Attachments + the \`/\` menu: composer-kit.ts, shared with the « Nouveau workspace » form.
+  var kit = (${COMPOSER_KIT_JS})(el, auth);
 
   // ---- live stream: one per page, shared by the list and the conversation ----
   var handlers = [];
@@ -397,131 +395,42 @@ export const CONVERSATION_JS = `(function () {
     if ((m.t === 'conv' && m.id === current && m.v !== version) || m.t === 'resume') fetchConv();
   });
 
-  // Files attached on the phone (Lucas 2026-10-12): images + PDFs, sent as the desktop composer's paste/drop attachments.
-  var ATTACH_MAX = ${MOBILE_ATTACH_MAX_COUNT}, ATTACH_BODY = ${MOBILE_ATTACH_MAX_BODY}, IMG_EDGE = 1568;
-  var API_IMG = { 'image/png': 1, 'image/jpeg': 1, 'image/gif': 1, 'image/webp': 1 };
+  // The bubble's line for files attached on the phone (Lucas 2026-10-12).
   function attLabel(kinds) {
     var i = kinds.filter(function (k) { return k === 'image'; }).length, p = kinds.length - i, out = [];
     if (i) out.push('🖼 ' + i + ' image' + (i > 1 ? 's' : ''));
     if (p) out.push('📄 ' + p + ' PDF');
     return out.join(' · ');
   }
-  function readDataUrl(file) { return new Promise(function (ok, ko) { var r = new FileReader(); r.onload = function () { ok(String(r.result || '')); }; r.onerror = function () { ko(r.error); }; r.readAsDataURL(file); }); }
-  function splitDataUrl(u) { var m = /^data:([^;,]+)[^,]*;base64,(.*)$/.exec(u); return m ? { mediaType: m[1], dataBase64: m[2] } : null; }
-  // One phone file → an attachment. A picture is redrawn to ≤ IMG_EDGE px as JPEG (the API scales anything bigger down anyway,
-  // and a phone photo would cost megabytes on the uplink); one already small and in an API type goes as is; a PDF goes as is.
-  function prepareFile(file) {
-    var type = file.type || '';
-    if (type === 'application/pdf') return readDataUrl(file).then(function (u) { var d = splitDataUrl(u); if (!d) throw new Error('read'); return { mediaType: 'application/pdf', dataBase64: d.dataBase64, url: '', name: file.name || 'document.pdf', kind: 'pdf' }; });
-    if (type.indexOf('image/') !== 0) return Promise.reject(new Error('type'));
-    return readDataUrl(file).then(function (u) {
-      return new Promise(function (ok, ko) {
-        var img = new Image();
-        img.onload = function () {
-          var w = img.naturalWidth, h = img.naturalHeight, k = Math.min(1, IMG_EDGE / Math.max(w, h)), d = splitDataUrl(u);
-          if (k === 1 && API_IMG[type] && file.size <= 3500000 && d) return ok({ mediaType: type, dataBase64: d.dataBase64, url: u, name: file.name || 'image', kind: 'image' });
-          var c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
-          var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
-          var out = c.toDataURL('image/jpeg', 0.88), o = splitDataUrl(out);
-          if (!o) return ko(new Error('encode'));
-          ok({ mediaType: 'image/jpeg', dataBase64: o.dataBase64, url: out, name: file.name || 'image', kind: 'image' });
-        };
-        img.onerror = function () { ko(new Error('decode')); };
-        img.src = u;
-      });
-    });
-  }
 
   // #338: the composer — the message goes the desktop composer's way (queued if mid-turn). Never claims « sent » on a doubt.
   function composer(id) {
     var form = el('form', 'conv-compose cmp');
     var err = el('div', 'conv-send-error toast', ''); err.setAttribute('role', 'alert');
-    var tray = el('div', 'conv-atts atts'); tray.hidden = true;
     var fld = el('div', 'fld');
-    var file = el('input', 'conv-file'); file.type = 'file'; file.multiple = true; file.accept = 'image/*,application/pdf'; file.hidden = true;
-    var add = el('button', 'conv-attach att', '+'); add.type = 'button'; add.setAttribute('aria-label', 'Joindre une image ou un PDF');
     var ta = el('textarea', 'conv-input'); composerTa = ta; ta.rows = 1; ta.placeholder = 'Message à l’agent…'; ta.maxLength = 32000;
     var btn = el('button', 'conv-send send', '↑'); btn.type = 'submit'; btn.setAttribute('aria-label', 'Envoyer');
-    var atts = [];
-    function canSend() { return !!ta.value.trim() || atts.length > 0; }
-    function syncBtn() { btn.className = 'conv-send send' + (canSend() ? ' on' : ''); }
-    function drawTray() {
-      tray.textContent = ''; tray.hidden = !atts.length;
-      atts.forEach(function (a, i) {
-        var t = el('div', 'conv-att att-' + a.kind); t.dataset.kind = a.kind;
-        if (a.kind === 'image') { var im = el('img'); im.src = a.url; im.alt = a.name; t.appendChild(im); }
-        else t.appendChild(el('span', 'att-pdf', 'PDF · ' + a.name));
-        var x = el('button', 'conv-att-x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Retirer ' + a.name);
-        x.addEventListener('click', function () { atts.splice(i, 1); drawTray(); syncBtn(); });
-        t.appendChild(x); tray.appendChild(t);
-      });
-    }
-    function addFiles(list) {
-      var files = Array.prototype.slice.call(list || []);
-      if (!files.length) return;
-      err.textContent = '';
-      var room = Math.max(0, ATTACH_MAX - atts.length);
-      if (files.length > room) { err.textContent = 'Au plus ' + ATTACH_MAX + ' pièces jointes.'; files = files.slice(0, room); }
-      if (!files.length) return;
-      form.dataset.attaching = '1';
-      Promise.all(files.map(function (f) {
-        return prepareFile(f).then(null, function (e) { return { error: e && e.message === 'type' ? 'Seuls les images et les PDF passent.' : 'Fichier illisible : ' + (f.name || '?') }; });
-      })).then(function (res) {
-        res.forEach(function (r) { if (r.error) err.textContent = r.error; else if (atts.length < ATTACH_MAX) atts.push(r); });
-        delete form.dataset.attaching; drawTray(); syncBtn();
-      });
-    }
-    add.addEventListener('click', function () { file.click(); });
-    file.addEventListener('change', function () { addFiles(file.files); file.value = ''; });
-    // A picture pasted into the field (a screenshot copied on the phone) is attached; pasted text stays text.
-    ta.addEventListener('paste', function (ev) {
-      var cd = ev.clipboardData; if (!cd) return;
-      var files = Array.prototype.slice.call(cd.files || []);
-      if (!files.length && cd.items) Array.prototype.forEach.call(cd.items, function (it) { if (it.kind === 'file') { var f = it.getAsFile(); if (f) files.push(f); } });
-      if (!files.length) return;
-      if (!cd.getData('text/plain')) ev.preventDefault();
-      addFiles(files);
+    var atts = kit.attachments({
+      say: function (t) { err.textContent = t; },
+      onChange: function () { syncBtn(); },
+      onBusy: function (on) { if (on) form.dataset.attaching = '1'; else delete form.dataset.attaching; },
     });
-    // The skills autocomplete: the desktop's \`/\` menu. The list is re-fetched each time the menu opens (a skill added since
-    // shows); the last list stays shown while it loads; an older, slower answer never wins. A tap fills \`/<name> \`.
-    var ac = el('div', 'conv-ac ac'); ac.hidden = true; ac.setAttribute('role', 'listbox');
-    var acItems = null, acGen = 0, acWasOpen = false;
-    function drawAc() {
-      var q = slashQuery(ta.value);
-      if (q === null) { ac.hidden = true; acWasOpen = false; return; }
-      if (!acWasOpen) {
-        acWasOpen = true;
-        var gen = ++acGen;
-        fetch('/api/skills?id=' + encodeURIComponent(id), { headers: auth(), cache: 'no-store' })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (res) { if (gen !== acGen) return; acItems = res && res.ok && Array.isArray(res.items) ? res.items : (acItems || []); drawAc(); })
-          .catch(function () { if (gen === acGen && !acItems) { acItems = []; drawAc(); } });
-      }
-      var rows = filterSlash(acItems || [], q, 8);
-      ac.textContent = '';
-      ac.hidden = !rows.length;
-      rows.forEach(function (it) {
-        var b = el('button', 'ac-row'); b.type = 'button'; b.dataset.name = it.name; b.setAttribute('role', 'option');
-        b.appendChild(el('span', 'ac-name', '/' + it.name));
-        if (it.description) b.appendChild(el('span', 'ac-desc', it.description));
-        b.addEventListener('click', function () {
-          ta.value = '/' + it.name + ' '; ac.hidden = true; ta.focus(); ta.dispatchEvent(new Event('input'));
-        });
-        ac.appendChild(b);
-      });
-    }
-    ta.addEventListener('input', function () { syncBtn(); drawAc(); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
-    fld.appendChild(add); fld.appendChild(ta); fld.appendChild(btn);
-    form.appendChild(err); form.appendChild(tray); form.appendChild(ac); form.appendChild(fld); form.appendChild(file);
+    atts.watch(ta);
+    function canSend() { return !!ta.value.trim() || atts.count() > 0; }
+    function syncBtn() { btn.className = 'conv-send send' + (canSend() ? ' on' : ''); }
+    var ac = kit.slashMenu(ta, function () { return '/api/skills?id=' + encodeURIComponent(id); });
+    ta.addEventListener('input', function () { syncBtn(); ac.draw(); ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
+    fld.appendChild(atts.add); fld.appendChild(ta); fld.appendChild(btn);
+    form.appendChild(err); form.appendChild(atts.tray); form.appendChild(ac.el); form.appendChild(fld); form.appendChild(atts.file);
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var text = ta.value.trim();
-      if (!canSend() || btn.disabled || form.dataset.attaching) return;
+      if (!canSend() || btn.disabled || atts.busy()) return;
       var payload = { text: text };
-      if (atts.length) payload.attachments = atts.map(function (a) { return { mediaType: a.mediaType, dataBase64: a.dataBase64 }; });
+      if (atts.count()) payload.attachments = atts.payload();
       var body = JSON.stringify(payload);
-      if (body.length > ATTACH_BODY) { err.textContent = 'Pièces jointes trop lourdes (20 Mo max).'; form.dataset.state = 'error'; return; }
-      btn.disabled = true; ta.disabled = true; add.disabled = true; err.textContent = ''; form.dataset.state = 'sending';
+      if (body.length > kit.ATTACH_BODY) { err.textContent = 'Pièces jointes trop lourdes (20 Mo max).'; form.dataset.state = 'error'; return; }
+      btn.disabled = true; ta.disabled = true; atts.disable(true); err.textContent = ''; form.dataset.state = 'sending';
       fetch('/api/send?id=' + encodeURIComponent(id), { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: body })
         .then(function (r) {
           if (r.status === 401) return { ok: false, error: 'Jeton refusé : re-scanne le QR code.' };
@@ -532,11 +441,11 @@ export const CONVERSATION_JS = `(function () {
           return r.json();
         })
         .then(function (res) {
-          if (res && res.ok) { ta.value = ''; atts = []; drawTray(); syncBtn(); drawAc(); form.dataset.state = 'sent'; fetchConv(); }
+          if (res && res.ok) { ta.value = ''; atts.clear(); syncBtn(); ac.draw(); form.dataset.state = 'sent'; fetchConv(); }
           else { err.textContent = (res && res.error) || 'Échec de l’envoi.'; form.dataset.state = 'error'; }
         })
         .catch(function () { err.textContent = 'Réseau coupé : le message n’est peut-être pas parti, vérifie la conversation.'; form.dataset.state = 'error'; })
-        .then(function () { btn.disabled = false; ta.disabled = false; add.disabled = false; });
+        .then(function () { btn.disabled = false; ta.disabled = false; atts.disable(false); });
     });
     return form;
   }

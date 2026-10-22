@@ -37,7 +37,7 @@ test('spawn gate: inside startWorkspaceAgentOnce, AFTER the owed check and BEFOR
   assert.match(body, /origin: origin \?\? 'auto',\s*\n\s*kind: 'spawn',/);
   assert.match(body, /run: \(\) => startWorkspaceAgentHeadless\(id, 'auto', true\),/);
   assert.match(body, /if \(gate\.held\) return \{ ok: true, held: \{ since: gate\.since \}, note: heldPhrase\('spawn', gate\.since\) \};/);
-  assert.match(ws, /startWorkspaceAgentHeadless\(id: string, origin\?: PauseOrigin, admitted = false\)/);
+  assert.match(ws, /startWorkspaceAgentHeadless\(id: string, origin\?: PauseOrigin, admitted = false, images\?: AgentImage\[\]\)/);
 });
 
 test('spawn stillOwed: owed AND no live SDK session AND not archived', () => {

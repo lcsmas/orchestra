@@ -150,7 +150,7 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   assert.ok(launchCase, 'control: found the launch case');
   assert.match(routes, /case '\/mobile\/repos':[\s\S]*?return \{ ok: true, repos: projectMobileRepos\(store\.repos, store\.accounts\) \};/, 'the repo list is the registered repos');
   // THE desktop-click path (the pinned-ticket click's, CONTEXT.md « Spawned agent »): human default kind, top-level, no `from`, no model/branch/Compte from the phone
-  assert.match(routes, /spawn: \(\{ repoPath, task \}\) => dispatchSpawnRequest\(\{ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' \}\),/);
+  assert.match(routes, /spawn: \(\{ repoPath, task, images \}\) => dispatchSpawnRequest\(\{ repoPath, task, images, detached: true, defaultKind: 'workspace', origin: 'human' \}\),/);
   assert.match(routes, /repos: \(\) => store\.repos,/, 'the registered repos are the store\'s, read at launch time');
   const spawnCall = /dispatchSpawnRequest\(\{[^}]*\}\)/.exec(routes)?.[0] ?? '';
   assert.doesNotMatch(spawnCall, /\bfrom\b|parentId|model|effort|branch|baseBranch|accountId|host/, 'nothing but the repo and the task is chosen by the phone');
@@ -162,7 +162,7 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   assert.ok(hooksSpawn.includes('dispatchAgentSpawnRequest({'), 'control: found the hooks /spawn call (an agent\'s spawn takes the agent wrapper)');
   assert.match(read('src/main/workspaces.ts'), /dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from, exactName: true \}\)/, 'the wrapper keeps an agent\'s spawn the spawned kind');
   assert.doesNotMatch(hooksSpawn, /origin/, 'an agent\'s /spawn body can never carry the human origin into the spawn path');
-  assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin\);/, 'the origin reaches the agent start');
+  assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\);/, 'the origin reaches the agent start');
   // a failed start KEEPS the child and the phone gets the bare cause + the id — also when the start THROWS after the workspace was persisted
   const spawnSrc = read('src/main/workspaces.ts');
   const dsr = spawnSrc.slice(spawnSrc.indexOf('export async function dispatchSpawnRequest'), spawnSrc.indexOf('// ---------- Add repo'));
@@ -235,4 +235,23 @@ test('archive from the phone: the private channel only, the desktop\'s own calls
   assert.doesNotMatch(hooks, /\/mobile\/archive/, 'not on the hooks socket any agent can reach');
   assert.match(server, /const POST_PATHS = new Set\(\[[^\]]*'\/api\/archive'(?:, '[^']+')*\]\)/);
   assert.match(server, /const WRITE_ROUTES = new Set\(\[[^\]]*'\/mobile\/archive'(?:, '[^']+')*\]\)/);
+});
+
+test('launch files (Lucas 2026-10-22): the phone\'s images / PDFs ride the agent\'s FIRST send — route → spawn → start → sdkWake → sdkSend', () => {
+  const sdk = read('src/main/agent-sdk.ts');
+  const ws = read('src/main/workspaces.ts');
+  const delivery = read('src/main/sdk-delivery.ts');
+  assert.match(ws, /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\);/, 'dispatchSpawnRequest hands the files to the start');
+  assert.match(ws, /startWorkspaceAgentOnce\(id, origin, admitted, images\)/, 'the deduped start forwards them');
+  assert.match(ws, /sdkStartAndDeliverResult\(id, ws\.lastTask, \{ openingBrief: true, [^\n]*\.\.\.\(images\?\.length \? \{ images \} : \{\}\) \}\)/, 'the opening brief carries them');
+  assert.match(delivery, /await impl\.start\(wsId, text, opts\);/, 'the seam passes opts through');
+  assert.match(sdk, /start: \(wsId, text, opts\) => sdkWake\(wsId, text, opts\),/);
+  assert.match(sdk, /await sdkSend\(wsId, text, opts\?\.images\?\.length \? opts\.images : undefined, /, 'sdkWake sends them as the composer\'s paste content blocks');
+});
+
+test('launch `/` menu: /mobile/skills with a repoPath answers only for a REGISTERED repo, from its checkout + its Compte', () => {
+  const sdk = read('src/main/agent-sdk.ts');
+  assert.match(routes, /if \(typeof msg\.repoPath === 'string'\) \{\n\s*if \(!store\.repos\.some\(\(r\) => r\.path === msg\.repoPath\)\) return \{ ok: false, error: 'unknown repo' \};/);
+  assert.match(sdk, /export async function sdkListRepoSkills\(repoPath: string\)[\s\S]*?const repo = store\.repos\.find\(\(r\) => r\.path === repoPath\);\n\s*if \(!repo\) return \[\];/);
+  assert.match(sdk, /workspaceAccountConfigDir\(\{ accountId: repo\.accountId \} as Workspace, repo\)/, 'the Compte a new workspace of this repo pins');
 });

@@ -21,7 +21,17 @@ const ok = { repoPath: '/home/u/repo', prompt: 'fix the typo', requestId: RID };
 
 test('parseMobileLaunch: a well-formed launch passes, the prompt is trimmed, extra keys never travel', () => {
   const r = parseMobileLaunch({ ...ok, prompt: '  fix the typo \n', model: 'opus', branch: 'x', accountId: 'a', parentId: 'p', attachments: [] });
-  assert.deepEqual(r, { ok: true, launch: ok }, 'only {repoPath, prompt, requestId}: no model / branch / Compte / parent / attachments from the phone (D1)');
+  assert.deepEqual(r, { ok: true, launch: ok }, 'only {repoPath, prompt, requestId}: no model / branch / Compte / parent from the phone (D1); an empty attachment list is none');
+});
+
+test('parseMobileLaunch: images / PDFs ride the launch under a conversation send\'s rules; a bad one refuses the whole launch', () => {
+  const png = { mediaType: 'image/png', dataBase64: 'iVBORw0KGgo=' };
+  const pdf = { mediaType: 'application/pdf', dataBase64: 'JVBERi0x' };
+  assert.deepEqual(parseMobileLaunch({ ...ok, attachments: [png, { ...pdf, name: 'x.pdf' }] }), { ok: true, launch: { ...ok, attachments: [png, pdf] } }, 'only {mediaType, dataBase64} travel');
+  for (const attachments of ['x', {}, [{ mediaType: 'text/html', dataBase64: 'PGI+' }], [{ mediaType: 'image/png', dataBase64: 'not base64!' }], Array(9).fill(png)]) {
+    assert.equal(parseMobileLaunch({ ...ok, attachments }).ok, false, `attachments ${JSON.stringify(attachments).slice(0, 40)}`);
+  }
+  assert.equal(parseMobileLaunch({ ...ok, prompt: ' ', attachments: [png] }).ok, false, 'files alone never launch: the prompt stays required');
 });
 
 test('parseMobileLaunch: the prompt is REQUIRED — empty, blank, non-string and over-long are refused', () => {

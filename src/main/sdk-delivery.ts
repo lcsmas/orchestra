@@ -18,6 +18,7 @@
 import { log } from './logger';
 import type { PeerOrigin } from '../shared/peer-messages.ts';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
+import type { AgentImage } from '../shared/types.ts';
 
 /** The subset of the SDK session manager the lifecycle dispatchers need. */
 export interface SdkDelivery {
@@ -57,7 +58,7 @@ export interface SdkDelivery {
    *  a live session: it lazy-starts one, resuming the workspace's prior
    *  conversation when there is one (agent-sdk's `sdkWake`).
    *  `opts.openingBrief`: this send is spawn / Restart's own delivery of `lastTask` (the only callers whose same-text in-flight send is deduped — #227 F5). */
-  start(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin }): Promise<void>;
+  start(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin; images?: AgentImage[] }): Promise<void>;
   /** Resolve when the workspace's CURRENT session settles its first TURN (first non-error output, an errored turn, or death before
    *  either) or `timeoutMs` passes. Optional: a seam without it reports `unknown` (#227 D7). */
   awaitFirstTurn?(wsId: string, timeoutMs: number): Promise<SdkFirstTurnOutcome>;
@@ -146,7 +147,7 @@ export type SdkFirstTurnOutcome =
 
 /** Start a structured session and deliver `text` as its opening turn (resuming prior context). No PTY fallback (#227):
  *  a failure is REPORTED here, and is an error row in the Agent view (agent-sdk `sdkSend`). */
-export async function sdkStartAndDeliverResult(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin }): Promise<SdkStartResult> {
+export async function sdkStartAndDeliverResult(wsId: string, text: string, opts?: { openingBrief?: boolean; origin?: PauseOrigin; images?: AgentImage[] }): Promise<SdkStartResult> {
   if (!impl) return { ok: false, error: 'the structured agent module is not loaded' };
   try {
     await impl.start(wsId, text, opts);

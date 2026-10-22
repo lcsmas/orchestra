@@ -6,7 +6,9 @@
 //   · a repeat of a request id inside MOBILE_LAUNCH_REPEAT_WINDOW_MS is the SAME launch: one workspace, the same answer (#376 — the
 //     entry is recorded in the tick of the lookup, so a double tap whose first request is still creating shares its promise).
 
+import { createHash } from 'node:crypto';
 import { MOBILE_LAUNCH_REPEAT_WINDOW_MS, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
+import type { AgentImage } from '../shared/types.ts';
 
 /** What the human-click spawn path (dispatchSpawnRequest) tells back — the fields this module reads. */
 export interface MobileSpawnResult {
@@ -20,8 +22,9 @@ export interface MobileSpawnResult {
 
 export interface MobileLauncherDeps {
   repos: () => readonly { path: string }[];
-  /** Create the workspace + deliver `task` as the agent's first message. THE desktop-click path: human defaults, top-level. */
-  spawn: (input: { repoPath: string; task: string }) => Promise<MobileSpawnResult>;
+  /** Create the workspace + deliver `task` (+ `images`, in the same first message) as the agent's first message. THE desktop-click
+   *  path: human defaults, top-level. */
+  spawn: (input: { repoPath: string; task: string; images?: AgentImage[] }) => Promise<MobileSpawnResult>;
   now?: () => number;
   info?: (line: string) => void;
   /** A workspace EXISTS for this launch (created, or kept after a failed start). The spawn returned after the first output, so its transcript
@@ -33,6 +36,14 @@ export interface MobileLauncherDeps {
 export type MobileLaunchOutcome =
   | { ok: true; id: string; branch?: string; note?: string }
   | { ok: false; code: 'bad-request' | 'unknown-repo' | 'request-reused' | 'create-failed' | 'start-failed'; error: string; id?: string; branch?: string };
+
+/** The files' identity in a launch's fingerprint: the same id carrying other files is another launch (`request-reused`). */
+function attachmentsDigest(images: AgentImage[] | undefined): string {
+  if (!images?.length) return '';
+  const h = createHash('sha256');
+  for (const a of images) h.update(a.mediaType).update('\0').update(a.dataBase64).update('\0');
+  return h.digest('hex');
+}
 
 /** Hard bound on the repeat table (the server's 10/min cap keeps it far below this; main does not rely on that). */
 const MAX_REMEMBERED = 256;
@@ -50,10 +61,10 @@ export function createMobileLauncher(deps: MobileLauncherDeps): { launch(raw: un
     }
   }
 
-  async function create(repoPath: string, prompt: string): Promise<MobileLaunchOutcome> {
+  async function create(repoPath: string, prompt: string, images: AgentImage[] | undefined): Promise<MobileLaunchOutcome> {
     let res: MobileSpawnResult;
     try {
-      res = await deps.spawn({ repoPath, task: prompt });
+      res = await deps.spawn({ repoPath, task: prompt, ...(images ? { images } : {}) });
     } catch (e) {
       return { ok: false, code: 'create-failed', error: e instanceof Error ? e.message : String(e) };
     }
@@ -65,7 +76,7 @@ export function createMobileLauncher(deps: MobileLauncherDeps): { launch(raw: un
       }
     }
     if (res.id && res.ok) {
-      deps.info?.(`mobile launch: workspace ${res.id} created in ${repoPath.split('/').pop()} (${prompt.length} chars)`);
+      deps.info?.(`mobile launch: workspace ${res.id} created in ${repoPath.split('/').pop()} (${prompt.length} chars${images ? `, ${images.length} attachment(s)` : ''})`);
       return { ok: true, id: res.id, ...(res.branch ? { branch: res.branch } : {}), ...(res.note ? { note: res.note } : {}) };
     }
     if (res.id) return { ok: false, code: 'start-failed', id: res.id, ...(res.branch ? { branch: res.branch } : {}), error: res.startError ?? res.error ?? 'the agent failed to start' };
@@ -76,10 +87,10 @@ export function createMobileLauncher(deps: MobileLauncherDeps): { launch(raw: un
     launch(raw) {
       const parsed = parseMobileLaunch(raw);
       if (!parsed.ok) return Promise.resolve({ ok: false, code: 'bad-request', error: parsed.error });
-      const { repoPath, prompt, requestId } = parsed.launch;
+      const { repoPath, prompt, requestId, attachments } = parsed.launch;
       const t = now();
       prune(t);
-      const fingerprint = `${repoPath}\0${prompt}`;
+      const fingerprint = `${repoPath}\0${prompt}\0${attachmentsDigest(attachments)}`;
       const prior = seen.get(requestId);
       if (prior) {
         // The same launch again ⇒ the same answer. The same id carrying ANOTHER launch is a client bug: never answer with a workspace that is not its own.
@@ -87,7 +98,7 @@ export function createMobileLauncher(deps: MobileLauncherDeps): { launch(raw: un
         return Promise.resolve({ ok: false, code: 'request-reused', error: 'this request id already carried another launch' });
       }
       if (!deps.repos().some((r) => r.path === repoPath)) return Promise.resolve({ ok: false, code: 'unknown-repo', error: 'unknown repo' });
-      const entry = { fingerprint, at: t, settled: false, outcome: create(repoPath, prompt) };
+      const entry = { fingerprint, at: t, settled: false, outcome: create(repoPath, prompt, attachments) };
       seen.set(requestId, entry);
       // A launch that created NOTHING is retryable under the same id; one that created (or kept) a workspace stays answered with it.
       void entry.outcome.then((o) => {

@@ -5,7 +5,7 @@
 
 import { appIdentity, appUpdateState, relaunchApp } from './app-update-host';
 import { store } from './store';
-import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands, sdkStopMany } from './agent-sdk';
+import { sdkAnswerAskUserQuestion, sdkInterrupt, sdkListRepoSkills, sdkListSkills, sdkLiveAnswerables, sdkRewind, sdkRewindPreview, sdkSend, sdkSlashCommands, sdkStopMany } from './agent-sdk';
 import { mergeSlashItems, PHONE_EXCLUDED } from '../shared/slash-menu';
 import { getMobileConversation, mobileFoldedMessages, noteMobileActivity, subscribeMobileFeed } from './acces-mobile-feed';
 import { markWorkspaceSeen } from './mark-seen';
@@ -40,7 +40,7 @@ function previewOfLive(ws: { id: string }): MobileWorkspaceRow['preview'] | unde
  *  model + effort, the repo's Compte), top-level (no `from`, detached), structured view. `origin: 'human'` — the human's act, like the composer. */
 const launcher = createMobileLauncher({
   repos: () => store.repos,
-  spawn: ({ repoPath, task }) => dispatchSpawnRequest({ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' }),
+  spawn: ({ repoPath, task, images }) => dispatchSpawnRequest({ repoPath, task, images, detached: true, defaultKind: 'workspace', origin: 'human' }),
   info: (line) => log.info(line),
   onCreated: (id) => noteMobileActivity(id), // the entry is created hot even when no stream was open at the answer
 });
@@ -87,6 +87,11 @@ export const mobileRpcHandlers: RpcHandlers = {
       }
       case '/mobile/skills': {
         // The composer's `/` menu: the desktop's list (on-disk skills + the CLI's built-ins), minus the desktop-only intercepts.
+        // `repoPath` = the launch form's menu: a REGISTERED repo's skills (no session yet ⇒ no CLI built-ins, like a fresh desktop composer).
+        if (typeof msg.repoPath === 'string') {
+          if (!store.repos.some((r) => r.path === msg.repoPath)) return { ok: false, error: 'unknown repo' };
+          return { ok: true, items: mergeSlashItems(await sdkListRepoSkills(msg.repoPath), undefined, ['compact'], PHONE_EXCLUDED) };
+        }
         const ws = liveWorkspace(msg.id);
         if (!ws) return { ok: false, error: 'unknown workspace' };
         return { ok: true, items: mergeSlashItems(await sdkListSkills(ws.id), sdkSlashCommands(ws.id), ['compact'], PHONE_EXCLUDED) };

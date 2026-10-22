@@ -10,7 +10,7 @@ const REPO = '/home/u/orchestra';
 const rid = (n: number | string) => `request-id-${String(n).padStart(8, '0')}`;
 
 function rig(spawnImpl?: (n: number, input: { repoPath: string; task: string }) => Promise<MobileSpawnResult>) {
-  const spawned: { repoPath: string; task: string }[] = [];
+  const spawned: { repoPath: string; task: string; images?: unknown }[] = [];
   let t = 1_000_000;
   const launcher = createMobileLauncher({
     repos: () => [{ path: REPO }, { path: '/home/u/other' }],
@@ -91,6 +91,27 @@ test('#376: the repeat window is bounded — after MOBILE_LAUNCH_REPEAT_WINDOW_M
   r.advance(1);
   const again = await r.launcher.launch({ repoPath: REPO, prompt: 'x', requestId: rid(1) });
   assert.deepEqual([again.ok && again.id, r.spawned.length], ['ws-2', 2], 'outside it');
+});
+
+test('attachments reach the spawn path with the task (they ride the first message); none ⇒ no images key', async () => {
+  const r = rig();
+  const png = { mediaType: 'image/png', dataBase64: 'iVBORw0KGgo=' };
+  assert.equal((await r.launcher.launch({ repoPath: REPO, prompt: 'look', requestId: rid(1), attachments: [png] })).ok, true);
+  assert.equal((await r.launcher.launch({ repoPath: REPO, prompt: 'plain', requestId: rid(2) })).ok, true);
+  assert.deepEqual(r.spawned, [{ repoPath: REPO, task: 'look', images: [png] }, { repoPath: REPO, task: 'plain' }]);
+});
+
+test('#376 must-FAIL: the same request id with OTHER files is another launch (refused); with the SAME files it is the same one', async () => {
+  const r = rig();
+  const a = { mediaType: 'image/png', dataBase64: 'iVBORw0KGgo=' };
+  const b = { mediaType: 'image/png', dataBase64: 'iVBORw0KGgA=' };
+  const first = await r.launcher.launch({ repoPath: REPO, prompt: 'look', requestId: rid(1), attachments: [a] });
+  assert.deepEqual(await r.launcher.launch({ repoPath: REPO, prompt: 'look', requestId: rid(1), attachments: [a] }), first, 'a retry with the same files = the same answer');
+  const other = await r.launcher.launch({ repoPath: REPO, prompt: 'look', requestId: rid(1), attachments: [b] });
+  assert.equal(other.ok === false && other.code, 'request-reused');
+  const none = await r.launcher.launch({ repoPath: REPO, prompt: 'look', requestId: rid(1) });
+  assert.equal(none.ok === false && none.code, 'request-reused', 'dropping the files is another launch too');
+  assert.equal(r.spawned.length, 1);
 });
 
 test('#376: the same request id carrying ANOTHER launch is refused — never answered with a workspace that is not its own', async () => {

@@ -2523,10 +2523,22 @@ export async function pluginSkillDirs(configDir: string): Promise<{ dir: string;
 export async function sdkListSkills(wsId: string): Promise<AgentSkillInfo[]> {
   const ws = store.getWorkspace(wsId);
   if (!ws) return [];
-  const configDir = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
+  return listSkillsIn(ws.worktreePath || undefined, workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude'));
+}
+
+/** The skills a NEW workspace of a registered repo would see (the phone's launch form `/` menu): the repo checkout's project skills +
+ *  the repo's Compte (the account a new workspace pins — workspaces.ts createWorkspace). Unknown repo ⇒ []. */
+export async function sdkListRepoSkills(repoPath: string): Promise<AgentSkillInfo[]> {
+  const repo = store.repos.find((r) => r.path === repoPath);
+  if (!repo) return [];
+  const configDir = workspaceAccountConfigDir({ accountId: repo.accountId } as Workspace, repo) || path.join(os.homedir(), '.claude');
+  return listSkillsIn(repo.path, configDir);
+}
+
+async function listSkillsIn(projectDir: string | undefined, configDir: string): Promise<AgentSkillInfo[]> {
   const roots: { dir: string; source: AgentSkillInfo['source'] }[] = [];
-  if (ws.worktreePath) {
-    roots.push({ dir: path.join(ws.worktreePath, '.claude', 'skills'), source: 'project' });
+  if (projectDir) {
+    roots.push({ dir: path.join(projectDir, '.claude', 'skills'), source: 'project' });
   }
   roots.push({ dir: path.join(configDir, 'skills'), source: 'user' });
 
@@ -3259,10 +3271,14 @@ export function sdkReleaseStrandedGate(wsId: string, observedTurnUuid: string | 
 export async function sdkWake(
   wsId: string,
   text: string,
-  opts?: { openingBrief?: boolean; /** #252: 'human' = a person asked (toolbar Restart, Send now) — allowed while paused. */ origin?: PauseOrigin },
+  opts?: {
+    openingBrief?: boolean;
+    /** #252: 'human' = a person asked (toolbar Restart, Send now) — allowed while paused. */ origin?: PauseOrigin;
+    /** Files attached to the opening task (accès mobile launch): the same content blocks as a composer paste. */ images?: AgentImage[];
+  },
 ): Promise<void> {
   await adoptTerminalTranscript(wsId);
-  await sdkSend(wsId, text, undefined, undefined, undefined, false, opts?.openingBrief === true, opts?.origin ?? 'auto');
+  await sdkSend(wsId, text, opts?.images?.length ? opts.images : undefined, undefined, undefined, false, opts?.openingBrief === true, opts?.origin ?? 'auto');
 }
 
 /** The terminal-only → SDK adoption step shared by {@link sdkWake} and the legacy

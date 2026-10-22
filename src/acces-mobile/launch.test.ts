@@ -85,6 +85,14 @@ function run(opts: { token?: boolean; replies?: Reply[] } = {}) {
       scrollingElement: { scrollTop: 0 },
     },
     location,
+    // A phone file in these tests carries its data URL; the page reads it the browser's way (FileReader, async).
+    FileReader: class {
+      result = '';
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL(f: { dataUrl: string }) { this.result = f.dataUrl; setImmediate(() => this.onload?.()); }
+    },
+    Event: class { type: string; constructor(t: string) { this.type = t; } },
     localStorage: { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => storage.set(k, v) },
     fetch: (url: string, init: { headers: Record<string, string> }) => {
       fetches.push({ url, init });
@@ -415,4 +423,91 @@ test('a refused token while loading the repos sends the phone back to the list (
   const r = run({ replies: [{ status: 401 }] });
   r.api.open(); await r.settle();
   assert.equal(r.location.hash, '');
+});
+
+// ---- Images / PDFs and the `/` menu: the conversation composer's own parts (composer-kit.ts), on the launch form (Lucas 2026-10-22) ----
+
+const PDF = { type: 'application/pdf', name: 'brief.pdf', dataUrl: 'data:application/pdf;base64,JVBERi0x' };
+function paste(ta: El, files: unknown[], text = '') {
+  let prevented = false;
+  for (const f of ta.listeners.paste ?? []) f({ clipboardData: { files, getData: () => text }, preventDefault: () => (prevented = true) });
+  return prevented;
+}
+
+test('a PDF pasted in the task is attached (tray), and rides the launch as {mediaType, dataBase64} beside the prompt', async () => {
+  const r = await filled({ replies: [{ status: 200, body: REPOS }, 'pending'] }, 'alpha', 'lis ce brief');
+  assert.equal(paste(r.root.one('nf-task'), [PDF]), true, 'a file-only paste does not drop text into the field');
+  await r.settle();
+  const tiles = r.root.all('conv-att');
+  assert.deepEqual(tiles.map((t) => t.dataset.kind), ['pdf']);
+  assert.ok(tiles[0].textContent.includes('brief.pdf'));
+  go(r).tap();
+  const body = JSON.parse(r.launches()[0].init.body!);
+  assert.deepEqual(body.attachments, [{ mediaType: 'application/pdf', dataBase64: 'JVBERi0x' }]);
+  assert.deepEqual([body.repoPath, body.prompt], ['/r/alpha', 'lis ce brief']);
+});
+
+test('the « + » file picker attaches too; « × » removes; a non-image/PDF is refused with a message; « Lancer » waits for a file being read', async () => {
+  const r = await filled();
+  const input = r.root.one('conv-file');
+  assert.equal(input.attrs.accept ?? (input as unknown as { accept: string }).accept, 'image/*,application/pdf');
+  (input as unknown as { files: unknown[] }).files = [PDF];
+  for (const f of input.listeners.change ?? []) f({});
+  assert.equal(go(r).disabled, true, 'a file still being read holds the launch (it would leave without it)');
+  await r.settle();
+  assert.equal(go(r).disabled, false);
+  assert.equal(r.root.all('conv-att').length, 1);
+  r.root.one('conv-att-x').tap();
+  assert.equal(r.root.all('conv-att').length, 0, '× removes it');
+  (input as unknown as { files: unknown[] }).files = [{ type: 'text/html', name: 'x.html', dataUrl: 'data:text/html;base64,PGI+' }];
+  for (const f of input.listeners.change ?? []) f({});
+  await r.settle();
+  assert.equal(r.root.all('conv-att').length, 0);
+  assert.match(err(r).textContent, /images et les PDF/);
+});
+
+test('must-FAIL: the same prompt with OTHER files is another launch (new request id); the same files keep the id', async () => {
+  const r = await filled({ replies: [{ status: 200, body: REPOS }, { status: 502 }, { status: 502 }, { status: 502 }] });
+  paste(r.root.one('nf-task'), [PDF]);
+  await r.settle();
+  go(r).tap(); await r.settle();
+  go(r).tap(); await r.settle();
+  const [a, b] = r.launches().map((f) => JSON.parse(f.init.body!).requestId);
+  assert.equal(a, b, 'a retry with the same files is the same launch');
+  r.root.one('conv-att-x').tap();
+  go(r).tap(); await r.settle();
+  assert.notEqual(JSON.parse(r.launches()[2].init.body!).requestId, a, 'dropping the file makes another launch');
+});
+
+test('start-failed with files: the workspace exists, its kept task is the text — the form says the files must be re-sent', async () => {
+  const r = await filled({ replies: [{ status: 200, body: REPOS }, { status: 200, body: { ok: false, code: 'start-failed', id: 'ws-9', error: 'boom' } }] });
+  paste(r.root.one('nf-task'), [PDF]);
+  await r.settle();
+  go(r).tap(); await r.settle();
+  assert.match(err(r).textContent, /pièces jointes ne sont pas gardées/);
+  assert.equal(r.root.all('conv-att').length, 0, 'cleared: a second tap would duplicate the workspace');
+});
+
+test('the `/` menu lists the PICKED repo\'s skills (GET /api/skills?repo=, bearer); no repo ⇒ no menu, no request; another repo ⇒ its list', async () => {
+  const SK = (names: string[]) => ({ status: 200, body: { ok: true, items: names.map((name) => ({ name, description: name + ' d' })) } });
+  const r = run({ replies: [{ status: 200, body: REPOS }, SK(['ship', 'retro']), SK(['beta-only'])] });
+  r.api.open();
+  await r.settle();
+  const ta = r.root.one('nf-task');
+  ta.type_('/');
+  await r.settle();
+  assert.equal(r.fetches.filter((f) => f.url.startsWith('/api/skills')).length, 0, 'no repo picked: nothing to list');
+  assert.equal(r.root.one('conv-ac').hidden, true);
+  r.root.all('nf-repo')[0].tap();
+  ta.type_('/s');
+  await r.settle();
+  const sk = r.fetches.filter((f) => f.url.startsWith('/api/skills'));
+  assert.deepEqual(sk.map((f) => [f.url, f.init.headers.Authorization]), [['/api/skills?repo=%2Fr%2Falpha', `Bearer ${TOKEN}`]]);
+  assert.equal(r.root.one('conv-ac').hidden, false);
+  assert.deepEqual(r.root.all('ac-row').map((b) => b.dataset.name), ['ship']);
+  r.root.all('nf-repo')[1].tap();
+  await r.settle();
+  assert.equal(r.fetches.filter((f) => f.url.startsWith('/api/skills'))[1]?.url, '/api/skills?repo=%2Fr%2Fbeta', 'another repo: its own list');
+  ta.type_('/b');
+  assert.deepEqual(r.root.all('ac-row').map((b) => b.dataset.name), ['beta-only']);
 });

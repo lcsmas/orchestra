@@ -7,7 +7,7 @@ import { jsqrSource } from './jsqr-src.ts';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
-import { MOBILE_LAUNCH_TIMEOUT_MS, createLaunchLimiter, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
+import { MOBILE_LAUNCH_MAX_PATH, MOBILE_LAUNCH_TIMEOUT_MS, createLaunchLimiter, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validRewindId } from '../shared/acces-mobile-conversation.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
@@ -193,6 +193,9 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       return id ? relay('/mobile/conversation', { id }) : refuse(400, 'bad-id');
     }
     if (pathOnly === '/api/skills') {
+      // A workspace's `/` menu (?id=), or a registered repo's for the launch form (?repo=, checked against the repos in main).
+      const repo = query.get('repo');
+      if (repo !== null) return repo && repo.length <= MOBILE_LAUNCH_MAX_PATH && !repo.includes('\0') ? relay('/mobile/skills', { repoPath: repo }) : refuse(400, 'bad-repo');
       const id = wsId();
       return id ? relay('/mobile/skills', { id }) : refuse(400, 'bad-id');
     }
@@ -269,11 +272,12 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     if (pathOnly === '/api/launch' && method === 'POST') {
       // #375: start a workspace from the phone. Body read after identity + token; shape-checked here (a prompt is required, a request id
       // is required), the registered repo and the request-id repeat are decided in main. Nothing but {repoPath, prompt, requestId} is relayed.
+      // Images / PDFs ride the first message: the body may weigh what a conversation send does.
       return readJson((body) => {
         const parsed = parseMobileLaunch(body);
         if (!parsed.ok) return refuse(400, 'bad-launch');
         relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);
-      });
+      }, MOBILE_ATTACH_MAX_BODY);
     }
     if (pathOnly === '/api/relaunch' && method === 'POST') {
       // « Relancer Orchestra » (the desktop banner's relaunch, any version). No body; main refuses before quitting or answers then quits.

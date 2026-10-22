@@ -1,9 +1,11 @@
 // The phone's « Nouveau workspace » screen (#375, design A picked by Lucas 2026-10-12 — ledger #377 D-Q1): the « + » of the list header
 // routes to `#new`, a full-screen form — repo cards (every registered repo, every Compte), a REQUIRED prompt, a sticky « Lancer ».
 // A separate static asset (like conversation.ts) so the shell only routes to it. textContent only: repo names and error texts are data.
-// Class names the e2e rig reads are part of the contract: #launch, .nf-cancel, .nf-repo[data-path], .nf-task, .nf-go, .nf-err, [data-state].
+// Class names the e2e rig reads are part of the contract: #launch, .nf-cancel, .nf-repo[data-path], .nf-task, .nf-go, .nf-err, [data-state],
+// + the composer kit's (.conv-attach, .conv-file, .conv-att, .conv-ac, .ac-row): images / PDFs and the `/` menu, as in a conversation.
 
 import { mobileLaunchFailure, mobileLaunchRequestId } from '../shared/acces-mobile-launch.ts';
+import { COMPOSER_KIT_JS } from './composer-kit.ts';
 
 export const LAUNCH_JS = `(function () {
   'use strict';
@@ -13,7 +15,10 @@ export const LAUNCH_JS = `(function () {
   var failure = (${mobileLaunchFailure.toString()});
   var requestIdFrom = (${mobileLaunchRequestId.toString()});
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+  function auth() { return { Authorization: 'Bearer ' + token() }; }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  // Attachments + the \`/\` menu: the conversation composer's own (composer-kit.ts).
+  var kit = (${COMPOSER_KIT_JS})(el, auth);
   function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
   function newId() {
     try { if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID(); } catch (e) {}
@@ -24,8 +29,19 @@ export const LAUNCH_JS = `(function () {
   }
   // State that outlives the screen: an accidental back-swipe must not lose a typed prompt (cleared only by a launch), and a request still in
   // flight when the human leaves must still land somewhere (st.busy / st.error), never in a detached form. st.ui = the screen open NOW.
-  var st = { repos: null, sel: '', draft: '', pending: null, busy: false, error: null, launched: null, ui: null };
+  var st = { repos: null, sel: '', draft: '', pending: null, busy: false, error: null, launched: null, ui: null, atts: null };
   var root = null;
+  // The attached files outlive the screen like the draft (made once; its callbacks reach the screen open NOW).
+  function attKit() {
+    if (!st.atts) st.atts = kit.attachments({
+      say: function (t) { if (st.ui) st.ui.say(t ? { text: t } : null); },
+      onChange: function () { if (st.ui) st.ui.sync(); },
+      onBusy: function () { if (st.ui) st.ui.sync(); },
+    });
+    return st.atts;
+  }
+  // Same files ⇒ same launch (the request id is kept); main fingerprints the bytes themselves.
+  function attSig(p) { return p.map(function (a) { return a.mediaType + ':' + a.dataBase64.length + ':' + a.dataBase64.slice(-48); }).join('|'); }
 
   function open() {
     root = document.getElementById('launch');
@@ -41,7 +57,16 @@ export const LAUNCH_JS = `(function () {
     body.appendChild(el('div', 'nf-lbl', 'Tâche'));
     var ta = el('textarea', 'nf-task'); ta.rows = 5; ta.placeholder = 'Que doit faire l’agent ?'; ta.value = st.draft;
     ta.setAttribute('autocapitalize', 'sentences'); ta.setAttribute('enterkeyhint', 'default');
+    var atts = attKit(); atts.watch(ta);
+    // The \`/\` menu lists the skills of the picked repo (none picked ⇒ no menu); above the field, which the keyboard pushes up.
+    var ac = kit.slashMenu(ta, function () { return st.sel ? '/api/skills?repo=' + encodeURIComponent(st.sel) : null; });
+    body.appendChild(ac.el);
     body.appendChild(ta);
+    var attRow = el('div', 'nf-attrow');
+    var attLbl = el('button', 'nf-attlbl', 'Image ou PDF (ou colle-le dans la tâche)'); attLbl.type = 'button';
+    attLbl.addEventListener('click', function () { atts.file.click(); });
+    attRow.appendChild(atts.add); attRow.appendChild(attLbl);
+    body.appendChild(attRow); body.appendChild(atts.tray); body.appendChild(atts.file);
     body.appendChild(el('div', 'nf-note', 'Branche générée (l’agent la renomme), modèle et effort par défaut, vue structurée. Comme un « + » sur le bureau.'));
     var err = el('div', 'nf-err'); err.setAttribute('role', 'alert'); err.hidden = true; body.appendChild(err);
     var bar = el('div', 'nf-bar');
@@ -64,8 +89,8 @@ export const LAUNCH_JS = `(function () {
     }
     function sync() {
       st.draft = ta.value;
-      ta.disabled = st.busy;
-      go.disabled = st.busy || !st.sel || !ta.value.trim();
+      ta.disabled = st.busy; atts.disable(st.busy);
+      go.disabled = st.busy || atts.busy() || !st.sel || !ta.value.trim();
       go.textContent = '';
       if (st.busy) { go.appendChild(el('i', 'nf-spin')); go.appendChild(document.createTextNode(' Création…')); } else go.textContent = 'Lancer';
     }
@@ -87,7 +112,7 @@ export const LAUNCH_JS = `(function () {
         b.addEventListener('click', function () {
           if (st.busy) return; // the launch in flight is for THIS repo
           st.sel = r.path; try { localStorage.setItem(LAST_REPO, r.path); } catch (e) {}
-          say(null); drawRepos(); sync();
+          say(null); drawRepos(); sync(); ac.reset(); // another repo, other skills
         });
         repos.appendChild(b);
       });
@@ -111,18 +136,24 @@ export const LAUNCH_JS = `(function () {
     }
     var ui = { say: say, sync: sync, ta: ta };
     st.ui = ui;
-    ta.addEventListener('input', function () { say(null); sync(); });
+    ta.addEventListener('input', function () { say(null); sync(); ac.draw(); });
 
     go.addEventListener('click', function () {
       var prompt = ta.value.trim();
-      if (st.busy || !st.sel || !prompt) return;
-      // One request id per DISTINCT launch: a retry of the same repo + prompt keeps it (the server then answers with the workspace the
-      // first attempt made), another repo or prompt is another launch.
-      var fp = st.sel + '\\u0000' + prompt;
+      if (st.busy || atts.busy() || !st.sel || !prompt) return;
+      var files = atts.payload();
+      // One request id per DISTINCT launch: a retry of the same repo + prompt + files keeps it (the server then answers with the workspace
+      // the first attempt made), another repo, prompt or file is another launch.
+      var fp = st.sel + '\\u0000' + prompt + '\\u0000' + attSig(files);
+      var payload = { repoPath: st.sel, prompt: prompt };
+      if (files.length) payload.attachments = files;
       if (!st.pending || st.pending.fp !== fp) st.pending = { id: newId(), fp: fp };
+      payload.requestId = st.pending.id;
+      var body = JSON.stringify(payload);
+      if (body.length > kit.ATTACH_BODY) { say({ text: 'Pièces jointes trop lourdes (20 Mo max). Aucun workspace n’a été créé.' }); root.dataset.state = 'error'; return; }
       var repo = (st.repos || []).filter(function (r) { return r.path === st.sel; })[0] || { name: '', account: '' };
       st.busy = true; root.dataset.state = 'sending'; say(null); sync();
-      fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() }, body: JSON.stringify({ repoPath: st.sel, prompt: prompt, requestId: st.pending.id }) })
+      fetch('/api/launch', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() }, body: body })
         .then(function (r) { return (r.status === 200 ? r.json().catch(function () { return null; }) : Promise.resolve(null)).then(function (j) { return { status: r.status, body: j }; }); })
         .catch(function () { return { status: null, body: null }; })
         .then(function (res) {
@@ -130,7 +161,7 @@ export const LAUNCH_JS = `(function () {
           var u = st.ui; // the screen open NOW — null when the human left meanwhile (the result is then kept, never written into a detached form)
           var made = function (b) { return { id: String(b.id), name: b.branch || '', displayName: b.branch || '', group: repo.name, branch: b.branch || '', account: repo.account }; };
           if (res.status === 200 && res.body && res.body.ok === true && typeof res.body.id === 'string') {
-            st.launched = made(res.body); st.draft = ''; st.pending = null; st.error = null;
+            st.launched = made(res.body); st.draft = ''; st.pending = null; st.error = null; atts.clear();
             if (u) {
               u.ta.value = ''; root.dataset.state = 'launched'; u.sync();
               location.hash = 'w=' + encodeURIComponent(res.body.id); // the conversation opens: the agent picks the task up
@@ -138,7 +169,11 @@ export const LAUNCH_JS = `(function () {
             return;
           }
           var f = failure(res.status, res.body);
-          if (f.open) { st.launched = made({ id: f.open, branch: res.body && res.body.branch }); st.draft = ''; } // the workspace EXISTS: its task is the draft — a second tap would duplicate it
+          if (f.open) {
+            // the workspace EXISTS: its task is the draft — a second tap would duplicate it. Its kept task is the TEXT: files are not kept.
+            st.launched = made({ id: f.open, branch: res.body && res.body.branch }); st.draft = '';
+            if (files.length) { f = { text: f.text + ' Les pièces jointes ne sont pas gardées : renvoie-les dans la conversation.', open: f.open }; atts.clear(); }
+          }
           st.error = f;
           if (u) {
             if (f.open) u.ta.value = '';
@@ -184,6 +219,11 @@ export const LAUNCH_CSS = `
 .v1 .nf-task:focus{border-color:var(--accent)}
 .v1 .nf-task::placeholder{color:var(--faint)}
 .v1 .nf-task:disabled{opacity:.6}
+.v1 .nf-attrow{display:flex;align-items:center;gap:10px;margin:10px 16px 0;padding-left:11px}
+.v1 .nf-attrow .att{border:1px solid var(--hair2)}
+.v1 .nf-attlbl{color:var(--dim);font-size:14px;text-align:left}
+.v1 .nf-body .conv-atts{margin:10px 16px 0}
+.v1 .nf-body .conv-ac{margin:0 16px 8px}
 .v1 .nf-note{margin:10px 20px 0;font-size:12.5px;color:var(--faint);line-height:1.4}
 .v1 .nf-err{margin:12px 16px 0;padding:12px 14px;border:1px solid rgba(255,107,107,.45);background:rgba(255,107,107,.09);border-radius:14px;color:var(--red);font-weight:600;font-size:14.5px;line-height:1.35}
 .v1 .nf-open{display:block;margin-top:8px;color:var(--accent);font-weight:650;font-size:14.5px}

@@ -136,7 +136,7 @@ import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
-import type { Account, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
+import type { Account, AgentImage, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { canOrchestrate, isScratchLike } from '../shared/types';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
@@ -1391,15 +1391,17 @@ const openingTaskStarts = new Map<string, Promise<SdkStartResult>>();
 
 /** Start the workspace's SDK session with `lastTask` as its opening turn. NO PTY fallback (#227): on failure the child
  *  stays stopped with the task retained (`owesOpeningTask`) and the reason is an error row in its Agent view; Restart retries. */
-export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin, admitted = false): Promise<SdkStartResult> {
+export function startWorkspaceAgentHeadless(id: string, origin?: PauseOrigin, admitted = false, images?: AgentImage[]): Promise<SdkStartResult> {
   const inFlight = openingTaskStarts.get(id);
   if (inFlight) return inFlight;
-  const p = startWorkspaceAgentOnce(id, origin, admitted).finally(() => openingTaskStarts.delete(id));
+  const p = startWorkspaceAgentOnce(id, origin, admitted, images).finally(() => openingTaskStarts.delete(id));
   openingTaskStarts.set(id, p);
   return p;
 }
 
-async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitted = false): Promise<SdkStartResult> {
+/** `images`: files the human attached to the opening task (accès mobile launch) — they ride THIS first delivery only; the retained
+ *  brief (`lastTask`, re-sent by Restart) is its text. */
+async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitted = false, images?: AgentImage[]): Promise<SdkStartResult> {
   const ws = store.getWorkspace(id);
   if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
   // #226: sandbox agents are paused — refuse before any start (a sandbox ws is never spawned today; no PTY fallback could mask it, #227).
@@ -1428,7 +1430,7 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
     if (gate.held) return { ok: true, held: { since: gate.since }, note: heldPhrase('spawn', gate.since) };
   }
   // #252: a HUMAN retry (toolbar Restart) carries its origin to the sdkSend gate; spawn / `orchestra restart` stay AUTO.
-  const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true, ...(origin ? { origin } : {}) });
+  const started = await sdkStartAndDeliverResult(id, ws.lastTask, { openingBrief: true, ...(origin ? { origin } : {}), ...(images?.length ? { images } : {}) });
   if (!started.ok) return started;
   // #227 D7: wait (bounded) for the FIRST TURN's outcome — init alone proves nothing (a bad --model / no auth inits, then errors and exits).
   const turn = await sdkAwaitFirstTurn(id, initWaitMs());
@@ -1519,6 +1521,8 @@ export async function dispatchSpawnRequest(
     /** #375: 'human' for a launch typed by the human on the phone (the accès mobile) — the agent's start is a human act, as a composer send
      *  (a pause bypass by decision, listed in pause-gates-wiring). Absent → today's behaviour (AUTO). */
     origin?: PauseOrigin;
+    /** Images / PDFs the human attached to the task on the phone: they ride the agent's FIRST message (not kept for a Restart). */
+    images?: AgentImage[];
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1586,7 +1590,7 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
     }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName });
     created = { id: ws.id, branch: ws.branch };
-    const started = await startWorkspaceAgentHeadless(ws.id, input.origin);
+    const started = await startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images);
     if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
     return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}) };
   } catch (e) {

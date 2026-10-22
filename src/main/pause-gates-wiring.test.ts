@@ -37,8 +37,8 @@ test('row 14 wiring: the boot roster is the REAL wakeRosterEntry, whose wakeable
 
 test('#375 phone launch: a HUMAN act — the route passes origin human and dispatchSpawnRequest hands it to the agent start (a launch is listed below)', () => {
   const spawn = read('workspaces.ts');
-  assert.match(body(spawn, 'export async function dispatchSpawnRequest', '// ---------- Add repo'), /startWorkspaceAgentHeadless\(ws\.id, input\.origin\)/, 'origin reaches the start');
-  assert.match(read('acces-mobile-routes.ts'), /dispatchSpawnRequest\(\{ repoPath, task, detached: true, defaultKind: 'workspace', origin: 'human' \}\)/, 'the launch route says human');
+  assert.match(body(spawn, 'export async function dispatchSpawnRequest', '// ---------- Add repo'), /startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\)/, 'origin (and the phone\'s files) reach the start');
+  assert.match(read('acces-mobile-routes.ts'), /dispatchSpawnRequest\(\{ repoPath, task, images, detached: true, defaultKind: 'workspace', origin: 'human' \}\)/, 'the launch route says human');
   assert.doesNotMatch(read('linear-tickets.ts'), /origin: 'human'/, 'control: the pinned-ticket click is unchanged (an agent\'s ticket spawn must stay AUTO)');
 });
 

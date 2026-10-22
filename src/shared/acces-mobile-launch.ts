@@ -2,7 +2,8 @@
 // Pure (no fs / Electron): the phone server (the network-facing process), main and node --test share ONE definition.
 
 import { resolveWorkspaceAccountId, type Account } from './accounts.ts';
-import type { RepoEntry } from './types.ts';
+import { parseMobileAttachments } from './acces-mobile-conversation.ts';
+import type { AgentImage, RepoEntry } from './types.ts';
 
 /** The first prompt typed on the phone: 1–this many characters (the same bound as a message, MOBILE_SEND_MAX_CHARS). */
 export const MOBILE_LAUNCH_MAX_PROMPT = 32_000;
@@ -42,10 +43,13 @@ export interface MobileLaunchRequest {
   /** Trimmed, 1..MOBILE_LAUNCH_MAX_PROMPT characters. */
   prompt: string;
   requestId: string;
+  /** Images / PDFs attached on the phone — they ride the FIRST message (the desktop composer's paste/drop path). Absent when none. */
+  attachments?: AgentImage[];
 }
 
 /** The phone's launch body. Run by the server (shape) AND by main (before anything is created). A prompt is REQUIRED: a tap must
- *  never create an idle workspace (#371 story 5). Extra keys (a model, a branch, a Compte) are ignored — D1: none of them is a choice. */
+ *  never create an idle workspace (#371 story 5). `attachments` = parseMobileAttachments' rules (a conversation send's). Extra keys
+ *  (a model, a branch, a Compte) are ignored — D1: none of them is a choice. */
 export function parseMobileLaunch(raw: unknown): { ok: true; launch: MobileLaunchRequest } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'launch must be an object' };
   const b = raw as Record<string, unknown>;
@@ -55,7 +59,9 @@ export function parseMobileLaunch(raw: unknown): { ok: true; launch: MobileLaunc
   if (!prompt || prompt.length > MOBILE_LAUNCH_MAX_PROMPT) return { ok: false, error: `prompt must be 1–${MOBILE_LAUNCH_MAX_PROMPT} characters` };
   const requestId = b.requestId;
   if (typeof requestId !== 'string' || !REQUEST_ID_RE.test(requestId)) return { ok: false, error: 'requestId is required' };
-  return { ok: true, launch: { repoPath, prompt, requestId } };
+  const atts = parseMobileAttachments(b.attachments);
+  if (!atts.ok) return { ok: false, error: atts.error };
+  return { ok: true, launch: { repoPath, prompt, requestId, ...(atts.images.length ? { attachments: atts.images } : {}) } };
 }
 
 /** #376: a rolling-window counter. `take()` records a launch and returns true, or returns false (nothing recorded) when `max` launches
@@ -82,6 +88,7 @@ export function mobileLaunchFailure(status: number | null, body: unknown): { tex
   const lost = 'Réessaie : un même envoi ne crée qu’un seul workspace.';
   if (status === null) return { text: 'Réseau coupé : le workspace est peut-être créé. ' + lost };
   if (status === 401) return { text: 'Jeton refusé : re-scanne le QR code.', repair: true };
+  if (status === 413) return { text: 'Pièces jointes trop lourdes (20 Mo max). Aucun workspace n’a été créé.' };
   if (status === 429) return { text: 'Trop de lancements (10 par minute) : réessaie dans un instant. Aucun workspace n’a été créé.' };
   if (status >= 500) return { text: 'Orchestra injoignable : le workspace est peut-être créé. ' + lost };
   if (status !== 200) return { text: 'Refusé (' + status + '). Aucun workspace n’a été créé.' };
