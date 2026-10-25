@@ -9,6 +9,7 @@
 
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
@@ -533,3 +534,53 @@ test('designModePoll pins ONE tab: the element screenshot comes from the tab the
   assert.equal(shots(t1), 1, 'the screenshot was taken on the tab that held the pick');
   assert.equal(shots(t2), 0, 'and not on the tab that became active meanwhile');
 });
+
+// ── explicit tabId NEVER builds a panel: every one of the 16 entry points, three stale situations ──
+
+const ENTRY_POINTS: Record<string, (ws: string) => unknown> = {
+  navigate: (ws) => bp.navigate(ws, 'http://localhost:9/x', 't1'),
+  goBack: (ws) => bp.goBack(ws, 't1'),
+  goForward: (ws) => bp.goForward(ws, 't1'),
+  reload: (ws) => bp.reload(ws, 't1'),
+  attachDebugger: (ws) => bp.attachDebugger(ws, 't1'),
+  capture: (ws) => bp.capture(ws, 75, 't1'),
+  evaluate: (ws) => bp.evaluate(ws, '1', 't1'),
+  readPage: (ws) => bp.readPage(ws, 't1'),
+  clickAt: (ws) => bp.clickAt(ws, 1, 1, 't1'),
+  clickRef: (ws) => bp.clickRef(ws, 1, 't1'),
+  typeText: (ws) => bp.typeText(ws, 'x', 't1'),
+  formInput: (ws) => bp.formInput(ws, 1, 'v', 't1'),
+  scrollBy: (ws) => bp.scrollBy(ws, 5, 't1'),
+  designModeArm: (ws) => bp.designModeArm(ws, 't1'),
+  designModePoll: (ws) => bp.designModePoll(ws, 't1'),
+  designModeDisarm: (ws) => bp.designModeDisarm(ws, 't1'), // swallows "page gone" BY DESIGN: must still not build a panel
+};
+const SWALLOWS = new Set(['designModeDisarm']);
+
+test('the arm list covers EVERY exported function that takes a trailing tabId (a new entry point needs an arm)', () => {
+  const src = readFileSync(new URL('./browser-panel.ts', import.meta.url), 'utf8');
+  const found = [...src.matchAll(/export (?:async )?function (\w+)\(([^)]*)\)/g)]
+    .filter((m) => /tabId\?: BrowserTabId/.test(m[2]))
+    .map((m) => m[1]);
+  assert.equal(found.length, 16, `expected 16 explicit-tabId entry points, found ${found.length}: ${found}`);
+  assert.deepEqual(found.sort(), Object.keys(ENTRY_POINTS).sort());
+});
+
+const STALE: Record<string, (ws: string) => void> = {
+  'after closeTab(last)': (ws) => { openShown(ws); bp.closeTab(ws, 't1'); },
+  'after destroyPanel': (ws) => { openShown(ws); bp.destroyPanel(ws); },
+  'on a workspace that never opened a panel': () => {},
+};
+for (const [situation, setup] of Object.entries(STALE)) {
+  for (const [name, call] of Object.entries(ENTRY_POINTS)) {
+    test(`explicit tabId ${situation}: ${name} fails "not found" and builds no panel / native view`, async () => {
+      const ws = newWs();
+      setup(ws);
+      const views = (globalThis as any).__bpViews.length as number;
+      if (SWALLOWS.has(name)) await call(ws);
+      else await assert.rejects(async () => { await call(ws); }, /not found/);
+      assert.equal(bp.getPanel(ws), undefined, `${name} resurrected a panel`);
+      assert.equal((globalThis as any).__bpViews.length, views, `${name} built a native view`);
+    });
+  }
+}
