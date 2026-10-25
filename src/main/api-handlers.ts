@@ -234,6 +234,13 @@ type ServableApi = Omit<
   | 'relaunchInstalled'
   // #289 — the memory banner's pull (`memoryGuard:banner`) is registered by registerMemoryBannerIpc() (src/main/memory-banner-host.ts), next to its push; not from this generic table.
   | 'memoryBanner'
+  // #400 — the profils navigateur channels are registered by registerBrowserProfilesIpc() (src/main/browser-profiles-ipc.ts): every write is sender-checked to
+  // the app's own window, so none of them may be reachable as a "served" method.
+  | 'browserProfiles'
+  | 'browserProfileCreate'
+  | 'browserProfileRename'
+  | 'browserProfileDelete'
+  | 'browserProfileAttach'
 >;
 
 /** Served backend methods that are not part of the renderer-facing

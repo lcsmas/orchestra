@@ -33,6 +33,9 @@ import type {
   AgentSkillInfo,
   BrowserBounds,
   BrowserPanelState,
+  BrowserProfile,
+  BrowserProfileId,
+  BrowserProfileResult,
   BrowserTabId,
   BrowserTabResult,
   CreateWorkspaceInput,
@@ -583,6 +586,19 @@ export interface OrchestraAPI {
   browserTabActivate: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
   /** Close `tabId`. Closing the last tab leaves one fresh blank tab. */
   browserTabClose: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
+
+  // --- Profils navigateur (#400, ADR 0010) — HUMAN-FACING only ---
+  // Registered by main/browser-profiles-ipc.ts, NOT from the generic api-handlers table: every write is refused unless
+  // the call comes from the app's own window, and no CLI verb / socket route / agent tool exists for any of them.
+  // A refused operation RESOLVES `{ok:false, reason, message}` (never rejects).
+  /** The profils navigateur on record. */
+  browserProfiles: () => Promise<BrowserProfile[]>;
+  browserProfileCreate: (name: string) => Promise<BrowserProfileResult>;
+  browserProfileRename: (id: BrowserProfileId, name: string) => Promise<BrowserProfileResult>;
+  /** Delete: detaches the workspaces carrying it, reloads their tabs ephemeral, clears the partition's storage. */
+  browserProfileDelete: (id: BrowserProfileId) => Promise<BrowserProfileResult>;
+  /** Attach (or switch to) a profile for ALL of the workspace's tabs; `null` returns it to navigation éphémère. */
+  browserProfileAttach: (wsId: string, profileId: BrowserProfileId | null) => Promise<BrowserProfileResult>;
 
   // --- Design mode (the browser pane's element picker) ---
   // The user arms design mode from the browser toolbar, hovers to highlight,

@@ -2,6 +2,7 @@ import { WebContentsView, Menu, clipboard, session, shell } from 'electron';
 import type {
   BrowserBounds,
   BrowserPanelState,
+  BrowserProfileId,
   BrowserTabId,
   BrowserTabInfo,
   BrowserTabOpener,
@@ -20,6 +21,7 @@ import {
 } from '../shared/design-mode.ts';
 import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import { partitionFor } from '../shared/browser-profile.ts';
 import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { log } from './logger';
@@ -84,6 +86,11 @@ export interface Tab {
  *  composited view at a time — the ACTIVE tab's). */
 export interface Panel {
   wsId: string;
+  /** The session partition ALL this panel's tabs use (#400): its profil navigateur's `persist:` one, else the
+   *  workspace's own ephemeral one. Fixed at panel creation; {@link reprofilePanel} swaps it by rebuilding the tabs. */
+  partition: string;
+  /** The profil navigateur behind {@link partition}; absent = navigation éphémère. */
+  profileId?: BrowserProfileId;
   tabs: Tab[];
   /** Id of the active tab — the one every un-suffixed primitive drives. */
   activeId: BrowserTabId;
@@ -266,6 +273,48 @@ export function flushBrowserTabs(): void {
   persistence?.flush();
 }
 
+/** Which profil navigateur a workspace carries (#400): the host reads the workspace record + the profile list
+ *  (`effectiveProfileId`). Absent in the verify harnesses → every panel is navigation éphémère. */
+let profileOf: ((wsId: string) => BrowserProfileId | undefined) | null = null;
+
+/** Install (index.ts) the resolver {@link ensurePanel} asks when it builds a panel. Human-facing wiring only: the
+ *  agent tools and the CLI never reach this (pinned by browser-profiles-wiring.test.ts). */
+export function setBrowserProfileResolver(fn: ((wsId: string) => BrowserProfileId | undefined) | null): void {
+  profileOf = fn;
+}
+
+const FLUSH_COOKIES_MS = 1500;
+const signInSessions = new WeakSet<Electron.Session>();
+
+/** A profile's cookies sit in Chromium's cookie store, which writes to disk on its own ~30 s timer — a crash or
+ *  SIGKILL right after signing in would lose the sign-in. Flush shortly after any change (once per session). */
+function persistSignIns(ses: Electron.Session): void {
+  if (signInSessions.has(ses)) return;
+  signInSessions.add(ses);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  ses.cookies.on('changed', () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void ses.cookies.flushStore().catch(() => {});
+    }, FLUSH_COOKIES_MS);
+  });
+}
+
+/** Write every open profile's cookies / storage to disk now (app quit). */
+export function flushProfileStorage(): void {
+  for (const panel of panels.values()) {
+    if (panel.profileId === undefined) continue;
+    try {
+      const ses = session.fromPartition(panel.partition);
+      ses.flushStorageData();
+      void ses.cookies.flushStore().catch(() => {});
+    } catch (e) {
+      log.debug('browser-panel: flushProfileStorage', e);
+    }
+  }
+}
+
 function savePanelTabs(panel: Panel): void {
   // Only a REGISTERED panel is remembered: a panel mid-restore (not yet in `panels`), a closed-last-tab husk and a
   // destroyed panel must not overwrite what is on record.
@@ -281,15 +330,6 @@ function savePanelTabs(panel: Panel): void {
       panel.activeId,
     ),
   );
-}
-
-/** The session partition holding a workspace's browser cookies/storage. Not
- *  `persist:` — a panel is scratch browsing tied to the workspace's lifetime;
- *  we don't want authenticated sessions surviving a workspace delete. Keyed by
- *  wsId so two workspaces browsing the same site stay isolated. All tabs of a
- *  workspace share it (one cookie jar per panel). */
-function partitionFor(wsId: string): string {
-  return `orchestra-browser-${wsId}`;
 }
 
 /** Strip Electron/Orchestra tokens from the UA so sites (and their bot
@@ -357,6 +397,7 @@ function computeState(panel: Panel): BrowserPanelState {
     ...(n.error !== undefined ? { error: n.error } : {}),
     tabs: panel.tabs.map((t) => tabInfo(panel, t)),
     activeTabId: panel.activeId,
+    ...(panel.profileId !== undefined ? { profileId: panel.profileId } : {}),
   };
 }
 
@@ -419,15 +460,16 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
 
 /** Build a tab (native view + handlers) for `panel` and append it to the
  *  registry. Does NOT change the active tab. */
-function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
+function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: BrowserTabId }): Tab {
   const win = getWindow?.();
   if (!win) throw new Error('browser-panel: main window not ready');
 
-  const ses = session.fromPartition(partitionFor(panel.wsId));
+  const ses = session.fromPartition(panel.partition);
   normalizeUserAgent(ses);
+  if (panel.profileId !== undefined) persistSignIns(ses);
   const view = new WebContentsView({
     webPreferences: {
-      partition: partitionFor(panel.wsId),
+      partition: panel.partition,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -442,7 +484,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   view.setBackgroundColor('#1a1f26');
 
   const tab: Tab = {
-    id: nextTabId(panel.wsId),
+    id: opts.id ?? nextTabId(panel.wsId),
     view,
     openedBy: opts.openedBy,
     designHold: null,
@@ -515,8 +557,11 @@ export function ensurePanel(wsId: string): Panel {
   if (existing) return existing;
   if (!getWindow?.()) throw new Error('browser-panel: main window not ready');
 
+  const profileId = profileOf?.(wsId);
   const panel: Panel = {
     wsId,
+    partition: partitionFor(wsId, profileId),
+    profileId,
     tabs: [],
     activeId: '',
     attachedId: null,
@@ -552,6 +597,42 @@ export function ensurePanel(wsId: string): Panel {
  *  should only drive a panel the user/agent has already opened. */
 export function getPanel(wsId: string): Panel | undefined {
   return reapIfDead(wsId);
+}
+
+/** Move a workspace's panel onto another identity (#400): `profileId` = a profil navigateur, undefined = navigation
+ *  éphémère. A view's partition is fixed at creation, so EVERY tab is rebuilt in the new partition — same ids, same
+ *  openers, same active tab, each reloaded at its URL — and the old views (debuggers included) are destroyed. A panel
+ *  that is not open is not built here: it picks the identity from the workspace record at its first ensurePanel
+ *  (restored tabs included). HUMAN-FACING only (browser-profiles.ts); never reachable from the agent tools. */
+export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undefined): BrowserPanelState {
+  const panel = reapIfDead(wsId);
+  if (!panel) return getState(wsId);
+  const partition = partitionFor(wsId, profileId);
+  if (partition === panel.partition) return panel.state;
+  const oldTabs = panel.tabs;
+  const snaps = oldTabs.map((t) => ({
+    id: t.id,
+    openedBy: t.openedBy,
+    url: restorableUrl(refreshNav(t).url) || restoreUrls.get(t) || '',
+  }));
+  const oldActive = panel.activeId;
+  const wasAttached = panel.attachedId !== null;
+  const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
+  if (attachedTab) detachTab(panel, attachedTab);
+  panel.partition = partition;
+  panel.profileId = profileId;
+  panel.tabs = [];
+  for (const sn of snaps) {
+    const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
+    if (sn.url) {
+      restoreUrls.set(tab, sn.url);
+      void loadIn(tab, sn.url);
+    }
+  }
+  panel.activeId = oldActive;
+  for (const t of oldTabs) destroyTab(t);
+  if (wasAttached) attachActive(panel);
+  return publish(panel);
 }
 
 // ---------------------------------------------------------------------------

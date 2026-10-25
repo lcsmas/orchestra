@@ -2316,7 +2316,8 @@ export interface BrowserProfile {
 }
 
 /** Why a profile operation was refused. `not-human`: the call did not come from the app's own window. `storage`: the
- *  partition's storage could not be cleared (the profile is KEPT so the delete can be retried). */
+ *  partition's storage could not be cleared (the profile is KEPT so the delete can be retried).
+ *  `failed`: an unexpected error (the message says what). */
 export type BrowserProfileRefusal =
   | 'empty'
   | 'too-long'
@@ -2324,7 +2325,8 @@ export type BrowserProfileRefusal =
   | 'unknown-profile'
   | 'unknown-workspace'
   | 'not-human'
-  | 'storage';
+  | 'storage'
+  | 'failed';
 
 /** Result of a human-facing profile operation: it happened (with the profile list now on record, and for attach the
  *  panel's new state) or it was REFUSED with a message safe to show as-is — never a throw across IPC. */

@@ -169,7 +169,8 @@ if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
 }
 import { initPlatform, platform } from './platform';
 import { createElectronPlatform } from './platform/electron';
-import { flushBrowserTabs, initBrowserPanels } from './browser-panel';
+import { flushBrowserTabs, flushProfileStorage, initBrowserPanels } from './browser-panel';
+import { initBrowserProfiles } from './browser-profiles-host';
 import { createBrowserTabsStore } from './browser-tabs-store';
 import { disposeAllEndpoints, initBrowserCliHost } from './browser-cdp-host';
 import { initVoice, disposeVoice } from './voice';
@@ -289,6 +290,10 @@ initBrowserPanels(
     warn: (m, e) => log.warn(m, e),
   }),
 );
+
+// Profils navigateur (#400, ADR 0010): the panel's identity resolver + the HUMAN-ONLY profile channels (create / rename /
+// delete / attach). Module scope, ONCE (a second ipcMain.handle THROWS on darwin); the main-window id is read lazily.
+initBrowserProfiles(() => mainWindow?.webContents.id ?? null);
 
 // Voice dictation (composer mic). Registers its own ipcMain handlers; the
 // feature self-gates on the local STT models existing (voiceAvailable).
@@ -944,6 +949,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
 
 function shutdownSubsystems(): void {
   flushBrowserTabs(); // #393: the debounced tab snapshot must reach disk before the process goes
+  flushProfileStorage(); // #400: a profile's cookies are flushed with it, or a sign-in made seconds ago is lost
   stopAll();
   stopAllWatchers(); // #330: cancels every pending watcher retry (each subsystem's own stop below is then a no-op for its watch)
   stopLoopScan();
