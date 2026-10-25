@@ -1,4 +1,4 @@
-// Wiring pins for #395 (the pieces no unit can see from inside): the route, the verb, the teardown hook and "the old tools keep working".
+// Wiring pins for #395/#399 (the pieces no unit can see from inside): the route, the verb, the teardown hook and "the old tools are gone".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -80,10 +80,10 @@ test('the renderer disarms the workspace it LEAVES (BrowserPanel is keyed per wo
   assert.match(fs.readFileSync(new URL('../renderer/App.tsx', import.meta.url), 'utf8'), /<BrowserPanel\s+key=\{active\.id[^}]*\}\s+workspaceId=\{active\.id\}/, 'the premise (#393): one instance PER workspace — switching unmounts the old one, and nothing but this cleanup disarms it');
 });
 
-test('the legacy mcp__browser__* tools are still built per session and still define their eight tools', () => {
-  assert.match(read('./agent-sdk.ts'), /buildBrowserToolServer/);
-  const tools = read('./agent-browser-tools.ts');
-  for (const t of ['navigate', 'read_page', 'screenshot', 'click', 'type', 'form_input', 'evaluate', 'scroll']) {
-    assert.match(tools, new RegExp(`tool\\(\\s*'${t}'`), `tool ${t}`);
-  }
+test('the mcp__browser__* tools are gone (#399): no module, no per-session server, and the launch site registers no MCP server', () => {
+  assert.equal(fs.existsSync(new URL('./agent-browser-tools.ts', import.meta.url)), false, 'agent-browser-tools.ts must stay deleted');
+  const sdk = read('./agent-sdk.ts');
+  assert.doesNotMatch(sdk, /buildBrowserToolServer|agent-browser-tools/);
+  assert.doesNotMatch(sdk, /mcpServers:\s*\{\s*browser/);
+  // the behaviour twins: scripts/verify-answerable-wiring.mjs (options bag of the real launch site) and the session-budget `browserMcp` budget (a real session's init tools)
 });

@@ -40,7 +40,7 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
     requests: { beforeFirstReply: preOk(), afterFirstReply: counts(0, 57, 0, {}, { [HOST]: 3 }), total: counts(1, 57, 0, { [HAIKU]: 1 }, { [HOST]: 8 }) },
     processes: { atFirstReply: census(4), atEnd: census(4), survivorsAfterTeardown: 0 },
     egress: [],
-    subject: { firstModelRequestTools: 13, firstModelRequestMcpTools: 60, firstModelRequestBytes: 400000, markersSeen: [...SUBJECT_MARKERS], mcpServersConnected: 4, toolsAtInit: 91 },
+    subject: { firstModelRequestTools: 13, firstModelRequestMcpTools: 60, firstModelRequestBytes: 400000, markersSeen: [...SUBJECT_MARKERS], mcpServersConnected: 4, toolsAtInit: 91, browserMcp: { observed: true, initTools: [], initServers: [], requestNames: [] } },
     ...over,
   };
 }
@@ -48,7 +48,7 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
 test('the budget numbers are pinned as LITERALS (a silent loosening must fail here)', () => {
   assert.deepEqual(
     { ...SESSION_BUDGETS.beforeFirstReply },
-    { modelRequests: 1, sideModelRequests: { [HAIKU]: 1 }, countTokensRequests: 0, otherRequests: 0, startupEgressAttempts: { [HOST]: 3 } },
+    { modelRequests: 1, sideModelRequests: { [HAIKU]: 1 }, countTokensRequests: 0, otherRequests: 0, startupEgressAttempts: { [HOST]: 3 }, browserMcp: 0 },
   );
   assert.ok(Object.isFrozen(SESSION_BUDGETS) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply));
   assert.ok(Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.sideModelRequests) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.startupEgressAttempts));
@@ -65,10 +65,10 @@ test('a healthy session passes every budget and every instrument check', () => {
   assert.equal(j.ok, true);
   assert.equal(j.void, false);
   assert.ok(j.verdicts.every((v) => v.ok), j.verdicts.filter((v) => !v.ok).map((v) => v.message).join('\n'));
-  // 5 budget lines (main, haiku side call, count_tokens, other, egress host) + containment, productionEnv, egress visible, startup not stalled, clock, runCompleted, keeper, cli,
-  // firstReply, mcpConnected, mcpChildren, tools + 4 markers
-  assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 5);
-  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 16);
+  // 8 budget lines (main, haiku side call, count_tokens, other, egress host, + #399's browser-MCP init tools / init servers / request names) + containment, productionEnv, egress visible,
+  // startup not stalled, clock, runCompleted, keeper, cli, firstReply, mcpConnected, mcpChildren, tools + 4 markers + browserMcpObserved
+  assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 8);
+  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 17);
 });
 
 test('a boot-time context read (count_tokens burst before the first reply) breaks the budget NAMING it and the counts', () => {
@@ -99,10 +99,29 @@ test('any other route before the first reply breaks otherRequests (a CLI upgrade
   assert.match(v.message, /saw 1 — .*other=1 \|/);
 });
 
+test('#399: a session that still loads the browser MCP server breaks its own budget at each of the three places it shows', () => {
+  const tools = ['mcp__browser__navigate', 'mcp__browser__click'];
+  for (const [k, bm] of [
+    ['initTools', { observed: true, initTools: tools, initServers: [], requestNames: [] }],
+    ['initServers', { observed: true, initTools: [], initServers: ['browser'], requestNames: [] }],
+    ['requestNames', { observed: true, initTools: [], initServers: [], requestNames: tools }],
+  ] as const) {
+    const j = judgeSessionBudget(good({ subject: { ...good().subject, browserMcp: { ...bm, initTools: [...bm.initTools], initServers: [...bm.initServers], requestNames: [...bm.requestNames] } } }));
+    const v = j.verdicts.find((x) => x.id === `session.beforeFirstReply.browserMcp.${k}`)!;
+    assert.equal(v.ok, false, k);
+    assert.equal(j.ok, false, k);
+    assert.equal(j.void, false, `${k}: a broken budget is a FAIL, not a VOID`);
+    assert.match(v.message, /BUDGET BROKEN .* allowed at most 0, saw \d+ — .*removed in-process browser MCP server/, k);
+  }
+  assert.equal(judgeSessionBudget(good()).ok, true, 'the clean report passes (control)');
+});
+
 test('a run whose subject never mounted is VOID, never a pass (a vacuous 0 must not go green)', () => {
   const cases: Array<[string, Partial<SessionBudgetReport>, RegExp]> = [
     ['no first reply', { timing: { timeToFirstReplyMs: null, fakeModelLatencyMs: 500 } }, /instrument\.firstReplyObserved/],
     ['mcp not connected', { subject: { ...good().subject, mcpServersConnected: 1 } }, /instrument\.mcpServersConnected/],
+    ['browser MCP never observed', { subject: { ...good().subject, browserMcp: undefined } }, /instrument\.browserMcpObserved/],
+    ['browser MCP observation without the init event', { subject: { ...good().subject, browserMcp: { observed: false, initTools: [], initServers: [], requestNames: [] } } }, /instrument\.browserMcpObserved/],
     ['mcp children absent', { processes: { atFirstReply: census(0), atEnd: census(0), survivorsAfterTeardown: 0 } }, /instrument\.mcpChildProcesses/],
     ['tools missing', { subject: { ...good().subject, firstModelRequestMcpTools: 59 } }, /instrument\.modelRequestCarriesTools/],
     ...SUBJECT_MARKERS.map((m): [string, Partial<SessionBudgetReport>, RegExp] => [

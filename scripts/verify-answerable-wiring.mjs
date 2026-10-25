@@ -189,8 +189,7 @@ fs.writeFileSync(
 // store, the platform seam, the bridges, the launch site itself — is the real
 // source under test. Emitted into the repo's own node_modules/.cache so the
 // bundle's runtime `import('@anthropic-ai/claude-agent-sdk')` (reached via
-// buildBrowserToolServer, just before the launch site) resolves against the
-// repo's installed dependencies.
+// the SDK loader) resolves against the repo's installed dependencies.
 const ELECTRON_STUB = `
 const noop = () => {};
 const chainable = new Proxy(function () {}, {
@@ -332,6 +331,17 @@ if (!options) {
   console.log('\nWIRING GATE FAILED — the launch site was never reached.');
   process.exit(1);
 }
+
+// ── 0. #399: the launch site registers NO in-process MCP server ──────────────
+// The removed `mcp__browser__*` server rode `options.mcpServers.browser` (built per session by agent-browser-tools.ts). Agents now drive the
+// panel with `orchestra browser` (bundled skill), so the options bag must not name it — read off the OBJECT the real launch site built.
+// Own mutant (restore the old registration): see the PROVEN TO FAIL note in docs/codebase-map/browser-panel.md; the real-session twin is the
+// `session.beforeFirstReply.browserMcp.*` budget of the session-budget suite.
+check(
+  'no in-process browser MCP server is passed to query()',
+  options.mcpServers === undefined || !Object.keys(options.mcpServers).includes('browser'),
+  `mcpServers: ${options.mcpServers === undefined ? 'undefined' : JSON.stringify(Object.keys(options.mcpServers))}`,
+);
 
 // ── 1. The options OBJECT carries all three ─────────────────────────────────
 check(

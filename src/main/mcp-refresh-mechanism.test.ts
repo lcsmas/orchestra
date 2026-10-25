@@ -40,8 +40,8 @@ import path from 'node:path';
 // press it for — a regression with NO failing test and no error message,
 // visible only as "the connector I just added on claude.ai never shows up".
 //
-// Orchestra's ONLY dynamically-added MCP server is the in-process `browser`
-// one; it is never what ↻ is for. So there is nothing for `setMcpServers` to
+// Orchestra adds no MCP server of its own to a session (the in-process `browser`
+// one was removed by #399). So there is nothing for `setMcpServers` to
 // usefully do here today, and this test fails loudly if a future change wires
 // it into the refresh path or drops the restart.
 
