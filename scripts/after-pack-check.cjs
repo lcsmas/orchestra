@@ -342,4 +342,7 @@ exports.default = async function afterPack(context) {
     }
     console.log(`  • afterPack: native module CONSTRUCTS — ${out.trim().replace('NATIVE_OK ', '')}`);
   }
+
+  // Pinned Node for the keepers (#390): the bundled runtime must be the pinned bytes AND start the packaged keeper (a failure blocks the release).
+  await require('./pinned-node/pack-check.cjs').packCheck(context);
 };

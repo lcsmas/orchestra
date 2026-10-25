@@ -1,0 +1,19 @@
+{
+  "version": "22.23.4",
+  "source": "https://nodejs.org/dist/v22.23.4/",
+  "shasums": "SHASUMS256.txt (GPG-signed .asc, key 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356) — tarballSha256 below are its linux-<arch>.tar.gz lines; nodeSha256 is bin/node extracted from that verified tarball",
+  "arch": {
+    "arm64": {
+      "tarball": "node-v22.23.4-linux-arm64.tar.gz",
+      "tarballSha256": "f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9",
+      "nodeSha256": "7e48183361053f039294fbbc3ba586722fe756bf296d6cb8195356d10819cd16",
+      "nodeBytes": 122293360
+    },
+    "x64": {
+      "tarball": "node-v22.23.4-linux-x64.tar.gz",
+      "tarballSha256": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
+      "nodeSha256": "94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90",
+      "nodeBytes": 124902584
+    }
+  }
+}
