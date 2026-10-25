@@ -75,7 +75,9 @@ test('the Resources chip (D-Q4 A\'): « 🌐 N arrêtés » only on rows that EX
   assert.ok(view.includes('browsers={browsersOf ? browsersOf(row) : null}'));
   assert.ok(view.includes('const rows: AgentRow[] = grouped.rows.map('), 'rows come from the sessions/containers grouping ONLY');
   const grouping = codeOf('src/shared/resources.ts');
-  assert.ok(!/browserReliquat|BrowserReliquat|browserChip|browsersChip/i.test(grouping.slice(at(grouping, 'export function groupSessionsByWorkspace('))), 'the grouping never creates or keeps a row for a browser Reliquat counter (#394\'s browser TAB rows are another thing)');
+  // #394's own browser-TAB names are allow-listed (stripped); ANY other `browser` — a Reliquat counter's, e.g. `stoppedBrowsers` — must still be absent from the grouping (the #331 pin, restored to `!/browser/i`)
+  const groupingNoTabs = grouping.slice(at(grouping, 'export function groupSessionsByWorkspace(')).replace(/\b(browserTabs|browserOf|browserOnly|browserBytesFor|BrowserTabMemoryView|BrowserWorkspaceMemory)\b|\bbrowser(?=:)/g, '');
+  assert.ok(!/browser/i.test(groupingNoTabs), 'the grouping never creates or keeps a row for a browser counter');
   const css = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
   assert.ok(/\.res-chip\.browsers \{ text-transform: none; letter-spacing: 0; \}/.test(css) && !/\.res-chip\.browsers[^}]*(color|border-color)/.test(css), 'the default grey chip: history tone, no status colour');
 });
