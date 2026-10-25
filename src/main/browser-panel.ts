@@ -18,6 +18,7 @@ import {
 } from '../shared/design-mode.ts';
 import { platform } from './platform';
 import { log } from './logger';
+import { setBrowserTabSource } from './browser-tab-memory.ts';
 
 // Per-workspace embedded browser panel — an Electron `WebContentsView` overlaid
 // on the React renderer inside the main window, that BOTH the user drives
@@ -214,6 +215,11 @@ let getWindow: (() => Electron.BaseWindow | null) | null = null;
 /** Called once from index.ts after the main window exists. */
 export function initBrowserPanels(accessor: () => Electron.BaseWindow | null): void {
   getWindow = accessor;
+  // #394: the Resources sampler / monitor read each tab's renderer pid through this — a pure read, it never reaps or publishes.
+  setBrowserTabSource({
+    tabs: () => [...panels.values()].flatMap((p) => p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; })),
+    nonTabPids: () => { const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents; return ui && !ui.isDestroyed() ? [ui.getOSProcessId()] : []; },
+  });
 }
 
 /** The session partition holding a workspace's browser cookies/storage. Not

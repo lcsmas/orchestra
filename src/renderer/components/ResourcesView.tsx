@@ -10,6 +10,7 @@ import { reliquatChipTitle, reliquatWord, reliquatsNote } from '../../shared/mem
 import { browserChipOf, type BrowserChip, type BrowserReliquatView } from '../../shared/browser-chip';
 import { CAP_NOT_APPLIED_TIP, CAP_UNPROTECTED_TIP, capSummaryLine } from '../../shared/memory-cap-view';
 import { roomChipOf } from '../../shared/keeper-room';
+import { appMemoryExcludingTabs, browserChipText, browserChipTitle } from '../../shared/browser-tab-memory';
 import { CapBar } from './CapBar';
 import type { UsageErrorKind, UsageWindow, Workspace } from '../../shared/types';
 import { classifyVolume, worstLevel, type DiskLevel, type VolumeStat } from '../../shared/disk-space';
@@ -163,7 +164,7 @@ interface AgentRow extends SessionGroup {
 
 /** Session-kind chips; a keeper-hosted structured agent (`sdk`) reads « agent » — it IS the workspace's agent, just not under a PTY — and a workspace with attributed containers gets the 🐳 chip
  *  (#293, D-pick4 A): count in the label, the measured figure in the tooltip (it is already part of the row's memory figure). */
-function SessionChips({ sessions, containers, reliquats, browsers, room }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats']; browsers?: BrowserChip | null; room?: SessionGroup['room'] }) {
+function SessionChips({ sessions, containers, reliquats, browsers, room, browser }: { sessions: SessionResourceStat[]; containers?: SessionGroup['containers']; reliquats?: SessionGroup['reliquats']; browsers?: BrowserChip | null; room?: SessionGroup['room']; browser?: SessionGroup['browser'] }) {
   const roomChip = roomChipOf(room);
   return (
     <span className="res-chips">
@@ -187,6 +188,12 @@ function SessionChips({ sessions, containers, reliquats, browsers, room }: { ses
       {roomChip && (
         <span className={`res-chip room tone-${roomChip.tone}`} data-res-room={room?.pct} data-res-room-tone={roomChip.tone} title={roomChip.title}>
           {roomChip.text}
+        </span>
+      )}
+      {/* #394: the workspace's open browser tabs — their renderer memory is already part of the row's figure (the chip says how much) */}
+      {browser && (
+        <span className="res-chip tabs" data-res-tabs={browser.tabs} data-res-tabs-bytes={browser.bytes ?? ''} title={browserChipTitle(browser)}>
+          {'\u{1F5C2}'} {browserChipText(browser)}
         </span>
       )}
       {browsers && (
@@ -261,10 +268,10 @@ function AgentRowView({
             )}
           </span>
         </span>
-        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} room={row.room} />
+        <SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} room={row.room} browser={row.browser} />
         {row.remote ? (
           <span className="res-remote-note">runs in sandbox — no local footprint</span>
-        ) : row.containerOnly || row.scopeOnly ? (
+        ) : row.containerOnly || row.scopeOnly || row.browserOnly ? (
           <>
             <span className="res-col-trace" />
             <span className="res-cell dim">—</span>
@@ -644,9 +651,9 @@ export function ResourcesView() {
   const rows: AgentRow[] = grouped.rows.map((g) => ({ ...g, ws: wsById.get(g.key) ?? null, fallbackName: nameById.get(g.key) ?? g.key }));
 
   const agentCpu = rows.filter((r) => !r.remote).reduce((n, r) => n + r.cpuPct, 0);
-  const agentMem = rows.filter((r) => !r.remote).reduce((n, r) => n + r.memBytes, 0);
+  const agentMem = rows.reduce((n, r) => n + (r.remote ? (r.browser?.bytes ?? 0) : r.memBytes), 0); // #394: a sandbox workspace's tab renderers are local memory — its row has no figure, its chip does
   const agentProcs = rows.filter((r) => !r.remote).reduce((n, r) => n + r.procCount, 0);
-  const appMem = (snap?.app ?? []).reduce((n, p) => n + p.memBytes, 0);
+  const appMem = appMemoryExcludingTabs(snap?.app ?? [], snap?.browserTabs); // #394: the tab renderers billed to a workspace row are in Agent memory, not counted again here
   const appCpu = (snap?.app ?? []).reduce((n, p) => n + p.cpuPct, 0);
   const worktreeBytes = live.reduce((n, w) => n + (sizes[w.id] ?? 0), 0);
   const agentCount = rows.filter((r) => r.sessions.some((s) => s.kind === 'sdk')).length; // the Agent view's keeper-hosted session IS the live agent (#231: no agent-kind PTY exists any more) — the tile agrees with the table
@@ -836,7 +843,10 @@ export function ResourcesView() {
               .sort((a, b) => b.memBytes - a.memBytes)
               .map((p) => (
                 <div key={p.pid} className="res-app-row">
-                  <span className="res-cell">{appTypeLabel(p.type)}</span>
+                  <span className="res-cell">
+                    {appTypeLabel(p.type)}
+                    {snap?.browserTabs?.attributedPids.includes(p.pid) && <span className="dim" data-res-app-tab="" title="A browser tab's renderer — its memory is counted in the owning workspace's row, not in App memory"> · tab</span>}
+                  </span>
                   <span className="res-cell dim">{p.pid}</span>
                   <span className="res-cell">{formatCpu(p.cpuPct)}</span>
                   <span className="res-cell">{formatBytes(p.memBytes)}</span>

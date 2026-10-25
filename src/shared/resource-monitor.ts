@@ -6,6 +6,7 @@ import type { ProcSample } from './resources.ts';
 import { collectTree, parseProcIdentity } from './resources.ts';
 import { measuredContainerBytes, type ContainerAccountingView } from './container-accounting.ts';
 import type { MemberMemoryReport } from './member-memory.ts';
+import type { BrowserTabMemoryView } from './browser-tab-memory.ts';
 
 // ─── The JSONL line shape ────────────────────────────────────────────────────
 
@@ -62,6 +63,8 @@ export interface ResourceLogLine {
   containers?: ContainerAccountingView;
   /** #328: each member's memory read from ITS kernel scope + live Reliquats (sessions[].rssBytes stays the process-tree figure). Absent = not read (an older build, or a rig without the dep). */
   members?: MemberMemoryReport;
+  /** #394: each workspace's browser-tab renderer memory (bytes null = not measured) — the Electron entries above carry the same processes, billed here to their owner. Absent = not measured (no panel module, or a rig without the dep). */
+  browserTabs?: BrowserTabMemoryView;
 }
 
 // ─── Thresholds (detector b — advisory only) ─────────────────────────────────
@@ -135,6 +138,8 @@ export interface BuildLogLineInput {
   containers?: ContainerAccountingView;
   /** #328: the scope reading the tick took (omitted by callers that do not read scopes). */
   members?: MemberMemoryReport;
+  /** #394: the browser-tab attribution the tick took (omitted by callers that do not measure tabs). */
+  browserTabs?: BrowserTabMemoryView;
 }
 
 /** Roll one keeper root's process tree into a `ResourceLogSessionTree`. */
@@ -197,6 +202,7 @@ export function buildResourceLogLine(
     sessions,
     ...(view ? { containers: view } : {}),
     ...(input.members ? { members: input.members } : {}),
+    ...(input.browserTabs ? { browserTabs: input.browserTabs } : {}),
   };
 }
 

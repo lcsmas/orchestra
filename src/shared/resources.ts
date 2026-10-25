@@ -3,6 +3,7 @@ import { rowProcessBytes, viewFor, type MemberCapView, type MemberMemoryReport }
 import type { VolumeStat } from './disk-space.ts';
 import type { BrowserReliquatView } from './browser-chip.ts';
 import type { KeeperRoom } from './keeper-room.ts';
+import { browserBytesFor, browserOf, type BrowserTabMemoryView, type BrowserWorkspaceMemory } from './browser-tab-memory.ts';
 
 // Pure logic for the Resources page: parsing the OS process table, walking
 // process trees, and turning raw jiffy counters into per-session CPU/memory
@@ -111,6 +112,8 @@ export interface ResourceSnapshot {
   capLevels?: { softGb: number; hardGb: number };
   /** #331: browser Reliquats (orphaned headless browsers) the resource monitor / a Pause dure stopped, per workspace, since the app started. Absent from an older main. */
   browserReliquats?: BrowserReliquatView;
+  /** #394: each workspace's browser-tab renderer memory (the owning workspace's row adds it) + the renderer pids already billed (the App tile leaves them out). undefined = not measurable (older main, no panel module). */
+  browserTabs?: BrowserTabMemoryView;
 }
 
 /** Classify a PTY id into its session kind + owning workspace. Login PTYs
@@ -356,17 +359,23 @@ export interface SessionGroup {
   capNote?: 'not-applied' | 'unprotected' | null;
   /** #343: how close keeper + CLI (leaf `k`) are to the room under the scope's backstop — drives the row's chip (from 70 %), the MEM tooltip line and the grey line; null/absent = not stateable. Live session rows only. */
   room?: KeeperRoom | null;
+  /** #394: the workspace's browser tabs — their renderer memory is already part of `memBytes`; drives the row's tabs chip. null/absent = no tab. */
+  browser?: BrowserWorkspaceMemory | null;
+  /** #394: a workspace whose only footprint is its browser tabs (no session, no Reliquat) — a row with just the chip and the figure; cpu / procs read « — ». */
+  browserOnly?: boolean;
 }
 
 /**
  * Group the sampled sessions (PTY sessions AND keeper-hosted structured agents, `<wsId>:sdk`) into per-workspace rows + the login PTYs apart — what the page renders. `containers` (the last
  * monitor tick's accounting, #293) is folded into the OWNING row's memory figure and shown as its container chip; a workspace with attributed containers but no session at all gets a
  * container-only row (D-pick4 option A). `members` (#328) replaces a scope-tracked member's process memory with its scope's meter (`rowProcessBytes`) and attaches its Reliquat count.
+ * `browserTabs` (#394) adds the workspace's tab renderers (they are children of the app, never of the keeper's scope, so nothing is counted twice) and its tabs chip; a workspace with only tabs gets a browser-only row.
  */
 export function groupSessionsByWorkspace(
   sessions: readonly SessionResourceStat[],
   containers?: ContainerAccountingView | null,
   members?: MemberMemoryReport | null,
+  browserTabs?: BrowserTabMemoryView | null,
 ): { rows: SessionGroup[]; login: SessionResourceStat[] } {
   const byWs = new Map<string, SessionResourceStat[]>();
   const login: SessionResourceStat[] = [];
@@ -391,7 +400,7 @@ export function groupSessionsByWorkspace(
       key,
       sessions: list,
       cpuPct: list.reduce((n, s) => n + s.cpuPct, 0),
-      memBytes: (view ? rowProcessBytes(list, view) : list.reduce((n, s) => n + s.memBytes, 0)) + (remote ? 0 : viewBytesFor(containers, key)),
+      memBytes: (view ? rowProcessBytes(list, view) : list.reduce((n, s) => n + s.memBytes, 0)) + (remote ? 0 : viewBytesFor(containers, key)) + browserBytesFor(browserTabs, key), // tabs are local app memory even for a sandbox workspace
       procCount: list.reduce((n, s) => n + s.procCount, 0),
       remote,
       containers: remote ? null : chipOf(key),
@@ -401,17 +410,26 @@ export function groupSessionsByWorkspace(
       cap: view?.cap ?? null,
       capNote: view?.capNote ?? null,
       room: view?.room ?? null,
+      browser: browserOf(browserTabs, key),
+      browserOnly: false,
     };
   });
   // #328: a member whose session is gone but whose scope still holds processes (the Reliquats) has no session row — give it one; its containers (if any) fold into the SAME row
   const scopeOnly = new Map<string, SessionGroup>();
   for (const m of members?.tracked ?? []) {
     if (byWs.has(m.wsId) || (m.reliquats ?? 0) <= 0) continue; // D-Q3: the row is kept for a member that has only RELIQUATS left — a scope without one (the keeper's boot window, before its pid file) is not a row
-    scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true, cap: null });
+    scopeOnly.set(m.wsId, { key: m.wsId, sessions: [], cpuPct: 0, memBytes: (m.bytes ?? 0) + viewBytesFor(containers, m.wsId) + browserBytesFor(browserTabs, m.wsId), procCount: 0, remote: false, containers: chipOf(m.wsId), containerOnly: false, reliquats: m.reliquats !== null ? { count: m.reliquats, bytes: m.reliquatBytes ?? 0, partial: m.unlisted > 0, procs: m.reliquatProcs } : null, scopeOnly: true, cap: null, browser: browserOf(browserTabs, m.wsId) });
   }
   rows.push(...scopeOnly.values());
+  // #394: a workspace with browser tabs but no session and no Reliquat — its containers (if any) fold into the SAME row, like the scope-only one
+  const browserOnly = new Set<string>();
+  for (const w of browserTabs?.byWorkspace ?? []) {
+    if (w.tabs <= 0 || byWs.has(w.wsId) || scopeOnly.has(w.wsId)) continue;
+    browserOnly.add(w.wsId);
+    rows.push({ key: w.wsId, sessions: [], cpuPct: 0, memBytes: (w.bytes ?? 0) + viewBytesFor(containers, w.wsId), procCount: 0, remote: false, containers: chipOf(w.wsId), containerOnly: false, reliquats: null, scopeOnly: false, cap: null, browser: w, browserOnly: true });
+  }
   for (const a of containers?.docker === 'ok' ? containers.attributed : []) {
-    if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true, reliquats: null, scopeOnly: false, cap: null });
+    if (a.count > 0 && !byWs.has(a.wsId) && !scopeOnly.has(a.wsId) && !browserOnly.has(a.wsId)) rows.push({ key: a.wsId, sessions: [], cpuPct: 0, memBytes: a.bytes, procCount: 0, remote: false, containers: { count: a.count, bytes: a.bytes, unmeasured: a.unmeasured }, containerOnly: true, reliquats: null, scopeOnly: false, cap: null });
   }
   rows.sort((a, b) => b.cpuPct - a.cpuPct || b.memBytes - a.memBytes);
   return { rows, login };
@@ -421,6 +439,6 @@ export function groupSessionsByWorkspace(
  * The page's ONE grouping call over a sampled snapshot: its sessions, the container accounting (#293) and the member scope report (#328). `ResourcesView` and the screenshot gate both go through it, so a call-site that
  * forgets a source is visible to a rendered capture and not only to a source pin.
  */
-export function groupSnapshot(snap: Pick<ResourceSnapshot, 'sessions' | 'containers' | 'members'> | null | undefined): { rows: SessionGroup[]; login: SessionResourceStat[] } {
-  return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members);
+export function groupSnapshot(snap: Pick<ResourceSnapshot, 'sessions' | 'containers' | 'members' | 'browserTabs'> | null | undefined): { rows: SessionGroup[]; login: SessionResourceStat[] } {
+  return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members, snap?.browserTabs);
 }

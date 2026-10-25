@@ -26,6 +26,8 @@ import { earliestLiveFleetRunStart, runKnownIn, workspaceKnownIn, type Container
 import { getContainerAccounting, realContainerAccountingDeps, refreshContainerAccounting } from './container-accounting';
 import { accountingView, type ContainerAccountingView } from '../shared/container-accounting';
 import { currentMemberMemory } from './member-memory-host';
+import { sampleBrowserTabMemory } from './browser-tab-memory';
+import type { BrowserTabMemoryView } from '../shared/browser-tab-memory';
 import type { MemberMemoryReport } from '../shared/member-memory';
 import { hostPageSize, onPageSizeFallback } from './host-page-size';
 import { parseMemUsedBytes } from '../shared/memory-guard';
@@ -141,6 +143,8 @@ export interface ResourceMonitorDeps {
   /** #328: each member's memory read from its kernel scope + live Reliquats (FI-1). Optional like the container dep: a deps object without it writes no `members` block (every existing rig);
    *  only `productionDeps()` installs it, so a rig calling `sampleTick()` never reads the host's cgroups. */
   memberMemory?(): MemberMemoryReport | null;
+  /** #394: each workspace's browser-tab renderer memory, measured against the tick's own process table. Optional like the container dep: only `productionDeps()` installs it, so a rig calling `sampleTick()` reads no panel. */
+  browserTabs?(table: ProcSample[]): BrowserTabMemoryView | undefined;
   /** #331: the browser-Reliquat bridge (orphaned headless browsers attributable to a workspace). OPTIONAL like the containers: only `productionDeps()` installs it, so a rig calling
    *  `sampleTick()` with `defaultDeps` never touches a browser; a browser rig installs its own deps (scratch agent-tmp, short window) and drives the REAL pass. */
   browser?: { deps: BrowserPassDeps; tracker: BrowserTracker; notifyOwner(wsId: string, text: string): void };
@@ -457,6 +461,7 @@ export function productionDeps(): ResourceMonitorDeps {
     },
     containerView: () => accountingView(getContainerAccounting()),
     memberMemory: () => currentMemberMemory({ fresh: true }),
+    browserTabs: (table) => sampleBrowserTabMemory(table, undefined, (m, e) => rlog.warn(m, e)),
     browser: productionBrowserBridge(),
   };
 }
@@ -616,6 +621,7 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
       reapedWorkspaceIds,
       containers: d.containerView?.() ?? undefined,
       members: readMembers(d),
+      browserTabs: d.browserTabs?.(table),
     },
     d.statusFor,
   );
