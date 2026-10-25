@@ -15,7 +15,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* clauses are controls (identity, scratch containment, own sway, instrument).
 // Mutant BUILDS that must redden each arm: scripts/e2e-browser-profiles-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete]
+// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush]
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,7 +32,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -381,7 +381,18 @@ const before = liveCanary();
 // G10b: the human's login collection is only LISTED (never read for values, never written) before and after the whole run.
 function keyringItems() {
   const env = { PATH: '/usr/bin:/bin', DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
-  const bus = (path, iface, prop) => spawnSync('busctl', ['--user', 'get-property', 'org.freedesktop.secrets', path, iface, prop], { encoding: 'utf8', env, timeout: 8000 });
+  // The Secret Service answers a property read with an EMPTY value now and then when it is busy (measured under load: Label "" / Created 0 on an
+  // item that reads fine a moment later) — retry until the answer has the busctl shape, so the instrument cannot report a change that is only a bad read.
+  const bus = (path, iface, prop) => {
+    let r;
+    for (let i = 0; i < 6; i++) {
+      r = spawnSync('busctl', ['--user', 'get-property', 'org.freedesktop.secrets', path, iface, prop], { encoding: 'utf8', env, timeout: 8000 });
+      const good = r.status === 0 && (prop === 'Label' ? /^s "[^"]+"/.test(r.stdout) : prop === 'Items' || /^t [1-9]/.test(r.stdout));
+      if (good) break;
+      spawnSync('sleep', ['0.4']);
+    }
+    return r;
+  };
   const r = bus('/org/freedesktop/secrets/collection/login', 'org.freedesktop.Secret.Collection', 'Items');
   if (r.status !== 0) return { unreadable: (r.stderr || r.error?.message || '').slice(0, 120) };
   const paths = [...r.stdout.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
@@ -491,7 +502,10 @@ try {
     const jar1 = await jarOf(b, PQ(1)), jar2 = await jarOf(b, AQ(1));
     S.sid1 = sid;
     clause('attach', 'one-sign-in-is-shared-by-all-the-tabs', /^[0-9a-f]{16}$/.test(sid) && jar1 === sid && jar2 === sid, `signed in on tab 2 (sid ${sid}); /whoami from tab 1 = ${jar1}, tab 2 = ${jar2}`);
-    clause('attach', 'profile-partition-is-persist-on-disk', partDirs(world).includes(`orchestra-profile-${S.staging}`) && partDirs(world).every((d) => !d.startsWith('orchestra-browser-')), `Partitions/ = ${JSON.stringify(partDirs(world))}`);
+    // the SIGN-IN itself must land in the profile's persistent cookie DB (the partition DIRECTORY alone proves nothing: merely asking Electron for the session creates it)
+    let rows1 = null;
+    await softWait(() => { rows1 = cookieRows(world, S.staging); return Array.isArray(rows1) && rows1.some((r) => r[1] === 'sid'); }, 12000, 'the sign-in in the profile cookie DB');
+    clause('attach', 'profile-partition-holds-the-sign-in-on-disk', Array.isArray(rows1) && rows1.some((r) => r[1] === 'sid') && partDirs(world).every((d) => !d.startsWith('orchestra-browser-')), `Partitions/ = ${JSON.stringify(partDirs(world))}; cookie DB of "Staging admin" (copy) = ${JSON.stringify(rows1)}`);
 
     // a second workspace WITHOUT the profile is signed out
     await selectWorkspace(b, 'e2e/bp400-2');

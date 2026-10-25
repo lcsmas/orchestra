@@ -17,7 +17,7 @@ const HOST = 'src/main/browser-profiles-host.ts';
 const PURE = 'src/shared/browser-profile.ts';
 
 const MUTANTS = [
-  { id: 'P1-partition-ignored', file: PANEL, arms: 'attach', from: '      partition: panel.partition,', to: '      partition: partitionFor(panel.wsId, undefined),', red: ['profile-partition-is-persist-on-disk', 'two-workspaces-share-one-profile-and-its-sign-in'] },
+  { id: 'P1-partition-ignored', file: PANEL, arms: 'attach', from: '      partition: panel.partition,', to: '      partition: partitionFor(panel.wsId, undefined),', red: ['profile-partition-holds-the-sign-in-on-disk', 'two-workspaces-share-one-profile-and-its-sign-in'] },
   { id: 'P2-human-guard-off', file: PURE, arms: 'human', from: "  return typeof c.senderId === 'number' && typeof c.mainId === 'number' && c.senderId === c.mainId && c.senderIsMainFrame;", to: '  return true;', red: ['foreign-webcontents-refused-on-every-write-channel', 'nothing-moved-after-every-agent-path-attempt'] },
   { id: 'P3-rebuild-leaks-old-views', file: PANEL, arms: 'attach', from: '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }\n  if (wasAttached) attachActive(panel);', to: '  if (wasAttached) attachActive(panel);', red: ['no-view-leaked-by-the-rebuild'] },
   { id: 'P4-rebuild-never-recomposites', file: PANEL, arms: 'attach', from: '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }\n  if (wasAttached) attachActive(panel);', to: '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }', red: ['rebuilt-active-view-is-painted-on-screen'] },
