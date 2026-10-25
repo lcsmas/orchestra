@@ -29,6 +29,10 @@ export function createBrowserTabsStore(opts: { file: string | (() => string); wa
   let cache: Record<string, PersistedBrowserTabs> | null = null;
   let timer: NodeJS.Timeout | null = null;
   let dirty = false;
+  // True when the file EXISTS but could not be read (EMFILE / EACCES / EIO): writing then would replace other workspaces' saved tabs
+  // with this session's — so no write happens until a re-read succeeds. (A corrupt-but-readable file is repaired by the next write.)
+  let readFailed = false;
+  const forgotten = new Set<string>(); // save(null) since the last good write: a late merge must not resurrect them
 
   const read = (): Record<string, PersistedBrowserTabs> => {
     if (cache) return cache;
@@ -37,7 +41,10 @@ export function createBrowserTabsStore(opts: { file: string | (() => string); wa
     } catch (err) {
       // ENOENT (ENOTDIR: the parent is not a directory yet) is the normal first run; anything else is worth a line but never a boot failure.
       const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') warn(`browser-tabs: cannot read ${fileOf()} — starting empty`, err);
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        readFailed = true;
+        warn(`browser-tabs: cannot read ${fileOf()} — keeping the file untouched`, err);
+      }
       cache = {};
     }
     return cache;
@@ -49,8 +56,23 @@ export function createBrowserTabsStore(opts: { file: string | (() => string); wa
       timer = null;
     }
     if (!dirty) return;
-    dirty = false;
     const file = fileOf();
+    if (readFailed) {
+      // Retry the read: if the file is readable now, merge this session's entries over it instead of clobbering it.
+      try {
+        const disk = parseBrowserTabsFile(fs.readFileSync(file, 'utf8'));
+        const mine = read();
+        cache = { ...disk, ...mine };
+        for (const id of forgotten) delete cache[id];
+        readFailed = false;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') readFailed = false;
+        else return; // still unreadable: keep the change pending, never overwrite
+      }
+    }
+    dirty = false;
+    forgotten.clear();
     const tmp = `${file}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -71,7 +93,11 @@ export function createBrowserTabsStore(opts: { file: string | (() => string); wa
     load: (wsId) => read()[wsId] ?? null,
     save(wsId, tabs) {
       const all = read();
-      if (tabs === null ? !(wsId in all) : JSON.stringify(all[wsId]) === JSON.stringify(tabs)) return;
+      if (readFailed) { // the cache is a stand-in for a file we could not read: remember the intent, not the (unknown) delta
+        if (tabs === null) forgotten.add(wsId);
+        else forgotten.delete(wsId);
+      }
+      if (tabs === null ? !(wsId in all) && !readFailed : JSON.stringify(all[wsId]) === JSON.stringify(tabs)) return;
       if (tabs === null) delete all[wsId];
       else all[wsId] = tabs;
       dirty = true;

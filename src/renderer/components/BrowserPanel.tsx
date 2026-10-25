@@ -210,6 +210,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
       setDesignArmed(false);
     }
     const r = await op();
+    if (r.state.wsId !== workspaceId) return r; // a late result for a workspace we have since left
     setState(r.state);
     // The user explicitly changed tab: the URL bar follows it even if it had focus.
     setUrlInput(r.state.url);

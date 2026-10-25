@@ -341,7 +341,6 @@ function computeState(panel: Panel): BrowserPanelState {
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
   panel.state = computeState(panel);
-  for (const t of panel.tabs) if (restorableUrl(t.nav.url)) restoreUrls.delete(t);
   savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
   return panel.state;
@@ -419,14 +418,36 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
       disposition: details.disposition,
       features: details.features,
     });
-    if (route.route === 'same-view') void wc.loadURL(details.url);
-    else void shell.openExternal(details.url);
+    switch (route.route) {
+      case 'same-view':
+        void wc.loadURL(details.url);
+        break;
+      case 'external':
+        void shell.openExternal(details.url);
+        break;
+      default: {
+        // #396 adds routes: an unhandled one must fail to COMPILE here, not fall through to the OS browser.
+        const unhandled: never = route;
+        log.warn(`browser-panel: unhandled popup route ${JSON.stringify(unhandled)}`);
+      }
+    }
     return { action: 'deny' };
   });
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
   wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
-  wc.on('did-navigate', () => emitState(panel, tab, {}));
-  wc.on('did-navigate-in-page', () => emitState(panel, tab, {}));
+  // A restored tab keeps its remembered URL until a navigation COMMITS to a restorable URL: during the load, and after a
+  // failed one (server down at boot), `getURL()` can be the pending URL or a chrome-error:// page — neither may blank the record.
+  const committed = (url: string): void => {
+    if (restorableUrl(url)) restoreUrls.delete(tab);
+  };
+  wc.on('did-navigate', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
+  wc.on('did-navigate-in-page', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
   wc.on('page-title-updated', () => emitState(panel, tab, {}));
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     // -3 is ERR_ABORTED (a superseded navigation) — not a real failure.

@@ -20,7 +20,7 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ??= []).push(fn); }
   once() {}
   setWindowOpenHandler(fn) { this.openHandler = fn; }
-  loadURL(u) { this.loads.push(u); if (!globalThis.__tabsStub.holdLoads) this.url = u; (this.handlers['did-navigate'] ?? []).forEach((f) => f()); return Promise.resolve(); }
+  loadURL(u) { this.loads.push(u); if (globalThis.__tabsStub.errorPage) { this.url = 'chrome-error://chromewebdata/'; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); } if (!globalThis.__tabsStub.holdLoads) this.url = u; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return this.url; } getTitle() { return ''; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('jpeg') }); }
@@ -160,6 +160,21 @@ const live = () => S.views.filter((v) => !v.webContents.destroyed).length;
     assert.strictEqual(bp.tryCloseTab(W, last, 'human').state.activeTabId, after.at(-2).id);
   });
 
+  await check('the registry follows the POLICY: after tryCloseTab the active tab is exactly decideTabClose(...).nextActiveId, for every position of the closed tab', async () => {
+    const { decideTabClose } = await import(pathToFileURL(new URL('../src/shared/browser-tab-policy.ts', import.meta.url).pathname).href);
+    for (const [activeIdx, closeIdx] of [[0, 0], [1, 1], [2, 2], [1, 0], [1, 2], [0, 2], [2, 0]]) {
+      const WP = `ws-policy-${activeIdx}-${closeIdx}`;
+      bp.ensurePanel(WP);
+      for (let i = 0; i < 2; i++) bp.tryOpenTab(WP, { openedBy: 'human' });
+      const ids = bp.listTabs(WP).map((t) => t.id);
+      bp.tryActivateTab(WP, ids[activeIdx]);
+      const want = decideTabClose({ tabs: bp.listTabs(WP).map((t) => ({ id: t.id, openedBy: t.openedBy })), activeId: ids[activeIdx], tabId: ids[closeIdx], actor: 'human' });
+      const got = bp.tryCloseTab(WP, ids[closeIdx], 'human');
+      assert.strictEqual(got.ok, true);
+      assert.strictEqual(got.state.activeTabId, want.nextActiveId, `active ${activeIdx}, closed ${closeIdx}: registry ${got.state.activeTabId} vs policy ${want.nextActiveId}`);
+    }
+  });
+
   await check('closing the LAST tab leaves ONE fresh blank human tab (the panel is not evicted, ids are not reused)', () => {
     const W2 = 'ws-last';
     bp.showPanel(W2);
@@ -245,6 +260,17 @@ const live = () => S.views.filter((v) => !v.webContents.destroyed).length;
     const e = JSON.parse(fs.readFileSync(file, 'utf8')).workspaces[W];
     assert.deepStrictEqual(e.tabs.slice(0, 3).map((t) => t.url), ['https://one.example/a', 'https://two.example/b', 'https://three.example/c']);
     assert.strictEqual(e.tabs.length, 4);
+  });
+
+  await check('restore: a load that ends on an ERROR page (chrome-error://, server down at boot) keeps the remembered URLs on the next snapshot', async () => {
+    S.errorPage = true;
+    const fourth = await boot('p3b', createBrowserTabsStore({ file }));
+    fourth.bp.ensurePanel(W);
+    fourth.bp.tryOpenTab(W, { openedBy: 'human' });
+    fourth.bp.flushBrowserTabs();
+    S.errorPage = false;
+    const e = JSON.parse(fs.readFileSync(file, 'utf8')).workspaces[W];
+    assert.deepStrictEqual(e.tabs.slice(0, 3).map((t) => t.url), ['https://one.example/a', 'https://two.example/b', 'https://three.example/c']);
   });
 
   await check('destroyPanel (workspace deleted / archived) forgets the tabs, even when this process never opened the panel', () => {

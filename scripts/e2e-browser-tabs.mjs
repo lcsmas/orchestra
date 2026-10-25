@@ -10,11 +10,12 @@
 //   boot 2  restore  first panel open after the restart: 3 tabs back, same URLs, same active tab, pixels = B; click C, SIGKILL
 //   boot 3  restore  (debounced write, no quit hook): 3 tabs back, C active
 //           last     closing every tab leaves ONE fresh blank tab (not zero, not a crash)
+//   boot 4  down     a remembered tab whose server is DOWN at boot keeps its URL in browser-tabs.json after later snapshots (the real chrome-error page)
 // Every clause prints PASS/FAIL with the value that proves it; controls (identity, scratch containment, own sway, target counts,
 // pixel instrument) are separate clauses so a red clause can only be blamed on the behaviour. Mutant BUILDS that must redden each arm:
 // scripts/e2e-browser-tabs-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,cap,paint,ws,restore,last]
+// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,cap,paint,ws,restore,last,down]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -29,7 +30,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'tabs,cap,paint,ws,restore,last').split(','));
+const ARMS = new Set(flag('--arms', 'tabs,cap,paint,ws,restore,last,down').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -490,6 +491,30 @@ try {
     clause('last', 'single-blank-tab-is-what-is-remembered', safe(() => { const e = readTabsFile(world); return e.tabs.length === 1 && e.tabs[0].url === '' && e.activeIndex === 0; }), `file ${JSON.stringify(readTabsFile(world))}`);
     saveShot('last-tab-renderer.png', await b.cdp.shot());
     grim('last-tab-compositor.png');
+    await teardown(b, 'term'); b = null;
+  }
+
+  // ────────────────────────────── boot 4: server down at boot ──────────────────────────────
+  if (ARMS.has('down')) {
+    const deadPort = await freePort(); // bound then released: nothing listens there
+    const DEAD = `http://127.0.0.1:${deadPort}/gone.html`;
+    fs.mkdirSync(path.dirname(world.tabsFile), { recursive: true });
+    fs.writeFileSync(world.tabsFile, JSON.stringify({ version: 1, workspaces: { [world.ws.id]: { tabs: [{ url: DEAD, openedBy: 'human' }, { url: URLS.a, openedBy: 'human' }], activeIndex: 1 } } }));
+    b = await boot(world, 'boot-down');
+    await openBrowserPane(b);
+    await softWait(async () => (await tabs(b)).length === 2 && (await tabs(b))[1].label === labelOf('a'), 20000, 'the live restored tab to load');
+    await sleep(2500); // the dead tab's load has failed by now
+    // force snapshots while the dead tab sits in its error page: open a tab, close it again
+    await clickSel(b, '.browser-tab-new');
+    await softWait(async () => (await tabs(b)).length === 3, 10000, 'a third tab');
+    await clickSel(b, '.browser-tab-close', 2);
+    await softWait(async () => (await tabs(b)).length === 2, 10000, 'back to two tabs');
+    await sleep(1000);
+    const dt = await tabs(b); const dfile = readTabsFile(world);
+    clause('down', 'ctl/dead-url-really-fails', await b.cdp.eval(`fetch(${JSON.stringify(DEAD)}).then(() => false, () => true)`).catch(() => true), `nothing answers on ${DEAD}`);
+    clause('down', 'dead-tab-is-restored-as-a-tab', safe(() => dt.length === 2 && dt[0].tip === DEAD), `tabs ${JSON.stringify(dt.map((t) => [t.label, t.tip]))}`);
+    clause('down', 'failed-restore-keeps-the-remembered-url', safe(() => dfile.tabs.length === 2 && dfile.tabs[0].url === DEAD && dfile.tabs[1].url === URLS.a && dfile.activeIndex === 1), `${world.tabsFile}: ${JSON.stringify(dfile)}`);
+    saveShot('down-renderer.png', await b.cdp.shot());
     await teardown(b, 'term'); b = null;
   }
 } catch (e) {

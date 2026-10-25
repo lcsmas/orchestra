@@ -80,3 +80,23 @@ test('a failed write keeps the change pending: the next flush retries instead of
   a.flush();
   assert.deepEqual(createBrowserTabsStore({ file }).load('w1'), T3);
 });
+
+test('an UNREADABLE (not missing, not corrupt) file is never overwritten: no write until a re-read works, then this session merges over what was on disk', () => {
+  const file = mkFile();
+  fs.mkdirSync(file, { recursive: true }); // the "file" is a directory -> readFileSync throws EISDIR (an I/O failure, not ENOENT)
+  const warns: string[] = [];
+  const a = createBrowserTabsStore({ file, warn: (m) => warns.push(m) });
+  a.save('mine', T3);
+  a.flush();
+  assert.ok(fs.statSync(file).isDirectory(), 'the unreadable path was replaced');
+  assert.ok(warns.some((w) => /cannot read/.test(w)), `no read warning: ${warns.join(' | ')}`);
+  // the path becomes readable, holding another workspace's tabs and a workspace this session forgot
+  fs.rmSync(file, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, workspaces: { other: T3, gone: T3 } }));
+  a.save('gone', null);
+  a.flush();
+  const back = createBrowserTabsStore({ file });
+  assert.deepEqual(back.load('other'), T3, "another workspace's saved tabs were lost");
+  assert.deepEqual(back.load('mine'), T3);
+  assert.equal(back.load('gone'), null, 'a forgotten workspace was resurrected by the merge');
+});

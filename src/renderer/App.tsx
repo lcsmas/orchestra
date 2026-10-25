@@ -873,6 +873,7 @@ export function App() {
                         (dialog / settings modal / jump palette) is up, which
                         would otherwise render invisibly BEHIND the view. */}
                     <BrowserPanel
+                      key={active.id /* #393: tab ids restart per workspace — never carry A's tab strip / state into B */}
                       workspaceId={active.id}
                       isActive={
                         browserOpen &&

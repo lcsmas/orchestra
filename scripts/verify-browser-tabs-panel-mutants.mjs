@@ -25,8 +25,10 @@ const MUTANTS = [
   { id: 'M5-active-index-ignored', file: P, cmd: HARNESS, from: 'built[Math.min(saved.activeIndex, built.length - 1)]', to: 'built[0]' },
   { id: 'M6-destroy-keeps-tabs', file: P, cmd: HARNESS, from: '  persistence?.save(wsId, null);\n}', to: '}' },
   { id: 'M7-restore-url-forgotten', file: P, cmd: HARNESS, from: '        restoreUrls.set(tab, t.url);\n', to: '' },
-  { id: 'M8-popup-always-same-view', file: P, cmd: HARNESS, from: "if (route.route === 'same-view') void wc.loadURL(details.url);\n    else void shell.openExternal(details.url);", to: 'void wc.loadURL(details.url);' },
+  { id: 'M8-popup-non-web-loads-in-view', file: P, cmd: HARNESS, from: "      case 'external':\n        void shell.openExternal(details.url);", to: "      case 'external':\n        void wc.loadURL(details.url);" },
   { id: 'M9-inactive-tab-stays-attached', file: P, cmd: HARNESS, from: '  if (prev) detachTab(panel, prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;' },
+  { id: 'M11-restore-url-dropped-on-error-commit', file: P, cmd: HARNESS, from: '    if (restorableUrl(url)) restoreUrls.delete(tab);', to: '    restoreUrls.delete(tab);' },
+  { id: 'M12-close-picks-left-neighbour', file: P, cmd: HARNESS, from: 'panel.activeId = panel.tabs[Math.min(idx, panel.tabs.length - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);', to: 'panel.activeId = panel.tabs[Math.max(0, idx - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);' },
   { id: 'M10-unknown-tab-activate-throws', file: P, cmd: HARNESS, from: "if (!panel?.tabs.some((t) => t.id === tabId)) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);", to: '' },
   // pure policy arms
   { id: 'P1-cap-off-by-one', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'if (input.openCount < cap) return { ok: true };', to: 'if (input.openCount <= cap) return { ok: true };' },
@@ -44,6 +46,8 @@ const MUTANTS = [
   // on-disk store arms
   { id: 'D1-noop-save-rewrites', file: STORE, cmd: unit('src/main/browser-tabs-store.test.ts'), from: 'JSON.stringify(all[wsId]) === JSON.stringify(tabs)', to: 'false' },
   { id: 'D2-write-not-atomic', file: STORE, cmd: unit('src/main/browser-tabs-store.test.ts'), from: 'fs.renameSync(tmp, file);', to: 'fs.copyFileSync(tmp, file);' },
+  { id: 'D4-unreadable-file-overwritten', file: STORE, cmd: unit('src/main/browser-tabs-store.test.ts'), from: '        readFailed = true;\n', to: '' },
+  { id: 'D5-merge-resurrects-forgotten', file: STORE, cmd: unit('src/main/browser-tabs-store.test.ts'), from: '        for (const id of forgotten) delete cache[id];\n', to: '' },
   { id: 'D3-failed-write-forgotten', file: STORE, cmd: unit('src/main/browser-tabs-store.test.ts'), from: '      dirty = true; // keep it pending', to: '      // keep it pending' },
 ];
 
