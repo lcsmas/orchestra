@@ -560,6 +560,17 @@ function readMembers(d: ResourceMonitorDeps): MemberMemoryReport | undefined {
   }
 }
 
+/** #394: the tab attribution for this line; a throwing dep leaves the line without it (and one WARN), never fails the tick. */
+function readBrowserTabs(d: ResourceMonitorDeps, table: ProcSample[]): BrowserTabMemoryView | undefined {
+  if (!d.browserTabs) return undefined;
+  try {
+    return d.browserTabs(table);
+  } catch (e) {
+    d.warn('resources: browser tab memory read failed — this line carries no browser figure', e);
+    return undefined;
+  }
+}
+
 /** One sample + detect + reap + log cycle (what the 60s timer runs). */
 export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<ResourceLogLine> {
   const now = d.now();
@@ -621,7 +632,7 @@ export async function sampleTick(d: ResourceMonitorDeps = defaultDeps): Promise<
       reapedWorkspaceIds,
       containers: d.containerView?.() ?? undefined,
       members: readMembers(d),
-      browserTabs: d.browserTabs?.(table),
+      browserTabs: readBrowserTabs(d, table),
     },
     d.statusFor,
   );

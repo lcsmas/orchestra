@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { currentBrowserTabMemory, readPidTable, sampleBrowserTabMemory, setBrowserTabSource, type BrowserTabSource } from './browser-tab-memory.ts';
+import { currentBrowserTabMemory, psTable, readPidTable, sampleBrowserTabMemory, setBrowserTabSource, type BrowserTabSource } from './browser-tab-memory.ts';
 import type { ProcSample } from '../shared/resources.ts';
 
 const MB = 1024 * 1024;
@@ -39,6 +39,24 @@ test('P4 a throwing source never throws out of the sampler: undefined + ONE warn
   assert.equal(warns.length, 1);
   assert.match(warns[0], /browser tab memory could not be read/);
   setBrowserTabSource(null);
+});
+
+test('P4b a caller with no logger (the page, bus-status) never consumes the ONE warning the monitor owes', () => {
+  const bad: BrowserTabSource = { tabs: () => { throw new Error('boom'); }, nonTabPids: () => [] };
+  const warns: string[] = [];
+  setBrowserTabSource(bad);
+  assert.equal(sampleBrowserTabMemory([]), undefined, 'the page path: silent, no logger');
+  assert.equal(currentBrowserTabMemory(), undefined, 'the bus-status path: silent, no logger');
+  assert.equal(sampleBrowserTabMemory([], undefined, (m) => warns.push(m)), undefined);
+  assert.equal(warns.length, 1, 'the monitor still gets its WARN');
+  setBrowserTabSource(null);
+});
+
+test('P7 psTable (non-Linux): `ps -p` exits 1 when one pid is gone — the surviving rows are salvaged, not all unmeasured; a clean run and a total failure behave', () => {
+  const rows = '  10     1 300000  0.0 chrome\n';
+  assert.deepEqual(psTable([10, 11], () => rows).map((p) => [p.pid, p.memBytes]), [[10, 300000 * 1024]]);
+  assert.deepEqual(psTable([10, 11], () => { throw Object.assign(new Error('exit 1'), { stdout: rows }); }).map((p) => p.pid), [10], 'a pid gone: ps still printed the other rows');
+  assert.deepEqual(psTable([10], () => { throw new Error('ps missing'); }), [], 'nothing to salvage');
 });
 
 test('P5 currentBrowserTabMemory reads ONLY the tabs\' own pids (bus-status: no full-table scan) and agrees with the table path', () => {
@@ -91,7 +109,10 @@ test('W4 the 60 s monitor line carries the tabs: ONLY productionDeps installs it
   const prod = mon.slice(mon.indexOf('export function productionDeps()'), mon.indexOf('async function withBudget('));
   assert.match(prod, /browserTabs: \(table\) => sampleBrowserTabMemory\(table, undefined, /);
   const body = mon.slice(mon.indexOf('export async function sampleTick('), mon.indexOf('let timer: NodeJS.Timeout | null = null;'));
-  assert.match(body, /browserTabs: d\.browserTabs\?\.\(table\),/);
+  assert.match(body, /browserTabs: readBrowserTabs\(d, table\),/);
+  const rb = mon.slice(mon.indexOf('function readBrowserTabs('), mon.indexOf('/** One sample + detect'));
+  assert.match(rb, /if \(!d\.browserTabs\) return undefined;/);
+  assert.match(rb, /catch \(e\) \{\s*\n\s*d\.warn\('resources: browser tab memory read failed — this line carries no browser figure', e\);/);
 });
 
 test('W5 /busStatus returns the tabs + labels only when measurable; the CLI prints the line only for that shape', () => {
@@ -109,4 +130,5 @@ test('W6 the page: rows read the snapshot through the ONE grouping call, the App
   assert.match(v, /const appMem = appMemoryExcludingTabs\(snap\?\.app \?\? \[\], snap\?\.browserTabs\);/);
   assert.match(v, /row\.containerOnly \|\| row\.scopeOnly \|\| row\.browserOnly \? \(/);
   assert.match(v, /data-res-tabs=\{browser\.tabs\}/);
+  assert.match(v, /formatBytes\(row\.browserOnly && row\.browser\?\.bytes == null && !row\.containers \? null : row\.memBytes\)/, 'a browser-only row whose tabs are all unmeasured reads « — », never 0 B');
 });

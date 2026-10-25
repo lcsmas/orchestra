@@ -276,7 +276,7 @@ function AgentRowView({
           <>
             <span className="res-col-trace" />
             <span className="res-cell dim">—</span>
-            <span className="res-cell">{formatBytes(row.memBytes)}</span>
+            <span className="res-cell">{formatBytes(row.browserOnly && row.browser?.bytes == null && !row.containers ? null : row.memBytes)}</span>
             <span className="res-cell dim res-col-procs">—</span>
           </>
         ) : (

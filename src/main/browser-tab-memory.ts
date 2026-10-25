@@ -38,10 +38,15 @@ export function readPidTable(pids: readonly number[]): ProcSample[] {
     }
     return out;
   }
+  return psTable(pids);
+}
+
+/** `ps -p a,b,c` exits 1 when ANY listed pid is gone but still prints the rest — salvage that output (one crashed renderer must not unmeasure every tab). `run` is injectable. */
+export function psTable(pids: readonly number[], run: (args: string[]) => string = (args) => execFileSync('ps', args, { encoding: 'utf8', timeout: 2000 })): ProcSample[] {
   try {
-    return parsePsOutput(execFileSync('ps', ['-o', 'pid=,ppid=,rss=,pcpu=,comm=', '-p', pids.join(',')], { encoding: 'utf8', timeout: 2000 }));
-  } catch {
-    return out;
+    return parsePsOutput(run(['-o', 'pid=,ppid=,rss=,pcpu=,comm=', '-p', pids.join(',')]));
+  } catch (e) {
+    return parsePsOutput(String((e as { stdout?: unknown }).stdout ?? ''));
   }
 }
 
@@ -58,21 +63,21 @@ function measure(src: BrowserTabSource, tableOf: (tabPids: number[]) => readonly
  * `undefined` = not measurable (no source registered: a rig or a test; or the source threw) — never an empty view, so « no tabs » and
  * « could not look » stay different. Never throws.
  */
-export function sampleBrowserTabMemory(table: readonly ProcSample[], src: BrowserTabSource | null = source, warn: (msg: string, e: unknown) => void = () => {}): BrowserTabMemoryView | undefined {
+export function sampleBrowserTabMemory(table: readonly ProcSample[], src: BrowserTabSource | null = source, warn?: (msg: string, e: unknown) => void): BrowserTabMemoryView | undefined {
   return guarded(src, warn, (s) => measure(s, () => table));
 }
 
 /** Same figure from a read of just the tabs' own pids (`bus-status`: no full-table scan). */
-export function currentBrowserTabMemory(src: BrowserTabSource | null = source, warn: (msg: string, e: unknown) => void = () => {}, tableOf: (pids: number[]) => readonly ProcSample[] = readPidTable): BrowserTabMemoryView | undefined {
+export function currentBrowserTabMemory(src: BrowserTabSource | null = source, warn?: (msg: string, e: unknown) => void, tableOf: (pids: number[]) => readonly ProcSample[] = readPidTable): BrowserTabMemoryView | undefined {
   return guarded(src, warn, (s) => measure(s, tableOf));
 }
 
-function guarded(src: BrowserTabSource | null, warn: (msg: string, e: unknown) => void, f: (s: BrowserTabSource) => BrowserTabMemoryView): BrowserTabMemoryView | undefined {
+function guarded(src: BrowserTabSource | null, warn: ((msg: string, e: unknown) => void) | undefined, f: (s: BrowserTabSource) => BrowserTabMemoryView): BrowserTabMemoryView | undefined {
   if (!src) return undefined;
   try {
     return f(src);
   } catch (e) {
-    if (!warned) {
+    if (warn && !warned) { // only a caller that can LOG consumes the one warning (the page and bus-status pass none; the monitor's WARN must still fire)
       warned = true;
       warn('resources: browser tab memory could not be read — rows carry no browser figure', e);
     }
