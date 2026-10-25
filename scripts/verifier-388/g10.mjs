@@ -25,6 +25,9 @@ function snap() {
   const cfg = path.join(H, '.config', 'orchestra');
   for (const f of ['Preferences', 'Network Persistent State', 'orchestra/secrets.json', 'orchestra/usage.json']) { const p = path.join(cfg, f); if (fs.existsSync(p)) strict[p] = entry(p); }
   info[path.join(cfg, 'orchestra/store.json')] = entry(path.join(cfg, 'orchestra/store.json'));
+  // #389: the human's REAL gnome-keyring files (bytes only — never opened as a keyring); mtime recorded as info.
+  const kr = path.join(H, '.local', 'share', 'keyrings');
+  try { for (const n of fs.readdirSync(kr)) { const f = path.join(kr, n); try { if (!fs.lstatSync(f).isFile()) continue; } catch { continue; } strict[f] = entry(f); info[`${f}#mtimeMs`] = String(fs.statSync(f).mtimeMs); } } catch { /* none */ }
   const od = path.join(H, '.orchestra');
   const churn = /^(bus\.sqlite.*|admission\.state|session-keys\.json|sock|.*\.log)$/;
   for (const n of fs.readdirSync(od)) {
