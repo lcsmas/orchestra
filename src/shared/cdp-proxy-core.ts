@@ -1,0 +1,492 @@
+/**
+ * Core of the per-workspace CDP proxy (#395, ADR 0009): fakes the BROWSER-level surface
+ * (`Target.*`, `Browser.getVersion`, `/json`) over a workspace's panel tabs and routes every
+ * page-level command to that tab's debugger. Electron-free and socket-free — `CdpPanelPort`
+ * is the seam to the panel, `CdpClientLink` the seam to a WebSocket (`browser-cdp-proxy.ts`).
+ *
+ * Electron has no `Target.createTarget`, so "new target" maps onto the panel's own tab creation;
+ * `Page.bringToFront` / `Target.activateTarget` activate the tab instead of taking OS focus.
+ * Targets are flattened sessions only (`flatten: true`), which is all `agent-browser` speaks.
+ */
+import { randomBytes, createHash } from 'node:crypto';
+import { captureWithFallback } from './cdp-capture.ts';
+
+export interface CdpTab {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+  openedBy: 'human' | 'agent';
+}
+export type CdpEventListener = (method: string, params: unknown, sessionId?: string) => void;
+export interface CdpTabChannel {
+  /** `sessionId` set only for an auto-attached CHILD session of the tab (iframe, worker). */
+  send(method: string, params: Record<string, unknown> | undefined, sessionId?: string): Promise<unknown>;
+  subscribe(l: CdpEventListener): () => void;
+  /** Fired once when the debugger goes away (tab destroyed, DevTools took it). */
+  onDetach(l: (reason: string) => void): () => void;
+}
+export type CdpTabEvent = { kind: 'created' | 'changed' | 'destroyed'; tab: CdpTab };
+export interface CdpPanelPort {
+  listTabs(): CdpTab[];
+  subscribeTabs(l: (e: CdpTabEvent) => void): () => void;
+  /** Attach the debugger (idempotent per call; the core pairs every acquire with one release). */
+  acquire(tabId: string): Promise<CdpTabChannel>;
+  release(tabId: string): void;
+  createTab?(url?: string): Promise<CdpTab>;
+  closeTab?(tabId: string): Promise<void>;
+  /** Bring the tab to the front of the panel (no OS focus). */
+  activateTab(tabId: string): void;
+  userAgent(): string;
+  invalidate(tabId: string): void;
+  /** `capturePage()` as base64 in the requested format. */
+  captureFallback(tabId: string, format: 'png' | 'jpeg', quality?: number): Promise<string>;
+  /** A reason the tab cannot produce frames right now (panel hidden / workspace in background), else null. */
+  framesError(tabId: string): string | null;
+}
+export interface CdpClientLink {
+  send(msg: Record<string, unknown>): void;
+}
+export interface CdpClient {
+  /** Feed one raw client message (JSON text). Never throws. */
+  message(raw: string): Promise<void>;
+  close(): void;
+}
+
+/** Input / paint commands hang on a view that is not composited (browser-panel.md): fail fast instead. */
+export const FRAME_BOUND_METHODS: ReadonlySet<string> = new Set([
+  'Input.dispatchMouseEvent',
+  'Input.dispatchKeyEvent',
+  'Input.dispatchTouchEvent',
+  'Input.insertText',
+  'Input.synthesizeScrollGesture',
+]);
+
+const ERR_METHOD = -32601;
+const ERR_PARAMS = -32602;
+const ERR_SERVER = -32000;
+
+class CdpError extends Error {
+  readonly code: number;
+  constructor(message: string, code = ERR_SERVER) {
+    super(message);
+    this.code = code;
+  }
+}
+
+interface TabState {
+  channel: CdpTabChannel;
+  refs: number;
+  unsub: Array<() => void>;
+  children: Set<string>;
+}
+interface Session {
+  kind: 'tab' | 'browser';
+  tabId?: string;
+}
+interface ClientState {
+  link: CdpClientLink;
+  sessions: Map<string, Session>;
+  discover: boolean;
+  closed: boolean;
+}
+
+const hex32 = (): string => randomBytes(16).toString('hex').toUpperCase();
+
+export class CdpProxyCore {
+  private readonly port: CdpPanelPort;
+  private readonly nonce: string;
+  readonly browserTargetId: string;
+  readonly browserContextId: string;
+  private readonly clients = new Set<ClientState>();
+  private readonly tabs = new Map<string, TabState>();
+  private readonly unsubTabs: () => void;
+  private readonly known = new Map<string, CdpTab>();
+
+  constructor(port: CdpPanelPort, opts: { nonce?: string } = {}) {
+    this.port = port;
+    this.nonce = opts.nonce ?? randomBytes(8).toString('hex');
+    this.browserTargetId = this.derive('browser');
+    this.browserContextId = this.derive('context');
+    for (const t of port.listTabs()) this.known.set(t.id, t);
+    this.unsubTabs = port.subscribeTabs((e) => this.onTabEvent(e));
+  }
+
+  /** Stable, hex-shaped ids (real Chrome's) derived from the proxy nonce: never the registry's `t1`. */
+  private derive(what: string): string {
+    return createHash('sha1').update(`${this.nonce}:${what}`).digest('hex').slice(0, 32).toUpperCase();
+  }
+  targetIdFor(tabId: string): string {
+    return this.derive(`tab:${tabId}`);
+  }
+  private tabForTarget(targetId: unknown): CdpTab | undefined {
+    if (typeof targetId !== 'string') return undefined;
+    return this.port.listTabs().find((t) => this.targetIdFor(t.id) === targetId);
+  }
+
+  // ── HTTP discovery (/json/*) ────────────────────────────────────────────────
+  private tabsOrdered(): CdpTab[] {
+    // The active tab FIRST: a client that attaches to "the first page" must land on what the user sees.
+    return [...this.port.listTabs()].sort((a, b) => Number(b.active) - Number(a.active));
+  }
+  private targetInfo(t: CdpTab): Record<string, unknown> {
+    const attached = [...this.clients].some((c) => [...c.sessions.values()].some((s) => s.tabId === t.id));
+    return {
+      targetId: this.targetIdFor(t.id),
+      type: 'page',
+      title: t.title,
+      url: t.url,
+      attached,
+      canAccessOpener: false,
+      browserContextId: this.browserContextId,
+    };
+  }
+  jsonVersion(wsUrl: string): Record<string, string> {
+    return {
+      Browser: 'Chrome/orchestra-panel',
+      'Protocol-Version': '1.3',
+      'User-Agent': this.port.userAgent(),
+      'V8-Version': '',
+      'WebKit-Version': '',
+      webSocketDebuggerUrl: wsUrl,
+    };
+  }
+  jsonList(wsBase: string, devtoolsFrontendBase = ''): Array<Record<string, string>> {
+    return this.tabsOrdered().map((t) => {
+      const id = this.targetIdFor(t.id);
+      return {
+        description: '',
+        devtoolsFrontendUrl: devtoolsFrontendBase,
+        id,
+        title: t.title,
+        type: 'page',
+        url: t.url,
+        webSocketDebuggerUrl: `${wsBase}/devtools/page/${id}`,
+      };
+    });
+  }
+  async jsonNew(url?: string): Promise<CdpTab> {
+    if (!this.port.createTab) throw new CdpError('creating tabs is not supported here');
+    return this.port.createTab(url);
+  }
+  jsonActivate(targetId: string): boolean {
+    const t = this.tabForTarget(targetId);
+    if (!t) return false;
+    this.port.activateTab(t.id);
+    return true;
+  }
+  async jsonClose(targetId: string): Promise<boolean> {
+    const t = this.tabForTarget(targetId);
+    if (!t || !this.port.closeTab) return false;
+    await this.port.closeTab(t.id);
+    return true;
+  }
+
+  // ── clients ─────────────────────────────────────────────────────────────────
+  connect(link: CdpClientLink): CdpClient {
+    const client: ClientState = { link, sessions: new Map(), discover: false, closed: false };
+    this.clients.add(client);
+    return {
+      message: (raw) => this.onMessage(client, raw),
+      close: () => this.closeClient(client),
+    };
+  }
+  clientCount(): number {
+    return this.clients.size;
+  }
+  /** Tabs currently holding a debugger acquired by this proxy (observability / rig assertions). */
+  attachedTabIds(): string[] {
+    return [...this.tabs.keys()];
+  }
+
+  dispose(): void {
+    this.unsubTabs();
+    for (const c of [...this.clients]) this.closeClient(c);
+  }
+
+  private closeClient(c: ClientState): void {
+    if (c.closed) return;
+    c.closed = true;
+    this.clients.delete(c);
+    for (const [, s] of c.sessions) if (s.tabId) this.releaseTab(s.tabId);
+    c.sessions.clear();
+  }
+
+  private emit(c: ClientState, method: string, params: unknown, sessionId?: string): void {
+    if (c.closed) return;
+    try {
+      c.link.send({ method, params, ...(sessionId ? { sessionId } : {}) });
+    } catch {
+      /* a dying socket must not break fan-out to the others */
+    }
+  }
+
+  private reply(c: ClientState, id: unknown, result: unknown, sessionId?: string): void {
+    if (c.closed) return;
+    try {
+      c.link.send({ id, result, ...(sessionId ? { sessionId } : {}) });
+    } catch {
+      /* closed */
+    }
+  }
+  private replyError(c: ClientState, id: unknown, e: unknown, sessionId?: string): void {
+    if (c.closed) return;
+    const code = e instanceof CdpError ? e.code : ERR_SERVER;
+    const message = e instanceof Error ? e.message : String(e);
+    try {
+      c.link.send({ id, error: { code, message }, ...(sessionId ? { sessionId } : {}) });
+    } catch {
+      /* closed */
+    }
+  }
+
+  private async onMessage(c: ClientState, raw: string): Promise<void> {
+    let msg: { id?: unknown; method?: unknown; params?: Record<string, unknown>; sessionId?: unknown };
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      return; // not JSON: nothing to answer to (no id)
+    }
+    if (typeof msg.method !== 'string' || msg.id === undefined) return;
+    const sessionId = typeof msg.sessionId === 'string' && msg.sessionId ? msg.sessionId : undefined;
+    try {
+      const result = await this.dispatch(c, msg.method, msg.params, sessionId);
+      this.reply(c, msg.id, result ?? {}, sessionId);
+    } catch (e) {
+      this.replyError(c, msg.id, e, sessionId);
+    }
+  }
+
+  private async dispatch(
+    c: ClientState,
+    method: string,
+    params: Record<string, unknown> | undefined,
+    sessionId: string | undefined,
+  ): Promise<unknown> {
+    if (!sessionId) return this.browserCommand(c, method, params);
+    const own = c.sessions.get(sessionId);
+    if (own?.kind === 'browser') return this.browserCommand(c, method, params);
+    if (own?.kind === 'tab') return this.tabCommand(own.tabId!, method, params, undefined);
+    // Not one of ours: an auto-attached child session of some tab this client holds.
+    for (const s of c.sessions.values()) {
+      if (s.tabId && this.tabs.get(s.tabId)?.children.has(sessionId)) {
+        return this.tabCommand(s.tabId, method, params, sessionId);
+      }
+    }
+    throw new CdpError('Session with given id not found.', ERR_SERVER);
+  }
+
+  // ── browser-level surface ───────────────────────────────────────────────────
+  private async browserCommand(c: ClientState, method: string, params: Record<string, unknown> | undefined): Promise<unknown> {
+    switch (method) {
+      case 'Target.setDiscoverTargets': {
+        c.discover = params?.discover === true;
+        const result = {};
+        if (c.discover) {
+          // Chrome announces every existing target once discovery is on.
+          queueMicrotask(() => {
+            for (const t of this.port.listTabs()) this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(t) });
+          });
+        }
+        return result;
+      }
+      case 'Target.getTargets':
+        return { targetInfos: this.tabsOrdered().map((t) => this.targetInfo(t)) };
+      case 'Target.getTargetInfo': {
+        if (params?.targetId === undefined || params.targetId === this.browserTargetId) {
+          return {
+            targetInfo: { targetId: this.browserTargetId, type: 'browser', title: '', url: '', attached: true, canAccessOpener: false },
+          };
+        }
+        const t = this.tabForTarget(params.targetId);
+        if (!t) throw new CdpError('No target with given id found', ERR_SERVER);
+        return { targetInfo: this.targetInfo(t) };
+      }
+      case 'Target.getBrowserContexts':
+        return { browserContextIds: [this.browserContextId] };
+      case 'Target.attachToTarget': {
+        const t = this.tabForTarget(params?.targetId);
+        if (!t) throw new CdpError('No target with given id found', ERR_SERVER);
+        const sessionId = await this.attachTab(c, t);
+        return { sessionId };
+      }
+      case 'Target.attachToBrowserTarget': {
+        const sessionId = hex32();
+        c.sessions.set(sessionId, { kind: 'browser' });
+        return { sessionId };
+      }
+      case 'Target.detachFromTarget': {
+        const sid = params?.sessionId;
+        const s = typeof sid === 'string' ? c.sessions.get(sid) : undefined;
+        if (!s || typeof sid !== 'string') throw new CdpError('Session with given id not found.', ERR_SERVER);
+        c.sessions.delete(sid);
+        if (s.tabId) {
+          this.emit(c, 'Target.detachedFromTarget', { sessionId: sid, targetId: this.targetIdFor(s.tabId) });
+          this.releaseTab(s.tabId);
+        }
+        return {};
+      }
+      case 'Target.activateTarget': {
+        const t = this.tabForTarget(params?.targetId);
+        if (!t) throw new CdpError('No target with given id found', ERR_SERVER);
+        this.port.activateTab(t.id);
+        return {};
+      }
+      case 'Target.createTarget': {
+        if (!this.port.createTab) throw new CdpError('Target.createTarget is not supported by this panel', ERR_METHOD);
+        const url = typeof params?.url === 'string' && params.url !== '' ? params.url : undefined;
+        const tab = await this.port.createTab(url);
+        return { targetId: this.targetIdFor(tab.id) };
+      }
+      case 'Target.closeTarget': {
+        const t = this.tabForTarget(params?.targetId);
+        if (!t) throw new CdpError('No target with given id found', ERR_SERVER);
+        if (!this.port.closeTab) throw new CdpError('Target.closeTarget is not supported by this panel', ERR_METHOD);
+        await this.port.closeTab(t.id);
+        return { success: true };
+      }
+      case 'Target.setAutoAttach':
+      case 'Target.setRemoteLocations':
+        return {};
+      case 'Browser.getVersion':
+        return {
+          protocolVersion: '1.3',
+          product: 'Chrome/orchestra-panel',
+          revision: '',
+          userAgent: this.port.userAgent(),
+          jsVersion: '',
+        };
+      case 'Browser.close':
+        return {}; // an agent must never close the human's panel
+      default:
+        throw new CdpError(`'${method}' wasn't found`, ERR_METHOD);
+    }
+  }
+
+  // ── tab sessions ────────────────────────────────────────────────────────────
+  private async acquireTab(tabId: string): Promise<TabState> {
+    const have = this.tabs.get(tabId);
+    if (have) {
+      have.refs++;
+      return have;
+    }
+    const channel = await this.port.acquire(tabId);
+    const raced = this.tabs.get(tabId); // another attach finished while we awaited
+    if (raced) {
+      raced.refs++;
+      this.port.release(tabId);
+      return raced;
+    }
+    const st: TabState = { channel, refs: 1, unsub: [], children: new Set() };
+    st.unsub.push(channel.subscribe((m, p, sid) => this.onTabEventFromDebugger(tabId, st, m, p, sid)));
+    st.unsub.push(channel.onDetach((reason) => this.onDebuggerDetached(tabId, reason)));
+    this.tabs.set(tabId, st);
+    return st;
+  }
+  private releaseTab(tabId: string): void {
+    const st = this.tabs.get(tabId);
+    if (!st) return;
+    if (--st.refs > 0) return;
+    for (const u of st.unsub) u();
+    this.tabs.delete(tabId);
+    this.port.release(tabId);
+  }
+
+  private async attachTab(c: ClientState, t: CdpTab): Promise<string> {
+    await this.acquireTab(t.id);
+    const sessionId = hex32();
+    c.sessions.set(sessionId, { kind: 'tab', tabId: t.id });
+    // Real Chrome announces the new session before answering the attach.
+    this.emit(c, 'Target.attachedToTarget', {
+      sessionId,
+      targetInfo: { ...this.targetInfo(t), attached: true },
+      waitingForDebugger: false,
+    });
+    return sessionId;
+  }
+
+  private async tabCommand(
+    tabId: string,
+    method: string,
+    params: Record<string, unknown> | undefined,
+    childSessionId: string | undefined,
+  ): Promise<unknown> {
+    const st = this.tabs.get(tabId);
+    if (!st) throw new CdpError('Target closed.', ERR_SERVER);
+    if (!childSessionId) {
+      if (method === 'Page.bringToFront') {
+        this.port.activateTab(tabId);
+        return {};
+      }
+      if (FRAME_BOUND_METHODS.has(method)) {
+        const why = this.port.framesError(tabId);
+        if (why) throw new CdpError(why, ERR_SERVER);
+      }
+      if (method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
+    }
+    return st.channel.send(method, params, childSessionId);
+  }
+
+  private async screenshot(tabId: string, st: TabState, params: Record<string, unknown>): Promise<unknown> {
+    const why = this.port.framesError(tabId);
+    if (why) throw new CdpError(why, ERR_SERVER);
+    const format: 'png' | 'jpeg' = params.format === 'jpeg' ? 'jpeg' : 'png';
+    const quality = typeof params.quality === 'number' ? params.quality : undefined;
+    const canFallback = params.clip === undefined && params.captureBeyondViewport !== true;
+    const r = await captureWithFallback({
+      primary: async () => ((await st.channel.send('Page.captureScreenshot', params)) as { data: string }).data,
+      probe: () =>
+        st.channel.send('Page.captureScreenshot', { format: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }),
+      invalidate: () => this.port.invalidate(tabId),
+      fallback: canFallback ? () => this.port.captureFallback(tabId, format, quality) : null,
+    });
+    return { data: r.data };
+  }
+
+  // ── events ──────────────────────────────────────────────────────────────────
+  private onTabEventFromDebugger(tabId: string, st: TabState, method: string, params: unknown, sessionId?: string): void {
+    if (sessionId) {
+      st.children.add(sessionId);
+    } else if (method === 'Target.attachedToTarget') {
+      const child = (params as { sessionId?: string } | undefined)?.sessionId;
+      if (child) st.children.add(child);
+    }
+    if (method === 'Target.detachedFromTarget') {
+      const child = (params as { sessionId?: string } | undefined)?.sessionId;
+      if (child) st.children.delete(child);
+    }
+    for (const c of this.clients) {
+      for (const [csid, s] of c.sessions) {
+        if (s.kind === 'tab' && s.tabId === tabId) this.emit(c, method, params, sessionId ?? csid);
+      }
+    }
+  }
+
+  private onDebuggerDetached(tabId: string, reason: string): void {
+    const st = this.tabs.get(tabId);
+    if (st) {
+      for (const u of st.unsub) u();
+      this.tabs.delete(tabId); // the debugger is gone: nothing to release
+    }
+    for (const c of this.clients) {
+      for (const [csid, s] of [...c.sessions]) {
+        if (s.tabId !== tabId) continue;
+        c.sessions.delete(csid);
+        this.emit(c, 'Target.detachedFromTarget', { sessionId: csid, targetId: this.targetIdFor(tabId), reason });
+      }
+    }
+  }
+
+  private onTabEvent(e: CdpTabEvent): void {
+    if (e.kind === 'created') this.known.set(e.tab.id, e.tab);
+    if (e.kind === 'destroyed') {
+      this.known.delete(e.tab.id);
+      this.onDebuggerDetached(e.tab.id, 'target closed');
+    }
+    const method = e.kind === 'created' ? 'Target.targetCreated' : e.kind === 'changed' ? 'Target.targetInfoChanged' : 'Target.targetDestroyed';
+    for (const c of this.clients) {
+      if (!c.discover) continue;
+      this.emit(c, method, e.kind === 'destroyed' ? { targetId: this.targetIdFor(e.tab.id) } : { targetInfo: this.targetInfo(e.tab) });
+    }
+  }
+}
