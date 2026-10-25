@@ -9,7 +9,7 @@ const profiles = [STAGING, PROD];
 const holder = { browserProfileId: STAGING.id };
 
 function decide(over: Partial<Parameters<typeof decideSpawnProfile>[0]> = {}) {
-  return decideSpawnProfile({ requested: STAGING.id, caller: holder, callerVouched: true, profiles, ...over });
+  return decideSpawnProfile({ requested: STAGING.id, detached: false, caller: holder, callerVouched: true, profiles, ...over });
 }
 
 test('holds: the caller holds the requested profile (by id) → honoured, the id to write on the new record', () => {
@@ -39,6 +39,8 @@ test('does not hold: a refusal about an existing profile and about a made-up one
   for (const d of [real, byName, madeUp]) assert.equal(d.kind === 'refused' && d.reason, 'not-held');
   // the only part that varies is the echo of what the CALLER typed — never a lookup in the human's other profiles
   assert.ok(real.kind === 'refused' && !real.message.includes(PROD.name));
+  assert.ok(byName.kind === 'refused' && !byName.message.includes(PROD.id) && !byName.message.includes(PROD.name), 'asking for another profile BY NAME reveals neither its id nor its stored name');
+  assert.ok(madeUp.kind === 'refused' && !/bp-/.test(madeUp.message), 'a made-up request leaks no profile id at all');
 });
 
 test('does not hold: the caller has no profile → refused holds-none', () => {
@@ -56,6 +58,13 @@ test('dangling id: the caller records a profile that was deleted → holds nothi
 test('none: no --profile → none (navigation éphémère), whatever the caller holds', () => {
   assert.deepEqual(decide({ requested: undefined }), { kind: 'none' });
   assert.deepEqual(decide({ requested: undefined, caller: undefined, callerVouched: false }), { kind: 'none' });
+});
+
+test('detached: a parentless worker gets no profile even from a caller that holds it (fails closed)', () => {
+  const d = decide({ detached: true });
+  assert.equal(d.kind === 'refused' && d.reason, 'detached');
+  assert.ok(d.kind === 'refused' && /navigation éphémère/.test(d.message) && /nested/.test(d.message));
+  assert.deepEqual(decide({ detached: true, requested: undefined }), { kind: 'none' }, 'no --profile: nothing to refuse');
 });
 
 test('no caller: an unknown/absent spawning workspace cannot pass a profile', () => {
@@ -81,6 +90,7 @@ test('every refusal says the worker starts in navigation éphémère; an honoure
     decide({ callerVouched: false }),
     decide({ caller: {} }),
     decide({ requested: PROD.id }),
+    decide({ detached: true }),
   ];
   for (const d of refusals) assert.ok(d.kind === 'refused' && /navigation éphémère/.test(d.message), JSON.stringify(d));
   const ok = decide();

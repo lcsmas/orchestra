@@ -126,6 +126,27 @@ test('an honoured pass is confirmed on stdout, no warning', needsBuild, () => {
   assert.equal(r.stderr, '');
 });
 
+test('--profile sent but the app answers no decision (an app that predates it): the worker is created and the silence is warned about', needsBuild, () => {
+  const r = driveCli([...SPAWN, '--profile', 'bp-0123456789ab'], OK, 'k');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, 'Spawned ws-new on branch b-new\n');
+  assert.match(r.stderr, /^warning: --profile not applied: this Orchestra did not report a profile decision/);
+  // and no profile asked → no such warning (nothing to be silent about)
+  assert.equal(driveCli(SPAWN, OK, 'k').stderr, '');
+});
+
+test('a kept child (start failed, ok:false + id) still reports what became of its profile, then fails with the start error', needsBuild, () => {
+  const kept = "return { ok: false, id: 'ws-kept', branch: 'b-kept', error: 'the agent failed to start: boom', profile: { applied: true, message: 'Profile “Staging admin” passed.' } };";
+  const r = driveCli([...SPAWN, '--profile', 'bp-0123456789ab'], kept, 'k');
+  assert.notEqual(r.code, 0);
+  assert.match(r.stdout, /Profile “Staging admin” passed\./);
+  assert.match(r.stderr, /the agent failed to start: boom/);
+  // a refusal with NO workspace at all (ok:false, no id) says nothing about a profile
+  const none = driveCli([...SPAWN, '--profile', 'x'], "return { ok: false, error: 'unknown repoPath' };", 'k');
+  assert.notEqual(none.code, 0);
+  assert.doesNotMatch(none.stderr + none.stdout, /profile/i);
+});
+
 test('usage text and the spawn help name --profile', needsBuild, () => {
   const bare = driveCli(['spawn'], OK);
   assert.notEqual(bare.code, 0);

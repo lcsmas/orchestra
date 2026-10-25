@@ -6,6 +6,7 @@ import { effectiveProfileId } from './browser-profile.ts';
 import type { BrowserProfile, BrowserProfileId } from './types.ts';
 
 export type SpawnProfileRefusal =
+  | 'detached' // `--detached`: the worker has NO parent, and a profile is only handed from a parent to its nested worker
   | 'no-caller' // no spawning workspace on record (plain shell / unknown id): nothing to hold a profile
   | 'unvouched' // the host cannot vouch that this call comes from the live session of `from` (ADR 0008)
   | 'holds-none' // the caller has no profile, or its recorded one was deleted (dangling id)
@@ -24,6 +25,8 @@ const EPHEMERAL = 'The worker starts in navigation éphémère.';
  *  does not hold is never looked up, so a refusal reveals nothing about the human's other profiles. */
 export function decideSpawnProfile(input: {
   requested: string | undefined;
+  /** `--detached`: the new workspace is parentless (the caller does not track it) — a spec reading of "its PARENT holds it" that fails closed. */
+  detached: boolean;
   caller: { browserProfileId?: BrowserProfileId } | undefined;
   callerVouched: boolean;
   profiles: readonly BrowserProfile[];
@@ -35,6 +38,9 @@ export function decideSpawnProfile(input: {
     reason,
     message: `--profile not applied: ${why} ${EPHEMERAL}`,
   });
+  if (input.detached) {
+    return refuse('detached', 'a --detached worker has no parent to hold a profile — spawn it nested to pass one.');
+  }
   if (!input.caller) {
     return refuse('no-caller', 'no spawning workspace — only a workspace that holds a profil navigateur can pass it on.');
   }

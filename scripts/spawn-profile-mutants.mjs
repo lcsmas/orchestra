@@ -32,6 +32,8 @@ const MUTANTS = [
   { id: 'U7_blank_read_as_none', file: F.pure, find: "if (input.requested === undefined) return { kind: 'none' };", to: "if (!input.requested) return { kind: 'none' };", tests: [T.unit], expect: 'blank value is refused' },
   { id: 'U8_ephemeral_wording_dropped', file: F.pure, find: "const EPHEMERAL = 'The worker starts in navigation éphémère.';", to: "const EPHEMERAL = '';", tests: [T.unit], expect: 'every refusal says' },
   { id: 'U9_message_names_the_unheld_profile', file: F.pure, find: 'not ${JSON.stringify(requested.slice(0, 40))}', to: 'not ${JSON.stringify(requested.slice(0, 40))} (${input.profiles.map((p) => p.name).join(", ")})', tests: [T.unit], expect: 'no existence oracle' },
+  { id: 'U10_message_leaks_profile_ids', file: F.pure, find: 'not ${JSON.stringify(requested.slice(0, 40))}', to: 'not ${JSON.stringify(requested.slice(0, 40))} (${input.profiles.map((p) => p.id).join(", ")})', tests: [T.unit], expect: 'no existence oracle' },
+  { id: 'U11_detached_ignored', file: F.pure, find: 'if (input.detached) {', to: 'if (false) {', tests: [T.unit], expect: 'detached:' },
   // ── CLI ──
   { id: 'C1_profile_not_sent', file: F.cli, find: 'body.profile = profile;', to: '', rebuild: true, tests: [T.cli], expect: 'POSTs profile=P' },
   { id: 'C2_key_not_sent', file: F.cli, find: 'if (key) body.key = key;', to: '', rebuild: true, tests: [T.cli], expect: 'POSTs profile=P' },
@@ -39,7 +41,10 @@ const MUTANTS = [
   { id: 'C4_warning_swallowed', file: F.cli, find: 'else process.stderr.write(`warning: ${passed.message}\\n`);', to: '', rebuild: true, tests: [T.cli], expect: 'a refused pass' },
   { id: 'C5_usage_without_profile', file: F.cli, find: "[--effort <level>] [--profile <id|name>] [--detached]',", to: "[--effort <level>] [--detached]',", rebuild: true, tests: [T.cli], expect: 'usage text' },
   { id: 'C6_whoami_row_wrong', file: F.cli, find: ": 'ephemeral'))(res.browserProfile", to: ": 'none'))(res.browserProfile", rebuild: true, tests: [T.cli], expect: 'whoami prints' },
+  { id: 'C7_kept_child_profile_unreported', file: F.cli, find: "if (typeof res.id === 'string') reportProfile();", to: '', rebuild: true, tests: [T.cli], expect: 'a kept child' },
+  { id: 'C8_old_app_silence_unwarned', file: F.cli, find: '} else if (profile !== undefined) {', to: '} else if (false) {', rebuild: true, tests: [T.cli], expect: 'predates it' },
   // ── host wiring ──
+  { id: 'W12_detached_not_passed_to_the_rule', file: F.ws, find: 'detached: input.detached === true,', to: 'detached: false,', tests: [T.wiring], expect: 'decides from the LIVE records' },
   { id: 'W1_caller_read_from_the_request', file: F.ws, find: 'caller: input.from ? store.getWorkspace(input.from) : undefined,', to: 'caller: { browserProfileId: input.profile },', tests: [T.wiring], expect: 'decides from the LIVE records' },
   { id: 'W2_vouch_bypassed', file: F.ws, find: "callerVouched: !!input.from && !!input.key && sessionKeys().verify(input.from, input.key) === 'ok',", to: 'callerVouched: true,', tests: [T.wiring], expect: 'decides from the LIVE records' },
   { id: 'W3_unhonoured_profile_written', file: F.ws, find: "profileDecision.kind === 'honoured' ? { browserProfileId: profileDecision.profileId } : undefined);", to: 'input.profile ? { browserProfileId: input.profile } : undefined);', tests: [T.wiring], expect: 'only an honoured one' },
@@ -56,6 +61,9 @@ const MUTANTS = [
   { id: 'A2_vouch_removed (rig)', tier: 'app', file: F.pure, find: 'if (!input.callerVouched) {', to: 'if (false) {', arms: 'a5', expect: ['a5/no-session-key-is-refused', 'a5/another-sessions-key-is-refused'] },
   { id: 'A3_record_write_dropped (rig)', tier: 'app', file: F.ws, find: '...(inherited?.browserProfileId ? { browserProfileId: inherited.browserProfileId } : {}),', to: '', arms: 'a1', expect: ['a1/record-carries-the-profile', 'a1/worker-panel-is-signed-in-as-the-parent'] },
   { id: 'A4_route_drops_profile (rig)', tier: 'app', file: F.hooks, find: "profile: typeof msg.profile === 'string' ? msg.profile : undefined,", to: '', arms: 'a1', expect: ['a1/record-carries-the-profile', 'a1/worker-panel-is-signed-in-as-the-parent'] },
+  { id: 'A6_detached_ignored (rig)', tier: 'app', file: F.pure, find: 'if (input.detached) {', to: 'if (false) {', arms: 'a4', expect: ['a4/detached-worker-gets-no-profile'] },
+  { id: 'A7_unheld_profile_written_from_the_request (rig)', tier: 'app', file: F.ws, find: "profileDecision.kind === 'honoured' ? { browserProfileId: profileDecision.profileId } : undefined);", to: 'input.profile ? { browserProfileId: input.profile } : undefined);', arms: 'a6', expect: ['a6/hostile-body-creates-a-new-workspace-without-the-unheld-profile'] },
+  { id: 'A8_superseded_key_accepted (rig)', tier: 'app', file: F.ws, find: "sessionKeys().verify(input.from, input.key) === 'ok',", to: "sessionKeys().verify(input.from, input.key) !== 'unregistered',", arms: 'a5,a7', expect: ['a7/superseded-session-key-is-refused', 'a5/another-sessions-key-is-refused'] },
   { id: 'A5_cli_drops_key (rig)', tier: 'app', file: F.cli, find: 'if (key) body.key = key;', to: '', rebuild: true, arms: 'a1', expect: ['a1/record-carries-the-profile', 'a1/worker-panel-is-signed-in-as-the-parent'] },
 ];
 

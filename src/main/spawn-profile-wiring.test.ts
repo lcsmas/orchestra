@@ -37,6 +37,7 @@ test('dispatchSpawnRequest decides from the LIVE records: caller = store.getWork
   const call = /decideSpawnProfile\(\{([\s\S]*?)\n  \}\);/.exec(dispatch)?.[1] ?? '';
   assert.ok(call, 'decideSpawnProfile call found');
   assert.match(call, /requested: input\.profile,/);
+  assert.match(call, /detached: input\.detached === true,/, 'a parentless (--detached) worker is never handed a profile');
   assert.match(call, /caller: input\.from \? store\.getWorkspace\(input\.from\) : undefined,/, 'what the caller holds is read from ITS record, never from the request');
   assert.match(call, /callerVouched: !!input\.from && !!input\.key && sessionKeys\(\)\.verify\(input\.from, input\.key\) === 'ok',/, 'ADR 0008: only the live session of `from`');
   assert.match(call, /profiles: store\.getBrowserProfiles\(\),/);
@@ -63,18 +64,26 @@ test('the spawn path never touches the human-only attach service or IPC', () => 
   assert.doesNotMatch(read('src/cli/index.ts'), /browserProfileAttach|browser-profiles/);
 });
 
+/** A profile or a session key in any form — `profile`, `key:`, shorthand `key,`, or a spread of a whole body (`...msg`) that could carry them. */
+const NO_PROFILE_OR_KEY = /\bprofile\b|\bkey\b|\.\.\.(?:msg|p|input|body|payload)\b/;
+
+test('CONTROL: the scan that keeps profile + key off the other spawn paths can match each form', () => {
+  for (const form of ['profile: x', 'key: k', 'key,', '...msg', '...p,']) assert.match(form, NO_PROFILE_OR_KEY, form);
+  assert.doesNotMatch("name: typeof p.name === 'string' ? p.name : undefined,", NO_PROFILE_OR_KEY);
+});
+
 test('only the hooks /spawn route sends profile + key; the sandbox wire and the human paths (Linear, accès mobile) send neither', () => {
   const route = hooks.slice(hooks.indexOf("route === '/spawn'"), hooks.indexOf("route === '/peers'"));
   assert.match(route, /profile: typeof msg\.profile === 'string' \? msg\.profile : undefined,/);
   assert.match(route, /key: typeof msg\.key === 'string' \? msg\.key : undefined,/);
   const rpc = sandbox.slice(sandbox.indexOf("case 'spawn':"), sandbox.indexOf("case 'peers':"));
   assert.match(rpc, /dispatchAgentSpawnRequest\(/, 'control: the right slice');
-  assert.doesNotMatch(rpc, /profile|key:/);
+  assert.doesNotMatch(rpc, NO_PROFILE_OR_KEY);
   const linearCall = linear.slice(linear.indexOf('await dispatchSpawnRequest({'));
-  assert.doesNotMatch(linearCall.slice(0, linearCall.indexOf('});')), /profile|key:/);
+  assert.doesNotMatch(linearCall.slice(0, linearCall.indexOf('});')), NO_PROFILE_OR_KEY);
   const mobileCall = mobile.slice(mobile.indexOf('dispatchSpawnRequest({'), mobile.indexOf('}),', mobile.indexOf('dispatchSpawnRequest({')));
   assert.match(mobileCall, /defaultKind: 'workspace'/, 'control: the right slice');
-  assert.doesNotMatch(mobileCall, /profile|key:/);
+  assert.doesNotMatch(mobileCall, NO_PROFILE_OR_KEY);
 });
 
 test('the reply carries the decision: a profile report on success AND on a kept (failed-start) child', () => {

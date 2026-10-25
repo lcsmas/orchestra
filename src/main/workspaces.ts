@@ -1582,6 +1582,7 @@ export async function dispatchSpawnRequest(
   // the CLI, and the caller must be the live session of `from` (ADR 0008). Honoured ⇒ written on the NEW record only (no attach path for agents).
   const profileDecision = decideSpawnProfile({
     requested: input.profile,
+    detached: input.detached === true,
     caller: input.from ? store.getWorkspace(input.from) : undefined,
     callerVouched: !!input.from && !!input.key && sessionKeys().verify(input.from, input.key) === 'ok',
     profiles: store.getBrowserProfiles(),

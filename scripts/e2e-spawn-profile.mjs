@@ -5,9 +5,13 @@
 //   a1  `spawn --profile "Staging admin"` as ws-ops (+ its session key) → record carries the profile, the worker's panel shows the parent's sid
 //   a2  `spawn --profile Prod` (a profile ws-ops does NOT hold) → worker still created, warning on stderr, NO profile on the record, panel anon
 //   a3  `spawn` without --profile → ephemeral (anon)
-//   a4  ws-bare (holds nothing) passes "Staging admin" → refused, anon
-//   a5  identity: ws-ops WITHOUT its key, and ws-ops claimed with ws-bare's key → refused (the host cannot vouch), anon; no existing record changed
-//   a6  no path attaches a profile to an EXISTING workspace: a /spawn naming ws-bare's id as nothing, `attach`-style verbs absent; ws-bare's record unchanged
+//   a4  ws-bare (holds nothing) passes "Staging admin" → refused, anon; `--detached` (no parent) → refused, record without profile
+//   a5  identity: ws-ops WITHOUT its key, and ws-ops claimed with ws-bare's key → refused (the host cannot vouch), anon; a body claiming a holding is ignored
+//   a6  a HOSTILE /spawn body (asks for Prod, which ws-ops does not hold; names ws-bare's id and `holds`/`browserProfileId` fields) creates a NEW workspace WITHOUT the profile;
+//       ws-bare's record is unchanged and nobody holds Prod. (That no CLI verb / route / IPC attaches a profile is pinned at source: spawn-profile-wiring.test.ts + #400's browser-profiles-wiring.test.ts;
+//       the guessed-verb check below only proves those three names do not exist.)
+//   a7  the REAL session key: ws-ops' own session is started (a fresh start registers its key, superseding the seeded one), the key is read from its claude CLI's environ,
+//       `spawn --profile` with it is honoured; the seeded (now superseded) key is refused
 // Usage: scripts/e2e-spawn-profile.sh <app-dir> [--arms a1,a2,…] [--out <dir>]   (build first: pnpm run build:bundles && pnpm run build:bus-abi)
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -22,7 +26,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : refuse('no <app-dir>');
 const LIVE_HOME = flag('--live-home', null) ?? refuse('--live-home missing');
-const ARMS = new Set(flag('--arms', 'a0,a1,a2,a3,a4,a5,a6').split(','));
+const ARMS = new Set(flag('--arms', 'a0,a1,a2,a3,a4,a5,a6,a7').split(','));
 const RIG_DIR = process.env.RIG_DIR, RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('run via scripts/e2e-spawn-profile.sh (the contained rig)');
 if (process.env.DISPLAY) refuse('X11 DISPLAY set — would reach the human screen');
@@ -231,6 +235,10 @@ try {
     const rec = await wsRec(id);
     const w = await panelWho(id, 'impl-prof-bare', 'bare');
     clause('a4/caller-holding-nothing-is-refused', r.code === 0 && /you hold no profil navigateur/.test(r.stderr) && rec?.browserProfileId === null && w.who === 'anon', `rc ${r.code}; stderr «${r.stderr.trim()}»; record ${JSON.stringify(rec)}; panel who:${w.who}`);
+    const det = orch(['spawn', '--detached', '--name', 'impl-prof-detached', '--task', 'reply ok and stop.', '--profile', P.name], 'ws-ops', KEY_OPS);
+    kids.detached = spawnedId(det);
+    const detRec = await wsRec(kids.detached);
+    clause('a4/detached-worker-gets-no-profile', det.code === 0 && /a --detached worker has no parent/.test(det.stderr) && detRec?.browserProfileId === null && detRec?.parentId === null, `rc ${det.code}; stderr «${det.stderr.trim()}»; record ${JSON.stringify(detRec)}`);
   }
   // ── a5: identity ──
   if (ARMS.has('a5')) {
@@ -250,15 +258,47 @@ try {
     const rawRec = raw.id ? await wsRec(raw.id) : null;
     clause('a5/a-body-claiming-a-holding-is-ignored', raw.ok === true && raw.profile?.applied === false && rawRec?.browserProfileId === null, `reply ${JSON.stringify(raw).slice(0, 260)}; record ${JSON.stringify(rawRec)}`);
   }
-  // ── a6: nothing attaches to an EXISTING workspace ──
+  // ── a6: a hostile body cannot pick another workspace or another profile ──
   if (ARMS.has('a6')) {
+    // ws-ops holds Staging; the body asks for PROD (not held) and, beside it, names ws-bare and a profile in other fields
+    const hostile = await postHooks('/spawn', { task: 'reply ok and stop.', name: 'impl-prof-hostile', from: 'ws-ops', key: KEY_OPS, profile: Q.id, id: 'ws-bare', workspaceId: 'ws-bare', target: 'ws-bare', holds: Q.id, browserProfileId: Q.id });
+    kids.hostile = hostile.id;
+    const hRec = hostile.id ? await wsRec(hostile.id) : null;
+    const onDisk = readStore().workspaces;
+    clause('a6/hostile-body-creates-a-new-workspace-without-the-unheld-profile', hostile.ok === true && hostile.id !== 'ws-bare' && hostile.profile?.applied === false && hRec?.browserProfileId === null && onDisk.filter((w) => w.browserProfileId === Q.id).length === 0, `reply ${JSON.stringify(hostile).slice(0, 220)}; new record ${JSON.stringify(hRec)}; workspaces holding Prod on disk: ${onDisk.filter((w) => w.browserProfileId === Q.id).length}`);
     const bareAfter = JSON.stringify(await wsRec('ws-bare'));
+    clause('a6/existing-workspace-record-unchanged', bareAfter === bareBefore && onDisk.find((w) => w.id === 'ws-bare').browserProfileId === undefined, `ws-bare before ${bareBefore} / after ${bareAfter}`);
     const verbs = ['attach-profile', 'profile', 'browser-profile'].map((v) => orch([v, 'ws-bare', P.id], 'ws-ops', KEY_OPS));
-    clause('a6/no-cli-verb-attaches-a-profile', verbs.every((v) => v.code !== 0 && !/Spawned/.test(v.stdout)), verbs.map((v) => `rc ${v.code} «${v.stderr.trim().split('\n')[0].slice(0, 70)}»`).join(' | '));
-    clause('a6/existing-workspace-record-unchanged', bareAfter === bareBefore && readStore().workspaces.find((w) => w.id === 'ws-bare').browserProfileId === undefined, `ws-bare before ${bareBefore} / after ${bareAfter}`);
-    const other = readStore().workspaces.filter((w) => w.browserProfileId).map((w) => w.id).sort();
-    const expected = ['ws-ops', ...(kids.honoured ? [kids.honoured] : [])].sort();
-    clause('a6/only-ws-ops-and-the-honoured-worker-hold-the-profile', JSON.stringify(other) === JSON.stringify(expected), `workspaces with a profile on disk: [${other.join(', ')}] expected [${expected.join(', ')}]`);
+    clause('a6/guessed-cli-verbs-do-not-exist', verbs.every((v) => v.code !== 0 && /unknown command/.test(v.stderr)), verbs.map((v) => `rc ${v.code} «${v.stderr.trim().split('\n')[0].slice(0, 70)}»`).join(' | '));
+    const holders = onDisk.filter((w) => w.browserProfileId).map((w) => w.id).sort();
+    const expected = ['ws-ops', ...[kids.honoured].filter(Boolean)].sort();
+    clause('a6/only-ws-ops-and-its-honoured-worker-hold-the-profile', JSON.stringify(holders) === JSON.stringify(expected), `workspaces with a profile on disk: [${holders.join(', ')}] expected [${expected.join(', ')}]`);
+  }
+  // ── a7: the REAL session key (registered by a fresh session start), and a superseded one ──
+  if (ARMS.has('a7')) {
+    const keyPid = () => {
+      for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+        try {
+          if (fs.readFileSync(`/proc/${p}/stat`, 'utf8').split(') ')[1][0] === 'Z') continue;
+          const e = environOf(p);
+          if (e.includes('ORCHESTRA_WS_ID=ws-ops') && e.includes(`ORCHESTRA_HOME=${world.ohome}`) && e.some((x) => x.startsWith('ORCHESTRA_SESSION_KEY=')) && fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes('claude')) return +p;
+        } catch { /* gone */ }
+      }
+      return null;
+    };
+    await cdp.eval(`window.orchestra.agentSdkSend('ws-ops', 'reply ok and stop.')`);
+    const pid = await waitFor(() => keyPid(), 90000, "ws-ops' real claude CLI carrying ORCHESTRA_SESSION_KEY");
+    const realKey = environOf(pid).find((x) => x.startsWith('ORCHESTRA_SESSION_KEY=')).split('=')[1];
+    const reg = JSON.parse(fs.readFileSync(path.join(world.ohome, 'session-keys.json'), 'utf8')).sessions['ws-ops'];
+    clause('a7/a-fresh-session-registers-its-own-key', !!realKey && realKey !== KEY_OPS && reg.hash === sha256(realKey) && reg.hash !== sha256(KEY_OPS), `claude pid ${pid} carries a key (not the seeded one); session-keys.json ws-ops hash == sha256(that key): ${reg.hash === sha256(realKey)}; the file holds hashes only`);
+    const good = orch(['spawn', '--name', 'impl-prof-realkey', '--task', 'reply ok and stop.', '--profile', P.name], 'ws-ops', realKey);
+    kids.real = spawnedId(good);
+    const gRec = await wsRec(kids.real);
+    clause('a7/real-session-key-passes-the-profile', good.code === 0 && gRec?.browserProfileId === P.id && good.stdout.includes('passed') && good.stderr === '', `rc ${good.code}; stdout «${good.stdout.trim().split('\n').pop()}»; stderr «${good.stderr.trim()}»; record ${JSON.stringify(gRec)}`);
+    const stale = orch(['spawn', '--name', 'impl-prof-superseded', '--task', 'reply ok and stop.', '--profile', P.name], 'ws-ops', KEY_OPS);
+    kids.stale = spawnedId(stale);
+    const sRec = await wsRec(kids.stale);
+    clause('a7/superseded-session-key-is-refused', stale.code === 0 && /could not vouch/.test(stale.stderr) && sRec?.browserProfileId === null, `rc ${stale.code}; stderr «${stale.stderr.trim()}»; record ${JSON.stringify(sRec)}`);
   }
 
   // ── no live contact ──

@@ -1417,7 +1417,21 @@ async function main(argv: string[]): Promise<void> {
       }
       if (detached) body.detached = true;
       const res = await request('/spawn', body);
-      if (!res.ok) fail(res.error ?? 'failed to spawn workspace');
+      // #401: what became of the pass is told in EVERY outcome — the worker WAS created either way (a refused pass says so on stderr, an honoured one on stdout);
+      // an app that predates --profile ignores it and answers no decision: said too, never a silent ephemeral worker.
+      const reportProfile = (): void => {
+        const passed = res.profile as { applied?: unknown; message?: unknown } | undefined;
+        if (passed && typeof passed.message === 'string') {
+          if (passed.applied === true) process.stdout.write(`${passed.message}\n`);
+          else process.stderr.write(`warning: ${passed.message}\n`);
+        } else if (profile !== undefined) {
+          process.stderr.write('warning: --profile not applied: this Orchestra did not report a profile decision (it may predate --profile). The worker starts in navigation éphémère.\n');
+        }
+      };
+      if (!res.ok) {
+        if (typeof res.id === 'string') reportProfile(); // a kept child (its start failed) still exists: say what became of its profile
+        fail(res.error ?? 'failed to spawn workspace');
+      }
       // `ok` alone is not proof: a spawn that failed partway (e.g. the git
       // worktree add collided with a stale checkout) has come back ok:true
       // with both fields undefined, and this printed
@@ -1431,12 +1445,7 @@ async function main(argv: string[]): Promise<void> {
       }
       process.stdout.write(`Spawned ${res.id} on branch ${res.branch}\n`);
       if (typeof res.note === 'string') process.stdout.write(`${res.note}\n`);
-      // #401: the worker WAS created either way; a refused pass says so (stderr) so it is not mistaken for a signed-in worker.
-      const passed = res.profile as { applied?: unknown; message?: unknown } | undefined;
-      if (passed && typeof passed.message === 'string') {
-        if (passed.applied === true) process.stdout.write(`${passed.message}\n`);
-        else process.stderr.write(`warning: ${passed.message}\n`);
-      }
+      reportProfile();
       return;
     }
 
