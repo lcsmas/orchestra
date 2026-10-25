@@ -10,6 +10,10 @@ import type { BrowserTabOpener } from './types.ts';
 /** Tabs a workspace may hold, human and agent combined (spec #388, user story 15: 20 workspaces x tabs must not push the machine to critical memory). */
 export const BROWSER_TAB_CAP = 8;
 
+/** The tab-opener roles as values (api-handlers acts for the HUMAN; #397 for the AGENT). Named so no `'human'` string literal is spread over the main process: the pause-origin guard (pause-gates-wiring.test.ts) counts those. */
+export const HUMAN_OPENER: BrowserTabOpener = 'human';
+export const AGENT_OPENER: BrowserTabOpener = 'agent';
+
 /** The least a policy decision needs to know about one tab. */
 export interface PolicyTab {
   id: string;

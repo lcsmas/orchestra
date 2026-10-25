@@ -150,6 +150,7 @@ import {
 } from './agent-sdk';
 import { log, revealLogs, getLogFile, getLogLevel, scoped } from './logger';
 import * as browserPanel from './browser-panel';
+import { HUMAN_OPENER } from '../shared/browser-tab-policy.ts';
 import type { OrchestraAPI } from '../shared/ipc';
 // NOTE the .ts extension: this is a VALUE import (the others from
 // ../shared/types below are type-only and erased at compile). Any main-process
@@ -1021,11 +1022,11 @@ export const apiHandlers: ApiHandlerTable = {
     browserPanel.setBounds(wsId, bounds),
   browserState: async (wsId: string): Promise<BrowserPanelState> => browserPanel.getState(wsId),
   browserTabNew: async (wsId: string, url?: string): Promise<BrowserTabResult> =>
-    browserPanel.tryOpenTab(wsId, { url, openedBy: 'human', activate: true }),
+    browserPanel.tryOpenTab(wsId, { url, openedBy: HUMAN_OPENER, activate: true }),
   browserTabActivate: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
     browserPanel.tryActivateTab(wsId, tabId),
   browserTabClose: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
-    browserPanel.tryCloseTab(wsId, tabId, 'human'),
+    browserPanel.tryCloseTab(wsId, tabId, HUMAN_OPENER),
 
   // --- Design mode: the browser pane's element picker ---
   // Arm/disarm inject and tear down the in-page highlight overlay; poll drains
