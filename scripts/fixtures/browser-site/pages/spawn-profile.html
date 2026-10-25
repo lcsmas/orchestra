@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>who:pending</title>
+<body style="margin:0;font:48px sans-serif;background:#1a1f26;color:#00c853">
+<p id="who">pending</p>
+<script>
+  // #401: who is this panel signed in as? The fixture's sid cookie (set by /signin), or "anon".
+  const sid = (document.cookie.match(/(?:^|;\s*)sid=([^;]+)/) || [, 'anon'])[1];
+  document.title = 'who:' + sid;
+  document.getElementById('who').textContent = sid === 'anon' ? 'anon (ephemeral)' : 'signed in ' + sid;
+</script>
