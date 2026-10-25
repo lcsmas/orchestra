@@ -135,9 +135,10 @@ async function main() {
   };
   const snap = () => cdp.eval(`window.orchestra.sampleResources()`);
   const tabsOf = (s, ws) => (s.browserTabs?.byWorkspace ?? []).find((w) => w.wsId === ws) ?? null;
-  const domRows = () => cdp.eval(`(() => [...document.querySelectorAll('.res-agent-row[data-res-ws]')].map((r) => {
+  const byName = {}; // branch → workspace id, so a build without `data-res-ws` (the must-FAIL arm) is read by the SAME clauses
+  const domRows = () => cdp.eval(`(() => [...document.querySelectorAll('.res-agent-row')].map((r) => {
     const chip = r.querySelector('[data-res-tabs]'), mem = r.querySelector(':scope > .res-cell:not(.dim)');
-    return { ws: r.getAttribute('data-res-ws'), name: (r.querySelector('.res-agent-branch') || {}).textContent || null, mem: mem ? mem.textContent.trim() : null,
+    return { ws: r.getAttribute('data-res-ws') || (${JSON.stringify(byName)})[(r.querySelector('.res-agent-branch') || {}).textContent] || null, name: (r.querySelector('.res-agent-branch') || {}).textContent || null, mem: mem ? mem.textContent.trim() : null,
       chip: chip ? { tabs: chip.getAttribute('data-res-tabs'), bytes: chip.getAttribute('data-res-tabs-bytes'), text: chip.textContent.trim(), title: chip.getAttribute('title') } : null };
   }))()`);
   const tile = (label) => cdp.eval(`(() => { const t = [...document.querySelectorAll('.res-tile')].find((x) => x.querySelector('.res-tile-label') && x.querySelector('.res-tile-label').textContent.trim() === ${JSON.stringify(label)}); return t ? t.querySelector('.res-tile-value').textContent.trim() : null; })()`);
@@ -162,8 +163,10 @@ async function main() {
 
     // ── S0: two workspaces, each with a (stub-claude) session so their Resources rows are the ordinary ones ──
     const wsA = await cdp.eval(`window.orchestra.createScratchWorkspace()`), wsB = await cdp.eval(`window.orchestra.createScratchWorkspace()`);
-    const A = wsA.id, B = wsB.id;
+    const A = wsA.id, B = wsB.id; byName[wsA.branch] = A; byName[wsB.branch] = B;
     clause('S0/two-workspaces', !!A && !!B && A !== B, `A=${A} (${wsA.branch}) B=${B} (${wsB.branch})`);
+    // a prompt starts each workspace's keeper (the stub `claude` just sleeps) — until then a scratch workspace has no session row
+    for (const id of [A, B]) await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(id)}, 'hello', [])`).catch((e) => console.log(`  (agentSdkSend ${id}: ${e.message})`));
     const s0 = await waitFor(async () => { const s = await snap(); return s.sessions.some((x) => x.workspaceId === A) && s.sessions.some((x) => x.workspaceId === B) ? s : null; }, 60000, 'a session row for each workspace').catch(() => null);
     clause('S0/ordinary-session-rows', !!s0, s0 ? `sessions: ${s0.sessions.map((x) => `${x.ptyId}(${x.kind}, ${mbOf(x.memBytes)} MB)`).join(' ')}` : 'no keeper session appeared for both (the stub claude) — rows will be browser-only');
 
@@ -176,9 +179,10 @@ async function main() {
     await cdp.click(...(await cdp.eval(`(() => { const r = document.querySelector('button[aria-label="Open the Resources page"]').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`)));
     await waitFor(() => cdp.eval(`!!document.querySelector('.res-page')`), 10000, 'the Resources page');
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 895 });
-    const r1 = await waitFor(async () => { const rows = await domRows(); const a = rows.find((r) => r.ws === A), b = rows.find((r) => r.ws === B); return a && b && a.chip && b.chip && a.mem && b.mem ? { a, b } : null; }, 20000, 'both rows with a tabs chip').catch(() => null);
+    const tRows = Date.now();
+    const r1 = await waitFor(async () => { const rows = await domRows(); const a = rows.find((r) => r.ws === A), b = rows.find((r) => r.ws === B); return a && b && a.mem && b.mem && parseBytes(a.mem) !== null && parseBytes(b.mem) !== null && (a.chip || Date.now() - tRows > 15000) ? { a, b } : null; }, 25000, 'both rows (with a tabs chip on a #394 build)').catch(() => null);
     const rowsNow = await domRows();
-    clause('S1/rows-carry-the-tabs-chip', !!r1 && r1.a.chip.tabs === '1' && r1.b.chip.tabs === '1' && /^1 tab · \d+(\.\d+)? (MB|GB)$/.test(r1.a.chip.text), r1 ? `A row mem ${r1.a.mem} chip "${r1.a.chip.text}" · B row mem ${r1.b.mem} chip "${r1.b.chip.text}"` : `rows: ${JSON.stringify(rowsNow)}`);
+    clause('S1/rows-carry-the-tabs-chip', !!r1 && !!r1.a.chip && !!r1.b.chip && r1.a.chip.tabs === '1' && r1.b.chip.tabs === '1' && /^\S+ 1 tab · \d+(\.\d+)? (MB|GB)$/.test(r1.a.chip.text), r1 ? `A row mem ${r1.a.mem} chip "${r1.a.chip?.text}" · B row mem ${r1.b.mem} chip "${r1.b.chip?.text}"` : `rows: ${JSON.stringify(rowsNow)}`);
     const shotLight = saveShot(`${LABEL}-s1-light-renderer.png`, await cdp.shot());
     const aMem0 = parseBytes(r1?.a.mem), bMem0 = parseBytes(r1?.b.mem);
 
@@ -199,7 +203,7 @@ async function main() {
     clause('ctl/billed-pid-is-a-renderer', !!heavy && /--type=renderer/.test(heavy.cmd), `pid ${heavy?.pid} cmdline: ${(heavy?.cmd || '').slice(0, 120)}`);
     clause('ctl/page-really-holds-the-memory', !!heavy && heavy.rss > HEAVY_MB * MB * 0.9, `the heavy renderer's own VmRSS ${heavy ? mbOf(heavy.rss) : '?'} MB ≥ 90% of the ${HEAVY_MB} MB the fixture page touches`);
     // the rendered Resources rows (the page re-polls every 2 s)
-    const r2 = await waitFor(async () => { const rows = await domRows(); const a = rows.find((r) => r.ws === A), b = rows.find((r) => r.ws === B); return a && b && parseBytes(a.mem) >= (aMem0 ?? 0) + 0.7 * HEAVY_MB * MB ? { a, b } : null; }, 20000, "A's row memory to rise").catch(async () => { const rows = await domRows(); return { a: rows.find((r) => r.ws === A), b: rows.find((r) => r.ws === B) }; });
+    const r2 = await waitFor(async () => { const rows = await domRows(); const a = rows.find((r) => r.ws === A), b = rows.find((r) => r.ws === B); return a && b && parseBytes(a.mem) >= (aMem0 ?? 0) + 0.7 * HEAVY_MB * MB ? { a, b } : null; }, 12000, "A's row memory to rise").catch(async () => { const rows = await domRows(); return { a: rows.find((r) => r.ws === A), b: rows.find((r) => r.ws === B) }; });
     const aMem2 = parseBytes(r2.a?.mem), bMem2 = parseBytes(r2.b?.mem);
     clause('S2/rendered-A-row-rises', aMem0 !== null && aMem2 !== null && aMem2 - aMem0 >= 0.7 * HEAVY_MB * MB, `A's rendered row memory ${r1?.a.mem} -> ${r2.a?.mem}; chip "${r2.a?.chip?.text}"`);
     clause('S2/rendered-B-row-flat', bMem0 !== null && bMem2 !== null && Math.abs(bMem2 - bMem0) < 60 * MB, `B's rendered row memory ${r1?.b.mem} -> ${r2.b?.mem}; chip "${r2.b?.chip?.text}"`);
