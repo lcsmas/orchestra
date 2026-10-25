@@ -9,6 +9,14 @@ turn footer — instead of scraping the terminal. Opt-in alongside the terminal 
 `docs/plans/sdk-structured-agent-view.md` for the phased plan. Design-system/CSS
 reference is the sibling doc `agent-view-design.md`.
 
+## Which `claude` runs
+
+`resolveClaudeBinary` (`src/main/agent-sdk.ts`) walks the session env's PATH and the
+result is passed as `pathToClaudeCodeExecutable`. The packaged app ships no SDK binary
+(pruned in `package.json` `build.files`), so a local session with no `claude` on PATH
+throws a clear "not found on PATH" error at start (rendered as the agent pane's ERROR
+row); dev falls back to the SDK's own binary from `node_modules`.
+
 ## Data path
 
 ```

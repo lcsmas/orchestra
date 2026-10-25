@@ -20,6 +20,12 @@ The same artifact is both the GUI and the CLI (`<app> cli …`).
 - **electron-builder** (config in `package.json`): `appId dev.orchestra.app`,
   bundles `dist/**` + `dist-electron/**` → `release/`. Targets: Linux **AppImage**
   (`Orchestra.AppImage`), macOS **dmg**, Windows **nsis**.
+  **Pruned from the package** (`build.files` negations + `electronLanguages`): the
+  SDK's per-platform `claude` binaries (`@anthropic-ai/claude-agent-sdk-*`, ~670 MB
+  unpacked, never run — sessions use the host `claude`, see `agent-sdk.ts`
+  `resolveClaudeBinary`), better-sqlite3's compile sources/intermediates, and every
+  Chromium locale but `en-US`/`fr`. AppImage 298 → 102 MB. Rationale:
+  `docs/research/bundle-claude-cli.md`.
 - **App icon**: source of truth is `build/icon.svg` (the "conductor's fan" mark —
   root node splitting into four lanes ending in dots). `build/icon.png` (512², a
   raster of the same SVG) feeds electron-builder via `linux.icon`. Copies in

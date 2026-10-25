@@ -175,7 +175,16 @@
     "productName": "Orchestra",
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+      "!**/node_modules/better-sqlite3/deps/**",
+      "!**/node_modules/better-sqlite3/src/**",
+      "!**/node_modules/better-sqlite3/build/Release/obj/**",
+      "!**/node_modules/better-sqlite3/build/Release/test_extension.node"
+    ],
+    "electronLanguages": [
+      "en-US",
+      "fr"
     ],
     "directories": {
       "output": "release"

@@ -4,6 +4,11 @@ Question (Lucas, 2026-10-25): « est-ce qu'il ne serait pas mieux de shipper le 
 l'app image d'orchestra ? » — should Orchestra run a `claude` it bundles instead of the one
 installed on the host?
 
+**Decision (2026-10-25): option A** — keep the host CLI only, prune the SDK binaries (plus
+better-sqlite3 sources and unused Chromium locales) from the package, and fail a session start
+with a clear "not found on PATH" error. The fallback (option B) was dropped: login, voice and
+self-tune need a host `claude` anyway.
+
 Date: 2026-10-25. Host: Fedora 42 Asahi, `6.19.14-400.asahi.fc42.aarch64+16k`. Code read at
 `276cd058` (0 commits behind `origin/master`). Installed app: v0.5.352
 (`~/Applications/orchestra/release/Orchestra.AppImage`).
