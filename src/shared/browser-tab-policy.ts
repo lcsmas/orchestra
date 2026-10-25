@@ -76,13 +76,27 @@ export function decideTabClose(input: {
 
 // ---- renderer: when does a panel event re-open the pane? --------------------------------------------------------------
 
-/** `browser:event` -> should the renderer mark this workspace's pane OPEN (an agent drove a closed pane)? Only when the ACTIVE tab
- *  navigated: a new (activeTabId, url) key. A background tab's title / loading / in-page event re-publishes the SAME active url and
- *  must not re-open a pane the user closed (#393 F2; up to 8 live tabs per workspace feed that stream). `prevKey` = the key returned
- *  for the previous event of this workspace (undefined before the first). */
-export function decideBrowserAutoOpen(prevKey: string | undefined, state: { activeTabId: string; url: string }): { open: boolean; key: string } {
+/** What the renderer remembers per workspace between `browser:event`s. */
+export interface BrowserAutoOpenMemo {
+  key: string;
+  loading: boolean;
+}
+
+/** `browser:event` -> should the renderer mark this workspace's pane OPEN (an agent drove a closed pane)? Only when the ACTIVE tab did
+ *  something an agent does: it navigated to a new (activeTabId, url) key, OR it STARTED loading (a same-url navigate / reload emits
+ *  `did-start-loading` — the key does not change, the agent still needs its pane). A background tab's title / loading event re-publishes
+ *  the active tab's unchanged url AND unchanged `loading`, so it neither changes the key nor raises the edge: it must not re-open a pane
+ *  the user closed (#393 F2; up to 8 live tabs per workspace feed that stream). `prev` = the `next` returned for the previous event of
+ *  this workspace (undefined before the first) — never clear it when the user closes the pane. */
+export function decideBrowserAutoOpen(
+  prev: BrowserAutoOpenMemo | undefined,
+  state: { activeTabId: string; url: string; loading: boolean },
+): { open: boolean; next: BrowserAutoOpenMemo } {
   const key = state.url ? `${state.activeTabId}\n${state.url}` : '';
-  return { open: key !== '' && key !== prevKey, key };
+  const next = { key, loading: state.loading };
+  const navigated = key !== '' && key !== prev?.key;
+  const startedLoading = key !== '' && state.loading && !prev?.loading;
+  return { open: navigated || startedLoading, next };
 }
 
 // ---- popups (shape only — #396 implements the routing) -----------------------------------------------------------------

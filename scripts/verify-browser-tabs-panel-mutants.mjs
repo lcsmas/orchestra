@@ -40,8 +40,10 @@ const MUTANTS = [
   { id: 'P6-background-close-moves-active', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { ok: true, nextActiveId: input.activeId, replaceWithBlank: false };', to: 'return { ok: true, nextActiveId: input.tabs[0].id, replaceWithBlank: false };' },
   { id: 'P7-popup-external-urls-load', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: "return /^https?:/i.test(req.url) ? { route: 'same-view' } : { route: 'external' };", to: "return { route: 'same-view' };" },
   // persisted-state arms
-  { id: 'P8-background-event-reopens-the-pane', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { open: key !== \'\' && key !== prevKey, key };', to: 'return { open: key !== \'\', key };' },
-  { id: 'P9-url-less-event-opens', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { open: key !== \'\' && key !== prevKey, key };', to: 'return { open: key !== prevKey, key };' },
+  { id: 'P8-background-event-reopens-the-pane', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'const navigated = key !== \'\' && key !== prev?.key;', to: 'const navigated = key !== \'\';' },
+  { id: 'P9-url-less-event-opens', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'const navigated = key !== \'\' && key !== prev?.key;', to: 'const navigated = key !== prev?.key;' },
+  { id: 'P10-same-url-navigate-does-not-reopen', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { open: navigated || startedLoading, next };', to: 'return { open: navigated, next };' },
+  { id: 'P11-loading-edge-is-level', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'const startedLoading = key !== \'\' && state.loading && !prev?.loading;', to: 'const startedLoading = key !== \'\' && state.loading;' },
   { id: 'S1-unsafe-scheme-restored', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: 'return /^(https?|file):/i.test(u) ? u : \'\';', to: 'return u;' },
   { id: 'S2-cap-ignored-on-parse', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: '    if (tabs.length >= BROWSER_TAB_CAP) break;\n', to: '' },
   { id: 'S3-active-index-unclamped', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: 'return { tabs, activeIndex: ai >= 0 && ai < tabs.length ? ai : 0 };', to: 'return { tabs, activeIndex: ai };' },

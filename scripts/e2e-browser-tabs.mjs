@@ -469,6 +469,13 @@ try {
       await b.cdp.eval(`window.orchestra.browserNavigate(${JSON.stringify(WSID)}, ${JSON.stringify(URLS.b + '?agent=1')})`);
       const reopened = await softWait(() => b.cdp.eval(`!!document.querySelector('.browser-tabs')`), 10000, 'the pane to re-open after an agent-style navigation');
       clause('reopen', 'agent-style-navigation-still-reopens-the-pane', reopened, `tab strip ${reopened ? 'present' : 'ABSENT'} after browserNavigate(ws, ${URLS.b}?agent=1)`);
+      // review MAJOR: the agent navigates to the url the active tab is ALREADY on while the pane is closed — only did-start-loading tells the renderer
+      await clickSel(b, 'button.pane-toggle[aria-label="Hide browser pane"]');
+      await waitFor(() => b.cdp.eval(`!document.querySelector('.browser-tabs')`), 10000, 'the pane to close again');
+      await sleep(600);
+      await b.cdp.eval(`window.orchestra.browserNavigate(${JSON.stringify(WSID)}, ${JSON.stringify(URLS.b + '?agent=1')})`); // SAME url as the active tab
+      const reopenedSame = await softWait(() => b.cdp.eval(`!!document.querySelector('.browser-tabs')`), 10000, 'the pane to re-open after a SAME-url agent navigation');
+      clause('reopen', 'same-url-agent-navigation-reopens-the-pane', reopenedSame, `tab strip ${reopenedSame ? 'present' : 'ABSENT'} after browserNavigate(ws, ${URLS.b}?agent=1) with the active tab already there`);
       // put things back: B at its fixture url, A at its title (the restore arm asserts [A,B,C] with B active)
       await b.cdp.eval(`window.orchestra.browserNavigate(${JSON.stringify(WSID)}, ${JSON.stringify(URLS.b)})`);
       await softWait(async () => (await urlBar(b)) === URLS.b && (await tabs(b))[1]?.label === labelOf('b'), 15000, 'B back at its url');

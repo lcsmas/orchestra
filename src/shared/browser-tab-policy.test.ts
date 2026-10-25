@@ -102,24 +102,39 @@ test('decidePopup (#396 seam): today a web URL stays in the opener view and a no
   assert.deepEqual(decidePopup({ ...base, url: 'https://x/', frameName: '_blank', userGesture: false }), { route: 'same-view' });
 });
 
+const ev = (activeTabId: string, url: string, loading = false) => ({ activeTabId, url, loading });
+
 test('decideBrowserAutoOpen: the first event with a real url opens the pane; an event with no url never does', () => {
-  const a = decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: 'https://a/' });
-  assert.equal(a.open, true);
-  assert.equal(decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: '' }).open, false);
+  assert.equal(decideBrowserAutoOpen(undefined, ev('t1', 'https://a/')).open, true);
+  assert.equal(decideBrowserAutoOpen(undefined, ev('t1', '')).open, false);
+  assert.equal(decideBrowserAutoOpen(undefined, ev('t1', '', true)).open, false, 'a loading blank tab has no url to show');
 });
 
-test('decideBrowserAutoOpen (#393 F2): the SAME active (tab, url) again — a background tab\'s title/loading event, the active tab\'s late title — does NOT re-open a pane the user closed', () => {
-  const first = decideBrowserAutoOpen(undefined, { activeTabId: 't3', url: 'https://c/' });
-  const again = decideBrowserAutoOpen(first.key, { activeTabId: 't3', url: 'https://c/' });
+test('decideBrowserAutoOpen (#393 F2): the SAME active (tab, url, loading) again — a background tab\'s title/loading event, the active tab\'s late title — does NOT re-open a pane the user closed', () => {
+  const first = decideBrowserAutoOpen(undefined, ev('t3', 'https://c/'));
+  const again = decideBrowserAutoOpen(first.next, ev('t3', 'https://c/'));
   assert.equal(again.open, false);
-  assert.equal(again.key, first.key);
+  assert.deepEqual(again.next, first.next);
+  // the active tab is mid-load when the user closes the pane: a background tab's event keeps reporting loading=true — no rising edge
+  const mid = decideBrowserAutoOpen(undefined, ev('t3', 'https://c/', true));
+  assert.equal(decideBrowserAutoOpen(mid.next, ev('t3', 'https://c/', true)).open, false);
 });
 
 test('decideBrowserAutoOpen: an agent navigation (new url) or a different active tab re-opens; coming back to a url after a blank state counts as a navigation', () => {
-  const k = decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: 'https://a/' }).key;
-  assert.equal(decideBrowserAutoOpen(k, { activeTabId: 't1', url: 'https://a/next' }).open, true, 'new url');
-  assert.equal(decideBrowserAutoOpen(k, { activeTabId: 't2', url: 'https://a/' }).open, true, 'another tab became active');
-  const blank = decideBrowserAutoOpen(k, { activeTabId: 't1', url: '' });
+  const k = decideBrowserAutoOpen(undefined, ev('t1', 'https://a/')).next;
+  assert.equal(decideBrowserAutoOpen(k, ev('t1', 'https://a/next')).open, true, 'new url');
+  assert.equal(decideBrowserAutoOpen(k, ev('t2', 'https://a/')).open, true, 'another tab became active');
+  const blank = decideBrowserAutoOpen(k, ev('t1', ''));
   assert.equal(blank.open, false);
-  assert.equal(decideBrowserAutoOpen(blank.key, { activeTabId: 't1', url: 'https://a/' }).open, true, 'same url after a blank state');
+  assert.equal(decideBrowserAutoOpen(blank.next, ev('t1', 'https://a/')).open, true, 'same url after a blank state');
+});
+
+test('decideBrowserAutoOpen (review MAJOR): an agent navigate / reload to the url the active tab is ALREADY on re-opens the pane — the active tab STARTS loading (rising edge)', () => {
+  const idle = decideBrowserAutoOpen(undefined, ev('t1', 'https://a/')).next;
+  const started = decideBrowserAutoOpen(idle, ev('t1', 'https://a/', true));
+  assert.equal(started.open, true, 'did-start-loading on the same url');
+  assert.equal(decideBrowserAutoOpen(started.next, ev('t1', 'https://a/', true)).open, false, 'still loading: no second edge');
+  const done = decideBrowserAutoOpen(started.next, ev('t1', 'https://a/', false));
+  assert.equal(done.open, false, 'load finished: falling edge never opens');
+  assert.equal(decideBrowserAutoOpen(done.next, ev('t1', 'https://a/', true)).open, true, 'the next reload opens again');
 });
