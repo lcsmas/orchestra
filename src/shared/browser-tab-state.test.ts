@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBrowserTabsFile, parsePersistedTabs, restorableUrl, serializeBrowserTabsFile, snapshotTabs } from './browser-tab-state.ts';
+import { parseBrowserTabsFile, parsePersistedTabs, restorableUrl, serializeBrowserTabsFile, snapshotTabs, tabLabel } from './browser-tab-state.ts';
 
 test('restorableUrl: web and file URLs restore; about:blank, javascript:, chrome:, data:, non-strings and junk restore as a blank tab', () => {
   assert.equal(restorableUrl('https://a.example/x?y=1#z'), 'https://a.example/x?y=1#z');
@@ -78,4 +78,12 @@ test('parseBrowserTabsFile: corrupt, empty or foreign content is an empty map, n
 test('parseBrowserTabsFile: one bad workspace entry does not lose the good ones', () => {
   const text = JSON.stringify({ version: 1, workspaces: { good: { tabs: [{ url: 'https://a/', openedBy: 'human' }], activeIndex: 0 }, bad: { tabs: 'nope' }, empty: { tabs: [] } } });
   assert.deepEqual(Object.keys(parseBrowserTabsFile(text)), ['good']);
+});
+
+test('tabLabel: title wins; else host; else the file name; else "New tab"', () => {
+  assert.equal(tabLabel({ title: ' Docs ', url: 'https://a.example/x' }), 'Docs');
+  assert.equal(tabLabel({ title: '', url: 'https://a.example:8080/x?y' }), 'a.example:8080');
+  assert.equal(tabLabel({ title: '', url: 'file:///srv/pages/index.html' }), 'index.html');
+  assert.equal(tabLabel({ title: '', url: '' }), 'New tab');
+  assert.equal(tabLabel({ title: '', url: 'not a url' }), 'not a url');
 });

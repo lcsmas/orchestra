@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { BrowserPanelState } from '../../shared/types';
+import type { BrowserPanelState, BrowserTabResult } from '../../shared/types';
+import { tabLabel } from '../../shared/browser-tab-state';
 import { useStore } from '../store';
 
 // The renderer half of the embedded browser panel. The actual web content is a
@@ -39,6 +40,11 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   // input isn't focused.
   const [urlInput, setUrlInput] = useState('');
   const urlFocused = useRef(false);
+  const urlInputRef = useRef<HTMLInputElement>(null);
+  // A refused tab operation (the cap of 8) is shown, not swallowed: the user must be told why nothing opened.
+  const [tabNotice, setTabNotice] = useState<string | null>(null);
+  // Focus the URL bar once the NEW (blank) tab has become the active one.
+  const focusUrlOnNewTab = useRef(false);
 
   // Push the placeholder's rect to main so the native view tracks it. Called on
   // mount, resize, scroll, and whenever the active/open state flips.
@@ -181,6 +187,42 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     });
   }, [state.url, designArmed, isActive, workspaceId]);
 
+  // --- Tabs (#393) -----------------------------------------------------------
+  // Main owns the tab list (and the cap / ownership rules in shared/browser-tab-policy.ts); this strip only asks.
+  // Design mode lives in the ACTIVE tab's page, so it is disarmed BEFORE the active tab changes — otherwise the
+  // overlay would stay armed (click-swallowing, invisible to this UI) in the tab we are leaving.
+  useEffect(() => {
+    if (!tabNotice) return;
+    const t = setTimeout(() => setTabNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [tabNotice]);
+
+  useEffect(() => {
+    if (focusUrlOnNewTab.current && !state.url) {
+      focusUrlOnNewTab.current = false;
+      urlInputRef.current?.focus();
+    }
+  }, [state.activeTabId, state.url]);
+
+  const runTabOp = async (op: () => Promise<BrowserTabResult>) => {
+    if (designArmed) {
+      await window.orchestra.browserDesignDisarm(workspaceId).catch(() => {});
+      setDesignArmed(false);
+    }
+    const r = await op();
+    setState(r.state);
+    // The user explicitly changed tab: the URL bar follows it even if it had focus.
+    setUrlInput(r.state.url);
+    setTabNotice(r.ok ? null : r.message);
+    return r;
+  };
+
+  const newTab = async () => {
+    focusUrlOnNewTab.current = true;
+    const r = await runTabOp(() => window.orchestra.browserTabNew(workspaceId));
+    if (!r.ok) focusUrlOnNewTab.current = false;
+  };
+
   const submitUrl = (e: React.FormEvent) => {
     e.preventDefault();
     const v = urlInput.trim();
@@ -192,6 +234,47 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     <div
       className={`browser-panel ${isActive ? '' : 'browser-panel-hidden'} ${designArmed ? 'browser-panel-design' : ''}`}
     >
+      <div className="browser-tabs" role="tablist" aria-label="Browser tabs">
+        {state.tabs.map((t) => {
+          const label = tabLabel(t);
+          return (
+            <div
+              key={t.id}
+              role="tab"
+              aria-selected={t.active}
+              data-tab-id={t.id}
+              data-opened-by={t.openedBy}
+              className={`browser-tab ${t.active ? 'browser-tab-active' : ''}`}
+              title={t.url || label}
+              onClick={() => {
+                if (!t.active) void runTabOp(() => window.orchestra.browserTabActivate(workspaceId, t.id));
+              }}
+            >
+              <span className="browser-tab-label">{label}</span>
+              {t.loading && <span className="browser-tab-loading" aria-label="Loading" />}
+              <button
+                className="browser-tab-close"
+                title="Close tab"
+                aria-label={`Close tab ${label}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void runTabOp(() => window.orchestra.browserTabClose(workspaceId, t.id));
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+        <button className="browser-tab-new" title="New tab" aria-label="New tab" onClick={() => void newTab()}>
+          +
+        </button>
+      </div>
+      {tabNotice && (
+        <div className="browser-error browser-tab-notice" role="alert">
+          {tabNotice}
+        </div>
+      )}
       <div className="browser-toolbar">
         <button
           className="browser-nav-btn"
@@ -228,6 +311,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
         </button>
         <form className="browser-url-form" onSubmit={submitUrl}>
           <input
+            ref={urlInputRef}
             className="browser-url-input"
             value={urlInput}
             spellCheck={false}

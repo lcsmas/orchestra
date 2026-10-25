@@ -70,8 +70,10 @@ test('decideTabClose: an unknown tab id is refused as unknown-tab (a stale id ne
   if (!d.ok) assert.equal(d.reason, 'unknown-tab');
 });
 
-test('decideTabClose: closing a BACKGROUND tab keeps the active tab', () => {
+test('decideTabClose: closing a BACKGROUND tab keeps the active tab — wherever it is (first, middle, last), whichever side the closed tab is on', () => {
   assert.deepEqual(decideTabClose({ tabs: tabs('h1 h2 h3'), activeId: '1', tabId: '3', actor: 'human' }), { ok: true, nextActiveId: '1', replaceWithBlank: false });
+  assert.deepEqual(decideTabClose({ tabs: tabs('h1 h2 h3'), activeId: '2', tabId: '3', actor: 'human' }), { ok: true, nextActiveId: '2', replaceWithBlank: false });
+  assert.deepEqual(decideTabClose({ tabs: tabs('h1 h2 h3'), activeId: '3', tabId: '1', actor: 'human' }), { ok: true, nextActiveId: '3', replaceWithBlank: false });
 });
 
 test('decideTabClose: closing the ACTIVE tab activates its right neighbour', () => {

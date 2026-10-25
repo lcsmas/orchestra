@@ -169,6 +169,7 @@ import type {
   Account,
   BrowserBounds,
   BrowserPanelState,
+  BrowserTabResult,
   CreateWorkspaceInput,
   DiffFile,
   RepoScripts,
@@ -356,6 +357,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   browserReload: 'browser:reload',
   browserSetBounds: 'browser:setBounds',
   browserState: 'browser:state',
+  browserTabNew: 'browser:tabNew',
+  browserTabActivate: 'browser:tabActivate',
+  browserTabClose: 'browser:tabClose',
   browserDesignArm: 'browser:designArm',
   browserDesignDisarm: 'browser:designDisarm',
   browserDesignPoll: 'browser:designPoll',
@@ -1016,6 +1020,12 @@ export const apiHandlers: ApiHandlerTable = {
   browserSetBounds: async (wsId: string, bounds: BrowserBounds): Promise<void> =>
     browserPanel.setBounds(wsId, bounds),
   browserState: async (wsId: string): Promise<BrowserPanelState> => browserPanel.getState(wsId),
+  browserTabNew: async (wsId: string, url?: string): Promise<BrowserTabResult> =>
+    browserPanel.tryOpenTab(wsId, { url, openedBy: 'human', activate: true }),
+  browserTabActivate: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
+    browserPanel.tryActivateTab(wsId, tabId),
+  browserTabClose: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
+    browserPanel.tryCloseTab(wsId, tabId, 'human'),
 
   // --- Design mode: the browser pane's element picker ---
   // Arm/disarm inject and tear down the in-page highlight overlay; poll drains

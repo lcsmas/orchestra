@@ -83,3 +83,17 @@ export function serializeBrowserTabsFile(workspaces: Record<string, PersistedBro
   const file: PersistedBrowserTabsFile = { version: 1, workspaces };
   return JSON.stringify(file);
 }
+
+/** The label a tab shows in the strip: its page title, else its host (or `file` name), else "New tab". */
+export function tabLabel(tab: { title: string; url: string }): string {
+  const title = tab.title.trim();
+  if (title) return title;
+  const url = tab.url.trim();
+  if (!url) return 'New tab';
+  try {
+    const u = new URL(url);
+    return u.host || u.pathname.split('/').filter(Boolean).pop() || url;
+  } catch {
+    return url;
+  }
+}
