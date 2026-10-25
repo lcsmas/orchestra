@@ -269,6 +269,21 @@ import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
+import {
+  decideRole,
+  takeHostdLock,
+  dropHostdLock,
+  startAttachServer,
+  stopAttachServer,
+  pushToClients,
+  attachedClientCount,
+  connectClient,
+  remoteInvoke,
+} from './hostd-proto';
+
+// PROTOTYPE #139: which role this process plays — 'host' (today's app), 'hostd' (windowless, ORCHESTRA_ROLE=hostd) or
+// 'client' (an app launched while a hostd is up: it serves the window only and forwards every api-handlers call).
+const ROLE = ORCHESTRA_CLI_MODE ? 'host' : decideRole();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -276,7 +291,27 @@ let mainWindow: BrowserWindow | null = null;
 // URLs, reads app paths, etc. through it instead of touching Electron. The
 // Electron implementation targets the main window via this live accessor —
 // installed at module scope so it is in place before the first store access.
-initPlatform(createElectronPlatform(() => mainWindow));
+if (ROLE === 'hostd') {
+  const base = createElectronPlatform(() => null);
+  initPlatform({
+    ...base,
+    // broadcast stays base (no window → no-op); the onBroadcast tap in hostd-proto fans it out to attached clients
+    broadcastPtyData(id, data) {
+      if (!attachedClientCount()) return false;
+      pushToClients('pty:data', [id, data]);
+      return true;
+    },
+    canBroadcast: () => attachedClientCount() > 0,
+    // #137 §4.6: the spool drains only with a UI. Default here = always drain; ORCHESTRA_PROTO_SPOOL_GATE=attached restores the gate (must-FAIL arm).
+    hasAttachedUi: () => (process.env.ORCHESTRA_PROTO_SPOOL_GATE === 'attached' ? attachedClientCount() > 0 : true),
+    isFocused: () => false,
+    notify(n) {
+      pushToClients('hostd:notify', [n]);
+    },
+  });
+} else {
+  initPlatform(createElectronPlatform(() => mainWindow));
+}
 
 // The embedded browser panel attaches its per-workspace WebContentsView to the
 // main window's content view; give it the same live accessor.
@@ -354,7 +389,7 @@ if (VITE_DEV_SERVER_URL || process.env.ORCHESTRA_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-allow-origins', '*');
 }
 
-async function createMainWindow() {
+async function loadHostState() {
   await store.load();
   // Seed default inheritance for any account that has none, then materialize
   // every account's selection into its login dir (symlinks + MCP merge) so an
@@ -365,6 +400,10 @@ async function createMainWindow() {
   );
   void syncAllAccountsInheritance({ caller: 'boot' });
   await ensureRoot();
+}
+
+async function createMainWindow() {
+  if (ROLE === 'host') await loadHostState();
 
   // Drop the default Electron menu (File/Edit/View/Window/Help). We don't ship
   // any custom menu commands; the strip just eats vertical space.
@@ -413,6 +452,189 @@ async function createMainWindow() {
   // `app.on('activate')` when 0 windows exist, and on darwin a second
   // `ipcMain.handle` for an already-registered channel THROWS — a re-registration
   // here crashed the app on macOS re-activate. Top-level registration runs once.
+  if (ROLE === 'host') await startHostServices();
+  else if (ROLE === 'client') await attachToHostd();
+
+  // NOTE: these two handlers are independent and NOT deduped against each
+  // other. A `target="_blank"` click normally routes only through the
+  // window-open handler, but any gesture that falls back to a same-frame
+  // navigation reaches `will-navigate` as well — and then ONE click opens the
+  // URL TWICE. The `origin` tags below exist to make that visible in the log:
+  // two `[open-url]` lines for one click means the duplication is here; one
+  // line means it is below us (see openUrlExternally's comment).
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openUrlExternally(url, 'window-open');
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL() ?? '';
+    if (url === current) return;
+    if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
+    event.preventDefault();
+    void openUrlExternally(url, 'will-navigate');
+  });
+
+  // Renderer/GPU crash recovery. Two distinct "the window went black" failure
+  // modes are handled here, because they log and recover differently:
+  //
+  //  1. render-process-gone — the renderer PROCESS died (OOM SIGKILL, segfault).
+  //     Chromium leaves its white "sad tab" page until the user quits and
+  //     relaunches by hand.
+  //  2. GPU-process crash — the renderer JS stays ALIVE but every WebGL/canvas
+  //     context in the page is lost at once (they all share the one GPU
+  //     process), and the compositor can leave a BLACK content surface with the
+  //     window chrome still painted. This mode logs NOTHING today: the observed
+  //     black-screen reports have no render-process-gone line and no Crashpad
+  //     dump, i.e. no process died — a live renderer painting black. A stack of
+  //     ~40 mounted xterm WebGL contexts (one per open workspace) is the likely
+  //     GPU-process stressor; the pane-mount LRU cap in the renderer bounds that,
+  //     and reloading re-establishes the GL contexts here.
+  //
+  // Everything the renderer holds is rebuildable from main (store hydration, a
+  // fresh xterm that repaints via `claude --continue`, live event
+  // resubscription), so a reload restores a working UI in place — agents keep
+  // running throughout; pty.ts retains undeliverable output while the window
+  // can't receive. Guard against a reload loop (reload → same heavy state →
+  // crash again): after 3 crash-triggered reloads in 60s, stop and leave the
+  // window as-is rather than thrash.
+  let recentReloads: number[] = [];
+  const guardedReload = (why: string) => {
+    const now = Date.now();
+    recentReloads = recentReloads.filter((t) => now - t < 60_000);
+    recentReloads.push(now);
+    if (recentReloads.length > 3) {
+      log.error(
+        `${why}: reload loop (${recentReloads.length} in 60s) — giving up on auto-reload; restart Orchestra manually`,
+      );
+      return;
+    }
+    // Small delay so a system-wide event (OOM killer sweep, GPU reset) settles
+    // before we ask Chromium to spin up a fresh renderer / GPU context.
+    setTimeout(() => {
+      const w = mainWindow;
+      if (w && !w.isDestroyed()) {
+        log.info(`reloading renderer after ${why}`);
+        w.webContents.reload();
+      }
+    }, 1000);
+  };
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    log.error(
+      `renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`,
+    );
+    guardedReload('renderer crash');
+  });
+
+  // GPU-process crash: the renderer survives but its GL contexts are gone, which
+  // is the "black content, live window" signature. The deprecated
+  // `gpu-process-crashed` event is gone from this Electron's typings, so we key
+  // off the app-level `child-process-gone` with type 'GPU'. Reloading the window
+  // makes the renderer re-establish its WebGL contexts against the freshly
+  // respawned GPU process. (A second, diagnostic-only child-process-gone handler
+  // outside createMainWindow logs every helper death; this one recovers.)
+  const onGpuGone = (_event: Electron.Event, details: Electron.Details) => {
+    if (details.type !== 'GPU' || details.reason === 'clean-exit') return;
+    log.error(
+      `gpu process gone: reason=${details.reason} exitCode=${details.exitCode} — recovering renderer GL contexts`,
+    );
+    guardedReload('gpu crash');
+  };
+  app.on('child-process-gone', onGpuGone);
+  mainWindow.on('closed', () => app.off('child-process-gone', onGpuGone));
+
+  // A renderer that is ALIVE but wedged (event loop blocked, or a GPU stall that
+  // never surfaces as a crash) paints nothing new — another route to a black
+  // window. We can't safely auto-reload here (a reload would discard an
+  // in-progress operation), but logging the transition turns a silent "it went
+  // black" into a dated, diagnosable event; if `responsive` never follows an
+  // `unresponsive`, that IS the black-screen occurrence.
+  mainWindow.webContents.on('unresponsive', () => {
+    log.error('renderer unresponsive — window may appear black/frozen until it recovers');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    log.info('renderer responsive again');
+  });
+
+  // Drop workspaces whose worktree was deleted out-of-band BEFORE the renderer
+  // fetches the list, so stale "ghost" rows (a ~12 KB husk, no working actions)
+  // never appear. Cheap (one `git worktree list` per repo); guarded against
+  // pruning when a repo is merely unmounted. Best-effort — never block startup.
+  if (ROLE === 'host') await hostBootSweeps();
+
+  if (VITE_DEV_SERVER_URL) {
+    await mainWindow.loadURL(VITE_DEV_SERVER_URL);
+  } else {
+    await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  // Agents that were running when Orchestra last exited are NOT relaunched
+  // here. Startup used to resume every one of them headlessly, which meant a
+  // restart with many live workspaces immediately spawned that many `claude
+  // --continue` processes, each reloading a full session. Instead the agent
+  // starts the first time the user opens the workspace (its SDK session
+  // resumes the stored `sdkSessionId`), so the conversation still picks up
+  // where it left off — just on demand.
+
+  // Base-branch sync: prime local state immediately (no network) so the
+  // sidebar paints with whatever the on-disk refs say, then kick a real
+  // fetch in the background. Prime must complete before sync starts —
+  // otherwise the prime's late `syncing:false, syncedAt:0` event races
+  // ahead of sync completion and clobbers the success state. Subsequent
+  // fetches are driven by window focus.
+  if (ROLE === 'host') {
+    startRepoSync();
+    mainWindow.on('focus', () => {
+      void syncAllRepos().catch((e) => log.warn('syncAllRepos (focus) failed', e));
+    });
+  }
+}
+
+async function hostBootSweeps(): Promise<void> {
+  await pruneOrphanedWorkspaces().catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
+  // Disk TMPDIRs of workspaces that no longer exist (deleted while the app was down). See agent-tmpdir.ts.
+  try { sweepAgentTmpDirs(store.workspaces.map((w) => w.id)); } catch (e) { log.warn('sweepAgentTmpDirs failed', e); }
+}
+
+function startRepoSync(): void {
+  primeLocalSyncStates()
+    .catch((e) => log.warn('primeLocalSyncStates failed', e))
+    .then(() => syncAllRepos())
+    .catch((e) => log.warn('syncAllRepos failed', e));
+}
+
+/** PROTOTYPE #139: the windowless host. Same services as the app's host, no BrowserWindow. */
+async function startHostd(): Promise<void> {
+  takeHostdLock();
+  installAgentCliShim();
+  installKeeper();
+  await loadHostState();
+  await startHostServices();
+  const extra: Record<string, (...a: unknown[]) => unknown> = {
+    'hostd:hello': () => ({ pid: process.pid, version: app.getVersion(), role: 'hostd' }),
+  };
+  startAttachServer({ ...(apiHandlers as unknown as Record<string, (...a: unknown[]) => unknown>), ...extra }, (m) => log.info(m));
+  await hostBootSweeps();
+  void reconcileKeepersAtStartup();
+  startLoopScan();
+  installCliShim();
+  startRepoSync();
+  const bye = (sig: string) => {
+    log.info(`hostd-proto: ${sig} — detaching keepers and stopping`);
+    setAppQuitting();
+    shutdownSubsystems();
+    stopAttachServer();
+    dropHostdLock();
+    app.exit(0);
+  };
+  process.on('SIGTERM', () => bye('SIGTERM'));
+  process.on('SIGINT', () => bye('SIGINT'));
+  log.info(`hostd ready (pid ${process.pid}, no window)`);
+}
+
+async function startHostServices(): Promise<void> {
   try {
     const version = initBus();
     log.info(`bus: opened ${busPath()} (schema v${version})`);
@@ -654,145 +876,21 @@ async function createMainWindow() {
   // would silently lose its badge on upgrade. Fire-and-forget: it makes network
   // calls and must never delay window creation.
   void backfillWorkspaceLinks().catch(() => {});
+}
 
-  // NOTE: these two handlers are independent and NOT deduped against each
-  // other. A `target="_blank"` click normally routes only through the
-  // window-open handler, but any gesture that falls back to a same-frame
-  // navigation reaches `will-navigate` as well — and then ONE click opens the
-  // URL TWICE. The `origin` tags below exist to make that visible in the log:
-  // two `[open-url]` lines for one click means the duplication is here; one
-  // line means it is below us (see openUrlExternally's comment).
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openUrlExternally(url, 'window-open');
-    return { action: 'deny' };
-  });
-
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const current = mainWindow?.webContents.getURL() ?? '';
-    if (url === current) return;
-    if (VITE_DEV_SERVER_URL && url.startsWith(VITE_DEV_SERVER_URL)) return;
-    event.preventDefault();
-    void openUrlExternally(url, 'will-navigate');
-  });
-
-  // Renderer/GPU crash recovery. Two distinct "the window went black" failure
-  // modes are handled here, because they log and recover differently:
-  //
-  //  1. render-process-gone — the renderer PROCESS died (OOM SIGKILL, segfault).
-  //     Chromium leaves its white "sad tab" page until the user quits and
-  //     relaunches by hand.
-  //  2. GPU-process crash — the renderer JS stays ALIVE but every WebGL/canvas
-  //     context in the page is lost at once (they all share the one GPU
-  //     process), and the compositor can leave a BLACK content surface with the
-  //     window chrome still painted. This mode logs NOTHING today: the observed
-  //     black-screen reports have no render-process-gone line and no Crashpad
-  //     dump, i.e. no process died — a live renderer painting black. A stack of
-  //     ~40 mounted xterm WebGL contexts (one per open workspace) is the likely
-  //     GPU-process stressor; the pane-mount LRU cap in the renderer bounds that,
-  //     and reloading re-establishes the GL contexts here.
-  //
-  // Everything the renderer holds is rebuildable from main (store hydration, a
-  // fresh xterm that repaints via `claude --continue`, live event
-  // resubscription), so a reload restores a working UI in place — agents keep
-  // running throughout; pty.ts retains undeliverable output while the window
-  // can't receive. Guard against a reload loop (reload → same heavy state →
-  // crash again): after 3 crash-triggered reloads in 60s, stop and leave the
-  // window as-is rather than thrash.
-  let recentReloads: number[] = [];
-  const guardedReload = (why: string) => {
-    const now = Date.now();
-    recentReloads = recentReloads.filter((t) => now - t < 60_000);
-    recentReloads.push(now);
-    if (recentReloads.length > 3) {
-      log.error(
-        `${why}: reload loop (${recentReloads.length} in 60s) — giving up on auto-reload; restart Orchestra manually`,
-      );
-      return;
-    }
-    // Small delay so a system-wide event (OOM killer sweep, GPU reset) settles
-    // before we ask Chromium to spin up a fresh renderer / GPU context.
-    setTimeout(() => {
+/** PROTOTYPE #139 client: attach to the hostd and replay its pushes into this window. */
+async function attachToHostd(): Promise<void> {
+  const t0 = Date.now();
+  await connectClient(
+    (channel, args) => {
       const w = mainWindow;
-      if (w && !w.isDestroyed()) {
-        log.info(`reloading renderer after ${why}`);
-        w.webContents.reload();
-      }
-    }, 1000);
-  };
-
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    if (details.reason === 'clean-exit') return;
-    log.error(
-      `renderer process gone: reason=${details.reason} exitCode=${details.exitCode}`,
-    );
-    guardedReload('renderer crash');
-  });
-
-  // GPU-process crash: the renderer survives but its GL contexts are gone, which
-  // is the "black content, live window" signature. The deprecated
-  // `gpu-process-crashed` event is gone from this Electron's typings, so we key
-  // off the app-level `child-process-gone` with type 'GPU'. Reloading the window
-  // makes the renderer re-establish its WebGL contexts against the freshly
-  // respawned GPU process. (A second, diagnostic-only child-process-gone handler
-  // outside createMainWindow logs every helper death; this one recovers.)
-  const onGpuGone = (_event: Electron.Event, details: Electron.Details) => {
-    if (details.type !== 'GPU' || details.reason === 'clean-exit') return;
-    log.error(
-      `gpu process gone: reason=${details.reason} exitCode=${details.exitCode} — recovering renderer GL contexts`,
-    );
-    guardedReload('gpu crash');
-  };
-  app.on('child-process-gone', onGpuGone);
-  mainWindow.on('closed', () => app.off('child-process-gone', onGpuGone));
-
-  // A renderer that is ALIVE but wedged (event loop blocked, or a GPU stall that
-  // never surfaces as a crash) paints nothing new — another route to a black
-  // window. We can't safely auto-reload here (a reload would discard an
-  // in-progress operation), but logging the transition turns a silent "it went
-  // black" into a dated, diagnosable event; if `responsive` never follows an
-  // `unresponsive`, that IS the black-screen occurrence.
-  mainWindow.webContents.on('unresponsive', () => {
-    log.error('renderer unresponsive — window may appear black/frozen until it recovers');
-  });
-  mainWindow.webContents.on('responsive', () => {
-    log.info('renderer responsive again');
-  });
-
-  // Drop workspaces whose worktree was deleted out-of-band BEFORE the renderer
-  // fetches the list, so stale "ghost" rows (a ~12 KB husk, no working actions)
-  // never appear. Cheap (one `git worktree list` per repo); guarded against
-  // pruning when a repo is merely unmounted. Best-effort — never block startup.
-  await pruneOrphanedWorkspaces().catch((e) => log.warn('pruneOrphanedWorkspaces failed', e));
-  // Disk TMPDIRs of workspaces that no longer exist (deleted while the app was down). See agent-tmpdir.ts.
-  try { sweepAgentTmpDirs(store.workspaces.map((w) => w.id)); } catch (e) { log.warn('sweepAgentTmpDirs failed', e); }
-
-  if (VITE_DEV_SERVER_URL) {
-    await mainWindow.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    await mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
-
-  // Agents that were running when Orchestra last exited are NOT relaunched
-  // here. Startup used to resume every one of them headlessly, which meant a
-  // restart with many live workspaces immediately spawned that many `claude
-  // --continue` processes, each reloading a full session. Instead the agent
-  // starts the first time the user opens the workspace (its SDK session
-  // resumes the stored `sdkSessionId`), so the conversation still picks up
-  // where it left off — just on demand.
-
-  // Base-branch sync: prime local state immediately (no network) so the
-  // sidebar paints with whatever the on-disk refs say, then kick a real
-  // fetch in the background. Prime must complete before sync starts —
-  // otherwise the prime's late `syncing:false, syncedAt:0` event races
-  // ahead of sync completion and clobbers the success state. Subsequent
-  // fetches are driven by window focus.
-  primeLocalSyncStates()
-    .catch((e) => log.warn('primeLocalSyncStates failed', e))
-    .then(() => syncAllRepos())
-    .catch((e) => log.warn('syncAllRepos failed', e));
-  mainWindow.on('focus', () => {
-    void syncAllRepos().catch((e) => log.warn('syncAllRepos (focus) failed', e));
-  });
+      if (!w || w.isDestroyed() || w.webContents.isDestroyed()) return;
+      if (channel === 'hostd:notify') return; // spike: toasts not rendered client-side
+      w.webContents.send(channel, ...args);
+    },
+    () => log.warn('hostd-proto: hostd connection closed — this client is now orphaned (no reconnect in the spike)'),
+  );
+  log.info(`hostd-proto: attached to hostd as a client in ${Date.now() - t0} ms`);
 }
 
 function getMainWindow(): BrowserWindow {
@@ -811,7 +909,7 @@ for (const [method, channel] of Object.entries(METHOD_IPC_CHANNELS)) {
   const handler = apiHandlers[method as keyof typeof apiHandlers] as (
     ...args: unknown[]
   ) => unknown;
-  handle(channel, (_e, ...args) => handler(...args));
+  handle(channel, (_e, ...args) => (ROLE === 'client' ? remoteInvoke(method, args) : handler(...args)));
 }
 
 // ── Fleet-bus IPC (#118) — registered ONCE at module top level ───────────────
@@ -990,7 +1088,7 @@ if (!ORCHESTRA_CLI_MODE) {
   //
   // This is the only backend fence: Orchestra's backend runs exclusively inside
   // the Electron main process, so app-vs-app is the whole hazard space.
-  if (!app.requestSingleInstanceLock()) {
+  if (ROLE !== 'client' && !app.requestSingleInstanceLock()) {
     // We lost the race: a primary instance already holds the lock and will get
     // our launch via its `second-instance` handler (focusing its window). Exit
     // immediately — `app.exit(0)`, not `app.quit()` — so the lifecycle wiring
@@ -1023,6 +1121,16 @@ if (!ORCHESTRA_CLI_MODE) {
 
   app.whenReady().then(async () => {
     initLogger();
+    log.info(`hostd-proto: role=${ROLE}`);
+    if (ROLE === 'hostd') {
+      await startHostd();
+      return;
+    }
+    if (ROLE === 'client') {
+      await createMainWindow();
+      log.info('main window ready (client of hostd)');
+      return;
+    }
     try {
       // Dependency probing spawns subshells; don't make the user wait at a
       // blank screen for it. Run it concurrently with window creation — the
@@ -1068,6 +1176,11 @@ if (!ORCHESTRA_CLI_MODE) {
 
   app.on('window-all-closed', () => {
     log.info('window-all-closed — shutting down');
+    if (ROLE === 'client') {
+      disposeVoice();
+      app.quit();
+      return;
+    }
     setAppQuitting(); // keeper bridges: treat everything from here as detach
     shutdownSubsystems();
     if (process.platform !== 'darwin') app.quit();
@@ -1079,6 +1192,7 @@ if (!ORCHESTRA_CLI_MODE) {
     // "detach" in the keeper bridge, letting in-flight turns keep running in
     // their detached keepers (keeper-client.ts). Deliberately NO sdkStop here —
     // surviving quit is the feature; shutdownSubsystems stays SDK-free.
+    if (ROLE === 'client') return; // a client owns no keeper, socket or bus
     setAppQuitting();
     shutdownSubsystems();
   });

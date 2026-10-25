@@ -1,0 +1,58 @@
+HP inapp.seed {"seeded":["fee07b9b-0000-4000-8000-000000000001","fee07b9b-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP inapp.role 2026-10-25T20:54:50.244Z [INFO] hostd-proto: role=host
+HP wake.inapp.0 {"rowCreatedAt":1792961697300,"cliStartToRowMs":660,"cliRunMs":10700,"sendRc":0,"sendErr":"","latencyMs":2897,"cold":true,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default be"}
+HP wake.inapp.1 {"rowCreatedAt":1792961712325,"cliStartToRowMs":581,"cliRunMs":10591,"sendRc":0,"sendErr":"","latencyMs":259,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run fee07b9b-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP wake.inapp.2 {"rowCreatedAt":1792961727123,"cliStartToRowMs":448,"cliRunMs":10557,"sendRc":0,"sendErr":"","latencyMs":348,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run fee07b9b-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP wake.inapp.3 {"rowCreatedAt":1792961742395,"cliStartToRowMs":589,"cliRunMs":10689,"sendRc":0,"sendErr":"","latencyMs":300,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run fee07b9b-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP inapp.wake {"cold":2897,"warmMedian":300,"all":[2897,259,348,300]}
+HP inapp.survivors 0
+HP hostd.seed {"seeded":["ede763d0-0000-4000-8000-000000000001","ede763d0-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP hostd.attachSocketUp true
+HP hostd.role ["2026-10-25T20:56:05.102Z [INFO] hostd-proto: role=hostd","2026-10-25T20:56:05.284Z [INFO] hostd ready (pid 1495925, no window)"]
+HP hostd.swayWindowsOfHostdPid 0
+HP hostd.procs ["1495925:hostd"]
+HP hostd.cliWhoami {"rc":0,"out":"id            ede763d0-0000-4000-8000-000000000001\nname          pc-lead\nbranch        pc-lead\nkind          orchestrato","err":""}
+HP wake.hostd.0 {"rowCreatedAt":1792961769414,"cliStartToRowMs":507,"cliRunMs":10518,"sendRc":0,"sendErr":"","latencyMs":2503,"cold":true,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default be"}
+HP wake.hostd.1 {"rowCreatedAt":1792961784103,"cliStartToRowMs":372,"cliRunMs":10387,"sendRc":0,"sendErr":"","latencyMs":265,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run ede763d0-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP wake.hostd.2 {"rowCreatedAt":1792961798734,"cliStartToRowMs":349,"cliRunMs":10365,"sendRc":0,"sendErr":"","latencyMs":239,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run ede763d0-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP wake.hostd.3 {"rowCreatedAt":1792961813300,"cliStartToRowMs":292,"cliRunMs":10314,"sendRc":0,"sendErr":"","latencyMs":208,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run ede763d0-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP hostd.wake {"cold":2503,"warmMedian":239,"all":[2503,265,239,208]}
+HP hostd.listWorkspacesOverAttach {"n":3,"statuses":["pc-lead:idle","pc-ops:idle","pc-w1:idle"]}
+HP hostd.keepersAfterWakes ["1497364@46542074"]
+HP client.role ["2026-10-25T20:57:08.010Z [INFO] hostd-proto: role=client","2026-10-25T20:57:08.035Z [INFO] hostd-proto: attached to hostd as a client in 2 ms"]
+HP client.procs ["1495925:hostd","1510198:app"]
+HP client.listWorkspaces ["pc-lead:idle","pc-ops:idle","pc-w1:idle"]
+HP client.sidebarDomNames ["pc-lead","pc-ops","pc-w1","pc-lead"]
+HP client.busPaneSnapshot {"available":false,"runs":0,"err":"The fleet bus is not open. Orchestra started normally (the bus never blocks boot) — see the log for the open failure."}
+HP wake.client.1 {"rowCreatedAt":1792961833476,"cliStartToRowMs":235,"cliRunMs":10293,"sendRc":0,"sendErr":"","latencyMs":206,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run ede763d0-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP client.pushesSeenByRenderer ["1792961833630 pc-w1:idle","1792961833658 pc-w1:running","1792961834503 pc-w1:idle","1792961834556 pc-w1:idle"]
+HP client.wakeWithClientAttached 206
+HP client.frontendLocal.browserNavigate ERR Error: Error invoking remote method 'browser:navigate': Error: browser-panel: main window not ready
+HP client.frontendLocal.revealLogs OK null
+HP client.frontendLocal.getAppVersion OK "0.5.353"
+HP client.screenshot /home/lmas/.cache/hostd-proto/h-hostd/client.png
+HP client.consoleErrs 0
+HP keeper.beforeAppQuit {"keepers":["1497364@46542074"],"claudes":["1497479@46542113"]}
+HP keeper.afterAppQuit {"keepers":["1497364@46542074"],"claudes":["1497479@46542113"],"sameKeeper":true,"procs":["1495925:hostd"]}
+HP wake.afterAppQuit.1 {"rowCreatedAt":1792961853410,"cliStartToRowMs":702,"cliRunMs":10715,"sendRc":0,"sendErr":"","latencyMs":247,"cold":false,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"lot pending — run the check command(s) below, then ack each lot:\norchestra check --run ede763d0-0000-4000-8000-000000000002\n<total_tokens>15000000 tokens left</"}
+HP keeper.wakeAfterAppQuit 247
+HP keeper.afterHostdStop {"keepers":["1497364@46542074"],"claudes":["1497479@46542113"],"sameKeeper":true,"procs":[],"lockLeft":false,"attachSockLeft":false}
+HP keeper.sendWithNoHost {"rc":0,"err":""}
+HP keeper.deliveredByNextHostd {"latencyFromSendMs":967,"keepers":["1497364@46542074"],"sameKeeper":true}
+HP hostd.survivors 0
+HP spool-attached.seed {"seeded":["00c2df33-0000-4000-8000-000000000001","00c2df33-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP wake.spool-attached.0 {"rowCreatedAt":1792961885763,"cliStartToRowMs":884,"cliRunMs":10912,"sendRc":0,"sendErr":"","latencyMs":3346,"cold":true,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default be"}
+HP spoolgate.attached {"w1Status":"idle","lastActivityAt":null,"spool":["00c2df33-0000-4000-8000-000000000011.jsonl:1763","00c2df33-0000-4000-8000-000000000011.seq:1"],"livenessLines":["2026-10-25T20:58:01.834Z [INFO] pause-trap: started (watch /home/lmas/.cache/hostd-proto/h-spool-attached, sweep 15000 ms)","2026-10-25T20:58:01.856Z [INFO] hostd-proto: attach socket /home/lmas/.cache/hostd-proto/h-spool-attached/hostd-attach.sock","2026-10-25T20:58:05.935Z [WARN] account-inherit: source /home/lmas/.cache/hostd-proto/h-spool-attached/home/.claude is missing or unreadable — sync skipped, /home/lmas/.cache/hostd-proto/h-spool-attached/cfg left untouched"]}
+HP spool-off.seed {"seeded":["4e2b5ae0-0000-4000-8000-000000000001","4e2b5ae0-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP wake.spool-off.0 {"rowCreatedAt":1792961914102,"cliStartToRowMs":360,"cliRunMs":10407,"sendRc":0,"sendErr":"","latencyMs":2398,"cold":true,"reqsAfter":"w1:WAKE w1:- w1:-","firstTail":"<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default be"}
+HP spoolgate.off {"w1Status":"idle","lastActivityAt":null,"spool":["4e2b5ae0-0000-4000-8000-000000000011.cursor:13","4e2b5ae0-0000-4000-8000-000000000011.jsonl:1703","4e2b5ae0-0000-4000-8000-000000000011.seq:1"],"livenessLines":["2026-10-25T20:58:30.672Z [INFO] pause-trap: started (watch /home/lmas/.cache/hostd-proto/h-spool-off, sweep 15000 ms)","2026-10-25T20:58:30.723Z [INFO] hostd-proto: attach socket /home/lmas/.cache/hostd-proto/h-spool-off/hostd-attach.sock","2026-10-25T20:58:34.289Z [WARN] account-inherit: source /home/lmas/.cache/hostd-proto/h-spool-off/home/.claude is missing or unreadable — sync skipped, /home/lmas/.cache/hostd-proto/h-spool-off/cfg left untouched"]}
+HP forcehost.seed {"seeded":["96e31bd0-0000-4000-8000-000000000001","96e31bd0-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP forcehost.secondHost {"exit":0,"lockLine":null,"sockPointerUnchanged":true,"roles":["2026-10-25T20:58:59.643Z [INFO] hostd-proto: role=hostd"]}
+HP-DONE
+HP wakeoff.seed {"seeded":["7c671460-0000-4000-8000-000000000001","7c671460-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=false,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP wake.wakeoff.0 {"rowCreatedAt":1792961999388,"cliStartToRowMs":375,"cliRunMs":10439,"sendRc":0,"sendErr":"","latencyMs":null,"cold":true,"reqsAfter":"","firstTail":null}
+HP wakeoff.wake null
+HP hostdgone.seed {"seeded":["a02c8445-0000-4000-8000-000000000001","a02c8445-0000-4000-8000-000000000002"],"schema":10,"switches":"delivery=true,wake=true,askGate=true,liveness=true,fencing=true,capability=true,receipts=true,pause=true,dockerRelay=true,memoryCap=true"}
+HP hostdgone.before OK 3
+HP hostdgone.after {"list":"ERR Error: Error invoking remote method 'workspaces:list': Error: hostd-proto: not attached","clientAlive":true,"orphanLine":"2026-10-25T21:01:32.069Z [WARN] hostd-proto: hostd connection closed — this client is now orphaned (no reconnect in the spike)","lockLeft":true,"attachSockLeft":true}
+HP-DONE
