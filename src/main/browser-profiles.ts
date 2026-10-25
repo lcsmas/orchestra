@@ -20,6 +20,10 @@ export interface BrowserProfilesDeps {
   setWorkspaceProfile(wsId: string, profileId: BrowserProfileId | undefined): Promise<void>;
   /** Rebuild the workspace's open panel on that identity (a no-op for a panel that is not open). */
   reprofilePanel(wsId: string, profileId: BrowserProfileId | undefined): BrowserPanelState;
+  /** Workspaces whose OPEN panel runs on that profile right now (what the views do, not what a record says). */
+  openPanelsOn(profileId: BrowserProfileId): string[];
+  /** Resolve once the views a re-profile closed are really gone (their unload handlers can still write the partition). */
+  settleViews(): Promise<void>;
   /** Wipe a profile partition's cookies and storage. */
   clearStorage(profileId: BrowserProfileId): Promise<void>;
   mintId(): BrowserProfileId;
@@ -91,6 +95,10 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
           await deps.setWorkspaceProfile(wsId, undefined);
           deps.reprofilePanel(wsId, undefined);
         }
+        //    …and so is any OPEN panel still running on it though its workspace record says otherwise (a half-failed earlier move);
+        for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);
+        //    …then we wait for the closed views to be really gone (async unload) so none can write the partition back;
+        await deps.settleViews();
         // 2. the partition's cookies and storage are cleared;
         try {
           await deps.clearStorage(profileId);

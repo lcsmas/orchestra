@@ -508,6 +508,11 @@ try {
     await chooseProfile(b, '');
     const j2c = await jarOf(b, PQ(2));
     clause('attach', 'detach-returns-to-ephemeral-signed-out', j2c === 'anon' && !wsRec(world, ws2).browserProfileId && (await chip(b)).id === '', `after detach: /whoami = ${j2c}; ws2 record profile=${wsRec(world, ws2).browserProfileId ?? '<none>'}`);
+    // the RENDERER's own view of who carries the profile (Settings counts from its workspace store): a detach must reach it
+    await openSettings(b);
+    const usage = (await rows(b)).find((r) => r.id === S.staging)?.meta ?? null;
+    await closeSettings(b);
+    clause('attach', 'settings-usage-count-follows-a-detach', /^1 workspace\b/.test(usage ?? ''), `Settings row "Staging admin" says ${JSON.stringify(usage)} after ws2 detached (ws1 still carries it; a stale record in the renderer would say 2 workspaces)`);
     await selectWorkspace(b, 'e2e/bp400-1');
     await sleep(800);
     const j1b = await jarOf(b, PQ(1));

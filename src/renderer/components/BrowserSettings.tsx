@@ -118,7 +118,8 @@ export function BrowserSettings({ onClose }: Props) {
         <div className="sound-hint">
           A profile is a named sign-in the browser panel keeps across restarts. Attach one to a workspace from the
           panel’s URL bar; every tab of that workspace then uses it, and several workspaces can share one. Without a
-          profile a workspace browses ephemerally: nothing is kept. Only you can attach a profile — agents cannot.
+          profile a workspace browses ephemerally: nothing is kept. Cookies a site marks as session-only (no expiry) are not
+          kept across restarts. Only you can attach a profile — agents cannot.
         </div>
         <div className="bp-body">
           {!loaded ? (

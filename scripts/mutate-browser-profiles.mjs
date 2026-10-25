@@ -37,14 +37,14 @@ const load = (rel) => {
 // [file, name, find (exactly once), replace]
 const MUTANTS = [
   // --- browser-panel.ts: which partition, what a move does ---
-  [PANEL, 'buildTab ignores the panel partition (always ephemeral)', 'partition: panel.partition,', 'partition: partitionFor(panel.wsId, undefined),'],
+  [PANEL, 'buildTab ignores the panel partition (always ephemeral)', '      partition: panel.partition,\n', '      partition: partitionFor(panel.wsId, undefined),\n'],
   [PANEL, 'ensurePanel ignores the profile resolver', 'const profileId = profileOf?.(wsId);', 'const profileId = undefined;'],
   [PANEL, 'ensurePanel does not record the profile on the panel', '    partition: partitionFor(wsId, profileId),\n    profileId,', '    partition: partitionFor(wsId, profileId),'],
-  [PANEL, 'reprofilePanel leaves the old views alive', '  for (const t of oldTabs) destroyTab(t);\n  if (wasAttached) attachActive(panel);', '  if (wasAttached) attachActive(panel);'],
+  [PANEL, 'reprofilePanel leaves the old views alive', '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }\n  if (wasAttached) attachActive(panel);', '  if (wasAttached) attachActive(panel);'],
   [PANEL, 'reprofilePanel mints new tab ids', 'buildTab(panel, { openedBy: sn.openedBy, id: sn.id })', 'buildTab(panel, { openedBy: sn.openedBy })'],
-  [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '    if (sn.url) {\n      restoreUrls.set(tab, sn.url);', '    if (false as boolean) {\n      restoreUrls.set(tab, sn.url);'],
+  [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '      if (sn.url) {\n        restoreUrls.set(tab, sn.url);', '      if (false as boolean) {\n        restoreUrls.set(tab, sn.url);'],
   [PANEL, 'reprofilePanel loses the active tab', 'panel.activeId = oldActive;', 'panel.activeId = panel.tabs[0].id;'],
-  [PANEL, 'reprofilePanel never re-composites the active view', '  for (const t of oldTabs) destroyTab(t);\n  if (wasAttached) attachActive(panel);', '  for (const t of oldTabs) destroyTab(t);'],
+  [PANEL, 'reprofilePanel never re-composites the active view', '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }\n  if (wasAttached) attachActive(panel);', '  for (const t of oldTabs) {\n    trackClose(t);\n    destroyTab(t);\n  }'],
   [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.partition = partition;', '  panel.partition = partition;'],
   [PANEL, 'reprofilePanel rebuilds even for the same identity', '  if (partition === panel.partition) return panel.state;\n', ''],
   [PANEL, 'reprofilePanel builds a panel that is not open', '  if (!panel) return getState(wsId);\n  const partition', '  if (!panel) { ensurePanel(wsId); return getState(wsId); }\n  const partition'],
@@ -53,6 +53,15 @@ const MUTANTS = [
   [PANEL, 'sign-in flushing also watches ephemeral sessions', 'if (panel.profileId !== undefined) persistSignIns(ses);', 'persistSignIns(ses);'],
   [PANEL, 'sign-in flushing adds a watcher per tab', '  if (signInSessions.has(ses)) return;\n', ''],
   [PANEL, 'flushProfileStorage also flushes ephemeral partitions', '    if (panel.profileId === undefined) continue;\n', ''],
+  [PANEL, 'a failed rebuild leaves a half-built panel', '    panel.tabs = oldTabs;\n    panel.partition = prev.partition;\n    panel.profileId = prev.profileId;\n    if (wasAttached) attachActive(panel);\n    throw e;', '    throw e;'],
+  [PANEL, 'the closing views are not tracked', '    trackClose(t);\n    destroyTab(t);', '    destroyTab(t);'],
+  [PANEL, 'settleClosedViews never waits', 'await Promise.race([Promise.all([...closing]).then(() => undefined), new Promise<void>((r) => setTimeout(r, timeoutMs))]);', 'void timeoutMs;'],
+  [PANEL, 'settleClosedViews can wait forever', 'await Promise.race([Promise.all([...closing]).then(() => undefined), new Promise<void>((r) => setTimeout(r, timeoutMs))]);', 'await Promise.all([...closing]);'],
+  [PANEL, 'workspacesOnProfile lists every open panel', '.filter((p) => p.profileId === profileId).map((p) => p.wsId)', '.map((p) => p.wsId)'],
+  [SVC, 'delete does not wait for the closed views', '        await deps.settleViews();\n', ''],
+  [SVC, 'delete ignores open panels the record does not know', '        for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);\n', ''],
+  ['src/main/browser-profiles-host.ts', 'the host never waits for the closed views', 'settleViews: () => settleClosedViews(3000),', 'settleViews: async () => {},'],
+  ['src/main/browser-profiles-host.ts', 'a detach broadcasts a DELETED key (the renderer keeps the old id)', 'const updated = { ...ws, browserProfileId: profileId };\n      await store.upsertWorkspace(updated);', 'const updated: typeof ws = { ...ws };\n      if (profileId === undefined) delete updated.browserProfileId; else updated.browserProfileId = profileId;\n      await store.upsertWorkspace(updated);'],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', '          return refuse(\'storage\',', '          void refuse(\'storage\','],
@@ -106,6 +115,12 @@ function restoreAll() {
 process.on('exit', () => { for (const [rel, b] of backups) { try { copyFileSync(b, path.join(root, rel)); } catch {} } });
 
 for (const m of MUTANTS) load(m[0]);
+if (process.argv.includes('--check')) { // every mutant string LIVE (exactly one occurrence), nothing run
+  let bad = 0;
+  for (const [file, name, find] of MUTANTS) { const n = orig.get(file).split(find).length - 1; if (n !== 1) bad++; if (n !== 1) console.log(`DEAD ${name} (${n}x in ${file})`); }
+  console.log(`${MUTANTS.length - bad}/${MUTANTS.length} live`);
+  process.exit(bad ? 1 : 0);
+}
 const base = run();
 if (base.status !== 0) { console.log('BASELINE FAILS — abort\n' + base.stdout.slice(-3000)); process.exit(2); }
 const baseTests = /# tests (\d+)/.exec(base.stdout)?.[1];

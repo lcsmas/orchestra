@@ -332,6 +332,9 @@ function savePanelTabs(panel: Panel): void {
   );
 }
 
+/** The session partition holding a workspace's browser cookies/storage: a panel's is `Panel.partition` (#400) — its profil
+ *  navigateur's `persist:` one, else the workspace's own in-memory one (`partitionFor`, shared/browser-profile.ts). */
+
 /** Strip Electron/Orchestra tokens from the UA so sites (and their bot
  *  heuristics) see a plain Chromium — same reasoning as login-browser.ts. */
 function normalizeUserAgent(ses: Electron.Session): void {
@@ -617,22 +620,59 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   }));
   const oldActive = panel.activeId;
   const wasAttached = panel.attachedId !== null;
+  const prev = { partition: panel.partition, profileId: panel.profileId };
   const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
   if (attachedTab) detachTab(panel, attachedTab);
   panel.partition = partition;
   panel.profileId = profileId;
   panel.tabs = [];
-  for (const sn of snaps) {
-    const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
-    if (sn.url) {
-      restoreUrls.set(tab, sn.url);
-      void loadIn(tab, sn.url);
+  try {
+    for (const sn of snaps) {
+      const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
+      if (sn.url) {
+        restoreUrls.set(tab, sn.url);
+        void loadIn(tab, sn.url);
+      }
     }
+  } catch (e) {
+    // A view could not be built: put the panel back EXACTLY as it was (old tabs alive, old identity, old view composited) and
+    // let the caller see the error — never a half-built panel whose record and views disagree.
+    for (const t of panel.tabs) destroyTab(t);
+    panel.tabs = oldTabs;
+    panel.partition = prev.partition;
+    panel.profileId = prev.profileId;
+    if (wasAttached) attachActive(panel);
+    throw e;
   }
   panel.activeId = oldActive;
-  for (const t of oldTabs) destroyTab(t);
+  for (const t of oldTabs) {
+    trackClose(t);
+    destroyTab(t);
+  }
   if (wasAttached) attachActive(panel);
   return publish(panel);
+}
+
+/** The workspaces whose OPEN panel runs on `profileId` right now (what the views do, not what a record says). */
+export function workspacesOnProfile(profileId: BrowserProfileId): string[] {
+  return [...panels.values()].filter((p) => p.profileId === profileId).map((p) => p.wsId);
+}
+
+/** Views being closed by a re-profile: `webContents.close()` is ASYNC (unload / pagehide handlers still run), so a storage wipe
+ *  must wait for their `destroyed` or a page could write the partition back after it was cleared. */
+const closing = new Set<Promise<void>>();
+function trackClose(tab: Tab): void {
+  const wc = liveContents(tab);
+  if (!wc) return;
+  const p = new Promise<void>((resolve) => wc.once('destroyed', () => resolve()));
+  closing.add(p);
+  void p.then(() => closing.delete(p));
+}
+
+/** Resolve once every view closed by a re-profile is gone (or after `timeoutMs`: a hung page must not block a delete forever). */
+export async function settleClosedViews(timeoutMs: number): Promise<void> {
+  if (closing.size === 0) return;
+  await Promise.race([Promise.all([...closing]).then(() => undefined), new Promise<void>((r) => setTimeout(r, timeoutMs))]);
 }
 
 // ---------------------------------------------------------------------------

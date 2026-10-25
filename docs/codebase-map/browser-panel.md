@@ -367,8 +367,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   text never reaches a partition name), `effectiveProfileId`, `decideAttach` (attach / switch / detach / unknown; `changed:false` = nothing to
   rebuild), `decideDelete` (the carriers to detach), `isHumanProfileCaller`, `profileCreateWarning` (reuses #389's `secretsNotice`).
 - **Service — `src/main/browser-profiles.ts`** (Electron-free, `browser-profiles.test.ts`): `create/rename/remove/attach`, serialized (a second click
-  waits for the first). **Delete order matters**: every carrier is detached (record cleared, open panel rebuilt ephemeral — the only writers into
-  the partition die first) → the partition's storage is cleared → ONLY THEN the profile is forgotten; a failed clear keeps the profile (`storage`
+  waits for the first). **Delete order matters**: every carrier is detached (record cleared — as an explicit `undefined`, because the renderer MERGES a
+  `workspace:update`, an absent key would keep the old id there — and the open panel rebuilt ephemeral; the only writers into
+  the partition die first, and are awaited) → the partition's storage is cleared → ONLY THEN the profile is forgotten; a failed clear keeps the profile (`storage`
   refusal, retryable) instead of dropping a profile whose sign-ins are still on disk. Attach records the id THEN rebuilds the panel, rolling the
   record back if the rebuild throws. Wiring to the store / `session` / panel: `browser-profiles-host.ts` (`clearStorage` = `clearStorageData`
   + `clearCache` + `clearAuthCache` + flush).
@@ -377,6 +378,10 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   commits) — the old views (debuggers included) are destroyed and the active one re-composited. Same identity = no-op; a panel that is not open
   is NOT built (it takes the identity from the record at its first `ensurePanel`, restored tabs included). The rebuilt tabs of a workspace that
   is not on screen broadcast like any tab events do (the renderer's auto-open of a pane on a real URL is pre-existing, #393 review F2).
+  A view that cannot be built rolls the whole move back (old tabs alive, old identity, old view composited, error surfaced — never a half-built
+  panel). `webContents.close()` is ASYNC, so the closed views are tracked (`trackClose`) and a delete waits for them (`settleClosedViews`, 3 s cap)
+  before wiping the partition — a page's `pagehide` write must not repopulate a "deleted" profile; `workspacesOnProfile` lets the delete also move
+  off any OPEN panel that still runs on the profile though its record says otherwise.
   **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
 - **ONLY the human can change a profile (story 26).** The five channels (`browserProfiles:list|create|rename|delete`, `browser:profileAttach`) are
   registered by `registerBrowserProfilesIpc` (`browser-profiles-ipc.ts`) — deliberately NOT in `api-handlers.ts`'s generic table (omitted from
@@ -387,7 +392,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   hidden FOREIGN window invoking all four write channels over the main-process inspector → `not-human`, nothing moved; the app's own window works).
   A spawn that names a profile is #401's rule (parent must hold it) and writes the record on the NEW workspace directly, never through this service.
 - **Settings > Browser — `BrowserSettings.tsx`** (globe icon in the sidebar header, `store.browserSettingsOpen`): create / rename (id kept) /
-  delete (confirm names the workspaces that lose it), the per-profile usage count, and — when `getSecretsState()` says not encrypted — the
+  delete (the confirmation says how many workspaces lose it), the per-profile usage count, and — when `getSecretsState()` says not encrypted — the
   `[data-profile-warning="create"]` notice above the create field + a "not encrypted" tag per row (ADR 0010: warn, never refuse).
 - **URL bar — `BrowserPanel.tsx`**: a chip (`[data-browser-profile-chip]`, `data-profile-id`) beside the URL form shows the profile or
   "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
@@ -402,9 +407,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   human's live login keyring (G10b: the rig guards the collection listing before/after).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
-  `browser-profiles-wiring.test.ts`; 53 in-place mutants `node scripts/mutate-browser-profiles.mjs`; built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  `browser-profiles-wiring.test.ts`; 62 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
   (arms `settings,attach,human,restore,delete,flush`; oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
-  on disk, compositor pixels, store.json) + 12 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
+  on disk, compositor pixels, store.json) + 13 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
 
 ## IPC / seam
 

@@ -99,3 +99,12 @@ test('the renderer asks via browserProfileAttach only from the panel chip bar; S
   assert.match(code('renderer/components/BrowserPanel.tsx'), /browserProfileAttach\(workspaceId, profileId\)/);
   assert.doesNotMatch(code('renderer/components/BrowserSettings.tsx'), /browserProfileAttach/);
 });
+
+test('the host moves open panels off a deleted profile, waits for the closed views, and clears the carriers\' key with `undefined` (the renderer merges a workspace:update)', () => {
+  const host = code('main/browser-profiles-host.ts');
+  assert.match(host, /openPanelsOn: workspacesOnProfile,/);
+  assert.match(host, /settleViews: \(\) => settleClosedViews\(\d+\),/);
+  assert.match(host, /const updated = \{ \.\.\.ws, browserProfileId: profileId \};/, 'an ABSENT key would keep the old id in the renderer\'s merged record');
+  assert.doesNotMatch(host, /delete updated\.browserProfileId/);
+  assert.match(host, /platform\.broadcast\('workspace:update', updated\)/);
+});

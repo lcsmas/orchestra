@@ -25,14 +25,22 @@ class WebContents {
   }
   isDestroyed() { return this.destroyed; }
   on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
-  once() {} setWindowOpenHandler() {}
+  once(ev, fn) { (this.onceH ||= {})[ev] = ((this.onceH ||= {})[ev] || []).concat(fn); }
+  setWindowOpenHandler() {}
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() {}
   getURL() { return this.url; } getTitle() { return this.title; }
-  close() { this.destroyed = true; this.closed++; this._view.webContents = undefined; }
+  close() {
+    this.destroyed = true; this.closed++; this._view.webContents = undefined;
+    // real Electron closes ASYNC: 'destroyed' fires later, when the harness releases it (globalThis.__bpHoldClose) or right away
+    const fire = () => { for (const f of (this.onceH?.destroyed || [])) f(); };
+    if (globalThis.__bpHoldClose) (globalThis.__bpHeld ??= []).push(fire); else fire();
+  }
 }
 export class WebContentsView {
-  constructor(opts) { this.opts = opts; this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
+  constructor(opts) {
+    if (globalThis.__bpFailNext > 0 && --globalThis.__bpFailNext === 0) throw new Error('stub: cannot build a view');
+    this.opts = opts; this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
 }
@@ -242,4 +250,66 @@ test('profile sessions are told to flush sign-ins to disk; ephemeral ones are no
   bp.flushProfileStorage();
   assert.ok(sessions().get(PERSIST(P2)).flushedStorage >= 1 && sessions().get(PERSIST(P2)).flushedCookies >= 1);
   assert.equal(sessions().get(EPH(eph)).flushedStorage, e0, 'ephemeral partition untouched');
+});
+
+test('a view that cannot be built leaves the panel EXACTLY as it was: old tabs alive, old identity, old view composited, error surfaced', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  bp.createTab(ws, { openedBy: 'human', url: 'http://localhost:1/three', activate: true });
+  const before = bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!);
+  const viewsBefore = (globalThis as any).__bpViews.length;
+  (globalThis as any).__bpFailNext = 2; // the 2nd view of the rebuild throws
+  assert.throws(() => bp.reprofilePanel(ws, P1), /cannot build a view/);
+  (globalThis as any).__bpFailNext = 0;
+  const after = bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!);
+  assert.deepEqual(after, before, 'the very same tabs');
+  for (const t of before) assert.equal(wcOf(t).closed, 0, 'no old view destroyed');
+  assert.deepEqual(after.map(partitionOf), [EPH(ws), EPH(ws), EPH(ws)], 'old partition');
+  assert.equal('profileId' in bp.getState(ws), false, 'old identity');
+  assert.equal(attached.size, 1);
+  assert.equal(attached.has(bp.getActiveTab(ws)!.view), true, 'the OLD active view is the composited one');
+  assert.equal(bp.getActiveTab(ws)!.id, 't3');
+  // the one new view that WAS built before the failure was closed again (no leak)
+  const built = (globalThis as any).__bpViews.slice(viewsBefore);
+  assert.equal(built.length, 1);
+  assert.equal(built[0]._wc.closed, 1, 'the half-built replacement was destroyed');
+  // and the panel still works: a later, successful move goes through
+  bp.reprofilePanel(ws, P1);
+  assert.deepEqual(bp.listTabs(ws).map((t) => partitionOf(bp.getTab(ws, t.id)!)), [PERSIST(P1), PERSIST(P1), PERSIST(P1)]);
+});
+
+test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {
+  const a = newWs(P1), b = newWs(P1), c = newWs(P2), d = newWs();
+  for (const w of [a, b, c, d]) bp.ensurePanel(w);
+  assert.deepEqual(bp.workspacesOnProfile(P1).sort(), [a, b].sort());
+  assert.deepEqual(bp.workspacesOnProfile(P2), [c]);
+  bp.reprofilePanel(a, undefined);
+  assert.deepEqual(bp.workspacesOnProfile(P1), [b]);
+  assert.deepEqual(bp.workspacesOnProfile('bp-cccccccccccc'), []);
+});
+
+test('settleClosedViews waits for the views a re-profile closed to be really destroyed (async unload), but never longer than its timeout', { timeout: 8000 }, async () => {
+  const ws = newWs();
+  openShown(ws);
+  (globalThis as any).__bpHoldClose = true;
+  (globalThis as any).__bpHeld = [];
+  bp.reprofilePanel(ws, P1); // closes the old view; its 'destroyed' is held back
+  let settled = false;
+  const waiting = bp.settleClosedViews(5000).then(() => { settled = true; });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(settled, false, 'still waiting while the old view has not finished closing');
+  (globalThis as any).__bpHoldClose = false;
+  for (const fire of (globalThis as any).__bpHeld.splice(0)) fire();
+  await waiting;
+  assert.equal(settled, true, 'released once the view is destroyed');
+  // a view that never finishes closing cannot block a delete forever
+  (globalThis as any).__bpHoldClose = true;
+  bp.reprofilePanel(ws, undefined);
+  const t0 = Date.now();
+  await bp.settleClosedViews(60);
+  assert.ok(Date.now() - t0 >= 50 && Date.now() - t0 < 2000, `gave up after its timeout (${Date.now() - t0} ms)`);
+  (globalThis as any).__bpHoldClose = false;
+  for (const fire of (globalThis as any).__bpHeld.splice(0)) fire();
+  await bp.settleClosedViews(10);
 });

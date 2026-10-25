@@ -10,9 +10,10 @@ import type { BrowserPanelState, BrowserProfile } from '../shared/types.ts';
 const A = 'bp-aaaaaaaaaaaa';
 const B = 'bp-bbbbbbbbbbbb';
 
-function rig(init?: { profiles?: BrowserProfile[]; workspaces?: Array<{ id: string; browserProfileId?: string }>; clearFails?: boolean; latency?: boolean }) {
+function rig(init?: { profiles?: BrowserProfile[]; workspaces?: Array<{ id: string; browserProfileId?: string }>; clearFails?: boolean; latency?: boolean; openOn?: string[] }) {
   const tick = () => (init?.latency ? new Promise<void>((r) => setTimeout(r, 5)) : Promise.resolve());
   const calls: string[] = [];
+  const onProfile = new Set(init?.openOn ?? []); // workspaces whose open panel runs on a profile (a re-profile moves it off)
   let profiles: BrowserProfile[] = init?.profiles ?? [];
   const workspaces = (init?.workspaces ?? []).map((w) => ({ ...w }));
   let n = 0;
@@ -36,7 +37,12 @@ function rig(init?: { profiles?: BrowserProfile[]; workspaces?: Array<{ id: stri
     },
     reprofilePanel: (wsId, profileId) => {
       calls.push(`reprofile:${wsId}=${profileId ?? '-'}`);
+      if (profileId === undefined) onProfile.delete(wsId);
       return stateOf(wsId, profileId);
+    },
+    openPanelsOn: () => [...onProfile],
+    settleViews: async () => {
+      calls.push('settle');
     },
     clearStorage: async (id) => {
       calls.push(`clear:${id}`);
@@ -128,6 +134,8 @@ test('attach: when the panel cannot move, the record is rolled back and the erro
     reprofilePanel: () => {
       throw new Error('main window not ready');
     },
+    openPanelsOn: () => [],
+    settleViews: async () => {},
     clearStorage: async () => {},
     mintId: () => A,
     now: () => 0,
@@ -148,6 +156,7 @@ test('delete: detaches every carrier, reloads ephemeral, clears storage, THEN fo
   assert.deepEqual(r.calls, [
     'record:w1=-', 'reprofile:w1=-',
     'record:w4=-', 'reprofile:w4=-',
+    'settle',
     `clear:${A}`,
     `setProfiles:${B}`,
   ]);
@@ -171,7 +180,14 @@ test('delete: unknown profile refused with nothing touched; a profile nobody car
   assert.equal(((await r.svc.remove('bp-eeeeeeeeeeee')) as { reason: string }).reason, 'unknown-profile');
   assert.deepEqual(r.calls, []);
   assert.equal((await r.svc.remove(A)).ok, true);
-  assert.deepEqual(r.calls, [`clear:${A}`, 'setProfiles:']);
+  assert.deepEqual(r.calls, ['settle', `clear:${A}`, 'setProfiles:']);
+});
+
+test('delete: an OPEN panel still on the profile though its record says otherwise is moved off it too, before the wipe', async () => {
+  const r = rig({ profiles: [P(A, 'Staging')], workspaces: [{ id: 'w1' }, { id: 'w2', browserProfileId: A }], openOn: ['w1', 'w2'] });
+  await r.svc.remove(A);
+  // w2 is a recorded carrier (record cleared + moved); w1's record is clean but its views still run on A (a half-failed earlier move): moved, nothing recorded
+  assert.deepEqual(r.calls, ['record:w2=-', 'reprofile:w2=-', 'reprofile:w1=-', 'settle', `clear:${A}`, 'setProfiles:']);
 });
 
 test('operations are serialized: create + delete fired together never interleave their read-modify-writes', async () => {

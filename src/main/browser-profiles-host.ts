@@ -5,7 +5,7 @@
 import { ipcMain, session } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { effectiveProfileId, profilePartition } from '../shared/browser-profile.ts';
-import { reprofilePanel, setBrowserProfileResolver } from './browser-panel';
+import { reprofilePanel, settleClosedViews, setBrowserProfileResolver, workspacesOnProfile } from './browser-panel';
 import { createBrowserProfilesService } from './browser-profiles.ts';
 import { registerBrowserProfilesIpc, type ProfileIpcEvent } from './browser-profiles-ipc.ts';
 import { log } from './logger';
@@ -23,13 +23,15 @@ export function initBrowserProfiles(getMainWebContentsId: () => number | null): 
     setWorkspaceProfile: async (wsId, profileId) => {
       const ws = store.getWorkspace(wsId);
       if (!ws) return;
-      const updated = { ...ws };
-      if (profileId === undefined) delete updated.browserProfileId;
-      else updated.browserProfileId = profileId;
+      // `undefined`, not a deleted key: the renderer MERGES a workspace:update (`{...old, ...w}`), so an absent key would keep the old id there.
+      // JSON persistence drops the undefined, so store.json is clean either way.
+      const updated = { ...ws, browserProfileId: profileId };
       await store.upsertWorkspace(updated);
       platform.broadcast('workspace:update', updated);
     },
     reprofilePanel,
+    openPanelsOn: workspacesOnProfile,
+    settleViews: () => settleClosedViews(3000),
     clearStorage: async (profileId) => {
       const ses = session.fromPartition(profilePartition(profileId));
       await ses.clearStorageData();
