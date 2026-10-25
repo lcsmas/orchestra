@@ -4,8 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { installBundledRuntime } from './keeper-runtime-install.ts';
+import { createRuntimeTrust, installBundledRuntime as installReal, type InstallOptions } from './keeper-runtime-install.ts';
 import { runtimeDirName, type RuntimeManifest } from '../shared/keeper-runtime.ts';
+
+/** The stand-ins below are shell scripts, not a node that answers `-p 1`: unit tests inject "it runs" unless the test is ABOUT the probe. */
+const installBundledRuntime = (o: InstallOptions) => installReal({ probe: () => null, ...o });
 
 let root: string;
 let resources: string;
@@ -54,9 +57,11 @@ test('second install is a no-op: same inode, copied=false', () => {
   assert.ok(a.ok);
   if (!a.ok) return;
   const ino = fs.statSync(a.path).ino;
-  const b = installBundledRuntime({ resourcesDir: resources, binDir });
+  let copiedAgain = false;
+  const b = installBundledRuntime({ resourcesDir: resources, binDir, beforeSwap: () => { copiedAgain = true; } }); // beforeSwap fires only after a (wasted) 120 MB copy+hash
   assert.ok(b.ok && b.path === a.path && b.copied === false);
   assert.equal(fs.statSync(a.path).ino, ino);
+  assert.equal(copiedAgain, false, 'an already-installed runtime is not copied a second time (the guard before the swap would hide that from the result)');
 });
 
 test('a bundle whose binary does not hash to its manifest is refused and nothing is left behind', () => {
@@ -145,4 +150,83 @@ test('a runtime that cannot be executed HERE (noexec bin/) is refused — never 
   // …and once the mount allows it, the same dir is simply used (copied:false)
   const ok = installBundledRuntime({ resourcesDir: resources, binDir, canExec: () => true });
   assert.ok(ok.ok && ok.copied === false && ok.path === dest);
+});
+
+// ── -fu F1: concurrent installs must not replace each other ─────────────────────────────────────────────────────────────────
+
+test('F1: an instance that lost the race to a GOOD runtime leaves the winner\'s dir alone (no aside-rename, same inode)', () => {
+  const m = bundle('#!/bin/sh\necho v1\n');
+  const dest = path.join(binDir, runtimeDirName(m), 'node');
+  let winnerIno = 0;
+  const loser = installBundledRuntime({
+    resourcesDir: resources,
+    binDir,
+    beforeSwap: () => {
+      const w = installBundledRuntime({ resourcesDir: resources, binDir }); // the other instance finishes its install while ours is mid-copy
+      assert.ok(w.ok && w.copied);
+      winnerIno = fs.statSync(dest).ino;
+    },
+  });
+  assert.ok(loser.ok, 'the loser still reports a working runtime');
+  if (loser.ok) assert.equal(loser.copied, false, 'it did NOT replace anything');
+  assert.equal(fs.statSync(dest).ino, winnerIno, 'the winner\'s binary was never renamed aside / replaced');
+  assert.deepEqual(fs.readdirSync(binDir), [runtimeDirName(m)], 'no aside/tmp dir left behind');
+});
+
+// ── -fu F2: trust ends at install → content is verified once per run, and the runtime must RUN ──────────────────────────────
+
+test('F2: a same-size corrupted/planted binary under the versioned name is HEALED at the first install of a run, not trusted', () => {
+  const body = '#!/bin/sh\necho v1\n';
+  const m = bundle(body);
+  const first = installBundledRuntime({ resourcesDir: resources, binDir });
+  assert.ok(first.ok);
+  if (!first.ok) return;
+  fs.writeFileSync(first.path, body.replace('v1', 'v2'), { mode: 0o755 }); // same size, other bytes
+  const healed = installBundledRuntime({ resourcesDir: resources, binDir, trust: createRuntimeTrust() });
+  assert.ok(healed.ok && healed.copied === true, 'the corrupted copy was replaced');
+  assert.equal(fs.readFileSync(first.path, 'utf8'), body);
+  assert.deepEqual(fs.readdirSync(binDir), [runtimeDirName(m)]);
+});
+
+test('F2: with a trust the content hash + probe are paid ONCE per run (the second call is a stat); without one every call verifies', () => {
+  bundle('#!/bin/sh\necho v1\n');
+  const trust = createRuntimeTrust();
+  let probes = 0;
+  const probe = () => (probes++, null);
+  const a = installReal({ resourcesDir: resources, binDir, trust, probe });
+  const b = installReal({ resourcesDir: resources, binDir, trust, probe });
+  assert.ok(a.ok && b.ok && b.copied === false);
+  assert.equal(probes, 1, 'one probe for two calls');
+  const c = installReal({ resourcesDir: resources, binDir, probe }); // no trust → verifies every call
+  assert.ok(c.ok);
+  assert.equal(probes, 2);
+});
+
+test('F2: a runtime that passes X_OK and the hash but cannot RUN is refused (and remembered), never picked — the launcher then falls through', () => {
+  const m = bundle('#!/nonexistent/interpreter\n'); // exec bit set, hash matches its manifest, exec() fails ENOENT
+  const trust = createRuntimeTrust();
+  let probes = 0;
+  const r1 = installReal({ resourcesDir: resources, binDir, trust, probe: (f) => (probes++, `exec failed: ${f}`) });
+  assert.equal(r1.ok, false);
+  if (!r1.ok && !r1.absent) assert.match(r1.reason, /does not run/);
+  const dest = path.join(binDir, runtimeDirName(m), 'node');
+  const ino = fs.statSync(dest).ino;
+  const r2 = installReal({ resourcesDir: resources, binDir, trust, probe: (f) => (probes++, `exec failed: ${f}`) });
+  assert.equal(r2.ok, false);
+  assert.equal(probes, 1, 'the verdict is remembered for this run');
+  assert.equal(fs.statSync(dest).ino, ino, 'a refused runtime is not recopied at every launch');
+});
+
+test('F2: the DEFAULT probe really executes the runtime (`-p 1`): an unexecutable interpreter and a wrong answer are refused, a node-like answer passes', () => {
+  bundle('#!/nonexistent/interpreter\n');
+  const bad = installReal({ resourcesDir: resources, binDir });
+  assert.equal(bad.ok, false);
+  if (!bad.ok && !bad.absent) assert.match(bad.reason, /does not run/);
+  bundle('#!/bin/sh\necho 2\n');
+  const wrong = installReal({ resourcesDir: resources, binDir: path.join(root, 'bin2') });
+  assert.equal(wrong.ok, false);
+  if (!wrong.ok && !wrong.absent) assert.match(wrong.reason, /expected "1"/);
+  bundle('#!/bin/sh\necho 1\n');
+  const good = installReal({ resourcesDir: resources, binDir: path.join(root, 'bin3') });
+  assert.ok(good.ok);
 });

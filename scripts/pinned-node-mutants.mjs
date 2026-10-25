@@ -50,14 +50,18 @@ const MUTANTS = [
   { id: 'pick-path-before-bundled', file: RT, edits: [["  if (i.bundledNode) return { kind: 'bundled', cmd: i.bundledNode, electronRunAsNode: false };\n  if (i.appImage) {\n    if (i.pathNode)", "  if (i.appImage) {\n    if (i.pathNode)"], ["  return { kind: 'app', cmd: i.execPath, electronRunAsNode: true };\n}", "  if (i.bundledNode) return { kind: 'bundled', cmd: i.bundledNode, electronRunAsNode: false };\n  return { kind: 'app', cmd: i.execPath, electronRunAsNode: true };\n}"]], unit: [U_RT] },
   { id: 'runtime-dir-not-versioned', file: RT, edits: [['return `node-${m.version}-${m.nodeSha256.slice(0, 12)}`;', "return 'node';"]], unit: [U_RT, U_INST], rig: ['update_keeps_running_keeper'] },
   { id: 'install-hash-unchecked', file: INST, edits: [["      if (got !== manifest.nodeSha256) return", '      if (false) return']], unit: [U_INST] },
-  { id: 'install-always-recopies', file: INST, edits: [["    if (usable(dest, manifest)) return runnable(dest, manifest, false);\n\n    fs.mkdirSync(o.binDir", '    fs.mkdirSync(o.binDir']], unit: [U_INST] },
+  { id: 'install-always-recopies', file: INST, edits: [["    if (usable(dest, manifest) && (o.trust?.checked.has(dest) || contentGood(dest, manifest))) return finish(dest, manifest, false);\n\n    fs.mkdirSync(o.binDir", '    fs.mkdirSync(o.binDir']], unit: [U_INST] },
   { id: 'install-arch-unchecked', file: INST, edits: [['if (manifest.arch !== arch) return', 'if (false) return']], unit: [U_INST] },
   { id: 'launcher-ignores-bundled', file: KC, edits: [['bundledNode: bundled,', 'bundledNode: null,']], rig: ['bundled_launch'] },
   { id: 'launcher-no-reinstall', file: KC, edits: [['  if (!bundled) bundled = refreshBundledRuntime();\n', '']], rig: ['reinstall_when_wiped'] },
   { id: 'startup-install-removed', file: KC, edits: [['  installOomWrapper();\n  refreshBundledRuntime();\n', '  installOomWrapper();\n']], rig: ['bundled_launch', 'update_keeps_running_keeper'] },
-  { id: 'install-exec-unchecked', file: INST, edits: [['    canExec(dest) ? { ok: true, path: dest, manifest, copied } :', '    true ? { ok: true, path: dest, manifest, copied } :']], unit: [U_INST], rig: ['noexec_bin_refused'] },
+  { id: 'install-exec-unchecked', file: INST, edits: [['      if (!canExec(dest)) reason =', '      if (false) reason =']], unit: [U_INST], rig: ['noexec_bin_refused'] },
   { id: 'gather-ignores-appimage', file: RT, edits: [['const appImage = !!o.appImagePath;', 'const appImage = false;']], unit: [U_RT] },
   { id: 'gather-path-lookup-unconditional', file: RT, edits: [["pathNode: appImage ? o.findOnPath('node') : null", "pathNode: o.findOnPath('node')"]], unit: [U_RT] },
+  { id: 'install-race-replaces-winner', file: INST, edits: [['        if (usable(dest, manifest) && contentGood(dest, manifest)) return finish(dest, manifest, false); // another instance won the race\n', '']], unit: [U_INST], rig: ['concurrent_install_keeps_winner'] },
+  { id: 'install-content-unchecked', file: INST, edits: [['(o.trust?.checked.has(dest) || contentGood(dest, manifest))', 'true']], unit: [U_INST], rig: ['corrupt_runtime_healed_at_start'] },
+  { id: 'install-probe-skipped', file: INST, edits: [['const p = probe(dest);', 'const p: string | null = null;']], unit: [U_INST], rig: ['unrunnable_runtime_falls_through'] },
+  { id: 'trust-not-remembered', file: INST, edits: [['      o.trust?.checked.set(dest, reason);\n', '']], unit: [U_INST] },
   // INSTRUMENT CHECK: a provably EQUIVALENT edit (same read buffer size). It MUST survive.
   { id: 'equiv-buffer-size', file: LIB, edits: [['Buffer.allocUnsafe(1 << 20)', 'Buffer.allocUnsafe(1048576)']], rig: ['fetch_real_ok', 'pack_ok_real'], equivalent: true },
 ];
@@ -151,7 +155,7 @@ const repoClean = TRACKED.every((f) => before[f] === after[f]);
 {
   const r = runRig(allRigArms);
   const reds = allRigArms.filter((a) => !armLine(r.out, a).startsWith(`ARM ${a}: PASS`));
-  line(`control (restored): rig ${allRigArms.length - reds.length}/${allRigArms.length} PASS; repo files byte-equal before/after: ${repoClean}`);
+  line(`control (restored): rig ${allRigArms.length - reds.length}/${allRigArms.length} PASS${reds.length ? ` — NOT PASS: ${reds.map((a) => armLine(r.out, a).slice(0, 160)).join(' | ')}` : ''}; repo files byte-equal before/after: ${repoClean}`);
   if (reds.length || !repoClean) bad++;
 }
 fs.rmSync(MIRROR, { recursive: true, force: true });

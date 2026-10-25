@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { parseRuntimeManifest, runtimeDirName, type RuntimeManifest } from '../shared/keeper-runtime.ts';
 
 export type InstallRuntimeResult =
@@ -70,11 +71,66 @@ function sweepStaleTmp(binDir: string): void {
   }
 }
 
-/** `canExec` is the seam for the rare host where `bin/` is a `noexec` mount (default: access(2) X_OK) — a runtime that cannot run there is REFUSED so the launcher falls through, never picked and spawned into EACCES (pre-review #390 M1). */
-export function installBundledRuntime(o: { resourcesDir: string | undefined; binDir: string; arch?: string; canExec?: (file: string) => boolean }): InstallRuntimeResult {
+/** What THIS process has established about an installed runtime (path → null = content-verified, executable, runs; string = why it is refused). One entry per runtime per app run:
+ *  the hash (~75 ms warm for 122 MB) and the probe (~50 ms) are paid once at startup, never per keeper launch (pre-review #390 F2). */
+export interface RuntimeTrust {
+  checked: Map<string, string | null>;
+}
+export function createRuntimeTrust(): RuntimeTrust {
+  return { checked: new Map() };
+}
+
+/** The default probe — `node -p 1`: the runtime must EXECUTE. An exec bit and a matching hash prove neither (a missing loader/libstdc++, an LSM deny or rot passes both), and a picked
+ *  runtime that cannot run fails EVERY session start where the pre-bundle launcher always ran. Null = fine, else the reason. */
+function runProbe(file: string): string | null {
+  try {
+    const out = execFileSync(file, ['-p', '1'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' } }).trim();
+    return out === '1' ? null : `printed ${JSON.stringify(out.slice(0, 40))}, expected "1"`;
+  } catch (e) {
+    const err = e as { stderr?: Buffer | string; message?: string };
+    return String(err.stderr || err.message || 'failed').trim().split('\n')[0].slice(0, 160);
+  }
+}
+
+/** Does the file at `dest` hash to the manifest's `nodeSha256`? (size alone is not content: a same-size corrupted/planted binary passes `usable`.) */
+function contentGood(dest: string, manifest: RuntimeManifest): boolean {
+  try {
+    return sha256File(dest) === manifest.nodeSha256;
+  } catch {
+    return false;
+  }
+}
+
+export interface InstallOptions {
+  resourcesDir: string | undefined;
+  binDir: string;
+  arch?: string;
+  /** Seam for a `noexec` `bin/` (default: access(2) X_OK) — a runtime that cannot run there is REFUSED so the launcher falls through (pre-review #390 M1). */
+  canExec?: (file: string) => boolean;
+  /** Seam for "can it run": null = yes, else the reason (default: `node -p 1`, see runProbe). */
+  probe?: (file: string) => string | null;
+  /** The caller's per-process memory of what it already verified (see RuntimeTrust). Absent = verify (hash + exec + probe) on every call. */
+  trust?: RuntimeTrust;
+  /** TEST SEAM: runs right before the swap into place, after our copy is verified — where a concurrent instance can win the race (F1). */
+  beforeSwap?: () => void;
+}
+
+export function installBundledRuntime(o: InstallOptions): InstallRuntimeResult {
   const canExec = o.canExec ?? canExecHere;
-  const runnable = (dest: string, manifest: RuntimeManifest, copied: boolean): InstallRuntimeResult =>
-    canExec(dest) ? { ok: true, path: dest, manifest, copied } : { ok: false, reason: `the installed runtime ${dest} is not executable here (a noexec mount?) — falling back to another runtime` };
+  const probe = o.probe ?? runProbe;
+  /** Final gate for a runtime that is on disk and content-verified: executable HERE, and it RUNS. Cached per process when the caller gave a `trust`. */
+  const finish = (dest: string, manifest: RuntimeManifest, copied: boolean): InstallRuntimeResult => {
+    let reason = o.trust?.checked.get(dest);
+    if (reason === undefined) {
+      if (!canExec(dest)) reason = `the installed runtime ${dest} is not executable here (a noexec mount?)`;
+      else {
+        const p = probe(dest);
+        reason = p === null ? null : `the installed runtime ${dest} does not run (${p})`;
+      }
+      o.trust?.checked.set(dest, reason);
+    }
+    return reason === null ? { ok: true, path: dest, manifest, copied } : { ok: false, reason: `${reason} — falling back to another runtime` };
+  };
   if (!o.resourcesDir) return { ok: false, absent: true };
   const srcDir = path.join(o.resourcesDir, 'pinned-node');
   const srcManifest = path.join(srcDir, 'manifest.json');
@@ -88,7 +144,8 @@ export function installBundledRuntime(o: { resourcesDir: string | undefined; bin
     const src = path.join(srcDir, 'node');
     const destDir = path.join(o.binDir, runtimeDirName(manifest));
     const dest = path.join(destDir, 'node');
-    if (usable(dest, manifest)) return runnable(dest, manifest, false);
+    // Fast path: right size + mode, and this process has either verified the content already or does so now (a same-size corrupted/planted binary is HEALED below, not trusted — F2).
+    if (usable(dest, manifest) && (o.trust?.checked.has(dest) || contentGood(dest, manifest))) return finish(dest, manifest, false);
 
     fs.mkdirSync(o.binDir, { recursive: true });
     sweepStaleTmp(o.binDir);
@@ -101,20 +158,24 @@ export function installBundledRuntime(o: { resourcesDir: string | undefined; bin
       fs.chmodSync(path.join(tmpDir, 'node'), 0o755);
       const got = sha256File(path.join(tmpDir, 'node'));
       if (got !== manifest.nodeSha256) return { ok: false, reason: `the bundled node does not hash to its manifest (got ${got.slice(0, 12)}…, expected ${manifest.nodeSha256.slice(0, 12)}…) — refusing to install it` };
-      let movedAside = false;
-      if (fs.existsSync(destDir)) {
-        fs.renameSync(destDir, aside); // a corrupt/partial dir of this exact name: replace by rename, never write into it (a process may be running it)
-        movedAside = true;
-      }
+      o.beforeSwap?.();
+      o.trust?.checked.delete(dest); // we are about to (maybe) replace what this process may have vouched for
+      // F1: the swap is ONE atomic rename that succeeds only when no dir of that name exists. A loser of a race gets ENOTEMPTY and finds the winner's GOOD dir → leaves it alone: renaming a
+      // good dir aside (even for µs) makes the runtime vanish under a keeper that is launching from it. Only a dir that is demonstrably corrupt/partial is moved aside.
       try {
         fs.renameSync(tmpDir, destDir);
       } catch (e) {
-        if (usable(dest, manifest)) return runnable(dest, manifest, false); // another instance won the race
-        throw e;
-      } finally {
-        if (movedAside) fs.rmSync(aside, { recursive: true, force: true });
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code !== 'ENOTEMPTY' && code !== 'EEXIST') throw e;
+        if (usable(dest, manifest) && contentGood(dest, manifest)) return finish(dest, manifest, false); // another instance won the race
+        fs.renameSync(destDir, aside); // a corrupt/partial dir of this exact name: replace by rename, never write into it (a process may be running it)
+        try {
+          fs.renameSync(tmpDir, destDir);
+        } finally {
+          fs.rmSync(aside, { recursive: true, force: true });
+        }
       }
-      return runnable(dest, manifest, true);
+      return finish(dest, manifest, true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

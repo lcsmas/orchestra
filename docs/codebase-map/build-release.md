@@ -115,7 +115,7 @@ The package ships a pinned Node (linux arm64 + x64) as `resources/pinned-node/{n
   `/proc/<keeper>/exe` is that very runtime (an exec-proxy wrapper fails). Any failure throws → electron-builder fails → `pnpm run build` fails → `release.sh`
   stops before tag/publish (and the CI build job goes red — CI runs the same hooks via `electron-builder`). A pack for the OTHER arch than the host is
   **refused** (cannot be executed) unless `ORCHESTRA_PINNED_NODE_ALLOW_CROSS=1`, which ships it hash-verified but UNSMOKED and says so.
-- **Gates**: `pnpm run test:pinned-node` (25 arms: fetch/hash must-FAILs, packaged-runtime must-FAILs incl. corrupted byte / truncated / non-exec / manifest / cross-arch,
+- **Gates**: `pnpm run test:pinned-node` (28 arms: fetch/hash must-FAILs, packaged-runtime must-FAILs incl. corrupted byte / truncated / non-exec / manifest / cross-arch,
   smoke-has-teeth arms with the hash gate neutralised, launcher arms) · `pnpm run test:pinned-node-mutants` · `pnpm run test:pinned-node-pack` (the REAL
   electron-builder `--linux dir` chain under `flock $PKG_LOCK`: good pack passes; corrupted runtime and missing runtime FAIL the pack; with the `packCheck` call
   removed the corrupted runtime ships) · `pnpm run test:pinned-node-app` (built AppImage, see `session-keeper.md`). The AppImage grows by ~40 MB (measured 339 MB vs 298–304 MB for sibling builds of the same tree family; node is 28 MB xz / 44 MB gzip).
