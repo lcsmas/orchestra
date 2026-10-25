@@ -31,8 +31,10 @@ test('panel teardown reaches the proxy: destroyPanel notifies observers with des
 
 test('the proxy is the only NEW debugger attacher, and it shares the legacy attach instead of replacing it', () => {
   const host = read('./browser-cdp-host.ts');
-  assert.equal((host.match(/\.debugger\.attach\(/g) ?? []).length, 1);
-  assert.match(host, /if \(!wc\.debugger\.isAttached\(\)\) wc\.debugger\.attach\('1\.3'\)/);
+  assert.equal((host.match(/\.debugger\.attach\(/g) ?? []).length, 2, 'acquire, and the grace-period reset (which re-attaches only to undo overrides, then detaches)');
+  assert.match(host, /if \(!wc\.debugger\.isAttached\(\)\) wc\.debugger\.attach\('1\.3'\);/);
+  assert.match(host, /const reset = pendingReset\.get\(tabId\);\s*if \(reset\) \{\s*clearTimeout\(reset\)/, 'a session coming back cancels the pending reset');
+  assert.match(host, /release: \(tabId\) => \{[\s\S]{0,500}setTimeout\([\s\S]{0,700}resetCommands\([\s\S]{0,900}\.debugger\.detach\(\)[\s\S]{0,300}RELEASE_GRACE_MS\)/, 'the last session leaving schedules a grace-delayed reset that clears the agent overrides, then detaches');
 });
 
 test('the legacy mcp__browser__* tools are still built per session and still define their eight tools', () => {

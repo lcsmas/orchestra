@@ -438,9 +438,11 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
 - **One loopback proxy per workspace** (`127.0.0.1:0`), created lazily by the first `/browser` call, closed by
   `destroyPanel` (workspace delete/archive) and at quit. `checkLoopbackRequest` (`shared/cdp-loopback-guard.ts`) refuses
   ANY `Origin` header and any `Host` other than `127.0.0.1:<port>` / `localhost:<port>` before routing; on top of it
-  every path starts with an unguessable token (`/<token>/json/version`, `/<token>/devtools/browser/<id>`) that only the
-  verified session receives (other agents are the same uid and can read loopback ports). Token and Host guard are
-  separate clauses with their own rig mutants.
+  every path starts with an unguessable token (`/<token>/json/version`, `/<token>/devtools/browser/<id>`) that the host hands
+  only to the verified session — a same-uid process scanning loopback ports learns nothing. It is NOT secret from a same-uid
+  process that reads another agent's `/proc/<pid>/cmdline` while a call runs (the same-uid boundary of ADR 0008). Token,
+  Origin and Host are separate clauses with their own rig mutants. Only the BROWSER websocket endpoint is served (`/json/list`
+  advertises no page-level urls).
 - **Faked browser surface** (`CdpProxyCore`): `Target.setDiscoverTargets/getTargets/getTargetInfo/attachToTarget(flatten)/
   attachToBrowserTarget/detachFromTarget/activateTarget/createTarget/closeTarget/setAutoAttach/getBrowserContexts`,
   `Browser.getVersion`, `Browser.close` (no-op: an agent never closes the human's panel). Target ids are 32-hex derived
@@ -448,7 +450,11 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   to the tab's `webContents.debugger` with no session id; auto-attached child sessions (iframes) keep theirs.
   `Target.createTarget` → `createTab({openedBy:'agent', activate:true})` (interim cap 8 in `makePanelPort` until the
   tab policy #393/#397 sits in front); `closeTarget` refuses a tab the human opened. `Page.bringToFront` /
-  `Target.activateTarget` → `activateTab`; an input/capture command on a non-active tab activates it first.
+  `Target.activateTarget` → `activateTab`; an input/capture command on a non-active tab activates it first. The same
+  browser-level rules apply to a TAB session: `Page.close` / `Target.closeTarget|createTarget|…` / `Browser.*` sent on one never
+  reach the page debugger (they would close the human's tab or the panel); only the page's own `Target.setAutoAttach` is forwarded.
+  `Browser.getWindowForTarget|setWindowBounds|setContentsSize` are answered (fixed frame / ignored): erroring on `set viewport`
+  made agent-browser drop its connection.
 - **Screenshots** (`shared/cdp-capture.ts`): `invalidate()` → keep the real `Page.captureScreenshot` pending with 1×1 probes
   at 250/750/1750/3750 ms → deadline 5 s → `capturePage()` (1 s bound) → a NAMED error. A clip /
   `captureBeyondViewport` request has no fallback (never a wrong image). Fault: the primary hanging has NOT been
@@ -461,11 +467,18 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   runs `agent-browser connect <wsUrl>` itself (`ensureDaemon`, socket probe, env = `abEnv` only: no PATH, no secrets),
   gives it a scratch HOME + an empty `{}` config (a repo's `./agent-browser.json` can declare plugins), a short hashed
   socket dir under `$XDG_RUNTIME_DIR` (`orch-ab-<hash of ORCHESTRA_HOME>`), idle timeout 10 min, and closes it on
-  panel destroy / quit / next boot (`listSessions` sweep). The binary is copied out of the bundle to
+  panel destroy / quit (`terminateDaemonsOf`: SIGTERM by pid-file, identity re-read from `/proc/<pid>/environ` — synchronous, quit
+  does not wait on the graceful `close`) / next boot (`listSessions` sweep). `ensureDaemon` is single-flight per session (two
+  parallel `connect`s raced and one failed, measured). The binary is copied out of the bundle to
   `<ORCHESTRA_HOME>/browser-cli/bin/` before use (an AppImage mount can go away).
 - **CLI policy** (`shared/browser-cli.ts`): an allowlist of commands; refused: `connect close session install upgrade
   plugin auth profiles dashboard stream chat mcp batch read inspect …` and every flag that re-points the client
-  (`--cdp --session --namespace --profile --auto-connect --headed --config --provider --proxy …`). The child's env is
+  (`--cdp --session --namespace --profile --auto-connect --headed --config --provider --proxy …`). The COMMAND must be the
+  first token (only the valueless `--json` may lead) and refused flags are refused ANYWHERE, `--` included: agent-browser
+  parses global options wherever they stand, so a leading value-taking option (`--screenshot-dir open session info`) or a
+  flag after `--` (`session -- --session x`) used to slip through (pre-review B2, verified on v0.39.2). File arguments
+  (`screenshot|pdf` path, `upload` files, `network har` path, `--curl|--baseline|--output`) are made absolute by the CLI
+  (`absolutizeBrowserArgs`): the daemon is the host's, so a relative path would land in the app's cwd. The child's env is
   an allowlist of the caller's (`PATH LANG TERM TMPDIR …`) + the host's — the caller's `AGENT_BROWSER_*` never pass.
   Identity: `{id, key}` must verify against the session-key registry (ADR 0008); NO env fallback (a browser command acts
   on a panel) — no key, a stale key or another workspace's key is refused, an unknown id likewise.
@@ -479,14 +492,24 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `tab close` of the last tab is refused client-side; `connect <url>` starts a detached daemon (ppid 1) and returns,
   later calls without `--cdp` reuse it; `close` only disconnects (our proxy no-ops `Browser.close`); a daemon whose proxy
   died reconnects when the next call carries a new `--cdp`.
+- **State an agent leaves on the shared tab.** `set viewport|device|media|offline|geo|headers` and `network route` live on the
+  tab's debugger session, and in Electron 33 **`detach()` alone does not clear an `Emulation.setDeviceMetricsOverride`**
+  (measured: innerWidth stayed 360). When the agent's last session has been gone for 15 s (`RELEASE_GRACE_MS`,
+  `ORCHESTRA_CDP_RELEASE_GRACE_MS` for rigs; a session coming back cancels it — agent-browser reconnects lazily), the host
+  sends `resetCommands` (`shared/cdp-reset.ts`) and then detaches; the legacy tools re-attach on demand. The renderer's pane
+  already attaches this debugger (design-mode disarm on mount), so the proxy almost always SHARES it.
+- **agent-browser quirks (v0.39.2)**: `tab close tN` prints "✓ closed" even when the proxy refused (a human-opened tab) —
+  the registry is the truth; a click on a hidden pane is refused by agent-browser itself ("outside the viewport") before any
+  input reaches us.
 - **Coexistence with the legacy path** (until #398): `makePanelPort.acquire` attaches `webContents.debugger` only if nobody
   has (`isAttached()`), sets `tab.debuggerAttached`, and never detaches on release; design mode / MCP tools keep sharing it.
 - **Pinned binary**: `scripts/agent-browser-pins.json` (v0.39.2, SHA-256 per asset, linux-arm64 + linux-x64),
-  `scripts/fetch-agent-browser.mjs` (`pnpm run fetch:agent-browser`, run by `pnpm run build`; cache under
-  `$XDG_CACHE_HOME/orchestra-build`) → `build/agent-browser/agent-browser` (git-ignored) → `extraResources` →
+  `scripts/fetch-agent-browser.mjs` (`pnpm run fetch:agent-browser`; run for the pack's own arch by the `beforePack` hook
+  `scripts/before-pack.cjs` — which also runs #390's pinned-Node hook — so EVERY packaging path gets it: `pnpm run build`,
+  release CI, composed drives, canaries; `afterPack` re-hashes the packaged file; cache under `$XDG_CACHE_HOME/orchestra-build`) → `build/agent-browser/agent-browser` (git-ignored) → `extraResources` →
   `<resources>/agent-browser/agent-browser`. `ORCHESTRA_AGENT_BROWSER_BIN` overrides (rigs).
 - **Tracing**: `ORCHESTRA_CDP_TRACE=1` logs every client request / reply / forwarded command to the app log.
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
-  `scripts/e2e-browser-cli.sh <app-dir>` (14 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
-  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (18 in-place bundle mutants, restored byte-exact + `cmp`).
+  `scripts/e2e-browser-cli.sh <app-dir>` (17 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
+  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (28 in-place bundle mutants, restored byte-exact + `cmp`).

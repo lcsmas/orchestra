@@ -244,6 +244,17 @@ test('the debugger detaching (DevTools opened on the tab) detaches the sessions 
   assert.deepEqual(core.attachedTabIds(), []);
 });
 
+test('Browser.getWindowForTarget / setWindowBounds / setContentsSize are answered (the panel is not resizable by an agent) — an error there made agent-browser drop its connection after `set viewport`', async () => {
+  const p = fakePanel();
+  const c = client(new CdpProxyCore(p.port));
+  const w = (await c.call('Browser.getWindowForTarget', { targetId: 'x' })).result;
+  assert.equal(w.windowId, 1);
+  assert.equal(typeof w.bounds.width, 'number');
+  assert.deepEqual((await c.call('Browser.setWindowBounds', { windowId: 1, bounds: { width: 10 } })).result, {});
+  assert.deepEqual((await c.call('Browser.setContentsSize', { windowId: 1, width: 10, height: 10 })).result, {});
+  assert.equal(p.channels.size, 0, 'nothing reached a page debugger');
+});
+
 test('browser-level: version, destructive Browser.close is a no-op, unknown methods are "wasn\'t found"', async () => {
   const p = fakePanel();
   const c = client(new CdpProxyCore(p.port));
@@ -254,11 +265,59 @@ test('browser-level: version, destructive Browser.close is a no-op, unknown meth
   assert.match((await c.call('Target.attachToTarget', { targetId: 'NOPE' })).error.message, /No target with given id/);
 });
 
-test('/json: version carries the ws url; list is active-first with a per-target ws url', () => {
+test('/json: version carries the ws url; the list is active-first and advertises NO page ws url (only the browser endpoint is served)', () => {
   const p = fakePanel();
   const core = new CdpProxyCore(p.port, { nonce: 'n' });
   assert.equal(core.jsonVersion('ws://x/y').webSocketDebuggerUrl, 'ws://x/y');
   const l = core.jsonList('ws://127.0.0.1:9/tok');
   assert.equal(l.length, 1);
-  assert.match(l[0]!.webSocketDebuggerUrl, /^ws:\/\/127\.0\.0\.1:9\/tok\/devtools\/page\/[0-9A-F]{32}$/);
+  assert.match(l[0]!.id!, /^[0-9A-F]{32}$/);
+  assert.equal('webSocketDebuggerUrl' in l[0]!, false);
+});
+
+test('a client that closes while its attach is in flight leaves NO acquired debugger behind (pre-review m6)', async () => {
+  const p = fakePanel();
+  let release!: (c: CdpTabChannel) => void;
+  const gate = new Promise<CdpTabChannel>((r) => { release = r; });
+  const real = p.port.acquire;
+  p.port.acquire = (id) => { p.log.acquire.push(id); return gate; };
+  void real;
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const tid = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const attaching = c.call('Target.attachToTarget', { targetId: tid });
+  c.close(); // the socket dies mid-attach
+  release(new FakeChannel());
+  void attaching; // a closed client never receives its reply
+  await tick();
+  await tick();
+  assert.deepEqual(p.log.release, ['t1'], 'the acquire was paired with a release');
+  assert.deepEqual(core.attachedTabIds(), []);
+  core.dispose();
+});
+
+test('destructive / browser-level methods sent on a TAB session get the browser-level rules and never reach the page debugger (pre-review m11)', async () => {
+  const p = fakePanel([
+    { id: 't1', url: 'http://a/', title: 'A', active: false, openedBy: 'human' },
+    { id: 't2', url: 'http://b/', title: 'B', active: true, openedBy: 'agent' },
+  ]);
+  const real = p.port.closeTab!;
+  p.port.closeTab = async (id) => {
+    if (id === 't1') throw new Error('browser tab t1 was opened by the user: an agent may only close tabs it opened');
+    return real(id);
+  };
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const infos = (await c.call('Target.getTargets')).result.targetInfos;
+  const human = infos.find((i: any) => i.title === 'A');
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId: human.targetId })).result;
+  const ch = p.channels.get('t1')!;
+  assert.match((await c.call('Page.close', undefined, sessionId)).error.message, /opened by the user/);
+  assert.match((await c.call('Target.closeTarget', { targetId: human.targetId }, sessionId)).error.message, /opened by the user/);
+  assert.deepEqual((await c.call('Browser.close', undefined, sessionId)).result, {}, 'a no-op, as at the browser level');
+  assert.equal((await c.call('Browser.getVersion', undefined, sessionId)).result.protocolVersion, '1.3');
+  assert.equal(ch.sent.length, 0, 'none of them reached the page debugger');
+  // the page's own Target.setAutoAttach (child targets) IS forwarded
+  await c.call('Target.setAutoAttach', { autoAttach: true, flatten: true }, sessionId);
+  assert.deepEqual(ch.sent.map((s) => s.method), ['Target.setAutoAttach']);
 });

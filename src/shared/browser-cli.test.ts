@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_COMMANDS, browserChildEnv, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
+import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
 
 test('every allowed command plans through unchanged, with its refs listed', () => {
   for (const c of BROWSER_COMMANDS) assert.deepEqual(planBrowserCommand([c]), { ok: true, args: [c], refs: [] }, c);
@@ -25,18 +25,48 @@ test('commands that escape the panel are refused with their reason', () => {
 
 test('flags that re-point the client are refused ANYWHERE in argv, incl. --flag=value and after the command', () => {
   for (const f of ['--cdp', '--session', '--namespace', '--profile', '--auto-connect', '--executable-path', '--headed', '--config', '--provider', '-p', '--state', '--extension', '--proxy', '--engine']) {
-    for (const argv of [[f, 'x', 'snapshot'], ['snapshot', f, 'x'], ['snapshot', `${f}=x`]]) {
+    for (const argv of [['snapshot', f, 'x'], ['snapshot', `${f}=x`]]) {
       const r = planBrowserCommand(argv);
       assert.equal(r.ok, false, argv.join(' '));
       assert.match((r as any).error, /is not allowed/);
     }
+    assert.equal(planBrowserCommand([f, 'x', 'snapshot']).ok, false, 'leading: refused (command-first rule or the flag list)');
   }
 });
 
-test('a refused-looking token AFTER `--` is data, not a flag; ordinary flags pass', () => {
-  assert.equal(planBrowserCommand(['type', '@e1', '--', '--cdp']).ok, true);
+test('`--` is NOT a way out: agent-browser honours flags after it, so a refused flag is refused there too (pre-review B2, verified on v0.39.2)', () => {
+  for (const argv of [['session', '--', '--session', 'x'], ['type', '@e1', '--', '--cdp'], ['get', 'url', '--', '--profile=Default']]) {
+    assert.equal(planBrowserCommand(argv).ok, false, argv.join(' '));
+  }
   assert.equal(planBrowserCommand(['screenshot', '--full', 'x.png']).ok, true);
   assert.equal(planBrowserCommand(['snapshot', '-i', '-c', '-d', '3']).ok, true);
+  assert.equal(planBrowserCommand(['fill', '@e1', '--', 'plain text']).ok, true, 'a plain `--` separator itself is fine');
+});
+
+test('the command must come first: a leading value-taking option would shift which token is the command (pre-review B2)', () => {
+  for (const argv of [['--screenshot-dir', 'open', 'session', 'info'], ['--max-output', '5', 'connect', 'ws://x'], ['--headers', '{}', 'plugin', 'add', 'x'], ['--color-scheme', 'dark', 'dashboard']]) {
+    const r = planBrowserCommand(argv);
+    assert.equal(r.ok, false, argv.join(' '));
+    assert.match((r as any).error, /put the command first/);
+  }
+  assert.equal(planBrowserCommand(['--json', 'snapshot']).ok, true, '--json is valueless and may lead');
+  assert.equal(planBrowserCommand(['snapshot', '--json']).ok, true);
+});
+
+test('absolutizeBrowserArgs makes every file argument absolute and leaves everything else alone', () => {
+  const cwd = '/work/tree';
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', 'out.png'], cwd), ['screenshot', '/work/tree/out.png']);
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--full', 'sub/out.png'], cwd), ['screenshot', '--full', '/work/tree/sub/out.png']);
+  assert.deepEqual(absolutizeBrowserArgs(['--json', 'pdf', './p.pdf'], cwd), ['--json', 'pdf', '/work/tree/p.pdf']);
+  assert.deepEqual(absolutizeBrowserArgs(['upload', '@e3', 'a.bin', '/abs/b.bin'], cwd), ['upload', '@e3', '/work/tree/a.bin', '/abs/b.bin']);
+  assert.deepEqual(absolutizeBrowserArgs(['network', 'har', 'stop', 'net.har'], cwd), ['network', 'har', 'stop', '/work/tree/net.har']);
+  assert.deepEqual(absolutizeBrowserArgs(['cookies', 'set', '--curl', 'c.txt'], cwd), ['cookies', 'set', '--curl', '/work/tree/c.txt']);
+  // untouched: no path argument, an absolute path, a url, selectors and text
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot'], cwd), ['screenshot']);
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '/abs/x.png'], cwd), ['screenshot', '/abs/x.png']);
+  assert.deepEqual(absolutizeBrowserArgs(['open', 'page.html'], cwd), ['open', 'page.html'], 'open is a url, not a file argument');
+  assert.deepEqual(absolutizeBrowserArgs(['fill', '@e6', 'a.bin'], cwd), ['fill', '@e6', 'a.bin']);
+  assert.deepEqual(absolutizeBrowserArgs(['click', '@e1'], cwd), ['click', '@e1']);
 });
 
 test('browserChildEnv: only the allowlist of the caller\'s env + the host values; the caller\'s AGENT_BROWSER_* and secrets never pass', () => {

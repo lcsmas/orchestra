@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { abEnv, abLayout, closeDaemon, ensureDaemon, installBinary, listSessions, prepareLayout, sockPath, type AbDeps } from './agent-browser-daemon.ts';
+import { abEnv, abLayout, closeDaemon, ensureDaemon, installBinary, listSessions, prepareLayout, sockPath, terminateDaemonsOf, type AbDeps } from './agent-browser-daemon.ts';
 
 const layout = abLayout('/home/u/.orchestra', '/run/user/1000');
 
@@ -87,4 +87,36 @@ test('prepareLayout writes the scratch dirs (0700 socket dir) and an empty confi
   fs.writeFileSync(path.join(l.socketDir, 'namespaces', 'orchestra', 'run', 'abc.sock'), '');
   assert.deepEqual(listSessions(l), ['abc']);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('ensureDaemon is single-flight per session: concurrent first calls share ONE connect (pre-review M5: two parallel connects raced and one failed)', async () => {
+  let runs = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const deps: AbDeps = { run: async () => { runs++; await gate; return { code: 0, out: '' }; }, canConnect: async () => false };
+  const ps = [1, 2, 3].map(() => ensureDaemon('/bin/ab', layout, 'sf', 'ws://x', deps));
+  await new Promise((r) => setImmediate(r));
+  release();
+  await Promise.all(ps);
+  assert.equal(runs, 1);
+  // a different session is NOT serialized with it, and a finished flight does not poison the next call
+  await ensureDaemon('/bin/ab', layout, 'other', 'ws://x', { run: async () => { runs++; return { code: 0, out: '' }; }, canConnect: async () => false });
+  await ensureDaemon('/bin/ab', layout, 'sf', 'ws://x', { run: async () => { runs++; return { code: 0, out: '' }; }, canConnect: async () => false });
+  assert.equal(runs, 3);
+});
+
+test('terminateDaemonsOf signals only pids whose environment names THIS socket dir (identity re-read), never a recycled pid or garbage', () => {
+  const dir = '/run/user/1000/orch-ab-test/namespaces/orchestra/run';
+  const l = { ...layout, socketDir: '/run/user/1000/orch-ab-test' };
+  const files: Record<string, string> = { 'a.pid': '111\n', 'b.pid': '222\n', 'c.pid': 'junk', 'd.pid': '1\n', 'e.sock': '' };
+  const killed: number[] = [];
+  const out = terminateDaemonsOf(l, {
+    readdir: () => Object.keys(files),
+    read: (f) => files[f.slice(dir.length + 1)]!,
+    environ: (pid) => (pid === 111 ? ['AGENT_BROWSER_SOCKET_DIR=/run/user/1000/orch-ab-test', 'X=1'] : pid === 222 ? ['AGENT_BROWSER_SOCKET_DIR=/run/user/1000/orch-ab-other'] : null),
+    kill: (pid) => { killed.push(pid); },
+  });
+  assert.deepEqual(out, [111]);
+  assert.deepEqual(killed, [111], 'pid 222 belongs to another socket dir, junk and pid 1 are skipped, a vanished /proc entry is skipped');
+  assert.deepEqual(terminateDaemonsOf(l, { readdir: () => { throw new Error('ENOENT'); }, read: () => '', environ: () => null, kill: () => undefined }), []);
 });

@@ -1,6 +1,6 @@
 // Fetch the PINNED agent-browser release asset for this build host (#395, ADR 0009) into
 // build/agent-browser/agent-browser, SHA-256 checked against scripts/agent-browser-pins.json.
-// usage: node scripts/fetch-agent-browser.mjs [--check]   (--check: verify what is there, download nothing)
+// usage: node scripts/fetch-agent-browser.mjs [--check] [--arch x64|arm64] [--platform linux]   (--check: verify what is there, download nothing; --arch/--platform default to this host)
 // A cache under $XDG_CACHE_HOME/orchestra-build keeps rebuilds offline; a hash mismatch is fatal, never a retry.
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -14,7 +14,8 @@ const pins = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'agent-browse
 const checkOnly = process.argv.includes('--check');
 const sha256 = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
-const asset = assetFor(pins, process.platform, process.arch);
+const argOf = (n) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : undefined; };
+const asset = assetFor(pins, argOf('--platform') ?? process.platform, argOf('--arch') ?? process.arch);
 if (!asset) {
   console.error(`fetch-agent-browser: no pinned asset for ${process.platform}-${process.arch} — nothing bundled`);
   process.exit(checkOnly ? 1 : 0);

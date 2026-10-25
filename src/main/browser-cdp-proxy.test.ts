@@ -79,15 +79,15 @@ test('a CLI-shaped request is served; every browser-shaped one is refused BEFORE
   }
 });
 
-test('/json/list is active-first and its per-target ws urls carry the token', async () => {
+test('/json/list is active-first and carries no page ws urls', async () => {
   const srv = await startCdpProxy(panel());
   try {
     const token = new URL(srv.wsUrl).pathname.split('/')[1]!;
     const r = await get(srv.port, `/${token}/json/list`, { Host: `127.0.0.1:${srv.port}` });
-    const list = JSON.parse(r.body) as Array<{ id: string; webSocketDebuggerUrl: string; type: string }>;
+    const list = JSON.parse(r.body) as Array<{ id: string; type: string }>;
     assert.equal(list.length, 1);
     assert.equal(list[0]!.type, 'page');
-    assert.ok(list[0]!.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${srv.port}/${token}/devtools/page/`));
+    assert.equal('webSocketDebuggerUrl' in list[0]!, false, 'no page-level ws endpoint is served, so none is advertised');
   } finally {
     await srv.close();
   }

@@ -77,7 +77,7 @@ import {
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
-import { browserChildEnv, mapBrowserFailure, planBrowserCommand } from '../shared/browser-cli.ts';
+import { absolutizeBrowserArgs, browserChildEnv, mapBrowserFailure, planBrowserCommand } from '../shared/browser-cli.ts';
 import { spawn as spawnChild } from 'node:child_process';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
@@ -1938,7 +1938,7 @@ async function main(argv: string[]): Promise<void> {
       const binary = res.binary as string;
       const env = browserChildEnv(process.env, res.env as Record<string, string>);
       const run = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawnChild(binary, ['--cdp', res.wsUrl as string, ...plan.args], { env, stdio: ['inherit', 'pipe', 'pipe'] });
+        const child = spawnChild(binary, ['--cdp', res.wsUrl as string, ...absolutizeBrowserArgs(plan.args, process.cwd())], { env, stdio: ['inherit', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c));

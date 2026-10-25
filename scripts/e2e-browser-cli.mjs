@@ -25,7 +25,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'breadth', 'tabs', 'destroy-closes-daemon'];
+const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'breadth', 'tabs', 'daemon-lifecycle', 'destroy-closes-daemon'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires (hash changes per build), 'cli' = dist-electron/cli.js.
  *  Each edit is a regex that must match EXACTLY once (so a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* clause must stay GREEN. */
 const MUTANTS = {
@@ -49,6 +49,10 @@ const MUTANTS = {
   'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
   'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{const (\w+)=await/, 'try{const $3=await']], arms: ['destroy-closes-daemon'], why: 'a late /browser call for an archived workspace resurrects its panel, proxy and daemon' },
   'bring-to-front-forwarded': { file: 'chunk', edits: [[/if\((\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, '']], arms: ['tabs'], why: 'Page.bringToFront reaches the real debugger (OS focus) instead of only activating the tab' },
+  'relative-paths': { file: 'cli', edits: [[/absolutizeBrowserArgs\(plan\.args, [\w$.]+\(\)\)/, 'plan.args']], arms: ['screenshot'], why: 'a relative screenshot path is handed to the host-owned daemon and lands in the app\'s cwd' },
+  'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
+  'command-not-first': { file: 'cli', edits: [['const command = argv[idx];', 'const command = argv.find((a) => !a.startsWith("-"));']], arms: ['allowlist'], why: 'the command is the first non-flag token again (a leading value-taking option shifts it)' },
+  'release-no-reset': { file: 'chunk', edits: [[/of (\w+)\((\w+)\.getUserAgent\(\)\)\)await/, 'of [])await']], arms: ['daemon-lifecycle'], why: 'the agent\'s Emulation overrides are not undone when its daemon leaves (detach alone does not clear them)' },
   'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
   'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
@@ -235,7 +239,7 @@ async function main() {
   const port = await freePort();
   const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ...(argv.includes('--trace') ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_RELEASE_GRACE_MS: '1500', ...(argv.includes('--trace') ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(armDir, 'app.log');
@@ -398,8 +402,9 @@ const ARM_FNS = {
   async upload(ctx) {
     const { W1 } = ctx; const A = 'upload';
     const file = path.join(ctx.world.fakeHome, 'upload.bin'); fs.writeFileSync(file, crypto.randomBytes(4321));
+    const relName = 'upload.bin'; // passed RELATIVE below: it must resolve against the agent's cwd (the rig runs the CLI from fakeHome)
     const snap = await cli(ctx, W1, ['snapshot', '-i']); const inp = refOf(snap.stdout, 'button', 'Choose File');
-    const r = await cli(ctx, W1, ['upload', inp, file]);
+    const r = await cli(ctx, W1, ['upload', inp, relName]);
     await waitFor(() => ctx.o1.eval(`document.getElementById('upres').textContent.startsWith('up:')`), 10000, 'the upload echo').catch(() => {});
     const echo = await ctx.o1.eval(`document.getElementById('upres').textContent`);
     clause(A, 'upload-reaches-the-page-and-server', r.code === 0 && echo === 'up:upload.bin:4321', `${show(r)} → oracle #upres=${JSON.stringify(echo)} (name:size echoed by the fixture server from the multipart body)`);
@@ -451,6 +456,11 @@ const ARM_FNS = {
     const refImg = decodePng(Buffer.from(ref.data, 'base64'));
     clause(A, 'matches-the-oracles-own-capture-size', !!img && Math.abs(img.w - refImg.w) <= 2 && Math.abs(img.h - refImg.h) <= 2, `CLI shot ${img?.w}x${img?.h} vs oracle capture of the same view ${refImg.w}x${refImg.h}`);
     if (img) saveShot('cli-screenshot.png', fs.readFileSync(dest));
+    // a RELATIVE path must land in the agent's cwd (the daemon is the host's: its cwd is the app's)
+    const rel = await cli(ctx, W1, ['screenshot', 'rel-shot.png']);
+    const inCwd = path.join(ctx.world.fakeHome, 'rel-shot.png'), inApp = path.join(APP_DIR, 'rel-shot.png');
+    clause(A, 'relative-path-lands-in-the-agents-cwd', rel.code === 0 && fs.existsSync(inCwd) && !fs.existsSync(inApp), `${show(rel)} → ${inCwd} ${fs.existsSync(inCwd) ? 'exists' : 'MISSING'}; ${inApp} ${fs.existsSync(inApp) ? 'EXISTS (wrong: the host\'s cwd)' : 'absent'}`);
+    fs.rmSync(inApp, { force: true });
   },
 };
 
@@ -531,9 +541,12 @@ const ARM_FNS2 = {
     const w2after = await cli(ctx, W2, ['get', 'url']);
     clause(A, 'caller-agent-browser-env-is-scrubbed', outs.every((o) => o === `${FIX}/cli.html`) && w2after.stdout.trim() === `${FIX}/index.html`,
       `W1 with AGENT_BROWSER_SESSION=<W2's> / _CDP=<W2's> / all four pointing elsewhere / _JSON=1 + _MAX_OUTPUT=3 (a leak would print JSON or htt) → ${JSON.stringify(outs)}; W2's own panel afterwards → ${w2after.stdout.trim()} (a leaked env would re-point W2's daemon at W1's panel)`);
-    const f1 = await cli(ctx, W1, ['--session', own2.env.AGENT_BROWSER_SESSION, 'get', 'url']);
-    const f2 = await cli(ctx, W1, ['--cdp', own2.wsUrl, 'get', 'url']);
-    clause(A, 'session-and-cdp-flags-refused', f1.code !== 0 && f2.code !== 0 && /--session is not allowed/.test(f1.stderr) && /--cdp is not allowed/.test(f2.stderr), `--session → ${show(f1)}; --cdp → ${show(f2)}`);
+    const f1 = await cli(ctx, W1, ['get', 'url', '--session', own2.env.AGENT_BROWSER_SESSION]);
+    const f2 = await cli(ctx, W1, ['get', 'url', '--cdp', own2.wsUrl]);
+    const f3 = await cli(ctx, W1, ['--session', own2.env.AGENT_BROWSER_SESSION, 'get', 'url']);
+    const f4 = await cli(ctx, W1, ['get', 'url', '--', '--session', own2.env.AGENT_BROWSER_SESSION]);
+    clause(A, 'session-and-cdp-flags-refused', f1.code !== 0 && f2.code !== 0 && f3.code !== 0 && f4.code !== 0 && /--session is not allowed/.test(f1.stderr) && /--cdp is not allowed/.test(f2.stderr) && /put the command first/.test(f3.stderr) && /--session is not allowed/.test(f4.stderr) && [f1, f2, f3, f4].every((r) => r.stdout.trim() === ''),
+      `after the command: --session → ${show(f1)}; --cdp → ${show(f2)}; leading --session → ${show(f3)}; after \`--\` → ${show(f4)}`);
   },
 
   async background(ctx) {
@@ -568,10 +581,12 @@ const ARM_FNS2 = {
   async allowlist(ctx) {
     const { W1 } = ctx; const A = 'allowlist';
     const before = sockets(ctx).length;
-    const cases = [['profiles'], ['--session', 'x', 'get', 'url'], ['connect', 'ws://127.0.0.1:1/x'], ['plugin', 'list'], ['batch', 'get url'], ['frobnicate']];
+    const cases = [['profiles'], ['--session', 'x', 'get', 'url'], ['connect', 'ws://127.0.0.1:1/x'], ['plugin', 'list'], ['batch', 'get url'], ['frobnicate'],
+      // verified bypasses of an earlier planner (pre-review B2): a flag after `--`, and a leading value-taking option that shifts the command
+      ['get', 'url', '--', '--session', 'x'], ['session', '--', '--session', 'x'], ['--screenshot-dir', 'open', 'session', 'info']];
     const outs = [];
     for (const args of cases) { const r = await cli(ctx, W1, args, { timeoutMs: 20000 }); outs.push({ args: args.join(' '), r }); }
-    const refused = outs.every(({ r }) => r.code !== 0 && /not available|not allowed|unknown command/.test(r.stderr) && r.stdout.trim() === '');
+    const refused = outs.every(({ r }) => r.code !== 0 && /not available|not allowed|unknown command|put the command first/.test(r.stderr) && r.stdout.trim() === '');
     clause(A, 'out-of-scope-commands-and-flags-refused', refused, outs.map(({ args, r }) => `[${args}] rc=${r.code} ${JSON.stringify(r.stderr.trim().slice(0, 70))}`).join(' · '));
     const after = sockets(ctx).length;
     clause(A, 'refusal-happens-before-the-host', before === after, `daemon sockets ${before} → ${after} (a refused command never reached the host or spawned a client)`);
@@ -682,6 +697,37 @@ const ARM_FNS3 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS3);
+
+
+const ARM_FNS4 = {
+  async 'daemon-lifecycle'(ctx) {
+    const { W1, FIX } = ctx; const A = 'daemon-lifecycle';
+    await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
+    const o = await oracle(ctx, `${FIX}/cli.html`);
+    try {
+      const own = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+      const session = own.env.AGENT_BROWSER_SESSION;
+      const width0 = await o.eval(`window.innerWidth`);
+      const sv = await cli(ctx, W1, ['set', 'viewport', '360', '640']);
+      const width1 = await o.eval(`window.innerWidth`);
+      clause(A, 'ctl/set-viewport-takes-effect', sv.code === 0 && width1 === 360 && width0 !== 360, `${show(sv)} → oracle innerWidth ${width0} → ${width1}`);
+      await sleep(3500); // longer than the release grace (1.5 s): while the agent's daemon is connected, its override must NOT be reset
+      const width2 = await o.eval(`window.innerWidth`);
+      clause(A, 'override-kept-while-the-daemon-is-connected', width2 === 360, `3.5 s after set viewport (grace 1.5 s) the oracle still sees innerWidth ${width2} (a spurious reset would undo the agent's own work)`);
+      // the agent's daemon goes away (idle exit, crash, quit): its Emulation override must not stay on the human's tab
+      const pid1 = daemonPids(ctx)[session];
+      try { process.kill(pid1, 'SIGKILL'); } catch {}
+      await waitFor(() => !alive(pid1), 5000, 'the daemon to die').catch(() => {});
+      const restored = await waitFor(async () => (await o.eval(`window.innerWidth`)) === width0, 8000, 'the viewport override to be cleared').then(() => true, () => false);
+      clause(A, 'override-cleared-when-the-daemon-leaves', restored, `daemon ${pid1} killed → oracle innerWidth back to ${await o.eval('window.innerWidth')} (was ${width0}; override ${width1}) — the proxy detaches what it attached when its last session leaves`);
+      // the next calls re-start the daemon; several at once must all succeed (single-flight connect)
+      const par = await Promise.all([1, 2, 3, 4].map(() => cli(ctx, W1, ['get', 'url'])));
+      const pid2 = daemonPids(ctx)[session];
+      clause(A, 'parallel-first-calls-after-the-daemon-died-all-succeed', par.every((r) => r.code === 0 && r.stdout.trim() === `${FIX}/cli.html`) && !!pid2 && pid2 !== pid1 && alive(pid2), `4 concurrent calls: rc ${par.map((r) => r.code).join(',')}; new daemon pid ${pid2} (was ${pid1})`);
+    } finally { o.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS4);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');

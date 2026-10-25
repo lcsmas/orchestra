@@ -110,17 +110,74 @@ export function installBinary(src: string, layout: AbLayout, version: string): s
   return dst;
 }
 
-/** Make sure a live daemon is connected to `wsUrl` for `session`; returns once its socket answers. */
-export async function ensureDaemon(
+const ensuring = new Map<string, Promise<void>>();
+
+/**
+ * Make sure a live daemon is connected to `wsUrl` for `session`; returns once its socket answers.
+ * Single-flight per session: two concurrent `connect`s for one session race each other and one fails
+ * ("started concurrently with different daemon configuration", measured on v0.39.2), which made the first
+ * two parallel `orchestra browser` calls — or the first after the idle exit — return `unavailable`.
+ */
+export function ensureDaemon(
   binary: string,
   layout: AbLayout,
   session: string,
   wsUrl: string,
   deps: AbDeps = realAbDeps,
 ): Promise<void> {
-  if (await deps.canConnect(sockPath(layout, session))) return;
-  const r = await deps.run(binary, ['connect', wsUrl], abEnv(layout, session, undefined), 20_000);
-  if (r.code !== 0) throw new Error(`agent-browser could not connect to the panel (${r.out.slice(0, 300) || `exit ${r.code}`})`);
+  const key = sockPath(layout, session);
+  const inflight = ensuring.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    if (await deps.canConnect(key)) return;
+    const r = await deps.run(binary, ['connect', wsUrl], abEnv(layout, session, undefined), 20_000);
+    if (r.code !== 0) throw new Error(`agent-browser could not connect to the panel (${r.out.slice(0, 300) || `exit ${r.code}`})`);
+  })().finally(() => ensuring.delete(key));
+  ensuring.set(key, p);
+  return p;
+}
+
+/**
+ * Quit-time best effort that does not wait on anything: SIGTERM every daemon of THIS socket dir whose pid file still names a
+ * process that carries this dir in its environment (identity re-read at signal time — a recycled pid is never touched).
+ * Returns the pids signalled.
+ */
+export function terminateDaemonsOf(
+  layout: AbLayout,
+  io: { readdir(d: string): string[]; read(f: string): string; environ(pid: number): string[] | null; kill(pid: number): void } = {
+    readdir: (d) => fs.readdirSync(d),
+    read: (f) => fs.readFileSync(f, 'utf8'),
+    environ: (pid) => {
+      try {
+        return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
+      } catch {
+        return null;
+      }
+    },
+    kill: (pid) => process.kill(pid, 'SIGTERM'),
+  },
+): number[] {
+  const dir = path.join(layout.socketDir, 'namespaces', AB_NAMESPACE, 'run');
+  const done: number[] = [];
+  let names: string[] = [];
+  try {
+    names = io.readdir(dir).filter((n) => n.endsWith('.pid'));
+  } catch {
+    return done;
+  }
+  for (const n of names) {
+    const pid = Number(io.read(path.join(dir, n)).trim());
+    if (!Number.isInteger(pid) || pid <= 1) continue;
+    const env = io.environ(pid);
+    if (!env || !env.includes(`AGENT_BROWSER_SOCKET_DIR=${layout.socketDir}`)) continue;
+    try {
+      io.kill(pid);
+      done.push(pid);
+    } catch {
+      /* already gone */
+    }
+  }
+  return done;
 }
 
 /** Ask the daemon to exit (it only disconnects: the proxy turns `Browser.close` into a no-op). Never throws. */

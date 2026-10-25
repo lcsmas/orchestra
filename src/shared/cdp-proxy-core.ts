@@ -64,6 +64,13 @@ export const FRAME_BOUND_METHODS: ReadonlySet<string> = new Set([
   'Input.synthesizeScrollGesture',
 ]);
 
+/** Target.* methods that mean the same thing on a tab session as at the browser level (everything else under Target.* — setAutoAttach — is the page's own). */
+const TAB_SESSION_BROWSER_LEVEL: ReadonlySet<string> = new Set([
+  'Target.closeTarget', 'Target.createTarget', 'Target.activateTarget', 'Target.getTargets', 'Target.getTargetInfo',
+  'Target.attachToTarget', 'Target.attachToBrowserTarget', 'Target.detachFromTarget', 'Target.setDiscoverTargets',
+  'Target.getBrowserContexts', 'Target.createBrowserContext', 'Target.disposeBrowserContext',
+]);
+
 const ERR_METHOD = -32601;
 const ERR_PARAMS = -32602;
 const ERR_SERVER = -32000;
@@ -156,7 +163,8 @@ export class CdpProxyCore {
       webSocketDebuggerUrl: wsUrl,
     };
   }
-  jsonList(wsBase: string, devtoolsFrontendBase = ''): Array<Record<string, string>> {
+  /** Page-level websocket endpoints are NOT served (only the browser endpoint), so the list does not advertise any. */
+  jsonList(_wsBase: string, devtoolsFrontendBase = ''): Array<Record<string, string>> {
     return this.tabsOrdered().map((t) => {
       const id = this.targetIdFor(t.id);
       return {
@@ -166,7 +174,6 @@ export class CdpProxyCore {
         title: t.title,
         type: 'page',
         url: t.url,
-        webSocketDebuggerUrl: `${wsBase}/devtools/page/${id}`,
       };
     });
   }
@@ -274,7 +281,13 @@ export class CdpProxyCore {
     if (!sessionId) return this.browserCommand(c, method, params);
     const own = c.sessions.get(sessionId);
     if (own?.kind === 'browser') return this.browserCommand(c, method, params);
-    if (own?.kind === 'tab') return this.tabCommand(own.tabId!, method, params, undefined);
+    if (own?.kind === 'tab') {
+      // A tab session reaches the page's debugger, which would honour browser-level / destructive methods itself
+      // (Browser.close, Page.close, Target.closeTarget …): those get the browser-level rules (ownership, no-op close).
+      if (method === 'Page.close') return this.browserCommand(c, 'Target.closeTarget', { targetId: this.targetIdFor(own.tabId!) });
+      if (method.startsWith('Browser.') || TAB_SESSION_BROWSER_LEVEL.has(method)) return this.browserCommand(c, method, params);
+      return this.tabCommand(own.tabId!, method, params, undefined);
+    }
     // Not one of ours: an auto-attached child session of some tab this client holds.
     for (const s of c.sessions.values()) {
       if (s.tabId && this.tabs.get(s.tabId)?.children.has(sessionId)) {
@@ -366,6 +379,13 @@ export class CdpProxyCore {
         };
       case 'Browser.close':
         return {}; // an agent must never close the human's panel
+      // `set viewport` asks for the window around a target and resizes it; erroring here made agent-browser drop its connection.
+      // The panel is not a window an agent may resize: answer with a fixed frame and accept (ignore) the resize.
+      case 'Browser.getWindowForTarget':
+        return { windowId: 1, bounds: { left: 0, top: 0, width: 1280, height: 800, windowState: 'normal' } };
+      case 'Browser.setWindowBounds':
+      case 'Browser.setContentsSize':
+        return {};
       default:
         throw new CdpError(`'${method}' wasn't found`, ERR_METHOD);
     }
@@ -402,6 +422,11 @@ export class CdpProxyCore {
 
   private async attachTab(c: ClientState, t: CdpTab): Promise<string> {
     await this.acquireTab(t.id);
+    if (c.closed) {
+      // the client went away while the debugger was being acquired: nobody will ever detach this session
+      this.releaseTab(t.id);
+      throw new CdpError('Target closed.', ERR_SERVER);
+    }
     const sessionId = hex32();
     c.sessions.set(sessionId, { kind: 'tab', tabId: t.id });
     // Real Chrome announces the new session before answering the attach.

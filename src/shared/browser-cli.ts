@@ -66,28 +66,72 @@ export type BrowserPlan = { ok: true; args: string[]; refs: string[] } | { ok: f
 
 const REF = /^@e\d+$/;
 
-/** Validate `orchestra browser <argv>`; returns the args to hand to `agent-browser` (after `--cdp <url>`). */
+/** Options that may precede the command: valueless ones only (a value-taking option would shift which token is the command). */
+const LEADING_OPTIONS: ReadonlySet<string> = new Set(['--json']);
+
+/**
+ * Validate `orchestra browser <argv>`; returns the args to hand to `agent-browser` (after `--cdp <url>`).
+ * The command MUST be the first token (after `--json`): agent-browser parses global options wherever they stand, so a
+ * leading value-taking option (`--screenshot-dir open session …`) or a flag after `--` (`session -- --session x`)
+ * would change which command runs / which daemon is addressed (found by pre-review, verified on v0.39.2). Refused
+ * flags are therefore refused EVERYWHERE, `--` included; a data token that looks like one (`fill @e1 -p`) is refused too.
+ */
 export function planBrowserCommand(argv: readonly string[]): BrowserPlan {
   const usage = 'usage: orchestra browser <command> [args]   (e.g. snapshot, click @e2, fill @e6 "text", screenshot out.png)';
-  // Flags first: a flag's VALUE can precede the command (`--cdp x snapshot`), so the refusal must not depend on parsing it.
-  for (const a of argv) {
-    if (a === '--') break; // after a separator everything is data
-    const name = a.startsWith('--') || a.startsWith('-p=') ? a.split('=')[0]! : a;
-    if (REFUSED_FLAGS.has(name)) {
-      return { ok: false, error: `orchestra browser: ${name} is not allowed — this CLI drives only your workspace's own browser panel.` };
-    }
+  let idx = 0;
+  while (idx < argv.length && LEADING_OPTIONS.has(argv[idx]!)) idx++;
+  const command = argv[idx];
+  if (command === undefined) return { ok: false, error: usage };
+  if (command.startsWith('-')) {
+    return { ok: false, error: `orchestra browser: put the command first and options after it (got ${command} before the command).\n${usage}` };
   }
-  // The command is the first token that is not a flag.
-  const idx = argv.findIndex((a) => !a.startsWith('-'));
-  if (idx === -1) return { ok: false, error: usage };
-  const command = argv[idx]!;
   if (command in REFUSED_COMMANDS) {
     return { ok: false, error: `orchestra browser: '${command}' is not available — ${REFUSED_COMMANDS[command]}.` };
   }
   if (!BROWSER_COMMANDS.has(command)) {
     return { ok: false, error: `orchestra browser: unknown command '${command}'.\n${usage}` };
   }
+  for (const a of argv) {
+    const name = a.startsWith('--') || a.startsWith('-p=') ? a.split('=')[0]! : a;
+    if (REFUSED_FLAGS.has(name)) {
+      return { ok: false, error: `orchestra browser: ${name} is not allowed — this CLI drives only your workspace's own browser panel.` };
+    }
+  }
   return { ok: true, args: [...argv], refs: argv.filter((a) => REF.test(a)) };
+}
+
+/** Flags whose NEXT token is a file path the client reads or writes. */
+const PATH_VALUE_FLAGS: ReadonlySet<string> = new Set(['--curl', '--baseline', '--output']);
+
+/**
+ * The agent-browser daemon is owned by the HOST, so a relative path would resolve against the Electron process's cwd
+ * (verified: `screenshot rel.png` landed there). The CLI knows the agent's cwd: make every file argument absolute.
+ * Covers screenshot [path], pdf <path>, upload <sel> <files…>, network har start|stop [path], and --curl/--baseline/--output <file>.
+ */
+export function absolutizeBrowserArgs(args: readonly string[], cwd: string): string[] {
+  const abs = (p: string): string => (p.startsWith('/') || p.includes('://') ? p : `${cwd.replace(/\/$/, '')}/${p.replace(/^\.\//, '')}`);
+  const out = [...args];
+  let ci = 0;
+  while (ci < out.length && LEADING_OPTIONS.has(out[ci]!)) ci++;
+  const command = out[ci];
+  const positionals: number[] = [];
+  for (let i = ci + 1; i < out.length; i++) {
+    const t = out[i]!;
+    if (PATH_VALUE_FLAGS.has(t) && i + 1 < out.length) {
+      out[i + 1] = abs(out[i + 1]!);
+      i++;
+    } else if (!t.startsWith('-')) positionals.push(i);
+  }
+  if (command === 'screenshot' || command === 'pdf') {
+    const i = positionals[0];
+    if (i !== undefined) out[i] = abs(out[i]!);
+  } else if (command === 'upload') {
+    for (const i of positionals.slice(1)) out[i] = abs(out[i]!);
+  } else if (command === 'network' && out[positionals[0] ?? -1] === 'har') {
+    const i = positionals[2]; // har <start|stop> [path]
+    if (i !== undefined) out[i] = abs(out[i]!);
+  }
+  return out;
 }
 
 /** Env the `agent-browser` child may inherit from the agent's shell (nothing of `AGENT_BROWSER_*`, no secrets). */

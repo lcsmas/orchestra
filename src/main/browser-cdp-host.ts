@@ -16,6 +16,7 @@ import {
   abLayout,
   closeDaemon,
   ensureDaemon,
+  terminateDaemonsOf,
   installBinary,
   listSessions,
   prepareLayout,
@@ -26,6 +27,7 @@ import { sessionKeys } from './session-identity-host.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
+import { resetCommands } from '../shared/cdp-reset.ts';
 import type { CdpPanelPort, CdpTab, CdpTabChannel, CdpTabEvent } from '../shared/cdp-proxy-core.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
@@ -34,10 +36,15 @@ const blog = scoped('browser-cli');
 /** Interim cap until the tab policy (#393/#397) sits in front of `createTab`: the spec's 8 per workspace. */
 const INTERIM_TAB_CAP = 8;
 
+/** How long a tab keeps the agent's CDP state after its last session left (`ORCHESTRA_CDP_RELEASE_GRACE_MS` overrides it for rigs). */
+const RELEASE_GRACE_MS = Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) > 0 ? Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) : 15_000;
+
 const toCdpTab = (t: BrowserTabInfo): CdpTab => ({ id: t.id, url: t.url, title: t.title, active: t.active, openedBy: t.openedBy });
 
 /** The proxy's view of one workspace's panel — the only code that maps CDP semantics onto `browser-panel.ts`. */
 export function makePanelPort(wsId: string): CdpPanelPort {
+  /** Grace timers: a tab is reset only if no session comes back within RELEASE_GRACE_MS of its last one leaving. */
+  const pendingReset = new Map<string, ReturnType<typeof setTimeout>>();
   const channelFor = (tabId: string): CdpTabChannel => {
     const wc = bp.tabContents(wsId, tabId);
     if (!wc) throw new Error(`browser tab ${tabId} has no live view`);
@@ -89,6 +96,12 @@ export function makePanelPort(wsId: string): CdpPanelPort {
         await Promise.race([wc.loadURL('about:blank').catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
       }
       // Shared with the legacy mcp__browser__* path (one attach per target): attach only if nobody has.
+      const reset = pendingReset.get(tabId);
+      if (reset) {
+        clearTimeout(reset); // the daemon came back (agent-browser reconnects lazily): the agent is still here
+        pendingReset.delete(tabId);
+      }
+      // The renderer's pane already attaches this debugger (design-mode disarm on mount), so it is almost always shared.
       if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
       tab.debuggerAttached = true;
       wc.debugger.once('detach', () => {
@@ -96,8 +109,36 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       });
       return channelFor(tabId);
     },
-    // The legacy tools and design mode still share this debugger; #398 makes the proxy its only owner and detaches here.
-    release: () => undefined,
+    // The agent is gone (its daemon exited or was closed): end the DevTools session on the shared tab after a grace period, which clears
+    // everything the agent left there — Emulation.* from `set viewport|media|offline`, Fetch.enable from `network route`, init scripts.
+    // The legacy tools / design mode re-attach on demand (`tab.debuggerAttached` is reset by the 'detach' event registered in acquire).
+    release: (tabId) => {
+      const prev = pendingReset.get(tabId);
+      if (prev) clearTimeout(prev);
+      const t = setTimeout(() => {
+        pendingReset.delete(tabId);
+        const wc = bp.tabContents(wsId, tabId);
+        if (!wc) return;
+        blog.info(`cdp[${wsId.slice(0, 8)}] no session came back to tab ${tabId} within ${RELEASE_GRACE_MS} ms: clearing the agent's overrides, then detaching`);
+        void (async () => {
+          try {
+            // detach() alone does NOT clear Emulation.* in Electron 33 (measured): undo each explicitly, then end the session.
+            if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+            for (const [method, params] of resetCommands(wc.getUserAgent())) await wc.debugger.sendCommand(method, params).catch(() => undefined);
+          } catch (e) {
+            blog.warn(`resetting tab ${tabId} of ${wsId} failed`, e);
+          } finally {
+            try {
+              wc.debugger.detach();
+            } catch {
+              /* already gone */
+            }
+          }
+        })();
+      }, RELEASE_GRACE_MS);
+      t.unref?.();
+      pendingReset.set(tabId, t);
+    },
     createTab: async (url) => {
       if (bp.listTabs(wsId).length >= INTERIM_TAB_CAP) throw new Error(`this workspace already has ${INTERIM_TAB_CAP} browser tabs`);
       const tab = bp.createTab(wsId, { ...(url ? { url } : {}), openedBy: 'agent', activate: true });
@@ -228,6 +269,12 @@ export async function disposeEndpoint(wsId: string): Promise<void> {
 }
 
 export async function disposeAllEndpoints(): Promise<void> {
+  // Quit does not wait for the graceful `close` below: SIGTERM our daemons first, synchronously (identity re-read per pid).
+  try {
+    terminateDaemonsOf(layout());
+  } catch (e) {
+    blog.warn('terminating agent-browser daemons at quit failed', e);
+  }
   await Promise.all([...endpoints.keys()].map((id) => disposeEndpoint(id)));
 }
 
@@ -283,7 +330,13 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
   // An archived workspace has no panel any more (destroyPanel): a late call from a leftover shell must not resurrect one.
   if (ws.archived) return { ok: false, code: 'unknown-workspace', error: `workspace ${id} is archived` };
   try {
-    const ep = await ensureEndpoint(id);
+    const pending = ensureEndpoint(id);
+    const ep = await pending;
+    // The workspace may have been archived / deleted while the proxy came up (destroyPanel disposes it): do not reveal, connect or resurrect.
+    const again = store.getWorkspace(id);
+    if (endpoints.get(id) !== pending || !again || again.archived) {
+      return { ok: false, code: 'unknown-workspace', error: `workspace ${id} was closed while its browser endpoint was starting` };
+    }
     bp.revealForAgent(id);
     const l = layout();
     const binary = agentBrowserBinary();
