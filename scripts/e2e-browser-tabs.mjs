@@ -185,9 +185,15 @@ function seedWorld(armDir) {
 }
 
 function procsByHome(home) {
+  // identity = this world's ORCHESTRA_HOME in the environ (keeper, stub claude, app) OR its --user-data-dir on the command line
+  // (Electron gpu/utility helpers re-exec with a clean environ and used to outlive a SIGKILLed app).
   const out = [];
   for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
-    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+    try {
+      const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0');
+      if (env.includes(`ORCHESTRA_HOME=${home}`)) { out.push(+p); continue; }
+    } catch {}
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(`--user-data-dir=${path.join(home, 'userData')}`)) out.push(+p); } catch {}
   }
   return out.filter((p) => p !== process.pid);
 }
