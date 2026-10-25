@@ -18,13 +18,14 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { abLayout } from '../src/main/agent-browser-daemon.ts';
+import { BROWSER_SKILL, BROWSER_SKILL_EXAMPLE_HEADING, BROWSER_SKILL_NAME } from '../src/shared/browser-skill.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel'];
+const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -40,6 +41,7 @@ const MUTANTS = {
   'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
+  'skill-not-installed': { file: 'chunk', edits: [[/(\w+)\("orchestra-status",(\w+)\),\1\((\w+),(\w+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'no-auto-open': { file: 'renderer', edits: [[/onBrowserEvent\(\((\w+),(\w+)\)=>\{\2\.url&&/, 'onBrowserEvent(($1,$2)=>{!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -179,7 +181,7 @@ function seedWorld(armDir) {
   fs.writeFileSync(path.join(ohome, 'session-keys.json'), JSON.stringify({ version: 1, sessions: Object.fromEntries(workspaces.map((w) => [w.id, { hash: sha256(w.key), issuedAt: Date.now() }])) }), { mode: 0o600 });
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho B399-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
-  return { fakeHome, ohome, cfg, account, workspaces, stubDir };
+  return { fakeHome, ohome, cfg, account, workspaces, stubDir, repoDir };
 }
 
 function listProcsByHome(home) {
@@ -313,10 +315,14 @@ async function openPane(ctx) {
   await waitFor(() => paneVisible(ctx), 15000, 'the Browser pane to be open');
 }
 /** The REAL CLI bundle, with an `env -i` allowlist: exactly what an agent's Bash tool hands it. */
-function cli(ctx, W, args, { env: extra = {}, timeoutMs = 60000, key } = {}) {
+const cliEnv = (ctx, W, { env: extra = {}, key } = {}) => {
   const base = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: ctx.world.fakeHome, ORCHESTRA_HOME: ctx.world.ohome, ORCHESTRA_WS_ID: W.id, ORCHESTRA_SESSION_KEY: key ?? W.key,
     ORCHESTRA_AGENT_TMPDIR: path.join(ctx.world.fakeHome, 'agent-tmp', W.name), LANG: 'C.UTF-8', ...extra };
   fs.mkdirSync(base.ORCHESTRA_AGENT_TMPDIR, { recursive: true });
+  return base;
+};
+function cli(ctx, W, args, { env: extra = {}, timeoutMs = 60000, key } = {}) {
+  const base = cliEnv(ctx, W, { env: extra, key });
   const t0 = Date.now();
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env: base, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome, detached: true });
@@ -603,6 +609,59 @@ const ARM_FNS3 = {
 };
 Object.assign(ARM_FNS, ARM_FNS3);
 
+
+
+const ARM_FNS4 = {
+  async skill(ctx) {
+    // Spec #388 AC: "the bundled skill exists in new worktrees and an agent following it completes the fixture flow".
+    // The skill is read from the file the REAL app wrote into a NEW worktree, and its worked example is run VERBATIM (only $URL is supplied)
+    // through the real CLI, as the agent's Bash tool would: an `orchestra` on PATH, the agent's env, the workspace's session key.
+    const { W1, FIX, ui, world } = ctx; const A = 'skill';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const made = await ui.eval(`window.orchestra.createWorkspace({ repoPath: ${sel(world.repoDir)} }).then((w) => ({ id: w.id, worktreePath: w.worktreePath }))`);
+    const skillFile = path.join(made.worktreePath, '.claude', 'skills', BROWSER_SKILL_NAME, 'SKILL.md');
+    const sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-link', 'SKILL.md');
+    await waitFor(() => fs.existsSync(sibling), 30000, 'the app to install the capability skills into the NEW worktree').catch(() => {});
+    clause(A, 'ctl/the-app-installed-its-skills-in-the-new-worktree', fs.existsSync(sibling), `${sibling} ${fs.existsSync(sibling) ? 'exists' : 'MISSING'} (the installer ran for the workspace the app just created)`);
+    const installed = fs.existsSync(skillFile) ? fs.readFileSync(skillFile, 'utf8') : null;
+    clause(A, 'skill-installed-in-a-new-worktree', installed === BROWSER_SKILL, `${skillFile} ${installed === null ? 'MISSING' : installed === BROWSER_SKILL ? `exists, byte-equal to BROWSER_SKILL (${installed.length} chars)` : 'exists but DIFFERS from BROWSER_SKILL'}`);
+    if (installed === null) return;
+
+    const at = installed.indexOf(BROWSER_SKILL_EXAMPLE_HEADING);
+    const block = (/```bash\n([\s\S]*?)```/.exec(installed.slice(at)) ?? [])[1];
+    clause(A, 'ctl/example-extracted-from-the-installed-file', at > 0 && !!block && /b open "\$URL"/.test(block), `worked example under "${BROWSER_SKILL_EXAMPLE_HEADING}": ${block ? block.split('\n').length - 1 : 0} lines`);
+    if (!block) return;
+    const shim = path.join(world.fakeHome, 'agent-bin'); fs.mkdirSync(shim, { recursive: true });
+    fs.writeFileSync(path.join(shim, 'orchestra'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(APP_DIR, 'dist-electron/cli.js'))} "$@"\n`, { mode: 0o755 });
+    const runFlow = (name, script) => new Promise((resolve) => {
+      const f = path.join(world.fakeHome, `${name}.sh`); fs.writeFileSync(f, script);
+      const env = cliEnv(ctx, W1, { env: { URL: `${FIX}/skill-flow.html` } }); env.PATH = `${shim}:${env.PATH}`;
+      const t0 = Date.now();
+      const child = spawn('bash', [f], { env, cwd: world.fakeHome, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
+      const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 90000);
+      child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr, ms: Date.now() - t0 }); });
+    });
+    const welcome = async () => { const o = await oracle(ctx, `${FIX}/skill-flow.html`, 8000).catch(() => null); if (!o) return null; try { return await o.eval(`(document.getElementById('welcome') || {}).textContent || null`); } finally { o.close(); } };
+
+    // must-FAIL arms FIRST (they leave the page without a welcome line; the green run then sets it): a label that is not on the page, and a flow that does not wait
+    const wrongLabel = await runFlow('flow-wrong-label', block.replace(`'textbox "Email'`, `'textbox "Phone'`));
+    const w0 = await welcome();
+    clause(A, 'ctl/example-with-a-label-not-on-the-page-fails', block.includes(`'textbox "Email'`) && wrongLabel.code !== 0 && w0 === null, `ref lookup for a missing textbox → ${show({ code: wrongLabel.code, stdout: wrongLabel.stdout, stderr: wrongLabel.stderr, ms: wrongLabel.ms })}; oracle #welcome ${JSON.stringify(w0)} (the flow cannot pass by accident)`);
+    const noClick = await runFlow('flow-no-click', block.replace(/^b click .*\n/m, ''));
+    const w1 = await welcome();
+    clause(A, 'ctl/example-without-the-click-fails', /^b click /m.test(block) && noClick.code !== 0 && w1 === null, `flow minus its click → ${show({ code: noClick.code, stdout: noClick.stdout, stderr: noClick.stderr, ms: noClick.ms })}; oracle #welcome ${JSON.stringify(w1)}`);
+
+    const run = await runFlow('flow', block);
+    const w2 = await welcome();
+    const last = run.stdout.trim().split('\n').pop();
+    clause(A, 'example-completes-the-fixture-flow-verbatim', run.code === 0 && last === 'Welcome, me@example.com' && w2 === 'Welcome, me@example.com', `bash flow.sh (the skill's block, $URL=${FIX}/skill-flow.html) → ${show({ code: run.code, stdout: run.stdout, stderr: run.stderr, ms: run.ms })}; oracle #welcome ${JSON.stringify(w2)}`);
+    const shot = await ui.send('Page.captureScreenshot', { format: 'png' });
+    saveShot('parity-skill-flow-app.png', Buffer.from(shot.data, 'base64'));
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS4);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');

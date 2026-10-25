@@ -65,15 +65,17 @@ Then open the file with the **Read** tool — it shows images. JPEG: §screensho
 
 ## Several commands in one call
 
-A multi-step flow costs one turn, not one per click. Use §set -e§ so it stops at the first failure, and look refs up inside the script instead of hard-coding them (§$(ref …)§ re-snapshots, so the ref is always fresh):
+A multi-step flow costs one turn, not one per click. Use §set -e§ so it stops at the first failure, and look refs up inside the script instead of hard-coding them (§ref§ re-snapshots, so the ref is always fresh, and it FAILS when nothing matches — assign its result to a variable, as below, so §set -e§ sees that failure):
 
 §§§bash
 set -e
 b() { orchestra browser "$@"; }
-ref() { b snapshot -i | grep -m1 "$1" | sed -n 's/.*\[ref=\(e[0-9]*\)\].*/@\1/p'; }
+ref() { b snapshot -i | grep -m1 "$1" | sed -n 's/.*\[ref=\(e[0-9]*\)\].*/@\1/p' | grep .; }
 b open "$URL"
-b fill "$(ref 'textbox "Email')" "me@example.com"
-b click "$(ref 'button "Sign in')"
+email=$(ref 'textbox "Email')
+b fill "$email" "me@example.com"
+button=$(ref 'button "Sign in')
+b click "$button"
 b wait "#welcome"
 b get text "#welcome"
 §§§
@@ -109,6 +111,7 @@ Your commands never move the human's keyboard focus: they keep typing in the com
 - A page that does not load is exit 1 with the network error (§ERR_CONNECTION_REFUSED§ = nothing is listening).
 - Relative file paths (§screenshot x.png§, §upload @e9 f.pdf§) resolve against your current directory.
 - The command comes first: §orchestra browser snapshot -i§, not §orchestra browser -i snapshot§ (only §--json§ may lead).
+- An EMPTY ref (§click ""§, §fill "" x§ — e.g. a lookup that matched nothing) is not an error: it succeeds and does not do what you meant. Check a variable before using it.
 - §orchestra help browser§ lists the same commands.
 `.replaceAll('§', '`');
 
