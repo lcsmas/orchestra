@@ -275,6 +275,21 @@ fleet bus and carries no content; an avis de tâche comes from the CLI and
 reports on one task.
 _Avoid_: notification (blurs it with a réveil), alert
 
+### Browser
+
+**Profil navigateur** (browser profile):
+A named, persistent browser identity (cookies, storage, sign-ins) that the
+human creates and attaches to a workspace's browser panel on purpose. It
+survives app restarts and workspace deletion; several workspaces may share one.
+Settled with the user 2026-10-25 (Orca port grilling).
+_Avoid_: profil / profile alone (collides with Compte), session
+
+**Navigation éphémère** (ephemeral browsing):
+The default state of a workspace's browser panel when no profil navigateur is
+attached: scratch storage of its own, gone when the app quits or the workspace
+is deleted.
+_Avoid_: incognito, private mode
+
 ### Accès mobile
 
 **Accès mobile** (mobile access):
