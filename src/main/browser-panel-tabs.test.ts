@@ -24,7 +24,7 @@ class WebContents {
       attach: () => { this.dbgAttached = true; },
       detach: () => { this.dbgAttached = false; this.detachCalls++; },
       isAttached: () => this.dbgAttached,
-      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve({ result: { value: 'ev' } }); },
+      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve({ result: { value: this.evalValue ?? 'ev' } }); },
     };
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
@@ -36,7 +36,9 @@ class WebContents {
   reload() { this.reloaded = true; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
   getURL() { return this.url; } getTitle() { return this.title; }
-  close() { this.destroyed = true; this.closed++; this._view.webContents = undefined; }
+  // Real Electron closes ASYNCHRONOUSLY: with __bpAsyncClose the contents stay live until finishClose().
+  close() { this.closed++; if (globalThis.__bpAsyncClose) { this.pendingClose = true; return; } this.destroyed = true; this._view.webContents = undefined; }
+  finishClose() { this.destroyed = true; this._view.webContents = undefined; }
 }
 export class WebContentsView {
   constructor() { this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
@@ -407,4 +409,118 @@ test('a held Panel keeps a readable view after its LAST tab is closed (no TypeEr
   bp.closeTab(ws, 't1');
   assert.doesNotThrow(() => panel.view);
   assert.equal(panel.view, viewOf(t1));
+});
+
+// ── follow-up (#391-fu): ghost state, explicit-tabId resurrection, reaping on every read, pinned multi-step ──
+
+test('a late did-* event from a closed LAST tab / destroyed panel publishes no ghost state', () => {
+  (globalThis as any).__bpAsyncClose = true; // the old contents outlive closeTab for a moment, like real Electron
+  try {
+    const ws = newWs();
+    openShown(ws);
+    const old = bp.getActiveTab(ws)!;
+    bp.closeTab(ws, 't1'); // last tab: panel evicted, old contents still live
+    const rebuilt = bp.ensurePanel(ws); // a fresh panel for the same workspace
+    const n = events().length;
+    wcOf(old).emitEvent('did-stop-loading');
+    assert.equal(events().length, n, 'no broadcast from the evicted panel (it would show t1 over the live one)');
+    assert.equal(bp.getState(ws).tabs[0].id, rebuilt.tabs[0].id);
+    const ws2 = newWs();
+    openShown(ws2);
+    const t = bp.getActiveTab(ws2)!;
+    bp.destroyPanel(ws2);
+    const m = events().length;
+    wcOf(t).emitEvent('did-navigate');
+    assert.equal(events().length, m, 'no ghost state for a deleted workspace');
+  } finally {
+    (globalThis as any).__bpAsyncClose = false;
+  }
+});
+
+test('an explicit tabId that no longer exists fails WITHOUT building a panel (closeTab-last, destroyPanel)', async () => {
+  const views = () => (globalThis as any).__bpViews.length as number;
+  const ws = newWs();
+  openShown(ws);
+  bp.closeTab(ws, 't1');
+  const before = views();
+  await assert.rejects(() => bp.evaluate(ws, '1', 't1'), /not found/);
+  await assert.rejects(() => bp.navigate(ws, 'http://localhost:9/x', 't1'), /not found/);
+  assert.throws(() => bp.attachDebugger(ws, 't1'), /not found/);
+  assert.equal(bp.getPanel(ws), undefined, 'no panel resurrected');
+  assert.equal(views(), before, 'no native view built');
+  const ws2 = newWs();
+  openShown(ws2);
+  bp.destroyPanel(ws2);
+  const before2 = views();
+  await assert.rejects(() => bp.evaluate(ws2, '1', 't1'), /not found/);
+  assert.equal(bp.getPanel(ws2), undefined);
+  assert.equal(views(), before2);
+  // control: the DEFAULT (no tabId) form still opens the panel on demand, as before
+  const ws3 = newWs();
+  const b3 = views();
+  await bp.evaluate(ws3, '1');
+  assert.ok(bp.getPanel(ws3) && views() === b3 + 1, 'default evaluate builds the panel');
+  const ws4 = newWs();
+  await bp.navigate(ws4, 'http://localhost:9/y');
+  assert.ok(bp.getPanel(ws4), 'default navigate builds the panel');
+});
+
+test('listTabs / getTab / getActiveTab reap a dead tab themselves (no stale list for the CDP target list)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  (viewOf(t2) as any).killExternally();
+  assert.deepEqual(bp.listTabs(ws).map((t) => t.id), ['t1']);
+  const ws2 = newWs();
+  openShown(ws2);
+  const u2 = bp.createTab(ws2, { openedBy: 'agent' });
+  (viewOf(u2) as any).killExternally();
+  assert.equal(bp.getTab(ws2, 't2'), undefined, 'a dead tab is not returned by getTab');
+  const ws3 = newWs();
+  openShown(ws3);
+  const v1 = bp.getActiveTab(ws3)!;
+  bp.createTab(ws3, { openedBy: 'agent' });
+  (viewOf(v1) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws3)?.id, 't2', 'a dead active tab is not returned by getActiveTab');
+});
+
+test('reaping a dead ACTIVE tab promotes its right neighbour, else the left one (not always the first)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  const t3 = bp.createTab(ws, { openedBy: 'agent' });
+  bp.activateTab(ws, 't2');
+  (viewOf(bp.getTab(ws, 't2')!) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't3', 'middle tab died: the one that slid into its slot (t3), not t1');
+  assert.ok(attached.has(viewOf(t3)) && attached.size === 1);
+  bp.activateTab(ws, 't3');
+  (viewOf(t3) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't1', 'last tab died: the left neighbour');
+});
+
+test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking never lands on the new tab', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  wcOf(t1).evalValue = { x: 5, y: 6 };
+  wcOf(t1).onCmd = (m: string) => { if (m === 'Runtime.evaluate') bp.activateTab(ws, 't2'); };
+  await assert.rejects(() => bp.clickRef(ws, 1), /not the active tab/, 'the pinned click refuses a tab that is no longer composited');
+  const mouse = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent');
+  assert.deepEqual(mouse(t2), [], 'nothing was clicked on the tab that became active');
+  assert.deepEqual(mouse(t1), [], 'and the click was not half-delivered to the first tab either');
+});
+
+test('designModePoll pins ONE tab: the element screenshot comes from the tab the pick was read on', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  wcOf(t1).evalValue = { url: 'u', title: 't', chain: [], outerHTML: '<b/>', computed: {}, box: { x: 1, y: 1, width: 10, height: 10 }, viewport: { width: 100, height: 100 } };
+  wcOf(t1).onCmd = (m: string) => { if (m === 'Runtime.evaluate') bp.activateTab(ws, 't2'); };
+  const pick = await bp.designModePoll(ws);
+  assert.ok(pick && !('cancelled' in pick), 'a pick was shaped');
+  const shots = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Page.captureScreenshot').length;
+  assert.equal(shots(t1), 1, 'the screenshot was taken on the tab that held the pick');
+  assert.equal(shots(t2), 0, 'and not on the tab that became active meanwhile');
 });

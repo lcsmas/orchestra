@@ -157,9 +157,18 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
   size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
   (popup routing is #396).
-- **Tests**: `src/main/browser-panel-tabs.test.ts` (22 arms, N>1 tabs, real
-  module over a stubbed `electron` loader hook) + `scripts/mutate-browser-panel-tabs.mjs`
-  (18 in-place mutants, byte-exact restore). The registry itself cannot be
+- **An explicit `tabId` never builds a panel**: `attachDebugger`/`evaluate`/…
+  and `navigate` resolve it first and throw "not found" — a stale id after
+  `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
+  (only the DEFAULT, active-tab form opens a panel on demand). `emitState` also
+  requires `panels.get(wsId) === panel`: an evicted panel keeps its `tabs`, so
+  without it a late did-* event from a still-live (async-closing) tab publishes
+  a ghost state for a deleted workspace or over the rebuilt panel.
+  `listTabs`/`getTab`/`getActiveTab` reap on every read.
+- **Tests**: `src/main/browser-panel-tabs.test.ts` (28 arms, N>1 tabs, real
+  module over a stubbed `electron` loader hook; `__bpAsyncClose` models
+  Electron's async `close()`) + `scripts/mutate-browser-panel-tabs.mjs`
+  (27 in-place mutants, byte-exact restore). The registry itself cannot be
   imported by `node --test` without that hook (it imports `electron`).
   Real Electron: `scripts/e2e-browser-tabs-registry.sh <app-dir>` (own headless
   sway) — `app` arm drives the unchanged renderer flow on the built app (pane

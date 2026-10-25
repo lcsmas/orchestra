@@ -305,8 +305,11 @@ function publish(panel: Panel): BrowserPanelState {
 function emitState(panel: Panel, tab: Tab, patch: Partial<TabNav>): void {
   // Reachable from webContents event handlers, which can still fire while the
   // contents are being torn down — so the view may already have lost them, or
-  // the tab may already have been closed out of the registry.
-  if (!liveContents(tab) || !panel.tabs.includes(tab)) return;
+  // the tab may already have been closed out of the registry. An evicted panel
+  // keeps its `tabs` (stale holders read `panel.view`), so also require that
+  // this panel is still THE registered one — else a late did-* event publishes
+  // a ghost state for a deleted workspace or over a rebuilt panel.
+  if (!liveContents(tab) || !panel.tabs.includes(tab) || panels.get(panel.wsId) !== panel) return;
   Object.assign(tab.nav, patch);
   publish(panel);
 }
@@ -628,11 +631,12 @@ export async function navigate(
   to: string,
   tabId?: BrowserTabId,
 ): Promise<BrowserPanelState> {
-  const panel = ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
-  if (!tab) return panel.state;
+  // An explicit tabId must already exist (throws "not found"); only the
+  // default (active-tab) form opens the panel.
+  const tab = tabId === undefined ? (ensurePanel(wsId), getActiveTab(wsId)) : resolveTab(wsId, tabId);
+  if (!tab) return getState(wsId);
   await loadIn(tab, to);
-  return panel.state;
+  return getState(wsId);
 }
 
 /** Turn user/agent input into a loadable URL: pass through explicit schemes,
@@ -691,12 +695,16 @@ export function destroyPanel(wsId: string): void {
  *  Enables the CDP domains the tools need. Returns the panel (creating it if the
  *  workspace has none) or throws if the tab has no live view. */
 export function attachDebugger(wsId: string, tabId?: BrowserTabId): Panel {
-  const panel = getPanel(wsId) ?? ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
+  // An EXPLICIT tabId addresses a tab that must already exist: resolve it first
+  // (throws "not found") and never build a panel for it — a stale id after
+  // closeTab(last)/destroyPanel must fail, not resurrect a blank native view.
+  const explicit = tabId === undefined ? undefined : resolveTab(wsId, tabId);
+  const panel = getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);
+  const tab = explicit ?? (panel ? activeTabOf(panel) : undefined);
   const wc = liveContents(tab);
   // A dead view surfaces to the agent as a clear error rather than a TypeError
   // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
-  if (!tab || !wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  if (!panel || !tab || !wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
   const dbg = wc.debugger;
   if (!tab.debuggerAttached) {
     if (!dbg.isAttached()) dbg.attach('1.3');
