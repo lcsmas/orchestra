@@ -1599,6 +1599,7 @@ export async function dispatchSpawnRequest(
     error:
       `the agent failed to start: ${cause}. Workspace ${branch} (${id}) was kept, stopped, ` +
       `with its task retained — fix the cause, then restart it (\`orchestra restart ${id}\`).`,
+    ...profileReport, // #401: a kept child still says what became of its profile
   });
   try {
     // `detached` skips only the parent nesting — `from` above still drives
@@ -1615,12 +1616,12 @@ export async function dispatchSpawnRequest(
     }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, profileDecision.kind === 'honoured' ? { browserProfileId: profileDecision.profileId } : undefined);
     created = { id: ws.id, branch: ws.branch };
     const started = await startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images);
-    if (!started.ok) return { ...keptFailure(ws.id, ws.branch, started.error), ...profileReport };
+    if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
     return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...profileReport };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'spawn failed';
     // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
-    return created ? { ...keptFailure(created.id, created.branch, msg), ...profileReport } : { ok: false, error: msg };
+    return created ? keptFailure(created.id, created.branch, msg) : { ok: false, error: msg };
   }
 }
 

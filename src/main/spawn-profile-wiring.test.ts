@@ -88,7 +88,8 @@ test('only the hooks /spawn route sends profile + key; the sandbox wire and the 
 
 test('the reply carries the decision: a profile report on success AND on a kept (failed-start) child', () => {
   assert.match(dispatch, /profileDecision\.kind === 'none' \? \{\} : \{ profile: \{ applied: profileDecision\.kind === 'honoured', message: profileDecision\.message \} \}/);
-  assert.equal(dispatch.split('...profileReport').length - 1, 3, 'ok result + start failure + thrown start');
+  assert.equal(dispatch.split('...profileReport').length - 1, 2, 'ok result + keptFailure (which both failed-start returns go through — #375 pins those return lines verbatim)');
+  assert.match(dispatch, /startError: cause,[\s\S]*?\.\.\.profileReport,/, 'the kept child\'s reply carries the report');
 });
 
 test('whoami exposes the HELD profile through effectiveProfileId (a dangling id reads null)', () => {
