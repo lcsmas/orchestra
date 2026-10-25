@@ -27,15 +27,15 @@ step 3 (`build-release.md`).
 | Scratch guard (D7) | `scripts/session-budget/scratch-guard.mjs` | `assertScratch` refuses any HOME/config/`ORCHESTRA_HOME` that is, resolves into, or contains `~/.claude*`, `~/.orchestra*`, or the invoker's `CLAUDE_CONFIG_DIR`/`ORCHESTRA_HOME` (symlinks resolved). |
 | Optional real-API smoke | `scripts/session-budget/smoke-real.mjs` (`pnpm run smoke:session-budget-real`) | ONE tiny cheap-model turn (`--model haiku`, no tools/MCP, nothing persisted, `--max-budget-usd 0.05`). Refuses unless `--real-api` AND an explicit `--config-dir` (the account billed; never defaulted). `--api-base` redirects it (how tests prove the flag path against the fake API). The release gate runs it only when `RELEASE_REAL_API_SMOKE_CONFIG_DIR` is set. **Never run against the real API by tests or by the C1 author.** |
 
-## Measured facts (CLI 2.1.284, SDK 0.3.241)
+## Measured facts (CLI 2.1.284, SDK 0.3.241; re-measured on CLI 2.1.310, 2026-10-25)
 
 **Production numbers** (suite env = Orchestra's env: no traffic-suppressing knob — `git grep NONESSENTIAL src scripts` finds
 none; fake non-first-party base URL; netns; 10/10 identical runs, 2026-09-30, load 9–11). Before the first reply:
 
 | what | number | note |
 |---|---|---|
-| main model request (tools>0) | **1** | `claude-opus-4-8`, ~92 tools, carries CLAUDE.md + rules + skills + MCP tools |
-| tool-less side model call | **1 × `claude-haiku-4-5-20251001`** | lands ~170 ms BEFORE the main request; its prompt is `<session>…</session> Write the title in …` = the CLI's **session-title generator** |
+| main model request (tools>0) | **1** | `claude-opus-4-8`, carries CLAUDE.md + rules + skills + MCP tools. 2.1.284: ~92 tool defs. **2.1.310: 13 tool defs** — MCP tools are deferred behind `ToolSearch` and only *named* in the body, so `instrument.modelRequestCarriesTools` counts distinct fixture `mcp__<srv>__<tool>` names (`subject.firstModelRequestMcpTools`, measured 60/60), not `tools[]` |
+| tool-less side model call | **1 × `claude-haiku-5-5`** (2.1.284: `claude-haiku-4-5-20251001`; the CLI's `haiku` alias moved to Haiku 5.5 in 2.1.310) | lands ~170 ms BEFORE the main request; its prompt is `<session>…</session> Write the title in …` = the CLI's **session-title generator** |
 | `count_tokens` / other routes | **0 / 0** | |
 | refused egress attempts BEFORE THE MAIN REQUEST STARTS | **3 × `api.anthropic.com:443`** | hard-coded host, ignores the base URL; 5 by the first reply, 8–9 by the end of the run (the rest are triggered by the request/reply or retried on a ~2 s backoff, so they grow with elapsed time and are printed, not budgeted). In production these reach the real API — what they are is NOT identified |
 

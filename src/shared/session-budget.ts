@@ -100,7 +100,9 @@ export interface SessionBudgetReport {
   /** Set when the run itself raised (a setup/teardown/agent error): a run that raised is never a pass. */
   error?: string;
   /** Instrument facts proving the SUBJECT mounted (a vacuous 0 must not pass). */
-  subject: { firstModelRequestTools: number; firstModelRequestBytes: number; markersSeen: string[]; mcpServersConnected: number; toolsAtInit: number };
+  /** `firstModelRequestMcpTools`: distinct fixture `mcp__<srv>__<tool>` names in the main request — as tool defs or, since CLI
+   *  2.1.310, the deferred ToolSearch listing (the request then carries ~13 tools). */
+  subject: { firstModelRequestTools: number; firstModelRequestMcpTools: number; firstModelRequestBytes: number; markersSeen: string[]; mcpServersConnected: number; toolsAtInit: number };
 }
 
 /** Sentinels the fixture plants and the fake API greps for in the FIRST model request body — proof the
@@ -136,7 +138,7 @@ export const WEAK_CONTAINMENT_ENV = 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT';
  *  They describe PRODUCTION configuration: the suite sets none of the CLI's traffic-disabling env knobs (Orchestra sets none
  *  either — `git grep NONESSENTIAL src scripts` finds only this suite), against a fake non-first-party base URL, inside a
  *  network namespace, with the app process's own fetch()/http(s) routed through the recording proxy too. Measured on CLI
- *  2.1.284 (2026-09-30, ledger #237 reviews): the user's turn is the model call that carries tools; one tool-less haiku call
+ *  2.1.284 (2026-09-30, ledger #237 reviews; side model re-pinned to Haiku 5.5 on 2.1.310, 2026-10-25): the user's turn is the model call that carries tools; one tool-less haiku call
  *  (the CLI's session-title generator) precedes it; exactly 3 refused attempts at api.anthropic.com:443 precede the main
  *  request (9/9 runs at reply latency 500/2000/5000 ms; later attempts grow with session duration and are printed, not
  *  budgeted). A NEW startup call — a different side model, another route, another host, one more attempt — breaks a number.
@@ -149,7 +151,7 @@ export const SESSION_BUDGETS = Object.freeze({
     /** Exactly one model call carrying tools — the opening turn itself. */
     modelRequests: 1,
     /** Tool-less model calls the CLI makes on its own, at most N per model; a model not listed is allowed 0. */
-    sideModelRequests: Object.freeze({ 'claude-haiku-4-5-20251001': 1 } as Record<string, number>),
+    sideModelRequests: Object.freeze({ 'claude-haiku-5-5': 1 } as Record<string, number>),
     /** No count_tokens at all: a boot-time context read fans out to one per memory file (#176: ~58). */
     countTokensRequests: 0,
     /** No other route: a new startup call from a CLI upgrade must be looked at, not absorbed. */
@@ -268,7 +270,7 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
   verdicts.push(instrumentVerdict('instrument.firstReplyObserved', report.timing?.timeToFirstReplyMs == null ? null : 1, 1, 'the session never produced a first reply, so the counts above measure nothing'));
   verdicts.push(instrumentVerdict('instrument.mcpServersConnected', s?.mcpServersConnected ?? null, f?.mcpServers ?? 1, 'the fixture MCP servers did not all connect — the subject is lighter than the fixture claims'));
   verdicts.push(instrumentVerdict('instrument.mcpChildProcesses', report.processes?.atFirstReply?.byKind?.mcp ?? null, f?.mcpServers ?? 1, 'the fixture MCP servers were not running as real child processes at the first reply'));
-  verdicts.push(instrumentVerdict('instrument.modelRequestCarriesTools', s?.firstModelRequestTools ?? null, (f?.mcpServers ?? 1) * (f?.toolsPerServer ?? 1), 'the model request did not carry the fixture tools'));
+  verdicts.push(instrumentVerdict('instrument.modelRequestCarriesTools', s?.firstModelRequestMcpTools ?? null, (f?.mcpServers ?? 1) * (f?.toolsPerServer ?? 1), 'the model request did not carry or list the fixture MCP tools'));
   for (const m of SUBJECT_MARKERS) {
     verdicts.push(instrumentVerdict(`instrument.modelRequestCarries.${m}`, s?.markersSeen?.includes(m) ? 1 : null, 1, `the first model request did not contain the fixture's ${m} sentinel — the subject is lighter than the fixture claims`));
   }

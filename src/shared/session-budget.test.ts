@@ -17,7 +17,7 @@ import {
   type SessionBudgetReport,
 } from './session-budget.ts';
 
-const HAIKU = 'claude-haiku-4-5-20251001';
+const HAIKU = 'claude-haiku-5-5';
 const HOST = 'api.anthropic.com:443';
 /** A request window: `main` tool-carrying model calls, tool-less `side` calls by model, count_tokens, other routes, refused egress. */
 const counts = (main: number, count_tokens: number, other = 0, side: Record<string, number> = {}, egress: Record<string, number> = {}): RequestCounts => {
@@ -40,7 +40,7 @@ function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
     requests: { beforeFirstReply: preOk(), afterFirstReply: counts(0, 57, 0, {}, { [HOST]: 3 }), total: counts(1, 57, 0, { [HAIKU]: 1 }, { [HOST]: 8 }) },
     processes: { atFirstReply: census(4), atEnd: census(4), survivorsAfterTeardown: 0 },
     egress: [],
-    subject: { firstModelRequestTools: 91, firstModelRequestBytes: 400000, markersSeen: [...SUBJECT_MARKERS], mcpServersConnected: 4, toolsAtInit: 91 },
+    subject: { firstModelRequestTools: 13, firstModelRequestMcpTools: 60, firstModelRequestBytes: 400000, markersSeen: [...SUBJECT_MARKERS], mcpServersConnected: 4, toolsAtInit: 91 },
     ...over,
   };
 }
@@ -80,7 +80,7 @@ test('a boot-time context read (count_tokens burst before the first reply) break
   assert.equal(broken[0].id, 'session.beforeFirstReply.countTokensRequests');
   assert.equal(broken[0].actual, 57);
   assert.match(broken[0].message, /BUDGET BROKEN session\.beforeFirstReply\.countTokensRequests: allowed at most 0, saw 57/);
-  assert.match(broken[0].message, /model=2 count_tokens=57 other=0 \| main=1 side=\{claude-haiku-4-5-20251001:1\} egress=\{api\.anthropic\.com:443:5\}/);
+  assert.match(broken[0].message, /model=2 count_tokens=57 other=0 \| main=1 side=\{claude-haiku-5-5:1\} egress=\{api\.anthropic\.com:443:5\}/);
 });
 
 test('exactly one MAIN (tool-carrying) model request: zero AND two both break it; a tool-less side call never counts as the main one', () => {
@@ -104,7 +104,7 @@ test('a run whose subject never mounted is VOID, never a pass (a vacuous 0 must 
     ['no first reply', { timing: { timeToFirstReplyMs: null, fakeModelLatencyMs: 500 } }, /instrument\.firstReplyObserved/],
     ['mcp not connected', { subject: { ...good().subject, mcpServersConnected: 1 } }, /instrument\.mcpServersConnected/],
     ['mcp children absent', { processes: { atFirstReply: census(0), atEnd: census(0), survivorsAfterTeardown: 0 } }, /instrument\.mcpChildProcesses/],
-    ['tools missing', { subject: { ...good().subject, firstModelRequestTools: 10 } }, /instrument\.modelRequestCarriesTools/],
+    ['tools missing', { subject: { ...good().subject, firstModelRequestMcpTools: 59 } }, /instrument\.modelRequestCarriesTools/],
     ...SUBJECT_MARKERS.map((m): [string, Partial<SessionBudgetReport>, RegExp] => [
       `marker ${m} missing`,
       { subject: { ...good().subject, markersSeen: SUBJECT_MARKERS.filter((x) => x !== m) } },
@@ -129,7 +129,7 @@ test('the printed request summary carries all three windows by type, plus the st
   const lines = formatRequestSummary(good());
   assert.equal(lines.length, 4);
   assert.match(lines[3], /startup egress \(before the main request started\): \{api\.anthropic\.com:443:3\}/);
-  assert.match(lines[0], /before first reply: model=2 count_tokens=0 other=0 \| main=1 side=\{claude-haiku-4-5-20251001:1\} egress=\{api\.anthropic\.com:443:5\}/);
+  assert.match(lines[0], /before first reply: model=2 count_tokens=0 other=0 \| main=1 side=\{claude-haiku-5-5:1\} egress=\{api\.anthropic\.com:443:5\}/);
   assert.match(lines[1], /after first reply: +model=0 count_tokens=57 other=0 \| main=0 side=\{\} egress=\{api\.anthropic\.com:443:3\}/);
 });
 

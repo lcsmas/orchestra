@@ -187,6 +187,7 @@ const report = {
   egressLog: api.egress.map((e) => ({ tMs: Math.round(e.tMs), target: e.target })),
   subject: {
     firstModelRequestTools: mainModel?.tools ?? 0,
+    firstModelRequestMcpTools: (mainModel?.mcpToolNames ?? []).filter((n) => fx.mcpServerNames.some((srv) => n.startsWith(`mcp__${srv}__`))).length,
     firstModelRequestBytes: mainModel?.bodyBytes ?? 0,
     markersSeen: mainModel?.marks ?? [],
     mcpServersConnected: (initEvent?.mcpServers ?? []).filter((s) => fx.mcpServerNames.includes(s.name) && s.status === 'connected').length,

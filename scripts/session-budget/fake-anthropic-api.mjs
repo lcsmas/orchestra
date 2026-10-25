@@ -105,6 +105,8 @@ function summarizeModelBody(buf, markers = {}, keepAttachmentData = false, keepM
       max_tokens: b.max_tokens ?? null,
       stream: b.stream === true,
       tools: Array.isArray(b.tools) ? b.tools.length : 0,
+      // Distinct `mcp__<server>__<tool>` names anywhere in the body: full tool defs (CLI ≤ 2.1.291) or the deferred ToolSearch listing (2.1.310).
+      mcpToolNames: [...new Set(text.match(/mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+/g) ?? [])],
       messages: Array.isArray(b.messages) ? b.messages.length : 0,
       systemBytes: sysText.length,
       hasThinking: !!b.thinking,
