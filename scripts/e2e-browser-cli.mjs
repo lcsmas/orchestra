@@ -48,6 +48,7 @@ const MUTANTS = {
   'archive-no-dispose': { file: 'chunk', edits: [[/\((\w+),(\w+),(\w+)\)=>\{\3&&(\w+)\(\1\)\}\),\(async\(\)=>\{try\{/, '($1,$2,$3)=>{}),(async()=>{try{']], arms: ['destroy-closes-daemon'], why: 'archiving a workspace leaves its CDP proxy and agent-browser daemon running' },
   'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
   'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{const (\w+)=await/, 'try{const $3=await']], arms: ['destroy-closes-daemon'], why: 'a late /browser call for an archived workspace resurrects its panel, proxy and daemon' },
+  'bring-to-front-forwarded': { file: 'chunk', edits: [[/if\((\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, '']], arms: ['tabs'], why: 'Page.bringToFront reaches the real debugger (OS focus) instead of only activating the tab' },
   'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
   'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
@@ -315,6 +316,13 @@ async function oracle(ctx, urlPrefix, ms = 15000) {
   const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
   return Cdp.connect(t.webSocketDebuggerUrl);
 }
+/** Put the human's keyboard focus in the workspace composer (renderer DOM) and report whether it is there. */
+const focusComposer = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('textarea'); if (!t) return null; t.focus(); return { onComposer: document.activeElement === t, windowFocus: document.hasFocus() }; })()`);
+const composerFocus = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('textarea'); return t ? { onComposer: document.activeElement === t, windowFocus: document.hasFocus() } : null; })()`);
+/** Oracle read that reports a page stuck behind a JS dialog as 'BLOCKED' instead of hanging the arm. */
+const readOrBlocked = async (o, expr, ms = 4000) => {
+  try { const r = await o.send('Runtime.evaluate', { expression: expr, returnByValue: true }, ms); return r.result?.value; } catch (e) { return /timed out/.test(String(e)) ? 'BLOCKED' : `ERR ${e}`; }
+};
 const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*\\[ref=(e\\d+)\\]`).exec(snapshot); return m ? `@${m[1]}` : null; };
 const sockets = (ctx) => { const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR); try { return fs.readdirSync(path.join(l.socketDir, 'namespaces', 'orchestra', 'run')).filter((n) => n.endsWith('.sock')).map((n) => n.slice(0, -5)); } catch { return []; } };
 const hooksSock = (ctx) => fs.readFileSync(path.join(ctx.world.ohome, 'sock'), 'utf8').trim();
@@ -362,9 +370,13 @@ const ARM_FNS = {
     const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
     const pre = await ctx.o1.eval(`document.getElementById('out').textContent`);
     clause(A, 'ctl/precondition-idle', pre === 'idle' && !!go, `#out=${JSON.stringify(pre)} before the click, Go ref ${go}`);
+    const f0 = await focusComposer(ctx);
     const click = await cli(ctx, W1, ['click', go]);
     const post = await ctx.o1.eval(`document.getElementById('out').textContent`);
     clause(A, 'click-changes-dom', click.code === 0 && post === 'clicked', `${show(click)} → oracle #out=${JSON.stringify(post)}`);
+    const f1 = await composerFocus(ctx);
+    clause(A, 'ctl/composer-focusable', f0?.onComposer === true, `composer textarea focused before the click: ${JSON.stringify(f0)}`);
+    clause(A, 'click-does-not-steal-keyboard-focus', f1?.onComposer === true && f1?.windowFocus === true, `after an agent click in the panel the human's composer focus is ${JSON.stringify(f1)} (story 44)`);
   },
 
   async fill(ctx) {
@@ -393,12 +405,12 @@ const ARM_FNS = {
     clause(A, 'status-sees-the-confirm', /sure\?/.test(status.stdout), show(status));
     const acc = await cli(ctx, W1, ['dialog', 'accept']);
     await Promise.race([clickP, sleep(8000)]); // a page that stays blocked must turn into a RED clause below, not an aborted arm
-    const t1 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
+    const t1 = await readOrBlocked(ctx.o1, `document.getElementById('dlg').textContent`);
     clause(A, 'accept-resolves-true', acc.code === 0 && t1 === 'true', `${show(acc)} → oracle #dlg=${JSON.stringify(t1)}`);
     const click2 = cli(ctx, W1, ['click', ask], { timeoutMs: 40000 });
     await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'the second confirm');
     const dis = await cli(ctx, W1, ['dialog', 'dismiss']); await Promise.race([click2, sleep(8000)]);
-    const t2 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
+    const t2 = await readOrBlocked(ctx.o1, `document.getElementById('dlg').textContent`);
     clause(A, 'dismiss-resolves-false', dis.code === 0 && t2 === 'false', `${show(dis)} → oracle #dlg=${JSON.stringify(t2)}`);
   },
 
@@ -639,6 +651,11 @@ const ARM_FNS3 = {
     clause(A, 'tab-new-creates-a-loaded-agent-tab', nw.code === 0 && after.length === 2 && !!mine && mine.active === true && /\/index\.html$/.test(mine.url), `${show(nw)} → registry ${JSON.stringify(after.map((t) => [t.id, t.openedBy, t.active, t.url.slice(-12)]))}`);
     const list = await cli(ctx, W1, ['tab', 'list']);
     clause(A, 'tab-list-shows-both', list.code === 0 && list.stdout.split('\n').filter((l) => /\[t\d+\]/.test(l)).length === 2 && /cli\.html/.test(list.stdout) && /index\.html/.test(list.stdout), show(list));
+    const fT0 = await focusComposer(ctx);
+    const humanLabel0 = labelOf(list, /\/cli\.html/);
+    const sw = await cli(ctx, W1, ['tab', humanLabel0 ?? 't1']);
+    const fT1 = await composerFocus(ctx);
+    clause(A, 'tab-switch-does-not-steal-keyboard-focus', sw.code === 0 && fT0?.onComposer === true && fT1?.onComposer === true && fT1?.windowFocus === true, `tab ${humanLabel0}: ${show(sw)} → composer focus before ${JSON.stringify(fT0)}, after ${JSON.stringify(fT1)} (Page.bringToFront / Target.activateTarget never take OS focus)`);
     const myLabel = labelOf(list, /\/index\.html/);
     const closeMine = await cli(ctx, W1, ['tab', 'close', myLabel ?? 't0']);
     await waitFor(async () => (await reg()).length === 1, 8000, 'the agent tab to leave the registry').catch(() => {});

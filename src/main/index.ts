@@ -467,9 +467,9 @@ async function createMainWindow() {
   // ORCHESTRA_SOCK from buildSdkEnv (and the Run/nvim PTYs from their spawn env), and that value is
   // read from getHookSocketPath() which only returns non-null after listen().
   await startHooksServer();
-  initBrowserCliHost(); // #395: sweeps daemons of an earlier run, follows panel teardown
   // Accès mobile (#334, ADR 0006): starts the phone server process only if the human turned it on — needs the socket (just bound) + the store.
   startAccesMobileHost();
+  initBrowserCliHost(); // #395: sweeps daemons of an earlier run, follows panel teardown
   // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every transition,
   // exposes the state to `bus-status` + Settings. Holds nothing yet. Started with the hooks server (store is loaded above) so the
   // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
