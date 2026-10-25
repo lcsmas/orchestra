@@ -799,14 +799,18 @@ export function getState(wsId: string): BrowserPanelState {
 
 /** Destroy a workspace's panel entirely (workspace deleted / archived): every
  *  tab's debugger and contents, not just the active one. */
-export function destroyPanel(wsId: string): void {
+function destroyPanelViews(wsId: string): void {
   const panel = panels.get(wsId);
-  if (panel) {
-    hidePanel(wsId);
-    panels.delete(wsId);
-    for (const tab of panel.tabs) destroyTab(tab);
-  }
-  // Forget the remembered tabs even when this process never opened the panel (deleted straight after a restart).
+  if (!panel) return;
+  hidePanel(wsId);
+  panels.delete(wsId);
+  for (const tab of panel.tabs) destroyTab(tab);
+}
+
+/** Destroy a workspace's panel (delete / archive) AND forget its remembered tabs (#393) — even when this process never
+ *  opened the panel (deleted straight after a restart). Forgetting comes after the teardown so no late event re-saves. */
+export function destroyPanel(wsId: string): void {
+  destroyPanelViews(wsId);
   persistence?.save(wsId, null);
 }
 
