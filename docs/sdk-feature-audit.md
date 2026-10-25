@@ -19,8 +19,7 @@ was enumerated from `src/main/agent-sdk.ts` (2,810 lines, read end-to-end),
 
 ## What Orchestra USES today (baseline)
 
-**Options passed to `query()`** (agent-sdk.ts:953–1067): `mcpServers` (in-process browser
-server), `cwd`, `includePartialMessages`, `agentProgressSummaries`, `settingSources`,
+**Options passed to `query()`** (agent-sdk.ts:953–1067): `cwd`, `includePartialMessages`, `agentProgressSummaries`, `settingSources`,
 `permissionMode`, `allowDangerouslySkipPermissions`, `canUseTool`, `env`,
 `pathToClaudeCodeExecutable`, `spawnClaudeCodeProcess` (keeper), `model`, `effort`,
 `resume`, `resumeSessionAt`, `systemPrompt` (preset+append), `enableFileCheckpointing`,
@@ -136,7 +135,7 @@ Relevant to Orchestra (changelog version in parens):
 | `command_lifecycle` state `refused` for declined cross-session messages | 0.3.238 | Sender-side feedback if Orchestra adopts native cross-session messaging (`command_lifecycle` is not in the 0.3.216 sdk.d.ts at all — 0 matches) |
 | `api_error_status: 529` on repeated-overload results (and 429/529 mid-stream, 0.3.218) | 0.3.223 | Orchestra already threads `api_error_status` → `apiErrorStatus` (agent-events.ts:634); after the bump overload terminations become structurally detectable (auto-retry / backoff UI) |
 | `resumeDropsTurn` option | 0.3.223 | Safety check for `sdkRewind`'s truncating resume — CLI refuses if the cut would drop more than intended |
-| External `mcpServers` connected before first turn — FIX | 0.3.221 | Guards against tool-calls-as-literal-text; Orchestra's browser server is an in-process SDK server so likely unaffected, but future external servers via `setMcpServers` benefit |
+| External `mcpServers` connected before first turn — FIX | 0.3.221 | Guards against tool-calls-as-literal-text; Orchestra passes no `mcpServers` of its own since #399 (the in-process browser server was removed), but future external servers via `setMcpServers` benefit |
 | Notification hooks fire for pending permission prompts on the SDK path | 0.3.233 | Parity for needs-input notification if SDK hooks are adopted |
 | `terminal_slash_commands` on init | 0.3.229 | Hide terminal-only commands from composer autocomplete if `supportedCommands()` is adopted |
 | Cost fields: US-inference 1.1× multiplier in `total_cost_usd` (0.3.239); `canonicalModel`/`provider` in `modelUsage` (0.3.218); `usage` vs `modelUsage` semantics documented (0.3.223) | 0.3.218–239 | More accurate `costUsd` in TurnFooter; `modelUsage` (cumulative) is the documented field for cost accounting — relevant to the known cumulative-usage gotcha (memory: SDK result.usage is cumulative) |
