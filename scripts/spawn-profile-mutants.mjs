@@ -24,7 +24,8 @@ const MUTANTS = [
   // ── pure rule ──
   { id: 'U1_holds_check_removed', file: F.pure, find: "if (requested === held.id || (requested !== '' && requested.toLowerCase() === held.name.toLowerCase())) {", to: 'if (true) {', tests: [T.unit], expect: 'does not hold: the caller holds ANOTHER' },
   { id: 'U2_holds_none_not_checked', file: F.pure, find: 'if (!held) {', to: 'if (false) {', tests: [T.unit], expect: 'the caller has no profile' },
-  { id: 'U3_dangling_id_trusted', file: F.pure, find: 'input.profiles.find((p) => p.id === heldId);', to: 'input.profiles.find((p) => p.id === heldId) ?? { id: heldId, name: heldId, createdAt: 0 };', tests: [T.unit], expect: 'dangling id' },
+  // (a first U3 only added a fallback AFTER effectiveProfileId — an equivalent mutant, GREEN; this one trusts the recorded id itself)
+  { id: 'U3_dangling_id_trusted', file: F.pure, find: 'const heldId = effectiveProfileId(input.caller.browserProfileId, input.profiles);\n  const held = heldId === undefined ? undefined : input.profiles.find((p) => p.id === heldId);', to: 'const heldId = input.caller.browserProfileId;\n  const held = heldId === undefined ? undefined : { id: heldId, name: heldId, createdAt: 0 };', tests: [T.unit], expect: 'dangling id' },
   { id: 'U4_vouch_removed', file: F.pure, find: 'if (!input.callerVouched) {', to: 'if (false) {', tests: [T.unit], expect: 'unvouched:' },
   { id: 'U5_no_caller_not_checked', file: F.pure, find: 'if (!input.caller) {', to: 'if (false) {', tests: [T.unit], expect: 'no caller:' },
   { id: 'U6_name_match_case_sensitive', file: F.pure, find: "requested.toLowerCase() === held.name.toLowerCase()", to: 'requested === held.name', tests: [T.unit], expect: 'by NAME' },
