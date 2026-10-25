@@ -370,7 +370,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   waits for the first). **Delete order matters**: every carrier is detached (record cleared — as an explicit `undefined`, because the renderer MERGES a
   `workspace:update`, an absent key would keep the old id there — and the open panel rebuilt ephemeral; the only writers into
   the partition die first, and are awaited) → the partition's storage is cleared → ONLY THEN the profile is forgotten; a failed clear keeps the profile (`storage`
-  refusal, retryable) instead of dropping a profile whose sign-ins are still on disk. Attach records the id THEN rebuilds the panel, rolling the
+  refusal, retryable) instead of dropping a profile whose sign-ins are still on disk. The emptied `Partitions/orchestra-profile-<id>` directory itself stays (a live session holds it); its cookie DB / storage are empty and its id is never reused. Attach records the id THEN rebuilds the panel, rolling the
   record back if the rebuild throws. Wiring to the store / `session` / panel: `browser-profiles-host.ts` (`clearStorage` = `clearStorageData`
   + `clearCache` + `clearAuthCache` + flush).
 - **Moving a panel — `reprofilePanel(wsId, profileId|undefined)`** (`browser-panel.ts`): a view's partition cannot change, so EVERY tab is rebuilt in
