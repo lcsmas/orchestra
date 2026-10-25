@@ -1,0 +1,86 @@
+// #400 — must-FAIL proof for the BUILT-APP rig (scripts/e2e-browser-profiles.sh): each mutant is applied IN PLACE to the real source, the app is
+// REBUILT (a stale bundle reproduces perfectly), the rig runs only the arm(s) that own the clause, and the clause(s) named below must be RED
+// while every ctl/* control stays GREEN (a red for the wrong reason is a failure). The source is restored byte-exact (cmp) right after the build;
+// a final CLEAN rebuild leaves dist/ matching the tree. The mutant string is checked LIVE (exactly one occurrence).
+// Run: node scripts/e2e-browser-profiles-mutants.mjs [id ...]      (exit 0 = every mutant killed for its named reason, tree restored)
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const OUT = process.env.MUT_OUT || path.join(process.env.TMPDIR || os.tmpdir(), 'e2e-browser-profiles-mutants');
+fs.mkdirSync(OUT, { recursive: true });
+const PANEL = 'src/main/browser-panel.ts';
+const SVC = 'src/main/browser-profiles.ts';
+const HOST = 'src/main/browser-profiles-host.ts';
+const PURE = 'src/shared/browser-profile.ts';
+
+const MUTANTS = [
+  { id: 'P1-partition-ignored', file: PANEL, arms: 'attach', from: '      partition: panel.partition,', to: '      partition: partitionFor(panel.wsId, undefined),', red: ['profile-partition-is-persist-on-disk', 'two-workspaces-share-one-profile-and-its-sign-in'] },
+  { id: 'P2-human-guard-off', file: PURE, arms: 'human', from: "  return typeof c.senderId === 'number' && typeof c.mainId === 'number' && c.senderId === c.mainId && c.senderIsMainFrame;", to: '  return true;', red: ['foreign-webcontents-refused-on-every-write-channel', 'nothing-moved-after-every-agent-path-attempt'] },
+  { id: 'P3-rebuild-leaks-old-views', file: PANEL, arms: 'attach', from: '  for (const t of oldTabs) destroyTab(t);\n  if (wasAttached) attachActive(panel);', to: '  if (wasAttached) attachActive(panel);', red: ['no-view-leaked-by-the-rebuild'] },
+  { id: 'P4-rebuild-never-recomposites', file: PANEL, arms: 'attach', from: '  for (const t of oldTabs) destroyTab(t);\n  if (wasAttached) attachActive(panel);', to: '  for (const t of oldTabs) destroyTab(t);', red: ['rebuilt-active-view-is-painted-on-screen'] },
+  { id: 'P5-delete-keeps-storage', file: HOST, arms: 'delete', from: '      await ses.clearStorageData();\n', to: '', red: ['partition-storage-cleared-on-disk'] },
+  { id: 'P6-delete-keeps-carriers-recorded', file: SVC, arms: 'delete', from: '          await deps.setWorkspaceProfile(wsId, undefined);', to: '', red: ['carriers-detached-in-the-store'] },
+  { id: 'P7-no-cookie-flush-on-change', file: PANEL, arms: 'flush', from: '  if (panel.profileId !== undefined) persistSignIns(ses);', to: '', red: ['sign-in-made-9s-before-a-sigkill-survives'] },
+  { id: 'P8-dangling-profile-honoured', file: PURE, arms: 'restore', from: 'return recorded !== undefined && profiles.some((p) => p.id === recorded) ? recorded : undefined;', to: 'return recorded;', red: ['dangling-profile-id-reads-as-ephemeral'] },
+  { id: 'P9-attach-not-recorded', file: SVC, arms: 'attach', from: '        if (prev !== d.profileId) await deps.setWorkspaceProfile(wsId, d.profileId);', to: '', red: ['attach-records-the-profile-on-the-workspace'] },
+  { id: 'P10-no-unencrypted-warning', file: 'src/renderer/components/BrowserSettings.tsx', arms: 'settings', from: '  const warning = profileCreateWarning(secrets);', to: '  const warning = null as string | null;', red: ['unencrypted-storage-warning-shown-at-creation'] },
+  { id: 'P11-cli-grows-a-profile-verb', file: 'src/cli/index.ts', arms: 'human', from: "    case 'peers': {\n      const { present: stats, rest } = takeBoolFlag(args, '--stats');", to: "    case 'profile': {\n      process.stdout.write('attached\\n');\n      return;\n    }\n    case 'peers': {\n      const { present: stats, rest } = takeBoolFlag(args, '--stats');", red: ['cli-has-no-profile-verb'] },
+  { id: 'P12-socket-grows-a-profile-route', file: 'src/main/hooks-server.ts', arms: 'human', from: "          if (route === '/rename') {", to: "          if (route === '/browserProfileAttach') {\n            send(200, { ok: true, attached: true });\n          } else if (route === '/rename') {", red: ['socket-has-no-profile-route'] },
+];
+
+const only = process.argv.slice(2).filter((a) => a !== '--check');
+if (process.argv.includes('--check')) { // verify every mutant string is LIVE (exactly one occurrence) without building anything
+  let bad = 0;
+  for (const m of MUTANTS) { const n = fs.readFileSync(path.join(ROOT, m.file), 'utf8').split(m.from).length - 1; if (n !== 1) bad++; console.log(`${n === 1 ? 'live ' : 'DEAD '} ${m.id} (${n}x in ${m.file})`); }
+  process.exit(bad ? 1 : 0);
+}
+const sh = (cmd, args, opt = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, ...opt });
+const backups = new Map();
+for (const f of new Set(MUTANTS.map((m) => m.file))) {
+  const b = path.join(OUT, `${f.replaceAll('/', '__')}.orig`);
+  fs.copyFileSync(path.join(ROOT, f), b);
+  backups.set(f, b);
+}
+const restoreAll = () => { for (const [f, b] of backups) fs.copyFileSync(b, path.join(ROOT, f)); };
+let cleaned = false;
+process.on('exit', () => { if (!cleaned) restoreAll(); });
+process.on('SIGINT', () => process.exit(130));
+
+const rows = []; let bad = 0;
+for (const m of MUTANTS) {
+  if (only.length && !only.includes(m.id)) continue;
+  const abs = path.join(ROOT, m.file), backup = backups.get(m.file);
+  const src = fs.readFileSync(abs, 'utf8');
+  const n = src.split(m.from).length - 1;
+  if (n !== 1) { rows.push(['STRING-NOT-LIVE', `${m.id} (${n} occurrences in ${m.file})`]); bad++; continue; }
+  fs.writeFileSync(abs, src.replace(m.from, () => m.to));
+  let built;
+  try { built = sh('nice', ['-n', '10', 'pnpm', 'run', 'build:bundles']); } finally { fs.copyFileSync(backup, abs); }
+  let restored = true; try { execFileSync('cmp', [abs, backup]); } catch { restored = false; }
+  if (built.status !== 0) { rows.push(['BUILD-FAILED', `${m.id}: ${built.stderr.split('\n').slice(-5).join(' ')}`]); bad++; continue; }
+  const rig = sh(path.join(ROOT, 'scripts/e2e-browser-profiles.sh'), [ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT]);
+  fs.writeFileSync(path.join(OUT, `${m.id}.log`), rig.stdout + rig.stderr);
+  let res = null; try { res = JSON.parse(fs.readFileSync(path.join(OUT, `${m.id}-result.json`), 'utf8')); } catch {}
+  if (!res) { rows.push(['RIG-NO-RESULT', `${m.id} rc=${rig.status} (see ${m.id}.log)`]); bad++; continue; }
+  const redNames = res.results.filter((r) => !r.ok).map((r) => r.clause);
+  const ctlRed = redNames.filter((c) => c.startsWith('ctl/') || c.startsWith('rig/'));
+  const namedRed = m.red.every((c) => redNames.includes(c));
+  const ok = restored && rig.status !== 0 && namedRed && ctlRed.length === 0;
+  if (!ok) bad++;
+  rows.push([ok ? 'KILLED' : !restored ? 'NOT-RESTORED' : rig.status === 0 ? 'SURVIVED' : ctlRed.length ? 'WRONG-REASON' : 'NOT-NAMED-CLAUSE', `${m.id}: red = ${redNames.join(', ') || 'none'}${ctlRed.length ? ` | CONTROLS RED: ${ctlRed.join(', ')}` : ''}${namedRed ? '' : ` | wanted ${m.red.join(', ')}`}`]);
+  console.log(`${rows.at(-1)[0].padEnd(18)} ${rows.at(-1)[1]}`);
+}
+
+// leave a CLEAN build behind
+cleaned = true;
+restoreAll();
+const clean = sh('nice', ['-n', '10', 'pnpm', 'run', 'build:bundles']);
+rows.push([clean.status === 0 ? 'CLEAN-REBUILD-OK' : 'CLEAN-REBUILD-FAILED', 'dist/ matches the restored tree']);
+if (clean.status !== 0) bad++;
+console.log('\n== summary ==');
+for (const [s, t] of rows) console.log(`${s.padEnd(18)} ${t}`);
+console.log(`\n${rows.filter((r) => r[0] === 'KILLED').length}/${only.length || MUTANTS.length} killed; ${bad ? `${bad} PROBLEM(S)` : 'all clean'}`);
+process.exit(bad ? 1 : 0);

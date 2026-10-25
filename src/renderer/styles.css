@@ -6241,6 +6241,7 @@ button.danger-primary:active {
 .bp-create .bp-warning { margin-bottom: 0; }
 .bp-create-row { display: flex; gap: 8px; }
 .bp-create-row .accounts-input { flex: 1 1 auto; min-width: 0; }
+.bp-create-row button { flex: 0 0 auto; white-space: nowrap; }
 /* The panel's profile chip + the inline choice bar. INLINE on purpose: a dropdown would open over the native
    WebContentsView, which paints above the DOM. */
 .browser-profile-btn { display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; max-width: 150px; height: 34px; padding: 0 9px; border: none; border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
