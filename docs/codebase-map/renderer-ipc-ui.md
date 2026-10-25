@@ -98,7 +98,7 @@ channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 (#161 — the open human-directed decision gates, rebuilt from the bus DB), and `pause:update` (#257 — the whole fleet-Pause overview, rebuilt from the bus; the `pause:*` write channels are registered by `src/main/pause-ui-host.ts`, NOT through the read-only bus-pane registrar).
 
 `secrets:state` (`getSecretsState`, #389) answers `SecretsState` — whether the platform can encrypt now, the
-selected backend and the plaintext / ciphertext entry counts; the Settings dialogs that hold a secret render
+selected backend, the plaintext / ciphertext entry counts and why the backend was chosen (`selectionReason`); the Settings dialogs that hold a secret render
 `SecretsNotice` from it (the Linear key and Accounts dialogs; #400's profils navigateur reuse `useSecretsState`).
 
 ## Renderer state — store.ts (Zustand, ~479 lines)

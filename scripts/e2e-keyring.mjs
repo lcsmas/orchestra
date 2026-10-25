@@ -20,7 +20,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = (flag('--arms', 'unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,fleet')).split(',').filter(Boolean);
+const ARMS = (flag('--arms', 'unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome,fleet')).split(',').filter(Boolean);
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing');
@@ -295,6 +295,7 @@ const SPECS = {
   hung: { desktop: 'sway', keyring: 'unlocked', bus: 'runtime-dir', hungGdbus: true },
   gnome: { desktop: 'GNOME', keyring: 'unlocked', bus: 'env' }, // Chromium's OWN choice (libsecret): startup must NOT touch safeStorage; Settings seals the plaintext
   relock: { desktop: 'sway', keyring: 'unlocked', bus: 'runtime-dir' },
+  'isolated-gnome': { desktop: 'GNOME', keyring: 'unlocked', bus: 'env', optIn: false }, // review m1: on a RECOGNISED desktop Chromium would pick libsecret itself — the isolated instance must force `basic`
   isolated: { desktop: 'sway', keyring: 'unlocked', bus: 'runtime-dir', optIn: false }, // review F1: the same world as `unlocked` minus the opt-in → the unlocked keyring must NOT be touched
   fleet: { desktop: '', keyring: 'none', bus: 'runtime-dir', optIn: false, realRuntime: true, noBus: true }, // review F1: the real fleet-rig env — REAL XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME, no opt-in
 };
@@ -305,7 +306,12 @@ async function stateOf(a) { const t = Date.now(); const s = await a.cdp.eval('wi
 
 // ── review F1: the REAL fleet-rig env (real XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME, no opt-in) must never select libsecret or export the real bus ──
 /** Run the SHIPPED selection source (src/main/linux-keyring.ts) in a child node under `env`, with spies instead of the real appendSwitch / export. */
-function selectionUnder(w, env, { probeThrows = false } = {}) {
+function selectionUnder(w, env, { probeThrows = false, stubUnlocked = false } = {}) {
+  if (stubUnlocked) { // a `gdbus` that answers "unlocked": the control must not depend on the human's keyring being unlocked right now (it is not always — and then nothing real is read at all)
+    const dir = path.join(w.armDir, 'stub-gdbus'); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'gdbus'), '#!/bin/sh\necho "(<false>,)"\n', { mode: 0o755 });
+    env = { ...env, PATH: `${dir}:/usr/bin:/bin` };
+  }
   const code = `import { pathToFileURL } from 'node:url';
 const { selectLinuxPasswordStore } = await import(pathToFileURL(process.env.SEL_MODULE).href);
 const env = JSON.parse(process.env.SEL_ENV); const applied = []; let probed = false;
@@ -319,19 +325,20 @@ console.log(JSON.stringify({ store: d.store, reason: d.reason, facts: d.facts, p
 }
 async function fleetPreflight(w) {
   // The built bundle's behaviour is proven in the PRIVATE world first (arm `isolated`: same clause, nothing real reachable); only then may an app run against the real runtime dir.
-  const need = ['isolated/decision-logged', 'isolated/keyring-untouched-by-the-app'];
+  const need = ['isolated/decision-logged', 'isolated/keyring-untouched-by-the-app', 'isolated-gnome/decision-logged', 'isolated-gnome/keyring-untouched-by-the-app'];
   if (!need.every((c) => results.some((r) => r.clause === c && r.ok))) throw new Error(`fleet preflight: ${need.join(' + ')} must have PASSED on this build in this run — REFUSING to launch an app against the real runtime dir`);
   const mainFile = path.join(APP_DIR, 'dist-electron', fs.readFileSync(path.join(APP_DIR, 'dist-electron/main.js'), 'utf8').match(/require\("\.\/(index-[^"]+\.js)"\)/)[1]);
   const clauseCount = fs.readFileSync(mainFile, 'utf8').split('reason:"isolated-instance"').length - 1;
   const fleetEnv = { PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: HUMAN_RUNTIME, LANG: 'C.UTF-8', ORCHESTRA_HOME: w.oh, DBUS_SESSION_BUS_ADDRESS: 'disabled:' }; // `disabled:` = what Electron puts in its own env
   const iso = selectionUnder(w, fleetEnv, { probeThrows: true });
-  const ok = clauseCount === 1 && iso.store === null && iso.reason === 'isolated-instance' && iso.applied?.length === 0 && iso.probed === false;
-  clause('fleet/preflight-isolated-never-probes-or-exports', ok, `built main bundle carries the isolation clause ${clauseCount}×; shipped source under the fleet env (real XDG_RUNTIME_DIR=${HUMAN_RUNTIME}, scratch ORCHESTRA_HOME) → ${JSON.stringify(iso)}`);
+  const ok = clauseCount === 1 && iso.store === 'basic' && iso.reason === 'isolated-instance' && JSON.stringify(iso.applied) === JSON.stringify(['--password-store=basic']) && iso.probed === false;
+  clause('fleet/preflight-isolated-forces-basic-never-probes-or-exports', ok, `built main bundle carries the isolation clause ${clauseCount}×; shipped source under the fleet env (real XDG_RUNTIME_DIR=${HUMAN_RUNTIME}, scratch ORCHESTRA_HOME) → ${JSON.stringify(iso)}`);
   if (!ok) throw new Error('fleet preflight failed — REFUSING to launch an app against the real runtime dir');
   const { ORCHESTRA_HOME: _drop, ...noHome } = fleetEnv;
-  const ctl = selectionUnder(w, noHome); // the REAL default probe: one read-only Properties.Get Locked on the human's bus — nothing is applied (spies)
+  const ctl = selectionUnder(w, noHome, { stubUnlocked: true }); // a STUBBED probe (answers unlocked): nothing of the human's is read and nothing is applied (spies)
+  console.log(`  [host] the human's REAL default collection answers ${realLoginCollectionLocked()} right now (informational — the control above does not depend on it)`);
   clause('fleet/ctl/control-without-orchestra-home-selects-libsecret', ctl.store === 'gnome-libsecret' && ctl.reason === 'unlocked-service' && ctl.applied?.some((x) => x === `export DBUS_SESSION_BUS_ADDRESS=unix:path=${HUMAN_RUNTIME}/bus`) && ctl.applied?.includes('--password-store=gnome-libsecret'),
-    `the SAME env minus ORCHESTRA_HOME → ${JSON.stringify(ctl)} (spied, not applied) — what the app would have done to the human's keyring without the rule`);
+    `the SAME env minus ORCHESTRA_HOME, probe stubbed unlocked → ${JSON.stringify(ctl)} (spied, not applied) — what the app would have done to the human's keyring without the rule`);
 }
 
 async function runArm(name) {
@@ -365,8 +372,9 @@ async function runArm(name) {
       locked: /password-store: Chromium default — locked-service \(probe \d+ ms\) \[desktop="sway" session="" bus=runtime-dir\]/,
       nosvc: /password-store: Chromium default — no-service \(probe \d+ ms\) \[desktop="sway" session="" bus=runtime-dir\]/,
       recognised: /password-store: Chromium default — recognised-desktop \[desktop="LXQt" session="" bus=env\]/,
-      isolated: /password-store: Chromium default — isolated-instance \[desktop="sway" session="" bus=runtime-dir\]$/m,
-      fleet: /password-store: Chromium default — isolated-instance \[desktop="" session="" bus=runtime-dir\]$/m,
+      isolated: /password-store: basic — isolated-instance \[desktop="sway" session="" bus=runtime-dir\]$/m,
+      'isolated-gnome': /password-store: basic — isolated-instance \[desktop="GNOME" session="" bus=env\]$/m,
+      fleet: /password-store: basic — isolated-instance \[desktop="" session="" bus=runtime-dir\]$/m,
       gnome: /password-store: Chromium default — recognised-desktop \[desktop="GNOME" session="" bus=env\]/,
       hung: /password-store: Chromium default — no-service \(probe (1[5-9]\d\d|2\d\d\d) ms\)/, // killed at ~1.5 s, not 30 s
       relock: /password-store: gnome-libsecret — unlocked-service/,
@@ -432,6 +440,10 @@ async function runArm(name) {
       clause(`${tag}/ctl/compositor-frame-shows-the-dialog`, grim.w === rend.w && grim.h === rend.h && inkPx(c) > 400, `grim ${grim.w}x${grim.h} vs renderer ${rend.w}x${rend.h}; dialog crop has ${inkPx(c)} ink px (>400: not a blank frame)`);
     }
     console.log(`  shots: ${f1}, ${f2}`);
+    if (spec.optIn === false) { // review m2: an isolated instance skipped the keyring ON PURPOSE — the notice must say so and name the opt-in, not "no keyring is available"
+      const okText = (n) => !!n && /isolated home \(ORCHESTRA_HOME\)/.test(n.text) && /ORCHESTRA_KEYRING=probe/.test(n.text) && !/no keyring is available/.test(n.text);
+      clause(`${tag}/notice-says-isolated-not-no-keyring`, okText(lin.n) && okText(acc), `Linear notice "${lin.n?.text}" · Accounts notice "${acc?.text}"`);
+    }
     await closeDialog(a.cdp, SEL.accounts);
 
     // ── a second boot: encrypted arms prove the entries survive a restart and are not re-sealed again ──
@@ -482,14 +494,14 @@ async function main() {
   const before = liveHash(); const lockedBefore = realLoginCollectionLocked();
   console.log(`[host] human's REAL default collection (read-only probe): ${lockedBefore}; ${Object.keys(before).length} live files hashed`);
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']); sh('swaymsg', ['default_border', 'none']);
-  const order = [...ARMS]; // `fleet` always follows `isolated` (see fleetPreflight)
-  if (order.includes('fleet')) { const i = order.indexOf('isolated'); if (i < 0) order.splice(order.indexOf('fleet'), 0, 'isolated'); else if (i > order.indexOf('fleet')) { order.splice(i, 1); order.splice(order.indexOf('fleet'), 0, 'isolated'); } }
+  const order = [...ARMS]; // `fleet` always follows the two private isolated arms (see fleetPreflight)
+  if (order.includes('fleet')) for (const dep of ['isolated', 'isolated-gnome']) { const i = order.indexOf(dep); if (i < 0) order.splice(order.indexOf('fleet'), 0, dep); else if (i > order.indexOf('fleet')) { order.splice(i, 1); order.splice(order.indexOf('fleet'), 0, dep); } }
   for (const name of order) { if (!SPECS[name]) refuse(`unknown arm ${name}`); await runArm(name); }
   const after = liveHash();
   clause('ctl/host-files-byte-equal-whole-run', JSON.stringify(before) === JSON.stringify(after), `${Object.keys(before).length} host files (keyring files, secrets.json under ~/.config/orchestra + ~/.orchestra, ~/.claude* settings; credentials.json excluded as live-session churn) before/after the whole run: ${JSON.stringify(before) === JSON.stringify(after) ? 'identical' : 'CHANGED — real collection items now (read-only metadata): ' + realItems()}`);
   clause('ctl/host-collection-unchanged', realLoginCollectionLocked() === lockedBefore, `real default collection Locked before ${lockedBefore} / after ${realLoginCollectionLocked()}`);
   // Same state → same pixels, so duplicates are only a no-op detector WITHIN an arm (linear / accounts / relock are three different frames).
-  const byArm = {}; for (const sh of shots) (byArm[ARMS.find((x) => path.basename(sh.file).startsWith(`${LABEL}-${x}-`)) ?? '?'] ||= []).push(sh);
+  const byArm = {}; for (const sh of shots) (byArm[[...ARMS].sort((a, b) => b.length - a.length).find((x) => path.basename(sh.file).startsWith(`${LABEL}-${x}-`)) ?? '?'] ||= []).push(sh); // longest arm name wins (isolated vs isolated-gnome)
   const dups = Object.entries(byArm).map(([arm, l]) => [arm, l.length - new Set(l.map((x) => x.md5)).size]).filter(([, n]) => n > 0);
   clause('ctl/no-duplicate-captures-within-an-arm', dups.length === 0, `${shots.length} captures; byte-identical duplicates within an arm: ${dups.length ? JSON.stringify(dups) : 'none'}`);
   const m5 = (arm, what) => shots.find((x) => path.basename(x.file) === `${LABEL}-${arm}-${what}.png`)?.md5;

@@ -171,7 +171,7 @@ import { initPlatform } from './platform';
 import { createElectronPlatform } from './platform/electron';
 import { initBrowserPanels } from './browser-panel';
 import { selectLinuxPasswordStore } from './linux-keyring';
-import { reencryptInBackground } from './secrets';
+import { reencryptInBackground, setKeyringSelectionReason } from './secrets';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { sweepAgentTmpDirs } from './agent-tmpdir';
@@ -362,6 +362,8 @@ const keyringDecision = ORCHESTRA_CLI_MODE
         process.env.DBUS_SESSION_BUS_ADDRESS = address;
       },
     });
+
+setKeyringSelectionReason(keyringDecision?.reason ?? null);
 
 // Expose Chrome DevTools Protocol in dev so chrome-devtools-mcp can attach.
 // Port is overridable via ORCHESTRA_DEBUG_PORT so a second instance can be

@@ -1,3 +1,5 @@
+import type { PasswordStoreReason } from './password-store';
+
 // What Settings tells the human about secret storage (#389). `SecretsState` is the IPC payload
 // (`getSecretsState`, channel `secrets:state`); `secretsNotice` is the pure rule for the warning.
 
@@ -12,6 +14,9 @@ export interface SecretsState {
   /** Stored entries currently in plaintext / as ciphertext. */
   plaintextEntries: number;
   encryptedEntries: number;
+  /** Why this process picked its `--password-store` (null off Linux / CLI). Only `isolated-instance` changes what Settings says:
+   *  there the keyring is deliberately not used, so "no keyring is available" would be untrue. */
+  selectionReason: PasswordStoreReason | null;
 }
 
 export interface SecretsNotice {
@@ -25,12 +30,15 @@ export interface SecretsNotice {
  *  wallet, no reachable session bus and no `gdbus` all end in the same state. */
 export function secretsNotice(state: SecretsState | null): SecretsNotice | null {
   if (!state || state.encrypted) return null;
-  const text = 'Secrets are stored unencrypted on this machine: no keyring is available.';
+  const text =
+    state.selectionReason === 'isolated-instance'
+      ? 'Secrets are stored unencrypted on this machine: this instance runs in an isolated home (ORCHESTRA_HOME) and does not use the keyring — set ORCHESTRA_KEYRING=probe to opt in.'
+      : 'Secrets are stored unencrypted on this machine: no keyring is available.';
   if (state.encryptedEntries > 0) {
     const n = state.encryptedEntries;
     return {
       kind: 'unreadable',
-      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable until a keyring is available again.`,
+      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable ${state.selectionReason === 'isolated-instance' ? 'in this instance (sealed by a keyring earlier)' : 'until a keyring is available again'}.`,
     };
   }
   return { kind: 'unencrypted', text };

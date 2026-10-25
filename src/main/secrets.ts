@@ -19,6 +19,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { log } from './logger.ts';
 import type { SecretsState } from '../shared/secrets-state.ts';
+import type { PasswordStoreReason } from '../shared/password-store.ts';
 
 /** One stored secret: the value plus whether it is safeStorage ciphertext, so
  *  a read decodes correctly even if keyring availability changed between
@@ -401,8 +402,15 @@ function countEntries(data: SecretsFile): { plaintext: number; encrypted: number
   return { plaintext, encrypted };
 }
 
+let selectionReason: PasswordStoreReason | null = null;
+/** index.ts hands over WHY it picked its `--password-store` (decided before `ready`), so Settings can say the keyring was deliberately skipped. */
+export function setKeyringSelectionReason(reason: PasswordStoreReason | null): void {
+  selectionReason = reason;
+}
+
 /** The encrypted / not-encrypted state for Settings. Touches safeStorage, so call it when Settings opens,
  *  not at startup. */
+
 export async function getSecretsState(): Promise<SecretsState> {
   const { plaintext, encrypted } = countEntries(await readFileSafe());
   return {
@@ -410,6 +418,7 @@ export async function getSecretsState(): Promise<SecretsState> {
     backend: platform.getSecretBackend(),
     plaintextEntries: plaintext,
     encryptedEntries: encrypted,
+    selectionReason,
   };
 }
 

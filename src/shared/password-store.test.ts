@@ -58,9 +58,9 @@ test('an explicit --password-store always wins and the probe never runs', () => 
   assert.deepEqual(decide(SWAY, 'unlocked', true), { store: null, reason: 'explicit-switch', probes: 0 });
 });
 
-test('an isolated instance (ORCHESTRA_HOME set) never binds to the keyring: Chromium default, probe never runs — unless ORCHESTRA_KEYRING=probe opts in', () => {
+test('an isolated instance (ORCHESTRA_HOME set) never binds to the keyring: --password-store=basic (also on a RECOGNISED desktop, where Chromium would pick libsecret/kwallet itself), probe never runs — unless ORCHESTRA_KEYRING=probe opts in', () => {
   const scratch = { ...SWAY, ORCHESTRA_HOME: '/scratch-home' };
-  assert.deepEqual(decide(scratch, 'unlocked'), { store: null, reason: 'isolated-instance', probes: 0 });
+  assert.deepEqual(decide(scratch, 'unlocked'), { store: 'basic', reason: 'isolated-instance', probes: 0 });
   assert.deepEqual(decide({ ...scratch, ORCHESTRA_KEYRING: 'probe' }, 'unlocked'), { store: 'gnome-libsecret', reason: 'unlocked-service', probes: 1 });
   assert.equal(decide({ ...scratch, ORCHESTRA_KEYRING: 'off' }, 'unlocked').reason, 'isolated-instance', 'only the exact word "probe" opts in');
   assert.equal(decide({ ...SWAY, ORCHESTRA_KEYRING: 'probe' }, 'unlocked').store, 'gnome-libsecret', 'the opt-in alone changes nothing');
@@ -68,6 +68,7 @@ test('an isolated instance (ORCHESTRA_HOME set) never binds to the keyring: Chro
   assert.equal(decide({ ...SWAY, ORCHESTRA_HOME: '  ' }, 'unlocked').reason, 'isolated-instance', 'any non-empty value relocates the instance, so it is isolated too');
   assert.equal(decide(scratch, 'unlocked', true).reason, 'explicit-switch', 'an explicit --password-store still wins');
   assert.equal(isIsolatedInstance({}), false);
+  for (const desktop of ['GNOME', 'KDE', 'X-Cinnamon', 'LXQt']) assert.deepEqual(decide({ ...BUS, XDG_CURRENT_DESKTOP: desktop, ORCHESTRA_HOME: '/scratch-home' }, 'unlocked'), { store: 'basic', reason: 'isolated-instance', probes: 0 }, `recognised desktop ${desktop} + ORCHESTRA_HOME`);
 });
 
 test('no reachable session bus → nothing to name, the probe never runs', () => {

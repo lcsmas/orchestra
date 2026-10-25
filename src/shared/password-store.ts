@@ -33,8 +33,10 @@ export type PasswordStoreReason =
   | 'no-service';
 
 export interface PasswordStoreDecision {
-  /** The `--password-store` value to append, or null to leave Chromium's choice alone. */
-  store: 'gnome-libsecret' | null;
+  /** The `--password-store` value to append, or null to leave Chromium's choice alone. `basic` (plaintext, no keyring) is
+   *  chosen ONLY for an isolated instance — leaving Chromium's choice there would still bind the human's real keyring on a
+   *  recognised desktop (GNOME/KDE), where Chromium picks libsecret / kwallet by itself. */
+  store: 'gnome-libsecret' | 'basic' | null;
   reason: PasswordStoreReason;
 }
 
@@ -82,7 +84,7 @@ export function decidePasswordStore(input: {
   probe: () => SecretServiceState;
 }): PasswordStoreDecision {
   if (input.passwordStoreAlreadySelected) return { store: null, reason: 'explicit-switch' };
-  if (isIsolatedInstance(input.env)) return { store: null, reason: 'isolated-instance' };
+  if (isIsolatedInstance(input.env)) return { store: 'basic', reason: 'isolated-instance' };
   if (!input.sessionBusReachable) return { store: null, reason: 'no-session-bus' };
   if (isRecognisedDesktop(input.env)) return { store: null, reason: 'recognised-desktop' };
   const state = input.probe();

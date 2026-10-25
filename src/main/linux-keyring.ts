@@ -114,7 +114,7 @@ export function selectLinuxPasswordStore(
   // `disabled:` when the launcher exported none (measured). Selecting libsecret without an address it can
   // use would leave safeStorage unavailable, so name the bus we probed.
   const bus = sessionBusKind(deps.env);
-  const exported = decision.store !== null && bus === 'runtime-dir';
+  const exported = decision.store === 'gnome-libsecret' && bus === 'runtime-dir'; // never for `basic`: an isolated instance must not carry the bus
   if (exported) deps.exportBusAddress(probeEnv(deps.env).DBUS_SESSION_BUS_ADDRESS as string);
   // What the decision saw, for the startup log: a wrong guess about a user's desktop is diagnosable from it.
   const facts = `desktop="${deps.env.XDG_CURRENT_DESKTOP ?? ''}" session="${deps.env.DESKTOP_SESSION ?? ''}" bus=${bus}${exported ? ' (exported)' : ''}`;

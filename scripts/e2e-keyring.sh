@@ -7,7 +7,7 @@
 # Properties.Get Locked per run, plus (arm `fleet`, whose app runs with the REAL XDG_RUNTIME_DIR) a spied selection control.
 # Driver: scripts/e2e-keyring.mjs. HEAVY (an Electron app under a compositor): MemAvailable > 6 GB right before.
 #
-# Usage: scripts/e2e-keyring.sh <app-dir> [--arms unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,fleet] [--out <dir>] [--label <name>]
+# Usage: scripts/e2e-keyring.sh <app-dir> [--arms unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome,fleet] [--out <dir>] [--label <name>]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. cli.js + keeper.js) with the Electron-ABI bus binding.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -17,6 +17,7 @@ import {
   reencryptPlaintextSecrets,
   setAccountApiKey,
   setAccountBaseUrl,
+  setKeyringSelectionReason,
   setLinearApiKey,
 } from './secrets.ts';
 
@@ -72,7 +73,10 @@ beforeEach(() => {
   installFake();
   reload();
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  setKeyringSelectionReason(null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 /** The state after "the human used Orchestra on a box with no keyring": every kind of entry in plaintext. */
 async function seedPlaintext(): Promise<void> {
@@ -101,7 +105,7 @@ test('no keyring: entries are stored plaintext, 0600, and the state says not-enc
   assert.equal(onDisk().enc, false);
   assert.ok(raw().includes('sk-ant-PLAINTEXT-A'));
   assert.equal(fs.statSync(file()).mode & 0o777, 0o600);
-  assert.deepEqual(await getSecretsState(), { encrypted: false, backend: 'basic_text', plaintextEntries: 4, encryptedEntries: 0 });
+  assert.deepEqual(await getSecretsState(), { encrypted: false, backend: 'basic_text', plaintextEntries: 4, encryptedEntries: 0 , selectionReason: null });
 });
 
 test('plaintext + encryption now available → re-encrypted at startup, nothing readable on disk, every value still readable', async () => {
@@ -120,7 +124,7 @@ test('plaintext + encryption now available → re-encrypted at startup, nothing 
   reload();
   assert.deepEqual(await readAll(), ALL, 'still readable (decrypted) after a cold read from disk');
   assert.deepEqual(await accountApiKeyIds(), ['acc-a', 'acc-b']);
-  assert.deepEqual(await getSecretsState(), { encrypted: true, backend: 'fake_keyring', plaintextEntries: 0, encryptedEntries: 4 });
+  assert.deepEqual(await getSecretsState(), { encrypted: true, backend: 'fake_keyring', plaintextEntries: 0, encryptedEntries: 4 , selectionReason: null });
   assert.deepEqual(fs.readdirSync(path.dirname(file())), ['secrets.json'], 'no tmp residue');
 });
 
@@ -139,7 +143,7 @@ test('encryption failing MID-WAY → the failing entries keep their plaintext, n
   assert.equal(disk.accountApiKeys['acc-b'].value, ALL.b, 'the failed entry is still the plaintext, byte for byte');
   assert.equal(disk.accountBaseUrls['acc-a'].value, ALL.url);
   assert.ok(!raw().includes(ALL.linear) && !raw().includes(ALL.a), 'the sealed ones are no longer plaintext');
-  assert.deepEqual(await getSecretsState(), { encrypted: true, backend: 'fake_keyring', plaintextEntries: 2, encryptedEntries: 2 });
+  assert.deepEqual(await getSecretsState(), { encrypted: true, backend: 'fake_keyring', plaintextEntries: 2, encryptedEntries: 2 , selectionReason: null });
 
   fake.encryptThrowsFrom = 0; // the hiccup is over: the next startup retries only what is left
   assert.deepEqual(await reencryptPlaintextSecrets(), { reencrypted: 2, failed: 0, skipped: null });
@@ -211,7 +215,7 @@ test('encrypted entries on disk but the keyring gone (locked next boot) → stat
   fake.available = false;
   const before = raw();
 
-  assert.deepEqual(await getSecretsState(), { encrypted: false, backend: 'basic_text', plaintextEntries: 0, encryptedEntries: 2 });
+  assert.deepEqual(await getSecretsState(), { encrypted: false, backend: 'basic_text', plaintextEntries: 0, encryptedEntries: 2 , selectionReason: null });
   assert.equal(await getLinearApiKey(), undefined);
   assert.equal(await getAccountApiKey('acc-a'), undefined);
   assert.deepEqual(await reencryptPlaintextSecrets(), { reencrypted: 0, failed: 0, skipped: 'no-plaintext' });
@@ -381,4 +385,12 @@ test('F3 composed with the real env builder: a WITHHELD key leaves the agent wit
   const ok = await getAccountApiCredentials('a');
   const env2 = accountAgentEnv(account, '/home/x', {}, ok.apiKey, ok.baseUrl);
   assert.deepEqual([env2.set.ANTHROPIC_API_KEY, env2.set.ANTHROPIC_BASE_URL], ['k-new', 'https://gw.example'], 'with the keyring back the pair flows together');
+});
+
+test('the state carries WHY the backend was chosen (Settings words an isolated instance differently)', async () => {
+  assert.equal((await getSecretsState()).selectionReason, null);
+  setKeyringSelectionReason('isolated-instance');
+  assert.equal((await getSecretsState()).selectionReason, 'isolated-instance');
+  setKeyringSelectionReason('locked-service');
+  assert.equal((await getSecretsState()).selectionReason, 'locked-service');
 });

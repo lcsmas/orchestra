@@ -668,9 +668,13 @@ the first disk read is single-flight (`loading`).
   is selected, the address is exported into `process.env` (`exportBusAddress`) — without it libsecret is
   selected but safeStorage stays unavailable (rig arm `unlocked`, verified).
 - **Isolated instances never bind to the human's keyring (review F1)** — `isIsolatedInstance(env)`: `ORCHESTRA_HOME` set
-  (the packaged app never sets it; every built-app rig and `pnpm run dev` does) ⇒ reason `isolated-instance`, Chromium's default, NO probe,
-  NO bus export — otherwise a rig run with the real `XDG_RUNTIME_DIR` would seal scratch secrets through the human's login
-  keyring and carry his bus. `ORCHESTRA_KEYRING=probe` opts in (only `scripts/e2e-keyring.sh`, which brings a private bus).
+  (the packaged app never sets it; every built-app rig and `pnpm run dev` does) ⇒ reason `isolated-instance`, `--password-store=basic` FORCED (Chromium's own
+  choice on a recognised desktop — GNOME/KDE — would still bind the real keyring), NO probe, NO bus export — otherwise a rig run with the
+  real `XDG_RUNTIME_DIR` would seal scratch secrets through the human's login keyring and carry his bus. Settings words it truthfully:
+  `setKeyringSelectionReason` (index.ts) → `SecretsState.selectionReason` → the notice says "isolated home (ORCHESTRA_HOME) … set
+  ORCHESTRA_KEYRING=probe", not "no keyring is available". Behaviour change: a dev/scratch home on a RECOGNISED desktop
+  (GNOME/KDE) used to seal through libsecret/kwallet by Chromium's own choice and now uses `basic` — entries sealed earlier are
+  unreadable there (API-key accounts then fail closed); no change on sway, where it already was `basic_text`. `ORCHESTRA_KEYRING=probe` opts in (only `scripts/e2e-keyring.sh`, which brings a private bus).
 - **Fail closed (review F3)** — `getAccountApiCredentials(id)` is the ONLY way agents (`agent-sdk.ts` `buildSdkEnv`) and the usage
   probe read an API key: a key whose base URL is stored but undecryptable (a locked keyring after the key was re-typed in plaintext) is
   `withheld: 'base-url-unreadable'` — never sent without its gateway URL; a stored-but-undecryptable key is `key-unreadable` (the
@@ -689,7 +693,7 @@ the first disk read is single-flight (`loading`).
   atomically. Ciphertext written under a keyring that is gone next boot is kept untouched (unreadable
   until the keyring is back).
 - **State for Settings** — `getSecretsState()` → `SecretsState {encrypted, backend, plaintextEntries,
-  encryptedEntries}` (`shared/secrets-state.ts`), IPC `secrets:state` / `window.orchestra.getSecretsState()`.
+  encryptedEntries, selectionReason}` (`shared/secrets-state.ts`), IPC `secrets:state` / `window.orchestra.getSecretsState()`.
   `secretsNotice(state)` is the pure rule for the warning ("Secrets are stored unencrypted on this
   machine…", plus an "N stored secrets are encrypted and unreadable until a keyring is available again"
   variant — no cause named); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.

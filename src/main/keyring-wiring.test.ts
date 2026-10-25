@@ -18,6 +18,13 @@ test('index.ts: selectLinuxPasswordStore runs at module scope BEFORE app.whenRea
   assert.match(index, /appendSwitch: \(name, value\) => app\.commandLine\.appendSwitch\(name, value\)/);
 });
 
+test('index.ts hands the selection reason to the secrets state (Settings says an isolated instance skipped the keyring on purpose)', () => {
+  const index = read('src/main/index.ts');
+  assert.match(index, /setKeyringSelectionReason\(keyringDecision\?\.reason \?\? null\);/);
+  assert.ok(index.search(/const keyringDecision = /) < index.search(/setKeyringSelectionReason\(/), 'set after the decision exists');
+  assert.match(read('src/main/secrets.ts'), /selectionReason,\n  \};/, 'getSecretsState returns it');
+});
+
 test('index.ts: the decision is logged after initLogger; startup re-encryption runs after the window and ONLY after our own unlocked-probe libsecret selection', () => {
   const index = read('src/main/index.ts');
   const ready = index.slice(index.search(/app\.whenReady\(\)\.then/));

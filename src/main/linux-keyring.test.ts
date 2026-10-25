@@ -190,3 +190,24 @@ test('Electron sets DBUS_SESSION_BUS_ADDRESS="disabled:" when the launcher expor
     await new Promise((r) => srv.close(r));
   }
 });
+
+test('select: an ISOLATED instance (ORCHESTRA_HOME) with a reachable runtime-dir bus appends --password-store=basic, never probes, never exports the bus — also on a recognised desktop', async () => {
+  const run = path.join(scratch, 'run4');
+  fs.mkdirSync(run, { recursive: true });
+  const net = await import('node:net');
+  const srv = net.createServer().listen(path.join(run, 'bus'));
+  await new Promise((r) => srv.once('listening', r));
+  try {
+    for (const desktop of ['', 'sway', 'GNOME', 'KDE']) {
+      const f = fakeDeps({ env: { XDG_RUNTIME_DIR: run, XDG_CURRENT_DESKTOP: desktop, ORCHESTRA_HOME: '/scratch-home', DBUS_SESSION_BUS_ADDRESS: 'disabled:' } as NodeJS.ProcessEnv, state: 'unlocked' });
+      const d = selectLinuxPasswordStore(f.deps);
+      assert.equal(d?.reason, 'isolated-instance', desktop);
+      assert.deepEqual(f.appended, [['password-store', 'basic']], `desktop "${desktop}": Chromium's own choice is overridden, not kept`);
+      assert.deepEqual(f.exportedAddrs, [], 'the bus address is not exported for basic');
+      assert.equal(f.probes(), 0);
+      assert.doesNotMatch(d!.facts, /exported/);
+    }
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});

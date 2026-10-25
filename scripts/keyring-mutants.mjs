@@ -52,13 +52,13 @@ const MUTANTS = [
   ['U27', 'src/main/api-handlers.ts', "    if (state.encrypted && state.plaintextEntries > 0) reencryptInBackground('settings');\n", '', T_WI, 'Settings re-attempts the re-encryption with a working keyring'],
   ['U28', IX, "      if (keyringDecision?.store === 'gnome-libsecret') reencryptInBackground('startup');", "      reencryptInBackground('startup');", T_WI, 'startup re-encryption only after our own unlocked-probe selection (never touches a locked/recognised keyring)'],
   ['U29', 'src/renderer/components/LinearSettings.tsx', "secrets?.encrypted === true && secrets.plaintextEntries === 0 && ", "secrets?.encrypted === true && ", T_WI, 'no "stored encrypted" claim while plaintext is on disk'],
-  ['U30', PS, "  if (isIsolatedInstance(input.env)) return { store: null, reason: 'isolated-instance' };\n", '', T_PS, 'a scratch/dev instance (ORCHESTRA_HOME) never binds to the human\'s real keyring (review F1)'],
+  ['U30', PS, "  if (isIsolatedInstance(input.env)) return { store: 'basic', reason: 'isolated-instance' };\n", '', T_PS, 'a scratch/dev instance (ORCHESTRA_HOME) never binds to the human\'s real keyring (review F1)'],
   ['U31', PS, "env.ORCHESTRA_KEYRING?.trim() !== 'probe'", "true", T_PS, 'ORCHESTRA_KEYRING=probe opts a rig in'],
   ['U32', SE, "  if (apiKey !== undefined && urlEntry?.value && baseUrl === undefined) return { withheld: 'base-url-unreadable' };\n", '', T_SE, 'a key whose base URL is unreadable is withheld — fail closed (review F3)'],
   ['U33', SE, "  if (keyEntry?.value && apiKey === undefined) return { withheld: 'key-unreadable' };\n", '', T_SE, 'a stored-but-unreadable key is reported, not "absent"'],
   ['U34', SE, "async function loadFromDisk(): Promise<void> {\n  await sweepStaleTemps();\n", "async function loadFromDisk(): Promise<void> {\n", T_SE, 'stale secrets.json.<pid>.tmp is swept at load (review F2)'],
   ['U35', SE, "async function writeFileSafe(data: SecretsFile): Promise<void> {\n  const file = await writeTarget();", "async function writeFileSafe(data: SecretsFile): Promise<void> {\n  const file = secretsPath();", T_SE, 'a symlinked secrets.json is written through (review F2)'],
-  ['U36', SS, "encrypted and unreadable until a keyring is available again.", "encrypted and unreadable until the keyring is unlocked.", T_SS, 'the unreadable notice names no cause (review F4b)'],
+  ['U36', SS, "'until a keyring is available again'", "'until the keyring is unlocked'", T_SS, 'the unreadable notice names no cause (review F4b)'],
   ['U37', SS, "  if (withheld === 'key-unreadable') return 'API key stored but unreadable';\n", '', T_SS, 'a stored-but-unreadable key is not "no API key stored" (review F4a)'],
   ['U38', 'src/main/agent-sdk.ts', "import { getAccountApiCredentials } from './secrets';", "import { getAccountApiKey, getAccountBaseUrl, getAccountApiCredentials } from './secrets';", T_WI, 'the agent env cannot bypass the fail-closed pair accessor'],
   ['U39', SE, "new RegExp(`^${path.basename(target)", "new RegExp(`${path.basename(target)", T_SE, 'the sweep name match is anchored at the start (xsecrets.json.1.tmp is not ours)'],
@@ -67,6 +67,12 @@ const MUTANTS = [
   ['U42', SE, "    file = path.resolve(path.dirname(file), link);", "    file = path.resolve(link);", T_SE, 'a relative symlink resolves from the link\'s own directory'],
   ['U43', SE, "let file = path.join(await realpath(path.dirname(lexical)).catch(() => path.dirname(lexical)), path.basename(lexical));", "let file = lexical;", T_SE, 'a symlinked userData/orchestra directory is resolved physically (review pre-review #3)'],
   ['U44', PS, "return Boolean(env.ORCHESTRA_HOME) &&", "return (env.ORCHESTRA_HOME?.trim() ?? '') !== '' &&", T_PS, 'isolated iff index.ts relocates (same truthiness)'],
+  ['U45', LK, "const exported = decision.store === 'gnome-libsecret' && bus === 'runtime-dir';", "const exported = decision.store !== null && bus === 'runtime-dir';", T_LK, 'an isolated (basic) instance never exports the bus (review m1)'],
+  ['U46', PS, "return { store: 'basic', reason: 'isolated-instance' };", "return { store: null, reason: 'isolated-instance' };", T_PS, 'an isolated instance FORCES basic — Chromium\'s own choice on a recognised desktop would bind the real keyring (review m1)'],
+  ['U47', SS, "const text =\n    state.selectionReason === 'isolated-instance'", "const text =\n    false", T_SS, 'the notice says "isolated", not "no keyring is available" (review m2)'],
+  ['U50', SS, "${state.selectionReason === 'isolated-instance' ? 'in this instance (sealed by a keyring earlier)'", "${false ? 'in this instance (sealed by a keyring earlier)'", T_SS, 'the unreadable variant does not promise a keyring coming back to an isolated instance'],
+  ['U48', IX, "setKeyringSelectionReason(keyringDecision?.reason ?? null);\n", '', T_WI, 'index.ts hands the selection reason to Settings (review m2)'],
+  ['U49', SE, "    encryptedEntries: encrypted,\n    selectionReason,\n  };", "    encryptedEntries: encrypted,\n  };", T_SE, 'getSecretsState carries the selection reason (review m2)'],
 ];
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
