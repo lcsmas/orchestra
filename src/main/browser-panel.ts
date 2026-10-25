@@ -20,6 +20,16 @@ import {
 } from '../shared/design-mode.ts';
 import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import {
+  closePopupWindows,
+  closePopupsOpenedBy,
+  consumeUserGesture,
+  livePopupWindows,
+  registerPopupWindow,
+  setPopupWindowsVisible,
+  trackUserGesture,
+  type PopupWindow,
+} from './browser-popups.ts';
 import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { log } from './logger';
@@ -395,6 +405,95 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
   });
 }
 
+/** Tabs a page opened without a user gesture: each holds popup budget until it is closed (#396). */
+const pageOpenedTabs = new WeakSet<Tab>();
+
+/** What `routePopup` decided for a child window, read back by `did-create-window` on the same opener (Electron creates the window itself). */
+const pendingPopup = new WeakMap<Electron.WebContents, { pageInitiated: boolean; openedBy: BrowserTabOpener }>();
+
+/** Route a window a page opened (#396): the pure policy decides, this applies it. A tab is built here (so it gets none of Electron's own window);
+ *  the one `allow` is a native child window that keeps its `window.opener`, so an OAuth sign-in can post back. */
+function routePopup(
+  panel: Panel,
+  opener: Electron.WebContents,
+  openedBy: BrowserTabOpener,
+  d: Electron.HandlerDetails,
+): Electron.WindowOpenHandlerResponse {
+  const wsId = panel.wsId;
+  if (panels.get(wsId) !== panel) return { action: 'deny' }; // the panel was evicted or destroyed under this page
+  const windows = livePopupWindows(wsId);
+  const route = decidePopup(
+    { url: d.url, frameName: d.frameName, disposition: d.disposition, features: d.features, userGesture: consumeUserGesture(opener) },
+    {
+      openTabs: panel.tabs.length,
+      openWindows: windows.length,
+      pageInitiatedOpen: panel.tabs.filter((t) => pageOpenedTabs.has(t)).length + windows.filter((w) => w.pageInitiated).length,
+    },
+  );
+  switch (route.route) {
+    case 'new-tab': {
+      const tab = createTab(wsId, { url: d.url, openedBy, activate: route.activate });
+      if (route.pageInitiated) pageOpenedTabs.add(tab);
+      return { action: 'deny' };
+    }
+    case 'child-window': {
+      pendingPopup.set(opener, { pageInitiated: route.pageInitiated, openedBy });
+      const parent = getWindow?.() as Electron.BrowserWindow | null | undefined;
+      return {
+        action: 'allow',
+        outlivesOpener: false,
+        overrideBrowserWindowOptions: {
+          ...(parent ? { parent } : {}),
+          show: false, // shown by adoptPopupWindow only when this workspace is the one on screen
+          autoHideMenuBar: true,
+          resizable: false, // sway TILES a resizable child window beside the app (halving it); a fixed-size one floats (measured)
+          webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+        },
+      };
+    }
+    case 'external':
+      void shell.openExternal(d.url);
+      return { action: 'deny' };
+    case 'refuse': {
+      let origin = d.url;
+      try { origin = new URL(d.url).origin; } catch { /* keep the raw (scheme-only) text */ }
+      log.info(`browser-panel: popup refused (${route.reason}) ws=${wsId} url=${origin}`); // origin only: an OAuth URL carries tokens in its query
+      return { action: 'deny' };
+    }
+    default: {
+      const unhandled: never = route;
+      log.warn(`browser-panel: unhandled popup route ${JSON.stringify(unhandled)}`);
+      return { action: 'deny' };
+    }
+  }
+}
+
+/** A child window Electron just created for an opener-dependent popup: register it (budget, cap, teardown), route ITS popups the same way, show it
+ *  when its workspace is the one on screen. */
+function adoptPopupWindow(panel: Panel, opener: Electron.WebContents, win: Electron.BrowserWindow): void {
+  const meta = pendingPopup.get(opener);
+  pendingPopup.delete(opener);
+  if (!meta || panels.get(panel.wsId) !== panel) {
+    win.destroy(); // not a window routePopup asked for, or its panel is gone: never leave it open
+    return;
+  }
+  const popup: PopupWindow = { win, opener, openedBy: meta.openedBy, pageInitiated: meta.pageInitiated };
+  registerPopupWindow(panel.wsId, popup);
+  watchPopups(panel, win.webContents, meta.openedBy);
+  if (focusedWsId === panel.wsId) {
+    if (meta.pageInitiated) win.showInactive();
+    else win.show();
+  }
+}
+
+/** Route every window `wc` (a tab, or a popup child window) opens, and close the child windows it opened when it goes away. */
+function watchPopups(panel: Panel, wc: Electron.WebContents, openedBy: BrowserTabOpener): void {
+  trackUserGesture(wc);
+  wc.setWindowOpenHandler((details) => routePopup(panel, wc, openedBy, details));
+  wc.on('did-create-window', (win) => adoptPopupWindow(panel, wc, win));
+  wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));
+}
+
 /** Build a tab (native view + handlers) for `panel` and append it to the
  *  registry. Does NOT change the active tab. */
 function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
@@ -429,30 +528,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   if (panel.bounds) view.setBounds(panel.bounds);
 
   const wc = view.webContents;
-  // Where a page-opened window goes is decided by the pure tab policy (#396 fills the routing: today a
-  // web URL stays in THIS tab, anything else goes to the OS — mirrors login-browser.ts).
-  wc.setWindowOpenHandler((details) => {
-    const route = decidePopup({
-      url: details.url,
-      frameName: details.frameName,
-      disposition: details.disposition,
-      features: details.features,
-    });
-    switch (route.route) {
-      case 'same-view':
-        void wc.loadURL(details.url);
-        break;
-      case 'external':
-        void shell.openExternal(details.url);
-        break;
-      default: {
-        // #396 adds routes: an unhandled one must fail to COMPILE here, not fall through to the OS browser.
-        const unhandled: never = route;
-        log.warn(`browser-panel: unhandled popup route ${JSON.stringify(unhandled)}`);
-      }
-    }
-    return { action: 'deny' };
-  });
+  watchPopups(panel, wc, opts.openedBy);
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
   wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
   // A restored tab keeps its remembered URL until a navigation COMMITS to a restorable URL: during the load, and after a
@@ -684,6 +760,7 @@ export function showPanel(wsId: string): BrowserPanelState {
   // (The agent path goes through revealForAgent, which only reaches here when
   // this workspace is already the focused one.)
   focusedWsId = wsId;
+  setPopupWindowsVisible(wsId, true);
   const win = getWindow?.();
   // Never composite a view that has never been positioned: an agent can call
   // this (via its MCP browser tools) while the renderer's pane is closed, so no
@@ -708,6 +785,7 @@ export function showPanel(wsId: string): BrowserPanelState {
  *  its pages + history + cookies survive so re-showing is instant. */
 export function hidePanel(wsId: string): void {
   if (focusedWsId === wsId) focusedWsId = null;
+  setPopupWindowsVisible(wsId, false);
   const panel = panels.get(wsId);
   if (!panel) return;
   // Cancel a deferred attach too, or a later setBounds would show a panel the
@@ -846,6 +924,7 @@ export function isFocusedWorkspace(wsId: string): boolean {
  *  opened the panel (deleted straight after a restart). Forgetting comes after the teardown so no late event re-saves. */
 export function destroyPanel(wsId: string): void {
   destroyPanelViews(wsId);
+  closePopupWindows(wsId);
   persistence?.save(wsId, null);
 }
 

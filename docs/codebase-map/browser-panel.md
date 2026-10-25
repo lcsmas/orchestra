@@ -62,6 +62,8 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   once from `index.ts` with the live main-window accessor. Reuses
   `login-browser.ts`'s session-partition + UA-normalization + context-menu
   pattern.
+- **`src/main/browser-popups.ts`** (#396) — user-gesture tracker (`trackUserGesture` / `consumeUserGesture`) + the per-workspace registry of popup child windows
+  (`registerPopupWindow` / `livePopupWindows` / `closePopupWindows` / `closePopupsOpenedBy` / `setPopupWindowsVisible`); the routing flow itself is `routePopup` in `browser-panel.ts` (see Popups).
 - **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
   an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
   a **cached dynamic `import()`** (the SDK is pure-ESM; a static value import
@@ -155,8 +157,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   `designModePoll`): the tab is resolved once, so an `activateTab` between two
   CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
-  size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
-  (popup routing is #396).
+  size); popups are routed by `routePopup` (see Popups, #396).
 - **An explicit `tabId` never builds a panel**: `attachDebugger`/`evaluate`/…
   and `navigate` resolve it first and throw "not found" — a stale id after
   `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
@@ -280,8 +281,7 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 
 - **Pure policy — `src/shared/browser-tab-policy.ts`** (unit-tested, `browser-tab-policy.test.ts`): `BROWSER_TAB_CAP`, `decideTabOpen`
   (the cap; refusal carries a user-facing message), `decideTabClose` (**the human closes any tab, an agent only `openedBy:'agent'`**;
-  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the #396 seam:
-  `PopupRouteDecision = {route:'same-view'|'external'}` today = the pre-tabs behaviour; #396 adds arms). #397 consumes the ownership rule.
+  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the popup routing, see Popups #396). #397 consumes the ownership rule.
 - **Main entry points — `tryOpenTab` / `tryCloseTab` / `tryActivateTab`** in `src/main/browser-panel.ts`: ask the policy FIRST, so a refused open
   allocates no `WebContentsView` (no leak) and a refused close destroys nothing. They RESOLVE `BrowserTabResult` (`{ok:true,state,tabId?}` |
   `{ok:false,reason:'cap'|'not-owner'|'unknown-tab',message,state}`) — never throw across IPC. Anything acting for the human or the agent
@@ -315,6 +315,41 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 - **Traps:** a `WebContentsView` that is not the active tab of the focused workspace is NOT in the window (never composites); the rig's pixel
   clauses are the only oracle for that (DOM cannot see paint). `Browser.close` over the debug port is a graceful quit that reaches
   `before-quit` (the flush); a SIGKILL restart relies on the 400 ms debounce alone — both are driven.
+
+## Popups (#396) — `_blank` → tab, OAuth → native child window, budget
+
+A page-opened window never loads into the opener's view any more (that broke every `window.opener` OAuth flow). `setWindowOpenHandler` is installed
+per contents by `watchPopups` (tab views AND popup child windows) and answers through `routePopup` in `src/main/browser-panel.ts`.
+
+- **Pure policy — `decidePopup(req, ctx)` in `src/shared/browser-tab-policy.ts`** (`browser-tab-policy.test.ts`): `PopupRouteDecision` =
+  `new-tab{activate,pageInitiated}` | `child-window{pageInitiated}` | `external` | `refuse{reason: cap|budget|unsafe-url|no-gesture-external}`.
+  Rules, in order: `javascript:`/`data:`/`file:`/`blob:`/internal-scheme URLs are refused (never loaded, never handed to the OS); a non-web scheme
+  (`mailto:`, `slack://`) goes to the OS only with a click; **cap** = tabs + live popup windows ≥ `BROWSER_TAB_CAP` (8, shared, refuses even a click);
+  **budget** = a popup with no gesture while `POPUP_BUDGET` (3) page-initiated ones (tabs + windows) are still open. Route: a popup that needs
+  `window.opener` — **named** (`frameName` not ''/`_blank`/`_self`/`_parent`/`_top`) or **sized** (`disposition:'new-window'`) and without an explicit
+  `noopener` feature — is a child window; everything else is a tab, activated only for a clicked foreground link (not `background-tab`, not page-initiated).
+  Electron reports `features:'noopener'` only for `window.open(…,'noopener')`, never for `rel=noopener` anchors (measured), so that is the only opt-out.
+- **User gesture — `src/main/browser-popups.ts`:** Electron's handler does not say whether a gesture started the popup, so `trackUserGesture`
+  records the last activating `input-event` (`mouseDown`/`keyDown`/`rawKeyDown`/`touchEnd`, also CDP-dispatched input = how the agent clicks) per
+  contents and `consumeUserGesture` reads it within `USER_GESTURE_WINDOW_MS` (5 s, Chromium's activation window) and **consumes it: one input opens
+  one popup** (a click that fires 20 `window.open` = 1 shown popup + 19 on the budget). `evaluate(…, userGesture:true)` fires no input event: counted as page-initiated.
+- **New tab:** `createTab(wsId,{url,openedBy,activate})` with `openedBy` **inherited from the opener tab** (an agent tab's popups are agent-closable, the human's are not);
+  the handler denies Electron's own window. Page-opened tabs are tracked in `pageOpenedTabs` (a WeakSet — closing the tab gives its budget back).
+- **Child window:** the one `allow` — Electron builds a `BrowserWindow` in the OPENER's session (same partition, cookies shared) with `window.opener`
+  intact; `routePopup` passes `parent: main window`, `show:false`, `resizable:false` (**a resizable child window is TILED beside the app by sway — halving it; a fixed-size one floats**, measured),
+  sandboxed `webPreferences`, `outlivesOpener:false`. `did-create-window` → `adoptPopupWindow` registers it (`registerPopupWindow`), installs the same handler on ITS contents
+  (nested popups follow the same policy and budget), and shows it only if its workspace is the one on screen (`focusedWsId`; a page-initiated one with `showInactive`, never stealing focus).
+  The decision rides `pendingPopup` (per opener) from the handler to the event. Child windows are NOT in the tab registry: the CDP proxy (#395) and agent tab tools do not see them.
+- **No leaked windows:** the registry (`livePopupWindows`) prunes destroyed windows on read, so counts cannot drift; windows die with their opener (`wc.once('destroyed')` → `closePopupsOpenedBy`, recursive)
+  and with the workspace (`destroyPanel` → `closePopupWindows`, belt and braces for an opener that never announces its end); `hidePanel` hides them, `showPanel` brings them back (`showInactive`),
+  so a sign-in window never floats over another workspace's UI. A refusal is logged `popup refused (<reason>) ws=… url=<origin>` (origin only: OAuth URLs carry tokens in the query) — no UI notice.
+- **Not handled (accepted gaps):** an UNNAMED, feature-less `window.open(url)` that relies on `window.opener` becomes a tab with no opener (spec: "unnamed → tab");
+  a `target=_blank` form POST loads as GET (pre-existing); `referrer` is not forwarded.
+- **Tests:** `browser-tab-policy.test.ts` (every routing clause), `src/main/browser-popups.test.ts` (gesture window/consume, registry), `src/main/browser-panel-popups.test.ts`
+  (real `browser-panel.ts` over a stubbed `electron`, driven through the handler: tab, budget storm, cap shared with windows, child window options, hide/show, no leaks);
+  `scripts/mutate-browser-popups.mjs` (45 in-place mutants, byte-exact restore). Built app: `scripts/e2e-browser-popups.sh <app-dir>` (own headless sway; arms `blank,oauth,storm,ws,cleanup`;
+  the OAuth flow completes through a real child window — compositor tree + pixels + cookie in the opener's jar; storms capped; archive leaves nothing) +
+  `scripts/e2e-browser-popups-mutants.mjs` (rebuilt-app mutants incl. `R0-unfixed-same-view-handler`, today's handler). Fixture pages `scripts/fixtures/browser-site/pages/popups-{opener,oauth,blank,storm}.html`.
 
 ## IPC / seam
 

@@ -3,7 +3,7 @@
 //   - the cap: at most BROWSER_TAB_CAP tabs per workspace, human + agent combined;
 //   - who opened each tab (BrowserTabOpener) and who may close what: the human closes any tab, an agent only its own (#397 consumes this);
 //   - what closing a tab leaves active, and what closing the LAST tab means (it is replaced by a blank tab — the panel never has zero);
-//   - the popup-routing decision SHAPE (#396 fills the routing; today every popup keeps the pre-tabs behaviour).
+//   - popup routing (#396): `_blank`/unnamed -> tab, opener-dependent -> native child window, page-initiated -> budget, all under the same cap.
 
 import type { BrowserTabOpener } from './types.ts';
 
@@ -26,7 +26,7 @@ export type TabOpenDecision =
   | { ok: true }
   | { ok: false; reason: 'cap'; cap: number; open: number; message: string };
 
-/** May `opener` open one more tab when the workspace already holds `openCount`? The cap is the only rule today; `opener` is carried so a per-opener budget (#396 page-initiated popups) extends this without a new signature. */
+/** May `opener` open one more tab when the workspace already holds `openCount`? The cap is the only rule here; `opener` is carried for a per-opener rule. Popups (#396) are decided by `decidePopup`, which counts child windows with the tabs. */
 export function decideTabOpen(input: { openCount: number; opener: BrowserTabOpener; cap?: number }): TabOpenDecision {
   const cap = input.cap ?? BROWSER_TAB_CAP;
   if (input.openCount < cap) return { ok: true };
@@ -99,28 +99,102 @@ export function decideBrowserAutoOpen(
   return { open: navigated || startedLoading, next };
 }
 
-// ---- popups (shape only — #396 implements the routing) -----------------------------------------------------------------
+// ---- popups (#396) -----------------------------------------------------------------------------------------------------
 
-/** What `webContents.setWindowOpenHandler` hands us about a page-opened window, plus what #396 adds (user gesture, opener dependence). */
+/** Page-initiated popups (opened WITHOUT a user gesture) a workspace may hold open at once, tabs and child windows together (spec #388 story 14). */
+export const POPUP_BUDGET = 3;
+
+/** Chromium's transient user-activation lifetime: an input this recent is the gesture that may open a popup (the main process consumes it on use). */
+export const USER_GESTURE_WINDOW_MS = 5000;
+
+/** What `webContents.setWindowOpenHandler` hands us about a page-opened window, plus the gesture the main process tracked. */
 export interface PopupRequest {
   url: string;
-  /** `window.open` target name; `_blank` / '' / `_self` / a named frame. */
+  /** `window.open` target name; '' for `_blank` / unnamed (Electron strips `_blank`), a name for a named window. */
   frameName: string;
-  /** Electron's disposition: `foreground-tab`, `background-tab`, `new-window`, … */
+  /** Electron's disposition: `foreground-tab` (link / plain window.open), `background-tab` (ctrl/middle click), `new-window` (window.open with popup features), … */
   disposition: string;
-  /** window.open features string. */
+  /** window.open features string (`noopener` shows here only for an explicit `window.open(…, 'noopener')`, never for `rel=noopener`). */
   features: string;
-  /** Whether a user gesture started the popup (not provided by Electron's handler today — #396 plumbs it). */
-  userGesture?: boolean;
+  /** Whether a fresh user input on the opener started it (Electron's handler does not say; main tracks `input-event`, one input = one popup). */
+  userGesture: boolean;
 }
 
-/** Where a popup goes. A discriminated union on `route` so #396 adds arms (`new-tab`, `child-window`, `refuse`) without touching callers that already switch on it exhaustively. */
-export type PopupRouteDecision =
-  | { route: 'same-view' }
-  | { route: 'external' };
-// #396 adds: { route: 'new-tab'; activate: boolean } | { route: 'child-window' } | { route: 'refuse'; reason: string }
+/** What the workspace holds right now. The counts come from the live registries, never from a counter that could drift. */
+export interface PopupContext {
+  openTabs: number;
+  /** Live popup child windows (they count against the cap with the tabs). */
+  openWindows: number;
+  /** Page-initiated popups (tabs + windows) still open. */
+  pageInitiatedOpen: number;
+  cap?: number;
+  budget?: number;
+}
 
-/** Route a popup. TODAY (pre-#396) this is the behaviour the panel always had: a web URL loads in the opener's own view, anything else goes to the OS. #396 replaces the body with the real routing (`_blank` -> tab, opener-dependent -> child window, page-initiated -> budget). */
-export function decidePopup(req: PopupRequest): PopupRouteDecision {
-  return /^https?:/i.test(req.url) ? { route: 'same-view' } : { route: 'external' };
+export type PopupRefusal = 'cap' | 'budget' | 'unsafe-url' | 'no-gesture-external';
+
+/** Where a popup goes. */
+export type PopupRouteDecision =
+  /** `_blank` / unnamed: a new tab (no opener). `activate` only for a user's foreground click. */
+  | { route: 'new-tab'; activate: boolean; pageInitiated: boolean }
+  /** `window.opener`-dependent (named, or a sized popup): a native child window that KEEPS its opener, so an OAuth sign-in can post back. */
+  | { route: 'child-window'; pageInitiated: boolean }
+  /** A non-web scheme the user clicked: the OS handles it. */
+  | { route: 'external' }
+  | { route: 'refuse'; reason: PopupRefusal; message: string };
+
+type UrlKind = 'web' | 'blank' | 'external' | 'unsafe';
+
+/** Schemes a page-controlled popup must never hand to the OS or load: script, inline documents, local files, internal pages. */
+const UNSAFE_SCHEMES = /^(javascript|data|file|vbscript|blob|chrome|chrome-untrusted|devtools|view-source|filesystem|about):/i;
+
+function classifyUrl(url: string): UrlKind {
+  const u = url.trim();
+  if (/^https?:\/\//i.test(u)) return 'web';
+  if (u === '' || /^about:blank$/i.test(u)) return 'blank';
+  if (UNSAFE_SCHEMES.test(u) || !/^[a-z][a-z0-9+.-]*:/i.test(u)) return 'unsafe';
+  return 'external';
+}
+
+/** Does this `window.open` features string opt out of the opener (`noopener`, not `noopener=0|no|false`)? */
+function featuresDenyOpener(features: string): boolean {
+  return features.split(/[\s,]+/).some((tok) => {
+    const [k, v = ''] = tok.toLowerCase().split('=');
+    return k === 'noopener' && !['0', 'no', 'false'].includes(v);
+  });
+}
+
+/** Does the page need `window.opener` in the popup? A NAMED window (the page addresses it, and OAuth libraries post back to it) or a sized/positioned
+ *  popup (`new-window`) is; a plain `_blank` link / unnamed `window.open` is a tab; an explicit `noopener` is a tab either way. */
+export function popupNeedsOpener(req: Pick<PopupRequest, 'frameName' | 'disposition' | 'features'>): boolean {
+  if (featuresDenyOpener(req.features)) return false;
+  const name = req.frameName.trim().toLowerCase();
+  if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;
+  return req.disposition === 'new-window';
+}
+
+/** Route a popup (spec #388 "Tabs and popups"): web `_blank` / unnamed -> new tab; opener-dependent -> native child window; a page-initiated popup (no
+ *  gesture) draws on a budget; tabs + child windows share the per-workspace cap. A refusal allocates nothing. */
+export function decidePopup(req: PopupRequest, ctx: PopupContext): PopupRouteDecision {
+  const cap = ctx.cap ?? BROWSER_TAB_CAP;
+  const budget = ctx.budget ?? POPUP_BUDGET;
+  const kind = classifyUrl(req.url);
+  if (kind === 'unsafe') {
+    return { route: 'refuse', reason: 'unsafe-url', message: 'A page tried to open a window on a script, file or internal URL: refused.' };
+  }
+  if (kind === 'external') {
+    // An OS hand-off cannot be counted against a budget, so only a user's own click may start one.
+    return req.userGesture
+      ? { route: 'external' }
+      : { route: 'refuse', reason: 'no-gesture-external', message: 'A page tried to open an external application without a click: refused.' };
+  }
+  if (ctx.openTabs + ctx.openWindows >= cap) {
+    return { route: 'refuse', reason: 'cap', message: `Popup refused: a workspace holds at most ${cap} browser tabs and popup windows. Close one first.` };
+  }
+  if (!req.userGesture && ctx.pageInitiatedOpen >= budget) {
+    return { route: 'refuse', reason: 'budget', message: `Popup refused: a page may hold at most ${budget} popups it opened without a click.` };
+  }
+  const pageInitiated = !req.userGesture;
+  if (popupNeedsOpener(req)) return { route: 'child-window', pageInitiated };
+  return { route: 'new-tab', activate: req.userGesture && req.disposition !== 'background-tab', pageInitiated };
 }

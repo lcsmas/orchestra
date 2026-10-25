@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Popups fixture storm</title>
+<style>html,body{margin:0;height:100%;background:#a02c2c;color:#fff;font:700 18px sans-serif}button{position:absolute;left:20px;top:20px;width:300px;height:44px;font:600 16px sans-serif}#calls,#handles{position:absolute;left:20px}#calls{top:90px}#handles{top:120px}</style></head>
+<body>
+<button id="go" onclick="storm()">Storm (from a click)</button>
+<div id="calls">calls 0</div><div id="handles">handles 0</div>
+<script>
+// A hostile page's popup storm (#396). ?auto=<n> fires n window.open calls on load with NO user gesture; ?kind=tab|named|mixed picks the popup shape
+// (unnamed -> a tab, named+sized -> a native child window); the button fires 20 from a click (ONE gesture, then page-initiated).
+const q = new URLSearchParams(location.search);
+let calls = 0, handles = 0;
+function storm(n = 20, kind = q.get('kind') || 'tab') {
+  for (let i = 0; i < n; i++) {
+    const named = kind === 'named' || (kind === 'mixed' && i % 2 === 1);
+    const w = named ? window.open('popups-blank.html?w=' + i, 'storm' + i, 'width=300,height=200') : window.open('popups-blank.html?i=' + i);
+    calls++; if (w) handles++;
+  }
+  document.getElementById('calls').textContent = 'calls ' + calls;
+  document.getElementById('handles').textContent = 'handles ' + handles;
+}
+if (q.get('auto')) setTimeout(() => storm(Number(q.get('auto'))), 300);
+</script>
+</body></html>
