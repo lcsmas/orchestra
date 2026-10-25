@@ -292,6 +292,9 @@ export async function startHooksServer(): Promise<void> {
                   model: typeof msg.model === 'string' ? msg.model : undefined,
                   effort: typeof msg.effort === 'string' ? msg.effort : undefined,
                   name: typeof msg.name === 'string' ? msg.name : undefined,
+                  // #401: the profile REQUEST + the caller's session key; what the caller holds is read host-side (never sent).
+                  profile: typeof msg.profile === 'string' ? msg.profile : undefined,
+                  key: typeof msg.key === 'string' ? msg.key : undefined,
                 }),
               );
             } else {

@@ -67,6 +67,7 @@ import { staleRunRefusalMessage } from '../shared/reparent-run.ts';
 import {
   identityEnv,
   resolveHostIdentity,
+  SESSION_KEY_ENV,
   SessionSupersededError,
   staleMarkerBlocksSend,
   staleMarkerPaths,
@@ -1359,16 +1360,17 @@ async function main(argv: string[]): Promise<void> {
       const { value: model, rest: r4 } = takeFlag(r3, '--model');
       const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
       const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
-      const { present: detached, rest: r5 } = takeBoolFlag(r4c, '--detached');
+      const { value: profile, rest: r4d } = takeFlag(r4c, '--profile');
+      const { present: detached, rest: r5 } = takeBoolFlag(r4d, '--detached');
       if (!task)
         fail(
-          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]',
+          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--detached]',
         );
       // A value option with no value (last on the line) or whose "value" is exactly the NEXT option was swallowed by the parser: `--repo` last silently
       // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. A value that merely STARTS with `--` (a brief
       // beginning `--- notes`) is still a value. (`--name` has its own, convention-restating refusal.)
-      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--detached'];
-      for (const f of ['--task', '--repo', '--base', '--model', '--effort']) {
+      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--profile', '--detached'];
+      for (const f of ['--task', '--repo', '--base', '--model', '--effort', '--profile']) {
         const i = args.indexOf(f);
         if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))
           fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
@@ -1406,6 +1408,13 @@ async function main(argv: string[]): Promise<void> {
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;
       if (effort !== undefined) body.effort = effort;
+      // #401: the profile REQUEST rides with the session key, so the host can vouch the call is the live session of `from`
+      // (ADR 0008). What the caller holds is read by the host from its own record — never sent from here.
+      if (profile !== undefined) {
+        body.profile = profile;
+        const key = process.env[SESSION_KEY_ENV]?.trim();
+        if (key) body.key = key;
+      }
       if (detached) body.detached = true;
       const res = await request('/spawn', body);
       if (!res.ok) fail(res.error ?? 'failed to spawn workspace');
@@ -1422,6 +1431,12 @@ async function main(argv: string[]): Promise<void> {
       }
       process.stdout.write(`Spawned ${res.id} on branch ${res.branch}\n`);
       if (typeof res.note === 'string') process.stdout.write(`${res.note}\n`);
+      // #401: the worker WAS created either way; a refused pass says so (stderr) so it is not mistaken for a signed-in worker.
+      const passed = res.profile as { applied?: unknown; message?: unknown } | undefined;
+      if (passed && typeof passed.message === 'string') {
+        if (passed.applied === true) process.stdout.write(`${passed.message}\n`);
+        else process.stderr.write(`warning: ${passed.message}\n`);
+      }
       return;
     }
 
@@ -1949,6 +1964,8 @@ async function main(argv: string[]): Promise<void> {
         // `(none)` test stays a simple presence check regardless of count.
         ['pr', ((res.linkedPrUrls as string[] | undefined) ?? []).join(' ') || '(none)'],
         ['linear', (res.linkedLinearKey as string | null | undefined) || '(none)'],
+        // #401: the profil navigateur this workspace holds — the value `orchestra spawn --profile` accepts. (Key kept ≤ the widest one: no re-pad.)
+        ['browser', ((p) => (p ? `${p.name} (${p.id})` : 'ephemeral'))(res.browserProfile as { id: string; name: string } | null | undefined)],
       ];
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');
