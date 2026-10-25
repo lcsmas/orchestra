@@ -1,5 +1,11 @@
 import { WebContentsView, Menu, clipboard, session, shell } from 'electron';
-import type { BrowserBounds, BrowserPanelState } from '../shared/types';
+import type {
+  BrowserBounds,
+  BrowserPanelState,
+  BrowserTabId,
+  BrowserTabInfo,
+  BrowserTabOpener,
+} from '../shared/types';
 // NOTE the .ts extension on this VALUE import: it matches the convention the
 // rest of main uses for shared modules (git.ts → ci-state.ts, workspaces.ts →
 // status-text.ts), so this file stays resolvable if it is ever pulled into the
@@ -24,43 +30,81 @@ import { log } from './logger';
 // spawned Chromium, no puppeteer, and no MCP subprocess: everything runs
 // in-process against a view Orchestra owns.
 //
-// Isolation: the registry keys every view by `wsId`. The agent's browser tools
-// (agent-browser-tools.ts) close over their session's `wsId` and route through
-// `getPanel(wsId)`, so a workspace's agent can only drive that workspace's
-// panel — multiple workspaces each get an independent browser by construction.
+// Isolation: the registry keys every panel by `wsId`, and each panel holds an
+// ordered list of tabs (one native view each) with one ACTIVE tab. The agent's
+// browser tools (agent-browser-tools.ts) close over their session's `wsId` and
+// route through the registry, so a workspace's agent can only drive that
+// workspace's panel — multiple workspaces each get an independent browser by
+// construction. Every primitive acts on the active tab unless handed a `tabId`.
 //
 // This file is Electron-only: it owns native views, so only the main process
 // touches it. The renderer reaches it through IPC (`browser:*`) and receives
 // pushes on `browser:event`.
 
-/** How the native view is attached to the window + kept in sync with the DOM
- *  placeholder the renderer draws.
+
+/** Per-tab navigation snapshot — what {@link BrowserPanelState} mirrors for the
+ *  ACTIVE tab and {@link BrowserTabInfo} lists for every tab. */
+type TabNav = Pick<
+  BrowserPanelState,
+  'url' | 'title' | 'loading' | 'canGoBack' | 'canGoForward' | 'error'
+>;
+
+/** One browser tab: a native view + its own debugger and navigation state.
  *
  *  `view` is always assigned at construction and never reassigned — but the
  *  `WebContentsView` it points at can OUTLIVE its own `webContents`: Electron
  *  sets `view.webContents` to `undefined` once the underlying WebContents is
  *  destroyed, even though its typing declares the property non-nullable
- *  (`readonly webContents: WebContents`). So `panel.view.webContents` must be
+ *  (`readonly webContents: WebContents`). So `tab.view.webContents` must be
  *  treated as possibly-absent at every dereference — see {@link liveContents}. */
-interface Panel {
-  wsId: string;
+export interface Tab {
+  /** `t1`, `t2`, … minted per workspace, never reused (see {@link nextTabId}). */
+  id: BrowserTabId;
   view: WebContentsView;
-  /** True while the panel is visible (bounds set, added to the window). */
-  visible: boolean;
-  /** Whether setBounds has ever run for this view. Until the renderer measures
+  openedBy: BrowserTabOpener;
+  /** Whether this tab's debugger has been attached for agent driving. */
+  debuggerAttached: boolean;
+  nav: TabNav;
+}
+
+/** A workspace's browser panel: an ordered list of tabs with one active tab,
+ *  plus the window-level attach state shared by all of them (one rect, one
+ *  composited view at a time — the ACTIVE tab's). */
+export interface Panel {
+  wsId: string;
+  tabs: Tab[];
+  /** Id of the active tab — the one every un-suffixed primitive drives. */
+  activeId: BrowserTabId;
+  /** Id of the tab whose view is currently added to the window, or null. */
+  attachedId: BrowserTabId | null;
+  /** Whether setBounds has ever run for this panel. Until the renderer measures
    *  the `.browser-pane` placeholder the view has no meaningful rect, so adding
-   *  it to the window would composite it at a garbage position over the app. */
+   *  it to the window would composit it at a garbage position over the app. */
   bounded: boolean;
+  /** The last rect the renderer measured, re-applied to a tab view on attach. */
+  bounds: BrowserBounds | null;
   /** A show was requested before any bounds existed (agent-driven open while the
    *  pane is closed); the attach happens on the first setBounds instead. */
   pendingShow: boolean;
-  /** Whether this view's debugger has been attached for agent driving. */
-  debuggerAttached: boolean;
-  /** Last computed navigation state, for a fresh renderer to re-request. */
+  /** Last computed panel state, for a fresh renderer to re-request. */
   state: BrowserPanelState;
+  /** The ACTIVE tab's native view (compat accessor — the browser verify
+   *  harnesses read `panel.view`). Only valid while the panel has a tab. */
+  readonly view: WebContentsView;
 }
 
 const panels = new Map<string, Panel>();
+
+/** Next tab sequence number per workspace. Lives OUTSIDE {@link panels} on
+ *  purpose: a panel evicted by dead-view reaping (or a last-tab close) and
+ *  rebuilt must not restart at `t1`, or a stale id would address a new tab. */
+const tabSeq = new Map<string, number>();
+
+function nextTabId(wsId: string): BrowserTabId {
+  const n = (tabSeq.get(wsId) ?? 0) + 1;
+  tabSeq.set(wsId, n);
+  return `t${n}`;
+}
 
 /** The workspace whose panel the RENDERER currently composites (its
  *  BrowserPanel component is mounted + active and called browserShow). This is
@@ -72,43 +116,95 @@ const panels = new Map<string, Panel>();
  *  {@link hidePanel}. */
 let focusedWsId: string | null = null;
 
-/** The panel's live `webContents`, or `undefined` if the view has none any more.
+/** The tab's live `webContents`, or `undefined` if the view has none any more.
  *
  *  Electron drops `WebContentsView.webContents` (to `undefined`) once the
  *  underlying WebContents is destroyed — by us via {@link destroyPanel}, or
  *  EXTERNALLY (renderer/GPU crash of the sandboxed panel page, Chromium
  *  reclaiming it, window teardown). Its typing says `readonly webContents:
- *  WebContents`, so TypeScript happily lets `panel.view.webContents.isDestroyed()`
+ *  WebContents`, so TypeScript happily lets `tab.view.webContents.isDestroyed()`
  *  through — and that expression throws `Cannot read properties of undefined
  *  (reading 'isDestroyed')` in exactly that case: the guard meant to detect a
  *  dead view is itself what crashes on one.
  *
  *  Routing every dereference through here makes the absent case representable
- *  and checkable. Callers that get `undefined` should treat the panel as dead. */
-function liveContents(panel: Panel | undefined): Electron.WebContents | undefined {
-  const wc = panel?.view?.webContents as Electron.WebContents | undefined;
+ *  and checkable. Callers that get `undefined` should treat the tab as dead. */
+function liveContents(tab: Tab | undefined): Electron.WebContents | undefined {
+  const wc = tab?.view?.webContents as Electron.WebContents | undefined;
   return wc && !wc.isDestroyed() ? wc : undefined;
 }
 
-/** Drop a panel whose native view is gone, so the next call recreates it
- *  cleanly instead of tripping over a husk left in the map. */
+function activeTabOf(panel: Panel): Tab | undefined {
+  return panel.tabs.find((t) => t.id === panel.activeId);
+}
+
+/** Remove `tab`'s view from the window if it is the one attached. */
+function detachTab(panel: Panel, tab: Tab): void {
+  if (panel.attachedId !== tab.id) return;
+  try {
+    getWindow?.()?.contentView.removeChildView(tab.view);
+  } catch {
+    /* already detached / window gone */
+  }
+  panel.attachedId = null;
+}
+
+/** Composite the ACTIVE tab (swapping out whichever tab was attached). Only the
+ *  active tab of a panel ever composits. */
+function attachActive(panel: Panel): void {
+  const win = getWindow?.();
+  const tab = activeTabOf(panel);
+  if (!win || !tab || panel.attachedId === tab.id) return;
+  const prev = panel.tabs.find((t) => t.id === panel.attachedId);
+  if (prev) detachTab(panel, prev);
+  panel.attachedId = null;
+  if (panel.bounds) tab.view.setBounds(panel.bounds);
+  win.contentView.addChildView(tab.view);
+  panel.attachedId = tab.id;
+}
+
+/** Release a tab's native resources: debugger first, then the contents. */
+function destroyTab(tab: Tab): void {
+  const wc = liveContents(tab);
+  if (!wc) return;
+  try {
+    if (tab.debuggerAttached) wc.debugger.detach();
+  } catch {
+    /* already detached */
+  }
+  // WebContentsView has no close(); destroying its webContents releases it.
+  (wc as unknown as { close?: () => void }).close?.();
+}
+
+/** Drop every tab whose native view is gone, so the next call recreates them
+ *  cleanly instead of tripping over husks left in the map. A panel whose LAST
+ *  tab died is evicted whole (the next ensurePanel builds a fresh one); a dead
+ *  active tab hands the active slot to a surviving neighbour. */
 function reapIfDead(wsId: string): Panel | undefined {
   const panel = panels.get(wsId);
   if (!panel) return undefined;
-  if (liveContents(panel)) return panel;
+  const dead = panel.tabs.filter((t) => !liveContents(t));
+  if (dead.length === 0) return panel;
   // The view lost its webContents (destroyed by us or externally). Detach the
   // husk from the window if it is still attached, then forget it.
-  if (panel.visible) {
-    const win = getWindow?.();
-    try {
-      win?.contentView.removeChildView(panel.view);
-    } catch {
-      /* already detached / window gone */
-    }
-    panel.visible = false;
+  const wasActive = dead.some((t) => t.id === panel.activeId);
+  const wasAttached = panel.attachedId !== null;
+  const activeIdx = panel.tabs.findIndex((t) => t.id === panel.activeId);
+  for (const t of dead) detachTab(panel, t);
+  if (dead.length === panel.tabs.length) {
+    // Keep `panel.tabs` intact: a holder of this evicted panel can still read
+    // `panel.view` (the dead husk) instead of crashing on an empty list.
+    panel.attachedId = null;
+    panels.delete(wsId);
+    return undefined;
   }
-  panels.delete(wsId);
-  return undefined;
+  panel.tabs = panel.tabs.filter((t) => !dead.includes(t));
+  if (wasActive) {
+    panel.activeId = panel.tabs[Math.min(activeIdx, panel.tabs.length - 1)].id;
+    if (wasAttached) attachActive(panel);
+  }
+  publish(panel);
+  return panel;
 }
 
 /** The live main-window accessor. Installed by index.ts at startup so this
@@ -123,7 +219,8 @@ export function initBrowserPanels(accessor: () => Electron.BaseWindow | null): v
 /** The session partition holding a workspace's browser cookies/storage. Not
  *  `persist:` — a panel is scratch browsing tied to the workspace's lifetime;
  *  we don't want authenticated sessions surviving a workspace delete. Keyed by
- *  wsId so two workspaces browsing the same site stay isolated. */
+ *  wsId so two workspaces browsing the same site stay isolated. All tabs of a
+ *  workspace share it (one cookie jar per panel). */
 function partitionFor(wsId: string): string {
   return `orchestra-browser-${wsId}`;
 }
@@ -143,26 +240,75 @@ function emptyState(wsId: string): BrowserPanelState {
     loading: false,
     canGoBack: false,
     canGoForward: false,
+    tabs: [],
+    activeTabId: '',
   };
 }
 
-/** Recompute the panel's navigation state from the live webContents and push it
- *  to the renderer (URL bar / title / nav buttons). */
-function emitState(panel: Panel, patch: Partial<BrowserPanelState>): void {
-  // Reachable from webContents event handlers, which can still fire while the
-  // contents are being torn down — so the view may already have lost them.
-  const wc = liveContents(panel);
-  if (!wc) return;
-  const nav = wc.navigationHistory;
-  panel.state = {
-    ...panel.state,
-    url: wc.getURL(),
-    title: wc.getTitle(),
-    canGoBack: nav.canGoBack(),
-    canGoForward: nav.canGoForward(),
-    ...patch,
+function blankNav(): TabNav {
+  return { url: '', title: '', loading: false, canGoBack: false, canGoForward: false };
+}
+
+/** Refresh a tab's url / title / history flags from its live contents (the
+ *  `loading` flag and `error` are event-driven and kept as stored). */
+function refreshNav(tab: Tab): TabNav {
+  const wc = liveContents(tab);
+  if (wc) {
+    const nav = wc.navigationHistory;
+    tab.nav.url = wc.getURL();
+    tab.nav.title = wc.getTitle();
+    tab.nav.canGoBack = nav.canGoBack();
+    tab.nav.canGoForward = nav.canGoForward();
+  }
+  return tab.nav;
+}
+
+function tabInfo(panel: Panel, tab: Tab): BrowserTabInfo {
+  const n = refreshNav(tab);
+  return {
+    id: tab.id,
+    url: n.url,
+    title: n.title,
+    loading: n.loading,
+    active: tab.id === panel.activeId,
+    openedBy: tab.openedBy,
   };
+}
+
+/** The panel's state: url / title / loading / nav / error mirror the ACTIVE tab
+ *  (so the renderer's URL bar is unchanged by tabs), plus the ordered tab list. */
+function computeState(panel: Panel): BrowserPanelState {
+  const active = activeTabOf(panel);
+  const n = active ? refreshNav(active) : blankNav();
+  return {
+    wsId: panel.wsId,
+    url: n.url,
+    title: n.title,
+    loading: n.loading,
+    canGoBack: n.canGoBack,
+    canGoForward: n.canGoForward,
+    ...(n.error !== undefined ? { error: n.error } : {}),
+    tabs: panel.tabs.map((t) => tabInfo(panel, t)),
+    activeTabId: panel.activeId,
+  };
+}
+
+/** Recompute the panel's state and push it to the renderer. */
+function publish(panel: Panel): BrowserPanelState {
+  panel.state = computeState(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
+  return panel.state;
+}
+
+/** Fold a navigation event into `tab` and push the panel state (URL bar /
+ *  title / nav buttons / tab list). */
+function emitState(panel: Panel, tab: Tab, patch: Partial<TabNav>): void {
+  // Reachable from webContents event handlers, which can still fire while the
+  // contents are being torn down — so the view may already have lost them, or
+  // the tab may already have been closed out of the registry.
+  if (!liveContents(tab) || !panel.tabs.includes(tab)) return;
+  Object.assign(tab.nav, patch);
+  publish(panel);
 }
 
 /** Right-click escape hatches, mirroring login-browser.ts. */
@@ -183,22 +329,17 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
   });
 }
 
-/** Create (or return) the panel for `wsId`. The native view is created lazily
- *  on first open and reused thereafter. Throws if the window isn't ready. */
-export function ensurePanel(wsId: string): Panel {
-  // reapIfDead returns the panel only if its view still has live contents;
-  // otherwise it evicts the husk so we fall through and build a fresh one.
-  const existing = reapIfDead(wsId);
-  if (existing) return existing;
-
+/** Build a tab (native view + handlers) for `panel` and append it to the
+ *  registry. Does NOT change the active tab. */
+function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   const win = getWindow?.();
   if (!win) throw new Error('browser-panel: main window not ready');
 
-  const ses = session.fromPartition(partitionFor(wsId));
+  const ses = session.fromPartition(partitionFor(panel.wsId));
   normalizeUserAgent(ses);
   const view = new WebContentsView({
     webPreferences: {
-      partition: partitionFor(wsId),
+      partition: partitionFor(panel.wsId),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -212,18 +353,17 @@ export function ensurePanel(wsId: string): Panel {
   // colour so any such gap reads as a normal empty pane instead of a black hole.
   view.setBackgroundColor('#1a1f26');
 
-  const panel: Panel = {
-    wsId,
+  const tab: Tab = {
+    id: nextTabId(panel.wsId),
     view,
-    visible: false,
-    bounded: false,
-    pendingShow: false,
+    openedBy: opts.openedBy,
     debuggerAttached: false,
-    state: emptyState(wsId),
+    nav: blankNav(),
   };
+  if (panel.bounds) view.setBounds(panel.bounds);
 
   const wc = view.webContents;
-  // Keep external target=_blank / window.open navigations in-panel when they're
+  // Keep external target=_blank / window.open navigations in-tab when they're
   // web URLs; bounce anything else to the OS (mirrors login-browser.ts).
   wc.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http:') || url.startsWith('https:')) {
@@ -233,18 +373,48 @@ export function ensurePanel(wsId: string): Panel {
     }
     return { action: 'deny' };
   });
-  wc.on('did-start-loading', () => emitState(panel, { loading: true, error: undefined }));
-  wc.on('did-stop-loading', () => emitState(panel, { loading: false }));
-  wc.on('did-navigate', () => emitState(panel, {}));
-  wc.on('did-navigate-in-page', () => emitState(panel, {}));
-  wc.on('page-title-updated', () => emitState(panel, {}));
+  wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
+  wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
+  wc.on('did-navigate', () => emitState(panel, tab, {}));
+  wc.on('did-navigate-in-page', () => emitState(panel, tab, {}));
+  wc.on('page-title-updated', () => emitState(panel, tab, {}));
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     // -3 is ERR_ABORTED (a superseded navigation) — not a real failure.
     if (!isMainFrame || errorCode === -3) return;
-    emitState(panel, { loading: false, error: `${errorDescription} (${validatedURL})` });
+    emitState(panel, tab, { loading: false, error: `${errorDescription} (${validatedURL})` });
   });
 
   attachContextMenu(view, win);
+  panel.tabs.push(tab);
+  return tab;
+}
+
+/** Create (or return) the panel for `wsId`. The panel and its ONE initial tab
+ *  (`openedBy: 'human'`) are created lazily on first open and reused thereafter.
+ *  Throws if the window isn't ready. */
+export function ensurePanel(wsId: string): Panel {
+  // reapIfDead returns the panel only if it still has a live tab; otherwise it
+  // evicts the husk so we fall through and build a fresh one.
+  const existing = reapIfDead(wsId);
+  if (existing) return existing;
+  if (!getWindow?.()) throw new Error('browser-panel: main window not ready');
+
+  const panel: Panel = {
+    wsId,
+    tabs: [],
+    activeId: '',
+    attachedId: null,
+    bounded: false,
+    bounds: null,
+    pendingShow: false,
+    state: emptyState(wsId),
+    get view() {
+      return activeTabOf(this)!.view;
+    },
+  };
+  const tab = buildTab(panel, { openedBy: 'human' });
+  panel.activeId = tab.id;
+  panel.state = computeState(panel);
   panels.set(wsId, panel);
   return panel;
 }
@@ -255,8 +425,109 @@ export function getPanel(wsId: string): Panel | undefined {
   return reapIfDead(wsId);
 }
 
-/** Add the view to the window (if not already) and mark it visible. Bounds are
- *  applied separately via {@link setBounds} once the renderer measures them. */
+// ---------------------------------------------------------------------------
+// Tabs registry (v1) — workspace → ordered tabs with one active tab.
+// ---------------------------------------------------------------------------
+//
+// Every un-suffixed primitive below (navigate, goBack, evaluate, capture, …)
+// acts on the ACTIVE tab; the debugger/CDP ones also take an optional trailing
+// `tabId`. No cap and no policy here — callers (the human tab UI, the agent
+// tools) put their own rules in front.
+
+/** The panel's tabs in display order (empty when it has no live panel). */
+export function listTabs(wsId: string): BrowserTabInfo[] {
+  const panel = reapIfDead(wsId);
+  return panel ? panel.tabs.map((t) => tabInfo(panel, t)) : [];
+}
+
+export function getTab(wsId: string, tabId: BrowserTabId): Tab | undefined {
+  return reapIfDead(wsId)?.tabs.find((t) => t.id === tabId);
+}
+
+export function getActiveTab(wsId: string): Tab | undefined {
+  const panel = reapIfDead(wsId);
+  return panel ? activeTabOf(panel) : undefined;
+}
+
+/** Add a tab to `wsId`'s panel (creating the panel — and its initial human tab —
+ *  first if there is none). `url` is loaded in the new tab; `activate` (default
+ *  false) makes it the active tab, swapping it onto the screen if the panel is
+ *  composited. Never changes which workspace is focused. */
+export function createTab(
+  wsId: string,
+  opts: { url?: string; openedBy: BrowserTabOpener; activate?: boolean },
+): Tab {
+  const panel = ensurePanel(wsId);
+  const tab = buildTab(panel, opts);
+  if (opts.activate) setActive(panel, tab);
+  else publish(panel);
+  if (opts.url) loadIn(tab, opts.url);
+  return tab;
+}
+
+function setActive(panel: Panel, tab: Tab): void {
+  if (panel.activeId === tab.id) return;
+  panel.activeId = tab.id;
+  if (panel.attachedId !== null) attachActive(panel);
+  publish(panel);
+}
+
+/** Make `tabId` the active tab (the one composited / driven). Throws if the
+ *  workspace has no such tab. */
+export function activateTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
+  const panel = reapIfDead(wsId);
+  const tab = panel?.tabs.find((t) => t.id === tabId);
+  if (!panel || !tab) throw new Error(`browser tab ${tabId} not found in workspace ${wsId}`);
+  setActive(panel, tab);
+  return panel.state;
+}
+
+/** Close `tabId`: detach its view, drop its debugger, destroy its contents. If
+ *  it was active, its right neighbour (else the left) becomes active. Closing
+ *  the LAST tab evicts the panel — the next ensurePanel builds a fresh one
+ *  (what that should mean for the user is the human-tabs ticket's call).
+ *  Throws if the workspace has no such tab. */
+export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
+  const panel = reapIfDead(wsId);
+  const tab = panel?.tabs.find((t) => t.id === tabId);
+  if (!panel || !tab) throw new Error(`browser tab ${tabId} not found in workspace ${wsId}`);
+  const idx = panel.tabs.indexOf(tab);
+  const wasActive = tab.id === panel.activeId;
+  const wasAttached = panel.attachedId !== null;
+  detachTab(panel, tab);
+  if (panel.tabs.length === 1) {
+    // Last tab: evict the panel whole. `panel.tabs` is left intact (like the
+    // all-dead reap) so a holder's `panel.view` reads the husk, not a TypeError.
+    destroyTab(tab);
+    panels.delete(wsId);
+    panel.attachedId = null;
+    panel.pendingShow = false;
+    const empty = emptyState(wsId);
+    platform.broadcast('browser:event', wsId, empty);
+    return empty;
+  }
+  panel.tabs.splice(idx, 1);
+  destroyTab(tab);
+  if (wasActive) {
+    panel.activeId = panel.tabs[Math.min(idx, panel.tabs.length - 1)].id;
+    if (wasAttached) attachActive(panel);
+  }
+  return publish(panel);
+}
+
+/** Resolve the tab a primitive should drive: `tabId` when given (throws if the
+ *  workspace has no such tab), else the active tab. `undefined` only when the
+ *  workspace has no live panel. */
+function resolveTab(wsId: string, tabId?: BrowserTabId): Tab | undefined {
+  if (tabId === undefined) return getActiveTab(wsId);
+  const tab = getTab(wsId, tabId);
+  if (!tab) throw new Error(`browser tab ${tabId} not found in workspace ${wsId}`);
+  return tab;
+}
+
+/** Add the ACTIVE tab's view to the window (if not already) and mark the panel
+ *  visible. Bounds are applied separately via {@link setBounds} once the
+ *  renderer measures them. */
 export function showPanel(wsId: string): BrowserPanelState {
   const panel = ensurePanel(wsId);
   // Renderer-authoritative: whoever shows a panel is putting it on screen.
@@ -272,32 +543,29 @@ export function showPanel(wsId: string): BrowserPanelState {
     panel.pendingShow = true;
     return panel.state;
   }
-  if (win && !panel.visible) {
+  if (win && panel.attachedId === null) {
     // Hide every OTHER workspace's panel first: only the active workspace's
     // browser should be composited (they'd otherwise stack).
     for (const [id, other] of panels) {
-      if (id !== wsId && other.visible) hidePanel(id);
+      if (id !== wsId && other.attachedId !== null) hidePanel(id);
     }
-    win.contentView.addChildView(panel.view);
-    panel.visible = true;
+    attachActive(panel);
   }
   return panel.state;
 }
 
 /** Remove the view from the window (stops compositing) without destroying it —
- *  its page + history + cookies survive so re-showing is instant. */
+ *  its pages + history + cookies survive so re-showing is instant. */
 export function hidePanel(wsId: string): void {
   if (focusedWsId === wsId) focusedWsId = null;
   const panel = panels.get(wsId);
-  const win = getWindow?.();
   if (!panel) return;
   // Cancel a deferred attach too, or a later setBounds would show a panel the
   // caller has since hidden.
   panel.pendingShow = false;
-  if (win && panel.visible) {
-    win.contentView.removeChildView(panel.view);
-    panel.visible = false;
-  }
+  const attached = panel.tabs.find((t) => t.id === panel.attachedId);
+  if (attached) detachTab(panel, attached);
+  panel.attachedId = null;
 }
 
 /** Agent-driven "open the panel" — never steals the screen. If this
@@ -314,19 +582,23 @@ export function revealForAgent(wsId: string): BrowserPanelState {
 }
 
 /** Position/size the native view over the renderer's `.browser-pane` rect.
- *  Bounds are device-independent pixels relative to the window content. */
+ *  Bounds are device-independent pixels relative to the window content. Applied
+ *  to every tab of the panel, so a tab swapped in later is already the right
+ *  size. */
 export function setBounds(wsId: string, bounds: BrowserBounds): void {
   // The renderer pushes bounds continuously (ResizeObserver + window resize), so
   // this is the call most likely to land on a panel whose view died underneath
   // it — the burst of `browser:setBounds failed` TypeErrors this guard fixes.
   const panel = reapIfDead(wsId);
   if (!panel) return;
-  panel.view.setBounds({
+  const rect = {
     x: Math.round(bounds.x),
     y: Math.round(bounds.y),
     width: Math.round(bounds.width),
     height: Math.round(bounds.height),
-  });
+  };
+  panel.bounds = rect;
+  for (const tab of panel.tabs) tab.view.setBounds(rect);
   panel.bounded = true;
   // A panel opened by an agent (showPanel with no renderer mounted) defers its
   // attach until now, when it finally has a real rect to sit in.
@@ -336,22 +608,30 @@ export function setBounds(wsId: string, bounds: BrowserBounds): void {
   }
 }
 
-/** Navigate the panel. `to` is a URL (http/https/file); a bare host gets
- *  https:// prepended, and a non-URL string is treated as a query is NOT done
- *  here (the renderer/agent decides). Opens the panel view if needed. */
-export async function navigate(wsId: string, to: string): Promise<BrowserPanelState> {
-  const panel = ensurePanel(wsId);
+function loadIn(tab: Tab, to: string): Promise<void> {
   const url = normalizeUrl(to);
-  const wc = liveContents(panel);
-  if (!wc) return panel.state;
-  try {
-    await wc.loadURL(url);
-  } catch (err) {
+  const wc = liveContents(tab);
+  if (!wc) return Promise.resolve();
+  return wc.loadURL(url).catch((err) => {
     // loadURL rejects on ERR_ABORTED for a superseded nav; state is emitted by
     // did-fail-load for real failures. Swallow so callers don't see spurious
     // rejections.
-    log.debug(`browser-panel navigate(${wsId}) ${url}`, err);
-  }
+    log.debug(`browser-panel navigate ${url}`, err);
+  });
+}
+
+/** Navigate the active tab (or `tabId`). `to` is a URL (http/https/file); a bare
+ *  host gets https:// prepended, and a non-URL string is treated as a query is
+ *  NOT done here (the renderer/agent decides). Opens the panel view if needed. */
+export async function navigate(
+  wsId: string,
+  to: string,
+  tabId?: BrowserTabId,
+): Promise<BrowserPanelState> {
+  const panel = ensurePanel(wsId);
+  const tab = resolveTab(wsId, tabId);
+  if (!tab) return panel.state;
+  await loadIn(tab, to);
   return panel.state;
 }
 
@@ -370,41 +650,33 @@ export function normalizeUrl(input: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(s)}`;
 }
 
-export function goBack(wsId: string): void {
-  const wc = liveContents(getPanel(wsId));
+export function goBack(wsId: string, tabId?: BrowserTabId): void {
+  const wc = liveContents(resolveTab(wsId, tabId));
   if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
 }
 
-export function goForward(wsId: string): void {
-  const wc = liveContents(getPanel(wsId));
+export function goForward(wsId: string, tabId?: BrowserTabId): void {
+  const wc = liveContents(resolveTab(wsId, tabId));
   if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
 }
 
-export function reload(wsId: string): void {
-  liveContents(getPanel(wsId))?.reload();
+export function reload(wsId: string, tabId?: BrowserTabId): void {
+  liveContents(resolveTab(wsId, tabId))?.reload();
 }
 
 /** Current state snapshot (a freshly-mounted renderer requests this). */
 export function getState(wsId: string): BrowserPanelState {
-  return panels.get(wsId)?.state ?? emptyState(wsId);
+  return reapIfDead(wsId)?.state ?? emptyState(wsId);
 }
 
-/** Destroy a workspace's panel entirely (workspace deleted). */
+/** Destroy a workspace's panel entirely (workspace deleted / archived): every
+ *  tab's debugger and contents, not just the active one. */
 export function destroyPanel(wsId: string): void {
   const panel = panels.get(wsId);
   if (!panel) return;
   hidePanel(wsId);
   panels.delete(wsId);
-  const wc = liveContents(panel);
-  if (wc) {
-    try {
-      if (panel.debuggerAttached) wc.debugger.detach();
-    } catch {
-      /* already detached */
-    }
-    // WebContentsView has no close(); destroying its webContents releases it.
-    (wc as unknown as { close?: () => void }).close?.();
-  }
+  for (const tab of panel.tabs) destroyTab(tab);
 }
 
 // ---------------------------------------------------------------------------
@@ -415,25 +687,32 @@ export function destroyPanel(wsId: string): void {
 // call. They operate on the SAME view the user sees, so the agent and the user
 // share one surface.
 
-/** Attach the view's debugger (idempotent). Enables the CDP domains the tools
- *  need. Returns the panel or throws if the workspace has no open panel. */
-export function attachDebugger(wsId: string): Panel {
+/** Attach a tab's debugger (idempotent; the active tab unless `tabId` is given).
+ *  Enables the CDP domains the tools need. Returns the panel (creating it if the
+ *  workspace has none) or throws if the tab has no live view. */
+export function attachDebugger(wsId: string, tabId?: BrowserTabId): Panel {
   const panel = getPanel(wsId) ?? ensurePanel(wsId);
-  const wc = liveContents(panel);
+  const tab = resolveTab(wsId, tabId);
+  const wc = liveContents(tab);
   // A dead view surfaces to the agent as a clear error rather than a TypeError
   // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
-  if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  if (!tab || !wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
   const dbg = wc.debugger;
-  if (!panel.debuggerAttached) {
+  if (!tab.debuggerAttached) {
     if (!dbg.isAttached()) dbg.attach('1.3');
-    panel.debuggerAttached = true;
+    tab.debuggerAttached = true;
   }
   return panel;
 }
 
-async function cdp(wsId: string, method: string, params?: Record<string, unknown>): Promise<any> {
-  const panel = attachDebugger(wsId);
-  const wc = liveContents(panel);
+async function cdp(
+  wsId: string,
+  method: string,
+  params?: Record<string, unknown>,
+  tabId?: BrowserTabId,
+): Promise<any> {
+  attachDebugger(wsId, tabId);
+  const wc = liveContents(resolveTab(wsId, tabId));
   if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
   return wc.debugger.sendCommand(method, params ?? {});
 }
@@ -451,17 +730,20 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   ]);
 }
 
-/** Throw a clear, actionable error when the panel isn't composited. A hidden
+/** Throw a clear, actionable error when the tab isn't composited. A hidden
  *  (background-workspace / closed-pane) `WebContentsView` produces NO frames:
  *  measured on Electron 33, `capturePage` returns an empty 0x0 image if the
  *  view was never attached and hangs forever if it was detached after showing;
  *  CDP `Page.captureScreenshot` hangs in both cases, and CDP mouse input hangs
  *  or silently queues. Failing fast with guidance beats a blank image, a
  *  phantom click, or an agent stuck on a tool call that never returns. */
-function requireComposited(wsId: string, what: string): Panel {
+function requireComposited(wsId: string, what: string, tabId?: BrowserTabId): Tab {
   const panel = getPanel(wsId);
-  if (!liveContents(panel)) throw new Error(`no browser panel open for workspace ${wsId}`);
-  if (!panel!.visible) {
+  const tab = resolveTab(wsId, tabId);
+  if (!panel || !tab || !liveContents(tab)) {
+    throw new Error(`no browser panel open for workspace ${wsId}`);
+  }
+  if (panel.attachedId === null) {
     throw new Error(
       `${what} needs the Browser pane on screen, but this workspace's panel is not currently ` +
         `composited (the workspace is in the background or its pane is closed). ` +
@@ -469,27 +751,44 @@ function requireComposited(wsId: string, what: string): Panel {
         `to open this workspace's Browser pane.`,
     );
   }
-  return panel!;
+  // Only the ACTIVE tab composits; a background tab produces no frames either.
+  if (panel.attachedId !== tab.id) {
+    throw new Error(
+      `${what} needs tab ${tab.id} on screen, but it is not the active tab (only the active ` +
+        `tab of the Browser pane is composited). read_page, evaluate, navigate and form_input ` +
+        `still work on it; for ${what}, activate the tab first.`,
+    );
+  }
+  return tab;
 }
 
 /** Capture the panel as a JPEG (base64) — the agent's "screenshot" primitive.
  *  Uses the native `capturePage()` (simpler + faster than `Page.captureScreenshot`),
  *  matching the Claude Code desktop app's screenshot tool. */
-export async function capture(wsId: string, quality = 75): Promise<string> {
-  const panel = requireComposited(wsId, 'screenshot');
-  const wc = liveContents(panel);
+export async function capture(
+  wsId: string,
+  quality = 75,
+  tabId?: BrowserTabId,
+): Promise<string> {
+  const tab = requireComposited(wsId, 'screenshot', tabId);
+  const wc = liveContents(tab);
   if (!wc) throw new Error(`no browser panel open for workspace ${wsId}`);
   const image = await withTimeout(wc.capturePage(), 10_000, 'capturePage');
   return image.toJPEG(Math.max(0, Math.min(100, quality))).toString('base64');
 }
 
 /** Evaluate JS in the page and return the value (JSON-serialized by CDP). */
-export async function evaluate(wsId: string, expression: string): Promise<any> {
-  const res = await cdp(wsId, 'Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  });
+export async function evaluate(
+  wsId: string,
+  expression: string,
+  tabId?: BrowserTabId,
+): Promise<any> {
+  const res = await cdp(
+    wsId,
+    'Runtime.evaluate',
+    { expression, returnByValue: true, awaitPromise: true },
+    tabId,
+  );
   if (res?.exceptionDetails) {
     throw new Error(res.exceptionDetails.text || 'evaluate failed');
   }
@@ -500,7 +799,7 @@ export async function evaluate(wsId: string, expression: string): Promise<any> {
  *  tagged `[ref_N]` so the agent can act on it by ref (matching CC's
  *  `read_page`). Built in-page via a DOM walk (robust across Electron versions
  *  vs the CDP Accessibility domain, which varies). */
-export async function readPage(wsId: string): Promise<string> {
+export async function readPage(wsId: string, tabId?: BrowserTabId): Promise<string> {
   // Walk the DOM in-page, assigning stable data-orch-ref ids to interactive
   // elements, and emit a YAML-ish outline. Kept dependency-free and defensive.
   const script = `(() => {
@@ -537,14 +836,19 @@ export async function readPage(wsId: string): Promise<string> {
     walk(document.body, 0);
     return document.title + '\\n' + document.location.href + '\\n' + out.join('\\n');
   })()`;
-  return String(await evaluate(wsId, script));
+  return String(await evaluate(wsId, script, tabId));
 }
 
 /** Resolve a `ref_N` (from {@link readPage}) to viewport center coordinates. */
-async function refToPoint(wsId: string, ref: number): Promise<{ x: number; y: number }> {
+async function refToPoint(
+  wsId: string,
+  ref: number,
+  tabId?: BrowserTabId,
+): Promise<{ x: number; y: number }> {
   const rect = await evaluate(
     wsId,
     `(() => { const el = document.querySelector('[data-orch-ref="${ref}"]'); if (!el) return null; const r = el.getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; })()`,
+    tabId,
   );
   if (!rect) throw new Error(`ref_${ref} not found (call read_page again)`);
   return rect;
@@ -552,36 +856,48 @@ async function refToPoint(wsId: string, ref: number): Promise<{ x: number; y: nu
 
 /** Click at viewport coordinates via CDP Input (a real, trusted input event —
  *  unlike a synthetic DOM `.click()` which fails isTrusted checks). */
-export async function clickAt(wsId: string, x: number, y: number): Promise<void> {
-  requireComposited(wsId, 'click');
+export async function clickAt(
+  wsId: string,
+  x: number,
+  y: number,
+  tabId?: BrowserTabId,
+): Promise<void> {
+  // Pin the tab ONCE: press and release must hit the same tab even if the active tab changes mid-click.
+  const pin = requireComposited(wsId, 'click', tabId).id;
   await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }),
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, pin),
     10_000,
     'click (mousePressed)',
   );
   await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }),
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, pin),
     10_000,
     'click (mouseReleased)',
   );
 }
 
 /** Click a `ref_N` element (resolves its center, then clickAt). */
-export async function clickRef(wsId: string, ref: number): Promise<void> {
-  const p = await refToPoint(wsId, ref);
-  await clickAt(wsId, p.x, p.y);
+export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId): Promise<void> {
+  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the point and the click hit the same tab
+  const p = await refToPoint(wsId, ref, pin);
+  await clickAt(wsId, p.x, p.y, pin);
 }
 
 /** Type text into the currently-focused element via CDP (trusted input). */
-export async function typeText(wsId: string, text: string): Promise<void> {
-  requireComposited(wsId, 'type');
-  await withTimeout(cdp(wsId, 'Input.insertText', { text }), 10_000, 'type (insertText)');
+export async function typeText(wsId: string, text: string, tabId?: BrowserTabId): Promise<void> {
+  requireComposited(wsId, 'type', tabId);
+  await withTimeout(cdp(wsId, 'Input.insertText', { text }, tabId), 10_000, 'type (insertText)');
 }
 
 /** Set the value of a form element identified by `ref` (matches CC's
  *  `form_input`) — focuses it, selects all, and types, so it works for inputs
  *  and textareas alike, firing input/change events. */
-export async function formInput(wsId: string, ref: number, value: string): Promise<void> {
+export async function formInput(
+  wsId: string,
+  ref: number,
+  value: string,
+  tabId?: BrowserTabId,
+): Promise<void> {
   await evaluate(
     wsId,
     `(() => {
@@ -594,20 +910,20 @@ export async function formInput(wsId: string, ref: number, value: string): Promi
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     })()`,
+    tabId,
   );
 }
 
 /** Scroll the page (or a wheel gesture) via CDP. */
-export async function scrollBy(wsId: string, deltaY: number): Promise<void> {
-  requireComposited(wsId, 'scroll');
+export async function scrollBy(wsId: string, deltaY: number, tabId?: BrowserTabId): Promise<void> {
+  requireComposited(wsId, 'scroll', tabId);
   await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', {
-      type: 'mouseWheel',
-      x: 100,
-      y: 100,
-      deltaX: 0,
-      deltaY,
-    }),
+    cdp(
+      wsId,
+      'Input.dispatchMouseEvent',
+      { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY },
+      tabId,
+    ),
     10_000,
     'scroll (mouseWheel)',
   );
@@ -776,8 +1092,8 @@ const DESIGN_MODE_SCRIPT = `(() => {
 })()`;
 
 /** Arm design mode in the panel's page. Returns once the overlay is installed. */
-export async function designModeArm(wsId: string): Promise<void> {
-  await evaluate(wsId, DESIGN_MODE_SCRIPT);
+export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
+  await evaluate(wsId, DESIGN_MODE_SCRIPT, tabId);
 }
 
 /** Disarm design mode (user toggled it off, or the panel is closing). Safe to
@@ -789,11 +1105,12 @@ export async function designModeArm(wsId: string): Promise<void> {
  *  There is nothing to clean up in that case — the document that held the
  *  overlay no longer exists — so surfacing it would log an ERROR on a perfectly
  *  normal path and train readers to ignore the channel. */
-export async function designModeDisarm(wsId: string): Promise<void> {
+export async function designModeDisarm(wsId: string, tabId?: BrowserTabId): Promise<void> {
   try {
     await evaluate(
       wsId,
       `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
+      tabId,
     );
   } catch (err) {
     log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
@@ -806,10 +1123,11 @@ export async function designModeDisarm(wsId: string): Promise<void> {
  *  Polled by the renderer while design mode is armed rather than pushed as a
  *  CDP event, because the picker holds no debugger event subscription — see the
  *  block comment at the top of this section. */
-async function readRawPick(wsId: string): Promise<any | null> {
+async function readRawPick(wsId: string, tabId?: BrowserTabId): Promise<any | null> {
   return evaluate(
     wsId,
     `(() => { const p = window[${JSON.stringify(DESIGN_PICK_GLOBAL)}]; window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return p || null; })()`,
+    tabId,
   );
 }
 
@@ -827,8 +1145,10 @@ async function readRawPick(wsId: string): Promise<any | null> {
  *  losing it to a failed crop would be the worse outcome. */
 export async function designModePoll(
   wsId: string,
+  tabId?: BrowserTabId,
 ): Promise<DesignPick | { cancelled: true } | null> {
-  const raw = await readRawPick(wsId);
+  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the pick and its screenshot come from the same tab
+  const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
   if (raw.cancelled) return { cancelled: true };
 
@@ -839,11 +1159,12 @@ export async function designModePoll(
     // Bounded: Page.captureScreenshot HANGS (never settles) if the view stops
     // compositing mid-call — e.g. the pane closing right after a pick.
     const shot = await withTimeout(
-      cdp(wsId, 'Page.captureScreenshot', {
-        format: 'png',
-        clip,
-        captureBeyondViewport: false,
-      }),
+      cdp(
+        wsId,
+        'Page.captureScreenshot',
+        { format: 'png', clip, captureBeyondViewport: false },
+        pin,
+      ),
       10_000,
       'design-mode screenshot',
     );

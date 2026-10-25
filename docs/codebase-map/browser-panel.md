@@ -19,10 +19,11 @@ no MCP subprocess**. Everything runs in-process against a view Orchestra owns.
   surface and no target-ambiguity problem (an app-wide debug port would expose
   Orchestra's own renderer as a CDP target too).
 - **One independent browser per workspace, by construction.** `browser-panel.ts`
-  keys every `WebContentsView` by `wsId`; the agent's browser MCP server is built
-  per-session in `agent-sdk.ts` and each tool closes over its own `wsId`. So a
-  workspace's agent can only ever drive that workspace's panel — multiple
-  workspaces get fully isolated browsers.
+  keys every panel by `wsId` (a panel = an ordered list of tabs, each its own
+  `WebContentsView`, with one ACTIVE tab — see *Tabs registry* below); the
+  agent's browser MCP server is built per-session in `agent-sdk.ts` and each tool
+  closes over its own `wsId`. So a workspace's agent can only ever drive that
+  workspace's panel — multiple workspaces get fully isolated browsers.
 
 ## Data path
 
@@ -47,8 +48,9 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
 
 ## Key files
 
-- **`src/main/browser-panel.ts`** — the per-workspace `WebContentsView` registry
-  (`Map<wsId, WebContentsView>`), attached to the main window's `contentView`.
+- **`src/main/browser-panel.ts`** — the per-workspace tabs registry
+  (`Map<wsId, Panel>`, `Panel.tabs: Tab[]`, one `WebContentsView` per tab),
+  attached to the main window's `contentView`.
   Owns navigation (`navigate`/`goBack`/`goForward`/`reload`), visibility
   (`showPanel`/`hidePanel` — only the active workspace's panel composits at a
   time), bounds sync (`setBounds` — the native view is positioned over the
@@ -99,6 +101,76 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   `.browser-toolbar` / `.browser-url-input` / `.browser-holder` etc., styled with
   the app's own tokens (`--bg`, `--text`, `--accent`, …) so the chrome blends
   with the surrounding window.
+
+## Tabs registry (v1, #391)
+
+The registry is workspace → ordered tabs with one active tab. #391 is the
+**prefactor**: it still creates exactly ONE tab (`t1`, `openedBy:'human'`) in
+`ensurePanel` and exposes **no tab IPC** — the renderer sees no change. The
+human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
+(#397) build on the exports below.
+
+- **Types** (`shared/types.ts`): `BrowserTabId` (`t1`, `t2`, … minted per
+  workspace by `nextTabId`, from a counter that lives OUTSIDE `panels` so an
+  evicted-and-rebuilt panel never reuses an id), `BrowserTabOpener`
+  (`'human'|'agent'`), `BrowserTabInfo {id,url,title,loading,active,openedBy}`.
+  `BrowserPanelState` gained `tabs` (ordered) + `activeTabId` (`''` while there
+  is no tab); its url/title/loading/nav/error fields keep mirroring the ACTIVE
+  tab (`computeState`), so `BrowserPanel.tsx` only grew two literal fields.
+- **Shapes** (`browser-panel.ts`): `Tab {id, view, openedBy, debuggerAttached,
+  nav}`; `Panel {wsId, tabs, activeId, attachedId, bounded, bounds, pendingShow,
+  state, view}` — `attachedId` is the tab whose view is in the window right now
+  (`null` = not composited; replaces the old `visible`), `bounds` the last
+  renderer rect (re-applied to a view on attach), `view` a getter for the ACTIVE
+  tab's view (the three `scripts/verify-*browser-panel*.mjs` harnesses read it).
+- **Exports**: `listTabs` · `getTab` · `getActiveTab` · `createTab(wsId,
+  {url?, openedBy, activate?})` (no cap, no policy; `activate` defaults false;
+  runs `ensurePanel` first, so a fresh workspace gets `t1` human then the new
+  tab) · `activateTab` · `closeTab` (both THROW on an unknown id). Every
+  pre-existing export keeps its signature and acts on the ACTIVE tab; the
+  debugger/CDP primitives (`attachDebugger`, `evaluate`, `capture`, `readPage`,
+  `clickAt/Ref`, `typeText`, `formInput`, `scrollBy`, `designMode*`) and
+  `navigate/goBack/goForward/reload` take an optional trailing `tabId`
+  (`resolveTab`). `cdp()` stays internal.
+- **Composition rule**: only the ACTIVE tab of the FOCUSED workspace is in the
+  window (`attachActive` swaps; `activateTab`/`closeTab` on a hidden panel
+  attach nothing). `capture`/`clickAt`/`typeText`/`scrollBy` on a non-active tab
+  fail with "not the active tab" (a background tab produces no frames, same
+  trap as a hidden panel); `evaluate`/`readPage`/`navigate` still work on it.
+- **Teardown iterates every tab**: `destroyPanel` (workspace delete AND the
+  archive path) calls `destroyTab` on each — debugger detach then
+  `webContents.close()`. A teardown that only handled the active tab would leak
+  native views that paint black over the app (pinned by
+  `browser-panel-tabs.test.ts` + its mutant set).
+- **Dead-view reaping is per tab** (`reapIfDead`): a dead non-last tab is
+  dropped (its neighbour becomes active, re-attached if it was composited); when
+  the LAST live tab dies the whole panel is evicted and `ensurePanel` rebuilds
+  it. `panel.tabs` is left intact on whole-panel eviction so a stale holder's
+  `panel.view` still reads the husk instead of throwing.
+- **Closing the last tab** evicts the panel (destroys the tab, empty state
+  broadcast, `panel.tabs` left intact for stale holders) — a placeholder; what
+  it should mean for the user is #393's call. The rebuilt panel has
+  `bounded=false`, so it only composits after the next `setBounds`/`showPanel`.
+- **Multi-step primitives pin ONE tab** (`clickAt` press+release, `clickRef`,
+  `designModePoll`): the tab is resolved once, so an `activateTab` between two
+  CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
+- `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
+  size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
+  (popup routing is #396).
+- **Tests**: `src/main/browser-panel-tabs.test.ts` (22 arms, N>1 tabs, real
+  module over a stubbed `electron` loader hook) + `scripts/mutate-browser-panel-tabs.mjs`
+  (18 in-place mutants, byte-exact restore). The registry itself cannot be
+  imported by `node --test` without that hook (it imports `electron`).
+  Real Electron: `scripts/e2e-browser-tabs-registry.sh <app-dir>` (own headless
+  sway) — `app` arm drives the unchanged renderer flow on the built app (pane
+  open, URL bar, back, hide/show; one tab `t1`, pixels via grim), `probe` arm
+  (`e2e-browser-tabs-probe.cjs`) runs the bundled registry over real
+  `WebContentsView`s with N>1 tabs; `--mutant destroy-active-only|no-detach-prev`
+  must redden its named clause. Real-Electron trap: `webContents.close()` is
+  ASYNC — `view.webContents` is still live right after it.
+- `'human'` literals in `src/main/*.ts` are counted by
+  `pause-gates-wiring.test.ts` (pause-bypass origins); `openedBy: 'human'` is
+  stripped there — write the tab opener in that exact form.
 
 ## Design mode — the element picker
 
@@ -270,9 +342,10 @@ in the archived subtree, so an orchestrator archives its children's panels too.
   (`ERR_REQUIRE_ESM`). Verify the emitted bundle has **0**
   `require("@anthropic-ai/claude-agent-sdk")` and **≥1**
   `import("@anthropic-ai/claude-agent-sdk")`.
-- `Target.createTarget` is unsupported in Electron, so there is no "new tab" for
-  the agent — it reuses the one panel view. That's fine: the agent's `navigate`
-  reuses the existing view.
+- `Target.createTarget` is unsupported in Electron, so a CDP client cannot open
+  a tab itself — new tabs come from `createTab` (the registry), which the CDP
+  proxy (#395) will expose. Until agent tabs land the agent's `navigate` reuses
+  the one (active) tab.
 - Bounds are device-independent pixels relative to the window content; apply
   them **after** the view is added (next animation frame) so the placeholder has
   laid out.
