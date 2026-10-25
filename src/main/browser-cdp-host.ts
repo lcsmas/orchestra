@@ -240,7 +240,7 @@ async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpT
   return ep.server.core.lease(tabId);
 }
 
-/** What `browser-panel.ts` calls instead of attaching a debugger of its own. */
+/** What `browser-panel.ts` calls instead of attaching anything itself. */
 export const panelCdpSeat: bp.CdpSeat = {
   async send(wsId, tabId, method, params) {
     const lease = await attachLease(wsId, tabId);

@@ -19,10 +19,10 @@ const orig = readFileSync(target, 'utf8');
 
 const MUTANTS = [
   ['destroyPanel tears down only the ACTIVE tab (leaks the rest)',
-    'for (const tab of panel.tabs) destroyTab(tab);\n}',
-    'destroyTab(activeTabOf(panel)!);\n}'],
-  ['destroyTab skips the debugger detach',
-    'if (tab.debuggerAttached) wc.debugger.detach();', ''],
+    'for (const tab of panel.tabs) destroyTab(tab);\n  notifyPanelListeners(wsId, [], true);',
+    'destroyTab(activeTabOf(panel)!);\n  notifyPanelListeners(wsId, [], true);'],
+  ['destroyTab skips the proxy seat\'s force-detach (#398: the debugger seat outlives its tab)',
+    'tabTeardownHook?.(wc);', ''],
   ['closeTab never destroys the closed tab contents',
     'panel.tabs.splice(idx, 1);\n  destroyTab(tab);', 'panel.tabs.splice(idx, 1);'],
   ['closing the LAST tab leaks its contents',
@@ -112,6 +112,19 @@ const MUTANTS = [
     'export function reload(wsId: string, tabId?: BrowserTabId): void {\n  ensurePanel(wsId);'],
   ['hidePanel leaves the view attached',
     'if (attached) detachTab(panel, attached);', ''],
+  // #398: design mode's lease on the proxy's debugger attach
+  ['design mode keeps no lease while armed (every poll attaches anew)',
+    'if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);', ''],
+  ['a pick or Escape never gives the lease back',
+    '  } finally {\n    releaseDesignHold(pinned);', '  } finally {'],
+  ['a disarm never gives the lease back',
+    '    } finally {\n      releaseDesignHold(t);', '    } finally {'],
+  ['an arm whose script fails keeps the lease',
+    '    } catch (err) {\n      releaseDesignHold(tab);\n      throw err;', '    } catch (err) {\n      throw err;'],
+  ['a disarm does not wait for the arm still attaching (orphan overlay)',
+    'const run = tab.designOp.then(fn);', 'const run = fn();'],
+  ['a disarm of an unarmed tab still attaches and evaluates',
+    '    if (!t.designHold) return;\n', ''],
 ];
 
 let killed = 0;

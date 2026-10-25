@@ -23,11 +23,13 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
+/** The seat's release grace for this rig (#395's `ORCHESTRA_CDP_RELEASE_GRACE_MS` knob; 15 s in production). */
+const GRACE_MS = 1500;
 const ARMS = ['static-attacher', 'design-pick', 'design-while-agent', 'design-then-agent'];
 /** Each edit is a regex that must match EXACTLY once in the BUILT main chunk (so a refactor can never leave a mutant silently inert). */
 const MUTANTS = {
   'second-attacher': { edits: [[/(throw new Error\("the browser CDP proxy is not running \(initBrowserCliHost has not run\)"\);)return (\w+)\.send\((\w+),(\w+)\.id,/, '$1$4.view.webContents.debugger.attach("1.3");return $2.send($3,$4.id,']], arms: ['static-attacher', 'design-pick', 'design-while-agent', 'design-then-agent'], why: 'the legacy path attaches a debugger of its own again (unguarded: a second attach throws)' },
-  'seat-never-detaches': { edits: [[/--(\w+)\.count>0\?"kept":\((\w+)\((\w+),\1\),"detached"\)/, '--$1.count>0?"kept":"detached"']], arms: ['design-pick'], why: 'the last holder leaves but the debugger stays attached to the human\'s panel' },
+  'seat-never-detaches': { edits: [[/,!(\w+)\.isDestroyed\(\)&&\1\.debugger\.isAttached\(\)&&\1\.debugger\.detach\(\)/, '']], arms: ['design-pick'], why: 'the grace is over, the seat says "detached", but the debugger stays attached to the human\'s panel' },
   'design-hold-leak': { edits: [[/const (\w+)=(\w+)==null\?void 0:\2\.designHold;!\2\|\|!\1\|\|\(\2\.designHold=null,\1\(\)\)/, 'const $1=$2==null?void 0:$2.designHold;!$2||!$1||($2.designHold=null)']], arms: ['design-pick'], why: 'a pick / cancel / disarm never gives the design-mode lease back' },
   'design-hold-removed': { edits: [[/(\w+)\.designHold\|\|\(\1\.designHold=await (\w+)\.hold\((\w+),\1\.id\)\);/, '']], arms: ['design-pick'], why: 'design mode keeps no lease while armed: every 150 ms poll attaches and detaches the debugger' },
   'pick-screenshot-dropped': { edits: [[/return await (\w+)\.channel\.send\((\w+),(\w+)\)\}finally\{\1\.release\(\)\}/, 'return $2==="Page.captureScreenshot"?{}:await $1.channel.send($2,$3)}finally{$1.release()}']], arms: ['design-pick', 'design-while-agent'], why: 'the cropped element screenshot never reaches the pick' },
@@ -216,7 +218,7 @@ async function main() {
   const port = await freePort();
   const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1' };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1', ORCHESTRA_CDP_RELEASE_GRACE_MS: String(GRACE_MS) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const fd = fs.openSync(path.join(armDir, 'app.out'), 'w');
@@ -260,13 +262,14 @@ const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`
 // ── driving helpers ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 const sel = (n) => JSON.stringify(n);
 const appLog = (ctx) => { try { return fs.readFileSync(path.join(ctx.world.ohome, 'logs/orchestra.log'), 'utf8'); } catch { return ''; } };
-/** Seat trace lines of `W` after byte offset `from`: [{tab, op, what, attached}] in log order. */
+/** Seat trace lines of `W` after byte offset `from`, in log order: `acquire attached|shared`, `release kept|pending`, `grace-over …`, `detached`. */
 function seatLines(ctx, W, from = 0) {
-  const re = new RegExp(`seat\\[${W.id.slice(0, 8)}\\] (t\\d+) (acquire|release) (\\w+) isAttached=(true|false)`, 'g');
+  const re = new RegExp(`seat\\[${W.id.slice(0, 8)}\\] (t\\d+) (acquire|release|grace-over|detached)(?:[: ]+(\\w+))? ?[^\\n]*? isAttached=(true|false)`, 'g');
   const text = appLog(ctx).slice(from), out = [];
-  for (const m of text.matchAll(re)) out.push({ tab: m[1], op: m[2], what: m[3], attached: m[4] === 'true' });
+  for (const m of text.matchAll(re)) out.push({ tab: m[1], op: m[2], what: m[2] === 'acquire' || m[2] === 'release' ? m[3] : '', attached: m[4] === 'true' });
   return out;
 }
+const fmtLines = (lines) => lines.map((l) => `${l.op}${l.what ? ':' + l.what : ''}/${l.attached}`).join(' ');
 const logMark = (ctx) => appLog(ctx).length;
 const countWhat = (lines, op, what) => lines.filter((l) => l.op === op && l.what === what).length;
 const attachErrors = (ctx, from = 0) => (appLog(ctx).slice(from).match(/already attached|Another debugger|Debugger is not attached|Target closed/gi) ?? []);
@@ -379,11 +382,12 @@ const ARM_FNS = {
     // the BUILT bundle: one `.attach("1.3")`, and every `.debugger` reference sits in the seat's code
     const src = fs.readFileSync(mainChunk(), 'utf8');
     const attaches = [...src.matchAll(/\.attach\("1\.3"\)/g)].map((m) => m.index);
-    const seatAt = attaches.length === 1 ? attaches[0] : -1;
-    const seatFn = seatAt >= 0 ? src.slice(Math.max(0, seatAt - 120), seatAt + 1500) : '';
-    clause(A, 'ctl/bundle-attach-is-the-seat', attaches.length >= 1 && /isAttached\(\)\|\|\w+\.attach\("1\.3"\)/.test(src) && /"attached":"shared"|\?"attached":"shared"/.test(seatFn), `${attaches.length} attach("1.3") call(s) in ${path.basename(mainChunk())}; the first sits in the seat function: ${/"attached":"shared"/.test(seatFn)}`);
+    const seatMatch = /(\w+)\.debugger\.isAttached\(\)\|\|\1\.debugger\.attach\("1\.3"\)/.exec(src); // the seat's guarded attach, found by SHAPE (not by count: a second attacher must not hide it)
+    const seatAt = seatMatch ? seatMatch.index : -1;
+    const lo = seatAt - 1000, hi = seatAt + 3500; // the seat's functions are contiguous in the chunk
+    clause(A, 'ctl/bundle-attach-is-the-seat', seatAt >= 0 && /"attached":"shared"|\?"attached":"shared"/.test(src.slice(seatAt, seatAt + 1500)) && /timer/.test(src.slice(seatAt, hi)), `${attaches.length} attach("1.3") call(s) in ${path.basename(mainChunk())}; the guarded one sits in the seat (acquire → attached|shared, grace timer): ${seatAt >= 0}`);
     const dbgRefs = [...src.matchAll(/\.debugger\b/g)].map((m) => m.index);
-    const outside = seatAt < 0 ? dbgRefs : dbgRefs.filter((i) => i < seatAt - 120 || i > seatAt + 1500);
+    const outside = seatAt < 0 ? dbgRefs : dbgRefs.filter((i) => i < lo || i > hi);
     clause(A, 'bundle-has-one-attacher', attaches.length === 1 && dbgRefs.length > 0 && outside.length === 0, `built bundle: attach("1.3") ×${attaches.length}; .debugger references ×${dbgRefs.length}, outside the seat: ${outside.length}${outside.length ? ' e.g. ' + JSON.stringify(src.slice(outside[0] - 60, outside[0] + 60)) : ''}`);
   },
 
@@ -401,11 +405,12 @@ const ARM_FNS = {
     assertPick(ctx, A, 'pick', comp, rect, 1);
     await waitFor(async () => !(await designPressed(ctx)), 8000, 'the toolbar to disarm after the pick').catch(() => {});
     clause(A, 'pick-disarms-one-shot', !(await designPressed(ctx)) && !(await o.eval(`!!document.getElementById('__orchestra_design_overlay__')`)), 'toolbar not pressed and no overlay left in the page (a pick is one-shot)');
-    await sleep(500);
+    const pendingAt = Date.now();
+    await waitFor(() => seatLines(ctx, W1, log0).some((l) => l.op === 'detached'), GRACE_MS + 8000, 'the seat to finish its grace and detach').catch(() => {});
     const lines = seatLines(ctx, W1, log0);
-    clause(A, 'one-attach-for-arm-polls-pick-and-screenshot', countWhat(lines, 'acquire', 'attached') === 1 && lines.filter((l) => l.op === 'acquire').length === 1, `seat trace for ${W1.id} since arming (${lines.length} line(s)): ${lines.map((l) => `${l.op}:${l.what}/${l.attached}`).join(' ')} — ~8 renderer polls and the cropped screenshot rode the ONE attach`);
+    clause(A, 'one-attach-for-arm-polls-pick-and-screenshot', countWhat(lines, 'acquire', 'attached') === 1 && lines.filter((l) => l.op === 'acquire').length === 1, `seat trace for ${W1.id} since arming (${lines.length} line(s)): ${fmtLines(lines)} — ~8 renderer polls and the cropped screenshot rode the ONE attach`);
     const last = lines[lines.length - 1];
-    clause(A, 'debugger-released-after-the-pick', last?.op === 'release' && last.what === 'detached' && last.attached === false, `last seat line ${JSON.stringify(last)} (isAttached is Electron's own answer)`);
+    clause(A, 'debugger-released-after-the-pick', last?.op === 'detached' && last.attached === false && lines.some((l) => l.op === 'release' && l.what === 'pending' && l.attached === true), `seat: ${fmtLines(lines)} — the last holder left (release pending, still attached during the ${GRACE_MS} ms grace), then the reset and ${last ? `\`${last.op}\` with isAttached=${last.attached}` : 'NOTHING'} (isAttached is Electron's own answer; ${Date.now() - pendingAt} ms after the pick landed)`);
     clause(A, 'no-attach-error-in-the-app-log', attachErrors(ctx, log0).length === 0, `app log since arming: ${attachErrors(ctx, log0).join(' | ') || 'no "already attached"/"not attached"/"Target closed"'}`);
     ctx.pickMark = mark;
     wholeScreen('design-pick-screen.png');
@@ -425,11 +430,13 @@ const ARM_FNS = {
     const pickDoneAt = Date.now();
     assertPick(ctx, A, 'pick-during-wait', comp, rect, picksBefore + 1);
     clause(A, 'the-pick-finished-while-the-wait-was-still-running', !wait.isSettled() && pickDoneAt > wait.startedAt, `pick delivered ${pickDoneAt - wait.startedAt} ms after the wait started; the wait ${wait.isSettled() ? 'ALREADY RETURNED' : 'is still pending'}`);
+    await sleep(GRACE_MS + 1500); // longer than the seat's grace: a design lease that detached the agent's attach on release would be reset + detached by now
+    clause(A, 'agent-wait-still-running-past-the-grace', !wait.isSettled() && !seatLines(ctx, W1, log0).some((l) => l.op === 'grace-over' || l.op === 'detached'), `${GRACE_MS + 1500} ms after the pick: the wait is ${wait.isSettled() ? 'GONE' : 'still pending'}; seat: ${fmtLines(seatLines(ctx, W1, log0))}`);
     await o.eval('window.__release = true');
     const r = await Promise.race([wait, sleep(30000).then(() => null)]);
     clause(A, 'agent-wait-survives-the-pick-and-completes', !!r && r.code === 0 && !/detach|not attached|closed|error/i.test(r.stderr), r ? show(r) : 'the wait never returned after the flag was set (the debugger was pulled from under it?)');
     const lines = seatLines(ctx, W1, log0);
-    clause(A, 'still-one-attach-and-no-detach-under-the-agent', countWhat(lines, 'acquire', 'attached') === 1 && countWhat(lines, 'release', 'detached') === 0 && lines.every((l) => l.attached), `seat trace since the wait began: ${lines.map((l) => `${l.op}:${l.what}/${l.attached}`).join(' ')} (the agent's daemon session holds the one attach; design mode shared it and left it alone)`);
+    clause(A, 'still-one-attach-and-no-detach-under-the-agent', countWhat(lines, 'acquire', 'attached') === 1 && !lines.some((l) => l.op === 'grace-over' || l.op === 'detached') && lines.every((l) => l.attached), `seat trace since the wait began: ${fmtLines(lines)} (the agent's daemon session holds the one attach; design mode shared it and left it alone)`);
     clause(A, 'no-attach-error-in-the-app-log', attachErrors(ctx, log0).length === 0, `app log since the wait began: ${attachErrors(ctx, log0).join(' | ') || 'clean'}`);
     const after = await cli(ctx, W1, ['eval', 'document.title']);
     clause(A, 'agent-still-drives-the-tab-afterwards', after.code === 0 && /Design fixture/.test(after.stdout), show(after));
@@ -448,7 +455,7 @@ const ARM_FNS = {
     await waitFor(() => o.eval(`!!document.getElementById('__orchestra_design_overlay__')`), 10000, 'the design overlay on W2');
     await waitFor(() => seatLines(ctx, W2, log0).some((l) => l.op === 'acquire' && l.what === 'attached'), 5000, 'design mode to hold the attach');
     const first = seatLines(ctx, W2, log0);
-    clause(A, 'design-armed-holds-the-attach-before-any-agent', first.length === 1 && first[0].attached === true, `seat trace after arming: ${first.map((l) => `${l.op}:${l.what}/${l.attached}`).join(' ')}`);
+    clause(A, 'design-armed-holds-the-attach-before-any-agent', first.length === 1 && first[0].attached === true, `seat trace after arming: ${fmtLines(first)}`);
     // the agent's first-ever command on W2 now attaches a session WHILE design mode is armed
     const snap = await cli(ctx, W2, ['snapshot', '-i'], { timeoutMs: 60000 });
     const ev1 = await cli(ctx, W2, ['eval', 'document.title']);
@@ -461,7 +468,7 @@ const ARM_FNS = {
     assertPick(ctx, A, 'pick-agent-attached', comp, rect, picksBefore + 1);
     const ev2 = await cli(ctx, W2, ['eval', 'document.title']);
     const lines = seatLines(ctx, W2, log0);
-    clause(A, 'one-attach-and-the-agents-session-keeps-it-after-the-pick', countWhat(lines, 'acquire', 'attached') === 1 && countWhat(lines, 'release', 'detached') === 0 && lines.every((l) => l.attached) && ev2.code === 0, `seat trace: ${lines.map((l) => `${l.op}:${l.what}/${l.attached}`).join(' ')}; agent eval after the pick: ${show(ev2)}`);
+    clause(A, 'one-attach-and-the-agents-session-keeps-it-after-the-pick', countWhat(lines, 'acquire', 'attached') === 1 && !lines.some((l) => l.op === 'grace-over' || l.op === 'detached') && lines.every((l) => l.attached) && ev2.code === 0, `seat trace: ${fmtLines(lines)}; agent eval after the pick: ${show(ev2)}`);
     clause(A, 'no-attach-error-in-the-app-log', attachErrors(ctx, log0).length === 0, `app log since arming: ${attachErrors(ctx, log0).join(' | ') || 'clean'}`);
     wholeScreen('design-then-agent-screen.png');
   },

@@ -104,7 +104,7 @@ function drop(wc: DebuggerHost, seat: Seat): void {
 
 async function resetAndDetach(wc: DebuggerHost, seat: Seat): Promise<void> {
   seat.timer = null;
-  if (seats.get(wc) !== seat || seat.count > 0) return;
+  if (seats.get(wc) !== seat) return; // a holder coming back cancelled the timer; a force-detach dropped the seat
   note(wc, seat, "grace-over: clearing the agent's overrides, then detaching");
   try {
     if (wc.isDestroyed()) return;

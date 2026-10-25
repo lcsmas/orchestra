@@ -31,6 +31,7 @@ class WebContents {
       isAttached: () => this.dbgAttached,
       sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return this.reply ? this.reply(m, p) : Promise.resolve({ result: { value: this.evalValue ?? 'ev' } }); },
     };
+    this.getUserAgent = () => 'UA';
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
   isDestroyed() { return this.destroyed; }
@@ -88,7 +89,7 @@ const lease = async (ws: string, tabId: string) => {
   const wc = bp.tabContents(ws, tabId) as any;
   if (!wc) throw new Error('no live view');
   seat.seatAcquire(wc);
-  return { wc, release: () => seat.seatRelease(wc) };
+  return { wc, release: () => seat.seatRelease(wc, 0) }; // grace 0: the registry's contract is about WHO holds the attach, the grace has its own tests
 };
 const testSeat: Parameters<typeof bp.setCdpSeat>[0] = {
   async send(ws, tabId, method, params) {
@@ -689,7 +690,7 @@ test('design mode + a proxy client on the SAME tab: one attach, neither side det
   assert.equal(wcOf(t1).attachCalls, 1, 'design mode did not attach a second time');
   await bp.designModeDisarm(ws);
   assert.equal(wcOf(t1).dbgAttached, true, 'the agent session still holds the debugger');
-  seat.seatRelease(wc);
+  seat.seatRelease(wc, 0);
   assert.equal(wcOf(t1).dbgAttached, false);
 });
 

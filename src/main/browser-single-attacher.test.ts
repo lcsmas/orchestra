@@ -64,7 +64,7 @@ test('a comment that names the debugger is NOT a use', () => {
 test('positive control bites: a seat with no attach( (blind pattern) is DIRTY, not vacuously clean', () => {
   const v = withTree((dir) => {
     const f = path.join(dir, 'src/main/browser-cdp-seat.ts');
-    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace("dbg.attach('1.3')", "dbg.connect('1.3')"));
+    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace("wc.debugger.attach('1.3')", "wc.debugger.connect('1.3')"));
   });
   assert.equal(v.clean, false);
   assert.match(v.problems.join(), /positive control/);

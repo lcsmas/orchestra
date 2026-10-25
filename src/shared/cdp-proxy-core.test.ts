@@ -375,6 +375,7 @@ test('#400 seam: port.refuseMethod refuses a page-level command on a root AND a 
   const t2 = (await c2.call('Target.getTargets')).result.targetInfos[0].targetId;
   const s2 = (await c2.call('Target.attachToTarget', { targetId: t2 })).result.sessionId;
   assert.equal((await c2.call('Network.clearBrowserCookies', undefined, s2)).error, undefined);
+});
 
 test('lease (#398): an in-process holder shares the ONE acquire with a WebSocket client; the debugger is released only when both are gone', async () => {
   const p = fakePanel();
@@ -552,4 +553,17 @@ test('reviewer addendum: the refuseMethod verdict contract is STRICT — only nu
     else if (want === 'refuse-text') { assert.equal(r.error.message, 'no cookies for you', label); assert.equal(reached, 0, label); }
     else { assert.equal(r.error.message, 'Runtime.evaluate refused: policy returned an invalid verdict', label); assert.equal(reached, 0, `${label}: never reaches the debugger`); }
   }
+});
+
+test('lease (#398): releasing one lease twice gives back ONE hold — the other holder keeps the debugger', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const a = await core.lease('t1');
+  const b = await core.lease('t1');
+  a.release();
+  a.release(); // a stray double release must not eat b's hold
+  assert.deepEqual(core.attachedTabIds(), ['t1'], 'b still holds the tab');
+  assert.equal(p.log.acquire.length - p.log.release.length, 1, 'the port still holds exactly one attach');
+  b.release();
+  assert.deepEqual(core.attachedTabIds(), []);
 });
