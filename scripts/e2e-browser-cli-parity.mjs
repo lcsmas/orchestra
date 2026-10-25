@@ -25,7 +25,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'skill'];
+const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -42,6 +42,7 @@ const MUTANTS = {
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
   'skill-not-installed': { file: 'chunk', edits: [[/(\w+)\("orchestra-status",(\w+)\),\1\((\w+),(\w+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
+  'focus-steal-on-input': { file: 'chunk', edits: [[DROP_RE, '(($2.startsWith("Input.")&&require("electron").webContents.getAllWebContents().forEach((w)=>{try{if(/^https?:/.test(w.getURL()))w.focus()}catch{}}),0),$1.channel.send($2,$3,$4)).then(']], arms: ['focus'], why: 'every forwarded Input.* command focuses the panel page (the old focus-steal bug): the human loses the composer' },
   'no-auto-open': { file: 'renderer', edits: [[/onBrowserEvent\(\((\w+),(\w+)\)=>\{\2\.url&&/, 'onBrowserEvent(($1,$2)=>{!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -339,6 +340,16 @@ async function oracle(ctx, urlPrefix, ms = 15000) {
   return Cdp.connect(t.webSocketDebuggerUrl);
 }
 const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*\\[ref=(e\\d+)\\]`).exec(snapshot); return m ? `@${m[1]}` : null; };
+/** Put the human's keyboard focus in the workspace composer (the CodeMirror editor in the renderer DOM) with a TRUSTED click, and report whether it is there. */
+const composerFocus = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('.av-composer .cm-content'); return t ? { onComposer: document.activeElement === t, windowFocus: document.hasFocus() } : null; })()`);
+const focusComposer = async (ctx) => {
+  const pos = await ctx.ui.eval(`(() => { const t = document.querySelector('.av-composer .cm-content'); if (!t) return null; const r = t.getBoundingClientRect(); return { x: r.left + Math.min(40, r.width / 2), y: r.top + r.height / 2 }; })()`);
+  if (!pos) return null;
+  await ctx.ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+  await ctx.ui.click(pos.x, pos.y);
+  await sleep(250);
+  return composerFocus(ctx);
+};
 const regTabs = async (ctx, W) => (await ctx.ui.eval(`window.orchestra.browserState(${sel(W.id)})`));
 /** Open `url` on W through the CLI and hand back a fresh oracle on the loaded page. */
 async function openOn(ctx, W, url) {
@@ -601,6 +612,13 @@ const ARM_FNS3 = {
       const kt = await cli(ctx, W2, ['keyboard', 'type', 'zzz'], { timeoutMs: 45000 });
       clause(A, 'keyboard-type-fails-fast', kt.code !== 0 && kt.ms < 9000 && /not on screen/.test(kt.stderr), show(kt));
       const y0 = await o2.eval(`Math.round(window.scrollY)`);
+      const pr = await cli(ctx, W2, ['press', 'Tab'], { timeoutMs: 45000 });
+      clause(A, 'press-fails-fast', pr.code !== 0 && pr.ms < 9000 && /not on screen/.test(pr.stderr), show(pr));
+      const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
+      clause(A, 'mouse-fails-fast', mv.code !== 0 && mv.ms < 9000 && /not on screen/.test(mv.stderr), show(mv));
+      const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']]];
+      const outs = []; for (const [n, a] of keep) outs.push([n, await cli(ctx, W2, a, { timeoutMs: 45000 })]);
+      clause(A, 'wait-get-cookies-storage-console-network-keep-working', outs.every(([, r]) => r.code === 0), outs.map(([n, r]) => `${n}: rc=${r.code}${r.code ? ' ' + JSON.stringify(r.stderr.slice(0, 80)) : ''}`).join(' · '));
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
       clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0 - 300) <= 2, `${show(sc)}; oracle scrollY ${y0} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
@@ -662,6 +680,36 @@ const ARM_FNS4 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS4);
+
+
+const ARM_FNS5 = {
+  async focus(ctx) {
+    // Spec #388 story 44 + the skill's "Focus" section: a command the skill documents never moves the human's keyboard focus out of the composer.
+    const { W1, FIX } = ctx; const A = 'focus';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const snap = await cli(ctx, W1, ['snapshot', '-i']);
+      const r = { go: refOf(snap.stdout, 'button', 'Go'), name: refOf(snap.stdout, 'textbox', 'Name'), typed: refOf(snap.stdout, 'textbox', 'Typed') };
+      const shotFile = path.join(ctx.world.fakeHome, 'focus-shot.png');
+      const cmds = [
+        ['snapshot', ['snapshot', '-i']], ['eval', ['eval', 'document.title']], ['get', ['get', 'text', r.go ?? '@e0']], ['click', ['click', r.go ?? '@e0']],
+        ['hover', ['hover', r.go ?? '@e0']], ['focus', ['focus', r.name ?? '@e0']], ['fill', ['fill', r.name ?? '@e0', 'fx']], ['type', ['type', r.typed ?? '@e0', 'ty']],
+        ['keyboard type', ['keyboard', 'type', 'kt']], ['press', ['press', 'Tab']], ['scroll', ['scroll', 'down', '100']], ['screenshot', ['screenshot', shotFile]],
+        ['mouse', ['mouse', 'move', '30', '30']], ['wait', ['wait', '50']], ['open', ['open', `${FIX}/parity.html`]],
+      ];
+      for (const [label, args] of cmds) {
+        if (label === 'open') { const { o: o2 } = await openOn(ctx, W1, `${FIX}/index.html`); o2.close(); }
+        const f0 = await focusComposer(ctx);
+        clause(A, `ctl/${label}-composer-focused-before`, f0?.onComposer === true && f0?.windowFocus === true, `trusted click into the composer → ${JSON.stringify(f0)}`);
+        const rr = await cli(ctx, W1, args);
+        const f1 = await composerFocus(ctx);
+        clause(A, `${label}-keeps-the-composer-focused`, rr.code === 0 && f1?.onComposer === true && f1?.windowFocus === true, `${show(rr)} → composer focus ${JSON.stringify(f1)}`);
+      }
+    } finally { o.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS5);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
