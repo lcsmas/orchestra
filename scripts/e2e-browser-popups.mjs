@@ -198,12 +198,14 @@ async function boot(world, bootName) {
   const port = await freePort();
   const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8' };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
+    // The human's login keyring lives behind /run/user/1000/bus (XDG_RUNTIME_DIR must stay real for the wayland socket): pin the session bus to a PRIVATE nonexistent socket so libdbus never falls back to it (incident Q2, ledger #405)
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(RIG_DIR, `app-${bootName}.log`);
   const fd = fs.openSync(logFile, 'w');
-  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland', '--password-store=basic'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`  [${bootName}] app pid ${app.pid} port ${port} log ${logFile}`);
   const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); return (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null; }, 60000, 'the app page target');
   const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
@@ -217,6 +219,9 @@ async function boot(world, bootName) {
   const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
   clause(bootName, 'ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
     `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+  const cmdline = fs.readFileSync(`/proc/${app.pid}/cmdline`, 'utf8').split('\0');
+  clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', ev('DBUS_SESSION_BUS_ADDRESS') === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && !ev('DBUS_SESSION_BUS_ADDRESS').includes('/run/user/') && cmdline.includes('--password-store=basic'),
+    `app DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS')}; argv has --password-store=basic: ${cmdline.includes('--password-store=basic')}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
