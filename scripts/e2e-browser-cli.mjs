@@ -316,9 +316,17 @@ async function oracle(ctx, urlPrefix, ms = 15000) {
   const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
   return Cdp.connect(t.webSocketDebuggerUrl);
 }
-/** Put the human's keyboard focus in the workspace composer (renderer DOM) and report whether it is there. */
-const focusComposer = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('textarea'); if (!t) return null; t.focus(); return { onComposer: document.activeElement === t, windowFocus: document.hasFocus() }; })()`);
-const composerFocus = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('textarea'); return t ? { onComposer: document.activeElement === t, windowFocus: document.hasFocus() } : null; })()`);
+/** Put the human's keyboard focus in the workspace composer (the CodeMirror editor in the renderer DOM) and report whether it is there. */
+const focusComposer = async (ctx) => {
+  // a TRUSTED click into the editor (what the human does) gives the renderer window real focus; a bare .focus() does not
+  const pos = await ctx.ui.eval(`(() => { const t = document.querySelector('.av-composer .cm-content'); if (!t) return null; const r = t.getBoundingClientRect(); return { x: r.left + Math.min(40, r.width / 2), y: r.top + r.height / 2 }; })()`);
+  if (!pos) return null;
+  await ctx.ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+  await ctx.ui.click(pos.x, pos.y);
+  await sleep(250);
+  return composerFocus(ctx);
+};
+const composerFocus = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('.av-composer .cm-content'); return t ? { onComposer: document.activeElement === t, windowFocus: document.hasFocus() } : null; })()`);
 /** Oracle read that reports a page stuck behind a JS dialog as 'BLOCKED' instead of hanging the arm. */
 const readOrBlocked = async (o, expr, ms = 4000) => {
   try { const r = await o.send('Runtime.evaluate', { expression: expr, returnByValue: true }, ms); return r.result?.value; } catch (e) { return /timed out/.test(String(e)) ? 'BLOCKED' : `ERR ${e}`; }
@@ -375,7 +383,7 @@ const ARM_FNS = {
     const post = await ctx.o1.eval(`document.getElementById('out').textContent`);
     clause(A, 'click-changes-dom', click.code === 0 && post === 'clicked', `${show(click)} → oracle #out=${JSON.stringify(post)}`);
     const f1 = await composerFocus(ctx);
-    clause(A, 'ctl/composer-focusable', f0?.onComposer === true, `composer textarea focused before the click: ${JSON.stringify(f0)}`);
+    clause(A, 'ctl/composer-focusable', f0?.onComposer === true && f0?.windowFocus === true, `composer editor focused before the click: ${JSON.stringify(f0)}`);
     clause(A, 'click-does-not-steal-keyboard-focus', f1?.onComposer === true && f1?.windowFocus === true, `after an agent click in the panel the human's composer focus is ${JSON.stringify(f1)} (story 44)`);
   },
 
