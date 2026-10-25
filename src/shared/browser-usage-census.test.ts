@@ -53,7 +53,7 @@ test('C2 CLI process: JSON on stdout, table on stderr, exit 0; a root with no tr
   assert.equal(bad.status, 2);
 });
 
-function mutate(name: string, edits: Array<[string, string]>): Promise<Mod> {
+function mutateFile(name: string, edits: Array<[string, string]>): string {
   let src = fs.readFileSync(SCRIPT, 'utf8');
   for (const [from, to] of edits) {
     assert.equal(src.split(from).length - 1, 1, `${name}: mutant anchor must occur exactly once in the live script: ${from}`);
@@ -62,8 +62,9 @@ function mutate(name: string, edits: Array<[string, string]>): Promise<Mod> {
   assert.notEqual(src, fs.readFileSync(SCRIPT, 'utf8'));
   const file = path.join(scratch, `${name}.mjs`);
   fs.writeFileSync(file, src);
-  return import(pathToFileURL(file).href);
+  return file;
 }
+const mutate = (name: string, edits: Array<[string, string]>): Promise<Mod> => import(pathToFileURL(mutateFile(name, edits)).href);
 
 test('C3 must-FAIL: "count tool names anywhere in a line" reddens the control (listing + prose + result + replay all counted)', async () => {
   const m = await mutate('names-anywhere', [
@@ -76,7 +77,7 @@ test('C3 must-FAIL: "count tool names anywhere in a line" reddens the control (l
 
 test('C3b must-FAIL: a plain-substring `orchestra browser` match counts the quoted/heredoc mention and reddens the control', async () => {
   const m = await mutate('cli-substring', [
-    ['const m = CLI_RE.exec(shellSkeleton(command));', 'const m = /orchestra\\s+browser(?:\\s+([A-Za-z][\\w-]*))?/.exec(command);'],
+    ["if (typeof command !== 'string' || !command.includes('browser')) return null;", "{ const m = /orchestra\\s+browser(?:\\s+([A-Za-z][\\w-]*))?/.exec(command ?? ''); return m ? `orchestra browser${m[1] ? ` ${m[1]}` : ''}` : null; }"],
   ]);
   assert.equal(controlHolds(m), false);
   assert.equal(m.runCensus({ roots: [FIXTURE_ROOT] }).surfaces['orchestra-browser-cli'].calls, 1);
@@ -90,6 +91,59 @@ test('C3c must-FAIL: dropping the tool_use-id de-duplication double-counts a cop
   assert.equal(census.runCensus({ roots: [dir] }).surfaces['panel-mcp'].calls, 1);
   const m = await mutate('no-dedupe', [['if (census.seenIds.has(block.id)) { census.scanned.duplicatesSkipped++; continue; }', '']]);
   assert.equal(m.runCensus({ roots: [dir] }).surfaces['panel-mcp'].calls, 2);
+});
+
+test('C3d must-FAIL: counting tool_use of ANY record type (api-request-blob replays) reddens the replay control', async () => {
+  const blobOnly = (mod: Mod) => {
+    const c = mod.createCensus();
+    mod.addTranscriptText(c, JSON.stringify({ type: 'api-request-blob', sessionId: 's', message: { role: 'assistant', content: [use('toolu_fresh', 'mcp__chrome-main__click')] } }), mod.parseWindow(null, null), 'f');
+    return mod.finalize(c, { window: mod.parseWindow(null, null), roots: [] }).surfaces['chrome-main'].calls;
+  };
+  assert.equal(blobOnly(census), 0);
+  const m = await mutate('type-blind', [["record.type !== 'assistant' || ", '']]);
+  assert.equal(blobOnly(m), 1, 'the mutant counts a replay that has no assistant twin to de-duplicate against');
+});
+
+const windowDir = (() => {
+  const dir = fs.mkdtempSync(path.join(scratch, 'win-'));
+  fs.writeFileSync(path.join(dir, 'w.jsonl'), [
+    asst('s1', '2026-09-30T23:59:59Z', use('w1', 'mcp__chrome-main__click')),
+    asst('s2', '2026-10-01T00:00:00Z', use('w2', 'mcp__chrome-main__click')),
+    asst('s2', '2026-10-02T23:59:59Z', use('w3', 'mcp__browser__navigate')),
+    asst('s3', '2026-10-03T00:00:00Z', use('w4', 'mcp__chrome-main__click')),
+  ].join('\n') + '\n');
+  return dir;
+})();
+/** The ticket's window promise through the REAL entry points (runCensus and the CLI process), not the inner function. */
+function windowControl(mod: Mod, script: string): boolean {
+  let lib: any;
+  try { lib = mod.runCensus({ roots: [windowDir], since: '2026-10-01', until: '2026-10-02' }); } catch { return false; }
+  const cli = spawnSync(process.execPath, [script, '--root', windowDir, '--since', '2026-10-01', '--until', '2026-10-02', '--format', 'json'], { encoding: 'utf8' });
+  if (cli.status !== 0) return false;
+  const j = JSON.parse(cli.stdout);
+  return [lib, j].every((r) => r.surfaces['chrome-main'].calls === 1 && r.surfaces['panel-mcp'].calls === 1 && r.window.since === '2026-10-01' && r.window.until === '2026-10-02');
+}
+
+test('C6b --since/--until through runCensus AND the CLI process select exactly the window; the open-ended forms too', () => {
+  assert.equal(windowControl(census, SCRIPT), true);
+  const only = (args: string[]) => JSON.parse(spawnSync(process.execPath, [SCRIPT, '--root', windowDir, ...args, '--format', 'json'], { encoding: 'utf8' }).stdout);
+  assert.equal(total(only([])), 4);
+  assert.equal(total(only(['--since', '2026-10-02'])), 2);
+  assert.equal(total(only(['--until', '2026-09-30'])), 1);
+  assert.equal(only(['--since', '2026-10-01', '--until', '2026-10-02']).surfaces['chrome-main'].sessions, 1);
+});
+
+test('C6c must-FAIL: dropping --until in main(), or swapping the bounds in runCensus, reddens the window control', async () => {
+  const dropUntil = mutateFile('drop-until', [['report = runCensus({ roots, since: opts.since, until: opts.until });', 'report = runCensus({ roots, since: opts.since, until: null });']]);
+  assert.equal(windowControl(census, dropUntil), false);
+  const swapped = mutateFile('swap-bounds', [['const window = parseWindow(since, until);', 'const window = parseWindow(until, since);']]);
+  assert.equal(windowControl(await import(pathToFileURL(swapped).href), swapped), false);
+});
+
+test('C6d an impossible calendar day is an error, not a silently shifted window', () => {
+  for (const bad of ['2026-02-30', '2026-04-31', '2026-13-01', '2026-00-10', '2026-1-1']) assert.throws(() => census.parseWindow(bad, null), /real YYYY-MM-DD/, bad);
+  assert.doesNotThrow(() => census.parseWindow('2028-02-29', '2028-02-29'));
+  assert.throws(() => census.parseWindow('2026-02-29', null), /real YYYY-MM-DD/);
 });
 
 test('C4 the four surfaces, tools and distinct sessions; subagent/other-name tool_use are not browser calls', () => {
@@ -178,6 +232,14 @@ test('C7 `orchestra browser` counts only when the command RUNS it (positives and
     ['sleep 1\norchestra browser snapshot', 'orchestra browser snapshot'],
     ['orchestra browser snapshot | jq .', 'orchestra browser snapshot'],
     ['cat <<EOF >/dev/null\nignored\nEOF\norchestra browser tabs', 'orchestra browser tabs'],
+    ["# what's the state\norchestra browser snapshot", 'orchestra browser snapshot'],
+    ['if orchestra browser tabs; then echo y; fi', 'orchestra browser tabs'],
+    ['until orchestra browser tabs; do sleep 1; done', 'orchestra browser tabs'],
+    ['while ! orchestra browser tabs; do sleep 1; done', 'orchestra browser tabs'],
+    ['sudo -u bob orchestra browser tabs', 'orchestra browser tabs'],
+    ['sudo env FOO=1 nice -n 5 timeout 30 orchestra browser snapshot', 'orchestra browser snapshot'],
+    ['flock /var/lock/x.lock orchestra browser snapshot', 'orchestra browser snapshot'],
+    ['echo $# && orchestra browser tabs', 'orchestra browser tabs'],
   ];
   for (const [cmd, tool] of yes) assert.equal(inv(cmd), tool, `should count: ${JSON.stringify(cmd)}`);
   const no = [
@@ -196,12 +258,22 @@ test('C7 `orchestra browser` counts only when the command RUNS it (positives and
     '# orchestra browser snapshot',
     'cat orchestra browser.md',
     'echo hi; echo orchestra browser',
+    '# first; orchestra browser snapshot',
+    'echo x # then orchestra browser snapshot',
+    'command -v orchestra browser',
+    'time -p grep orchestra browser',
+    'which orchestra browser',
     "bash -c 'echo orchestra browser'",
     'printf "%s" "$(echo orchestra browser)"',
     '',
   ];
   for (const cmd of no) assert.equal(inv(cmd), null, `must NOT count: ${JSON.stringify(cmd)}`);
   assert.equal(inv(undefined as any), null);
+  // linear time: wrapper-heavy commands that merely contain the word "browser" must not blow up (the old regex took 80 s)
+  const t0 = Date.now();
+  assert.equal(inv('xargs ' + '/a/b/c/d/e/f '.repeat(40) + 'x browser'), null);
+  assert.equal(inv('env ' + '/home/lmas/.orchestra/worktrees/x/y '.repeat(40) + 'cmd browser'), null);
+  assert.ok(Date.now() - t0 < 1000, `pathological wrapper commands took ${Date.now() - t0} ms`);
   assert.equal(census.classifyToolUse({ type: 'tool_use', name: 'Bash', input: {} }), null);
   assert.equal(census.classifyToolUse({ type: 'tool_use', name: 'PowerShell', input: { command: 'orchestra browser tabs' } }), null);
   assert.equal(census.classifyToolUse({ type: 'text', name: 'mcp__chrome-main__click' }), null);
@@ -235,4 +307,28 @@ test('C10 read-only: scanning leaves the transcript tree byte-identical', () => 
   assert.equal(total(census.runCensus({ roots: [dir] })), 1);
   assert.equal(digest(), before);
   assert.deepEqual(fs.readdirSync(dir), ['-work-census-control']);
+});
+
+test('C11 symlinked transcript dirs are followed once, an unreadable file is counted, and a symlinked script path still runs', () => {
+  const real = fs.mkdtempSync(path.join(scratch, 'sym-real-'));
+  const root = fs.mkdtempSync(path.join(scratch, 'sym-root-'));
+  fs.writeFileSync(path.join(real, 'a.jsonl'), `${asst('s1', '2026-10-01T00:00:00Z', use('a', 'mcp__browser__click'))}\n`);
+  fs.symlinkSync(real, path.join(root, 'linked-dir'));
+  fs.symlinkSync(path.join(root, 'linked-dir'), path.join(root, 'loop-back'));
+  fs.writeFileSync(path.join(root, 'b.jsonl'), `${asst('s2', '2026-10-01T00:00:00Z', use('b', 'mcp__browser__click'))}\n`);
+  const r = census.runCensus({ roots: [root] });
+  assert.equal(r.surfaces['panel-mcp'].calls, 2, 'the symlinked dir is read (once, despite the second link to it)');
+  assert.equal(r.scanned.files, 2);
+  if (process.getuid?.() !== 0) {
+    fs.writeFileSync(path.join(root, 'locked.jsonl'), '{}\n');
+    fs.chmodSync(path.join(root, 'locked.jsonl'), 0);
+    const r2 = census.runCensus({ roots: [root] });
+    assert.equal(r2.scanned.unreadableFiles, 1, 'a file that cannot be read is reported, not silently skipped');
+    assert.equal(r2.scanned.files, 2);
+  }
+  const link = path.join(scratch, 'census-link.mjs');
+  fs.symlinkSync(SCRIPT, link);
+  const viaLink = spawnSync(process.execPath, [link, '--root', FIXTURE_ROOT, '--format', 'json'], { encoding: 'utf8' });
+  assert.equal(viaLink.status, 0);
+  assert.equal(JSON.parse(viaLink.stdout).surfaces['chrome-main'].calls, 1, 'run through a symlink it still prints (it used to exit 0 with no output)');
 });

@@ -100,6 +100,8 @@ export function shellSkeleton(cmd, depth = 0) {
         out += ch;
         i++;
       }
+    } else if (ch === '#' && (out === '' || /[\s;&|(]$/.test(out))) {
+      while (i < n && cmd[i] !== '\n') i++; // a shell comment: nothing in it runs
     } else {
       out += ch;
       i++;
@@ -108,18 +110,51 @@ export function shellSkeleton(cmd, depth = 0) {
   return out;
 }
 
-const WRAPPER = String.raw`(?:(?:sudo|env|nice|ionice|time|command|exec|nohup|setsid|timeout|stdbuf|flock|xargs)\s+(?:(?:-\S+(?:\s+[A-Z_][A-Z0-9_]*)?|\d\S*|\S*[/=]\S*)\s+)*)*`;
-const CLI_RE = new RegExp(
-  String.raw`(?:^|[;&|\n({` + '`' + String.raw`!]|\$\(|\b(?:then|do|else)\b)\s*(?:[A-Za-z_]\w*=\S*\s+)*` +
-    WRAPPER +
-    String.raw`(?:\S*/)?orchestra\s+browser(?=[\s;&|)]|$)(?:\s+([A-Za-z][\w-]*))?`,
-);
+// Command wrappers the CLI is often run through: the options that take a value, and how many bare positionals precede the command.
+const WRAPPERS = {
+  sudo: { opts: 'ugCDhprtUT', pos: 0 }, env: { opts: 'uCS', pos: 0 }, nice: { opts: 'n', pos: 0 }, ionice: { opts: 'cnp', pos: 0 },
+  time: { opts: 'fo', pos: 0 }, exec: { opts: 'a', pos: 0 }, nohup: { opts: '', pos: 0 }, setsid: { opts: '', pos: 0 },
+  timeout: { opts: 'sk', pos: 1 }, stdbuf: { opts: 'ioe', pos: 0 }, flock: { opts: 'wEc', pos: 1 }, xargs: { opts: 'IniPdaEsL', pos: 0 },
+};
+const LEADING_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!']);
+const ENV_ASSIGN = /^[A-Za-z_]\w*=/;
+const IS_ORCHESTRA = /(?:^|\/)orchestra$/;
+
+/** The tool name for ONE simple command's tokens when it runs `orchestra browser [sub]`, else null. Linear: no regex backtracking. */
+function segmentInvocation(tokens) {
+  let i = 0;
+  const skipAssigns = () => { while (i < tokens.length && ENV_ASSIGN.test(tokens[i])) i++; };
+  while (i < tokens.length && LEADING_KEYWORDS.has(tokens[i])) i++;
+  for (;;) {
+    skipAssigns();
+    const w = WRAPPERS[tokens[i]];
+    if (!w) break;
+    i++;
+    let pos = w.pos;
+    for (; i < tokens.length; ) {
+      const t = tokens[i];
+      if (IS_ORCHESTRA.test(t)) break;
+      if (t.length > 1 && t[0] === '-') i += t.length === 2 && w.opts.includes(t[1]) ? 2 : 1;
+      else if (ENV_ASSIGN.test(t)) i++;
+      else if (pos > 0 && !WRAPPERS[t]) { i++; pos--; }
+      else break;
+    }
+  }
+  if (!IS_ORCHESTRA.test(tokens[i] ?? '') || tokens[i + 1] !== 'browser') return null;
+  const sub = tokens[i + 2];
+  return `orchestra browser${sub && /^[A-Za-z][\w-]*$/.test(sub) ? ` ${sub}` : ''}`;
+}
 
 /** The `orchestra browser <sub>` tool name when the Bash command RUNS the CLI, else null. */
 export function orchestraBrowserInvocation(command) {
   if (typeof command !== 'string' || !command.includes('browser')) return null;
-  const m = CLI_RE.exec(shellSkeleton(command));
-  return m ? `orchestra browser${m[1] ? ` ${m[1]}` : ''}` : null;
+  for (const seg of shellSkeleton(command).split(/\$\(|[;&|\n(){}`]/)) {
+    const tokens = seg.trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) continue;
+    const hit = segmentInvocation(tokens);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** { surface, tool } for one `tool_use` block, or null when it is not a browser call. */
@@ -143,15 +178,16 @@ export function toolUseBlocks(record) {
 export function createCensus() {
   const surfaces = {};
   for (const s of SURFACES) surfaces[s.key] = { calls: 0, sessions: new Set(), tools: {}, firstTs: null, lastTs: null };
-  return { surfaces, seenIds: new Set(), scanned: { files: 0, lines: 0, toolUseBlocks: 0, duplicatesSkipped: 0, outsideWindow: 0, undatedExcluded: 0, unparsableLines: 0 } };
+  return { surfaces, seenIds: new Set(), scanned: { files: 0, lines: 0, toolUseBlocks: 0, duplicatesSkipped: 0, outsideWindow: 0, undatedExcluded: 0, unparsableLines: 0, unreadableFiles: 0 } };
 }
 
 /** Parse --since / --until (YYYY-MM-DD, UTC, inclusive) into epoch-ms bounds; throws on garbage. */
 export function parseWindow(since, until) {
   const day = (v, name) => {
     if (v == null) return null;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(`${v}T00:00:00Z`))) throw new Error(`${name} must be YYYY-MM-DD, got "${v}"`);
-    return Date.parse(`${v}T00:00:00Z`);
+    const ms = /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T00:00:00Z`) : NaN;
+    if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== v) throw new Error(`${name} must be a real YYYY-MM-DD date, got "${v}"`);
+    return ms;
   };
   const lo = day(since, '--since');
   const hi = day(until, '--until');
@@ -236,14 +272,21 @@ export function renderTable(report) {
   return [`browser tool_use census — ${win}`, fmt(rows[0]), ...rows.slice(1).map(fmt), `human Chrome (main+devtools) ${report.totals.humanChrome} · panel (mcp+cli) ${report.totals.panel} · panel share ${share}`].join('\n');
 }
 
-export function* walkJsonl(dir) {
+/** Every `.jsonl` under `dir`, sorted; symlinked files/dirs are followed once (a directory seen by realpath is not re-entered). */
+export function* walkJsonl(dir, seen = new Set()) {
+  let real;
+  try { real = fs.realpathSync(dir); } catch { return; }
+  if (seen.has(real)) return;
+  seen.add(real);
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
   entries.sort((a, b) => (a.name < b.name ? -1 : 1));
   for (const e of entries) {
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) yield* walkJsonl(p);
-    else if (e.isFile() && e.name.endsWith('.jsonl')) yield p;
+    let st = e;
+    if (e.isSymbolicLink()) { try { st = fs.statSync(p); } catch { continue; } }
+    if (st.isDirectory()) yield* walkJsonl(p, seen);
+    else if (st.isFile() && e.name.endsWith('.jsonl')) yield p;
   }
 }
 
@@ -265,7 +308,7 @@ export function runCensus({ roots, since = null, until = null }) {
   for (const root of roots) {
     for (const file of walkJsonl(root)) {
       let text;
-      try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+      try { text = fs.readFileSync(file, 'utf8'); } catch { census.scanned.unreadableFiles++; continue; }
       addTranscriptText(census, text, window, path.basename(file, '.jsonl'));
     }
   }
@@ -302,9 +345,13 @@ function main() {
     console.error(`browser-usage-census: ${e.message}`);
     process.exit(2);
   }
+  if (report.scanned.unreadableFiles) console.error(`browser-usage-census: WARNING ${report.scanned.unreadableFiles} transcript file(s) unreadable — counts are a lower bound`);
   if (report.scanned.files === 0) { console.error('browser-usage-census: 0 transcript files under the roots — refusing to report a zero baseline'); process.exit(3); }
   if (opts.format !== 'table') process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (opts.format !== 'json') (opts.format === 'table' ? process.stdout : process.stderr).write(`${renderTable(report)}\n`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();
+function isMain() {
+  try { return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+if (isMain()) main();
