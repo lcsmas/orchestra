@@ -1,0 +1,51 @@
+electron=$TMPDIR/r404-wt/node_modules/.pnpm/electron@33.4.11/node_modules/electron/dist/electron  scratch=$TMPDIR/r404-scratch-1444249-1792961490  app=orchestra-r404-probe-1444249
+--- positive control: windowless Electron, full session env, libsecret forced
+PASS       K1:encrypt+self-decrypt            expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       K2:decrypt-new-process             expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       K2:bus-abi130                      expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+--- must-FAIL: the silent basic_text fallback and an unreachable/foreign keyring
+PASS       F1:default-switches-decrypt        expect=fails observed=fails | backend=basic_text available=false prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. Decryption is rc=0
+PASS       F1e:default-switches-encrypt       expect=fails observed=fails | backend=basic_text available=false err=Error while encrypting the text provided to safeStorage.encryptString. Encryption is not a rc=0
+PASS       F2:password-store=basic            expect=fails observed=fails | backend=basic_text available=false prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. Decryption is rc=0
+PASS       F3:libsecret-but-no-dbus           expect=fails observed=fails | backend=gnome_libsecret available=false prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. Decryption is rc=0
+PASS       F4:other-app-keyring-item          expect=fails observed=fails | backend=gnome_libsecret available=true prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. rc=0
+--- arm B: windowless Electron with NO WAYLAND_DISPLAY / DISPLAY
+docs/research/404-rig/run-matrix.sh: line 35: 1444838 Segmentation fault      timeout 90 "$@" > "$S/$name.log" 2>&1
+PASS       B1:no-display-default-ozone        expect=fails observed=fails | no R404 line rc=139
+           log: [1444839:1025/215132.103249:ERROR:ozone_platform_x11.cc(245)] Missing X server or $DISPLAY
+PASS       B2:no-display-headless-decrypt     expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       B2:bus-abi130                      expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       B2m:bus-abi127-in-electron         expect=fails observed=fails | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=FAIL(The module '$TMPDIR/r404-wt/build/bus-a) rc=0
+PASS       B3:no-display-no-switch            expect=fails observed=fails | backend=basic_text available=false prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. Decryption is rc=0
+PASS       B4e:no-display-encrypt             expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 rc=0
+PASS       B4d:its-blob-in-session-process    expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET rc=0
+--- arm B in a REAL systemd user unit (UnsetEnvironment of the display vars)
+PASS       U1:unit-headless-decrypt           expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       U1:unit-bus-abi130                 expect=works observed=works | backend=gnome_libsecret available=true prefix=v11 decrypt=SECRET bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       U2:unit-no-switch                  expect=fails observed=fails | backend=basic_text available=false prefix=v11 err=Error while decrypting the ciphertext provided to safeStorage.decryptString. Decryption is rc=0
+--- arm A: ELECTRON_RUN_AS_NODE=1 electron script.js
+PASS       A1:safeStorage                     expect=fails observed=fails | safeStorage=undefined bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       A1:bus-abi130                      expect=works observed=works | safeStorage=undefined bus=ok(wal,better_sqlite3-abi130.node) rc=0
+PASS       A2:bus-abi127                      expect=fails observed=fails | safeStorage=undefined bus=FAIL(was compiled against a different Node.js version using NODE_MODULE_VER) rc=0
+docs/research/404-rig/run-matrix.sh: line 35: 1448958 Segmentation fault      timeout 90 "$@" > "$S/$name.log" 2>&1
+PASS       A3:internal-safeStorage-binding    expect=fails observed=fails | no R404 line rc=139
+PASS       A5:keyring-reader-under-asnode     expect=works observed=works | prefix=v11 decrypt=SECRET rc=0
+PASS       A5m:keyring-reader-wrong-item      expect=fails observed=fails | prefix=v11 err=error:1e000065:Cipher functions:OPENSSL_internal:BAD_DECRYPT rc=0
+PASS       A4:shipped-binary-shipped-binding  expect=works observed=works | safeStorage=undefined bus=ok(wal,better_sqlite3.node) rc=0
+PASS       A4:shipped-binary-safeStorage      expect=fails observed=fails | safeStorage=undefined bus=ok(wal,better_sqlite3.node) rc=0
+--- arm C: plain system node
+PASS       C1:safeStorage                     expect=fails observed=fails | safeStorage=undefined bus=FAIL(was compiled against a different Node.js version using NODE_MODULE_VER) rc=0
+PASS       C1:bus-abi130                      expect=fails observed=fails | safeStorage=undefined bus=FAIL(was compiled against a different Node.js version using NODE_MODULE_VER) rc=0
+PASS       C1:require-trap-require-succeeds   expect=works observed=works | safeStorage=undefined bus=FAIL(was compiled against a different Node.js version using NODE_MODULE_VER) rc=0
+PASS       C2:bus-abi127-second-build         expect=works observed=works | safeStorage=undefined bus=ok(wal,better_sqlite3-abi127.node) rc=0
+PASS       C3:libsecret-via-secret-tool       expect=works observed=works | prefix=v11 decrypt=SECRET rc=0
+PASS       C4:wrong-password                  expect=fails observed=fails | prefix=v11 err=error:1C800064:Provider routines::bad decrypt rc=0
+PASS       C5:no-dbus                         expect=fails observed=fails | prefix=v11 err=Command failed: secret-tool lookup application orchestra-r404-probe-1444249 rc=0
+PASS       C6:in-systemd-unit                 expect=works observed=works | prefix=v11 decrypt=SECRET rc=0
+--- why a basic_text 'works' proves nothing: v10 decrypts with NO keyring at all
+PASS       V1:basic_text-plaintext-opt-in     expect=works observed=works | backend=basic_text available=true prefix=v10 rc=0
+PASS       V2:v10-decrypt-without-keyring     expect=works observed=works | prefix=v10 decrypt=SECRET rc=0
+--- hygiene
+ok: nothing under ~/.config/orchestra-r404-probe-1444249
+evidence: $TMPDIR/r404-scratch-1444249-1792961490
+MATRIX CLEAN (every arm matched its expected outcome)
