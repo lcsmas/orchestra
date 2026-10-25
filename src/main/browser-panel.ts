@@ -331,7 +331,7 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
 
 /** Build a tab (native view + handlers) for `panel` and append it to the
  *  registry. Does NOT change the active tab. */
-function buildTab(panel: Panel, openedBy: BrowserTabOpener): Tab {
+function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   const win = getWindow?.();
   if (!win) throw new Error('browser-panel: main window not ready');
 
@@ -356,7 +356,7 @@ function buildTab(panel: Panel, openedBy: BrowserTabOpener): Tab {
   const tab: Tab = {
     id: nextTabId(panel.wsId),
     view,
-    openedBy,
+    openedBy: opts.openedBy,
     debuggerAttached: false,
     nav: blankNav(),
   };
@@ -412,7 +412,7 @@ export function ensurePanel(wsId: string): Panel {
       return activeTabOf(this)!.view;
     },
   };
-  const tab = buildTab(panel, 'human');
+  const tab = buildTab(panel, { openedBy: 'human' });
   panel.activeId = tab.id;
   panel.state = computeState(panel);
   panels.set(wsId, panel);
@@ -458,7 +458,7 @@ export function createTab(
   opts: { url?: string; openedBy: BrowserTabOpener; activate?: boolean },
 ): Tab {
   const panel = ensurePanel(wsId);
-  const tab = buildTab(panel, opts.openedBy);
+  const tab = buildTab(panel, opts);
   if (opts.activate) setActive(panel, tab);
   else publish(panel);
   if (opts.url) loadIn(tab, opts.url);
@@ -495,15 +495,19 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
   const wasActive = tab.id === panel.activeId;
   const wasAttached = panel.attachedId !== null;
   detachTab(panel, tab);
-  panel.tabs.splice(idx, 1);
-  destroyTab(tab);
-  if (panel.tabs.length === 0) {
+  if (panel.tabs.length === 1) {
+    // Last tab: evict the panel whole. `panel.tabs` is left intact (like the
+    // all-dead reap) so a holder's `panel.view` reads the husk, not a TypeError.
+    destroyTab(tab);
     panels.delete(wsId);
     panel.attachedId = null;
     panel.pendingShow = false;
-    panel.activeId = '';
-    return publish(panel);
+    const empty = emptyState(wsId);
+    platform.broadcast('browser:event', wsId, empty);
+    return empty;
   }
+  panel.tabs.splice(idx, 1);
+  destroyTab(tab);
   if (wasActive) {
     panel.activeId = panel.tabs[Math.min(idx, panel.tabs.length - 1)].id;
     if (wasAttached) attachActive(panel);
@@ -662,7 +666,7 @@ export function reload(wsId: string, tabId?: BrowserTabId): void {
 
 /** Current state snapshot (a freshly-mounted renderer requests this). */
 export function getState(wsId: string): BrowserPanelState {
-  return panels.get(wsId)?.state ?? emptyState(wsId);
+  return reapIfDead(wsId)?.state ?? emptyState(wsId);
 }
 
 /** Destroy a workspace's panel entirely (workspace deleted / archived): every
@@ -858,14 +862,15 @@ export async function clickAt(
   y: number,
   tabId?: BrowserTabId,
 ): Promise<void> {
-  requireComposited(wsId, 'click', tabId);
+  // Pin the tab ONCE: press and release must hit the same tab even if the active tab changes mid-click.
+  const pin = requireComposited(wsId, 'click', tabId).id;
   await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, tabId),
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, pin),
     10_000,
     'click (mousePressed)',
   );
   await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, tabId),
+    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, pin),
     10_000,
     'click (mouseReleased)',
   );
@@ -873,8 +878,9 @@ export async function clickAt(
 
 /** Click a `ref_N` element (resolves its center, then clickAt). */
 export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId): Promise<void> {
-  const p = await refToPoint(wsId, ref, tabId);
-  await clickAt(wsId, p.x, p.y, tabId);
+  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the point and the click hit the same tab
+  const p = await refToPoint(wsId, ref, pin);
+  await clickAt(wsId, p.x, p.y, pin);
 }
 
 /** Type text into the currently-focused element via CDP (trusted input). */
@@ -1141,7 +1147,8 @@ export async function designModePoll(
   wsId: string,
   tabId?: BrowserTabId,
 ): Promise<DesignPick | { cancelled: true } | null> {
-  const raw = await readRawPick(wsId, tabId);
+  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the pick and its screenshot come from the same tab
+  const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
   if (raw.cancelled) return { cancelled: true };
 
@@ -1156,7 +1163,7 @@ export async function designModePoll(
         wsId,
         'Page.captureScreenshot',
         { format: 'png', clip, captureBeyondViewport: false },
-        tabId,
+        pin,
       ),
       10_000,
       'design-mode screenshot',

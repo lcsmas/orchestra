@@ -48,7 +48,8 @@ test('ENUMERATION: the ONLY sites that pass origin `human` are the composer, tra
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
     // strip comments so prose about 'human' cannot count
-    const src = read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/.*$/gm, '');
+    // `openedBy: 'human'` is the browser-tab opener tag (#391), not a pause origin: only an `origin`-style pass counts here
+    const src = read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/.*$/gm, '').replace(/\bopenedBy:\s*'human'/g, 'openedBy: TAB_OPENER');
     const n = [...src.matchAll(/'human'/g)].length;
     if (n > 0) found[f] = n;
   }

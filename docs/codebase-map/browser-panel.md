@@ -147,15 +147,30 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   the LAST live tab dies the whole panel is evicted and `ensurePanel` rebuilds
   it. `panel.tabs` is left intact on whole-panel eviction so a stale holder's
   `panel.view` still reads the husk instead of throwing.
-- **Closing the last tab** evicts the panel (empty state broadcast) — a
-  placeholder; what it should mean for the user is #393's call.
+- **Closing the last tab** evicts the panel (destroys the tab, empty state
+  broadcast, `panel.tabs` left intact for stale holders) — a placeholder; what
+  it should mean for the user is #393's call. The rebuilt panel has
+  `bounded=false`, so it only composits after the next `setBounds`/`showPanel`.
+- **Multi-step primitives pin ONE tab** (`clickAt` press+release, `clickRef`,
+  `designModePoll`): the tab is resolved once, so an `activateTab` between two
+  CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
   size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
   (popup routing is #396).
-- **Tests**: `src/main/browser-panel-tabs.test.ts` (19 arms, N>1 tabs, real
+- **Tests**: `src/main/browser-panel-tabs.test.ts` (22 arms, N>1 tabs, real
   module over a stubbed `electron` loader hook) + `scripts/mutate-browser-panel-tabs.mjs`
-  (14 in-place mutants, byte-exact restore). The registry itself cannot be
+  (18 in-place mutants, byte-exact restore). The registry itself cannot be
   imported by `node --test` without that hook (it imports `electron`).
+  Real Electron: `scripts/e2e-browser-tabs-registry.sh <app-dir>` (own headless
+  sway) — `app` arm drives the unchanged renderer flow on the built app (pane
+  open, URL bar, back, hide/show; one tab `t1`, pixels via grim), `probe` arm
+  (`e2e-browser-tabs-probe.cjs`) runs the bundled registry over real
+  `WebContentsView`s with N>1 tabs; `--mutant destroy-active-only|no-detach-prev`
+  must redden its named clause. Real-Electron trap: `webContents.close()` is
+  ASYNC — `view.webContents` is still live right after it.
+- `'human'` literals in `src/main/*.ts` are counted by
+  `pause-gates-wiring.test.ts` (pause-bypass origins); `openedBy: 'human'` is
+  stripped there — write the tab opener in that exact form.
 
 ## Design mode — the element picker
 

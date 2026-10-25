@@ -24,7 +24,7 @@ class WebContents {
       attach: () => { this.dbgAttached = true; },
       detach: () => { this.dbgAttached = false; this.detachCalls++; },
       isAttached: () => this.dbgAttached,
-      sendCommand: (m, p) => { this.cmds.push({ m, p }); return Promise.resolve({ result: { value: 'ev' } }); },
+      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve({ result: { value: 'ev' } }); },
     };
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
@@ -373,4 +373,38 @@ test('navigate / reload honour tabId and default to the active tab', async () =>
   bp.reload(ws, 't2');
   assert.equal(wcOf(t2).reloaded, true);
   assert.equal(wcOf(t1).reloaded, undefined);
+});
+
+test('clickAt pins ONE tab: press and release land on the same tab even if the active tab changes mid-click', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  let switched = false;
+  wcOf(t1).onCmd = (m: string) => {
+    if (m === 'Input.dispatchMouseEvent' && !switched) { switched = true; bp.activateTab(ws, 't2'); }
+  };
+  await bp.clickAt(ws, 3, 4);
+  const mouse = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent').map((c: any) => c.p.type);
+  assert.equal(switched, true, 'setup: the active tab changed between press and release');
+  assert.deepEqual(mouse(t1), ['mousePressed', 'mouseReleased'], 'both halves of the click hit the tab the click started on');
+  assert.deepEqual(mouse(t2), [], 'nothing leaked to the tab that became active');
+});
+
+test('getState reaps: a dead tab is not listed to a freshly mounted renderer', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  (viewOf(t2) as any).killExternally();
+  assert.deepEqual(bp.getState(ws).tabs.map((t) => t.id), ['t1']);
+});
+
+test('a held Panel keeps a readable view after its LAST tab is closed (no TypeError on the husk)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const panel = bp.getPanel(ws)!;
+  const t1 = bp.getActiveTab(ws)!;
+  bp.closeTab(ws, 't1');
+  assert.doesNotThrow(() => panel.view);
+  assert.equal(panel.view, viewOf(t1));
 });
