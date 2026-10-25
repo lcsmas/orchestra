@@ -17,7 +17,10 @@ no MCP subprocess**. Everything runs in-process against a view Orchestra owns.
   `Runtime.evaluate`, …) on the panel view's own debugger, and screenshot via
   the native `webContents.capturePage()`. No debug port means no security
   surface and no target-ambiguity problem (an app-wide debug port would expose
-  Orchestra's own renderer as a CDP target too).
+  Orchestra's own renderer as a CDP target too). **Since #398 the CDP proxy is
+  the ONLY debugger attacher** (`browser-cdp-seat.ts`, see *Single attacher*
+  below): `browser-panel.ts` holds no debugger and runs every command through a
+  proxy lease.
 - **One independent browser per workspace, by construction.** `browser-panel.ts`
   keys every panel by `wsId` (a panel = an ordered list of tabs, each its own
   `WebContentsView`, with one ACTIVE tab — see *Tabs registry* below); the
@@ -32,7 +35,7 @@ Agent (SDK query) ── mcp__browser__navigate / read_page / screenshot / click
    │  in-process SDK MCP server (createSdkMcpServer)      src/main/agent-browser-tools.ts
    ▼
 browser-panel.ts primitives (navigate / capture / evaluate / clickAt …)
-   │  drive the WebContentsView via webContents.debugger + capturePage()
+   │  CDP commands = a proxy lease (cdpSeat.send); capturePage() for screenshots
    ▼
 WebContentsView (contentView.addChildView)               src/main/browser-panel.ts
    │  did-navigate / page-title-updated / did-*-loading
@@ -55,7 +58,7 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   (`showPanel`/`hidePanel` — only the active workspace's panel composits at a
   time), bounds sync (`setBounds` — the native view is positioned over the
   renderer's `.browser-pane` placeholder rect), and the **agent-driving
-  primitives** over `webContents.debugger`: `capture` (JPEG via `capturePage`),
+  primitives** over CDP commands leased from the proxy (`cdp()` → `cdpSeat`, #398): `capture` (JPEG via `capturePage`),
   `evaluate` (`Runtime.evaluate`), `readPage` (in-page DOM walk → `[ref_N]`
   accessibility outline), `clickAt`/`clickRef` (`Input.dispatchMouseEvent`),
   `typeText`/`formInput`, `scrollBy`. `initBrowserPanels(accessor)` is called
@@ -117,8 +120,8 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   `BrowserPanelState` gained `tabs` (ordered) + `activeTabId` (`''` while there
   is no tab); its url/title/loading/nav/error fields keep mirroring the ACTIVE
   tab (`computeState`), so `BrowserPanel.tsx` only grew two literal fields.
-- **Shapes** (`browser-panel.ts`): `Tab {id, view, openedBy, debuggerAttached,
-  nav}`; `Panel {wsId, tabs, activeId, attachedId, bounded, bounds, pendingShow,
+- **Shapes** (`browser-panel.ts`): `Tab {id, view, openedBy, designHold,
+  designOp, nav}`; `Panel {wsId, tabs, activeId, attachedId, bounded, bounds, pendingShow,
   state, view}` — `attachedId` is the tab whose view is in the window right now
   (`null` = not composited; replaces the old `visible`), `bounds` the last
   renderer rect (re-applied to a view on attach), `view` a getter for the ACTIVE
@@ -138,7 +141,8 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   fail with "not the active tab" (a background tab produces no frames, same
   trap as a hidden panel); `evaluate`/`readPage`/`navigate` still work on it.
 - **Teardown iterates every tab**: `destroyPanel` (workspace delete AND the
-  archive path) calls `destroyTab` on each — debugger detach then
+  archive path) calls `destroyTab` on each — the proxy seat's force-detach
+  (`tabTeardownHook`, registered by `initBrowserCliHost`) then
   `webContents.close()`. A teardown that only handled the active tab would leak
   native views that paint black over the app (pinned by
   `browser-panel-tabs.test.ts` + its mutant set).
@@ -217,8 +221,14 @@ Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/component
   and `appendPickToDraft`.
 - **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
   `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
-  SAME `cdp()` / `evaluate()` helpers the agent tools use — **no second
-  `debugger.attach`** (attaching twice to one target throws).
+  SAME `cdp()` / `evaluate()` helpers the agent tools use, which run on a lease
+  of the CDP proxy's debugger attach (#398) — design mode holds **no debugger of
+  its own** (attaching twice to one target throws). While armed it keeps ONE
+  lease (`Tab.designHold`, taken before the script is injected) so the 150 ms
+  poll does not attach/detach on every tick and an agent command on the same tab
+  cannot detach the debugger from under the picker; a pick, Escape or a disarm
+  gives it back (the pick's cropped screenshot rides the same lease, released
+  after it).
 - **`src/renderer/store.ts`** — `designPicks: Record<wsId, DesignPick[]>` plus
   `addDesignPick` / `takeDesignPicks` (reads and clears in one `set`, so a pick
   is drained exactly once).
@@ -264,6 +274,12 @@ keeps the shared debugger free of any long-lived event subscription.
 - **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
   backtick in a comment there silently terminates the string and breaks the
   build (`TS1005`/esbuild parse error) far from the edit.
+- **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
+  `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
+  arm now awaits its lease before injecting — an unordered disarm would find no
+  lease, return, and leave an invisible click-swallowing overlay. A disarm with
+  no lease (after a pick / Escape — the page-side picker tore itself down) sends
+  nothing and attaches nothing.
 - `designModeDisarm` **swallows evaluation failures**. The renderer disarms on
   unmount, on going inactive, and after every pick, so it routinely lands on a
   page that is mid-navigation or already gone (`Inspected target navigated or
@@ -504,17 +520,28 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   tab's debugger session, and in Electron 33 **`detach()` alone does not clear an `Emulation.setDeviceMetricsOverride`**
   (measured: innerWidth stayed 360). When the agent's last session has been gone for 15 s (`RELEASE_GRACE_MS`,
   `ORCHESTRA_CDP_RELEASE_GRACE_MS` for rigs; a session coming back cancels it — agent-browser reconnects lazily), the host
-  sends `resetCommands` (`shared/cdp-reset.ts`) and then detaches; the legacy tools re-attach on demand. The renderer's pane
-  already attaches this debugger (design-mode disarm on mount), so the proxy almost always SHARES it.
+  sends `resetCommands` (`shared/cdp-reset.ts`) and then detaches (since #398 this policy lives in the seat, below — every holder,
+  agent session or design mode / legacy-tool lease, counts toward "the last session").
 - **agent-browser quirks (v0.39.2)**: `tab close tN` prints "✓ closed" even when the proxy refused (a human-opened tab) —
   the registry is the truth; a click on a hidden pane is refused by agent-browser itself ("outside the viewport") before any
   input reaches us.
-- **Coexistence with the legacy path** (until #398): `makePanelPort.acquire` attaches `webContents.debugger` only if nobody
-  has (`isAttached()`) and sets `tab.debuggerAttached`; the core takes ONE `port.acquire` per tab however many sessions attach
-  at once (single-flight — a raced second acquire used to be released while the tab was held, arming the reset under a live
-  session) and calls `port.release` once, when the last session goes. `release` does NOT detach at once: it arms the 15 s
-  grace (above), after which the agent's overrides are undone and the debugger detached; design mode / MCP tools keep sharing
-  the attach and re-attach on demand.
+- **Single attacher (#398)**: `src/main/browser-cdp-seat.ts` is the ONLY file in `src/main` that touches `webContents.debugger`
+  (`seatAcquire` = the one `attach('1.3')`, shared by refcount; `seatRelease` with the last holder starts the grace period, then
+  `resetCommands` + detach so the human's panel carries no debugger/emulation when nobody drives it; a holder coming back
+  cancels it; `seatForceDetach` at tab destroy via `bp.setTabTeardownHook`; `seatChannel` = the proxy's
+  send/subscribe/onDetach). `makePanelPort.acquire/release` pair with it; the core takes ONE `port.acquire` per tab however many sessions attach at once (single-flight — a raced second acquire used to be released while the tab was held, arming the reset under a live session) and calls `port.release` once, when the last session goes. The app's own callers —
+  design mode and the legacy `mcp__browser__*` tools (`browser-panel.ts` `cdp()`) — never attach: they call `cdpSeat.send` /
+  `cdpSeat.hold` (registered by `initBrowserCliHost`, `panelCdpSeat` in `browser-cdp-host.ts`), which take an in-process
+  **lease** on the workspace proxy (`CdpProxyCore.lease`, refcounted with the WebSocket clients; a lease that outlived a detach
+  never decrements a newer attach) and send straight on the tab's channel (no bring-to-front, no screenshot chain: the legacy
+  guards `requireComposited` / `withTimeout` still front them). So one agent-browser session, a design pick and a legacy call
+  share ONE attach in any order, and the last holder out starts the grace. A workspace's first lease starts its proxy (no daemon:
+  `Endpoint.daemon` is set only by `/browser`). `release` of a tab that never navigated: `acquire` kicks `about:blank` first.
+  **Grep gate**: `node scripts/check-single-debugger-attacher.mjs [--list]` (CLEAN/DIRTY; every code use of `debugger` /
+  `.attach(` / `sendCommand(` under `src/main` must sit in the seat; positive control: the same scan must find the seat's one
+  `attach(` and the host must acquire it; `--self-test` injects a second attacher into a copy and requires DIRTY), pinned by
+  `src/main/browser-single-attacher.test.ts`. Trace: `ORCHESTRA_CDP_TRACE=1` also logs `seat[<ws8>] <tab> acquire attached|shared`, `release kept|pending|detached`,
+  `grace-over…`, `detached`, each with `isAttached=<Electron's own answer>` — the rig counts attaches from it.
 - **Pinned binary**: `scripts/agent-browser-pins.json` (v0.39.2, SHA-256 per asset, linux-arm64 + linux-x64),
   `scripts/agent-browser-fetch.cjs` (plain CommonJS, run IN-PROCESS by the `beforePack` hook `scripts/before-pack.cjs` — which
   also runs #390's pinned-Node hook — so EVERY packaging path gets it under whatever Node it uses: release.yml packs on Node 20,
@@ -547,3 +574,13 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
   `scripts/e2e-browser-cli.sh <app-dir>` (18 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
   own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (33 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).
+  #398: `browser-cdp-seat.test.ts` (one attach per contents, refcount, force-detach, a fake debugger that THROWS on a second
+  attach), `cdp-proxy-core.test.ts` (`lease` arms), `browser-single-attacher.test.ts`, the registry arms in
+  `browser-panel-tabs.test.ts` (design lease: no churn across polls, pick/cancel/disarm release, arm/disarm order, no
+  debugger without the seat), and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>` (4 arms, 40 clauses: the
+  static gate on source + bundle, the REAL toolbar → hover → click → composer pick on `pages/design.html`, a pick while an
+  `orchestra browser wait --fn` runs on the same tab, and design-armed-first with the agent attaching second; oracle = the app's
+  own debug port + Electron's `isAttached()` in the trace) with `scripts/e2e-browser-design-proxy-mutants.sh <app-dir>` (6
+  bundle mutants: second attacher, detach skipped, lease leak, lease removed, screenshot dropped, release detaching under the
+  agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
+  in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.

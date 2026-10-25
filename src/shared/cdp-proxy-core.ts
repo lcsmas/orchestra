@@ -236,6 +236,25 @@ export class CdpProxyCore {
     return [...this.tabs.keys()];
   }
 
+  /**
+   * In-process lease on a tab's debugger channel (#398): the app's own callers (design mode, the
+   * legacy `mcp__browser__*` tools) ride the proxy's one attach instead of making a second one.
+   * Refcounted with the WebSocket clients; `release()` is idempotent and a lease that outlived a
+   * detach never decrements a newer attach.
+   */
+  async lease(tabId: string): Promise<{ channel: CdpTabChannel; release(): void }> {
+    const st = await this.acquireTab(tabId);
+    let held = true;
+    return {
+      channel: st.channel,
+      release: () => {
+        if (!held) return;
+        held = false;
+        if (this.tabs.get(tabId) === st) this.releaseTab(tabId);
+      },
+    };
+  }
+
   dispose(): void {
     this.unsubTabs();
     for (const c of [...this.clients]) this.closeClient(c);

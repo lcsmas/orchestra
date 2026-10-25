@@ -11,6 +11,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import * as bp from './browser-panel.ts';
 import { startCdpProxy, type CdpProxyServer } from './browser-cdp-proxy.ts';
+import { seatAcquire, seatChannel, seatForceDetach, seatRelease, setSeatTrace } from './browser-cdp-seat.ts';
 import {
   abEnv,
   abLayout,
@@ -28,7 +29,6 @@ import { sessionKeys } from './session-identity-host.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
-import { resetCommands } from '../shared/cdp-reset.ts';
 import type { CdpPanelPort, CdpTab, CdpTabChannel, CdpTabEvent } from '../shared/cdp-proxy-core.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
@@ -44,31 +44,6 @@ const toCdpTab = (t: BrowserTabInfo): CdpTab => ({ id: t.id, url: t.url, title: 
 
 /** The proxy's view of one workspace's panel — the only code that maps CDP semantics onto `browser-panel.ts`. */
 export function makePanelPort(wsId: string): CdpPanelPort {
-  /** Grace timers: a tab is reset only if no session comes back within RELEASE_GRACE_MS of its last one leaving. */
-  const pendingReset = new Map<string, ReturnType<typeof setTimeout>>();
-  const channelFor = (tabId: string): CdpTabChannel => {
-    const wc = bp.tabContents(wsId, tabId);
-    if (!wc) throw new Error(`browser tab ${tabId} has no live view`);
-    const dbg = wc.debugger;
-    return {
-      send: (method, params, sessionId) => dbg.sendCommand(method, params ?? {}, sessionId),
-      subscribe: (l) => {
-        const f = (_e: unknown, method: string, params: unknown, sessionId?: string): void => l(method, params, sessionId || undefined);
-        dbg.on('message', f);
-        return () => {
-          dbg.off('message', f);
-        };
-      },
-      onDetach: (l) => {
-        const f = (_e: unknown, reason: string): void => l(reason);
-        dbg.on('detach', f);
-        return () => {
-          dbg.off('detach', f);
-        };
-      },
-    };
-  };
-
   return {
     listTabs: () => bp.listTabs(wsId).map(toCdpTab),
     subscribeTabs: (listener) => {
@@ -96,49 +71,17 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       if (!wc.getURL() && !wc.isLoading()) {
         await Promise.race([wc.loadURL('about:blank').catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
       }
-      // Shared with the legacy mcp__browser__* path (one attach per target): attach only if nobody has.
-      const reset = pendingReset.get(tabId);
-      if (reset) {
-        clearTimeout(reset); // the daemon came back (agent-browser reconnects lazily): the agent is still here
-        pendingReset.delete(tabId);
-      }
-      // The renderer's pane already attaches this debugger (design-mode disarm on mount), so it is almost always shared.
-      if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-      tab.debuggerAttached = true;
-      wc.debugger.once('detach', () => {
-        tab.debuggerAttached = false;
-      });
-      return channelFor(tabId);
+      // The proxy is the ONLY attacher (#398): design mode and the legacy tools lease this same attach (`attachLease`). The seat
+      // shares it by refcount; the last holder leaving starts the grace period, then the agent's overrides are reset and it detaches.
+      const live = bp.tabContents(wsId, tabId);
+      if (!live) throw new Error(`browser tab ${tabId} has no live view`);
+      const channel = seatChannel(live);
+      seatAcquire(live, `seat[${wsId.slice(0, 8)}] ${tabId}`);
+      return channel;
     },
-    // The agent is gone (its daemon exited or was closed): end the DevTools session on the shared tab after a grace period, which clears
-    // everything the agent left there — Emulation.* from `set viewport|media|offline`, Fetch.enable from `network route`, init scripts.
-    // The legacy tools / design mode re-attach on demand (`tab.debuggerAttached` is reset by the 'detach' event registered in acquire).
     release: (tabId) => {
-      const prev = pendingReset.get(tabId);
-      if (prev) clearTimeout(prev);
-      const t = setTimeout(() => {
-        pendingReset.delete(tabId);
-        const wc = bp.tabContents(wsId, tabId);
-        if (!wc) return;
-        blog.info(`cdp[${wsId.slice(0, 8)}] no session came back to tab ${tabId} within ${RELEASE_GRACE_MS} ms: clearing the agent's overrides, then detaching`);
-        void (async () => {
-          try {
-            // detach() alone does NOT clear Emulation.* in Electron 33 (measured): undo each explicitly, then end the session.
-            if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-            for (const [method, params] of resetCommands(wc.getUserAgent())) await wc.debugger.sendCommand(method, params).catch(() => undefined);
-          } catch (e) {
-            blog.warn(`resetting tab ${tabId} of ${wsId} failed`, e);
-          } finally {
-            try {
-              wc.debugger.detach();
-            } catch {
-              /* already gone */
-            }
-          }
-        })();
-      }, RELEASE_GRACE_MS);
-      t.unref?.();
-      pendingReset.set(tabId, t);
+      const live = bp.tabContents(wsId, tabId);
+      if (live) seatRelease(live, RELEASE_GRACE_MS);
     },
     createTab: async (url) => {
       if (bp.listTabs(wsId).length >= INTERIM_TAB_CAP) throw new Error(`this workspace already has ${INTERIM_TAB_CAP} browser tabs`);
@@ -198,6 +141,8 @@ interface Endpoint {
   server: CdpProxyServer;
   /** Unguessable per proxy instance: it is the daemon's socket name. */
   session: string;
+  /** `ensureDaemon` ran for this endpoint: only then is there a daemon to close (design mode alone starts none). */
+  daemon: boolean;
 }
 const endpoints = new Map<string, Promise<Endpoint>>();
 let layoutCache: AbLayout | null = null;
@@ -220,7 +165,7 @@ export function ensureEndpoint(wsId: string): Promise<Endpoint> {
         : undefined;
       const server = await startCdpProxy(makePanelPort(wsId), trace ? { trace } : {});
       blog.info(`cdp proxy for ${wsId} on 127.0.0.1:${server.port}`);
-      return { wsId, server, session: randomBytes(6).toString('hex') };
+      return { wsId, server, session: randomBytes(6).toString('hex'), daemon: false };
     })();
     endpoints.set(wsId, p);
     p.catch(() => {
@@ -256,10 +201,12 @@ export async function disposeEndpoint(wsId: string): Promise<void> {
   } catch {
     return; // it never came up: nothing to close
   }
-  try {
-    await closeDaemon(agentBrowserBinary(), layout(), ep.session);
-  } catch (e) {
-    blog.warn(`closing the agent-browser daemon of ${wsId} failed`, e); // the proxy below must close regardless
+  if (ep.daemon) {
+    try {
+      await closeDaemon(agentBrowserBinary(), layout(), ep.session);
+    } catch (e) {
+      blog.warn(`closing the agent-browser daemon of ${wsId} failed`, e); // the proxy below must close regardless
+    }
   }
   try {
     await ep.server.close();
@@ -284,11 +231,36 @@ export async function disposeAllEndpoints(): Promise<void> {
   }
 }
 
+// ── in-process access (#398): design mode + the legacy tools ride the proxy's attach ──────────
+
+async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpTabChannel; release(): void }> {
+  const ep = await ensureEndpoint(wsId);
+  return ep.server.core.lease(tabId);
+}
+
+/** What `browser-panel.ts` calls instead of attaching a debugger of its own. */
+export const panelCdpSeat: bp.CdpSeat = {
+  async send(wsId, tabId, method, params) {
+    const lease = await attachLease(wsId, tabId);
+    try {
+      return await lease.channel.send(method, params);
+    } finally {
+      lease.release();
+    }
+  },
+  async hold(wsId, tabId) {
+    return (await attachLease(wsId, tabId)).release;
+  },
+};
+
 let started = false;
 /** Called once at boot: close daemons left by an earlier app run, and follow panel teardown. */
 export function initBrowserCliHost(): void {
   if (started) return;
   started = true;
+  bp.setCdpSeat(panelCdpSeat);
+  bp.setTabTeardownHook((wc) => seatForceDetach(wc));
+  if (process.env.ORCHESTRA_CDP_TRACE) setSeatTrace((line) => blog.info(line));
   bp.onPanelChange((wsId, _tabs, destroyed) => {
     if (destroyed) void disposeEndpoint(wsId);
   });
@@ -348,6 +320,7 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
     prepareLayout(l); // idempotent mkdir: a socket dir that vanished (runtime dir cleaned, a rig's teardown) must not fail every call until restart
     const binary = agentBrowserBinary();
     await ensureDaemon(binary, l, ep.session, ep.server.wsUrl);
+    ep.daemon = true;
     const shot = typeof msg.shotDir === 'string' && path.isAbsolute(msg.shotDir) ? msg.shotDir : undefined;
     // the URL travels in the client's ENVIRONMENT (AGENT_BROWSER_CDP), not its argv: cmdline is world-readable on this host, environ is not
     return { ok: true, binary, wsUrl: ep.server.wsUrl, env: { ...abEnv(l, ep.session, shot), AGENT_BROWSER_CDP: ep.server.wsUrl } };

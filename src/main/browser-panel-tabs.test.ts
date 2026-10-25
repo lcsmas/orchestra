@@ -21,11 +21,15 @@ class WebContents {
     this.destroyed = false; this.closed = 0; this.url = ''; this.title = '';
     this.cmds = []; this.dbgAttached = false; this.detachCalls = 0; this.loaded = [];
     this.handlers = {};
+    this.dbgHandlers = {};
     this.debugger = {
-      attach: () => { this.dbgAttached = true; },
-      detach: () => { this.dbgAttached = false; this.detachCalls++; },
+      // Like Electron: a second attach throws, and detach emits 'detach'.
+      attach: () => { if (this.dbgAttached) throw new Error('Another debugger is already attached to this WebContents.'); this.dbgAttached = true; this.attachCalls = (this.attachCalls || 0) + 1; },
+      detach: () => { this.dbgAttached = false; this.detachCalls++; for (const f of [...(this.dbgHandlers.detach || [])]) f({}, 'client disconnected'); },
+      on: (ev, fn) => { (this.dbgHandlers[ev] ||= []).push(fn); },
+      off: (ev, fn) => { this.dbgHandlers[ev] = (this.dbgHandlers[ev] || []).filter((f) => f !== fn); },
       isAttached: () => this.dbgAttached,
-      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve({ result: { value: this.evalValue ?? 'ev' } }); },
+      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return this.reply ? this.reply(m, p) : Promise.resolve({ result: { value: this.evalValue ?? 'ev' } }); },
     };
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
@@ -76,6 +80,25 @@ register(
 );
 
 const bp = await import('./browser-panel.ts');
+const seat = await import('./browser-cdp-seat.ts');
+
+// The registry attaches no debugger (#398): its CDP commands ride the proxy host's seat. The real host
+// imports Electron; this stands in with the REAL `browser-cdp-seat.ts` over the stubbed debugger.
+const lease = async (ws: string, tabId: string) => {
+  const wc = bp.tabContents(ws, tabId) as any;
+  if (!wc) throw new Error('no live view');
+  seat.seatAcquire(wc);
+  return { wc, release: () => seat.seatRelease(wc) };
+};
+const testSeat: Parameters<typeof bp.setCdpSeat>[0] = {
+  async send(ws, tabId, method, params) {
+    const l = await lease(ws, tabId);
+    try { return await l.wc.debugger.sendCommand(method, params); } finally { l.release(); }
+  },
+  async hold(ws, tabId) { return (await lease(ws, tabId)).release; },
+};
+bp.setCdpSeat(testSeat);
+bp.setTabTeardownHook((wc) => seat.seatForceDetach(wc as any));
 
 const attached = new Set<unknown>();
 bp.initBrowserPanels(() => ({
@@ -214,7 +237,7 @@ test('closeTab on a background tab leaves the active tab and the window alone, d
   openShown(ws);
   const t1 = bp.getActiveTab(ws)!;
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
-  await bp.evaluate(ws, '1', 't2'); // attaches t2's debugger
+  await bp.designModeArm(ws, 't2'); // design mode keeps t2's debugger attached while armed
   assert.equal(wcOf(t2).dbgAttached, true);
   bp.closeTab(ws, 't2');
   assert.equal(wcOf(t2).detachCalls, 1, 'debugger detached before the contents closed');
@@ -255,9 +278,10 @@ test('destroyPanel tears down EVERY tab: contents closed, debuggers detached, no
   const t1 = bp.getActiveTab(ws)!;
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   const t3 = bp.createTab(ws, { openedBy: 'human' });
-  await bp.evaluate(ws, '1', 't1');
-  await bp.evaluate(ws, '1', 't2');
-  await bp.evaluate(ws, '1', 't3');
+  await bp.designModeArm(ws, 't1');
+  await bp.designModeArm(ws, 't2');
+  await bp.designModeArm(ws, 't3');
+  for (const t of [t1, t2, t3]) assert.equal(wcOf(t).dbgAttached, true, `${t.id} armed: debugger held`);
   bp.destroyPanel(ws);
   for (const t of [t1, t2, t3]) {
     assert.equal(wcOf(t).closed, 1, `${t.id} contents closed`);
@@ -346,8 +370,7 @@ test('primitives hit the ACTIVE tab by default and the named tab with a trailing
   await bp.evaluate(ws, 'C');
   assert.deepEqual(evals(t2), ['B', 'C'], 'default follows the active tab');
   await assert.rejects(() => bp.evaluate(ws, 'D', 't99'), /not found/);
-  assert.equal(bp.attachDebugger(ws, 't1').wsId, ws);
-  assert.equal(wcOf(t1).dbgAttached, true);
+  assert.equal(wcOf(t1).dbgAttached, false, 'a one-shot command leaves no debugger behind (lease released)');
 });
 
 test('capture / input on a BACKGROUND tab are refused (only the active tab produces frames)', async () => {
@@ -446,7 +469,7 @@ test('an explicit tabId that no longer exists fails WITHOUT building a panel (cl
   const before = views();
   await assert.rejects(() => bp.evaluate(ws, '1', 't1'), /not found/);
   await assert.rejects(() => bp.navigate(ws, 'http://localhost:9/x', 't1'), /not found/);
-  assert.throws(() => bp.attachDebugger(ws, 't1'), /not found/);
+  await assert.rejects(() => bp.designModeArm(ws, 't1'), /not found/);
   assert.equal(bp.getPanel(ws), undefined, 'no panel resurrected');
   assert.equal(views(), before, 'no native view built');
   const ws2 = newWs();
@@ -535,14 +558,13 @@ test('designModePoll pins ONE tab: the element screenshot comes from the tab the
   assert.equal(shots(t2), 0, 'and not on the tab that became active meanwhile');
 });
 
-// ── explicit tabId NEVER builds a panel: every one of the 16 entry points, three stale situations ──
+// ── explicit tabId NEVER builds a panel: every one of the 15 entry points, three stale situations ──
 
 const ENTRY_POINTS: Record<string, (ws: string) => unknown> = {
   navigate: (ws) => bp.navigate(ws, 'http://localhost:9/x', 't1'),
   goBack: (ws) => bp.goBack(ws, 't1'),
   goForward: (ws) => bp.goForward(ws, 't1'),
   reload: (ws) => bp.reload(ws, 't1'),
-  attachDebugger: (ws) => bp.attachDebugger(ws, 't1'),
   capture: (ws) => bp.capture(ws, 75, 't1'),
   evaluate: (ws) => bp.evaluate(ws, '1', 't1'),
   readPage: (ws) => bp.readPage(ws, 't1'),
@@ -562,7 +584,7 @@ test('the arm list covers EVERY exported function that takes a trailing tabId (a
   const found = [...src.matchAll(/export (?:async )?function (\w+)\(([^)]*)\)/g)]
     .filter((m) => /tabId\?: BrowserTabId/.test(m[2]))
     .map((m) => m[1]);
-  assert.equal(found.length, 16, `expected 16 explicit-tabId entry points, found ${found.length}: ${found}`);
+  assert.equal(found.length, 15, `expected 15 explicit-tabId entry points (attachDebugger is gone: #398 — the proxy is the only attacher), found ${found.length}: ${found}`);
   assert.deepEqual(found.sort(), Object.keys(ENTRY_POINTS).sort());
 });
 
@@ -584,3 +606,139 @@ for (const [situation, setup] of Object.entries(STALE)) {
     });
   }
 }
+// ── design mode rides the proxy's attach (#398) ─────────────────────────────
+
+const RAW_PICK = {
+  url: 'http://localhost:9/p', title: 'P', chain: [{ tag: 'BODY', classes: [], nthOfType: 1 }, { tag: 'BUTTON', id: 'go', classes: [], nthOfType: 1 }],
+  outerHTML: '<button id="go">Go</button>', computed: { color: 'red' }, box: { x: 10, y: 10, width: 50, height: 20 }, viewport: { width: 800, height: 600 },
+};
+
+test('design mode: arm takes ONE attach and the polling does not churn it; a pick delivers the shaped pick + screenshot, then detaches', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  assert.deepEqual([wcOf(t1).attachCalls, wcOf(t1).dbgAttached], [1, true], 'armed: attached by the seat');
+  wcOf(t1).reply = () => Promise.resolve({ result: { value: null } }); // nothing picked yet
+  for (let i = 0; i < 5; i++) assert.equal(await bp.designModePoll(ws), null);
+  assert.equal(wcOf(t1).attachCalls, 1, '5 polls reused the held attach');
+  assert.equal(wcOf(t1).detachCalls, 0);
+  wcOf(t1).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'PNGDATA' } : { result: { value: RAW_PICK } });
+  const pick: any = await bp.designModePoll(ws);
+  assert.equal(pick.selector, 'body > button#go');
+  assert.equal(pick.html, '<button id="go">Go</button>');
+  assert.equal(pick.styles.color, 'red');
+  assert.equal(pick.screenshotBase64, 'PNGDATA', 'the cropped element screenshot is delivered');
+  assert.ok(wcOf(t1).cmds.some((c: any) => c.m === 'Page.captureScreenshot' && c.p.clip));
+  assert.deepEqual([wcOf(t1).attachCalls, wcOf(t1).detachCalls, wcOf(t1).dbgAttached], [1, 1, false], 'one attach for arm+polls+pick+screenshot, detached when the pick ended');
+});
+
+test('design mode: Escape (cancel) and disarm give the attach back; a failing disarm still does', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  wcOf(t1).reply = () => Promise.resolve({ result: { value: { cancelled: true } } });
+  assert.deepEqual(await bp.designModePoll(ws), { cancelled: true });
+  assert.equal(wcOf(t1).dbgAttached, false, 'cancel detached');
+  wcOf(t1).reply = undefined;
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).dbgAttached, true);
+  wcOf(t1).reply = () => Promise.reject(new Error('Inspected target navigated or closed'));
+  await bp.designModeDisarm(ws); // swallowed
+  assert.equal(wcOf(t1).dbgAttached, false, 'disarm detached although its evaluate failed');
+});
+
+test('design mode: two concurrent arms (and a re-arm after navigation) hold ONE attach, released by ONE disarm', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await Promise.all([bp.designModeArm(ws), bp.designModeArm(ws)]);
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).attachCalls, 1);
+  await bp.designModeDisarm(ws);
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t1).detachCalls], [false, 1], 'one disarm drops every arm: no leaked hold keeps the debugger attached');
+});
+
+test('design mode: an arm whose script fails does not leave the attach held', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  wcOf(t1).reply = () => Promise.reject(new Error('boom'));
+  await assert.rejects(() => bp.designModeArm(ws), /boom/);
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('design mode: disarm on a workspace with no panel builds none; on a closed tab it is a no-op', async () => {
+  const ws = newWs();
+  await bp.designModeDisarm(ws);
+  assert.equal(bp.getPanel(ws), undefined, 'no panel was created just to disarm');
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  bp.closeTab(ws, 't2');
+  await bp.designModeDisarm(ws, 't2');
+});
+
+test('design mode + a proxy client on the SAME tab: one attach, neither side detaches the other', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const wc = bp.tabContents(ws, 't1') as any;
+  seat.seatAcquire(wc); // an agent-browser session holds the tab through the proxy
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).attachCalls, 1, 'design mode did not attach a second time');
+  await bp.designModeDisarm(ws);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the agent session still holds the debugger');
+  seat.seatRelease(wc);
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('without the proxy host no command can run: a clear error, and still no debugger attached', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  bp.setCdpSeat(null);
+  try {
+    await assert.rejects(() => bp.evaluate(ws, '1'), /CDP proxy is not running/);
+    await assert.rejects(() => bp.designModeArm(ws), /CDP proxy is not running/);
+    assert.equal(wcOf(t1).attachCalls ?? 0, 0);
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
+
+test('design mode: the disarm that follows a pick (or Escape) sends nothing and takes no attach — there is nothing armed', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  wcOf(t1).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'P' } : { result: { value: RAW_PICK } });
+  await bp.designModePoll(ws);
+  const cmds = wcOf(t1).cmds.length, attaches = wcOf(t1).attachCalls;
+  await bp.designModeDisarm(ws); // the renderer's setDesignArmed(false) after the pick
+  assert.deepEqual([wcOf(t1).cmds.length, wcOf(t1).attachCalls], [cmds, attaches], 'no command, no attach');
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('design mode: a disarm that lands while the arm is still attaching runs AFTER it (no orphan overlay, no leaked lease)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  let openGate!: () => void;
+  const gate = new Promise<void>((r) => (openGate = r));
+  const slow = { ...testSeat, async hold(w: string, t: string) { await gate; return testSeat.hold(w, t); } } as Parameters<typeof bp.setCdpSeat>[0];
+  bp.setCdpSeat(slow);
+  try {
+    const arm = bp.designModeArm(ws);
+    const disarm = bp.designModeDisarm(ws); // the user toggled off before the lease was even granted
+    openGate();
+    await Promise.all([arm, disarm]);
+    const exprs = wcOf(t1).cmds.filter((c: any) => c.m === 'Runtime.evaluate').map((c: any) => c.p.expression as string);
+    assert.equal(exprs.length, 2, 'arm script then teardown');
+    assert.match(exprs[0], /__orchestra_design_overlay__/);
+    assert.match(exprs[1], /__orchestraDesignTeardown/);
+    assert.equal(wcOf(t1).dbgAttached, false, 'the lease was given back');
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
