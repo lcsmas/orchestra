@@ -5,6 +5,7 @@
 //   blank    a `_blank` link opens a NEW TAB (active; the page it was on stays); ctrl-click opens a background tab
 //   oauth    a NAMED sized window.open (OAuth shape) is a NATIVE CHILD WINDOW that keeps window.opener: the popup posts a token back to its opener and closes;
 //            the window is a real toplevel in MY sway, painted, in the workspace's session
+//   xsite    the same flow with a CROSS-SITE IdP (localhost vs 127.0.0.1: another site, another renderer process)
 //   storm    40 window.open from a script (no click): the budget of 3 binds (tabs, windows, or both together); near the cap of 8 the cap binds;
 //            ONE click firing 20 opens one popup (shown) + the budget; every view and window is accounted for
 //   ws       switching workspace takes the child window out of the compositor, switching back restores it
@@ -12,7 +13,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* controls (identity, scratch containment, own sway, trusted click, the page really fired
 // its popups) are separate clauses so a red clause can only be blamed on the behaviour. Must-FAIL builds: scripts/e2e-browser-popups-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,storm,ws,cleanup]
+// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,xsite,storm,ws,cleanup]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -27,7 +28,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'blank,oauth,storm,ws,cleanup').split(','));
+const ARMS = new Set(flag('--arms', 'blank,oauth,xsite,storm,ws,cleanup').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -468,12 +469,16 @@ try {
     await clickIn(opener, '#signin');
     const full = await softWait(async () => (await evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)) === 'signed-in tok-auto|popup-closed', 15000, 'the unattended OAuth flow (post back + self-close)');
     clause('oauth', 'unattended-oauth-flow-posts-back-and-closes-itself', full && swayWindows(b.app.pid).length === baseWins.length, `${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; app windows ${JSON.stringify(winNames(b))}`);
+  });
+
+  // ────────────────────────────── xsite: the same flow with a CROSS-SITE IdP ──────────────────────────────
+  if (ARMS.has('xsite')) await runArm('xsite', async () => {
     // a CROSS-SITE IdP (another host name = another site, another renderer process), the shape real OAuth has: the token still reaches window.opener
     opener = await gotoOpener(b);
     await clickIn(opener, '#signin-x');
     const cross = await softWait(async () => (await evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)) === 'signed-in tok-cross|popup-closed', 15000, 'the cross-site OAuth flow');
     const orig = await val(() => evalIn(opener, `document.getElementById('origin').textContent`), '');
-    clause('oauth', 'cross-site-oauth-flow-completes-through-window-opener', cross && /from http:\/\/localhost:\d+$/.test(orig) && swayWindows(b.app.pid).length === baseWins.length, `status|closed = ${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; message origin ${JSON.stringify(orig)} (the opener is on 127.0.0.1); app windows ${JSON.stringify(winNames(b))}`);
+    clause('xsite', 'cross-site-oauth-flow-completes-through-window-opener', cross && /from http:\/\/localhost:\d+$/.test(orig) && swayWindows(b.app.pid).length === baseWins.length, `status|closed = ${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; message origin ${JSON.stringify(orig)} (the opener is on 127.0.0.1); app windows ${JSON.stringify(winNames(b))}`);
   });
 
   // ────────────────────────────── storm: page-initiated popups -> budget + cap, nothing leaked ──────────────────────────────
@@ -563,6 +568,18 @@ try {
   // ────────────────────────────── cleanup: archiving the workspace leaves no popup window behind ──────────────────────────────
   if (ARMS.has('cleanup')) await runArm('cleanup', async () => {
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+    // closing the OPENER tab closes the child window it opened (a tab's popup must not outlive the tab)
+    await clickSel(b, '.browser-tab-new');
+    await softWait(async () => (await tabs(b)).length === 2, 10000, 'a second tab');
+    await typeUrl(b, `${URLS.opener}?t=2`);
+    await waitFor(async () => (await tabs(b))[1]?.label === TITLES.opener, 20000, 'tab 2 to load the opener fixture');
+    const opener2 = await pageOf(b, /popups-opener\.html\?t=2/);
+    await clickIn(opener2, '#signin-hold');
+    const up = await softWait(async () => swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 10000, 'the child window of tab 2');
+    clause('cleanup', 'ctl/tab-two-has-a-child-window-before-it-is-closed', up && (await tabs(b)).length === 2, `app windows ${JSON.stringify(winNames(b))}; tabs ${(await tabs(b)).length}`);
+    await clickSel(b, '.browser-tab-close', 1);
+    const gone = await softWait(async () => (await tabs(b)).length === 1 && swayWindows(b.app.pid).length === baseWins.length, 10000, 'the child window to follow its closed opener tab');
+    clause('cleanup', 'closing-the-opener-tab-closes-its-child-window', gone, `after closing tab 2: tabs ${(await tabs(b)).length}; app windows ${JSON.stringify(winNames(b))} (baseline ${JSON.stringify(baseWins)})`);
     await typeUrl(b, URLS.storm('?auto=40&kind=mixed'));
     await waitFor(async () => (await tabs(b))[0]?.label === TITLES.storm, 20000, 'tab 1 on the storm fixture');
     await sleep(2500);

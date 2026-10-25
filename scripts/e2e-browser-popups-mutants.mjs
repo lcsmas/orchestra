@@ -23,9 +23,9 @@ const SAME_VIEW = "  wc.setWindowOpenHandler((details) => {\n    if (/^https?:/i
 
 // edits: [file, from, to] (each `from` must occur exactly once in the ORIGINAL file)
 const MUTANTS = [
-  { id: 'R0-unfixed-same-view-handler', arms: 'blank,oauth,storm', edits: [[BP, WATCH, SAME_VIEW]], setupCtl: true,
+  { id: 'R0-unfixed-same-view-handler', arms: 'blank,oauth,xsite,storm', edits: [[BP, WATCH, SAME_VIEW]], setupCtl: true,
     red: ['blank-link-opens-a-new-tab', 'oauth-flow-completes-the-popup-posts-back-to-window-opener', 'cross-site-oauth-flow-completes-through-window-opener', 'script-storm-capped-by-the-budget'] },
-  { id: 'R1-named-popup-routed-as-a-tab', arms: 'oauth', edits: [[POL, "if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;", 'if (false) return true;'], [POL, "return req.disposition === 'new-window' && req.features.trim() !== '';", 'return false;']], setupCtl: true,
+  { id: 'R1-named-popup-routed-as-a-tab', arms: 'oauth,xsite', edits: [[POL, "if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;", 'if (false) return true;'], [POL, "return req.disposition === 'new-window' && req.features.trim() !== '';", 'return false;']], setupCtl: true,
     red: ['oauth-flow-completes-the-popup-posts-back-to-window-opener', 'the-popup-is-a-window-not-a-tab'] },
   { id: 'R2-budget-never-applied', arms: 'storm', edits: [[POL, 'if (!req.userGesture && ctx.pageInitiatedOpen >= budget)', 'if (false)']],
     red: ['script-storm-capped-by-the-budget'] },
@@ -47,6 +47,8 @@ const MUTANTS = [
     red: ['a-click-on-page-A-is-no-gesture-for-the-page-it-navigated-to'] },
   { id: 'R12-featureless-new-window-is-a-native-window', arms: 'blank', edits: [[POL, "return req.disposition === 'new-window' && req.features.trim() !== '';", "return req.disposition === 'new-window';"]],
     red: ['shift-click-opens-a-tab-not-a-native-window'] },
+  { id: 'R13-closed-opener-tab-leaves-its-child-window', arms: 'cleanup', edits: [[BP, "  wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));\n", ''], [BP, 'outlivesOpener: false,', 'outlivesOpener: true,']],
+    red: ['closing-the-opener-tab-closes-its-child-window'] },
   { id: 'R10-archive-leaves-the-child-windows', arms: 'cleanup', edits: [[BP, '  closePopupWindows(wsId);\n', ''], [BP, "  wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));\n", ''], [BP, 'outlivesOpener: false,', 'outlivesOpener: true,']],
     red: ['archive-leaves-no-tab-view-and-no-popup-window'] },
 ];
@@ -61,13 +63,8 @@ let cleaned = false;
 process.on('exit', () => { if (!cleaned) restoreAll(); });
 process.on('SIGINT', () => process.exit(130));
 const cmpAll = () => files.every((f) => fs.readFileSync(path.join(ROOT, f)).equals(fs.readFileSync(backups.get(f))));
-/** md5 over the built main-process bundle + its chunks: a mutant that did not reach the bundle leaves this unchanged. */
-const bundleHash = () => {
-  const dir = path.join(ROOT, 'dist-electron');
-  const h = crypto.createHash('md5');
-  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.js')).sort()) h.update(f).update(fs.readFileSync(path.join(dir, f)));
-  return h.digest('hex');
-};
+/** md5 of dist-electron/main.js: it names its hashed chunks, so a mutant in main.js OR in a shared chunk changes it; stale chunks left by earlier builds (emptyOutDir:false) do not. */
+const bundleHash = () => crypto.createHash('md5').update(fs.readFileSync(path.join(ROOT, 'dist-electron', 'main.js'))).digest('hex');
 const build = () => sh('nice', ['-n', '10', 'pnpm', 'exec', 'vite', 'build']);
 
 const rows = []; let bad = 0;
