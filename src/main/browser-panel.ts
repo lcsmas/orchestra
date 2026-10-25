@@ -568,9 +568,10 @@ export function activateTab(wsId: string, tabId: BrowserTabId): BrowserPanelStat
 
 /** Close `tabId`: detach its view, drop its debugger, destroy its contents. If
  *  it was active, its right neighbour (else the left) becomes active. Closing
- *  the LAST tab evicts the panel — the next ensurePanel builds a fresh one
- *  (what that should mean for the user is the human-tabs ticket's call).
- *  Throws if the workspace has no such tab. */
+ *  the LAST tab evicts the panel AND forgets its saved tabs (#393 F1: else the next
+ *  ensurePanel would restore the tab just closed) — the next ensurePanel builds a
+ *  fresh blank one. The human/agent paths go through {@link tryCloseTab}, which never
+ *  evicts (it replaces the last tab first). Throws if the workspace has no such tab. */
 export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
   const panel = reapIfDead(wsId);
   const tab = panel?.tabs.find((t) => t.id === tabId);
@@ -586,6 +587,7 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
     panels.delete(wsId);
     panel.attachedId = null;
     panel.pendingShow = false;
+    persistence?.save(wsId, null);
     const empty = emptyState(wsId);
     platform.broadcast('browser:event', wsId, empty);
     return empty;

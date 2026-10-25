@@ -74,6 +74,17 @@ export function decideTabClose(input: {
   return { ok: true, nextActiveId: neighbour.id, replaceWithBlank: false };
 }
 
+// ---- renderer: when does a panel event re-open the pane? --------------------------------------------------------------
+
+/** `browser:event` -> should the renderer mark this workspace's pane OPEN (an agent drove a closed pane)? Only when the ACTIVE tab
+ *  navigated: a new (activeTabId, url) key. A background tab's title / loading / in-page event re-publishes the SAME active url and
+ *  must not re-open a pane the user closed (#393 F2; up to 8 live tabs per workspace feed that stream). `prevKey` = the key returned
+ *  for the previous event of this workspace (undefined before the first). */
+export function decideBrowserAutoOpen(prevKey: string | undefined, state: { activeTabId: string; url: string }): { open: boolean; key: string } {
+  const key = state.url ? `${state.activeTabId}\n${state.url}` : '';
+  return { open: key !== '' && key !== prevKey, key };
+}
+
 // ---- popups (shape only — #396 implements the routing) -----------------------------------------------------------------
 
 /** What `webContents.setWindowOpenHandler` hands us about a page-opened window, plus what #396 adds (user gesture, opener dependence). */

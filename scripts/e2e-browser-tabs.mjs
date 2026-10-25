@@ -6,6 +6,7 @@
 //           urlbar   12x: new blank tab -> type a URL -> the bar must SHOW it once loaded (the input blurs ~11 ms after submit; it used to reset to a stale blank)
 //           cap      fill to 8, the 9th is refused: notice shown, 8 tabs, 8 page targets (no leaked view)
 //           paint    pane hidden / Help overlay up -> no fixture colour left over the app
+//           reopen   a BACKGROUND tab's title event must not re-open a pane the user closed; an agent-style navigation still does (F2)
 //           ws       a 2nd workspace: switching hides the 1st's views, tab sets are per workspace, switching back restores
 //           restore  [A,B,C] with B active reaches disk; GRACEFUL quit (Browser.close)
 //   boot 2  restore  first panel open after the restart: 3 tabs back, same URLs, same active tab, pixels = B; click C, SIGKILL
@@ -16,7 +17,7 @@
 // pixel instrument) are separate clauses so a red clause can only be blamed on the behaviour. Mutant BUILDS that must redden each arm:
 // scripts/e2e-browser-tabs-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,urlbar,cap,paint,ws,restore,last,down]
+// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,urlbar,cap,paint,reopen,ws,restore,last,down]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'tabs,urlbar,cap,paint,ws,restore,last,down').split(','));
+const ARMS = new Set(flag('--arms', 'tabs,urlbar,cap,paint,reopen,ws,restore,last,down').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -325,7 +326,7 @@ const BASE = `http://127.0.0.1:${site.port}`;
 const URLS = { a: `${BASE}/tabs-a.html`, b: `${BASE}/tabs-b.html`, c: `${BASE}/tabs-c.html` };
 console.log(`[rig] app ${APP_DIR} label ${LABEL} arms ${[...ARMS].join(',')} out ${OUT}\n[rig] fixture: ${site.kind} on ${BASE}`);
 const world = seedWorld(path.join(RIG_DIR, 'world'));
-const needBoot1 = ['tabs', 'urlbar', 'cap', 'paint', 'ws', 'restore'].some((a) => ARMS.has(a));
+const needBoot1 = ['tabs', 'urlbar', 'cap', 'paint', 'ws', 'reopen', 'restore'].some((a) => ARMS.has(a));
 let b = null;
 try {
   // ────────────────────────────── boot 1 ──────────────────────────────
@@ -441,6 +442,37 @@ try {
       await waitFor(() => b.cdp.eval(`!document.querySelector('.help-view')`), 10000, 'Help to close');
       const back = await holderColor(b, 'paint-after-help', COLORS.b);
       clause('paint', 'closing-the-overlay-restores-the-active-tab', near(back.color, COLORS.b), `pixel ${hex(back.color)}`);
+    }
+
+    // ── reopen (#393 F2) — BEFORE `ws`: a second workspace holds another tab at the same fixture url, and the target lookup is by url ──
+    //    a closed pane stays closed when a BACKGROUND tab publishes; an agent-style navigation re-opens it ──
+    if (ARMS.has('reopen')) {
+      const WSID = world.ws.id;
+      await clickSel(b, 'button.pane-toggle[aria-label="Hide browser pane"]');
+      await waitFor(() => b.cdp.eval(`!document.querySelector('.browser-tabs')`), 10000, 'the pane to close');
+      const urlMatches = (await viewTargets(b)).filter((t) => t.url === URLS.a);
+      clause('reopen', 'ctl/exactly-one-page-target-for-tab-a', urlMatches.length === 1, `page targets at ${URLS.a}: ${urlMatches.length} (a second workspace's tab would make the lookup ambiguous)`);
+      const bgTarget = urlMatches[0];
+      clause('reopen', 'ctl/background-tab-target-found', !!bgTarget, `page target for tab A (a background tab, pane closed): ${bgTarget?.url ?? 'NOT FOUND'}`);
+      if (bgTarget) {
+        const pc = await Cdp.connect(bgTarget.webSocketDebuggerUrl);
+        await pc.eval(`document.title = 'bg-title-changed'`);
+        pc.close();
+      }
+      const published = await softWait(() => b.cdp.eval(`window.orchestra.browserState(${JSON.stringify(WSID)}).then((s) => s.tabs.some((t) => t.title === 'bg-title-changed' && !t.active))`), 8000, 'main to publish the background title');
+      clause('reopen', 'ctl/background-title-event-reached-main', published, 'browserState(ws).tabs holds the changed title on a NON-active tab (the event ran through main)');
+      await sleep(1500);
+      const stillClosed = await b.cdp.eval(`!document.querySelector('.browser-tabs') && !!document.querySelector('button.pane-toggle[aria-label="Show browser pane"]')`);
+      clause('reopen', 'background-tab-event-does-not-reopen-a-closed-pane', stillClosed, `after the background title event: tab strip ${stillClosed ? 'absent' : 'PRESENT'}, toggle ${stillClosed ? 'reads "Show browser pane"' : 'reopened'}`);
+      grim('reopen-pane-still-closed.png');
+      // control: what the agent's navigate does (same main primitive) re-opens it — the auto-open feature is intact
+      await b.cdp.eval(`window.orchestra.browserNavigate(${JSON.stringify(WSID)}, ${JSON.stringify(URLS.b + '?agent=1')})`);
+      const reopened = await softWait(() => b.cdp.eval(`!!document.querySelector('.browser-tabs')`), 10000, 'the pane to re-open after an agent-style navigation');
+      clause('reopen', 'agent-style-navigation-still-reopens-the-pane', reopened, `tab strip ${reopened ? 'present' : 'ABSENT'} after browserNavigate(ws, ${URLS.b}?agent=1)`);
+      // put things back: B at its fixture url, A at its title (the restore arm asserts [A,B,C] with B active)
+      await b.cdp.eval(`window.orchestra.browserNavigate(${JSON.stringify(WSID)}, ${JSON.stringify(URLS.b)})`);
+      await softWait(async () => (await urlBar(b)) === URLS.b && (await tabs(b))[1]?.label === labelOf('b'), 15000, 'B back at its url');
+      if (bgTarget) { const pc = await Cdp.connect(bgTarget.webSocketDebuggerUrl).catch(() => null); if (pc) { await pc.eval(`document.title = ${JSON.stringify(labelOf('a'))}`).catch(() => {}); pc.close(); } }
     }
 
     // ── ws: a second workspace never sees (or is covered by) the first one's tabs ──

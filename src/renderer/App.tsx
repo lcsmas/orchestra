@@ -24,6 +24,7 @@ import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
 import { computeMountedIds } from '../shared/mounted-panes';
+import { decideBrowserAutoOpen } from '../shared/browser-tab-policy';
 
 // Max number of workspace panes (StructuredView, the Agent view) kept mounted at
 // once. The cap dates from when every pane was an xterm holding a WebGL context
@@ -191,9 +192,14 @@ export function App() {
   // open state is per-workspace, a BACKGROUND agent's browsing never yanks the
   // pane open on the workspace the user is looking at: its own pane is simply
   // revealed when the user switches there.
+  // Only a NAVIGATION of the active tab counts (decideBrowserAutoOpen): a background tab's title / loading event re-publishes the
+  // active tab's unchanged url and must not re-open a pane the user closed (#393 F2).
+  const browserEventKeys = useRef(new Map<string, string>());
   useEffect(() => {
     return window.orchestra.onBrowserEvent((wsId, state) => {
-      if (!state.url) return;
+      const d = decideBrowserAutoOpen(browserEventKeys.current.get(wsId), state);
+      browserEventKeys.current.set(wsId, d.key);
+      if (!d.open) return;
       setBrowserOpenIds((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
     });
   }, []);

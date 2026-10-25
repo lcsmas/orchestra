@@ -273,6 +273,26 @@ const live = () => S.views.filter((v) => !v.webContents.destroyed).length;
     assert.deepStrictEqual(e.tabs.slice(0, 3).map((t) => t.url), ['https://one.example/a', 'https://two.example/b', 'https://three.example/c']);
   });
 
+  await check('F1: BARE closeTab on the LAST tab (the #395 host path) forgets the saved tabs — a fresh process opens ONE blank tab, loads nothing', async () => {
+    const WL = 'ws-bare-last';
+    const s1 = createBrowserTabsStore({ file });
+    const one = await boot('p3c', s1);
+    one.bp.ensurePanel(WL);
+    one.bp.navigate(WL, 'https://closed.example/x');
+    one.bp.flushBrowserTabs();
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).workspaces[WL]?.tabs[0].url, 'https://closed.example/x', 'control: the URL was on disk before the close');
+    one.bp.closeTab(WL, one.bp.listTabs(WL)[0].id);
+    one.bp.flushBrowserTabs();
+    assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).workspaces[WL], undefined, 'the closed tab is still remembered');
+    const viewsBefore = S.views.length;
+    const two = await boot('p3d', createBrowserTabsStore({ file }));
+    two.bp.ensurePanel(WL);
+    const tabs = two.bp.listTabs(WL);
+    assert.strictEqual(tabs.length, 1);
+    assert.strictEqual(tabs[0].url, '');
+    assert.strictEqual(S.views.slice(viewsBefore).flatMap((v) => v.webContents.loads).length, 0, 'the closed URL was reloaded');
+  });
+
   await check('destroyPanel (workspace deleted / archived) forgets the tabs, even when this process never opened the panel', () => {
     const W2 = 'ws-never-opened';
     const store = createBrowserTabsStore({ file });

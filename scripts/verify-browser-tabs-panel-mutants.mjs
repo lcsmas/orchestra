@@ -29,6 +29,7 @@ const MUTANTS = [
   { id: 'M9-inactive-tab-stays-attached', file: P, cmd: HARNESS, from: '  if (prev) detachTab(panel, prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;' },
   { id: 'M11-restore-url-dropped-on-error-commit', file: P, cmd: HARNESS, from: '    if (restorableUrl(url)) restoreUrls.delete(tab);', to: '    restoreUrls.delete(tab);' },
   { id: 'M12-close-picks-left-neighbour', file: P, cmd: HARNESS, from: 'panel.activeId = panel.tabs[Math.min(idx, panel.tabs.length - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);', to: 'panel.activeId = panel.tabs[Math.max(0, idx - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);' },
+  { id: 'M13-bare-last-close-keeps-saved-tabs', file: P, cmd: HARNESS, from: '    panel.pendingShow = false;\n    persistence?.save(wsId, null);\n    const empty', to: '    panel.pendingShow = false;\n    const empty' },
   { id: 'M10-unknown-tab-activate-throws', file: P, cmd: HARNESS, from: "if (!panel?.tabs.some((t) => t.id === tabId)) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);", to: '' },
   // pure policy arms
   { id: 'P1-cap-off-by-one', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'if (input.openCount < cap) return { ok: true };', to: 'if (input.openCount <= cap) return { ok: true };' },
@@ -39,6 +40,8 @@ const MUTANTS = [
   { id: 'P6-background-close-moves-active', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { ok: true, nextActiveId: input.activeId, replaceWithBlank: false };', to: 'return { ok: true, nextActiveId: input.tabs[0].id, replaceWithBlank: false };' },
   { id: 'P7-popup-external-urls-load', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: "return /^https?:/i.test(req.url) ? { route: 'same-view' } : { route: 'external' };", to: "return { route: 'same-view' };" },
   // persisted-state arms
+  { id: 'P8-background-event-reopens-the-pane', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { open: key !== \'\' && key !== prevKey, key };', to: 'return { open: key !== \'\', key };' },
+  { id: 'P9-url-less-event-opens', file: POL, cmd: unit('src/shared/browser-tab-policy.test.ts'), from: 'return { open: key !== \'\' && key !== prevKey, key };', to: 'return { open: key !== prevKey, key };' },
   { id: 'S1-unsafe-scheme-restored', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: 'return /^(https?|file):/i.test(u) ? u : \'\';', to: 'return u;' },
   { id: 'S2-cap-ignored-on-parse', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: '    if (tabs.length >= BROWSER_TAB_CAP) break;\n', to: '' },
   { id: 'S3-active-index-unclamped', file: ST, cmd: unit('src/shared/browser-tab-state.test.ts'), from: 'return { tabs, activeIndex: ai >= 0 && ai < tabs.length ? ai : 0 };', to: 'return { tabs, activeIndex: ai };' },

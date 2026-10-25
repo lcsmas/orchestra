@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_TAB_CAP, decidePopup, decideTabClose, decideTabOpen, type PolicyTab } from './browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, type PolicyTab } from './browser-tab-policy.ts';
 
 const tabs = (spec: string): PolicyTab[] => spec.split(' ').map((s) => ({ id: s.slice(1), openedBy: s[0] === 'h' ? 'human' : 'agent' }));
 
@@ -100,4 +100,26 @@ test('decidePopup (#396 seam): today a web URL stays in the opener view and a no
   assert.deepEqual(decidePopup({ ...base, url: 'mailto:a@b.c' }), { route: 'external' });
   assert.deepEqual(decidePopup({ ...base, url: 'javascript:alert(1)' }), { route: 'external' });
   assert.deepEqual(decidePopup({ ...base, url: 'https://x/', frameName: '_blank', userGesture: false }), { route: 'same-view' });
+});
+
+test('decideBrowserAutoOpen: the first event with a real url opens the pane; an event with no url never does', () => {
+  const a = decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: 'https://a/' });
+  assert.equal(a.open, true);
+  assert.equal(decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: '' }).open, false);
+});
+
+test('decideBrowserAutoOpen (#393 F2): the SAME active (tab, url) again — a background tab\'s title/loading event, the active tab\'s late title — does NOT re-open a pane the user closed', () => {
+  const first = decideBrowserAutoOpen(undefined, { activeTabId: 't3', url: 'https://c/' });
+  const again = decideBrowserAutoOpen(first.key, { activeTabId: 't3', url: 'https://c/' });
+  assert.equal(again.open, false);
+  assert.equal(again.key, first.key);
+});
+
+test('decideBrowserAutoOpen: an agent navigation (new url) or a different active tab re-opens; coming back to a url after a blank state counts as a navigation', () => {
+  const k = decideBrowserAutoOpen(undefined, { activeTabId: 't1', url: 'https://a/' }).key;
+  assert.equal(decideBrowserAutoOpen(k, { activeTabId: 't1', url: 'https://a/next' }).open, true, 'new url');
+  assert.equal(decideBrowserAutoOpen(k, { activeTabId: 't2', url: 'https://a/' }).open, true, 'another tab became active');
+  const blank = decideBrowserAutoOpen(k, { activeTabId: 't1', url: '' });
+  assert.equal(blank.open, false);
+  assert.equal(decideBrowserAutoOpen(blank.key, { activeTabId: 't1', url: 'https://a/' }).open, true, 'same url after a blank state');
 });
