@@ -84,8 +84,8 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       const tab = bp.getTab(wsId, tabId);
       const wc = bp.tabContents(wsId, tabId);
       if (!tab || !wc) throw new Error(`browser tab ${tabId} has no live view`);
-      // A tab that never navigated has no renderer: `Runtime.evaluate` on it hangs, and agent-browser gives up on the connect ("tab is not responding").
-      if (!wc.getURL()) {
+      // A tab that never navigated (and has no load in flight — a fresh `createTab({url})` must not be overwritten) has no renderer: `Runtime.evaluate` on it hangs, and agent-browser gives up on the connect ("tab is not responding").
+      if (!wc.getURL() && !wc.isLoading()) {
         await Promise.race([wc.loadURL('about:blank').catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
       }
       // Shared with the legacy mcp__browser__* path (one attach per target): attach only if nobody has.
@@ -133,6 +133,8 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       const wc = bp.tabContents(wsId, tabId);
       if (!wc) throw new Error(`browser tab ${tabId} has no live view`);
       const img = await wc.capturePage();
+      // A never-painted view answers with an EMPTY 0x0 image (browser-panel.md), which must read as a failure, not as a screenshot.
+      if (img.isEmpty()) throw new Error('capturePage() returned an empty image (the view has no painted frame)');
       return (format === 'jpeg' ? img.toJPEG(Math.max(0, Math.min(100, quality ?? 80))) : img.toPNG()).toString('base64');
     },
     framesError: (tabId) => {
@@ -206,13 +208,22 @@ export async function disposeEndpoint(wsId: string): Promise<void> {
   const p = endpoints.get(wsId);
   if (!p) return;
   endpoints.delete(wsId);
+  let ep: Endpoint;
   try {
-    const ep = await p;
+    ep = await p;
+  } catch {
+    return; // it never came up: nothing to close
+  }
+  try {
     await closeDaemon(agentBrowserBinary(), layout(), ep.session);
+  } catch (e) {
+    blog.warn(`closing the agent-browser daemon of ${wsId} failed`, e); // the proxy below must close regardless
+  }
+  try {
     await ep.server.close();
     blog.info(`cdp proxy for ${wsId} closed`);
   } catch (e) {
-    blog.warn(`closing the browser endpoint of ${wsId} failed`, e);
+    blog.warn(`closing the cdp proxy of ${wsId} failed`, e);
   }
 }
 
@@ -267,7 +278,10 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
   if (verdict === 'unregistered') {
     return { ok: false, code: 'unregistered', error: 'the host cannot vouch for this session (it holds no session key for the workspace) — restart the workspace session' };
   }
-  if (!store.getWorkspace(id)) return { ok: false, code: 'unknown-workspace', error: `unknown workspace ${id}` };
+  const ws = store.getWorkspace(id);
+  if (!ws) return { ok: false, code: 'unknown-workspace', error: `unknown workspace ${id}` };
+  // An archived workspace has no panel any more (destroyPanel): a late call from a leftover shell must not resurrect one.
+  if (ws.archived) return { ok: false, code: 'unknown-workspace', error: `workspace ${id} is archived` };
   try {
     const ep = await ensureEndpoint(id);
     bp.revealForAgent(id);

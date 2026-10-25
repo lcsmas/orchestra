@@ -1934,7 +1934,7 @@ async function main(argv: string[]): Promise<void> {
         { id, key: process.env.ORCHESTRA_SESSION_KEY ?? '', ...(shotRoot ? { shotDir: path.join(shotRoot, 'browser') } : {}) },
         { timeoutMs: 45_000 },
       );
-      if (!res.ok) fail(`orchestra browser: ${res.error ?? 'the host refused'}`);
+      if (!res.ok) fail(`orchestra browser: ${res.error ?? 'this Orchestra app does not serve the browser CLI (an older build answers unknown routes with an empty reply) — update the app'}`);
       const binary = res.binary as string;
       const env = browserChildEnv(process.env, res.env as Record<string, string>);
       const run = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {

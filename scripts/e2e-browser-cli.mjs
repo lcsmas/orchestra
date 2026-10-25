@@ -25,7 +25,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'destroy-closes-daemon'];
+const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'breadth', 'tabs', 'destroy-closes-daemon'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires (hash changes per build), 'cli' = dist-electron/cli.js.
  *  Each edit is a regex that must match EXACTLY once (so a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* clause must stay GREEN. */
 const MUTANTS = {
@@ -36,9 +36,9 @@ const MUTANTS = {
   'env-scrub': { file: 'cli', edits: [['for (const [k, v] of Object.entries(fromHost)) out[k] = v;', 'for (const [k, v] of Object.entries(fromHost)) out[k] = v; for (const [k, v] of Object.entries(parent)) if (k.startsWith("AGENT_BROWSER_") && typeof v === "string") out[k] = v;']], arms: ['cross-workspace'], why: 'the caller\'s AGENT_BROWSER_* env reaches the client (it can re-point at a sibling\'s daemon)' },
   'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['stale-ref'], why: 'a stale ref is reported as the raw agent-browser error, not browser_stale_ref' },
   'allowlist-open': { file: 'cli', edits: [['if (!BROWSER_COMMANDS.has(command)) {', 'if (false) {'], ['if (command in REFUSED_COMMANDS) {', 'if (false) {'], ['if (REFUSED_FLAGS.has(name)) {', 'if (false) {']], arms: ['allowlist'], why: 'every agent-browser command and flag passes through' },
-  'frames-guard': { file: 'chunk', edits: [[/(\w+)\.attachedId===null\?"this workspace's Browser pane is not on screen/, '$1.attachedId===void 0?"this workspace\'s Browser pane is not on screen']], arms: ['background'], why: 'a background workspace\'s screenshot is no longer refused up front' },
+  'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['background'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes (the probe → deadline → capturePage chain runs for real)' },
   'acquire-always-attach': { file: 'chunk', edits: [[/(\w+)\.debugger\.isAttached\(\)\|\|\1\.debugger\.attach\("1\.3"\),(\w+)\.debuggerAttached=!0,\1\.debugger\.once\("detach"/, '$1.debugger.attach("1.3"),$2.debuggerAttached=!0,$1.debugger.once("detach"']], arms: ['legacy-coexist'], why: 'the proxy attaches even when the legacy tools / design mode already hold the debugger' },
-  'no-about-blank': { file: 'chunk', edits: [[/(\w+)\.getURL\(\)\|\|await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\),/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
+  'no-about-blank': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\),/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
   'daemon-neuter': { file: 'chunk', edits: [[/(async function \w+\((\w+),(\w+),(\w+),(\w+),(\w+)=\w+\)\{)(if\(await \6\.canConnect)/, '$1return;$7']], arms: ['daemon-host-owned'], why: 'the host never starts the daemon; the first agent client does, with the agent\'s env, inside the member\'s scope' },
   'daemon-env-leak': { file: 'chunk', edits: [[/execFile\((\w+),(\w+),\{env:(\w+),timeout/, 'execFile($1,$2,{env:{...process.env,...$3},timeout']], arms: ['daemon-host-owned'], why: 'the host spawns the daemon with the app\'s whole environment' },
   'screenshot-truncated': { file: 'chunk', edits: [[/primary:async\(\)=>\(await (\w+)\.channel\.send\("Page\.captureScreenshot",(\w+)\)\)\.data/, 'primary:async()=>(await $1.channel.send("Page.captureScreenshot",$2)).data.slice(0,64)']], arms: ['screenshot'], why: 'the screenshot chain returns a truncated image' },
@@ -46,6 +46,10 @@ const MUTANTS = {
   'upload-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="DOM.setFileInputFiles"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['upload'], why: 'the file-input assignment is acknowledged but never reaches the page' },
   'dialog-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Page.handleJavaScriptDialog"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['dialog'], why: 'dialog accept/dismiss is acknowledged but the page stays blocked' },
   'archive-no-dispose': { file: 'chunk', edits: [[/\((\w+),(\w+),(\w+)\)=>\{\3&&(\w+)\(\1\)\}\),\(async\(\)=>\{try\{/, '($1,$2,$3)=>{}),(async()=>{try{']], arms: ['destroy-closes-daemon'], why: 'archiving a workspace leaves its CDP proxy and agent-browser daemon running' },
+  'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
+  'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{const (\w+)=await/, 'try{const $3=await']], arms: ['destroy-closes-daemon'], why: 'a late /browser call for an archived workspace resurrects its panel, proxy and daemon' },
+  'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
+  'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
 };
 if (argv.includes('--list')) {
@@ -388,12 +392,12 @@ const ARM_FNS = {
     const status = await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'dialog status to report the open confirm');
     clause(A, 'status-sees-the-confirm', /sure\?/.test(status.stdout), show(status));
     const acc = await cli(ctx, W1, ['dialog', 'accept']);
-    await clickP;
+    await Promise.race([clickP, sleep(8000)]); // a page that stays blocked must turn into a RED clause below, not an aborted arm
     const t1 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
     clause(A, 'accept-resolves-true', acc.code === 0 && t1 === 'true', `${show(acc)} → oracle #dlg=${JSON.stringify(t1)}`);
     const click2 = cli(ctx, W1, ['click', ask], { timeoutMs: 40000 });
     await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'the second confirm');
-    const dis = await cli(ctx, W1, ['dialog', 'dismiss']); await click2;
+    const dis = await cli(ctx, W1, ['dialog', 'dismiss']); await Promise.race([click2, sleep(8000)]);
     const t2 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
     clause(A, 'dismiss-resolves-false', dis.code === 0 && t2 === 'false', `${show(dis)} → oracle #dlg=${JSON.stringify(t2)}`);
   },
@@ -493,14 +497,20 @@ const ARM_FNS2 = {
     await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
     const g1 = await cli(ctx, W1, ['get', 'url']); const g2 = await cli(ctx, W2, ['get', 'url']);
     clause(A, 'each-cli-reaches-only-its-own-panel', g1.stdout.trim() === `${FIX}/cli.html` && g2.stdout.trim() === `${FIX}/index.html`, `W1 get url → ${g1.stdout.trim()}; W2 get url → ${g2.stdout.trim()}`);
-    // the agent's own env cannot re-point the client at a sibling's daemon / proxy
-    const sess = sockets(ctx);
+    // the agent's own env cannot re-point the client at a sibling's daemon / proxy — nor drag the sibling's daemon onto ITS panel
+    const sess2 = own2.env.AGENT_BROWSER_SESSION;
+    const attempts = [
+      { AGENT_BROWSER_SESSION: sess2 },
+      { AGENT_BROWSER_CDP: own2.wsUrl },
+      { AGENT_BROWSER_SESSION: sess2, AGENT_BROWSER_CDP: own2.wsUrl, AGENT_BROWSER_NAMESPACE: 'elsewhere', AGENT_BROWSER_SOCKET_DIR: path.join(ctx.world.fakeHome, 'elsewhere') },
+      // the client follows each call's own --cdp, so a leaked SESSION alone re-points nothing: the observable proof of a leak is a setting the host never sets
+      { AGENT_BROWSER_JSON: '1', AGENT_BROWSER_MAX_OUTPUT: '3' },
+    ];
     const outs = [];
-    for (const s2 of [own2.env.AGENT_BROWSER_SESSION, ...sess]) {
-      const r = await cli(ctx, W1, ['get', 'url'], { env: { AGENT_BROWSER_SESSION: s2, AGENT_BROWSER_CDP: own2.wsUrl, AGENT_BROWSER_NAMESPACE: 'elsewhere', AGENT_BROWSER_SOCKET_DIR: path.join(ctx.world.fakeHome, 'elsewhere') } });
-      outs.push(r.stdout.trim());
-    }
-    clause(A, 'caller-agent-browser-env-is-scrubbed', outs.length >= 2 && outs.every((o) => o === `${FIX}/cli.html`), `W1 with AGENT_BROWSER_{SESSION,CDP,NAMESPACE,SOCKET_DIR} pointing at W2 (sessions tried: ${[own2.env.AGENT_BROWSER_SESSION, ...sess].join(',')}) → ${JSON.stringify(outs)}`);
+    for (const extra of attempts) { const r = await cli(ctx, W1, ['get', 'url'], { env: extra }); outs.push(r.stdout.trim()); }
+    const w2after = await cli(ctx, W2, ['get', 'url']);
+    clause(A, 'caller-agent-browser-env-is-scrubbed', outs.every((o) => o === `${FIX}/cli.html`) && w2after.stdout.trim() === `${FIX}/index.html`,
+      `W1 with AGENT_BROWSER_SESSION=<W2's> / _CDP=<W2's> / all four pointing elsewhere / _JSON=1 + _MAX_OUTPUT=3 (a leak would print JSON or htt) → ${JSON.stringify(outs)}; W2's own panel afterwards → ${w2after.stdout.trim()} (a leaked env would re-point W2's daemon at W1's panel)`);
     const f1 = await cli(ctx, W1, ['--session', own2.env.AGENT_BROWSER_SESSION, 'get', 'url']);
     const f2 = await cli(ctx, W1, ['--cdp', own2.wsUrl, 'get', 'url']);
     clause(A, 'session-and-cdp-flags-refused', f1.code !== 0 && f2.code !== 0 && /--session is not allowed/.test(f1.stderr) && /--cdp is not allowed/.test(f2.stderr), `--session → ${show(f1)}; --cdp → ${show(f2)}`);
@@ -513,7 +523,7 @@ const ARM_FNS2 = {
     const link = refOf(snap.stdout, 'link', 'CLI page');
     clause(A, 'ctl/background-workspace-can-read', snap.code === 0 && !!link, `W2 (not on screen) snapshot: ${show(snap)}`);
     const shot = await cli(ctx, W2, ['screenshot', path.join(ctx.world.fakeHome, 'bg.png')], { timeoutMs: 45000 });
-    clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /not on screen/.test(shot.stderr), show(shot));
+    clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /Browser pane is not on screen/.test(shot.stderr), show(shot));
     const click = await cli(ctx, W2, ['click', link], { timeoutMs: 45000 });
     clause(A, 'click-fails-fast-nothing-dispatched', click.code !== 0 && click.ms < 9000 && /not on screen|outside the viewport/.test(click.stderr), show(click));
     const still = await ctx.o2.eval(`location.pathname`);
@@ -560,9 +570,93 @@ const ARM_FNS2 = {
     const dead = !alive(pid);
     const refused = await new Promise((resolve) => { const sck = net.connect(port, '127.0.0.1'); sck.on('connect', () => { sck.destroy(); resolve(false); }); sck.on('error', () => resolve(true)); });
     clause(A, 'archive-closes-daemon-and-proxy', dead && refused && !sockets(ctx).includes(session), `after archiving ${W2.branch}: daemon ${pid} ${dead ? 'exited' : 'STILL ALIVE'}, proxy port ${refused ? 'closed' : 'STILL OPEN'}, socket ${sockets(ctx).includes(session) ? 'still listed' : 'gone'}`);
+    const late = await hostCall(ctx, '/browser', { id: W2.id, key: W2.key });
+    const bw = (await ctx.targets()).filter((t) => t.type === 'page' && t.url.startsWith(`${ctx.FIX}/index.html`)).length;
+    clause(A, 'late-call-for-an-archived-workspace-is-refused', late.ok === false && /archived/.test(late.error ?? '') && sockets(ctx).length === 1, `/browser as the archived ${W2.branch} → ${JSON.stringify(late).slice(0, 140)}; daemon sockets left: ${sockets(ctx).length} (no panel, proxy or daemon is resurrected)`);
   },
 };
 Object.assign(ARM_FNS, ARM_FNS2);
+
+
+const ARM_FNS3 = {
+  async breadth(ctx) {
+    // The surface the ticket names beyond click/fill/upload/dialog: type, press, wait, scroll, hover, console, network, cookies, storage, eval.
+    const { W1, FIX } = ctx; const A = 'breadth';
+    const open = await cli(ctx, W1, ['open', `${FIX}/cli-keys.html`]);
+    const o = await oracle(ctx, `${FIX}/cli-keys.html`);
+    try {
+      const w = await cli(ctx, W1, ['wait', '#late']);
+      clause(A, 'wait-for-selector-waits', open.code === 0 && w.code === 0 && w.ms >= 250 && (await o.eval(`!!document.getElementById('late')`)), `${show(w)} (the element is inserted 900 ms after load; the oracle sees it)`);
+      const snap = await cli(ctx, W1, ['snapshot', '-i']);
+      const box = refOf(snap.stdout, 'textbox', 'keys') ?? refOf(snap.stdout, 'textbox', ''); const hov = refOf(snap.stdout, 'button', 'hover me');
+      const ty = await cli(ctx, W1, ['type', box, 'abc']);
+      const v = await o.eval(`document.getElementById('k').value`);
+      clause(A, 'type-into-element', ty.code === 0 && v === 'abc', `${show(ty)} → oracle value=${JSON.stringify(v)}`);
+      const pr = await cli(ctx, W1, ['press', 'Enter']);
+      const keys = await o.eval(`document.getElementById('keys').textContent`);
+      clause(A, 'press-key', pr.code === 0 && /Enter,/.test(keys), `${show(pr)} → oracle keydown log=${JSON.stringify(keys)}`);
+      const hv = await cli(ctx, W1, ['hover', hov]);
+      clause(A, 'hover', hv.code === 0 && (await o.eval(`document.getElementById('hov').dataset.h`)) === '1', `${show(hv)}`);
+      const sc = await cli(ctx, W1, ['scroll', 'down', '400']);
+      const y = await o.eval(`Math.round(window.scrollY)`);
+      clause(A, 'scroll', sc.code === 0 && y >= 300, `${show(sc)} → oracle scrollY=${y}`);
+      await cli(ctx, W1, ['eval', "console.log('b395-console-x')"]);
+      const con = await cli(ctx, W1, ['console']);
+      clause(A, 'console-messages', con.code === 0 && /b395-console-x/.test(con.stdout), show(con));
+      await cli(ctx, W1, ['eval', "fetch('/whoami').then(r => r.text())"]);
+      const net = await cli(ctx, W1, ['network', 'requests']);
+      clause(A, 'network-requests', net.code === 0 && /\/whoami/.test(net.stdout), show(net));
+      const ck = await cli(ctx, W1, ['cookies', 'set', 'sid', 'b395cookie', '--url', FIX]);
+      const who = await o.eval(`fetch('/whoami').then((r) => r.text())`);
+      const ckg = await cli(ctx, W1, ['cookies', 'get']);
+      clause(A, 'cookies-set-and-get', ck.code === 0 && who === 'b395cookie' && /sid=b395cookie/.test(ckg.stdout), `set ${show(ck)} → the fixture server sees sid=${who}; get → ${JSON.stringify(ckg.stdout.trim().slice(0, 80))}`);
+      const st = await cli(ctx, W1, ['storage', 'local', 'set', 'b395k', 'b395v']);
+      const sv = await o.eval(`localStorage.getItem('b395k')`);
+      const sg = await cli(ctx, W1, ['storage', 'local', 'get', 'b395k']);
+      clause(A, 'storage-set-and-get', st.code === 0 && sv === 'b395v' && /b395v/.test(sg.stdout), `${show(st)} → oracle localStorage=${JSON.stringify(sv)}; get → ${JSON.stringify(sg.stdout.trim())}`);
+      await o.eval(`localStorage.removeItem('b395k')`);
+      await cli(ctx, W1, ['open', `${FIX}/cli.html`]); // leave the form page for later arms
+    } finally { o.close(); }
+  },
+
+  async tabs(ctx) {
+    // Story 36/37: list, open and close tabs; an agent closes the tabs it opened and NEVER the human's. The REGISTRY (read over the app's own IPC) is the
+    // truth: agent-browser v0.39.2 prints "closed" even when the proxy refused (it swallows the Target.closeTarget error).
+    const { W1, FIX, ui } = ctx; const A = 'tabs';
+    const reg = async () => (await ui.eval(`window.orchestra.browserState(${sel(W1.id)})`)).tabs;
+    const labelOf = (list, re) => (list.stdout.split('\n').find((l) => re.test(l)) ?? '').match(/\[(t\d+)\]/)?.[1];
+    const openOwn = async () => {
+      const nw = await cli(ctx, W1, ['tab', 'new', `${FIX}/index.html`]);
+      await waitFor(async () => (await reg()).some((t) => t.openedBy === 'agent' && /\/index\.html$/.test(t.url)), 10000, 'the new tab to load /index.html').catch(() => {});
+      return nw;
+    };
+    const before = await reg();
+    const human = before.find((t) => t.openedBy === 'human');
+    clause(A, 'ctl/one-human-tab-to-start', before.length === 1 && !!human, `registry tabs: ${JSON.stringify(before.map((t) => [t.id, t.openedBy, t.url]))}`);
+    const nw = await openOwn();
+    const after = await reg();
+    const mine = after.find((t) => t.openedBy === 'agent');
+    clause(A, 'tab-new-creates-a-loaded-agent-tab', nw.code === 0 && after.length === 2 && !!mine && mine.active === true && /\/index\.html$/.test(mine.url), `${show(nw)} → registry ${JSON.stringify(after.map((t) => [t.id, t.openedBy, t.active, t.url.slice(-12)]))}`);
+    const list = await cli(ctx, W1, ['tab', 'list']);
+    clause(A, 'tab-list-shows-both', list.code === 0 && list.stdout.split('\n').filter((l) => /\[t\d+\]/.test(l)).length === 2 && /cli\.html/.test(list.stdout) && /index\.html/.test(list.stdout), show(list));
+    const myLabel = labelOf(list, /\/index\.html/);
+    const closeMine = await cli(ctx, W1, ['tab', 'close', myLabel ?? 't0']);
+    await waitFor(async () => (await reg()).length === 1, 8000, 'the agent tab to leave the registry').catch(() => {});
+    const end = await reg();
+    clause(A, 'agent-closes-its-own-tab', closeMine.code === 0 && end.length === 1 && end[0].id === human.id && end[0].active, `tab close ${myLabel}: ${show(closeMine)} → registry ${JSON.stringify(end.map((t) => [t.id, t.openedBy, t.active]))}`);
+    const ok = await cli(ctx, W1, ['get', 'url']);
+    clause(A, 'human-tab-drivable-after', ok.code === 0 && /cli\.html$/.test(ok.stdout.trim()), show(ok));
+    // now try to close the HUMAN's tab while an agent tab exists
+    await openOwn();
+    const list2 = await cli(ctx, W1, ['tab', 'list']);
+    const humanLabel = labelOf(list2, /\/cli\.html/);
+    const closeHuman = await cli(ctx, W1, ['tab', 'close', humanLabel ?? 't0']);
+    await sleep(500);
+    const still = await reg();
+    clause(A, 'agent-cannot-close-the-humans-tab', !!humanLabel && still.some((t) => t.id === human.id), `tab close ${humanLabel}: ${show(closeHuman)} → registry still has the human tab: ${still.some((t) => t.id === human.id)} (agent-browser says "closed" regardless; the registry is the truth)`);
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS3);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
@@ -599,7 +693,9 @@ clause('ctl', 'live-dirs-untouched', same, `${Object.keys(before).length} live p
 
 // ── verdict ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const isCtl = (c) => c.arm === 'ctl' || c.clause.startsWith('ctl/');
-const ctlRed = results.filter((c) => isCtl(c) && !c.ok), armRed = results.filter((c) => !isCtl(c) && !c.ok);
+const targetArms = new Set(MUTANT ? MUTANTS[MUTANT].arms : ARM_LIST);
+// A mutant may break OTHER arms (collateral): their arm-scoped controls are not the mutant's concern. Global controls (app identity, containment, teardown, live dirs) always are.
+const ctlRed = results.filter((c) => isCtl(c) && !c.ok && (c.arm === 'ctl' || targetArms.has(c.arm))), armRed = results.filter((c) => !isCtl(c) && !c.ok);
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ app: APP_DIR, mutant: MUTANT, results, shots }, null, 2));
 let verdict, rc;

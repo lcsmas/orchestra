@@ -10,7 +10,12 @@ if [[ $# -gt 0 ]]; then MUTANTS=("$@"); else read -r -a MUTANTS <<< "$("${HERE}/
 fail=0
 for m in "${MUTANTS[@]}"; do
   out="$(mktemp "${TMPDIR:-/var/tmp}/b395-mutant-XXXXXX.log")"
-  "${HERE}/e2e-browser-cli.sh" "${APP_DIR}" --mutant "$m" > "$out" 2>&1; rc=$?
+  # rc=90 = the contained rig could not prove its display (a sibling's marker raced ours): infrastructure, not a verdict — retry up to 3x
+  for attempt in 1 2 3; do
+    "${HERE}/e2e-browser-cli.sh" "${APP_DIR}" --mutant "$m" > "$out" 2>&1; rc=$?
+    [[ $rc -eq 90 ]] || break
+    echo "[$m] rig abort rc=90 (attempt ${attempt}) — retrying" >&2
+  done
   verdict="$(grep -E '^VERDICT:|^\[mutant\].*restored|REFUSED' "$out" | tr '\n' ' ')"
   echo "[$m] rc=${rc} ${verdict}   (log ${out})"
   [[ $rc -eq 0 ]] || fail=1
