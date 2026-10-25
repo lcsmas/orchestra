@@ -146,6 +146,14 @@ test('C6d an impossible calendar day is an error, not a silently shifted window'
   assert.throws(() => census.parseWindow('2026-02-29', null), /real YYYY-MM-DD/);
 });
 
+test('C3e must-FAIL: a heredoc skip that stops after the first body line counts a multi-line brief as a CLI call', async () => {
+  const brief = "cat > brief.md <<'EOF'\n# Brief\nrun it:\norchestra browser snapshot\nEOF";
+  assert.equal(census.orchestraBrowserInvocation(brief), null);
+  const m = await mutate('heredoc-first-line', [['=== h.word) break;', '=== h.word || true) break;']]);
+  assert.equal(m.orchestraBrowserInvocation(brief), 'orchestra browser snapshot', 'the mutant leaks the 2nd+ body lines into the command text — the multi-line negative in C7 reddens it');
+  assert.equal(m.orchestraBrowserInvocation("cat <<'EOF'\nonly one line\nEOF"), null, 'a ONE-line body passes even the mutant — which is why the single-line cases alone never pinned this clause');
+});
+
 test('C4 the four surfaces, tools and distinct sessions; subagent/other-name tool_use are not browser calls', () => {
   const c = census.createCensus();
   const w = census.parseWindow(null, null);
@@ -163,6 +171,14 @@ test('C4 the four surfaces, tools and distinct sessions; subagent/other-name too
   assert.deepEqual([r.totals.humanChrome, r.totals.panel, r.totals.panelShare], [4, 4, 0.5]);
   assert.equal(r.surfaces['orchestra-browser-cli'].firstTs, '2026-10-03T00:00:00.000Z');
   assert.match(census.renderTable(r), /panel share 50\.0%/);
+});
+
+test('C4b look-alike tool names are NOT browser calls (the surface prefixes end in `__`)', async () => {
+  const lookAlikes = ['mcp__browser', 'mcp__browserx__click', 'mcp__browser_use__click', 'mcp__browsers__navigate', 'mcp__chrome-main', 'mcp__chrome-mainx__click', 'mcp__chrome-main2__click', 'mcp__chrome-devtools', 'mcp__chrome-devtools2__click', 'mcp__claude-in-chrome__tabs_context_mcp', 'xmcp__browser__navigate', 'browser__navigate'];
+  for (const name of lookAlikes) assert.equal(census.classifyToolUse(use('x', name)), null, `must NOT count: ${name}`);
+  for (const [name, surface] of [['mcp__browser__navigate', 'panel-mcp'], ['mcp__chrome-main__click', 'chrome-main'], ['mcp__chrome-devtools__click', 'chrome-devtools']]) assert.equal(census.classifyToolUse(use('x', name))?.surface, surface);
+  const m = await mutate('prefix-no-underscores', [["prefix: 'mcp__browser__'", "prefix: 'mcp__browser'"]]);
+  assert.equal(m.classifyToolUse(use('x', 'mcp__browser_use__click'))?.surface, 'panel-mcp', 'must-FAIL: the shortened prefix mutant counts a look-alike, so this negative reddens it');
 });
 
 test('C5 de-duplicates by tool_use id (a replayed/forked history counts once); api-request-blob and non-assistant records are never calls', () => {
@@ -183,6 +199,16 @@ test('C5b a record without sessionId is attributed to its file; with `session_id
   census.addTranscriptText(c, JSON.stringify({ type: 'assistant', message: { content: [use('a', 'mcp__browser__scroll')] } }), w, 'file-x');
   census.addTranscriptText(c, JSON.stringify({ type: 'assistant', session_id: 'sid-y', message: { content: [use('b', 'mcp__browser__scroll')] } }), w, 'file-z');
   assert.equal(census.finalize(c, { window: w, roots: [] }).surfaces['panel-mcp'].sessions, 2);
+  assert.deepEqual([...c.surfaces['panel-mcp'].sessions].sort(), ['file-x', 'sid-y'], 'WHICH sessions: the file name for a record with no id, `session_id` (not the file name) for the snake_case one');
+  census.addTranscriptText(c, JSON.stringify({ type: 'assistant', sessionId: 'camel', session_id: 'snake', message: { content: [use('c', 'mcp__browser__scroll')] } }), w, 'file-q');
+  assert.deepEqual([...c.surfaces['panel-mcp'].sessions].sort(), ['camel', 'file-x', 'sid-y'], '`sessionId` wins over `session_id` and the file name');
+});
+
+test('C5c must-FAIL: dropping the `session_id` fallback attributes the record to its file name and reddens C5b', async () => {
+  const m = await mutate('no-session_id', [['record.sessionId ?? record.session_id ?? sessionFallback', 'record.sessionId ?? sessionFallback']]);
+  const c = m.createCensus();
+  m.addTranscriptText(c, JSON.stringify({ type: 'assistant', session_id: 'sid-y', message: { content: [use('b', 'mcp__browser__scroll')] } }), m.parseWindow(null, null), 'file-z');
+  assert.deepEqual([...c.surfaces['panel-mcp'].sessions], ['file-z'], 'the mutant names the wrong session — the C5b identity assertion would fail on it');
 });
 
 test('C6 --since/--until are inclusive UTC days; undated records are excluded (and counted) once a window is set', () => {
@@ -240,6 +266,8 @@ test('C7 `orchestra browser` counts only when the command RUNS it (positives and
     ['sudo env FOO=1 nice -n 5 timeout 30 orchestra browser snapshot', 'orchestra browser snapshot'],
     ['flock /var/lock/x.lock orchestra browser snapshot', 'orchestra browser snapshot'],
     ['echo $# && orchestra browser tabs', 'orchestra browser tabs'],
+    ["cat <<'EOF' >/dev/null\nl1\nl2\nl3\nEOF\norchestra browser tabs", 'orchestra browser tabs'],
+    ["cat <<A <<B >/dev/null\nx\ny\nA\nz\nw\nB\norchestra browser tabs", 'orchestra browser tabs'],
   ];
   for (const [cmd, tool] of yes) assert.equal(inv(cmd), tool, `should count: ${JSON.stringify(cmd)}`);
   const no = [
@@ -258,6 +286,11 @@ test('C7 `orchestra browser` counts only when the command RUNS it (positives and
     '# orchestra browser snapshot',
     'cat orchestra browser.md',
     'echo hi; echo orchestra browser',
+    "cat <<'EOF'\nline one\nline two\norchestra browser snapshot\nline four\nEOF",
+    "cat > brief.md <<'EOF'\n# Brief\n\n- run `orchestra browser snapshot`\n\norchestra browser click @e1\nEOF\necho done",
+    'cat <<-EOF\n\tl1\n\tl2\n\torchestra browser click\n\tEOF',
+    'cat <<A <<B\norchestra browser a\nA\norchestra browser b\nB',
+    'python3 - <<PY\nimport os\nprint(1)\nos.system("orchestra browser tabs")\nPY',
     '# first; orchestra browser snapshot',
     'echo x # then orchestra browser snapshot',
     'command -v orchestra browser',
