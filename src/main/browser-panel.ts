@@ -878,19 +878,28 @@ export function destroyPanel(wsId: string): void {
 // proxy (`browser-cdp-host.ts`) is the only attacher (#398, ADR 0009) and every
 // command below rides a lease on its attach (`cdpSeat`).
 
-/** Run one CDP command on a tab through the proxy's lease. Creates the panel if
- *  the workspace has none, and throws if the tab has no live view. */
+/** The tab a CDP primitive drives. The default form (no `tabId`) creates the
+ *  panel if the workspace has none; an EXPLICIT `tabId` must already exist —
+ *  resolved first, so a stale id after closeTab(last)/destroyPanel fails with
+ *  "not found" instead of resurrecting a blank native view. Throws if the tab
+ *  has no live view: a dead view surfaces to the agent as a clear error rather
+ *  than a TypeError about `isDestroyed`. */
+function liveTabFor(wsId: string, tabId?: BrowserTabId): Tab {
+  const explicit = tabId === undefined ? undefined : resolveTab(wsId, tabId);
+  const panel = getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);
+  const tab = explicit ?? (panel ? activeTabOf(panel) : undefined);
+  if (!panel || !tab || !liveContents(tab)) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  return tab;
+}
+
+/** Run one CDP command on a tab through the proxy's lease. */
 async function cdp(
   wsId: string,
   method: string,
   params?: Record<string, unknown>,
   tabId?: BrowserTabId,
 ): Promise<any> {
-  getPanel(wsId) ?? ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
-  // A dead view surfaces to the agent as a clear error rather than a TypeError
-  // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
-  if (!tab || !liveContents(tab)) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  const tab = liveTabFor(wsId, tabId);
   if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
   return cdpSeat.send(wsId, tab.id, method, params ?? {});
 }
@@ -1288,9 +1297,7 @@ function inDesignOrder<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
 /** Arm design mode in the panel's page. Returns once the overlay is installed.
  *  Holds the proxy's debugger attach until the pick, the cancel or the disarm. */
 export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
-  getPanel(wsId) ?? ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
-  if (!tab || !liveContents(tab)) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  const tab = liveTabFor(wsId, tabId);
   return inDesignOrder(tab, async () => {
     if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
     if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);

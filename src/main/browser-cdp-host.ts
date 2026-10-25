@@ -234,6 +234,8 @@ export async function disposeAllEndpoints(): Promise<void> {
 // ── in-process access (#398): design mode + the legacy tools ride the proxy's attach ──────────
 
 async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpTabChannel; release(): void }> {
+  // Same tick as `ensureEndpoint`'s `ensurePanel`: a panel destroyed an instant ago (archive/delete) must not be rebuilt for a late poll.
+  if (!bp.tabContents(wsId, tabId)) throw new Error(`browser tab ${tabId} has no live view`);
   const ep = await ensureEndpoint(wsId);
   return ep.server.core.lease(tabId);
 }

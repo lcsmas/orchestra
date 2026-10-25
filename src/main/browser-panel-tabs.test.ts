@@ -742,3 +742,19 @@ test('design mode: a disarm that lands while the arm is still attaching runs AFT
     bp.setCdpSeat(testSeat);
   }
 });
+
+test('an explicit stale tabId reaches the proxy seat NEVER and builds NO panel (evaluate / design arm after the last tab closed)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.closeTab(ws, 't1'); // last tab: panel evicted
+  let sent = 0;
+  bp.setCdpSeat({ send: async () => { sent++; return {}; }, hold: async () => { sent++; return () => undefined; } });
+  try {
+    await assert.rejects(() => bp.evaluate(ws, '1', 't1'), /not found/);
+    await assert.rejects(() => bp.designModeArm(ws, 't1'), /not found/);
+    assert.equal(bp.getPanel(ws), undefined, 'no blank native view was resurrected');
+    assert.equal(sent, 0, 'nothing reached the seat');
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
