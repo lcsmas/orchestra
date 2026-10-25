@@ -74,10 +74,10 @@ test('W8 the Resources page (D-Q3 option A): the call site hands the snapshot\'s
   const view = read('src/renderer/components/ResourcesView.tsx');
   const css = read('src/renderer/styles.css');
   assert.match(view, /const grouped = groupSnapshot\(snap\);/);
-  assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members\);/);
+  assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members, snap\?\.browserTabs\);/);
   assert.match(view, /\{reliquats && reliquats\.count > 0 && \(\s*\n\s*<span className="res-chip reliquat" data-res-reliquats=\{reliquats\.count\} title=\{reliquatChipTitle\(reliquats\)\}>/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} \/>/); // #343 adds the keeper-leaf room
-  assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/);
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} browser=\{row\.browser\} \/>/); // #343 adds the keeper-leaf room, #394 the tabs chip
+  assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \|\| row\.browserOnly \? \(/);
   assert.match(view, /reliquatsLine=\{reliquatsNote\(snap\?\.members\)\}/);
   assert.match(view, /const nameById = new Map\(workspaces\.map\(\(w\) => \[w\.id, w\.branch\]\)\);/);
   assert.match(view, /fallbackName: nameById\.get\(g\.key\) \?\? g\.key \}\)\);/, 'a Reliquat-only row of an ARCHIVED workspace reads its branch, never a raw id');

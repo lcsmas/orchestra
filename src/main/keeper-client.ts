@@ -35,6 +35,8 @@ import {
   type KeeperDaemonFrame,
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
+import { gatherRuntimeInputs, pickKeeperRuntime } from '../shared/keeper-runtime';
+import { installBundledRuntime } from './keeper-runtime-install.ts';
 import { relayHoldFile, relaySocketPath, relayUpstreamFile, type DockerRelaySpec } from '../shared/docker-relay';
 import {
   OOM_TOOL_WRAPPER_FILE,
@@ -477,6 +479,7 @@ function oomWrapperReady(): boolean {
  */
 export function installKeeper(): void {
   installOomWrapper();
+  refreshBundledRuntime();
   try {
     const src = path.join(__dirname, 'keeper.js');
     if (!fs.existsSync(src)) {
@@ -498,28 +501,44 @@ export function installKeeper(): void {
   }
 }
 
-/**
- * Pick the node runtime for the keeper. AppImage: prefer a PATH `node` (the
- * mount vanishes at quit; Claude Code users virtually always have node), else
- * fall back to the AppImage's own binary accepting lazy-unmount semantics.
- * Everything else: this very executable with ELECTRON_RUN_AS_NODE (stable on
- * disk, guaranteed node version).
- */
-function resolveKeeperRuntime(): { cmd: string; env: NodeJS.ProcessEnv } {
-  const baseEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: '1',
-  };
-  if (APPIMAGE_PATH) {
-    const pathNode = findOnPath('node');
-    if (pathNode) {
-      const env = { ...process.env };
-      delete env.ELECTRON_RUN_AS_NODE;
-      return { cmd: pathNode, env };
-    }
-    log.warn('AppImage without a PATH node — keeper rides the mount and may die at quit');
+/** The pinned Node installed under `<ORCHESTRA_HOME>/bin/node-<version>-<hash>/` (#390), or null (dev run, mac/win, install refused). */
+let bundledNodePath: string | null = null;
+
+/** Copy the pinned Node out of the package (idempotent, atomic, hash-verified) and remember where it is. Best-effort: failure only means the next runtime in the pick order. */
+function refreshBundledRuntime(): string | null {
+  const resourcesDir = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const r = installBundledRuntime({ resourcesDir, binDir: path.join(orchestraHome(), 'bin') });
+  if (r.ok) {
+    if (r.copied) log.info(`installed pinned node v${r.manifest.version} at ${r.path}`);
+    bundledNodePath = r.path;
+  } else {
+    if (!r.absent) log.warn(`pinned node not installed (${r.reason}) — keepers fall back to a PATH node / the app binary`);
+    bundledNodePath = null;
   }
-  return { cmd: process.execPath, env: baseEnv };
+  return bundledNodePath;
+}
+
+/**
+ * Pick the runtime for the keeper — the policy is the pure `pickKeeperRuntime` (shared/keeper-runtime.ts): the pinned Node shipped with the app
+ * > (AppImage only) a PATH `node` > this very executable with ELECTRON_RUN_AS_NODE. The bundled path is re-checked at every launch, so a
+ * `bin/` wiped while the app runs is re-installed instead of failing the start.
+ */
+function resolveKeeperRuntime(): { cmd: string; env: NodeJS.ProcessEnv; kind: 'bundled' | 'path' | 'app' } {
+  let bundled = bundledNodePath;
+  if (bundled) {
+    try {
+      fs.accessSync(bundled, fs.constants.X_OK);
+    } catch {
+      bundled = null;
+    }
+  }
+  if (!bundled) bundled = refreshBundledRuntime();
+  const pick = pickKeeperRuntime(gatherRuntimeInputs({ bundledNode: bundled, appImagePath: APPIMAGE_PATH, findOnPath, execPath: process.execPath }));
+  if (pick.warn) log.warn(pick.warn);
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (pick.electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
+  else delete env.ELECTRON_RUN_AS_NODE;
+  return { cmd: pick.cmd, env, kind: pick.kind };
 }
 
 function findOnPath(name: string): string | null {
@@ -1047,6 +1066,7 @@ async function launchKeeperDaemon(wsId: string, cap?: MemoryCapLaunch): Promise<
   drainMemNotices(wsId); // #322 m1: deliver what the previous keeper recorded (and prune its file) before a new generation starts appending
   const sockPath = keeperSocketPath(wsId);
   const runtime = resolveKeeperRuntime();
+  log.info(`keeper[${wsId}] runtime: ${runtime.kind} ${runtime.cmd}`);
   const script = installedKeeperPath();
   const target = fs.existsSync(script) ? script : path.join(__dirname, 'keeper.js');
   fs.mkdirSync(keeperDir(), { recursive: true });

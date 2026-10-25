@@ -95,6 +95,31 @@ resolution).
     #76 carried. The aggregate inherits the invoker's PATH; the contained rig sets
     its own `PATH=/usr/local/bin:/usr/bin:/bin` for the Electron child.
 
+## Pinned Node bundled for the keepers (#390, spec #388)
+
+The package ships a pinned Node (linux arm64 + x64) as `resources/pinned-node/{node,manifest.json}`; the runtime side (copy-out, pick, versioned dir) is in
+`session-keeper.md` § Pinned Node runtime. Build side, all under `scripts/pinned-node/`:
+
+- **`pins.json`** — the pin: Node **22.23.4** (LTS Jod), per arch the tarball name + `tarballSha256` (the `linux-<arch>.tar.gz` lines of the release's
+  `SHASUMS256.txt`, whose `.asc` was GPG-verified 2026-10-25) + `nodeSha256`/`nodeBytes` of the `bin/node` inside. `lib.cjs` `loadPins` refuses any malformed pin.
+  **Bumping Node** = edit this file (version, tarball names, the six hashes), `pnpm run test:pinned-node` (its `pins_match_upstream` arm re-checks the tarball
+  hashes against nodejs.org), rebuild.
+- **`before-pack.cjs`** (electron-builder `beforePack`, linux only) → `lib.cjs` `prepareRuntime`: tarball cached in `build/pinned-node/.cache` (gitignored; **re-hashed on
+  every use**, a poisoned cache is deleted and re-fetched), downloaded to a `.part` file and hashed BEFORE extraction, `tar` extracts only `bin/node`, the binary is hashed
+  against `nodeSha256`, written with `manifest.json` to `build/pinned-node/<arch>/` by atomic rename. Offline + no cache = the build fails (never a silent skip).
+- **`package.json` `build.linux.extraResources`** `build/pinned-node/${arch}` → `resources/pinned-node`. electron-builder SKIPS a missing `from` silently — that is
+  why the next step re-verifies what actually landed.
+- **`pack-check.cjs`** (called at the end of `scripts/after-pack-check.cjs`'s `afterPack`; linux only) → `checkPackedRuntime`: the packaged `node` exists, is a regular
+  executable, has the pinned size and SHA-256, its `manifest.json` agrees with the pin, then **`smoke.cjs` `smokeKeeper`** — the runtime executes and reports the
+  pinned version, STARTS the packaged `keeper.js` (read out of `app.asar`), answers a `hello`, relays a child's stdio (`spawn` → echo → `kill`), and
+  `/proc/<keeper>/exe` is that very runtime (an exec-proxy wrapper fails). Any failure throws → electron-builder fails → `pnpm run build` fails → `release.sh`
+  stops before tag/publish (and the CI build job goes red — CI runs the same hooks via `electron-builder`). A pack for the OTHER arch than the host is
+  **refused** (cannot be executed) unless `ORCHESTRA_PINNED_NODE_ALLOW_CROSS=1`, which ships it hash-verified but UNSMOKED and says so.
+- **Gates**: `pnpm run test:pinned-node` (25 arms: fetch/hash must-FAILs, packaged-runtime must-FAILs incl. corrupted byte / truncated / non-exec / manifest / cross-arch,
+  smoke-has-teeth arms with the hash gate neutralised, launcher arms) · `pnpm run test:pinned-node-mutants` · `pnpm run test:pinned-node-pack` (the REAL
+  electron-builder `--linux dir` chain under `flock $PKG_LOCK`: good pack passes; corrupted runtime and missing runtime FAIL the pack; with the `packCheck` call
+  removed the corrupted runtime ships) · `pnpm run test:pinned-node-app` (built AppImage, see `session-keeper.md`). The AppImage grows by ~40 MB (measured 339 MB vs 298–304 MB for sibling builds of the same tree family; node is 28 MB xz / 44 MB gzip).
+
 ## Release — scripts/release.sh (~265 lines)
 **Worktree-safe** (never checks out master). Invoke via
 `pnpm run release [patch|minor|major|X.Y.Z] [flags]`.

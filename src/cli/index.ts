@@ -50,6 +50,7 @@ import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunVi
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
 import { formatContainersLine, type ContainerAccountingView } from '../shared/container-accounting.ts';
 import { formatReliquatsLine, formatRoomLine, type MemberMemoryReport } from '../shared/member-memory.ts';
+import { formatBrowserTabsLine, type BrowserTabMemoryView } from '../shared/browser-tab-memory.ts';
 import { peersExColumn } from '../shared/former-branch.ts';
 import { formatWatchersLines, type WatchersStatus } from '../shared/watcher-status.ts';
 import { formatHeldStartsLine, formatRestartHeldReply, type HeldStartView } from '../shared/admission.ts';
@@ -2275,6 +2276,11 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write(`${formatReliquatsLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\n`);
         // #343: how close keeper + CLI are to the room under the scope's backstop (the cap's one remaining way to end a session). Same report, one more line.
         process.stdout.write(`${formatRoomLine(res.members as MemberMemoryReport, (id) => mlabels[id] ?? id)}\n`);
+      }
+      // #394: browser tabs per workspace (renderer memory, counted in each workspace's memory figure). Absent from an older app → no line.
+      if (res.browserTabs && typeof res.browserTabs === 'object' && Array.isArray((res.browserTabs as BrowserTabMemoryView).byWorkspace)) {
+        const blabels = (res.browserTabLabels ?? {}) as Record<string, string>;
+        process.stdout.write(`${formatBrowserTabsLine(res.browserTabs as BrowserTabMemoryView, (id) => blabels[id] ?? id)}\n`);
       }
       // #330: the app's directory watchers (one summary line + one line per DEGRADED watcher: since when, last error, what keeps working meanwhile). Absent from an older app → no line.
       if (res.watchers && typeof res.watchers === 'object' && Array.isArray((res.watchers as WatchersStatus).watchers)) {

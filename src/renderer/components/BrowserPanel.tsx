@@ -27,6 +27,8 @@ const BLANK: (wsId: string) => BrowserPanelState = (wsId) => ({
   loading: false,
   canGoBack: false,
   canGoForward: false,
+  tabs: [],
+  activeTabId: '',
 });
 
 export function BrowserPanel({ workspaceId, isActive }: Props) {

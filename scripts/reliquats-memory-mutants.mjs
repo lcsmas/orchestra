@@ -100,9 +100,9 @@ const MUTANTS = [
   { id: 'M53_page_stamp_is_sample_start', file: RES, find: 'members: currentMemberMemory(), // read AFTER', to: 'members: currentMemberMemory({ now }), // read AFTER', expect: ['W5 the Resources snapshot'] },
   { id: 'M54_support_uncached', file: P, find: 'support: () => scopeSupportCached(),', to: 'support: () => scopeSupport(),', expect: ['W1 FI-1.3'] },
   // ── the page (D-Q3 option A) + the display helpers ──
-  { id: 'M55_page_ignores_members', file: SR, find: 'return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members);', to: 'return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers);', expect: ['G9 (#328) groupSnapshot', 'W8 the Resources page', 'shot:seeded: feat-x carries'], shot: true },
+  { id: 'M55_page_ignores_members', file: SR, find: 'return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, snap?.members, snap?.browserTabs);', to: 'return groupSessionsByWorkspace(snap?.sessions ?? [], snap?.containers, undefined, snap?.browserTabs);', expect: ['G9 (#328) groupSnapshot', 'W8 the Resources page', 'shot:seeded: feat-x carries'], shot: true },
   { id: 'M56_chip_at_zero', file: V, find: '{reliquats && reliquats.count > 0 && (', to: '{reliquats && (', expect: ['W8 the Resources page', 'shot:seeded: feat-y (tracked, no Reliquat) has NO chip'], shot: true },
-  { id: 'M57_reliquat_only_row_not_rendered_as_container_only', file: V, find: ') : row.containerOnly || row.scopeOnly ? (', to: ') : row.containerOnly ? (', expect: ['W8 the Resources page', 'shot:seeded: the finished member'], shot: true },
+  { id: 'M57_reliquat_only_row_not_rendered_as_container_only', file: V, find: ') : row.containerOnly || row.scopeOnly || row.browserOnly ? (', to: ') : row.containerOnly ? (', expect: ['W8 the Resources page', 'shot:seeded: the finished member'], shot: true },
   { id: 'M58_chip_without_tooltip', file: V, find: ' title={reliquatChipTitle(reliquats)}>', to: '>', expect: ['W8 the Resources page', 'shot:seeded: feat-x carries'], shot: true },
   { id: 'M59_reliquat_procs_not_listed', file: V, find: '{reliquatProcs.map((p) => (', to: '{([] as typeof reliquatProcs).map((p) => (', expect: ['shot:expanded: the opened feat-x row lists'], shot: true },
   { id: 'M60_note_line_removed', file: V, find: '{reliquatsLine && (', to: '{false && reliquatsLine && (', expect: ['W8 the Resources page', 'shot:seeded: the dim line names'], shot: true },
@@ -112,7 +112,7 @@ const MUTANTS = [
   { id: 'M64_procs_not_capped', file: S, find: '      .slice(0, MAX_RELIQUAT_PROCS),', to: '      ,', expect: ['M13 reliquatProcs'] },
   { id: 'M65_note_for_a_healthy_page', file: S, find: 'if (r.untracked.length > 0 || stray > 0) bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', to: 'bits.push(`Reliquats not tracked — ${untrackedWhy(r)}`);', expect: ['M14 reliquatsNote'] },
   { id: 'M66_chip_title_without_rss', file: S, find: '${fmtBytes(c.bytes)} RSS — processes this workspace', to: '${fmtBytes(c.bytes)} — processes this workspace', expect: ['M15 reliquatChipTitle', 'shot:seeded: feat-x carries'], shot: true },
-  { id: 'M67_container_only_row_added_next_to_scope_only', file: SR, find: '!byWs.has(a.wsId) && !scopeOnly.has(a.wsId))', to: '!byWs.has(a.wsId))', expect: ['G8'] },
+  { id: 'M67_container_only_row_added_next_to_scope_only', file: SR, find: '!byWs.has(a.wsId) && !scopeOnly.has(a.wsId) && !browserOnly.has(a.wsId))', to: '!byWs.has(a.wsId) && !browserOnly.has(a.wsId))', expect: ['G8'] },
   // ── delta review (renderer round): real FI-1 binding, keeper outside its scopes, keeper without its pid file, archived names ──
   { id: 'M69_count_scopes_stubbed', file: P, find: 'countScopes: () => countMemberScopes()?.total ?? null,', to: 'countScopes: () => null,', expect: ['P7 the REAL FI-1 binding', 'rig:bus_status_line'], rig: ['bus_status_line'], cli: true },
   { id: 'M70_read_memory_stubbed', file: P, find: 'readMemory: (s) => readScopeMemory(s),', to: 'readMemory: (_s) => null,', expect: ['P7 the REAL FI-1 binding'] },

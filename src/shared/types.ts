@@ -2252,9 +2252,30 @@ export interface BackgroundTask {
 // agent's browser tools close over their own session's `wsId`, so a workspace's
 // agent can only ever drive that workspace's panel.
 
+/** Id of one browser tab within a workspace's panel. Minted by main per
+ *  workspace (`t1`, `t2`, …) and never reused while the main process lives, so
+ *  a stale id held by a renderer / agent can never address a different tab. */
+export type BrowserTabId = string;
+
+/** Who opened a tab: the user (URL bar / new-tab control) or the agent. */
+export type BrowserTabOpener = 'human' | 'agent';
+
+/** One tab of a workspace's browser panel, as listed to the renderer / agent. */
+export interface BrowserTabInfo {
+  id: BrowserTabId;
+  /** The tab's committed URL (empty before its first navigation). */
+  url: string;
+  title: string;
+  loading: boolean;
+  /** True for the single tab the panel composits and the primitives drive. */
+  active: boolean;
+  openedBy: BrowserTabOpener;
+}
+
 /** The live navigation state of one workspace's browser panel, pushed to the
  *  renderer over `browser:event` so the URL bar / title / nav buttons reflect
- *  BOTH manual and agent-driven navigation. */
+ *  BOTH manual and agent-driven navigation. The url / title / loading / nav /
+ *  error fields below always mirror the ACTIVE tab. */
 export interface BrowserPanelState {
   /** Workspace the panel belongs to. */
   wsId: string;
@@ -2269,6 +2290,10 @@ export interface BrowserPanelState {
   canGoForward: boolean;
   /** Last navigation error, if the load failed (e.g. DNS/connection). */
   error?: string;
+  /** The panel's tabs, in display order (empty until the panel is created). */
+  tabs: BrowserTabInfo[];
+  /** Id of the active tab; `''` while the panel has no tab. */
+  activeTabId: BrowserTabId;
 }
 
 /** Pixel bounds of the DOM placeholder the native `WebContentsView` must track.

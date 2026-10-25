@@ -2,6 +2,8 @@ node_modules/
 dist/
 dist-electron/
 release/
+# The pinned Node (#390): fetched + hash-checked by scripts/pinned-node/before-pack.cjs at pack time.
+build/pinned-node/
 .vite/
 *.log
 .DS_Store

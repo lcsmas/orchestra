@@ -57,7 +57,7 @@ test('W5 the Resources page snapshot carries the LAST tick\'s accounting (never 
   assert.doesNotMatch(res, /refreshContainerAccounting|createDockerApi|docker-api/);
   const view = read('src/renderer/components/ResourcesView.tsx');
   assert.match(view, /const grouped = groupSnapshot\(snap\);/, 'the page uses the SAME pure function the unit tests (G1/G2/G9) and the rigs drive');
-  assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members\);/, 'groupSnapshot hands the container accounting to the grouping (#328 added the member report beside it)');
+  assert.match(read('src/shared/resources.ts'), /return groupSessionsByWorkspace\(snap\?\.sessions \?\? \[\], snap\?\.containers, snap\?\.members, snap\?\.browserTabs\);/, 'groupSnapshot hands the container accounting to the grouping (#328 added the member report beside it, #394 the browser tabs)');
   assert.match(read('src/shared/resources.ts'), /\+ \(remote \? 0 : viewBytesFor\(containers, key\)\),/);
   assert.match(read('src/shared/resources.ts'), /containers\?: ContainerAccountingView;/);
 });
@@ -87,8 +87,8 @@ test('W8 (D-pick4 A) the Resources page: keeper-hosted structured agents are SAM
   const view = read('src/renderer/components/ResourcesView.tsx');
   assert.match(view, /warning=\{unattributedWarning\(snap\?\.containers\)\}/);
   assert.match(view, /\{warning && \(\s*\n\s*<div className="res-unattributed" role="note" data-res-unattributed="">/);
-  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} \/>/); // + the #331 browsers chip (D-Q4 A')
-  assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \? \(/, 'a workspace whose only footprint is a container (or, #328, only its Reliquats) gets its own row (cpu / procs « — »)');
+  assert.match(view, /<SessionChips sessions=\{row\.sessions\} containers=\{row\.containers\} reliquats=\{row\.reliquats\} browsers=\{browsers\} room=\{row\.room\} browser=\{row\.browser\} \/>/); // + the #331 browsers chip (D-Q4 A'), the #394 tabs chip
+  assert.match(view, /\) : row\.containerOnly \|\| row\.scopeOnly \|\| row\.browserOnly \? \(/, 'a workspace whose only footprint is a container (or, #328, only its Reliquats; #394, only its browser tabs) gets its own row (cpu / procs « — »)');
   assert.match(view, /className="res-chip docker" data-res-containers=\{containers\.count\} title=\{containersChipTitle\(containers\)\}/);
   assert.match(view, /const agentCount = rows\.filter\(\(r\) => r\.sessions\.some\(\(s\) => s\.kind === 'sdk'\)\)\.length;/, 'the Live agents tile counts the keeper-hosted Agent-view sessions — it agrees with the table (#231: no agent-kind PTY exists any more)');
   assert.doesNotMatch(view, /stopAgent|res-stop-btn|agentSession/, 'no per-row stop control: its only target was an agent PTY (#231)');
