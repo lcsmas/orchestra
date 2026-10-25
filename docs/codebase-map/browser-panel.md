@@ -263,6 +263,48 @@ keeps the shared debugger free of any long-lived event subscription.
 - The screenshot is **best-effort**: a failed `Page.captureScreenshot` still
   delivers the pick's text half rather than aborting the whole capture.
 
+## Human tabs (#393) — cap, ownership, restore
+
+The panel holds up to **8 tabs per workspace** (human + agent combined); the human opens / switches / closes them in a strip above the
+URL bar, and each workspace's tabs come back after an app restart. The tabs registry itself is #391 (`Tab` / `Panel`, `createTab` /
+`closeTab` / `activateTab`: no cap, no policy); everything below sits in FRONT of it.
+
+- **Pure policy — `src/shared/browser-tab-policy.ts`** (unit-tested, `browser-tab-policy.test.ts`): `BROWSER_TAB_CAP`, `decideTabOpen`
+  (the cap; refusal carries a user-facing message), `decideTabClose` (**the human closes any tab, an agent only `openedBy:'agent'`**;
+  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the #396 seam:
+  `PopupRouteDecision = {route:'same-view'|'external'}` today = the pre-tabs behaviour; #396 adds arms). #397 consumes the ownership rule.
+- **Main entry points — `tryOpenTab` / `tryCloseTab` / `tryActivateTab`** in `src/main/browser-panel.ts`: ask the policy FIRST, so a refused open
+  allocates no `WebContentsView` (no leak) and a refused close destroys nothing. They RESOLVE `BrowserTabResult` (`{ok:true,state,tabId?}` |
+  `{ok:false,reason:'cap'|'not-owner'|'unknown-tab',message,state}`) — never throw across IPC. Anything acting for the human or the agent
+  goes through them; the bare registry calls stay unguarded by design.
+- **Last tab:** `tryCloseTab` builds the blank human replacement BEFORE closing (the registry's `closeTab` on the only tab evicts the panel),
+  so a panel never has zero tabs and the agent primitives always find an active one. The new tab gets a fresh id (ids are never reused).
+- **Persistence — `src/shared/browser-tab-state.ts` + `src/main/browser-tabs-store.ts`:** `<userData>/orchestra/browser-tabs.json`
+  (`{version:1, workspaces:{<wsId>:{tabs:[{url,openedBy}], activeIndex}}}`), a SEPARATE small file (not `store.json`: a navigation rewrites it
+  and `browser-panel.ts` must stay loadable by the stub harnesses without the workspace store). `initBrowserPanels(accessor, store?)` injects the
+  store; without one (the harnesses) there is simply no restore/persist. `publish()` → `savePanelTabs` snapshots (only a REGISTERED panel — a
+  mid-restore / closed-last / destroyed panel never overwrites the record); the store coalesces writes (400 ms) and writes tmp + rename;
+  `flushBrowserTabs()` runs from `shutdownSubsystems` (quit). Parse is defensive: only `http(s)`/`file` URLs restore (anything else comes back
+  as a blank tab), capped at 8, bad active index → 0, a corrupt file → a fresh start.
+- **Restore is LAZY:** at the workspace's FIRST `ensurePanel` after boot (opening the pane, or an agent navigating), not for every workspace at
+  startup — 20 workspaces' pages must not load at boot. All saved tabs are built and loaded, the saved one is active. A restored tab keeps its
+  remembered URL (`restoreUrls`) until it has a URL of its own, so a snapshot taken while the load is starting or failing (server down at boot)
+  never blanks it. `destroyPanel` (delete / archive) forgets the entry even if this process never opened the panel.
+- **IPC (human-facing, additive):** `browserTabNew(wsId, url?)` / `browserTabActivate(wsId, tabId)` / `browserTabClose(wsId, tabId)`
+  (`browser:tabNew|tabActivate|tabClose`, `shared/ipc.ts` → `api-handlers.ts` → `preload/index.ts`). State still arrives on `browser:event`
+  (`state.tabs` / `activeTabId`; `state.url` etc. mirror the ACTIVE tab, so the URL bar follows it).
+- **Renderer — `BrowserPanel.tsx`:** `.browser-tabs` strip (`role=tablist`; each `.browser-tab` carries `data-tab-id` / `data-opened-by`, a
+  `×`, and `+` at the end), a `role=alert` `.browser-tab-notice` for a refusal (5 s). Design mode is DISARMED before the active tab changes
+  (`runTabOp`): the overlay lives in the page of the tab being left and would otherwise stay armed, click-swallowing and invisible to the UI.
+  Label = `tabLabel` (title, else host, else "New tab").
+- **Tests:** `scripts/verify-browser-tabs-panel.mjs` (stub Electron: cap with no leaked view, ownership, last tab, one view composited, persist →
+  fresh module instance → restore, destroy forgets) + `scripts/verify-browser-tabs-panel-mutants.mjs` (24 in-place mutants, byte-exact restore);
+  built-app rig `scripts/e2e-browser-tabs.sh` (3 tabs → graceful restart → SIGKILL restart; compositor pixels via `grim`; cap; last tab) +
+  `scripts/e2e-browser-tabs-mutants.mjs` (6 rebuilt-app mutants). Fixture pages `scripts/fixtures/browser-site/pages/tabs-{a,b,c}.html`.
+- **Traps:** a `WebContentsView` that is not the active tab of the focused workspace is NOT in the window (never composites); the rig's pixel
+  clauses are the only oracle for that (DOM cannot see paint). `Browser.close` over the debug port is a graceful quit that reaches
+  `before-quit` (the flush); a SIGKILL restart relies on the 400 ms debounce alone — both are driven.
+
 ## IPC / seam
 
 Request/response methods (`browserShow`/`Hide`/`Navigate`/`Back`/`Forward`/
@@ -271,7 +313,7 @@ registered in the `apiHandlers` table + `METHOD_IPC_CHANNELS`
 (`api-handlers.ts`), and closured in `preload/index.ts` — wired mechanically to
 ipcMain. Design mode adds three on the same path: `browserDesignArm` /
 `browserDesignDisarm` / `browserDesignPoll` (`browser:designArm` /
-`designDisarm` / `designPoll`). The `browser:event` broadcast is declared as `onBrowserEvent`
+`designDisarm` / `designPoll`). Tabs add `browserTabNew` / `browserTabActivate` / `browserTabClose` (`browser:tab*`, see Human tabs). The `browser:event` broadcast is declared as `onBrowserEvent`
 (`shared/ipc.ts`), pushed through `platform.broadcast`, and subscribed in
 preload. Panel teardown rides the workspace-delete handlers
 (`browserPanel.destroyPanel(id)` beside `sdkStopMany`) **and the archive path** —
