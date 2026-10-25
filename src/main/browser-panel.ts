@@ -625,7 +625,8 @@ function loadIn(tab: Tab, to: string): Promise<void> {
 
 /** Navigate the active tab (or `tabId`). `to` is a URL (http/https/file); a bare
  *  host gets https:// prepended, and a non-URL string is treated as a query is
- *  NOT done here (the renderer/agent decides). Opens the panel view if needed. */
+ *  NOT done here (the renderer/agent decides). The default (active-tab) form
+ *  opens the panel view if needed; an explicit `tabId` must already exist. */
 export async function navigate(
   wsId: string,
   to: string,
@@ -692,8 +693,9 @@ export function destroyPanel(wsId: string): void {
 // share one surface.
 
 /** Attach a tab's debugger (idempotent; the active tab unless `tabId` is given).
- *  Enables the CDP domains the tools need. Returns the panel (creating it if the
- *  workspace has none) or throws if the tab has no live view. */
+ *  Enables the CDP domains the tools need. Returns the panel (the default form
+ *  creates it if the workspace has none; an explicit `tabId` must already exist)
+ *  or throws if the tab has no live view. */
 export function attachDebugger(wsId: string, tabId?: BrowserTabId): Panel {
   // An EXPLICIT tabId addresses a tab that must already exist: resolve it first
   // (throws "not found") and never build a panel for it — a stale id after

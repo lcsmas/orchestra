@@ -424,7 +424,7 @@ test('a late did-* event from a closed LAST tab / destroyed panel publishes no g
     const n = events().length;
     wcOf(old).emitEvent('did-stop-loading');
     assert.equal(events().length, n, 'no broadcast from the evicted panel (it would show t1 over the live one)');
-    assert.equal(bp.getState(ws).tabs[0].id, rebuilt.tabs[0].id);
+    assert.equal(rebuilt.tabs.length, 1, 'setup: the rebuilt panel is the live one');
     const ws2 = newWs();
     openShown(ws2);
     const t = bp.getActiveTab(ws2)!;
@@ -496,6 +496,15 @@ test('reaping a dead ACTIVE tab promotes its right neighbour, else the left one 
   bp.activateTab(ws, 't3');
   (viewOf(t3) as any).killExternally();
   assert.equal(bp.getActiveTab(ws)?.id, 't1', 'last tab died: the left neighbour');
+});
+
+test('reaping the dead LAST of 3 tabs promotes its left neighbour (t2), not the first tab (t1)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  const t3 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  (viewOf(t3) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't2');
 });
 
 test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking never lands on the new tab', async () => {

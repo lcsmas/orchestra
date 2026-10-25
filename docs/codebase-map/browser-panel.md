@@ -165,10 +165,10 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   without it a late did-* event from a still-live (async-closing) tab publishes
   a ghost state for a deleted workspace or over the rebuilt panel.
   `listTabs`/`getTab`/`getActiveTab` reap on every read.
-- **Tests**: `src/main/browser-panel-tabs.test.ts` (28 arms, N>1 tabs, real
+- **Tests**: `src/main/browser-panel-tabs.test.ts` (29 arms, N>1 tabs, real
   module over a stubbed `electron` loader hook; `__bpAsyncClose` models
   Electron's async `close()`) + `scripts/mutate-browser-panel-tabs.mjs`
-  (27 in-place mutants, byte-exact restore). The registry itself cannot be
+  (30 in-place mutants, byte-exact restore). The registry itself cannot be
   imported by `node --test` without that hook (it imports `electron`).
   Real Electron: `scripts/e2e-browser-tabs-registry.sh <app-dir>` (own headless
   sway) — `app` arm drives the unchanged renderer flow on the built app (pane
