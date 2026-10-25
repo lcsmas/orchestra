@@ -84,7 +84,7 @@ Raw lines: `hp-lines.txt` (runs 4 and 5, 2026-10-25). Screenshot: `client-attach
 - **(a) Launch.** The hostd needs no display only with `--ozone-platform=headless`. This rig ran it inside sway, so the
   no-display case is #404's evidence, not mine.
 - **(b) Ownership.** Keeper ownership needed NO change. Keepers already outlive their host, and any host that boots reattaches
-  them. The real ownership rule is "one host at a time". With an Electron hostd that rule is free (claim 5).
+  them. The real ownership rule is "one host at a time". With an Electron hostd that rule is free (claim 5); a Node hostd needs its own lock (orca's `orcad.lock`, #138 §1.2).
 - **(c) Attach.** Forwarding the existing table plus the `onBroadcast` tap is enough for the sidebar, the agent view's data path
   and the status dot. Add registrars, a PTY stream with replay, and client UI state.
 - **(e) Shadow.** The spike did not run one. The fence in claim 5 makes "app-host + hostd" impossible with an Electron hostd,
@@ -103,5 +103,5 @@ typecheck (`npx tsc --noEmit`) passed on the prototype tree, and the packaged bu
 - PTY panes (Run script / nvim / login) through the client.
 - The agent view's streaming `agent:event` volume over the socket, and permission prompts or AskUserQuestion answered from the
   client.
-- A Node hostd (out per #404). The hostd under systemd or with no display (#404 covers this). More than one client attached.
+- A Node hostd. The spike used windowless Electron because it was the least work, and that choice dodged three Node costs: cutting the 3 Electron import leaks (#137 §2), a pinned Node plus the ABI-127 bus build, and its own lock file (claim 5's free fence is Electron-only). #404 shows Node is viable, and it is orca's default. The hostd under systemd or with no display (#404 covers this). More than one client attached.
 - Whether `orchestra cli send`'s ~10 s exit linger also happens on master. It was measured only on this build.
