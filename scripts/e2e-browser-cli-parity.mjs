@@ -1,0 +1,661 @@
+// #399 — PARITY of the REAL `orchestra browser` CLI with the 8 removed `mcp__browser__*` tools (navigate, read_page, screenshot, click, type,
+// form_input, evaluate, scroll) + the old server's documented hidden-pane rule + "the user sees what the agent navigates to".
+//
+// Boots a BUILT Orchestra (argv[2] = app dir) inside the contained rig's own headless sway (scripts/e2e-browser-cli-parity.sh → e2e-contained-rig.sh),
+// SCRATCH ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, TWO seeded workspaces (a pinned session key each) and the shared fixture site
+// (scripts/fixtures/browser-site, owned by #395; this rig only adds pages/parity.html). Every page assertion reads an INDEPENDENT oracle: the app's own
+// remote-debugging port (a second CDP client on the panel's page) — never the CLI/proxy/agent-browser chain under test.
+//
+// Harness plumbing mirrors scripts/e2e-browser-cli.mjs (#395, serialized seam): same seeding, same scratch guard, same in-place bundle mutants.
+// Usage (via scripts/e2e-browser-cli-parity.sh): <app-dir> --live-home <real $HOME> [--arm a,b] [--list] [--mutant <name>] [--trace] [--out dir]
+//   --mutant <name>: patch the BUILT bundle in place (byte-exact backup, `cmp`-verified restore), run, and require the mutant's arms RED
+//   (and every ctl/* clause of those arms GREEN). Without it the run must be all green.
+import { execFileSync, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
+import { abLayout } from '../src/main/agent-browser-daemon.ts';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
+
+// ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
+const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel'];
+/** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
+ *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
+const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
+/** Acknowledge-and-ignore: the proxy answers `{}` for a forwarded CDP command (optionally only when `when` — a JS condition over $2=method $3=params — holds). */
+const dropCdp = (method, when = 'true') => ({ file: 'chunk', edits: [[DROP_RE, `($2==="${method}"&&${when}?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(`]] });
+const MUTANTS = {
+  'navigate-dropped': { ...dropCdp('Page.navigate'), arms: ['navigate'], why: 'Page.navigate is acknowledged but never reaches the page: `open` returns and nothing loads' },
+  'history-dropped': { ...dropCdp('Runtime.evaluate', '/history\\.(back|forward)\\(/.test($3.expression)'), arms: ['navigate'], why: 'back/forward (history.back()) are acknowledged but the history never moves' },
+  'snapshot-dropped': { ...dropCdp('Accessibility.getFullAXTree'), arms: ['read-page'], why: 'the accessibility tree is acknowledged but empty: `snapshot` lists no element and no refs' },
+  'screenshot-truncated': { file: 'chunk', edits: [[/primary:async\(\)=>\(await (\w+)\.channel\.send\("Page\.captureScreenshot",(\w+)\)\)\.data/, 'primary:async()=>(await $1.channel.send("Page.captureScreenshot",$2)).data.slice(0,64)']], arms: ['screenshot'], why: 'the screenshot chain returns a truncated image' },
+  'click-dropped': { ...dropCdp('Input.dispatchMouseEvent'), arms: ['click'], why: 'mouse events are acknowledged but never reach the page' },
+  'insert-text-dropped': { ...dropCdp('Input.insertText'), arms: ['type', 'form-input'], why: 'text insertion (type / fill) is acknowledged but never reaches the page' },
+  'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
+  'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
+  'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
+  'no-auto-open': { file: 'renderer', edits: [[/onBrowserEvent\(\((\w+),(\w+)\)=>\{\2\.url&&/, 'onBrowserEvent(($1,$2)=>{!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
+};
+if (argv.includes('--list')) {
+  console.log(`arms: ${ARMS.join(' ')}`);
+  console.log(`mutants: ${Object.keys(MUTANTS).join(' ')}`);
+  process.exit(0);
+}
+
+const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
+const LIVE_HOME = flag('--live-home', null);
+const MUTANT = flag('--mutant', null);
+// a mutant run drives only the arms the mutant must redden (the unmutated full run is the all-green control)
+const ARM_LIST = (flag('--arm', null) ?? (MUTANT && MUTANTS[MUTANT] ? MUTANTS[MUTANT].arms.join(',') : ARMS.join(','))).split(',');
+const TRACE = argv.includes('--trace');
+
+const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
+if (!APP_DIR) refuse('no <app-dir>');
+if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude*, ~/.config, ~/.orchestra and to prove nothing there moved)');
+for (const a of ARM_LIST) if (!ARMS.includes(a)) refuse(`unknown arm ${a} (have: ${ARMS.join(', ')})`);
+if (MUTANT && !MUTANTS[MUTANT]) refuse(`unknown mutant ${MUTANT} (have: ${Object.keys(MUTANTS).join(', ')})`);
+const RIG_DIR = process.env.RIG_DIR;
+const RIG_WAYLAND = process.env.RIG_WAYLAND;
+if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-cli-parity.sh (the contained rig)');
+if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
+if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
+const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
+
+// ── scratch-containment guard (live dirs are never handed to the app) ─────────────────────────────────────────────────────────
+const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
+const liveReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const LIVE_DIRS = [...fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n)),
+  path.join(LIVE_HOME, '.orchestra'), path.join(LIVE_HOME, '.config')].map(liveReal);
+function checkScratch(p) {
+  const r = liveReal(p);
+  for (const l of LIVE_DIRS) if (r === l || r.startsWith(l + path.sep) || l.startsWith(r + path.sep)) return { ok: false, clause: 'live-dir' };
+  if (!(r === RIG_BASE || r.startsWith(RIG_BASE + path.sep))) return { ok: false, clause: 'outside-rig-base' };
+  return { ok: true, clause: 'scratch' };
+}
+const mustBeScratch = (what, p) => { const r = checkScratch(p); if (!r.ok) refuse(`${what}=${p} [${r.clause}]`); };
+{
+  const a = checkScratch(path.join(LIVE_HOME, '.claude')), b = checkScratch('/tmp/not-in-the-rig'), c = checkScratch(path.join(RIG_DIR, 'x'));
+  if (a.clause !== 'live-dir' || b.clause !== 'outside-rig-base' || !c.ok) refuse(`scratch guard self-test failed: ${JSON.stringify({ a, b, c })}`);
+  console.log(`[guard] self-test: live ~/.claude -> ${a.clause} · /tmp path -> ${b.clause} · rig path -> ${c.clause}`);
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+async function waitFor(fn, ms, what) {
+  const t0 = Date.now(); let last;
+  while (Date.now() - t0 < ms) { try { last = await fn(); if (last) return last; } catch (e) { last = e; } await sleep(150); }
+  throw new Error(`timeout ${ms}ms waiting for ${what}${last instanceof Error ? `: ${last.message}` : ''}`);
+}
+const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); s.on('error', rej); });
+const sh = (cmd, args, opt = {}) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt });
+const git = (cwd, args, home) => sh('git', ['-c', 'user.name=rig', '-c', 'user.email=rig@example.invalid', ...args], { cwd, env: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' } });
+
+function decodePng(buf) {
+  let pos = 8; const idat = []; let w, h, bd, ct, il;
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos), type = buf.toString('latin1', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); bd = data[8]; ct = data[9]; il = data[12]; }
+    else if (type === 'IDAT') idat.push(data); else if (type === 'IEND') break;
+    pos += 12 + len;
+  }
+  if (bd !== 8 || il !== 0 || (ct !== 6 && ct !== 2)) throw new Error(`unsupported PNG bd=${bd} ct=${ct} il=${il}`);
+  const ch = ct === 6 ? 4 : 3, stride = w * ch, raw = zlib.inflateSync(Buffer.concat(idat)), out = Buffer.alloc(stride * h);
+  let prev = Buffer.alloc(stride), i = 0;
+  for (let y = 0; y < h; y++) {
+    const f = raw[i++], line = Buffer.from(raw.subarray(i, i + stride)); i += stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= ch ? line[x - ch] : 0, b = prev[x], c = x >= ch ? prev[x - ch] : 0;
+      let add = 0;
+      if (f === 1) add = a; else if (f === 2) add = b; else if (f === 3) add = (a + b) >> 1;
+      else if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      line[x] = (line[x] + add) & 255;
+    }
+    line.copy(out, y * stride); prev = line;
+  }
+  return { w, h, ch, data: out };
+}
+/** pixels that are not the image's dominant colour = painted "ink". */
+function inkPx(I, tol = 6) {
+  const cnt = new Map();
+  for (let p = 0; p < I.w * I.h; p++) { const o = p * I.ch, k = (I.data[o] << 16) | (I.data[o + 1] << 8) | I.data[o + 2]; cnt.set(k, (cnt.get(k) || 0) + 1); }
+  let mode = 0, best = -1; for (const [k, v] of cnt) if (v > best) { best = v; mode = k; }
+  const mr = mode >> 16, mg = (mode >> 8) & 255, mb = mode & 255; let n = 0;
+  for (let p = 0; p < I.w * I.h; p++) { const o = p * I.ch; if (Math.abs(I.data[o] - mr) > tol || Math.abs(I.data[o + 1] - mg) > tol || Math.abs(I.data[o + 2] - mb) > tol) n++; }
+  return n;
+}
+/** JPEG dimensions from the first SOFn marker (no decoder needed): { w, h } or null when the bytes are not a JPEG. */
+function jpegSize(buf) {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < buf.length) {
+    if (buf[i] !== 0xff) { i++; continue; }
+    const m = buf[i + 1];
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) };
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+class Cdp {
+  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); ws.onmessage = (ev) => { const m = JSON.parse(ev.data); const p = m.id && this.pending.get(m.id); if (p) { this.pending.delete(m.id); m.error ? p.rej(new Error(`${m.error.message}`)) : p.res(m.result); } }; }
+  static async connect(url) { const ws = new WebSocket(url); await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws error')); }); return new Cdp(ws); }
+  send(method, params = {}, ms = 20000) {
+    const id = ++this.id;
+    return new Promise((res, rej) => { const t = setTimeout(() => { this.pending.delete(id); rej(new Error(`CDP ${method} timed out after ${ms}ms`)); }, ms); this.pending.set(id, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } }); this.ws.send(JSON.stringify({ id, method, params })); });
+  }
+  async eval(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(`eval threw: ${r.exceptionDetails.text} ${r.exceptionDetails.exception?.description ?? ''}`); return r.result.value; }
+  async click(x, y) { for (const [type, extra] of [['mouseMoved', {}], ['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) { await this.send('Input.dispatchMouseEvent', { type, x, y, ...extra }); await sleep(60); } }
+  close() { try { this.ws.close(); } catch {} }
+}
+
+// ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const WS_NAMES = ['b399-one', 'b399-two'];
+function seedWorld(armDir) {
+  const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
+  for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
+  for (const [k, v] of Object.entries({ HOME: fakeHome, ORCHESTRA_HOME: ohome, CLAUDE_CONFIG_DIR: cfg, repo: repoDir })) mustBeScratch(k, v);
+  git(repoDir, ['init', '-q', '-b', 'main'], fakeHome);
+  fs.writeFileSync(path.join(repoDir, 'README.md'), '# b399 seed repo\n');
+  git(repoDir, ['add', '.'], fakeHome); git(repoDir, ['commit', '-q', '-m', 'seed'], fakeHome);
+  const account = { id: 'rig-b399', label: 'rig (scratch config dir)', configDir: cfg };
+  mustBeScratch('account.configDir', account.configDir);
+  const workspaces = WS_NAMES.map((name, i) => {
+    const wt = path.join(armDir, 'wt', name);
+    fs.mkdirSync(path.dirname(wt), { recursive: true });
+    git(repoDir, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome);
+    return { id: `ws-${name}`, name, repoPath: repoDir, worktreePath: wt, branch: `e2e/${name}`, baseBranch: 'main', createdAt: Date.now() + i, status: 'idle', agent: 'claude', accountId: account.id, key: crypto.randomBytes(24).toString('hex') };
+  });
+  const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'b399-repo', defaultBranch: 'main', accountId: account.id }], workspaces: workspaces.map(({ key, ...w }) => w), accounts: [account], selfTuneRuns: [] }, null, 2));
+  // the host vouches for a CLI only through this registry (ADR 0008): hashes, 0600 — exactly what a fresh keeper spawn writes
+  fs.writeFileSync(path.join(ohome, 'session-keys.json'), JSON.stringify({ version: 1, sessions: Object.fromEntries(workspaces.map((w) => [w.id, { hash: sha256(w.key), issuedAt: Date.now() }])) }), { mode: 0o600 });
+  const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
+  fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho B399-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+  return { fakeHome, ohome, cfg, account, workspaces, stubDir };
+}
+
+function listProcsByHome(home) {
+  const out = [];
+  for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+  }
+  return out.filter((p) => p !== process.pid);
+}
+const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
+const daemonPids = (ctx) => { const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR); const dir = path.join(l.socketDir, 'namespaces', 'orchestra', 'run'); const out = {}; try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.pid')) out[f.slice(0, -4)] = Number(fs.readFileSync(path.join(dir, f), 'utf8').trim()); } catch {} return out; };
+
+const results = []; // {arm, clause, ok, detail}
+function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !!ok, detail }); console.log(`  ${ok ? 'PASS' : 'FAIL'}  [${arm}] ${name} — ${detail}`); }
+/** A divergence from the removed tool that is REPORTED to the #395 member (ledger #405), not asserted green and not hidden: it never gates the verdict, and prints GAP-CLOSED the day it passes. */
+const gaps = [];
+function knownGap(arm, name, ok, detail, ref) { gaps.push({ arm, clause: name, closed: !!ok, detail, ref }); console.log(`  ${ok ? 'GAP-CLOSED' : 'GAP'}  [${arm}] ${name} — ${detail} (${ref})`); }
+const shots = [];
+function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
+
+// ── mutants: patch the BUILT bundle in place; restore byte-exact and prove it with cmp ──────────────────────────────────────────
+let mutantRestore = null;
+function mutantTarget(kind) {
+  if (kind === 'cli') return path.join(APP_DIR, 'dist-electron/cli.js');
+  if (kind === 'renderer') {
+    const dir = path.join(APP_DIR, 'dist/assets');
+    const hits = fs.readdirSync(dir).filter((n) => /^index-.*\.js$/.test(n) && fs.readFileSync(path.join(dir, n), 'utf8').includes('onBrowserEvent'));
+    if (hits.length !== 1) refuse(`renderer chunk with onBrowserEvent: ${hits.length} match(es) in ${dir} (need exactly 1)`);
+    return path.join(dir, hits[0]);
+  }
+  const m = /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(APP_DIR, 'dist-electron/main.js'), 'utf8'));
+  if (!m) refuse('cannot resolve the main-process chunk from dist-electron/main.js');
+  return path.join(APP_DIR, 'dist-electron', m[1]);
+}
+const MARKER = path.join(APP_DIR ?? '/nonexistent', 'dist-electron', '.b399-mutant-active');
+function applyMutant() {
+  if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore it from that backup, or rebuild, then delete the marker)`);
+  if (!MUTANT) return;
+  const m = MUTANTS[MUTANT], file = mutantTarget(m.file), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
+  let src = fs.readFileSync(file, 'utf8');
+  for (const [from, to] of m.edits) {
+    const hits = typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length;
+    if (hits !== 1) refuse(`mutant ${MUTANT}: ${String(from).slice(0, 70)} occurs ${hits}x in ${path.basename(file)} (must be exactly 1) — the bundle changed, update the mutant`);
+    src = typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to);
+  }
+  fs.copyFileSync(file, backup);
+  fs.writeFileSync(MARKER, `${backup} -> ${file}\n`);
+  fs.writeFileSync(file, src);
+  console.log(`[mutant] ${MUTANT} applied to ${path.basename(file)} (${m.edits.length} edit(s)): ${m.why}; backup ${backup}`);
+  mutantRestore = () => { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK)`); } catch { console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${path.basename(file)}`); process.exitCode = 4; } };
+}
+process.on('exit', () => { try { mutantRestore?.(); } catch {} });
+process.on('SIGINT', () => process.exit(130));
+process.on('SIGTERM', () => process.exit(143));
+
+// ── one world, all arms ───────────────────────────────────────────────────────────────────────────────────────────────────────
+async function main() {
+  const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
+  const world = seedWorld(armDir);
+  const [W1, W2] = world.workspaces;
+  const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
+  console.log(`[rig] fixture ${FIX}`);
+
+  sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
+  sh('swaymsg', ['default_border', 'none']);
+  const port = await freePort();
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+    WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_RELEASE_GRACE_MS: '1500', ...(TRACE ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
+  for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
+  if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
+  const logFile = path.join(armDir, 'app.log');
+  const fd = fs.openSync(logFile, 'w');
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  console.log(`[rig] app pid ${app.pid} debug port ${port} log ${logFile}`);
+  let ui;
+  const targets = async () => (await (await fetch(`http://127.0.0.1:${port}/json`)).json());
+  try {
+    const target = await waitFor(async () => (await targets()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the app page target');
+    clause('ctl', 'app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
+    ui = await Cdp.connect(target.webSocketDebuggerUrl);
+    await ui.send('Page.enable');
+    const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
+    const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
+    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
+      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+    const ctx = { world, W1, W2, FIX, port, app, ui, targets, env, logFile };
+    await runArms(ctx);
+  } catch (e) {
+    clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
+  } finally {
+    ui?.close();
+    try { process.kill(-app.pid, 'SIGTERM'); } catch {}
+    await sleep(2000);
+    try { process.kill(-app.pid, 'SIGKILL'); } catch {}
+    try { fixture.kill('SIGKILL'); } catch {}
+    { // daemons a refused-then-leaked mutant run may have left (they carry no ORCHESTRA_HOME), then the scratch socket dir — only ever THIS ORCHESTRA_HOME's hashed one
+      const l = abLayout(world.ohome, process.env.XDG_RUNTIME_DIR);
+      for (const pid of Object.values(daemonPids({ world }))) { if (environOf(pid)?.includes(`AGENT_BROWSER_SOCKET_DIR=${l.socketDir}`)) { try { process.kill(pid, 'SIGKILL'); } catch {} } }
+      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((process.env.XDG_RUNTIME_DIR ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
+    }
+    for (const p of listProcsByHome(world.ohome)) { try { process.kill(p, 'SIGKILL'); } catch {} }
+    let left = listProcsByHome(world.ohome);
+    for (let i = 0; i < 20 && left.length > 0; i++) { await sleep(250); left = listProcsByHome(world.ohome); }
+    clause('ctl', 'teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
+  }
+}
+
+// ── driving helpers ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+const sel = (n) => JSON.stringify(n);
+async function selectWs(ctx, W) {
+  const { ui } = ctx;
+  const pos = await ui.eval(`(() => { const n = [...document.querySelectorAll('.ws-item .ws-name')].find((e) => e.textContent.trim() === ${sel(W.branch)}); if (!n) return null; const b = n.getBoundingClientRect(); return { x: b.left + 20, y: b.top + b.height / 2 }; })()`);
+  if (!pos) throw new Error(`sidebar row for ${W.branch} not found`);
+  await ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+  await ui.click(pos.x, pos.y);
+  await waitFor(() => ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W.branch)}))`), 15000, `${W.branch} to become the active workspace`);
+}
+const paneToggle = (ctx) => ctx.ui.eval(`(() => { const b = document.querySelector('button[aria-label="Show browser pane"],button[aria-label="Hide browser pane"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { open: b.getAttribute('aria-label') === 'Hide browser pane', x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+const paneVisible = (ctx) => ctx.ui.eval(`!!document.querySelector('.browser-panel:not(.browser-panel-hidden) .browser-url-input')`);
+async function clickToggle(ctx) {
+  const state = await paneToggle(ctx);
+  if (!state) throw new Error('browser pane toggle not found');
+  await ctx.ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: state.x, y: state.y }); await ctx.ui.click(state.x, state.y);
+}
+async function openPane(ctx) {
+  const state = await paneToggle(ctx);
+  if (!state) throw new Error('browser pane toggle not found');
+  if (!state.open) await clickToggle(ctx);
+  await waitFor(() => paneVisible(ctx), 15000, 'the Browser pane to be open');
+}
+/** The REAL CLI bundle, with an `env -i` allowlist: exactly what an agent's Bash tool hands it. */
+function cli(ctx, W, args, { env: extra = {}, timeoutMs = 60000, key } = {}) {
+  const base = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: ctx.world.fakeHome, ORCHESTRA_HOME: ctx.world.ohome, ORCHESTRA_WS_ID: W.id, ORCHESTRA_SESSION_KEY: key ?? W.key,
+    ORCHESTRA_AGENT_TMPDIR: path.join(ctx.world.fakeHome, 'agent-tmp', W.name), LANG: 'C.UTF-8', ...extra };
+  fs.mkdirSync(base.ORCHESTRA_AGENT_TMPDIR, { recursive: true });
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env: base, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome, detached: true });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
+    const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} } }, timeoutMs);
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code: code ?? (signal ? 137 : 0), stdout, stderr, ms: Date.now() - t0 }); });
+  });
+}
+const show = (r) => `rc=${r.code} ${r.ms}ms stdout=${JSON.stringify(r.stdout.trim().slice(0, 160))} stderr=${JSON.stringify(r.stderr.trim().slice(0, 200))}`;
+/** Independent oracle: a second CDP client on the panel's page through the APP's own remote-debugging port. */
+async function oracle(ctx, urlPrefix, ms = 15000) {
+  const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
+  return Cdp.connect(t.webSocketDebuggerUrl);
+}
+const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*\\[ref=(e\\d+)\\]`).exec(snapshot); return m ? `@${m[1]}` : null; };
+const regTabs = async (ctx, W) => (await ctx.ui.eval(`window.orchestra.browserState(${sel(W.id)})`));
+/** Open `url` on W through the CLI and hand back a fresh oracle on the loaded page. */
+async function openOn(ctx, W, url) {
+  const r = await cli(ctx, W, ['open', url]);
+  const o = await oracle(ctx, url.split('?')[0]);
+  return { r, o };
+}
+
+const ARM_FNS = {
+  async navigate(ctx) {
+    const { W1, FIX } = ctx; const A = 'navigate';
+    await selectWs(ctx, W1); await openPane(ctx);
+    clause(A, 'ctl/pane-open', true, `${W1.branch} active, Browser pane open`);
+    const a = await cli(ctx, W1, ['open', `${FIX}/parity.html`]);
+    const o = await oracle(ctx, `${FIX}/parity.html`).catch(() => null);
+    const title = o ? await o.eval('document.title') : null;
+    clause(A, 'open-url-loads-the-page', a.code === 0 && title === 'Parity fixture', `${show(a)} → oracle title ${JSON.stringify(title)}`);
+    o?.close();
+    // a scheme-less host gets https:// (old tool: "a bare domain gets https:// prepended"): the plain-http fixture then answers with a TLS error, which names the scheme that was tried
+    const bare = FIX.replace(/^http:\/\//, '');
+    const b = await cli(ctx, W1, ['open', `${bare}/index.html`]);
+    clause(A, 'bare-host-gets-https', b.code !== 0 && /ERR_SSL_PROTOCOL_ERROR/.test(b.stderr), `open ${bare}/index.html → ${show(b)} (https:// was prepended; an explicit ${FIX}/… works, see open-url-loads-the-page)`);
+    // file: URLs (the old tool allowed http/https/file)
+    const f = path.join(ctx.world.fakeHome, 'local.html'); fs.writeFileSync(f, '<!doctype html><title>Local file</title><p>from disk</p>');
+    const fo = await cli(ctx, W1, ['open', `file://${f}`]);
+    const ofile = await oracle(ctx, `file://${f}`, 8000).catch(() => null);
+    clause(A, 'file-url-opens', fo.code === 0 && !!ofile && (await ofile.eval('document.title')) === 'Local file', `open file://… → ${show(fo)}; oracle title ${ofile ? JSON.stringify(await ofile.eval('document.title')) : 'NO PAGE'}`);
+    ofile?.close();
+    // back / forward walk the page history
+    await cli(ctx, W1, ['open', `${FIX}/parity.html`]);
+    await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
+    const ob = await oracle(ctx, `${FIX}/cli.html`);
+    const bk = await cli(ctx, W1, ['back']);
+    const atBack = await waitFor(() => ob.eval('location.pathname').then((p) => p === '/parity.html' ? p : null), 8000, 'back to /parity.html').catch(() => null);
+    clause(A, 'back-moves-history', bk.code === 0 && atBack === '/parity.html', `${show(bk)} → oracle path ${JSON.stringify(await ob.eval('location.pathname'))}`);
+    const fw = await cli(ctx, W1, ['forward']);
+    const atFwd = await waitFor(() => ob.eval('location.pathname').then((p) => p === '/cli.html' ? p : null), 8000, 'forward to /cli.html').catch(() => null);
+    clause(A, 'forward-moves-history', fw.code === 0 && atFwd === '/cli.html', `${show(fw)} → oracle path ${JSON.stringify(await ob.eval('location.pathname'))}`);
+    ob.close();
+    // a failing load is reported, not swallowed (old tool: "Navigated to … (error: …)")
+    const dead = await freePort();
+    const bad = await cli(ctx, W1, ['open', `http://127.0.0.1:${dead}/nothing`], { timeoutMs: 45000 });
+    clause(A, 'unreachable-url-is-reported', bad.code !== 0 && /ERR_|refused|fail|error/i.test(bad.stderr + bad.stdout), `open http://127.0.0.1:${dead}/ (nothing listens) → ${show(bad)}`);
+    await cli(ctx, W1, ['open', `${FIX}/parity.html`]);
+  },
+};
+
+
+const ARM_FNS2 = {
+  async 'read-page'(ctx) {
+    const { W1, FIX } = ctx; const A = 'read-page';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const inter = await cli(ctx, W1, ['snapshot', '-i']);
+      console.log(`    [probe] snapshot -i:\n${inter.stdout.split('\n').map((l) => '      ' + l).join('\n')}`);
+      const refs = { go: refOf(inter.stdout, 'button', 'Go'), name: refOf(inter.stdout, 'textbox', 'Name'), msg: refOf(inter.stdout, 'textbox', 'Message'), typed: refOf(inter.stdout, 'textbox', 'Typed'), home: refOf(inter.stdout, 'link', 'Home'), coord: refOf(inter.stdout, 'button', 'Coord target') };
+      const all = Object.values(refs);
+      clause(A, 'interactive-outline-lists-every-control-with-a-ref', inter.code === 0 && all.every(Boolean) && new Set(all).size === all.length, `rc=${inter.code}; refs ${JSON.stringify(refs)} (button Go, textbox Name/Message/Typed, link Home, button Coord target — one distinct @eN each)`);
+      const full = await cli(ctx, W1, ['snapshot']);
+      clause(A, 'full-outline-carries-the-page-text', full.code === 0 && /heading "Parity fixture"/.test(full.stdout) && /idle/.test(full.stdout) && /Far down the page/.test(full.stdout), `snapshot (no -i) has the heading, the #out text "idle" and the far paragraph: ${/heading "Parity fixture"/.test(full.stdout)}/${/idle/.test(full.stdout)}/${/Far down the page/.test(full.stdout)}`);
+      const txt = await cli(ctx, W1, ['get', 'text', refs.go ?? '@e0']);
+      clause(A, 'ref-resolves-to-its-own-element', txt.code === 0 && txt.stdout.trim() === 'Go', `get text ${refs.go} → ${JSON.stringify(txt.stdout.trim())} (the Go button's own label)`);
+      await o.eval(`document.getElementById('out').textContent = 'changed-by-the-oracle'`);
+      const live = await cli(ctx, W1, ['snapshot']);
+      clause(A, 'outline-reads-the-live-page', /changed-by-the-oracle/.test(live.stdout) && !/\bidle\b/.test(live.stdout), `after the oracle rewrote #out the next snapshot shows it (and no longer "idle"): ${/changed-by-the-oracle/.test(live.stdout)}/${!/\bidle\b/.test(live.stdout)}`);
+    } finally { o.close(); }
+  },
+
+  async screenshot(ctx) {
+    const { W1, FIX } = ctx; const A = 'screenshot';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const dir = path.join(ctx.world.fakeHome, 'shots'); fs.mkdirSync(dir, { recursive: true });
+      const png = path.join(dir, 'p.png');
+      const r = await cli(ctx, W1, ['screenshot', png]);
+      let img = null, err = '';
+      try { img = decodePng(fs.readFileSync(png)); } catch (e) { err = String(e.message ?? e); }
+      const ref = decodePng(Buffer.from((await o.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+      clause(A, 'png-is-the-painted-page', r.code === 0 && !!img && inkPx(img) > 400 && Math.abs(img.w - ref.w) <= 2 && Math.abs(img.h - ref.h) <= 2, `${show(r)} → ${img ? `${img.w}x${img.h}, ${inkPx(img)} ink px` : `unreadable: ${err}`}; the oracle's own capture of the same view is ${ref.w}x${ref.h}`);
+      if (img) saveShot('parity-screenshot.png', fs.readFileSync(png));
+      const lo = path.join(dir, 'q20.jpg'), hi = path.join(dir, 'q90.jpg');
+      const rl = await cli(ctx, W1, ['screenshot', lo, '--screenshot-format', 'jpeg', '--screenshot-quality', '20']);
+      const rh = await cli(ctx, W1, ['screenshot', hi, '--screenshot-format', 'jpeg', '--screenshot-quality', '90']);
+      const bl = fs.existsSync(lo) ? fs.readFileSync(lo) : Buffer.alloc(0), bh = fs.existsSync(hi) ? fs.readFileSync(hi) : Buffer.alloc(0);
+      const sl = jpegSize(bl), sh2 = jpegSize(bh);
+      clause(A, 'jpeg-with-quality', rl.code === 0 && rh.code === 0 && !!sl && !!sh2 && sl.w === sh2.w && Math.abs(sl.w - ref.w) <= 2 && bl.length < bh.length, `q20 ${sl ? `${sl.w}x${sl.h}` : 'NOT A JPEG'} ${bl.length} B < q90 ${sh2 ? `${sh2.w}x${sh2.h}` : 'NOT A JPEG'} ${bh.length} B (old tool: quality 1-100, JPEG)`);
+      // the file extension does NOT pick the format, and flags placed BEFORE the path are mangled by absolutizeBrowserArgs (the format VALUE is taken for the path)
+      const ext = path.join(dir, 'ext.jpg'); await cli(ctx, W1, ['screenshot', ext]);
+      const flagFirst = path.join(dir, 'flagfirst.jpg'); const ff = await cli(ctx, W1, ['screenshot', '--screenshot-format', 'jpeg', flagFirst]);
+      const bf = fs.existsSync(flagFirst) ? fs.readFileSync(flagFirst) : Buffer.alloc(0);
+      clause(A, 'extension-alone-writes-png-bytes', fs.existsSync(ext) && jpegSize(fs.readFileSync(ext)) === null, `screenshot x.jpg (no format flag) → ${fs.existsSync(ext) ? `${fs.readFileSync(ext).subarray(0, 4).toString('hex')} (PNG magic 89504e47): the extension does not choose the format` : 'no file'}`);
+      knownGap(A, 'format-flag-before-the-path-works', ff.code === 0 && jpegSize(bf) !== null, `screenshot --screenshot-format jpeg x.jpg → ${show(ff)}; magic ${bf.subarray(0, 4).toString('hex')} (absolutizeBrowserArgs absolutizes the flag VALUE "jpeg" as if it were the path)`, 'reported to #395');
+      // a bare `screenshot` lands under the agent's own tmp dir and prints where
+      const bare = await cli(ctx, W1, ['screenshot']);
+      const printed = (/(\/\S+\.png)/.exec(bare.stdout) ?? [])[1];
+      clause(A, 'no-path-saves-under-the-agents-tmp-and-prints-it', bare.code === 0 && !!printed && printed.startsWith(path.join(ctx.world.fakeHome, 'agent-tmp', W1.name)) && fs.existsSync(printed), `${show(bare)} → printed ${printed ?? '<none>'} (must be under ORCHESTRA_AGENT_TMPDIR)`);
+    } finally { o.close(); }
+  },
+
+  async click(ctx) {
+    const { W1, FIX } = ctx; const A = 'click';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const reset = () => o.eval(`document.getElementById('out').textContent = 'idle'`);
+      const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
+      clause(A, 'ctl/precondition-idle', (await o.eval(`document.getElementById('out').textContent`)) === 'idle' && !!go, `#out idle before any click, Go ref ${go}`);
+      const byRef = await cli(ctx, W1, ['click', go ?? '@e0']);
+      const afterRef = await o.eval(`document.getElementById('out').textContent`);
+      clause(A, 'click-by-ref', byRef.code === 0 && afterRef === 'clicked', `${show(byRef)} → oracle #out ${JSON.stringify(afterRef)}`);
+      await reset();
+      const rect = await o.eval(`(() => { const r = document.getElementById('coord').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), right: r.right, top: r.top, h: r.height }; })()`);
+      // a miss: the same three-command click one button-width to the right of the target must NOT trigger it (the clause below cannot be satisfied by "any click works")
+      const miss = [await cli(ctx, W1, ['mouse', 'move', String(rect.right + 80), String(rect.y)]), await cli(ctx, W1, ['mouse', 'down']), await cli(ctx, W1, ['mouse', 'up'])];
+      const afterMiss = await o.eval(`document.getElementById('out').textContent`);
+      clause(A, 'ctl/click-beside-the-target-does-nothing', miss.every((m) => m.code === 0) && afterMiss === 'idle', `mouse move/down/up at (${rect.right + 80}, ${rect.y}) → rc ${miss.map((m) => m.code).join(',')}, #out ${JSON.stringify(afterMiss)}`);
+      const hit = [await cli(ctx, W1, ['mouse', 'move', String(rect.x), String(rect.y)]), await cli(ctx, W1, ['mouse', 'down']), await cli(ctx, W1, ['mouse', 'up'])];
+      const afterHit = await o.eval(`document.getElementById('out').textContent`);
+      clause(A, 'click-by-coordinates', hit.every((m) => m.code === 0) && afterHit === `coord:${rect.x},${rect.y}`, `mouse move/down/up at (${rect.x}, ${rect.y}) → rc ${hit.map((m) => m.code).join(',')}, oracle #out ${JSON.stringify(afterHit)} (the page saw the click at exactly those viewport coordinates)`);
+    } finally { o.close(); }
+  },
+
+  async type(ctx) {
+    const { W1, FIX } = ctx; const A = 'type';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const snap = await cli(ctx, W1, ['snapshot', '-i']); const typed = refOf(snap.stdout, 'textbox', 'Typed');
+      clause(A, 'ctl/precondition-empty', (await o.eval(`document.getElementById('typed').value`)) === '' && !!typed, `#typed empty, ref ${typed}`);
+      await cli(ctx, W1, ['click', typed ?? '@e0']);
+      const focused = await o.eval(`document.activeElement && document.activeElement.id`);
+      const kt = await cli(ctx, W1, ['keyboard', 'type', 'abc']);
+      const v1 = await o.eval(`({ value: document.getElementById('typed').value, keys: document.getElementById('keys').textContent, inputs: document.getElementById('tin').textContent })`);
+      clause(A, 'type-into-the-focused-element', focused === 'typed' && kt.code === 0 && v1.value === 'abc' && v1.inputs === 'in;in;in;', `focus after click: ${focused}; keyboard type abc → ${show(kt)} → oracle value ${JSON.stringify(v1.value)}, input events ${JSON.stringify(v1.inputs)} (one per character, as the old tool's Input.insertText; keydown log ${JSON.stringify(v1.keys)} — neither sends key events: use \`press\` for those)`);
+      const ty = await cli(ctx, W1, ['type', typed ?? '@e0', 'def']);
+      const v2 = await o.eval(`document.getElementById('typed').value`);
+      clause(A, 'type-into-an-element-by-ref', ty.code === 0 && v2 === 'abcdef', `type ${typed} def → ${show(ty)} → oracle value ${JSON.stringify(v2)}`);
+    } finally { o.close(); }
+  },
+
+  async 'form-input'(ctx) {
+    const { W1, FIX } = ctx; const A = 'form-input';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const snap = await cli(ctx, W1, ['snapshot', '-i']); const name = refOf(snap.stdout, 'textbox', 'Name'), msg = refOf(snap.stdout, 'textbox', 'Message');
+      const read = () => o.eval(`({ name: document.getElementById('name').value, msg: document.getElementById('msg').value, log: document.getElementById('evlog').textContent })`);
+      const v0 = await read();
+      clause(A, 'ctl/precondition-empty', v0.name === '' && v0.msg === '' && v0.log === '' && !!name && !!msg, `fields empty, no events yet; refs ${name} ${msg}`);
+      const f1 = await cli(ctx, W1, ['fill', name ?? '@e0', 'hello orchestra']);
+      const v1 = await read();
+      clause(A, 'fill-sets-value-and-fires-input', f1.code === 0 && v1.name === 'hello orchestra' && /name:input;/.test(v1.log), `${show(f1)} → oracle value ${JSON.stringify(v1.name)}, events ${JSON.stringify(v1.log)}`);
+      const f2 = await cli(ctx, W1, ['fill', name ?? '@e0', 'second']);
+      const v2 = await read();
+      clause(A, 'fill-replaces-it-does-not-append', f2.code === 0 && v2.name === 'second', `second fill → oracle value ${JSON.stringify(v2.name)} (form_input SET the value)`);
+      clause(A, 'fill-alone-does-not-fire-change', !/name:change;/.test(v2.log), `events after two fills ${JSON.stringify(v2.log)} — no change yet: it fires when the field is left (old form_input dispatched it itself; the skill says to press Tab)`);
+      const tab = await cli(ctx, W1, ['press', 'Tab']);
+      const v4 = await read();
+      clause(A, 'change-fires-when-the-field-is-left', tab.code === 0 && /name:change;/.test(v4.log), `press Tab → ${show(tab)} → events ${JSON.stringify(v4.log)}`);
+      const f3 = await cli(ctx, W1, ['fill', msg ?? '@e0', 'a longer message']);
+      const v3 = await read();
+      clause(A, 'fill-works-on-a-textarea', f3.code === 0 && v3.msg === 'a longer message' && /msg:input;/.test(v3.log), `${show(f3)} → oracle textarea ${JSON.stringify(v3.msg)}, events ${JSON.stringify(v3.log)}`);
+    } finally { o.close(); }
+  },
+
+  async evaluate(ctx) {
+    const { W1, FIX } = ctx; const A = 'evaluate';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const t = await cli(ctx, W1, ['eval', 'document.title']);
+      clause(A, 'string-result', t.code === 0 && /Parity fixture/.test(t.stdout), show(t));
+      const j = await cli(ctx, W1, ['eval', '({a: 1, b: [2, 3], c: "x"})']);
+      let parsed = null; try { parsed = JSON.parse(j.stdout.trim()); } catch {}
+      clause(A, 'object-result-is-json', j.code === 0 && parsed && parsed.a === 1 && JSON.stringify(parsed.b) === '[2,3]' && parsed.c === 'x', show(j));
+      const p = await cli(ctx, W1, ['eval', "fetch('/whoami').then((r) => r.text())"]);
+      clause(A, 'promise-is-awaited', p.code === 0 && /anon/.test(p.stdout), show(p));
+      const m = await cli(ctx, W1, ['eval', "document.getElementById('out').textContent = 'evaled'; 'ok'"]);
+      const after = await o.eval(`document.getElementById('out').textContent`);
+      clause(A, 'runs-in-the-page', m.code === 0 && after === 'evaled', `${show(m)} → oracle #out ${JSON.stringify(after)}`);
+      const bad = await cli(ctx, W1, ['eval', "throw new Error('boom-399')"]);
+      clause(A, 'page-error-is-reported', bad.code !== 0 && /boom-399/.test(bad.stderr + bad.stdout), show(bad));
+    } finally { o.close(); }
+  },
+
+  async scroll(ctx) {
+    const { W1, FIX } = ctx; const A = 'scroll';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const y = () => o.eval(`Math.round(window.scrollY)`);
+      clause(A, 'ctl/starts-at-the-top', (await y()) === 0, `scrollY ${await y()} before any scroll`);
+      const d = await cli(ctx, W1, ['scroll', 'down', '600']);
+      const y1 = await y();
+      clause(A, 'scroll-down-by-pixels', d.code === 0 && Math.abs(y1 - 600) <= 2, `${show(d)} → oracle scrollY ${y1} (old tool: deltaY 600)`);
+      const u = await cli(ctx, W1, ['scroll', 'up', '200']);
+      const y2 = await y();
+      clause(A, 'scroll-up-by-pixels', u.code === 0 && Math.abs(y2 - 400) <= 2, `${show(u)} → oracle scrollY ${y2} (old tool: negative deltaY)`);
+      const snap = await cli(ctx, W1, ['snapshot']);
+      const si = await cli(ctx, W1, ['scrollintoview', '#far']);
+      const y3 = await y();
+      clause(A, 'scrollintoview-reaches-far-content', si.code === 0 && y3 > 3000, `${show(si)} → oracle scrollY ${y3}`);
+      void snap;
+    } finally { o.close(); }
+  },
+
+  async reveal(ctx) {
+    const { W1, FIX, ui } = ctx; const A = 'reveal';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
+    if ((await paneToggle(ctx)).open) await clickToggle(ctx);
+    await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the pane to close');
+    clause(A, 'ctl/pane-closed-by-the-user', !(await paneVisible(ctx)), `the user closed the Browser pane (toolbar toggle)`);
+    const quiet = await cli(ctx, W1, ['snapshot', '-i']);
+    await sleep(1200);
+    clause(A, 'ctl/a-read-only-command-does-not-open-it', quiet.code === 0 && !(await paneVisible(ctx)), `snapshot ${show(quiet)} → pane visible: ${await paneVisible(ctx)} (only a navigation reveals the pane)`);
+    const nav = await cli(ctx, W1, ['open', `${FIX}/index.html`]);
+    const opened = await waitFor(() => paneVisible(ctx), 10000, 'the pane to open for the agent').catch(() => false);
+    const urlInBar = await ui.eval(`(document.querySelector('.browser-url-input') || {}).value || null`);
+    clause(A, 'navigation-opens-the-pane-for-the-user', nav.code === 0 && opened === true && /index\.html$/.test(String(urlInBar)), `${show(nav)} → pane visible ${opened}, URL bar ${JSON.stringify(urlInBar)} (the user sees what the agent opens)`);
+    const shot = await ui.send('Page.captureScreenshot', { format: 'png' });
+    saveShot('parity-reveal-app.png', Buffer.from(shot.data, 'base64'));
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS2);
+
+
+const ARM_FNS3 = {
+  async 'hidden-panel'(ctx) {
+    // The removed server's documented rule: a hidden panel produces no frames — screenshot/click/type/scroll fail with a clear error and do
+    // not queue; navigate/read_page/evaluate/form_input keep working.
+    const { W1, W2, FIX } = ctx; const A = 'hidden-panel';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/index.html`]);
+    const w2 = await cli(ctx, W2, ['open', `${FIX}/parity.html`]);
+    const o2 = await oracle(ctx, `${FIX}/parity.html`);
+    try {
+      clause(A, 'ctl/w2-is-in-the-background', w2.code === 0 && (await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`)), `${W1.branch} is the active workspace; ${W2.branch} has a panel on ${FIX}/parity.html that is not composited`);
+      const snap = await cli(ctx, W2, ['snapshot', '-i']); const name = refOf(snap.stdout, 'textbox', 'Name'), go = refOf(snap.stdout, 'button', 'Go');
+      clause(A, 'snapshot-keeps-working', snap.code === 0 && !!name && !!go, show(snap));
+      const ev = await cli(ctx, W2, ['eval', 'document.title']);
+      clause(A, 'eval-keeps-working', ev.code === 0 && /Parity fixture/.test(ev.stdout), show(ev));
+      const nav = await cli(ctx, W2, ['open', `${FIX}/parity.html`]);
+      clause(A, 'open-keeps-working', nav.code === 0, show(nav));
+      const snap2 = await cli(ctx, W2, ['snapshot', '-i']); const name2 = refOf(snap2.stdout, 'textbox', 'Name'), go2 = refOf(snap2.stdout, 'button', 'Go');
+      const fill = await cli(ctx, W2, ['fill', name2 ?? '@e0', 'typed while hidden'], { timeoutMs: 45000 });
+      const val = await o2.eval(`document.getElementById('name').value`);
+      knownGap(A, 'fill-keeps-working-while-hidden', fill.code === 0 && val === 'typed while hidden', `${show(fill)} → oracle value ${JSON.stringify(val)} (the removed form_input set the value through the DOM and worked on a hidden pane; fill uses Input.insertText, which the proxy refuses without frames)`, 'reported to #395');
+      clause(A, 'fill-on-a-hidden-pane-fails-fast-and-writes-nothing', fill.code !== 0 && fill.ms < 9000 && /not on screen/.test(fill.stderr) && val === '', `fill refused in ${fill.ms} ms with the reason; oracle value ${JSON.stringify(val)} (nothing was queued)`);
+      const evs = await cli(ctx, W2, ['eval', "const el = document.getElementById('name'); el.value = 'set by eval'; el.dispatchEvent(new Event('input', { bubbles: true })); el.value"]);
+      const val2 = await o2.eval(`document.getElementById('name').value`);
+      clause(A, 'eval-sets-a-field-while-hidden', evs.code === 0 && val2 === 'set by eval', `${show(evs)} → oracle value ${JSON.stringify(val2)} (the documented workaround)`);
+      const shot = await cli(ctx, W2, ['screenshot', path.join(ctx.world.fakeHome, 'bg.png')], { timeoutMs: 45000 });
+      clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /not on screen/.test(shot.stderr), show(shot));
+      const click = await cli(ctx, W2, ['click', go2 ?? '@e0'], { timeoutMs: 45000 });
+      const out = await o2.eval(`document.getElementById('out').textContent`);
+      clause(A, 'click-fails-fast-nothing-dispatched', click.code !== 0 && click.ms < 9000 && /not on screen|outside the viewport/.test(click.stderr) && out === 'idle', `${show(click)}; oracle #out ${JSON.stringify(out)} (the refused click was not dispatched or queued)`);
+      const kt = await cli(ctx, W2, ['keyboard', 'type', 'zzz'], { timeoutMs: 45000 });
+      clause(A, 'keyboard-type-fails-fast', kt.code !== 0 && kt.ms < 9000 && /not on screen/.test(kt.stderr), show(kt));
+      const y0 = await o2.eval(`Math.round(window.scrollY)`);
+      const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
+      const y1 = await o2.eval(`Math.round(window.scrollY)`);
+      clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0 - 300) <= 2, `${show(sc)}; oracle scrollY ${y0} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
+    } finally { o2.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS3);
+
+
+async function runArms(ctx) {
+  await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
+  await sleep(1500);
+  clause('ctl', 'app-in-my-sway', new RegExp(`"pid":\\s*${ctx.app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${ctx.app.pid} present in my sway's get_tree`);
+  for (const arm of ARM_LIST) {
+    console.log(`\n== arm ${arm} ==`);
+    if (!ARM_FNS[arm]) { clause(arm, 'implemented', false, 'arm not implemented yet'); continue; }
+    try { await ARM_FNS[arm](ctx); } catch (e) { clause(arm, 'arm-completed', false, `ARM ABORTED: ${e.stack || e}`); }
+  }
+}
+
+// ── live-dir canary: independent tool (find) + json, before/after ─────────────────────────────────────────────────────────────
+function liveCanary() {
+  const snap = {};
+  for (const d of fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n))) {
+    let links = ''; try { links = sh('find', [d, '-maxdepth', '1', '-type', 'l', '-printf', '%f->%l\\n']).split('\n').sort().join('|'); } catch {}
+    let mcp = ''; for (const f of [path.join(d, '.claude.json'), path.join(LIVE_HOME, '.claude.json')]) { try { mcp += Object.keys(JSON.parse(fs.readFileSync(f, 'utf8')).mcpServers || {}).sort().join(',') + ';'; } catch {} }
+    snap[d] = md5(links) + ':' + md5(mcp) + ` (${links.split('|').filter(Boolean).length} symlinks)`;
+  }
+  const abDot = path.join(LIVE_HOME, '.agent' + '-browser');
+  snap['agent-browser dot-dir in the real home'] = fs.existsSync(abDot) ? 'exists' : 'absent';
+  return snap;
+}
+
+const before = liveCanary();
+console.log(`[rig] app ${APP_DIR} arms ${ARM_LIST.join(',')} mutant=${MUTANT ?? 'none'} out=${OUT}`);
+applyMutant();
+await main();
+const after = liveCanary();
+const same = JSON.stringify(before) === JSON.stringify(after);
+clause('ctl', 'live-dirs-untouched', same, `${Object.keys(before).length} live probes (symlink-set + mcpServers hashes of each ~/.claude*, agent-browser dot-dir existence) ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
+
+// ── verdict ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const isCtl = (c) => c.arm === 'ctl' || c.clause.startsWith('ctl/');
+const targetArms = new Set(MUTANT ? MUTANTS[MUTANT].arms : ARM_LIST);
+// A mutant may break OTHER arms (collateral): their arm-scoped controls are not the mutant's concern. Global controls (app identity, containment, teardown, live dirs) always are.
+const ctlRed = results.filter((c) => isCtl(c) && !c.ok && (c.arm === 'ctl' || targetArms.has(c.arm))), armRed = results.filter((c) => !isCtl(c) && !c.ok);
+fs.mkdirSync(OUT, { recursive: true });
+fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ app: APP_DIR, mutant: MUTANT, results, gaps, shots }, null, 2));
+let verdict, rc;
+if (MUTANT) {
+  const want = MUTANTS[MUTANT].arms;
+  const redArms = new Set(armRed.map((c) => c.arm));
+  const missed = want.filter((a) => !redArms.has(a));
+  ({ verdict, rc } = ctlRed.length === 0 && missed.length === 0
+    ? { verdict: `MUTANT ${MUTANT} KILLED: arm(s) ${want.join(', ')} red (${armRed.filter((c) => want.includes(c.arm)).map((c) => c.clause).join(', ')}), every control green; other red arms: ${[...redArms].filter((a) => !want.includes(a)).join(', ') || 'none'}`, rc: 0 }
+    : { verdict: `MUTANT ${MUTANT} SURVIVED/INVALID: arms not red: ${missed.join(', ') || 'none'}; controls red: ${ctlRed.map((c) => c.clause).join('; ') || 'none'}`, rc: 1 });
+} else {
+  ({ verdict, rc } = ctlRed.length === 0 && armRed.length === 0
+    ? { verdict: `ALL GREEN: ${results.length} clauses (${results.filter(isCtl).length} controls, ${results.length - results.filter(isCtl).length} arm clauses) over ${ARM_LIST.length} arms`, rc: 0 }
+    : { verdict: `RED: ${results.filter((c) => !c.ok).map((c) => `${c.arm}:${c.clause}`).join('; ')}`, rc: 1 });
+}
+for (const g of gaps) console.log(`[gap] ${g.closed ? 'CLOSED' : 'OPEN  '} ${g.arm}:${g.clause} — ${g.ref}`);
+console.log(`\nVERDICT: ${verdict}`);
+process.exit(process.exitCode || rc);

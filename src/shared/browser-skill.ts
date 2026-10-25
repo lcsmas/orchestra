@@ -1,0 +1,200 @@
+/**
+ * The bundled `orchestra-browser` skill (#399, spec #388 stories 29-40, 43-44): how an agent drives its workspace's Browser pane with
+ * `orchestra browser <command>`. Installed into every worktree as `.claude/skills/orchestra-browser/SKILL.md` by `installHooks`
+ * (src/main/workspaces.ts). Pure text + a lint that holds the text to the CLI's own allowlist (`planBrowserCommand`).
+ *
+ * Written with `String.raw` and `§` standing for a backtick (the sed regex below needs literal backslashes); `§§§` is a code fence.
+ */
+import { BROWSER_COMMANDS, planBrowserCommand } from './browser-cli.ts';
+
+export const BROWSER_SKILL_NAME = 'orchestra-browser';
+
+/** Heading of the section whose first bash block is the worked example the test suite runs verbatim. */
+export const BROWSER_SKILL_EXAMPLE_HEADING = '## Several commands in one call';
+
+export const BROWSER_SKILL = String.raw`---
+name: orchestra-browser
+description: Drive THIS workspace's embedded Browser pane from Bash with §orchestra browser <command>§ — open pages, read them as a compact snapshot with element refs, click / fill / type / press / wait, screenshots, tabs, console and network. Use it whenever a task needs a real browser (testing a web app you are building, reproducing a UI bug, filling a form, checking a deployed page); the human sees the same pane.
+---
+
+# Drive your Browser pane — §orchestra browser§
+
+One command per call, run from Bash (also inside scripts and sub-agents). It acts on THIS workspace's Browser pane only — the one the human sees beside the chat — so what you open there is visible to them. A failure is a non-zero exit plus a message on stderr.
+
+## The loop: open → snapshot → act → snapshot again
+
+§§§bash
+orchestra browser open http://localhost:3000/login   # always a full URL (see Gotchas)
+orchestra browser snapshot -i                        # interactive elements, each with a ref
+#   - textbox "Email" [ref=e3]
+#   - button "Sign in" [ref=e5]
+orchestra browser fill @e3 "me@example.com"          # [ref=e3] is addressed as @e3
+orchestra browser click @e5
+orchestra browser snapshot -i                        # the page changed → take fresh refs
+§§§
+
+- A ref belongs to the snapshot that issued it. After a navigation, a re-render or a tab switch an old ref fails with §browser_stale_ref: @e5 no longer resolves…§ — run §snapshot§ again and use the new refs; never retry the stale one.
+- §snapshot -i§ lists interactive elements only (the cheapest); plain §snapshot§ also carries headings and text; §-c§ drops empty structure, §-s "<css>"§ scopes it to part of the page, §-d <n>§ limits the depth.
+- Prefer refs to coordinates. When you must: §mouse move X Y§, §mouse down§, §mouse up§ (viewport pixels).
+
+## Act on the page
+
+| need | command |
+|---|---|
+| click, hover, focus | §click @e5§ · §dblclick @e5§ · §hover @e5§ · §focus @e5§ |
+| set a field | §fill @e3 "text"§ replaces the content and fires §input§; §press Tab§ afterwards if the page listens for §change§ |
+| type | §type @e3 "text"§ appends to that element · §keyboard type "text"§ types into whatever is focused (neither sends key events: use §press§ for those) |
+| keys | §press Enter§ · §press Tab§ · §press Control+a§ |
+| choose, tick, upload | §select @e7 "Label"§ · §check @e8§ · §uncheck @e8§ · §upload @e9 ./report.pdf§ |
+| scroll | §scroll down 600§ · §scroll up 200§ · §scrollintoview @e12§ |
+| wait | §wait "#result"§ (until a selector appears) · §wait 500§ (milliseconds) |
+| read | §get text @e5§ · §get value @e3§ · §get url§ · §get title§ · §is visible @e5§ |
+| run JS | §eval "document.title"§ prints the value as JSON; a promise is awaited; a thrown error is exit 1 |
+| dialogs | §dialog status§ · §dialog accept§ · §dialog dismiss§ (an open §confirm()§ blocks the page until you answer) |
+| debug | §console§ · §errors§ · §network requests§ · §cookies get§ · §storage local get <key>§ |
+| history | §back§ · §forward§ · §reload§ |
+
+## Seeing the page
+
+§§§bash
+orchestra browser screenshot                    # writes a PNG under your scratch dir and prints its path
+orchestra browser screenshot "$TMPDIR/page.png" # or choose the file
+§§§
+
+Then open the file with the **Read** tool — it shows images. JPEG: §screenshot out.jpg --screenshot-format jpeg --screenshot-quality 60§ (the path comes FIRST; the extension alone does not change the format). §--annotate§ overlays numbered labels on the interactive elements.
+
+## Several commands in one call
+
+A multi-step flow costs one turn, not one per click. Use §set -e§ so it stops at the first failure, and look refs up inside the script instead of hard-coding them (§$(ref …)§ re-snapshots, so the ref is always fresh):
+
+§§§bash
+set -e
+b() { orchestra browser "$@"; }
+ref() { b snapshot -i | grep -m1 "$1" | sed -n 's/.*\[ref=\(e[0-9]*\)\].*/@\1/p'; }
+b open "$URL"
+b fill "$(ref 'textbox "Email')" "me@example.com"
+b click "$(ref 'button "Sign in')"
+b wait "#welcome"
+b get text "#welcome"
+§§§
+
+Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-readable output.
+
+## Tabs
+
+§tab list§ · §tab new [url]§ · §tab t2§ (switch; use the id §tab list§ printed) · §tab close t2§
+
+- At most 8 tabs per workspace, the human's and yours together; a refused §tab new§ says so.
+- You may close only the tabs YOU opened. Closing one of the human's is refused — do not try.
+- Acting on a tab that is not the active one brings it to the front, and the human sees a notice. Refs do not survive a tab switch: re-snapshot.
+- Tab ids are not stable across an app restart: run §tab list§ before using one.
+
+## When the pane is not on screen
+
+The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §wait§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once with "this workspace's Browser pane is not on screen" and do nothing. Meanwhile §eval "document.querySelector('#q').value = 'x'"§ can set a field. Do not retry in a loop — wait for the pane to come back.
+
+## Focus
+
+Your commands never move the human's keyboard focus: they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; read-only commands (§snapshot§, §get§, §eval§) do not.
+
+## What you cannot do
+
+- Sign in as the human. The pane starts signed out unless the human attached a browser profile to this workspace; you cannot attach, switch or create profiles — ask the human.
+- Reach another browser or another workspace's pane: §connect§, §close§, §session§, §install§, §batch§, §plugin§, §profiles§ and the flags §--cdp§, §--session§, §--profile§, §--headed§ are refused with "not available".
+- Not yet available: §download§, §trace§, §record§, §profiler§, §clipboard§.
+
+## Gotchas
+
+- A URL without a scheme gets §https://§, so §localhost:3000§ fails with §ERR_SSL_PROTOCOL_ERROR§: write §http://localhost:3000§. §file:///abs/path.html§ works.
+- A page that does not load is exit 1 with the network error (§ERR_CONNECTION_REFUSED§ = nothing is listening).
+- Relative file paths (§screenshot x.png§, §upload @e9 f.pdf§) resolve against your current directory.
+- The command comes first: §orchestra browser snapshot -i§, not §orchestra browser -i snapshot§ (only §--json§ may lead).
+- §orchestra help browser§ lists the same commands.
+`.replaceAll('§', '`');
+
+// ── lint: the skill may only document what the CLI accepts ───────────────────────────────────────────────────────────────────────
+
+/** Split a shell-ish line into words: single/double quotes group, `$(…)` collapses to a ref placeholder. */
+export function shellWords(line: string): string[] {
+  const s = line.replace(/\$\((?:[^()'"]|'[^']*'|"[^"]*")*\)/g, '@e0');
+  const out: string[] = [];
+  let cur = '';
+  let has = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (quote) {
+      if (c === quote) quote = null;
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      has = true;
+    } else if (/\s/.test(c)) {
+      if (has || cur) out.push(cur);
+      cur = '';
+      has = false;
+    } else if (c === '#' && !cur && !has) {
+      break;
+    } else cur += c;
+  }
+  if (has || cur) out.push(cur);
+  return out;
+}
+
+const CANNOT_HEADING = '## What you cannot do';
+
+/**
+ * Every `orchestra browser …` command the skill shows, split by what the skill CLAIMS about it: `allowed` (bash-block lines, `orchestra browser …` or the
+ * `b …` helper, and every backticked span anywhere else that starts with a CLI command word) and `refused` (spans under "What you cannot do").
+ */
+export function documentedCommands(text: string): { allowed: string[][]; refused: string[][]; refusedFlags: string[] } {
+  const allowed: string[][] = [];
+  const refused: string[][] = [];
+  const refusedFlags: string[] = [];
+  let inBash = false;
+  let section = '';
+  for (const raw of text.split('\n')) {
+    if (/^```bash\s*$/.test(raw)) { inBash = true; continue; }
+    if (/^```\s*$/.test(raw)) { inBash = false; continue; }
+    if (inBash) {
+      const m = /^(?:orchestra browser|b)\s+(.*)$/.exec(raw.trim());
+      if (m) allowed.push(shellWords(m[1]!));
+      continue;
+    }
+    if (raw.startsWith('## ')) section = raw;
+    const line = raw.replace(/\bnot `[^`]*`/g, ''); // a deliberately wrong example ("not `orchestra browser -i snapshot`")
+    for (const span of line.matchAll(/`([^`]+)`/g)) {
+      const words = shellWords(span[1]!.replace(/^orchestra browser\s+/, '').replace(/<[^>]*>/g, 'x').replace(/\[[^\]]*\]/g, 'x'));
+      const w0 = words[0];
+      if (!w0 || w0 === 'x') continue; // empty, or a `<placeholder>` standing for any command
+      if (section === CANNOT_HEADING) {
+        if (w0.startsWith('--')) refusedFlags.push(w0);
+        else if (/^[a-z]+$/.test(w0)) refused.push(words);
+      } else if (BROWSER_COMMANDS.has(w0) || /^orchestra browser /.test(span[1]!)) allowed.push(words);
+    }
+  }
+  return { allowed, refused, refusedFlags };
+}
+
+/** Problems found in a skill text (empty = clean). */
+export function lintBrowserSkill(text: string): string[] {
+  const problems: string[] = [];
+  const m = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\n---\n/.exec(text);
+  if (!m) return ['frontmatter: expected --- / name: / description: (one line) / ---'];
+  if (m[1] !== BROWSER_SKILL_NAME) problems.push(`frontmatter name is ${m[1]}, expected ${BROWSER_SKILL_NAME}`);
+  if (m[2]!.length > 700) problems.push(`description is ${m[2]!.length} chars (it is loaded on every turn: keep it under 700)`);
+  const { allowed, refused, refusedFlags } = documentedCommands(text);
+  if (allowed.length < 40) problems.push(`only ${allowed.length} documented commands found: the extractor or the skill is broken`);
+  for (const words of allowed) {
+    const plan = planBrowserCommand(words);
+    if (!plan.ok) problems.push(`documented as usable but refused by the CLI: orchestra browser ${words.join(' ')} → ${plan.error.split('\n')[0]}`);
+  }
+  if (refused.length < 5) problems.push(`only ${refused.length} refused commands listed under "What you cannot do"`);
+  for (const words of refused) {
+    if (planBrowserCommand(words).ok) problems.push(`documented as refused but the CLI accepts it: orchestra browser ${words.join(' ')}`);
+  }
+  for (const f of refusedFlags) {
+    if (planBrowserCommand(['get', 'url', f]).ok) problems.push(`documented as refused but the CLI accepts the flag ${f}`);
+  }
+  return problems;
+}

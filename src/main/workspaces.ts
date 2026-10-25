@@ -45,6 +45,7 @@ import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
+import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
@@ -4911,6 +4912,7 @@ const HOOKS_VERSION = createHash('sha256')
       RENAME_SKILL,
       LINK_SKILL,
       STATUS_SKILL,
+      BROWSER_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -5264,6 +5266,8 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-rename', RENAME_SKILL),
       writeSkill('orchestra-link', LINK_SKILL),
       writeSkill('orchestra-status', STATUS_SKILL),
+      // #399: how to drive the Browser pane with `orchestra browser` (the in-process mcp__browser__* tools are gone)
+      writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
