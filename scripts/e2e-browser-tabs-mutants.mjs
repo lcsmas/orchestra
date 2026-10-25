@@ -19,6 +19,7 @@ const MUTANTS = [
   { id: 'B3-active-index-ignored', file: P, arms: 'tabs,restore', from: 'built[Math.min(saved.activeIndex, built.length - 1)]', to: 'built[0]', red: ['graceful-restart-restores-the-same-active-tab', 'restored-active-tab-is-the-one-painted'] },
   { id: 'B4-switch-does-not-swap-the-view', file: P, arms: 'tabs', from: '  panel.activeId = tab.id;\n  if (panel.attachedId !== null) attachActive(panel);\n  publish(panel);', to: '  panel.activeId = tab.id;\n  publish(panel);', red: ['switch-paints-the-active-view/B'] },
   { id: 'B5-inactive-view-stays-composited', file: P, arms: 'tabs,paint', from: '  if (prev) detachTab(panel, prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;', red: ['pane-hidden-leaves-no-view-over-the-app'] },
+  { id: 'B7-workspace-switch-leaves-view-attached', file: P, arms: 'tabs,ws', from: "  const attached = panel.tabs.find((t) => t.id === panel.attachedId);\n  if (attached) detachTab(panel, attached);\n  panel.attachedId = null;\n}", to: '  panel.attachedId = null;\n}', red: ['switching-workspace-leaves-no-view-over-the-app'] },
   { id: 'B6-last-tab-evicts-the-panel', file: P, arms: 'last', from: "if (d.replaceWithBlank) createTab(wsId, { openedBy: 'human', activate: true });", to: '', red: ['closing-the-last-tab-leaves-one-fresh-blank-tab'] },
 ];
 

@@ -5,6 +5,7 @@
 //   boot 1  tabs     new tab x2 via the strip, URL bar follows the ACTIVE tab, switching paints the right native view (compositor pixels)
 //           cap      fill to 8, the 9th is refused: notice shown, 8 tabs, 8 page targets (no leaked view)
 //           paint    pane hidden / Help overlay up -> no fixture colour left over the app
+//           ws       a 2nd workspace: switching hides the 1st's views, tab sets are per workspace, switching back restores
 //           restore  [A,B,C] with B active reaches disk; GRACEFUL quit (Browser.close)
 //   boot 2  restore  first panel open after the restart: 3 tabs back, same URLs, same active tab, pixels = B; click C, SIGKILL
 //   boot 3  restore  (debounced write, no quit hook): 3 tabs back, C active
@@ -13,7 +14,7 @@
 // pixel instrument) are separate clauses so a red clause can only be blamed on the behaviour. Mutant BUILDS that must redden each arm:
 // scripts/e2e-browser-tabs-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,cap,restore,paint,last]
+// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,cap,paint,ws,restore,last]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -28,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'tabs,cap,restore,paint,last').split(','));
+const ARMS = new Set(flag('--arms', 'tabs,cap,paint,ws,restore,last').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -169,12 +170,16 @@ function seedWorld(armDir) {
   if (!git(repoDir, ['worktree', 'list', '--porcelain'], fakeHome).includes(`worktree ${fs.realpathSync(wtDir)}`)) throw new Error('seed worktree not registered');
   const account = { id: 'rig-bt393', label: 'rig (scratch config dir)', configDir: cfg };
   mustBeScratch('account.configDir', account.configDir);
+  const wtDir2 = path.join(armDir, 'wt', 'bt393-2');
+  mustBeScratch('wt2', wtDir2);
+  git(repoDir, ['worktree', 'add', '-q', '-b', 'e2e/bt393-2', wtDir2], fakeHome);
   const ws = { id: 'ws-bt393-1', name: 'bt393-1', repoPath: repoDir, worktreePath: wtDir, branch: 'e2e/bt393-1', baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id };
+  const ws2 = { ...ws, id: 'ws-bt393-2', name: 'bt393-2', worktreePath: wtDir2, branch: 'e2e/bt393-2', createdAt: Date.now() + 1 };
   const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'bt393-repo', defaultBranch: 'main', accountId: account.id }], workspaces: [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'bt393-repo', defaultBranch: 'main', accountId: account.id }], workspaces: [ws, ws2], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho BT393-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
-  return { fakeHome, ohome, cfg, account, ws, stubDir, tabsFile: path.join(ohome, 'userData', 'orchestra', 'browser-tabs.json') };
+  return { fakeHome, ohome, cfg, account, ws, ws2, stubDir, tabsFile: path.join(ohome, 'userData', 'orchestra', 'browser-tabs.json') };
 }
 
 function procsByHome(home) {
@@ -206,6 +211,7 @@ async function boot(world, bootName) {
   await cdp.send('Page.enable');
   await waitFor(() => cdp.eval('!!document.querySelector(".toolbar")'), 60000, 'the toolbar (an ACTIVE workspace)');
   const b = { app, port, cdp, target, bootName, world };
+  await selectWorkspace(b, 'e2e/bt393-1'); // two workspaces are seeded: every boot drives the first
   // controls: the app answering is OUR build, on OUR sway, in OUR scratch world
   clause(bootName, 'ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
   const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
@@ -282,6 +288,14 @@ async function holderColor(b, name, want, ms = 6000) {
   } while (Date.now() - t0 < ms);
   return { color: c, tries, rect: r, w: img.w, h: img.h };
 }
+/** Click the sidebar row whose text contains `branch` (trusted click) and wait until it is the active one. */
+async function selectWorkspace(b, branch) {
+  const idx = await b.cdp.eval(`[...document.querySelectorAll('.ws-item')].findIndex((e) => e.textContent.includes(${JSON.stringify(branch)}))`);
+  if (idx < 0) throw new Error(`no sidebar row for ${branch}`);
+  await clickSel(b, '.ws-item', idx);
+  await waitFor(() => b.cdp.eval(`[...document.querySelectorAll('.ws-item.active')].some((e) => e.textContent.includes(${JSON.stringify(branch)}))`), 15000, `${branch} to be the active workspace`);
+  await sleep(500);
+}
 const labelOf = (letter) => `Tabs fixture ${letter.toUpperCase()}`;
 const readTabsFile = (world) => { try { return JSON.parse(fs.readFileSync(world.tabsFile, 'utf8')).workspaces?.[world.ws.id] ?? null; } catch { return null; } };
 
@@ -303,7 +317,7 @@ const BASE = `http://127.0.0.1:${site.port}`;
 const URLS = { a: `${BASE}/tabs-a.html`, b: `${BASE}/tabs-b.html`, c: `${BASE}/tabs-c.html` };
 console.log(`[rig] app ${APP_DIR} label ${LABEL} arms ${[...ARMS].join(',')} out ${OUT}\n[rig] fixture: ${site.kind} on ${BASE}`);
 const world = seedWorld(path.join(RIG_DIR, 'world'));
-const needBoot1 = ['tabs', 'cap', 'paint', 'restore'].some((a) => ARMS.has(a));
+const needBoot1 = ['tabs', 'cap', 'paint', 'ws', 'restore'].some((a) => ARMS.has(a));
 let b = null;
 try {
   // ────────────────────────────── boot 1 ──────────────────────────────
@@ -397,6 +411,29 @@ try {
       clause('paint', 'closing-the-overlay-restores-the-active-tab', near(back.color, COLORS.b), `pixel ${hex(back.color)}`);
     }
 
+    // ── ws: a second workspace never sees (or is covered by) the first one's tabs ──
+    if (ARMS.has('ws')) {
+      const isFix = (c) => Object.values(COLORS).some((k) => near(c, k, 24));
+      const wsBase = await holderColor(b, 'ws-ws1-before', COLORS.b);
+      clause('ws', 'ctl/ws1-page-visible-before-switching', near(wsBase.color, COLORS.b), `pixel ${hex(wsBase.color)} (ws1, B active)`);
+      await selectWorkspace(b, 'e2e/bt393-2');
+      const away = grim('ws-ws2-selected.png'); const ac = blockColor(away, Math.round(wsBase.rect.x), Math.round(wsBase.rect.y));
+      clause('ws', 'switching-workspace-leaves-no-view-over-the-app', !isFix(ac), `pixel where ws1's page was, ws2 selected: ${hex(ac)} (not a fixture colour)`);
+      clause('ws', 'second-workspace-pane-starts-closed', await b.cdp.eval(`!document.querySelector('.browser-tabs')`), 'ws2: no tab strip until its pane is opened');
+      await openBrowserPane(b);
+      const w2 = await tabs(b);
+      clause('ws', 'tab-sets-are-per-workspace', w2.length === 1 && w2[0].label === 'New tab' && w2[0].active, `ws2 tabs ${JSON.stringify(w2.map((t) => [t.label, t.active]))} (ws1 holds 3)`);
+      await typeUrl(b, URLS.a);
+      await softWait(async () => (await tabs(b))[0]?.label === labelOf('a'), 20000, 'ws2 tab to load fixture A');
+      const w2c = await holderColor(b, 'ws-ws2-page', COLORS.a);
+      clause('ws', 'second-workspace-paints-its-own-active-tab', near(w2c.color, COLORS.a), `pixel ${hex(w2c.color)} (want A ${hex(COLORS.a)})`);
+      await selectWorkspace(b, 'e2e/bt393-1');
+      await softWait(() => b.cdp.eval(`!!document.querySelector('.browser-tabs')`), 10000, 'ws1 pane to be open again');
+      const back1 = await holderColor(b, 'ws-ws1-back', COLORS.b);
+      const w1 = await tabs(b);
+      clause('ws', 'switching-back-restores-the-first-workspaces-tabs', near(back1.color, COLORS.b) && safe(() => w1.length === 3 && w1[1].active), `ws1 tabs ${JSON.stringify(w1.map((t) => [t.label, t.active]))}; pixel ${hex(back1.color)} (want B ${hex(COLORS.b)})`);
+    }
+
     // ── persistence reaches disk, then a GRACEFUL quit ──
     if (ARMS.has('restore')) {
       await softWait(() => { const e = readTabsFile(world); return e && e.tabs.length === 3 && e.activeIndex === 1; }, 8000, 'browser-tabs.json to hold [A,B,C] with B active');
@@ -415,12 +452,12 @@ try {
       const rt = await tabs(b);
       clause('restore', 'graceful-restart-restores-three-tabs-same-urls', safe(() => rt.length === 3 && rt.map((t) => t.tip).join('|') === [URLS.a, URLS.b, URLS.c].join('|')), `tabs ${JSON.stringify(rt.map((t) => [t.label, t.tip]))}`);
       clause('restore', 'graceful-restart-restores-the-same-active-tab', rt.findIndex((t) => t.active) === 1 && (await urlBar(b)) === URLS.b, `active index ${rt.findIndex((t) => t.active)} (want 1 = B); URL bar ${JSON.stringify(await urlBar(b))}`);
-      clause('restore', 'restored-views-match-restored-tabs', (await viewTargets(b)).length === 3, `page targets ${(await viewTargets(b)).length}`);
+      clause('restore', 'restored-views-match-restored-tabs', (await viewTargets(b)).length === 3, `page targets ${(await viewTargets(b)).length} (ws1's 3 tabs; ws2's remembered tab is NOT loaded until its pane opens — restore is lazy)`);
       const rp = await holderColor(b, 'boot2-restored-active', COLORS.b);
       clause('restore', 'restored-active-tab-is-the-one-painted', near(rp.color, COLORS.b), `compositor pixel ${hex(rp.color)} (want B ${hex(COLORS.b)})`);
       saveShot('boot2-restored-renderer.png', await b.cdp.shot());
       // change the active tab, then die WITHOUT any quit hook
-      await clickSel(b, '.browser-tab', 2);
+      await clickSel(b, '.browser-tab', 2).catch((e) => console.log(`  (no third tab to click: ${e.message})`));
       await softWait(async () => (await tabs(b))[2]?.active, 10000, 'tab C active');
       await softWait(() => readTabsFile(world)?.activeIndex === 2, 8000, 'the debounced write of active=C');
       await sleep(300);
