@@ -40,6 +40,15 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   // input isn't focused.
   const [urlInput, setUrlInput] = useState('');
   const urlFocused = useRef(false);
+  // The LATEST url main pushed — read by onBlur. `state.url` in a closure lags a render: the input blurs ~11 ms after a
+  // submit (the page takes focus) and used to reset the bar to the stale blank url, leaving it empty after the first navigation.
+  const latestUrl = useRef('');
+  /** Take a state from main: remember its url for onBlur, and let the bar follow it unless the user is typing. */
+  const applyState = useCallback((s: BrowserPanelState, force = false) => {
+    latestUrl.current = s.url;
+    setState(s);
+    if (force || !urlFocused.current) setUrlInput(s.url);
+  }, []);
   const urlInputRef = useRef<HTMLInputElement>(null);
   // A refused tab operation (the cap of 8) is shown, not swallowed: the user must be told why nothing opened.
   const [tabNotice, setTabNotice] = useState<string | null>(null);
@@ -66,15 +75,11 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     // Prime from the current main-side state (covers a re-mount after the agent
     // already navigated while the panel was closed).
     void window.orchestra.browserState(workspaceId).then((s) => {
-      if (mounted) {
-        setState(s);
-        if (!urlFocused.current) setUrlInput(s.url);
-      }
+      if (mounted) applyState(s);
     });
     const off = window.orchestra.onBrowserEvent((id, s) => {
       if (id !== workspaceId) return;
-      setState(s);
-      if (!urlFocused.current) setUrlInput(s.url);
+      applyState(s);
     });
     return () => {
       mounted = false;
@@ -87,8 +92,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   useEffect(() => {
     if (isActive) {
       void window.orchestra.browserShow(workspaceId).then((s) => {
-        setState(s);
-        if (!urlFocused.current) setUrlInput(s.url);
+        applyState(s);
         // Bounds must be applied AFTER the view is added; do it next frame so
         // the placeholder has laid out.
         requestAnimationFrame(syncBounds);
@@ -211,9 +215,8 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     }
     const r = await op();
     if (r.state.wsId !== workspaceId) return r; // a late result for a workspace we have since left
-    setState(r.state);
     // The user explicitly changed tab: the URL bar follows it even if it had focus.
-    setUrlInput(r.state.url);
+    applyState(r.state, true);
     setTabNotice(r.ok ? null : r.message);
     return r;
   };
@@ -322,7 +325,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
             }}
             onBlur={() => {
               urlFocused.current = false;
-              setUrlInput(state.url);
+              setUrlInput(latestUrl.current);
             }}
             onChange={(e) => setUrlInput(e.target.value)}
           />

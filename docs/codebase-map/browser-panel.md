@@ -296,7 +296,7 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 - **Renderer — `BrowserPanel.tsx`:** `.browser-tabs` strip (`role=tablist`; each `.browser-tab` carries `data-tab-id` / `data-opened-by`, a
   `×`, and `+` at the end), a `role=alert` `.browser-tab-notice` for a refusal (5 s). `<BrowserPanel key={active.id}>` in `App.tsx` so tab ids (restarting at `t1` per workspace) never cross workspaces. Design mode is DISARMED before the active tab changes
   (`runTabOp`): the overlay lives in the page of the tab being left and would otherwise stay armed, click-swallowing and invisible to the UI.
-  Label = `tabLabel` (title, else host, else "New tab").
+  Label = `tabLabel` (title, else host, else "New tab"). URL bar: every state from main goes through `applyState`, which also records `latestUrl` — `onBlur` resets the bar from THAT ref, not the render-lagging `state.url` (the bar went empty after a first navigation when the input blurred before React committed; rig arm `urlbar` is a regression net — the race is not reachable from CDP, the unfixed form survives it).
 - **Tests:** `scripts/verify-browser-tabs-panel.mjs` (stub Electron: cap with no leaked view, ownership, last tab, one view composited, persist →
   fresh module instance → restore, destroy forgets) + `scripts/verify-browser-tabs-panel-mutants.mjs` (28 in-place mutants, byte-exact restore);
   built-app rig `scripts/e2e-browser-tabs.sh` (3 tabs → graceful restart → SIGKILL restart; compositor pixels via `grim`; cap; last tab; two workspaces; server-down tab) +

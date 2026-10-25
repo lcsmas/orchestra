@@ -13,6 +13,8 @@ const OUT = process.env.MUT_OUT || path.join(process.env.TMPDIR || os.tmpdir(), 
 fs.mkdirSync(OUT, { recursive: true });
 const P = 'src/main/browser-panel.ts';
 
+// NOT here: the URL-bar blur fix (BrowserPanel.tsx `latestUrl`). Its unfixed form SURVIVED the rig (arm `urlbar`, even with a forced blur 2-40 ms after submit):
+// the race needs a blur between an IPC event and React's commit, which CDP timing cannot hit. The arm is a regression net, not a proof (ledger #405 #393 nomination).
 const MUTANTS = [
   { id: 'B1-cap-ignored', file: P, arms: 'tabs,cap', from: '  if (!d.ok) return refused(wsId, d.reason, d.message);\n  const tab = createTab(wsId, opts);', to: '  const tab = createTab(wsId, opts);', red: ['ninth-tab-refused-with-a-clear-notice', 'ninth-tab-creates-no-tab-and-no-view'] },
   { id: 'B2-snapshot-never-saved', file: P, arms: 'tabs,restore', from: '  savePanelTabs(panel);\n  platform.broadcast', to: '  platform.broadcast', red: ['tabs-file-holds-three-tabs-and-the-active-index', 'graceful-restart-restores-three-tabs-same-urls', 'sigkill-restart-restores-three-tabs-with-the-active-one'] },
@@ -26,16 +28,21 @@ const MUTANTS = [
 
 const only = process.argv.slice(2);
 const sh = (cmd, args, opt = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, ...opt });
-const abs = path.join(ROOT, P);
-const backup = path.join(OUT, 'browser-panel.ts.orig');
-fs.copyFileSync(abs, backup);
+const backups = new Map(); // file -> backup path (byte-exact copies taken before the first mutation)
+for (const f of new Set(MUTANTS.map((m) => m.file))) {
+  const b = path.join(OUT, `${f.replaceAll('/', '__')}.orig`);
+  fs.copyFileSync(path.join(ROOT, f), b);
+  backups.set(f, b);
+}
+const restoreAll = () => { for (const [f, b] of backups) fs.copyFileSync(b, path.join(ROOT, f)); };
 let cleaned = false;
-process.on('exit', () => { if (!cleaned) fs.copyFileSync(backup, abs); });
+process.on('exit', () => { if (!cleaned) restoreAll(); });
 process.on('SIGINT', () => process.exit(130));
 
 const rows = []; let bad = 0;
 for (const m of MUTANTS) {
   if (only.length && !only.includes(m.id)) continue;
+  const abs = path.join(ROOT, m.file), backup = backups.get(m.file);
   const src = fs.readFileSync(abs, 'utf8');
   const n = src.split(m.from).length - 1;
   if (n !== 1) { rows.push(['STRING-NOT-LIVE', `${m.id} (${n} occurrences)`]); bad++; continue; }
@@ -59,7 +66,7 @@ for (const m of MUTANTS) {
 
 // leave a CLEAN build behind
 cleaned = true;
-fs.copyFileSync(backup, abs);
+restoreAll();
 const clean = sh('nice', ['-n', '10', 'pnpm', 'run', 'build:bundles']);
 rows.push([clean.status === 0 ? 'CLEAN-REBUILD-OK' : 'CLEAN-REBUILD-FAILED', 'dist/ matches the restored tree']);
 if (clean.status !== 0) bad++;

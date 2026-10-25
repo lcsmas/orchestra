@@ -3,6 +3,7 @@
 // One scratch world (ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, one seeded workspace, pinned scratch account, stub `claude`),
 // the shared fixture site (three pages, three distinct background colours) and THREE boots of the app on the same world:
 //   boot 1  tabs     new tab x2 via the strip, URL bar follows the ACTIVE tab, switching paints the right native view (compositor pixels)
+//           urlbar   12x: new blank tab -> type a URL -> the bar must SHOW it once loaded (the input blurs ~11 ms after submit; it used to reset to a stale blank)
 //           cap      fill to 8, the 9th is refused: notice shown, 8 tabs, 8 page targets (no leaked view)
 //           paint    pane hidden / Help overlay up -> no fixture colour left over the app
 //           ws       a 2nd workspace: switching hides the 1st's views, tab sets are per workspace, switching back restores
@@ -15,7 +16,7 @@
 // pixel instrument) are separate clauses so a red clause can only be blamed on the behaviour. Mutant BUILDS that must redden each arm:
 // scripts/e2e-browser-tabs-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,cap,paint,ws,restore,last,down]
+// Usage (via scripts/e2e-browser-tabs.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms tabs,urlbar,cap,paint,ws,restore,last,down]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'tabs,cap,paint,ws,restore,last,down').split(','));
+const ARMS = new Set(flag('--arms', 'tabs,urlbar,cap,paint,ws,restore,last,down').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -318,7 +319,7 @@ const BASE = `http://127.0.0.1:${site.port}`;
 const URLS = { a: `${BASE}/tabs-a.html`, b: `${BASE}/tabs-b.html`, c: `${BASE}/tabs-c.html` };
 console.log(`[rig] app ${APP_DIR} label ${LABEL} arms ${[...ARMS].join(',')} out ${OUT}\n[rig] fixture: ${site.kind} on ${BASE}`);
 const world = seedWorld(path.join(RIG_DIR, 'world'));
-const needBoot1 = ['tabs', 'cap', 'paint', 'ws', 'restore'].some((a) => ARMS.has(a));
+const needBoot1 = ['tabs', 'urlbar', 'cap', 'paint', 'ws', 'restore'].some((a) => ARMS.has(a));
 let b = null;
 try {
   // ────────────────────────────── boot 1 ──────────────────────────────
@@ -359,6 +360,30 @@ try {
     // the three fixture colours must be distinguishable, or the pixel clauses above prove nothing
     clause('tabs', 'ctl/fixture-colours-distinct', !near(COLORS.a, COLORS.b, 40) && !near(COLORS.b, COLORS.c, 40) && !near(COLORS.a, COLORS.c, 40), `A ${hex(COLORS.a)} B ${hex(COLORS.b)} C ${hex(COLORS.c)}`);
     clause('tabs', 'three-live-views-three-tabs', (await viewTargets(b)).length === 3, `page targets = ${(await viewTargets(b)).length}, tabs = ${(await tabs(b)).length}`);
+
+    // ── urlbar: the bar shows the URL after the FIRST navigation of a blank tab (the 4/14 flake in the verifier baseline) ──
+    if (ARMS.has('urlbar')) {
+      const empty = [];
+      const N = 12;
+      for (let i = 0; i < N; i++) {
+        const letter = 'abc'[i % 3];
+        await clickSel(b, '.browser-tab-new');
+        await softWait(async () => (await tabs(b)).length === 4, 10000, 'a 4th (blank) tab');
+        await typeUrl(b, URLS[letter]);
+        // The page takes focus ~11 ms after a submit in the verifier's drives; a CDP-driven Enter leaves the input focused, so force
+        // that blur at a varying delay (2..40 ms) to hit the window between main's first events and React's flush.
+        await sleep([2, 6, 11, 16, 25, 40][i % 6]);
+        await b.cdp.eval(`document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
+        await softWait(async () => (await tabs(b))[3]?.label === labelOf(letter), 20000, `blank tab to load fixture ${letter.toUpperCase()}`);
+        await sleep(700); // past the load events and React's flush
+        const bar = await urlBar(b);
+        if (bar !== URLS[letter]) empty.push(`#${i + 1} ${letter}: bar ${JSON.stringify(bar)}`);
+        await clickSel(b, '.browser-tab-close', 3);
+        await softWait(async () => (await tabs(b)).length === 3, 10000, 'the extra tab to close');
+      }
+      clause('urlbar', 'url-bar-shows-the-url-after-the-first-navigation-of-a-blank-tab', empty.length === 0, `${N} blank-tab navigations, bar wrong in ${empty.length}${empty.length ? `: ${empty.join('; ')}` : ' (0/12 with a forced blur 2-40 ms after each submit — a regression net: the unfixed bar did NOT fail here either, the 4/14 race is not reachable from CDP)'}`);
+      clause('urlbar', 'ctl/three-tabs-left-after-the-loop', (await tabs(b)).length === 3, `tabs ${(await tabs(b)).length}`);
+    }
 
     // ── cap ──
     if (ARMS.has('cap')) {
