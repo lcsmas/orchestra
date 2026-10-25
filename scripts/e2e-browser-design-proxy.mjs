@@ -486,7 +486,7 @@ const ARM_FNS = {
     for (const W of [ctx.W1, ctx.W2]) {
       const all = seatLines(ctx, W, log0);
       const heldNow = all.filter((l) => l.op === 'acquire').length - all.filter((l) => l.op === 'detached' || l.op === 'force-detached').length;
-      clause(A, `workspace-switch-while-armed-leaves-no-lease-on-${W.name}`, heldNow === 0 && !(await designPressed(ctx)), `${W.name} seat since the archive: ${fmtLines(all)} (every acquire matched by a detach; the BrowserPanel component follows the active workspace, so each one the picker moved off must be disarmed)`);
+      clause(A, `workspace-switch-while-armed-leaves-no-lease-on-${W.name}`, all.some((l) => l.op === 'acquire') && heldNow === 0 && !(await designPressed(ctx)), `${W.name} seat since the archive: ${fmtLines(all)} (every acquire matched by a detach; the BrowserPanel component follows the active workspace, so each one the picker moved off must be disarmed)`);
     }
   },
 

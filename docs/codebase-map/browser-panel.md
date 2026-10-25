@@ -121,7 +121,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   is no tab); its url/title/loading/nav/error fields keep mirroring the ACTIVE
   tab (`computeState`), so `BrowserPanel.tsx` only grew two literal fields.
 - **Shapes** (`browser-panel.ts`): `Tab {id, view, openedBy, designHold,
-  designOp, nav}`; `Panel {wsId, tabs, activeId, attachedId, bounded, bounds, pendingShow,
+  designArmed, designOp, nav}`; `Panel {wsId, tabs, activeId, attachedId, bounded, bounds, pendingShow,
   state, view}` — `attachedId` is the tab whose view is in the window right now
   (`null` = not composited; replaces the old `visible`), `bounds` the last
   renderer rect (re-applied to a view on attach), `view` a getter for the ACTIVE
@@ -277,9 +277,17 @@ keeps the shared debugger free of any long-lived event subscription.
 - **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no
-  lease, return, and leave an invisible click-swallowing overlay. A disarm with
-  no lease (after a pick / Escape — the page-side picker tore itself down) sends
-  nothing and attaches nothing.
+  lease, return, and leave an invisible click-swallowing overlay. `Tab.designArmed`
+  is set synchronously by the arm so a disarm queued behind it targets that tab. A
+  disarm with nothing armed (after a pick / Escape — the page-side picker tore
+  itself down) sends nothing and attaches nothing.
+- **The renderer addresses design mode by workspace, not tab, and the armed state FOLLOWS the active workspace** (`BrowserPanel`
+  is ONE un-keyed instance — `App.tsx` — whose `workspaceId` prop changes; its effect arms the new workspace). So: (a) a disarm
+  with no `tabId` disarms EVERY tab of the workspace it is armed on (`armedTabs`), not the active one (an agent opening an
+  activated tab mid-pick moves "active" away from the armed tab); (b) a pick or Escape is one-shot for the whole workspace
+  (`designModePoll` tears down any other armed tab); (c) `BrowserPanel` disarms the workspace it LEAVES (cleanup effect on
+  `[workspaceId]`) — before #398's lease this only left an orphan overlay on the old page, now it would also leave the lease. A
+  poll for a workspace with no panel returns null and builds nothing.
 - `designModeDisarm` **swallows evaluation failures**. The renderer disarms on
   unmount, on going inactive, and after every pick, so it routinely lands on a
   page that is mid-navigation or already gone (`Inspected target navigated or
@@ -527,21 +535,24 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   input reaches us.
 - **Single attacher (#398)**: `src/main/browser-cdp-seat.ts` is the ONLY file in `src/main` that touches `webContents.debugger`
   (`seatAcquire` = the one `attach('1.3')`, shared by refcount; `seatRelease` with the last holder starts the grace period, then
-  `resetCommands` + detach so the human's panel carries no debugger/emulation when nobody drives it; a holder coming back
-  cancels it; `seatForceDetach` at tab destroy via `bp.setTabTeardownHook`; `seatChannel` = the proxy's
-  send/subscribe/onDetach). `makePanelPort.acquire/release` pair with it; the core takes ONE `port.acquire` per tab however many sessions attach at once (single-flight — a raced second acquire used to be released while the tab was held, arming the reset under a live session) and calls `port.release` once, when the last session goes. The app's own callers —
+  detach — first `resetCommands` IF an agent session ever held the seat (`CdpProxyCore` marks a TabState `agent` when a client
+  session attaches and passes it as `port.release(tabId, agentTouched)`; the mark is sticky until the seat drops), so design
+  mode and the legacy tools alone write NOTHING to the human's page; a holder coming back cancels it; `seatForceDetach` at tab
+  destroy via `bp.setTabTeardownHook`; `seatChannel` = the proxy's send/subscribe/onDetach). `makePanelPort.acquire/release` pair with it; the core takes ONE `port.acquire` per tab however many sessions attach at once (single-flight — a raced second acquire used to be released while the tab was held, arming the reset under a live session) and calls `port.release` once, when the last session goes. The app's own callers —
   design mode and the legacy `mcp__browser__*` tools (`browser-panel.ts` `cdp()`) — never attach: they call `cdpSeat.send` /
   `cdpSeat.hold` (registered by `initBrowserCliHost`, `panelCdpSeat` in `browser-cdp-host.ts`), which take an in-process
   **lease** on the workspace proxy (`CdpProxyCore.lease`, refcounted with the WebSocket clients; a lease that outlived a detach
   never decrements a newer attach) and send straight on the tab's channel (no bring-to-front, no screenshot chain: the legacy
-  guards `requireComposited` / `withTimeout` still front them). So one agent-browser session, a design pick and a legacy call
+  guards `requireComposited` / `withTimeout` still front them). `sendOnLease` gives the lease back when the command settles OR
+  after 120 s (`LEASE_SEND_MAX_MS`), so a command a non-painting view never answers cannot pin the tab's debugger forever. So one agent-browser session, a design pick and a legacy call
   share ONE attach in any order, and the last holder out starts the grace. A workspace's first lease starts its proxy (no daemon:
   `Endpoint.daemon` is set only by `/browser`). `release` of a tab that never navigated: `acquire` kicks `about:blank` first.
   **Grep gate**: `node scripts/check-single-debugger-attacher.mjs [--list]` (CLEAN/DIRTY; every code use of `debugger` /
   `.attach(` / `sendCommand(` under `src/main` must sit in the seat; positive control: the same scan must find the seat's one
   `attach(` and the host must acquire it; `--self-test` injects a second attacher into a copy and requires DIRTY), pinned by
   `src/main/browser-single-attacher.test.ts`. Trace: `ORCHESTRA_CDP_TRACE=1` also logs `seat[<ws8>] <tab> acquire attached|shared`, `release kept|pending|detached`,
-  `grace-over…`, `detached`, each with `isAttached=<Electron's own answer>` — the rig counts attaches from it.
+  `grace-over reset|plain`, `reset-command <method>`, `detached`, `force-detached`, each with `isAttached=<Electron's own
+  answer>` — the rig counts attaches and reset commands from it.
 - **Pinned binary**: `scripts/agent-browser-pins.json` (v0.39.2, SHA-256 per asset, linux-arm64 + linux-x64),
   `scripts/agent-browser-fetch.cjs` (plain CommonJS, run IN-PROCESS by the `beforePack` hook `scripts/before-pack.cjs` — which
   also runs #390's pinned-Node hook — so EVERY packaging path gets it under whatever Node it uses: release.yml packs on Node 20,
@@ -575,12 +586,16 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `scripts/e2e-browser-cli.sh <app-dir>` (18 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
   own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (33 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).
   #398: `browser-cdp-seat.test.ts` (one attach per contents, refcount, force-detach, a fake debugger that THROWS on a second
-  attach), `cdp-proxy-core.test.ts` (`lease` arms), `browser-single-attacher.test.ts`, the registry arms in
-  `browser-panel-tabs.test.ts` (design lease: no churn across polls, pick/cancel/disarm release, arm/disarm order, no
-  debugger without the seat), and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>` (4 arms, 40 clauses: the
-  static gate on source + bundle, the REAL toolbar → hover → click → composer pick on `pages/design.html`, a pick while an
+  attach; grace, agent-only reset), `cdp-proxy-core.test.ts` (`lease`, `sendOnLease`, `agentTouched` arms),
+  `browser-single-attacher.test.ts`, the registry arms in `browser-panel-tabs.test.ts` (design lease: no churn across polls,
+  pick/cancel/disarm release, arm/disarm order, tab switch, no debugger without the seat), wiring pins in
+  `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (28 registry mutants) and
+  `scripts/mutate-cdp-seat.mjs` (20 seat/lease mutants); and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>`
+  (5 arms, 49 clauses: the static gate on source + bundle, the REAL toolbar → hover → click → composer pick on
+  `pages/design.html`, toolbar-off / Escape / archive-while-armed / workspace-switch lifecycle, a pick while an
   `orchestra browser wait --fn` runs on the same tab, and design-armed-first with the agent attaching second; oracle = the app's
-  own debug port + Electron's `isAttached()` in the trace) with `scripts/e2e-browser-design-proxy-mutants.sh <app-dir>` (6
-  bundle mutants: second attacher, detach skipped, lease leak, lease removed, screenshot dropped, release detaching under the
-  agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
+  own debug port + Electron's `isAttached()` in the trace; `ORCHESTRA_CDP_RELEASE_GRACE_MS=1500`) with
+  `scripts/e2e-browser-design-proxy-mutants.sh <app-dir>` (8 bundle mutants: second attacher, detach skipped, lease leak, lease
+  removed, screenshot dropped, reset without an agent, switch leaves the old workspace armed (renderer chunk), release
+  detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
