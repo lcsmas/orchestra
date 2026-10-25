@@ -170,6 +170,10 @@ export interface Workspace {
    *  immediately via `applyFlagSettings({effortLevel})`. Unset = the model's
    *  own default (`high`). */
   sdkEffort?: AgentEffortLevel;
+  /** The profil navigateur attached to this workspace's browser panel (#400, ADR 0010): all its tabs use that profile's
+   *  persistent partition. Absent = navigation éphémère (the default). Set ONLY by the human-facing IPC
+   *  (`browserProfileAttach`) — no CLI/agent path writes it. A dangling id (profile deleted) reads as ephemeral. */
+  browserProfileId?: BrowserProfileId;
   /** Last Claude Agent SDK session id for this workspace's structured session.
    *  Captured from the SDK stream and persisted so re-opening the structured view
    *  RESUMES the prior conversation (query({ resume }) — the agent keeps its
@@ -2294,7 +2298,50 @@ export interface BrowserPanelState {
   tabs: BrowserTabInfo[];
   /** Id of the active tab; `''` while the panel has no tab. */
   activeTabId: BrowserTabId;
+  /** The profil navigateur ALL of this panel's tabs use (#400); absent = navigation éphémère. What the panel
+   *  really runs on, not just what the workspace records. */
+  profileId?: BrowserProfileId;
 }
+
+/** A profil navigateur's id (#400, ADR 0010): `bp-` + 12 hex, minted by main when the human creates the profile and
+ *  embedded in its `persist:` partition name. `Workspace.browserProfileId` and a spawn's profile argument (#401) carry it. */
+export type BrowserProfileId = string;
+
+/** A profil navigateur: a named, persistent browser identity (cookies, storage, sign-ins) the human creates in
+ *  Settings > Browser and attaches to a workspace on purpose. Stored in the app store, outliving any workspace. */
+export interface BrowserProfile {
+  id: BrowserProfileId;
+  name: string;
+  createdAt: number;
+}
+
+/** Why a profile operation was refused. `not-human`: the call did not come from the app's own window. `storage`: the
+ *  partition's storage could not be cleared (the profile is KEPT so the delete can be retried). */
+export type BrowserProfileRefusal =
+  | 'empty'
+  | 'too-long'
+  | 'duplicate'
+  | 'unknown-profile'
+  | 'unknown-workspace'
+  | 'not-human'
+  | 'storage';
+
+/** Result of a human-facing profile operation: it happened (with the profile list now on record, and for attach the
+ *  panel's new state) or it was REFUSED with a message safe to show as-is — never a throw across IPC. */
+export type BrowserProfileResult =
+  | { ok: true; profiles: BrowserProfile[]; profile?: BrowserProfile; state?: BrowserPanelState }
+  | { ok: false; reason: BrowserProfileRefusal; message: string; profiles: BrowserProfile[] };
+
+/** Why a tab operation was refused (#393). `cap`: the workspace already holds the maximum
+ *  number of tabs. `not-owner`: an agent tried to close a tab the user opened. `unknown-tab`:
+ *  the id names no tab of that workspace (closed meanwhile / stale). */
+export type BrowserTabRefusal = 'cap' | 'not-owner' | 'unknown-tab';
+
+/** Result of a human-facing tab operation: either it happened (with the new panel state) or it
+ *  was REFUSED with a message safe to show the user as-is — never a throw across IPC. */
+export type BrowserTabResult =
+  | { ok: true; state: BrowserPanelState; tabId?: BrowserTabId }
+  | { ok: false; reason: BrowserTabRefusal; message: string; state: BrowserPanelState };
 
 /** Pixel bounds of the DOM placeholder the native `WebContentsView` must track.
  *  The renderer measures its `.browser-pane` rect and sends this to main so the
