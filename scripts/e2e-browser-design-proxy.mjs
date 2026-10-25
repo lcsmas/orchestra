@@ -25,14 +25,16 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 /** The seat's release grace for this rig (#395's `ORCHESTRA_CDP_RELEASE_GRACE_MS` knob; 15 s in production). */
 const GRACE_MS = 1500;
-const ARMS = ['static-attacher', 'design-pick', 'design-while-agent', 'design-then-agent'];
+const ARMS = ['static-attacher', 'design-pick', 'design-lifecycle', 'design-while-agent', 'design-then-agent'];
 /** Each edit is a regex that must match EXACTLY once in the BUILT main chunk (so a refactor can never leave a mutant silently inert). */
 const MUTANTS = {
   'second-attacher': { edits: [[/(throw new Error\("the browser CDP proxy is not running \(initBrowserCliHost has not run\)"\);)return (\w+)\.send\((\w+),(\w+)\.id,/, '$1$4.view.webContents.debugger.attach("1.3");return $2.send($3,$4.id,']], arms: ['static-attacher', 'design-pick', 'design-while-agent', 'design-then-agent'], why: 'the legacy path attaches a debugger of its own again (unguarded: a second attach throws)' },
   'seat-never-detaches': { edits: [[/,!(\w+)\.isDestroyed\(\)&&\1\.debugger\.isAttached\(\)&&\1\.debugger\.detach\(\)/, '']], arms: ['design-pick'], why: 'the grace is over, the seat says "detached", but the debugger stays attached to the human\'s panel' },
   'design-hold-leak': { edits: [[/const (\w+)=(\w+)==null\?void 0:\2\.designHold;!\2\|\|!\1\|\|\(\2\.designHold=null,\1\(\)\)/, 'const $1=$2==null?void 0:$2.designHold;!$2||!$1||($2.designHold=null)']], arms: ['design-pick'], why: 'a pick / cancel / disarm never gives the design-mode lease back' },
-  'design-hold-removed': { edits: [[/(\w+)\.designHold\|\|\(\1\.designHold=await (\w+)\.hold\((\w+),\1\.id\)\);/, '']], arms: ['design-pick'], why: 'design mode keeps no lease while armed: every 150 ms poll attaches and detaches the debugger' },
-  'pick-screenshot-dropped': { edits: [[/return await (\w+)\.channel\.send\((\w+),(\w+)\)\}finally\{\1\.release\(\)\}/, 'return $2==="Page.captureScreenshot"?{}:await $1.channel.send($2,$3)}finally{$1.release()}']], arms: ['design-pick', 'design-while-agent'], why: 'the cropped element screenshot never reaches the pick' },
+  'design-hold-removed': { edits: [[/(\w+)\.designHold\|\|\(\1\.designHold=await (\w+)\.hold\((\w+),\1\.id\)\),/, '']], arms: ['design-pick'], why: 'design mode keeps no lease while armed: every 150 ms poll attaches and detaches the debugger' },
+  'pick-screenshot-dropped': { edits: [[/Promise\.race\(\[(\w+)\.channel\.send\((\w+),(\w+)\),new Promise/, 'Promise.race([$2==="Page.captureScreenshot"?Promise.resolve({}):$1.channel.send($2,$3),new Promise']], arms: ['design-pick', 'design-while-agent'], why: 'the cropped element screenshot never reaches the pick' },
+  'reset-without-agent': { edits: [[/if\((\w+)\.reset\)\{(\w+)\((\w+)\);for/, 'if(true){$2($3);for']], arms: ['design-pick', 'design-lifecycle'], why: 'the agent-override reset runs even though no agent session ever held the tab (design mode alone writes to the human\'s page)' },
+  'switch-leaves-the-old-workspace-armed': { file: 'renderer', edits: [[/(\w+)\.useEffect\(\(\)=>\(\)=>\{window\.orchestra\.browserDesignDisarm\((\w+)\)\.catch\(\(\)=>\{\}\)\},\[\2\]\),/, '']], arms: ['design-lifecycle'], why: 'switching workspace while armed leaves the picker (overlay + lease) on the workspace the user left' },
   'lease-steals-attach': { edits: [[/this\.tabs\.get\((\w+)\)===(\w+)&&this\.releaseTab\(\1\)/, 'this.port.release($1)']], arms: ['design-while-agent', 'design-then-agent'], why: 'releasing design mode\'s lease detaches the debugger from under the agent\'s session' },
 };
 if (argv.includes('--list')) {
@@ -47,10 +49,18 @@ const mainChunk = () => {
   if (!m) { console.log('REFUSED: cannot resolve the main-process chunk from dist-electron/main.js'); process.exit(3); }
   return path.join(APP_DIR, 'dist-electron', m[1]);
 };
+/** The renderer bundle holding BrowserPanel (dist/assets/index-*.js that names browserDesignDisarm). */
+const rendererChunk = () => {
+  const dir = path.join(APP_DIR, 'dist/assets');
+  const f = fs.readdirSync(dir).filter((n) => /^index-.*\.js$/.test(n)).find((n) => fs.readFileSync(path.join(dir, n), 'utf8').includes('browserDesignDisarm'));
+  if (!f) { console.log('REFUSED: no renderer chunk names browserDesignDisarm'); process.exit(3); }
+  return path.join(dir, f);
+};
+const targetOf = (m) => (m.file === 'renderer' ? rendererChunk() : mainChunk());
 const hitsOf = (src, from) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length);
 if (argv.includes('--dry-mutants')) { // does every mutant still match the BUILT chunk exactly once? (no app, no sway)
-  const src = fs.readFileSync(mainChunk(), 'utf8'); let bad = 0;
-  for (const [name, m] of Object.entries(MUTANTS)) for (const [from] of m.edits) { const n = hitsOf(src, from); if (n !== 1) bad++; console.log(`${n === 1 ? 'OK ' : 'BAD'} ${name}: ${n} hit(s)`); }
+  let bad = 0;
+  for (const [name, m] of Object.entries(MUTANTS)) for (const [from] of m.edits) { const n = hitsOf(fs.readFileSync(targetOf(m), 'utf8'), from); if (n !== 1) bad++; console.log(`${n === 1 ? 'OK ' : 'BAD'} ${name}: ${n} hit(s)`); }
   process.exit(bad ? 1 : 0);
 }
 
@@ -145,7 +155,7 @@ class Cdp {
 }
 
 // ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const WS_NAMES = ['b398-one', 'b398-two'];
+const WS_NAMES = ['b398-one', 'b398-two', 'b398-three'];
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
@@ -187,7 +197,7 @@ const MARKER = path.join(APP_DIR ?? '/nonexistent', 'dist-electron', '.b398-muta
 function applyMutant() {
   if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore it from that backup, or rebuild, then delete the marker)`);
   if (!MUTANT) return;
-  const m = MUTANTS[MUTANT], file = mainChunk(), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
+  const m = MUTANTS[MUTANT], file = targetOf(m), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
   let src = fs.readFileSync(file, 'utf8');
   for (const [from, to] of m.edits) {
     const hits = hitsOf(src, from);
@@ -208,7 +218,7 @@ process.on('SIGTERM', () => process.exit(143));
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir);
-  const [W1, W2] = world.workspaces;
+  const [W1, W2, W3] = world.workspaces;
   const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
@@ -235,7 +245,7 @@ async function main() {
     const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
     clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && ev('ORCHESTRA_CDP_TRACE') === '1',
       `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'} ORCHESTRA_CDP_TRACE=${ev('ORCHESTRA_CDP_TRACE')}`);
-    await runArms({ world, W1, W2, FIX, port, app, ui, targets, env });
+    await runArms({ world, W1, W2, W3, FIX, port, app, ui, targets, env });
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
   } finally {
@@ -262,13 +272,16 @@ const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`
 // ── driving helpers ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 const sel = (n) => JSON.stringify(n);
 const appLog = (ctx) => { try { return fs.readFileSync(path.join(ctx.world.ohome, 'logs/orchestra.log'), 'utf8'); } catch { return ''; } };
-/** Seat trace lines of `W` after byte offset `from`, in log order: `acquire attached|shared`, `release kept|pending`, `grace-over …`, `detached`. */
+/** Seat trace lines of `W` after byte offset `from`, in log order: `acquire attached|shared`, `release kept|pending`, `grace-over reset|plain`, `detached`, `force-detached`. */
 function seatLines(ctx, W, from = 0) {
-  const re = new RegExp(`seat\\[${W.id.slice(0, 8)}\\] (t\\d+) (acquire|release|grace-over|detached)(?:[: ]+(\\w+))? ?[^\\n]*? isAttached=(true|false)`, 'g');
+  const re = new RegExp(`seat\\[${W.id.slice(0, 8)}\\] (t\\d+) (acquire|release|grace-over|reset-command|detached|force-detached)(?:[: ]+(\\w+))? ?[^\\n]*? isAttached=(true|false)`, 'g');
   const text = appLog(ctx).slice(from), out = [];
-  for (const m of text.matchAll(re)) out.push({ tab: m[1], op: m[2], what: m[2] === 'acquire' || m[2] === 'release' ? m[3] : '', attached: m[4] === 'true' });
+  for (const m of text.matchAll(re)) out.push({ tab: m[1], op: m[2], what: m[2] === 'acquire' || m[2] === 'release' || m[2] === 'grace-over' ? m[3] : '', attached: m[4] === 'true' });
   return out;
 }
+/** One attach, given back after the grace with NO agent reset, ending detached: a late 150 ms poll may add a lease/release pair inside the grace. */
+const cleanSingleAttach = (lines) => lines.filter((l) => l.op === 'acquire' && l.what === 'attached').length === 1 && lines[lines.length - 1]?.op === 'detached' && lines[lines.length - 1].attached === false
+  && lines.some((l) => l.op === 'grace-over' && l.what === 'plain') && !lines.some((l) => l.op === 'reset-command') && lines.filter((l) => l.op === 'detached').length === 1;
 const fmtLines = (lines) => lines.map((l) => `${l.op}${l.what ? ':' + l.what : ''}/${l.attached}`).join(' ');
 const logMark = (ctx) => appLog(ctx).length;
 const countWhat = (lines, op, what) => lines.filter((l) => l.op === op && l.what === what).length;
@@ -411,9 +424,70 @@ const ARM_FNS = {
     clause(A, 'one-attach-for-arm-polls-pick-and-screenshot', countWhat(lines, 'acquire', 'attached') === 1 && lines.filter((l) => l.op === 'acquire').length === 1, `seat trace for ${W1.id} since arming (${lines.length} line(s)): ${fmtLines(lines)} — ~8 renderer polls and the cropped screenshot rode the ONE attach`);
     const last = lines[lines.length - 1];
     clause(A, 'debugger-released-after-the-pick', last?.op === 'detached' && last.attached === false && lines.some((l) => l.op === 'release' && l.what === 'pending' && l.attached === true), `seat: ${fmtLines(lines)} — the last holder left (release pending, still attached during the ${GRACE_MS} ms grace), then the reset and ${last ? `\`${last.op}\` with isAttached=${last.attached}` : 'NOTHING'} (isAttached is Electron's own answer; ${Date.now() - pendingAt} ms after the pick landed)`);
+    clause(A, 'design-alone-writes-nothing-to-the-tab', lines.some((l) => l.op === 'grace-over' && l.what === 'plain') && !lines.some((l) => l.op === 'grace-over' && l.what === 'reset') && !lines.some((l) => l.op === 'reset-command'), `${lines.filter((l) => l.op === 'reset-command').length} reset command(s) sent; grace-over line: ${JSON.stringify(lines.find((l) => l.op === 'grace-over'))} — no agent session ever held this tab, so the agent-override reset (Emulation.*, UA, Fetch.disable…) is NOT sent to the human's page`);
     clause(A, 'no-attach-error-in-the-app-log', attachErrors(ctx, log0).length === 0, `app log since arming: ${attachErrors(ctx, log0).join(' | ') || 'no "already attached"/"not attached"/"Target closed"'}`);
     ctx.pickMark = mark;
     wholeScreen('design-pick-screen.png');
+  },
+
+  async 'design-lifecycle'(ctx) {
+    // Design mode alone on W2, through the real toolbar and the page: toggle off, Escape — each must tear the overlay down and give the debugger
+    // back, with no pick. Then W3: the workspace is archived while the picker is armed.
+    const { W2, W3, FIX, ui } = ctx; const A = 'design-lifecycle';
+    await selectWs(ctx, W2); await openPane(ctx);
+    await ui.eval(`window.orchestra.browserNavigate(${sel(W2.id)}, ${sel(FIX + '/design.html?ws=2')}).then(() => true)`);
+    const o = await oracle(ctx, `${FIX}/design.html?ws=2`);
+    const overlay = () => o.eval(`!!document.getElementById('__orchestra_design_overlay__')`);
+    const settle = (W, log0, want) => waitFor(() => seatLines(ctx, W, log0).some((l) => l.op === want), GRACE_MS + 8000, `the seat trace to show ${want}`).catch(() => {});
+    // (a) toolbar off
+    let log0 = logMark(ctx);
+    if (await toggleDesign(ctx)) throw new Error('design mode was already armed');
+    await waitFor(overlay, 10000, 'the design overlay');
+    await sleep(500);
+    await toggleDesign(ctx); // off
+    await waitFor(async () => !(await overlay()), 8000, 'the overlay to be removed').catch(() => {});
+    await settle(W2, log0, 'detached');
+    let lines = seatLines(ctx, W2, log0);
+    clause(A, 'toolbar-off-removes-the-overlay-and-releases-the-debugger', !(await overlay()) && !(await designPressed(ctx)) && cleanSingleAttach(lines), `overlay ${(await overlay()) ? 'STILL THERE' : 'gone'}, toolbar ${(await designPressed(ctx)) ? 'still pressed' : 'off'}; seat: ${fmtLines(lines)}`);
+    // (b) Escape in the page
+    log0 = logMark(ctx);
+    const picksBefore = countPicks((await readComposer(ctx)).text);
+    if (await toggleDesign(ctx)) throw new Error('design mode was already armed');
+    await waitFor(overlay, 10000, 'the design overlay');
+    await sleep(500);
+    for (const type of ['keyDown', 'keyUp']) await o.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await waitFor(async () => !(await designPressed(ctx)), 8000, 'the toolbar to disarm after Escape').catch(() => {});
+    await settle(W2, log0, 'detached');
+    lines = seatLines(ctx, W2, log0);
+    clause(A, 'escape-cancels-without-a-pick-and-releases-the-debugger', !(await overlay()) && !(await designPressed(ctx)) && countPicks((await readComposer(ctx)).text) === picksBefore && cleanSingleAttach(lines), `overlay ${(await overlay()) ? 'STILL THERE' : 'gone'}, toolbar ${(await designPressed(ctx)) ? 'still pressed' : 'off'}, picks ${countPicks((await readComposer(ctx)).text)} (was ${picksBefore}); seat: ${fmtLines(lines)}`);
+    clause(A, 'no-attach-error-in-the-app-log', attachErrors(ctx).length === 0, `app log: ${attachErrors(ctx).join(' | ') || 'clean'}`);
+    o.close();
+    // (c) archive the workspace while the picker is armed
+    await selectWs(ctx, W3); await openPane(ctx);
+    await ui.eval(`window.orchestra.browserNavigate(${sel(W3.id)}, ${sel(FIX + '/design.html?ws=3')}).then(() => true)`);
+    const o3 = await oracle(ctx, `${FIX}/design.html?ws=3`);
+    log0 = logMark(ctx);
+    if (await toggleDesign(ctx)) throw new Error('design mode was already armed on W3');
+    await waitFor(() => o3.eval(`!!document.getElementById('__orchestra_design_overlay__')`), 10000, 'the design overlay on W3');
+    o3.close();
+    await ui.eval(`window.orchestra.archiveWorkspace(${sel(W3.id)}).then(() => true)`);
+    await waitFor(() => /cdp proxy for [^\n]*b398-three closed/.test(appLog(ctx).slice(log0)), 15000, 'the archived workspace\'s proxy to close').catch(() => {});
+    await sleep(GRACE_MS + 1500); // a grace timer left running on the destroyed tab would fire (reset a closed view) inside this window
+    lines = seatLines(ctx, W3, log0);
+    const tail = appLog(ctx).slice(log0);
+    clause(A, 'archive-while-armed-leaves-no-seat-timer-or-proxy', fmtLines(lines) === 'acquire:attached/true force-detached/false' && /cdp proxy for [^\n]*b398-three closed/.test(tail) && !/\[ERROR\]/.test(tail), `seat: ${fmtLines(lines)}; proxy closed: ${/cdp proxy for [^\n]*b398-three closed/.test(tail)}; ERROR lines since arming: ${(tail.match(/\[ERROR\][^\n]*/g) ?? []).slice(0, 2).join(' | ') || 'none'}`);
+    // the renderer's armed state belongs to the BrowserPanel component, which FOLLOWS the active workspace (the old one is disarmed, the new one armed):
+    // the archive left it armed on whichever workspace became active. Put it off before the next arm.
+    await selectWs(ctx, ctx.W1);
+    clause(A, 'ctl/app-still-answers-after-the-archive', await ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(ctx.W1.branch)}))`), 'the sidebar switched back to W1');
+    if (await designPressed(ctx)) await toggleDesign(ctx);
+    await waitFor(async () => !(await designPressed(ctx)), 8000, 'the toolbar to go off').catch(() => {});
+    await sleep(GRACE_MS + 1500);
+    for (const W of [ctx.W1, ctx.W2]) {
+      const all = seatLines(ctx, W, log0);
+      const heldNow = all.filter((l) => l.op === 'acquire').length - all.filter((l) => l.op === 'detached' || l.op === 'force-detached').length;
+      clause(A, `workspace-switch-while-armed-leaves-no-lease-on-${W.name}`, heldNow === 0 && !(await designPressed(ctx)), `${W.name} seat since the archive: ${fmtLines(all)} (every acquire matched by a detach; the BrowserPanel component follows the active workspace, so each one the picker moved off must be disarmed)`);
+    }
   },
 
   async 'design-while-agent'(ctx) {

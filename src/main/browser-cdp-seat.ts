@@ -35,6 +35,8 @@ interface Seat {
   label: string;
   /** The grace timer: set while no holder is left and the reset + detach has not run yet. */
   timer: ReturnType<typeof setTimeout> | null;
+  /** An agent session held this seat: its leftovers (Emulation.*, Fetch, init scripts) get undone before the detach. Sticky until the seat is dropped. */
+  reset: boolean;
   onDetach: () => void;
 }
 const seats = new WeakMap<DebuggerHost, Seat>();
@@ -69,10 +71,12 @@ export function seatAcquire(wc: DebuggerHost, label = 'seat'): 'attached' | 'sha
       count: 0,
       label,
       timer: null,
+      reset: false,
       // The debugger went away under us (contents closed, tab destroyed): the seat is empty again.
       onDetach: () => {
         if (made.timer) clearTimeout(made.timer);
         if (seats.get(wc) === made) seats.delete(wc);
+        wc.debugger.off('detach', made.onDetach);
       },
     };
     wc.debugger.on('detach', made.onDetach);
@@ -105,11 +109,16 @@ function drop(wc: DebuggerHost, seat: Seat): void {
 async function resetAndDetach(wc: DebuggerHost, seat: Seat): Promise<void> {
   seat.timer = null;
   if (seats.get(wc) !== seat) return; // a holder coming back cancelled the timer; a force-detach dropped the seat
-  note(wc, seat, "grace-over: clearing the agent's overrides, then detaching");
+  note(wc, seat, seat.reset ? "grace-over reset: clearing the agent's overrides, then detaching" : 'grace-over plain: no agent session was here, detaching');
   try {
     if (wc.isDestroyed()) return;
-    ensureAttached(wc);
-    for (const [method, params] of resetCommands(wc.getUserAgent())) await wc.debugger.sendCommand(method, params).catch(() => undefined);
+    if (seat.reset) {
+      ensureAttached(wc);
+      for (const [method, params] of resetCommands(wc.getUserAgent())) {
+        note(wc, seat, `reset-command ${method}`);
+        await wc.debugger.sendCommand(method, params).catch(() => undefined);
+      }
+    }
   } catch {
     /* best effort: each command is independent */
   } finally {
@@ -122,12 +131,14 @@ async function resetAndDetach(wc: DebuggerHost, seat: Seat): Promise<void> {
 }
 
 /**
- * Give one hold back. The last one starts the grace period (`graceMs` > 0): after it the seat resets the agent's overrides and
- * detaches, unless a holder came back; `graceMs` 0 detaches at once without the reset (tests, force paths).
+ * Give one hold back. The last one starts the grace period (`graceMs` > 0): after it the seat detaches — first resetting the agent's
+ * overrides if an agent session held it (`agentTouched`; design mode and the legacy tools alone leave nothing to undo, so they write
+ * nothing to the human's tab) — unless a holder came back; `graceMs` 0 detaches at once without the reset (tests, force paths).
  */
-export function seatRelease(wc: DebuggerHost, graceMs: number): 'pending' | 'detached' | 'kept' | 'none' {
+export function seatRelease(wc: DebuggerHost, graceMs: number, agentTouched = true): 'pending' | 'detached' | 'kept' | 'none' {
   const seat = seats.get(wc);
   if (!seat || seat.count === 0) return 'none';
+  if (agentTouched) seat.reset = true;
   if (--seat.count > 0) {
     note(wc, seat, 'release kept');
     return 'kept';
@@ -147,7 +158,9 @@ export function seatRelease(wc: DebuggerHost, graceMs: number): 'pending' | 'det
 /** Detach whatever holds the seat now (the tab is being destroyed). Holds taken before are void; their release is a no-op. */
 export function seatForceDetach(wc: DebuggerHost): void {
   const seat = seats.get(wc);
-  if (seat) drop(wc, seat);
+  if (!seat) return;
+  drop(wc, seat);
+  note(wc, seat, 'force-detached');
 }
 
 /** Does `wc` currently have a seat holder? (rig / test observability) */

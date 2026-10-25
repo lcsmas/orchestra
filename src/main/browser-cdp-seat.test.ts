@@ -189,3 +189,43 @@ test('the channel sends through the debugger without attaching; subscribe/onDeta
   seatRelease(host(w), 0);
   assert.deepEqual(reasons, []);
 });
+
+test('grace over, NO agent session held the seat: it detaches WITHOUT writing the reset commands to the human\'s tab', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = fakeWc();
+  const lines: string[] = [];
+  setSeatTrace((l) => lines.push(l));
+  try {
+    seatAcquire(host(w), 'seat[w1] t1');
+    assert.equal(seatRelease(host(w), 15_000, false), 'pending');
+    t.mock.timers.tick(15_000);
+    await flush();
+  } finally {
+    setSeatTrace(null);
+  }
+  assert.deepEqual([w.attached, w.detaches, w.sent], [false, 1, []], 'design mode / legacy tools alone leave nothing to undo');
+  assert.ok(lines.some((l) => /grace-over plain/.test(l)) && lines.every((l) => !/grace-over reset/.test(l)), lines.join(' | '));
+});
+
+test('the agent mark is sticky: an agent release, then an in-process holder coming and going, still resets', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = fakeWc();
+  seatAcquire(host(w));
+  seatRelease(host(w), 1000, true); // the agent's last session leaves
+  t.mock.timers.tick(500);
+  seatAcquire(host(w));
+  seatRelease(host(w), 1000, false); // design mode pokes the tab inside the grace
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.ok(w.sent.includes('Emulation.clearDeviceMetricsOverride'), 'the agent\'s leftovers are still undone');
+  assert.equal(w.attached, false);
+});
+
+test('an external detach removes the seat\'s own listener (no listener per re-attach cycle)', () => {
+  const w = fakeWc();
+  for (let i = 0; i < 4; i++) {
+    seatAcquire(host(w));
+    w.attached = false; w.emit('detach', {}, 'target closed');
+  }
+  assert.equal(w.listeners('detach'), 0);
+});

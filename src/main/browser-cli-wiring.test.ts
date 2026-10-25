@@ -55,13 +55,29 @@ test('the proxy host is the ONLY attacher (#398): it acquires the seat; the seat
   const host = read('./browser-cdp-host.ts');
   assert.equal((host.match(/\bdebugger\b/g) ?? []).length, 0, 'browser-cdp-host.ts touches no debugger itself — browser-cdp-seat.ts does');
   assert.match(host, /seatAcquire\(live, `seat\[\$\{wsId\.slice\(0, 8\)\}\] \$\{tabId\}`\)/);
-  assert.match(host, /release: \(tabId\) => \{\s*const live = bp\.tabContents\(wsId, tabId\);\s*if \(live\) seatRelease\(live, RELEASE_GRACE_MS\);/, 'the last session leaving starts the grace period');
+  assert.match(host, /release: \(tabId, agentTouched\) => \{\s*const live = bp\.tabContents\(wsId, tabId\);\s*if \(live\) seatRelease\(live, RELEASE_GRACE_MS, agentTouched \?\? true\);/, 'the last session leaving starts the grace period');
   assert.match(host, /bp\.setTabTeardownHook\(\(wc\) => seatForceDetach\(wc\)\)/, 'a destroyed tab drops its seat before its contents close');
   const seat = read('./browser-cdp-seat.ts');
   assert.equal((seat.match(/\.attach\(/g) ?? []).length, 1, 'exactly one attach call in the whole of src/main');
   assert.match(seat, /if \(!wc\.debugger\.isAttached\(\)\) wc\.debugger\.attach\('1\.3'\);/);
   assert.match(seat, /if \(seat\.timer\) \{\s*clearTimeout\(seat\.timer\); \/\/ a holder came back/, 'a session coming back cancels the pending reset');
   assert.match(seat, /resetCommands\(wc\.getUserAgent\(\)\)[\s\S]{0,900}drop\(wc, seat\)/, 'the grace-delayed reset clears the agent overrides, then detaches');
+});
+
+test('production wiring of the proxy lease (#398): the seat is registered, every send gives its lease back, a destroyed panel gets none', () => {
+  const host = read('./browser-cdp-host.ts');
+  assert.match(host, /export function initBrowserCliHost\(\): void \{[\s\S]{0,200}bp\.setCdpSeat\(panelCdpSeat\);/, 'without this every browser tool and design mode throws "CDP proxy is not running"');
+  assert.match(host, /return sendOnLease\(await attachLease\(wsId, tabId\), method, params, LEASE_SEND_MAX_MS\)/, 'the lease is given back when the command settles — or is abandoned');
+  assert.match(host, /async hold\(wsId, tabId\) \{\s*return \(await attachLease\(wsId, tabId\)\)\.release;/);
+  assert.match(host, /if \(!bp\.tabContents\(wsId, tabId\)\) throw new Error\(`browser tab \$\{tabId\} has no live view`\);\s*const ep = await ensureEndpoint\(wsId\);/, 'no lease (hence no rebuilt panel/proxy) for a panel destroyed an instant ago');
+  assert.match(host, /ep\.daemon = true;[^\n]*\n\s*await ensureDaemon\(/, 'the flag is set BEFORE ensureDaemon: a connect that fails after spawning its daemon is still closed at dispose');
+  assert.match(host, /release: \(tabId, agentTouched\) => \{[\s\S]{0,200}seatRelease\(live, RELEASE_GRACE_MS, agentTouched \?\? true\)/, 'the reset runs only when an agent session held the tab');
+});
+
+test('the renderer disarms the workspace it LEAVES (BrowserPanel is not keyed by workspace; its armed state follows the active one)', () => {
+  const src = fs.readFileSync(new URL('../renderer/components/BrowserPanel.tsx', import.meta.url), 'utf8');
+  assert.match(src, /useEffect\(\(\) => \{\s*return \(\) => \{\s*void window\.orchestra\.browserDesignDisarm\(workspaceId\)[\s\S]{0,200}\}, \[workspaceId\]\);/);
+  assert.match(fs.readFileSync(new URL('../renderer/App.tsx', import.meta.url), 'utf8'), /<BrowserPanel\s+workspaceId=\{active\.id\}/, 'the premise: one un-keyed instance follows the active workspace');
 });
 
 test('the legacy mcp__browser__* tools are still built per session and still define their eight tools', () => {

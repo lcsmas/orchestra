@@ -29,7 +29,7 @@ import { sessionKeys } from './session-identity-host.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
-import type { CdpPanelPort, CdpTab, CdpTabChannel, CdpTabEvent } from '../shared/cdp-proxy-core.ts';
+import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel, type CdpTabEvent } from '../shared/cdp-proxy-core.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
@@ -39,6 +39,9 @@ const INTERIM_TAB_CAP = 8;
 
 /** How long a tab keeps the agent's CDP state after its last session left (`ORCHESTRA_CDP_RELEASE_GRACE_MS` overrides it for rigs). */
 const RELEASE_GRACE_MS = Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) > 0 ? Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) : 15_000;
+
+/** A lease command that has not settled by now is abandoned and its lease given back (the legacy tools' own `withTimeout`s are 10 s; this is the backstop for any command). */
+const LEASE_SEND_MAX_MS = 120_000;
 
 const toCdpTab = (t: BrowserTabInfo): CdpTab => ({ id: t.id, url: t.url, title: t.title, active: t.active, openedBy: t.openedBy });
 
@@ -79,9 +82,9 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       seatAcquire(live, `seat[${wsId.slice(0, 8)}] ${tabId}`);
       return channel;
     },
-    release: (tabId) => {
+    release: (tabId, agentTouched) => {
       const live = bp.tabContents(wsId, tabId);
-      if (live) seatRelease(live, RELEASE_GRACE_MS);
+      if (live) seatRelease(live, RELEASE_GRACE_MS, agentTouched ?? true);
     },
     createTab: async (url) => {
       if (bp.listTabs(wsId).length >= INTERIM_TAB_CAP) throw new Error(`this workspace already has ${INTERIM_TAB_CAP} browser tabs`);
@@ -243,12 +246,7 @@ async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpT
 /** What `browser-panel.ts` calls instead of attaching anything itself. */
 export const panelCdpSeat: bp.CdpSeat = {
   async send(wsId, tabId, method, params) {
-    const lease = await attachLease(wsId, tabId);
-    try {
-      return await lease.channel.send(method, params);
-    } finally {
-      lease.release();
-    }
+    return sendOnLease(await attachLease(wsId, tabId), method, params, LEASE_SEND_MAX_MS);
   },
   async hold(wsId, tabId) {
     return (await attachLease(wsId, tabId)).release;
@@ -321,8 +319,8 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
     const l = layout();
     prepareLayout(l); // idempotent mkdir: a socket dir that vanished (runtime dir cleaned, a rig's teardown) must not fail every call until restart
     const binary = agentBrowserBinary();
+    ep.daemon = true; // before the call: a connect that fails after spawning its daemon must still be closed at dispose
     await ensureDaemon(binary, l, ep.session, ep.server.wsUrl);
-    ep.daemon = true;
     const shot = typeof msg.shotDir === 'string' && path.isAbsolute(msg.shotDir) ? msg.shotDir : undefined;
     // the URL travels in the client's ENVIRONMENT (AGENT_BROWSER_CDP), not its argv: cmdline is world-readable on this host, environ is not
     return { ok: true, binary, wsUrl: ep.server.wsUrl, env: { ...abEnv(l, ep.session, shot), AGENT_BROWSER_CDP: ep.server.wsUrl } };

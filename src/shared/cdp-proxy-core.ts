@@ -32,7 +32,8 @@ export interface CdpPanelPort {
   subscribeTabs(l: (e: CdpTabEvent) => void): () => void;
   /** Attach the debugger (idempotent per call; the core pairs every acquire with one release). */
   acquire(tabId: string): Promise<CdpTabChannel>;
-  release(tabId: string): void;
+  /** `agentTouched`: a WebSocket client (an agent's session) attached to this tab while it was held — only then has anything been left on the page that a reset must undo. */
+  release(tabId: string, agentTouched?: boolean): void;
   createTab?(url?: string): Promise<CdpTab>;
   closeTab?(tabId: string): Promise<void>;
   /** Bring the tab to the front of the panel (no OS focus). */
@@ -108,6 +109,8 @@ class CdpError extends Error {
 interface TabState {
   channel: CdpTabChannel;
   refs: number;
+  /** A client session (not an in-process lease) attached since the debugger was acquired: sticky until it is released. */
+  agent: boolean;
   unsub: Array<() => void>;
   children: Set<string>;
 }
@@ -123,6 +126,31 @@ interface ClientState {
 }
 
 const hex32 = (): string => randomBytes(16).toString('hex').toUpperCase();
+
+/**
+ * Run one command on an in-process lease and give the lease back when it settles — or after `maxMs`, so a command that never settles (a view that
+ * stopped painting hangs `Page.captureScreenshot`, browser-panel.md) cannot pin the tab's debugger, and the proxy's hold on it, forever.
+ */
+export async function sendOnLease(
+  lease: { channel: CdpTabChannel; release(): void },
+  method: string,
+  params: Record<string, unknown> | undefined,
+  maxMs: number,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      lease.channel.send(method, params),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${method} did not settle within ${maxMs} ms (the lease on the tab was given back)`)), maxMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    lease.release();
+  }
+}
 
 export class CdpProxyCore {
   private readonly port: CdpPanelPort;
@@ -454,7 +482,7 @@ export class CdpProxyCore {
     if (!flight) {
       flight = (async () => {
         const channel = await this.port.acquire(tabId);
-        const st: TabState = { channel, refs: 0, unsub: [], children: new Set() };
+        const st: TabState = { channel, refs: 0, agent: false, unsub: [], children: new Set() };
         st.unsub.push(channel.subscribe((m, p, sid) => this.onTabEventFromDebugger(tabId, st, m, p, sid)));
         st.unsub.push(channel.onDetach((reason) => this.onDebuggerDetached(tabId, reason)));
         this.tabs.set(tabId, st);
@@ -472,11 +500,12 @@ export class CdpProxyCore {
     if (--st.refs > 0) return;
     for (const u of st.unsub) u();
     this.tabs.delete(tabId);
-    this.port.release(tabId);
+    this.port.release(tabId, st.agent);
   }
 
   private async attachTab(c: ClientState, t: CdpTab): Promise<string> {
-    await this.acquireTab(t.id);
+    const st = await this.acquireTab(t.id);
+    st.agent = true;
     if (c.closed) {
       // the client went away while the debugger was being acquired: nobody will ever detach this session
       this.releaseTab(t.id);

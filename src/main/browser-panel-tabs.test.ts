@@ -717,6 +717,7 @@ test('design mode: the disarm that follows a pick (or Escape) sends nothing and 
   await bp.designModePoll(ws);
   const cmds = wcOf(t1).cmds.length, attaches = wcOf(t1).attachCalls;
   await bp.designModeDisarm(ws); // the renderer's setDesignArmed(false) after the pick
+  await bp.designModeDisarm(ws, 't1'); // ...and the explicit-tab form
   assert.deepEqual([wcOf(t1).cmds.length, wcOf(t1).attachCalls], [cmds, attaches], 'no command, no attach');
   assert.equal(wcOf(t1).dbgAttached, false);
 });
@@ -758,4 +759,39 @@ test('an explicit stale tabId reaches the proxy seat NEVER and builds NO panel (
   } finally {
     bp.setCdpSeat(testSeat);
   }
+});
+
+test('design mode after a TAB SWITCH: the renderer addresses it by workspace, so disarm reaches every armed tab and a pick on one disarms the rest', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws); // armed on t1
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true }); // an agent opens + activates a tab (Target.createTarget)
+  await bp.designModeArm(ws); // the renderer re-arms on the new active tab (state.url changed)
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [true, true], 'one lease per armed tab');
+  await bp.designModeDisarm(ws); // the user toggles design mode off: resolves the ACTIVE tab (t2) only, before this fix
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [false, false], 'no lease (and no overlay) left on the tab that is no longer active');
+  const tore = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)).length;
+  assert.deepEqual([tore(t1), tore(t2)], [1, 1], 'the overlay was torn down on BOTH pages');
+});
+
+test('design mode: a pick on one tab tears the picker down on the others (one-shot per workspace)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  await bp.designModeArm(ws);
+  wcOf(t2).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'P' } : { result: { value: RAW_PICK } });
+  const pick: any = await bp.designModePoll(ws); // polls the active tab (t2)
+  assert.ok(pick.selector);
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); // the pick itself tears t1 down; NO disarm call is made here
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [false, false]);
+  assert.equal(wcOf(t1).cmds.some((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)), true, 't1 overlay torn down');
+});
+
+test('design mode: a poll for a workspace with no panel returns null and builds nothing (a late poll after archive)', async () => {
+  const ws = newWs();
+  assert.equal(await bp.designModePoll(ws), null);
+  assert.equal(bp.getPanel(ws), undefined);
 });

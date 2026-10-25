@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CdpProxyCore,
   isBrowserLevelMethod,
+  sendOnLease,
   type CdpEventListener,
   type CdpPanelPort,
   type CdpTab,
@@ -29,13 +30,13 @@ function fakePanel(initial: CdpTab[] = [{ id: 't1', url: 'http://a/', title: 'A'
   const tabs = [...initial];
   const channels = new Map<string, FakeChannel>();
   const subs = new Set<(e: CdpTabEvent) => void>();
-  const log = { acquire: [] as string[], release: [] as string[], activate: [] as string[], invalidate: [] as string[], fallback: [] as string[] };
+  const log = { acquire: [] as string[], release: [] as string[], touched: [] as boolean[], activate: [] as string[], invalidate: [] as string[], fallback: [] as string[] };
   let frames: string | null = null;
   const port: CdpPanelPort = {
     listTabs: () => tabs.map((t) => ({ ...t })),
     subscribeTabs: (l) => { subs.add(l); return () => subs.delete(l); },
     acquire: async (id) => { log.acquire.push(id); if (!channels.has(id)) channels.set(id, new FakeChannel()); return channels.get(id)!; },
-    release: (id) => { log.release.push(id); },
+    release: (id, agent) => { log.release.push(id); log.touched.push(!!agent); },
     createTab: async (url) => { const t: CdpTab = { id: `t${tabs.length + 1}`, url: url ?? 'about:blank', title: '', active: false, openedBy: 'agent' }; tabs.push(t); for (const s of subs) s({ kind: 'created', tab: t }); return t; },
     closeTab: async (id) => { const i = tabs.findIndex((t) => t.id === id); const [t] = tabs.splice(i, 1); for (const s of subs) s({ kind: 'destroyed', tab: t! }); },
     activateTab: (id) => { log.activate.push(id); },
@@ -566,4 +567,46 @@ test('lease (#398): releasing one lease twice gives back ONE hold — the other 
   assert.equal(p.log.acquire.length - p.log.release.length, 1, 'the port still holds exactly one attach');
   b.release();
   assert.deepEqual(core.attachedTabIds(), []);
+});
+
+test('release carries agentTouched: only a client SESSION marks the tab; leases alone do not (so design mode never triggers the agent reset)', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const l = await core.lease('t1');
+  l.release();
+  assert.deepEqual(p.log.touched, [false], 'a lease alone: nothing for a reset to undo');
+  const c = client(core);
+  const { targetInfos } = (await c.call('Target.getTargets')).result;
+  await c.call('Target.attachToTarget', { targetId: targetInfos[0].targetId });
+  c.close();
+  assert.deepEqual(p.log.touched, [false, true], 'an agent session attached: the release says so');
+  const l2 = await core.lease('t1');
+  const c2 = client(core);
+  await c2.call('Target.attachToTarget', { targetId: targetInfos[0].targetId });
+  c2.close();
+  assert.deepEqual(p.log.touched.length, 2, 'the lease still holds the debugger');
+  l2.release();
+  assert.deepEqual(p.log.touched, [false, true, true], 'the agent touched it while the lease held: the LAST release carries the mark');
+});
+
+test('sendOnLease: gives the lease back when the command settles, rejects or never settles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const mk = (answer: () => Promise<unknown>) => {
+    let released = 0;
+    const ch = new FakeChannel();
+    ch.answer = answer;
+    return { lease: { channel: ch, release: () => { released++; } }, released: () => released };
+  };
+  const ok = mk(async () => 'r');
+  assert.equal(await sendOnLease(ok.lease, 'X.y', {}, 1000), 'r');
+  assert.equal(ok.released(), 1);
+  const bad = mk(async () => { throw new Error('boom'); });
+  await assert.rejects(() => sendOnLease(bad.lease, 'X.y', {}, 1000), /boom/);
+  assert.equal(bad.released(), 1);
+  const hung = mk(() => new Promise(() => undefined));
+  const p = sendOnLease(hung.lease, 'Page.captureScreenshot', {}, 1000);
+  t.mock.timers.tick(1000);
+  const outcome = await Promise.race([p.then(() => 'resolved', (e: Error) => e.message), new Promise((r) => setImmediate(() => r('STILL PENDING')))]);
+  assert.match(String(outcome), /did not settle within 1000 ms/);
+  assert.equal(hung.released(), 1, 'a command that never settles cannot pin the tab\'s debugger');
 });
