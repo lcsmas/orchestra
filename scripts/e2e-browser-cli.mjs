@@ -273,8 +273,8 @@ async function main() {
       if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((process.env.XDG_RUNTIME_DIR ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
     }
     for (const p of listProcsByHome(world.ohome)) { try { process.kill(p, 'SIGKILL'); } catch {} }
-    await sleep(500);
-    const left = listProcsByHome(world.ohome);
+    let left = listProcsByHome(world.ohome);
+    for (let i = 0; i < 20 && left.length > 0; i++) { await sleep(250); left = listProcsByHome(world.ohome); }
     clause('ctl', 'teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
   }
 }
@@ -305,10 +305,10 @@ function cli(ctx, W, args, { env: extra = {}, timeoutMs = 60000, key } = {}) {
   const t0 = Date.now();
   let child;
   const done = new Promise((resolve) => {
-    child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env: base, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome });
+    child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env: base, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome, detached: true });
     let stdout = '', stderr = '';
     child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, timeoutMs);
+    const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} } }, timeoutMs);
     child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code: code ?? (signal ? 137 : 0), stdout, stderr, ms: Date.now() - t0 }); });
   });
   done.child = child;
@@ -613,6 +613,24 @@ const ARM_FNS2 = {
 Object.assign(ARM_FNS, ARM_FNS2);
 
 
+/** One-shot raw CDP client on the proxy: attach to the page target whose url matches (flatten) and send Page.bringToFront on that session. */
+function bringToFrontViaProxy(wsUrl, urlRe) {
+  return new Promise((resolve) => {
+    const ws = new WS(wsUrl);
+    let nextId = 0, sid = null;
+    const send = (method, params, sessionId) => ws.send(JSON.stringify({ id: ++nextId, method, params, ...(sessionId ? { sessionId } : {}) }));
+    const t = setTimeout(() => { try { ws.terminate(); } catch {} resolve({ reply: 'timeout' }); }, 10000);
+    ws.on('error', (e) => { clearTimeout(t); resolve({ reply: `error ${e.message}` }); });
+    ws.on('open', () => send('Target.getTargets'));
+    ws.on('message', (d) => {
+      const m = JSON.parse(String(d));
+      if (m.id === 1) send('Target.attachToTarget', { targetId: (m.result.targetInfos.find((i) => urlRe.test(i.url)) ?? m.result.targetInfos[0]).targetId, flatten: true });
+      else if (m.id === 2) { sid = m.result.sessionId; send('Page.bringToFront', {}, sid); }
+      else if (m.id === 3) { clearTimeout(t); ws.close(); resolve({ reply: JSON.stringify(m.result ?? m.error) }); }
+    });
+  });
+}
+
 const ARM_FNS3 = {
   async breadth(ctx) {
     // The surface the ticket names beyond click/fill/upload/dialog: type, press, wait, scroll, hover, console, network, cookies, storage, eval.
@@ -679,6 +697,16 @@ const ARM_FNS3 = {
     const sw = await cli(ctx, W1, ['tab', humanLabel0 ?? 't1']);
     const fT1 = await composerFocus(ctx);
     clause(A, 'tab-switch-does-not-steal-keyboard-focus', sw.code === 0 && fT0?.onComposer === true && fT1?.onComposer === true && fT1?.windowFocus === true, `tab ${humanLabel0}: ${show(sw)} → composer focus before ${JSON.stringify(fT0)}, after ${JSON.stringify(fT1)} (Page.bringToFront / Target.activateTarget never take OS focus)`);
+    // Page.bringToFront straight to the proxy (agent-browser does not send it in the flows driven here): it must activate the tab, answer {}, and never take the human's focus
+    await cli(ctx, W1, ['tab', labelOf(list, /\/index\.html/) ?? 't2']); // make the agent's tab the active one first
+    const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const fB0 = await focusComposer(ctx);
+    const activeBefore = (await reg()).find((t) => t.active)?.id;
+    const btf = await bringToFrontViaProxy(ep.wsUrl, /\/cli\.html/); // the HUMAN's tab, while the agent's new tab is the active one
+    const fB1 = await composerFocus(ctx);
+    const activeAfter = (await reg()).find((t) => t.active)?.id;
+    clause(A, 'page-bringtofront-activates-the-tab-and-keeps-keyboard-focus', btf.reply === '{}' && activeBefore !== human.id && activeAfter === human.id && fB0?.onComposer === true && fB1?.onComposer === true && fB1?.windowFocus === true,
+      `Page.bringToFront on the human tab's session → ${btf.reply}; active tab ${activeBefore} → ${activeAfter}; composer focus before ${JSON.stringify(fB0)}, after ${JSON.stringify(fB1)} (measured: forwarding it to Electron's debugger neither activates the tab nor moves focus)`);
     const myLabel = labelOf(list, /\/index\.html/);
     const closeMine = await cli(ctx, W1, ['tab', 'close', myLabel ?? 't0']);
     await waitFor(async () => (await reg()).length === 1, 8000, 'the agent tab to leave the registry').catch(() => {});
