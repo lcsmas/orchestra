@@ -171,6 +171,7 @@ import { initPlatform, platform } from './platform';
 import { createElectronPlatform } from './platform/electron';
 import { flushBrowserTabs, initBrowserPanels } from './browser-panel';
 import { createBrowserTabsStore } from './browser-tabs-store';
+import { disposeAllEndpoints, initBrowserCliHost } from './browser-cdp-host';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { sweepAgentTmpDirs } from './agent-tmpdir';
@@ -466,6 +467,7 @@ async function createMainWindow() {
   // ORCHESTRA_SOCK from buildSdkEnv (and the Run/nvim PTYs from their spawn env), and that value is
   // read from getHookSocketPath() which only returns non-null after listen().
   await startHooksServer();
+  initBrowserCliHost(); // #395: sweeps daemons of an earlier run, follows panel teardown
   // Accès mobile (#334, ADR 0006): starts the phone server process only if the human turned it on — needs the socket (just bound) + the store.
   startAccesMobileHost();
   // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every transition,
@@ -948,6 +950,7 @@ function shutdownSubsystems(): void {
   stopEventsSpool();
   stopAccesMobileHost(); // before the socket it relays to goes away
   stopHooksServer();
+  void disposeAllEndpoints(); // #395: close each workspace's CDP proxy + its agent-browser daemon
   stopUsagePolling();
   stopAccountUsagePolling();
   stopPromptQueueFlusher();

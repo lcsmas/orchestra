@@ -77,6 +77,8 @@ import {
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
+import { browserChildEnv, mapBrowserFailure, planBrowserCommand } from '../shared/browser-cli.ts';
+import { spawn as spawnChild } from 'node:child_process';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -1917,6 +1919,37 @@ async function main(argv: string[]): Promise<void> {
         db.close();
       }
       return;
+    }
+
+    case 'browser': {
+      // #395 / ADR 0009: drive THIS workspace's Browser panel through the bundled agent-browser. The host resolves the workspace from
+      // {id, session key} on every call and answers with the proxy URL; no argument names another workspace, and flags that re-point the client are refused.
+      const plan = planBrowserCommand(args);
+      if (!plan.ok) fail(plan.error);
+      const id = selfWorkspaceId();
+      if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
+      const shotRoot = process.env.ORCHESTRA_AGENT_TMPDIR;
+      const res = await request(
+        '/browser',
+        { id, key: process.env.ORCHESTRA_SESSION_KEY ?? '', ...(shotRoot ? { shotDir: path.join(shotRoot, 'browser') } : {}) },
+        { timeoutMs: 45_000 },
+      );
+      if (!res.ok) fail(`orchestra browser: ${res.error ?? 'the host refused'}`);
+      const binary = res.binary as string;
+      const env = browserChildEnv(process.env, res.env as Record<string, string>);
+      const run = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawnChild(binary, ['--cdp', res.wsUrl as string, ...plan.args], { env, stdio: ['inherit', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c));
+        child.stderr.setEncoding('utf8').on('data', (c: string) => (stderr += c));
+        child.once('error', reject);
+        child.once('close', (code, signal) => resolve({ code: code ?? (signal ? 1 : 0), stdout, stderr }));
+      });
+      const out = mapBrowserFailure(run, plan.refs, plan.args.includes('--json'));
+      if (out.stdout) process.stdout.write(out.stdout);
+      if (out.stderr) process.stderr.write(out.stderr);
+      exitWith(out.code);
     }
 
     case 'whoami': {

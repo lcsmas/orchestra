@@ -1,0 +1,619 @@
+// #395 — `orchestra browser <cmd>` end to end: the REAL CLI bundle → the host `/browser` route (ADR 0008 identity) → the per-workspace
+// loopback CDP proxy → the pinned agent-browser daemon → the REAL Browser panel of a BUILT Orchestra, against the shared fixture site.
+//
+// Boots a BUILT Orchestra (argv[2] = app dir) inside the contained rig's own headless sway (scripts/e2e-browser-cli.sh → e2e-contained-rig.sh),
+// with a SCRATCH ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, TWO seeded workspaces (a pinned session key each, hashes in session-keys.json)
+// and the fixture site (scripts/fixtures/browser-site). Every page assertion reads an INDEPENDENT oracle: the app's own remote-debugging port
+// (a second CDP client on the panel's page), never the CLI/proxy/agent-browser chain under test.
+//
+// Usage (via scripts/e2e-browser-cli.sh): <app-dir> --live-home <real $HOME> [--arm a,b] [--list] [--mutant <name>] [--out dir]
+//   --mutant <name>: patch the BUILT bundle in place (byte-exact backup, `cmp`-verified restore), run, and require the mutant's arms RED
+//   (and every control GREEN). Without it the run must be all green.
+import { execFileSync, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import http from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { WebSocket as WS } from 'ws';
+import { abLayout } from '../src/main/agent-browser-daemon.ts';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
+
+// ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
+const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'destroy-closes-daemon'];
+/** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires (hash changes per build), 'cli' = dist-electron/cli.js.
+ *  Each edit is a regex that must match EXACTLY once (so a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* clause must stay GREEN. */
+const MUTANTS = {
+  'guard-origin': { file: 'chunk', edits: [[/if\((\w+)\.origin!==void 0\)return\{ok:!1,reason:"origin-present"\};/, '']], arms: ['loopback-guard'], why: 'the proxy accepts a request carrying an Origin header' },
+  'guard-host': { file: 'chunk', edits: [[/return (\w+)\?Number\(\1\[2\]\)!==(\w+)\?\{ok:!1,reason:"host-port-mismatch"\}:\{ok:!0\}:\{ok:!1,reason:"host-not-loopback"\}/, 'return{ok:!0}']], arms: ['loopback-guard'], why: 'the proxy accepts any Host (DNS rebinding)' },
+  'guard-token': { file: 'chunk', edits: [[/return (\w+)\.length===(\w+)\.length&&\2\.length>0&&(\w+)\.timingSafeEqual\(\1,\2\)/, 'return!0']], arms: ['loopback-guard'], why: 'any path token is accepted' },
+  'verify-bypass': { file: 'chunk', edits: [[/if\((\w+)==="superseded"\)return\{ok:!1,code:"superseded",error:"this session was replaced by a newer one/, 'if($1==="__never__")return{ok:!1,code:"superseded",error:"this session was replaced by a newer one']], arms: ['cross-workspace'], why: 'the host stops refusing a session key that belongs to another workspace' },
+  'env-scrub': { file: 'cli', edits: [['for (const [k, v] of Object.entries(fromHost)) out[k] = v;', 'for (const [k, v] of Object.entries(fromHost)) out[k] = v; for (const [k, v] of Object.entries(parent)) if (k.startsWith("AGENT_BROWSER_") && typeof v === "string") out[k] = v;']], arms: ['cross-workspace'], why: 'the caller\'s AGENT_BROWSER_* env reaches the client (it can re-point at a sibling\'s daemon)' },
+  'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['stale-ref'], why: 'a stale ref is reported as the raw agent-browser error, not browser_stale_ref' },
+  'allowlist-open': { file: 'cli', edits: [['if (!BROWSER_COMMANDS.has(command)) {', 'if (false) {'], ['if (command in REFUSED_COMMANDS) {', 'if (false) {'], ['if (REFUSED_FLAGS.has(name)) {', 'if (false) {']], arms: ['allowlist'], why: 'every agent-browser command and flag passes through' },
+  'frames-guard': { file: 'chunk', edits: [[/(\w+)\.attachedId===null\?"this workspace's Browser pane is not on screen/, '$1.attachedId===void 0?"this workspace\'s Browser pane is not on screen']], arms: ['background'], why: 'a background workspace\'s screenshot is no longer refused up front' },
+  'acquire-always-attach': { file: 'chunk', edits: [[/(\w+)\.debugger\.isAttached\(\)\|\|\1\.debugger\.attach\("1\.3"\),(\w+)\.debuggerAttached=!0,\1\.debugger\.once\("detach"/, '$1.debugger.attach("1.3"),$2.debuggerAttached=!0,$1.debugger.once("detach"']], arms: ['legacy-coexist'], why: 'the proxy attaches even when the legacy tools / design mode already hold the debugger' },
+  'no-about-blank': { file: 'chunk', edits: [[/(\w+)\.getURL\(\)\|\|await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\),/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
+  'daemon-neuter': { file: 'chunk', edits: [[/(async function \w+\((\w+),(\w+),(\w+),(\w+),(\w+)=\w+\)\{)(if\(await \6\.canConnect)/, '$1return;$7']], arms: ['daemon-host-owned'], why: 'the host never starts the daemon; the first agent client does, with the agent\'s env, inside the member\'s scope' },
+  'daemon-env-leak': { file: 'chunk', edits: [[/execFile\((\w+),(\w+),\{env:(\w+),timeout/, 'execFile($1,$2,{env:{...process.env,...$3},timeout']], arms: ['daemon-host-owned'], why: 'the host spawns the daemon with the app\'s whole environment' },
+  'screenshot-truncated': { file: 'chunk', edits: [[/primary:async\(\)=>\(await (\w+)\.channel\.send\("Page\.captureScreenshot",(\w+)\)\)\.data/, 'primary:async()=>(await $1.channel.send("Page.captureScreenshot",$2)).data.slice(0,64)']], arms: ['screenshot'], why: 'the screenshot chain returns a truncated image' },
+  'fill-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.insertText"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['fill'], why: 'text insertion is acknowledged but never reaches the page' },
+  'upload-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="DOM.setFileInputFiles"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['upload'], why: 'the file-input assignment is acknowledged but never reaches the page' },
+  'dialog-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Page.handleJavaScriptDialog"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['dialog'], why: 'dialog accept/dismiss is acknowledged but the page stays blocked' },
+  'archive-no-dispose': { file: 'chunk', edits: [[/\((\w+),(\w+),(\w+)\)=>\{\3&&(\w+)\(\1\)\}\),\(async\(\)=>\{try\{/, '($1,$2,$3)=>{}),(async()=>{try{']], arms: ['destroy-closes-daemon'], why: 'archiving a workspace leaves its CDP proxy and agent-browser daemon running' },
+  'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
+};
+if (argv.includes('--list')) {
+  console.log(`arms: ${ARMS.join(' ')}`);
+  console.log(`mutants: ${Object.keys(MUTANTS).join(' ')}`);
+  process.exit(0);
+}
+
+const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
+const LIVE_HOME = flag('--live-home', null);
+const ARM_LIST = (flag('--arm', null) ?? ARMS.join(',')).split(',');
+const MUTANT = flag('--mutant', null);
+
+const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
+if (!APP_DIR) refuse('no <app-dir>');
+if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude*, ~/.config, ~/.orchestra and to prove nothing there moved)');
+for (const a of ARM_LIST) if (!ARMS.includes(a)) refuse(`unknown arm ${a} (have: ${ARMS.join(', ')})`);
+if (MUTANT && !MUTANTS[MUTANT]) refuse(`unknown mutant ${MUTANT} (have: ${Object.keys(MUTANTS).join(', ')})`);
+const RIG_DIR = process.env.RIG_DIR;
+const RIG_WAYLAND = process.env.RIG_WAYLAND;
+if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-cli.sh (the contained rig)');
+if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
+if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
+const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
+
+// ── scratch-containment guard (live dirs are never handed to the app) ─────────────────────────────────────────────────────────
+const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
+const liveReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const LIVE_DIRS = [...fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n)),
+  path.join(LIVE_HOME, '.orchestra'), path.join(LIVE_HOME, '.config')].map(liveReal);
+function checkScratch(p) {
+  const r = liveReal(p);
+  for (const l of LIVE_DIRS) if (r === l || r.startsWith(l + path.sep) || l.startsWith(r + path.sep)) return { ok: false, clause: 'live-dir' };
+  if (!(r === RIG_BASE || r.startsWith(RIG_BASE + path.sep))) return { ok: false, clause: 'outside-rig-base' };
+  return { ok: true, clause: 'scratch' };
+}
+const mustBeScratch = (what, p) => { const r = checkScratch(p); if (!r.ok) refuse(`${what}=${p} [${r.clause}]`); };
+{
+  const a = checkScratch(path.join(LIVE_HOME, '.claude')), b = checkScratch('/tmp/not-in-the-rig'), c = checkScratch(path.join(RIG_DIR, 'x'));
+  if (a.clause !== 'live-dir' || b.clause !== 'outside-rig-base' || !c.ok) refuse(`scratch guard self-test failed: ${JSON.stringify({ a, b, c })}`);
+  console.log(`[guard] self-test: live ~/.claude -> ${a.clause} · /tmp path -> ${b.clause} · rig path -> ${c.clause}`);
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+async function waitFor(fn, ms, what) {
+  const t0 = Date.now(); let last;
+  while (Date.now() - t0 < ms) { try { last = await fn(); if (last) return last; } catch (e) { last = e; } await sleep(150); }
+  throw new Error(`timeout ${ms}ms waiting for ${what}${last instanceof Error ? `: ${last.message}` : ''}`);
+}
+const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); s.on('error', rej); });
+const sh = (cmd, args, opt = {}) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt });
+const git = (cwd, args, home) => sh('git', ['-c', 'user.name=rig', '-c', 'user.email=rig@example.invalid', ...args], { cwd, env: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' } });
+
+function decodePng(buf) {
+  let pos = 8; const idat = []; let w, h, bd, ct, il;
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos), type = buf.toString('latin1', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); bd = data[8]; ct = data[9]; il = data[12]; }
+    else if (type === 'IDAT') idat.push(data); else if (type === 'IEND') break;
+    pos += 12 + len;
+  }
+  if (bd !== 8 || il !== 0 || (ct !== 6 && ct !== 2)) throw new Error(`unsupported PNG bd=${bd} ct=${ct} il=${il}`);
+  const ch = ct === 6 ? 4 : 3, stride = w * ch, raw = zlib.inflateSync(Buffer.concat(idat)), out = Buffer.alloc(stride * h);
+  let prev = Buffer.alloc(stride), i = 0;
+  for (let y = 0; y < h; y++) {
+    const f = raw[i++], line = Buffer.from(raw.subarray(i, i + stride)); i += stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= ch ? line[x - ch] : 0, b = prev[x], c = x >= ch ? prev[x - ch] : 0;
+      let add = 0;
+      if (f === 1) add = a; else if (f === 2) add = b; else if (f === 3) add = (a + b) >> 1;
+      else if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      line[x] = (line[x] + add) & 255;
+    }
+    line.copy(out, y * stride); prev = line;
+  }
+  return { w, h, ch, data: out };
+}
+/** pixels that are not the image's dominant colour = painted "ink". */
+function inkPx(I, tol = 6) {
+  const cnt = new Map();
+  for (let p = 0; p < I.w * I.h; p++) { const o = p * I.ch, k = (I.data[o] << 16) | (I.data[o + 1] << 8) | I.data[o + 2]; cnt.set(k, (cnt.get(k) || 0) + 1); }
+  let mode = 0, best = -1; for (const [k, v] of cnt) if (v > best) { best = v; mode = k; }
+  const mr = mode >> 16, mg = (mode >> 8) & 255, mb = mode & 255; let n = 0;
+  for (let p = 0; p < I.w * I.h; p++) { const o = p * I.ch; if (Math.abs(I.data[o] - mr) > tol || Math.abs(I.data[o + 1] - mg) > tol || Math.abs(I.data[o + 2] - mb) > tol) n++; }
+  return n;
+}
+
+class Cdp {
+  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); ws.onmessage = (ev) => { const m = JSON.parse(ev.data); const p = m.id && this.pending.get(m.id); if (p) { this.pending.delete(m.id); m.error ? p.rej(new Error(`${m.error.message}`)) : p.res(m.result); } }; }
+  static async connect(url) { const ws = new WebSocket(url); await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws error')); }); return new Cdp(ws); }
+  send(method, params = {}, ms = 20000) {
+    const id = ++this.id;
+    return new Promise((res, rej) => { const t = setTimeout(() => { this.pending.delete(id); rej(new Error(`CDP ${method} timed out after ${ms}ms`)); }, ms); this.pending.set(id, { res: (v) => { clearTimeout(t); res(v); }, rej: (e) => { clearTimeout(t); rej(e); } }); this.ws.send(JSON.stringify({ id, method, params })); });
+  }
+  async eval(expr) { const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(`eval threw: ${r.exceptionDetails.text} ${r.exceptionDetails.exception?.description ?? ''}`); return r.result.value; }
+  async click(x, y) { for (const [type, extra] of [['mouseMoved', {}], ['mousePressed', { button: 'left', clickCount: 1 }], ['mouseReleased', { button: 'left', clickCount: 1 }]]) { await this.send('Input.dispatchMouseEvent', { type, x, y, ...extra }); await sleep(60); } }
+  close() { try { this.ws.close(); } catch {} }
+}
+
+// ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const WS_NAMES = ['b395-one', 'b395-two'];
+function seedWorld(armDir) {
+  const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
+  for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
+  for (const [k, v] of Object.entries({ HOME: fakeHome, ORCHESTRA_HOME: ohome, CLAUDE_CONFIG_DIR: cfg, repo: repoDir })) mustBeScratch(k, v);
+  git(repoDir, ['init', '-q', '-b', 'main'], fakeHome);
+  fs.writeFileSync(path.join(repoDir, 'README.md'), '# b395 seed repo\n');
+  git(repoDir, ['add', '.'], fakeHome); git(repoDir, ['commit', '-q', '-m', 'seed'], fakeHome);
+  const account = { id: 'rig-b395', label: 'rig (scratch config dir)', configDir: cfg };
+  mustBeScratch('account.configDir', account.configDir);
+  const workspaces = WS_NAMES.map((name, i) => {
+    const wt = path.join(armDir, 'wt', name);
+    fs.mkdirSync(path.dirname(wt), { recursive: true });
+    git(repoDir, ['worktree', 'add', '-q', '-b', `e2e/${name}`, wt], fakeHome);
+    return { id: `ws-${name}`, name, repoPath: repoDir, worktreePath: wt, branch: `e2e/${name}`, baseBranch: 'main', createdAt: Date.now() + i, status: 'idle', agent: 'claude', accountId: account.id, key: crypto.randomBytes(24).toString('hex') };
+  });
+  const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'b395-repo', defaultBranch: 'main', accountId: account.id }], workspaces: workspaces.map(({ key, ...w }) => w), accounts: [account], selfTuneRuns: [] }, null, 2));
+  // the host vouches for a CLI only through this registry (ADR 0008): hashes, 0600 — exactly what a fresh keeper spawn writes
+  fs.writeFileSync(path.join(ohome, 'session-keys.json'), JSON.stringify({ version: 1, sessions: Object.fromEntries(workspaces.map((w) => [w.id, { hash: sha256(w.key), issuedAt: Date.now() }])) }), { mode: 0o600 });
+  const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
+  fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho B395-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+  return { fakeHome, ohome, cfg, account, workspaces, stubDir };
+}
+
+function listProcsByHome(home) {
+  const out = [];
+  for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+  }
+  return out.filter((p) => p !== process.pid);
+}
+
+const results = []; // {arm, clause, ok, detail}
+function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !!ok, detail }); console.log(`  ${ok ? 'PASS' : 'FAIL'}  [${arm}] ${name} — ${detail}`); }
+const shots = [];
+function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
+
+// ── mutants: patch the BUILT bundle in place; restore byte-exact and prove it with cmp ──────────────────────────────────────────
+let mutantRestore = null;
+function mutantTarget(kind) {
+  if (kind === 'cli') return path.join(APP_DIR, 'dist-electron/cli.js');
+  const m = /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(APP_DIR, 'dist-electron/main.js'), 'utf8'));
+  if (!m) refuse('cannot resolve the main-process chunk from dist-electron/main.js');
+  return path.join(APP_DIR, 'dist-electron', m[1]);
+}
+const MARKER = path.join(APP_DIR ?? '/nonexistent', 'dist-electron', '.b395-mutant-active');
+function applyMutant() {
+  if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore it from that backup, or rebuild, then delete the marker)`);
+  if (!MUTANT) return;
+  const m = MUTANTS[MUTANT], file = mutantTarget(m.file), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
+  let src = fs.readFileSync(file, 'utf8');
+  for (const [from, to] of m.edits) {
+    const hits = typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length;
+    if (hits !== 1) refuse(`mutant ${MUTANT}: ${String(from).slice(0, 70)} occurs ${hits}x in ${path.basename(file)} (must be exactly 1) — the bundle changed, update the mutant`);
+    src = typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to);
+  }
+  fs.copyFileSync(file, backup);
+  fs.writeFileSync(MARKER, `${backup} -> ${file}\n`);
+  fs.writeFileSync(file, src);
+  console.log(`[mutant] ${MUTANT} applied to ${path.basename(file)} (${m.edits.length} edit(s)): ${m.why}; backup ${backup}`);
+  mutantRestore = () => { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK)`); } catch { console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${path.basename(file)}`); process.exitCode = 4; } };
+}
+process.on('exit', () => { try { mutantRestore?.(); } catch {} });
+process.on('SIGINT', () => process.exit(130));
+process.on('SIGTERM', () => process.exit(143));
+
+// ── one world, all arms ───────────────────────────────────────────────────────────────────────────────────────────────────────
+async function main() {
+  const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
+  const world = seedWorld(armDir);
+  const [W1, W2] = world.workspaces;
+  const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
+  console.log(`[rig] fixture ${FIX}`);
+
+  sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
+  sh('swaymsg', ['default_border', 'none']);
+  const port = await freePort();
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+    WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ...(argv.includes('--trace') ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
+  for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
+  if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
+  const logFile = path.join(armDir, 'app.log');
+  const fd = fs.openSync(logFile, 'w');
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  console.log(`[rig] app pid ${app.pid} debug port ${port} log ${logFile}`);
+  let ui;
+  const targets = async () => (await (await fetch(`http://127.0.0.1:${port}/json`)).json());
+  try {
+    const target = await waitFor(async () => (await targets()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the app page target');
+    clause('ctl', 'app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
+    ui = await Cdp.connect(target.webSocketDebuggerUrl);
+    await ui.send('Page.enable');
+    const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
+    const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
+    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
+      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+    const ctx = { world, W1, W2, FIX, port, app, ui, targets, env };
+    await runArms(ctx);
+  } catch (e) {
+    clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
+  } finally {
+    ui?.close();
+    try { process.kill(-app.pid, 'SIGTERM'); } catch {}
+    await sleep(2000);
+    try { process.kill(-app.pid, 'SIGKILL'); } catch {}
+    try { fixture.kill('SIGKILL'); } catch {}
+    { // daemons a refused-then-leaked mutant run may have left (they carry no ORCHESTRA_HOME), then the scratch socket dir — only ever THIS ORCHESTRA_HOME's hashed one
+      const l = abLayout(world.ohome, process.env.XDG_RUNTIME_DIR);
+      for (const pid of Object.values(daemonPids({ world }))) { if (environOf(pid)?.includes(`AGENT_BROWSER_SOCKET_DIR=${l.socketDir}`)) { try { process.kill(pid, 'SIGKILL'); } catch {} } }
+      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((process.env.XDG_RUNTIME_DIR ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
+    }
+    for (const p of listProcsByHome(world.ohome)) { try { process.kill(p, 'SIGKILL'); } catch {} }
+    await sleep(500);
+    const left = listProcsByHome(world.ohome);
+    clause('ctl', 'teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
+  }
+}
+
+
+// ── driving helpers ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+const sel = (n) => JSON.stringify(n);
+async function selectWs(ctx, W) {
+  const { ui } = ctx;
+  const pos = await ui.eval(`(() => { const n = [...document.querySelectorAll('.ws-item .ws-name')].find((e) => e.textContent.trim() === ${sel(W.branch)}); if (!n) return null; const b = n.getBoundingClientRect(); return { x: b.left + 20, y: b.top + b.height / 2 }; })()`);
+  if (!pos) throw new Error(`sidebar row for ${W.branch} not found`);
+  await ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+  await ui.click(pos.x, pos.y);
+  await waitFor(() => ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W.branch)}))`), 15000, `${W.branch} to become the active workspace`);
+}
+async function openPane(ctx) {
+  const { ui } = ctx;
+  const state = await ui.eval(`(() => { const b = document.querySelector('button[aria-label="Show browser pane"],button[aria-label="Hide browser pane"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { open: b.getAttribute('aria-label') === 'Hide browser pane', x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (!state) throw new Error('browser pane toggle not found');
+  if (!state.open) { await ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: state.x, y: state.y }); await ui.click(state.x, state.y); }
+  await waitFor(() => ui.eval(`!!document.querySelector('.browser-panel:not(.browser-panel-hidden) .browser-url-input')`), 15000, 'the Browser pane to be open');
+}
+/** The REAL CLI bundle, with an `env -i` allowlist: exactly what an agent's Bash tool hands it. */
+function cli(ctx, W, args, { env: extra = {}, timeoutMs = 60000, key } = {}) {
+  const base = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: ctx.world.fakeHome, ORCHESTRA_HOME: ctx.world.ohome, ORCHESTRA_WS_ID: W.id, ORCHESTRA_SESSION_KEY: key ?? W.key,
+    ORCHESTRA_AGENT_TMPDIR: path.join(ctx.world.fakeHome, 'agent-tmp', W.name), LANG: 'C.UTF-8', ...extra };
+  fs.mkdirSync(base.ORCHESTRA_AGENT_TMPDIR, { recursive: true });
+  const t0 = Date.now();
+  let child;
+  const done = new Promise((resolve) => {
+    child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env: base, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, timeoutMs);
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code: code ?? (signal ? 137 : 0), stdout, stderr, ms: Date.now() - t0 }); });
+  });
+  done.child = child;
+  return done;
+}
+const show = (r) => `rc=${r.code} ${r.ms}ms stdout=${JSON.stringify(r.stdout.trim().slice(0, 160))} stderr=${JSON.stringify(r.stderr.trim().slice(0, 200))}`;
+/** Independent oracle: a second CDP client on the panel's page through the APP's own remote-debugging port. */
+async function oracle(ctx, urlPrefix, ms = 15000) {
+  const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
+  return Cdp.connect(t.webSocketDebuggerUrl);
+}
+const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*\\[ref=(e\\d+)\\]`).exec(snapshot); return m ? `@${m[1]}` : null; };
+const sockets = (ctx) => { const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR); try { return fs.readdirSync(path.join(l.socketDir, 'namespaces', 'orchestra', 'run')).filter((n) => n.endsWith('.sock')).map((n) => n.slice(0, -5)); } catch { return []; } };
+const hooksSock = (ctx) => fs.readFileSync(path.join(ctx.world.ohome, 'sock'), 'utf8').trim();
+function hostCall(ctx, route, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request({ socketPath: hooksSock(ctx), method: 'POST', path: route, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, (res) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } }); });
+    req.on('error', reject); req.end(payload);
+  });
+}
+
+const ARM_FNS = {
+  async smoke(ctx) {
+    const { W1, FIX } = ctx; const A = 'smoke';
+    await selectWs(ctx, W1); await openPane(ctx);
+    clause(A, 'ctl/pane-open', true, `${W1.branch} active, Browser pane open`);
+    const open = await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
+    clause(A, 'cli-open', open.code === 0, show(open));
+    const o = await oracle(ctx, `${FIX}/cli.html`); ctx.o1 = o;
+    clause(A, 'ctl/oracle-sees-page', (await o.eval(`document.title`)) === 'CLI fixture', `oracle page title = ${JSON.stringify(await o.eval('document.title'))} (read through the app's own debug port, not the CLI)`);
+    const snap = await cli(ctx, W1, ['snapshot', '-i']);
+    clause(A, 'cli-snapshot-refs', snap.code === 0 && !!refOf(snap.stdout, 'button', 'Go') && !!refOf(snap.stdout, 'textbox', 'Name'), show(snap));
+  },
+
+  async 'legacy-coexist'(ctx) {
+    // The old mcp__browser__* path (and design mode) share ONE debugger attach with the proxy, in BOTH orders.
+    const { W1, W2, FIX, ui } = ctx; const A = 'legacy-coexist';
+    // (a) proxy attached first (smoke ran the CLI on W1) → legacy design-mode arm still works
+    await ui.eval(`window.orchestra.browserDesignArm(${sel(W1.id)}).then(() => true)`);
+    const armed = await ctx.o1.eval(`typeof window.__orchestraDesignTeardown === 'function'`);
+    await ui.eval(`window.orchestra.browserDesignDisarm(${sel(W1.id)}).then(() => true)`);
+    clause(A, 'proxy-first-then-legacy', armed === true, `design overlay installed through the legacy debugger path while the proxy holds the attach: ${armed}`);
+    // (b) legacy attached first on W2 (never driven by the CLI yet) → the CLI still works
+    await ui.eval(`window.orchestra.browserNavigate(${sel(W2.id)}, ${sel(FIX + '/index.html')}).then(() => true)`);
+    await ui.eval(`window.orchestra.browserDesignArm(${sel(W2.id)}).then(() => true)`);
+    const o2 = await oracle(ctx, `${FIX}/index.html`); ctx.o2 = o2;
+    const armed2 = await o2.eval(`typeof window.__orchestraDesignTeardown === 'function'`);
+    const snap = await cli(ctx, W2, ['snapshot', '-i']);
+    await ui.eval(`window.orchestra.browserDesignDisarm(${sel(W2.id)}).then(() => true)`);
+    clause(A, 'legacy-first-then-proxy', armed2 === true && snap.code === 0 && /heading "Fixture home"/.test(snap.stdout), `legacy attach first (overlay=${armed2}), then the CLI: ${show(snap)}`);
+  },
+
+  async 'snapshot-click'(ctx) {
+    const { W1 } = ctx; const A = 'snapshot-click';
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
+    const pre = await ctx.o1.eval(`document.getElementById('out').textContent`);
+    clause(A, 'ctl/precondition-idle', pre === 'idle' && !!go, `#out=${JSON.stringify(pre)} before the click, Go ref ${go}`);
+    const click = await cli(ctx, W1, ['click', go]);
+    const post = await ctx.o1.eval(`document.getElementById('out').textContent`);
+    clause(A, 'click-changes-dom', click.code === 0 && post === 'clicked', `${show(click)} → oracle #out=${JSON.stringify(post)}`);
+  },
+
+  async fill(ctx) {
+    const { W1 } = ctx; const A = 'fill';
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const box = refOf(snap.stdout, 'textbox', 'Name');
+    const r = await cli(ctx, W1, ['fill', box, 'hello orchestra']);
+    const v = await ctx.o1.eval(`({ value: document.getElementById('name').value, echo: document.getElementById('echo').textContent })`);
+    clause(A, 'fill-sets-value-and-fires-input', r.code === 0 && v.value === 'hello orchestra' && v.echo === 'hello orchestra', `${show(r)} → oracle input.value=${JSON.stringify(v.value)} #echo=${JSON.stringify(v.echo)}`);
+  },
+
+  async upload(ctx) {
+    const { W1 } = ctx; const A = 'upload';
+    const file = path.join(ctx.world.fakeHome, 'upload.bin'); fs.writeFileSync(file, crypto.randomBytes(4321));
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const inp = refOf(snap.stdout, 'button', 'Choose File');
+    const r = await cli(ctx, W1, ['upload', inp, file]);
+    await waitFor(() => ctx.o1.eval(`document.getElementById('upres').textContent.startsWith('up:')`), 10000, 'the upload echo').catch(() => {});
+    const echo = await ctx.o1.eval(`document.getElementById('upres').textContent`);
+    clause(A, 'upload-reaches-the-page-and-server', r.code === 0 && echo === 'up:upload.bin:4321', `${show(r)} → oracle #upres=${JSON.stringify(echo)} (name:size echoed by the fixture server from the multipart body)`);
+  },
+
+  async dialog(ctx) {
+    const { W1 } = ctx; const A = 'dialog';
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const ask = refOf(snap.stdout, 'button', 'Ask');
+    const clickP = cli(ctx, W1, ['click', ask], { timeoutMs: 40000 });
+    const status = await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'dialog status to report the open confirm');
+    clause(A, 'status-sees-the-confirm', /sure\?/.test(status.stdout), show(status));
+    const acc = await cli(ctx, W1, ['dialog', 'accept']);
+    await clickP;
+    const t1 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
+    clause(A, 'accept-resolves-true', acc.code === 0 && t1 === 'true', `${show(acc)} → oracle #dlg=${JSON.stringify(t1)}`);
+    const click2 = cli(ctx, W1, ['click', ask], { timeoutMs: 40000 });
+    await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'the second confirm');
+    const dis = await cli(ctx, W1, ['dialog', 'dismiss']); await click2;
+    const t2 = await ctx.o1.eval(`document.getElementById('dlg').textContent`);
+    clause(A, 'dismiss-resolves-false', dis.code === 0 && t2 === 'false', `${show(dis)} → oracle #dlg=${JSON.stringify(t2)}`);
+  },
+
+  async 'stale-ref'(ctx) {
+    const { W1, FIX } = ctx; const A = 'stale-ref';
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go'); const home = refOf(snap.stdout, 'link', 'Home');
+    const ok = await cli(ctx, W1, ['click', go]);
+    clause(A, 'ctl/ref-works-before-navigation', ok.code === 0 && !!home, `click ${go} before navigating: ${show(ok)}`);
+    const nav = await cli(ctx, W1, ['click', home]);
+    await waitFor(() => ctx.o1.eval(`location.pathname === '/index.html'`), 10000, 'navigation to /index.html');
+    const stale = await cli(ctx, W1, ['click', go]);
+    clause(A, 'stale-ref-error-after-navigation', nav.code === 0 && stale.code !== 0 && /^browser_stale_ref: /.test(stale.stderr) && stale.stderr.includes(go), `${show(stale)}`);
+    const js = await cli(ctx, W1, ['--json', 'click', go]);
+    let parsed = null; try { parsed = JSON.parse(js.stdout.trim()); } catch {}
+    clause(A, 'stale-ref-json', js.code !== 0 && parsed?.code === 'browser_stale_ref' && parsed?.success === false, `--json: ${show(js)}`);
+    const re = await cli(ctx, W1, ['snapshot', '-i']);
+    clause(A, 'resnapshot-recovers', re.code === 0 && /heading "Fixture home"/.test(re.stdout), show(re));
+    await cli(ctx, W1, ['open', `${FIX}/cli.html`]); // back to the form page for the later arms
+    await waitFor(() => ctx.o1.eval(`location.pathname === '/cli.html'`), 10000, 'back on /cli.html');
+  },
+
+  async screenshot(ctx) {
+    const { W1 } = ctx; const A = 'screenshot';
+    const dest = path.join(ctx.world.fakeHome, 'shot.png');
+    const r = await cli(ctx, W1, ['screenshot', dest]);
+    let img = null, err = '';
+    try { img = decodePng(fs.readFileSync(dest)); } catch (e) { err = String(e.message ?? e); }
+    clause(A, 'png-written-and-painted', r.code === 0 && !!img && img.w >= 300 && img.h >= 200 && inkPx(img) > 400, `${show(r)} → ${img ? `${img.w}x${img.h}, ${inkPx(img)} ink px` : `unreadable: ${err}`}`);
+    const ref = await ctx.o1.send('Page.captureScreenshot', { format: 'png' });
+    const refImg = decodePng(Buffer.from(ref.data, 'base64'));
+    clause(A, 'matches-the-oracles-own-capture-size', !!img && Math.abs(img.w - refImg.w) <= 2 && Math.abs(img.h - refImg.h) <= 2, `CLI shot ${img?.w}x${img?.h} vs oracle capture of the same view ${refImg.w}x${refImg.h}`);
+    if (img) saveShot('cli-screenshot.png', fs.readFileSync(dest));
+  },
+};
+
+
+/** Raw HTTP to the proxy with full control of Host / Origin (a browser page or a DNS-rebinding page would send these). */
+function rawGet(port, pathname, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: pathname, method: 'GET', headers }, (res) => { let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => resolve({ status: res.statusCode, body: d })); });
+    req.on('error', reject); req.end();
+  });
+}
+function wsTry(url, headers = {}) {
+  return new Promise((resolve) => {
+    const ws = new WS(url, { headers });
+    const t = setTimeout(() => { try { ws.terminate(); } catch {} resolve({ opened: false, error: 'timeout' }); }, 8000);
+    ws.on('unexpected-response', (_q, res) => { clearTimeout(t); resolve({ opened: false, status: res.statusCode }); });
+    ws.on('error', (e) => { clearTimeout(t); resolve({ opened: false, error: String(e.message ?? e) }); });
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
+      ws.once('message', (d) => { clearTimeout(t); const m = JSON.parse(String(d)); ws.close(); resolve({ opened: true, version: m.result?.protocolVersion }); });
+    });
+  });
+}
+const daemonPids = (ctx) => { const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR); const dir = path.join(l.socketDir, 'namespaces', 'orchestra', 'run'); const out = {}; try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.pid')) out[f.slice(0, -4)] = Number(fs.readFileSync(path.join(dir, f), 'utf8').trim()); } catch {} return out; };
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
+const ppidOf = (pid) => { try { return Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[1]); } catch { return null; } };
+
+const ARM_FNS2 = {
+  async 'loopback-guard'(ctx) {
+    const { W1 } = ctx; const A = 'loopback-guard';
+    const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const u = new URL(ep.wsUrl); const port = Number(u.port); const token = u.pathname.split('/')[1];
+    const good = await rawGet(port, `/${token}/json/version`, { Host: `127.0.0.1:${port}` });
+    let gj = null; try { gj = JSON.parse(good.body); } catch {}
+    clause(A, 'ctl/valid-request-served', ep.ok === true && good.status === 200 && typeof gj?.webSocketDebuggerUrl === 'string' && gj.webSocketDebuggerUrl.startsWith(`ws://127.0.0.1:${port}/${token}/devtools/browser/`), `host route ok=${ep.ok}; GET /<token>/json/version → ${good.status} ${good.body.replace(/\s+/g, ' ').slice(0, 160)}`);
+    const ws0 = await wsTry(ep.wsUrl);
+    clause(A, 'ctl/valid-websocket-served', ws0.opened === true && ws0.version === '1.3', `WebSocket to the proxy without Origin: ${JSON.stringify(ws0)}`);
+    const org = await rawGet(port, `/${token}/json/version`, { Host: `127.0.0.1:${port}`, Origin: 'http://evil.example' });
+    clause(A, 'origin-header-refused', org.status === 403 && /origin-present/.test(org.body), `GET with Origin: http://evil.example → ${org.status} ${JSON.stringify(org.body)}`);
+    const wsOrg = await wsTry(ep.wsUrl, { Origin: 'http://evil.example' });
+    clause(A, 'origin-websocket-refused', wsOrg.opened === false && wsOrg.status === 403, `WebSocket upgrade with Origin → ${JSON.stringify(wsOrg)}`);
+    const rebind = await rawGet(port, `/${token}/json/version`, { Host: `evil.example:${port}` });
+    clause(A, 'foreign-host-refused', rebind.status === 403 && /host-not-loopback/.test(rebind.body), `GET with Host: evil.example:${port} (DNS rebinding) → ${rebind.status} ${JSON.stringify(rebind.body)}`);
+    const wrongPort = await rawGet(port, `/${token}/json/version`, { Host: `127.0.0.1:${port + 1}` });
+    clause(A, 'wrong-port-host-refused', wrongPort.status === 403 && /host-port-mismatch/.test(wrongPort.body), `GET with Host 127.0.0.1:${port + 1} → ${wrongPort.status} ${JSON.stringify(wrongPort.body)}`);
+    const notoken = await rawGet(port, `/json/version`, { Host: `127.0.0.1:${port}` });
+    const badtoken = await rawGet(port, `/${'x'.repeat(token.length)}/json/version`, { Host: `127.0.0.1:${port}` });
+    clause(A, 'missing-or-wrong-token-refused', notoken.status === 404 && badtoken.status === 404, `no token → ${notoken.status}; wrong token → ${badtoken.status} (a same-uid process scanning loopback ports learns nothing)`);
+  },
+
+  async 'cross-workspace'(ctx) {
+    const { W1, W2, FIX } = ctx; const A = 'cross-workspace';
+    const own = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const own2 = await hostCall(ctx, '/browser', { id: W2.id, key: W2.key });
+    clause(A, 'ctl/each-workspace-gets-its-own-endpoint', own.ok === true && own2.ok === true && own.wsUrl !== own2.wsUrl && own.env.AGENT_BROWSER_SESSION !== own2.env.AGENT_BROWSER_SESSION, `W1 ${own.wsUrl?.slice(0, 40)}… session ${own.env?.AGENT_BROWSER_SESSION}; W2 ${own2.wsUrl?.slice(0, 40)}… session ${own2.env?.AGENT_BROWSER_SESSION}`);
+    const swapped = await hostCall(ctx, '/browser', { id: W1.id, key: W2.key });
+    clause(A, 'host-refuses-another-workspaces-key', swapped.ok === false && swapped.code === 'superseded' && !swapped.wsUrl, `{id: W1, key: W2's} → ${JSON.stringify(swapped).slice(0, 200)}`);
+    const nokey = await hostCall(ctx, '/browser', { id: W1.id });
+    const ghost = await hostCall(ctx, '/browser', { id: 'ws-ghost', key: W1.key });
+    clause(A, 'host-refuses-no-key-and-unknown-workspace', nokey.ok === false && ghost.ok === false && !nokey.wsUrl && !ghost.wsUrl, `no key → ${JSON.stringify(nokey).slice(0, 110)}; unknown id → ${JSON.stringify(ghost).slice(0, 110)}`);
+    const cliSwap = await cli(ctx, W1, ['get', 'url'], { key: W2.key });
+    clause(A, 'cli-with-another-workspaces-key-is-refused', cliSwap.code !== 0 && /replaced|vouch|session/.test(cliSwap.stderr) && cliSwap.stdout.trim() === '', show(cliSwap));
+    await cli(ctx, W1, ['open', `${FIX}/cli.html`]);
+    const g1 = await cli(ctx, W1, ['get', 'url']); const g2 = await cli(ctx, W2, ['get', 'url']);
+    clause(A, 'each-cli-reaches-only-its-own-panel', g1.stdout.trim() === `${FIX}/cli.html` && g2.stdout.trim() === `${FIX}/index.html`, `W1 get url → ${g1.stdout.trim()}; W2 get url → ${g2.stdout.trim()}`);
+    // the agent's own env cannot re-point the client at a sibling's daemon / proxy
+    const sess = sockets(ctx);
+    const outs = [];
+    for (const s2 of [own2.env.AGENT_BROWSER_SESSION, ...sess]) {
+      const r = await cli(ctx, W1, ['get', 'url'], { env: { AGENT_BROWSER_SESSION: s2, AGENT_BROWSER_CDP: own2.wsUrl, AGENT_BROWSER_NAMESPACE: 'elsewhere', AGENT_BROWSER_SOCKET_DIR: path.join(ctx.world.fakeHome, 'elsewhere') } });
+      outs.push(r.stdout.trim());
+    }
+    clause(A, 'caller-agent-browser-env-is-scrubbed', outs.length >= 2 && outs.every((o) => o === `${FIX}/cli.html`), `W1 with AGENT_BROWSER_{SESSION,CDP,NAMESPACE,SOCKET_DIR} pointing at W2 (sessions tried: ${[own2.env.AGENT_BROWSER_SESSION, ...sess].join(',')}) → ${JSON.stringify(outs)}`);
+    const f1 = await cli(ctx, W1, ['--session', own2.env.AGENT_BROWSER_SESSION, 'get', 'url']);
+    const f2 = await cli(ctx, W1, ['--cdp', own2.wsUrl, 'get', 'url']);
+    clause(A, 'session-and-cdp-flags-refused', f1.code !== 0 && f2.code !== 0 && /--session is not allowed/.test(f1.stderr) && /--cdp is not allowed/.test(f2.stderr), `--session → ${show(f1)}; --cdp → ${show(f2)}`);
+  },
+
+  async background(ctx) {
+    const { W1, W2 } = ctx; const A = 'background';
+    await selectWs(ctx, W1); // W1 is the focused workspace with its pane open; W2's panel exists but is not composited
+    const snap = await cli(ctx, W2, ['snapshot', '-i']);
+    const link = refOf(snap.stdout, 'link', 'CLI page');
+    clause(A, 'ctl/background-workspace-can-read', snap.code === 0 && !!link, `W2 (not on screen) snapshot: ${show(snap)}`);
+    const shot = await cli(ctx, W2, ['screenshot', path.join(ctx.world.fakeHome, 'bg.png')], { timeoutMs: 45000 });
+    clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /not on screen/.test(shot.stderr), show(shot));
+    const click = await cli(ctx, W2, ['click', link], { timeoutMs: 45000 });
+    clause(A, 'click-fails-fast-nothing-dispatched', click.code !== 0 && click.ms < 9000 && /not on screen|outside the viewport/.test(click.stderr), show(click));
+    const still = await ctx.o2.eval(`location.pathname`);
+    clause(A, 'ctl/nothing-was-clicked', still === '/index.html', `W2's page is still ${still} (the refused click was not dispatched or queued)`);
+  },
+
+  async 'daemon-host-owned'(ctx) {
+    const { W1, W2 } = ctx; const A = 'daemon-host-owned';
+    const pids = daemonPids(ctx); const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR);
+    const entries = Object.entries(pids);
+    clause(A, 'ctl/two-workspaces-two-daemons', entries.length === 2 && entries.every(([, p]) => alive(p)), `daemons: ${JSON.stringify(pids)}`);
+    for (const [session, pid] of entries) {
+      const env = environOf(pid) ?? [];
+      const has = (k, v) => env.includes(`${k}=${v}`);
+      const keys = env.filter((e) => /^(ORCHESTRA_SESSION_KEY|ORCHESTRA_WS_ID|ANTHROPIC)/.test(e));
+      clause(A, `daemon-${session}-runs-with-the-host-env-only`, has('AGENT_BROWSER_SESSION', session) && has('AGENT_BROWSER_SOCKET_DIR', l.socketDir) && has('HOME', l.home) && keys.length === 0 && !env.some((e) => e.startsWith('PATH=')),
+        `pid ${pid}: SESSION/SOCKET_DIR/HOME are the host's, no ORCHESTRA_*/ANTHROPIC secrets, no inherited PATH (the daemon was started by the host's \`connect\`, not by an agent's client); env keys: ${env.map((e) => e.split('=')[0]).join(',')}`);
+      clause(A, `daemon-${session}-is-not-a-cli-child`, ppidOf(pid) !== process.pid, `ppid ${ppidOf(pid)} (rig pid ${process.pid})`);
+    }
+  },
+
+  async allowlist(ctx) {
+    const { W1 } = ctx; const A = 'allowlist';
+    const before = sockets(ctx).length;
+    const cases = [['profiles'], ['--session', 'x', 'get', 'url'], ['connect', 'ws://127.0.0.1:1/x'], ['plugin', 'list'], ['batch', 'get url'], ['frobnicate']];
+    const outs = [];
+    for (const args of cases) { const r = await cli(ctx, W1, args, { timeoutMs: 20000 }); outs.push({ args: args.join(' '), r }); }
+    const refused = outs.every(({ r }) => r.code !== 0 && /not available|not allowed|unknown command/.test(r.stderr) && r.stdout.trim() === '');
+    clause(A, 'out-of-scope-commands-and-flags-refused', refused, outs.map(({ args, r }) => `[${args}] rc=${r.code} ${JSON.stringify(r.stderr.trim().slice(0, 70))}`).join(' · '));
+    const after = sockets(ctx).length;
+    clause(A, 'refusal-happens-before-the-host', before === after, `daemon sockets ${before} → ${after} (a refused command never reached the host or spawned a client)`);
+    const ok = await cli(ctx, W1, ['get', 'url']);
+    clause(A, 'ctl/allowed-command-passes', ok.code === 0 && /^http/.test(ok.stdout.trim()), show(ok));
+  },
+
+  async 'destroy-closes-daemon'(ctx) {
+    const { W2, ui } = ctx; const A = 'destroy-closes-daemon';
+    const own = await hostCall(ctx, '/browser', { id: W2.id, key: W2.key });
+    const u = new URL(own.wsUrl); const port = Number(u.port); const session = own.env.AGENT_BROWSER_SESSION;
+    const pid = daemonPids(ctx)[session];
+    clause(A, 'ctl/daemon-and-proxy-up-before', alive(pid) && (await wsTry(own.wsUrl)).opened === true, `daemon pid ${pid} alive, proxy 127.0.0.1:${port} serving`);
+    await ui.eval(`window.orchestra.archiveWorkspace(${sel(W2.id)}).then(() => true)`);
+    await waitFor(() => !alive(pid), 15000, 'the archived workspace\'s daemon to exit').catch(() => {});
+    const dead = !alive(pid);
+    const refused = await new Promise((resolve) => { const sck = net.connect(port, '127.0.0.1'); sck.on('connect', () => { sck.destroy(); resolve(false); }); sck.on('error', () => resolve(true)); });
+    clause(A, 'archive-closes-daemon-and-proxy', dead && refused && !sockets(ctx).includes(session), `after archiving ${W2.branch}: daemon ${pid} ${dead ? 'exited' : 'STILL ALIVE'}, proxy port ${refused ? 'closed' : 'STILL OPEN'}, socket ${sockets(ctx).includes(session) ? 'still listed' : 'gone'}`);
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS2);
+
+async function runArms(ctx) {
+  await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
+  await sleep(1500);
+  clause('ctl', 'app-in-my-sway', new RegExp(`"pid":\\s*${ctx.app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${ctx.app.pid} present in my sway's get_tree`);
+  for (const arm of ARM_LIST) {
+    console.log(`\n== arm ${arm} ==`);
+    if (!ARM_FNS[arm]) { clause(arm, 'implemented', false, 'arm not implemented yet'); continue; }
+    try { await ARM_FNS[arm](ctx); } catch (e) { clause(arm, 'arm-completed', false, `ARM ABORTED: ${e.stack || e}`); }
+  }
+}
+
+// ── live-dir canary: independent tool (find) + json, before/after ─────────────────────────────────────────────────────────────
+function liveCanary() {
+  const snap = {};
+  for (const d of fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n))) {
+    let links = ''; try { links = sh('find', [d, '-maxdepth', '1', '-type', 'l', '-printf', '%f->%l\\n']).split('\n').sort().join('|'); } catch {}
+    let mcp = ''; for (const f of [path.join(d, '.claude.json'), path.join(LIVE_HOME, '.claude.json')]) { try { mcp += Object.keys(JSON.parse(fs.readFileSync(f, 'utf8')).mcpServers || {}).sort().join(',') + ';'; } catch {} }
+    snap[d] = md5(links) + ':' + md5(mcp) + ` (${links.split('|').filter(Boolean).length} symlinks)`;
+  }
+  // the host gives every agent-browser process a scratch HOME: the user's own dot-dir for it must never appear
+  const abDot = path.join(LIVE_HOME, '.agent' + '-browser');
+  snap['agent-browser dot-dir in the real home'] = fs.existsSync(abDot) ? 'exists' : 'absent';
+  return snap;
+}
+
+const before = liveCanary();
+console.log(`[rig] app ${APP_DIR} arms ${ARM_LIST.join(',')} mutant=${MUTANT ?? 'none'} out=${OUT}`);
+applyMutant();
+await main();
+const after = liveCanary();
+const same = JSON.stringify(before) === JSON.stringify(after);
+clause('ctl', 'live-dirs-untouched', same, `${Object.keys(before).length} live probes (symlink-set + mcpServers hashes of each ~/.claude*, agent-browser dot-dir existence) ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
+
+// ── verdict ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+const isCtl = (c) => c.arm === 'ctl' || c.clause.startsWith('ctl/');
+const ctlRed = results.filter((c) => isCtl(c) && !c.ok), armRed = results.filter((c) => !isCtl(c) && !c.ok);
+fs.mkdirSync(OUT, { recursive: true });
+fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ app: APP_DIR, mutant: MUTANT, results, shots }, null, 2));
+let verdict, rc;
+if (MUTANT) {
+  const want = MUTANTS[MUTANT].arms;
+  const redArms = new Set(armRed.map((c) => c.arm));
+  const missed = want.filter((a) => !redArms.has(a));
+  ({ verdict, rc } = ctlRed.length === 0 && missed.length === 0
+    ? { verdict: `MUTANT ${MUTANT} KILLED: arm(s) ${want.join(', ')} red (${armRed.filter((c) => want.includes(c.arm)).map((c) => c.clause).join(', ')}), every control green; other red arms: ${[...redArms].filter((a) => !want.includes(a)).join(', ') || 'none'}`, rc: 0 }
+    : { verdict: `MUTANT ${MUTANT} SURVIVED/INVALID: arms not red: ${missed.join(', ') || 'none'}; controls red: ${ctlRed.map((c) => c.clause).join('; ') || 'none'}`, rc: 1 });
+} else {
+  ({ verdict, rc } = ctlRed.length === 0 && armRed.length === 0
+    ? { verdict: `ALL GREEN: ${results.length} clauses (${results.filter(isCtl).length} controls, ${results.length - results.filter(isCtl).length} arm clauses) over ${ARM_LIST.length} arms`, rc: 0 }
+    : { verdict: `RED: ${results.filter((c) => !c.ok).map((c) => `${c.arm}:${c.clause}`).join('; ')}`, rc: 1 });
+}
+console.log(`\nVERDICT: ${verdict}`);
+process.exit(process.exitCode || rc);

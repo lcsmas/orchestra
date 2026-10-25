@@ -47,6 +47,8 @@ export interface CdpPanelPort {
 export interface CdpClientLink {
   send(msg: Record<string, unknown>): void;
 }
+/** Debug tap (`ORCHESTRA_CDP_TRACE`): every client request and every reply/event, in order. */
+export type CdpTrace = (dir: 'client->proxy' | 'proxy->client' | 'debugger->proxy' | 'proxy->debugger', msg: unknown) => void;
 export interface CdpClient {
   /** Feed one raw client message (JSON text). Never throws. */
   message(raw: string): Promise<void>;
@@ -103,8 +105,11 @@ export class CdpProxyCore {
   private readonly unsubTabs: () => void;
   private readonly known = new Map<string, CdpTab>();
 
-  constructor(port: CdpPanelPort, opts: { nonce?: string } = {}) {
+  private readonly trace: CdpTrace | undefined;
+
+  constructor(port: CdpPanelPort, opts: { nonce?: string; trace?: CdpTrace } = {}) {
     this.port = port;
+    this.trace = opts.trace;
     this.nonce = opts.nonce ?? randomBytes(8).toString('hex');
     this.browserTargetId = this.derive('browser');
     this.browserContextId = this.derive('context');
@@ -184,7 +189,9 @@ export class CdpProxyCore {
 
   // ── clients ─────────────────────────────────────────────────────────────────
   connect(link: CdpClientLink): CdpClient {
-    const client: ClientState = { link, sessions: new Map(), discover: false, closed: false };
+    const tap = this.trace;
+    const traced: CdpClientLink = tap ? { send: (m) => { tap('proxy->client', m); link.send(m); } } : link;
+    const client: ClientState = { link: traced, sessions: new Map(), discover: false, closed: false };
     this.clients.add(client);
     return {
       message: (raw) => this.onMessage(client, raw),
@@ -247,6 +254,7 @@ export class CdpProxyCore {
     } catch {
       return; // not JSON: nothing to answer to (no id)
     }
+    this.trace?.('client->proxy', msg);
     if (typeof msg.method !== 'string' || msg.id === undefined) return;
     const sessionId = typeof msg.sessionId === 'string' && msg.sessionId ? msg.sessionId : undefined;
     try {
@@ -419,15 +427,33 @@ export class CdpProxyCore {
         return {};
       }
       if (FRAME_BOUND_METHODS.has(method)) {
+        this.bringToFrontIfBackground(tabId);
         const why = this.port.framesError(tabId);
         if (why) throw new CdpError(why, ERR_SERVER);
       }
       if (method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
     }
-    return st.channel.send(method, params, childSessionId);
+    this.trace?.('proxy->debugger', { method, params, sessionId: childSessionId });
+    return st.channel.send(method, params, childSessionId).then(
+      (r) => {
+        this.trace?.('debugger->proxy', { method, result: r });
+        return r;
+      },
+      (e) => {
+        this.trace?.('debugger->proxy', { method, error: e instanceof Error ? e.message : String(e) });
+        throw e;
+      },
+    );
+  }
+
+  /** An agent action on a tab nobody is looking at brings it to the front first (no hidden-view painting yet, ADR 0009). */
+  private bringToFrontIfBackground(tabId: string): void {
+    const t = this.port.listTabs().find((x) => x.id === tabId);
+    if (t && !t.active) this.port.activateTab(tabId);
   }
 
   private async screenshot(tabId: string, st: TabState, params: Record<string, unknown>): Promise<unknown> {
+    this.bringToFrontIfBackground(tabId);
     const why = this.port.framesError(tabId);
     if (why) throw new CdpError(why, ERR_SERVER);
     const format: 'png' | 'jpeg' = params.format === 'jpeg' ? 'jpeg' : 'png';

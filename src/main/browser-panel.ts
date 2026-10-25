@@ -338,11 +338,28 @@ function computeState(panel: Panel): BrowserPanelState {
   };
 }
 
+/** Main-process observers of a panel's tab list (the CDP proxy, #395): called with the new ordered tabs after every publish, and once with `destroyed` when `destroyPanel` removes the workspace's panel. */
+const panelListeners = new Set<(wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void>();
+export function onPanelChange(l: (wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void): () => void {
+  panelListeners.add(l);
+  return () => panelListeners.delete(l);
+}
+function notifyPanelListeners(wsId: string, tabs: BrowserTabInfo[], destroyed = false): void {
+  for (const l of [...panelListeners]) {
+    try {
+      l(wsId, tabs, destroyed);
+    } catch {
+      /* an observer must never break the panel */
+    }
+  }
+}
+
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
   panel.state = computeState(panel);
   savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
+  notifyPanelListeners(panel.wsId, panel.state.tabs);
   return panel.state;
 }
 
@@ -812,6 +829,17 @@ function destroyPanelViews(wsId: string): void {
   hidePanel(wsId);
   panels.delete(wsId);
   for (const tab of panel.tabs) destroyTab(tab);
+  notifyPanelListeners(wsId, [], true);
+}
+
+/** The tab's live `webContents` for the CDP proxy (#395), or `undefined` when it has none. */
+export function tabContents(wsId: string, tabId: BrowserTabId): Electron.WebContents | undefined {
+  return liveContents(getTab(wsId, tabId));
+}
+
+/** Is `wsId` the workspace whose panel the renderer composites right now? (the agent bring-to-front rule) */
+export function isFocusedWorkspace(wsId: string): boolean {
+  return focusedWsId === wsId;
 }
 
 /** Destroy a workspace's panel (delete / archive) AND forget its remembered tabs (#393) — even when this process never

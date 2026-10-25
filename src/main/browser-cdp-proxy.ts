@@ -8,7 +8,7 @@ import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { CdpProxyCore, type CdpPanelPort } from '../shared/cdp-proxy-core.ts';
+import { CdpProxyCore, type CdpPanelPort, type CdpTrace } from '../shared/cdp-proxy-core.ts';
 import { checkLoopbackRequest, splitTokenPath, tokenMatches } from '../shared/cdp-loopback-guard.ts';
 
 export interface CdpProxyServer {
@@ -29,9 +29,9 @@ function refuseUpgrade(socket: Duplex, code: number, why: string): void {
   socket.destroy();
 }
 
-export async function startCdpProxy(panel: CdpPanelPort): Promise<CdpProxyServer> {
+export async function startCdpProxy(panel: CdpPanelPort, opts: { trace?: CdpTrace } = {}): Promise<CdpProxyServer> {
   const token = randomBytes(18).toString('base64url');
-  const core = new CdpProxyCore(panel);
+  const core = new CdpProxyCore(panel, opts.trace ? { trace: opts.trace } : {});
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set<WebSocket>();
   let boundPort = 0;
