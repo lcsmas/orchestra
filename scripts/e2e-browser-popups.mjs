@@ -205,7 +205,8 @@ async function boot(world, bootName) {
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(RIG_DIR, `app-${bootName}.log`);
   const fd = fs.openSync(logFile, 'w');
-  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland', '--password-store=basic'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  const APP_ARGS = [APP_DIR, '--ozone-platform=wayland', '--password-store=basic'];
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), APP_ARGS, { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`  [${bootName}] app pid ${app.pid} port ${port} log ${logFile}`);
   const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); return (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null; }, 60000, 'the app page target');
   const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
@@ -219,9 +220,16 @@ async function boot(world, bootName) {
   const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
   clause(bootName, 'ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
     `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
-  const cmdline = fs.readFileSync(`/proc/${app.pid}/cmdline`, 'utf8').split('\0');
-  clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', ev('DBUS_SESSION_BUS_ADDRESS') === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && !ev('DBUS_SESSION_BUS_ADDRESS').includes('/run/user/') && cmdline.includes('--password-store=basic'),
-    `app DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS')}; argv has --password-store=basic: ${cmdline.includes('--password-store=basic')}`);
+  // what the driver HANDED the app (not a /proc read: an Electron process may rewrite its own argv/environ area): the private bus pin and the basic password store
+  const handed = { bus: env.DBUS_SESSION_BUS_ADDRESS, args: APP_ARGS };
+  clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', handed.bus === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && !handed.bus.includes('/run/user/') && handed.args.includes('--password-store=basic'),
+    `handed to the app: DBUS_SESSION_BUS_ADDRESS=${handed.bus}; argv ${JSON.stringify(handed.args)}`);
+  // positive proof it tried ONLY the private bus: Chromium logs the failed connect with the address it used (set at start-up, so wait for it)
+  await sleep(2500);
+  const busLines = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('bus.cc'));
+  const privateTried = busLines.some((l) => l.includes(path.join(RIG_DIR, 'no-session-bus')));
+  const realTouched = busLines.some((l) => l.includes('/run/user/') || /org\.freedesktop\.secrets/.test(l));
+  clause(bootName, 'ctl/app-tried-only-the-private-bus', privateTried && !realTouched, `bus.cc lines: ${busLines.length}; mention the private socket: ${privateTried}; mention /run/user or the secrets service: ${realTouched}; first: ${JSON.stringify(busLines[0]?.replace(/^\[[^\]]*\]/, '').slice(0, 160) ?? null)}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
