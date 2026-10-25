@@ -97,7 +97,7 @@ test('W8 (gap 2) the producer attaches the keeper\'s state only to the scope tha
 
 test('W9 (D-pick B) the Resources page hands the room to the chip, to the MEM tooltip and to the grey line — the three places the LEAD chose', () => {
   const view = src('../renderer/components/ResourcesView.tsx');
-  assert.ok(live(view, '<SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} room={row.room} />'));
+  assert.ok(live(view, '<SessionChips sessions={row.sessions} containers={row.containers} reliquats={row.reliquats} browsers={browsers} room={row.room} browser={row.browser} />'));
   assert.ok(live(view, '<CapBar cap={row.cap} levels={capLevels} room={row.room} />'));
   assert.ok(live(view, "capLine={capSummaryLine(rows.map((r) => ({ key: r.key, name: r.ws ? r.ws.branch : r.fallbackName, cap: r.cap, room: r.room })))}"));
   assert.match(view, /\{roomChip && \(\s*<span className=\{`res-chip room tone-\$\{roomChip\.tone\}`\} data-res-room=\{room\?\.pct\} data-res-room-tone=\{roomChip\.tone\} title=\{roomChip\.title\}>/);

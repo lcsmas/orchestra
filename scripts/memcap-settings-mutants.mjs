@@ -54,7 +54,7 @@ const MUTANTS = [
   { id: 'M06_producer_drops_the_limit', file: PM, find: "maxBytes: mem?.maxBytes ?? null,", to: "maxBytes: null,", expect: ['P15 (#323)', 'P16 (#323)'] },
   { id: 'M07_producer_drops_the_working_set', file: PM, find: "workingSetBytes: mem?.workingSetBytes ?? null,", to: "workingSetBytes: null,", expect: ['P15 (#323)', 'P16 (#323)'] },
   { id: 'M08_row_without_cap', file: SR, find: "      cap: view?.cap ?? null,", to: "      cap: null,", expect: ['G13 (#323)'] },
-  { id: 'M09_leftover_scope_row_carries_a_cap', file: SR, find: "scopeOnly: true, cap: null });", to: "scopeOnly: true, cap: m.cap });", expect: ['G13 (#323)'] },
+  { id: 'M09_leftover_scope_row_carries_a_cap', file: SR, find: "scopeOnly: true, cap: null, browser: browserOf(browserTabs, m.wsId) });", to: "scopeOnly: true, cap: m.cap, browser: browserOf(browserTabs, m.wsId) });", expect: ['G13 (#323)'] },
   // ── usage vs cap: the tones, the words ──
   { id: 'V01_red_threshold_strict', file: SC, find: "pressureFrac(cap) >= CAP_NEAR_FRACTION ? 'crit'", to: "pressureFrac(cap) > CAP_NEAR_FRACTION ? 'crit'", expect: ['V2 thresholds'] },
   { id: 'V02_red_threshold_moved', file: SC, find: "export const CAP_NEAR_FRACTION = 0.9;", to: "export const CAP_NEAR_FRACTION = 0.95;", expect: ['V2 thresholds', 'V1 tone'] },
@@ -183,7 +183,7 @@ const MUTANTS = [
   { id: 'Z06_absent_limit_file_reads_a_stale_number', file: MS, find: "maxBytes: limitText === null ? null : parseCgroupLimit(limitText),", to: "maxBytes: limitText === null ? (limitFileAbsent ? 1 : null) : parseCgroupLimit(limitText),", expect: ['#323-fu × #332 (2/3)'] },
   // ── #343 (D-pick B + the two gaps): the keeper-leaf room on the page, and an unprotected member never looks capped ──
   { id: 'R01_room_chip_never_rendered', file: RV, find: '{roomChip && (', to: '{false && (', expect: ['smoke:the chip shows ONLY from 70 %'], smoke: true },
-  { id: 'R02_room_not_given_to_the_chips', file: RV, find: 'browsers={browsers} room={row.room} />', to: 'browsers={browsers} />', expect: ['smoke:the chip shows ONLY from 70 %', 'W9 (D-pick B)'], smoke: true },
+  { id: 'R02_room_not_given_to_the_chips', file: RV, find: 'browsers={browsers} room={row.room} browser={row.browser} />', to: 'browsers={browsers} browser={row.browser} />', expect: ['smoke:the chip shows ONLY from 70 %', 'W9 (D-pick B)'], smoke: true },
   { id: 'R03_capbar_gets_no_room', file: RV, find: '<CapBar cap={row.cap} levels={capLevels} room={row.room} />', to: '<CapBar cap={row.cap} levels={capLevels} />', expect: ['smoke:the MEM tooltip ALWAYS carries the room line', 'W9 (D-pick B)'], smoke: true },
   { id: 'R04_unprotected_cell_missing', file: RV, find: "row.capNote === 'unprotected' ? (", to: 'false ? (', expect: ['smoke:#343 gap 2: an UNPROTECTED member gets NO bar'], smoke: true },
   { id: 'R05_grey_line_without_room', file: RV, find: 'cap: r.cap, room: r.room })))}', to: 'cap: r.cap })))}', expect: ['W9 (D-pick B)'] },

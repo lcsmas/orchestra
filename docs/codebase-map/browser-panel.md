@@ -278,6 +278,10 @@ preload. Panel teardown rides the workspace-delete handlers
 `archiveWorkspace` (`workspaces.ts:579`) calls `destroyPanel` for every workspace
 in the archived subtree, so an orchestrator archives its children's panels too.
 
+## Tab memory (#394)
+
+Each tab's renderer RSS is billed to its owning workspace on the Resources page, the 60 s monitor line and `bus-status` (design, shared-pid split, limits: `resources.md` § Browser tab memory). The panel's only part: `initBrowserPanels` registers a read-only **tab source** (`setBrowserTabSource`, `src/main/browser-tab-memory.ts`) — every live tab's `{ wsId, tabId, webContents.getOSProcessId() }` read from `panels` through `liveContents(tab)`, plus the main window's UI renderer pid as `nonTabPids` (never billed). It never reaps or publishes: the sampler must not change panel state. A new tab, a closed tab and a reaped dead tab need no extra wiring — the source is read per sample, so the figure follows the registry.
+
 ## Gotchas
 
 - The native view paints **above** the renderer DOM — it ignores React

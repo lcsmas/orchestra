@@ -506,9 +506,9 @@ export async function startHooksServer(): Promise<void> {
               // #286: starts HELD for low memory (release order is the CLI's `held starts:` line); empty = nothing held.
               // #328: per-member scope memory + live Reliquats (a fresh short-cached read; sysfs only); the CLI prints the `reliquats:` line.
               members: membersView,
+              memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               // #394: browser tabs per workspace (renderer memory, already part of each workspace's row on the Resources page); the CLI prints the `browser tabs:` line.
               ...(browserTabsView ? { browserTabs: browserTabsView, browserTabLabels: Object.fromEntries(browserTabsView.byWorkspace.map((w) => [w.wsId, heldStartLabel(store.getWorkspace(w.wsId), w.wsId)])) } : {}),
-              memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
               // #330: the directory watchers' health (every armed watcher; a degraded one has its since / last error / fallback) — the CLI prints the `watchers:` block.
               watchers: watchersStatus(),
               // #321: container create/start HELD at a member's Docker relay for low memory; the CLI prints the `docker holds:` line (absent when none).

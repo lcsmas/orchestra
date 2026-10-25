@@ -400,7 +400,7 @@ export function groupSessionsByWorkspace(
       key,
       sessions: list,
       cpuPct: list.reduce((n, s) => n + s.cpuPct, 0),
-      memBytes: (view ? rowProcessBytes(list, view) : list.reduce((n, s) => n + s.memBytes, 0)) + (remote ? 0 : viewBytesFor(containers, key)) + browserBytesFor(browserTabs, key), // tabs are local app memory even for a sandbox workspace
+      memBytes: (view ? rowProcessBytes(list, view) : list.reduce((n, s) => n + s.memBytes, 0)) + browserBytesFor(browserTabs, key) + (remote ? 0 : viewBytesFor(containers, key)), // #394 tabs: local app memory even for a sandbox workspace
       procCount: list.reduce((n, s) => n + s.procCount, 0),
       remote,
       containers: remote ? null : chipOf(key),

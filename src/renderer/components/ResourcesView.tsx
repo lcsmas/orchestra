@@ -233,6 +233,7 @@ function AgentRowView({
           which is invalid inside a real <button>. */}
       <div
         className={`res-agent-row${open ? ' open' : ''}`}
+        data-res-ws={row.key}
         role="button"
         tabIndex={0}
         onClick={() => setOpen((v) => !v)}

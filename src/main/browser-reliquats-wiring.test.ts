@@ -75,7 +75,7 @@ test('the Resources chip (D-Q4 A\'): « 🌐 N arrêtés » only on rows that EX
   assert.ok(view.includes('browsers={browsersOf ? browsersOf(row) : null}'));
   assert.ok(view.includes('const rows: AgentRow[] = grouped.rows.map('), 'rows come from the sessions/containers grouping ONLY');
   const grouping = codeOf('src/shared/resources.ts');
-  assert.ok(!/browser/i.test(grouping.slice(at(grouping, 'export function groupSessionsByWorkspace('))), 'the grouping never creates or keeps a row for a browser counter');
+  assert.ok(!/browserReliquat|BrowserReliquat|browserChip|browsersChip/i.test(grouping.slice(at(grouping, 'export function groupSessionsByWorkspace('))), 'the grouping never creates or keeps a row for a browser Reliquat counter (#394\'s browser TAB rows are another thing)');
   const css = fs.readFileSync(path.join(ROOT, 'src/renderer/styles.css'), 'utf8');
   assert.ok(/\.res-chip\.browsers \{ text-transform: none; letter-spacing: 0; \}/.test(css) && !/\.res-chip\.browsers[^}]*(color|border-color)/.test(css), 'the default grey chip: history tone, no status colour');
 });
