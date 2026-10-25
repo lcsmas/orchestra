@@ -268,9 +268,10 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     }
   };
 
-  const profileName = state.profileId
-    ? (profiles.find((p) => p.id === state.profileId)?.name ?? 'Profile')
-    : 'Ephemeral';
+  // Until main has pushed a state WITH tabs (first paint), show what the workspace records; afterwards what the panel really runs on.
+  const recordedProfile = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.browserProfileId);
+  const profileId = state.tabs.length > 0 ? state.profileId : recordedProfile;
+  const profileName = profileId ? (profiles.find((p) => p.id === profileId)?.name ?? 'Profile') : 'Ephemeral';
 
   const runTabOp = async (op: () => Promise<BrowserTabResult>) => {
     if (designArmed) {
@@ -398,14 +399,14 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
         <button
           className="browser-profile-btn"
           title={
-            state.profileId
+            profileId
               ? `Browser profile “${profileName}” — all tabs of this workspace use it. Click to switch or detach.`
               : 'Ephemeral browsing — nothing is kept. Click to attach a browser profile (a persistent sign-in).'
           }
           aria-label={`Browser profile: ${profileName}`}
           aria-expanded={profileBarOpen}
           data-browser-profile-chip
-          data-profile-id={state.profileId ?? ''}
+          data-profile-id={profileId ?? ''}
           onClick={() => setProfileBarOpen((v) => !v)}
         >
           {/* person glyph */}
@@ -445,7 +446,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           <button
             className="browser-profile-choice"
             role="radio"
-            aria-checked={!state.profileId}
+            aria-checked={!profileId}
             disabled={profileBusy}
             data-profile-choice=""
             onClick={() => void chooseProfile(null)}
@@ -457,7 +458,7 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
               key={p.id}
               className="browser-profile-choice"
               role="radio"
-              aria-checked={state.profileId === p.id}
+              aria-checked={profileId === p.id}
               disabled={profileBusy}
               data-profile-choice={p.id}
               onClick={() => void chooseProfile(p.id)}

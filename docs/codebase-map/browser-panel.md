@@ -350,6 +350,62 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
   clauses are the only oracle for that (DOM cannot see paint). `Browser.close` over the debug port is a graceful quit that reaches
   `before-quit` (the flush); a SIGKILL restart relies on the 400 ms debounce alone — both are driven.
 
+## Profils navigateur (#400, ADR 0010) — attach, persist, delete
+
+A **profil navigateur** is a named, persistent sign-in the HUMAN creates in Settings > Browser and attaches to a workspace from the
+panel's URL bar. A workspace with none keeps **navigation éphémère** (the default). Spec #388 stories 18-26.
+
+- **What a profile is.** `BrowserProfile {id, name, createdAt}` (`shared/types.ts`; id = `BrowserProfileId` = `bp-` + 12 hex, minted by main) in
+  `store.json` (`browserProfiles`, `store.getBrowserProfiles()` normalizes it); the workspace carries `Workspace.browserProfileId?` (absent =
+  ephemeral; a dangling id — profile deleted, store hand-edited — reads as ephemeral through `effectiveProfileId`). The partition is
+  `persist:orchestra-profile-<id>` (on disk under `<userData>/Partitions/`), shared by every workspace that attaches it; the ephemeral one stays
+  `orchestra-browser-<wsId>` (in memory, no directory). **ALL tabs of a workspace use ONE partition**: `Panel.partition` / `Panel.profileId`
+  are fixed at `ensurePanel` (resolved through `setBrowserProfileResolver`, installed by `browser-profiles-host.ts`) and read by `buildTab` — the
+  ONLY place a partition is chosen (restored tabs and agent tabs included). `BrowserPanelState.profileId?` is what the panel really runs on.
+- **Pure rules — `src/shared/browser-profile.ts`** (`browser-profile.test.ts`): id/name validity (`checkProfileName`: 1..40 chars, unique
+  case-insensitively among the OTHER profiles), `partitionFor(wsId, profileId|undefined)` / `profilePartition` (throws on a non-minted id — free
+  text never reaches a partition name), `effectiveProfileId`, `decideAttach` (attach / switch / detach / unknown; `changed:false` = nothing to
+  rebuild), `decideDelete` (the carriers to detach), `isHumanProfileCaller`, `profileCreateWarning` (reuses #389's `secretsNotice`).
+- **Service — `src/main/browser-profiles.ts`** (Electron-free, `browser-profiles.test.ts`): `create/rename/remove/attach`, serialized (a second click
+  waits for the first). **Delete order matters**: every carrier is detached (record cleared, open panel rebuilt ephemeral — the only writers into
+  the partition die first) → the partition's storage is cleared → ONLY THEN the profile is forgotten; a failed clear keeps the profile (`storage`
+  refusal, retryable) instead of dropping a profile whose sign-ins are still on disk. Attach records the id THEN rebuilds the panel, rolling the
+  record back if the rebuild throws. Wiring to the store / `session` / panel: `browser-profiles-host.ts` (`clearStorage` = `clearStorageData`
+  + `clearCache` + `clearAuthCache` + flush).
+- **Moving a panel — `reprofilePanel(wsId, profileId|undefined)`** (`browser-panel.ts`): a view's partition cannot change, so EVERY tab is rebuilt in
+  the new partition — **same tab ids, openers, active tab**, each reloaded at its URL (`restoreUrls` keeps the remembered URL until a navigation
+  commits) — the old views (debuggers included) are destroyed and the active one re-composited. Same identity = no-op; a panel that is not open
+  is NOT built (it takes the identity from the record at its first `ensurePanel`, restored tabs included). The rebuilt tabs of a workspace that
+  is not on screen broadcast like any tab events do (the renderer's auto-open of a pane on a real URL is pre-existing, #393 review F2).
+  **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
+- **ONLY the human can change a profile (story 26).** The five channels (`browserProfiles:list|create|rename|delete`, `browser:profileAttach`) are
+  registered by `registerBrowserProfilesIpc` (`browser-profiles-ipc.ts`) — deliberately NOT in `api-handlers.ts`'s generic table (omitted from
+  `ServableApi`; same split as `pause-ui-host.ts`). Every WRITE refuses (`not-human`, logged) unless the sender is the app's own main window top
+  frame (`isHumanProfileCaller`; fail closed on an unknown frame / no main window). No CLI verb, no hooks-socket route, no `mcp__browser__*` tool,
+  no mobile route exists — `browser-profiles-wiring.test.ts` scans every agent surface for the operations (with a positive control) and
+  `scripts/e2e-browser-profiles.mjs` arm `human` drives them for real (CLI verbs → rc≠0, socket routes → `{}`, the agent's page has no bridge, a
+  hidden FOREIGN window invoking all four write channels over the main-process inspector → `not-human`, nothing moved; the app's own window works).
+  A spawn that names a profile is #401's rule (parent must hold it) and writes the record on the NEW workspace directly, never through this service.
+- **Settings > Browser — `BrowserSettings.tsx`** (globe icon in the sidebar header, `store.browserSettingsOpen`): create / rename (id kept) /
+  delete (confirm names the workspaces that lose it), the per-profile usage count, and — when `getSecretsState()` says not encrypted — the
+  `[data-profile-warning="create"]` notice above the create field + a "not encrypted" tag per row (ADR 0010: warn, never refuse).
+- **URL bar — `BrowserPanel.tsx`**: a chip (`[data-browser-profile-chip]`, `data-profile-id`) beside the URL form shows the profile or
+  "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
+  would open under the native view, which paints above the DOM. Design mode is disarmed before the rebuild.
+- **Persistence.** Cookies/localStorage live in the profile's `persist:` partition; a restart restores each workspace's tabs (#393) on it, signed in.
+  `persistSignIns` flushes the cookie store 1.5 s after any change (Chromium's own timer is ~30 s — a crash right after a sign-in lost it) and
+  `flushProfileStorage()` runs at quit. **Measured limitation: Electron 33 drops SESSION cookies (no expiry) at restart** (`persist_session_cookies`
+  is false); persistent cookies and localStorage survive — a site that signs in with a session cookie signs out at each restart even with a profile.
+  Promoting them to persistent is a credential-lifetime decision, NOT done (ledger #405 QUESTION).
+- **Keyring.** The cookie store is encrypted with the OS keyring when one answers (Chromium os_crypt, #389's selection); otherwise under a fixed key
+  — hence the warning. A built-app rig must pass `--password-store=basic` (and #389 skips its probe under a scratch `ORCHESTRA_HOME`), or it binds the
+  human's live login keyring (G10b: the rig guards the collection listing before/after).
+- **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
+  Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
+  `browser-profiles-wiring.test.ts`; 53 in-place mutants `node scripts/mutate-browser-profiles.mjs`; built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  (arms `settings,attach,human,restore,delete,flush`; oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
+  on disk, compositor pixels, store.json) + 12 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
+
 ## IPC / seam
 
 Request/response methods (`browserShow`/`Hide`/`Navigate`/`Back`/`Forward`/
@@ -358,7 +414,7 @@ registered in the `apiHandlers` table + `METHOD_IPC_CHANNELS`
 (`api-handlers.ts`), and closured in `preload/index.ts` — wired mechanically to
 ipcMain. Design mode adds three on the same path: `browserDesignArm` /
 `browserDesignDisarm` / `browserDesignPoll` (`browser:designArm` /
-`designDisarm` / `designPoll`). Tabs add `browserTabNew` / `browserTabActivate` / `browserTabClose` (`browser:tab*`, see Human tabs). The `browser:event` broadcast is declared as `onBrowserEvent`
+`designDisarm` / `designPoll`). Tabs add `browserTabNew` / `browserTabActivate` / `browserTabClose` (`browser:tab*`, see Human tabs). Profils navigateur add `browserProfiles` / `browserProfileCreate|Rename|Delete` / `browserProfileAttach` (`browserProfiles:*`, `browser:profileAttach`) — registered by `browser-profiles-ipc.ts`, NOT this table (see Profils navigateur). The `browser:event` broadcast is declared as `onBrowserEvent`
 (`shared/ipc.ts`), pushed through `platform.broadcast`, and subscribed in
 preload. Panel teardown rides the workspace-delete handlers
 (`browserPanel.destroyPanel(id)` beside `sdkStopMany`) **and the archive path** —

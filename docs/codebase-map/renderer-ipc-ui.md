@@ -429,6 +429,10 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
+- **BrowserSettings.tsx** (#400) — Settings > Browser: the profils navigateur (create / rename / delete + the unencrypted-storage warning from
+  `useSecretsState()`), a modal behind the globe icon of the sidebar header (`[data-bp-open]`). Open state = `store.browserSettingsOpen` /
+  `setBrowserSettingsOpen` (not Sidebar-local: the browser panel's "Manage profiles…" opens it too). Mounted by `Sidebar.tsx`. See
+  `browser-panel.md` § Profils navigateur.
 - **DiffPane.tsx — the Diff review pane.** Replaces the removed Monaco-based
   `DiffView.tsx` (Monaco was the heaviest thing the agent view mounted and drove
   the GPU-crash black screen). **Do not reintroduce Monaco here**: this renders
