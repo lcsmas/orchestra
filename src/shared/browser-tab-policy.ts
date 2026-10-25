@@ -165,12 +165,12 @@ function featuresDenyOpener(features: string): boolean {
 }
 
 /** Does the page need `window.opener` in the popup? A NAMED window (the page addresses it, and OAuth libraries post back to it) or a sized/positioned
- *  popup (`new-window`) is; a plain `_blank` link / unnamed `window.open` is a tab; an explicit `noopener` is a tab either way. */
+ *  popup (`new-window` WITH features) is; a plain `_blank` link / unnamed `window.open` is a tab; an explicit `noopener` is a tab either way. */
 export function popupNeedsOpener(req: Pick<PopupRequest, 'frameName' | 'disposition' | 'features'>): boolean {
   if (featuresDenyOpener(req.features)) return false;
   const name = req.frameName.trim().toLowerCase();
   if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;
-  return req.disposition === 'new-window';
+  return req.disposition === 'new-window' && req.features.trim() !== ''; // no features = a shift-clicked link, not a sized popup
 }
 
 /** Route a popup (spec #388 "Tabs and popups"): web `_blank` / unnamed -> new tab; opener-dependent -> native child window; a page-initiated popup (no

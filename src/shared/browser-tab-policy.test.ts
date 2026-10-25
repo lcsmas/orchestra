@@ -130,6 +130,12 @@ test('route: a SIZED popup (disposition new-window, e.g. width/height features) 
   assert.deepEqual(decidePopup(click({ disposition: 'new-window', features: 'width=500,height=600' }), room), { route: 'child-window', pageInitiated: false });
 });
 
+test('route: a features-less `new-window` (a shift-clicked link) is a TAB, not a sized popup', () => {
+  assert.deepEqual(decidePopup(click({ disposition: 'new-window' }), room), { route: 'new-tab', activate: true, pageInitiated: false });
+  assert.equal(decidePopup(click({ disposition: 'new-window', features: '  ' }), room).route, 'new-tab');
+  assert.equal(decidePopup(click({ disposition: 'new-window', features: 'popup' }), room).route, 'child-window', 'any feature makes it a popup window');
+});
+
 test('route: the special targets `_self` `_parent` `_top` are not names a page waits on — they route as a tab', () => {
   for (const frameName of ['_self', '_parent', '_top']) assert.equal(decidePopup(click({ frameName }), room).route, 'new-tab', frameName);
 });
@@ -157,7 +163,8 @@ test('popupNeedsOpener: the table', () => {
   const t = (r: Partial<PopupRequest>) => popupNeedsOpener({ frameName: '', disposition: 'foreground-tab', features: '', ...r });
   assert.equal(t({}), false);
   assert.equal(t({ frameName: 'w' }), true);
-  assert.equal(t({ disposition: 'new-window' }), true);
+  assert.equal(t({ disposition: 'new-window', features: 'width=400' }), true);
+  assert.equal(t({ disposition: 'new-window' }), false);
   assert.equal(t({ disposition: 'background-tab' }), false);
   assert.equal(t({ frameName: 'w', features: 'noopener' }), false);
 });

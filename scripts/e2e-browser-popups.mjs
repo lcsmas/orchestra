@@ -314,12 +314,12 @@ async function evalIn(target, expr) {
   try { return await c.eval(expr); } finally { c.close(); }
 }
 /** Trusted click on the element matching `sel` inside a page target (viewport coordinates), optionally with ctrl held. */
-async function clickIn(target, sel, { ctrl = false } = {}) {
+async function clickIn(target, sel, { ctrl = false, shift = false } = {}) {
   const c = await Cdp.connect(target.webSocketDebuggerUrl);
   try {
     const r = await c.eval(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     if (!r) throw new Error(`no element ${sel} in ${target.url}`);
-    await c.click(r.x, r.y, ctrl ? 2 : 0);
+    await c.click(r.x, r.y, (ctrl ? 2 : 0) | (shift ? 8 : 0));
   } finally { c.close(); }
 }
 /** The app's own native windows in MY sway (main window + popup child windows), from the compositor's tree. */
@@ -356,6 +356,15 @@ async function closeAllPopupWindows(b) {
   await sleep(600);
 }
 const OPENER_RE = /popups-opener\.html/;
+/** Read something that may be gone on a broken build (the page navigated away): a missing value is a red clause, not an aborted arm. */
+const val = async (fn, dflt = null) => { try { return await fn(); } catch { return dflt; } };
+/** Every arm starts from the same place: popup windows closed, ONE tab, on the opener fixture. */
+async function gotoOpener(b) {
+  await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+  await typeUrl(b, URLS.opener);
+  await waitFor(async () => (await tabs(b))[0]?.label === TITLES.opener, 20000, 'tab 1 to load the opener fixture');
+  return pageOf(b, OPENER_RE);
+}
 
 // ═════════════════════════════════════ main ═════════════════════════════════════
 const before = liveCanary();
@@ -390,6 +399,7 @@ try {
 
   // ────────────────────────────── blank: `_blank` -> a tab ──────────────────────────────
   if (ARMS.has('blank')) await runArm('blank', async () => {
+    opener = await gotoOpener(b);
     await clickIn(opener, '#blank');
     const opened = await softWait(async () => (await tabs(b)).length === 2, 15000, 'a new tab for the _blank link');
     await sleep(800);
@@ -409,16 +419,22 @@ try {
     const tc = await tabs(b);
     clause('blank', 'ctrl-click-opens-a-background-tab', tc.length === 3 && tc[0].active && !tc[2].active, `tabs ${JSON.stringify(tc.map((t) => [t.label, t.active]))}`);
     await closeExtraTabs(b, 1);
+    // shift-click: Chromium says `new-window` with NO features (a shifted link, not a sized popup) -> still a tab, never a fixed-size native window
+    opener = await pageOf(b, OPENER_RE);
+    await clickIn(opener, '#blank', { shift: true });
+    await softWait(async () => (await tabs(b)).length === 2, 15000, 'a tab for the shift-click');
+    await sleep(600);
+    const tsh = await tabs(b);
+    clause('blank', 'shift-click-opens-a-tab-not-a-native-window', tsh.length === 2 && winNames(b).length === baseWins.length && (await pageTargets(b)).length === 2, `tabs ${JSON.stringify(tsh.map((t) => [t.label, t.active]))}; app windows ${JSON.stringify(winNames(b))}; page targets ${(await pageTargets(b)).length}`);
+    await closeExtraTabs(b, 1);
   });
 
   // ────────────────────────────── oauth: opener-dependent popup -> native child window ──────────────────────────────
   if (ARMS.has('oauth')) await runArm('oauth', async () => {
-    await softWait(async () => (await tabs(b)).length === 1, 10000, 'back to one tab');
-    opener = await pageOf(b, OPENER_RE);
-    await evalIn(opener, `document.getElementById('status').textContent = 'idle'`);
+    opener = await gotoOpener(b);
     await clickIn(opener, '#signin-hold');
     const signed = await softWait(async () => (await evalIn(opener, `document.getElementById('status').textContent`)) === 'signed-in tok-hold', 15000, 'the OAuth popup to post its token back to window.opener');
-    const status = await evalIn(opener, `document.getElementById('status').textContent`);
+    const status = await val(() => evalIn(opener, `document.getElementById('status').textContent`), '<the opener page is gone>');
     clause('oauth', 'oauth-flow-completes-the-popup-posts-back-to-window-opener', signed, `opener #status = ${JSON.stringify(status)} (a handler that loads the popup in the opener's own view makes window.open return null: "no-window")`);
     const child = await softWait(async () => (await byUrl(b, /popups-oauth\.html/)).length === 1, 10000, 'the OAuth child window page target');
     const ct = (await byUrl(b, /popups-oauth\.html/))[0];
@@ -438,7 +454,7 @@ try {
       clause('oauth', 'the-child-window-paints-the-idp-page', near(c, [0x7a, 0x2c, 0xa0], 16), `pixel at the window's centre ${hex(c)} (the OAuth fixture's purple), rect ${JSON.stringify(cw.rect)}`);
     } else clause('oauth', 'the-child-window-paints-the-idp-page', false, 'no child window to look at');
     // a cookie the POPUP set must be in the OPENER's jar: same workspace session (a popup in another partition would not share it)
-    const sidLine = await evalIn(opener, `document.getElementById('sid').textContent`);
+    const sidLine = (await val(() => evalIn(opener, `document.getElementById('sid').textContent`), '')) ?? '';
     const sentSid = /sent (hold-[0-9a-f]+) \|/.exec(sidLine)?.[1];
     const shared = !!sentSid && sidLine.includes(`popup_sid=${sentSid}`);
     const sharedDetail = `opener's #sid line: ${JSON.stringify(sidLine)}`;
@@ -446,12 +462,18 @@ try {
     // the IdP page closes itself: the opener sees it
     if (ct) await evalIn(ct, 'window.close()').catch(() => {});
     const closed = await softWait(async () => (await evalIn(opener, `document.getElementById('closed').textContent`)) === 'popup-closed' && swayWindows(b.app.pid).length === baseWins.length, 10000, 'the popup to close and the opener to notice');
-    clause('oauth', 'popup-closes-and-the-opener-sees-it', closed && (await byUrl(b, /popups-oauth\.html/)).length === 0, `#closed = ${JSON.stringify(await evalIn(opener, `document.getElementById('closed').textContent`))}; child targets ${(await byUrl(b, /popups-oauth\.html/)).length}; app windows ${JSON.stringify(winNames(b))}`);
+    clause('oauth', 'popup-closes-and-the-opener-sees-it', closed && (await byUrl(b, /popups-oauth\.html/)).length === 0, `#closed = ${JSON.stringify(await val(() => evalIn(opener, `document.getElementById('closed').textContent`)))}; child targets ${(await byUrl(b, /popups-oauth\.html/)).length}; app windows ${JSON.stringify(winNames(b))}`);
     // the full unattended flow: the popup posts back and closes ITSELF
-    await evalIn(opener, `document.getElementById('status').textContent = 'idle'; document.getElementById('closed').textContent = ''`);
+    await val(() => evalIn(opener, `document.getElementById('status').textContent = 'idle'; document.getElementById('closed').textContent = ''`));
     await clickIn(opener, '#signin');
     const full = await softWait(async () => (await evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)) === 'signed-in tok-auto|popup-closed', 15000, 'the unattended OAuth flow (post back + self-close)');
-    clause('oauth', 'unattended-oauth-flow-posts-back-and-closes-itself', full && swayWindows(b.app.pid).length === baseWins.length, `${await evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)}; app windows ${JSON.stringify(winNames(b))}`);
+    clause('oauth', 'unattended-oauth-flow-posts-back-and-closes-itself', full && swayWindows(b.app.pid).length === baseWins.length, `${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; app windows ${JSON.stringify(winNames(b))}`);
+    // a CROSS-SITE IdP (another host name = another site, another renderer process), the shape real OAuth has: the token still reaches window.opener
+    opener = await gotoOpener(b);
+    await clickIn(opener, '#signin-x');
+    const cross = await softWait(async () => (await evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)) === 'signed-in tok-cross|popup-closed', 15000, 'the cross-site OAuth flow');
+    const orig = await val(() => evalIn(opener, `document.getElementById('origin').textContent`), '');
+    clause('oauth', 'cross-site-oauth-flow-completes-through-window-opener', cross && /from http:\/\/localhost:\d+$/.test(orig) && swayWindows(b.app.pid).length === baseWins.length, `status|closed = ${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; message origin ${JSON.stringify(orig)} (the opener is on 127.0.0.1); app windows ${JSON.stringify(winNames(b))}`);
   });
 
   // ────────────────────────────── storm: page-initiated popups -> budget + cap, nothing leaked ──────────────────────────────
@@ -467,7 +489,7 @@ try {
     await softWait(async () => (await evalIn(page, `document.getElementById('calls').textContent`)) === 'calls 40', 15000, 'the page to fire 40 window.open calls');
     await sleep(1500);
     let ts = await tabs(b);
-    clause('storm', 'ctl/the-page-really-fired-40-popups', (await evalIn(page, `document.getElementById('calls').textContent`)) === 'calls 40', `${await evalIn(page, `document.getElementById('calls').textContent`)}`);
+    clause('storm', 'ctl/the-page-really-fired-40-popups', (await val(() => evalIn(page, `document.getElementById('calls').textContent`))) === 'calls 40', `${await val(() => evalIn(page, `document.getElementById('calls').textContent`), '<the storm page is gone>')}`);
     clause('storm', 'script-storm-capped-by-the-budget', ts.length === 4, `tabs after 40 window.open without a click: ${ts.length} (1 + the budget of 3)`);
     clause('storm', 'script-storm-never-steals-the-active-tab', ts[0]?.active === true && ts.filter((t) => t.active).length === 1, `active = ${JSON.stringify(ts.map((t) => [t.id, t.active]))}`);
     clause('storm', 'script-storm-leaks-no-view', (await pageTargets(b)).length === ts.length, `page targets ${(await pageTargets(b)).length} for ${ts.length} tabs`);
@@ -482,6 +504,22 @@ try {
     clause('storm', 'mixed-storm-budget-counts-tabs-and-windows-together', (ts.length - 1) + wns === 3, `new tabs ${ts.length - 1} + new native windows ${wns} = ${(ts.length - 1) + wns} (budget 3)`);
     clause('storm', 'mixed-storm-window-handles-match-the-windows', handles === wns, `window.open returned a handle ${handles}x; native windows ${wns}`);
     clause('storm', 'mixed-storm-leaks-no-view-or-window', (await pageTargets(b)).length === ts.length + wns, `page targets ${(await pageTargets(b)).length} = ${ts.length} tabs + ${wns} windows`);
+    // (2b) 40 NAMED popups (native windows only): the budget counts windows alone, and every handle matches a real window
+    page = await stormTo('?auto=40&kind=named');
+    await softWait(async () => (await val(() => evalIn(page, `document.getElementById('calls').textContent`))) === 'calls 40', 15000, 'the named storm to fire');
+    await sleep(2000);
+    const nTabs = (await tabs(b)).length, nWins = swayWindows(b.app.pid).length - baseWins.length;
+    const nHandles = Number(((await val(() => evalIn(page, `document.getElementById('handles').textContent`), 'handles -1')) ?? 'handles -1').split(' ')[1]);
+    clause('storm', 'named-storm-opens-exactly-the-budget-of-windows', nTabs === 1 && nWins === 3 && nHandles === 3, `tabs ${nTabs}; new native windows ${nWins}; window.open handles ${nHandles} (budget 3; 40 calls)`);
+    clause('storm', 'named-storm-leaks-no-view-or-window', (await pageTargets(b)).length === nTabs + nWins, `page targets ${(await pageTargets(b)).length} = ${nTabs} tab + ${nWins} windows`);
+    // (2c) a click on page A that NAVIGATES to the storm page gives the new page NO gesture: all 5 popups are page-initiated (budget 3), none shown
+    await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+    opener = await gotoOpener(b);
+    await clickIn(opener, '#to-storm');
+    await softWait(async () => (await tabs(b))[0]?.label === TITLES.storm, 15000, 'the click to navigate tab 1 to the storm page');
+    await sleep(2500);
+    ts = await tabs(b);
+    clause('storm', 'a-click-on-page-A-is-no-gesture-for-the-page-it-navigated-to', ts.length === 4 && ts[0].active && ts.filter((t) => t.active).length === 1, `after click -> navigate -> 5 on-load window.open: tabs ${ts.length} (1 + budget 3; a stale gesture would add a 4th popup and show it); active ${JSON.stringify(ts.map((t) => [t.id, t.active]))}`);
     // (3) the CAP binds before the budget: 6 tabs open, storm in tab 1 -> only 2 more surfaces
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
     for (let i = 0; i < 5; i++) { await clickSel(b, '.browser-tab-new'); await softWait(async () => (await tabs(b)).length === 2 + i, 10000, `blank tab ${2 + i}`); }
@@ -508,10 +546,7 @@ try {
 
   // ────────────────────────────── ws: switching workspace takes the child window away, switching back restores it ──────────────────────────────
   if (ARMS.has('ws')) await runArm('ws', async () => {
-    await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
-    await typeUrl(b, URLS.opener);
-    await waitFor(async () => (await tabs(b))[0]?.label === TITLES.opener, 20000, 'tab 1 back on the opener fixture');
-    opener = await pageOf(b, OPENER_RE);
+    opener = await gotoOpener(b);
     await clickIn(opener, '#signin-hold');
     await softWait(async () => swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 10000, 'the child window');
     clause('ws', 'ctl/child-window-up-before-switching', swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), `app windows ${JSON.stringify(winNames(b))}`);

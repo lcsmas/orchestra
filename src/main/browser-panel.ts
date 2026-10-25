@@ -408,7 +408,7 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
 /** Tabs a page opened without a user gesture: each holds popup budget until it is closed (#396). */
 const pageOpenedTabs = new WeakSet<Tab>();
 
-/** What `routePopup` decided for a child window, read back by `did-create-window` on the same opener (Electron creates the window itself). */
+/** What `routePopup` decided for a child window, read back by `did-create-window` on the same opener (Electron creates the window itself; measured on 33: that event fires before the next window.open reaches the handler). */
 const pendingPopup = new WeakMap<Electron.WebContents, { pageInitiated: boolean; openedBy: BrowserTabOpener }>();
 
 /** Route a window a page opened (#396): the pure policy decides, this applies it. A tab is built here (so it gets none of Electron's own window);
@@ -714,7 +714,7 @@ export function tryOpenTab(
   opts: { url?: string; openedBy: BrowserTabOpener; activate?: boolean },
 ): BrowserTabResult {
   const panel = ensurePanel(wsId);
-  const d = decideTabOpen({ openCount: panel.tabs.length, opener: opts.openedBy });
+  const d = decideTabOpen({ openCount: panel.tabs.length + livePopupWindows(wsId).length, opener: opts.openedBy }); // popup windows share the cap (#396)
   if (!d.ok) return refused(wsId, d.reason, d.message);
   const tab = createTab(wsId, opts);
   return { ok: true, state: panel.state, tabId: tab.id };

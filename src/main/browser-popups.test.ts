@@ -17,7 +17,7 @@ import { USER_GESTURE_WINDOW_MS } from '../shared/browser-tab-policy.ts';
 
 const fakeWc = () => {
   const handlers: Record<string, ((...a: any[]) => void)[]> = {};
-  return { on: (ev: string, f: (...a: any[]) => void) => (handlers[ev] ||= []).push(f), input: (type: string) => handlers['input-event']?.forEach((f) => f({}, { type })), handlers } as any;
+  return { on: (ev: string, f: (...a: any[]) => void) => (handlers[ev] ||= []).push(f), input: (type: string) => handlers['input-event']?.forEach((f) => f({}, { type })), navigate: () => handlers['did-navigate']?.forEach((f) => f({})), handlers } as any;
 };
 const fakeWin = (wc: any = fakeWc()) => {
   const w: any = { destroyedFlag: false, log: [] as string[], webContents: wc, closed: [] as (() => void)[] };
@@ -67,10 +67,21 @@ test('gesture: no input -> no gesture; each contents has its own (a click on tab
   assert.equal(consumeUserGesture(a, 1), true);
 });
 
+test('gesture: a main-frame navigation clears it — a click on page A is no gesture for the page it navigated to', () => {
+  const wc = fakeWc();
+  trackUserGesture(wc, () => 0);
+  wc.input('mouseDown');
+  wc.navigate();
+  assert.equal(consumeUserGesture(wc, 1), false, 'the new document has no activation');
+  wc.input('mouseDown');
+  assert.equal(consumeUserGesture(wc, 2), true, 'a click on the NEW page still counts');
+});
+
 test('gesture: tracking the same contents twice installs ONE listener', () => {
   const wc = fakeWc();
   trackUserGesture(wc); trackUserGesture(wc);
   assert.equal(wc.handlers['input-event'].length, 1);
+  assert.equal(wc.handlers['did-navigate'].length, 1);
 });
 
 const popup = (wsOpener: any, over: Partial<PopupWindow> = {}): PopupWindow => ({ win: fakeWin(), opener: wsOpener, openedBy: 'agent', pageInitiated: false, ...over });

@@ -4,14 +4,16 @@
 <body><div id="who">oauth popup</div><div id="opener">opener: ?</div>
 <script>
 // The IdP page: report the sign-in to window.opener, then close (unless ?state=hold keeps it up for inspection).
-const state = new URLSearchParams(location.search).get('state') || 'auto';
+const params = new URLSearchParams(location.search);
+const state = params.get('state') || 'auto';
+const target = params.get('target') || location.origin; // where the opener listens (a cross-site IdP is told the opener's origin)
 const hasOpener = !!window.opener;
 document.getElementById('opener').textContent = 'opener: ' + (hasOpener ? 'yes' : 'no');
 // A cookie set HERE must be visible to the opener: both live in the workspace's session partition.
 const sid = state + '-' + Math.random().toString(16).slice(2, 10);
 document.cookie = 'popup_sid=' + sid + '; path=/';
 if (hasOpener) {
-  window.opener.postMessage({ type: 'oauth', token: 'tok-' + state, sid }, location.origin);
+  window.opener.postMessage({ type: 'oauth', token: 'tok-' + state, sid }, target);
   if (state !== 'hold') setTimeout(() => window.close(), 250);
 }
 </script>

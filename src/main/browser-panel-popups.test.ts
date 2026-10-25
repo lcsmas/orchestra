@@ -286,6 +286,33 @@ test('the cap is shared, other way: 6 tabs + 2 windows = 8 refuses both routes, 
   assert.equal(g.__bpWins.length, 2);
 });
 
+test('the human\'s own `+` (tryOpenTab) shares the cap with popup windows: 5 tabs + 3 windows = 8 refuses it', () => {
+  const ws = newWs();
+  const t1 = bp.ensurePanel(ws).tabs[0];
+  for (let i = 0; i < 4; i++) bp.createTab(ws, { openedBy: 'agent' });
+  const wc = wcOf(t1);
+  for (let i = 0; i < 3; i++) { clickOn(wc); assert.equal(wc.openHandler(named(`${base}/w${i}`, `n${i}`)).action, 'allow'); created(wc); }
+  assert.equal(tabsOf(ws).length, 5);
+  const r = bp.tryOpenTab(ws, { openedBy: bp.getTab(ws, 't1')!.openedBy });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.reason, 'cap');
+  assert.equal(tabsOf(ws).length, 5, 'refused: no sixth tab');
+  // control: with one window gone there is room again
+  g.__bpWins[0].destroy();
+  assert.equal(bp.tryOpenTab(ws, { openedBy: bp.getTab(ws, 't1')!.openedBy }).ok, true);
+});
+
+test('a window created AFTER its panel was destroyed (adoption arrives late) is destroyed, not adopted', () => {
+  const ws = newWs();
+  openShown(ws);
+  const wc = wcOf(bp.getActiveTab(ws)!);
+  clickOn(wc);
+  assert.equal(wc.openHandler(named()).action, 'allow');
+  bp.destroyPanel(ws); // the workspace goes away between the handler and did-create-window
+  const w = created(wc);
+  assert.equal(w.isDestroyed(), true, 'a window for a panel that no longer exists is never left open');
+});
+
 test('a popup from INSIDE a child window is routed by the same policy: _blank -> a tab of the panel', () => {
   const ws = newWs();
   openShown(ws);

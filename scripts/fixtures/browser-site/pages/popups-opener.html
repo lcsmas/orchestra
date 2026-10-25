@@ -2,12 +2,14 @@
 <html><head><meta charset="utf-8"><title>Popups fixture opener</title>
 <style>html,body{margin:0;height:100%;background:#2c5aa0;color:#fff;font:600 18px sans-serif}
 a,button{position:absolute;left:20px;width:300px;height:44px;display:block;box-sizing:border-box;font:600 16px sans-serif;text-align:center;line-height:44px;border:0;background:#fff;color:#123;cursor:pointer;text-decoration:none}
-#blank{top:20px}#signin{top:84px}#signin-hold{top:148px}#status{position:absolute;left:20px;top:220px}#closed{position:absolute;left:20px;top:260px}#sid{position:absolute;left:20px;top:300px}</style></head>
+#blank{top:20px}#signin{top:84px}#signin-hold{top:148px}#status{position:absolute;left:20px;top:220px}#closed{position:absolute;left:20px;top:260px}#sid{position:absolute;left:20px;top:300px}#signin-x{top:212px;left:340px}#to-storm{top:276px;left:340px}#origin{position:absolute;left:20px;top:340px}</style></head>
 <body>
 <a id="blank" href="popups-blank.html?from=link" target="_blank">open in a new tab</a>
 <button id="signin" onclick="signIn(false)">Sign in (popup closes itself)</button>
 <button id="signin-hold" onclick="signIn(true)">Sign in (popup stays open)</button>
-<div id="status">idle</div><div id="closed"></div><div id="sid"></div>
+<button id="signin-x" onclick="signInCross()">Sign in (cross-site IdP)</button>
+<a id="to-storm" href="popups-storm.html?auto=5&kind=tab">go to the storm page (same tab)</a>
+<div id="status">idle</div><div id="closed"></div><div id="sid"></div><div id="origin"></div>
 <script>
 // OAuth-style flow (#396): window.open a NAMED, sized popup; the popup posts a token back to window.opener and closes. Everything is observable in #status/#closed.
 let popup = null;
@@ -19,8 +21,18 @@ function signIn(hold) {
     const t = setInterval(() => { if (popup.closed) { document.getElementById('closed').textContent = 'popup-closed'; clearInterval(t); } }, 100);
   }
 }
+// A cross-site IdP: the SAME server under another host name (localhost vs 127.0.0.1) is another site, in another renderer process.
+const idpOrigin = location.origin.replace('127.0.0.1', 'localhost');
+function signInCross() {
+  popup = window.open(idpOrigin + '/popups-oauth.html?state=cross&target=' + encodeURIComponent(location.origin), 'oauth-x', 'width=480,height=520');
+  document.getElementById('status').textContent = popup ? 'waiting' : 'no-window';
+  if (popup) {
+    const t = setInterval(() => { if (popup.closed) { document.getElementById('closed').textContent = 'popup-closed'; clearInterval(t); } }, 100);
+  }
+}
 window.addEventListener('message', (e) => {
-  if (e.origin !== location.origin || !e.data || e.data.type !== 'oauth') return;
+  if ((e.origin !== location.origin && e.origin !== idpOrigin) || !e.data || e.data.type !== 'oauth') return;
+  document.getElementById('origin').textContent = 'from ' + e.origin;
   document.getElementById('status').textContent = 'signed-in ' + e.data.token;
   document.getElementById('sid').textContent = 'sent ' + e.data.sid + ' | my cookies: ' + document.cookie; // the popup's cookie, read from the opener's own jar
 });

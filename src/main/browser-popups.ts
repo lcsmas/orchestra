@@ -23,6 +23,8 @@ export function trackUserGesture(wc: WebContents, now: () => number = Date.now):
   wc.on('input-event', (_e, input) => {
     if (ACTIVATING_INPUT.has(input.type)) lastActivation.set(wc, now());
   });
+  // A new document starts with no activation (as in Chromium): a click on page A must not let the page it navigated to open a popup.
+  wc.on('did-navigate', () => lastActivation.delete(wc));
 }
 
 /** Was there an activating input on `wc` within the gesture window? Consumes it: one input opens at most one popup. */

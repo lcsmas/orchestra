@@ -17,15 +17,15 @@ const POL = 'src/shared/browser-tab-policy.ts';
 const BP = 'src/main/browser-panel.ts';
 
 // controls that only exist to SET UP a popup the broken build never makes: red there is the mutant's own doing, not a rig fault
-const SETUP_CTL = ['ctl/surfaces-exist-before-the-archive', 'ctl/child-window-up-before-switching'];
+const SETUP_CTL = ['ctl/surfaces-exist-before-the-archive', 'ctl/child-window-up-before-switching', 'ctl/the-page-really-fired-40-popups'];
 const WATCH = "  wc.setWindowOpenHandler((details) => routePopup(panel, wc, openedBy, details));\n";
 const SAME_VIEW = "  wc.setWindowOpenHandler((details) => {\n    if (/^https?:/i.test(details.url)) void wc.loadURL(details.url);\n    else void shell.openExternal(details.url);\n    return { action: 'deny' };\n  });\n";
 
 // edits: [file, from, to] (each `from` must occur exactly once in the ORIGINAL file)
 const MUTANTS = [
   { id: 'R0-unfixed-same-view-handler', arms: 'blank,oauth,storm', edits: [[BP, WATCH, SAME_VIEW]], setupCtl: true,
-    red: ['blank-link-opens-a-new-tab', 'oauth-flow-completes-the-popup-posts-back-to-window-opener', 'script-storm-capped-by-the-budget'] },
-  { id: 'R1-named-popup-routed-as-a-tab', arms: 'oauth', edits: [[POL, "if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;", 'if (false) return true;'], [POL, "return req.disposition === 'new-window';", 'return false;']], setupCtl: true,
+    red: ['blank-link-opens-a-new-tab', 'oauth-flow-completes-the-popup-posts-back-to-window-opener', 'cross-site-oauth-flow-completes-through-window-opener', 'script-storm-capped-by-the-budget'] },
+  { id: 'R1-named-popup-routed-as-a-tab', arms: 'oauth', edits: [[POL, "if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;", 'if (false) return true;'], [POL, "return req.disposition === 'new-window' && req.features.trim() !== '';", 'return false;']], setupCtl: true,
     red: ['oauth-flow-completes-the-popup-posts-back-to-window-opener', 'the-popup-is-a-window-not-a-tab'] },
   { id: 'R2-budget-never-applied', arms: 'storm', edits: [[POL, 'if (!req.userGesture && ctx.pageInitiatedOpen >= budget)', 'if (false)']],
     red: ['script-storm-capped-by-the-budget'] },
@@ -43,6 +43,10 @@ const MUTANTS = [
     red: ['switching-workspace-takes-the-child-window-away'] },
   { id: 'R9-child-window-resizable-tiled', arms: 'oauth', edits: [[BP, '          resizable: false, // sway TILES a resizable child window beside the app (halving it); a fixed-size one floats (measured)\n', '']],
     red: ['the-child-window-floats-instead-of-tiling-the-app'] },
+  { id: 'R11-gesture-survives-a-navigation', arms: 'storm', edits: [['src/main/browser-popups.ts', "  wc.on('did-navigate', () => lastActivation.delete(wc));\n", '']],
+    red: ['a-click-on-page-A-is-no-gesture-for-the-page-it-navigated-to'] },
+  { id: 'R12-featureless-new-window-is-a-native-window', arms: 'blank', edits: [[POL, "return req.disposition === 'new-window' && req.features.trim() !== '';", "return req.disposition === 'new-window';"]],
+    red: ['shift-click-opens-a-tab-not-a-native-window'] },
   { id: 'R10-archive-leaves-the-child-windows', arms: 'cleanup', edits: [[BP, '  closePopupWindows(wsId);\n', ''], [BP, "  wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));\n", ''], [BP, 'outlivesOpener: false,', 'outlivesOpener: true,']],
     red: ['archive-leaves-no-tab-view-and-no-popup-window'] },
 ];

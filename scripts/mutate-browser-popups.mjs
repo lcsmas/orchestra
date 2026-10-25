@@ -1,5 +1,5 @@
 // Must-FAIL proof for the popup routing (#396, ledger #405): src/shared/browser-tab-policy.test.ts + src/main/browser-popups.test.ts +
-// src/main/browser-panel-popups.test.ts. Each mutant edits ONE clause of the real source IN PLACE; the three test files MUST go red on an
+// src/main/browser-panel-popups.test.ts + src/main/browser-popups-wiring.test.ts. Each mutant edits ONE clause of the real source IN PLACE; the three test files MUST go red on an
 // ASSERTION (not a crash), and every file is restored from a byte-exact backup and `cmp`-checked after each mutant and on any exit path.
 // Run: node scripts/mutate-browser-popups.mjs [--list]   (RC 0 = every mutant killed, tree restored)
 
@@ -13,7 +13,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const POL = 'src/shared/browser-tab-policy.ts';
 const POP = 'src/main/browser-popups.ts';
 const BP = 'src/main/browser-panel.ts';
-const TESTS = ['src/shared/browser-tab-policy.test.ts', 'src/main/browser-popups.test.ts', 'src/main/browser-panel-popups.test.ts'];
+const WS = 'src/main/workspaces.ts';
+const TESTS = ['src/shared/browser-tab-policy.test.ts', 'src/main/browser-popups.test.ts', 'src/main/browser-panel-popups.test.ts', 'src/main/browser-popups-wiring.test.ts'];
 
 // [file, name, find (exactly once), replace]
 export const MUTANTS = [
@@ -25,7 +26,7 @@ export const MUTANTS = [
   [POL, 'the budget is never applied', 'if (!req.userGesture && ctx.pageInitiatedOpen >= budget)', 'if (false)'],
   [POL, 'the budget is off by one', 'ctx.pageInitiatedOpen >= budget)', 'ctx.pageInitiatedOpen > budget)'],
   [POL, 'a named popup is routed as a tab', "if (name !== '' && !['_blank', '_self', '_parent', '_top'].includes(name)) return true;", 'if (false) return true;'],
-  [POL, 'a sized popup (new-window) is routed as a tab', "return req.disposition === 'new-window';", 'return false;'],
+  [POL, 'a sized popup (new-window) is routed as a tab', "return req.disposition === 'new-window' && req.features.trim() !== '';", 'return false;'],
   [POL, 'noopener is ignored', 'if (featuresDenyOpener(req.features)) return false;', 'if (false) return false;'],
   [POL, 'noopener=0 denies the opener', "!['0', 'no', 'false'].includes(v)", 'true'],
   [POL, '`_blank` counts as a window name', "['_blank', '_self', '_parent', '_top'].includes(name)", "['_self', '_parent', '_top'].includes(name)"],
@@ -40,6 +41,11 @@ export const MUTANTS = [
   [POP, 'closePopupWindows destroys nothing', '  for (const p of livePopupWindows(wsId)) destroyWindow(p);\n  windows.delete(wsId);', '  windows.delete(wsId);'],
   [POP, 'hiding a workspace leaves its child windows up', '    else p.win.hide();', ''],
   [POP, 'destroyed windows are never pruned from the count', '  for (const p of set) if (!alive(p)) set.delete(p);\n', ''],
+  [POL, 'a features-less new-window (shift-click) is routed as a sized popup', "req.disposition === 'new-window' && req.features.trim() !== '';", "req.disposition === 'new-window';"],
+  [POP, 'a navigation does not clear the gesture', "  wc.on('did-navigate', () => lastActivation.delete(wc));\n", ''],
+  [BP, 'tryOpenTab ignores popup windows for the cap', 'openCount: panel.tabs.length + livePopupWindows(wsId).length,', 'openCount: panel.tabs.length,'],
+  [BP, 'a window adopted after its panel is gone is kept', '  if (!meta || panels.get(panel.wsId) !== panel) {', '  if (!meta) {'],
+  [WS, 'a socket / bulk delete leaves the workspace\'s browser panel (and popup windows)', '  destroyBrowserPanel(id); // #396: every delete path (socket `orchestra delete`, bulk, repo removal) — its tabs and popup windows must not outlive it\n', ''],
   [BP, 'a child window is created visible', 'show: false, // shown by adoptPopupWindow', 'show: true, // shown by adoptPopupWindow'],
   [BP, 'a child window is not sandboxed', 'webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },', 'webPreferences: { sandbox: false, contextIsolation: true, nodeIntegration: false },'],
   [BP, 'a child window outlives its opener', 'outlivesOpener: false,', 'outlivesOpener: true,'],
