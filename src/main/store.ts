@@ -3,7 +3,8 @@ import { migrateBaseUrlsIntoKeystore } from './secrets';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
+import type { Account, BrowserProfile, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
+import { normalizeBrowserProfiles } from '../shared/browser-profile';
 import {
   legacyStoreBaseUrl,
   sanitizeAccountAuth,
@@ -74,6 +75,7 @@ interface StoreShape {
   /** The two default reasoning efforts, raw — shared/effort-defaults.ts
    *  normalizes. Absent → both "model default" (no pin). */
   effortDefaults?: Partial<EffortDefaults>;
+  browserProfiles?: BrowserProfile[];
   /** Memory guard thresholds (GB) + the global Admission/fast-Veille toggle (#285), raw — shared/memory-guard.ts normalizes.
    *  LIVE values, read at every sample (never frozen per run). Absent → 6 / 3 GB, toggle ON. */
   memoryGuard?: Partial<MemoryGuardSettings>;
@@ -479,6 +481,11 @@ class Store {
   async setAccesMobileSettings(next: AccesMobileSettings): Promise<void> {
     this.data.accesMobile = next;
     await this.save();
+  }
+
+  /** TEMP stand-in for #400's accessor (frozen interface) — dropped at the rebase. */
+  getBrowserProfiles(): BrowserProfile[] {
+    return normalizeBrowserProfiles(this.data.browserProfiles);
   }
 
   /** The default efforts new workspaces are pinned to, normalized. */

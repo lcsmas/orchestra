@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CLI fixture</title></head>
+<body>
+<h1 id="h">CLI fixture</h1>
+<button id="go" onclick="document.getElementById('out').textContent='clicked'">Go</button>
+<label>Name <input id="name" name="name" oninput="document.getElementById('echo').textContent=this.value"></label>
+<p id="echo"></p>
+<p id="out">idle</p>
+<input id="file" type="file" onchange="up(this)">
+<p id="upres">no upload</p>
+<button id="ask" onclick="document.getElementById('dlg').textContent=String(confirm('sure?'))">Ask</button>
+<p id="dlg">no dialog</p>
+<a id="next" href="/index.html">Home</a>
+<script>
+async function up(i){const f=i.files[0],b=new FormData();b.append('f',f,f.name);
+const r=await fetch('/upload',{method:'POST',body:b});const j=await r.json();
+document.getElementById('upres').textContent='up:'+j.name+':'+j.size}
+</script>
+</body></html>

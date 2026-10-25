@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CLI keys fixture</title></head>
+<body style="height:3000px">
+<input id="k" placeholder="keys">
+<p id="keys"></p>
+<button id="hov" onmouseover="this.dataset.h='1'">hover me</button>
+<div id="late-host"></div>
+<script>
+document.getElementById('k').addEventListener('keydown', function (e) { document.getElementById('keys').textContent += e.key + ','; });
+setTimeout(function () { var d = document.createElement('div'); d.id = 'late'; d.textContent = 'late'; document.getElementById('late-host').appendChild(d); }, 900);
+console.log('b395-console-load');
+</script>
+</body></html>

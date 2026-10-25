@@ -17,6 +17,8 @@ import {
   type DesignPick,
 } from '../shared/design-mode.ts';
 import { platform } from './platform';
+import { store } from './store';
+import { effectiveProfileId, partitionFor as profileAwarePartition } from '../shared/browser-profile';
 import { log } from './logger';
 
 // Per-workspace embedded browser panel — an Electron `WebContentsView` overlaid
@@ -222,7 +224,8 @@ export function initBrowserPanels(accessor: () => Electron.BaseWindow | null): v
  *  wsId so two workspaces browsing the same site stay isolated. All tabs of a
  *  workspace share it (one cookie jar per panel). */
 function partitionFor(wsId: string): string {
-  return `orchestra-browser-${wsId}`;
+  // TEMP stand-in for #400's panel wiring (partition from the store record at first ensurePanel) — dropped at the rebase.
+  return profileAwarePartition(wsId, effectiveProfileId(store.getWorkspace(wsId)?.browserProfileId, store.getBrowserProfiles()));
 }
 
 /** Strip Electron/Orchestra tokens from the UA so sites (and their bot
