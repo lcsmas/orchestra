@@ -471,7 +471,7 @@ const ARMS = {
     for (let t = 0; t < 4; t++) {
       const bin = path.join(SCR, 'race', `bin-${t}`);
       fs.mkdirSync(bin, { recursive: true });
-      const startAt = Date.now() + 700;
+      const startAt = Date.now() + 1500;
       const kids = Array.from({ length: 4 }, () => spawn(process.execPath, [...NODE_FLAGS, script, path.dirname(big), bin, 'noprobe', String(startAt)], { stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' } }));
       const outs = kids.map(() => '');
       kids.forEach((c, i) => c.stdout.on('data', (d) => { outs[i] += d; }));

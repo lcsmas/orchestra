@@ -58,10 +58,14 @@ const MUTANTS = [
   { id: 'install-exec-unchecked', file: INST, edits: [['      if (!canExec(dest)) reason =', '      if (false) reason =']], unit: [U_INST], rig: ['noexec_bin_refused'] },
   { id: 'gather-ignores-appimage', file: RT, edits: [['const appImage = !!o.appImagePath;', 'const appImage = false;']], unit: [U_RT] },
   { id: 'gather-path-lookup-unconditional', file: RT, edits: [["pathNode: appImage ? o.findOnPath('node') : null", "pathNode: o.findOnPath('node')"]], unit: [U_RT] },
+  { id: 'heal-moves-dir-aside', file: INST, edits: [["        fs.renameSync(path.join(tmpDir, 'node'), dest);\n", "        const aside2 = `${destDir}.old-x`;\n        fs.renameSync(destDir, aside2);\n        fs.renameSync(tmpDir, destDir);\n        fs.rmSync(aside2, { recursive: true, force: true });\n"]], unit: [U_INST] },
+  { id: 'transient-probe-failure-remembered', file: INST, edits: [['if (!transient) o.trust?.checked.set(dest, reason);', 'o.trust?.checked.set(dest, reason);']], unit: [U_INST] },
+  { id: 'install-rehash-every-launch', file: INST, edits: [['(o.trust?.checked.has(dest) || contentGood(dest, manifest))', 'contentGood(dest, manifest)']], unit: [U_INST] },
+  { id: 'trust-not-reset-on-replace', file: INST, edits: [['      o.trust?.checked.delete(dest); // we are about to (maybe) replace what this process may have vouched for\n', '']], unit: [U_INST] },
   { id: 'install-race-replaces-winner', file: INST, edits: [['        if (usable(dest, manifest) && contentGood(dest, manifest)) return finish(dest, manifest, false); // another instance won the race\n', '']], unit: [U_INST], rig: ['concurrent_install_keeps_winner'] },
   { id: 'install-content-unchecked', file: INST, edits: [['(o.trust?.checked.has(dest) || contentGood(dest, manifest))', 'true']], unit: [U_INST], rig: ['corrupt_runtime_healed_at_start'] },
   { id: 'install-probe-skipped', file: INST, edits: [['const p = probe(dest);', 'const p: string | null = null;']], unit: [U_INST], rig: ['unrunnable_runtime_falls_through'] },
-  { id: 'trust-not-remembered', file: INST, edits: [['      o.trust?.checked.set(dest, reason);\n', '']], unit: [U_INST] },
+  { id: 'trust-not-remembered', file: INST, edits: [['      if (!transient) o.trust?.checked.set(dest, reason);\n', '']], unit: [U_INST] },
   // INSTRUMENT CHECK: a provably EQUIVALENT edit (same read buffer size). It MUST survive.
   { id: 'equiv-buffer-size', file: LIB, edits: [['Buffer.allocUnsafe(1 << 20)', 'Buffer.allocUnsafe(1048576)']], rig: ['fetch_real_ok', 'pack_ok_real'], equivalent: true },
 ];

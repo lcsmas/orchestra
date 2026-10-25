@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createRuntimeTrust, installBundledRuntime as installReal, type InstallOptions } from './keeper-runtime-install.ts';
+import { createRuntimeTrust, installBundledRuntime as installReal, TRANSIENT_PREFIX, type InstallOptions } from './keeper-runtime-install.ts';
 import { runtimeDirName, type RuntimeManifest } from '../shared/keeper-runtime.ts';
 
 /** The stand-ins below are shell scripts, not a node that answers `-p 1`: unit tests inject "it runs" unless the test is ABOUT the probe. */
@@ -86,17 +86,27 @@ test('a manifest for another arch, or an invalid manifest, is refused', () => {
   if (!bad.ok && !bad.absent) assert.match(bad.reason, /manifest is invalid/);
 });
 
-test('a partial dir of the exact name (wrong size) is replaced by rename, never written into', () => {
+test('a partial dir of the exact name (wrong size) is healed by an atomic FILE replace — a new inode, the dir is never moved aside', () => {
   const m = bundle('#!/bin/sh\necho v1\n');
   const destDir = path.join(binDir, runtimeDirName(m));
   fs.mkdirSync(destDir, { recursive: true });
   fs.writeFileSync(path.join(destDir, 'node'), '#!/bin/sh\n'); // a torn copy
   fs.writeFileSync(path.join(destDir, 'stray'), 'x');
-  const r = installBundledRuntime({ resourcesDir: resources, binDir });
+  const tornIno = fs.statSync(path.join(destDir, 'node')).ino;
+  const renames: string[] = [];
+  const real = fs.renameSync;
+  fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => { renames.push(String(from)); return real(from, to); }) as typeof fs.renameSync;
+  let r;
+  try {
+    r = installBundledRuntime({ resourcesDir: resources, binDir });
+  } finally {
+    fs.renameSync = real;
+  }
   assert.ok(r.ok && r.copied);
   assert.equal(fs.readFileSync(path.join(destDir, 'node'), 'utf8'), '#!/bin/sh\necho v1\n');
-  assert.ok(!fs.existsSync(path.join(destDir, 'stray')));
-  assert.deepEqual(fs.readdirSync(binDir), [runtimeDirName(m)]);
+  assert.notEqual(fs.statSync(path.join(destDir, 'node')).ino, tornIno, 'replaced by rename (new inode), not written into');
+  assert.ok(!renames.includes(destDir), 'the dir itself was never renamed aside');
+  assert.deepEqual(fs.readdirSync(binDir), [runtimeDirName(m)], 'no tmp/aside dir left behind');
 });
 
 test('an update that ships a new Node lands in a NEW dir and leaves the previous one untouched (running keepers keep their runtime)', () => {
@@ -229,4 +239,89 @@ test('F2: the DEFAULT probe really executes the runtime (`-p 1`): an unexecutabl
   bundle('#!/bin/sh\necho 1\n');
   const good = installReal({ resourcesDir: resources, binDir: path.join(root, 'bin3') });
   assert.ok(good.ok);
+});
+
+// ── -fu pre-review: heal race, transient probe failures, hash-once-per-run ─────────────────────────────────────────────────
+
+test('M1: healing a corrupt dir never makes the runtime absent, whoever else installs meanwhile (observed after EVERY rename of the heal)', () => {
+  const body = '#!/bin/sh\necho v1\n';
+  const m = bundle(body);
+  const first = installBundledRuntime({ resourcesDir: resources, binDir });
+  assert.ok(first.ok);
+  if (!first.ok) return;
+  fs.writeFileSync(first.path, body.replace('v1', 'v2'), { mode: 0o755 }); // same size, corrupt
+  const destDir = path.join(binDir, runtimeDirName(m));
+  let existed = false, vanished = false, movedDir = false;
+  const real = fs.renameSync;
+  fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+    if (String(from) === destDir) movedDir = true;
+    const out = real(from, to);
+    if (fs.existsSync(first.path)) existed = true; else if (existed) vanished = true;
+    return out;
+  }) as typeof fs.renameSync;
+  try {
+    // a second healer runs its WHOLE install between our verified copy and our swap, then we heal too
+    const r = installBundledRuntime({ resourcesDir: resources, binDir, beforeSwap: () => { const other = installBundledRuntime({ resourcesDir: resources, binDir }); assert.ok(other.ok); } });
+    assert.ok(r.ok);
+  } finally {
+    fs.renameSync = real;
+  }
+  assert.equal(vanished, false, 'the runtime was missing at some point of the heal');
+  assert.equal(movedDir, false, 'the (possibly good) dir was renamed aside');
+  assert.equal(fs.readFileSync(first.path, 'utf8'), body);
+});
+
+test('m2: a TRANSIENT probe failure (timeout / signal / memory pressure) is reported but not remembered — the next launch asks again; a deterministic one is remembered', () => {
+  bundle('#!/bin/sh\necho v1\n');
+  const trust = createRuntimeTrust();
+  let n = 0;
+  const flaky = () => (n++ === 0 ? `${TRANSIENT_PREFIX}ETIMEDOUT` : null);
+  const r1 = installReal({ resourcesDir: resources, binDir, trust, probe: flaky });
+  assert.equal(r1.ok, false);
+  const r2 = installReal({ resourcesDir: resources, binDir, trust, probe: flaky });
+  assert.ok(r2.ok, 'the second launch re-probed and the runtime is used');
+  assert.equal(n, 2);
+});
+
+test('m3: with a trust an already-vouched runtime is NOT re-hashed (even a refused one) — pinned by counting opens of the binary', () => {
+  const m = bundle('#!/bin/sh\necho v1\n');
+  const dest = path.join(binDir, runtimeDirName(m), 'node');
+  const trust = createRuntimeTrust();
+  const refuse = () => 'exec failed';
+  assert.equal(installReal({ resourcesDir: resources, binDir, trust, probe: refuse }).ok, false); // copy + hash + probe → remembered
+  let opens = 0;
+  const real = fs.openSync;
+  fs.openSync = ((p: fs.PathLike, ...rest: unknown[]) => { if (String(p) === dest) opens++; return (real as (...a: unknown[]) => number)(p, ...rest); }) as typeof fs.openSync;
+  try {
+    for (let i = 0; i < 3; i++) assert.equal(installReal({ resourcesDir: resources, binDir, trust, probe: refuse }).ok, false);
+  } finally {
+    fs.openSync = real;
+  }
+  assert.equal(opens, 0, 'three more launches read the 120 MB binary zero times');
+});
+
+test('m3b: when the runtime is replaced (bin/ wiped and re-copied) the trust is dropped and the fresh copy is probed again', () => {
+  const m = bundle('#!/bin/sh\necho v1\n');
+  const trust = createRuntimeTrust();
+  let probes = 0;
+  const probe = () => (probes++, null);
+  assert.ok(installReal({ resourcesDir: resources, binDir, trust, probe }).ok);
+  fs.rmSync(path.join(binDir, runtimeDirName(m)), { recursive: true, force: true });
+  assert.ok(installReal({ resourcesDir: resources, binDir, trust, probe }).ok);
+  assert.equal(probes, 2, 'the re-copied runtime was probed again');
+});
+
+test('m2b: the DEFAULT probe classifies — killed by a signal = transient (not remembered), a loader-style `exit 127` = deterministic (remembered)', () => {
+  bundle('#!/bin/sh\nkill -KILL $$\n');
+  const trustA = createRuntimeTrust();
+  const killed = installReal({ resourcesDir: resources, binDir: path.join(root, 'binA'), trust: trustA });
+  assert.equal(killed.ok, false);
+  if (!killed.ok && !killed.absent) assert.match(killed.reason, /transient: /);
+  assert.equal(trustA.checked.size, 0, 'a transient failure is not remembered');
+  bundle('#!/bin/sh\necho "error while loading shared libraries: libstdc++.so.6" >&2\nexit 127\n');
+  const trustB = createRuntimeTrust();
+  const loader = installReal({ resourcesDir: resources, binDir: path.join(root, 'binB'), trust: trustB });
+  assert.equal(loader.ok, false);
+  if (!loader.ok && !loader.absent) { assert.match(loader.reason, /libstdc\+\+/); assert.doesNotMatch(loader.reason, /transient: /); }
+  assert.equal(trustB.checked.size, 1, 'a deterministic refusal is remembered');
 });

@@ -82,13 +82,19 @@ export function createRuntimeTrust(): RuntimeTrust {
 
 /** The default probe — `node -p 1`: the runtime must EXECUTE. An exec bit and a matching hash prove neither (a missing loader/libstdc++, an LSM deny or rot passes both), and a picked
  *  runtime that cannot run fails EVERY session start where the pre-bundle launcher always ran. Null = fine, else the reason. */
+/** A probe reason starting with this is a TRANSIENT failure (timeout, fork/memory pressure, killed by a signal): it is reported but NOT remembered, so the next launch asks again instead of a bad minute
+ *  downgrading every keeper of the app run to the AppImage-mount binary (pre-review -fu m2). Deterministic refusals (ENOENT interpreter, loader error, wrong answer, noexec) are remembered. */
+export const TRANSIENT_PREFIX = 'transient: ';
+const TRANSIENT_CODES = new Set(['ETIMEDOUT', 'EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE', 'EINTR']);
+
 function runProbe(file: string): string | null {
   try {
     const out = execFileSync(file, ['-p', '1'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' } }).trim();
     return out === '1' ? null : `printed ${JSON.stringify(out.slice(0, 40))}, expected "1"`;
   } catch (e) {
-    const err = e as { stderr?: Buffer | string; message?: string };
-    return String(err.stderr || err.message || 'failed').trim().split('\n')[0].slice(0, 160);
+    const err = e as { stderr?: Buffer | string; message?: string; code?: string; signal?: string | null };
+    const why = String(err.stderr || err.message || 'failed').trim().split('\n')[0].slice(0, 160);
+    return (err.code && TRANSIENT_CODES.has(err.code)) || err.signal ? `${TRANSIENT_PREFIX}${why}` : why;
   }
 }
 
@@ -122,12 +128,14 @@ export function installBundledRuntime(o: InstallOptions): InstallRuntimeResult {
   const finish = (dest: string, manifest: RuntimeManifest, copied: boolean): InstallRuntimeResult => {
     let reason = o.trust?.checked.get(dest);
     if (reason === undefined) {
+      let transient = false;
       if (!canExec(dest)) reason = `the installed runtime ${dest} is not executable here (a noexec mount?)`;
       else {
         const p = probe(dest);
+        transient = p !== null && p.startsWith(TRANSIENT_PREFIX);
         reason = p === null ? null : `the installed runtime ${dest} does not run (${p})`;
       }
-      o.trust?.checked.set(dest, reason);
+      if (!transient) o.trust?.checked.set(dest, reason);
     }
     return reason === null ? { ok: true, path: dest, manifest, copied } : { ok: false, reason: `${reason} — falling back to another runtime` };
   };
@@ -151,7 +159,6 @@ export function installBundledRuntime(o: InstallOptions): InstallRuntimeResult {
     sweepStaleTmp(o.binDir);
     const tag = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const tmpDir = path.join(o.binDir, `.${runtimeDirName(manifest)}.tmp-${tag}`);
-    const aside = path.join(o.binDir, `.${runtimeDirName(manifest)}.old-${tag}`);
     try {
       fs.mkdirSync(tmpDir);
       fs.copyFileSync(src, path.join(tmpDir, 'node'));
@@ -168,12 +175,9 @@ export function installBundledRuntime(o: InstallOptions): InstallRuntimeResult {
         const code = (e as NodeJS.ErrnoException).code;
         if (code !== 'ENOTEMPTY' && code !== 'EEXIST') throw e;
         if (usable(dest, manifest) && contentGood(dest, manifest)) return finish(dest, manifest, false); // another instance won the race
-        fs.renameSync(destDir, aside); // a corrupt/partial dir of this exact name: replace by rename, never write into it (a process may be running it)
-        try {
-          fs.renameSync(tmpDir, destDir);
-        } finally {
-          fs.rmSync(aside, { recursive: true, force: true });
-        }
+        // A corrupt/partial dir of this exact name: replace the FILE by an atomic rename of our verified copy over it. The dir is never moved aside or absent — two healers, or a healer and a
+        // keeper that is launching, can never observe the runtime missing (pre-review -fu M1) — and a running keeper keeps the old inode.
+        fs.renameSync(path.join(tmpDir, 'node'), dest);
       }
       return finish(dest, manifest, true);
     } finally {
