@@ -37,6 +37,7 @@ const C = (rel) => JSON.stringify(path.join(repoRoot, rel));
 fs.writeFileSync(entry, `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { AgentsTable } from ${C('src/renderer/components/ResourcesView.tsx')};
 import { MemoryGuardSettings } from ${C('src/renderer/components/MemoryGuardSettings.tsx')};
 import { groupSnapshot } from ${C('src/shared/resources.ts')};
@@ -195,7 +196,7 @@ app.whenReady().then(async () => {
 const probeOut = path.join(tmp, 'shots.json');
 let rc = 0;
 try {
-  execFileSync('env', ['-i', `HOME=${tmp}`, 'PATH=/usr/bin:/bin', `XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR || '/run/user/1000'}`, `WAYLAND_DISPLAY=${rigWayland}`, 'ELECTRON_OZONE_PLATFORM_HINT=wayland', 'ELECTRON_DISABLE_SANDBOX=1', `SHOT_DIR=${outDir}`, `PAGE_DIR=${tmp}`, `PROBE_OUT=${probeOut}`, electronBin, '--no-sandbox', shotProbe], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 });
+  execFileSync('env', ['-i', `HOME=${tmp}`, 'PATH=/usr/bin:/bin', `XDG_RUNTIME_DIR=${privateRuntimeDir()}`, `WAYLAND_DISPLAY=${rigWayland}`, 'ELECTRON_OZONE_PLATFORM_HINT=wayland', 'ELECTRON_DISABLE_SANDBOX=1', `SHOT_DIR=${outDir}`, `PAGE_DIR=${tmp}`, `PROBE_OUT=${probeOut}`, electronBin, '--no-sandbox', shotProbe], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 });
 } catch (e) { rc = e.status ?? 1; if (e.stderr) console.log(String(e.stderr).split('\n').slice(0, 15).join('\n')); }
 
 let failures = 0;

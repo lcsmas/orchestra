@@ -180,7 +180,7 @@ async function drive({ appBin, appTree, exercise, cycles, members, label, pause,
   const driveArgs = ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'drive.mjs'), '--base', BASE, '--repo', REPO, '--app', appBin, '--claude', claudeBin, '--exercise', exercise, '--cycles', String(cycles), '--members', String(members), '--label', label, '--out', outJson, '--min-avail-gb', String(MIN_AVAIL_GB), ...(appTree ? ['--app-tree', appTree] : []), ...(pause ? ['--pause', pause] : []), ...(dwell ? ['--dwell-s', String(dwell)] : []), ...extra];
   fs.mkdirSync(path.join(BASE, 'rigs'), { recursive: true });
   fs.mkdirSync(path.join(BASE, 'pin-cfg'), { recursive: true });
-  const env = { PATH: process.env.PATH, HOME: REAL_HOME, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '/run/user/1000', E2E_RIG_BASE: path.join(BASE, 'rigs'), CLAUDE_CONFIG_DIR_PIN: path.join(BASE, 'pin-cfg') };
+  const env = { PATH: process.env.PATH, HOME: REAL_HOME, E2E_RIG_BASE: path.join(BASE, 'rigs'), CLAUDE_CONFIG_DIR_PIN: path.join(BASE, 'pin-cfg') };
   const log = fs.createWriteStream(logFile);
   const child = spawn('bash', [path.join(REPO, 'scripts', 'e2e-contained-rig.sh'), process.execPath, ...driveArgs], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const lines = [];

@@ -56,6 +56,7 @@ fs.writeFileSync(
   `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { AgentsTable } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/ResourcesView.tsx'))};
 import { groupSessionsByWorkspace } from ${JSON.stringify(path.join(repoRoot, 'src/shared/resources.ts'))};
 import { accountingView, buildAccounting, emptyAccounting, unattributedWarning } from ${JSON.stringify(path.join(repoRoot, 'src/shared/container-accounting.ts'))};
@@ -187,7 +188,7 @@ try {
       '-i',
       `HOME=${tmp}`,
       'PATH=/usr/bin:/bin',
-      `XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR || '/run/user/1000'}`,
+      `XDG_RUNTIME_DIR=${privateRuntimeDir()}`,
       `WAYLAND_DISPLAY=${rigWayland}`,
       'ELECTRON_OZONE_PLATFORM_HINT=wayland',
       'ELECTRON_DISABLE_SANDBOX=1',

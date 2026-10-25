@@ -48,6 +48,7 @@ fs.writeFileSync(
   `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { privateRuntimeDir } from '../lib/rig-runtime.mjs';
 import { AgentsTable, browsersChipFor } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/ResourcesView.tsx'))};
 import { groupSessionsByWorkspace } from ${JSON.stringify(path.join(repoRoot, 'src/shared/resources.ts'))};
 import { accountingView, buildAccounting } from ${JSON.stringify(path.join(repoRoot, 'src/shared/container-accounting.ts'))};
@@ -155,7 +156,7 @@ let rc = 0;
 try {
   execFileSync(
     'env',
-    ['-i', `HOME=${tmp}`, 'PATH=/usr/bin:/bin', `XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR || '/run/user/1000'}`, `WAYLAND_DISPLAY=${rigWayland}`, 'ELECTRON_OZONE_PLATFORM_HINT=wayland', 'ELECTRON_DISABLE_SANDBOX=1', 'TZ=UTC', `SHOT_DIR=${outDir}`, `PAGE_DIR=${tmp}`, `PROBE_OUT=${probeOut}`, electronBin, '--no-sandbox', shotProbe],
+    ['-i', `HOME=${tmp}`, 'PATH=/usr/bin:/bin', `XDG_RUNTIME_DIR=${privateRuntimeDir()}`, `WAYLAND_DISPLAY=${rigWayland}`, 'ELECTRON_OZONE_PLATFORM_HINT=wayland', 'ELECTRON_DISABLE_SANDBOX=1', 'TZ=UTC', `SHOT_DIR=${outDir}`, `PAGE_DIR=${tmp}`, `PROBE_OUT=${probeOut}`, electronBin, '--no-sandbox', shotProbe],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 },
   );
 } catch (e) {

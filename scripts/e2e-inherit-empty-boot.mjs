@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 // Imported before anything re-homes: live dirs are captured at its load.
 import { REAL_HOMES, checkScratch, liveCanary, canaryDiff } from './.scratch-guard.mjs';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const ARMS = ['refuse_live_seed', 'boot_empty', 'ui_unrelated_save', 'ui_deselect'];
 const argv = process.argv.slice(2);
@@ -132,7 +133,7 @@ async function boot(arm, seed) {
   const electron = path.join(APP_DIR, 'node_modules/electron/dist/electron');
   if (!fs.existsSync(electron)) throw new Error(`no electron binary at ${electron}`);
   const env = {
-    PATH: '/usr/local/bin:/usr/bin:/bin', HOME: world.home, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`,
+    PATH: '/usr/local/bin:/usr/bin:/bin', HOME: world.home, XDG_RUNTIME_DIR: privateRuntimeDir(),
     XDG_CONFIG_HOME: path.join(world.home, '.config'), XDG_CACHE_HOME: path.join(world.home, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, LANG: 'C.UTF-8',
     ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
