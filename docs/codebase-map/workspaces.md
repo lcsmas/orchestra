@@ -643,10 +643,49 @@ env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
   `{exitCode, lastStderrLine}`. `RepoScripts` = `{setup?, run?, archive?}`
   (`types.ts:173`). Run scripts get their own `<wsId>:run` PTY.
 
-## Secrets — secrets.ts (107 lines)
-Electron `safeStorage` (libsecret/Keychain/DPAPI) at `~/.orchestra/secrets.json`;
-falls back to 0600 plaintext with a warning if no keyring. Currently stores the
-Linear API key: `getLinearApiKey`/`setLinearApiKey`/`clearLinearApiKey`.
+## Secrets — secrets.ts, linux-keyring.ts, shared/password-store.ts (#389)
+`secrets.ts` stores the Linear key, each account's Anthropic API key and base URL in
+`<userData>/orchestra/secrets.json` (0600): per entry `{value, enc}` — `enc:true` = base64
+`safeStorage` ciphertext (platform seam `encryptString`/`decryptString`), `enc:false` = plaintext
+fallback with a warning when `isEncryptionAvailable()` is false. Every mutation runs under one
+`serial()` lock and lands via tmp-file + `rename` (a failed write leaves the previous bytes);
+the first disk read is single-flight (`loading`).
+- **Backend selection (before `ready`)** — on Linux Chromium picks `basic_text` on a desktop it does
+  not recognise (sway, Hyprland…), so safeStorage is unavailable and every secret is plaintext even
+  with a keyring on the bus. `shared/password-store.ts` is the PURE rule (`decidePasswordStore`):
+  explicit `--password-store` wins → no reachable session bus → recognised desktop
+  (`isRecognisedDesktop`: `XDG_CURRENT_DESKTOP`/`DESKTOP_SESSION` tokens + `KDE_FULL_SESSION` etc.,
+  Chromium keeps its choice) → probe: `gnome-libsecret` ONLY for an UNLOCKED default collection;
+  locked (libsecret would wait on a prompt nobody answers, a ~76 s stall) or no service → Chromium's
+  choice. `linux-keyring.ts` owns the impure half: `probeSecretService` (`gdbus … Properties.Get
+  org.freedesktop.Secret.Collection Locked` on `/org/freedesktop/secrets/aliases/default`, read-only,
+  synchronous, SIGKILLed at `PROBE_TIMEOUT_MS` = 1.5 s so it can never stall startup) and
+  `selectLinuxPasswordStore` (appends the switch; `index.ts` calls it at module scope, never in CLI
+  mode, and logs `[secrets] password-store: … — <reason> (probe N ms) [desktop=… bus=…]` after
+  `initLogger`). **Electron sets `DBUS_SESSION_BUS_ADDRESS=disabled:` in its main process when the
+  launcher exported none** — that is "no address" (`usableBusAddress`); the bus is then
+  `$XDG_RUNTIME_DIR/bus` (`sessionBusKind`), the probe is pointed at it (`probeEnv`) and, when libsecret
+  is selected, the address is exported into `process.env` (`exportBusAddress`) — without it libsecret is
+  selected but safeStorage stays unavailable (rig arm `unlocked`, verified).
+- **Re-encryption at startup** — `reencryptPlaintextSecrets()` (fired after the window in `index.ts`):
+  a no-op that never touches safeStorage when nothing is plaintext; skipped while encryption is
+  unavailable; otherwise each plaintext entry is replaced only by ciphertext that DECRYPTS BACK TO THE
+  SAME VALUE, a failing entry stays plaintext (retried next start), and the file is rewritten once,
+  atomically. Ciphertext written under a keyring that is gone next boot is kept untouched (unreadable
+  until the keyring is back).
+- **State for Settings** — `getSecretsState()` → `SecretsState {encrypted, backend, plaintextEntries,
+  encryptedEntries}` (`shared/secrets-state.ts`), IPC `secrets:state` / `window.orchestra.getSecretsState()`.
+  `secretsNotice(state)` is the pure rule for the warning ("Secrets are stored unencrypted on this
+  machine…", plus an "N stored secrets are encrypted and unreadable until the keyring is unlocked"
+  variant); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.
+  `isSecretStorageEncrypted` (`accounts:secretsEncrypted`, the old boolean) is kept.
+- **Rigs** — `scripts/e2e-keyring.sh` (built app, own sway, a PRIVATE `dbus-run-session` with no host
+  service dirs + a private gnome-keyring-daemon under scratch XDG dirs; arms unlocked / locked /
+  nosvc / recognised / hung / relock), mutants `scripts/keyring-mutants.mjs` (unit) and
+  `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps: gnome-keyring needs `--login` (password on
+  stdin) THEN `--start` to publish `org.freedesktop.secrets`; give it its own `XDG_RUNTIME_DIR` or
+  its control socket is the human's; `/proc/<app>/environ` is clobbered once a bus address is set
+  (Chromium rewrites its title).
 
 ## Base-branch sync — repo-sync.ts (113 lines)
 `syncAllRepos(window)` (parallel per repo) → `syncBaseBranch` (git.ts) +

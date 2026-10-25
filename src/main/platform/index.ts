@@ -85,6 +85,9 @@ export interface OrchestraPlatform {
   /** safeStorage facade. When it reports unavailable, secrets.ts falls back to
    *  its 0600-plaintext path. */
   isEncryptionAvailable(): boolean;
+  /** The Chromium backend safeStorage selected (Linux: `gnome_libsecret`, `kwallet5`, `basic_text`, …);
+   *  null where it is not reported. Diagnostic only — `isEncryptionAvailable` is the truth. */
+  getSecretBackend(): string | null;
   encryptString(plain: string): Buffer;
   decryptString(cipher: Buffer): string;
 }
@@ -149,6 +152,7 @@ export const platform: OrchestraPlatform = {
   getAppVersion: () => current().getAppVersion(),
   getAppMetrics: () => current().getAppMetrics(),
   isEncryptionAvailable: () => current().isEncryptionAvailable(),
+  getSecretBackend: () => current().getSecretBackend(),
   encryptString: (plain) => current().encryptString(plain),
   decryptString: (cipher) => current().decryptString(cipher),
 };

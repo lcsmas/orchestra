@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { LinearKeyCheck, LinearKeySource } from '../../shared/types';
+import { SecretsNotice, useSecretsState } from './SecretsNotice';
 
 interface Props {
   onClose: () => void;
@@ -14,6 +15,7 @@ export function LinearSettings({ onClose, onChanged }: Props) {
   // Result of the last check/save probe — drives the inline status line.
   const [check, setCheck] = useState<LinearKeyCheck | null>(null);
   const [saved, setSaved] = useState(false);
+  const secrets = useSecretsState();
 
   useEffect(() => {
     void window.orchestra.getLinearKeySource().then(setSource).catch(() => {});
@@ -96,9 +98,10 @@ export function LinearSettings({ onClose, onChanged }: Props) {
           >
             personal API key
           </button>{' '}
-          (separate from the Linear MCP login). It’s stored encrypted on this
-          machine.
+          (separate from the Linear MCP login).{' '}
+          {secrets?.encrypted === true && secrets.plaintextEntries === 0 && 'It’s stored encrypted on this machine.'}
         </div>
+        <SecretsNotice state={secrets} />
 
         {source && (
           <div className={`linear-key-source ${source}`}>{statusLabel}</div>

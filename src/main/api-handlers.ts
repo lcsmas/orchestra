@@ -36,6 +36,8 @@ import {
   setAccountApiKey,
   clearAccountApiKey as clearAccountApiKeySecret,
   pruneAccountApiKeys,
+  getSecretsState,
+  reencryptInBackground,
 } from './secrets';
 import { getEnvStatus } from './env-status';
 import { busDivergenceReport } from './bus-mirror.ts';
@@ -270,6 +272,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   listAccounts: 'accounts:list',
   setAccounts: 'accounts:set',
   isSecretStorageEncrypted: 'accounts:secretsEncrypted',
+  getSecretsState: 'secrets:state',
   listAccountApiKeyIds: 'accounts:apiKeyIds',
   saveAccountApiKey: 'accounts:saveApiKey',
   listAccountBaseUrlIds: 'accounts:baseUrlIds',
@@ -567,6 +570,13 @@ export const apiHandlers: ApiHandlerTable = {
   // ---------- per-account Anthropic API keys (keystore, never in store.json) ----------
 
   isSecretStorageEncrypted: async () => platform.isEncryptionAvailable(),
+
+  getSecretsState: async () => {
+    const state = await getSecretsState();
+    // The keyring works but plaintext is still on disk (saved while it did not, or a startup skipped it): seal it now.
+    if (state.encrypted && state.plaintextEntries > 0) reencryptInBackground('settings');
+    return state;
+  },
 
   listAccountApiKeyIds: async () => accountApiKeyIds(),
 

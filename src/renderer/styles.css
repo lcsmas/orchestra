@@ -690,6 +690,21 @@ input:focus, textarea:focus, select:focus {
   margin-bottom: 14px;
   line-height: 1.5;
 }
+/* #389 — secrets are stored unencrypted (no keyring): shown only in that state. */
+.secrets-notice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 38%, transparent);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 14px;
+}
+.secrets-notice-icon { flex: none; }
 /* Voice dictionary settings modal — mirrors .linear-key-input's field tokens. */
 .voice-dict-input {
   width: 100%;
