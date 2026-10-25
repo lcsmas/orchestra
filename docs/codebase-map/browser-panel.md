@@ -398,18 +398,21 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
   would open under the native view, which paints above the DOM. Design mode is disarmed before the rebuild.
 - **Persistence.** Cookies/localStorage live in the profile's `persist:` partition; a restart restores each workspace's tabs (#393) on it, signed in.
-  `persistSignIns` flushes the cookie store 1.5 s after any change (Chromium's own timer is ~30 s — a crash right after a sign-in lost it) and
-  `flushProfileStorage()` runs at quit. **Measured limitation: Electron 33 drops SESSION cookies (no expiry) at restart** (`persist_session_cookies`
-  is false); persistent cookies and localStorage survive — a site that signs in with a session cookie signs out at each restart even with a profile.
-  Promoting them to persistent is a credential-lifetime decision, NOT done (ledger #405 QUESTION).
+  `persistSignIns` (PROFILE sessions only, never an ephemeral one) does two things on every cookie `changed`: (1) **promotes SESSION cookies** —
+  Electron 33 drops cookies without an expiry at quit (`persist_session_cookies` false; measured), and most admin/staging sites sign in with exactly
+  those — by re-setting them with a **sliding 30-day expiry** (OPS ruling 2026-10-26; pure rule `shared/browser-cookie-promote.ts`: only
+  `session && no expirationDate`, host-only stays host-only, secure → https url; the promoted copy has an expiry so the `set → changed` echo never
+  loops; a removal — logout — is never undone); (2) flushes the cookie store 1.5 s later (Chromium's own timer is ~30 s — a crash right after a
+  sign-in lost it). `flushProfileStorage()` runs at quit. Delete-profile clears everything including promoted cookies. The Settings copy says
+  session-only cookies are kept 30 days after their last change.
 - **Keyring.** The cookie store is encrypted with the OS keyring when one answers (Chromium os_crypt, #389's selection); otherwise under a fixed key
   — hence the warning. A built-app rig must pass `--password-store=basic` (and #389 skips its probe under a scratch `ORCHESTRA_HOME`), or it binds the
   human's live login keyring (G10b: the rig guards the collection listing before/after).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
-  `browser-profiles-wiring.test.ts`; 62 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
-  (arms `settings,attach,human,restore,delete,flush`; oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
-  on disk, compositor pixels, store.json) + 13 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
+  `browser-profiles-wiring.test.ts`; 70 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  (arms `settings,attach,human,restore,delete,flush,session`; oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
+  on disk, compositor pixels, store.json) + 14 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
 
 ## IPC / seam
 

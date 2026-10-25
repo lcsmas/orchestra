@@ -54,7 +54,7 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
     return s;
@@ -312,4 +312,34 @@ test('settleClosedViews waits for the views a re-profile closed to be really des
   (globalThis as any).__bpHoldClose = false;
   for (const fire of (globalThis as any).__bpHeld.splice(0)) fire();
   await bp.settleClosedViews(10);
+});
+
+const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false) => {
+  const ses = sessions().get(sesName);
+  for (const [, fn] of ses.cookieListeners) fn({}, cookie, 'explicit', removed);
+  return ses;
+};
+const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
+
+test('PROFILE partition: a session cookie is re-set with a sliding ~30-day expiry (Electron would drop it at quit); a cookie with an expiry or a removal is left alone', () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const t0 = Date.now() / 1000;
+  const ses = cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  assert.equal(ses.cookieSets?.length, 1, 'one promotion');
+  const d = ses.cookieSets[0];
+  assert.deepEqual([d.url, d.name, d.value, d.path], ['http://127.0.0.1/', 'sid', 'v1', '/']);
+  assert.ok(d.expirationDate >= t0 + 30 * 86400 - 5 && d.expirationDate <= t0 + 30 * 86400 + 5, `expiry ${d.expirationDate - t0}s ahead`);
+  assert.equal('domain' in d, false, 'host-only stays host-only');
+  cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, session: false, expirationDate: t0 + 99 }); // the promoted copy coming back: no loop
+  cookieEvent(PERSIST(P1), SESSION_COOKIE, true); // a removal (logout): nothing re-created
+  assert.equal(ses.cookieSets.length, 1, 'still just the one promotion');
+});
+
+test('EPHEMERAL partition: session cookies are never promoted (no listener at all)', () => {
+  const ws = newWs();
+  bp.ensurePanel(ws);
+  const ses = sessions().get(EPH(ws));
+  assert.equal(ses.cookieListeners.length, 0);
+  assert.equal(ses.cookieSets, undefined);
 });

@@ -16,11 +16,13 @@ const TESTS = [
   'src/main/browser-profiles-ipc.test.ts',
   'src/main/browser-panel-profiles.test.ts',
   'src/main/browser-profiles-wiring.test.ts',
+  'src/shared/browser-cookie-promote.test.ts',
 ];
 const PANEL = 'src/main/browser-panel.ts';
 const SVC = 'src/main/browser-profiles.ts';
 const IPC = 'src/main/browser-profiles-ipc.ts';
 const PURE = 'src/shared/browser-profile.ts';
+const PROMO = 'src/shared/browser-cookie-promote.ts';
 const tmp = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'bprof-mut-'));
 const backups = new Map();
 const orig = new Map();
@@ -62,6 +64,15 @@ const MUTANTS = [
   [SVC, 'delete ignores open panels the record does not know', '        for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);\n', ''],
   ['src/main/browser-profiles-host.ts', 'the host never waits for the closed views', 'settleViews: () => settleClosedViews(3000),', 'settleViews: async () => {},'],
   ['src/main/browser-profiles-host.ts', 'a detach broadcasts a DELETED key (the renderer keeps the old id)', 'const updated = { ...ws, browserProfileId: profileId };\n      await store.upsertWorkspace(updated);', 'const updated: typeof ws = { ...ws };\n      if (profileId === undefined) delete updated.browserProfileId; else updated.browserProfileId = profileId;\n      await store.upsertWorkspace(updated);'],
+  // --- session cookies are promoted in a profile (OPS ruling) ---
+  [PROMO, 'a cookie that already has an expiry is promoted again (set → changed loop)', 'if (c.session !== true || c.expirationDate !== undefined) return null;', 'if (c.session !== true) return null;'],
+  [PROMO, 'a persistent cookie is promoted too', 'if (c.session !== true || c.expirationDate !== undefined) return null;', 'if (c.expirationDate !== undefined) return null;'],
+  [PROMO, 'a host-only cookie becomes a domain cookie', 'if (c.hostOnly === false && c.domain) out.domain = c.domain;', 'if (c.domain) out.domain = c.domain;'],
+  [PROMO, 'a secure cookie is set on an http url', "url: `${secure ? 'https' : 'http'}://${host}${path}`,", 'url: `http://${host}${path}`,'],
+  [PROMO, 'the promoted lifetime is not 30 days', 'export const PROMOTED_COOKIE_TTL_S = 30 * 24 * 3600;', 'export const PROMOTED_COOKIE_TTL_S = 24 * 3600;'],
+  [PROMO, 'the url host keeps the cookie domain\'s leading dot', "const host = (c.domain ?? '').replace(/^\\./, '');", "const host = (c.domain ?? '');"],
+  [PANEL, 'session cookies are never promoted', "      if (promoted) ses.cookies.set(promoted).catch((err) => log.debug('browser-panel: promoting a session cookie failed', err));\n", ''],
+  [PANEL, 'a cookie REMOVAL (logout) is promoted back', '    if (!removed) {\n      const promoted', '    if (true as boolean) {\n      const promoted'],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', '          return refuse(\'storage\',', '          void refuse(\'storage\','],

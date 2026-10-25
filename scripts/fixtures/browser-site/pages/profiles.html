@@ -2,7 +2,7 @@
 <meta charset="utf-8">
 <title>Profiles fixture</title>
 <!-- #400 (profils navigateur): writes storage the rig can look for. /profiles.html#set stores a SESSION cookie (no expiry),
-     a PERSISTENT cookie (max-age) and a localStorage key; every load prints what this page can see. -->
+     a PERSISTENT cookie (max-age) and a localStorage key; ?signin=session signs in with a session `sid`; every load prints what this page can see. -->
 <body style="margin:0;background:#8e44ad;color:#fff;font:16px monospace;padding:24px">
 <h1>profiles fixture</h1>
 <pre id="state"></pre>
@@ -11,6 +11,10 @@
     document.cookie = 'sess=1; path=/';
     document.cookie = 'perm=1; path=/; max-age=86400';
     localStorage.setItem('orch', 'ls1');
+  }
+  // ?signin=session: sign in with a SESSION cookie (no expiry), as most admin/staging sites do — the shared server's /whoami reads `sid`
+  if (location.search.indexOf('signin=session') >= 0) {
+    document.cookie = 'sid=sess' + Math.random().toString(16).slice(2, 12) + '; path=/';
   }
   document.getElementById('state').textContent = JSON.stringify({ cookie: document.cookie, ls: localStorage.getItem('orch') });
 </script>

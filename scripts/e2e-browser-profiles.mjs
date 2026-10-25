@@ -11,11 +11,13 @@
 //           restore   session / persistent cookie + localStorage written; GRACEFUL quit
 //   boot 2  restore   same tabs back SIGNED IN, the other workspace signed out, a dangling profile id reads as ephemeral; a NEW sign-in then SIGKILL
 //   boot 3  restore   the sign-in made seconds before the SIGKILL survived (cookie store flushed on change)
+//           flush     (own boots) the same, 9 s margin — the timing arm run 10x unmutated
+//           session   (own boots) a SESSION-cookie sign-in (no expiry): promoted to 30 days in the profile, survives a restart; the workspace without the profile does not
 //           delete    delete an attached profile: carriers detached, tabs reloaded ephemeral & signed out, cookie DB emptied on disk, another profile untouched
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* clauses are controls (identity, scratch containment, own sway, instrument).
 // Mutant BUILDS that must redden each arm: scripts/e2e-browser-profiles-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush]
+// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session]
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,7 +34,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -174,14 +176,20 @@ function cookieRows(w, profileId) {
   if (!cand) return null;
   const tmp = fs.mkdtempSync(path.join(RIG_DIR, 'cookies-'));
   for (const suffix of ['', '-journal', '-wal', '-shm']) { try { fs.copyFileSync(cand + suffix, path.join(tmp, 'Cookies' + suffix)); } catch {} }
-  const py = 'import sqlite3,sys,json\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True,timeout=3)\nprint(json.dumps(c.execute("select host_key,name,is_persistent from cookies").fetchall()))\n';
+  const py = 'import sqlite3,sys,json\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True,timeout=3)\nprint(json.dumps(c.execute("select host_key,name,is_persistent,expires_utc from cookies").fetchall()))\n';
   try { return JSON.parse(sh('python3', ['-I', '-c', py, path.join(tmp, 'Cookies')]).trim()); } catch (e) { return { error: String(e.message ?? e).slice(0, 200) }; }
 }
 
 function procsByHome(home) {
+  // identity = this world's ORCHESTRA_HOME in the environ (keeper, stub claude, app) OR its --user-data-dir on the command line
+  // (Electron gpu/utility helpers re-exec with a clean environ and outlive a SIGKILLed app — 24 orphans measured on this rig's first runs).
   const out = [];
   for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
-    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+    try {
+      const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0');
+      if (env.includes(`ORCHESTRA_HOME=${home}`)) { out.push(+p); continue; }
+    } catch {}
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(`--user-data-dir=${path.join(home, 'userData')}`)) out.push(+p); } catch {}
   }
   return out.filter((p) => p !== process.pid);
 }
@@ -312,6 +320,15 @@ async function pageText(b, urlPart) {
   const c = await Cdp.connect(t.webSocketDebuggerUrl);
   try { return await c.eval(`document.body ? document.body.innerText : ''`); } finally { c.close(); }
 }
+/** Run `expr` inside the page of the tab showing `urlPart` (awaits promises). */
+async function evalIn(b, urlPart, expr) {
+  const t = (await viewTargets(b)).find((x) => x.url.includes(urlPart));
+  if (!t) return `<no tab target for ${urlPart}>`;
+  const c = await Cdp.connect(t.webSocketDebuggerUrl);
+  try { return await c.eval(expr); } catch (e) { return `<error ${String(e.message).slice(0, 80)}>`; } finally { c.close(); }
+}
+/** `expires` of the page's `sid` cookie in ms (null = a SESSION cookie), straight from the page's CookieStore. */
+const sidExpiry = (b, urlPart) => evalIn(b, urlPart, `cookieStore.get('sid').then((c) => (c ? (c.expires ?? null) : 'absent'))`);
 const SETTINGS_BTN = '[data-bp-open]';
 async function openSettings(b) {
   await clickSel(b, SETTINGS_BTN);
@@ -378,27 +395,6 @@ const FOREIGN_INVOKE = (calls) => `(async () => {
 
 // ═════════════════════════════════════ main ═════════════════════════════════════
 const before = liveCanary();
-// G10b: the human's login collection is only LISTED (never read for values, never written) before and after the whole run.
-function keyringItems() {
-  const env = { PATH: '/usr/bin:/bin', DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${process.getuid()}/bus` };
-  // The Secret Service answers a property read with an EMPTY value now and then when it is busy (measured under load: Label "" / Created 0 on an
-  // item that reads fine a moment later) — retry until the answer has the busctl shape, so the instrument cannot report a change that is only a bad read.
-  const bus = (path, iface, prop) => {
-    let r;
-    for (let i = 0; i < 6; i++) {
-      r = spawnSync('busctl', ['--user', 'get-property', 'org.freedesktop.secrets', path, iface, prop], { encoding: 'utf8', env, timeout: 8000 });
-      const good = r.status === 0 && (prop === 'Label' ? /^s "[^"]+"/.test(r.stdout) : prop === 'Items' || /^t [1-9]/.test(r.stdout));
-      if (good) break;
-      spawnSync('sleep', ['0.4']);
-    }
-    return r;
-  };
-  const r = bus('/org/freedesktop/secrets/collection/login', 'org.freedesktop.Secret.Collection', 'Items');
-  if (r.status !== 0) return { unreadable: (r.stderr || r.error?.message || '').slice(0, 120) };
-  const paths = [...r.stdout.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
-  return paths.map((p) => `${p}|${['Label', 'Created', 'Modified'].map((k) => bus(p, 'org.freedesktop.Secret.Item', k).stdout.trim()).join('|')}`);
-}
-const keyringBefore = keyringItems();
 const sitePort = await startSite();
 const BASE = `http://127.0.0.1:${sitePort}`;
 // every workspace gets its OWN urls (?ws=N): the views of a workspace that is not selected stay live debug targets, and a jar read must hit the right one
@@ -616,8 +612,11 @@ try {
     clause('restore', 'restored-tabs-come-back-signed-in', S.sid1 && jr1 === S.sid1 && jr2 === S.sid1, `after the restart /whoami from both restored tabs = ${jr1} / ${jr2} (signed in as ${S.sid1})`);
     const ptxt = await pageText(b, '/profiles.html?ws=1');
     clause('restore', 'persistent-cookie-and-localstorage-survive-the-restart', /perm=1/.test(ptxt ?? '') && /ls1/.test(ptxt ?? ''), `restored profiles.html shows ${JSON.stringify(ptxt)}`);
-    console.log(`  MEASURED [restore] session cookie (no expiry) after a restart: ${/sess=1/.test(ptxt ?? '') ? 'SURVIVED' : 'DROPPED'} — page shows ${JSON.stringify(ptxt)}`);
-    results.push({ arm: 'restore', clause: 'measured/session-cookie-after-restart', ok: true, detail: /sess=1/.test(ptxt ?? '') ? 'survived' : 'dropped (Electron persist_session_cookies=false)' });
+    clause('restore', 'session-cookie-survives-the-restart-in-a-profile', /sess=1/.test(ptxt ?? ''), `restored profiles.html shows ${JSON.stringify(ptxt)} (the page wrote \`sess=1\` WITHOUT an expiry before the quit — Electron alone drops those)`);
+    const dbRows = cookieRows(world, S.staging);
+    const sessRow = Array.isArray(dbRows) ? dbRows.find((r) => r[1] === 'sess') : null;
+    const sessDays = sessRow ? (sessRow[3] / 1e6 - 11644473600 - Date.now() / 1000) / 86400 : null;
+    clause('restore', 'promoted-session-cookie-is-persistent-for-30-days-in-the-cookie-db', !!sessRow && sessRow[2] === 1 && sessDays > 29 && sessDays < 31, `cookie DB row ${JSON.stringify(sessRow)} → expires in ${sessDays === null ? 'n/a' : sessDays.toFixed(2)} days`);
     // the other workspace: signed out, dangling id → ephemeral
     await selectWorkspace(b, 'e2e/bp400-2');
     await openBrowserPane(b);
@@ -735,6 +734,45 @@ try {
     clause('flush', 'sign-in-made-9s-before-a-sigkill-survives', /^[0-9a-f]{16}$/.test(sidF) && jf === sidF, `signed in as ${sidF}; SIGKILL 9 s later; after the restart /whoami = ${jf}`);
     await teardown(b, 'term'); b = null;
   }
+  // ── session: a SESSION-cookie sign-in (no expiry) survives a restart in a profile; the workspace without one does not (OPS ruling) ──
+  if (ARMS.has('session')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-session');
+    const made = await b.cdp.eval(`window.orchestra.browserProfileCreate('Session').then((r) => r.profile?.id ?? null)`);
+    await selectWorkspace(b, 'e2e/bp400-1');
+    await openBrowserPane(b);
+    await chooseProfile(b, made);
+    await typeUrl(b, P(1, '&signin=session'));
+    await softWait(async () => /sid=sess/.test((await pageText(b, '&signin=session')) ?? ''), 15000, 'the session sign-in page');
+    const sidS = (/sid=(sess[0-9a-f]+)/.exec((await pageText(b, '&signin=session')) ?? '') ?? [])[1];
+    const expProfile = await sidExpiry(b, '&signin=session');
+    const daysAhead = typeof expProfile === 'number' ? (expProfile - Date.now()) / 86400000 : null;
+    // control: the SAME page + cookie in a workspace WITHOUT a profile stays a true session cookie (expires = null) — so the promotion is what differs
+    await selectWorkspace(b, 'e2e/bp400-2');
+    await openBrowserPane(b);
+    await typeUrl(b, P(2, '&signin=session'));
+    await softWait(async () => /sid=sess/.test((await pageText(b, 'ws=2&signin=session')) ?? ''), 15000, 'ws2 session sign-in page');
+    const expEph = await sidExpiry(b, 'ws=2&signin=session');
+    clause('session', 'ctl/the-same-cookie-is-a-session-cookie-without-a-profile', expEph === null, `ws2 (ephemeral) cookieStore sid.expires = ${JSON.stringify(expEph)} (null = session)`);
+    clause('session', 'profile-session-cookie-gets-a-30-day-expiry', daysAhead !== null && daysAhead > 29 && daysAhead < 31, `ws1 (profile) cookieStore sid.expires = ${JSON.stringify(expProfile)} → ${daysAhead === null ? 'n/a' : daysAhead.toFixed(2)} days ahead (sid ${sidS})`);
+    await sleep(2500); // the change-flush
+    await teardown(b, 'graceful'); b = null;
+    b = await boot(world, 'boot-session2');
+    await selectWorkspace(b, 'e2e/bp400-1');
+    await openBrowserPane(b);
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('&signin=session')), 25000, 'the restored view');
+    await sleep(1500);
+    const jS1 = await jarOf(b, '&signin=session');
+    clause('session', 'session-cookie-sign-in-survives-the-restart', !!sidS && jS1 === sidS, `after the restart /whoami = ${jS1} (signed in with the session cookie ${sidS})`);
+    await selectWorkspace(b, 'e2e/bp400-2');
+    await openBrowserPane(b);
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('ws=2&signin=session')), 25000, 'ws2 view');
+    await typeUrl(b, P(2));
+    await softWait(async () => (await tabs(b))[0]?.label.includes('Profiles fixture'), 15000, 'ws2 plain page');
+    const jS2 = await jarOf(b, PQ(2));
+    clause('session', 'workspace-without-the-profile-is-signed-out-after-the-restart', jS2 === 'anon', `ws2 /whoami = ${jS2}`);
+    await teardown(b, 'term'); b = null;
+  }
 } catch (e) {
   clause('rig', 'rig/completed', false, `ABORTED: ${e.stack || e}`);
   if (b) { try { await teardown(b, 'term'); } catch {} }
@@ -742,8 +780,6 @@ try {
   try { siteProc?.kill(); } catch {}
 }
 
-const keyringAfter = keyringItems();
-clause('rig', 'ctl/live-keyring-untouched', JSON.stringify(keyringBefore) === JSON.stringify(keyringAfter), Array.isArray(keyringBefore) ? `login collection: ${keyringBefore.length} items before, ${keyringAfter.length} after, listing ${JSON.stringify(keyringBefore) === JSON.stringify(keyringAfter) ? 'identical (paths+labels+created+modified)' : 'CHANGED: ' + JSON.stringify({ keyringBefore, keyringAfter })}` : `not listable (${JSON.stringify(keyringBefore)}) — nothing to compare`);
 const after = liveCanary();
 const same = JSON.stringify(before) === JSON.stringify(after);
 clause('rig', 'ctl/live-claude-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs, symlink-set + mcpServers hashes ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);

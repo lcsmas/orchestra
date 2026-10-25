@@ -22,6 +22,7 @@ import {
 import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import { partitionFor } from '../shared/browser-profile.ts';
+import { promoteSessionCookie } from '../shared/browser-cookie-promote.ts';
 import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { log } from './logger';
@@ -286,13 +287,19 @@ export function setBrowserProfileResolver(fn: ((wsId: string) => BrowserProfileI
 const FLUSH_COOKIES_MS = 1500;
 const signInSessions = new WeakSet<Electron.Session>();
 
-/** A profile's cookies sit in Chromium's cookie store, which writes to disk on its own ~30 s timer — a crash or
- *  SIGKILL right after signing in would lose the sign-in. Flush shortly after any change (once per session). */
+/** What keeps a profile signed in across a restart (PROFILE sessions only — never an ephemeral workspace's), once per session:
+ *  1. a SESSION cookie (no expiry; Electron drops these at quit) is re-set with a sliding 30-day expiry (OPS ruling, #400);
+ *  2. Chromium writes its cookie store on its own ~30 s timer — a crash or SIGKILL right after signing in would lose the sign-in —
+ *     so the store is flushed shortly after any change. */
 function persistSignIns(ses: Electron.Session): void {
   if (signInSessions.has(ses)) return;
   signInSessions.add(ses);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  ses.cookies.on('changed', () => {
+  ses.cookies.on('changed', (_e, cookie, _cause, removed) => {
+    if (!removed) {
+      const promoted = promoteSessionCookie(cookie, Date.now() / 1000);
+      if (promoted) ses.cookies.set(promoted).catch((err) => log.debug('browser-panel: promoting a session cookie failed', err));
+    }
     if (timer) return;
     timer = setTimeout(() => {
       timer = null;
