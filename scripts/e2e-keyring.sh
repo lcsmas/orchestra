@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # #389 — Linux keyring selection + re-encryption + Settings warning, driven in a BUILT Orchestra under its OWN headless
 # sway (scripts/e2e-contained-rig.sh: marker-verified, `env -i` allowlist). Every arm gets a PRIVATE `dbus-run-session`
-# (own config: NO host service dirs, so nothing is ever D-Bus-activated from the host), a private gnome-keyring-daemon under a
+# (own config: NO host service dirs, so no host service is ever D-Bus-activated INTO a rig), a private gnome-keyring-daemon under a
 # scratch XDG_DATA_HOME / XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR. The human's login keyring and bus
-# are never an input: the host keyring files are hashed before/after and the real bus is never addressed by an app.
+# are never an input to an app: the host keyring files are hashed before/after, and the human's bus is only read — one
+# Properties.Get Locked per run, plus (arm `fleet`, whose app runs with the REAL XDG_RUNTIME_DIR) a spied selection control.
 # Driver: scripts/e2e-keyring.mjs. HEAVY (an Electron app under a compositor): MemAvailable > 6 GB right before.
 #
-# Usage: scripts/e2e-keyring.sh <app-dir> [--arms unlocked,locked,nosvc,recognised,hung,gnome,relock] [--out <dir>] [--label <name>]
+# Usage: scripts/e2e-keyring.sh <app-dir> [--arms unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,fleet] [--out <dir>] [--label <name>]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. cli.js + keeper.js) with the Electron-ABI bus binding.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -667,6 +667,21 @@ the first disk read is single-flight (`loading`).
   `$XDG_RUNTIME_DIR/bus` (`sessionBusKind`), the probe is pointed at it (`probeEnv`) and, when libsecret
   is selected, the address is exported into `process.env` (`exportBusAddress`) — without it libsecret is
   selected but safeStorage stays unavailable (rig arm `unlocked`, verified).
+- **Isolated instances never bind to the human's keyring (review F1)** — `isIsolatedInstance(env)`: `ORCHESTRA_HOME` set
+  (the packaged app never sets it; every built-app rig and `pnpm run dev` does) ⇒ reason `isolated-instance`, Chromium's default, NO probe,
+  NO bus export — otherwise a rig run with the real `XDG_RUNTIME_DIR` would seal scratch secrets through the human's login
+  keyring and carry his bus. `ORCHESTRA_KEYRING=probe` opts in (only `scripts/e2e-keyring.sh`, which brings a private bus).
+- **Fail closed (review F3)** — `getAccountApiCredentials(id)` is the ONLY way agents (`agent-sdk.ts` `buildSdkEnv`) and the usage
+  probe read an API key: a key whose base URL is stored but undecryptable (a locked keyring after the key was re-typed in plaintext) is
+  `withheld: 'base-url-unreadable'` — never sent without its gateway URL; a stored-but-undecryptable key is `key-unreadable` (the
+  usage text says so, not "no API key stored"). Do not call `getAccountApiKey`/`getAccountBaseUrl` from a new consumer.
+- **File hygiene (review F2)** — a load sweeps `secrets.json.<pid>.tmp` (a killed writer's leftover plaintext copy, next to the
+  link target when `secrets.json` is a symlink; anchored name match, non-recursive); a symlinked `secrets.json` is written THROUGH
+  (`writeTarget`: the directory is `realpath`ed first, relative links resolve from it, the link survives). Known limit: a link whose
+  target DIRECTORY is read-only cannot get its temp file there — the save fails loudly (EACCES), the previous bytes are untouched.
+- **Usage text** — `accountKeyMissingMessage(withheld)` names "stored but unreadable" / "withheld: base URL unreadable" without
+  blaming a cause (locked wallet, no bus, other keyring all land there); it is data on `AccountUsageStatus.errorMessage` — the badges
+  still key on `errorKind` alone.
 - **Re-encryption at startup** — `reencryptPlaintextSecrets()` (fired after the window in `index.ts`):
   a no-op that never touches safeStorage when nothing is plaintext; skipped while encryption is
   unavailable; otherwise each plaintext entry is replaced only by ciphertext that DECRYPTS BACK TO THE
@@ -676,8 +691,8 @@ the first disk read is single-flight (`loading`).
 - **State for Settings** — `getSecretsState()` → `SecretsState {encrypted, backend, plaintextEntries,
   encryptedEntries}` (`shared/secrets-state.ts`), IPC `secrets:state` / `window.orchestra.getSecretsState()`.
   `secretsNotice(state)` is the pure rule for the warning ("Secrets are stored unencrypted on this
-  machine…", plus an "N stored secrets are encrypted and unreadable until the keyring is unlocked"
-  variant); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.
+  machine…", plus an "N stored secrets are encrypted and unreadable until a keyring is available again"
+  variant — no cause named); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.
   `isSecretStorageEncrypted` (`accounts:secretsEncrypted`, the old boolean) is kept.
 - **Rigs** — `scripts/e2e-keyring.sh` (built app, own sway, a PRIVATE `dbus-run-session` with no host
   service dirs + a private gnome-keyring-daemon under scratch XDG dirs; arms unlocked / locked /

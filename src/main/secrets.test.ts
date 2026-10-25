@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
+import { accountAgentEnv } from '../shared/accounts.ts';
 import { initPlatform, type OrchestraPlatform } from './platform/index.ts';
 import {
   __resetSecretsCacheForTests,
   accountApiKeyIds,
   clearLinearApiKey,
+  getAccountApiCredentials,
   getAccountApiKey,
   getAccountBaseUrl,
   getLinearApiKey,
@@ -262,4 +264,121 @@ test('a secrets.json that is valid JSON but not an object (null, 0, "", []) read
     const got = await Promise.race([getLinearApiKey(), new Promise((r) => setTimeout(() => r('HUNG'), 3000))]);
     assert.equal(got, undefined, `body ${body}`);
   }
+});
+
+// ---- F3 (review): an API key never travels without its base URL ----------------------------------------------------------
+
+test('credentials: key + URL both readable → both returned; a key with no stored URL → just the key (nothing withheld)', async () => {
+  fake.available = true;
+  await setAccountApiKey('a', 'ka');
+  await setAccountBaseUrl('a', 'https://gw.example');
+  await setAccountApiKey('b', 'kb');
+  reload();
+  assert.deepEqual(await getAccountApiCredentials('a'), { apiKey: 'ka', baseUrl: 'https://gw.example' });
+  assert.deepEqual(await getAccountApiCredentials('b'), { apiKey: 'kb', baseUrl: undefined });
+  assert.deepEqual(await getAccountApiCredentials('nobody'), { apiKey: undefined, baseUrl: undefined });
+});
+
+test('FAIL CLOSED: a key re-typed in plaintext while the keyring was gone, its base URL still ciphertext → the key is WITHHELD, not sent to the default host', async () => {
+  fake.available = true;
+  await setAccountApiKey('a', 'k-old');
+  await setAccountBaseUrl('a', 'https://gw.example');
+  reload();
+  fake.available = false; // the keyring is gone: the URL can no longer be decrypted
+  await setAccountApiKey('a', 'k-new'); // stored in plaintext, so it is readable by itself
+  assert.equal(await getAccountApiKey('a'), 'k-new', 'the raw key IS readable — the unsafe half of the pair');
+  assert.equal(await getAccountBaseUrl('a'), undefined, 'and its URL is not');
+  assert.deepEqual(await getAccountApiCredentials('a'), { withheld: 'base-url-unreadable' });
+  fake.available = true; // the keyring is back: both readable, the key flows with its URL again
+  assert.deepEqual(await getAccountApiCredentials('a'), { apiKey: 'k-new', baseUrl: 'https://gw.example' });
+});
+
+test('credentials: a stored key that cannot be decrypted is reported as key-unreadable (not as "no key"); an unreadable URL with NO key leaks nothing and withholds nothing', async () => {
+  fake.available = true;
+  await setAccountApiKey('a', 'ka');
+  await setAccountBaseUrl('b', 'https://only-url.example');
+  reload();
+  fake.available = false;
+  assert.deepEqual(await getAccountApiCredentials('a'), { withheld: 'key-unreadable' });
+  assert.deepEqual(await getAccountApiCredentials('b'), { apiKey: undefined, baseUrl: undefined });
+});
+
+// ---- F2 (review): temp residue and a symlinked secrets.json ---------------------------------------------------------------
+
+test('a temp file left by a killed process is swept at load; unrelated files and other names are not', async () => {
+  fs.mkdirSync(path.dirname(file()), { recursive: true });
+  fs.writeFileSync(file(), JSON.stringify({ linearApiKey: 'lin_KEEP', enc: false }));
+  const stale = `${file()}.4242.tmp`, stale2 = `${file()}.7.tmp`, other = `${file()}.bak`, note = path.join(path.dirname(file()), 'notes.tmp'), notPid = `${file()}.abc.tmp`;
+  const prefixed = path.join(path.dirname(file()), 'xsecrets.json.1.tmp'), suffixed = `${file()}.1.tmp.old`;
+  for (const f of [stale, stale2, other, note, notPid, prefixed, suffixed]) fs.writeFileSync(f, 'sk-ant-PLAINTEXT-RESIDUE');
+  const dirNamedLikeATemp = `${file()}.5.tmp`;
+  fs.mkdirSync(dirNamedLikeATemp);
+  fs.writeFileSync(path.join(dirNamedLikeATemp, 'inside'), 'not a regular file of ours');
+  reload();
+  assert.equal(await getLinearApiKey(), 'lin_KEEP');
+  assert.ok(!fs.existsSync(stale) && !fs.existsSync(stale2), 'the stale secrets.json.<pid>.tmp files are gone');
+  for (const f of [other, note, notPid, prefixed, suffixed]) assert.ok(fs.existsSync(f), `${path.basename(f)} is not ours to delete (anchored name match)`);
+  assert.ok(fs.existsSync(path.join(dirNamedLikeATemp, 'inside')), 'a directory is never swept');
+});
+
+test('a symlinked secrets.json is written THROUGH: the link survives, the target holds the new content, no residue (also when the link dangles)', async () => {
+  const real = path.join(dir, 'dotfiles');
+  fs.mkdirSync(real, { recursive: true });
+  fs.mkdirSync(path.dirname(file()), { recursive: true });
+  fs.writeFileSync(path.join(real, 'secrets.json'), JSON.stringify({ linearApiKey: 'lin_VIA_LINK', enc: false }));
+  fs.symlinkSync(path.join(real, 'secrets.json'), file());
+  fs.writeFileSync(path.join(real, `secrets.json.777.tmp`), 'stale residue next to the TARGET');
+  reload();
+  assert.equal(await getLinearApiKey(), 'lin_VIA_LINK', 'read through the link');
+  assert.ok(!fs.existsSync(path.join(real, 'secrets.json.777.tmp')), 'the sweep looks next to the target');
+  await setAccountApiKey('a', 'ka');
+  assert.ok(fs.lstatSync(file()).isSymbolicLink(), 'secrets.json is still a symlink');
+  assert.ok(fs.readFileSync(path.join(real, 'secrets.json'), 'utf8').includes('ka'), 'the TARGET holds the write');
+  assert.deepEqual(fs.readdirSync(real), ['secrets.json'], 'no tmp residue beside the target');
+  reload();
+  assert.equal(await getAccountApiKey('a'), 'ka');
+  // dangling link
+  fs.rmSync(file());
+  const gone = path.join(dir, 'dotfiles2');
+  fs.mkdirSync(gone);
+  fs.symlinkSync(path.join(gone, 'secrets.json'), file());
+  reload();
+  await setLinearApiKey('lin_NEW');
+  assert.ok(fs.lstatSync(file()).isSymbolicLink() && fs.existsSync(path.join(gone, 'secrets.json')), 'a dangling link is written through too');
+});
+
+test('a RELATIVE symlink (stow-style) and a symlinked userData/orchestra directory: the write lands where the kernel resolves the link', async () => {
+  const real = path.join(dir, 'dotfiles', 'sub');
+  fs.mkdirSync(real, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'dotfiles', 'x.json'), JSON.stringify({ linearApiKey: 'lin_REL', enc: false }));
+  fs.symlinkSync(real, path.join(dir, 'orchestra')); // userData/orchestra → dotfiles/sub  (the DIRECTORY is a link)
+  fs.symlinkSync('../x.json', path.join(real, 'secrets.json')); // relative: dotfiles/sub/../x.json = dotfiles/x.json
+  reload();
+  assert.equal(await getLinearApiKey(), 'lin_REL');
+  await setAccountApiKey('a', 'ka');
+  assert.ok(fs.readFileSync(path.join(dir, 'dotfiles', 'x.json'), 'utf8').includes('ka'), 'the TARGET (dotfiles/x.json) holds the write');
+  assert.ok(fs.lstatSync(path.join(real, 'secrets.json')).isSymbolicLink(), 'the relative link survives');
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'dotfiles')).sort(), ['sub', 'x.json'], 'no stray file next to the wrong target, no temp residue');
+  reload();
+  assert.equal(await getAccountApiKey('a'), 'ka');
+});
+
+test('F3 composed with the real env builder: a WITHHELD key leaves the agent with NO key and NO base URL, and strips an ambient shell key', async () => {
+  fake.available = true;
+  await setAccountApiKey('a', 'k-old');
+  await setAccountBaseUrl('a', 'https://gw.example');
+  reload();
+  fake.available = false;
+  await setAccountApiKey('a', 'k-new'); // plaintext key, ciphertext URL
+  const account = { env: {}, auth: { mode: 'apiKey' } } as never;
+  const { apiKey, baseUrl, withheld } = await getAccountApiCredentials('a');
+  const { set, strip } = accountAgentEnv(account, '/home/x', { ANTHROPIC_API_KEY: 'ambient-shell-key' }, apiKey, baseUrl);
+  assert.equal(withheld, 'base-url-unreadable');
+  assert.equal(set.ANTHROPIC_API_KEY, undefined, 'the gateway key is NOT handed to the agent');
+  assert.equal(set.ANTHROPIC_BASE_URL, undefined);
+  assert.ok(strip.includes('ANTHROPIC_API_KEY') && strip.includes('ANTHROPIC_BASE_URL'), 'an ambient key is stripped, not substituted');
+  fake.available = true;
+  const ok = await getAccountApiCredentials('a');
+  const env2 = accountAgentEnv(account, '/home/x', {}, ok.apiKey, ok.baseUrl);
+  assert.deepEqual([env2.set.ANTHROPIC_API_KEY, env2.set.ANTHROPIC_BASE_URL], ['k-new', 'https://gw.example'], 'with the keyring back the pair flows together');
 });

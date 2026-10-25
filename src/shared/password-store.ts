@@ -25,6 +25,7 @@ export type SecretServiceState =
 
 export type PasswordStoreReason =
   | 'explicit-switch'
+  | 'isolated-instance'
   | 'no-session-bus'
   | 'recognised-desktop'
   | 'unlocked-service'
@@ -48,6 +49,14 @@ const RECOGNISED_DESKTOP_TOKENS: ReadonlySet<string> = new Set([
 const DESKTOP_PRESENCE_VARS = ['GNOME_DESKTOP_SESSION_ID', 'KDE_FULL_SESSION', 'KDE_SESSION_VERSION'] as const;
 
 type Env = Record<string, string | undefined>;
+
+/** A scratch / dev instance: `ORCHESTRA_HOME` relocates every piece of its state (the packaged app never sets it), so it
+ *  must not bind to the human's REAL keyring and session bus either — every built-app rig sets it with the real runtime dir,
+ *  and would otherwise seal scratch secrets through his login keyring. `ORCHESTRA_KEYRING=probe` opts in (the keyring rig,
+ *  which brings its own private bus). */
+export function isIsolatedInstance(env: Env): boolean {
+  return Boolean(env.ORCHESTRA_HOME) && env.ORCHESTRA_KEYRING?.trim() !== 'probe'; // same truthiness as index.ts's `if (process.env.ORCHESTRA_HOME)`
+}
 
 /** True when Chromium resolves this desktop to a backend itself. */
 export function isRecognisedDesktop(env: Env): boolean {
@@ -73,6 +82,7 @@ export function decidePasswordStore(input: {
   probe: () => SecretServiceState;
 }): PasswordStoreDecision {
   if (input.passwordStoreAlreadySelected) return { store: null, reason: 'explicit-switch' };
+  if (isIsolatedInstance(input.env)) return { store: null, reason: 'isolated-instance' };
   if (!input.sessionBusReachable) return { store: null, reason: 'no-session-bus' };
   if (isRecognisedDesktop(input.env)) return { store: null, reason: 'recognised-desktop' };
   const state = input.probe();

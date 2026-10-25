@@ -24,7 +24,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
 import { store } from './store';
-import { getAccountApiKey, getAccountBaseUrl } from './secrets';
+import { getAccountApiCredentials } from './secrets';
 import { log, scoped } from './logger';
 import { decideGateRelease, isProofOfLifeMessage, shouldRedriveInbox } from '../shared/session-wedge.ts';
 import { resolveLaunchModel } from '../shared/model-defaults.ts';
@@ -854,9 +854,10 @@ async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): P
     // when the account authenticates with one).
     const account = workspaceAccount(ws);
     const useKey = account && isApiKeyAccount(account);
-    const [apiKey, baseUrl] = useKey
-      ? await Promise.all([getAccountApiKey(account.id), getAccountBaseUrl(account.id)])
-      : [undefined, undefined];
+    // One accessor for the pair: a key whose base URL cannot be decrypted is WITHHELD (fail closed), never sent to the default host.
+    const creds = useKey ? await getAccountApiCredentials(account.id) : {};
+    if (creds.withheld) log.warn(`API key for account ${account?.id} withheld (${creds.withheld}): the agent starts without it`);
+    const { apiKey, baseUrl } = creds;
     const acct = accountAgentEnv(account, os.homedir(), process.env, apiKey, baseUrl);
     for (const k of acct.strip) delete env[k];
     Object.assign(env, acct.set);

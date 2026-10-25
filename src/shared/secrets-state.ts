@@ -20,8 +20,9 @@ export interface SecretsNotice {
 }
 
 /** The warning to show, or null — nothing at all when encryption works. When it does not, stored
- *  ciphertext (written on an earlier run with a keyring) is unreadable until the keyring is back, which
- *  is worth saying: the keys are not lost, but they do not work either. */
+ *  ciphertext (written on an earlier run with a keyring) is unreadable until a keyring answers again, which
+ *  is worth saying: the keys are not lost, but they do not work either. No cause is named — a locked
+ *  wallet, no reachable session bus and no `gdbus` all end in the same state. */
 export function secretsNotice(state: SecretsState | null): SecretsNotice | null {
   if (!state || state.encrypted) return null;
   const text = 'Secrets are stored unencrypted on this machine: no keyring is available.';
@@ -29,8 +30,17 @@ export function secretsNotice(state: SecretsState | null): SecretsNotice | null 
     const n = state.encryptedEntries;
     return {
       kind: 'unreadable',
-      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable until the keyring is unlocked.`,
+      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable until a keyring is available again.`,
     };
   }
   return { kind: 'unencrypted', text };
+}
+
+/** The usage-probe message for an API-key account that has no usable key. A stored-but-unreadable key must not read as "no API key
+ *  stored" (Settings shows it as stored), and a key withheld for its unreadable base URL says why — fail closed, never sent to the
+ *  default host. `undefined` = nothing is stored. */
+export function accountKeyMissingMessage(withheld: 'key-unreadable' | 'base-url-unreadable' | undefined): string {
+  if (withheld === 'key-unreadable') return 'API key stored but unreadable';
+  if (withheld === 'base-url-unreadable') return 'API key withheld: its base URL is stored but unreadable';
+  return 'no API key stored';
 }

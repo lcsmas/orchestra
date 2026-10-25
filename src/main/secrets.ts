@@ -14,7 +14,7 @@
 
 // Explicit `.ts` imports: the type-stripping test runner loads this module (secrets.test.ts).
 import { platform } from './platform/index.ts';
-import { readFile, writeFile, mkdir, rm, rename, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, rename, chmod, readdir, lstat, readlink, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { log } from './logger.ts';
@@ -51,11 +51,51 @@ function secretsPath(): string {
   return path.join(platform.getUserDataDir(), 'orchestra', 'secrets.json');
 }
 
+/** Where a write must land: `secrets.json` itself, or — when it is a symlink (dotfile-managed) — the file it points at, so the
+ *  link survives (a rename onto the link would replace it with a regular file and leave the target stale). A dangling link
+ *  resolves to its target path too. */
+async function writeTarget(): Promise<string> {
+  const lexical = secretsPath();
+  // The kernel resolves a relative link from the PHYSICAL directory (`orchestra/` may itself be a symlink); do the same.
+  let file = path.join(await realpath(path.dirname(lexical)).catch(() => path.dirname(lexical)), path.basename(lexical));
+  for (let hops = 0; hops < 8; hops++) {
+    let link: string;
+    try {
+      if (!(await lstat(file)).isSymbolicLink()) return file;
+      link = await readlink(file);
+    } catch {
+      return file; // missing: a fresh file
+    }
+    file = path.resolve(path.dirname(file), link);
+  }
+  return file;
+}
+
+/** `secrets.json.<pid>.tmp` left by a process killed between the temp write and the rename: a second copy of whatever was
+ *  being written — plaintext included — that no later save would ever remove. */
+async function sweepStaleTemps(): Promise<void> {
+  const target = await writeTarget();
+  const dir = path.dirname(target);
+  const re = new RegExp(`^${path.basename(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d+\\.tmp$`);
+  let names: string[] = [];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    if (!re.test(n)) continue;
+    // Non-recursive: a directory that happens to carry the name makes `rm` throw and is left alone.
+    await rm(path.join(dir, n), { force: true }).catch(() => {});
+  }
+}
+
 /** One in-flight disk read at a time: concurrent first callers share it (each parsing its own copy let
  *  the last writer win and drop the others' updates). */
 let loading: Promise<void> | null = null;
 
 async function loadFromDisk(): Promise<void> {
+  await sweepStaleTemps();
   const file = secretsPath();
   if (!existsSync(file)) {
     cached = {};
@@ -95,7 +135,7 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
  *  the previous contents — possibly the only copy of a plaintext key — survive. `cached` follows the
  *  disk: it only changes once the rename has landed. */
 async function writeFileSafe(data: SecretsFile): Promise<void> {
-  const file = secretsPath();
+  const file = await writeTarget();
   const dir = path.dirname(file);
   if (!existsSync(dir)) await mkdir(dir, { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -199,6 +239,26 @@ function decodeSecret(secret: StoredSecret | undefined, what: string): string | 
 export async function getAccountApiKey(accountId: string): Promise<string | undefined> {
   const data = await readFileSafe();
   return decodeSecret(data.accountApiKeys?.[accountId], `API key for account ${accountId}`);
+}
+
+/** What an agent / usage probe may use for an API-key account. `withheld` explains why a STORED key is not returned: a key that
+ *  cannot be decrypted, or — fail CLOSED — a key whose base URL is stored but cannot be decrypted (a locked keyring after the
+ *  key was re-typed in plaintext): sending that key without its URL would hand a gateway credential to api.anthropic.com. */
+export interface AccountApiCredentials {
+  apiKey?: string;
+  baseUrl?: string;
+  withheld?: 'key-unreadable' | 'base-url-unreadable';
+}
+
+export async function getAccountApiCredentials(accountId: string): Promise<AccountApiCredentials> {
+  const data = await readFileSafe();
+  const keyEntry = data.accountApiKeys?.[accountId];
+  const urlEntry = data.accountBaseUrls?.[accountId];
+  const apiKey = decodeSecret(keyEntry, `API key for account ${accountId}`);
+  const baseUrl = decodeSecret(urlEntry, `base URL for account ${accountId}`);
+  if (keyEntry?.value && apiKey === undefined) return { withheld: 'key-unreadable' };
+  if (apiKey !== undefined && urlEntry?.value && baseUrl === undefined) return { withheld: 'base-url-unreadable' };
+  return { apiKey, baseUrl };
 }
 
 /** Every account id that currently has a stored key — lets the renderer show

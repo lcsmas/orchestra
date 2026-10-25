@@ -31,6 +31,8 @@ const MUTANTS = [
   ['E2', MAIN, /(\w+)==="unlocked"\?\{store:"gnome-libsecret"/, 'false?{store:"gnome-libsecret"', 'unlocked', 'unlocked/state-encrypted', 'never selects libsecret'],
   ['E3', MAIN, /if\(\w+\(e\.env\)\)return\{store:null,reason:"recognised-desktop"\};/, '', 'recognised', 'recognised/decision-logged', 'overrides a recognised desktop\'s own choice'],
   ['E4', MAIN, /(\w+)\(\)\.then\((\w)=>\{\2\.reencrypted\|\|/, 'Promise.resolve({reencrypted:0,failed:0,skipped:null}).then($2=>{$2.reencrypted||', 'unlocked', 'unlocked/file-re-encrypted', 'no re-encryption at all (startup or Settings)'],
+  ['E12', MAIN, /if\(\w+\(e\.env\)\)return\{store:null,reason:"isolated-instance"\};/, '', 'isolated', 'isolated/decision-logged', 'an ORCHESTRA_HOME instance binds to a reachable keyring (the human\'s, in a real rig) — runs only against the PRIVATE world'],
+  ['E13', MAIN, /\(\((\w)=(\w)\.ORCHESTRA_KEYRING\)==null\?void 0:\1\.trim\(\)\)!=="probe"/, 'true', 'unlocked', 'unlocked/decision-logged', 'ORCHESTRA_KEYRING=probe no longer opts a rig in'],
   ['E10', MAIN, /return (\w+)\.encrypted&&\1\.plaintextEntries>0&&\w+\("settings"\),\1/, 'return $1', 'gnome', 'gnome/file-re-encrypted', 'Settings never re-attempts the re-encryption'],
   ['E11', MAIN, /\(\w+==null\?void 0:\w+\.store\)==="gnome-libsecret"&&(\w+\("startup"\))/, '$1', 'gnome', 'gnome/startup-did-not-touch-secrets', 'startup re-encryption without our own unlocked probe (touches a recognised desktop\'s keyring)'],
   ['E5', MAIN, /\w+&&e\.exportBusAddress\([^;]*\);/, '', 'unlocked', 'unlocked/state-encrypted', 'does not hand libsecret the probed bus (Electron\'s `disabled:` stays)'],

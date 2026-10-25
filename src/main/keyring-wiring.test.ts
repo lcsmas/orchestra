@@ -49,3 +49,12 @@ test('both secret-holding Settings dialogs render the notice; the Linear dialog 
   assert.match(linear, /secrets\?\.encrypted === true && secrets\.plaintextEntries === 0 && 'It’s stored encrypted on this machine\.'/);
   assert.doesNotMatch(linear, /\(separate from the Linear MCP login\)\. It’s stored encrypted/);
 });
+
+test('F3: both consumers of the stored key go through the fail-closed pair accessor — never the raw key/URL getters', () => {
+  for (const f of ['src/main/agent-sdk.ts', 'src/main/account-usage.ts']) {
+    const src = read(f);
+    assert.match(src, /getAccountApiCredentials/, `${f} uses the pair accessor`);
+    assert.doesNotMatch(src, /\bgetAccountApiKey\b|\bgetAccountBaseUrl\b/, `${f} must not read the key and URL separately`);
+  }
+  assert.match(read('src/main/account-usage.ts'), /accountKeyMissingMessage\(withheld\)/, 'the usage text distinguishes stored-but-unreadable from absent');
+});

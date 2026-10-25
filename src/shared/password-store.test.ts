@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   decidePasswordStore,
+  isIsolatedInstance,
   isRecognisedDesktop,
   parseCollectionLocked,
   type SecretServiceState,
@@ -55,6 +56,18 @@ test('other tiling compositors are unrecognised and reach the probe', () => {
 
 test('an explicit --password-store always wins and the probe never runs', () => {
   assert.deepEqual(decide(SWAY, 'unlocked', true), { store: null, reason: 'explicit-switch', probes: 0 });
+});
+
+test('an isolated instance (ORCHESTRA_HOME set) never binds to the keyring: Chromium default, probe never runs — unless ORCHESTRA_KEYRING=probe opts in', () => {
+  const scratch = { ...SWAY, ORCHESTRA_HOME: '/scratch-home' };
+  assert.deepEqual(decide(scratch, 'unlocked'), { store: null, reason: 'isolated-instance', probes: 0 });
+  assert.deepEqual(decide({ ...scratch, ORCHESTRA_KEYRING: 'probe' }, 'unlocked'), { store: 'gnome-libsecret', reason: 'unlocked-service', probes: 1 });
+  assert.equal(decide({ ...scratch, ORCHESTRA_KEYRING: 'off' }, 'unlocked').reason, 'isolated-instance', 'only the exact word "probe" opts in');
+  assert.equal(decide({ ...SWAY, ORCHESTRA_KEYRING: 'probe' }, 'unlocked').store, 'gnome-libsecret', 'the opt-in alone changes nothing');
+  assert.equal(decide({ ...SWAY, ORCHESTRA_HOME: '' }, 'unlocked').store, 'gnome-libsecret', 'an empty ORCHESTRA_HOME is not set (index.ts relocates only on a truthy value)');
+  assert.equal(decide({ ...SWAY, ORCHESTRA_HOME: '  ' }, 'unlocked').reason, 'isolated-instance', 'any non-empty value relocates the instance, so it is isolated too');
+  assert.equal(decide(scratch, 'unlocked', true).reason, 'explicit-switch', 'an explicit --password-store still wins');
+  assert.equal(isIsolatedInstance({}), false);
 });
 
 test('no reachable session bus → nothing to name, the probe never runs', () => {
