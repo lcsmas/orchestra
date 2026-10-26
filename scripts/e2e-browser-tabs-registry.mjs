@@ -25,6 +25,19 @@ const LIVE_CFG = flag('--live-cfg', null);
 const ARMS = flag('--arm', 'app,probe').split(',');
 const MUTANT = flag('--mutant', null);
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
+const MUTANTS = {
+  'destroy-active-only': { find: 'for (const tab of panel.tabs) destroyTab(tab);\n  notifyPanelListeners(wsId, [], true);', replace: 'destroyTab(activeTabOf(panel)!);\n  notifyPanelListeners(wsId, [], true);', red: 'destroyPanel closes EVERY tab' },
+  'no-detach-prev': { find: 'if (prev) detachTab(panel, prev);', replace: '', red: 'activateTab swaps the composited view' },
+};
+// Static drift guard (no rig, no app): every mutant's find-string must occur EXACTLY once in src/main/browser-panel.ts, or `--mutant <name>` dies at
+// the bundler (this is what #395 did to `destroy-active-only` unnoticed). Run: node scripts/e2e-browser-tabs-registry.mjs --check-anchors
+if (argv.includes('--check-anchors')) {
+  const src = fs.readFileSync(path.join(repoRoot, 'src/main/browser-panel.ts'), 'utf8');
+  let bad = 0;
+  for (const [name, m] of Object.entries(MUTANTS)) { const n = src.split(m.find).length - 1; const ok = n === 1 && m.find !== m.replace; if (!ok) bad++; console.log(`${ok ? 'ok ' : 'BAD'} ${name}: find-string occurs ${n}x in src/main/browser-panel.ts (need exactly 1)`); }
+  console.log(bad ? `ANCHORS: ${bad} drifted` : `ANCHORS: all ${Object.keys(MUTANTS).length} match exactly once`);
+  process.exit(bad ? 1 : 0);
+}
 if (!APP_DIR) refuse('no <app-dir>');
 const RIG_DIR = process.env.RIG_DIR, RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-tabs-registry.sh (the contained rig)');
@@ -166,10 +179,7 @@ async function appArm() {
 }
 
 // ── probe arm ─────────────────────────────────────────────────────────────────────────────────────
-const MUTANTS = {
-  'destroy-active-only': { find: 'for (const tab of panel.tabs) destroyTab(tab);\n}', replace: 'destroyTab(activeTabOf(panel)!);\n}', red: 'destroyPanel closes EVERY tab' },
-  'no-detach-prev': { find: 'if (prev) detachTab(panel, prev);', replace: '', red: 'activateTab swaps the composited view' },
-};
+
 async function bundleBp(armDir) {
   const { build } = (() => { try { return require_('esbuild'); } catch { const g = fs.globSync?.(repoRoot + '/node_modules/.pnpm/esbuild@*/node_modules/esbuild') ?? []; if (!g.length) throw new Error('esbuild not resolvable'); return require_(g[0]); } })();
   const out = path.join(armDir, 'bp-bundle.cjs');
