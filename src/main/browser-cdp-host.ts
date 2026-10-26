@@ -29,7 +29,9 @@ import { sessionKeys } from './session-identity-host.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
-import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel, type CdpTabEvent } from '../shared/cdp-proxy-core.ts';
+import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel } from '../shared/cdp-proxy-core.ts';
+import { decideAgentCdp } from '../shared/browser-profile.ts';
+import { diffTabs } from '../shared/cdp-tab-diff.ts';
 import { describeAgentTabs, type AgentTabView } from '../shared/browser-agent-tabs.ts';
 import { AGENT_OPENER } from '../shared/browser-tab-policy.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
@@ -49,17 +51,15 @@ export function makePanelPort(wsId: string): CdpPanelPort {
   return {
     listTabs: () => bp.listTabs(wsId).map(toCdpTab),
     subscribeTabs: (listener) => {
-      let prev = new Map(bp.listTabs(wsId).map((t) => [t.id, t]));
+      // A tab id keeps its number across an in-place rebuild (#400 profile attach / detach / delete) but its webContents does not: the view id tells the diff.
+      const snapshot = (tabs: BrowserTabInfo[]) => new Map(tabs.map((t) => [t.id, { tab: toCdpTab(t), view: bp.tabContents(wsId, t.id)?.id }]));
+      let prev = snapshot(bp.listTabs(wsId));
       return bp.onPanelChange((id, tabs, destroyed) => {
         if (id !== wsId) return;
-        const next = new Map(tabs.map((t) => [t.id, t]));
-        const events: CdpTabEvent[] = [];
-        for (const [tid, t] of next) {
-          const was = prev.get(tid);
-          if (!was) events.push({ kind: 'created', tab: toCdpTab(t) });
-          else if (was.url !== t.url || was.title !== t.title || was.active !== t.active) events.push({ kind: 'changed', tab: toCdpTab(t) });
-        }
-        for (const [tid, t] of prev) if (!next.has(tid)) events.push({ kind: 'destroyed', tab: toCdpTab(t) });
+        const next = snapshot(tabs);
+        const events = diffTabs(prev, next);
+        // rig/trace evidence: what the panel published and what the proxy was told (a half-built tab list reads as a tab closed and reopened)
+        if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`cdp[${wsId.slice(0, 8)}] panel-change ${JSON.stringify({ t: tabs.map((t) => t.id), v: [...next.values()].map((v) => v.view), e: events.map((e) => `${e.kind}:${e.tab.id}`) })}`); // compact: the logger cuts long lines
         prev = next;
         void destroyed;
         for (const e of events) listener(e);
@@ -129,6 +129,14 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       }
       if (panel.attachedId !== tabId) return `tab ${tabId} is not on screen`;
       return null;
+    },
+    // #400: while this workspace's panel runs on a profil navigateur (shared with other workspaces and sites), an agent may not clear its jar or
+    // read/alter another site's cookies — judged on the call's params and the TARGETED tab's url (shared/browser-profile.ts decideAgentCdp).
+    // Read at call time (`panelProfileId`): a profile attached or deleted mid-session applies to the very next command.
+    refuseMethod: (method, params, tab) => {
+      const d = decideAgentCdp({ method, params, profileId: bp.panelProfileId(wsId), pageUrl: tab.url, frameUrls: bp.tabFrameUrls(wsId, tab.id) });
+      // The core judges TRUTHINESS: a refusal must be a NON-EMPTY string on every path ('' / undefined would fail OPEN) — hence the fallback text.
+      return d.ok ? null : d.message || 'refused: the profil navigateur policy of this workspace forbids this command';
     },
   };
 }
