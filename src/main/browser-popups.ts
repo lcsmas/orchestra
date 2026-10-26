@@ -4,7 +4,7 @@
 
 import type { BrowserWindow, WebContents } from 'electron';
 import type { BrowserTabOpener } from '../shared/types';
-import { USER_GESTURE_WINDOW_MS } from '../shared/browser-tab-policy.ts';
+import { POPUP_RATE_WINDOW_MS, USER_GESTURE_WINDOW_MS } from '../shared/browser-tab-policy.ts';
 
 // ---- user gesture ------------------------------------------------------------------------------------------------------
 // Electron's window-open handler does not say whether a user gesture started the popup. `input-event` fires for real input (also CDP-dispatched
@@ -39,6 +39,10 @@ export function consumeUserGesture(wc: WebContents, now: number = Date.now()): b
 
 /** One popup child window (an `window.opener` popup, e.g. an OAuth sign-in). */
 export interface PopupWindow {
+  /** `w1`, `w2`… minted at registration, never reused: the memory attribution (#394) names a window by it. */
+  id: string;
+  /** The `window.open` target name ('' when unnamed): Electron's frame-name registry is process-global, so another workspace must not reuse a live one. */
+  frameName: string;
   win: BrowserWindow;
   /** The contents that called `window.open` (a tab, or another child window). */
   opener: WebContents;
@@ -61,12 +65,53 @@ export function livePopupWindows(wsId: string): PopupWindow[] {
   return [...set];
 }
 
-/** Record `p` for `wsId`; it leaves the registry when its window closes. */
-export function registerPopupWindow(wsId: string, p: PopupWindow): void {
+let windowSeq = 0;
+
+/** Record `p` for `wsId` (stamping its id); it leaves the registry when its window closes. */
+export function registerPopupWindow(wsId: string, p: Omit<PopupWindow, 'id'>): PopupWindow {
+  const entry: PopupWindow = { ...p, id: `w${++windowSeq}` };
   let set = windows.get(wsId);
   if (!set) windows.set(wsId, (set = new Set()));
-  set.add(p);
-  p.win.once('closed', () => windows.get(wsId)?.delete(p));
+  set.add(entry);
+  entry.win.once('closed', () => windows.get(wsId)?.delete(entry));
+  return entry;
+}
+
+/** Is a live popup window named `frameName` held by a workspace OTHER than `wsId`? (Electron would load a new popup's URL into it, across partitions.) */
+export function frameNameHeldElsewhere(wsId: string, frameName: string): boolean {
+  const name = frameName.trim();
+  if (name === '') return false;
+  for (const other of [...windows.keys()]) {
+    if (other === wsId) continue;
+    if (livePopupWindows(other).some((p) => p.frameName === name)) return true;
+  }
+  return false;
+}
+
+// ---- opening rate --------------------------------------------------------------------------------------------------------
+// The budget is CONCURRENT (a popup that closes frees its slot), so a page that opens and closes popups would churn windows for ever: the policy also caps
+// how many page-initiated popups a workspace may OPEN per minute. One timestamp per opened popup, per workspace, pruned on read.
+
+const pageOpens = new Map<string, number[]>();
+
+/** Record that `wsId` just opened a page-initiated popup. */
+export function notePageInitiatedOpen(wsId: string, now: number = Date.now()): void {
+  const list = pageOpens.get(wsId) ?? [];
+  list.push(now);
+  pageOpens.set(wsId, list);
+}
+
+/** How many page-initiated popups `wsId` opened within the last rate window. */
+export function recentPageInitiatedOpens(wsId: string, now: number = Date.now()): number {
+  const fresh = (pageOpens.get(wsId) ?? []).filter((t) => now - t < POPUP_RATE_WINDOW_MS);
+  if (fresh.length === 0) pageOpens.delete(wsId);
+  else pageOpens.set(wsId, fresh);
+  return fresh.length;
+}
+
+/** Forget a workspace's opening history (delete / archive). */
+export function forgetPopupRate(wsId: string): void {
+  pageOpens.delete(wsId);
 }
 
 /** Destroy a window, tolerating one that is already gone. */
@@ -82,6 +127,7 @@ function destroyWindow(p: PopupWindow): void {
 export function closePopupWindows(wsId: string): void {
   for (const p of livePopupWindows(wsId)) destroyWindow(p);
   windows.delete(wsId);
+  forgetPopupRate(wsId);
 }
 
 /** Destroy the popup windows `opener` opened — and, through them, the ones those opened — when `opener` goes away. */

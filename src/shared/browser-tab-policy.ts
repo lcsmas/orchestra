@@ -6,6 +6,7 @@
 //   - popup routing (#396): `_blank`/unnamed -> tab, opener-dependent -> native child window, page-initiated -> budget, all under the same cap.
 
 import type { BrowserTabOpener } from './types.ts';
+import { featuresSmuggleWebContents } from './browser-popup-window.ts';
 
 /** Tabs a workspace may hold, human and agent combined (spec #388, user story 15: 20 workspaces x tabs must not push the machine to critical memory). */
 export const BROWSER_TAB_CAP = 8;
@@ -104,6 +105,11 @@ export function decideBrowserAutoOpen(
 /** Page-initiated popups (opened WITHOUT a user gesture) a workspace may hold open at once, tabs and child windows together (spec #388 story 14). */
 export const POPUP_BUDGET = 3;
 
+/** Page-initiated popups a workspace may OPEN per `POPUP_RATE_WINDOW_MS`, whether or not the earlier ones are still open: the budget alone is concurrent, so a page
+ *  that opens and closes its popups could churn windows forever (#396 review F4). User-gesture popups are bounded by the user's own clicks. */
+export const POPUP_RATE_MAX = 6;
+export const POPUP_RATE_WINDOW_MS = 60_000;
+
 /** Chromium's transient user-activation lifetime: an input this recent is the gesture that may open a popup (the main process consumes it on use). */
 export const USER_GESTURE_WINDOW_MS = 5000;
 
@@ -127,11 +133,16 @@ export interface PopupContext {
   openWindows: number;
   /** Page-initiated popups (tabs + windows) still open. */
   pageInitiatedOpen: number;
+  /** Page-initiated popups OPENED (not refused) by this workspace within the last `POPUP_RATE_WINDOW_MS`, closed or not. */
+  recentPageInitiated?: number;
+  /** A live popup window with this request's frame name belongs to ANOTHER workspace: Electron's frame-name registry is process-global and would load this URL into it. */
+  nameHeldElsewhere?: boolean;
   cap?: number;
   budget?: number;
+  rateMax?: number;
 }
 
-export type PopupRefusal = 'cap' | 'budget' | 'unsafe-url' | 'no-gesture-external';
+export type PopupRefusal = 'cap' | 'budget' | 'rate' | 'unsafe-url' | 'unsafe-features' | 'no-gesture-external' | 'name-in-use';
 
 /** Where a popup goes. */
 export type PopupRouteDecision =
@@ -139,21 +150,22 @@ export type PopupRouteDecision =
   | { route: 'new-tab'; activate: boolean; pageInitiated: boolean }
   /** `window.opener`-dependent (named, or a sized popup): a native child window that KEEPS its opener, so an OAuth sign-in can post back. */
   | { route: 'child-window'; pageInitiated: boolean }
-  /** A non-web scheme the user clicked: the OS handles it. */
+  /** An allow-listed OS scheme (`mailto:`, `tel:`) the user clicked: the OS handles it. */
   | { route: 'external' }
   | { route: 'refuse'; reason: PopupRefusal; message: string };
 
 type UrlKind = 'web' | 'blank' | 'external' | 'unsafe';
 
-/** Schemes a page-controlled popup must never hand to the OS or load: script, inline documents, local files, internal pages. */
-const UNSAFE_SCHEMES = /^(javascript|data|file|vbscript|blob|chrome|chrome-untrusted|devtools|view-source|filesystem|about):/i;
+/** The ONLY non-web schemes a clicked popup may hand to the OS. Everything else with a scheme (`javascript:`, `data:`, `file:`, `ssh:`, `smb:`, `zoommtg:`, internal pages…)
+ *  is refused: an agent's CDP click counts as a click, so a blocklist would let a prompt-injected page launch any registered handler (#396 review F3). */
+const OS_HANDOFF_SCHEMES = /^(mailto|tel):/i;
 
 function classifyUrl(url: string): UrlKind {
   const u = url.trim();
   if (/^https?:\/\//i.test(u)) return 'web';
   if (u === '' || /^about:blank$/i.test(u)) return 'blank';
-  if (UNSAFE_SCHEMES.test(u) || !/^[a-z][a-z0-9+.-]*:/i.test(u)) return 'unsafe';
-  return 'external';
+  if (OS_HANDOFF_SCHEMES.test(u)) return 'external';
+  return 'unsafe';
 }
 
 /** Does this `window.open` features string opt out of the opener (`noopener`, not `noopener=0|no|false`)? */
@@ -178,9 +190,13 @@ export function popupNeedsOpener(req: Pick<PopupRequest, 'frameName' | 'disposit
 export function decidePopup(req: PopupRequest, ctx: PopupContext): PopupRouteDecision {
   const cap = ctx.cap ?? BROWSER_TAB_CAP;
   const budget = ctx.budget ?? POPUP_BUDGET;
+  const rateMax = ctx.rateMax ?? POPUP_RATE_MAX;
   const kind = classifyUrl(req.url);
   if (kind === 'unsafe') {
-    return { route: 'refuse', reason: 'unsafe-url', message: 'A page tried to open a window on a script, file or internal URL: refused.' };
+    return { route: 'refuse', reason: 'unsafe-url', message: 'A page tried to open a window on a script, file, internal or unlisted-scheme URL: refused.' };
+  }
+  if (featuresSmuggleWebContents(req.features)) {
+    return { route: 'refuse', reason: 'unsafe-features', message: 'A page tried to open a window with a `webContents` feature: refused.' };
   }
   if (kind === 'external') {
     // An OS hand-off cannot be counted against a budget, so only a user's own click may start one.
@@ -191,10 +207,17 @@ export function decidePopup(req: PopupRequest, ctx: PopupContext): PopupRouteDec
   if (ctx.openTabs + ctx.openWindows >= cap) {
     return { route: 'refuse', reason: 'cap', message: `Popup refused: a workspace holds at most ${cap} browser tabs and popup windows. Close one first.` };
   }
+  const needsOpener = popupNeedsOpener(req);
+  if (needsOpener && ctx.nameHeldElsewhere) {
+    return { route: 'refuse', reason: 'name-in-use', message: 'Popup refused: another workspace holds a popup window with that name.' };
+  }
   if (!req.userGesture && ctx.pageInitiatedOpen >= budget) {
     return { route: 'refuse', reason: 'budget', message: `Popup refused: a page may hold at most ${budget} popups it opened without a click.` };
   }
+  if (!req.userGesture && (ctx.recentPageInitiated ?? 0) >= rateMax) {
+    return { route: 'refuse', reason: 'rate', message: `Popup refused: a workspace may open at most ${rateMax} popups per minute without a click.` };
+  }
   const pageInitiated = !req.userGesture;
-  if (popupNeedsOpener(req)) return { route: 'child-window', pageInitiated };
+  if (needsOpener) return { route: 'child-window', pageInitiated };
   return { route: 'new-tab', activate: req.userGesture && req.disposition !== 'background-tab', pageInitiated };
 }

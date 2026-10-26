@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, POPUP_BUDGET, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, POPUP_BUDGET, POPUP_RATE_MAX, POPUP_RATE_WINDOW_MS, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
 
 const tabs = (spec: string): PolicyTab[] => spec.split(' ').map((s) => ({ id: s.slice(1), openedBy: s[0] === 'h' ? 'human' : 'agent' }));
 
@@ -210,8 +210,14 @@ test('cap + budget compose: a storm of page-initiated popups stops at min(budget
   assert.equal(run(8), 0);
 });
 
-test('unsafe URLs are refused outright — never loaded, never handed to the OS, with or without a gesture', () => {
-  for (const url of ['javascript:alert(1)', 'data:text/html,<b>x', 'file:///etc/passwd', 'blob:https://x/1', 'about:srcdoc', 'chrome://settings', 'view-source:https://x', 'filesystem:https://x/t/a', 'not a url', 'JAVASCRIPT:1']) {
+test('OS hand-off is an ALLOWLIST of mailto:/tel: — every other scheme is refused outright, with or without a gesture (an agent\'s CDP click is a click)', () => {
+  const unsafe = [
+    'javascript:alert(1)', 'JAVASCRIPT:1', 'vbscript:msgbox(1)', 'data:text/html,<b>x', 'file:///etc/passwd', 'blob:https://x/1', 'about:srcdoc', 'chrome://settings',
+    'chrome-untrusted://x', 'devtools://devtools/bundled/inspector.html', 'view-source:https://x', 'filesystem:https://x/t/a', 'not a url',
+    // registered OS handlers a prompt-injected page + an agent click could otherwise launch
+    'ssh://root@host', 'smb://host/share', 'zoommtg://zoom.us/join?confno=1', 'slack://channel?id=1', 'vscode://file/etc/passwd', 'steam://run/1', 'x-apple.systempreferences:', 'intent://x#Intent;end', 'ftp://x/y',
+  ];
+  for (const url of unsafe) {
     for (const userGesture of [true, false]) {
       const d = decidePopup(click({ url, userGesture }), room);
       assert.equal(d.route, 'refuse', url);
@@ -220,13 +226,49 @@ test('unsafe URLs are refused outright — never loaded, never handed to the OS,
   }
 });
 
-test('external schemes: a clicked mailto:/custom scheme goes to the OS; the same without a gesture is refused', () => {
-  for (const url of ['mailto:a@b.c', 'slack://channel?id=1', 'tel:+33123456789']) {
+test('external schemes: a clicked mailto:/tel: goes to the OS; the same without a gesture is refused', () => {
+  for (const url of ['mailto:a@b.c', 'MAILTO:a@b.c', 'tel:+33123456789']) {
     assert.deepEqual(decidePopup(click({ url }), room), { route: 'external' }, url);
     const d = decidePopup(script({ url }), room);
     assert.equal(d.route, 'refuse', url);
     if (d.route === 'refuse') assert.equal(d.reason, 'no-gesture-external', url);
   }
+});
+
+test('a `webContents` feature is refused (Electron would hand the factory a string for the real guest): any position, spacing, with or without a gesture; other keys are not', () => {
+  for (const features of ['webContents=x', 'width=500,webContents=1,height=600', ' webContents = y ', 'webContents']) {
+    for (const userGesture of [true, false]) {
+      const d = decidePopup(click({ frameName: 'oauth', disposition: 'new-window', features, userGesture }), room);
+      assert.equal(d.route, 'refuse', features);
+      if (d.route === 'refuse') assert.equal(d.reason, 'unsafe-features', features);
+    }
+  }
+  for (const features of ['webContentsX=1', 'WEBCONTENTS=1', 'width=500,height=600', 'noopener']) {
+    assert.notEqual(decidePopup(click({ frameName: 'oauth', disposition: 'new-window', features }), room).route, 'refuse', features);
+  }
+});
+
+test('rate: page-initiated popups OPENED per minute are capped even when each one is closed again (the budget alone is concurrent); user-gesture popups are not rate-limited', () => {
+  const churned = { openTabs: 1, openWindows: 0, pageInitiatedOpen: 0, recentPageInitiated: 6 };
+  const d = decidePopup(script(), churned);
+  assert.equal(d.route, 'refuse');
+  if (d.route === 'refuse') { assert.equal(d.reason, 'rate'); assert.match(d.message, /at most 6 popups per minute/); }
+  assert.equal(decidePopup(script({ frameName: 'oauth' }), churned).route, 'refuse', 'the window route too');
+  assert.equal(decidePopup(script(), { ...churned, recentPageInitiated: 5 }).route, 'new-tab', 'one below the cap');
+  assert.equal(decidePopup(click(), { ...churned, recentPageInitiated: 99 }).route, 'new-tab', 'a click is bounded by the user');
+  assert.equal(POPUP_RATE_MAX, 6);
+  assert.equal(POPUP_RATE_WINDOW_MS, 60_000);
+});
+
+test('name in use: a named popup is refused while ANOTHER workspace holds a live popup of that name (Electron\'s frame-name registry is global); a tab-route popup and an unnamed one are not', () => {
+  const held = { ...room, nameHeldElsewhere: true };
+  const d = decidePopup(click({ frameName: 'oauth' }), held);
+  assert.equal(d.route, 'refuse');
+  if (d.route === 'refuse') assert.equal(d.reason, 'name-in-use');
+  assert.equal(decidePopup(click({ frameName: 'oauth', disposition: 'new-window', features: 'width=400' }), held).route, 'refuse');
+  assert.equal(decidePopup(click(), held).route, 'new-tab', 'unnamed: no registry entry involved');
+  assert.equal(decidePopup(click({ frameName: 'oauth', features: 'noopener' }), held).route, 'new-tab', 'noopener -> a tab we build ourselves');
+  assert.equal(decidePopup(click({ frameName: 'oauth' }), { ...room, nameHeldElsewhere: false }).route, 'child-window');
 });
 
 test('http and https are both web; the scheme match is case-insensitive', () => {

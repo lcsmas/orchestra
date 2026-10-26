@@ -1,4 +1,7 @@
 import { WebContentsView, Menu, clipboard, session, shell } from 'electron';
+// Namespace import on purpose: the stub-`electron` harnesses of #391/#393 (src/main/browser-panel-tabs.test.ts, scripts/verify-*-browser-panel*.mjs) do not export
+// BrowserWindow, and a NAMED import of a missing export fails to link; only the popup factory constructs one.
+import * as electronNs from 'electron';
 import type {
   BrowserBounds,
   BrowserPanelState,
@@ -18,17 +21,20 @@ import {
   shapePick,
   type DesignPick,
 } from '../shared/design-mode.ts';
-import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
+import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import {
   closePopupWindows,
   closePopupsOpenedBy,
   consumeUserGesture,
+  frameNameHeldElsewhere,
   livePopupWindows,
+  notePageInitiatedOpen,
+  recentPageInitiatedOpens,
   registerPopupWindow,
   setPopupWindowsVisible,
   trackUserGesture,
-  type PopupWindow,
 } from './browser-popups.ts';
 import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
@@ -244,7 +250,11 @@ export function initBrowserPanels(
   persistence = store ?? null;
   // #394: the Resources sampler / monitor read each tab's renderer pid through this — a pure read, it never reaps or publishes.
   setBrowserTabSource({
-    tabs: () => [...panels.values()].flatMap((p) => p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; })),
+    tabs: () => [...panels.values()].flatMap((p) => [
+      ...p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; }),
+      // popup child windows hold cap slots and a renderer each: billed to their workspace like a tab (#396 review F7) — the chip counts them as tabs
+      ...livePopupWindows(p.wsId).map((w) => ({ wsId: p.wsId, tabId: w.id, pid: w.win.webContents.getOSProcessId() })),
+    ]),
     nonTabPids: () => { const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents; return ui && !ui.isDestroyed() ? [ui.getOSProcessId()] : []; },
   });
 }
@@ -408,11 +418,9 @@ function attachContextMenu(view: WebContentsView, win: Electron.BaseWindow): voi
 /** Tabs a page opened without a user gesture: each holds popup budget until it is closed (#396). */
 const pageOpenedTabs = new WeakSet<Tab>();
 
-/** What `routePopup` decided for a child window, read back by `did-create-window` on the same opener (Electron creates the window itself; measured on 33: that event fires before the next window.open reaches the handler). */
-const pendingPopup = new WeakMap<Electron.WebContents, { pageInitiated: boolean; openedBy: BrowserTabOpener }>();
-
-/** Route a window a page opened (#396): the pure policy decides, this applies it. A tab is built here (so it gets none of Electron's own window);
- *  the one `allow` is a native child window that keeps its `window.opener`, so an OAuth sign-in can post back. */
+/** Route a window a page opened (#396): the pure policy decides, this applies it. A tab is built here (so it gets none of Electron's own window); the one
+ *  `allow` is a native child window that keeps its `window.opener`, so an OAuth sign-in can post back — built by OUR `createWindow` factory from an allowlist
+ *  (`buildChildWindowOptions`), never from the page's `features` string, and carrying its own decision in the closure (no per-opener slot to mix up). */
 function routePopup(
   panel: Panel,
   opener: Electron.WebContents,
@@ -422,33 +430,34 @@ function routePopup(
   const wsId = panel.wsId;
   if (panels.get(wsId) !== panel) return { action: 'deny' }; // the panel was evicted or destroyed under this page
   const windows = livePopupWindows(wsId);
+  const now = Date.now();
   const route = decidePopup(
     { url: d.url, frameName: d.frameName, disposition: d.disposition, features: d.features, userGesture: consumeUserGesture(opener) },
     {
       openTabs: panel.tabs.length,
       openWindows: windows.length,
       pageInitiatedOpen: panel.tabs.filter((t) => pageOpenedTabs.has(t)).length + windows.filter((w) => w.pageInitiated).length,
+      recentPageInitiated: recentPageInitiatedOpens(wsId, now),
+      nameHeldElsewhere: frameNameHeldElsewhere(wsId, d.frameName),
     },
   );
   switch (route.route) {
     case 'new-tab': {
       const tab = createTab(wsId, { url: d.url, openedBy, activate: route.activate });
-      if (route.pageInitiated) pageOpenedTabs.add(tab);
+      if (route.pageInitiated) {
+        pageOpenedTabs.add(tab);
+        notePageInitiatedOpen(wsId, now);
+      }
       return { action: 'deny' };
     }
     case 'child-window': {
-      pendingPopup.set(opener, { pageInitiated: route.pageInitiated, openedBy });
-      const parent = getWindow?.() as Electron.BrowserWindow | null | undefined;
+      if (route.pageInitiated) notePageInitiatedOpen(wsId, now);
       return {
         action: 'allow',
         outlivesOpener: false,
-        overrideBrowserWindowOptions: {
-          ...(parent ? { parent } : {}),
-          show: false, // shown by adoptPopupWindow only when this workspace is the one on screen
-          autoHideMenuBar: true,
-          resizable: false, // sway TILES a resizable child window beside the app (halving it); a fixed-size one floats (measured)
-          webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-        },
+        // the guest's own web preferences are derived from THIS (Electron merges it over the page's `features`): pinned to the secure set
+        overrideBrowserWindowOptions: { webPreferences: { ...POPUP_WEB_PREFERENCES } },
+        createWindow: (given) => createPopupWindow(panel, opener, openedBy, d, route.pageInitiated, given),
       };
     }
     case 'external':
@@ -468,29 +477,56 @@ function routePopup(
   }
 }
 
-/** A child window Electron just created for an opener-dependent popup: register it (budget, cap, teardown), route ITS popups the same way, show it
- *  when its workspace is the one on screen. */
-function adoptPopupWindow(panel: Panel, opener: Electron.WebContents, win: Electron.BrowserWindow): void {
-  const meta = pendingPopup.get(opener);
-  pendingPopup.delete(opener);
-  if (!meta || panels.get(panel.wsId) !== panel) {
-    win.destroy(); // not a window routePopup asked for, or its panel is gone: never leave it open
-    return;
+/** Electron's `createWindow` factory for an opener-dependent popup: Electron hands over the real guest `webContents` plus whatever the page's features string
+ *  produced; we build the window from an allowlist and MUST return that same guest. A guest we cannot (or may not) give a window is closed — never left
+ *  windowless. Registers the window (budget, cap, memory, teardown), routes ITS popups the same way, shows it when its workspace is the one on screen. */
+function createPopupWindow(
+  panel: Panel,
+  opener: Electron.WebContents,
+  openedBy: BrowserTabOpener,
+  d: Electron.HandlerDetails,
+  pageInitiated: boolean,
+  given: Electron.BrowserWindowConstructorOptions,
+): Electron.WebContents {
+  const guest = (given as { webContents?: Electron.WebContents }).webContents; // in the runtime options, not in Electron's typing; absent on Electron's guest-less path
+  if (guest !== undefined && (typeof guest !== 'object' || guest === null)) throw new Error('browser-panel: popup guest is not a webContents'); // unreachable: a features string that smuggles one is refused up front
+  const wsId = panel.wsId;
+  const gone = panels.get(wsId) !== panel;
+  const full = !gone && panel.tabs.length + livePopupWindows(wsId).length >= BROWSER_TAB_CAP;
+  const parent = getWindow?.() as Electron.BrowserWindow | null | undefined;
+  if (gone || full || !parent || parent.isDestroyed()) {
+    // the panel went away, or another popup took the last slot, between the handler and this call
+    log.info(`browser-panel: popup refused (${gone ? 'gone' : full ? 'cap' : 'no-window'}) ws=${wsId} at creation`);
+    if (!guest) throw new Error('browser-panel: popup refused at creation'); // guest-less path: nothing to hand back (Electron builds the window only after this returns)
+    guest.close();
+    return guest;
   }
-  const popup: PopupWindow = { win, opener, openedBy: meta.openedBy, pageInitiated: meta.pageInitiated };
-  registerPopupWindow(panel.wsId, popup);
-  watchPopups(panel, win.webContents, meta.openedBy);
-  if (focusedWsId === panel.wsId) {
-    if (meta.pageInitiated) win.showInactive();
+  const bounds = parent.getContentBounds();
+  const win = new electronNs.BrowserWindow(buildChildWindowOptions(given, { parent, parentSize: { width: bounds.width, height: bounds.height } }) as Electron.BrowserWindowConstructorOptions);
+  registerPopupWindow(wsId, { win, opener, openedBy, pageInitiated, frameName: d.frameName.trim() });
+  const wc = win.webContents;
+  if (!guest) void win.loadURL(d.url, { httpReferrer: d.referrer }); // guest-less path: the factory loads the page itself
+  const retitle = (pageTitle: string): void => {
+    if (!win.isDestroyed()) win.setTitle(popupWindowTitle(wc.getURL() || d.url, pageTitle));
+  };
+  retitle('');
+  wc.on('page-title-updated', (e, title) => {
+    e.preventDefault(); // the title is ours: the origin first, so a page cannot dress its window up as someone else
+    retitle(title);
+  });
+  wc.on('did-navigate', () => retitle(wc.getTitle()));
+  watchPopups(panel, wc, openedBy);
+  if (focusedWsId === wsId) {
+    if (pageInitiated) win.showInactive();
     else win.show();
   }
+  return wc;
 }
 
 /** Route every window `wc` (a tab, or a popup child window) opens, and close the child windows it opened when it goes away. */
 function watchPopups(panel: Panel, wc: Electron.WebContents, openedBy: BrowserTabOpener): void {
   trackUserGesture(wc);
   wc.setWindowOpenHandler((details) => routePopup(panel, wc, openedBy, details));
-  wc.on('did-create-window', (win) => adoptPopupWindow(panel, wc, win));
   wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));
 }
 

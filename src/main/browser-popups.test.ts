@@ -5,6 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   closePopupWindows,
+  forgetPopupRate,
+  frameNameHeldElsewhere,
+  notePageInitiatedOpen,
+  recentPageInitiatedOpens,
   closePopupsOpenedBy,
   consumeUserGesture,
   livePopupWindows,
@@ -13,7 +17,7 @@ import {
   trackUserGesture,
   type PopupWindow,
 } from './browser-popups.ts';
-import { USER_GESTURE_WINDOW_MS } from '../shared/browser-tab-policy.ts';
+import { POPUP_RATE_WINDOW_MS, USER_GESTURE_WINDOW_MS } from '../shared/browser-tab-policy.ts';
 
 const fakeWc = () => {
   const handlers: Record<string, ((...a: any[]) => void)[]> = {};
@@ -84,11 +88,10 @@ test('gesture: tracking the same contents twice installs ONE listener', () => {
   assert.equal(wc.handlers['did-navigate'].length, 1);
 });
 
-const popup = (wsOpener: any, over: Partial<PopupWindow> = {}): PopupWindow => ({ win: fakeWin(), opener: wsOpener, openedBy: 'agent', pageInitiated: false, ...over });
+const popup = (wsOpener: any, over: Partial<Omit<PopupWindow, 'id'>> = {}): Omit<PopupWindow, 'id'> => ({ win: fakeWin(), opener: wsOpener, openedBy: 'agent', pageInitiated: false, frameName: '', ...over });
 
 test('registry: a closed window leaves it (both through the closed event and through isDestroyed pruning)', () => {
-  const p = popup(fakeWc()), q = popup(fakeWc());
-  registerPopupWindow('wsR1', p); registerPopupWindow('wsR1', q);
+  const p = registerPopupWindow('wsR1', popup(fakeWc())), q = registerPopupWindow('wsR1', popup(fakeWc()));
   assert.equal(livePopupWindows('wsR1').length, 2);
   (p.win as any).destroy();
   assert.deepEqual(livePopupWindows('wsR1'), [q]);
@@ -97,8 +100,7 @@ test('registry: a closed window leaves it (both through the closed event and thr
 });
 
 test('registry: per workspace — closePopupWindows destroys only that workspace\'s windows', () => {
-  const p = popup(fakeWc()), q = popup(fakeWc());
-  registerPopupWindow('wsR2', p); registerPopupWindow('wsR3', q);
+  const p = registerPopupWindow('wsR2', popup(fakeWc())), q = registerPopupWindow('wsR3', popup(fakeWc()));
   closePopupWindows('wsR2');
   assert.equal((p.win as any).destroyedFlag, true);
   assert.equal((q.win as any).destroyedFlag, false);
@@ -108,10 +110,9 @@ test('registry: per workspace — closePopupWindows destroys only that workspace
 
 test('registry: closePopupsOpenedBy destroys the windows an opener opened and, recursively, theirs — and nobody else\'s', () => {
   const opener = fakeWc(), other = fakeWc();
-  const a = popup(opener);
-  const b = popup((a.win as any).webContents);
-  const c = popup(other);
-  for (const p of [a, b, c]) registerPopupWindow('wsR4', p);
+  const a = registerPopupWindow('wsR4', popup(opener));
+  const b = registerPopupWindow('wsR4', popup((a.win as any).webContents));
+  const c = registerPopupWindow('wsR4', popup(other));
   closePopupsOpenedBy('wsR4', opener);
   assert.equal((a.win as any).destroyedFlag, true);
   assert.equal((b.win as any).destroyedFlag, true);
@@ -120,10 +121,50 @@ test('registry: closePopupsOpenedBy destroys the windows an opener opened and, r
 });
 
 test('registry: setPopupWindowsVisible hides on false and shows INACTIVE on true', () => {
-  const p = popup(fakeWc());
-  registerPopupWindow('wsR5', p);
+  const p = registerPopupWindow('wsR5', popup(fakeWc()));
   setPopupWindowsVisible('wsR5', false);
   setPopupWindowsVisible('wsR5', true);
   assert.deepEqual((p.win as any).log, ['hide', 'showInactive']);
   closePopupWindows('wsR5');
+});
+
+test('registry: each window gets a stable, never-reused id (the memory attribution names it); destroyed windows\' ids are not handed out again', () => {
+  const a = registerPopupWindow('wsR6', popup(fakeWc())), b = registerPopupWindow('wsR6', popup(fakeWc()));
+  assert.match(a.id, /^w\d+$/);
+  assert.notEqual(a.id, b.id);
+  (a.win as any).destroy();
+  const c = registerPopupWindow('wsR6', popup(fakeWc()));
+  assert.notEqual(c.id, a.id);
+  assert.notEqual(c.id, b.id);
+  closePopupWindows('wsR6');
+});
+
+test('frame names: a live popup named N in workspace A is "held elsewhere" for B, never for A itself; unnamed and destroyed ones hold nothing', () => {
+  const p = registerPopupWindow('wsN1', popup(fakeWc(), { frameName: 'oauth' }));
+  registerPopupWindow('wsN1', popup(fakeWc(), { frameName: '' }));
+  assert.equal(frameNameHeldElsewhere('wsN2', 'oauth'), true);
+  assert.equal(frameNameHeldElsewhere('wsN1', 'oauth'), false, 'the holder itself may reuse its own popup');
+  assert.equal(frameNameHeldElsewhere('wsN2', ' oauth '), true, 'trimmed like the registry key');
+  assert.equal(frameNameHeldElsewhere('wsN2', 'other'), false);
+  assert.equal(frameNameHeldElsewhere('wsN2', ''), false, 'an unnamed popup never collides');
+  (p.win as any).destroy();
+  assert.equal(frameNameHeldElsewhere('wsN2', 'oauth'), false, 'a closed popup frees its name');
+  closePopupWindows('wsN1');
+});
+
+test('rate: page-initiated opens are counted per workspace inside a sliding window, pruned on read, and forgotten with the workspace', () => {
+  const t0 = 1_000_000;
+  for (let i = 0; i < 4; i++) notePageInitiatedOpen('wsT1', t0 + i * 1000);
+  notePageInitiatedOpen('wsT2', t0);
+  assert.equal(recentPageInitiatedOpens('wsT1', t0 + 5000), 4);
+  assert.equal(recentPageInitiatedOpens('wsT2', t0 + 5000), 1, 'per workspace');
+  assert.equal(recentPageInitiatedOpens('wsT1', t0 + POPUP_RATE_WINDOW_MS - 1), 4, 'just inside the window');
+  assert.equal(recentPageInitiatedOpens('wsT1', t0 + POPUP_RATE_WINDOW_MS), 3, 'the oldest fell out at exactly the window length');
+  assert.equal(recentPageInitiatedOpens('wsT1', t0 + POPUP_RATE_WINDOW_MS + 10_000), 0, 'all gone');
+  assert.equal(recentPageInitiatedOpens('wsNever', t0), 0);
+  forgetPopupRate('wsT2');
+  assert.equal(recentPageInitiatedOpens('wsT2', t0 + 1), 0);
+  notePageInitiatedOpen('wsT3', t0);
+  closePopupWindows('wsT3');
+  assert.equal(recentPageInitiatedOpens('wsT3', t0 + 1), 0, 'closePopupWindows (delete / archive) forgets the history too');
 });
