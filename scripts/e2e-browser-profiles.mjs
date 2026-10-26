@@ -760,20 +760,25 @@ try {
     const expEph = await sidExpiry(b, 'ws=2&signin=session');
     clause('session', 'ctl/the-same-cookie-is-a-session-cookie-without-a-profile', expEph === null, `ws2 (ephemeral) cookieStore sid.expires = ${JSON.stringify(expEph)} (null = session)`);
     clause('session', 'profile-session-cookie-gets-a-30-day-expiry', daysAhead !== null && daysAhead > 29 && daysAhead < 31, `ws1 (profile) cookieStore sid.expires = ${JSON.stringify(expProfile)} → ${daysAhead === null ? 'n/a' : daysAhead.toFixed(2)} days ahead (sid ${sidS})`);
+    // leave the sign-in URLs: restoring `?signin=session` would run the page script again and mint a NEW session sid (fakes the oracle)
+    await typeUrl(b, P(2));
+    await softWait(async () => (await tabs(b))[0]?.label.includes('Profiles fixture') && !(await tabs(b))[0]?.tip?.includes('signin'), 15000, 'ws2 off the sign-in url');
+    await selectWorkspace(b, 'e2e/bp400-1');
+    await typeUrl(b, P(1, '&w=after'));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('&w=after'), 15000, 'ws1 off the sign-in url');
     await sleep(2500); // the change-flush
     await teardown(b, 'graceful'); b = null;
     b = await boot(world, 'boot-session2');
     await selectWorkspace(b, 'e2e/bp400-1');
     await openBrowserPane(b);
-    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('&signin=session')), 25000, 'the restored view');
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('&w=after')), 25000, 'the restored view');
     await sleep(1500);
-    const jS1 = await jarOf(b, '&signin=session');
+    const jS1 = await jarOf(b, '&w=after');
     clause('session', 'session-cookie-sign-in-survives-the-restart', !!sidS && jS1 === sidS, `after the restart /whoami = ${jS1} (signed in with the session cookie ${sidS})`);
     await selectWorkspace(b, 'e2e/bp400-2');
     await openBrowserPane(b);
-    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('ws=2&signin=session')), 25000, 'ws2 view');
-    await typeUrl(b, P(2));
-    await softWait(async () => (await tabs(b))[0]?.label.includes('Profiles fixture'), 15000, 'ws2 plain page');
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes(PQ(2))), 25000, 'ws2 view');
+    await sleep(1500);
     const jS2 = await jarOf(b, PQ(2));
     clause('session', 'workspace-without-the-profile-is-signed-out-after-the-restart', jS2 === 'anon', `ws2 /whoami = ${jS2}`);
     await teardown(b, 'term'); b = null;
