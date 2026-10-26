@@ -37,6 +37,14 @@ const MUTANTS = {
     [/if\(([\w$]+)&&\1\.openedBy!=="agent"\)(throw new [\w$]+\(`\$\{[\w$]+\} is refused: tab)/, 'if(!1)$2'],
     [/return ([\w$]+)\.actor==="agent"&&([\w$]+)\.openedBy!=="agent"\?\{ok:!1,reason:"not-owner"/, 'return !1&&$2.openedBy!=="agent"?{ok:!1,reason:"not-owner"']],
     clauses: ['agent-cannot-close-the-humans-tab'], why: 'all three close-ownership layers (CLI pre-check, proxy Target.closeTarget guard, panel decideTabClose) let an agent close the human\'s tab' },
+  'skill-example-without-click': { needs: 399, edits: [['b click "$button"\n', '']],
+    clauses: ['skill-example-completes-the-fixture-flow-verbatim'], why: 'the bundled orchestra-browser skill\'s worked example loses its click: an agent following it never reaches the welcome line' },
+  'profile-not-persistent': { needs: 400, edits: [[/return`persist:(orchestra-profile-\$\{[\w$]+\}`)/, 'return`$1']],
+    clauses: ['profile-sign-in-survives-an-app-restart'], why: 'the profile partition loses its persist: prefix — it is in-memory again, so a restart signs the workspace out' },
+  'agent-cdp-unscoped': { needs: 400, edits: [[/(function [\w$]+\(([\w$]+)\)\{)if\(\2\.profileId===void 0\)return\{ok:!0\};(?=const [\w$]+=[\w$]+\.get\(\2\.method\))/, '$1return{ok:!0};']],
+    clauses: ['cookies-get-refused-when-the-page-embeds-another-site'], why: 'decideAgentCdp lets every cookie method through for a profile workspace (no site scope, no clear/read refusal)' },
+  'spawn-profile-not-held': { needs: 401, edits: [[/([\w$]+)===([\w$]+)\.id\|\|\1!==""&&\1\.toLowerCase\(\)===\2\.name\.toLowerCase\(\)\?/, '!0?']],
+    clauses: ['refused-pass-leaves-the-worker-ephemeral-with-a-message'], why: 'decideSpawnProfile no longer checks the requested profile against the one the parent holds: asking for Prod hands the worker the parent\'s Staging profile' },
   'partition-shared': { edits: [[/function ([\w$]+)\(e\)\{return`orchestra-browser-\$\{e\}`\}/, 'function $1(e){return"orchestra-browser-shared"}']],
     clauses: ['agent-in-another-workspace-sees-anon'], why: 'every workspace shares ONE cookie jar: a sign-in in one reaches the agent of another' },
 };
@@ -162,7 +170,7 @@ function seedWorld(armDir) {
   fs.writeFileSync(path.join(ohome, 'session-keys.json'), JSON.stringify({ version: 1, sessions: Object.fromEntries(workspaces.map((w) => [w.id, { hash: sha256(w.key), issuedAt: Date.now() }])) }), { mode: 0o600 });
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho FLOW-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
-  return { fakeHome, ohome, cfg, account, workspaces, stubDir, armDir };
+  return { fakeHome, ohome, cfg, account, workspaces, stubDir, armDir, repoDir };
 }
 function listProcsByHome(home) {
   const out = [];
@@ -244,6 +252,8 @@ async function stopApp(ctx) {
   try { process.kill(-ctx.app.pid, 'SIGKILL'); } catch { /* gone */ }
 }
 
+async function restartApp(ctx, tag) { ctx.ui.close(); await stopApp(ctx); await sleep(1500); await startApp(ctx, tag); }
+
 // ── driving helpers (trusted CDP input only) ─────────────────────────────────────────────────────────────────────────────────────
 async function selectWs(ctx, W) {
   const pos = await ctx.ui.eval(`(() => { const n = [...document.querySelectorAll('.ws-item .ws-name')].find((e) => e.textContent.trim() === ${sel(W.branch)}); if (!n) return null; const b = n.getBoundingClientRect(); return { x: b.left + 20, y: b.top + b.height / 2 }; })()`);
@@ -264,13 +274,13 @@ async function typeUrl(ctx, url) { await clickSel(ctx, '.browser-url-input'); aw
 const strip = (ctx) => ctx.ui.eval(`[...document.querySelectorAll('.browser-tab')].map((e) => ({ id: e.dataset.tabId, label: e.querySelector('.browser-tab-label')?.textContent ?? '', active: e.getAttribute('aria-selected') === 'true', openedBy: e.dataset.openedBy }))`);
 const reg = async (ctx, W) => (await ctx.ui.eval(`window.orchestra.browserState(${sel(W.id)})`)).tabs;
 /** The REAL CLI bundle with an `env -i` allowlist: exactly what an agent's Bash tool hands it. */
-function cli(ctx, W, args, { timeoutMs = 60000 } = {}) {
+function cli(ctx, W, args, { timeoutMs = 60000, raw = false } = {}) { // raw: a top-level `orchestra <cmd>` (spawn), not `orchestra browser <cmd>`
   const env = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: ctx.world.fakeHome, ORCHESTRA_HOME: ctx.world.ohome, ORCHESTRA_WS_ID: W.id, ORCHESTRA_SESSION_KEY: W.key,
     ORCHESTRA_AGENT_TMPDIR: path.join(ctx.world.fakeHome, 'agent-tmp', W.name), LANG: 'C.UTF-8' };
   fs.mkdirSync(env.ORCHESTRA_AGENT_TMPDIR, { recursive: true });
   const t0 = Date.now();
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'browser', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome, detached: true });
+    const child = spawn(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), ...(raw ? [] : ['browser']), ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], cwd: ctx.world.fakeHome, detached: true });
     let stdout = '', stderr = ''; child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
     const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } } }, timeoutMs);
     child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code: code ?? (signal ? 137 : 0), stdout, stderr, ms: Date.now() - t0 }); });
@@ -497,19 +507,44 @@ const ARM_FNS = {
   },
 
   async legacy(ctx) {
-    const A = 'legacy', src = fs.readFileSync(chunkOf(APP_DIR), 'utf8'), needle = 'Drive the embedded Browser pane for this workspace';
+    const { W1, FIX, world } = ctx; const A = 'legacy', src = fs.readFileSync(chunkOf(APP_DIR), 'utf8'), needle = 'Drive the embedded Browser pane for this workspace';
     const n = src.split(needle).length - 1, ctlN = src.split('Page.captureScreenshot').length - 1;
     clause(A, 'ctl/instrument-finds-strings-in-the-chunk', ctlN > 0, `control string "Page.captureScreenshot" found ${ctlN}x in ${path.basename(chunkOf(APP_DIR))}`);
-    if (isMerged(399)) clause(A, 'legacy-mcp-browser-server-is-gone', n === 0, `the in-process "browser" MCP server's instructions string occurs ${n}x in the built chunk (want 0)`);
-    else nym(A, 399, 'the mcp__browser__* tools are removed from the agent session', `the in-process browser MCP server is still built in (${n}x)`, 'the server instructions string absent from the built chunk and the browser CLI skill shipped');
+    if (!isMerged(399)) { nym(A, 399, 'the mcp__browser__* tools are removed from the agent session and the orchestra-browser skill ships in new worktrees', `the in-process browser MCP server is still built in (${n}x)`, 'the server instructions string absent from the built chunk; a NEW worktree holds .claude/skills/orchestra-browser/SKILL.md whose worked example, run verbatim through the real CLI, completes the sign-in fixture flow'); return; }
+    clause(A, 'legacy-mcp-browser-server-is-gone', n === 0, `the in-process "browser" MCP server's instructions string occurs ${n}x in the built chunk (want 0)`);
+    await selectWs(ctx, W1); await openPane(ctx);
+    // a NEW workspace: the app installs its skills into the new worktree; the skill is read from that file
+    const made = await ctx.ui.eval(`window.orchestra.createWorkspace({ repoPath: ${sel(world.repoDir)} }).then((w) => ({ id: w.id, worktreePath: w.worktreePath }))`);
+    const skillFile = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-browser', 'SKILL.md'), sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-link', 'SKILL.md');
+    await softWait(() => fs.existsSync(sibling), 30000, 'the app to install its skills into the NEW worktree');
+    clause(A, 'ctl/the-app-installed-its-skills-in-the-new-worktree', fs.existsSync(sibling), `${sibling} ${fs.existsSync(sibling) ? 'exists' : 'MISSING'}`);
+    const installed = fs.existsSync(skillFile) ? fs.readFileSync(skillFile, 'utf8') : null;
+    clause(A, 'browser-skill-installed-in-a-new-worktree', !!installed && /^name: orchestra-browser$/m.test(installed), `${skillFile} ${installed === null ? 'MISSING' : `exists (${installed.length} chars)`}`);
+    const at = installed ? installed.indexOf('## Several commands in one call') : -1, block = installed && at > 0 ? (/```bash\n([\s\S]*?)```/.exec(installed.slice(at)) ?? [])[1] : null;
+    clause(A, 'ctl/example-extracted-from-the-installed-file', !!block && /b open "\$URL"/.test(block), `worked example: ${block ? block.split('\n').length - 1 : 0} lines`);
+    if (!block) return;
+    const shim = path.join(world.fakeHome, 'agent-bin'); fs.mkdirSync(shim, { recursive: true });
+    fs.writeFileSync(path.join(shim, 'orchestra'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(APP_DIR, 'dist-electron/cli.js'))} "$@"\n`, { mode: 0o755 });
+    const runFlow = (name, script) => new Promise((resolve) => {
+      const f = path.join(world.fakeHome, `${name}.sh`); fs.writeFileSync(f, script);
+      const env = { PATH: `${shim}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_WS_ID: W1.id, ORCHESTRA_SESSION_KEY: W1.key, ORCHESTRA_AGENT_TMPDIR: path.join(world.fakeHome, 'agent-tmp', W1.name), LANG: 'C.UTF-8', URL: `${FIX}/skill-flow.html` };
+      const t0 = Date.now(), child = spawn('bash', [f], { env, cwd: world.fakeHome, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      let stdout = '', stderr = ''; child.stdout.on('data', (d) => (stdout += d)); child.stderr.on('data', (d) => (stderr += d));
+      const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } }, 90000);
+      child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr, ms: Date.now() - t0 }); });
+    });
+    const welcome = async () => { const o = await oracle(ctx, `${FIX}/skill-flow.html`, 8000).catch(() => null); if (!o) return null; try { return await o.eval(`(document.getElementById('welcome') || {}).textContent || null`); } finally { o.close(); } };
+    const wrong = await runFlow('flow-wrong-label', block.replace(`'textbox "Email'`, `'textbox "Phone'`)), w0 = await welcome();
+    clause(A, 'ctl/example-with-a-label-not-on-the-page-fails', block.includes(`'textbox "Email'`) && wrong.code !== 0 && w0 === null, `ref lookup for a missing textbox → rc=${wrong.code} ${wrong.ms}ms; oracle #welcome ${JSON.stringify(w0)} (the flow cannot pass by accident)`);
+    const run = await runFlow('flow', block), w2 = await welcome();
+    clause(A, 'skill-example-completes-the-fixture-flow-verbatim', run.code === 0 && run.stdout.trim().split('\n').pop() === 'Welcome, me@example.com' && w2 === 'Welcome, me@example.com', `bash flow.sh (the skill's own block, $URL=${FIX}/skill-flow.html) → rc=${run.code} ${run.ms}ms stdout=${JSON.stringify(run.stdout.trim().slice(-60))} stderr=${JSON.stringify(run.stderr.trim().slice(0, 120))}; oracle #welcome ${JSON.stringify(w2)}`);
   },
 
   async restart(ctx) {
     const { W1, FIX } = ctx; const A = 'restart';
     await selectWs(ctx, W1);
     const before = await reg(ctx, W1), humanBefore = before.filter((t) => t.openedBy === 'human' && /^https?:/.test(t.url));
-    ctx.ui.close(); await stopApp(ctx); await sleep(1500);
-    await startApp(ctx, 'restart');
+    await restartApp(ctx, 'restart');
     await selectWs(ctx, W1); await openPane(ctx);
     const after = await softWait(async () => { const r = await reg(ctx, W1); return r.length >= humanBefore.length && r.some((t) => t.url) ? r : null; }, 20000, 'the tabs to be restored');
     const got = after ?? await reg(ctx, W1);
@@ -519,15 +554,128 @@ const ARM_FNS = {
   },
 
   async profile(ctx) {
-    const A = 'profile';
-    const specs = [
-      [400, 'a profil navigateur is created in Settings, attached from the URL bar; its workspace stays signed in across a restart, a workspace without it stays signed out; deleting it detaches + clears', 'ephemeral per-workspace partitions only (partitionFor); a workspace signed out after every restart (asserted above)', 'agent in the profile workspace reads the sid on /whoami after restart (own site only), a second workspace reads anon, no CLI verb attaches a profile, creating one while secrets are unencrypted shows the warning'],
-      [401, 'orchestra spawn passes a profil navigateur the parent holds (refused otherwise, worker stays ephemeral)', 'no spawn argument', 'the worker panel signed in with the passed profile; a refused pass leaves it ephemeral with a clear message'],
-    ];
-    for (const [t, what, today, planned] of specs) {
-      if (isMerged(t)) clause(A, `#${t} merged — drive clause body`, false, `#${t} is merged but this drive has no clause body for it yet — write it against the merged UI (scripts/e2e-browser-whole-flow.mjs, arm profile)`);
-      else nym(A, t, what, today, planned);
+    const { W1, W2, FIX, world } = ctx; const A = 'profile';
+    const ui = { eval: (e) => ctx.ui.eval(e), send: (m, p, t) => ctx.ui.send(m, p, t) }; // ctx.ui is replaced by the restart: never hold the old connection
+    const storeJson = () => JSON.parse(fs.readFileSync(path.join(world.ohome, 'userData', 'orchestra', 'store.json'), 'utf8'));
+    const wsProfile = (W) => storeJson().workspaces.find((w) => w.id === W.id)?.browserProfileId;
+    const whoami = async (W, q) => { await cli(ctx, W, ['open', `${FIX}/whoami?w=${q}`]); return (await cli(ctx, W, ['get', 'text', 'body'])).stdout.trim(); };
+    const typeInto = async (s, text) => { await clickSel(ctx, s); await ui.eval(`document.querySelector(${sel(s)}).select()`); await ui.send('Input.insertText', { text }); await sleep(80); };
+    // the agent's CLI session on a workspace whose tabs were rebuilt in place (profile attach / detach / delete) must keep working: `get url` is the cheapest probe
+    const agentProbe = async (W) => { // first attempt must succeed; a failure is then timed (does it self-heal within 8 s?) and worked around with a fresh tab so the later clauses still run
+      const r = await cli(ctx, W, ['get', 'url']); if (r.code === 0) return { ...r, healed: 'n/a' };
+      const t0 = Date.now(); let healed = null; while (Date.now() - t0 < 8000 && !healed) { await sleep(500); const q = await cli(ctx, W, ['get', 'url']); if (q.code === 0) healed = `${Date.now() - t0} ms`; }
+      if (!healed) await cli(ctx, W, ['tab', 'new', `${FIX}/index.html`]);
+      return { ...r, healed: healed ? `self-healed after ${healed}` : 'still stale after 8 s (a fresh `tab new` works)' };
+    };
+    const chipText = () => ui.eval(`document.querySelector('[data-browser-profile-chip]')?.textContent?.trim() ?? null`);
+    if (!isMerged(400)) nym(A, 400, 'a profil navigateur is created in Settings, attached from the URL bar; its workspace stays signed in across a restart, a workspace without it stays signed out; the agent sees only its own site\'s cookies; deleting it detaches + clears', 'ephemeral per-workspace partitions only; a workspace is signed out after every restart (asserted in the restart arm)', 'create + warning, attach, sign in, agent reads the sid on its own site, cookies get/clear/set refused beyond the page, restart → still signed in, W2 anon, delete → detached and anon');
+    else {
+      // ── Settings > Browser: the warning shows BEFORE the profile exists; create ──
+      await selectWs(ctx, W1); await openPane(ctx);
+      await clickSel(ctx, '[data-bp-open]');
+      await waitFor(() => ui.eval(`!!document.querySelector('[data-bp-settings]') && !!document.querySelector('[data-bp-empty], .bp-list')`), 10000, 'Settings > Browser');
+      await sleep(300);
+      const warn = await ui.eval(`document.querySelector('[data-profile-warning="create"]')?.textContent ?? null`);
+      clause(A, 'settings-warns-before-creation-that-sign-ins-sit-unencrypted-on-disk', !!warn && /UNENCRYPTED on disk/.test(warn), `create form warning ${JSON.stringify(warn)}`);
+      await typeInto('input[aria-label="New profile name"]', 'Staging'); await clickSel(ctx, '[data-bp-create]');
+      const row = await softWait(() => ui.eval(`(() => { const r = document.querySelector('.bp-row[data-profile-name="Staging"]'); return r ? r.dataset.profileId : null; })()`), 8000, 'the new profile row');
+      clause(A, 'profile-created-with-a-minted-id-and-stored', /^bp-[0-9a-f]{12}$/.test(row ?? '') && !!(await softWait(() => storeJson().browserProfiles?.some((p) => p.id === row && p.name === 'Staging'), 8000, 'store.json')), `row id ${row}; store.json browserProfiles ${JSON.stringify(storeJson().browserProfiles)}`);
+      const pid = row;
+      if (isMerged(401)) { await typeInto('input[aria-label="New profile name"]', 'Prod'); await clickSel(ctx, '[data-bp-create]'); await softWait(() => ui.eval(`!!document.querySelector('.bp-row[data-profile-name="Prod"]')`), 8000, 'the Prod row'); } // a profile NO workspace will hold: the #401 refusal target
+      const closeSettings = async () => { await clickSel(ctx, '[data-bp-settings] .modal-actions button'); await softWait(async () => !(await rectOf(ctx, '[data-bp-settings]')), 8000, 'Settings to close'); await sleep(300); };
+      await closeSettings();
+      // ── attach from the URL bar; the human signs in; the agent of THAT workspace sees the session on its own site ──
+      const preAttach = await cli(ctx, W1, ['get', 'url']);
+      clause(A, 'ctl/agent-session-connected-before-the-attach', preAttach.code === 0, `get url before the attach → ${show(preAttach)} (the daemon now holds sessions on the ephemeral tabs)`);
+      await clickSel(ctx, '[data-browser-profile-chip]');
+      await waitFor(() => ui.eval(`!!document.querySelector('[data-browser-profile-bar]')`), 10000, 'the profile bar');
+      await clickSel(ctx, `[data-profile-choice="${pid}"]`);
+      await softWait(async () => /Staging/.test((await chipText()) ?? ''), 10000, 'the chip to show the profile');
+      const st = await ui.eval(`window.orchestra.browserState(${sel(W1.id)})`);
+      clause(A, 'attach-from-the-url-bar-puts-the-workspace-on-the-profile', /Staging/.test((await chipText()) ?? '') && st.profileId === pid && !!(await softWait(() => wsProfile(W1) === pid, 8000, 'the workspace record')) && wsProfile(W2) === undefined, `chip ${JSON.stringify(await chipText())}; panel profileId ${st.profileId}; W1 record ${wsProfile(W1)}, W2 record ${wsProfile(W2) ?? '<none>'}`);
+      const postAttach = await agentProbe(W1);
+      clause(A, 'agent-commands-keep-working-after-a-profile-attach', postAttach.code === 0, `the tabs were rebuilt on the profile partition (same ids); get url → ${show(postAttach)} · ${postAttach.healed}`);
+      await typeUrl(ctx, `${FIX}/signin`);
+      const o = await oracle(ctx, `${FIX}/signin`);
+      const sid = await softWait(() => o.eval(`/signed-in (\\w+)/.exec(document.body.innerText)?.[1] ?? null`), 8000, 'the signin page'); o.close();
+      ctx.profileSid = sid;
+      await typeUrl(ctx, `${FIX}/flow.html?after-signin`); // no tab may stay on /signin: a restored or reloaded tab would sign in AGAIN and mint a new sid under the clauses below
+      await softWait(async () => (await reg(ctx, W1)).some((t) => t.url.includes('after-signin')), 8000, 'the human tab to leave /signin');
+      const mine = await whoami(W1, 'p1');
+      clause(A, 'agent-sees-the-profile-session-on-its-own-site', !!sid && mine === sid, `human signed in as ${sid}; the workspace's agent reads /whoami = ${JSON.stringify(mine)}`);
+      const own = await cli(ctx, W1, ['cookies', 'get']);
+      clause(A, 'agent-may-read-the-cookies-of-the-page-it-is-on', own.code === 0 && own.stdout.includes('sid'), `cookies get on /whoami → ${show(own)}`);
+      await selectWs(ctx, W2); await openPane(ctx);
+      const other = await whoami(W2, 'p2');
+      clause(A, 'workspace-without-the-profile-is-signed-out', other === 'anon' && wsProfile(W2) === undefined, `W2 (no profile) agent reads /whoami = ${JSON.stringify(other)}`);
+      await selectWs(ctx, W1);
+      // ── "own site only": what the agent's cookie commands may reach on a profile workspace ──
+      await cli(ctx, W1, ['open', `${FIX}/profiles-frame.html?c=3`]); await sleep(2500);
+      const frameGet = await cli(ctx, W1, ['cookies', 'get']);
+      clause(A, 'cookies-get-refused-when-the-page-embeds-another-site', frameGet.code !== 0 && /an embedded frame included/.test(frameGet.stdout + frameGet.stderr), `cookies get on a page embedding http://localhost (page on 127.0.0.1) → ${show(frameGet)}`);
+      await cli(ctx, W1, ['open', `${FIX}/flow.html?p=3`]); await sleep(800);
+      const plain = await cli(ctx, W1, ['cookies', 'get']);
+      clause(A, 'cookies-get-allowed-again-on-a-page-without-foreign-frames', plain.code === 0 && plain.stdout.includes('sid'), show(plain));
+      const clr = await cli(ctx, W1, ['cookies', 'clear']);
+      clause(A, 'cookies-clear-refused-on-a-shared-profile', clr.code !== 0 && /shared with other workspaces/.test(clr.stdout + clr.stderr) && (await whoami(W1, 'p4')) === sid, `${show(clr)}; the sign-in survived the refused clear: ${(await whoami(W1, 'p5')) === sid}`);
+      const foreign = `http://localhost:${new URL(FIX).port}/`;
+      const cross = await cli(ctx, W1, ['cookies', 'set', 'planted', 'x', '--url', foreign]);
+      clause(A, 'cookie-write-on-another-site-refused', cross.code !== 0 && /site other than the page you are on/.test(cross.stdout + cross.stderr), `cookies set --url ${foreign} → ${show(cross)}`);
+      const verb = await cli(ctx, W1, ['profile', 'attach', pid]);
+      clause(A, 'no-cli-verb-attaches-a-profile', verb.code !== 0 && wsProfile(W1) === pid, `\`orchestra browser profile attach\` → ${show(verb)}; W1 record still ${wsProfile(W1)}`);
+      // ── restart: the profile's sign-in survives; the workspace without it stays signed out ──
+      await restartApp(ctx, 'profile-restart');
+      await selectWs(ctx, W1); await openPane(ctx);
+      const after = await whoami(W1, 'p6');
+      clause(A, 'profile-sign-in-survives-an-app-restart', !!sid && after === sid && wsProfile(W1) === pid, `before the restart sid ${sid}; after: the agent reads /whoami = ${JSON.stringify(after)}; W1 record ${wsProfile(W1)}`);
+      await selectWs(ctx, W2); await openPane(ctx);
+      const otherAfter = await whoami(W2, 'p7');
+      clause(A, 'workspace-without-the-profile-stays-signed-out-after-restart', otherAfter === 'anon', `W2 agent reads /whoami = ${JSON.stringify(otherAfter)}`);
+      await selectWs(ctx, W1);
+      const kids = {};
+      if (isMerged(401)) {
+        const rec = (id) => storeJson().workspaces.find((w) => w.id === id);
+        const spawnOne = async (name, extra) => { const r = await cli(ctx, W1, ['spawn', '--name', name, '--task', 'reply ok and stop.', ...extra], { raw: true, timeoutMs: 90000 }); const m = /^Spawned (\S+) on branch (\S+)$/m.exec(r.stdout); return { r, id: m?.[1], branch: m?.[2] }; };
+        const workerWho = async (k, tag) => { // the worker's own panel, opened by the human, shows who the fixture site thinks it is (title who:<sid>|who:anon)
+          const pos = await waitFor(() => ui.eval(`(() => { const e = [...document.querySelectorAll('.ws-name')].find((x) => x.textContent.includes(${sel(k.branch)})); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`), 30000, `the sidebar row of ${k.branch}`);
+          await ctx.ui.click(pos.x, pos.y); await openPane(ctx);
+          const url = `${FIX}/spawn-profile.html?w=${tag}`;
+          await ui.eval(`window.orchestra.browserNavigate(${sel(k.id)}, ${sel(url)})`);
+          const st = await waitFor(async () => { const x = await ui.eval(`window.orchestra.browserState(${sel(k.id)})`); return x.url === url && !x.loading && /^who:/.test(x.title) ? x : null; }, 30000, `${k.branch}'s panel at ${url}`);
+          return { who: st.title.slice(4), state: st };
+        };
+        kids.honoured = await spawnOne('impl-flow-honoured', ['--profile', 'Staging']);
+        const h = kids.honoured, hrec = h.id ? await softWait(() => rec(h.id)?.browserProfileId === pid && rec(h.id), 8000, 'the worker record') : null;
+        clause(A, 'spawn-with-a-held-profile-passes-it-to-the-worker', h.r.code === 0 && !!h.id && h.r.stdout.includes('Profile “Staging” passed') && !!hrec && hrec.parentId === W1.id, `${show(h.r)}; worker record browserProfileId ${rec(h.id)?.browserProfileId} parent ${rec(h.id)?.parentId}`);
+        const wh = await workerWho(h, 'honoured');
+        clause(A, 'worker-panel-is-signed-in-as-the-parent', !!sid && wh.who === sid && wh.state.profileId === pid, `worker panel who:${wh.who} vs the parent's sid ${sid}; panel profileId ${wh.state.profileId ?? '(none)'}`);
+        kids.refused = await spawnOne('impl-flow-refused', ['--profile', 'Prod']);
+        const x = kids.refused, wx = await workerWho(x, 'refused');
+        clause(A, 'refused-pass-leaves-the-worker-ephemeral-with-a-message', x.r.code === 0 && !!x.id && /--profile not applied: you hold “Staging”/.test(x.r.stderr) && !rec(x.id)?.browserProfileId && wx.who === 'anon' && wx.state.profileId === undefined, `${show(x.r)}; worker record browserProfileId ${rec(x.id)?.browserProfileId ?? '<none>'}; worker panel who:${wx.who}`);
+        kids.plain = await spawnOne('impl-flow-plain', []);
+        const pl = kids.plain, wp = await workerWho(pl, 'plain');
+        clause(A, 'spawn-without-a-profile-is-ephemeral', pl.r.code === 0 && !!pl.id && !rec(pl.id)?.browserProfileId && wp.who === 'anon', `${show(pl.r)}; worker panel who:${wp.who}`);
+        await selectWs(ctx, W1);
+      }
+      // ── delete the attached profile: the workspace goes back to navigation éphémère, signed out ──
+      const preDelete = await cli(ctx, W1, ['get', 'url']);
+      clause(A, 'ctl/agent-session-connected-before-the-delete', preDelete.code === 0, `get url before the delete → ${show(preDelete)}`);
+      await clickSel(ctx, '[data-bp-open]');
+      await waitFor(() => ui.eval(`!!document.querySelector('.bp-row[data-profile-id="${pid}"]')`), 10000, 'the profile row');
+      await clickSel(ctx, `.bp-row[data-profile-id="${pid}"] [data-bp-delete]`);
+      await waitFor(() => ui.eval(`!!document.querySelector('.dialog-actions .danger-primary')`), 8000, 'the delete confirmation');
+      const detail = await ui.eval(`document.querySelector('.dialog-detail')?.textContent ?? ''`);
+      await clickSel(ctx, '.dialog-actions .danger-primary');
+      await softWait(() => ui.eval(`!document.querySelector('.bp-row[data-profile-id="${pid}"]')`), 15000, 'the row to disappear');
+      await closeSettings();
+      await sleep(1200);
+      const postDelete = await agentProbe(W1);
+      clause(A, 'agent-commands-keep-working-after-the-profile-is-deleted', postDelete.code === 0, `the tabs were rebuilt ephemeral; get url → ${show(postDelete)} · ${postDelete.healed}`);
+      let gone = ''; for (let i = 0; i < 6 && gone === ''; i++) { gone = await whoami(W1, `p8${i}`); if (gone === '') await sleep(1000); } // the tabs reload ephemeral right after the delete: an empty read is a page caught mid-reload
+      const carriers = isMerged(401) ? 2 : 1, workerDetached = !kids.honoured?.id || !storeJson().workspaces.find((w) => w.id === kids.honoured.id)?.browserProfileId;
+      clause(A, 'deleting-the-attached-profile-detaches-and-signs-out', new RegExp(`${carriers} workspaces? use`).test(detail) && workerDetached && wsProfile(W1) === undefined && (await chipText()) !== null && !/Staging/.test((await chipText()) ?? '') && gone === 'anon' && !(storeJson().browserProfiles ?? []).some((p) => p.id === pid), `confirm detail ${JSON.stringify(detail)}; W1 record ${wsProfile(W1) ?? '<none>'}; chip ${JSON.stringify(await chipText())}; agent reads /whoami = ${JSON.stringify(gone)}; profiles on disk ${JSON.stringify(storeJson().browserProfiles ?? [])}`);
     }
+    if (!isMerged(401)) nym(A, 401, 'orchestra spawn passes a profil navigateur the parent holds (refused otherwise, worker stays ephemeral)', 'no spawn argument', 'the worker panel signed in with the passed profile; a refused pass leaves it ephemeral with a clear message');
   },
 };
 
