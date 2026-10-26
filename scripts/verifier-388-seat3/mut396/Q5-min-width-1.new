@@ -1,0 +1,1 @@
+export const POPUP_WINDOW_MIN = { width: 1, height: 150 } as const;

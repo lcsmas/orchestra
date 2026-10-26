@@ -1,0 +1,1 @@
+p.frameName === name && p.opener !== opener

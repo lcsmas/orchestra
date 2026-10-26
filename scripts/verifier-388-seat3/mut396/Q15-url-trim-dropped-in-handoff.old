@@ -1,0 +1,1 @@
+return OS_HANDOFF_SCHEMES.test(url.trim());

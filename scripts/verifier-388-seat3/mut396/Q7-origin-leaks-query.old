@@ -1,0 +1,1 @@
+return parsed.origin !== 'null' ? parsed.origin : 'unknown origin';

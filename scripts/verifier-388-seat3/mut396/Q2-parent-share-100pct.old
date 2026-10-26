@@ -1,0 +1,1 @@
+export const POPUP_WINDOW_PARENT_SHARE = 0.9;

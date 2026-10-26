@@ -1,0 +1,2 @@
+    resizable: true,
+    webPreferences: { ...POPUP_WEB_PREFERENCES },
