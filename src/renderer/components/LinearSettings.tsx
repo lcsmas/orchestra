@@ -73,7 +73,7 @@ export function LinearSettings({ onClose, onChanged }: Props) {
       : source === 'env'
         ? 'Using the LINEAR_API_KEY environment variable.'
         : source === 'none'
-          ? 'No key configured — Linear badges are off.'
+          ? 'No key configured — pinned Linear tickets are off.'
           : '';
 
   return (
@@ -86,8 +86,8 @@ export function LinearSettings({ onClose, onChanged }: Props) {
       <div className="modal linear-settings">
         <h2>Linear API key</h2>
         <div className="sound-hint">
-          Orchestra verifies branch issue keys against Linear and shows a badge
-          only for issues that exist. Paste a Linear{' '}
+          Orchestra uses it to fetch the Linear tickets you pin in the sidebar.
+          Paste a Linear{' '}
           <button
             className="env-notice-link"
             onClick={() =>

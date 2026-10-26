@@ -135,9 +135,9 @@ never runs again.
   empty result **plus `error: <first stderr line>`** (`PRsForBranch.error`): an
   empty `all` alone is indistinguishable from "this branch has no PRs", so a
   broken `gh` (missing binary, invalid `GITHUB_TOKEN`, rate limit) used to make
-  the PR badge silently vanish — failing in the passing direction. The Sidebar
-  renders `error` as an amber `.pr-badge.error` ("PR?") whose tooltip carries the
-  `gh` stderr line, so "could not ask" reads differently from "nothing to show".
+  the PR badge silently vanish — failing in the passing direction. (The sidebar
+  no longer renders PR badges at all since 2026-10-26; `error` is kept on the
+  record for any future consumer.)
   Note `gh` puts its real diagnostic on **stderr** — `err.message` is only the
   exec wrapper's "Command failed".
 - **`findBranchChecks(repoPath, branch)`** — CI (GitHub Actions) verdict per

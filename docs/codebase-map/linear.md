@@ -1,7 +1,8 @@
 # Linear integration
 
-Turns an **agent-reported** issue key into a verified Linear issue badge in the
-sidebar. Files: `src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`, pure
+Turns an **agent-reported** issue key into a verified Linear issue (the sidebar
+row badge was removed 2026-10-26 as clutter; the verified issue still lands in
+the renderer's `linear` store, currently unrendered). Files: `src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`, pure
 logic). UI: `LinearSettings.tsx`.
 
 ## The badge is reported, not derived

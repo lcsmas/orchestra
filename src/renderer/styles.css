@@ -452,14 +452,10 @@ button.run-toggle-btn.running:hover {
 }
 
 /* Release tag and unpushed-commits marks — glyph + number, NO pill chrome.
-   These deliberately match `.ws-item .pr-badge` (border/background/padding all
-   dropped, 10px glyph, 9px mono number) rather than carrying a filled track:
-   as bordered chips they were the only badges in the row's pill strip still
-   wearing chrome, which made them read a size larger than the PR/Linear badges
-   sitting beside them and inverted the row's hierarchy away from the branch
-   name. Colour alone carries the state — green "shipped", amber "ready to
-   push". Unlike the PR badges these keep their treatment everywhere they
-   appear, since the sidebar row is their only site. */
+   These deliberately match `.ws-item .ci-badge` (border/background/padding all
+   dropped, 10px glyph, 9px mono number) rather than carrying a filled track,
+   so the row's hierarchy leads with the branch name. Colour alone carries the
+   state — green "shipped", amber "ready to push". */
 .released-pill,
 .unpushed-pill {
   display: inline-flex;
@@ -487,8 +483,7 @@ button.run-toggle-btn.running:hover {
 .unpushed-pill { color: #f5c46b; }
 .released-v,
 .unpushed-n { line-height: 1; }
-/* Older releases collapse into a dim `+N` beside the newest version, matching
-   how `.pr-badge.more` folds away extra PRs. Muted so the version the branch
+/* Older releases collapse into a dim `+N` beside the newest version. Muted so the version the branch
    actually shipped in reads first; the full list lives on the title tooltip. */
 .released-more {
   color: var(--text-dim);
@@ -1592,45 +1587,6 @@ input:focus, textarea:focus, select:focus {
   color: var(--red);
   border-color: var(--red);
 }
-/* Coordinator marker on a sidebar row — a PROMOTED WORKTREE's only cue that it
-   coordinates other agents (it stays in its repo section and never appears in
-   the pinned Orchestrators list, so nothing else marks it).
-
-   Now the SAME network glyph the Orchestrators section header uses, so one
-   shape means "orchestrator" everywhere in the sidebar. Drawn as a bare
-   glyph + count rather than a bordered pill: beside the flat PR/Linear badges
-   a filled green pill was the loudest thing on the row, which inverted the
-   hierarchy — the branch name should lead. */
-.orchestrator-pill {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0;
-  margin-left: 0;
-  border: none;
-  background: none;
-  border-radius: 0;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-  color: var(--orchestrator);
-  opacity: 0.9;
-}
-.orchestrator-pill svg { width: 10px; height: 10px; }
-.orchestrator-pill .orch-count {
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-}
-/* Collapsed row: the glyph's count is the ONLY cue for the agents folded away
-   under it, so it takes over the urgency tint the separate hidden-count badge
-   used to carry (that badge was removed as redundant — on a flat tree it just
-   repeated this number). Expanded rows stay orchestrator-green: the children
-   are visible on their own rows and show their own status there. */
-.orchestrator-pill.running { color: var(--green); opacity: 1; }
-.orchestrator-pill.waiting { color: var(--yellow); opacity: 1; }
-.orchestrator-pill.error { color: var(--red); opacity: 1; }
 /* Re-parent drop feedback. A reorder drop draws an insertion LINE between rows
    (.drop-before/.drop-after above); an attach drop lands ON the row, so it gets
    a full-row outline instead — the two must not look alike or the user can't
@@ -1871,82 +1827,6 @@ input:focus, textarea:focus, select:focus {
   100% { box-shadow: 0 0 0 0 rgba(91, 214, 139, 0), 0 0 6px rgba(91, 214, 139, 0.8); }
 }
 
-.pr-badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-wrap: wrap;
-}
-.pr-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 6px 0 4px;
-  height: 16px;
-  border-radius: 999px;
-  flex-shrink: 0;
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  color: var(--accent);
-  background: transparent;
-  border: 1px solid rgba(110, 168, 255, 0.35);
-  transition: background 140ms var(--ease), border-color 140ms var(--ease),
-    color 140ms var(--ease);
-}
-.pr-badge:hover {
-  background: rgba(110, 168, 255, 0.14);
-  border-color: rgba(110, 168, 255, 0.6);
-}
-.pr-badge svg {
-  width: 11px;
-  height: 11px;
-  opacity: 0.95;
-  flex-shrink: 0;
-  shape-rendering: geometricPrecision;
-}
-.pr-badge-num { line-height: 1; }
-.pr-badge.merged {
-  color: #b8a0ff;
-  border-color: rgba(179, 139, 255, 0.35);
-}
-.pr-badge.merged:hover {
-  background: rgba(179, 139, 255, 0.14);
-  border-color: rgba(179, 139, 255, 0.6);
-}
-.pr-badge.closed {
-  color: #ff9a9a;
-  border-color: rgba(240, 128, 128, 0.35);
-}
-.pr-badge.closed:hover {
-  background: rgba(240, 128, 128, 0.14);
-  border-color: rgba(240, 128, 128, 0.6);
-}
-.pr-badge.more {
-  padding: 2px 6px;
-  color: var(--text-dim);
-  border-color: var(--border);
-  cursor: default;
-}
-.pr-badge.more:hover {
-  background: transparent;
-  border-color: var(--border);
-}
-/* `gh` PR query failed — PR state is unknown, not empty. Amber (warning), not
-   the `.closed` red, so it doesn't read as a closed PR. Not clickable: there's
-   no URL to open, so it overrides the base badge's pointer cursor like `.more`. */
-.pr-badge.error {
-  color: #e8b96a;
-  border-color: rgba(232, 185, 106, 0.4);
-  cursor: help;
-}
-.pr-badge.error:hover {
-  background: rgba(232, 185, 106, 0.14);
-  border-color: rgba(232, 185, 106, 0.65);
-}
-/* Linear issue link — Linear's indigo brand color. */
 /* ---------------------------------------------------------------------------
    Pinned Linear tickets — the sidebar's Tickets section.
 
@@ -2052,17 +1932,7 @@ input:focus, textarea:focus, select:focus {
 .ticket-btn:disabled { cursor: not-allowed; opacity: 0; }
 .ticket-item:hover .ticket-btn:disabled { opacity: 0.35; }
 
-.pr-badge.linear {
-  color: #8b91f0;
-  border-color: rgba(94, 106, 210, 0.4);
-}
-.pr-badge.linear:hover {
-  background: rgba(94, 106, 210, 0.16);
-  border-color: rgba(94, 106, 210, 0.65);
-}
-/* Orchestrator-tree children carry their repo tag and PR/Linear links inline on
- * the name row. Space is tight there (rows are indented), so shrink every pill
- * in the strip to match — smaller text, just the issue/PR number. */
+/* Orchestrator-tree children: indented rows, so shrink the strip's pills. */
 .ws-pills.mini {
   gap: 4px;
 }
@@ -2070,39 +1940,10 @@ input:focus, textarea:focus, select:focus {
   font-size: 8px;
   padding: 0 4px;
 }
-.ws-pills.mini .pr-badge {
-  height: 13px;
-  padding: 0 5px 0 3px;
-  gap: 2px;
-  font-size: 8px;
-  border-radius: 999px;
-}
-.ws-pills.mini .pr-badge svg {
-  width: 9px;
-  height: 9px;
-}
 
 /* ── Flat badges on sidebar rows ────────────────────────────────────────────
-   Inside a workspace row the PR / Linear / CI badges drop their pill chrome
-   (border + background + rounded track) and render as a bare glyph + number.
-   Three bordered pills in a row competed with each other and with the branch
-   name; as flat marks they group quietly and colour alone carries the state.
-   Scoped to `.ws-item` so the same components keep their pill treatment
-   wherever else they appear. */
-.ws-item .pr-badge {
-  border: none;
-  background: none;
-  padding: 0;
-  height: auto;
-  gap: 3px;
-  font-size: 9px;
-}
-.ws-item .pr-badge:hover { background: none; opacity: 1; }
-.ws-item .pr-badge svg { width: 10px; height: 10px; }
-.ws-item .ws-pills.mini .pr-badge { height: auto; padding: 0; }
-/* An OPEN pr is the unremarkable default, so it sits at the muted tier; the
-   states that want attention (draft/closed/error) keep their own colour. */
-.ws-item .pr-badge.open { color: #3fb950; }
+   Inside a workspace row the CI badge drops its pill chrome and renders as a
+   bare glyph + number; colour alone carries the state. Scoped to `.ws-item`. */
 .ws-item .ci-badge {
   border: none;
   background: none;
