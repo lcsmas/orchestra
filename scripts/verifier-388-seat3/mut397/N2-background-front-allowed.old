@@ -1,0 +1,1 @@
+wsFocused: focusedWsId === wsId,

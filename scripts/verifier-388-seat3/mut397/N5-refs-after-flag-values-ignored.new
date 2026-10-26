@@ -1,0 +1,1 @@
+return { op, refs: words.filter((_, i) => i !== opAt).slice(0, 1), json };

@@ -1,0 +1,2 @@
+    if (FRAME_BOUND_METHODS.has(method)) {
+      const why = this.port.framesError(tabId);
