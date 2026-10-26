@@ -65,6 +65,8 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   once from `index.ts` with the live main-window accessor. Reuses
   `login-browser.ts`'s session-partition + UA-normalization + context-menu
   pattern.
+- **`src/main/browser-popups.ts`** (#396) — user-gesture tracker (`trackUserGesture` / `consumeUserGesture`) + the per-workspace registry of popup child windows
+  (`registerPopupWindow` / `livePopupWindows` / `closePopupWindows` / `closePopupsOpenedBy` / `setPopupWindowsVisible`); the routing flow itself is `routePopup` in `browser-panel.ts` (see Popups).
 - **`scripts/spike-hidden-view.sh`** (+ `.mjs`, `-main.cjs`) — the #402 hidden-view measurement rig (no app code; see *Hidden-view spike*).
 - **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
   an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
@@ -160,8 +162,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   `designModePoll`): the tab is resolved once, so an `activateTab` between two
   CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
-  size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
-  (popup routing is #396).
+  size); popups are routed by `routePopup` (see Popups, #396).
 - **An explicit `tabId` never builds a panel**: `evaluate`/`designModeArm` (via `liveTabFor`)/…
   and `navigate` resolve it first and throw "not found" — a stale id after
   `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
@@ -418,8 +419,7 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 
 - **Pure policy — `src/shared/browser-tab-policy.ts`** (unit-tested, `browser-tab-policy.test.ts`): `BROWSER_TAB_CAP`, `decideTabOpen`
   (the cap; refusal carries a user-facing message), `decideTabClose` (**the human closes any tab, an agent only `openedBy:'agent'`**;
-  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the #396 seam:
-  `PopupRouteDecision = {route:'same-view'|'external'}` today = the pre-tabs behaviour; #396 adds arms). #397 consumes the ownership rule.
+  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the popup routing, see Popups #396). #397 consumes the ownership rule.
 - **Main entry points — `tryOpenTab` / `tryCloseTab` / `tryActivateTab`** in `src/main/browser-panel.ts`: ask the policy FIRST, so a refused open
   allocates no `WebContentsView` (no leak) and a refused close destroys nothing. They RESOLVE `BrowserTabResult` (`{ok:true,state,tabId?}` |
   `{ok:false,reason:'cap'|'not-owner'|'unknown-tab',message,state}`) — never throw across IPC. Anything acting for the human or the agent
@@ -453,6 +453,61 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 - **Traps:** a `WebContentsView` that is not the active tab of the focused workspace is NOT in the window (never composites); the rig's pixel
   clauses are the only oracle for that (DOM cannot see paint). `Browser.close` over the debug port is a graceful quit that reaches
   `before-quit` (the flush); a SIGKILL restart relies on the 400 ms debounce alone — both are driven.
+
+## Popups (#396) — `_blank` → tab, OAuth → native child window, budget
+
+A page-opened window never loads into the opener's view any more (that broke every `window.opener` OAuth flow). `setWindowOpenHandler` is installed
+per contents by `watchPopups` (tab views AND popup child windows) and answers through `routePopup` in `src/main/browser-panel.ts`.
+
+- **Pure policy — `decidePopup(req, ctx)` in `src/shared/browser-tab-policy.ts`** (`browser-tab-policy.test.ts`): `PopupRouteDecision` =
+  `new-tab{activate,pageInitiated}` | `child-window{pageInitiated}` | `external` | `refuse{reason: cap|budget|rate|unsafe-url|unsafe-features|no-gesture-external|name-in-use}`.
+  Rules, in order: **OS hand-off is an ALLOWLIST** — only `mailto:`/`tel:` (on a click) ever reach `shell.openExternal`; every other scheme (`javascript:`, `data:`, `file:`, `ssh:`, `smb:`, `zoommtg:`, internal pages…) is refused, because an agent's CDP click counts as a click
+  (review F3); a `webContents` key in the features string is refused (`featuresSmuggleWebContents`: Electron spreads the page's value over the real guest handle); **cap** = tabs + live popup windows ≥ `BROWSER_TAB_CAP` (8, shared, refuses even a click; the human's `+` / `tryOpenTab` counts the windows too);
+  a named popup whose name a window opened by ANOTHER OPENER holds is refused (`name-in-use`, F5); **budget** = a no-gesture popup while `POPUP_BUDGET` (3) page-initiated ones (tabs + windows) are still open; **rate** = a no-gesture popup once `POPUP_RATE_MAX` (6) page-initiated ones were OPENED
+  in the last `POPUP_RATE_WINDOW_MS` (60 s), closed or not — the budget alone is concurrent, so open/close churn was unbounded (F4). Route: a popup that needs
+  `window.opener` — **named** (`frameName` not ''/`_blank`/`_self`/`_parent`/`_top`) or **sized** (`disposition:'new-window'` WITH a features string — a features-less `new-window` is a shift-clicked link: a tab) and without an explicit
+  `noopener` feature — is a child window; everything else is a tab, activated only for a clicked foreground link (not `background-tab`, not page-initiated).
+  Electron reports `features:'noopener'` only for `window.open(…,'noopener')`, never for `rel=noopener` anchors (measured), so that is the only opt-out.
+- **User gesture — `src/main/browser-popups.ts`:** Electron's handler does not say whether a gesture started the popup, so `trackUserGesture`
+  records the last activating `input-event` (`mouseDown`/`keyDown`/`rawKeyDown`/`touchEnd`, also CDP-dispatched input = how the agent clicks) per
+  contents and `consumeUserGesture` reads it within `USER_GESTURE_WINDOW_MS` (5 s, Chromium's activation window) and **consumes it: one input opens
+  one popup** (a click that fires 20 `window.open` = 1 shown popup + 19 on the budget); **a main-frame `did-navigate` clears it** (a click on page A is no gesture for the page it navigated to — it would let that page open an OS handler or skip the budget). `evaluate(…, userGesture:true)` fires no input event: counted as page-initiated.
+  The gesture is per webContents, not per frame (accepted gap: a click anywhere lets a cross-origin iframe use it for 5 s).
+- **New tab:** `createTab(wsId,{url,openedBy,activate})` with `openedBy` **inherited from the opener tab** (an agent tab's popups are agent-closable, the human's are not);
+  the handler denies Electron's own window. Page-opened tabs are tracked in `pageOpenedTabs` (a WeakSet — closing the tab gives its budget back); the per-minute opens in `notePageInitiatedOpen` / `recentPageInitiatedOpens`.
+- **Child window — built by OUR `createWindow` factory, never from the page's features (review F1).** Electron builds a popup's options as `{ show:true, width:800, height:600, ...parseFeatures(<the PAGE's features>), ...ours }` — so
+  `alwaysOnTop,frame=no,transparent,fullscreen,kiosk,modal,closable=no,focusable=no,width=4000` would give a hostile page a screen-covering, frameless, un-closable window (measured on 33.4.11's shipped `guest-window-manager`). `routePopup`
+  therefore answers `{action:'allow', createWindow, overrideBrowserWindowOptions:{webPreferences:{sandbox,contextIsolation,nodeIntegration:false}}}` (the override is what Electron derives the GUEST's own preferences from) and
+  `createPopupWindow` (the factory) builds the window from **`buildChildWindowOptions`** (`src/shared/browser-popup-window.ts`, pure): an ALLOWLIST of `webContents` (the real guest, only when it is an object), `parent` = the app window, `show:false`, `resizable:false`
+  (**a resizable child window is TILED beside the app by sway — halving it; a fixed-size one floats**, measured), `autoHideMenuBar`, the pinned `webPreferences`, and a `width`/`height` clamped to [200×150, 90% of the app window] (junk or zero sizes fall back to 480×520; Electron itself merges 800×600 first, so a feature-less named popup is 800×600 clamped to 90%). No position, no frame / transparency / z-order / fullscreen / kiosk / modal /
+  closable / focusable key — they take their safe defaults by being absent. Electron REQUIRES the factory to return the guest it handed over (it throws "Invalid webContents" otherwise); a guest we may not give a window (panel gone, cap filled meanwhile) is `close()`d and handed back, never left windowless.
+  With `createWindow` there is no `did-create-window`: the factory registers the window itself (`registerPopupWindow`), installs the same handler on ITS contents (nested popups follow the same policy and budget) and shows it only if its workspace is the one on screen
+  (`focusedWsId`; a page-initiated one with `showInactive`; the gestured one with `show` — accepted gap: it takes OS focus). **The decision travels in the factory's closure** (the old per-opener `pendingPopup` slot could mix two approvals up across cross-process frames, F6).
+  The title is ours (`popupWindowTitle`: `<origin> — <sanitised page title>`; `page-title-updated` is prevented; control + bidi characters stripped, cut at 80) so a frameless-looking page cannot pass for someone else (F2).
+  Child windows are NOT in the tab registry (the CDP proxy #395 and agent tab tools do not see them), but they ARE billed to their workspace in the #394 tab-memory source (`setBrowserTabSource.tabs()` lists them as `w<n>`; the Resources chip counts them as tabs) and they hold cap slots.
+- **Page-driven bounds are vetoed (review F-a):** Electron APPLIES a page's `window.resizeTo` / `moveTo` by default and `resizable:false` does not stop it (measured on 33.4.11: a 400×329 popup became the whole 1600×1000 screen), so the creation-time clamp would last only until the page's first script.
+  `content-bounds-updated` is vetoed (`preventDefault`) on every popup window and, as defence in depth, on tabs (measured: a TAB's resizeTo does not move the app window).
+- **External protocols (review F-b):** a link click or a redirect to `ssh:` / `zoommtg:` / `smb:` … inside a tab or popup never goes through `window.open`: Chromium's external-protocol path asks the SESSION for the `openExternal` permission and then runs `xdg-open` (measured with a recording shim: a plain `ssh://` link
+  click reached it; a CDP agent click is a user activation). `guardExternalProtocols` (once per panel session; popup windows inherit the opener's session) answers that request through the pure `decideExternalProtocol`: the SAME allowlist as the popup path (`isOsHandoffUrl`: `mailto:`/`tel:`) AND a user gesture of the REQUESTING contents (`consumeUserGesture`: one input, one launch; a refused scheme does not eat the click's activation) —
+  a load-time `location.href = 'mailto:…'` or a programmatic `a.click()` on `tel:` has no gesture and never launches (seat-3 F1; measured with the recording shim). It logs a refusal with the SCHEME only (`(ssh:)`, `(mailto: no click)`) and keeps Electron's default (granted) for every other permission. A navigation within the 5 s activation window of a click is honoured, as in a normal browser.
+- **Electron's frame-name registry is process-global (F5):** `window.open(url, 'oauth')` loads into ANY live window registered under that name — across tabs, workspaces and partitions — and that window's `window.opener` is still the tab that created it, so a hostile tab could retarget another tab.
+  `PopupWindow.frameName` + `frameNameHeldByOther(name, opener)` make the policy refuse a named popup while a window of that name was opened by a DIFFERENT opener (another workspace OR another tab of the same one); the holder itself reuses its window (the browser resolves a same-context name natively; no new window, no cap slot).
+  Names held by windows Orchestra did not create (login windows) are unknown here.
+- **Electron's own per-embedder factory slot (backstop):** Electron keeps ONE `createWindow` / options slot per embedder, set in `-will-add-new-contents` and consumed in `-add-new-contents`; if another popup's approval lands in between (cross-process frames — NOT measured in the built app: a 40-call same-frame storm never overlapped), a popup takes Electron's DEFAULT path:
+  a window built from the PAGE's features, no registry, `did-create-window` emitted. Our factory never emits that event, so `watchPopups` destroys any window it announces (`popup window created outside the allowlist factory`). A rare OAuth popup lost in that interleave is the price of never leaving the hostile window up.
+- **Guest-less path:** if Electron ever calls the factory without a guest (the legacy `-new-window` path; unreachable today: it carries no frame name and no features), the factory builds the window pinned to the OPENER's session and loads the URL itself.
+- **Rate is counted when a window really opens** (in the factory / the tab creation), not at approval: a reused named window or a refused guest consumes none.
+- **No leaked windows:** the registry (`livePopupWindows`) prunes destroyed windows on read, so counts cannot drift; windows die with their opener (`wc.once('destroyed')` → `closePopupsOpenedBy`, recursive)
+  and with the workspace (`destroyPanel` → `closePopupWindows`, belt and braces for an opener that never announces its end; **every delete path reaches `destroyPanel`: `teardownWorkspace` calls it**, so the socket `orchestra delete`, bulk delete and repo removal no longer leak the panel — only archive and the two IPC wrappers did before); `hidePanel` hides them, `showPanel` brings them back (`showInactive`),
+  so a sign-in window never floats over another workspace's UI. A refusal is logged `popup refused (<reason>) ws=… url=<origin>` (origin only: OAuth URLs carry tokens in the query) — no UI notice.
+- **Not handled (accepted gaps):** no UI notice for a refused popup (log only) — in particular a `name-in-use` refusal is silent and keyed on library defaults (Auth0 `auth0:authorize:popup`, Google `oauth2`…): two tabs signing in at once, or an abandoned popup, block the second sign-in with a log line only; the `did-create-window` backstop destroys the stray window AFTER it was created (alive for a tick, uncounted by the rate cap) and a legitimate popup that loses that race dies with it (needs two cross-process frames; unmeasured); an UNNAMED, feature-less `window.open(url)` that relies on `window.opener` becomes a tab with no opener (spec: "unnamed → tab");
+  a `target=_blank` form POST loads as GET (pre-existing); `referrer` is not forwarded; the gesture is per webContents, not per frame; the namespace import of `electron` in `browser-panel.ts` exists because the #391/#393 stub harnesses do not export `BrowserWindow`.
+- **Tests:** `browser-tab-policy.test.ts` (every routing clause), `src/shared/browser-popup-window.test.ts` (the builder against Electron's own parse + merge, replicated in `electron-guest-window.testlib.ts`: hostile keys, sizes, smuggled webContents, prototype pollution, title), `src/main/browser-popups.test.ts` (gesture window/consume, registry, frame names, rate),
+  `src/main/browser-panel-popups.test.ts` (real `browser-panel.ts` over a stubbed `electron`, driven the way Electron 33 drives it — handler, then the factory with the merged options, which must return the guest: tab, budget / rate storms, cap shared with windows, hostile features, factory refusals, F5, F2, #394 billing, hide/show, no leaks),
+  `src/main/browser-popups-wiring.test.ts` (every delete path destroys the panel); `scripts/mutate-browser-popups.mjs` (in-place mutants, byte-exact restore; `browser-popups-wiring.test.ts` matches code only, anchored, with controls for the commented-out / conditional shapes). Hostile-features probe by verifier seat 3 (`hostile-features-probe.mjs` on the verifier branch `verif-barriere-navigateur-3-388`, not in this tree; adapter = `buildChildWindowOptions` fed by Electron's REAL shipped merge: 29 hostile strings, run 29/29 green).
+  Built app: `scripts/e2e-browser-popups.sh <app-dir>` (own headless sway in the private runtime world; arms `blank,oauth,xsite,hostile,extproto,storm,ws,cleanup` — `extproto` first loads `?nogesture=1` (load-time `mailto:`, programmatic `tel:` `a.click()`, `window.open(mailto:)`: nothing launches), then clicks `ssh://` / `zoommtg://` links in a tab and in a popup against a RECORDING `xdg-open` shim on the app's PATH, with ONE mailto click as the positive control (exactly one launch) — storm phases `s1,s2,s2b,s2c,s3,s4,churn` selectable alone: the rig itself spaces its page-initiated opens under the 6/min rate cap) —
+  the OAuth flow completes through a real child window, same-site and CROSS-SITE (`localhost` vs `127.0.0.1`), titled with its origin, floating, cookie in the opener's jar; a hostile `features` popup stays bounded and floating and its page's `resizeTo(4000,4000)`/`moveTo(0,0)` changes nothing; a `webContents` feature is refused; storms capped (script / mixed / named / near the cap / one click / churn); a click→navigate gives the next page no gesture; shift-click = tab; archive leaves nothing —
+  + `scripts/e2e-browser-popups-mutants.mjs` (rebuilt-app mutants incl. `R0-unfixed-same-view-handler`, today's handler, and R14–R21 for the hostile-features, bounds, external-protocol and no-click-mailto fixes). Fixture pages `scripts/fixtures/browser-site/pages/popups-{opener,oauth,blank,storm,hostile,extproto}.html`.
 
 ## IPC / seam
 
