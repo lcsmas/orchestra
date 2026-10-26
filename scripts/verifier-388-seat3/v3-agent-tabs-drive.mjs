@@ -762,7 +762,7 @@ const ARM_FNS = {
     const before = await reg(ctx, W1);
     await clickSel(ctx, '.browser-tab-close', idx); await sleep(900);
     const after = await reg(ctx, W1);
-    clause(A, 'a-real-click-on-a-human-tab-x-under-the-notice-closes-that-tab-only', before.tabs.length === 3 && after.tabs.length === 2 && !after.tabs.some((t) => t.id === second.id) && after.tabs.some((t) => t.openedBy === 'agent') && after.tabs.some((t) => t.openedBy === 'human'), `before ${brief(before)} → after ${brief(after)}`);
+    clause(A, 'a-real-click-on-a-human-tab-x-under-the-notice-closes-that-tab-only', after.tabs.length === before.tabs.length - 1 && !after.tabs.some((t) => t.id === second.id) && before.tabs.filter((t) => t.id !== second.id).every((t) => after.tabs.some((x) => x.id === t.id)), `before ${brief(before)} → after ${brief(after)}`);
   },
 
   // ── a background / archived workspace's agent never attaches or shows a view ───────────────────────────────────────────────────────
