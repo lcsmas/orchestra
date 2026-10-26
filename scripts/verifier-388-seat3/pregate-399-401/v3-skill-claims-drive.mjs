@@ -10,7 +10,7 @@
 // Usage (via scripts/e2e-browser-cli-parity.sh): <app-dir> --live-home <real $HOME> [--arm a,b] [--list] [--mutant <name>] [--trace] [--out dir]
 //   --mutant <name>: patch the BUILT bundle in place (byte-exact backup, `cmp`-verified restore), run, and require the mutant's arms RED
 //   (and every ctl/* clause of those arms GREEN). Without it the run must be all green.
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta', 'v3f3'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta', 'v3f3', 'v3hid'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -194,7 +194,7 @@ class Cdp {
 }
 
 // ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const WS_NAMES = ['b399-one', 'b399-two'];
+const WS_NAMES = ['b399-one', 'b399-two', 'b399-three']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
@@ -276,7 +276,7 @@ process.on('SIGTERM', () => process.exit(143));
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir);
-  const [W1, W2] = world.workspaces;
+  const [W1, W2, W3] = world.workspaces;
   const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
@@ -303,7 +303,7 @@ async function main() {
     // Assert what the DRIVER handed the app: Chromium may rewrite /proc/<pid>/environ once a bus var is present (seat 2 F2), so the process view is informational only
     clause('ctl', 'scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && env.XDG_RUNTIME_DIR === XDG && !('DISPLAY' in env) && !('DBUS_SESSION_BUS_ADDRESS' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND,
       `env handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} (the rig's private dir) WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'} DBUS=${'DBUS_SESSION_BUS_ADDRESS' in env ? 'SET' : '<unset>'}`);
-    const ctx = { world, W1, W2, FIX, port, app, ui, targets, env, logFile };
+    const ctx = { world, W1, W2, W3, FIX, port, app, ui, targets, env, logFile };
     await runArms(ctx);
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
@@ -423,6 +423,11 @@ const ARM_FNS = {
     const atFwd = await waitFor(() => ob.eval('location.pathname').then((p) => p === '/cli.html' ? p : null), 8000, 'forward to /cli.html').catch(() => null);
     clause(A, 'forward-moves-history', fw.code === 0 && atFwd === '/cli.html', `${show(fw)} → oracle path ${JSON.stringify(await ob.eval('location.pathname'))}`);
     ob.close();
+    // the human's tab cannot be sent to a browser-internal page (#397 F4): refused, the page stays (the skill's "What you cannot do")
+    const here = await cli(ctx, W1, ['get', 'url']);
+    const internal = await cli(ctx, W1, ['open', 'chrome://gpu'], { timeoutMs: 40000 });
+    const there = await cli(ctx, W1, ['get', 'url']);
+    clause(A, 'browser-internal-page-on-the-humans-tab-is-refused-and-the-page-stays', internal.code !== 0 && there.stdout.trim() === here.stdout.trim() && !/^chrome:/.test(there.stdout.trim()), `open chrome://gpu → ${show(internal)}; url before ${here.stdout.trim()} · after ${there.stdout.trim()}`);
     // a failing load is reported, not swallowed (old tool: "Navigated to … (error: …)")
     const dead = await freePort();
     const bad = await cli(ctx, W1, ['open', `http://127.0.0.1:${dead}/nothing`], { timeoutMs: 45000 });
@@ -525,6 +530,10 @@ const ARM_FNS2 = {
       const ty = await cli(ctx, W1, ['type', typed ?? '@e0', 'def']);
       const v2 = await o.eval(`document.getElementById('typed').value`);
       clause(A, 'type-into-an-element-by-ref', ty.code === 0 && v2 === 'abcdef', `type ${typed} def → ${show(ty)} → oracle value ${JSON.stringify(v2)}`);
+      await cli(ctx, W1, ['click', typed ?? '@e0']);
+      const sa = await cli(ctx, W1, ['press', 'Control+a']);
+      const sel2 = await o.eval(`({ s: document.getElementById('typed').selectionStart, e: document.getElementById('typed').selectionEnd, n: document.getElementById('typed').value.length })`);
+      clause(A, 'press-control-a-selects-the-field-content', sa.code === 0 && sel2.s === 0 && sel2.e === sel2.n && sel2.n > 0, `${show(sa)} → oracle selection ${sel2.s}..${sel2.e} of ${sel2.n} chars (the skill lists "press Control+a")`);
     } finally { o.close(); }
   },
 
@@ -568,6 +577,16 @@ const ARM_FNS2 = {
       const m = await cli(ctx, W1, ['eval', "document.getElementById('out').textContent = 'evaled'; 'ok'"]);
       const after = await o.eval(`document.getElementById('out').textContent`);
       clause(A, 'runs-in-the-page', m.code === 0 && after === 'evaled', `${show(m)} → oracle #out ${JSON.stringify(after)}`);
+      // the skill's recipe for catching an uncaught page error (`errors` prints blank lines): install a listener with eval, trigger an error, read it back later
+      const recipe = BROWSER_SKILL.split('\n').flatMap((l) => (/window\.addEventListener\('error'/.test(l) ? [l] : [])).join('\n');
+      const m1 = /eval "(window\.addEventListener\('error'[^"]*)"/.exec(recipe), m2 = /eval "(window\.__err)"/.exec(recipe);
+      if (m1 && m2) {
+        await cli(ctx, W1, ['eval', m1[1]]);
+        await o.eval(`setTimeout(() => { throw new Error('uncaught-399-recipe'); }, 30); 1`);
+        await sleep(400);
+        const got = await cli(ctx, W1, ['eval', m2[1]]);
+        clause(A, 'skill-recipe-catches-an-uncaught-page-error', got.code === 0 && /uncaught-399-recipe/.test(got.stdout), `listener installed with the skill's eval, an uncaught error thrown in the page, read back with the skill's second eval → ${show(got)}`);
+      } else clause(A, 'skill-recipe-catches-an-uncaught-page-error', false, `the recipe was not found in the skill text (${!!m1}/${!!m2})`);
       const c1 = await cli(ctx, W1, ['eval', 'const zz399 = 1; zz399']);
       const c2 = await cli(ctx, W1, ['eval', 'const zz399 = 2; zz399']);
       const i1 = await cli(ctx, W1, ['eval', '(() => { const yy399 = 1; return yy399; })()']);
@@ -616,12 +635,12 @@ const ARM_FNS2 = {
     const shot = await ui.send('Page.captureScreenshot', { format: 'png' });
     saveShot('parity-reveal-app.png', Buffer.from(shot.data, 'base64'));
     // the FIRST command ever on a workspace whose panel was never built: the host builds it (about:blank) — that must not open the pane either
-    const { W2 } = ctx;
-    await selectWs(ctx, W2);
+    const { W3 } = ctx;
+    await selectWs(ctx, W3);
     if ((await paneToggle(ctx)).open) await clickToggle(ctx);
     await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the fresh workspace pane to be closed').catch(() => {});
-    clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W2.branch} selected, its pane closed, no panel built yet`);
-    const first = await cli(ctx, W2, ['snapshot', '-i']);
+    clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W3.branch} selected, its pane closed, no panel built yet`);
+    const first = await cli(ctx, W3, ['snapshot', '-i']);
     const openedBlank = await waitFor(() => paneVisible(ctx), 4000, 'the pane to open for a fresh panel').catch(() => false);
     // MEASUREMENT: building a panel loads about:blank, and decideBrowserAutoOpen (#393-fu) counts a new (tab,url) key as "the agent drove it" — so the very
     // first command of a workspace opens its pane (blank). The skill does not promise otherwise; this clause pins what is true so a change is seen.
@@ -681,9 +700,12 @@ const ARM_FNS3 = {
       await cli(ctx, W2, ['eval', "(() => { const el = document.querySelector('#ctl'); el.value = 'plain'; el.dispatchEvent(new Event('input', { bubbles: true })); })()"]);
       const st2 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
       clause(A, 'ctl/a-plain-assignment-leaves-the-controlled-state-stale', st2.value === 'plain' && st2.state === '', `plain value= + input event → oracle ${JSON.stringify(st2)} (the fixture discriminates the two forms, as React does)`);
+      const tyh = await cli(ctx, W2, ['type', name2 ?? '@e0', 'zzz'], { timeoutMs: 45000 });
+      const valh = await o2.eval(`document.getElementById('name').value`);
+      clause(A, 'type-by-ref-fails-fast-and-writes-nothing', tyh.code !== 0 && tyh.ms < 9000 && /not on screen/.test(tyh.stderr) && !/zzz/.test(valh), `type ${name2} zzz → ${show(tyh)}; oracle value ${JSON.stringify(valh)}`);
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
       clause(A, 'mouse-fails-fast', mv.code !== 0 && mv.ms < 9000 && /not on screen/.test(mv.stderr), show(mv));
-      const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']]];
+      const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']], ['scrollintoview', ['scrollintoview', '#far']]];
       const outs = []; for (const [n, a] of keep) outs.push([n, await cli(ctx, W2, a, { timeoutMs: 45000 })]);
       clause(A, 'wait-get-cookies-storage-console-network-keep-working', outs.every(([, r]) => r.code === 0), outs.map(([n, r]) => `${n}: rc=${r.code}${r.code ? ' ' + JSON.stringify(r.stderr.slice(0, 80)) : ''}`).join(' · '));
       await o2.eval(`window.scrollTo(0, 0)`); await sleep(300); // the hidden attempts above may have scrolled elements into view
@@ -691,6 +713,38 @@ const ARM_FNS3 = {
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
       clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0b - 300) <= 2, `${show(sc)}; oracle scrollY ${y0b} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
+      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
+      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
+      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
+      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
+      await o2.eval(late('late-sel'));
+      const wsel = await cli(ctx, W2, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
+      await o2.eval(late('late-fn'));
+      const wfn = await cli(ctx, W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
+      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
+      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
+      const wblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const wctl = await cli(ctx, W2, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iw = await o2.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
+      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
+      await o2.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
+      await sleep(500);
+      const errs = await cli(ctx, W2, ['errors']);
+      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
+      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
+      await selectWs(ctx, W2); await openPane(ctx);
+      await o2.eval(late('late-vis'));
+      const wvis = await cli(ctx, W2, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wblockVis = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
+      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
+      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
+      await selectWs(ctx, W1);
+      await o2.eval(late('late-b'));
+      const wB = await cli(ctx, W2, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wBblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iwB = await o2.eval('innerWidth');
+      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W2 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
     } finally { o2.close(); }
   },
 };
@@ -900,108 +954,6 @@ const ARM_FNS8 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS8);
-
-// ── seat 3 (#399 F3 delta, 0dbc2b35): which elements does a hidden-pane `wait "<selector>"` pass for; the stale-ref and help sentences ──
-ARM_FNS.v3f3 = async function v3f3(ctx) {
-  const { W1, W2, FIX } = ctx; const A = 'v3f3';
-  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 60000, ...(o2 ?? {}) });
-  await selectWs(ctx, W1); await openPane(ctx);
-  const u = `${FIX}/v3-kinds.html`;
-  const { r: op, o } = await openOn(ctx, W2, u);
-  clause(A, 'ctl/w2-is-hidden', op.code === 0 && await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`), show(op));
-  const geo = await o.eval(`({ innerWidth, innerHeight, bodyW: Math.round(document.body.getBoundingClientRect().width), kinds: Object.fromEntries([...document.querySelectorAll('[id^=k-]')].map((e) => [e.id, Math.round(e.getBoundingClientRect().width)])) })`);
-  console.log(`  INFO  [${A}] hidden page geometry: innerWidth ${geo.innerWidth} innerHeight ${geo.innerHeight} body ${geo.bodyW}; widths ${JSON.stringify(geo.kinds)}`);
-  const ids = Object.keys(geo.kinds); const hidden = {};
-  for (const id of ids) { const r = await run(W2, ['wait', `#${id}`, '--timeout', '2500']); hidden[id] = { ok: r.code === 0, ms: r.ms }; }
-  const passH = ids.filter((i) => hidden[i].ok), failH = ids.filter((i) => !hidden[i].ok);
-  console.log(`  INFO  [${A}] hidden pane, wait "#id" --timeout 2500: RETURNS for [${passH.join(', ')}]; TIMES OUT for [${failH.join(', ')}]`);
-  const sentenceOnly = passH.every((i) => /^k-(input|btn)$/.test(i)) && ['k-input', 'k-btn'].every((i) => passH.includes(i));
-  clause(A, 'skill-says-hidden-wait-selector-returns-ONLY-for-inputs-and-buttons', sentenceOnly, `returns for [${passH.join(', ')}]`);
-  const sentenceFail = ['k-h1', 'k-p', 'k-div'].every((i) => failH.includes(i));
-  clause(A, 'skill-says-text-blocks-and-divs-time-out', sentenceFail, `h1 ${JSON.stringify(hidden['k-h1'])} p ${JSON.stringify(hidden['k-p'])} div ${JSON.stringify(hidden['k-div'])}`);
-  const bodyR = await run(W2, ['wait', 'body', '--timeout', '2500']); clause(A, 'skill-says-the-body-times-out', bodyR.code !== 0, show(bodyR));
-  const lateR = await (async () => { await o.eval(`setTimeout(() => { const d = document.createElement('input'); d.id = 'late-input'; document.body.appendChild(d); }, 700); 1`); return run(W2, ['wait', '#late-input', '--timeout', '3000']); })();
-  console.log(`  INFO  [${A}] hidden pane, a LATE <input> (skill: "an element that still has to appear" times out): ${show(lateR)}`);
-  // visible controls
-  await selectWs(ctx, W2); await openPane(ctx);
-  const ov = await oracle(ctx, `${u}?w=${W2.name}`);
-  const vis = {}; for (const id of ['k-h1', 'k-p', 'k-div', 'k-input']) { const r = await run(W2, ['wait', `#${id}`, '--timeout', '2500']); vis[id] = r.code === 0 && r.ms < 2000; }
-  clause(A, 'ctl/visible-pane-every-kind-returns-at-once', Object.values(vis).every(Boolean), JSON.stringify(vis));
-  // stale-ref sentence: "after a re-render the old ref may still resolve (by role and name) or may not"
-  const sn = await run(W2, ['snapshot', '-i']); const go = (/button "Go" \[ref=(e\d+)\]/.exec(sn.stdout) || [])[1];
-  await ov.eval(`document.getElementById('host').innerHTML = '<button id="bgo2" onclick="document.getElementById(\\'out\\').textContent=\\'clicked-new-node\\'">Go</button>'; 1`);
-  const c1 = await run(W2, ['click', `@${go}`]); const out1 = await ov.eval(`document.getElementById('out').textContent`);
-  console.log(`  INFO  [${A}] re-render with the SAME role+name, old ref @${go}: ${show(c1)} → #out ${JSON.stringify(out1)}`);
-  await ov.eval(`document.getElementById('host').innerHTML = '<button id="bgo3">Stop</button>'; 1`);
-  const c2 = await run(W2, ['click', `@${go}`]);
-  console.log(`  INFO  [${A}] re-render with ANOTHER name, old ref: ${show(c2)}`);
-  clause(A, 'skill-says-after-a-rerender-the-old-ref-may-resolve-or-may-not', (c1.code === 0 && /clicked-new-node/.test(out1)) && c2.code !== 0, `same role+name → ${c1.code === 0 ? 'resolved and clicked the NEW node' : 'failed'}; another name → rc ${c2.code}`);
-  // help sentence
-  const h = await run(W2, ['help'], {}); const hb = await new Promise((res) => { const r = spawnSync(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'help', 'browser'], { encoding: 'utf8', env: cliEnv(ctx, W2), cwd: ctx.world.fakeHome }); res(r); });
-  console.log(`  INFO  [${A}] orchestra help browser → rc ${hb.status}, ${hb.stdout.split('\n').length} lines, head ${JSON.stringify(hb.stdout.split('\n').slice(0, 4).join(' | ').slice(0, 220))}`);
-  clause(A, 'skill-says-help-browser-prints-a-short-reference', hb.status === 0 && hb.stdout.trim().length > 0 && hb.stdout.split('\n').length < 60, `${hb.stdout.split('\n').length} lines`);
-  ov.close(); o.close();
-};
-
-// ── seat 3 (#399 delta gate a94f4476): each NEW sentence of the skill vs what the page/app does ──
-ARM_FNS.v3delta = async function v3delta(ctx) {
-  const { W1, W2, FIX } = ctx; const A = 'v3delta';
-  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 60000, ...(o2 ?? {}) });
-  const late = (o, id) => o.eval(`setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`);
-  await selectWs(ctx, W1); await openPane(ctx);
-  const u = `${FIX}/v3-claims.html`;
-  const hid = async (tag) => { const r = await openOn(ctx, W2, u); return r.o; };            // W2 is a background workspace: its pane is NOT on screen
-  const o = await hid();
-  clause(A, 'ctl/w2-is-hidden', await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`), `${W1.branch} is the active workspace`);
-  const has = await o.eval(`!!document.getElementById('h1')`);
-  // 1. the sentence: "wait "<selector>" … returns at once for an element that is already on the page"
-  const t1 = await run(W2, ['wait', '#h1', '--timeout', '6000']);                   // right after open
-  await run(W2, ['snapshot', '-i']); const t2 = await run(W2, ['wait', '#h1', '--timeout', '6000']);
-  await sleep(3000); const t3 = await run(W2, ['wait', '#h1', '--timeout', '6000']);
-  const t4 = await run(W2, ['wait', '#h1']);                                        // the default timeout
-  clause(A, 'skill-says-wait-selector-for-an-element-already-on-the-page-returns-at-once-on-a-hidden-pane', has && [t1, t2, t3, t4].every((r) => r.code === 0 && r.ms < 3000), `element present: ${has}; right after open ${show(t1)} | after snapshot ${show(t2)} | after 3 s ${show(t3)} | default timeout ${show(t4)}`);
-  // 2. late element: selector hangs, --fn/--text/ms work
-  await late(o, 'late-sel'); const wsel = await run(W2, ['wait', '#late-sel', '--timeout', '4000']);
-  await late(o, 'late-fn'); const wfn = await run(W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"]);
-  await late(o, 'late-txt'); const wtx = await run(W2, ['wait', '--text', 'late late-txt']);
-  const wms = await run(W2, ['wait', '500']);
-  clause(A, 'skill-says-late-element-selector-wait-times-out-but-fn-text-ms-work-on-a-hidden-pane', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wfn.code === 0 && wtx.code === 0 && wms.code === 0, `selector ${show(wsel)} | --fn ${show(wfn)} | --text ${show(wtx)} | ms ${show(wms)}`);
-  // 3. "--timeout 3000" bounds it (25 s by default)
-  const tb = await run(W2, ['wait', '#never-there', '--timeout', '3000']);
-  clause(A, 'skill-says---timeout-3000-bounds-the-hung-wait', tb.code !== 0 && tb.ms >= 2500 && tb.ms < 8000, `wait "#never-there" --timeout 3000 on the hidden pane → ${show(tb)}`);
-  const td = await run(W2, ['wait', '#never-there']);
-  clause(A, 'skill-says-the-default-timeout-is-25-s', td.code !== 0 && td.ms >= 24000 && td.ms <= 27000, `default → ${show(td)}`);
-  // 4. the errors workaround, VERBATIM from the skill, on the hidden pane and on a visible one
-  const L = BROWSER_SKILL.split('\n').flatMap((l) => l.match(/§?`?eval "(window\.addEventListener\('error'[^"]*)"`?/) ? [l] : []);
-  const m1 = /eval "(window\.addEventListener\('error', e => \(window\.__err = e\.message\)\))"/.exec(BROWSER_SKILL); const m2 = /eval "(window\.__err)"/.exec(BROWSER_SKILL);
-  clause(A, 'ctl/the-skill-text-carries-both-workaround-commands', !!m1 && !!m2, `listener ${m1?.[1]} | read ${m2?.[1]}`);
-  const errCase = async (W, oo, label) => {
-    await oo.eval(`window.__err = undefined; 1`);
-    const a = await run(W, ['eval', m1[1]]);
-    await oo.eval(`setTimeout(() => { throw new Error('workaround-${label}'); }, 80); 1`);
-    let b = null; const tt0 = Date.now(); for (let i = 0; i < 12; i++) { await sleep(700); b = await run(W, ['eval', m2[1]]); if (b.stdout.includes(`workaround-${label}`)) break; }
-    console.log(`  INFO  [${A}] workaround read (${label}) took ${Date.now() - tt0} ms from the throw`);
-    const e = await run(W, ['errors']);
-    return { a, b, e, ok: a.code === 0 && b.code === 0 && b.stdout.includes(`workaround-${label}`) };
-  };
-  const eh = await errCase(W2, o, 'hidden');
-  clause(A, 'skill-workaround-captures-an-uncaught-error-message-on-a-hidden-pane', eh.ok, `add ${show(eh.a)} | read ${show(eh.b)} | (errors still: ${JSON.stringify(eh.e.stdout.slice(0, 40))})`);
-  // 5. console "may lag on a hidden pane"
-  await o.eval(`console.log('lagprobe-hidden-1'); 1`);
-  const c0 = await run(W2, ['console']); await sleep(2500); const c1 = await run(W2, ['console']);
-  console.log(`  INFO  [${A}] console on the hidden pane: right after the page logged: has it ${c0.stdout.includes('lagprobe-hidden-1')}; 2.5 s later: ${c1.stdout.includes('lagprobe-hidden-1')}`);
-  // visible controls
-  await selectWs(ctx, W2); await openPane(ctx);
-  const ov = await oracle(ctx, `${u}?w=${W2.name}`);
-  await late(ov, 'late-vis'); const wvis = await run(W2, ['wait', '#late-vis', '--timeout', '4000']);
-  clause(A, 'ctl/the-same-late-selector-wait-succeeds-on-the-visible-pane', wvis.code === 0 && wvis.ms < 3000, show(wvis));
-  const ev = await errCase(W2, ov, 'visible');
-  clause(A, 'skill-workaround-captures-an-uncaught-error-message-on-a-visible-pane', ev.ok, `add ${show(ev.a)} | read ${show(ev.b)}`);
-  await ov.eval(`console.log('lagprobe-visible-1'); 1`);
-  const cv = await run(W2, ['console']);
-  console.log(`  INFO  [${A}] console on the visible pane, immediately after the page logged: has it ${cv.stdout.includes('lagprobe-visible-1')}`);
-  ov.close(); o.close();
-};
 // ── seat 3 (#399 gate): the SKILL's behavioural claims beyond the member's 15 arms, each against an INDEPENDENT oracle (a 2nd CDP client on the page) ──
 ARM_FNS.v3claims = async function v3claims(ctx) {
   const { W1, W2, FIX } = ctx; const A = 'v3claims';
@@ -1119,6 +1071,42 @@ ARM_FNS.v3claims = async function v3claims(ctx) {
   clause(A, 'hidden-pane-the-fail-fast-list-fails-fast-with-the-reason', fres.every((x) => x.r.code !== 0 && x.r.ms < 9000 && /not on screen|outside the viewport/.test(x.r.stderr)), fres.map((x) => `${x.c.slice(0, 20)}→${x.r.code}/${x.r.ms}ms`).join(' | '));
   clause(A, 'hidden-pane-the-failed-commands-did-nothing', nameV === '' && asked === true, `oracle name field ${JSON.stringify(nameV)}, no confirm() raised: ${asked}`);
   o3.close(); o.close();
+};
+
+
+// ── seat 3 (#399 FINAL, 129bca63): `wait "<selector>"` on a hidden pane — NEVER shown vs shown-then-hidden vs shown-then-pane-closed ──
+ARM_FNS.v3hid = async function v3hid(ctx) {
+  const { W1, W2, W3, FIX } = ctx; const A = 'v3hid';
+  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 60000, ...(o2 ?? {}) });
+  const u = `${FIX}/v3-kinds.html`;
+  const mk = (o, id, tag) => o.eval(`setTimeout(() => { const d = document.createElement(${JSON.stringify(tag)}); d.id = ${JSON.stringify(id)}; d.textContent = 'late'; document.body.appendChild(d); }, 600); 1`);
+  const measure = async (label, W, o) => {
+    const iw = await o.eval('innerWidth');
+    const out = { label, iw };
+    for (const [k, sel0] of [['block-present', '#k-p'], ['h1-present', '#k-h1'], ['input-present', '#k-input']]) { const r = await run(W, ['wait', sel0, '--timeout', '2500']); out[k] = { ok: r.code === 0, ms: r.ms }; }
+    await mk(o, `late-div-${label}`, 'div'); const ld = await run(W, ['wait', `#late-div-${label}`, '--timeout', '3000']); out['late-block'] = { ok: ld.code === 0, ms: ld.ms };
+    await mk(o, `late-in-${label}`, 'input'); const li = await run(W, ['wait', `#late-in-${label}`, '--timeout', '3000']); out['late-input'] = { ok: li.code === 0, ms: li.ms };
+    const fn = await run(W, ['wait', '--fn', "!!document.getElementById('k-p')"]); out['fn'] = { ok: fn.code === 0, ms: fn.ms };
+    console.log(`  INFO  [${A}] ${label}: ${JSON.stringify(out)}`);
+    return out;
+  };
+  const okq = (x) => x.ok && x.ms < 2500;
+  // N — a pane that was NEVER on screen (W2: the app opened on W1; W2 has not been selected)
+  const rN = await openOn(ctx, W2, u); const N = await measure('never-shown', W2, rN.o);
+  clause(A, 'ctl/never-shown-pane-has-innerWidth-0', N.iw === 0, `innerWidth ${N.iw}`);
+  clause(A, 'never-shown: wait for a PRESENT text block / h1 times out, an input returns, a late block times out, --fn works', !N['block-present'].ok && !N['h1-present'].ok && okq(N['input-present']) && !N['late-block'].ok && N.fn.ok, JSON.stringify(N));
+  // S — shown once, then the workspace is switched away (W3)
+  await selectWs(ctx, W3); await openPane(ctx); const rS = await openOn(ctx, W3, u); await sleep(600); await selectWs(ctx, W1); await sleep(800);
+  const S = await measure('shown-then-switched-away', W3, rS.o);
+  clause(A, 'ctl/shown-then-hidden-pane-keeps-a-width', S.iw > 0, `innerWidth ${S.iw}`);
+  clause(A, 'shown-then-switched-away: the selector waits WORK (present block, h1, input, late block, late input)', okq(S['block-present']) && okq(S['h1-present']) && okq(S['input-present']) && S['late-block'].ok && S['late-input'].ok, JSON.stringify(S));
+  // C — shown once, then the human CLOSES the pane (W1 stays the active workspace)
+  await selectWs(ctx, W1); await openPane(ctx); const rC = await openOn(ctx, W1, u); await sleep(600);
+  if ((await paneToggle(ctx)).open) await clickToggle(ctx); await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the pane to close').catch(() => {}); await sleep(800);
+  const C = await measure('shown-then-pane-closed', W1, rC.o);
+  clause(A, 'ctl/the-pane-really-is-closed', !(await paneVisible(ctx)), `pane visible: ${await paneVisible(ctx)}`);
+  clause(A, 'shown-then-pane-closed: the skill says a pane shown once keeps its last size, where the wait works — same as switched-away', C.iw > 0 && okq(C['block-present']) && okq(C['h1-present']) && C['late-block'].ok, JSON.stringify(C));
+  rN.o.close(); rS.o.close(); rC.o.close();
 };
 
 async function runArms(ctx) {
