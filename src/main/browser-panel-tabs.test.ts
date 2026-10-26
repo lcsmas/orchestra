@@ -795,3 +795,41 @@ test('design mode: a poll for a workspace with no panel returns null and builds 
   assert.equal(await bp.designModePoll(ws), null);
   assert.equal(bp.getPanel(ws), undefined);
 });
+
+test('design mode: off→on inside one round trip (arm; disarm; arm) ends ARMED, and the next disarm still cleans up (no orphan overlay or lease)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  const d = bp.designModeDisarm(ws); // the user toggles off...
+  const a = bp.designModeArm(ws); // ...and on again before the first round trip returns
+  await Promise.all([d, a]);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the last intent (armed) wins: the lease is held');
+  const tore = () => wcOf(t1).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)).length;
+  assert.equal(tore(), 0, 'the superseded disarm tore nothing down');
+  await bp.designModeDisarm(ws);
+  assert.equal(tore(), 1, 'a later disarm still reaches the overlay');
+  assert.equal(wcOf(t1).dbgAttached, false, 'and gives the lease back');
+});
+
+test('design mode: a re-arm landing during a pick\'s screenshot is not wiped by the pick finishing', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  let openShot!: () => void;
+  const shotGate = new Promise<void>((r) => (openShot = r));
+  wcOf(t1).reply = async (m: string) => {
+    if (m === 'Page.captureScreenshot') { await shotGate; return { data: 'P' }; }
+    return { result: { value: RAW_PICK } };
+  };
+  const poll = bp.designModePoll(ws);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); // the poll is now inside finishPick's screenshot
+  const rearm = bp.designModeArm(ws); // BrowserPanel's url-change effect (or a toggle) re-arms mid-pick
+  openShot();
+  await Promise.all([poll, rearm]);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the re-armed picker keeps its lease');
+  wcOf(t1).reply = undefined;
+  await bp.designModeDisarm(ws);
+  assert.equal(wcOf(t1).dbgAttached, false, 'and a later disarm releases it (armed mark survived)');
+});

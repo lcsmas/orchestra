@@ -115,6 +115,7 @@ async function resetAndDetach(wc: DebuggerHost, seat: Seat): Promise<void> {
     if (seat.reset) {
       ensureAttached(wc);
       for (const [method, params] of resetCommands(wc.getUserAgent())) {
+        if (seat.count > 0 || seats.get(wc) !== seat) break; // an agent came back mid-reset: stop undoing what it is about to set
         note(wc, seat, `reset-command ${method}`);
         await wc.debugger.sendCommand(method, params).catch(() => undefined);
       }

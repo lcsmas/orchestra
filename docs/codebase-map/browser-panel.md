@@ -131,7 +131,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   runs `ensurePanel` first, so a fresh workspace gets `t1` human then the new
   tab) · `activateTab` · `closeTab` (both THROW on an unknown id). Every
   pre-existing export keeps its signature and acts on the ACTIVE tab; the
-  debugger/CDP primitives (`attachDebugger`, `evaluate`, `capture`, `readPage`,
+  CDP primitives (`evaluate`, `capture`, `readPage`,
   `clickAt/Ref`, `typeText`, `formInput`, `scrollBy`, `designMode*`) and
   `navigate/goBack/goForward/reload` take an optional trailing `tabId`
   (`resolveTab`). `cdp()` stays internal.
@@ -161,7 +161,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
   size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
   (popup routing is #396).
-- **An explicit `tabId` never builds a panel**: `attachDebugger`/`evaluate`/…
+- **An explicit `tabId` never builds a panel**: `evaluate`/`designModeArm` (via `liveTabFor`)/…
   and `navigate` resolve it first and throw "not found" — a stale id after
   `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
   (only the DEFAULT, active-tab form opens a panel on demand). `emitState` also
@@ -278,7 +278,9 @@ keeps the shared debugger free of any long-lived event subscription.
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no
   lease, return, and leave an invisible click-swallowing overlay. `Tab.designArmed`
-  is set synchronously by the arm so a disarm queued behind it targets that tab. A
+  is set synchronously by the arm so a disarm queued behind it targets that tab; `Tab.designGen` (bumped by every arm at call
+  time) makes a disarm / finished pick end only the arm it was issued against — an off→on inside one round trip, or a re-arm
+  landing during a pick's screenshot, must not be wiped by the older operation (it would orphan overlay + lease). A
   disarm with nothing armed (after a pick / Escape — the page-side picker tore
   itself down) sends nothing and attaches nothing.
 - **The renderer addresses design mode by workspace, not tab, and the armed state FOLLOWS the active workspace** (`BrowserPanel`

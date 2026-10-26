@@ -27,7 +27,7 @@ const MUTANTS = [
   [SEAT, 'a holder arriving mid-reset does not keep the debugger',
     'if (seats.get(wc) === seat && seat.count === 0) {', 'if (seats.get(wc) === seat) {'],
   [SEAT, 'the grace-over detaches without clearing the agent\'s overrides',
-    'for (const [method, params] of resetCommands(wc.getUserAgent())) {\n        note(wc, seat, `reset-command ${method}`);\n        await wc.debugger.sendCommand(method, params).catch(() => undefined);\n      }', ''],
+    'for (const [method, params] of resetCommands(wc.getUserAgent())) {\n        if (seat.count > 0 || seats.get(wc) !== seat) break; // an agent came back mid-reset: stop undoing what it is about to set\n        note(wc, seat, `reset-command ${method}`);\n        await wc.debugger.sendCommand(method, params).catch(() => undefined);\n      }', ''],
   [SEAT, 'the last release detaches at once (no grace period)',
     'if (graceMs <= 0) {', 'if (true) {'],
   [SEAT, 'force-detach (tab destroyed) leaves the seat and its timer behind',
@@ -50,6 +50,8 @@ const MUTANTS = [
     '    if (timer) clearTimeout(timer);\n    lease.release();', '    if (timer) clearTimeout(timer);'],
   [CORE, 'sendOnLease waits forever on a command that never settles',
     '(the lease on the tab was given back)`)), maxMs);', '(the lease on the tab was given back)`)), maxMs + 1e6);'],
+  [SEAT, 'the reset loop keeps undoing state over an agent that came back mid-reset',
+    'if (seat.count > 0 || seats.get(wc) !== seat) break;', ''],
   [CORE, 'a lease that outlived a detach decrements the NEXT attach',
     'if (this.tabs.get(tabId) === st) this.releaseTab(tabId);', 'this.releaseTab(tabId);'],
   [CORE, 'a lease released twice releases twice',
@@ -64,6 +66,8 @@ function restoreAll() {
   return Object.keys(backups).every((f) => readFileSync(path.join(root, f)).equals(readFileSync(backups[f])));
 }
 process.on('exit', () => { try { restoreAll(); } catch {} });
+// a kill (Ctrl-C, a rejected tool call, a timeout) must not leave the last mutant in the tree: route signals through the exit handler above
+for (const [sig, rc] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => process.exit(rc));
 
 for (const f of Object.keys(TESTS)) {
   const base = run(TESTS[f]);

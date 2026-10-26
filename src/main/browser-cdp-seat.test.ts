@@ -138,6 +138,7 @@ test('grace: a holder arriving while the resets are in flight keeps the debugger
   gate();
   await flush(); await flush();
   assert.deepEqual([w.attached, w.detaches], [true, 0], 'the late holder kept the debugger');
+  assert.equal(w.sent.length, 1, 'and the rest of the reset list was NOT sent over the returning holder\'s state');
   seatRelease(host(w), 0);
 });
 

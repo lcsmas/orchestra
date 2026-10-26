@@ -72,6 +72,8 @@ export interface Tab {
   designHold: (() => void) | null;
   /** Design mode was armed on this tab and its overlay may still be in the page; set synchronously by the arm (a disarm queued behind it must see it). */
   designArmed: boolean;
+  /** Bumped by every arm at CALL time. A disarm (or a finished pick) only ends the arm it was issued against: one superseded by a later arm is a no-op, or it would wipe the new arm's mark and orphan its overlay + lease. */
+  designGen: number;
   /** Tail of this tab's arm/disarm chain: a disarm that lands while an arm is still attaching must run AFTER it. */
   designOp: Promise<void>;
   nav: TabNav;
@@ -445,6 +447,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
     openedBy: opts.openedBy,
     designHold: null,
     designArmed: false,
+    designGen: 0,
     designOp: Promise.resolve(),
     nav: blankNav(),
   };
@@ -1313,6 +1316,7 @@ function inDesignOrder<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
  *  Holds the proxy's debugger attach until the pick, the cancel or the disarm. */
 export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
   const tab = liveTabFor(wsId, tabId);
+  tab.designGen++;
   tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed
   return inDesignOrder(tab, async () => {
     try {
@@ -1328,8 +1332,9 @@ export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise
 
 /** Tear the overlay down on one tab and give its lease back (a no-op when design mode is not armed there). */
 function disarmTab(wsId: string, tab: Tab): Promise<void> {
+  const gen = tab.designGen; // at call time: the arm this disarm is issued against
   return inDesignOrder(tab, async () => {
-    if (!tab.designArmed) return;
+    if (!tab.designArmed || tab.designGen !== gen) return; // not armed, or a later arm (off→on inside one round trip) supersedes this disarm
     try {
       await evaluate(
         wsId,
@@ -1401,6 +1406,7 @@ export async function designModePoll(
   const pin = pinned.id; // resolve once: the pick and its screenshot come from the same tab
   const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
+  const gen = pinned.designGen;
   // A pick or a cancel ends the arm (the page-side picker tore itself down): give the attach back,
   // but only after the screenshot, so the pick is one attach rather than detach-then-attach.
   // It is one-shot for the whole workspace: a picker still armed on another tab (the user switched tabs
@@ -1408,7 +1414,7 @@ export async function designModePoll(
   try {
     return await finishPick(wsId, pin, raw);
   } finally {
-    endDesign(pinned);
+    if (pinned.designGen === gen) endDesign(pinned); // a re-arm landing during the screenshot owns the tab now
     for (const other of armedTabs(wsId)) if (other !== pinned) void disarmTab(wsId, other);
   }
 }

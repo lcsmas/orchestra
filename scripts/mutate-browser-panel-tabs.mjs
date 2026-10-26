@@ -116,7 +116,7 @@ const MUTANTS = [
   ['design mode keeps no lease while armed (every poll attaches anew)',
     'if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);', ''],
   ['a pick or Escape never gives the lease back',
-    '  } finally {\n    endDesign(pinned);', '  } finally {'],
+    '    if (pinned.designGen === gen) endDesign(pinned); // a re-arm landing during the screenshot owns the tab now\n', ''],
   ['a disarm never gives the lease back',
     '    } finally {\n      endDesign(tab);\n    }\n  });\n}', '    } finally {\n    }\n  });\n}'],
   ['an arm whose script fails keeps the lease',
@@ -124,7 +124,7 @@ const MUTANTS = [
   ['a disarm does not wait for the arm still attaching (orphan overlay)',
     'const run = tab.designOp.then(fn);', 'const run = fn();'],
   ['a disarm of an unarmed tab still attaches and evaluates',
-    '    if (!tab.designArmed) return;\n', ''],
+    '    if (!tab.designArmed || tab.designGen !== gen) return; // not armed, or a later arm (off→on inside one round trip) supersedes this disarm\n', ''],
   ['a disarm reaches only the ACTIVE tab (a lease and an overlay stay on the tab armed before the switch)',
     'targets = tabId === undefined ? armedTabs(wsId) :', 'targets = tabId === undefined ? (getActiveTab(wsId) ? [getActiveTab(wsId)!] : []) :'],
   ['a pick leaves the picker armed on the other tabs',
@@ -133,6 +133,10 @@ const MUTANTS = [
     'if (!pinned) return null;', 'if (!pinned) { getPanel(wsId) ?? ensurePanel(wsId); return null; }'],
   ['the armed mark is set after the lease is granted (a disarm queued behind the arm finds nothing)',
     '  tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed\n', ''],
+  ['a disarm superseded by a later arm still tears down (off→on orphans overlay + lease)',
+    'if (!tab.designArmed || tab.designGen !== gen) return;', 'if (!tab.designArmed) return;'],
+  ['a finished pick wipes a re-arm that landed during its screenshot',
+    'if (pinned.designGen === gen) endDesign(pinned);', 'endDesign(pinned);'],
 ];
 
 let killed = 0;
@@ -146,6 +150,8 @@ function restore() {
   if (!same) throw new Error('RESTORE FAILED: browser-panel.ts differs from backup');
 }
 process.on('exit', () => { try { copyFileSync(backup, target); } catch {} });
+// a kill (Ctrl-C, a rejected tool call, a timeout) must not leave the last mutant in the tree: route signals through the exit handler above
+for (const [sig, rc] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => process.exit(rc));
 
 // Positive control: the UNMUTATED tree passes (a rig that cannot say PASS proves nothing).
 const base = run();
