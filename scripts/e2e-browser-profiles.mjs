@@ -18,7 +18,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* clauses are controls (identity, scratch containment, own sway, instrument).
 // Mutant BUILDS that must redden each arm: scripts/e2e-browser-profiles-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session,cdp]
+// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session,logout,cdp]
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,cdp').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -812,6 +812,111 @@ try {
     clause('session', 'workspace-without-the-profile-is-signed-out-after-the-restart', jS2 === 'anon', `ws2 /whoami = ${jS2}`);
     await teardown(b, 'term'); b = null;
   }
+  // ── logout: a logout is never undone by the session-cookie promotion (seat-1 finding of #400: 12/200 resurrected at a logout 243-250 ms after the login) ──
+  // ── rebuild (#400, seat-2 MAJOR): the agent's CLI session on a workspace keeps working — AND stays on its own page — after the human attaches / detaches a profile
+  // or deletes it (every tab is rebuilt in place: same ids, NEW webContents). Probe = `get url` (cheapest call needing the tab's CDP session); it must answer the
+  // fixture page the agent was on, not an error and not a blank tab the daemon opened to recover. 10 attach/detach cycles + 5 deletes in ONE boot (the race is per-batch).
+  if (ARMS.has('rebuild')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-rebuild', { trace: true });
+    const CYCLES = 10, DELETES = 5, PAGE = 'rb=1';
+    const wsrec = { ...world.ws1 };
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b);
+    await typeUrl(b, P(1, `&${PAGE}`));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes(PAGE), 15000, 'rebuild page');
+    const show = (r) => `rc ${r.code} ${JSON.stringify(r.out.slice(0, 120))}`;
+    const probe = () => { const r = browserCli(world, wsrec, ['get', 'url'], 30000); return { ...r, ok: r.code === 0 && r.out.includes(PAGE) }; };
+    const wire = (mark) => appLog(world).slice(mark).split('\n').filter((l) => /proxy->client|client->proxy|seat\[|panel-change/.test(l) && !/Browser.getVersion|frameResized|executionContext|consoleAPI/.test(l)).map((l) => l.replace(/^.*?(cdp\[|seat\[)/, '$1').slice(0, 200));
+    // TWO tabs (seat 1: a one-tab panel hid the half-built-list bug): the agent opens the second one through the real CLI, so the daemon holds sessions on both
+    const second = browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}&second=1`)], 30000);
+    await softWait(async () => (await tabs(b)).length >= 2, 15000, 'the second tab');
+    await sleep(1500);
+    const NT = (await tabs(b)).length; // 2 in a fresh world; more when `--arms restore,rebuild` restored tabs first
+    const pre = probe();
+    clause('rebuild', 'ctl/agent-session-connected-before-the-rebuilds', pre.ok && NT >= 2, `tab new → ${show(second)}; ${NT} tabs; get url before any rebuild → ${show(pre)} (the daemon holds sessions on the tabs)`);
+    const prof = await b.cdp.eval(`window.orchestra.browserProfileCreate('Rebuild').then((r) => r.profile?.id ?? null)`);
+    const loopMark = appLog(world).length;
+    const att = [], det = [];
+    for (let i = 1; i <= CYCLES; i++) {
+      await chooseProfile(b, prof); const a = probe(); att.push(a); if (!a.ok) console.log(`  MEASURED [rebuild] attach #${i}: ${show(a)}`);
+      await chooseProfile(b, ''); const d = probe(); det.push(d); if (!d.ok) console.log(`  MEASURED [rebuild] detach #${i}: ${show(d)}`);
+    }
+    const bad = (xs) => xs.filter((x) => !x.ok).length;
+    clause('rebuild', 'agent-commands-keep-working-after-a-profile-attach', bad(att) === 0, `${CYCLES - bad(att)}/${CYCLES} attach rebuilds answered \`get url\` with the fixture page; last: ${show(att.at(-1))}`);
+    clause('rebuild', 'agent-commands-keep-working-after-a-profile-detach', bad(det) === 0, `${CYCLES - bad(det)}/${CYCLES} detach rebuilds answered \`get url\` with the fixture page; last: ${show(det.at(-1))}`);
+    const dels = [];
+    for (let i = 1; i <= DELETES; i++) {
+      const pid = await b.cdp.eval(`window.orchestra.browserProfileCreate(${JSON.stringify(`Doomed${i}`)}).then((r) => r.profile?.id ?? null)`);
+      await chooseProfile(b, pid);
+      // a build that cannot survive a rebuild leaves the session dead (or on a blank tab) after the ATTACH above: revive it (`tab new`, which works on such a
+      // build) so the delete is judged on its OWN rebuild and the ctl stays about the instrument. A revive is counted, and fails the delete clause below.
+      let ctl = probe(); let revived = false;
+      if (!ctl.ok) { browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}`)], 30000); revived = true; for (let k = 0; k < 14 && !ctl.ok; k++) { await sleep(500); ctl = probe(); } }
+      await openSettings(b);
+      const idx = (await rows(b)).findIndex((r) => r.id === pid);
+      await clickSel(b, '[data-bp-delete]', idx);
+      await waitFor(() => b.cdp.eval(`!!document.querySelector('.dialog-actions .danger-primary')`), 8000, 'the delete confirmation');
+      await clickSel(b, '.dialog-actions .danger-primary');
+      await softWait(async () => !(await rows(b)).some((r) => r.id === pid), 15000, 'the row to disappear');
+      await closeSettings(b);
+      await sleep(1200);
+      const d = probe(); dels.push({ ...d, ctl: ctl.ok, revived }); if (!d.ok || !ctl.ok) console.log(`  MEASURED [rebuild] delete #${i}: before ${ctl.ok} · after ${show(d)}`);
+    }
+    clause('rebuild', 'agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
+    clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0 && !dels.some((x) => x.revived), `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page (${dels.filter((x) => x.revived).length} cycles needed a revive after the attach); last: ${show(dels.at(-1))}`);
+    const wl = wire(loopMark);
+    // every publish the panel made during the loop, as the proxy's diff read it: a rebuild must be `replaced` for EVERY tab, never a tab destroyed or created
+    // read from the FULL log (not the display-trimmed `wl`); a line that does not parse is a finding, never a crash that aborts the whole rig
+    const pcRaw = appLog(world).slice(loopMark).split('\n').filter((l) => l.includes('panel-change '));
+    const pc = [], unparseable = [];
+    for (const l of pcRaw) { try { pc.push(JSON.parse(l.slice(l.indexOf('panel-change ') + 13))); } catch { unparseable.push(l.slice(-80)); } }
+    const badPc = pc.filter((x) => x.e.some((e) => /^(destroyed|created):/.test(e)) || x.t.length !== NT);
+    clause('rebuild', 'a-rebuild-replaces-every-tab-and-never-destroys-or-creates-one', pc.length > 0 && badPc.length === 0 && unparseable.length === 0, `${pc.length} panel publishes during ${CYCLES * 2 + DELETES} rebuilds (${NT} tabs); ${badPc.length} showed a half-built tab list or a destroyed/created tab${badPc[0] ? `: ${JSON.stringify(badPc[0])}` : ''}${unparseable.length ? `; UNPARSEABLE trace lines: ${unparseable.length} (…${unparseable[0]})` : ''}`);
+    const blanks = wl.filter((l) => /client->proxy .*"method":"Target\.createTarget"/.test(l)).length;
+    const stale = wl.filter((l) => /proxy->client .*Session with given id not found/.test(l)).length;
+    clause('rebuild', 'recovery-never-opens-a-blank-tab-nor-meets-a-dead-session', blanks === 0 && stale === 0, `over ${CYCLES * 2 + DELETES} rebuilds: Target.createTarget from the daemon ${blanks}×, "Session with given id not found" ${stale}×`);
+    if (bad(att) + bad(det) + bad(dels) + blanks + stale > 0) { console.log('  WIRE [rebuild] (first 60 lines of the loop)'); for (const l of wl.slice(0, 60)) console.log(`    ${l}`); }
+    await teardown(b, 'term'); b = null;
+  }
+
+  if (ARMS.has('logout')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-logout');
+    const lid = await b.cdp.eval(`window.orchestra.browserProfileCreate('Logout').then((r) => r.profile?.id ?? null)`);
+    /** Run the login→logout sweep on the page of the CURRENT workspace's first tab and read its verdict from the page. */
+    const sweep = async (ws, query) => {
+      await typeUrl(b, `${BASE}/profiles-logout.html?ws=${ws}&${query}`);
+      let res = null;
+      await softWait(async () => { const t = await pageText(b, `ws=${ws}&`); try { res = JSON.parse(t.trim()); return true; } catch { return false; } }, 60000, `sweep ${query} to finish`);
+      return res;
+    };
+    await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b); // ws2 stays EPHEMERAL: the control (no promotion in its session)
+    const ctl = await sweep(2, 'n=300&lo=238&hi=258&spread=3000');
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b); await chooseProfile(b, lid);
+    const prof = await sweep(1, 'n=400&lo=238&hi=258&spread=4000');
+    const wide = await sweep(1, 'n=300&lo=225&hi=275&spread=3000');
+    clause('logout', 'ctl/the-sweep-really-logged-in-and-out', !!ctl && !!prof && ctl.seen === ctl.n && prof.seen === prof.n && wide.seen === wide.n, `cookies visible right after each login: ephemeral ${ctl?.seen}/${ctl?.n}, profile ${prof?.seen}/${prof?.n}, wide ${wide?.seen}/${wide?.n}`);
+    clause('logout', 'ctl/ephemeral-workspace-has-no-resurrection', ctl?.alive === 0, `ephemeral control (no promotion in its session): ${ctl?.alive}/${ctl?.n} alive after the logouts (band ${JSON.stringify(ctl?.band)})`);
+    clause('logout', 'logout-is-never-undone-by-the-promotion', prof?.alive === 0 && wide?.alive === 0, `profile workspace, band 238-258 ms: ${prof?.alive}/${prof?.n} resurrected ${JSON.stringify(prof?.names)}; band 225-275 ms: ${wide?.alive}/${wide?.n} ${JSON.stringify(wide?.names)} (must be 0 — before the post-write reconciliation seat 1 measured 12/200 in the 243-250 band)`);
+    // ── ROTATION (seat 1: the same read → write class): the cookie is rewritten at the same instants instead of deleted; the jar must end on the NEW value ──
+    await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b);
+    const rctl = await sweep(2, 'n=300&lo=238&hi=258&spread=6000&mode=rotate');
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b);
+    const rprof = await sweep(1, 'n=400&lo=238&hi=258&spread=8000&mode=rotate');
+    const rwide = await sweep(1, 'n=300&lo=225&hi=275&spread=6000&mode=rotate');
+    clause('logout', 'ctl/the-rotation-sweep-really-wrote-both-values', !!rctl && !!rprof && !!rwide && rctl.seen === rctl.n && rprof.seen === rprof.n && rwide.seen === rwide.n && rctl.fresh === rctl.n, `first value visible right after each write: ephemeral ${rctl?.seen}/${rctl?.n}, profile ${rprof?.seen}/${rprof?.n}, wide ${rwide?.seen}/${rwide?.n}; ephemeral ends on the new value ${rctl?.fresh}/${rctl?.n} (missing ${rctl?.missing})`);
+    clause('logout', 'ctl/ephemeral-workspace-has-no-stale-rotation', rctl?.stale === 0, `ephemeral control (no promotion in its session): ${rctl?.stale}/${rctl?.n} cookies ended on the PREVIOUS value`);
+    clause('logout', 'rotation-ends-on-the-newest-value', rprof?.stale === 0 && rwide?.stale === 0 && rprof?.fresh === rprof?.n && rwide?.fresh === rwide?.n && rprof?.missing === 0 && rwide?.missing === 0, `profile workspace, band 238-258 ms: ${rprof?.stale}/${rprof?.n} ended on the previous value ${JSON.stringify(rprof?.staleNames)}, ${rprof?.fresh}/${rprof?.n} on the new; band 225-275 ms: ${rwide?.stale}/${rwide?.n} stale ${JSON.stringify(rwide?.staleNames)}, ${rwide?.fresh}/${rwide?.n} new, missing ${rprof?.missing}+${rwide?.missing} (must be 0 stale)`);
+    await selectWorkspace(b, 'e2e/bp400-1');
+    // the promotion still WORKS for a cookie that is NOT logged out (the fix did not turn it off)
+    await typeUrl(b, P(1, '&signin=session&lg=1'));
+    await softWait(async () => /sid=sess/.test((await pageText(b, '&lg=1')) ?? ''), 15000, 'a session sign-in on the profile');
+    await sleep(900);
+    const kept = await sidExpiry(b, '&lg=1');
+    clause('logout', 'promotion-still-keeps-a-cookie-that-was-not-logged-out', typeof kept === 'number' && (kept - Date.now()) / 86400000 > 29, `sid.expires = ${JSON.stringify(kept)} → ${typeof kept === 'number' ? ((kept - Date.now()) / 86400000).toFixed(2) : 'n/a'} days ahead`);
+    await teardown(b, 'term'); b = null;
+  }
+
   // ── cdp: the agent's CLI against a SHARED profile (policy wired in the CDP proxy host) ──
   if (ARMS.has('cdp')) {
     if (b) { await teardown(b, 'term'); b = null; }

@@ -532,17 +532,29 @@ test('reaping the dead LAST of 3 tabs promotes its left neighbour (t2), not the 
   assert.equal(bp.getActiveTab(ws)?.id, 't2');
 });
 
-test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking never lands on the new tab', async () => {
+test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking never lands on the new tab — the pinned tab is brought back (#397) and gets the whole click', async () => {
   const ws = newWs();
   openShown(ws);
   const t1 = bp.getActiveTab(ws)!;
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   wcOf(t1).evalValue = { x: 5, y: 6 };
   wcOf(t1).onCmd = (m: string) => { if (m === 'Runtime.evaluate') bp.activateTab(ws, 't2'); };
-  await assert.rejects(() => bp.clickRef(ws, 1), /not the active tab/, 'the pinned click refuses a tab that is no longer composited');
+  await bp.clickRef(ws, 1); // #397: a click needs its tab on screen, so the pinned tab (focused workspace) is brought back before the click
   const mouse = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent');
   assert.deepEqual(mouse(t2), [], 'nothing was clicked on the tab that became active');
-  assert.deepEqual(mouse(t1), [], 'and the click was not half-delivered to the first tab either');
+  assert.deepEqual(mouse(t1).map((c: any) => c.p.type), ['mousePressed', 'mouseReleased'], 'the pinned tab received the WHOLE click (press and release), not half of it');
+  assert.equal(bp.getActiveTab(ws)?.id, 't1', 'and it is the tab on screen again');
+});
+
+test('clickRef in a BACKGROUND workspace is refused with the reason and dispatches nothing (no bring-to-front outside the focused workspace)', async () => {
+  const fg = newWs();
+  const ws = newWs();
+  openShown(fg);
+  const t1 = bp.ensurePanel(ws).tabs[0]!; // a panel nobody looks at
+  wcOf(t1).evalValue = { x: 5, y: 6 };
+  await assert.rejects(() => bp.clickRef(ws, 1), /needs the Browser pane on screen/);
+  assert.deepEqual(wcOf(t1).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent'), []);
+  assert.equal(attached.has(viewOf(t1)), false, 'and no view was attached for it');
 });
 
 test('designModePoll pins ONE tab: the element screenshot comes from the tab the pick was read on', async () => {

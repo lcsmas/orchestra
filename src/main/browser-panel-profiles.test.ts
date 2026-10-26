@@ -29,7 +29,7 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
   once(ev, fn) { (this.onceH ||= {})[ev] = ((this.onceH ||= {})[ev] || []).concat(fn); }
   setWindowOpenHandler() {}
-  loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
+  loadURL(u) { this.loaded.push(u); this.url = u; if (globalThis.__bpSyncStartLoading) for (const f of (this.handlers['did-start-loading'] || [])) f(); return Promise.resolve(); }
   reload() {}
   getURL() { return this.url; } getTitle() { return this.title; }
   close() {
@@ -37,6 +37,7 @@ class WebContents {
     // real Electron closes ASYNC: 'destroyed' fires later, when the harness releases it (globalThis.__bpHoldClose) or right away
     const fire = () => { for (const f of (this.onceH?.destroyed || [])) f(); };
     if (globalThis.__bpHoldClose) (globalThis.__bpHeld ??= []).push(fire); else fire();
+    if (globalThis.__bpCloseThrows) throw new Error('stub: close failed');
   }
 }
 export class WebContentsView {
@@ -56,7 +57,8 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); const dom = d.domain ?? new URL(d.url).hostname; s.liveCookies = (s.liveCookies ?? []).filter((c) => !(c.name === d.name && c.domain === dom && (c.path ?? '/') === d.path)); s.liveCookies.push({ name: d.name, value: d.value, domain: dom, hostOnly: !d.domain, path: d.path, secure: d.secure, httpOnly: d.httpOnly, session: false, expirationDate: d.expirationDate }); if (s.onSet) s.onSet(d); return s.setDelayMs ? new Promise((r) => setTimeout(r, s.setDelayMs)) : Promise.resolve(); },
+        remove(url, name) { (s.cookieRemoves ??= []).push({ url, name }); s.liveCookies = (s.liveCookies ?? []).filter((c) => c.name !== name); if (s.onRemove) s.onRemove(name); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
     return s;
@@ -281,6 +283,167 @@ test('a view that cannot be built leaves the panel EXACTLY as it was: old tabs a
   assert.deepEqual(bp.listTabs(ws).map((t) => partitionOf(bp.getTab(ws, t.id)!)), [PERSIST(P1), PERSIST(P1), PERSIST(P1)]);
 });
 
+test('seat-1 MAJOR: a rebuild of a MULTI-tab panel publishes only WHOLE tab lists — an observer never sees the first rebuilt tab alone (a tab missing from one publish and back in the next reads as closed + reopened to the CDP proxy)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  bp.createTab(ws, { openedBy: 'human', url: 'http://localhost:1/three', activate: true });
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  (globalThis as any).__bpSyncStartLoading = true; // real Electron starts the load (did-start-loading) inside loadURL: measured on the wire as a publish with ["t1"] alone
+  try {
+    bp.reprofilePanel(ws, P1);
+  } finally {
+    (globalThis as any).__bpSyncStartLoading = false;
+    off();
+  }
+  assert.ok(seen.length >= 1, 'the rebuild published');
+  for (const tabs of seen) assert.deepEqual(tabs, ['t1', 't2', 't3'], 'every publish carries the whole tab list');
+});
+
+test('a FAILED rebuild releases the half-built guard: the panel publishes again right after the rollback', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  (globalThis as any).__bpFailNext = 2;
+  assert.throws(() => bp.reprofilePanel(ws, P1), /cannot build a view/);
+  (globalThis as any).__bpFailNext = 0;
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  for (const f of wcOf(bp.getTab(ws, 't1')!).handlers['did-start-loading'] ?? []) f();
+  off();
+  assert.deepEqual(seen, [['t1', 't2']], 'a navigation event of the rolled-back panel is published');
+});
+
+test('D1: a rollback that itself fails (a half-built view will not close) still restores the whole registry and releases the guard — the ORIGINAL error surfaces, the panel is neither half-restored nor silent', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  const before = bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!);
+  (globalThis as any).__bpFailNext = 2; // the 2nd view of the rebuild cannot be built → rollback
+  (globalThis as any).__bpCloseThrows = true; // …and the 1st (half-built) view will not close
+  try {
+    assert.throws(() => bp.reprofilePanel(ws, P1), /cannot build a view/);
+  } finally {
+    (globalThis as any).__bpCloseThrows = false;
+    (globalThis as any).__bpFailNext = 0;
+  }
+  assert.deepEqual(bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!), before, 'the registry is the old one, whole');
+  assert.equal('profileId' in bp.getState(ws), false, 'old identity');
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  for (const f of wcOf(bp.getTab(ws, 't1')!).handlers['did-start-loading'] ?? []) f();
+  off();
+  assert.deepEqual(seen, [['t1', 't2']], 'and the panel publishes again (the guard is released on the way out)');
+});
+
+// ── ROTATION RACE (seat 1, same read → write class as the logout): the site rotated the cookie after our read, the network service applied OUR write last ──────────
+/** What the main process hears for that order: the site's insert, the overwrite-removal our write causes, then the echo of OUR copy (the LAST event, as in the real order). */
+function rotationOrder(ses: any, first: any, second: any, atMs = 2) {
+  ses.onSet = (d: any) => {
+    if (d.value !== first.value) return; // only the first write is the racy one
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), second); // the site's rotation (applied BEFORE our write by the network service, delivered after it)
+      cookieEvent(PERSIST(P1), first, true, 'overwrite'); // …replaced by our copy
+      cookieEvent(PERSIST(P1), { ...first, session: false, expirationDate: d.expirationDate }); // …and the insert event of OUR copy: it must not read as the site's
+    }, atMs);
+  };
+}
+const days = (c: any) => ((c.expirationDate ?? 0) - Date.now() / 1000) / 86400;
+
+test('ROTATION RACE: a rotation applied between the read and the write (event delivered after the write) is put back — the jar ends on the NEWEST value, promoted, not on the one that was read; our own echo does not loop', async () => {
+  for (const atMs of [2, 200]) { // right after the write's promise, and late (the settle re-check must still catch it)
+    const ws = newWs(P1);
+    bp.ensurePanel(ws);
+    const ses = fresh(sessions().get(PERSIST(P1)));
+    const first = { ...SESSION_COOKIE, name: `rot-${atMs}`, value: 'R1' };
+    const second = { ...first, value: 'R2' };
+    ses.liveCookies = [first];
+    rotationOrder(ses, first, second, atMs);
+    cookieEvent(PERSIST(P1), first);
+    await settle(260 + atMs + 700);
+    assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1', 'R2'], `the read value was written, then the newest value put back (rotation delivered ${atMs} ms after the write)`);
+    const live = ses.liveCookies.filter((c: any) => c.name === first.name);
+    assert.deepEqual(live.map((c: any) => c.value), ['R2'], 'the jar ends on the LAST value');
+    assert.ok(days(live[0]) > 29, 'and it is the promoted (30-day) form');
+    await settle(700);
+    assert.equal(ses.cookieSets.length, 2, 'our own echoes are not read as more rotations (no loop)');
+    assert.equal(ses.cookieRemoves, undefined);
+    bp.destroyPanel(ws);
+  }
+});
+
+test('ROTATION RACE: a PERSISTENT cookie the site rotated is put back with ITS OWN expiry (not 30 days)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-persistent', value: 'R1' };
+  const exp = Date.now() / 1000 + 3600;
+  const second = { ...first, value: 'R2', session: false, expirationDate: exp };
+  ses.liveCookies = [first];
+  rotationOrder(ses, first, second);
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  const live = ses.liveCookies.filter((c: any) => c.name === first.name);
+  assert.deepEqual(live.map((c: any) => c.value), ['R2']);
+  assert.ok(Math.abs(live[0].expirationDate - exp) < 2, `the site's expiry kept (${live[0].expirationDate} vs ${exp})`);
+  bp.destroyPanel(ws);
+});
+
+test('ROTATION RACE: a rotation FOLLOWED by a logout (the newest foreign event is a removal) ends with nothing alive — the removal wins', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-then-logout', value: 'R1' };
+  const second = { ...first, value: 'R2' };
+  ses.liveCookies = [first];
+  ses.onSet = (d: any) => {
+    if (d.value !== 'R1') return;
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), second);
+      cookieEvent(PERSIST(P1), first, true, 'overwrite');
+      cookieEvent(PERSIST(P1), { ...first, session: false, expirationDate: d.expirationDate });
+      cookieEvent(PERSIST(P1), second, true, 'explicit'); // the logout that followed
+    }, 2);
+  };
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1'], 'the stale rotation was NOT put back over a later logout');
+  assert.equal(ses.liveCookies.some((c: any) => c.name === first.name), false, 'nothing of the cookie is alive');
+  bp.destroyPanel(ws);
+});
+
+test('ROTATION RACE: when the live cookie is no longer our copy (the user signed in again, another write landed) nothing is put back over it', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-not-ours', value: 'R1' };
+  const second = { ...first, value: 'R2' };
+  ses.liveCookies = [first];
+  rotationOrder(ses, first, second, 100);
+  const otherLogin = { ...first, value: 'RX', session: false, expirationDate: Date.now() / 1000 + 7200 };
+  const realOnSet = ses.onSet;
+  ses.onSet = (d: any) => { realOnSet(d); setTimeout(() => { ses.liveCookies = [otherLogin]; }, 20); }; // someone else's write is the live one before our reconciliation runs
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1'], 'only the read value was written: the rotation was NOT forced over the other write');
+  assert.deepEqual(ses.liveCookies.filter((c: any) => c.name === first.name).map((c: any) => c.value), ['RX']);
+  bp.destroyPanel(ws);
+});
+
+test('R2 (union): a rebuild clears what #397 pins by TAB ID — the last read_page outline (`refTabId`) and the « the agent switched tabs » notice (`agentSwitch`): the ids survive the rebuild, the pages do not', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  const panel = bp.getPanel(ws)! as any;
+  panel.refTabId = 't2';
+  panel.agentSwitch = { from: 't1', to: 't2', at: Date.now() };
+  bp.reprofilePanel(ws, P1);
+  assert.equal(panel.refTabId, undefined, 'the outline of the OLD page is forgotten (a later click ref_N must not target the new page of that id)');
+  assert.equal(panel.agentSwitch, undefined);
+  assert.equal(bp.getState(ws).agentSwitch, undefined, 'and the renderer is no longer told about a swap that no longer exists');
+});
+
 test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {
   const a = newWs(P1), b = newWs(P1), c = newWs(P2), d = newWs();
   for (const w of [a, b, c, d]) bp.ensurePanel(w);
@@ -316,13 +479,13 @@ test('settleClosedViews waits for the views a re-profile closed to be really des
   assert.equal(await bp.settleClosedViews(500), true, 'true again once the views are gone');
 });
 
-const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false) => {
+const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false, cause = 'explicit') => {
   const ses = sessions().get(sesName);
-  for (const [, fn] of [...ses.cookieListeners]) fn({}, cookie, 'explicit', removed);
+  for (const [, fn] of [...ses.cookieListeners]) fn({}, cookie, cause, removed);
   return ses;
 };
 /** The stub sessions are shared per partition name across arms: forget what an earlier arm recorded on this one. */
-const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.liveCookies = undefined; ses.getGate = undefined; return ses; };
+const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.cookieRemoves = undefined; ses.liveCookies = undefined; ses.getGate = undefined; ses.onSet = undefined; ses.onRemove = undefined; ses.setDelayMs = undefined; return ses; };
 const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms)); // past the 250 ms per-cookie debounce + the re-read
 
@@ -511,4 +674,111 @@ test('tabFrameUrls: the live frame tree of ONE tab (main + subframes), a pure re
   assert.equal(bp.tabFrameUrls(ws, 't1'), undefined, 'a throwing tree');
   wcOf(t1).frameBoom = false;
   assert.equal((globalThis as any).__bpViews.length, viewsBefore, 'a read builds nothing');
+});
+
+// ── review of seat 1 (G5 of #400): a logout that the network service processes BETWEEN the promotion's read and its write reaches the main process only
+//    AFTER the write was issued — the order the earlier stub could not show. The post-write reconciliation must undo OUR copy, and only ours.
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('LOGOUT RACE: a removal delivered AFTER the write (read → write → removal event) removes the 30-day copy — checked right away and again after the settle', async () => {
+  for (const deliverAfterMs of [5, 200]) { // right after the write's promise, and late (the settle re-check must still catch it)
+    const ws = newWs(P1);
+    bp.ensurePanel(ws);
+    const ses = fresh(sessions().get(PERSIST(P1)));
+    const cookie = { ...SESSION_COOKIE, name: `sid-late-${deliverAfterMs}` }; // its own key per iteration
+    ses.liveCookies = [cookie];
+    ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), deliverAfterMs); // the site's logout, delivered late
+    cookieEvent(PERSIST(P1), cookie);
+    await settle(260 + deliverAfterMs + 450);
+    assert.equal(ses.cookieSets?.length, 1, 'the cookie WAS promoted (the removal was not yet visible to the pre-write guard)');
+    assert.deepEqual(ses.cookieRemoves, [{ url: ses.cookieSets[0].url, name: cookie.name }], `the resurrected copy was removed (removal delivered ${deliverAfterMs} ms after the write)`);
+    assert.equal(ses.liveCookies.some((c: any) => c.name === cookie.name), false, 'nothing of the cookie is left alive');
+    bp.destroyPanel(ws);
+  }
+});
+
+test('LOGOUT RACE: a removal that reaches us BEFORE the write resolves is compensated right away — not left to the settle re-check (a 300 ms longer window)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-early' };
+  ses.liveCookies = [cookie];
+  ses.setDelayMs = 40; // the write is slow: the site's logout is delivered while it is in flight
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 10);
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(250 + 40 + 120); // promotion at 250, write resolves ~40 ms later; the settle re-check is ~300 ms after that
+  assert.equal(ses.cookieRemoves?.length, 1, 'the copy was removed as soon as the write resolved, well before the settle re-check');
+  await settle(400); // let the settle re-check run inside this test: it finds nothing of ours left
+  assert.equal(ses.cookieRemoves.length, 1, 'removed exactly once');
+});
+
+test('LOGOUT RACE: the `overwrite` removal that OUR OWN write emits (the session cookie replaced by its promoted copy) is not a logout — the copy stays', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), SESSION_COOKIE, true, 'overwrite'), 5); // the echo of replacing the old cookie
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  await settle(900);
+  assert.equal(ses.cookieSets?.length, 1);
+  assert.equal(ses.cookieRemoves, undefined, 'an overwrite is not a logout: the promoted copy is kept');
+  assert.equal(ses.liveCookies.some((c: any) => c.name === 'sid'), true);
+});
+
+test('LOGOUT RACE: the user logged IN AGAIN meanwhile (a different live cookie) — the old value\'s removal never deletes the NEW login', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  ses.onSet = () => {
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), SESSION_COOKIE, true, 'explicit'); // logout of the old value …
+      ses.liveCookies = [{ ...SESSION_COOKIE, value: 'v-new-login' }]; // … and a fresh session cookie set by the next login
+      cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, value: 'v-new-login' });
+    }, 5);
+  };
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  await settle(1500);
+  assert.equal(ses.cookieRemoves, undefined, 'the live cookie is not OUR copy any more: left alone');
+  assert.ok(ses.liveCookies.some((c: any) => c.value === 'v-new-login'), 'the new login survives');
+});
+
+test('LOGOUT RACE: our own compensating remove emits a removal event of its own — it is neither a logout nor a reason to cancel the NEXT login\'s promotion', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-echo' };
+  ses.liveCookies = [cookie];
+  let echo: () => void = () => {};
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 5); // the late logout
+  ses.onRemove = () => { echo = () => cookieEvent(PERSIST(P1), cookie, true, 'explicit'); }; // OUR remove's own event, delivered when the test says
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(260 + 450);
+  assert.equal(ses.cookieRemoves?.length, 1, 'compensated once');
+  // the user logs in again; that promotion's live read is IN FLIGHT when the echo of our earlier remove arrives
+  ses.onSet = undefined;
+  ses.liveCookies = [cookie];
+  const release = gateReads(ses);
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(320); // debounce fired, the read is pending on the gate
+  echo();
+  release();
+  await settle(500);
+  assert.equal(ses.cookieRemoves.length, 1, 'the echo did not trigger a second remove');
+  assert.equal(ses.cookieSets.length, 2, 'the echo was swallowed: it did NOT cancel the new login\'s promotion');
+});
+
+test('LOGOUT RACE: an echo that never comes does not swallow a LATER, genuine logout (the suppression is dropped shortly after the remove resolves)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-noecho' };
+  for (let cycle = 1; cycle <= 2; cycle++) {
+    ses.liveCookies = [cookie];
+    ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 5);
+    cookieEvent(PERSIST(P1), cookie);
+    await settle(260 + 450);
+    assert.equal(ses.cookieRemoves?.length, cycle, `cycle ${cycle}: the late logout was compensated (no echo of our remove was ever delivered)`);
+    await settle(700); // past OWN_ECHO_MS
+  }
 });

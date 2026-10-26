@@ -32,6 +32,9 @@ const BLANK: (wsId: string) => BrowserPanelState = (wsId) => ({
   activeTabId: '',
 });
 
+/** How long the « the agent brought a tab to the front » notice stays up (#397). */
+const AGENT_NOTICE_MS = 9000;
+
 export function BrowserPanel({ workspaceId, isActive }: Props) {
   const holderRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<BrowserPanelState>(() => BLANK(workspaceId));
@@ -222,6 +225,18 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     return () => clearTimeout(t);
   }, [tabNotice]);
 
+  // The AGENT swapped the tab on screen (#397): say so, offer « back », and let the notice lapse. A tab swap by anyone else clears
+  // `agentSwitch` in main, and `to !== activeTabId` hides it here, so the notice is never about a tab you are no longer looking at.
+  const [agentNoticeOn, setAgentNoticeOn] = useState(false);
+  const agentSwitch = state.agentSwitch;
+  useEffect(() => {
+    const left = agentSwitch && agentSwitch.to === state.activeTabId ? AGENT_NOTICE_MS - (Date.now() - agentSwitch.at) : 0;
+    setAgentNoticeOn(left > 0);
+    if (left <= 0) return;
+    const t = setTimeout(() => setAgentNoticeOn(false), left);
+    return () => clearTimeout(t);
+  }, [agentSwitch?.at, agentSwitch?.to, state.activeTabId]);
+
   useEffect(() => {
     if (focusUrlOnNewTab.current && !state.url) {
       focusUrlOnNewTab.current = false;
@@ -320,6 +335,11 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
               }}
             >
               <span className="browser-tab-label">{label}</span>
+              {t.openedBy === 'agent' && (
+                <span className="browser-tab-agent-mark" title="Opened by the agent" aria-label="Opened by the agent">
+                  agent
+                </span>
+              )}
               {t.loading && <span className="browser-tab-loading" aria-label="Loading" />}
               <button
                 className="browser-tab-close"
@@ -469,6 +489,22 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           <button className="browser-profile-manage" onClick={() => setBrowserSettingsOpen(true)}>
             {profiles.length === 0 ? 'Create a profile…' : 'Manage profiles…'}
           </button>
+        </div>
+      )}
+      {agentNoticeOn && agentSwitch && (
+        <div className="browser-agent-switch" role="status" data-agent-switch-to={agentSwitch.to}>
+          <span className="browser-agent-switch-text">
+            The agent brought « {tabLabel(state.tabs.find((t) => t.id === agentSwitch.to) ?? { title: '', url: '' })} » to the front.
+          </span>
+          {state.tabs.some((t) => t.id === agentSwitch.from) && (
+            <button
+              type="button"
+              className="browser-agent-switch-back"
+              onClick={() => void runTabOp(() => window.orchestra.browserTabActivate(workspaceId, agentSwitch.from))}
+            >
+              Back to « {tabLabel(state.tabs.find((t) => t.id === agentSwitch.from) ?? { title: '', url: '' })} »
+            </button>
+          )}
         </div>
       )}
       {designArmed && (

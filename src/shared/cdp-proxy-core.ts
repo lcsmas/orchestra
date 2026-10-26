@@ -10,6 +10,7 @@
  */
 import { randomBytes, createHash } from 'node:crypto';
 import { captureWithFallback } from './cdp-capture.ts';
+import { TAB_DESTROYING_METHODS, internalNavigationRefusal, isActingCdpMethod, isBrowserInternalUrl } from './browser-agent-tabs.ts';
 
 export interface CdpTab {
   id: string;
@@ -26,7 +27,8 @@ export interface CdpTabChannel {
   /** Fired once when the debugger goes away (tab destroyed, DevTools took it). */
   onDetach(l: (reason: string) => void): () => void;
 }
-export type CdpTabEvent = { kind: 'created' | 'changed' | 'destroyed'; tab: CdpTab };
+/** `replaced`: the tab id survived but the PAGE behind it did not (an in-place rebuild — #400 profile attach / detach / delete): `tab` is the new page. */
+export type CdpTabEvent = { kind: 'created' | 'changed' | 'destroyed' | 'replaced'; tab: CdpTab };
 export interface CdpPanelPort {
   listTabs(): CdpTab[];
   subscribeTabs(l: (e: CdpTabEvent) => void): () => void;
@@ -162,6 +164,8 @@ export class CdpProxyCore {
   private readonly acquiring = new Map<string, Promise<TabState>>();
   private readonly unsubTabs: () => void;
   private readonly known = new Map<string, CdpTab>();
+  /** Per tab id: how many times the page behind it was replaced. It is part of the target id, so a replacement is a NEW target to the client. */
+  private readonly generation = new Map<string, number>();
 
   private readonly trace: CdpTrace | undefined;
 
@@ -179,8 +183,11 @@ export class CdpProxyCore {
   private derive(what: string): string {
     return createHash('sha1').update(`${this.nonce}:${what}`).digest('hex').slice(0, 32).toUpperCase();
   }
+  /** A replaced page gets a NEW target id: agent-browser drops a `targetCreated` for an id it still tracks when it arrives in the same batch as the
+   *  `targetDestroyed` of that id, then removes the page — and opens a blank tab (v0.39.2 `drain_cdp_events`). */
   targetIdFor(tabId: string): string {
-    return this.derive(`tab:${tabId}`);
+    const g = this.generation.get(tabId) ?? 0;
+    return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);
   }
   private tabForTarget(targetId: unknown): CdpTab | undefined {
     if (typeof targetId !== 'string') return undefined;
@@ -504,8 +511,14 @@ export class CdpProxyCore {
   }
 
   private async attachTab(c: ClientState, t: CdpTab): Promise<string> {
+    const gen = this.generation.get(t.id) ?? 0;
     const st = await this.acquireTab(t.id);
     st.agent = true;
+    if ((this.generation.get(t.id) ?? 0) !== gen || this.tabs.get(t.id) !== st) {
+      // the page was REPLACED while the debugger was being acquired: the hold is on the old one (cleaned up with it, or given back here)
+      if (this.tabs.get(t.id) === st) this.releaseTab(t.id);
+      throw new CdpError('Target closed.', ERR_SERVER);
+    }
     if (c.closed) {
       // the client went away while the debugger was being acquired: nobody will ever detach this session
       this.releaseTab(t.id);
@@ -522,6 +535,17 @@ export class CdpProxyCore {
     return sessionId;
   }
 
+  /** Does this navigation land on a browser-internal URL? A history entry is resolved to its URL first; a lookup that fails is refused (fail closed). */
+  private async navigatesToInternalUrl(st: TabState, method: string, params: Record<string, unknown> | undefined, childSessionId: string | undefined): Promise<boolean> {
+    if (method === 'Page.navigate') return isBrowserInternalUrl(params?.url);
+    try {
+      const h = (await st.channel.send('Page.getNavigationHistory', {}, childSessionId)) as { entries?: Array<{ id?: unknown; url?: unknown }> } | undefined;
+      return isBrowserInternalUrl(h?.entries?.find((e) => e.id === params?.entryId)?.url);
+    } catch {
+      return true;
+    }
+  }
+
   private async tabCommand(
     tabId: string,
     method: string,
@@ -531,6 +555,20 @@ export class CdpProxyCore {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
     if (TUNNEL_METHODS.has(method)) throw new CdpError(`${method} is not supported: this proxy speaks flattened sessions only`, ERR_METHOD);
+    if (TAB_DESTROYING_METHODS.has(method)) {
+      // Ownership is not only about closing (#397 round-2 INFO): a renderer-killer reaches the tab through the page debugger like any command, root or child session.
+      const owner = this.port.listTabs().find((t) => t.id === tabId);
+      if (owner && owner.openedBy !== 'agent') {
+        throw new CdpError(`${method} is refused: tab ${tabId} was opened by the user — an agent may only destroy the tabs it opened.`, ERR_SERVER);
+      }
+    }
+    if (method === 'Page.navigate' || method === 'Page.navigateToHistoryEntry') {
+      // #397 F4: `chrome://crash|kill|hang` / `about:crash` wedge the renderer like Page.crash does — an agent-opened tab may go anywhere, the user's may not (root + child sessions).
+      const owner = this.port.listTabs().find((t) => t.id === tabId);
+      if (owner && owner.openedBy !== 'agent' && (await this.navigatesToInternalUrl(st, method, params, childSessionId))) {
+        throw new CdpError(internalNavigationRefusal(method, tabId), ERR_SERVER);
+      }
+    }
     if (this.port.refuseMethod) {
       const tab = this.port.listTabs().find((t) => t.id === tabId);
       if (!tab) throw new CdpError('Target closed.', ERR_SERVER);
@@ -552,18 +590,19 @@ export class CdpProxyCore {
         throw new CdpError(`${method} refused: policy returned an invalid verdict`, ERR_SERVER);
       }
     }
-    if (!childSessionId) {
-      if (method === 'Page.bringToFront') {
-        this.port.activateTab(tabId);
-        return {};
-      }
-      if (FRAME_BOUND_METHODS.has(method)) {
-        this.bringToFrontIfBackground(tabId);
-        const why = this.port.framesError(tabId);
-        if (why) throw new CdpError(why, ERR_SERVER);
-      }
-      if (method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
+    if (!childSessionId && method === 'Page.bringToFront') {
+      this.port.activateTab(tabId);
+      return {};
     }
+    // Story 43 (#397): ANY agent action on a tab nobody looks at brings it to the front (the port applies the focus rule — a
+    // background workspace's agent never shows a view); domain enables and attach-time calls are not actions. A CHILD (frame) session
+    // is the same tab: its commands count too, and its Input.* meets the same fail-fast (review F3: a hidden pane queues them).
+    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);
+    if (FRAME_BOUND_METHODS.has(method)) {
+      const why = this.port.framesError(tabId);
+      if (why) throw new CdpError(why, ERR_SERVER);
+    }
+    if (!childSessionId && method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
     this.trace?.('proxy->debugger', { method, params, sessionId: childSessionId });
     return st.channel.send(method, params, childSessionId).then(
       (r) => {
@@ -634,7 +673,22 @@ export class CdpProxyCore {
     }
   }
 
+  /** The page behind a tab id was replaced: its sessions are dead (detach, under the OLD target id), then the client hears the NEW target created BEFORE
+   *  the old one is destroyed, so a client that tracks pages never has an empty moment in between. */
+  private onTabReplaced(tab: CdpTab): void {
+    const oldTarget = this.targetIdFor(tab.id);
+    this.onDebuggerDetached(tab.id, 'target closed');
+    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);
+    this.known.set(tab.id, tab);
+    for (const c of this.clients) {
+      if (!c.discover) continue;
+      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });
+      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });
+    }
+  }
+
   private onTabEvent(e: CdpTabEvent): void {
+    if (e.kind === 'replaced') return this.onTabReplaced(e.tab);
     if (e.kind === 'created') this.known.set(e.tab.id, e.tab);
     if (e.kind === 'destroyed') {
       this.known.delete(e.tab.id);

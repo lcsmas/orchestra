@@ -438,15 +438,15 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
+- **BrowserSettings.tsx** (#400) — Settings > Browser: the profils navigateur (create / rename / delete + the ALWAYS-on "stored unencrypted on disk" warning —
+  a constant (`PROFILE_AT_REST_WARNING`), no keyring state involved), a modal behind the globe icon of the sidebar header (`[data-bp-open]`). Open state = `store.browserSettingsOpen` /
+  `setBrowserSettingsOpen` (not Sidebar-local: the browser panel's "Manage profiles…" opens it too). Mounted by `Sidebar.tsx`. See
+  `browser-panel.md` § Profils navigateur.
 - **SecretsNotice.tsx** (#389) — `useSecretsState()` (one `getSecretsState()` per mount; `null` until it
   answers) and `<SecretsNotice state?>`: a yellow `.secrets-notice[data-secrets-notice=unencrypted|unreadable]`
   row rendered ONLY when the platform cannot encrypt (text from `shared/secrets-state.ts`
   `secretsNotice`). Mounted in `LinearSettings` (which no longer claims "stored encrypted" unless the state
   says so) and `AccountsSettings`.
-- **BrowserSettings.tsx** (#400) — Settings > Browser: the profils navigateur (create / rename / delete + the ALWAYS-on "stored unencrypted on disk" warning —
-  a constant (`PROFILE_AT_REST_WARNING`), no keyring state involved), a modal behind the globe icon of the sidebar header (`[data-bp-open]`). Open state = `store.browserSettingsOpen` /
-  `setBrowserSettingsOpen` (not Sidebar-local: the browser panel's "Manage profiles…" opens it too). Mounted by `Sidebar.tsx`. See
-  `browser-panel.md` § Profils navigateur.
 - **DiffPane.tsx — the Diff review pane.** Replaces the removed Monaco-based
   `DiffView.tsx` (Monaco was the heaviest thing the agent view mounted and drove
   the GPU-crash black screen). **Do not reintroduce Monaco here**: this renders

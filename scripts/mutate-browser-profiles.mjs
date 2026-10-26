@@ -18,6 +18,7 @@ const TESTS = [
   'src/main/browser-profiles-wiring.test.ts',
   'src/shared/browser-cookie-promote.test.ts',
   'src/shared/cdp-proxy-core.test.ts',
+  'src/shared/cdp-tab-diff.test.ts',
 ];
 const PANEL = 'src/main/browser-panel.ts';
 const SVC = 'src/main/browser-profiles.ts';
@@ -26,6 +27,7 @@ const PURE = 'src/shared/browser-profile.ts';
 const CDPHOST = 'src/main/browser-cdp-host.ts';
 const CORE = 'src/shared/cdp-proxy-core.ts';
 const PROMO = 'src/shared/browser-cookie-promote.ts';
+const DIFF = 'src/shared/cdp-tab-diff.ts';
 const tmp = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'bprof-mut-'));
 const backups = new Map();
 const orig = new Map();
@@ -45,20 +47,20 @@ const MUTANTS = [
   [PANEL, 'buildTab ignores the panel partition (always ephemeral)', '      partition: panel.partition,\n', '      partition: partitionFor(panel.wsId, undefined),\n'],
   [PANEL, 'ensurePanel ignores the profile resolver', 'const profileId = profileOf?.(wsId);', 'const profileId = undefined;'],
   [PANEL, 'ensurePanel does not record the profile on the panel', '    partition: partitionFor(wsId, profileId),\n    profileId,', '    partition: partitionFor(wsId, profileId),'],
-  [PANEL, 'reprofilePanel leaves the old views alive', '  for (const t of oldTabs) {\n    try {\n      destroyTab(t);\n    } catch (e) {\n      log.warn(\'browser-panel: reprofilePanel could not close an old view\', e);\n    }\n  }\n  try {\n    if (wasAttached) attachActive(panel);\n  } catch (e) {', '  for (const t of [] as typeof oldTabs) void t;\n  try {\n    if (wasAttached) attachActive(panel);\n  } catch (e) {'],
+  [PANEL, 'reprofilePanel leaves the old views alive', '    for (const t of oldTabs) {\n      try {\n        destroyTab(t);\n      } catch (e) {\n        log.warn(\'browser-panel: reprofilePanel could not close an old view\', e);\n      }\n    }\n    try {\n      if (wasAttached) attachActive(panel);\n    } catch (e) {', '    for (const t of [] as typeof oldTabs) void t;\n    try {\n      if (wasAttached) attachActive(panel);\n    } catch (e) {'],
   [PANEL, 'reprofilePanel mints new tab ids', 'buildTab(panel, { openedBy: sn.openedBy, id: sn.id })', 'buildTab(panel, { openedBy: sn.openedBy })'],
-  [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '      if (sn.url) {\n        restoreUrls.set(tab, sn.url);', '      if (false as boolean) {\n        restoreUrls.set(tab, sn.url);'],
+  [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '        if (sn.url) {\n          restoreUrls.set(tab, sn.url);', '        if (false as boolean) {\n          restoreUrls.set(tab, sn.url);'],
   [PANEL, 'reprofilePanel loses the active tab', 'panel.activeId = oldActive;', 'panel.activeId = panel.tabs[0].id;'],
-  [PANEL, 'reprofilePanel never re-composites the active view', '    if (wasAttached) attachActive(panel);\n  } catch (e) {\n    log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);', '    void wasAttached;\n  } catch (e) {\n    log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);'],
-  [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.partition = partition;', '  panel.partition = partition;'],
+  [PANEL, 'reprofilePanel never re-composites the active view', '      if (wasAttached) attachActive(panel);\n    } catch (e) {\n      log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);', '      void wasAttached;\n    } catch (e) {\n      log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);'],
+  [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.rebuilding = true;', '  panel.rebuilding = true;'],
   [PANEL, 'reprofilePanel rebuilds even for the same identity', '  if (partition === panel.partition) return panel.state;\n', ''],
   [PANEL, 'reprofilePanel builds a panel that is not open', '  if (!panel) return getState(wsId);\n  const partition', '  if (!panel) { ensurePanel(wsId); return getState(wsId); }\n  const partition'],
-  [PANEL, 'reprofilePanel keeps the old profileId in the state', '  panel.partition = partition;\n  panel.profileId = profileId;', '  panel.partition = partition;'],
+  [PANEL, 'reprofilePanel keeps the old profileId in the state', '    panel.partition = partition;\n    panel.profileId = profileId;', '    panel.partition = partition;'],
   [PANEL, 'the panel state never says which profile it runs on', '    ...(panel.profileId !== undefined ? { profileId: panel.profileId } : {}),\n', ''],
   [PANEL, 'sign-in flushing also watches ephemeral sessions', 'if (panel.profileId !== undefined) persistSignIns(ses);', 'persistSignIns(ses);'],
   [PANEL, 'sign-in flushing adds a watcher per tab', '  if (signInSessions.has(ses)) return;\n', ''],
   [PANEL, 'flushProfileStorage also flushes ephemeral partitions', '    if (panel.profileId === undefined) continue;\n', ''],
-  [PANEL, 'a failed rebuild leaves a half-built panel', '    panel.tabs = oldTabs;\n    panel.partition = prev.partition;\n    panel.profileId = prev.profileId;\n    if (wasAttached) attachActive(panel);\n    throw e;', '    throw e;'],
+  [PANEL, 'a failed rebuild leaves a half-built panel', '      const half = panel.tabs;\n      panel.tabs = oldTabs;\n      panel.partition = prev.partition;\n      panel.profileId = prev.profileId;\n', '      const half = panel.tabs;\n'],
   [PANEL, 'the closing views are not tracked', '  trackClose(wc);\n', ''],
   [PANEL, 'settleClosedViews never waits', '  const ok = await Promise.race([settled, timedOut]);', '  const ok = true as boolean; void settled; void timedOut;'],
   [PANEL, 'settleClosedViews can wait forever', '  const ok = await Promise.race([settled, timedOut]);', '  const ok = await settled;'],
@@ -104,8 +106,8 @@ const MUTANTS = [
   [SVC, 'leaving a profile never clears the ephemeral session (old sign-ins resurface)', '        if (d.changed && d.profileId === undefined) await deps.clearEphemeral(wsId);\n', ''],
   [SVC, 'an ephemeral detach that changes nothing still clears the (possibly in-use) ephemeral session', '        if (d.changed && d.profileId === undefined) await deps.clearEphemeral(wsId);', '        if (d.profileId === undefined) await deps.clearEphemeral(wsId);'],
   [SVC, 'attaching a profile clears the ephemeral session (still on screen)', '        if (d.changed && d.profileId === undefined) await deps.clearEphemeral(wsId);', '        if (d.changed) await deps.clearEphemeral(wsId);'],
-  [PANEL, 'a removal after the read does not cancel the write (F4B)', '        if (!alive || (changedSeq.get(key) ?? 0) > started) return undefined;', '        if (!alive) return undefined;'],
-  [PANEL, 'stopSignInPersistence does not stop an in-flight promotion (F4A)', '        if (!alive || (changedSeq.get(key) ?? 0) > started) return undefined;', '        if ((changedSeq.get(key) ?? 0) > started) return undefined;'],
+  [PANEL, 'a removal after the read does not cancel the write (F4B)', '        if (!alive || (changedSeq.get(key) ?? 0) > started) return;', '        if (!alive) return;'],
+  [PANEL, 'stopSignInPersistence does not stop an in-flight promotion (F4A)', '        if (!alive || (changedSeq.get(key) ?? 0) > started) return;', '        if ((changedSeq.get(key) ?? 0) > started) return;'],
   [PANEL, 'a same-name sibling cookie is promoted instead of the event\'s (F4C)', "        const own = live.find((c) => c.name === cookie.name && c.domain === cookie.domain && (c.path ?? '/') === (cookie.path ?? '/'));", "        const own = live[0];"],
   [PANEL, 'tabFrameUrls reads the wrong thing (main frame only)', 'return main ? main.framesInSubtree.map((f) => f.url) : undefined;', 'return main ? [main.url] : undefined;'],
   [PURE, 'a clear refusal has an EMPTY message (the proxy would fail open)', "'refused: this workspace\\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +", "'' +"],
@@ -122,7 +124,48 @@ const MUTANTS = [
   [PROMO, 'a secure cookie is set on an http url', "url: `${secure ? 'https' : 'http'}://${host}${path}`,", 'url: `http://${host}${path}`,'],
   [PROMO, 'the promoted lifetime is not 30 days', 'export const PROMOTED_COOKIE_TTL_S = 30 * 24 * 3600;', 'export const PROMOTED_COOKIE_TTL_S = 24 * 3600;'],
   [PROMO, 'the url host keeps the cookie domain\'s leading dot', "const host = (c.domain ?? '').replace(/^\\./, '');", "const host = (c.domain ?? '');"],
-  [PANEL, 'session cookies are never promoted', '        return p ? ses.cookies.set(p) : undefined;', '        void p;\n        return undefined;'],
+  [PANEL, 'session cookies are never promoted', '        if (!p) return;\n        noteOwnWrite(key, p);', '        void p;\n        return;\n        noteOwnWrite(key, p);'],
+  // --- a logout is not undone by the pending promotion (seat-1 MAJOR, OPS lot 9020) ---
+  // (no mutant for the outer-only or inner-only removal gate of `reconcile`: they are the SAME monotonic condition, so removing one is equivalent; the pair is mutated together)
+  [PANEL, 'no post-write compensation at all (the logout is undone)', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", ''],
+  [PANEL, 'no compensation right after the write (only the settle re-check)', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {", "        const t = setTimeout(() => {"],
+  [PANEL, 'no settle re-check (a removal delivered after the write\'s promise is missed)', "        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", ''],
+  [PANEL, 'compensation judges removals against the sequence at CHECK time, not the read start', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);", "        reconcile(key, p, domain, path, seq);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, seq);"],
+  [PANEL, 'compensation runs without any foreign event seen since the read started', "    if (!alive || (foreign.get(key)?.seq ?? 0) <= started) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        const last = foreign.get(key);\n        if (!alive || !last || last.seq <= started) return undefined;", "    if (!alive) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        const last = foreign.get(key) ?? { seq: 1e9, removed: true, cookie: {} as never };\n        if (!alive) return undefined;"],
+  [PANEL, 'compensation removes whatever cookie is live (a re-login is deleted)', "        if (!mine) return undefined;", "        if (!live.length) return undefined;"],
+  [PANEL, 'an overwrite (our own promotion replacing the cookie) counts as a logout', "    const genuineRemoval = removed && cause !== 'overwrite';", "    const genuineRemoval = removed;"],
+  [PANEL, 'the echo of our own compensating remove is read as a logout', "    if (genuineRemoval && ownRemoval.has(key)) {", "    if (false as boolean) {"],
+  [PANEL, 'our compensating remove is not marked as ours', "          ownRemoval.add(key);\n          return ses.cookies.remove(", "          return ses.cookies.remove("],
+  [PANEL, 'the own-echo mark is never dropped (an echo that never comes swallows a later logout)', "              settling.delete(t);\n              ownRemoval.delete(key);\n            }, OWN_ECHO_MS);", "              settling.delete(t);\n            }, OWN_ECHO_MS);"],
+  // --- an in-place rebuild is a REPLACED page, not a changed one (seat-2 MAJOR: the agent's CLI met a dead session for good) ---
+  [DIFF, 'the view identity is ignored (a rebuild reads as a bare `changed`)', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'false'],
+  [DIFF, 'an unknown view counts as replaced', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'was.view !== now.view'],
+  [DIFF, 'a replacement is announced as destroyed + created of the SAME id', "events.push({ kind: 'replaced', tab: now.tab });", "events.push({ kind: 'destroyed', tab: was.tab }, { kind: 'created', tab: now.tab });"],
+  [CORE, 'a replaced page keeps its target id (agent-browser drops the same-id create in one batch and opens a blank tab)', "return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);", "return this.derive(`tab:${tabId}`);"],
+  [CORE, 'a replacement does not detach the sessions on the old page', "    this.onDebuggerDetached(tab.id, 'target closed');\n    this.generation.set(", "    this.generation.set("],
+  [CORE, 'a replacement detaches under the NEW target id', "    const oldTarget = this.targetIdFor(tab.id);\n    this.onDebuggerDetached(tab.id, 'target closed');\n    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);", "    const oldTarget = this.targetIdFor(tab.id);\n    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);\n    this.onDebuggerDetached(tab.id, 'target closed');"],
+  [CORE, 'the old target is destroyed BEFORE the new one is created (an empty moment for the client)', "      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });\n      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });", "      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });\n      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });"],
+  [CORE, 'a replacement is announced to clients that never asked for discovery', "      if (!c.discover) continue;\n      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });", "      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });"],
+  [CORE, 'a replacement is never turned into events', "    if (e.kind === 'replaced') return this.onTabReplaced(e.tab);\n", ''],
+  [CORE, 'an attach in flight across a replacement is registered on the dead page', "(this.generation.get(t.id) ?? 0) !== gen || this.tabs.get(t.id) !== st", "false"],
+  [CORE, 'an attach in flight across a replacement keeps its hold', "      if (this.tabs.get(t.id) === st) this.releaseTab(t.id);\n", ''],
+  ['src/main/browser-cdp-host.ts', 'the host reads no view identity (a rebuild is invisible to the diff)', "view: bp.tabContents(wsId, t.id)?.id", "view: undefined"],
+  // --- a rebuild publishes only WHOLE tab lists (seat-1 MAJOR: a half-built list read as a tab closed and reopened under the same id) ---
+  [PANEL, 'publish speaks during a rebuild (the half-built guard is gone)', "  if (panel.rebuilding) return panel.state;\n", ''],
+  [PANEL, 'a rebuild never raises the half-built guard', "  panel.rebuilding = true;\n", ''],
+  [PANEL, 'a failed rebuild keeps the half-built guard (released on the success path only — the pre-D1 shape)', "  } finally {\n    panel.rebuilding = false;\n  }\n  return publish(panel);", "  } catch (e) {\n    throw e;\n  }\n  panel.rebuilding = false;\n  return publish(panel);"],
+  [PANEL, 'the rollback steps abort each other (a half-built view that will not close loses the original error)', "        try {\n          destroyTab(t);\n        } catch (err) {\n          log.warn('browser-panel: reprofilePanel rollback could not close a half-built view', err);\n        }", "        destroyTab(t);"],
+  [PANEL, 'a finished rebuild keeps the half-built guard (its own publish is swallowed)', "  } finally {\n    panel.rebuilding = false;\n  }\n  return publish(panel);", "  } finally {\n  }\n  return publish(panel);"],
+  // --- the rotation race (seat 1: the jar ended on the PREVIOUS value; same read → write class as the logout) ---
+  [PANEL, 'a foreign CHANGE is never put back (only removals are compensated)', "        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n", "        return undefined;\n        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n"],
+  [PANEL, 'the insert event of OUR copy reads as the site\'s (own writes are not recognised)', "else if (!removed && !isOwnWrite(key, cookie))", "else if (!removed)"],
+  [PANEL, 'our promoted write is not noted as ours (its echo reads as a rotation)', "        noteOwnWrite(key, p);\n        await ses.cookies.set(p);", "        await ses.cookies.set(p);"],
+  [PANEL, 'a genuine removal does not replace an older foreign change (the rotation wins over a later logout)', "if (genuineRemoval) foreign.set(key, { seq, removed: true, cookie });", "if (genuineRemoval && !foreign.has(key)) foreign.set(key, { seq, removed: true, cookie });"],
+  [PROMO, 'restore moves a persistent cookie to the 30-day expiry', "return detailsFor(c, c.expirationDate);", "return detailsFor(c, Math.floor(nowSec) + PROMOTED_COOKIE_TTL_S);"],
+  [PROMO, 'restore resurrects an already-expired cookie', "if (c.expirationDate === undefined || c.expirationDate <= nowSec) return null;", "if (c.expirationDate === undefined) return null;"],
+  // --- union with #397: a rebuild invalidates what #397 pins by tab id ---
+  [PANEL, 'a rebuild keeps the last read_page outline pinned to the tab id (refTabId)', "    panel.refTabId = undefined;\n", ''],
+  [PANEL, 'a rebuild keeps the « the agent switched tabs » notice (agentSwitch)', "    delete panel.agentSwitch;\n", ''],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', "          return refuse('storage', `Could not clear", "          void refuse('storage', `Could not clear"],
@@ -190,6 +233,7 @@ console.log(`baseline PASS (${baseTests} tests, ${/# skipped (\d+)/.exec(base.st
 let killed = 0;
 const survivors = [];
 for (const [file, name, find, replace] of MUTANTS) {
+  if (process.env.MUT_ONLY && !process.env.MUT_ONLY.split('|').some((t) => name.includes(t))) continue; // MUT_ONLY=a|b: name substrings
   const src = orig.get(file);
   const n = src.split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x in ${file} (need exactly 1)`); restoreAll(); process.exit(2); }

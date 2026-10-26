@@ -739,6 +739,7 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
   removeAgentTmpDir(id);
+  destroyBrowserPanel(id); // #396: every delete path (socket `orchestra delete`, bulk, repo removal) — its tabs and popup windows must not outlive it
 
   // Scratch sessions are a plain directory with no git worktree and no repo
   // (hence no archive script). Tear the directory down directly — confined to
