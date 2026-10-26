@@ -241,6 +241,7 @@ function applyMutant() {
   console.log(`[mutant] ${MUTANT} applied to ${path.basename(file)} (${m.edits.length} edit(s)): ${m.why}; backup ${backup}`);
   mutantRestore = () => { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK)`); } catch { console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${path.basename(file)}`); process.exitCode = 4; } };
 }
+process.on('uncaughtException', (e) => { clause('rig', 'uncaught-exception', false, String(e?.stack ?? e).slice(0, 400)); });
 process.on('exit', () => { try { mutantRestore?.(); } catch {} });
 process.on('SIGINT', () => process.exit(130));
 process.on('SIGTERM', () => process.exit(143));
@@ -675,10 +676,13 @@ function bringToFrontViaProxy(wsUrl, urlRe) {
     ws.on('error', (e) => { clearTimeout(t); resolve({ reply: `error ${e.message}` }); });
     ws.on('open', () => send('Target.getTargets'));
     ws.on('message', (d) => {
-      const m = JSON.parse(String(d));
-      if (m.id === 1) send('Target.attachToTarget', { targetId: (m.result.targetInfos.find((i) => urlRe.test(i.url)) ?? m.result.targetInfos[0]).targetId, flatten: true });
-      else if (m.id === 2) { sid = m.result.sessionId; send('Page.bringToFront', {}, sid); }
-      else if (m.id === 3) { clearTimeout(t); ws.close(); resolve({ reply: JSON.stringify(m.result ?? m.error) }); }
+      try {
+        const m = JSON.parse(String(d));
+        if (m.error && m.id !== 3) { clearTimeout(t); ws.close(); return resolve({ reply: `error ${JSON.stringify(m.error)}` }); } // e.g. a mutant that breaks the attach: a RED clause, never a crashed driver
+        if (m.id === 1) send('Target.attachToTarget', { targetId: (m.result.targetInfos.find((i) => urlRe.test(i.url)) ?? m.result.targetInfos[0]).targetId, flatten: true });
+        else if (m.id === 2) { sid = m.result.sessionId; send('Page.bringToFront', {}, sid); }
+        else if (m.id === 3) { clearTimeout(t); ws.close(); resolve({ reply: JSON.stringify(m.result ?? m.error) }); }
+      } catch (e) { clearTimeout(t); try { ws.close(); } catch {} resolve({ reply: `driver error ${e.message}` }); }
     });
   });
 }

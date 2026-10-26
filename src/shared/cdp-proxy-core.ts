@@ -43,6 +43,12 @@ export interface CdpPanelPort {
   captureFallback(tabId: string, format: 'png' | 'jpeg', quality?: number): Promise<string>;
   /** A reason the tab cannot produce frames right now (panel hidden / workspace in background), else null. */
   framesError(tabId: string): string | null;
+  /**
+   * Policy seam for page-level commands (#400: refuse partition-wide cookie clears while the workspace holds a shared profile).
+   * Called for EVERY command a client sends to a tab — root and auto-attached child sessions — before it reaches the debugger;
+   * a returned string refuses it (CDP error, the debugger never sees it). Absent = nothing refused.
+   */
+  refuseMethod?(method: string, params: Record<string, unknown> | undefined): string | null;
 }
 export interface CdpClientLink {
   send(msg: Record<string, unknown>): void;
@@ -452,6 +458,8 @@ export class CdpProxyCore {
   ): Promise<unknown> {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
+    const refused = this.port.refuseMethod?.(method, params);
+    if (refused) throw new CdpError(refused, ERR_SERVER);
     if (!childSessionId) {
       if (method === 'Page.bringToFront') {
         this.port.activateTab(tabId);

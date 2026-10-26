@@ -351,3 +351,27 @@ test('M1: two attaches in flight on one tab share ONE acquire; the port is relea
   assert.match((await c2.call('Target.attachToTarget', { targetId: t2 })).error.message, /DevTools is open/);
   assert.ok((await c2.call('Target.attachToTarget', { targetId: t2 })).result.sessionId, 'the next attach retries');
 });
+
+test('#400 seam: port.refuseMethod refuses a page-level command on a root AND a child session before the debugger sees it; targeted commands and a port without the hook are untouched', async () => {
+  const p = fakePanel();
+  (p.port as any).refuseMethod = (m: string) => (m === 'Network.clearBrowserCookies' || m === 'Storage.clearCookies' ? 'refused: partition-wide cookie clear while a profile is attached' : null);
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const tid = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId: tid })).result;
+  const ch = p.channels.get('t1')!;
+  assert.match((await c.call('Network.clearBrowserCookies', undefined, sessionId)).error.message, /partition-wide/);
+  assert.match((await c.call('Storage.clearCookies', {}, sessionId)).error.message, /partition-wide/);
+  ch.emit('Target.attachedToTarget', { sessionId: 'CHILD', targetInfo: {} }); // an iframe / worker session of the same tab
+  assert.match((await c.call('Network.clearBrowserCookies', undefined, 'CHILD')).error.message, /partition-wide/);
+  assert.deepEqual(ch.sent, [], 'none of the refused commands reached the debugger');
+  assert.equal((await c.call('Network.deleteCookies', { name: 'sid' }, sessionId)).error, undefined, 'a targeted delete names what it touches: allowed');
+  assert.equal((await c.call('Runtime.evaluate', { expression: '1' }, sessionId)).error, undefined);
+  assert.deepEqual(ch.sent.map((x) => x.method), ['Network.deleteCookies', 'Runtime.evaluate']);
+  // no hook: nothing is refused
+  const q = fakePanel();
+  const c2 = client(new CdpProxyCore(q.port));
+  const t2 = (await c2.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const s2 = (await c2.call('Target.attachToTarget', { targetId: t2 })).result.sessionId;
+  assert.equal((await c2.call('Network.clearBrowserCookies', undefined, s2)).error, undefined);
+});
