@@ -175,10 +175,10 @@ try {
   const onDisk = path.join(APP_DIR, 'dist', bundle.split('/dist/')[1]);
   clause('ctl/app-identity-bundle', md5(served) === md5(fs.readFileSync(onDisk)), `served ${path.basename(bundle)} md5 ${md5(served)} == ${onDisk}`);
   clause('ctl/cli-bundle-has-the-flag', /["']--profile["']/.test(fs.readFileSync(CLI, 'utf8')), `${CLI} parses --profile`);
-  const appEnv = environOf(app.pid);
-  clause('ctl/scratch-env', appEnv.includes(`ORCHESTRA_HOME=${world.ohome}`) && !appEnv.some((e) => e.startsWith('DISPLAY=')), `app ORCHESTRA_HOME=${world.ohome}, no DISPLAY`);
-  const evOf = (k) => (appEnv.find((e) => e.startsWith(`${k}=`)) ?? '').slice(k.length + 1);
-  clause('ctl/private-runtime-world', evOf('XDG_RUNTIME_DIR').startsWith(`${RIG_DIR}/`) && !evOf('XDG_RUNTIME_DIR').startsWith('/run/user/') && evOf('DBUS_SESSION_BUS_ADDRESS').startsWith(`unix:path=${RIG_DIR}/`) && !fs.existsSync(evOf('DBUS_SESSION_BUS_ADDRESS').replace('unix:path=', '')), `app XDG_RUNTIME_DIR=${evOf('XDG_RUNTIME_DIR')} DBUS_SESSION_BUS_ADDRESS=${evOf('DBUS_SESSION_BUS_ADDRESS')} (nonexistent)`);
+  // What the DRIVER handed the app — Chromium rewrites the main process's environ once DBUS_SESSION_BUS_ADDRESS is set, so /proc/<pid>/environ goes blind (#400 measured the same).
+  clause('ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND, `handed env: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
+  clause('ctl/private-runtime-world', env.XDG_RUNTIME_DIR.startsWith(`${RIG_DIR}/`) && !env.XDG_RUNTIME_DIR.startsWith('/run/user/') && env.DBUS_SESSION_BUS_ADDRESS.startsWith(`unix:path=${RIG_DIR}/`) && !fs.existsSync(env.DBUS_SESSION_BUS_ADDRESS.replace('unix:path=', '')), `handed env: XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS} (the socket path does not exist)`);
+  clause('ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   const st0 = readStore();
   clause('ctl/account-pin', st0.accounts[0].id === st0.workspaces[0].accountId && !LIVE.some((l) => real(st0.accounts[0].configDir).startsWith(l)), `accountId ${st0.workspaces[0].accountId} == account.id ${st0.accounts[0].id}; configDir ${st0.accounts[0].configDir} (scratch)`);
   const opsRec0 = await wsRec('ws-ops');
@@ -323,7 +323,12 @@ try {
   try { fx.kill('SIGTERM'); } catch { /* */ }
   // kill by resolved identity: every process whose environ names THIS rig's ORCHESTRA_HOME (app, keepers, claude CLIs)
   const mine = [];
-  for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) { try { if (+p !== process.pid && environOf(p).includes(`ORCHESTRA_HOME=${world.ohome}`)) mine.push(+p); } catch { /* */ } }
+  for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+    if (+p === process.pid) continue;
+    try { if (environOf(p).includes(`ORCHESTRA_HOME=${world.ohome}`)) { mine.push(+p); continue; } } catch { /* */ }
+    // Electron helpers re-exec with a clean environ: identify them by this world's --user-data-dir instead
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(`--user-data-dir=${path.join(world.ohome, 'userData')}`)) mine.push(+p); } catch { /* */ }
+  }
   for (const p of mine) { try { process.kill(p, 'SIGTERM'); } catch { /* */ } }
   await sleep(1500);
   for (const p of mine) { try { process.kill(p, 'SIGKILL'); } catch { /* */ } }
