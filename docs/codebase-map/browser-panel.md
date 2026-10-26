@@ -832,6 +832,11 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
   armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
+- **Whole-flow drive (#388 end gate)**: `scripts/e2e-browser-whole-flow.sh <app-dir>` — ONE built app in the contained rig, one story over 10 arms
+  (`human agent popup design cookies memory keyring legacy restart profile`); the fixture site is served from the app tree. A clause body activates when the app dir's HEAD carries a
+  `Merge #n` commit (or `--merged n,n`) — bodies exist for #396 popups, #397 agent tabs, #399 skill/legacy tools, #400 profiles, #401 `spawn --profile`; before that it prints `NOT YET MERGED: #n`
+  (`--require-all` turns each into a FAIL), and a merged ticket whose body is missing FAILS. Seam mutants (`--mutant strip-hides-agent-tabs | partition-shared | popup-same-view | agent-closes-any-tab |
+  skill-example-without-click | profile-not-persistent | agent-cdp-unscoped | spawn-profile-not-held`) must go red on the NAMED clause; `--check-anchors <app-dir>` proves each edit matches once.
 
 ## Agent tabs (#397) — policy entry points, ownership at the CLI, visible bring-to-front, ref pin
 
