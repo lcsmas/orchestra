@@ -32,6 +32,7 @@ import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { ModelDefaultsSettings } from './ModelDefaultsSettings';
 import { MemoryGuardSettings } from './MemoryGuardSettings';
+import { BrowserSettings } from './BrowserSettings';
 import { AccesMobileSettings } from './AccesMobileSettings';
 import { RepoScriptsModal } from './RepoScriptsModal';
 import { NewWorkspaceBranchPopover } from './NewWorkspaceBranchPopover';
@@ -131,6 +132,16 @@ function PhoneIcon() {
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <rect x="6.5" y="2" width="11" height="20" rx="2" />
       <path d="M11 18.5h2" />
+    </svg>
+  );
+}
+
+// Globe — Settings > Browser (profils navigateur, #400).
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9.5" />
+      <path d="M2.5 12h19M12 2.5c2.6 2.7 3.9 5.9 3.9 9.5s-1.3 6.8-3.9 9.5c-2.6-2.7-3.9-5.9-3.9-9.5S9.4 5.2 12 2.5z" />
     </svg>
   );
 }
@@ -930,6 +941,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [accesMobileOpen, setAccesMobileOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
+  const browserSettingsOpen = useStore((s) => s.browserSettingsOpen);
+  const setBrowserSettingsOpen = useStore((s) => s.setBrowserSettingsOpen);
   // #257 — read once: the row class below is a plain derivation (the row PARTS subscribe themselves).
   const pauseOverview = useStore((s) => s.pauseOverview);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
@@ -1830,6 +1843,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <MemoryIcon />
           </button>
+          {/* Settings > Browser (#400, ADR 0010): the profils navigateur — named persistent sign-ins a workspace's panel can carry. */}
+          <button
+            className="header-icon-btn"
+            onClick={() => setBrowserSettingsOpen(true)}
+            title="Browser profiles — named, persistent sign-ins for a workspace's browser panel"
+            aria-label="Browser profile settings"
+            data-bp-open
+          >
+            <GlobeIcon />
+          </button>
           {/* Accès mobile (#334, ADR 0006): the phone server process — off by default, tailnet identity + token. */}
           <button
             className="header-icon-btn"
@@ -2654,6 +2677,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           />
         )}
         {memoryGuardOpen && <MemoryGuardSettings onClose={() => setMemoryGuardOpen(false)} />}
+        {browserSettingsOpen && <BrowserSettings onClose={() => setBrowserSettingsOpen(false)} />}
         {accesMobileOpen && <AccesMobileSettings onClose={() => setAccesMobileOpen(false)} />}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}
         {accountsSettingsOpen && (

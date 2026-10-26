@@ -30,6 +30,7 @@ import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
 import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel, type CdpTabEvent } from '../shared/cdp-proxy-core.ts';
+import { decideAgentCdp } from '../shared/browser-profile.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
@@ -133,6 +134,14 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       }
       if (panel.attachedId !== tabId) return `tab ${tabId} is not on screen`;
       return null;
+    },
+    // #400: while this workspace's panel runs on a profil navigateur (shared with other workspaces and sites), an agent may not clear its jar or
+    // read/alter another site's cookies — judged on the call's params and the TARGETED tab's url (shared/browser-profile.ts decideAgentCdp).
+    // Read at call time (`panelProfileId`): a profile attached or deleted mid-session applies to the very next command.
+    refuseMethod: (method, params, tab) => {
+      const d = decideAgentCdp({ method, params, profileId: bp.panelProfileId(wsId), pageUrl: tab.url, frameUrls: bp.tabFrameUrls(wsId, tab.id) });
+      // The core judges TRUTHINESS: a refusal must be a NON-EMPTY string on every path ('' / undefined would fail OPEN) — hence the fallback text.
+      return d.ok ? null : d.message || 'refused: the profil navigateur policy of this workspace forbids this command';
     },
   };
 }

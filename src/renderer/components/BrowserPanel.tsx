@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { BrowserPanelState, BrowserTabResult } from '../../shared/types';
+import type { BrowserPanelState, BrowserProfile, BrowserTabResult } from '../../shared/types';
 import { tabLabel } from '../../shared/browser-tab-state';
 import { useStore } from '../store';
 
@@ -57,6 +57,13 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   const [tabNotice, setTabNotice] = useState<string | null>(null);
   // Focus the URL bar once the NEW (blank) tab has become the active one.
   const focusUrlOnNewTab = useRef(false);
+  // Profils navigateur (#400): the chip shows what ALL this workspace's tabs run on; the inline bar attaches / switches /
+  // detaches it. Main owns the rules — this only asks (human-facing IPC), and a refusal is shown, never swallowed.
+  const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
+  const [profileBarOpen, setProfileBarOpen] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const settingsOpen = useStore((s) => s.browserSettingsOpen);
+  const setBrowserSettingsOpen = useStore((s) => s.setBrowserSettingsOpen);
 
   // Push the placeholder's rect to main so the native view tracks it. Called on
   // mount, resize, scroll, and whenever the active/open state flips.
@@ -222,6 +229,50 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     }
   }, [state.activeTabId, state.url]);
 
+  // The profile list: on mount, when the choice bar opens, and after Settings > Browser closes (a profile may have been
+  // created / renamed / deleted there).
+  useEffect(() => {
+    if (settingsOpen) return;
+    let cancelled = false;
+    void window.orchestra
+      .browserProfiles()
+      .then((list) => !cancelled && setProfiles(list))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [profileBarOpen, settingsOpen]);
+
+  const chooseProfile = async (profileId: string | null) => {
+    if (profileBusy) return;
+    setProfileBusy(true);
+    try {
+      // Design mode lives in the pages being rebuilt: disarm first, like a tab change.
+      if (designArmed) {
+        await window.orchestra.browserDesignDisarm(workspaceId).catch(() => {});
+        setDesignArmed(false);
+      }
+      const r = await window.orchestra.browserProfileAttach(workspaceId, profileId);
+      setProfiles(r.profiles);
+      if (r.ok) {
+        if (r.state && r.state.wsId === workspaceId) applyState(r.state, true);
+        setTabNotice(null);
+        setProfileBarOpen(false);
+      } else {
+        setTabNotice(r.message);
+      }
+    } catch (e) {
+      setTabNotice((e as Error).message);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  // Until main has pushed a state WITH tabs (first paint), show what the workspace records; afterwards what the panel really runs on.
+  const recordedProfile = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.browserProfileId);
+  const profileId = state.tabs.length > 0 ? state.profileId : recordedProfile;
+  const profileName = profileId ? (profiles.find((p) => p.id === profileId)?.name ?? 'Profile') : 'Ephemeral';
+
   const runTabOp = async (op: () => Promise<BrowserTabResult>) => {
     if (designArmed) {
       await window.orchestra.browserDesignDisarm(workspaceId).catch(() => {});
@@ -346,6 +397,26 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           {state.loading && <span className="browser-spinner" aria-label="Loading" />}
         </form>
         <button
+          className="browser-profile-btn"
+          title={
+            profileId
+              ? `Browser profile “${profileName}” — all tabs of this workspace use it. Click to switch or detach.`
+              : 'Ephemeral browsing — nothing is kept. Click to attach a browser profile (a persistent sign-in).'
+          }
+          aria-label={`Browser profile: ${profileName}`}
+          aria-expanded={profileBarOpen}
+          data-browser-profile-chip
+          data-profile-id={profileId ?? ''}
+          onClick={() => setProfileBarOpen((v) => !v)}
+        >
+          {/* person glyph */}
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="8" cy="5.5" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" d="M2.8 13.5c.6-2.6 2.6-4 5.2-4s4.6 1.4 5.2 4" />
+          </svg>
+          <span className="browser-profile-label">{profileName}</span>
+        </button>
+        <button
           className={`browser-nav-btn browser-design-btn ${designArmed ? 'browser-design-btn-on' : ''}`}
           title={
             designArmed
@@ -369,6 +440,37 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
           </svg>
         </button>
       </div>
+      {profileBarOpen && (
+        <div className="browser-profile-bar" role="radiogroup" aria-label="Browser profile" data-browser-profile-bar>
+          <span className="bp-bar-title">Browser profile</span>
+          <button
+            className="browser-profile-choice"
+            role="radio"
+            aria-checked={!profileId}
+            disabled={profileBusy}
+            data-profile-choice=""
+            onClick={() => void chooseProfile(null)}
+          >
+            Ephemeral
+          </button>
+          {profiles.map((p) => (
+            <button
+              key={p.id}
+              className="browser-profile-choice"
+              role="radio"
+              aria-checked={profileId === p.id}
+              disabled={profileBusy}
+              data-profile-choice={p.id}
+              onClick={() => void chooseProfile(p.id)}
+            >
+              {p.name}
+            </button>
+          ))}
+          <button className="browser-profile-manage" onClick={() => setBrowserSettingsOpen(true)}>
+            {profiles.length === 0 ? 'Create a profile…' : 'Manage profiles…'}
+          </button>
+        </div>
+      )}
       {designArmed && (
         <div className="browser-design-hint">
           Click an element to send its HTML, styles and a screenshot to the agent ·{' '}

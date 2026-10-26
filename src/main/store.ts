@@ -4,7 +4,6 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Account, BrowserProfile, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
-import { normalizeBrowserProfiles } from '../shared/browser-profile';
 import {
   legacyStoreBaseUrl,
   sanitizeAccountAuth,
@@ -16,6 +15,7 @@ import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defa
 import { normalizeEffortDefaults, type EffortDefaults } from '../shared/effort-defaults';
 import { normalizeMemoryGuardSettings, type MemoryGuardSettings } from '../shared/memory-guard';
 import { normalizeAccesMobileSettings, type AccesMobileSettings } from '../shared/acces-mobile';
+import { normalizeBrowserProfiles } from '../shared/browser-profile';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -75,13 +75,15 @@ interface StoreShape {
   /** The two default reasoning efforts, raw — shared/effort-defaults.ts
    *  normalizes. Absent → both "model default" (no pin). */
   effortDefaults?: Partial<EffortDefaults>;
-  browserProfiles?: BrowserProfile[];
   /** Memory guard thresholds (GB) + the global Admission/fast-Veille toggle (#285), raw — shared/memory-guard.ts normalizes.
    *  LIVE values, read at every sample (never frozen per run). Absent → 6 / 3 GB, toggle ON. */
   memoryGuard?: Partial<MemoryGuardSettings>;
   /** Accès mobile (#334): on/off, ports, allowed Tailscale login — raw, shared/acces-mobile.ts normalizes. Absent → OFF.
    *  The token is NOT here: it lives in its own 0600 file (main/acces-mobile-host.ts). */
   accesMobile?: Partial<AccesMobileSettings>;
+  /** Profils navigateur (#400, ADR 0010): the named persistent browser identities the human created. Raw —
+   *  shared/browser-profile.ts normalizes. Absent → none. A workspace refers to one by `browserProfileId`. */
+  browserProfiles?: BrowserProfile[];
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -483,7 +485,7 @@ class Store {
     await this.save();
   }
 
-  /** TEMP stand-in for #400's accessor (frozen interface) — dropped at the rebase. */
+  /** The profils navigateur on record, normalized (a malformed entry never reaches a partition name). */
   getBrowserProfiles(): BrowserProfile[] {
     return normalizeBrowserProfiles(this.data.browserProfiles);
   }

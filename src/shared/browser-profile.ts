@@ -2,7 +2,6 @@
 // detach / delete mean, who may ask. No Electron, no store: `node --test` covers every branch
 // (browser-profile.test.ts). The host wiring is main/browser-profiles.ts (service) + browser-profiles-host.ts (IPC).
 import type { BrowserProfile, BrowserProfileId } from './types.ts';
-import { secretsNotice, type SecretsState } from './secrets-state.ts';
 
 export const BROWSER_PROFILE_NAME_MAX = 40;
 
@@ -128,11 +127,126 @@ export function isHumanProfileCaller(c: {
   return typeof c.senderId === 'number' && typeof c.mainId === 'number' && c.senderId === c.mainId && c.senderIsMainFrame;
 }
 
-/** The warning shown WHILE creating a profile when the machine's secret storage is not encrypted (ADR 0010): the
- *  profile's cookies are protected by the same OS keyring, so "no keyring" means they sit under a fixed key. null =
- *  nothing to say (encryption works, or the state is unknown). Reuses #389's rule, so the two can never disagree. */
-export function profileCreateWarning(state: SecretsState | null): string | null {
-  return secretsNotice(state)
-    ? 'Storage is not encrypted on this machine: this profile’s cookies and sign-ins will sit on disk readable by anything running as you.'
-    : null;
+/** The warning shown WHILE creating a profile, ALWAYS (ADR 0010, review F1 of #400): Chromium encrypts cookies at rest only when Electron's
+ *  `EnableCookieEncryption` fuse is on, and it is OFF in the shipped build (the repo flips no fuse; measured: the profile's Cookies DB holds `value` in
+ *  clear and an empty `encrypted_value`, whatever the keyring says). So every profile's sign-ins sit readable on disk for anything running as the user,
+ *  and the human must create one knowingly — independent of #389's keyring state, which governs `secrets.json`, not the cookie jar. */
+export const PROFILE_AT_REST_WARNING =
+  'Cookies and sign-ins of a profile are stored UNENCRYPTED on disk on this build (readable by anything running as you). Create profiles only for accounts you accept that for.';
+
+/** CDP methods an AGENT may not call while its workspace holds a profil navigateur (OPS ruling 2026-10-26, #400; names from #395's seam review).
+ *  The profile is SHARED — by other workspaces and across every site it holds a sign-in for — so these reach further than the agent's own page:
+ *  - CLEARS of the partition or of a whole origin/storage key (`Network.clearBrowserCookies`, `Storage.clearCookies`, `Storage.clearDataForOrigin`,
+ *    `Storage.clearDataForStorageKey` — whatever `storageTypes` says: "all" or "cookies" is a sign-out for every workspace on the profile);
+ *  - partition-wide READS of cookie values (`Network.getAllCookies`, `Storage.getCookies`): every origin's session token, not just this page's.
+ *  They name what they reach, so they are judged by name. */
+export const PROFILE_REFUSED_CDP_METHODS: ReadonlyMap<string, 'clear' | 'read'> = new Map([
+  ['Network.clearBrowserCookies', 'clear'],
+  ['Storage.clearCookies', 'clear'],
+  ['Storage.clearDataForOrigin', 'clear'],
+  ['Storage.clearDataForStorageKey', 'clear'],
+  ['Network.getAllCookies', 'read'],
+  ['Storage.getCookies', 'read'],
+]);
+
+export type AgentCdpDecision = { ok: true } | { ok: false; message: string };
+
+/** CDP methods that NAME a site (a url / a cookie domain): allowed for a profile workspace only on the PAGE's own HOST. The shared jar also holds the
+ *  OTHER sites the profile is signed in to, and `Network.getCookies` returns their HttpOnly session tokens, which the page's own script never sees.
+ *  What this does NOT stop (accepted): the agent can still navigate to another site of the profile and use that sign-in there (the point of a profile),
+ *  and in-page script / `network requests|har` Cookie headers show what the page itself sends. It bounds what CDP can LIFT from the jar, not what a page can do. */
+export const PROFILE_SITE_SCOPED_CDP_METHODS: ReadonlySet<string> = new Set([
+  'Network.getCookies', 'Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Storage.setCookies',
+]);
+
+/** Every other cookie-carrying CDP method — in ANY protocol domain (`Page.deleteCookie` is deprecated but still in the protocol) — is refused by default for a
+ *  profile workspace: an unknown one (a newer agent-browser routing `cookies set` through `Storage.setCookies`, `Network.setCookieControls`, …) must not silently
+ *  bypass the site scope. */
+const COOKIE_CDP_METHOD = /^\w+\.\w*[Cc]ookie/;
+
+const isHttp = (u: string): boolean => /^https?:\/\//i.test(u);
+
+/** The urls / domains a site-scoped call names (`null` = malformed params, or a frame list that was needed and unknown: refuse).
+ *  `Network.getCookies` WITHOUT `urls` (or with an empty list) returns the page URL's cookies AND every SUBFRAME's (CDP): its targets are then the
+ *  http(s) frame urls (`frameUrls`, from the live frame tree) — a page embedding another site's iframe is judged on that site too. */
+export function cdpSiteTargets(method: string, params: unknown, frameUrls?: readonly string[]): string[] | null {
+  const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+  const one = (v: unknown): string[] | null => (v === undefined ? [] : typeof v === 'string' ? [v] : null);
+  const both = (o: Record<string, unknown>): string[] | null => {
+    const u = one(o.url), d = one(o.domain);
+    return u && d ? [...u, ...d] : null;
+  };
+  switch (method) {
+    case 'Network.getCookies': {
+      if (p.urls === undefined || (Array.isArray(p.urls) && p.urls.length === 0)) return frameUrls ? frameUrls.filter(isHttp) : null;
+      return Array.isArray(p.urls) && p.urls.every((x) => typeof x === 'string') ? (p.urls as string[]) : null;
+    }
+    case 'Network.deleteCookies':
+    case 'Network.setCookie':
+      return both(p);
+    case 'Network.setCookies':
+    case 'Storage.setCookies': {
+      if (!Array.isArray(p.cookies)) return null;
+      const out: string[] = [];
+      for (const c of p.cookies) {
+        if (!c || typeof c !== 'object') return null;
+        const t = both(c as Record<string, unknown>);
+        if (!t) return null;
+        out.push(...t);
+      }
+      return out;
+    }
+    default:
+      return [];
+  }
+}
+
+/** Is `target` (a url, or a cookie domain with an optional leading dot) the page's OWN host? EXACT host only — no parent domain, no sibling, no
+ *  public suffix: a url on the parent host (`https://example.com/` from `app.example.com`) addresses that host's host-only HttpOnly cookies, which the
+ *  page can never see, and a PSL-free parent rule cannot tell `example.com` from `co.uk`. A page with no host (blank tab) owns no site. */
+export function isPageSite(pageUrl: string | undefined, target: string): boolean {
+  let pageHost: string;
+  try {
+    pageHost = new URL(pageUrl ?? '').hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!pageHost) return false;
+  let h: string;
+  try {
+    h = (target.includes('://') ? new URL(target).hostname : target).replace(/^\./, '').toLowerCase();
+  } catch {
+    return false;
+  }
+  return h !== '' && h === pageHost;
+}
+
+const REFUSAL_CLEAR =
+  'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +
+  'Delete the one cookie you mean (by name) or ask the human to delete or detach the profile.';
+const REFUSAL_READ =
+  'refused: this workspace\'s browser carries a profil navigateur — reading every site\'s cookies would expose sign-ins beyond this page. ' +
+  'Read the cookies of the page you are on instead.';
+const REFUSAL_SITE =
+  'refused: this workspace\'s browser carries a profil navigateur — cookies of a site other than the page you are on (an embedded frame included) are not yours to read or change from here. ' +
+  'Navigate to that site first, or ask the human.';
+const REFUSAL_UNKNOWN =
+  'refused: this workspace\'s browser carries a profil navigateur — this cookie command is not available here. Use `cookies get` / `cookies set` on the page you are on.';
+
+/** The decision for one CDP call an agent sent for a workspace whose panel runs on `profileId` (`panelProfileId`):
+ *  - refused: {@link PROFILE_REFUSED_CDP_METHODS}; the site-scoped methods that name a site other than the targeted tab's host (`pageUrl`) or cannot be judged
+ *    (malformed params, an unknown frame tree); any other cookie-carrying Network/Storage method;
+ *  - allowed otherwise. Ephemeral workspaces (profileId undefined) are never refused — their jar is their own.
+ *  `frameUrls` = the urls of the target tab's frame tree (main frame + subframes), read live by the host. Every refusal is a NON-EMPTY string. */
+export function decideAgentCdp(input: { method: string; params?: unknown; profileId: BrowserProfileId | undefined; pageUrl?: string; frameUrls?: readonly string[] }): AgentCdpDecision {
+  if (input.profileId === undefined) return { ok: true };
+  const kind = PROFILE_REFUSED_CDP_METHODS.get(input.method);
+  if (kind !== undefined) return { ok: false, message: kind === 'clear' ? REFUSAL_CLEAR : REFUSAL_READ };
+  if (PROFILE_SITE_SCOPED_CDP_METHODS.has(input.method)) {
+    const targets = cdpSiteTargets(input.method, input.params, input.frameUrls);
+    if (targets === null || targets.some((t) => !isPageSite(input.pageUrl, t))) return { ok: false, message: REFUSAL_SITE };
+    return { ok: true };
+  }
+  if (COOKIE_CDP_METHOD.test(input.method)) return { ok: false, message: REFUSAL_UNKNOWN };
+  return { ok: true };
 }

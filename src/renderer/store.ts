@@ -178,6 +178,9 @@ interface State {
    *  Same overlay contract as Insights: selecting a workspace closes it, and
    *  the two panes are mutually exclusive. */
   helpOpen: boolean;
+  /** Settings > Browser (#400, profils navigateur). Lives in the store, not in Sidebar state, so the panel's URL-bar
+   *  profile menu ("Manage profiles…") can open it too. */
+  browserSettingsOpen: boolean;
   activeId: string | null;
   /** Most-recently-opened-first stack of workspace ids the user has focused
    *  this session (deduped). When the active workspace disappears — archived,
@@ -231,6 +234,7 @@ interface State {
   setInsightsOpen: (open: boolean) => void;
   setPage: (p: 'workspaces' | 'resources' | 'bus') => void;
   setHelpOpen: (open: boolean) => void;
+  setBrowserSettingsOpen: (open: boolean) => void;
   /** Fleet Pause writes (#257): the shipped writers run as the human (D-pick Q1); the typed outcome comes back untouched and the store takes the reply's fresh overview. */
   pausePause: (wsId: string, mode: PauseMode) => Promise<PauseUiWriteResult>;
   pauseResume: (wsId: string) => Promise<PauseUiWriteResult>;
@@ -304,6 +308,7 @@ export const useStore = create<State>((set, get) => ({
   selfTuneRuns: [],
   insightsOpen: false,
   helpOpen: false,
+  browserSettingsOpen: false,
   activeId: null,
   openHistory: [],
   // Every workspace opens on the Agent view. A `terminal` value left in localStorage by the
@@ -386,6 +391,7 @@ export const useStore = create<State>((set, get) => ({
     set(open ? { insightsOpen: true, helpOpen: false, page: 'workspaces' } : { insightsOpen: false }),
   setHelpOpen: (open) =>
     set(open ? { helpOpen: true, insightsOpen: false, page: 'workspaces' } : { helpOpen: false }),
+  setBrowserSettingsOpen: (open) => set({ browserSettingsOpen: open }),
   // Any full-page surface (Resources, the read-only Bus pane) must close the
   // Insights/Help overlays, which render ABOVE the pane row — leaving one up
   // would cover the page the user just navigated to.
