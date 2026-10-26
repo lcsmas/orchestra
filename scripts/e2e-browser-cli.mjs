@@ -946,15 +946,23 @@ Object.assign(ARM_FNS, ARM_FNS5);
  *  every one of those requests, so "is a command on a child that was announced detached still unanswered?" is a COUNT, not a daemon stall that may or may not happen. */
 async function rawChildClient(wsUrl, urlRe) {
   const ws = new WS(wsUrl); await new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); });
-  let id = 0, attachedN = 0, childSent = 0, onTarget = null; const waiters = new Map(), childReqs = new Map(), detachedSids = new Set();
+  let id = 0, attachedN = 0, childSent = 0, settled = 0, seq = 0, onTarget = null; const waiters = new Map(), childReqs = new Map(), detachedAt = new Map();
   ws.on('message', (d) => {
     const m = JSON.parse(String(d));
+    seq++;
     if ((m.method === 'Target.targetCreated' || m.method === 'Target.targetInfoChanged') && m.params?.targetInfo?.type === 'page' && urlRe.test(m.params.targetInfo.url) && onTarget) { const f = onTarget; onTarget = null; f(m.params.targetInfo.targetId); return; }
-    if (m.id !== undefined) { if (waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); } else childReqs.delete(m.id); return; }
+    if (m.id !== undefined) {
+      if (waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); return; }
+      // a command SENT before the client saw its child's detach and answered with the session-gone error AFTER it = one the proxy settled while it was in flight (an unfixed build answers it never)
+      const r = childReqs.get(m.id);
+      if (r && m.error?.message === 'Session with given id not found.' && detachedAt.has(r.sid) && r.sentSeq < detachedAt.get(r.sid)) settled++;
+      childReqs.delete(m.id);
+      return;
+    }
     if (m.method === 'Target.attachedToTarget' && m.params?.targetInfo?.type === 'iframe') {
       attachedN++;
-      for (const method of ['Runtime.runIfWaitingForDebugger', 'Page.enable', 'Runtime.enable']) { const n = ++id; childReqs.set(n, { method, sid: m.params.sessionId }); childSent++; ws.send(JSON.stringify({ id: n, method, params: {}, sessionId: m.params.sessionId })); }
-    } else if (m.method === 'Target.detachedFromTarget') detachedSids.add(m.params?.sessionId);
+      for (const method of ['Runtime.runIfWaitingForDebugger', 'Page.enable', 'Runtime.enable']) { const n = ++id; childReqs.set(n, { method, sid: m.params.sessionId, sentSeq: seq }); childSent++; ws.send(JSON.stringify({ id: n, method, params: {}, sessionId: m.params.sessionId })); }
+    } else if (m.method === 'Target.detachedFromTarget' && m.params?.sessionId && !detachedAt.has(m.params.sessionId)) detachedAt.set(m.params.sessionId, seq);
   });
   const call = (method, params = {}, session) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { waiters.delete(n); res({ error: { message: `timeout ${method}` } }); }, 10000); waiters.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(session ? { sessionId: session } : {}) })); });
   // Started BEFORE the CLI creates the tab and waiting for it, so a daemon that stalls on an earlier run cannot make this client late: it attaches the moment the tab exists.
@@ -964,7 +972,7 @@ async function rawChildClient(wsUrl, urlRe) {
   const sid = tid ? (await call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
   if (!sid) { ws.close(); throw new Error('raw client: the churn tab never appeared'); }
   await call('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid);
-  return { stuck: () => [...childReqs.values()].filter((r) => detachedSids.has(r.sid)).length, attachedN: () => attachedN, detachedN: () => detachedSids.size, childSent: () => childSent, close: () => { try { ws.close(); } catch {} } };
+  return { stuck: () => [...childReqs.values()].filter((r) => detachedAt.has(r.sid)).length, settled: () => settled, attachedN: () => attachedN, detachedN: () => detachedAt.size, childSent: () => childSent, close: () => { try { ws.close(); } catch {} } };
 }
 
 const ARM_FNS6 = {
@@ -994,9 +1002,9 @@ const ARM_FNS6 = {
       const gt2 = await stamp(() => cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 }));
       let created = null, churn = null;
       try { const o = await oracle(ctx, `${FIX}/iframe-churn.html`, 5000); try { churn = await o.eval('({ ...window.__churn })'); created = churn.created; } finally { o.close(); } } catch {}
-      const rw = raw ? { stuck: raw.stuck(), attached: raw.attachedN(), detached: raw.detachedN(), sent: raw.childSent() } : { stuck: null, attached: 0, detached: 0, sent: 0 };
+      const rw = raw ? { stuck: raw.stuck(), settled: raw.settled(), attached: raw.attachedN(), detached: raw.detachedN(), sent: raw.childSent() } : { stuck: null, settled: 0, attached: 0, detached: 0, sent: 0 };
       raw?.close();
-      console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING rc=${gt.code} ${gt.ms} ms | AFTER rc=${gt2.code} ${gt2.ms} ms | iframes created=${created} | raw client: ${rw.attached} children announced, ${rw.detached} detached, ${rw.sent} child commands sent, ${rw.stuck} left unanswered on a detached child${rawErr ? ` (raw client error: ${rawErr})` : ''}`);
+      console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING rc=${gt.code} ${gt.ms} ms | AFTER rc=${gt2.code} ${gt2.ms} ms | iframes created=${created} | raw client: ${rw.attached} children announced, ${rw.detached} detached, ${rw.sent} child commands sent, ${rw.settled} settled in flight by the proxy, ${rw.stuck} left unanswered on a detached child${rawErr ? ` (raw client error: ${rawErr})` : ''}`);
       for (const [what, r] of [['tab new', nw], ['snapshot', sn], ['get title DURING', gt], ['get title AFTER', gt2]]) if (r.code !== 0) console.log(`    ${what} failed: ${show(r)}`);
       rows.push({ i, nw: nw.code, sn: sn.code, during: gt.code, after: gt2.code, created, raw: rw,
         duringInside: churn ? gt.t0 >= churn.t0 && gt.t0 < churn.t1 : null, afterOutside: churn ? gt2.t0 >= churn.t1 : null, attachedAfterMs: churn ? sn.t1 - churn.t0 : null });
@@ -1015,6 +1023,11 @@ const ARM_FNS6 = {
     clause(A, 'commands-overlapped-the-churn', fast.length >= 10 && fast.every((r) => r.duringInside), `${fast.filter((r) => r.duringInside).length}/${fast.length} fast-attach runs (snapshot back < 1.2 s after the page's window.__churn.t0; need >= 10) had the call start inside [t0, t1) — same host clock`);
     clause(A, 'ctl/get-title-AFTER-started-after-the-churn-ended', rows.every((r) => r.afterOutside !== false), `runs whose AFTER call started before the churn ended: ${rows.filter((r) => r.afterOutside === false).map((r) => r.i).join(',') || 'none'}`);
     const leaky = rows.filter((r) => r.raw.stuck !== 0);
+    // Non-vacuity of the clause below: it is green whenever nothing was in flight at a detach, so it is paired with a count of the commands that WERE (sent before the client saw the
+    // detach, answered `Session with given id not found.` after it). An ARM clause, red when the count is 0 in any run. It does NOT tell fixed from unfixed by itself: an unfixed build still
+    // answers the few commands that reach the proxy after it forgot the child (measured 32-111 per run vs ~700 fixed); the unanswered-count clause below is what reds an unfixed build.
+    const idle = rows.filter((r) => r.raw.settled < 1);
+    clause(A, 'commands-in-flight-at-a-detach-were-settled', idle.length === 0, `per run (settled in flight): ${rows.map((r) => r.raw.settled).join(' ')} — ${idle.length}/${N} runs with none (each run needs >= 1; they are the commands the proxy answered because the child died under them)`);
     clause(A, 'no-command-on-a-detached-child-is-left-unanswered', leaky.length === 0, `${leaky.length}/${N} runs left commands unanswered on a child the proxy had announced detached (deterministic oracle): ${leaky.map((r) => `${r.i}:${r.raw.stuck}`).join(' ') || 'none'}`);
     clause(A, 'tab-new-and-snapshot-answer-under-churn', attachedRuns === N, `${N - attachedRuns}/${N} runs had \`tab new\` or \`snapshot\` fail (30 s daemon timeout): ${rows.filter((r) => r.nw !== 0 || r.sn !== 0).map((r) => r.i).join(',') || 'none'}`);
     clause(A, 'get-title-answers-DURING-child-churn', hungDuring.length === 0, `${hungDuring.length}/${N} timed out (8 s): ${hungDuring.map((r) => r.i).join(',') || 'none'}`);
