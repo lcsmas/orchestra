@@ -231,6 +231,13 @@ ARM_ABSENT='sway pid=' arm R9s "SWAY_ENV carrying the real XDG_RUNTIME_DIR ABORT
 ARM_ABSENT='disk-guard OK|sway pid=' arm R9b "E2E_RIG_BASE under /run/user/<uid> ABORTS before anything is created there" 90 no \
   "is under /run/user/ — a rig dir there would sit inside the human's runtime dir" \
   RIG_HIDE_REAL_RUNTIME=1 E2E_RIG_BASE="${REAL_RT}/rig-base-selftest"
+# R10. A rig base that is a SYMLINK into the runtime dir (the link TEXT names it; it is only ever followed inside the hidden world's empty tmpfs):
+#      the canonicalised base check must abort before anything is created. Redundant with R3's resolved-path clause, so the mutation
+#      driver kills the pair together (r3b) and the base check alone (base-canon-removed).
+ln -s "${REAL_RT}" "${ST_BASE}/lnk"
+ARM_ABSENT='disk-guard OK|sway pid=' arm R10 "E2E_RIG_BASE through a SYMLINK into ${REAL_RT} ABORTS before anything is created" 90 no \
+  "is under /run/user/ — a rig dir there would sit inside the human's runtime dir" \
+  RIG_HIDE_REAL_RUNTIME=1 E2E_RIG_BASE="${ST_BASE}/lnk/rig-base-selftest"
 # R8. A private dir path too long for the sockets inside it.
 ARM_ABSENT='sway pid=' arm R8 "a private runtime dir path over 84 chars ABORTS" 90 no \
   "\(> 84\)" \
@@ -315,12 +322,12 @@ if [[ -n "${RIG_SELFTEST_ONLY:-}" ]]; then
   echo "RIG-SELFTEST: PARTIAL-FAIL arms=${ran} failed=${fails} only='${RIG_SELFTEST_ONLY}'"
   exit 1
 fi
-if (( ran < 30 )); then
-  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 30 — an arm did not run)"
+if (( ran < 31 )); then
+  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 31 — an arm did not run)"
   exit 1
 fi
 if (( fails == 0 )); then
-  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×20) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
+  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×21) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
   echo "RIG-SELFTEST: PASSED arms=${ran}"
   exit 0
 fi
