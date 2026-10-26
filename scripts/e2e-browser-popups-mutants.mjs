@@ -81,6 +81,8 @@ const bundleHash = () => crypto.createHash('md5').update(fs.readFileSync(path.jo
 const build = () => sh('nice', ['-n', '10', 'pnpm', 'exec', 'vite', 'build']);
 
 const rows = []; let bad = 0;
+const rowsPush = rows.push.bind(rows);
+rows.push = (...r) => { for (const x of r) console.log(`${x[0].padEnd(18)} ${x[1]}`); return rowsPush(...r); }; // progress is printed as it happens: an aborted sweep must not hide the rows it finished
 const base = build();
 if (base.status !== 0) { console.log('CLEAN BUILD FAILED\n' + base.stderr.slice(-1500)); process.exit(2); }
 const cleanHash = bundleHash();
@@ -106,7 +108,9 @@ for (const m of MUTANTS) {
   for (let attempt = 1; attempt <= 4; attempt++) {
     rig = sh(path.join(ROOT, 'scripts/e2e-browser-popups.sh'), [ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT]);
     const out = rig.stdout + rig.stderr;
-    if (rig.status === 90 && !out.includes('cannot prove which display is mine')) { console.log(`RIG PREFLIGHT ABORT (rc 90) on ${m.id} — not retried, tell OPS:\n${out.split('\n').filter((l) => l.includes('ABORT')).join('\n')}`); process.exit(90); }
+    // compositor start-up failures under load (my own sway died / never mapped): retried like the marker race; the private-runtime PREFLIGHT is neither of these
+    const startupRace = out.includes('cannot prove which display is mine') || out.includes('could not set the marker on my own output');
+    if (rig.status === 90 && !startupRace) { console.log(`RIG PREFLIGHT ABORT (rc 90) on ${m.id} — not retried, tell OPS:\n${out.split('\n').filter((l) => l.includes('ABORT')).join('\n')}`); process.exit(90); }
     if (rig.status !== 90) break;
     spawnSync('sleep', ['20']);
   }
@@ -127,6 +131,5 @@ restoreAll();
 const clean = sh('nice', ['-n', '10', 'pnpm', 'run', 'build:bundles']);
 rows.push([clean.status === 0 && bundleHash() === cleanHash ? 'CLEAN-REBUILD-OK' : 'CLEAN-REBUILD-DIFFERS', `dist-electron hash ${bundleHash()} (clean ${cleanHash})`]);
 if (clean.status !== 0 || bundleHash() !== cleanHash) bad++;
-for (const [s, t] of rows) console.log(`${s.padEnd(18)} ${t}`);
 console.log(`\n${rows.filter((r) => r[0] === 'KILLED').length}/${only.length || MUTANTS.length} killed; ${bad ? `${bad} PROBLEM(S)` : 'all clean'}`);
 process.exit(bad ? 1 : 0);
