@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Design fixture — hostile CSS</title>
+<style>
+/* #403 — a plain-DOM page (no framework: the picker's selector-path fallback) whose stylesheet attacks any
+   foreign overlay: hide it, collapse it, push it off-screen, inherit-hide it, layer it away. The design-mode
+   overlay must survive all of it. The page's own content lives in <main>, which the attack spares. */
+body { font: 16px/1.4 system-ui, sans-serif; margin: 24px; background: #fff7e0; color: #1a1f26 }
+main { display: block; max-width: 560px }
+h1 { margin: 0 0 16px }
+#target { font: inherit; padding: 12px 24px; border: 1px solid #556; border-radius: 6px; background: #fff }
+#note { margin: 16px 0 0 }
+
+div, [id*="orchestra"], [id^="__"], [popover], ::backdrop, body > :not(main), html > :not(head):not(body):not(aside) {
+  display: none !important; visibility: hidden !important; opacity: 0 !important;
+  width: 0 !important; height: 0 !important; max-width: 0 !important; max-height: 0 !important;
+  position: static !important; transform: scale(0) !important; clip-path: inset(100%) !important;
+  z-index: -1 !important; filter: blur(99px) !important; contain: strict !important; content-visibility: hidden !important;
+  overflow: hidden !important; border: 0 !important; background: none !important; left: -9999px !important; top: -9999px !important;
+}
+@layer attack { div, [id*="orchestra"] { display: none !important; } }
+html { visibility: hidden !important; }            /* inherited by every child of <html> … */
+main, main * { visibility: visible !important; }   /* … except the page's own content */
+* { pointer-events: auto !important; }             /* a foreign overlay must not become hit-testable */
+</style></head>
+<body>
+<main>
+  <h1 id="title">Hostile CSS fixture</h1>
+  <button id="target">Pick me</button>
+  <p id="note">The stylesheet above tries to hide, collapse, relocate and inherit-hide anything that is not page content.</p>
+</main>
+<script>
+// A late, opaque, max-z-index, click-through cover appended AFTER the picker armed (cookie banner / modal):
+// without the top layer it would paint above the highlight (same z-index, later in tree order).
+window.addLateBanner = function () {
+  var b = document.createElement('aside');
+  b.id = 'late-banner';
+  b.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483647;background:rgb(255,200,0);pointer-events:none !important;visibility:visible';
+  document.documentElement.appendChild(b);
+  return true;
+};
+</script>
+</body></html>

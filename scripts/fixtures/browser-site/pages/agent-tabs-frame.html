@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Frame fixture</title>
+<style>html,body{margin:0;height:100%;background:#7f7f7f}iframe{width:100%;height:100%;border:0}</style></head>
+<body><script>
+  // Two auto-attachable CHILD sessions of this tab (#397 review F1): a dedicated worker (always its own target) and a CROSS-SITE iframe
+  // (localhost vs 127.0.0.1: out-of-process when site isolation is on). `Target.setAutoAttach{flatten}` on the tab session attaches both.
+  window.__worker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => {}, 1000)'], { type: 'text/javascript' })));
+  const f = document.createElement('iframe'); f.src = 'http://localhost:' + location.port + '/tabs-c.html'; document.body.append(f);
+</script></body></html>

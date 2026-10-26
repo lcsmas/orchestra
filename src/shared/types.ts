@@ -2301,6 +2301,8 @@ export interface BrowserPanelState {
   /** The profil navigateur ALL of this panel's tabs use (#400); absent = navigation éphémère. What the panel
    *  really runs on, not just what the workspace records. */
   profileId?: BrowserProfileId;
+  /** The last tab swap an AGENT caused on screen (#397): the human is told, the strip offers « back ». Absent once the human (or a page) changes the active tab. */
+  agentSwitch?: { from: BrowserTabId; to: BrowserTabId; at: number };
 }
 
 /** A profil navigateur's id (#400, ADR 0010): `bp-` + 12 hex, minted by main when the human creates the profile and

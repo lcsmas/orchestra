@@ -163,6 +163,9 @@ const MUTANTS = [
   [PANEL, 'a genuine removal does not replace an older foreign change (the rotation wins over a later logout)', "if (genuineRemoval) foreign.set(key, { seq, removed: true, cookie });", "if (genuineRemoval && !foreign.has(key)) foreign.set(key, { seq, removed: true, cookie });"],
   [PROMO, 'restore moves a persistent cookie to the 30-day expiry', "return detailsFor(c, c.expirationDate);", "return detailsFor(c, Math.floor(nowSec) + PROMOTED_COOKIE_TTL_S);"],
   [PROMO, 'restore resurrects an already-expired cookie', "if (c.expirationDate === undefined || c.expirationDate <= nowSec) return null;", "if (c.expirationDate === undefined) return null;"],
+  // --- union with #397: a rebuild invalidates what #397 pins by tab id ---
+  [PANEL, 'a rebuild keeps the last read_page outline pinned to the tab id (refTabId)', "    panel.refTabId = undefined;\n", ''],
+  [PANEL, 'a rebuild keeps the « the agent switched tabs » notice (agentSwitch)', "    delete panel.agentSwitch;\n", ''],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', "          return refuse('storage', `Could not clear", "          void refuse('storage', `Could not clear"],

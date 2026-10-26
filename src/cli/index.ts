@@ -78,6 +78,17 @@ import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
 import { browserChildEnv, mapBrowserFailure, prepareBrowserCommand, redactEndpoint } from '../shared/browser-cli.ts';
+import {
+  annotateTabListJson,
+  annotateTabListText,
+  decideCloseThroughCli,
+  parseAbTabList,
+  annotateSwitchOutput,
+  parseTabInvocation,
+  resolveSwitchTarget,
+  tabCloseRefusal,
+  type AgentTabView,
+} from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
@@ -1937,15 +1948,40 @@ async function main(argv: string[]): Promise<void> {
       if (!res.ok) fail(`orchestra browser: ${res.error ?? 'this Orchestra app does not serve the browser CLI (an older build answers unknown routes with an empty reply) — update the app'}`);
       const binary = res.binary as string;
       const env = browserChildEnv(process.env, res.env as Record<string, string>);
-      const run = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawnChild(binary, plan.args, { env, stdio: ['inherit', 'pipe', 'pipe'] }); // the proxy URL rides env.AGENT_BROWSER_CDP (from the host), never argv
-        let stdout = '';
-        let stderr = '';
-        child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c));
-        child.stderr.setEncoding('utf8').on('data', (c: string) => (stderr += c));
-        child.once('error', reject);
-        child.once('close', (code, signal) => resolve({ code: code ?? (signal ? 1 : 0), stdout, stderr }));
-      });
+      const runAb = (argv: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+        new Promise((resolve, reject) => {
+          const child = spawnChild(binary, argv, { env, stdio: ['inherit', 'pipe', 'pipe'] }); // the proxy URL rides env.AGENT_BROWSER_CDP (from the host), never argv
+          let stdout = '';
+          let stderr = '';
+          child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c));
+          child.stderr.setEncoding('utf8').on('data', (c: string) => (stderr += c));
+          child.once('error', reject);
+          child.once('close', (code, signal) => resolve({ code: code ?? (signal ? 1 : 0), stdout, stderr }));
+        });
+      // #397: `tab list` says who opened each tab; `tab close` of a tab the user opened is refused HERE — agent-browser prints
+      // "Tab closed" and drops the tab from its own list whatever the proxy answers (measured, 0.39.2). Both fail OPEN to the
+      // native command if the host or agent-browser cannot say (the proxy refuses a forbidden close regardless).
+      const tab = parseTabInvocation(plan.args);
+      let run: { code: number; stdout: string; stderr: string };
+      if (tab && (tab.op === 'list' || tab.op === 'close' || tab.op === 'switch')) {
+        const abList = await runAb(['--json', 'tab', 'list']);
+        const abTabs = abList.code === 0 ? parseAbTabList(abList.stdout) : null;
+        const hostRes = abTabs ? await request('/browser', { id, key: process.env.ORCHESTRA_SESSION_KEY ?? '', op: 'tabs' }, { timeoutMs: 15_000 }) : null;
+        const hostTabs: AgentTabView[] = hostRes?.ok && Array.isArray(hostRes.tabs) ? (hostRes.tabs as AgentTabView[]) : [];
+        const verdict = tab.op === 'close' && abTabs && hostTabs.length > 0 ? decideCloseThroughCli(abTabs, tab.refs, hostTabs) : { run: true as const };
+        if (!verdict.run) {
+          run = tabCloseRefusal(verdict.message, tab.json);
+        } else {
+          run = await runAb(plan.args);
+          if (tab.op === 'list' && run.code === 0 && abTabs && hostTabs.length > 0) {
+            run = { ...run, stdout: tab.json ? annotateTabListJson(run.stdout, hostTabs) : annotateTabListText(run.stdout, abTabs, hostTabs) };
+          } else if (tab.op === 'switch' && run.code === 0 && abTabs && hostTabs.length > 0) {
+            run = { ...run, stdout: annotateSwitchOutput(run.stdout, resolveSwitchTarget(abTabs, tab.refs), hostTabs, tab.json) };
+          }
+        }
+      } else {
+        run = await runAb(plan.args);
+      }
       const wsUrl = res.wsUrl as string;
       const out = mapBrowserFailure({ ...run, stdout: redactEndpoint(run.stdout, wsUrl), stderr: redactEndpoint(run.stderr, wsUrl) }, plan.refs, plan.args.includes('--json'));
       if (out.stdout) process.stdout.write(out.stdout);

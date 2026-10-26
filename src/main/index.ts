@@ -172,6 +172,8 @@ import { createElectronPlatform } from './platform/electron';
 import { flushBrowserTabs, flushProfileStorage, initBrowserPanels } from './browser-panel';
 import { initBrowserProfiles } from './browser-profiles-host';
 import { createBrowserTabsStore } from './browser-tabs-store';
+import { selectLinuxPasswordStore } from './linux-keyring';
+import { reencryptInBackground, setKeyringSelectionReason } from './secrets';
 import { disposeAllEndpoints, initBrowserCliHost } from './browser-cdp-host';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
@@ -355,6 +357,27 @@ if (process.platform === 'linux') {
 
 // Rig instances chimed on the user's speakers despite their Sound=Silent.
 if (shouldMuteAudio(process.env)) app.commandLine.appendSwitch('mute-audio');
+
+// Linux keyring (#389): on a desktop Chromium does not recognise (sway…) safeStorage reports itself
+// unavailable and every secret lands in plaintext, even with a Secret Service on the bus. Ask for
+// `gnome-libsecret` when an UNLOCKED collection answers — BEFORE `ready`, when Chromium fixes its
+// backend. Never in CLI mode (the CLI touches no secrets). The decision is logged once the logger
+// exists (the ready handler below); the probe is bounded (shared/password-store.ts, linux-keyring.ts).
+const keyringDecision = ORCHESTRA_CLI_MODE
+  ? null
+  : selectLinuxPasswordStore({
+      platform: process.platform,
+      env: process.env,
+      argv: process.argv,
+      hasSwitch: (name) => app.commandLine.hasSwitch(name),
+      appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+      exportBusAddress: (address) => {
+        process.env.DBUS_SESSION_BUS_ADDRESS = address;
+      },
+      extraScratchDirs: [app.getPath('userData')], // the probe's scratch dir if TMPDIR and $XDG_RUNTIME_DIR are unusable
+    });
+
+setKeyringSelectionReason(keyringDecision?.reason ?? null);
 
 // Expose Chrome DevTools Protocol in dev so chrome-devtools-mcp can attach.
 // Port is overridable via ORCHESTRA_DEBUG_PORT so a second instance can be
@@ -1040,6 +1063,13 @@ if (!ORCHESTRA_CLI_MODE) {
 
   app.whenReady().then(async () => {
     initLogger();
+    if (keyringDecision) {
+      log.info(
+        `[secrets] password-store: ${keyringDecision.store ?? 'Chromium default'} — ${keyringDecision.reason}` +
+          (keyringDecision.probeMs != null ? ` (probe ${keyringDecision.probeMs} ms)` : '') +
+          ` [${keyringDecision.facts}]`,
+      );
+    }
     try {
       // Dependency probing spawns subshells; don't make the user wait at a
       // blank screen for it. Run it concurrently with window creation — the
@@ -1060,6 +1090,11 @@ if (!ORCHESTRA_CLI_MODE) {
       // must find the runtime in place.
       installKeeper();
       await createMainWindow();
+      // Seal plaintext secrets once the platform can encrypt (#389). At startup ONLY when this process just selected
+      // libsecret after an UNLOCKED probe: isEncryptionAvailable() fetches the key synchronously and would freeze the main
+      // thread on a locked keyring (a recognised desktop's own choice is never probed). Every other case is re-attempted when
+      // Settings opens (api-handlers getSecretsState) — after the window, so a slow keyring never delays it.
+      if (keyringDecision?.store === 'gnome-libsecret') reencryptInBackground('startup');
       // Reap keepers whose workspace no longer exists (deleted while the app
       // was closed) and restore the `running` dot for keeper turns still in
       // flight — everything else stays lazily attachable; also prunes

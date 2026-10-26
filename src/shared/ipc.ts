@@ -17,6 +17,7 @@ import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
 import type { InboxActionOutcome, InboxBlock } from './inbox-blocks';
 import type { BusDivergenceReport } from './bus-mirror';
+import type { SecretsState } from './secrets-state';
 import type {
   Account,
   AccountUsageStatus,
@@ -209,6 +210,10 @@ export interface OrchestraAPI {
    *  back to a 0600 file — the settings UI must say so rather than promise
    *  encryption it isn't getting. */
   isSecretStorageEncrypted: () => Promise<boolean>;
+  /** Encrypted / not-encrypted state of the secrets file (#389): whether the platform can encrypt now,
+   *  the selected backend, and how many entries are plaintext vs ciphertext. Drives the "stored
+   *  unencrypted on this machine" warning in Settings (`secretsNotice`) and the profils-navigateur warning. */
+  getSecretsState: () => Promise<SecretsState>;
   /** Ids of the accounts that have an Anthropic API key stored in the keystore.
    *  The KEY itself never crosses this boundary — the settings UI only needs to
    *  know whether one is set (to show "key saved" and offer to replace it). */

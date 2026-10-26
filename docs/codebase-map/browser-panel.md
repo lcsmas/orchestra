@@ -65,6 +65,9 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   once from `index.ts` with the live main-window accessor. Reuses
   `login-browser.ts`'s session-partition + UA-normalization + context-menu
   pattern.
+- **`src/main/browser-popups.ts`** (#396) — user-gesture tracker (`trackUserGesture` / `consumeUserGesture`) + the per-workspace registry of popup child windows
+  (`registerPopupWindow` / `livePopupWindows` / `closePopupWindows` / `closePopupsOpenedBy` / `setPopupWindowsVisible`); the routing flow itself is `routePopup` in `browser-panel.ts` (see Popups).
+- **`scripts/spike-hidden-view.sh`** (+ `.mjs`, `-main.cjs`) — the #402 hidden-view measurement rig (no app code; see *Hidden-view spike*).
 - **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
   an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
   a **cached dynamic `import()`** (the SDK is pure-ESM; a static value import
@@ -159,8 +162,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   `designModePoll`): the tab is resolved once, so an `activateTab` between two
   CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
-  size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
-  (popup routing is #396).
+  size); popups are routed by `routePopup` (see Popups, #396).
 - **An explicit `tabId` never builds a panel**: `evaluate`/`designModeArm` (via `liveTabFor`)/…
   and `navigate` resolve it first and throw "not found" — a stale id after
   `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
@@ -198,12 +200,12 @@ attachment (image + fenced text block).
 BrowserPanel crosshair toggle          src/renderer/components/BrowserPanel.tsx
    │  browserDesignArm(wsId)
    ▼
-designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts
+designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts (script: design-mode-script.ts)
    │  in-page overlay: mousemove highlight + capturing click handler
-   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box}
+   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box, component}
 renderer polls browserDesignPoll (150ms while armed)
    │  main: reads+clears the global, Page.captureScreenshot with a padded clip
-   ▼  shapePick() — trim HTML, subset styles, build selector path
+   ▼  shapePick() — trim HTML, subset styles, build selector path, shapeComponent() (#403)
 store.addDesignPick(wsId, pick)                        src/renderer/store.ts
    ▼  queued per workspace; survives an unmounted composer
 Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/components/StructuredView.tsx
@@ -219,8 +221,17 @@ Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/component
   `nth-of-type`, drops hashed css-modules/styled-components/emotion classes and
   Tailwind arbitrary values, keeps the TAIL when too deep), `formatPickBlock`
   and `appendPickToDraft`.
+- **`src/main/design-mode-script.ts`** — the injected page script
+  (`DESIGN_MODE_SCRIPT` + `DESIGN_OVERLAY_ID` / `DESIGN_PICK_GLOBAL`), split out of
+  `browser-panel.ts` so the page script and the transport evolve apart. Its vm
+  unit test (`design-mode-script.test.ts`) runs the exact injected text against a
+  fake DOM and mutates each clause in place.
+- **`src/shared/design-source.ts`** — React source for a pick (#403), unit-tested
+  (`design-source.test.ts`): `reactSourceInPage` (the in-page fiber walk),
+  `looksSecret` / `normalizeSourcePath` / `shapeComponent` (validation + SECRET
+  FILTER), `formatComponentLine`.
 - **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
-  `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
+  `designModePoll`, injecting `DESIGN_MODE_SCRIPT` (from `design-mode-script.ts`). Goes through the
   SAME `cdp()` / `evaluate()` helpers the agent tools use, which run on a lease
   of the CDP proxy's debugger attach (#398) — design mode holds **no debugger of
   its own** (attaching twice to one target throws). While armed it keeps ONE
@@ -243,11 +254,102 @@ DevTools frontend attached never composites. A picker the user cannot see is not
 the feature, so the highlight + hit-testing live in the page instead. That also
 keeps the shared debugger free of any long-lived event subscription.
 
+### React component `file:line` (#403)
+
+A pick on a **React 17/18 dev build** carries `component: {name, file, line,
+column?}` and the composer block gets a `- component: \`Counter\` — \`/abs/Counter.jsx:5\``
+line, so the agent knows which file to edit.
+
+- The page script calls `reactSourceInPage(el)` (stringified into the script via
+  `Function.prototype.toString`, so it is plain ES5 with **no free identifier** —
+  the unit test runs the stringified text in an empty `vm` context). It finds the
+  `__reactFiber$…` key on the element (or the nearest DOM ancestor that has one),
+  reads `fiber._debugSource` (the JSX element's own `{fileName, lineNumber,
+  columnNumber}`), else walks `_debugOwner` for the first owner that has one.
+  The NAME always pairs with the source it came from: the immediate owner for
+  its own JSX site (`via: 'self'`), the owner that supplied the source for an
+  inherited one (`via: 'owner'`, printed as "rendered at" — a use-site, not the
+  element's line); an unnamed owner is `Anonymous`, never a far `.return`
+  ancestor. `displayName`/`name`, forwardRef/memo unwrapped.
+- **The DOM-cached fiber goes STALE across re-renders (HMR), and `.return` cannot say which alternate is current.**
+  `__reactFiber$…` is the first-mount fiber; React 18 writes a re-render's new
+  `_debugSource` / `_debugOwner` on whichever alternate is the work-in-progress one,
+  so every other re-render the cached fiber reports the OLD line (measured in a
+  real page: `[10,10,14,14]` for a line moved +2 per render). The first fix — "the
+  alternate whose `.return` chain ends at `root.current`" — is UNSOUND once a
+  component BAILS OUT (`React.memo`, `{children}`, `useMemo` JSX, `PureComponent`):
+  React does not rewrite `.return` on a bailed-out subtree, so the stale fiber's
+  chain can end at the new `root.current` too (measured: 10/18/18 for truth
+  12/20/20). The walker therefore ports React's own
+  `findCurrentFiberUsingSlowPath`: at each level it scans `parent.child → .sibling`
+  to see which alternate the parent actually LISTS (child pointers are reliable,
+  `.return` is not), and decides at the HostRoot by `stateNode.current === a`;
+  any inconsistency (detached tree, cycle, throwing getter, >5000 levels) degrades
+  to the cached fiber. Applied to the host fiber and to every owner consulted.
+  Pinned by `design-source-react18.test.ts` (REAL React 18.2 from the fixture page
+  over a fake DOM: edits-only and edits+bailout plans, two must-FAIL walker
+  mutants) and by rig arms `react18/rerender` + `react18/memo-bailout`
+  (mutants `stale-fiber`, `return-chain-rule`). Not covered: Suspense/Offscreen
+  hidden trees, keyed reorders under bailout, React 17 alternates.
+- **React 19 (`_debugStack`, no `_debugSource`), Vue, production builds → `null`:**
+  the pick has no `component` key and keeps the selector path, no error. React 19
+  owner-stack / source-map decoding is out of scope (#388).
+- **Secret filter** (`looksSecret`): in main, on what the page returned — a path
+  or name that looks like a token / password / key (known token shapes, JWT, PEM,
+  `userinfo:pw@`, `key=value`, ≥32-char mixed alnum runs — except kebab/snake
+  SLUGS of ≥4 short words, so an Orchestra worktree dir like
+  `orchestra-impl-…-403-a6a5fb9d` is not a "token") drops the WHOLE component.
+  Only `component.file`/`name` are filtered: `url`, `title` and `html` are the
+  pre-existing, unfiltered half of a pick. Both are PAGE-AUTHORED text (a page can
+  forge a fiber), so beyond the secret check: any control/format character
+  (bidi override, zero-width, Unicode tag chars, variation selectors, line
+  separators, backtick) or a run of 3+ combining marks rejects the path, the
+  stripped path must match a letters/digits/path-punctuation allowlist, and a name
+  must be an identifier-ish token (no spaces, so no sentence rides in a name; else
+  `Anonymous`). **Accepted gap:** a plain-text sentence of ≤400 allowed
+  characters, or an arbitrary absolute / `..` path (`/home/x/.ssh/id_ed25519`),
+  still passes as `file` — it is page-authored text on a line the agent reads as
+  "the file to edit", the same class as the already-unfiltered `url` / `title` /
+  `html` of a pick. The raw string is checked BEFORE the `?query` is stripped (a
+  `?token=…` lives only there). Names like `password.tsx` / `auth/` are fine.
+- `_debugSource.fileName` is whatever the JSX transform recorded (usually an
+  absolute fs path); `normalizeSourcePath` strips `webpack-internal:///`,
+  `file://`, `http://host/`, Next's `(app-pages-browser)/` layer and `?query#hash`.
+- The owner fallback returns the OWNER's own `_debugSource` — where that owner
+  was *used*, not defined. It is only reached when the host element itself has
+  no JSX source (an element built with plain `createElement`).
+
+### Page-CSS-proof overlay (#403)
+
+The highlight box + label live in a **closed shadow root** inside ONE host
+`<div id="__orchestra_design_overlay__">` appended to `<html>` (not `<body>`, so
+`body > *` rules and a transformed `body` do not touch it):
+
+- host styles are set inline with `!important` (`setProperty(k, v, 'important')`)
+  — an inline `!important` beats any stylesheet rule, layered or not — starting
+  with `all: initial` so inherited `visibility`/`opacity`/`transform` from the page
+  are wiped; then `display:block; position:fixed; inset:0; z-index:2147483647;
+  pointer-events:none`;
+- `popover="manual"` + `showPopover()` puts the host in the **top layer**, above
+  every z-index, stacking context and transformed ancestor — a later full-screen
+  max-z-index cover (cookie banner) cannot paint over the highlight;
+- nothing in the shadow tree is reachable from the page (`host.shadowRoot` is
+  `null`), so no selector can restyle the box.
+
+Rig: `scripts/e2e-browser-design-source.sh <built app>` (arms `react18`,
+`react19`, `hostile`, `ui`; `--mutant <name>` patches ONE clause of a COPY of the
+built chunk — 14 mutants, each must redden its named clause while every `ctl/`
+stays green). Fixtures: `scripts/fixtures/browser-site/pages/design-{react18,
+react19,hostile}.html` (React 18.2 UMD dev inlined verbatim; React 19 bundled from
+the repo's own copy; both compiled with esbuild's real automatic dev JSX
+transform — regenerate with `scripts/gen-browser-design-fixtures.mjs`).
+
 ### Design-mode gotchas
 
-- The overlay sets `pointer-events: none` on its own chrome, and picking starts
-  from `document.elementFromPoint` (which skips `pointer-events:none` nodes) —
-  so **design mode cannot capture its own highlight box**.
+- The overlay host has `pointer-events: none` and `hit()` in the page script
+  skips the host even when a hit-test returns it (`document.elementsFromPoint`) —
+  so **design mode cannot capture its own highlight box**. The two are
+  redundant; the rig's `overlay-pickable` mutant removes both.
 - **A navigation destroys the injected overlay** (new document), silently
   disarming the picker. `BrowserPanel` re-arms on every `state.url` change while
   armed.
@@ -273,7 +375,10 @@ keeps the shared debugger free of any long-lived event subscription.
   `subsetStyles surfaces the SHORTHAND box/border properties`.
 - **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
   backtick in a comment there silently terminates the string and breaks the
-  build (`TS1005`/esbuild parse error) far from the edit.
+  build (`TS1005`/esbuild parse error) far from the edit. It also embeds
+  `reactSourceInPage.toString()`: the BUILT chunk is minified, so any rig mutant
+  that targets the walker or `looksSecret` must match the minified text with a
+  regex, never the source spelling.
 - **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no
@@ -314,8 +419,7 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 
 - **Pure policy — `src/shared/browser-tab-policy.ts`** (unit-tested, `browser-tab-policy.test.ts`): `BROWSER_TAB_CAP`, `decideTabOpen`
   (the cap; refusal carries a user-facing message), `decideTabClose` (**the human closes any tab, an agent only `openedBy:'agent'`**;
-  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the #396 seam:
-  `PopupRouteDecision = {route:'same-view'|'external'}` today = the pre-tabs behaviour; #396 adds arms). #397 consumes the ownership rule.
+  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the popup routing, see Popups #396). #397 consumes the ownership rule.
 - **Main entry points — `tryOpenTab` / `tryCloseTab` / `tryActivateTab`** in `src/main/browser-panel.ts`: ask the policy FIRST, so a refused open
   allocates no `WebContentsView` (no leak) and a refused close destroys nothing. They RESOLVE `BrowserTabResult` (`{ok:true,state,tabId?}` |
   `{ok:false,reason:'cap'|'not-owner'|'unknown-tab',message,state}`) — never throw across IPC. Anything acting for the human or the agent
@@ -395,7 +499,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   SAME id (seat 1; the one-tab rig arm could not see it, the arm now holds two). An attach in flight across the swap gets `Target closed.` Rig arm `rebuild`: 10 attach/detach
   + 5 delete rebuilds in one boot, `get url` must answer the fixture page, and the daemon must never `Target.createTarget` nor meet a dead session. Lease holders
   (design mode, legacy tools) are not migrated: a lease taken across the swap errors on its next `send` (accepted gap).
-  **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
+  **#395/#397 note:** an agent's target / session held across an attach or delete is on a REPLACED page — the proxy announces it (`targetCreated` new id → `targetDestroyed` old) and the daemon re-attaches; #397's `refTabId` / `agentSwitch` (pinned by tab id) are cleared by the rebuild.
 - **Back to navigation éphémère forgets the old ephemeral session (review F9).** A workspace's ephemeral partition is an in-memory session that lives as long as the process,
   so detaching (or deleting its profile) would hand back sign-ins made BEFORE the attach. `assign(ws, null)` from a profile — and every carrier of a deleted profile — first
   clears that session (`clearEphemeral`: storage + cache + auth cache); attach / switch / an already-ephemeral detach never do (that session may be on screen).
@@ -448,9 +552,64 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   nothing reconciles `Partitions/orchestra-profile-*` against the profile list at boot (a lost `store.json` leaves unlisted sign-ins with no UI to delete them).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
-  `browser-profiles-wiring.test.ts`; 149 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  `browser-profiles-wiring.test.ts`; 151 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
   (arms `settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp` — `logout` sweeps session-cookie login→logout cycles at 225–275 ms in a profile workspace and in an ephemeral control and requires 0 resurrected; `cdp` drives the REAL `orchestra browser` CLI (host-resolved agent identity, pinned agent-browser) against a profile SHARED by two workspaces and reads the CDP methods it emitted from the proxy trace: `cookies get` → `Network.getCookies` (allowed), `cookies clear` → `Network.clearBrowserCookies` (refused, never reached the debugger), `cookies set --url <other site>` → `Network.setCookies` (refused) —, run ONLY through `scripts/e2e-contained-rig.sh` — the private runtime world of incident Q2 — with the driver taking `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs`, `--password-store=basic` handed to the app and its `ctl/scratch-env` clause asserting what the DRIVER handed it (`/proc/<pid>/environ` goes blind once a D-Bus address is set); oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
   on disk, compositor pixels, store.json) + 26 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`, `pages/profiles-logout.html`.
+
+## Popups (#396) — `_blank` → tab, OAuth → native child window, budget
+
+A page-opened window never loads into the opener's view any more (that broke every `window.opener` OAuth flow). `setWindowOpenHandler` is installed
+per contents by `watchPopups` (tab views AND popup child windows) and answers through `routePopup` in `src/main/browser-panel.ts`.
+
+- **Pure policy — `decidePopup(req, ctx)` in `src/shared/browser-tab-policy.ts`** (`browser-tab-policy.test.ts`): `PopupRouteDecision` =
+  `new-tab{activate,pageInitiated}` | `child-window{pageInitiated}` | `external` | `refuse{reason: cap|budget|rate|unsafe-url|unsafe-features|no-gesture-external|name-in-use}`.
+  Rules, in order: **OS hand-off is an ALLOWLIST** — only `mailto:`/`tel:` (on a click) ever reach `shell.openExternal`; every other scheme (`javascript:`, `data:`, `file:`, `ssh:`, `smb:`, `zoommtg:`, internal pages…) is refused, because an agent's CDP click counts as a click
+  (review F3); a `webContents` key in the features string is refused (`featuresSmuggleWebContents`: Electron spreads the page's value over the real guest handle); **cap** = tabs + live popup windows ≥ `BROWSER_TAB_CAP` (8, shared, refuses even a click; the human's `+` / `tryOpenTab` counts the windows too);
+  a named popup whose name a window opened by ANOTHER OPENER holds is refused (`name-in-use`, F5); **budget** = a no-gesture popup while `POPUP_BUDGET` (3) page-initiated ones (tabs + windows) are still open; **rate** = a no-gesture popup once `POPUP_RATE_MAX` (6) page-initiated ones were OPENED
+  in the last `POPUP_RATE_WINDOW_MS` (60 s), closed or not — the budget alone is concurrent, so open/close churn was unbounded (F4). Route: a popup that needs
+  `window.opener` — **named** (`frameName` not ''/`_blank`/`_self`/`_parent`/`_top`) or **sized** (`disposition:'new-window'` WITH a features string — a features-less `new-window` is a shift-clicked link: a tab) and without an explicit
+  `noopener` feature — is a child window; everything else is a tab, activated only for a clicked foreground link (not `background-tab`, not page-initiated).
+  Electron reports `features:'noopener'` only for `window.open(…,'noopener')`, never for `rel=noopener` anchors (measured), so that is the only opt-out.
+- **User gesture — `src/main/browser-popups.ts`:** Electron's handler does not say whether a gesture started the popup, so `trackUserGesture`
+  records the last activating `input-event` (`mouseDown`/`keyDown`/`rawKeyDown`/`touchEnd`, also CDP-dispatched input = how the agent clicks) per
+  contents and `consumeUserGesture` reads it within `USER_GESTURE_WINDOW_MS` (5 s, Chromium's activation window) and **consumes it: one input opens
+  one popup** (a click that fires 20 `window.open` = 1 shown popup + 19 on the budget); **a main-frame `did-navigate` clears it** (a click on page A is no gesture for the page it navigated to — it would let that page open an OS handler or skip the budget). `evaluate(…, userGesture:true)` fires no input event: counted as page-initiated.
+  The gesture is per webContents, not per frame (accepted gap: a click anywhere lets a cross-origin iframe use it for 5 s).
+- **New tab:** `createTab(wsId,{url,openedBy,activate})` with `openedBy` **inherited from the opener tab** (an agent tab's popups are agent-closable, the human's are not);
+  the handler denies Electron's own window. Page-opened tabs are tracked in `pageOpenedTabs` (a WeakSet — closing the tab gives its budget back); the per-minute opens in `notePageInitiatedOpen` / `recentPageInitiatedOpens`.
+- **Child window — built by OUR `createWindow` factory, never from the page's features (review F1).** Electron builds a popup's options as `{ show:true, width:800, height:600, ...parseFeatures(<the PAGE's features>), ...ours }` — so
+  `alwaysOnTop,frame=no,transparent,fullscreen,kiosk,modal,closable=no,focusable=no,width=4000` would give a hostile page a screen-covering, frameless, un-closable window (measured on 33.4.11's shipped `guest-window-manager`). `routePopup`
+  therefore answers `{action:'allow', createWindow, overrideBrowserWindowOptions:{webPreferences:{sandbox,contextIsolation,nodeIntegration:false}}}` (the override is what Electron derives the GUEST's own preferences from) and
+  `createPopupWindow` (the factory) builds the window from **`buildChildWindowOptions`** (`src/shared/browser-popup-window.ts`, pure): an ALLOWLIST of `webContents` (the real guest, only when it is an object), `parent` = the app window, `show:false`, `resizable:false`
+  (**a resizable child window is TILED beside the app by sway — halving it; a fixed-size one floats**, measured), `autoHideMenuBar`, the pinned `webPreferences`, and a `width`/`height` clamped to [200×150, 90% of the app window] (junk or zero sizes fall back to 480×520; Electron itself merges 800×600 first, so a feature-less named popup is 800×600 clamped to 90%). No position, no frame / transparency / z-order / fullscreen / kiosk / modal /
+  closable / focusable key — they take their safe defaults by being absent. Electron REQUIRES the factory to return the guest it handed over (it throws "Invalid webContents" otherwise); a guest we may not give a window (panel gone, cap filled meanwhile) is `close()`d and handed back, never left windowless.
+  With `createWindow` there is no `did-create-window`: the factory registers the window itself (`registerPopupWindow`), installs the same handler on ITS contents (nested popups follow the same policy and budget) and shows it only if its workspace is the one on screen
+  (`focusedWsId`; a page-initiated one with `showInactive`; the gestured one with `show` — accepted gap: it takes OS focus). **The decision travels in the factory's closure** (the old per-opener `pendingPopup` slot could mix two approvals up across cross-process frames, F6).
+  The title is ours (`popupWindowTitle`: `<origin> — <sanitised page title>`; `page-title-updated` is prevented; control + bidi characters stripped, cut at 80) so a frameless-looking page cannot pass for someone else (F2).
+  Child windows are NOT in the tab registry (the CDP proxy #395 and agent tab tools do not see them), but they ARE billed to their workspace in the #394 tab-memory source (`setBrowserTabSource.tabs()` lists them as `w<n>`; the Resources chip counts them as tabs) and they hold cap slots.
+- **Page-driven bounds are vetoed (review F-a):** Electron APPLIES a page's `window.resizeTo` / `moveTo` by default and `resizable:false` does not stop it (measured on 33.4.11: a 400×329 popup became the whole 1600×1000 screen), so the creation-time clamp would last only until the page's first script.
+  `content-bounds-updated` is vetoed (`preventDefault`) on every popup window and, as defence in depth, on tabs (measured: a TAB's resizeTo does not move the app window).
+- **External protocols (review F-b):** a link click or a redirect to `ssh:` / `zoommtg:` / `smb:` … inside a tab or popup never goes through `window.open`: Chromium's external-protocol path asks the SESSION for the `openExternal` permission and then runs `xdg-open` (measured with a recording shim: a plain `ssh://` link
+  click reached it; a CDP agent click is a user activation). `guardExternalProtocols` (once per panel session; popup windows inherit the opener's session) answers that request through the pure `decideExternalProtocol`: the SAME allowlist as the popup path (`isOsHandoffUrl`: `mailto:`/`tel:`) AND a user gesture of the REQUESTING contents (`consumeUserGesture`: one input, one launch; a refused scheme does not eat the click's activation) —
+  a load-time `location.href = 'mailto:…'` or a programmatic `a.click()` on `tel:` has no gesture and never launches (seat-3 F1; measured with the recording shim). It logs a refusal with the SCHEME only (`(ssh:)`, `(mailto: no click)`) and keeps Electron's default (granted) for every other permission. A navigation within the 5 s activation window of a click is honoured, as in a normal browser. **Known limit (seat-3 F2, accepted):** a click on a `mailto:`/`tel:` link inside a CROSS-ORIGIN iframe does not launch (the gesture is tracked per requesting `webContents`, not per frame); it fails closed, no security impact.
+- **Electron's frame-name registry is process-global (F5):** `window.open(url, 'oauth')` loads into ANY live window registered under that name — across tabs, workspaces and partitions — and that window's `window.opener` is still the tab that created it, so a hostile tab could retarget another tab.
+  `PopupWindow.frameName` + `frameNameHeldByOther(name, opener)` make the policy refuse a named popup while a window of that name was opened by a DIFFERENT opener (another workspace OR another tab of the same one); the holder itself reuses its window (the browser resolves a same-context name natively; no new window, no cap slot).
+  Names held by windows Orchestra did not create (login windows) are unknown here.
+- **Electron's own per-embedder factory slot (backstop):** Electron keeps ONE `createWindow` / options slot per embedder, set in `-will-add-new-contents` and consumed in `-add-new-contents`; if another popup's approval lands in between (cross-process frames — NOT measured in the built app: a 40-call same-frame storm never overlapped), a popup takes Electron's DEFAULT path:
+  a window built from the PAGE's features, no registry, `did-create-window` emitted. Our factory never emits that event, so `watchPopups` destroys any window it announces (`popup window created outside the allowlist factory`). A rare OAuth popup lost in that interleave is the price of never leaving the hostile window up.
+- **Guest-less path:** if Electron ever calls the factory without a guest (the legacy `-new-window` path; unreachable today: it carries no frame name and no features), the factory builds the window pinned to the OPENER's session and loads the URL itself.
+- **Rate is counted when a window really opens** (in the factory / the tab creation), not at approval: a reused named window or a refused guest consumes none.
+- **No leaked windows:** the registry (`livePopupWindows`) prunes destroyed windows on read, so counts cannot drift; windows die with their opener (`wc.once('destroyed')` → `closePopupsOpenedBy`, recursive)
+  and with the workspace (`destroyPanel` → `closePopupWindows`, belt and braces for an opener that never announces its end; **every delete path reaches `destroyPanel`: `teardownWorkspace` calls it**, so the socket `orchestra delete`, bulk delete and repo removal no longer leak the panel — only archive and the two IPC wrappers did before); `hidePanel` hides them, `showPanel` brings them back (`showInactive`),
+  so a sign-in window never floats over another workspace's UI. A refusal is logged `popup refused (<reason>) ws=… url=<origin>` (origin only: OAuth URLs carry tokens in the query) — no UI notice.
+- **Not handled (accepted gaps):** no UI notice for a refused popup (log only) — in particular a `name-in-use` refusal is silent and keyed on library defaults (Auth0 `auth0:authorize:popup`, Google `oauth2`…): two tabs signing in at once, or an abandoned popup, block the second sign-in with a log line only; the `did-create-window` backstop destroys the stray window AFTER it was created (alive for a tick, uncounted by the rate cap) and a legitimate popup that loses that race dies with it (needs two cross-process frames; unmeasured); an UNNAMED, feature-less `window.open(url)` that relies on `window.opener` becomes a tab with no opener (spec: "unnamed → tab");
+  a `target=_blank` form POST loads as GET (pre-existing); `referrer` is not forwarded; the gesture is per webContents, not per frame; the namespace import of `electron` in `browser-panel.ts` exists because the #391/#393 stub harnesses do not export `BrowserWindow`.
+- **Tests:** `browser-tab-policy.test.ts` (every routing clause), `src/shared/browser-popup-window.test.ts` (the builder against Electron's own parse + merge, replicated in `electron-guest-window.testlib.ts`: hostile keys, sizes, smuggled webContents, prototype pollution, title), `src/main/browser-popups.test.ts` (gesture window/consume, registry, frame names, rate),
+  `src/main/browser-panel-popups.test.ts` (real `browser-panel.ts` over a stubbed `electron`, driven the way Electron 33 drives it — handler, then the factory with the merged options, which must return the guest: tab, budget / rate storms, cap shared with windows, hostile features, factory refusals, F5, F2, #394 billing, hide/show, no leaks),
+  `src/main/browser-popups-wiring.test.ts` (every delete path destroys the panel); `scripts/mutate-browser-popups.mjs` (in-place mutants, byte-exact restore; `browser-popups-wiring.test.ts` matches code only, anchored, with controls for the commented-out / conditional shapes). Hostile-features probe by verifier seat 3 (`hostile-features-probe.mjs` on the verifier branch `verif-barriere-navigateur-3-388`, not in this tree; adapter = `buildChildWindowOptions` fed by Electron's REAL shipped merge: 29 hostile strings, run 29/29 green).
+  Built app: `scripts/e2e-browser-popups.sh <app-dir>` (own headless sway in the private runtime world; arms `blank,oauth,xsite,hostile,extproto,storm,ws,cleanup` — `extproto` first loads `?nogesture=1` (load-time `mailto:`, programmatic `tel:` `a.click()`, `window.open(mailto:)`: nothing launches), then clicks `ssh://` / `zoommtg://` links in a tab and in a popup against a RECORDING `xdg-open` shim on the app's PATH, with ONE mailto click as the positive control (exactly one launch) — storm phases `s1,s2,s2b,s2c,s3,s4,churn` selectable alone: the rig itself spaces its page-initiated opens under the 6/min rate cap) —
+  the OAuth flow completes through a real child window, same-site and CROSS-SITE (`localhost` vs `127.0.0.1`), titled with its origin, floating, cookie in the opener's jar; a hostile `features` popup stays bounded and floating and its page's `resizeTo(4000,4000)`/`moveTo(0,0)` changes nothing; a `webContents` feature is refused; storms capped (script / mixed / named / near the cap / one click / churn); a click→navigate gives the next page no gesture; shift-click = tab; archive leaves nothing —
+  + `scripts/e2e-browser-popups-mutants.mjs` (rebuilt-app mutants incl. `R0-unfixed-same-view-handler`, today's handler, and R14–R21 for the hostile-features, bounds, external-protocol and no-click-mailto fixes). Fixture pages `scripts/fixtures/browser-site/pages/popups-{opener,oauth,blank,storm,hostile,extproto}.html`.
 
 ## IPC / seam
 
@@ -522,9 +681,12 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
 - **A non-composited view produces NO frames — screenshots and CDP input hang
   or lie.** Measured on Electron 33: `capturePage()` on a never-attached view
   silently returns an empty 0x0 image; on a detached-after-shown view it
-  **hangs forever**; CDP `Page.captureScreenshot` hangs in both cases; CDP
-  mouse input hangs or queues events that fire on a later attach.
-  `Runtime.evaluate` / `loadURL` work fine detached. So `capture`, `clickAt`,
+  **hangs** (pending until the view is composited again); CDP
+  `Page.captureScreenshot` hangs in both cases. CDP `mousePressed/Released` and
+  `Input.insertText` are NOT affected on a view detached after it was shown —
+  the #402 spike measured them landing at once (5/5); only `mouseWheel` hangs
+  (a never-attached view has no layout: text never lands, a click only with throttling on).
+  A hidden view CAN be made to answer — see *Hidden-view spike*. `Runtime.evaluate` / `loadURL` work fine detached. So `capture`, `clickAt`,
   `typeText` and `scrollBy` guard with `requireComposited()` (a clear,
   actionable error naming the tools that DO still work) and every
   capture/input CDP call is wrapped in `withTimeout` — a hung promise here is
@@ -542,6 +704,120 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
 - Bounds are device-independent pixels relative to the window content; apply
   them **after** the view is added (next animation frame) so the placeholder has
   laid out.
+
+## Hidden-view spike (#402, spec #388)
+
+**Question.** Can a browser view that is not composited in the main window still produce frames on Electron 33 under sway — so that agents could drive background tabs / background workspaces without bringing them to the front? **Verdict: POSITIVE for a view that loaded at real size while attached, with the conditions below.** `view.setVisible(false)` with `backgroundThrottling` OFF keeps `capturePage()`, all three `Page.captureScreenshot` forms, click and type working on the hidden view, and nothing leaks onto the screen. NOT covered: (a) a view hidden before its page first loaded or never attached (`d2`, `a1`: no usable frame; a view loaded at real size under the active tab and hidden afterwards works through `captureBeyondViewport` — finding 7); (b) the Orchestra window on a sway workspace that is not displayed (even the foreground tab hangs there); (c) the app's current hide path (`removeChildView`), a hidden `BrowserWindow`, or re-hosting a view (all produce no usable frames). **Refusals unchanged tonight; lifting is tracked in [#406](https://github.com/lcsmas/orchestra/issues/406) (measure N hidden unthrottled surfaces first).** `browser-panel.ts` is untouched by #402.
+
+**Conditions measured (all must hold for a hidden view to answer):**
+1. The view **loaded at real size while attached** — even occluded under the active tab (`g2`). Hidden before its page first loaded (`d2`), never attached (`a1`), or a 2×2 first paint (`d4`) never gives a frame.
+2. `backgroundThrottling` is OFF when the capture runs: set before hiding (`d1-bt0`) or flipped right before the agent acts (`d3`, throttling back ON while idle: timers 1/s instead of 20/s). Without it CDP screenshots time out 5/5 and the first `capturePage` of a run is often a STALE pre-hide frame (the first capture of a run: 2/5, 4/5, 2/5 in the three committed N=5 sets of `d1`; `capturePage` itself stale 2/5, 3/5, 1/5).
+3. A 0.25–0.6 s warm-up for a view that was loaded under the active tab and then hidden (`g2`: `captureBeyondViewport` fresh after 239–291 ms, `capturePage` after 553–602 ms and only after a failed first attempt; 5 runs, `retry` fields of the evidence); a view that was already composited answers on the first try (`d1-bt0`: `capturePage` fresh after 16–69 ms, `captureBeyondViewport` after 227–1345 ms).
+4. The Orchestra window's sway workspace is displayed: otherwise nothing paints — not even the visible tab (`ctl-visible+away` 0/5) — and the `withTimeout` guard is the only protection.
+5. Hidden captures keep the last composited size (a resize while hidden is not reflected, `d5`), and `captureBeyondViewport` returns the whole scrollable page, not the viewport (`clip` untested while hidden).
+
+**Re-run.** Bare Electron 33.4.11 (Chromium 130), no app code, in the contained rig (own headless sway, private runtime). Needs `MemAvailable` ≥ 6 GB; one rig tree at a time, `nice -n 10`, wrapped per batch in the fleet `gui-slot.sh`; the first run of a new tree with `RIG_HIDE_REAL_RUNTIME=1`:
+- `scripts/spike-hidden-view.sh "$PWD" --arms key --n 5 --assert` — 13 arms, ~35 min; exit 1 if the positive control fails or any verdict class changes.
+- `scripts/spike-hidden-view.sh "$PWD" --n 5` — the full matrix (≈190 runs, ~2.5 h); `--arms a,b` for a subset (the control `ctl-visible` is always added).
+- `node scripts/spike-hidden-view.mjs "$PWD" --summarize-only --markdown --out <dir>` re-prints the table from `<dir>/*/result.json` (no rig needed); `--export-jsonl <file> --tag <set>` writes the compact per-run evidence.
+- Instrument self-test: `… --arms ctl-visible,d1-setvisible-false-bt0 --mutant noflip --assert` must exit 1 with `CONTROL FAILED`.
+- Files: `scripts/spike-hidden-view{.sh,.mjs}` (harness, aggregation, verdicts), `scripts/spike-hidden-view-main.cjs` (one arm per fresh Electron process). Per-run evidence of this measurement: `docs/evidence/402-hidden-view-spike.jsonl`.
+
+**Re-deriving the cited numbers** (every number below that is not read off the matrix comes from the committed evidence file; run from the repo root):
+```bash
+python3 -I - <<'PY'
+import json
+R = [json.loads(l) for l in open('docs/evidence/402-hidden-view-spike.jsonl')]
+S = lambda arm, s='table': sorted((r for r in R if r['arm'] == arm and r['set'] == s), key=lambda r: r['iter'])
+for s in ('table', 'key-run-1d614d01', 'c2-instruments-off'):  # d1 without bt0: caps keep the oracle order, first = first capture
+    rs = S('d1-setvisible-false', s)
+    print(s, 'first capture stale', sum(next(iter(r['caps'].values())).startswith('stale') for r in rs), 'capturePage stale', sum(r['caps']['capturePage'].startswith('stale') for r in rs), 'of', len(rs))
+print('sampler post-hide samples a2/d1-bt0/d3', [[r['leakSampler']['postHide'] for r in S(a, 'c1-leak-sampler')] for a in ('a2-detached-after-shown', 'd1-setvisible-false-bt0', 'd3-setvisible-false-bt-on-demand')])
+for a in ('d1-setvisible-false-bt0', 'g2-occluded-then-hidden-bt0'):
+    print(a, '+retry (capturePage ms, beyondViewport ms)', [(r['retry']['firstFreshMs'], r['retry']['beyondFirstFreshMs']) for r in S(a + '+retry')])
+print('retry attempts d2/a1', [[r['retry']['attempts'] for r in S(a + '-bt0+retry')] for a in ('d2-setvisible-false-first', 'a1-detached-never')])
+for a, s in (('c1-rehost-moved', 'key-run-1d614d01'), ('c1-rehost-moved', 'table'), ('c3-rehost-basewindow', 'table'), ('c4-rehost-browserview', 'table')):
+    print(a, s, 'wedged', sum(not r['recovers'] for r in S(a, s)), 'of', len(S(a, s)))
+PY
+```
+Not committed (so not re-derivable from the repo): the per-run `late` lists (which hung calls settled afterwards), the screenshots, and the first full N=5 run's `d1` rows (superseded in the table by the final-tree run).
+
+**Method.** One fresh Electron per (arm, iteration), iteration-major (all arms' run *i* before any run *i+1*); the capture-oracle order alternates fwd/rev (N=5 = 3 fwd + 2 rev, so first-position effects are not balanced). The page is a solid colour A with an animated square, a 50 ms timer and a rAF counter, an `<input>` and a 4000 px spacer; after the view is hidden it flips to colour B. A capture reads **fresh** (B), **stale** (A, the pre-hide frame), **empty** (0×0), **error** or **timeout** (4 s — a hung promise is data). Oracles: in-page rAF/timer ticks per second; `Page.startScreencast` frames, `beginFrameSubscription` callbacks and OSR `paint` events; `capturePage()`; `Page.captureScreenshot` default / `fromSurface:false` / `captureBeyondViewport`; `invalidate()`+`capturePage()`; the app's own input calls (`Input.dispatchMouseEvent` press+release on the `<input>`, `Input.insertText`, `mouseWheel`); `grim` on the compositor after every phase plus a compositor sampler for a transient flash (one `grim` per ≈ 80–270 ms: 49–163 post-hide samples over a hidden phase of ≈ 13 s, `leakSampler` in the evidence). **Controls:** `ctl-visible` (a composited view) must read PAINTS in every valid run or the matrix is voided (`CONTROL FAILED`, exit 1); a run is `valid` only if the page ticked and — for arms that start composited — its pre-hide capture read A (never-visible arms: a fresh show-back capture; offscreen arms: liveness only, `e1` being the control of `e2`); `x1` (a mapped `showInactive` window) is the positive control of the leak sampler (47 %). **Mutant:** `--mutant noflip` (never flip the colour) turns every `fresh` into `stale` and the control gate red — killed (`--assert` exit 1: CONTROL FAILED + 2 assertion failures).
+
+**Matrix.** Ticket arms and extras N=5, informational arms N=3 (`d4`, `f*`, `x1`, `+sw`, `e1-fs0`); the matrix is assembled from three sets and tagged per run in the evidence file: the first full N=5 run (earlier contained-rig revision with the real `XDG_RUNTIME_DIR`, run before the Q2 freeze; same bare Electron and headless sway), the confound controls, and the final-harness re-runs on the private-runtime rig, which REPLACE the rows of `c4`, `d5`, `g1`, `g2`, the `+retry` arms and the 13 key arms. Of the 194 runs behind the table, 81 ran on the earlier rig revision and 113 on the private-runtime rig. Columns: the page's own rAF/timer ticks per second while hidden and idle (8 s window); "landed" = runs in which the click / typed text / wheel scroll had reached the page within 700 ms; leak = max share of the page's colours on the whole compositor output while hidden.
+
+| arm | valid | capturePage | CDP shot | CDP shot beyondViewport | rAF/s · timers/s | screencast fr./4 s | click · type · wheel landed | leak | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| `ctl-visible` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 61.9 · 20.0 | 250 | 5 · 5 · 5 | 99% | PAINTS |
+| `m1-multi-hidden` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 24.9 · 20.0 | 250 | 5 · 5 · 5 | 98% | PAINTS-ON-DEMAND |
+| `a1-detached-never` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 1.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `a2-detached-after-shown` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b1-hidden-window` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.9 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b2-hidden-window-view` | 5/5 | error×3 empty×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `c1-rehost-moved` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 2/5 |
+| `c2-rehost-wrapped` | 5/5 | — | — | — | — | — | — | 0% | UNSUPPORTED (Electron refuses to wrap an owned webContents) |
+| `c3-rehost-basewindow` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 5/5 |
+| `c4-rehost-browserview` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 5/5 |
+| `d1-setvisible-false` | 5/5 | stale×2 fresh×3 | timeout×5 | timeout×5 | 0.0 · 1.0 | 1 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `d2-setvisible-false-first` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 1.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 60.0 · 20.0 | 243 | 5 · 5 · 5 | 0% | PAINTS |
+| `e2-offscreen-view` | 5/5 | empty×5 | timeout×5 | error×5 | 60.0 · 20.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `a1-detached-never-bt0` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `a2-detached-after-shown-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b1-hidden-window-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.9 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b2-hidden-window-view-bt0` | 5/5 | error×3 timeout×2 | timeout×5 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: beyondViewport) |
+| `c1-rehost-moved-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 1.0 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 3 | 0% | PAINTS-ON-DEMAND |
+| `d2-setvisible-false-first-bt0` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 59.4 · 20.0 | 242 | 5 · 5 · 5 | 0% | PAINTS |
+| `d3-setvisible-false-bt-on-demand` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 0.0 · 1.0 | 243 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `d5-resize-while-hidden-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 5 | 0% | PAINTS-ON-DEMAND |
+| `ctl-visible+away` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0+away` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window+away` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 60.0 · 20.0 | 243 | 5 · 5 · 5 | 0% | PAINTS |
+| `e1-offscreen-window-fs0` | 0/3 | n/a | n/a | n/a | n/a · n/a | n/a | 0 · 0 · 0 | 0% | CRASH (3/3 runs: signal=SIGSEGV, during cap:fromSurface:false;) |
+| `d4-tiny-first-paint-bt0` | 3/3 | other×3 | other×2 timeout×1 | error×3 | 60.0 · 20.0 | 1 | 3 · 0 · 0 | 0% | NO FRAMES |
+| `g1-occluded-new` | 5/5 | error×3 empty×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `g2-occluded-then-hidden-bt0` | 5/5 | error×3 fresh×2 | timeout×3 fresh×2 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 2 | 0% | PARTIAL (some capture oracle fresh: capturePage,cdpShot,fromSurface:false,beyondViewport,invalidate+capturePage) |
+| `d1-setvisible-false-bt0+retry` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `d2-setvisible-false-first-bt0+retry` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `g1-occluded-new+retry` | 5/5 | fresh×5 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `g2-occluded-then-hidden-bt0+retry` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `a1-detached-never-bt0+retry` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `f1-clipped-bounds` | 3/3 | stale×2 fresh×1 | timeout×3 | timeout×3 | 0.0 · 1.0 | 1 | 3 · 3 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `f2-zero-bounds` | 3/3 | other×3 | other×3 | error×3 | 59.8 · 20.0 | 1 | 3 · 0 · 0 | 0% | NO FRAMES |
+| `x1-showinactive-opacity0` | 3/3 | fresh×3 | fresh×3 | fresh×3 | 60.9 · 20.0 | 239 | 3 · 3 · 3 | 48% | PAINTS |
+| `b1-hidden-window-bt0+sw` | 3/3 | timeout×3 | timeout×3 | timeout×3 | 0.9 · 20.0 | 1 | 3 · 3 · 0 | 0% | NO FRAMES |
+| `c1-rehost-moved-bt0+sw` | 3/3 | timeout×3 | timeout×3 | timeout×3 | 1.0 · 20.0 | 1 | 3 · 3 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0+sw` | 3/3 | fresh×3 | fresh×3 | fresh×3 | 1.1 · 20.0 | 243 | 3 · 3 · 3 | 0% | PAINTS-ON-DEMAND |
+
+**Findings** (numbers from the matrix unless stated).
+1. **Detached (`a1`/`a2`) and every hidden `BrowserWindow` (`b1`/`b2`) give no usable frames.** `a2` — the app's background-workspace path (`removeChildView`): `capturePage` and every CDP screenshot time out 5/5 (they settled only after the view was composited again — read from the per-run `late` lists, which are NOT in the committed evidence); rAF 0/s, timers throttled to 1/s. Yet a click and `Input.insertText` still LAND in the page 5/5 (only `mouseWheel` dispatch hangs) — the old belief "CDP input hangs on a hidden view" was wrong for press/release/insertText. `b1`/`b2` (a `show:false` window hosting the page / a view): `capturePage` timeout / "Current display surface not available" 5/5; `backgroundThrottling:false` and `--disable-renderer-backgrounding`, `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows` change nothing for `b1`/`c1`; for `b2` only `Page.captureScreenshot {captureBeyondViewport:true}` becomes fresh (`b2-…-bt0`, 5/5) while rAF stays 0/s and `capturePage` still fails — a hidden window cannot be driven like a hidden view. `a1` (never attached): `capturePage` → 0×0 5/5, CDP "0 width".
+2. **Re-hosting a tab's view in a hidden window wedges it.** `c1`/`c3` (move the view into a hidden `BrowserWindow` / `BaseWindow`): the FIRST oracle of each run reads fresh 5/5 (capturePage in fwd runs, `invalidate`+`capturePage` in rev runs), every later one times out, and after moving the view back `capturePage` still timed out within 4 s in 5/5 runs of the earlier key run but only 2/5 of the final-tree run (`c3`, `c4`: 5/5) — the wedge is real but timing-dependent. `c2` (wrap the tab's `webContents` in a new `WebContentsView`) is refused by Electron 33: `options.webContents is already attached to a window` (the arm's other columns are meaningless). `c4` (adopt the webContents with a legacy `BrowserView` inside a hidden `BrowserWindow`) behaves like `c1`/`c3`: the first oracle reads fresh at the BrowserView's 800×600, every later one times out.
+3. **`setVisible(false)` + `backgroundThrottling:false` works** (`d1-bt0`): `capturePage` and all CDP forms fresh 5/5, click 5/5, typed text 5/5, `mouseWheel` dispatch resolves 5/5 but scrolled within 700 ms in only 3/5 (always by the next frame); screencast 244 frames/4 s; rAF ~1/s, timers 20/s; leak 0 %. **Without** `bt0` (`d1`) CDP screenshots time out 5/5 and `capturePage` is bimodal — fresh or a **stale** pre-hide frame: the FIRST capture of a run (`capturePage` in forward runs, `invalidate`+`capturePage` in reverse runs) was stale in 2/5, 4/5 and 2/5 runs of the three N=5 sets committed in the evidence file (final-tree run / earlier key run / instruments-off control; `capturePage` alone stale 2/5, 3/5, 1/5); later captures of the same run were mostly fresh — a silently wrong screenshot, worse than a hang.
+4. **The throttling switch can be flipped at action time** (`d3`): throttling ON while idle (timers 1/s), `wc.setBackgroundThrottling(false)` right before acting → `capturePage` and all CDP forms fresh 5/5, also with the screencast and frame subscription OFF and the capture issued immediately after the toggle (confound control C2, N=5). A 24 s hidden wait before acting changes nothing (C3, N=2, `d1-bt0` and `d3` fresh 2/2).
+5. **Resize while hidden** (`d5`): the capture stays fresh 5/5 but its size stays the PRE-resize frame (bounds set to 900×500 while hidden; every oracle returned 1400×900) — a window resize while a tab is hidden is NOT reflected in hidden captures (they keep the last composited size; `captureBeyondViewport` returns the page's content size, 1385×4000). **Several hidden views next to a visible one** (`m1`: V1/V2 hidden with `bt0`, V0 visible on top): V1 fresh 5/5, V2 answered (its colour was not flipped, so its freshness is untested); the visible V0 kept ~55 rAF/s, received 0 clicks/keys, stayed unscrolled and its own capture still read its colour (5/5).
+6. **No on-screen leak.** The compositor sampler (49–163 samples per run) read 0 samples above 1 % of the page's colours during the hidden phases of `a2`, `d1-bt0`, `d3` (3 runs each) while `ctl-visible` read 99 % and the mapped-window control `x1` 47 %; `grim` after every phase read 0 % in every hidden arm. `x1` (opacity-0 `showInactive` window) paints but maps a second toplevel in sway — not a product option.
+7. **A view must have LOADED at real size, attached, before it is hidden** — `d2` (`setVisible(false)` before the page loads) and `a1` (never attached) give no usable frame: 27 attempts over 8 s of `capturePage` AND `captureBeyondViewport` every 300 ms were all empty / "0 width" (5/5 runs each). `g1` (loaded UNDER an opaque active tab and left there; Chromium treats the occluded sibling as hidden, rAF 0/s) is not dependable: first attempts error/empty and CDP calls hit the 4 s deadline (some of them settled afterwards, at a time not measured; per-run `late` lists, not committed); in the `+retry` runs a `captureBeyondViewport` left pending for 2×4 s was followed by a fresh `capturePage` in 5/5 runs, so an occluded sibling can wake after a long pending capture — do not rely on it. **`g2` — loaded at real size under the active tab, then `setVisible(false)` + `bt0` — works once warmed:** `captureBeyondViewport` is fresh in 5/5 runs of the oracle matrix and within 239–291 ms of the first retry attempt (5/5), `capturePage` fails its first attempt (error ×3, fresh ×2 un-retried) and is fresh 553–602 ms into the retry loop (5/5), the default CDP screenshot timeouts 3/5. `captureBeyondViewport` returns the full scrollable page (1385×4000 here), not the viewport — viewport-sized output needs a `clip` (untested while hidden). `d4` (a 2×2 first paint, then hide + resize) keeps returning the 2×2 frame
+8. **The Orchestra window being off-screen stops everything, hiding or not.** With the window's sway workspace switched away (`+away`), the VISIBLE control `ctl-visible+away` reads rAF 0/s and times out 5/5, as does `d1-bt0+away` — a pre-existing limit of foreground screenshots too (presumably sway sends no frame callbacks to a surface on a non-displayed workspace), not caused by hiding. `document.visibilityState` stays `visible` there, so it is no usable signal; the `withTimeout` guard in `browser-panel.ts` stays.
+9. **Offscreen rendering paints regardless** (`e1`, a `show:false` window with `webPreferences.offscreen`): 60 rAF/s, 243 screencast frames, ~254 `paint` events, all captures fresh, input OK, also with the workspace switched away (`e1+away` 5/5). But OSR is chosen at `webContents` creation (a human-facing tab cannot be both), an OSR `WebContentsView` never attached stays empty (`e2`), and **CDP `Page.captureScreenshot {fromSurface:false}` on an OSR window SIGSEGVs the Electron main process** (`e1-fs0`, 3/3) — the harness skips that oracle on `e*` arms.
+10. `f1` (bounds moved off-window, view still "visible") behaves like `d1` without `bt0` (capturePage / `invalidate`+`capturePage` fresh or stale by order, CDP timeouts); `f2` (1×1) returns a non-page frame — neither is a hiding technique.
+
+**Confound controls.** C1 leak sampler (`ctl-visible`, `x1`, `a2`, `d1-bt0`, `d3`, `m1`, N=3, private rig); C2 instruments off + immediate capture (`--skip screencast,framesub --p2-ms 0`, N=5, private rig); C3 24 s tail (N=2, earlier rig revision); C4 `d4` (N=3, private rig). The key preset (`--arms key --n 5 --assert`) passed twice — at `1d614d01` and on the final tree (ASSERT OK, 13/13 arms, N=5, private-runtime rig) — and the `noflip` mutant exits 1 (CONTROL FAILED + 2 assertion failures) on both.
+
+**What the lift (#406) can build on this** (design input, not implemented): keep every tab of every workspace attached to the window and hide the non-active ones with `setVisible(false)` instead of `removeChildView`; call `setBackgroundThrottling(false)` only around an agent action (`d3`) and restore it after; treat a `stale` or wrong-size frame as failure (compare the page's own marker, not just "non-blank"); keep the `requireComposited`-style refusal for a view that never loaded at real size and the `withTimeout` guard for a window that produces no frames; attribute hidden views per workspace (the #394 tab-memory pattern already attributes the renderer processes).
+
+**How to measure the cost (#406 — write the go/no-go thresholds BEFORE the run).** Rig: this one — `scripts/e2e-contained-rig.sh` through `gui-slot.sh`, `RIG_HIDE_REAL_RUNTIME=1` on the first run, `nice -n 10`, bare Electron 33.4.11 — as a new `--cost` mode of `spike-hidden-view-main.cjs` reusing the harness (control gate, `--assert`, evidence jsonl). One fresh Electron per (N, flavour, repetition); N ∈ {0, 1, 8, 40, 160}, 5 repetitions (N=0 = the main window + its one visible view = baseline and control). Each hidden view: a `WebContentsView` attached at real bounds (1400×900), loaded, then `setVisible(false)`, in a per-workspace partition (8 views per partition, as the app); flavours **BUSY** (the spike page: animated square + 50 ms timer), **IDLE** (static colour), and the **THROTTLED** comparison (throttling ON, the `d3` design). Settle 10 s after the last load, then sample 30 s at 1 Hz:
+- **Memory**: for every pid of `app.getAppMetrics()`, PSS from `/proc/<pid>/smaps_rollup` (the truth for shared pages) AND RSS from the process table (what #394 bills), grouped browser / gpu / renderer / utility; total, per workspace, and marginal per view = (total(N) − total(0)) / N; the number of distinct renderer pids; host `MemAvailable` before the first view and after the settle (the memory guard's own signal: Admission holds below 6 GB, Pause below 3 GB).
+- **CPU**: Δ(utime+stime) of the same pids over the 30 s, as % of one core, total and per view.
+- **GPU**: no portable counter on this host — record the gpu-process PSS growth and any readable DRM debugfs counter, else write "not readable" (never 0).
+- **Frames**: a hidden BUSY view's rAF/s and screencast frames/4 s (is the unthrottled view actually rendering at 60/s, or at 1/s like `d1-bt0`?).
+- **What the human feels / what the agent pays**: the VISIBLE view's rAF/s (median and 5th percentile), and per N the latency of `capturePage` and `captureBeyondViewport` (20 actions on random hidden views, median / p95) plus the first-capture warm-up of a freshly added view (condition 3).
+- **Stop rule**: abort a run at k views when `MemAvailable` falls below 6 GB and record "aborted at k"; run N=160 only when `MemAvailable` ≥ projected (marginal(1, 8, 40) × 160 + baseline) + 6 GB, else report the projection with its fit residual. The box runs ~40 agents, so expect to need a quiet fleet for N=160.
+
+**Traps hit while measuring.** An unreferenced `WebContentsView`/`BrowserWindow` is garbage-collected and its `webContents` destroyed mid-run ("Object has been destroyed") — keep references. `capturePage()` returns a 0×0 image for a never-painted view and rejects with "Current display surface not available for capture" when the surface is gone. The rig's `env -i` strips any knob exported outside the harness — knobs are CLI flags. `pkill -f` on the harness matches its own wrapper (kill by pid). A 2×2 first-paint view paints scrollbars over the whole page. The hygiene hash of `~/.claude*` differs for the invoking session's own `.credentials.json`/`.claude.json` (its normal churn), never for anything the probe could address.
+
+**NOT VERIFIED.** GPU/RSS/CPU cost of N hidden surfaces (→ #406); another compositor/GPU, or other windows overlapping Orchestra's (floating windows covering it); macOS/Windows; a flash shorter than the sampler cadence (≈ 80–270 ms); the legacy `BrowserView` re-host and the wheel scroll timing beyond 700 ms; the `+away` mechanism (the cause "no frame callbacks" is inferred, not read from sway); the full matrix was measured in two rig revisions (see provenance) — the final harness re-ran the key preset and the new/changed arms only.
 
 ## Usage census (#392, spec #388 success metric)
 
@@ -588,9 +864,9 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `Browser.getVersion`, `Browser.close` (no-op: an agent never closes the human's panel). Target ids are 32-hex derived
   from a per-proxy nonce (never the registry's `t1`); the ACTIVE tab is listed first. Page-level commands are forwarded
   to the tab's `webContents.debugger` with no session id; auto-attached child sessions (iframes) keep theirs.
-  `Target.createTarget` → `createTab({openedBy:'agent', activate:true})` (interim cap 8 in `makePanelPort` until the
-  tab policy #393/#397 sits in front); `closeTarget` refuses a tab the human opened. `Page.bringToFront` /
-  `Target.activateTarget` → `activateTab`; an input/capture command on a non-active tab activates it first. The same
+  `Target.createTarget` / `closeTarget` / `activateTarget` / `Page.bringToFront` go through the panel's POLICY-CHECKED agent entry
+  points (`agentOpenTab` / `agentCloseTab` / `agentActivateTab`, **Agent tabs (#397)** below); any acting command on a
+  non-active tab brings it to the front first. The same
   browser-level rules apply to a TAB session: `Page.close` / `Target.closeTarget|createTarget|…` / `Browser.*` sent on one never
   reach the page debugger (they would close the human's tab or the panel); only the page's own `Target.setAutoAttach` is forwarded.
   `Browser.getWindowForTarget|setWindowBounds|setContentsSize` are answered (fixed frame / ignored): erroring on `set viewport`
@@ -711,3 +987,57 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
   armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
+- **Whole-flow drive (#388 end gate)**: `scripts/e2e-browser-whole-flow.sh <app-dir>` — ONE built app in the contained rig, one story over 10 arms
+  (`human agent popup design cookies memory keyring legacy restart profile`); the fixture site is served from the app tree. A clause body activates when the app dir's HEAD carries a
+  `Merge #n` commit (or `--merged n,n`) — bodies exist for #396 popups, #397 agent tabs, #399 skill/legacy tools, #400 profiles, #401 `spawn --profile`; before that it prints `NOT YET MERGED: #n`
+  (`--require-all` turns each into a FAIL), and a merged ticket whose body is missing FAILS. Seam mutants (`--mutant strip-hides-agent-tabs | partition-shared | popup-same-view | agent-closes-any-tab |
+  skill-example-without-click | profile-not-persistent | agent-cdp-unscoped | spawn-profile-not-held`) must go red on the NAMED clause; `--check-anchors <app-dir>` proves each edit matches once.
+
+## Agent tabs (#397) — policy entry points, ownership at the CLI, visible bring-to-front, ref pin
+
+`orchestra browser tab list|new|<ref>|close` (agent-browser's `tab` command) work across the workspace's tabs; the proxy maps target
+discovery and "create target" onto the panel tabs (Electron has no `Target.createTarget`). Spec #388 stories 36-37, 41, 43-44; ADR 0009.
+
+- **Pure rules — `src/shared/browser-agent-tabs.ts`** (`browser-agent-tabs.test.ts`): `decideAgentFront` (activate only in the FOCUSED
+  workspace; a background workspace's agent never attaches or shows a view, story 44), `isActingCdpMethod` (what counts as an agent
+  ACTION on a tab: everything except `*.enable|disable`, `Runtime.runIfWaitingForDebugger`, `Target.setAutoAttach`, `Page.getFrameTree` —
+  the attach-time chatter measured on agent-browser 0.39.2; an unknown method is an action), `describeAgentTabs` (per tab: `openedBy`,
+  `closable` = `decideTabClose` with the agent actor), and the CLI half (`parseTabInvocation`, `parseAbTabList`, `resolveAbTab`,
+  `decideCloseThroughCli`, `tabCloseRefusal`, `annotateTabListText|Json`). The cap and close ownership stay in `browser-tab-policy.ts` (#393).
+- **Main — `browser-panel.ts`:** `agentOpenTab(wsId,{url?})` = `tryOpenTab(openedBy: AGENT_OPENER, activate: focusedWsId === wsId)`;
+  `agentCloseTab` = `tryCloseTab(…, AGENT_OPENER)` (refusal `not-owner` / `unknown-tab`); `agentActivateTab` = `decideAgentFront` then `setActive(…, byAgent=true)`.
+  `browser-cdp-host.ts`'s port calls ONLY these (never the bare `createTab`/`closeTab`/`activateTab`; the interim cap is gone) and throws the
+  policy message, which reaches agent-browser as a CDP error (`✗ CDP error (Target.createTarget): Tab limit reached: …`, rc 1).
+- **Bring to front, visibly (story 43):** `CdpProxyCore.tabCommand` calls `port.activateTab` for ANY acting command on a tab that is not active
+  (before the frame-bound `framesError` check, so a click on a background tab succeeds instead of being refused); explicit `tab <ref>` =
+  tab-level `Page.bringToFront`. An agent swap sets `Panel.agentSwitch {from,to,at}` → `BrowserPanelState.agentSwitch` (any tab swap that is not an
+  agent's clears it). Renderer: the agent's tabs wear an `agent` mark, and `.browser-agent-switch` ("The agent brought « X » to the
+  front." + « Back to « Y » », a HUMAN tab activation) shows for 9 s while `to` is still the active tab. Never silent.
+- **Close ownership is enforced twice.** agent-browser prints `✓ Tab [tN] closed` (rc 0) for a `Target.closeTarget` the proxy REFUSED and
+  drops the tab from its own list, so the next `tab close` of the agent's own tab says "Cannot close the last tab". The CLI therefore asks the
+  host first: `/browser {op:'tabs'}` (session-key verified like every `/browser` call; read-only, own workspace) → `describeAgentTabs`; a close of
+  a tab the user opened never reaches agent-browser: `browser_tab_not_owner: Tab t1 was opened by the user… (tab t1 is still open)` (rc 1; `--json`
+  carries the same `code`). Both fail OPEN to the native command if the host or agent-browser cannot say — the proxy refuses regardless. `tab list`
+  appends ` (yours)` / ` (the user's)`; `--json tab list` adds `openedBy` + `closable`.
+- **Refs and tabs:** agent-browser clears its ref map on EVERY tab switch (even back to the tab a ref came from) and a snapshot replaces it, so a
+  ref from another tab is `Unknown ref` → `browser_stale_ref`, never a wrong click; its daemon pointer is its own (a user's tab click does not move
+  it), so `click @eN` still lands on the tab the ref came from — and brings it to the front. The LEGACY `mcp__browser__*` path (until #399): `readPage`
+  pins `Panel.refTabId`; `clickRef` / `formInput` resolve the pin (an explicit `tabId` wins; a closed pinned tab is an error, not a click on whichever
+  tab is active) and bring the pinned tab to the front first.
+- **agent-browser 0.39.2 vs the faked surface (tab commands, measured with the real binary):** `tab new [--label x] [url]` = `Target.createTarget` +
+  attach (prints the url); `tab list` = browser-level only (`Browser.getVersion`; label shows as `[t2] docs <title> - <url>`); `tab <ref>` = tab-level
+  `Runtime.evaluate` then `Page.bringToFront`; `tab close [ref]` (no ref = its current tab) = `Target.closeTarget`; refs accept `tN`, a label or a CDP
+  target id; its `tN` ids are SESSION-local (not the registry's). A refused close is swallowed whatever the answer (error, `{success:false}`, a re-emitted
+  `Target.targetCreated|targetInfoChanged` — none repairs its list), which is why the CLI pre-flight exists. The cap refusal surfaces cleanly.
+- **Tests:** `browser-agent-tabs.test.ts` (pure, 25), `cdp-proxy-core-agent-tabs.test.ts` (core vs a fake port, 15), `main/browser-panel-agent-tabs.test.ts`
+  (the REAL panel over stub Electron, 16: focus rule, cap with no leaked view, ownership, notice, ref pin), `main/browser-agent-tabs-wiring.test.ts` (8 pins).
+  Must-FAIL: `node scripts/mutate-browser-agent-tabs.mjs` (74 source mutants, byte-exact restore). Built-app rig `scripts/e2e-browser-agent-tabs.sh <app-dir>`
+  (arms `restart open switch front cap strip ownership navigate children attach background refs` — `restart` runs first: SIGKILL + re-boot, a stale agent-browser id that now names the user's tab cannot close it; oracles = the app's state IPC, a second CDP client on the page, compositor pixels via `grim`;
+  `--mutant <name>` patches the BUILT bundle, 19 mutants incl. three stylesheet ones (`dist/assets`), restored byte-exact + `cmp`; every raw-client call and oracle wait is bounded — a mutant that lets `Page.crash` through leaves a dead renderer that never answers). Fixture pages `agent-tabs-hit-{a,b}.html` (one full-viewport button = a click counter), `agent-tabs-frame.html` (a cross-site iframe + worker = auto-attachable child sessions), `agent-tabs-spawn.html` (the PAGE spawns a worker / cross-site iframe 4 s after load).
+- **Early-review round (reviewer review-onglets-agent-proxy-397):** F1 the close verbs are gated on EVERY session of a tab — #395's shared `isBrowserLevelMethod` (core `dispatch`, applied BEFORE the root/child split) answers a CHILD (worker / frame) session exactly like the root: `Page.close` → ownership of the owning tab, `Browser.close` no-op, nothing reaches the debugger (Chromium's `Page.close` would close the whole WebContents); #397 calls it, never copies it. `Target.sendMessageToTarget` is #395's deny. **Accepted gap:** page-JS `window.close()` on a user tab (history ≤ 1) is not gate-able by the proxy. F2/F6/F3 the swap notice is a ROW below the toolbar (like the cap notice and the design hint): it never moves or covers a tab, a ×, the +, a nav button, the URL input or the design button (rig clause = `elementFromPoint` of each centre is the control itself while the notice is up, tab geometry equal after the lapse; mutants put it over the strip / the toolbar). The agent mark is a 6 px dot + a top accent line that takes NO width, and `.browser-tab` clips its contents: a text badge widened every agent tab ~38 px and at 6-8 tabs its × overflowed onto the next tab / the +, where a real click on the + CLOSED a tab (round-2 F2; arm `strip`: 8 tabs × {agent early, last, mixed} × 640 / 480 px, real click on the + at the cap). F1 the CLI gate reads the ref spellings agent-browser accepts (trim + case-fold: `tab close T1` / `" t1 "` used to slip past it). **Ownership beyond close:** `Page.crash` / `Runtime.terminateExecution` (`TAB_DESTROYING_METHODS`) are refused on a tab the agent did not open, root and child sessions, before the debugger. F3 a frame session's `Input.*` meets `framesError` and its acting commands bring the tab front. F4b `tab <ref>` says `(yours)`/`(the user's)` so a stale `tN` that now names the user's tab is not silent. **Accepted gaps (ship note):** F7 one daemon pointer + one `agent` identity per workspace — a sub-agent's `tab <ref>` / `tab new` moves the pointer under its parent, and `openedBy:'agent'` carries no agent identity, so any agent may close another agent's tab (per-session ownership is out of scope); F4a a popup/`window.open` born in a HUMAN tab (#396) is human-owned: the agent cannot close it and it counts against the shared cap — `tab list` shows it `(the user's)`, the human closes it; F5 no human priority: any acting command re-swaps at once after the human's explicit tab click (visible + reversible via « Back », story 43), `type`/`press_key` of the legacy tools are not ref-pinned (they die with #399).
+- **Browser-internal URLs (seat-3 re-attack F4):** `Page.navigate` / `Page.navigateToHistoryEntry` (the entry is resolved to its URL with `Page.getNavigationHistory`; a failed lookup refuses) on a tab the agent did NOT open is refused when the target is `chrome:` / `chrome-untrusted:` / `chrome-search:` / `chrome-distiller:` / `devtools:` or `about:` other than blank/srcdoc (`isBrowserInternalUrl`: decided by scheme after the URL parser's trim, tab/newline and case rules, nested `view-source:` unwrapped), root + child sessions, at the same `tabCommand` spot as the destroyer gate; an agent-opened tab may navigate anywhere (so may `Target.createTarget`, which makes an agent tab). **Measured** (this Electron, `Page.navigate` on an agent tab, 22 URLs): only `chrome://crash|kill|hang|shorthang` (any spelling: case, leading space, `chrome:crash`, trailing tab) wedge the renderer (eval times out; the app and the GPU process are unaffected); `about:crash|kill` → `about:blank#blocked`; `view-source:chrome://crash` → aborted; `chrome://gpucrash|gpuhang|gpuclean|restart|quit|inducebrowsercrashforrealz` → `ERR_INVALID_URL`, nothing happens (no process-wide class in this build). The refusal is a scheme-wide superset on purpose. Arm `navigate`; bundle mutants `internal-nav-allowed`, `internal-nav-guards-agent`; 12 source mutants. **Gap:** the legacy `mcp__browser__navigate` tool and the URL bar are not gated (the bar is the human's; the tools go with #399).
+- **Attach-time methods on a CHILD session (measured, agent-browser 0.39.2 through the proxy, real Electron `attach` arm + Chromium harness):** when a PAGE spawns a worker / cross-site iframe in a tab the daemon is attached to, it auto-attaches the child and sends `Runtime.runIfWaitingForDebugger`, `Page.enable`, `Runtime.enable`, `Network.enable`, `WebMCP.enable`, `Target.setAutoAttach`, `DOM.enable`, `Accessibility.enable`, `Page.getFrameTree` — all in the PASSIVE set (`isActingCdpMethod`: `*.enable`/`*.disable`, `runIfWaitingForDebugger`, `setAutoAttach`, `getFrameTree`), so a background tab's page spawning children never flips the human's tab (arm `attach`; mutant `attach-is-acting`). A first measurement that injected the spawn script through the app's debug port saw a « command storm »: that was a rig artefact (the injected `Runtime.evaluate` is re-dispatched on every main-frame process swap, so the script ran again and again) — a page that spawns its OWN children produced 12 requests / 2 attaches / 18 KB of trace.
+- **Never cache a `tN` across an app restart** (#393 review F3): restored tabs are renumbered per process and agent-browser's ids are session-local, so a remembered `t5` can name another tab — re-run `tab list`. A stale id still cannot close the user's tab (ownership is by `openedBy`, not by id).
+- **Traps:** the refs arm needs a page where a click ANYWHERE is counted (a wrong-tab click otherwise hides behind "nothing at those coordinates"); any
+  ctl/ clause that runs AFTER a refusal depends on agent-browser's post-refusal state (desync) — keep controls before the refusals; `pnpm run test`'s
+  `pretest` rebuilds `dist-electron/cli.js`, so never run it while a mutant rig is patching the bundle.

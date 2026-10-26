@@ -64,7 +64,7 @@ Details and gating order: [hooks-cli-socket.md](hooks-cli-socket.md).
   every launch, the exact quota drain this subsystem already got burned by, and
   an unresolved workspace is simply asked by the SessionStart hook.
 - Key resolution (`:37`): stored key → `LINEAR_API_KEY` env → none.
-  `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted). UI:
+  `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted when a keyring answers — see `workspaces.md` § Secrets; the dialog shows `SecretsNotice` when it does not). UI:
   `LinearSettings.tsx` (test/save/clear). IPC: `linear:keySource`/`checkKey`/
   `saveKey`/`clearKey`.
 

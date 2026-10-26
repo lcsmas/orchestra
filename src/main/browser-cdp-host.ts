@@ -32,12 +32,11 @@ import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser
 import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel } from '../shared/cdp-proxy-core.ts';
 import { decideAgentCdp } from '../shared/browser-profile.ts';
 import { diffTabs } from '../shared/cdp-tab-diff.ts';
+import { describeAgentTabs, type AgentTabView } from '../shared/browser-agent-tabs.ts';
+import { AGENT_OPENER } from '../shared/browser-tab-policy.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
-
-/** Interim cap until the tab policy (#393/#397) sits in front of `createTab`: the spec's 8 per workspace. */
-const INTERIM_TAB_CAP = 8;
 
 /** How long a tab keeps the agent's CDP state after its last session left (`ORCHESTRA_CDP_RELEASE_GRACE_MS` overrides it for rigs). */
 const RELEASE_GRACE_MS = Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) > 0 ? Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) : 15_000;
@@ -86,25 +85,22 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       const live = bp.tabContents(wsId, tabId);
       if (live) seatRelease(live, RELEASE_GRACE_MS, agentTouched ?? true);
     },
+    // Agent tab operations go through the panel's POLICY-CHECKED entry points (#397): the cap and close ownership are the
+    // human strip's own pure rules (browser-tab-policy.ts), a refusal rides the CDP error to agent-browser, and the focus
+    // rule (only the focused workspace's agent swaps the human's tab) lives in the panel, not here.
     createTab: async (url) => {
-      if (bp.listTabs(wsId).length >= INTERIM_TAB_CAP) throw new Error(`this workspace already has ${INTERIM_TAB_CAP} browser tabs`);
-      const tab = bp.createTab(wsId, { ...(url ? { url } : {}), openedBy: 'agent', activate: true });
-      const info = bp.listTabs(wsId).find((t) => t.id === tab.id);
+      const r = bp.agentOpenTab(wsId, url ? { url } : {});
+      if (!r.ok) throw new Error(r.message);
+      const info = bp.listTabs(wsId).find((t) => t.id === r.tabId);
       if (!info) throw new Error('the new browser tab disappeared');
       return toCdpTab(info);
     },
     closeTab: async (tabId) => {
-      const tab = bp.getTab(wsId, tabId);
-      if (!tab) throw new Error(`browser tab ${tabId} not found`);
-      if (tab.openedBy !== 'agent') throw new Error(`browser tab ${tabId} was opened by the user: an agent may only close tabs it opened`);
-      bp.closeTab(wsId, tabId);
+      const r = bp.agentCloseTab(wsId, tabId);
+      if (!r.ok) throw new Error(r.message);
     },
     activateTab: (tabId) => {
-      try {
-        bp.activateTab(wsId, tabId);
-      } catch {
-        /* the tab closed meanwhile */
-      }
+      bp.agentActivateTab(wsId, tabId);
     },
     userAgent: () => {
       const active = bp.getActiveTab(wsId);
@@ -290,6 +286,7 @@ export function initBrowserCliHost(): void {
 
 export type BrowserReply =
   | { ok: true; binary: string; wsUrl: string; env: Record<string, string> }
+  | { ok: true; tabs: AgentTabView[] }
   | { ok: false; code: 'superseded' | 'unregistered' | 'unknown-workspace' | 'unavailable'; error: string };
 
 /**
@@ -322,6 +319,11 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
     const again = store.getWorkspace(id);
     if (endpoints.get(id) !== pending || !again || again.archived) {
       return { ok: false, code: 'unknown-workspace', error: `workspace ${id} was closed while its browser endpoint was starting` };
+    }
+    // `{op:'tabs'}` (#397): who opened each tab and whether the agent may close it — the CLI refuses a forbidden close before agent-browser
+    // sees it (agent-browser prints "closed" and drops the tab from its own list whatever the proxy answers). Read-only; own workspace only.
+    if (msg.op === 'tabs') {
+      return { ok: true, tabs: describeAgentTabs(bp.listTabs(id), bp.getActiveTab(id)?.id ?? null, (t) => ep.server.core.targetIdFor(t), AGENT_OPENER) };
     }
     ep.daemon = true; // before ensureDaemon below: a connect that fails after spawning its daemon must still be closed at dispose
     bp.revealForAgent(id);

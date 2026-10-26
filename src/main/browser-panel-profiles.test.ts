@@ -431,6 +431,19 @@ test('ROTATION RACE: when the live cookie is no longer our copy (the user signed
   bp.destroyPanel(ws);
 });
 
+test('R2 (union): a rebuild clears what #397 pins by TAB ID — the last read_page outline (`refTabId`) and the « the agent switched tabs » notice (`agentSwitch`): the ids survive the rebuild, the pages do not', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  const panel = bp.getPanel(ws)! as any;
+  panel.refTabId = 't2';
+  panel.agentSwitch = { from: 't1', to: 't2', at: Date.now() };
+  bp.reprofilePanel(ws, P1);
+  assert.equal(panel.refTabId, undefined, 'the outline of the OLD page is forgotten (a later click ref_N must not target the new page of that id)');
+  assert.equal(panel.agentSwitch, undefined);
+  assert.equal(bp.getState(ws).agentSwitch, undefined, 'and the renderer is no longer told about a swap that no longer exists');
+});
+
 test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {
   const a = newWs(P1), b = newWs(P1), c = newWs(P2), d = newWs();
   for (const w of [a, b, c, d]) bp.ensurePanel(w);
