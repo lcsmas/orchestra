@@ -716,9 +716,9 @@ the first disk read is single-flight (`loading`).
   `shared/keyring-rig-world.ts` (driver env — `%hh`-decoded, malformed escape ⇒ refuse; the hidden world PROVEN from `/proc/self/mountinfo`: a fresh
   private tmpfs stacked on the human's runtime-dir mount — its own device (a bind of the real dir shares it), no propagation tags, nothing mounted on it — env var only
   the precondition; PHYSICAL preflight through `scripts/lib/rig-paths.mjs` — a
-  symlinked xdg / RIG_DIR / env value is refused; scratch guards run BEFORE any mkdir; arm world, bus config, secrets owner = our daemon by exe + a socket
-  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS (paths from `/proc/net/unix`, byte-exact; `ss -xnaeH` only for which inode is connected to which, strict: an
-  unplaceable row aborts after 3 snapshots; fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
+  symlinked xdg / RIG_DIR / env value — dangling link chains followed hop by hop, `%hh`-decoded — is refused; scratch guards run BEFORE any mkdir; arm world, bus config, secrets owner = our daemon by exe + a socket
+  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS (paths from `/proc/net/unix`, byte-exact; `ss -xnaeH` only for which inode is connected to which — candidate splits, a marker + well-formed `ino:/dev:/peers:` tail required after the peer inode, never
+  pattern-stripped; an unplaceable row that mentions one of the arm's own inodes aborts after 3 snapshots, a stranger's odd row is tolerated and counted; fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
   `--preflight-only` + source pins); processes are tracked by (pid, start time) from the private bus peers / app tree. Mutants
   `scripts/keyring-mutants.mjs` (unit; U*, W* world, D* driver/launcher) and `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps:
   gnome-keyring needs `--login` (password on stdin) THEN `--start` to publish `org.freedesktop.secrets`; the oracle uses `gdbus --address`

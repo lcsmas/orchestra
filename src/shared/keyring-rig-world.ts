@@ -240,6 +240,7 @@ export function parseProcNetUnix(text: string): { sockets: UnixSocket[]; inodes:
     const m = /^\s*\S+:\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\d+)(?: (.*))?$/.exec(line);
     if (!m) continue;
     const inode = Number(m[1]);
+    if (inode === 0) continue; // an embryonic socket (a connect() still waiting in a listener's backlog): it has no inode and shares its listener's path
     inodes.add(inode);
     if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2] });
   }
@@ -255,32 +256,50 @@ export interface SocketScan {
   peerOf: ReadonlyMap<number, number>;
 }
 
-const SS_TAIL = /(?:\s+(?:<->|-->|<--|---)(?:\s.*)?)?$/; // the trailing marker is the shutdown state: `<->`, `-->`, `<--` or `---` (measured on this host)
+const SS_MARKERS = new Set(['<->', '-->', '<--', '---']); // the shutdown state `ss` prints right after the peer inode (measured on this host)
+/** What `ss -e` prints AFTER the peer inode: the shutdown marker, then `ino:N dev:a/b sk:… cgroup:…` key:value tokens, and for a LISTENING socket with connections
+ *  waiting in its backlog `peers:` followed by those peers' inode numbers. Anything else (`zz`, a `*`, a path — i.e. the real `<local ino> <peer addr>` columns of
+ *  a row whose NAME contained a marker lookalike) means the candidate peer inode was placed too early. */
+const tailOk = (toks: readonly string[]): boolean => toks.every((t) => SS_MARKERS.has(t) || /^\d+$/.test(t) || /^[A-Za-z_]+:\S*$/.test(t));
 const addrOk = (tok: string | undefined): boolean => tok === '*' || (tok !== undefined && (tok.startsWith('/') || tok.startsWith('@')));
 
 /** `ss -xnaeH` rows → (local inode, peer inode) pairs: `Netid State Recv-Q Send-Q <local addr> <local ino> <peer addr> <peer ino> [<-> …]`. An address may
- *  contain spaces AND digit tokens (`/run/user/1000/my 123 sock`), so the inode columns are found by SHAPE (a numeric token followed by an address-looking
- *  token `*` / `/…` / `@…`, with an address-looking first token before it) — and when that still leaves more than one split, by /proc/net/unix (the local
- *  inode must be a real socket). A row left with zero or several splits goes to `unparsed` and the caller fails CLOSED (a row that silently disappears is a
- *  connection the scan cannot see). A unique shape needs no lookup, so a socket that closed between the two snapshots does not abort a scan. */
+ *  contain spaces, digit tokens AND marker lookalikes (`/p 1 /q 2 --- zz`), so nothing is stripped by pattern: every split (local inode at k, peer inode at j,
+ *  an address-looking token after each, and a shutdown marker + well-formed tail after j) is a CANDIDATE. One distinct candidate pair is
+ *  the answer; several are broken by /proc/net/unix (both inodes must be real sockets); still several — or none — and the row goes to `unparsed` and the
+ *  caller fails CLOSED (a row that silently disappears, or is mis-read, is a connection the scan cannot see). */
 export function parseSsPairs(text: string, known: ReadonlySet<number>): { pairs: Array<{ localIno: number; peerIno: number }>; unparsed: string[] } {
   const pairs: Array<{ localIno: number; peerIno: number }> = [];
   const unparsed: string[] = [];
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (line === '') continue;
-    const tok = line.replace(SS_TAIL, '').trim().split(/\s+/);
-    const last = tok.length - 1;
-    const peerIno = Number(tok[last]);
-    let cands: number[] = [];
-    if (tok.length >= 8 && /^\d+$/.test(tok[last]) && addrOk(tok[4])) {
-      for (let k = 5; k <= last - 2; k++) if (/^\d+$/.test(tok[k]) && addrOk(tok[k + 1])) cands.push(k);
+    const tok = line.split(/\s+/);
+    let cands: Array<{ localIno: number; peerIno: number }> = [];
+    if (tok.length >= 8 && addrOk(tok[4])) {
+      for (let k = 5; k < tok.length - 2; k++) {
+        if (!/^\d+$/.test(tok[k]) || !addrOk(tok[k + 1])) continue;
+        for (let j = k + 2; j < tok.length; j++) {
+          if (!/^\d+$/.test(tok[j])) continue;
+          // the peer inode is followed by the shutdown marker and a well-formed tail — never by anything else, and never "the last number in the row"
+          // (a listener's `peers: <inode>` list ends in numbers too)
+          if (SS_MARKERS.has(tok[j + 1] ?? '') && tailOk(tok.slice(j + 1))) cands.push({ localIno: Number(tok[k]), peerIno: Number(tok[j]) });
+        }
+      }
     }
-    if (cands.length > 1) cands = cands.filter((k) => known.has(Number(tok[k])));
-    if (cands.length === 1) pairs.push({ localIno: Number(tok[cands[0]]), peerIno });
-    else unparsed.push(line.slice(0, 160));
+    const distinct = (l: typeof cands): typeof cands => [...new Map(l.map((c) => [`${c.localIno}:${c.peerIno}`, c])).values()];
+    cands = distinct(cands);
+    if (cands.length > 1) cands = cands.filter((c) => known.has(c.localIno) && (c.peerIno === 0 || known.has(c.peerIno)));
+    if (cands.length === 1) pairs.push(cands[0]);
+    else unparsed.push(line); // the FULL row: relevance is decided on it ({@link unparsedAbout}); callers truncate only for display
   }
   return { pairs, unparsed };
+}
+
+/** The unplaceable rows that could hide a connection of ours: a connection has two rows (our end, the peer end) and both carry one of OUR socket inodes as a
+ *  whole token — so a row that mentions none of them cannot hide one (another agent's odd keeper socket, say) and need not abort a scan; a row that does, must. */
+export function unparsedAbout(unparsed: readonly string[], interest: ReadonlySet<number>): string[] {
+  return unparsed.filter((row) => row.split(/\s+/).some((t) => /^\d+$/.test(t) && interest.has(Number(t))));
 }
 
 /** Both sources → a {@link SocketScan}; `unparsed` lists every ss row that could not be placed unambiguously. */

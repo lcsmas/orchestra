@@ -23,10 +23,9 @@ export const PROBE_WAIT_MS = 5000;
 export const DBUS_CALL_TIMEOUT_S = '30';
 /** Wall-clock backstop for the WRAPPER (`sh`), never for gdbus: the wrapper holds no call, so killing it abandons nothing. */
 const WRAPPER_BACKSTOP_SLACK_MS = 2000;
-/** A failed attempt that ended sooner than this was an IMMEDIATE spawn/connect failure, not a reply (measured: an answer takes >= ~15 ms of real
- *  round trip, a spawn/connect failure 2-13 ms) — the only kind worth one retry. */
-export const QUICK_FAIL_MS = 50;
 export const RETRY_DELAY_MS = 100;
+/** A retry is only worth it if at least this much of the overall wait is still left after the delay. */
+export const MIN_RETRY_BUDGET_MS = 500;
 /** One attempt + at most ONE retry. */
 export const MAX_PROBE_ATTEMPTS = 2;
 /** The wrapper's poll tick. */
@@ -34,13 +33,15 @@ export const WRAPPER_TICK = '0.01';
 
 /** Wait-only wrapper: starts the probe child in the background (stdout / stderr to files, no pipe shared with us), polls it every 10 ms until it is gone or
  *  a WALL-CLOCK deadline (`$3` centiseconds, read from /proc/uptime with the `read` builtin — no fork, so a failing `sleep`/`grep` under process pressure
- *  cannot end the wait early), then either reports its exit status or exits 3 WITHOUT touching it — no signal is ever sent, the child finishes its own
- *  call and exits by itself. (Linux: finished-ness is read from /proc, because `kill -0` succeeds on a zombie; also a builtin read.) */
+ *  cannot end the wait early; if /proc/uptime is unreadable each tick counts as ~10 ms instead of freezing the clock), then either reports its exit status
+ *  or exits 3 WITHOUT touching it — no signal is ever sent, the child finishes its own call and exits by itself. (Linux: finished-ness is read from /proc,
+ *  because `kill -0` succeeds on a zombie; also a builtin read. A process whose status file cannot be read is treated as ALIVE, never as gone.) */
 export const WAIT_ONLY_SH = `out=$1; err=$2; limit=$3; shift 3
 "$@" >"$out" 2>"$err" </dev/null &
 pid=$!
-alive() { [ -e "/proc/$pid" ] || return 1; st=; while read -r k v; do if [ "$k" = "State:" ]; then st=$v; break; fi; done <"/proc/$pid/status" 2>/dev/null; case "$st" in Z*|"") return 1;; esac; return 0; }
-tick() { read -r up _ </proc/uptime; t=\${up%.*}\${up#*.}; while [ "\${t#0}" != "$t" ]; do t=\${t#0}; done; [ -n "$t" ] || t=0; }
+alive() { [ -e "/proc/$pid" ] || return 1; st=; while read -r k v; do if [ "$k" = "State:" ]; then st=$v; break; fi; done <"/proc/$pid/status" 2>/dev/null; case "$st" in Z*) return 1;; esac; return 0; }
+t=0
+tick() { up=; read -r up _ </proc/uptime 2>/dev/null; if [ -n "$up" ]; then t=\${up%.*}\${up#*.}; while [ "\${t#0}" != "$t" ]; do t=\${t#0}; done; [ -n "$t" ] || t=0; else t=$((t + 1)); fi; }
 tick; deadline=$((t + limit))
 while alive; do tick; [ "$t" -lt "$deadline" ] || break; sleep ${WRAPPER_TICK}; done
 if alive; then exit 3; fi
@@ -56,9 +57,10 @@ export interface ProbeAttempt {
   stderrLine: string;
 }
 
-/** What one probe attempt means, and whether it is worth ONE retry. Retry only an IMMEDIATE failure that is not a reply: a spawn error, or a nonzero
- *  exit in < {@link QUICK_FAIL_MS} whose stderr is not a D-Bus error reply (`GDBus.Error:…` = the bus answered: ServiceUnknown, NoSuchObject…). Never a real
- *  answer (status 0) and never the wait-only deadline (it fires only after the whole wait). `note` = anything the startup log should show. */
+/** What one probe attempt means, and whether it is worth ONE retry. Retry a failure that is not a reply: a spawn error of `sh`, or a nonzero exit whose
+ *  stderr is not a D-Bus error reply (`GDBus.Error:…` = the bus answered: ServiceUnknown, NoSuchObject…). Never a real answer (status 0) and never the
+ *  wait-only deadline (status 3 — the wall-clock wait cannot end early, so it only fires after the whole wait). No wall-clock "quick failure" test: under load a
+ *  genuine immediate failure can take 100 ms, and the overall-wait cap already bounds the retry. `note` = anything the startup log should show. */
 export function classifyProbeAttempt(a: ProbeAttempt): { state: SecretServiceState; retry: boolean; note: string | null } {
   if (a.spawnError) return { state: 'unavailable', retry: true, note: `spawn ${a.spawnError} (${a.elapsedMs} ms)` };
   if (a.status === 0) {
@@ -66,15 +68,18 @@ export function classifyProbeAttempt(a: ProbeAttempt): { state: SecretServiceSta
     return { state, retry: false, note: state === 'unavailable' ? `unparseable reply "${a.stdout.trim().slice(0, 60)}"` : null };
   }
   const reply = /GDBus\.Error:/.test(a.stderrLine); // the bus (or the service) answered with an error: a real "no service", not a failure to ask
-  const quick = a.elapsedMs < QUICK_FAIL_MS;
   const what = a.status === 3 ? 'wait deadline' : `exit ${a.status}`;
-  return { state: 'unavailable', retry: quick && !reply, note: reply ? null : `${what} (${a.elapsedMs} ms)${a.stderrLine ? `: ${a.stderrLine}` : ''}` };
+  return { state: 'unavailable', retry: !reply && a.status !== 3, note: reply ? null : `${what} (${a.elapsedMs} ms)${a.stderrLine ? `: ${a.stderrLine}` : ''}` };
 }
+
+/** Peer-controlled bytes (gdbus echoes what a bus server sent: ESC, CR, U+2028, `"`…) must not reach the log as-is: control / line-separator characters → `?`. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const cleanNote = (text: string): string => text.replace(CONTROL_CHARS, '?');
 
 const sleepSync = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const firstLine = (f: string): string => {
   try {
-    return (fs.readFileSync(f, 'utf8').split('\n').find((l) => l.trim() !== '') ?? '').trim().slice(0, 160);
+    return cleanNote((fs.readFileSync(f, 'utf8').split('\n').find((l) => l.trim() !== '') ?? '').trim()).slice(0, 160);
   } catch {
     return '';
   }
@@ -130,7 +135,6 @@ export function probeSecretService(
     let last: { state: SecretServiceState; retry: boolean; note: string | null } = { state: 'unavailable', retry: false, note: null };
     for (let attempt = 1; attempt <= MAX_PROBE_ATTEMPTS; attempt++) {
       const remaining = waitMs - (Date.now() - t0);
-      if (attempt > 1 && remaining < 500) break; // the one retry must fit inside the same overall wait
       fs.rmSync(out, { force: true });
       fs.rmSync(err, { force: true });
       const t = Date.now();
@@ -163,8 +167,10 @@ export function probeSecretService(
         stdout,
         stderrLine: firstLine(err),
       });
-      if (last.note) note(`probe#${attempt} ${last.note}${last.retry && attempt === 1 ? ' — retrying once' : ''}`);
-      if (!last.retry || attempt === MAX_PROBE_ATTEMPTS) break;
+      // the one retry must fit inside the SAME overall wait — and the note only says "retrying" when it really will
+      const willRetry = last.retry && attempt < MAX_PROBE_ATTEMPTS && waitMs - (Date.now() - t0) - RETRY_DELAY_MS >= MIN_RETRY_BUDGET_MS;
+      if (last.note) note(`probe#${attempt} ${last.note}${willRetry ? ' — retrying once' : ''}`);
+      if (!willRetry) break;
       sleepSync(RETRY_DELAY_MS);
     }
     return last.state;
@@ -257,6 +263,6 @@ export function selectLinuxPasswordStore(
   const exported = decision.store === 'gnome-libsecret' && bus === 'runtime-dir'; // never for `basic`: an isolated instance must not carry the bus
   if (exported) deps.exportBusAddress(probeEnv(deps.env).DBUS_SESSION_BUS_ADDRESS as string);
   // What the decision saw, for the startup log: a wrong guess about a user's desktop is diagnosable from it.
-  const facts = `desktop="${deps.env.XDG_CURRENT_DESKTOP ?? ''}" session="${deps.env.DESKTOP_SESSION ?? ''}" bus=${bus}${exported ? ' (exported)' : ''}${notes.length ? ` probe-notes="${notes.join('; ')}"` : ''}`;
+  const facts = `desktop="${deps.env.XDG_CURRENT_DESKTOP ?? ''}" session="${deps.env.DESKTOP_SESSION ?? ''}" bus=${bus}${exported ? ' (exported)' : ''}${notes.length ? ` probe-notes=${JSON.stringify(notes.map(cleanNote).join('; '))}` : ''}`;
   return { ...decision, probeMs, facts };
 }

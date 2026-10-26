@@ -49,3 +49,21 @@ test('absolutePieces: a plain path, a `:` list, `unix:path=…`, `KEY=/x` — on
   for (const want of ['/plain dir', '/plain%20dir', '/x']) assert.ok(absolutePieces('/plain%20dir:/x').includes(want), `both the literal and the decoded form (a literal % is legal in a path): ${want}`);
   assert.deepEqual(absolutePieces('unix:path=%2Fbad%zz%2Fbus'), [], 'malformed escape: nothing decoded, nothing guessed (refused lexically before this)');
 });
+
+test('F2 (seat 1): a DANGLING chain of links (d1 -> d2 -> <runtime>/x, and 3 hops) is followed hop by hop — realpath and a single lstat both miss it', () => {
+  const target = path.join(standin, 'never-created');
+  const d2 = path.join(scratch, 'chain-d2'), d1 = path.join(scratch, 'chain-d1');
+  fs.symlinkSync(target, d2);
+  fs.symlinkSync(d2, d1);
+  assert.ok(physicalForms(d1).includes(target), '2 hops: the final target is among the forms');
+  const e3 = path.join(scratch, 'chain-e3'), e2 = path.join(scratch, 'chain-e2'), e1 = path.join(scratch, 'chain-e1');
+  fs.symlinkSync(target, e3);
+  fs.symlinkSync(e3, e2);
+  fs.symlinkSync(e2, e1);
+  assert.ok(physicalForms(e1).includes(target), '3 hops');
+  const c1 = path.join(scratch, 'cycle-1'), c2 = path.join(scratch, 'cycle-2');
+  fs.symlinkSync(c2, c1);
+  fs.symlinkSync(c1, c2);
+  assert.ok(physicalForms(c1).length > 0, 'a cycle ends (bounded), it does not hang');
+  assert.ok(!physicalForms(path.join(scratch, 'no-link-here')).includes(target), 'control: an unrelated path does not');
+});

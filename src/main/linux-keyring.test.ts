@@ -1,10 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import type { SecretServiceState } from '../shared/password-store.ts';
-import { DBUS_CALL_TIMEOUT_S, PROBE_WAIT_MS, QUICK_FAIL_MS, WAIT_ONLY_SH, classifyProbeAttempt, makeProbeDir, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
+import { DBUS_CALL_TIMEOUT_S, PROBE_WAIT_MS, WAIT_ONLY_SH, classifyProbeAttempt, cleanNote, makeProbeDir, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
 
 // #389 — the impure half of the keyring selection: the REAL probe code path (a real child process) against a
 // stub `gdbus`, and the switch application against a fake `app.commandLine`.
@@ -359,21 +360,19 @@ function countingStub(name: string, body: string): { program: string; count: () 
   return { program, count: () => Number(fs.existsSync(cnt) ? fs.readFileSync(cnt, 'utf8') : 0) };
 }
 
-test('classifyProbeAttempt: retry ONLY an immediate failure that is not a reply — never a real answer, never a bus reply error, never the deadline', () => {
+test('classifyProbeAttempt: retry a failure that is not a reply — never a real answer, a bus reply error or the deadline — and NEVER on wall-clock time (round-7 m1)', () => {
   const at = (over: Partial<Parameters<typeof classifyProbeAttempt>[0]>) => classifyProbeAttempt({ status: 1, elapsedMs: 6, stdout: '', stderrLine: '', ...over });
-  // retried
+  // retried — however long the failing attempt took (under load an immediate failure can take 100 ms+; a wall-clock "quick" test flaked 1 in 30)
+  for (const elapsedMs of [0, 6, 49, 50, 110, 400, 2500]) assert.equal(at({ stderrLine: 'Error connecting: Could not connect: Connection refused', elapsedMs }).retry, true, `connect failure after ${elapsedMs} ms`);
   assert.equal(at({ spawnError: 'EAGAIN' }).retry, true, 'sh could not even be spawned');
-  assert.equal(at({ stderrLine: 'Error connecting: Could not connect: Connection refused' }).retry, true, 'a connect failure');
   assert.equal(at({ status: 127, stderrLine: 'gdbus: not found' }).retry, true, 'a fork/exec failure inside the wrapper');
-  assert.equal(at({ status: 3, elapsedMs: 5 }).retry, true, 'the wait-only deadline firing after 5 ms is not the deadline');
-  assert.equal(at({ status: 1, elapsedMs: QUICK_FAIL_MS - 1 }).retry, true, 'just under the quick bound');
   // not retried
   assert.equal(at({ status: 0, stdout: '(<true>,)', elapsedMs: 3 }).retry, false, 'a real answer, however fast');
   assert.equal(at({ status: 0, stdout: '(<true>,)' }).state, 'locked');
   assert.equal(at({ stderrLine: 'Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: x' }).retry, false, 'the bus ANSWERED: a real "no service"');
+  assert.equal(at({ stderrLine: 'Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: x', elapsedMs: 3000 }).retry, false);
   assert.equal(at({ stderrLine: 'Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: x' }).note, null, 'and that is not an abnormal outcome (no probe-notes on a normal no-service)');
-  assert.equal(at({ status: 3, elapsedMs: 5000 }).retry, false, 'the real wait-only deadline');
-  assert.equal(at({ status: 1, elapsedMs: QUICK_FAIL_MS }).retry, false, 'not quick any more');
+  for (const elapsedMs of [5, 5000]) assert.equal(at({ status: 3, elapsedMs }).retry, false, `the wait-only deadline is final (${elapsedMs} ms): the wall-clock wait cannot end early, so exit 3 IS the deadline`);
   assert.equal(at({ status: 0, stdout: 'junk', elapsedMs: 3 }).retry, false, 'an unparseable reply is a reply');
   assert.match(at({ status: 0, stdout: 'junk' }).note ?? '', /unparseable reply "junk"/);
   // what is reported
@@ -463,4 +462,68 @@ test('probe: the wait is WALL-CLOCK — a failing `sleep` (fork pressure) cannot
   const ms = Date.now() - t0;
   assert.equal(state, 'unavailable');
   assert.ok(ms >= 550 && ms < 2500, `waited the real 600 ms even though every sleep failed (returned after ${ms} ms)`);
+});
+
+// ── round-7 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('m2: peer-controlled bytes in gdbus\'s stderr never reach the startup log raw — control / line-separator characters are neutralised and the note is JSON-quoted, so a `" session="` cannot forge a field', () => {
+  assert.equal(cleanNote('a\x1b[31mb\rc\u2028d\u2029e\x00f\x7fg\u0085h'), 'a?[31mb?c?d?e?f?g?h');
+  assert.equal(cleanNote('plain: text — ok'), 'plain: text — ok');
+  const bin = path.join(scratch, 'bin-hostile');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'gdbus'), '#!/bin/sh\nprintf \'Error: \\033[2Jbad\\r\\342\\200\\250" session="forged" x\\n\' >&2; exit 1\n', { mode: 0o755 });
+  const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x', XDG_CURRENT_DESKTOP: 'sway', PATH: `${bin}:/usr/bin:/bin` } as NodeJS.ProcessEnv;
+  const f = fakeDeps({ env });
+  const sel = selectLinuxPasswordStore({ ...f.deps, probe: undefined });
+  const facts = sel?.facts ?? '';
+  assert.match(facts, /probe-notes="/, 'the failure is reported');
+  assert.doesNotMatch(facts, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/, 'no raw control / separator character reaches the line');
+  const quoted = /probe-notes=("(?:[^"\\]|\\.)*")$/.exec(facts)?.[1];
+  assert.ok(quoted, `the note is one JSON string at the end of the facts: ${facts}`);
+  assert.equal((facts.replace(quoted as string, '').match(/session=/g) ?? []).length, 1, 'outside the quoted note there is exactly the one real `session=` field — the forged one is data inside the string');
+  assert.match(JSON.parse(quoted as string), /session="forged"/, 'the quote survives as DATA (escaped), not as structure');
+});
+
+/** run the REAL wrapper against a hanging stub after rewriting one /proc path in it (to a path that cannot be read) */
+function probeWithBrokenProc(program: string, waitMs: number, from: string): { state: SecretServiceState; ms: number } {
+  const real = spawnSync;
+  const broken = ((cmd: string, args: string[], opts: Record<string, unknown>) => real(cmd, args.map((a) => (a.includes('probe') || !a.includes(from) ? a : a.split(from).join('/nonexistent/proc-x'))), opts as never)) as unknown as typeof spawnSync;
+  const t0 = Date.now();
+  const state = probeSecretService({ program, waitMs, spawn: broken });
+  return { state, ms: Date.now() - t0 };
+}
+
+test('m3a: an unreadable /proc/uptime does NOT freeze the wall clock — each tick counts as ~10 ms, so the deadline still fires (the shipped 5 s no longer becomes the ~7 s backstop)', () => {
+  const hang = stub('g-uptime-hang', 'exec /usr/bin/sleep 6');
+  const { state, ms } = probeWithBrokenProc(hang, 600, '/proc/uptime');
+  assert.equal(state, 'unavailable');
+  assert.ok(ms >= 500 && ms < 2400, `the deadline fired from tick counting after ${ms} ms (the 2 s wrapper backstop would have ended it at ~2.6 s)`);
+});
+
+test('m3b: an unreadable /proc/<pid>/status means ALIVE, never "gone" — the wrapper keeps waiting and still honours the deadline instead of blocking in `wait`', () => {
+  const hang = stub('g-status-hang', 'exec /usr/bin/sleep 6');
+  const { state, ms } = probeWithBrokenProc(hang, 600, '/status');
+  assert.equal(state, 'unavailable');
+  assert.ok(ms >= 500 && ms < 2400, `deadline honoured after ${ms} ms (treating it as dead blocks in \`wait\` until the backstop)`);
+  const quick = stub('g-status-quick', 'echo "(<true>,)"');
+  assert.equal(probeWithBrokenProc(quick, 3000, '/status').state, 'locked', 'and a child that finishes is still collected');
+});
+
+test('m3c: the note says "retrying once" only when a retry really follows (attempts left AND budget left)', () => {
+  const down = countingStub('g-note-down', 'echo "Error connecting: Could not connect: x" >&2; exit 1');
+  const withRetry: string[] = [];
+  probeSecretService({ program: down.program, note: (m) => withRetry.push(m) });
+  assert.match(withRetry[0], / — retrying once$/);
+  assert.doesNotMatch(withRetry[1], /retrying/, 'the second (last) attempt never says it will retry');
+  const tight = countingStub('g-note-tight', 'echo "Error connecting: Could not connect: x" >&2; exit 1');
+  const noBudget: string[] = [];
+  probeSecretService({ program: tight.program, waitMs: 400, note: (m) => noBudget.push(m) });
+  assert.equal(tight.count(), 1, 'no budget for a retry');
+  assert.equal(noBudget.length, 1);
+  assert.doesNotMatch(noBudget[0], /retrying/, 'so the note must not claim one');
+});
+
+test('wrapper script: alive() never treats an unreadable status as dead; tick() has a counting fallback', () => {
+  assert.match(WAIT_ONLY_SH, /case "\$st" in Z\*\) return 1;; esac; return 0;/, 'only a zombie is not alive');
+  assert.doesNotMatch(WAIT_ONLY_SH, /Z\*\|""/, 'the empty-state branch that read "unreadable" as gone is gone');
+  assert.match(WAIT_ONLY_SH, /else t=\$\(\(t \+ 1\)\); fi/, 'no /proc/uptime → count ticks');
 });

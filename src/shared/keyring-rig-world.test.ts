@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, normPath, parseUnixSockets,
-  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseProcNetUnix, parseSsPairs, buildSocketScan, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
+  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseProcNetUnix, parseSsPairs, buildSocketScan, unparsedAbout, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
   type ArmWorld, type DriverWorldFacts, type OwnerEvidence, type TreeEvidence,
 } from './keyring-rig-world.ts';
 import { HIDDEN_MI, HOST_MI, REBIND_ON_HIDE_MI, SELF_BIND_MI } from './keyring-rig-world.fixtures.ts';
@@ -263,12 +263,12 @@ u_str ESTAB  0      0                                        * 900 * 0        --
   assert.deepEqual(socketPaths([602], scan), [digits], 'and to a path with a digit token in it');
   assert.equal(scan.pathByIno.get(603), digits, 'paths are byte-exact from /proc/net/unix');
   // unplaceable rows are surfaced, not dropped
-  const bad = buildSocketScan(net, `${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\nu_str ESTAB 0 0 /x 5 /y 8 * 9\n`);
-  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5', 'u_str ESTAB 0 0 /x 5 /y 8 * 9'], 'junk, a non-number, and a row with TWO plausible splits where neither inode is a known socket all surface');
+  const bad = buildSocketScan(net, `${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\nu_str ESTAB 0 0 /x 5 /y 8 * 9 <->\n`);
+  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5', 'u_str ESTAB 0 0 /x 5 /y 8 * 9 <->'], 'junk, a non-number, and a row with TWO plausible splits where neither inode is a known socket all surface');
   const churn = buildSocketScan(net, `${ss}u_str ESTAB 0 0 * 4242424 * 4242425 <->\n`);
   assert.deepEqual(churn.unparsed, [], 'a UNIQUE shape needs no lookup: a socket pair that closed between the two snapshots does not abort the scan');
   assert.equal(churn.scan.peerOf.get(4242424), 4242425);
-  const tie = buildSocketScan(procNetUnix([[8, null], [9, null]]), 'u_str ESTAB 0 0 /x 5 /y 8 * 9\n');
+  const tie = buildSocketScan(procNetUnix([[8, null], [9, null]]), 'u_str ESTAB 0 0 /x 5 /y 8 * 9 <->\n');
   assert.deepEqual(tie.unparsed, [], 'two plausible splits: the one whose local inode is a real socket wins');
   assert.equal(tie.scan.peerOf.get(8), 9);
   assert.deepEqual(parseSsPairs('\n  \n', new Set()).unparsed, [], 'blank lines are not rows');
@@ -338,4 +338,87 @@ test('F2: physicalWorldChecks — a clean rig passes; a symlinked xdg / RIG_DIR 
   assert.ok(bad((f) => { f.envPhysical.GNOME_KEYRING_CONTROL = [`${HUMAN}/keyring`]; }).includes('env-path-values-resolve-physically-clean'), 'an env value that is a link into it');
   assert.ok(bad((f) => { f.envPhysical.PATH.push(`${HUMAN}/bin`); }).includes('env-path-values-resolve-physically-clean'), 'a PATH element that is a link into it');
   assert.ok(ids(failed(physicalWorldChecks({ ...good, rigReal: '/mnt/real/rig', xdgReal: '/mnt/real/rig/xdg' }))).length === 0, 'a rig dir under a symlinked BASE is fine as long as xdg sits right under the physical rig dir');
+});
+
+// ── round-7 seat-1 F1: marker lookalikes inside a path must not fabricate a pair ─────────────────────────────────────────────────
+test('F1 (seat 1): a path containing ` --- ` / ` <-> ` / ` --> ` / ` <-- ` plus shape tokens cannot make a fabricated pair — the REAL link (700 → 701 → the human socket) is found, or the row is reported', () => {
+  const HUMAN_BUS = `${HUMAN}/bus`;
+  const R = '/scratch/rig';
+  const names = [`${R}/hostile`, `${R}/p 1 /q 2 --- zz`, `${R}/p 1 /q 2 <-> zz`, `${R}/q 1 /r 2 --> zz`, `${R}/d 5 /e 6 <-- w 7 * 8`, `${R}/m 9 /n 10 --- 11 * 12`, `${R}/a --- b`];
+  for (const name of names) {
+    const net = procNetUnix([[700, name], [701, HUMAN_BUS]]);
+    const ss = `u_str ESTAB  0      0      ${name} 700 * 701 <-> ino:201225872 dev:0/36 sk:1\nu_str ESTAB  0      0      ${HUMAN_BUS} 701 * 700 <-> ino:5 dev:0/36 sk:2\n`;
+    const { scan, unparsed } = buildSocketScan(net, ss);
+    assert.deepEqual(unparsed, [], `placed: ${name}`);
+    assert.deepEqual([...scan.peerOf].filter(([k]) => k !== 700 && k !== 701), [], `no fabricated pair for: ${name}`);
+    assert.equal(scan.peerOf.get(700), 701, `the true link survives: ${name}`);
+    assert.ok(socketPaths([700], scan).includes(HUMAN_BUS), `the client end sees the human socket: ${name}`);
+  }
+});
+
+test('F1: ambiguity FAILS CLOSED — a name carrying the inode numbers of ANOTHER real pair gives two plausible splits, and the row is reported, never guessed', () => {
+  const net = procNetUnix([[700, '/s/p 600 /q 601 --- zz'], [701, `${HUMAN}/bus`], [600, null], [601, null]]);
+  const ss = 'u_str ESTAB 0 0 /s/p 600 /q 601 --- zz 700 * 701 <-> ino:1 dev:0/36\nu_str ESTAB 0 0 * 600 * 601 <->\nu_str ESTAB 0 0 * 601 * 600 <->\n';
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.equal(unparsed.length, 1, 'the hostile row has TWO plausible splits whose inodes are all real: refuse to pick');
+  assert.match(unparsed[0], /^u_str ESTAB 0 0 \/s\/p 600/);
+  assert.equal(scan.peerOf.get(700), undefined, 'and nothing was guessed for it');
+  // the same numbers, but the lookalike pair names unknown inodes → the known one wins
+  const ok = buildSocketScan(procNetUnix([[700, '/s/p 1 /q 2 --- zz'], [701, `${HUMAN}/bus`]]), 'u_str ESTAB 0 0 /s/p 1 /q 2 --- zz 700 * 701 <-> ino:1 dev:0/36\n');
+  assert.deepEqual(ok.unparsed, []);
+  assert.equal(ok.scan.peerOf.get(700), 701);
+  // a name that merely repeats the real pair's own numbers is harmless (same pair either way)
+  const same = buildSocketScan(procNetUnix([[700, '/s/p 700 /q 701 --- zz'], [701, null]]), 'u_str ESTAB 0 0 /s/p 700 /q 701 --- zz 700 * 701 <->\n');
+  assert.deepEqual(same.unparsed, []);
+  assert.equal(same.scan.peerOf.get(700), 701);
+});
+
+test('F3 (seat 1): /proc/net/unix paths are byte-exact — a trailing / leading space in the name is NOT trimmed', () => {
+  const t = procNetUnix([[1, '/a/trail '], [2, '/a/two  spaces'], [3, '/a/ lead']]);
+  assert.deepEqual(parseProcNetUnix(t).sockets, [{ inode: 1, path: '/a/trail ' }, { inode: 2, path: '/a/two  spaces' }, { inode: 3, path: '/a/ lead' }]);
+});
+
+test('final-run finding: a LISTENING row with a backlog (`peers: <inode>…` after the marker) is ONE pair; the tail grammar rejects splits that would swallow real columns', () => {
+  const net = procNetUnix([[87321665, '/a/keepers/ws.sock'], [87321667, null]]);
+  const row = 'u_str LISTEN 1      511                   /a/keepers/ws.sock 87321665 * 0        <-> ino:2293473 dev:0/64 peers: 87321667 87321668\n';
+  const { scan, unparsed } = buildSocketScan(net, row);
+  assert.deepEqual(unparsed, [], 'the numbers after `peers:` are tail, not a second peer inode');
+  assert.equal(scan.peerOf.get(87321665), 0);
+  // the same rows without any marker are not real ss output: reported, never guessed
+  assert.equal(buildSocketScan(net, 'u_str LISTEN 1 511 /a/keepers/ws.sock 87321665 * 0\n').unparsed.length, 1);
+  // a row whose tail holds something that is not tail (`zz`, `*`, a path) cannot be a candidate's tail
+  const hostile = buildSocketScan(procNetUnix([[700, '/s/p 1 /q 2 --- zz'], [701, null]]), 'u_str ESTAB 0 0 /s/p 1 /q 2 --- zz 700 * 701 <-> ino:1 dev:0/36 peers: 702\n');
+  assert.deepEqual(hostile.unparsed, []);
+  assert.equal(hostile.scan.peerOf.get(700), 701, 'the true pair, with a peers list in the tail as well');
+});
+
+test('F1 + tail grammar: when the row\'s TRUE inodes are not known (closed between the two snapshots) and the name carries two REAL inodes, the fabricated pair is rejected by the tail grammar — the row is reported, not mis-read', () => {
+  const net = procNetUnix([[600, null], [601, null]]); // 700 / 701 (this row's real sockets) are gone from /proc/net/unix
+  const { scan, unparsed } = buildSocketScan(net, 'u_str ESTAB 0 0 /s/p 600 /q 601 --- zz 700 * 701 <-> ino:1 dev:0/36\n');
+  assert.equal(unparsed.length, 1, 'no candidate survives: the split (600 → 601) leaves `zz 700 * 701` as its "tail", which is not a tail');
+  assert.equal(scan.peerOf.size, 0, 'and NO pair was fabricated from the numbers inside the name');
+});
+
+test('relevance: an unplaceable ss row aborts a scan only if it mentions one of OUR socket inodes as a whole token (the FULL row is kept, so a long path cannot hide it); a stranger\'s odd row does not', () => {
+  const longPath = '/x/' + 'd'.repeat(200);
+  const net = procNetUnix([[500, longPath], [900, null]]);
+  const rows = [`u_str ESTAB 0 0 ${longPath} 500 weird-peer-addr 900 <->`, 'u_str ESTAB 0 0 /stranger/odd 77777 weird 88888 <->'];
+  const { unparsed } = buildSocketScan(net, rows.join('\n') + '\n');
+  assert.equal(unparsed.length, 2, 'both rows are unplaceable (a peer address that is neither `*`, `/…` nor `@…`)');
+  assert.ok(unparsed[0].length > 200, 'the FULL row is kept — its inode tokens are past char 160');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([500])), [unparsed[0]], 'mentions our inode 500 (beyond the display cut) → relevant');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([900])), [unparsed[0]], 'also by the peer end');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([123])), [], 'mentions none of ours → tolerated');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([5])), [], 'a substring of a number is not the token (5 vs 500)');
+  assert.deepEqual(unparsedAbout(unparsed, new Set()), [], 'no interest, nothing relevant');
+});
+
+test('/proc/net/unix: an embryonic socket (inode 0, a connection waiting in a listener\'s backlog) is not a socket entry — it must not shadow its listener\'s path', () => {
+  const t = procNetUnix([[0, '/a/listen.sock'], [321, '/a/listen.sock'], [0, null]]);
+  const r = parseProcNetUnix(t);
+  assert.deepEqual(r.sockets, [{ inode: 321, path: '/a/listen.sock' }], 'only the real listener');
+  assert.deepEqual([...r.inodes], [321]);
+  const { scan } = buildSocketScan(t, 'u_str LISTEN 1 511 /a/listen.sock 321 * 0 <-> ino:1 dev:0/36 peers: 322\n');
+  assert.equal([...scan.pathByIno].filter(([, p]) => p === '/a/listen.sock').length, 1, 'one entry, keyed by the real inode');
+  assert.equal(scan.pathByIno.get(321), '/a/listen.sock');
 });

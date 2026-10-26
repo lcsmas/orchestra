@@ -24,7 +24,7 @@ import { descendantsOf, isAlive, procStat, signalIfSame } from './lib/rig-procs.
 import { absolutePieces, physicalForms, physicalPath } from './lib/rig-paths.mjs';
 import {
   armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, buildSocketScan, parseUnixSockets, physicalWorldChecks, referencesHumanRuntime,
-  rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, treeChecks,
+  rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, treeChecks, unparsedAbout,
 } from '../src/shared/keyring-rig-world.ts';
 
 const argv = process.argv.slice(2);
@@ -268,28 +268,30 @@ function secretsOwnerPid(w) {
   return m ? +m[1] : null;
 }
 /** `ss -xnaeH`: every unix socket on the host as NAMES only (a netlink dump — nothing is connected to) — the only way to turn a `socket:[N]` fd into the path it is bound / connected to. */
-function ssRows() {
+function ssRows(interest) {
   // Two snapshots (ss, then /proc/net/unix) of a host where sockets come and go: a row can name an inode that closed in between. A row that is STILL
-  // unplaceable on the 3rd try is a real ambiguity — abort (a row that vanishes is a connection the scan cannot see).
-  let unparsed = [];
+  // unplaceable on the 3rd try AND mentions one of OUR socket inodes (`interest`) is a real ambiguity — abort (a row that vanishes is a connection the scan
+  // cannot see). An unplaceable row that mentions none of them cannot hide a connection of ours (another agent's odd socket): tolerated, not silent — counted.
+  let mine = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     const r = spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 });
     if (r.status !== 0 || !r.stdout) throw new Error(`ss -xnaeH failed (rc ${r.status}) — the socket scan cannot run, so no clause may rely on it`);
     const built = buildSocketScan(fs.readFileSync('/proc/net/unix', 'utf8'), r.stdout);
-    unparsed = built.unparsed;
-    if (!unparsed.length) {
+    mine = unparsedAbout(built.unparsed, interest);
+    if (!mine.length) {
       if (built.scan.peerOf.size === 0) throw new Error('ss -xnaeH produced no (inode, peer) pairs — the socket scan saw nothing');
+      if (built.unparsed.length) console.log(`  [scan] ${built.unparsed.length} unplaceable ss row(s) mention none of this arm's socket inodes — tolerated (first: ${JSON.stringify(built.unparsed[0].slice(0, 120))})`);
       return built.scan;
     }
     spawnSync('sleep', ['0.05']);
   }
-  throw new Error(`ss -xnaeH: ${unparsed.length} row(s) could not be placed after 3 snapshots (first: ${JSON.stringify(unparsed[0])}) — a row that vanishes is a connection the scan cannot see`);
+  throw new Error(`ss -xnaeH: ${mine.length} row(s) mentioning this arm's sockets could not be placed after 3 snapshots (first: ${JSON.stringify(mine[0].slice(0, 160))}) — a row that vanishes is a connection the scan cannot see`);
 }
 const inodesOf = (fds) => fds.map(socketInode).filter((i) => i !== null);
 function ownerEvidence(w) {
   const pid = secretsOwnerPid(w);
   const ev = { ownerPid: pid, driverPid: process.pid, exeBase: '', cmdline: [], fdTargets: [], socketPaths: [], envEntries: [], sockets: parseUnixSockets(fs.readFileSync('/proc/net/unix', 'utf8')), run: w.run };
-  if (pid) { track(w, pid); ev.exeBase = exeBaseOf(pid); ev.cmdline = readList(`/proc/${pid}/cmdline`); ev.fdTargets = fdTargetsOf(pid); ev.socketPaths = socketPaths(inodesOf(ev.fdTargets), ssRows()); ev.envEntries = readList(`/proc/${pid}/environ`); }
+  if (pid) { track(w, pid); ev.exeBase = exeBaseOf(pid); ev.cmdline = readList(`/proc/${pid}/cmdline`); ev.fdTargets = fdTargetsOf(pid); ev.socketPaths = socketPaths(inodesOf(ev.fdTargets), ssRows(new Set(inodesOf(ev.fdTargets)))); ev.envEntries = readList(`/proc/${pid}/environ`); }
   return ev;
 }
 /** the app's process tree: fds + env of every descendant (tracked for teardown as a side effect — keepers detach and outlive the app) */
@@ -297,7 +299,7 @@ function treeEvidence(w, a) {
   const pids = descendantsOf(a.app.pid);
   const t = { pids: pids.length, fdTargets: [], socketPaths: [], envEntries: [], run: w.run };
   for (const p of pids) { track(w, p); t.fdTargets.push(...fdTargetsOf(p)); t.envEntries.push(...readList(`/proc/${p}/environ`)); }
-  t.socketPaths = socketPaths(inodesOf(t.fdTargets), ssRows());
+  t.socketPaths = socketPaths(inodesOf(t.fdTargets), ssRows(new Set(inodesOf(t.fdTargets))));
   return t;
 }
 /** a bus peer is ours only if it holds a socket bound / connected under THIS arm's runtime dir (a pid reported by the bus could have been reused since) */
@@ -308,7 +310,7 @@ const groupAlive = (pid) => { try { process.kill(-pid, 0); return true; } catch 
 /** kill a detached process GROUP only while its recorded leader is still the same process (a pgid is the leader's pid) */
 function killGroup(g, sig) { if (g && isAlive(g.pid, g.start)) { try { process.kill(-g.pid, sig); } catch {} } }
 async function reapWorld(w) {
-  try { const rows = ssRows(); for (const p of busPeerPids(w)) if (holdsArmSocket(w, p, rows)) track(w, p); } catch {}
+  try { const peers = busPeerPids(w); const rows = ssRows(new Set(peers.flatMap((p) => inodesOf(fdTargetsOf(p))))); for (const p of peers) if (holdsArmSocket(w, p, rows)) track(w, p); } catch {}
   if (w.busProc) for (const p of descendantsOf(w.busProc.pid)) track(w, p);
   if (w.appProc) for (const p of descendantsOf(w.appProc.pid)) track(w, p); // keepers detach and outlive the app
   try { const hp = +fs.readFileSync(w.hungPidFile, 'utf8'); if (hp > 1 && readList(`/proc/${hp}/cmdline`).join(' ') === 'sleep 30' && readList(`/proc/${hp}/environ`).includes(`XDG_RUNTIME_DIR=${w.run}`)) track(w, hp); } catch {}

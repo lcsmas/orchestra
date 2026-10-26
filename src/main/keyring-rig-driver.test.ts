@@ -113,6 +113,9 @@ test('F2 (seat 1): a SYMLINKED xdg / RIG_DIR / env value passes every lexical cl
   // 4. the same link given %hh-ESCAPED in a key no exact-match check covers (round-6 minor): lexical AND the raw physical pass miss it
   { const { rig, env } = mk('phys-esc'); const link = path.join(rig, 'esc-link'); fs.symlinkSync(path.join(fakeRuntime, 'xdg'), link);
     const r = preflight({ ...env, SOME_ADDRESS: `unix:path=${encodeURIComponent(link)}%2Fbus` }); assert.equal(r.rc, 3, r.out); assert.match(r.out, /env-path-values-resolve-physically-clean \(env keys whose value is a link\/path into it: SOME_ADDRESS\)/); }
+  // 5. a TWO-hop dangling chain d1 -> d2 -> <stand-in>/x (seat-1 F2): realpath fails and one lstat sees only d2
+  { const { rig, env } = mk('phys-chain'); const d2 = path.join(rig, 'd2'), d1 = path.join(rig, 'd1'); fs.symlinkSync(path.join(fakeRuntime, 'never-created'), d2); fs.symlinkSync(d2, d1);
+    const r = preflight({ ...env, SOME_SOCKET: d1 }); assert.equal(r.rc, 3, r.out); assert.match(r.out, /env-path-values-resolve-physically-clean \(env keys whose value is a link\/path into it: SOME_SOCKET\)/); }
   // control: the same shapes with innocent targets pass
   { const { rig, env } = mk('phys-ok'); const ok = path.join(rig, 'ok-link'); fs.mkdirSync(path.join(rig, 'real-target')); fs.symlinkSync(path.join(rig, 'real-target'), ok);
     const r = preflight({ ...env, SOME_DIR: ok }); assert.equal(r.rc, 0, r.out); assert.match(r.out, /\[preflight\] physical: 3\/3 clauses ok/); }
@@ -151,9 +154,12 @@ test('driver --preflight-only: every forged world is REFUSED (rc 3, naming the c
 
 test('driver source (m2/m3): ss is read strictly (a row that does not parse aborts), the mountinfo knob is gated on --preflight-only, the real run reads /proc/self/mountinfo', () => {
   const d = driver();
-  assert.match(d, /const built = buildSocketScan\(fs\.readFileSync\('\/proc\/net\/unix', 'utf8'\), r\.stdout\);\n    unparsed = built\.unparsed;\n    if \(!unparsed\.length\) \{/);
+  assert.match(d, /const built = buildSocketScan\(fs\.readFileSync\('\/proc\/net\/unix', 'utf8'\), r\.stdout\);\n    mine = unparsedAbout\(built\.unparsed, interest\);\n    if \(!mine\.length\) \{/);
   assert.match(d, /for \(let attempt = 1; attempt <= 3; attempt\+\+\) \{/, 'two snapshots of a churning host: retried, then abort');
-  assert.match(d, /throw new Error\(`ss -xnaeH: \$\{unparsed\.length\} row\(s\) could not be placed after 3 snapshots/);
+  assert.match(d, /mine = unparsedAbout\(built\.unparsed, interest\);/, 'only rows that mention one of THIS arms socket inodes abort a scan');
+  assert.match(d, /ssRows\(new Set\(inodesOf\(t\.fdTargets\)\)\)/, 'the tree scan names its own inodes');
+  assert.match(d, /ssRows\(new Set\(inodesOf\(ev\.fdTargets\)\)\)/, 'the owner scan names its own inodes');
+  assert.match(d, /throw new Error\(`ss -xnaeH: \$\{mine\.length\} row\(s\) mentioning this arm's sockets could not be placed after 3 snapshots/);
   assert.match(d, /if \(r\.status !== 0 \|\| !r\.stdout\) throw new Error\(`ss -xnaeH failed/);
   assert.match(d, /if \(built\.scan\.peerOf\.size === 0\) throw new Error\('ss -xnaeH produced no \(inode, peer\) pairs/, 'a scan that saw nothing is a failure, never a clean result');
   assert.match(d, /if \(miFlag && !PREFLIGHT_ONLY\) refuse\(/);
@@ -211,8 +217,8 @@ test('driver source: it reads nothing of the human\'s — no real bus, no real d
 test('driver source: sockets are resolved to PATHS through ss (a fd link is only `socket:[N]`); bus peers are tracked only if they hold an arm socket; the oracle waits long', () => {
   const d = driver();
   assert.match(d, /spawnSync\('ss', \['-xnaeH'\]/);
-  assert.match(d, /socketPaths\(inodesOf\(t\.fdTargets\), ssRows\(\)\)/, 'the tree\'s sockets');
-  assert.match(d, /ev\.socketPaths = socketPaths\(inodesOf\(ev\.fdTargets\), ssRows\(\)\)/, 'the secrets owner\'s sockets');
+  assert.match(d, /socketPaths\(inodesOf\(t\.fdTargets\), ssRows\(new Set\(inodesOf\(t\.fdTargets\)\)\)\)/, 'the tree\'s sockets');
+  assert.match(d, /ev\.socketPaths = socketPaths\(inodesOf\(ev\.fdTargets\), ssRows\(new Set\(inodesOf\(ev\.fdTargets\)\)\)\)/, 'the secrets owner\'s sockets');
   assert.match(d, /if \(holdsArmSocket\(w, p, rows\)\) track\(w, p\)/, 'a pid the bus reports is signalled only if it holds a socket of THIS arm');
   assert.match(d, /'--timeout', '30', \.\.\.args\]/, 'gdbus gets the shipped probe\'s long timeout: a client vanishing mid-call aborts a gnome-keyring-daemon');
   assert.doesNotMatch(d, /'--timeout', '2'/);

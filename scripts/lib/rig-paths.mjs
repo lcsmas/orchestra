@@ -18,14 +18,22 @@ export function physicalPath(p) {
   }
 }
 
-/** Every physical form of one absolute path piece: its realpath (when it exists) and, if it is itself a symlink, the target it points at (also when dangling). */
+/** Every physical form of one absolute path piece: its realpath (when it exists), where a missing leaf under a linked parent would land, and EVERY hop of
+ *  a symlink chain followed by hand (a DANGLING chain `d1 -> d2 -> <runtime>/x` never resolves with realpath, and one `lstat` sees only the first hop). */
 export function physicalForms(piece) {
   const out = [];
   try { out.push(fs.realpathSync(piece)); } catch { /* missing or dangling */ }
   out.push(physicalPath(piece)); // a MISSING leaf under a linked parent (`<link>/bus`) still lands where the link points
-  try {
-    if (fs.lstatSync(piece).isSymbolicLink()) out.push(path.resolve(path.dirname(piece), fs.readlinkSync(piece)));
-  } catch { /* not there */ }
+  let cur = piece;
+  for (let hops = 0; hops < 40; hops++) { // 40 = the kernel's own symlink-follow limit; also ends a cycle
+    let target;
+    try {
+      if (!fs.lstatSync(cur).isSymbolicLink()) break;
+      target = path.resolve(path.dirname(cur), fs.readlinkSync(cur));
+    } catch { break; }
+    out.push(target, physicalPath(target));
+    cur = target;
+  }
   return out;
 }
 
