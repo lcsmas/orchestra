@@ -843,10 +843,10 @@ try {
     for (let i = 1; i <= DELETES; i++) {
       const pid = await b.cdp.eval(`window.orchestra.browserProfileCreate(${JSON.stringify(`Doomed${i}`)}).then((r) => r.profile?.id ?? null)`);
       await chooseProfile(b, pid);
-      // a build that cannot survive a rebuild leaves the session dead for the rest of the run: revive it (`tab new`, which works on such a build) so each
-      // delete is judged on its OWN rebuild and the ctl stays about the instrument, not about the earlier failure. A revive is counted and reported.
+      // a build that cannot survive a rebuild leaves the session dead (or on a blank tab) after the ATTACH above: revive it (`tab new`, which works on such a
+      // build) so the delete is judged on its OWN rebuild and the ctl stays about the instrument. A revive is counted, and fails the delete clause below.
       let ctl = probe(); let revived = false;
-      if (!ctl.ok) { browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}`)], 30000); await sleep(1500); ctl = probe(); revived = true; }
+      if (!ctl.ok) { browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}`)], 30000); revived = true; for (let k = 0; k < 14 && !ctl.ok; k++) { await sleep(500); ctl = probe(); } }
       await openSettings(b);
       const idx = (await rows(b)).findIndex((r) => r.id === pid);
       await clickSel(b, '[data-bp-delete]', idx);
@@ -858,7 +858,7 @@ try {
       const d = probe(); dels.push({ ...d, ctl: ctl.ok, revived }); if (!d.ok || !ctl.ok) console.log(`  MEASURED [rebuild] delete #${i}: before ${ctl.ok} · after ${show(d)}`);
     }
     clause('rebuild', 'ctl/agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
-    clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0, `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page; last: ${show(dels.at(-1))}`);
+    clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0 && !dels.some((x) => x.revived), `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page (${dels.filter((x) => x.revived).length} cycles needed a revive after the attach); last: ${show(dels.at(-1))}`);
     const wl = wire(loopMark);
     const blanks = wl.filter((l) => /client->proxy .*"method":"Target\.createTarget"/.test(l)).length;
     const stale = wl.filter((l) => /proxy->client .*Session with given id not found/.test(l)).length;
