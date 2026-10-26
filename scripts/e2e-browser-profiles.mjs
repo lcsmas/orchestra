@@ -18,7 +18,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* clauses are controls (identity, scratch containment, own sway, instrument).
 // Mutant BUILDS that must redden each arm: scripts/e2e-browser-profiles-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session,cdp]
+// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session,logout,cdp]
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,cdp').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,logout,cdp').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -812,6 +812,35 @@ try {
     clause('session', 'workspace-without-the-profile-is-signed-out-after-the-restart', jS2 === 'anon', `ws2 /whoami = ${jS2}`);
     await teardown(b, 'term'); b = null;
   }
+  // ── logout: a logout is never undone by the session-cookie promotion (seat-1 finding of #400: 12/200 resurrected at a logout 243-250 ms after the login) ──
+  if (ARMS.has('logout')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-logout');
+    const lid = await b.cdp.eval(`window.orchestra.browserProfileCreate('Logout').then((r) => r.profile?.id ?? null)`);
+    /** Run the login→logout sweep on the page of the CURRENT workspace's first tab and read its verdict from the page. */
+    const sweep = async (ws, query) => {
+      await typeUrl(b, `${BASE}/profiles-logout.html?ws=${ws}&${query}`);
+      let res = null;
+      await softWait(async () => { const t = await pageText(b, `ws=${ws}&`); try { res = JSON.parse(t.trim()); return true; } catch { return false; } }, 60000, `sweep ${query} to finish`);
+      return res;
+    };
+    await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b); // ws2 stays EPHEMERAL: the control (no promotion in its session)
+    const ctl = await sweep(2, 'n=300&lo=238&hi=258&spread=3000');
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b); await chooseProfile(b, lid);
+    const prof = await sweep(1, 'n=400&lo=238&hi=258&spread=4000');
+    const wide = await sweep(1, 'n=300&lo=225&hi=275&spread=3000');
+    clause('logout', 'ctl/the-sweep-really-logged-in-and-out', !!ctl && !!prof && ctl.seen === ctl.n && prof.seen === prof.n && wide.seen === wide.n, `cookies visible right after each login: ephemeral ${ctl?.seen}/${ctl?.n}, profile ${prof?.seen}/${prof?.n}, wide ${wide?.seen}/${wide?.n}`);
+    clause('logout', 'ctl/ephemeral-workspace-has-no-resurrection', ctl?.alive === 0, `ephemeral control (no promotion in its session): ${ctl?.alive}/${ctl?.n} alive after the logouts (band ${JSON.stringify(ctl?.band)})`);
+    clause('logout', 'logout-is-never-undone-by-the-promotion', prof?.alive === 0 && wide?.alive === 0, `profile workspace, band 238-258 ms: ${prof?.alive}/${prof?.n} resurrected ${JSON.stringify(prof?.names)}; band 225-275 ms: ${wide?.alive}/${wide?.n} ${JSON.stringify(wide?.names)} (must be 0 — before the post-write reconciliation seat 1 measured 12/200 in the 243-250 band)`);
+    // the promotion still WORKS for a cookie that is NOT logged out (the fix did not turn it off)
+    await typeUrl(b, P(1, '&signin=session&lg=1'));
+    await softWait(async () => /sid=sess/.test((await pageText(b, '&lg=1')) ?? ''), 15000, 'a session sign-in on the profile');
+    await sleep(900);
+    const kept = await sidExpiry(b, '&lg=1');
+    clause('logout', 'promotion-still-keeps-a-cookie-that-was-not-logged-out', typeof kept === 'number' && (kept - Date.now()) / 86400000 > 29, `sid.expires = ${JSON.stringify(kept)} → ${typeof kept === 'number' ? ((kept - Date.now()) / 86400000).toFixed(2) : 'n/a'} days ahead`);
+    await teardown(b, 'term'); b = null;
+  }
+
   // ── cdp: the agent's CLI against a SHARED profile (policy wired in the CDP proxy host) ──
   if (ARMS.has('cdp')) {
     if (b) { await teardown(b, 'term'); b = null; }

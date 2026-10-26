@@ -39,6 +39,7 @@ const MUTANTS = [
   { id: 'P19-proxy-ignores-the-frame-tree', file: CDPHOST, arms: 'cdp', from: 'frameUrls: bp.tabFrameUrls(wsId, tab.id) });', to: 'frameUrls: [tab.url] });', red: ['cookies-get-refused-when-the-page-embeds-another-site'] },
   { id: 'P20-getcookies-without-urls-judged-on-the-page-only', file: PURE, arms: 'cdp', from: 'return frameUrls ? frameUrls.filter(isHttp) : null;', to: 'return [];', red: ['cookies-get-refused-when-the-page-embeds-another-site'] },
   { id: 'P21-getcookies-refused-without-urls-always', file: PURE, arms: 'cdp', from: 'return frameUrls ? frameUrls.filter(isHttp) : null;', to: 'return null;', red: ['own-page-cookies-can-be-read-by-the-agent', 'cookies-get-allowed-again-on-a-page-without-foreign-frames'] },
+  { id: 'P22-no-post-write-compensation-logout-is-undone', file: PANEL, arms: 'logout', from: "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", to: '', red: ['logout-is-never-undone-by-the-promotion'] },
 ];
 
 const only = process.argv.slice(2).filter((a) => a !== '--check');

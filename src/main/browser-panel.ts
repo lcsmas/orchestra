@@ -288,8 +288,14 @@ export function setBrowserProfileResolver(fn: ((wsId: string) => BrowserProfileI
 
 const FLUSH_COOKIES_MS = 1500;
 /** A cookie is promoted this long after its LAST change: a site that rewrites it at every request costs one `set`, and what is promoted is the
- *  cookie as it is THEN (re-read), never the snapshot the event carried — so a logout in between is never undone. */
+ *  cookie as it is THEN (re-read), never the snapshot the event carried. What is guaranteed: a logout whose event the main process has SEEN before the write is never undone
+ *  (pre-write guard), and one that lands inside the read → write window is undone right after the write (post-write reconciliation, seat-1 finding of #400) —
+ *  the copy can stay alive for the few ms of that window, no longer. */
 const PROMOTE_DEBOUNCE_MS = 250;
+/** After a promotion's write, how long before the logout re-check runs a second time (the removal event can be delivered after the write's promise). */
+const RECONCILE_SETTLE_MS = 300;
+/** How long after our compensating `remove` resolves its own removal event is still expected. */
+const OWN_ECHO_MS = 500;
 const signInSessions = new WeakMap<Electron.Session, () => void>();
 
 /** What keeps a profile signed in across a restart (PROFILE sessions only — never an ephemeral workspace's), once per session:
@@ -303,27 +309,73 @@ function persistSignIns(ses: Electron.Session): void {
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let alive = true;
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Per cookie: the sequence number of its LAST event (a change OR a removal). A promotion whose read started before a later event never writes:
-   *  a logout after the read stays a logout, a rotated token is not overwritten by the value that was read, and the later change schedules its own. */
+  const settling = new Set<ReturnType<typeof setTimeout>>();
+  /** Per cookie: the sequence number of its LAST event (a change OR a removal). A promotion whose read started before a later event SEEN BY THE MAIN PROCESS never
+   *  writes: a rotated token is not overwritten by the value that was read, and the later change schedules its own. An event not yet delivered is the post-write
+   *  reconciliation's job (below). */
   let seq = 0;
   const changedSeq = new Map<string, number>();
+  /** Per cookie: the sequence number of its last GENUINE removal (a logout, an expiry, an eviction — not the `overwrite` that replaces a cookie with its promoted copy). */
+  const removedSeq = new Map<string, number>();
+  /** A compensating `remove` of OUR OWN promoted copy emits a removal event too: it is expected ONCE and must be neither read as a logout nor promoted. Consumed by
+   *  that first echo, and dropped {@link OWN_ECHO_MS} after the remove resolves (an echo that never comes must not swallow a later, genuine logout). */
+  const ownRemoval = new Set<string>();
+  /** The promotion is read → write across the network service, and a removal it processes BETWEEN the two reaches us only AFTER the write was issued: the
+   *  pre-write guard cannot see it and the 30-day copy would resurrect a cookie the site just deleted (measured on the real app: login → logout at 243-250 ms,
+   *  12/200). So after the write, if a genuine removal for this cookie arrived since the READ STARTED and the live cookie is still exactly OUR copy, remove it.
+   *  A user who logged in again meanwhile has a different live cookie and is left alone. Checked right after the write and once more after a short settle
+   *  (the removal event can be delivered after the write's promise). */
+  const reconcile = (key: string, written: { url: string; name: string; value: string; expirationDate: number }, domain: string, path: string, started: number): void => {
+    if (!alive || (removedSeq.get(key) ?? 0) <= started) return;
+    void ses.cookies
+      .get({ name: written.name, domain, path })
+      .then((live) => {
+        if (!alive || (removedSeq.get(key) ?? 0) <= started) return undefined;
+        const mine = live.find((c) => c.name === written.name && c.domain === domain && c.value === written.value && Math.abs((c.expirationDate ?? 0) - written.expirationDate) < 2);
+        if (!mine) return undefined;
+        ownRemoval.add(key);
+        return ses.cookies.remove(written.url, written.name).finally(() => {
+          const t = setTimeout(() => {
+            settling.delete(t);
+            ownRemoval.delete(key);
+          }, OWN_ECHO_MS);
+          settling.add(t);
+        });
+      })
+      .catch((err) => log.warn('browser-panel: undoing a promotion after a logout failed', err));
+  };
   const promote = (key: string, cookie: Electron.Cookie): void => {
     pending.delete(key);
     const started = seq;
     void ses.cookies
       .get({ name: cookie.name, domain: cookie.domain, path: cookie.path })
-      .then((live) => {
-        if (!alive || (changedSeq.get(key) ?? 0) > started) return undefined;
+      .then(async (live) => {
+        if (!alive || (changedSeq.get(key) ?? 0) > started) return;
         // `get({domain})` also matches SUBDOMAINS: promote the cookie the EVENT named, never a same-name sibling.
         const own = live.find((c) => c.name === cookie.name && c.domain === cookie.domain && (c.path ?? '/') === (cookie.path ?? '/'));
         const p = own ? promoteSessionCookie(own, Date.now() / 1000) : null;
-        return p ? ses.cookies.set(p) : undefined;
+        if (!p) return;
+        await ses.cookies.set(p);
+        const domain = cookie.domain ?? '';
+        const path = cookie.path ?? '/';
+        reconcile(key, p, domain, path, started);
+        const t = setTimeout(() => {
+          settling.delete(t);
+          reconcile(key, p, domain, path, started);
+        }, RECONCILE_SETTLE_MS);
+        settling.add(t);
       })
       .catch((err) => log.warn('browser-panel: promoting a session cookie failed', err));
   };
-  const onChanged = (_e: unknown, cookie: Electron.Cookie, _cause: string, removed: boolean): void => {
+  const onChanged = (_e: unknown, cookie: Electron.Cookie, cause: string, removed: boolean): void => {
     const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+    const genuineRemoval = removed && cause !== 'overwrite';
+    if (genuineRemoval && ownRemoval.has(key)) {
+      ownRemoval.delete(key); // the echo of our own compensating remove: not a logout, nothing to promote or flush on its account
+      return;
+    }
     changedSeq.set(key, ++seq);
+    if (genuineRemoval) removedSeq.set(key, seq);
     if (!removed && promoteSessionCookie(cookie, 0)) {
       if (!pending.has(key)) pending.set(key, setTimeout(() => promote(key, cookie), PROMOTE_DEBOUNCE_MS));
     }
@@ -339,6 +391,8 @@ function persistSignIns(ses: Electron.Session): void {
     ses.cookies.removeListener('changed', onChanged);
     for (const t of pending.values()) clearTimeout(t);
     pending.clear();
+    for (const t of settling) clearTimeout(t);
+    settling.clear();
   });
 }
 

@@ -56,7 +56,8 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); const dom = d.domain ?? new URL(d.url).hostname; s.liveCookies = (s.liveCookies ?? []).filter((c) => !(c.name === d.name && c.domain === dom && (c.path ?? '/') === d.path)); s.liveCookies.push({ name: d.name, value: d.value, domain: dom, hostOnly: !d.domain, path: d.path, secure: d.secure, httpOnly: d.httpOnly, session: false, expirationDate: d.expirationDate }); if (s.onSet) s.onSet(d); return Promise.resolve(); },
+        remove(url, name) { (s.cookieRemoves ??= []).push({ url, name }); s.liveCookies = (s.liveCookies ?? []).filter((c) => c.name !== name); if (s.onRemove) s.onRemove(name); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
     return s;
@@ -316,13 +317,13 @@ test('settleClosedViews waits for the views a re-profile closed to be really des
   assert.equal(await bp.settleClosedViews(500), true, 'true again once the views are gone');
 });
 
-const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false) => {
+const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false, cause = 'explicit') => {
   const ses = sessions().get(sesName);
-  for (const [, fn] of [...ses.cookieListeners]) fn({}, cookie, 'explicit', removed);
+  for (const [, fn] of [...ses.cookieListeners]) fn({}, cookie, cause, removed);
   return ses;
 };
 /** The stub sessions are shared per partition name across arms: forget what an earlier arm recorded on this one. */
-const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.liveCookies = undefined; ses.getGate = undefined; return ses; };
+const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.cookieRemoves = undefined; ses.liveCookies = undefined; ses.getGate = undefined; ses.onSet = undefined; ses.onRemove = undefined; return ses; };
 const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms)); // past the 250 ms per-cookie debounce + the re-read
 
@@ -511,4 +512,96 @@ test('tabFrameUrls: the live frame tree of ONE tab (main + subframes), a pure re
   assert.equal(bp.tabFrameUrls(ws, 't1'), undefined, 'a throwing tree');
   wcOf(t1).frameBoom = false;
   assert.equal((globalThis as any).__bpViews.length, viewsBefore, 'a read builds nothing');
+});
+
+// ── review of seat 1 (G5 of #400): a logout that the network service processes BETWEEN the promotion's read and its write reaches the main process only
+//    AFTER the write was issued — the order the earlier stub could not show. The post-write reconciliation must undo OUR copy, and only ours.
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('LOGOUT RACE: a removal delivered AFTER the write (read → write → removal event) removes the 30-day copy — checked right away and again after the settle', async () => {
+  for (const deliverAfterMs of [5, 200]) { // right after the write's promise, and late (the settle re-check must still catch it)
+    const ws = newWs(P1);
+    bp.ensurePanel(ws);
+    const ses = fresh(sessions().get(PERSIST(P1)));
+    const cookie = { ...SESSION_COOKIE, name: `sid-late-${deliverAfterMs}` }; // its own key per iteration
+    ses.liveCookies = [cookie];
+    ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), deliverAfterMs); // the site's logout, delivered late
+    cookieEvent(PERSIST(P1), cookie);
+    await settle(260 + deliverAfterMs + 450);
+    assert.equal(ses.cookieSets?.length, 1, 'the cookie WAS promoted (the removal was not yet visible to the pre-write guard)');
+    assert.deepEqual(ses.cookieRemoves, [{ url: ses.cookieSets[0].url, name: cookie.name }], `the resurrected copy was removed (removal delivered ${deliverAfterMs} ms after the write)`);
+    assert.equal(ses.liveCookies.some((c: any) => c.name === cookie.name), false, 'nothing of the cookie is left alive');
+    bp.destroyPanel(ws);
+  }
+});
+
+test('LOGOUT RACE: the `overwrite` removal that OUR OWN write emits (the session cookie replaced by its promoted copy) is not a logout — the copy stays', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), SESSION_COOKIE, true, 'overwrite'), 5); // the echo of replacing the old cookie
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  await settle(900);
+  assert.equal(ses.cookieSets?.length, 1);
+  assert.equal(ses.cookieRemoves, undefined, 'an overwrite is not a logout: the promoted copy is kept');
+  assert.equal(ses.liveCookies.some((c: any) => c.name === 'sid'), true);
+});
+
+test('LOGOUT RACE: the user logged IN AGAIN meanwhile (a different live cookie) — the old value\'s removal never deletes the NEW login', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  ses.onSet = () => {
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), SESSION_COOKIE, true, 'explicit'); // logout of the old value …
+      ses.liveCookies = [{ ...SESSION_COOKIE, value: 'v-new-login' }]; // … and a fresh session cookie set by the next login
+      cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, value: 'v-new-login' });
+    }, 5);
+  };
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  await settle(1500);
+  assert.equal(ses.cookieRemoves, undefined, 'the live cookie is not OUR copy any more: left alone');
+  assert.ok(ses.liveCookies.some((c: any) => c.value === 'v-new-login'), 'the new login survives');
+});
+
+test('LOGOUT RACE: our own compensating remove emits a removal event of its own — it is neither a logout nor a reason to cancel the NEXT login\'s promotion', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-echo' };
+  ses.liveCookies = [cookie];
+  let echo: () => void = () => {};
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 5); // the late logout
+  ses.onRemove = () => { echo = () => cookieEvent(PERSIST(P1), cookie, true, 'explicit'); }; // OUR remove's own event, delivered when the test says
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(260 + 450);
+  assert.equal(ses.cookieRemoves?.length, 1, 'compensated once');
+  // the user logs in again; that promotion's live read is IN FLIGHT when the echo of our earlier remove arrives
+  ses.onSet = undefined;
+  ses.liveCookies = [cookie];
+  const release = gateReads(ses);
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(320); // debounce fired, the read is pending on the gate
+  echo();
+  release();
+  await settle(500);
+  assert.equal(ses.cookieRemoves.length, 1, 'the echo did not trigger a second remove');
+  assert.equal(ses.cookieSets.length, 2, 'the echo was swallowed: it did NOT cancel the new login\'s promotion');
+});
+
+test('LOGOUT RACE: an echo that never comes does not swallow a LATER, genuine logout (the suppression is dropped shortly after the remove resolves)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-noecho' };
+  for (let cycle = 1; cycle <= 2; cycle++) {
+    ses.liveCookies = [cookie];
+    ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 5);
+    cookieEvent(PERSIST(P1), cookie);
+    await settle(260 + 450);
+    assert.equal(ses.cookieRemoves?.length, cycle, `cycle ${cycle}: the late logout was compensated (no echo of our remove was ever delivered)`);
+    await settle(700); // past OWN_ECHO_MS
+  }
 });
