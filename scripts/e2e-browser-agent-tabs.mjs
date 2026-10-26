@@ -38,7 +38,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'strip', 'ownership', 'children', 'attach', 'background', 'refs'];
+const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'strip', 'ownership', 'navigate', 'children', 'attach', 'background', 'refs'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js.
  *  Each edit is a regex/string that must match EXACTLY once; `arms` must go RED, every ctl/* clause of those arms must stay GREEN. */
 const MUTANTS = {
@@ -56,6 +56,8 @@ const MUTANTS = {
   'notice-over-toolbar': { file: 'css', edits: [['.browser-agent-switch{display:flex;', '.browser-agent-switch{position:fixed;left:0;top:88px;width:100%;height:38px;z-index:5;box-sizing:border-box;display:flex;']], arms: ['open'], why: 'the swap notice is an overlay over the toolbar row: it covers the URL input and the design button' },
   'ref-spelling-exact': { file: 'cli', edits: [['const normRef = (r) => r.trim().toLowerCase();', 'const normRef = (r) => r;']], arms: ['ownership'], why: 'the CLI gate matches refs exactly: `tab close T1` / ` t1 ` slip past it, agent-browser normalises and prints "closed" (the lie + desync the pre-flight exists to stop)' },
   'destroyers-allowed': { file: 'chunk', edits: [[/if\((\w+)\.has\((\w+)\)\)\{const (\w+)=this\.port\.listTabs\(\)\.find\((\w+)=>\4\.id===(\w+)\);if\(\3&&\3\.openedBy!=="agent"\)throw new/, 'if(!1){const $3=this.port.listTabs().find($4=>$4.id===$5);if($3&&$3.openedBy!=="agent")throw new']], arms: ['ownership'], why: 'Page.crash / Runtime.terminateExecution reach the USER\'s tab renderer through the proxy' },
+  'internal-nav-allowed': { file: 'chunk', edits: [[/if\((\w+)==="Page\.navigate"\|\|\1==="Page\.navigateToHistoryEntry"\)\{/, 'if(!1){']], arms: ['navigate'], why: 'chrome://crash|kill|hang reach the USER\'s tab renderer through Page.navigate / `open` (seat-3 re-attack F4)' },
+  'internal-nav-guards-agent': { file: 'chunk', edits: [[/(const (\w+)=this\.port\.listTabs\(\)\.find\(\w+=>\w+\.id===\w+\);if\(\2&&\2\.openedBy)!=="agent"(&&await this\.navigatesToInternalUrl)/, '$1==="agent"$3']], arms: ['navigate'], why: 'the navigation gate protects the AGENT\'s tab instead of the user\'s' },
   'silent-swap': { file: 'chunk', edits: [[/(\w+)\.agentSwitch=\{from:(\w+)===(\w+)\.id\?(\w+):\2,to:\3\.id,at:Date\.now\(\)\}/, 'void 0']], arms: ['open', 'front'], why: 'an agent swap of the tab on screen is not announced to the human' },
   'background-activates': { file: 'chunk', edits: [[/(\.\.\.\w+\.url\?\{url:\w+\.url\}:\{\},openedBy:\w+,)activate:\w+===\w+\}/, '$1activate:!0}'], [/\.wsFocused\?\{act:"activate"\}:\{act:"none",reason:"background-workspace"\}/, '.wsFocused||!0?{act:"activate"}:{act:"none",reason:"background-workspace"}']], arms: ['background'], why: 'a background workspace\'s agent activates tabs (the focus rule is gone)' },
   'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['refs'], why: 'a ref from another tab is reported as agent-browser\'s raw error, not browser_stale_ref' },
@@ -721,6 +723,81 @@ const ARM_FNS = {
     const alive = oB ? await within(oB.eval('document.title'), 6000).catch(() => null) : null;
     try { oB?.close(); } catch {}
     clause(A, 'a-renderer-destroying-method-on-the-users-tab-is-refused', /opened by the user — an agent may only destroy the tabs it opened/.test(crash?.error?.message ?? '') && /opened by the user — an agent may only destroy the tabs it opened/.test(term?.error?.message ?? '') && alive === 'Tabs fixture B', `Page.crash → ${JSON.stringify(crash?.error?.message ?? crash).slice(0, 120)}; Runtime.terminateExecution → ${JSON.stringify(term?.error?.message ?? term).slice(0, 120)}; the user's page still answers: ${JSON.stringify(alive)}`);
+  },
+
+  async navigate(ctx) {
+    // Seat-3 re-attack F4: `open chrome://crash` (also kill/hang, `about:crash`) on the USER's tab wedged its renderer through a verb the Page.crash gate does not see.
+    // Every wait is bounded: a mutant that lets the URL through leaves a dead renderer that never answers (and would hold the rig + its mutated bundle).
+    const { W1, URL: U } = ctx; const A = 'navigate';
+    await reset(ctx);
+    await cli(ctx, W1, ['tab', 'new', U.a]);
+    await softWait(async () => !!titled(await reg(ctx, W1), /Tabs fixture A/), 15000, 'page A tab');
+    const labA = await abLabel(ctx, W1, /Tabs fixture A/); const labB = await abLabel(ctx, W1, /Tabs fixture B/);
+    const within = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${ms}ms`)), ms))]);
+    const tgtB = (await ctx.targets()).find((t) => t.type === 'page' && t.url.startsWith(U.b));
+    const tgtA = (await ctx.targets()).find((t) => t.type === 'page' && t.url.startsWith(U.a));
+    const answers = async (t) => { let o; try { o = await within(Cdp.connect(t.webSocketDebuggerUrl), 5000); return await within(o.eval('1+1'), 4000); } catch { return null; } finally { try { o?.close(); } catch {} } };
+    clause(A, 'ctl/the-users-tab-answers-before-anything-is-sent', !!tgtB && !!tgtA && !!labA && !!labB && (await answers(tgtB)) === 2, `user's tab target ${tgtB?.id?.slice(0, 8)}… eval 1+1 → ${tgtB ? await answers(tgtB) : 'no target'}; labels A=${labA} B=${labB}`);
+    // 1) the CLI verb: the daemon's current tab is the USER's tab, then `open chrome://crash`
+    const sw = await cli(ctx, W1, ['tab', labB ?? 't0']);
+    const openCrash = await cli(ctx, W1, ['open', 'chrome://crash'], { timeoutMs: 20000 });
+    await sleep(1200);
+    const afterCli = tgtB ? await answers(tgtB) : null;
+    clause(A, 'cli-open-chrome-crash-on-the-users-tab-is-refused-and-the-tab-survives', sw.code === 0 && openCrash.code !== 0 && /browser-internal URL/.test(openCrash.stdout + openCrash.stderr) && afterCli === 2, `tab ${labB}: ${show(sw)}; open chrome://crash: ${show(openCrash)}; user's tab eval 1+1 → ${afterCli}`);
+    // 2) raw Page.navigate on the root session: several spellings (case, leading space, about:, view-source:)
+    const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const raw = await rawProxyClient(ep.wsUrl);
+    const rep = {}; let rootSid = null;
+    try {
+      const gt = await raw.call('Target.getTargets');
+      const tid = gt.result?.targetInfos?.find((t) => /Tabs fixture B/.test(t.title))?.targetId;
+      rootSid = tid ? (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
+      if (rootSid) for (const url of ['chrome://kill', 'CHROME://SHORTHANG', ' chrome://crash', 'about:hang', 'view-source:chrome://hang', 'devtools://devtools/bundled/inspector.html']) rep[url] = await raw.callOn(rootSid, 'Page.navigate', { url });
+      const refusedAll = !!rootSid && Object.values(rep).every((r) => /browser-internal URL/.test(r?.error?.message ?? ''));
+      await sleep(1200);
+      const afterRaw = tgtB ? await answers(tgtB) : null;
+      clause(A, 'raw-page-navigate-to-internal-urls-on-the-users-tab-is-refused-and-the-tab-survives', refusedAll && afterRaw === 2, `${Object.entries(rep).map(([u, r]) => `${JSON.stringify(u)} → ${(r?.error?.message ?? JSON.stringify(r)).slice(0, 70)}`).join(' | ')}; user's tab eval 1+1 → ${afterRaw}`);
+      // 3) a history entry is resolved to its URL first — the real getNavigationHistory shape works: the CURRENT entry (an ordinary page) still navigates
+      const hist = rootSid ? await raw.callOn(rootSid, 'Page.getNavigationHistory') : null;
+      const cur = hist?.result?.entries?.[hist.result.currentIndex];
+      const toEntry = cur ? await raw.callOn(rootSid, 'Page.navigateToHistoryEntry', { entryId: cur.id }) : null;
+      await sleep(600);
+      clause(A, 'ctl/a-history-entry-of-an-ordinary-page-still-navigates', !!cur && toEntry?.error === undefined && (await answers(tgtB)) === 2, `current entry ${cur?.id} ${cur?.url} → ${JSON.stringify(toEntry).slice(0, 120)}`);
+      // 4) the same refusal on every CHILD session of the user's tab (a worker + a cross-site iframe)
+      const ev = []; raw.onEvent((m) => ev.push(m));
+      if (rootSid) await raw.callOn(rootSid, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+      await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.frame)}).then(() => true)`);
+      await softWait(async () => ev.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid), 15000, 'a child session to auto-attach');
+      await sleep(600);
+      const kids = ev.filter((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid).map((m) => m.params?.sessionId).filter(Boolean);
+      const kidReps = []; for (const k of kids) kidReps.push(await raw.callOn(k, 'Page.navigate', { url: 'chrome://kill' }));
+      await sleep(1200);
+      const afterKids = tgtB ? await answers(tgtB) : null;
+      clause(A, 'ctl/the-user-tab-has-child-sessions', kids.length >= 1, `${kids.length} child session(s) auto-attached on the user's page`);
+      clause(A, 'a-child-session-cannot-send-the-users-tab-to-an-internal-url', kidReps.length >= 1 && kidReps.some((r) => /browser-internal URL/.test(r?.error?.message ?? '')) && kidReps.every((r) => /browser-internal URL/.test(r?.error?.message ?? '') || /^Session with given id not found\.$/.test(r?.error?.message ?? '')) && afterKids === 2, `child replies ${kidReps.map((r) => (r?.error?.message ?? JSON.stringify(r)).slice(0, 60)).join(' | ')}; user's tab eval 1+1 → ${afterKids}`);
+    } finally { raw.close(); }
+    // 5) the agent's OWN tab may go anywhere (its own business): chrome://version is not refused
+    const rawA = await rawProxyClient(ep.wsUrl);
+    let own = null;
+    try {
+      const gt = await rawA.call('Target.getTargets');
+      const tid = gt.result?.targetInfos?.find((t) => /Tabs fixture A/.test(t.title))?.targetId;
+      const sid = tid ? (await rawA.call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
+      own = sid ? await rawA.callOn(sid, 'Page.navigate', { url: 'chrome://version' }) : null;
+    } finally { rawA.close(); }
+    clause(A, 'the-agents-own-tab-may-navigate-to-an-internal-url', !!own && !/browser-internal URL/.test(own?.error?.message ?? '') && tgtA !== undefined, `Page.navigate chrome://version on the agent's tab → ${JSON.stringify(own).slice(0, 160)}`);
+    // 6) the OTHER route to the same page: the page's own JS (`location.href = 'chrome://crash'`) through Runtime.evaluate, which the agent may send to any tab — Chromium must refuse a renderer-initiated debug URL
+    const rawJ = await rawProxyClient(ep.wsUrl);
+    let js = null;
+    try {
+      const gt = await rawJ.call('Target.getTargets');
+      const tid = gt.result?.targetInfos?.find((t) => /Frame fixture/.test(t.title))?.targetId;
+      const sid = tid ? (await rawJ.call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
+      js = sid ? await rawJ.callOn(sid, 'Runtime.evaluate', { expression: "try { location.href = 'chrome://crash'; 'assigned' } catch (e) { String(e) }", returnByValue: true }) : null;
+    } finally { rawJ.close(); }
+    await sleep(2500);
+    const afterJs = tgtB ? await answers(tgtB) : null;
+    clause(A, 'page-js-navigation-to-chrome-crash-does-not-wedge-the-users-tab', !!js && afterJs === 2, `Runtime.evaluate location.href='chrome://crash' on the user's tab → ${JSON.stringify(js?.result ?? js?.error).slice(0, 120)}; user's tab eval 1+1 → ${afterJs}`);
   },
 
   async children(ctx) {

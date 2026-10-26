@@ -5,14 +5,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CdpProxyCore, type CdpEventListener, type CdpPanelPort, type CdpTab, type CdpTabChannel } from './cdp-proxy-core.ts';
 
-function fake(initial: CdpTab[]) {
+function fake(initial: CdpTab[], replies: Record<string, unknown> = {}) {
   const tabs = [...initial];
   const sent: Array<{ tab: string; method: string }> = [];
   const activated: string[] = [];
   const listeners = new Map<string, Set<CdpEventListener>>();
   let frames: string | null = null;
   const channelFor = (id: string): CdpTabChannel => ({
-    send: async (method, _p, sid) => { sent.push({ tab: id, method, ...(sid ? { sid } : {}) } as { tab: string; method: string }); return {}; },
+    send: async (method, _p, sid) => { sent.push({ tab: id, method, ...(sid ? { sid } : {}) } as { tab: string; method: string }); const r = replies[method]; if (r instanceof Error) throw r; return r ?? {}; },
     subscribe: (l) => { (listeners.get(id) ?? listeners.set(id, new Set()).get(id)!).add(l); return () => undefined; },
     onDetach: () => () => undefined,
   });
@@ -118,8 +118,8 @@ test('a refused Target.createTarget / Target.closeTarget reaches the client as a
 
 // ---- #397 review F1: the close verbs are gated on EVERY session of a tab, not only the root one ---------------------------------------------
 
-async function withChild(tabId = 't1') {
-  const f = fake(TABS);
+async function withChild(tabId = 't1', replies: Record<string, unknown> = {}) {
+  const f = fake(TABS, replies);
   const core = new CdpProxyCore(f.port);
   const c = client(core);
   const sid = await attachTo(core, c, tabId);
@@ -192,4 +192,61 @@ test('Page.crash / Runtime.terminateExecution on the USER\'s tab are refused on 
   const ok = await own.c.call('Page.crash', {}, own.sid);
   assert.equal(ok.error, undefined, 'control: the agent may destroy a tab it opened');
   assert.deepEqual(own.f.sent.map((s: any) => s.method), ['Page.crash']);
+});
+
+// ---- #397 seat-3 F4: navigating the user's tab to a browser-internal URL is a renderer-killer too ---------------------------------------------
+
+const KILLERS = ['chrome://crash', 'chrome://kill/', 'about:hang', 'CHROME://CRASH', ' chrome://crash', 'chrome:crash'];
+
+test('F4: Page.navigate of the USER\'s tab to a browser-internal URL is refused on the root AND a child session and never reaches the debugger; about:blank and https still navigate', async () => {
+  const { f, c, sid } = await withChild('t1');
+  for (const url of KILLERS) {
+    const root = await c.call('Page.navigate', { url }, sid);
+    const child = await c.call('Page.navigate', { url }, 'CHILD1');
+    assert.match(root.error.message, /Page\.navigate to a browser-internal URL .* refused: tab t1 was opened by the user/, url);
+    assert.equal(child.error.message, root.error.message, `${url}: the child answers like the root`);
+  }
+  assert.deepEqual(f.sent, [], 'nothing was forwarded to the page debugger');
+  for (const url of ['about:blank', 'https://example.test/crash', 'http://127.0.0.1:1/chrome://crash']) {
+    const ok = await c.call('Page.navigate', { url }, sid);
+    assert.equal(ok.error, undefined, `control: ${url} is an ordinary navigation`);
+  }
+  assert.deepEqual(f.sent.map((s: any) => s.method), ['Page.navigate', 'Page.navigate', 'Page.navigate']);
+});
+
+test('F4: an agent-opened tab may navigate anywhere (its own business) — the gate keys on who opened the tab', async () => {
+  const own = await withChild('t2');
+  for (const url of ['chrome://version', 'chrome://crash']) assert.equal((await own.c.call('Page.navigate', { url }, own.sid)).error, undefined, url);
+  assert.equal(own.f.sent.length, 2);
+});
+
+test('F4: Page.navigateToHistoryEntry resolves the entry to its URL first — an internal-URL entry of the user\'s tab is refused, an ordinary one goes through, a failed lookup is refused (fail closed)', async () => {
+  const hist = { entries: [{ id: 3, url: 'https://a.test/' }, { id: 4, url: 'chrome://crash/' }] };
+  const a = await withChild('t1', { 'Page.getNavigationHistory': hist });
+  assert.match((await a.c.call('Page.navigateToHistoryEntry', { entryId: 4 }, a.sid)).error.message, /refused: tab t1 was opened by the user/);
+  assert.equal((await a.c.call('Page.navigateToHistoryEntry', { entryId: 3 }, a.sid)).error, undefined, 'control: an ordinary entry');
+  assert.deepEqual(a.f.sent.map((s: any) => s.method), ['Page.getNavigationHistory', 'Page.getNavigationHistory', 'Page.navigateToHistoryEntry'], 'the refused entry was never navigated to');
+  const b = await withChild('t1', { 'Page.getNavigationHistory': new Error('Session closed') });
+  assert.match((await b.c.call('Page.navigateToHistoryEntry', { entryId: 3 }, b.sid)).error.message, /refused/, 'a failed lookup refuses');
+  assert.deepEqual(b.f.sent.map((s: any) => s.method), ['Page.getNavigationHistory']);
+  const own = await withChild('t2', { 'Page.getNavigationHistory': hist });
+  assert.equal((await own.c.call('Page.navigateToHistoryEntry', { entryId: 4 }, own.sid)).error, undefined, 'the agent\'s own tab: no lookup, no refusal');
+  assert.deepEqual(own.f.sent.map((s: any) => s.method), ['Page.navigateToHistoryEntry']);
+});
+
+test('F4: a REFUSED navigation of a BACKGROUND user tab changes nothing on the human\'s screen — no bring-to-front, nothing forwarded', async () => {
+  const f = fake([
+    { id: 't1', url: 'http://a/', title: 'A', active: true, openedBy: 'agent' },
+    { id: 't2', url: 'http://b/', title: 'B', active: false, openedBy: 'human' },
+  ]);
+  const core = new CdpProxyCore(f.port);
+  const c = client(core);
+  const sid = await attachTo(core, c, 't2');
+  const r = await c.call('Page.navigate', { url: 'chrome://crash' }, sid);
+  assert.match(r.error.message, /browser-internal URL/);
+  assert.deepEqual(f.activated, [], 'the refusal did not swap the human\'s view');
+  assert.deepEqual(f.sent, []);
+  const ok = await c.call('Page.navigate', { url: 'about:blank' }, sid);
+  assert.equal(ok.error, undefined);
+  assert.deepEqual(f.activated, ['t2'], 'control: an ordinary navigation of a background tab is an agent action and brings it to the front');
 });

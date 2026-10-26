@@ -8,7 +8,9 @@ import {
   decideAgentFront,
   decideCloseThroughCli,
   describeAgentTabs,
+  internalNavigationRefusal,
   isActingCdpMethod,
+  isBrowserInternalUrl,
   parseAbTabList,
   parseTabInvocation,
   resolveAbTab,
@@ -214,4 +216,24 @@ test('round-2 F1: the close gate reads the spellings agent-browser accepts — c
   assert.equal(resolveAbTab([T1, T2], '   '), undefined, 'a blank ref resolves to nothing (not the current tab)');
   assert.equal(resolveAbTab([T1, { tabId: 't3', label: '', targetId: 'CCCC', active: false }], '  '), undefined, 'not even a tab whose label is the empty string');
   assert.equal(resolveSwitchTarget([T1, T2], ['3000', ' T1 ']), T1, 'a switch reads the same spellings');
+});
+
+// ---- F4: browser-internal navigation targets ----------------------------------------------------------------------------------
+
+test('isBrowserInternalUrl: every spelling of a chrome:/about:/devtools: target is internal (decided by scheme, not path)', () => {
+  const internal = ['chrome://crash', 'chrome://kill/', 'chrome://hang', 'chrome://shorthang', 'CHROME://CRASH', ' chrome://crash', 'chrome:crash', 'chrome:///crash', 'chrome://crash\t',
+    'chro\nme://crash', 'about:crash', 'ABOUT:kill', 'about:', 'about:blank-not', 'view-source:chrome://crash', 'view-source:view-source:about:hang', 'devtools://devtools/bundled/inspector.html',
+    'chrome-untrusted://terminal/', 'chrome-search://local-ntp/', '\u0000 chrome://gpucrash', 'chrome://inducebrowsercrashforrealz'];
+  for (const u of internal) assert.equal(isBrowserInternalUrl(u), true, JSON.stringify(u));
+});
+
+test('isBrowserInternalUrl: ordinary pages are not — about:blank/srcdoc, web, file, data, javascript, a chrome:// text inside a path, non-strings', () => {
+  const plain = ['about:blank', 'ABOUT:BLANK', 'about:blank#x', 'about:blank?y', 'about:srcdoc', 'https://example.test/chrome://crash', 'http://chrome.test/', 'file:///srv/a.html', 'data:text/html,chrome://crash',
+    'javascript:1', 'view-source:https://example.test/', '', 'not a url', 'crash'];
+  for (const u of plain) assert.equal(isBrowserInternalUrl(u), false, JSON.stringify(u));
+  for (const v of [undefined, null, 5, {}, ['chrome://crash']]) assert.equal(isBrowserInternalUrl(v), false, `${typeof v}`);
+});
+
+test('internalNavigationRefusal names the verb and the tab and says whose it is', () => {
+  assert.match(internalNavigationRefusal('Page.navigate', 't4'), /^Page\.navigate to a browser-internal URL \(chrome:, about:, devtools:…\) is refused: tab t4 was opened by the user/);
 });
