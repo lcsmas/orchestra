@@ -74,6 +74,11 @@ export class SessionPending {
     return n;
   }
 
+  /** Was this session's detach announced (and is it still inside the bounded window)? */
+  isRetired(sessionId: string): boolean {
+    return this.retired.has(sessionId);
+  }
+
   /** Commands in flight on `sessionId` (all sessions when omitted). */
   size(sessionId?: string): number {
     if (sessionId !== undefined) return this.bySession.get(sessionId)?.size ?? 0;

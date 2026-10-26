@@ -930,22 +930,45 @@ const ARM_FNS5 = {
 };
 Object.assign(ARM_FNS, ARM_FNS5);
 
+/** A raw client of the proxy that does to every iframe child what agent-browser does: answer its attach at once with the attach-time chain, on the child's own session. It keeps
+ *  every one of those requests, so "is a command on a child that was announced detached still unanswered?" is a COUNT, not a daemon stall that may or may not happen. */
+async function rawChildClient(wsUrl, urlRe) {
+  const ws = new WS(wsUrl); await new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); });
+  let id = 0, attachedN = 0, childSent = 0; const waiters = new Map(), childReqs = new Map(), detachedSids = new Set();
+  ws.on('message', (d) => {
+    const m = JSON.parse(String(d));
+    if (m.id !== undefined) { if (waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); } else childReqs.delete(m.id); return; }
+    if (m.method === 'Target.attachedToTarget' && m.params?.targetInfo?.type === 'iframe') {
+      attachedN++;
+      for (const method of ['Runtime.runIfWaitingForDebugger', 'Page.enable', 'Runtime.enable']) { const n = ++id; childReqs.set(n, { method, sid: m.params.sessionId }); childSent++; ws.send(JSON.stringify({ id: n, method, params: {}, sessionId: m.params.sessionId })); }
+    } else if (m.method === 'Target.detachedFromTarget') detachedSids.add(m.params?.sessionId);
+  });
+  const call = (method, params = {}, session) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { waiters.delete(n); res({ error: { message: `timeout ${method}` } }); }, 10000); waiters.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(session ? { sessionId: session } : {}) })); });
+  const tid = (await call('Target.getTargets')).result?.targetInfos?.find((t) => urlRe.test(t.url))?.targetId;
+  const sid = tid ? (await call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
+  if (!sid) { ws.close(); throw new Error('raw client: no session on the churn tab'); }
+  await call('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid);
+  return { stuck: () => [...childReqs.values()].filter((r) => detachedSids.has(r.sid)).length, attachedN: () => attachedN, detachedN: () => detachedSids.size, childSent: () => childSent, close: () => { try { ws.close(); } catch {} } };
+}
+
 const ARM_FNS6 = {
   async 'iframe-churn'(ctx) {
     // Cross-site iframes created and removed within 0-25 ms for 3 s on the agent's tab, the agent-browser daemon attached: `get title` must answer DURING and AFTER the churn.
     // Before the fix a child detaching mid-attach left a request unanswered and the daemon stayed wedged (seat-1 `tchurn`, ledger #405). N runs, each in a fresh agent tab.
+    // Two oracles per run: the DAEMON's symptom (stochastic: it depends on which command the daemon happens to await when a child dies) and the RAW client's count of commands on
+    // children announced detached that were never answered (deterministic: every run of an unfixed build leaves dozens).
     const { W1, FIX, ui } = ctx; const A = 'iframe-churn'; const N = Number(flag('--churn-n', 30));
     const reg = async () => (await ui.eval(`window.orchestra.browserState(${sel(W1.id)})`)).tabs;
-    const logFile = path.join(ctx.world.ohome, 'logs', 'orchestra.log');
     await selectWs(ctx, W1); await openPane(ctx);
     const rows = [];
     for (let i = 0; i < N; i++) {
       for (const t of (await reg()).filter((x) => x.openedBy === 'agent')) await ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(t.id)}).then(() => true)`);
       await waitFor(async () => (await reg()).every((t) => t.openedBy === 'human'), 10000, 'only the human tab to remain').catch(() => {});
-      let off0 = 0; try { off0 = fs.statSync(logFile).size; } catch {}
       const stamp = async (f) => { const t = Date.now(); const r = await f(); return Object.assign(r, { t0: t, t1: Date.now() }); };
       const nw = await stamp(() => cli(ctx, W1, ['tab', 'new', `${FIX}/iframe-churn.html?i=${i}`], { timeoutMs: 60000 }));
       await waitFor(async () => (await reg()).some((t) => /Churn fixture/.test(t.title)), 15000, 'the churn tab').catch(() => {});
+      let raw = null, rawErr = null;
+      try { const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key }); raw = await rawChildClient(ep.wsUrl, new RegExp(`/iframe-churn\\.html\\?i=${i}$`)); } catch (e) { rawErr = String(e?.message ?? e).slice(0, 100); }
       const sn = await stamp(() => cli(ctx, W1, ['snapshot', '-i'], { timeoutMs: 60000 })); // the daemon is attached from here on
       await sleep(250 + (i % 4) * 400); // inside the 3 s churn
       const gt = await stamp(() => cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 }));
@@ -953,20 +976,11 @@ const ARM_FNS6 = {
       const gt2 = await stamp(() => cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 }));
       let created = null, churn = null;
       try { const o = await oracle(ctx, `${FIX}/iframe-churn.html`, 5000); try { churn = await o.eval('({ ...window.__churn })'); created = churn.created; } finally { o.close(); } } catch {}
-      let slice = ''; try { const size = fs.statSync(logFile).size; const start = size >= off0 ? off0 : 0; const fd = fs.openSync(logFile, 'r'); const buf = Buffer.alloc(Math.min(size - start, 12e6)); fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd); slice = buf.toString('utf8'); } catch {}
-      // regex, not JSON.parse: the host truncates each trace line at 400 chars (a long reply would read as "unanswered")
-      const reqs = new Map(), answered = new Set(), detachedSids = new Set(); let attachedN = 0, detachedN = 0;
-      for (const line of slice.split('\n')) {
-        let m;
-        if ((m = /client->proxy (\{.*\})\s*$/.exec(line))) { const q = /^\{"id":(\d+),"method":"([^"]+)"/.exec(m[1]); if (q) reqs.set(+q[1], { method: q[2], sid: /"sessionId":"([0-9A-F]{32})"\}\s*$/.exec(m[1])?.[1] }); }
-        else if ((m = /proxy->client (\{.*\})\s*$/.exec(line))) { const r = /^\{"id":(\d+),/.exec(m[1]); if (r) answered.add(+r[1]); else if (m[1].startsWith('{"method":"Target.attachedToTarget"')) attachedN++; else { const d = /^\{"method":"Target\.detachedFromTarget","params":\{"sessionId":"([0-9A-F]+)"/.exec(m[1]); if (d) { detachedN++; detachedSids.add(d[1]); } } }
-      }
-      const unanswered = [...reqs].filter(([id]) => !answered.has(id)).map(([id, r]) => `${id}:${r.method}@${(r.sid || 'root').slice(0, 6)}${detachedSids.has(r.sid) ? '(DETACHED)' : ''}`);
-      if (gt.code !== 0 || gt2.code !== 0) { try { fs.mkdirSync(OUT, { recursive: true }); fs.writeFileSync(path.join(OUT, `churn-trace-run${i}.txt`), slice.split('\n').slice(-2500).join('\n')); } catch {} }
-      if (reqs.size > 0) console.log(`  MEASURED [${A}] run ${i} trace: attachedToTarget=${attachedN} detachedToClient=${detachedN} requests=${reqs.size} UNANSWERED=${unanswered.length} ${JSON.stringify(unanswered.slice(0, 6))}`);
-      console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING rc=${gt.code} ${gt.ms} ms | AFTER rc=${gt2.code} ${gt2.ms} ms | iframes created=${created}`);
+      const rw = raw ? { stuck: raw.stuck(), attached: raw.attachedN(), detached: raw.detachedN(), sent: raw.childSent() } : { stuck: null, attached: 0, detached: 0, sent: 0 };
+      raw?.close();
+      console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING rc=${gt.code} ${gt.ms} ms | AFTER rc=${gt2.code} ${gt2.ms} ms | iframes created=${created} | raw client: ${rw.attached} children announced, ${rw.detached} detached, ${rw.sent} child commands sent, ${rw.stuck} left unanswered on a detached child${rawErr ? ` (raw client error: ${rawErr})` : ''}`);
       for (const [what, r] of [['tab new', nw], ['snapshot', sn], ['get title DURING', gt], ['get title AFTER', gt2]]) if (r.code !== 0) console.log(`    ${what} failed: ${show(r)}`);
-      rows.push({ i, nw: nw.code, sn: sn.code, during: gt.code, after: gt2.code, created, unanswered: unanswered.length,
+      rows.push({ i, nw: nw.code, sn: sn.code, during: gt.code, after: gt2.code, created, raw: rw,
         duringInside: churn ? gt.t0 >= churn.t0 && gt.t0 < churn.t1 : null, afterOutside: churn ? gt2.t0 >= churn.t1 : null, attachedAfterMs: churn ? sn.t1 - churn.t0 : null });
     }
     const hungDuring = rows.filter((r) => r.during !== 0), hungAfter = rows.filter((r) => r.after !== 0);
@@ -975,12 +989,15 @@ const ARM_FNS6 = {
     clause(A, 'ctl/a-real-daemon-was-driven', socks >= 1, `agent-browser daemon sockets of this ORCHESTRA_HOME: ${socks} (independent of how many commands stalled)`);
     clause(A, 'ctl/at-least-20-runs', N >= 20, `${N} runs (--churn-n)`);
     clause(A, 'ctl/the-churn-really-ran', rows.every((r) => (r.created ?? 0) >= 50), `iframes created per run (page oracle, window.__churn.created): ${rows.map((r) => r.created).join(',')} (>= 50 each)`);
+    clause(A, 'ctl/children-were-announced-and-detached-to-a-raw-client', rows.every((r) => r.raw.attached >= 20 && r.raw.detached >= 20 && r.raw.sent >= 60), `per run (announced/detached/child commands sent): ${rows.map((r) => `${r.raw.attached}/${r.raw.detached}/${r.raw.sent}`).join(' ')} (>= 20/20/60 each; counted at the proxy's output, not at the page)`);
     // The commands must overlap the churn (a slow host that ate the 3 s before the daemon attached would make the arm green for nothing). An ARM clause, not a control: the failure under
     // test also delays the attach, so on a broken build it is red with the others; on a healthy build it is red only when the host is too slow for the arm to mean anything.
     // Judged on runs whose `tab new` + `snapshot` returned within 1.2 s of the churn start.
     const fast = rows.filter((r) => r.nw === 0 && r.sn === 0 && r.attachedAfterMs !== null && r.attachedAfterMs < 1200);
     clause(A, 'commands-overlapped-the-churn', fast.length >= 10 && fast.every((r) => r.duringInside), `${fast.filter((r) => r.duringInside).length}/${fast.length} fast-attach runs (snapshot back < 1.2 s after the page's window.__churn.t0; need >= 10) had the call start inside [t0, t1) — same host clock`);
     clause(A, 'ctl/get-title-AFTER-started-after-the-churn-ended', rows.every((r) => r.afterOutside !== false), `runs whose AFTER call started before the churn ended: ${rows.filter((r) => r.afterOutside === false).map((r) => r.i).join(',') || 'none'}`);
+    const leaky = rows.filter((r) => r.raw.stuck !== 0);
+    clause(A, 'no-command-on-a-detached-child-is-left-unanswered', leaky.length === 0, `${leaky.length}/${N} runs left commands unanswered on a child the proxy had announced detached (deterministic oracle): ${leaky.map((r) => `${r.i}:${r.raw.stuck}`).join(' ') || 'none'}`);
     clause(A, 'tab-new-and-snapshot-answer-under-churn', attachedRuns === N, `${N - attachedRuns}/${N} runs had \`tab new\` or \`snapshot\` fail (30 s daemon timeout): ${rows.filter((r) => r.nw !== 0 || r.sn !== 0).map((r) => r.i).join(',') || 'none'}`);
     clause(A, 'get-title-answers-DURING-child-churn', hungDuring.length === 0, `${hungDuring.length}/${N} timed out (8 s): ${hungDuring.map((r) => r.i).join(',') || 'none'}`);
     clause(A, 'get-title-answers-AFTER-child-churn', hungAfter.length === 0, `${hungAfter.length}/${N} timed out (8 s): ${hungAfter.map((r) => r.i).join(',') || 'none'}`);

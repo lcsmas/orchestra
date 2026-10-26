@@ -109,6 +109,8 @@ class CdpError extends Error {
   }
 }
 
+const sessionGone = (): CdpError => new CdpError('Session with given id not found.', ERR_SERVER);
+
 interface TabState {
   channel: CdpTabChannel;
   refs: number;
@@ -541,10 +543,14 @@ export class CdpProxyCore {
   /** Does this navigation land on a browser-internal URL? A history entry is resolved to its URL first; a lookup that fails is refused (fail closed). */
   private async navigatesToInternalUrl(st: TabState, method: string, params: Record<string, unknown> | undefined, childSessionId: string | undefined): Promise<boolean> {
     if (method === 'Page.navigate') return isBrowserInternalUrl(params?.url);
+    const gone = sessionGone();
     try {
-      const h = (await st.channel.send('Page.getNavigationHistory', {}, childSessionId)) as { entries?: Array<{ id?: unknown; url?: unknown }> } | undefined;
+      // On a child session the lookup is a command in flight like any other: a child that dies under it never answers, so it goes through `pending` (settled at the child's detach).
+      const lookup = (): Promise<unknown> => st.channel.send('Page.getNavigationHistory', {}, childSessionId);
+      const h = (await (childSessionId ? st.pending.track(childSessionId, lookup, () => gone) : lookup())) as { entries?: Array<{ id?: unknown; url?: unknown }> } | undefined;
       return isBrowserInternalUrl(h?.entries?.find((e) => e.id === params?.entryId)?.url);
-    } catch {
+    } catch (e) {
+      if (e === gone) throw e; // the child is gone: answer like any command on a dead session, not with an internal-URL refusal
       return true;
     }
   }
@@ -571,6 +577,7 @@ export class CdpProxyCore {
       if (owner && owner.openedBy !== 'agent' && (await this.navigatesToInternalUrl(st, method, params, childSessionId))) {
         throw new CdpError(internalNavigationRefusal(method, tabId), ERR_SERVER);
       }
+      if (this.tabs.get(tabId) !== st) throw new CdpError('Target closed.', ERR_SERVER); // the tab was replaced / re-acquired while the history was looked up: `st` is stale
     }
     if (this.port.refuseMethod) {
       const tab = this.port.listTabs().find((t) => t.id === tabId);
@@ -619,7 +626,7 @@ export class CdpProxyCore {
         },
       );
     // A child that dies with this command in flight never answers it, and the client (agent-browser) waits on it: settle it when the detach is announced.
-    return childSessionId ? st.pending.track(childSessionId, forward, () => new CdpError('Session with given id not found.', ERR_SERVER)) : forward();
+    return childSessionId ? st.pending.track(childSessionId, forward, sessionGone) : forward();
   }
 
   /** An agent action on a tab nobody is looking at brings it to the front first (no hidden-view painting yet, ADR 0009). */
@@ -648,7 +655,7 @@ export class CdpProxyCore {
   // ── events ──────────────────────────────────────────────────────────────────
   private onTabEventFromDebugger(tabId: string, st: TabState, method: string, params: unknown, sessionId?: string): void {
     if (sessionId) {
-      st.children.add(sessionId);
+      if (!st.pending.isRetired(sessionId)) st.children.add(sessionId); // a late event for a child whose detach was announced must not bring it back
     } else if (method === 'Target.attachedToTarget') {
       const child = (params as { sessionId?: string } | undefined)?.sessionId;
       if (child) st.children.add(child);

@@ -31,6 +31,7 @@ function setup() {
   const tab: CdpTab = { id: 't1', url: 'http://a/', title: 'A', active: true, openedBy: 'human' };
   const ch = new HeldChannel();
   const subs = new Set<(e: CdpTabEvent) => void>();
+  const refused: string[] = []; // every command the policy hook was asked about (it sees a command only if the core routed it to a live tab session)
   const port: CdpPanelPort = {
     listTabs: () => [{ ...tab }],
     subscribeTabs: (l) => { subs.add(l); return () => subs.delete(l); },
@@ -41,9 +42,10 @@ function setup() {
     invalidate: () => undefined,
     captureFallback: async () => '',
     framesError: () => null,
+    refuseMethod: (method) => { refused.push(method); return null; },
   };
   const core = new CdpProxyCore(port, { nonce: 'n' });
-  return { core, ch, emitTab: (e: CdpTabEvent) => { for (const s of [...subs]) s(e); }, tab };
+  return { core, ch, emitTab: (e: CdpTabEvent) => { for (const s of [...subs]) s(e); }, tab, refused };
 }
 
 /** A client that records everything it receives (in order) and awaits replies by id. */
@@ -221,3 +223,43 @@ for (const how of ['debugger detach', 'replaced', 'destroyed'] as const) {
     assert.equal(ch.sent.filter((s) => s.sessionId === 'CH1' && s.method === 'Page.enable').length, 0);
   });
 }
+
+test('a late event carrying a retired child\'s session id does not bring it back: the policy hook never sees a command on it', async () => {
+  const { core, ch, refused } = setup();
+  const { c, child, gone } = await attached(core, ch);
+  child('CH1');
+  gone('CH1');
+  ch.emit('Runtime.executionContextDestroyed', {}, 'CH1');
+  const r = await answered(c.call('Page.enable', {}, 'CH1').reply);
+  assert.equal(r.error?.message, 'Session with given id not found.');
+  assert.deepEqual(refused.filter((m) => m === 'Page.enable'), [], 'the child was re-admitted: its command reached the policy hook');
+  assert.equal(ch.sent.filter((s) => s.sessionId === 'CH1').length, 0);
+});
+
+// #397 F4's history lookup (`Page.getNavigationHistory`) is a command in flight on the child like any other, and `st` is stale after its await.
+test('Page.navigateToHistoryEntry on a user tab\'s child that dies during the history lookup is answered "Session with given id not found." — not left hanging, not refused as an internal URL', async () => {
+  const { core, ch } = setup();
+  const { c, child, gone } = await attached(core, ch);
+  child('CH1');
+  const cmd = c.call('Page.navigateToHistoryEntry', { entryId: 1 }, 'CH1');
+  await tick();
+  assert.equal(ch.sent.filter((s) => s.method === 'Page.getNavigationHistory' && s.sessionId === 'CH1').length, 1, 'the lookup went to the child');
+  gone('CH1');
+  const r = await answered(cmd.reply);
+  assert.ok(!r.wedged, 'the history lookup on the dead child was never answered');
+  assert.equal(r.error?.message, 'Session with given id not found.');
+  assert.equal(ch.sent.filter((s) => s.method === 'Page.navigateToHistoryEntry').length, 0, 'the navigation itself was never forwarded');
+});
+
+test('Page.navigateToHistoryEntry: a tab replaced while its history is looked up is refused ("Target closed.") and nothing is forwarded through the stale state', async () => {
+  const { core, ch, emitTab, tab } = setup();
+  const { c, root } = await attached(core, ch);
+  const cmd = c.call('Page.navigateToHistoryEntry', { entryId: 1 }, root);
+  await tick();
+  const lookup = ch.last('Page.getNavigationHistory', undefined)!;
+  emitTab({ kind: 'replaced', tab });
+  lookup.settle({ entries: [{ id: 1, url: 'http://fine.example/' }] }); // the OLD debugger's late answer
+  const r = await answered(cmd.reply);
+  assert.equal(r.error?.message, 'Target closed.');
+  assert.equal(ch.sent.filter((s) => s.method === 'Page.navigateToHistoryEntry').length, 0);
+});

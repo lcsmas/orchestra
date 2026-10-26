@@ -105,3 +105,13 @@ test('abortAll settles every command on every session and counts them; nothing i
   assert.equal(sp.size(), 0);
   assert.equal(sp.abortAll(), 0);
 });
+
+test('isRetired follows abort, and the DEFAULT window holds 1024 ids (the 1025th evicts the first)', () => {
+  const sp = new SessionPending();
+  assert.equal(sp.isRetired('S0'), false);
+  for (let i = 0; i < 1024; i++) sp.abort(`S${i}`);
+  assert.ok(sp.isRetired('S0') && sp.isRetired('S1023'), 'all 1024 are inside the window');
+  sp.abort('S1024');
+  assert.equal(sp.isRetired('S0'), false, 'the oldest id left the window');
+  assert.ok(sp.isRetired('S1') && sp.isRetired('S1024'));
+});

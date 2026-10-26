@@ -878,11 +878,12 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   of the churn page, both during and after the churn, 6/24 runs stalled in some step; with the settlement 0/60, with only it removed 10/30; measured in the trace: the child's `Target.detachedFromTarget` went out 1 ms after `Runtime.enable` was
   forwarded and the next client command came 20 s later, when the tab closed and Electron flushed "target closed while handling command"). The proxy answers
   those commands `Session with given id not found.` (the answer a command arriving a moment later already got) right after it emits the detach. Rig arm
-  `iframe-churn` (`pages/iframe-churn.html`); unit arms `cdp-proxy-core-detach.test.ts`, `cdp-session-pending.test.ts`, mutants `scripts/mutate-cdp-session-pending.mjs`.
+  `iframe-churn` (`pages/iframe-churn.html`; a raw client counts, per run, commands left unanswered on a child announced detached — the deterministic oracle — beside the daemon's stochastic `get title` symptom); unit arms `cdp-proxy-core-detach.test.ts`, `cdp-session-pending.test.ts`, mutants `scripts/mutate-cdp-session-pending.mjs`.
   A session whose detach was announced is RETIRED (bounded, 1024): a later command on it is refused at once instead of being forwarded into the void.
   A tab's whole debugger going away (`onDebuggerDetached`: DevTools took it, tab destroyed, #400's `replaced` swap) settles every child command in flight too (`abortAll`).
-  Limits: a nested child (worker inside an iframe) is settled only if Chromium announces its own detach; a tab's whole-debugger detach relies on Electron
-  flushing the pending commands itself ("target closed while handling command", seen in the trace), not on the proxy.
+  `#397` F4's `Page.getNavigationHistory` lookup on a child goes through the same tracking, and the tab state is re-read after its await (a tab replaced meanwhile → `Target closed.`).
+  Limits (accepted, documented): a NESTED child (worker inside an iframe) is settled only if Chromium announces its own detach — the cheap close (remember the parent, cascade the abort) is not done;
+  the retired window is 1024 ids, so an id older than 1024 newer detaches could be re-admitted by a late event (none observed).
 - **Screenshots** (`shared/cdp-capture.ts`): `invalidate()` → keep the real `Page.captureScreenshot` pending with 1×1 probes
   at 250/750/1750/3750 ms → deadline 5 s → `capturePage()` (1 s bound) → a NAMED error. A clip /
   `captureBeyondViewport` request has no fallback (never a wrong image). Fault: the primary hanging has NOT been

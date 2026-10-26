@@ -15,7 +15,7 @@ const dir = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'pend-mut-'));
 const backups = Object.fromEntries([PEND, CORE].map((f) => { const b = path.join(dir, path.basename(f) + '.orig'); copyFileSync(path.join(root, f), b); return [f, b]; }));
 const origs = Object.fromEntries([PEND, CORE].map((f) => [f, readFileSync(path.join(root, f), 'utf8')]));
 
-const FORWARD = "return childSessionId ? st.pending.track(childSessionId, forward, () => new CdpError('Session with given id not found.', ERR_SERVER)) : forward();";
+const FORWARD = 'return childSessionId ? st.pending.track(childSessionId, forward, sessionGone) : forward();';
 const MUTANTS = [
   [CORE, 'a child\'s detach announcement settles nothing (the command stays pending until the whole debugger detaches)',
     'if (gone) st.pending.abort(gone);', ''],
@@ -24,13 +24,13 @@ const MUTANTS = [
   [CORE, 'a child\'s detach settles the commands of EVERY child',
     'if (gone) st.pending.abort(gone);', 'if (gone) for (const ch of [...st.children, gone]) st.pending.abort(ch);'],
   [CORE, 'the settled command is answered with another error than the one a later command on that session gets',
-    FORWARD, FORWARD.replace("'Session with given id not found.'", "'Target closed.'")],
+    FORWARD, FORWARD.replace('sessionGone)', "() => new CdpError('Target closed.', ERR_SERVER))")],
   [PEND, 'abort rejects nothing',
     'if (finish()) reject(onAbort());', 'finish();'],
   [PEND, 'abort settles the commands of every session',
     'const set = this.bySession.get(sessionId);\n    if (!set) return 0;\n    const all = [...set];', 'const all = [...this.bySession.values()].flatMap((s) => [...s]);\n    if (all.length === 0) return 0;'],
   [PEND, 'abort reports no count',
-    'return all.length;', 'return 0;'],
+    'return all.length;', 'return 0;', 'API shape only: no production caller reads the count'],
   [PEND, 'a command that settles normally stays tracked',
     'if (finish()) resolve(r);', 'resolve(r);'],
   [PEND, 'a send that throws synchronously stays tracked',
@@ -46,7 +46,19 @@ const MUTANTS = [
   [PEND, 'abortAll settles the first session only',
     'for (const sessionId of [...this.bySession.keys()]) n += this.abortPending(sessionId);', 'for (const sessionId of [...this.bySession.keys()].slice(0, 1)) n += this.abortPending(sessionId);'],
   [PEND, 'abortAll reports no count',
-    '    return n;\n  }\n\n  /** Commands in flight on', '    return 0;\n  }\n\n  /** Commands in flight on'],
+    '    return n;\n  }\n\n  /** Was this session', '    return 0;\n  }\n\n  /** Was this session', 'API shape only: no production caller reads the count'],
+  [CORE, 'the history lookup on a child bypasses pending (a child that dies under it leaves Page.navigateToHistoryEntry hanging)',
+    '(await (childSessionId ? st.pending.track(childSessionId, lookup, () => gone) : lookup()))', '(await lookup())'],
+  [CORE, 'a lookup settled as session-gone is read as an internal-URL refusal',
+    'if (e === gone) throw e;', ''],
+  [CORE, 'the stale tab state is not re-checked after the history lookup (the navigation goes out through the old debugger)',
+    "      if (this.tabs.get(tabId) !== st) throw new CdpError('Target closed.', ERR_SERVER); // the tab was replaced / re-acquired while the history was looked up: `st` is stale\n", ''],
+  [CORE, 'a late event brings a retired child back into the child set',
+    'if (!st.pending.isRetired(sessionId)) st.children.add(sessionId);', 'st.children.add(sessionId);'],
+  [PEND, 'the default retired window is not 1024',
+    'constructor(retiredCap = 1024)', 'constructor(retiredCap = 1)'],
+  [PEND, 'isRetired never says so',
+    'isRetired(sessionId: string): boolean {\n    return this.retired.has(sessionId);', 'isRetired(sessionId: string): boolean {\n    return false;'],
 ];
 
 if (process.argv.includes('--check')) {
@@ -74,17 +86,17 @@ for (const f of Object.keys(TESTS)) {
 }
 console.log('baseline PASS (pending + core tests)');
 
-let killed = 0; const survivors = [];
-for (const [file, name, find, replace] of MUTANTS) {
+let killed = 0, apiOnly = 0; const survivors = [];
+for (const [file, name, find, replace, prodEquivalent] of MUTANTS) {
   const n = origs[file].split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x in ${file} (need exactly 1)`); restoreAll(); process.exit(2); }
   writeFileSync(path.join(root, file), origs[file].replace(find, () => replace));
   const r = run(TESTS[file]);
   restoreAll();
   const dead = r.status !== 0;
-  if (dead) killed++; else survivors.push(name);
-  console.log(`${dead ? 'KILLED  ' : 'SURVIVED'} ${name}${dead ? `  (${(r.stdout.match(/^not ok .*/gm) || []).length} arm(s) red)` : ''}`);
+  if (dead) { killed++; if (prodEquivalent) apiOnly++; } else survivors.push(name);
+  console.log(`${dead ? (prodEquivalent ? 'KILLED* ' : 'KILLED  ') : 'SURVIVED'} ${name}${dead ? `  (${(r.stdout.match(/^not ok .*/gm) || []).length} arm(s) red)` : ''}${prodEquivalent ? `  [* equivalent in production — ${prodEquivalent}: not counted as behavioural]` : ''}`);
 }
 const same = restoreAll();
-console.log(`\n${killed}/${MUTANTS.length} killed; restore byte-exact: ${same}`);
+console.log(`\n${killed}/${MUTANTS.length} killed (${killed - apiOnly} behavioural + ${apiOnly} unit-only/equivalent in production); restore byte-exact: ${same}`);
 process.exit(survivors.length || !same ? 1 : 0);
