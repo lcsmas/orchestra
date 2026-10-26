@@ -113,7 +113,7 @@ export const MUTANTS = [
   [BP, 'the page may retitle the child window', '    e.preventDefault(); // the title is ours: the origin first, so a page cannot dress its window up as someone else\n', ''],
   [BP, 'the title is set on the webContents event, which cannot veto the native title', "  win.on('page-title-updated', (e, title) => {", "  wc.on('page-title-updated', (e, title) => {"],
   [BP, 'the popup\'s frame name is not recorded', 'frameName: d.frameName.trim() });', "frameName: '' });"],
-  [BP, 'popup windows are not billed to their workspace (#394)', '      ...livePopupWindows(p.wsId).map((w) => ({ wsId: p.wsId, tabId: w.id, pid: w.win.webContents.getOSProcessId() })),\n', ''],
+  [BP, 'popup windows are not billed to their workspace (#394)', "      ...livePopupWindows(p.wsId).map((w) => { const wc = w.win.webContents as Electron.WebContents | undefined; return { wsId: p.wsId, tabId: w.id, pid: wc && !wc.isDestroyed() ? wc.getOSProcessId() : null }; }),\n", ''],
   [BP, 'tryOpenTab ignores popup windows for the cap', 'openCount: panel.tabs.length + livePopupWindows(wsId).length,', 'openCount: panel.tabs.length,'],
   [BP, 'destroyPanel leaves the child windows', '  closePopupWindows(wsId);\n', ''],
   [BP, 'an opener tab going away leaves its child windows', "  wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));\n", ''],
