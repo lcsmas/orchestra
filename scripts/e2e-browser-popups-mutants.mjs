@@ -87,10 +87,13 @@ for (const m of MUTANTS) {
   if (built.status !== 0) { rows.push(['BUILD-FAILED', `${m.id}: ${built.stderr.split('\n').slice(-5).join(' ')}`]); bad++; continue; }
   const h = bundleHash();
   if (h === cleanHash) { rows.push(['STALE-BUNDLE', `${m.id}: the mutant never reached dist-electron/`]); bad++; continue; }
-  // RC 90 = the rig's own start-up guard could not prove which display is mine (load): fail-closed, retried — a VERDICT is never retried
+  // RC 90 + "cannot prove which display is mine" = the marker race under load (fail-closed): retried. ANY other RC 90 (the private-runtime PREFLIGHT, incident Q2)
+  // is never worked around: the run stops. A VERDICT is never retried.
   let rig;
   for (let attempt = 1; attempt <= 4; attempt++) {
     rig = sh(path.join(ROOT, 'scripts/e2e-browser-popups.sh'), [ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT]);
+    const out = rig.stdout + rig.stderr;
+    if (rig.status === 90 && !out.includes('cannot prove which display is mine')) { console.log(`RIG PREFLIGHT ABORT (rc 90) on ${m.id} — not retried, tell OPS:\n${out.split('\n').filter((l) => l.includes('ABORT')).join('\n')}`); process.exit(90); }
     if (rig.status !== 90) break;
     spawnSync('sleep', ['20']);
   }

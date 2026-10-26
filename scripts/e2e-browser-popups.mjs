@@ -21,6 +21,7 @@ import net from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -38,6 +39,7 @@ const RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-tabs.sh (the contained rig)');
 if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
 if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
+const XDG = privateRuntimeDir(); // the rig's PRIVATE runtime dir (incident Q2, ledger #405): refuses the human's /run/user/<uid>
 const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
 
 // ── scratch containment: a live dir is never handed to the app ───────────────────────────────────
@@ -129,7 +131,7 @@ function saveShot(name, buf) { const f = path.join(OUT, `${LABEL}-${name}`); fs.
 const grimPath = (name) => path.join(OUT, `${LABEL}-${name}`);
 function grim(name) {
   const f = grimPath(name);
-  sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG_WAYLAND } });
+  sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: XDG, WAYLAND_DISPLAY: RIG_WAYLAND } });
   const buf = fs.readFileSync(f); shots.push({ file: f, md5: md5(buf) }); return decodePng(buf);
 }
 
@@ -196,10 +198,10 @@ async function boot(world, bootName) {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${VIEWPORT.w}x${VIEWPORT.h}`]);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
-  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: XDG, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
-    // The human's login keyring lives behind /run/user/1000/bus (XDG_RUNTIME_DIR must stay real for the wayland socket): pin the session bus to a PRIVATE nonexistent socket so libdbus never falls back to it (incident Q2, ledger #405)
+    // Belt and braces on top of the rig's private runtime dir (incident Q2, ledger #405): pin the session bus to a PRIVATE nonexistent socket so libdbus has nothing to fall back to
     DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
@@ -216,10 +218,9 @@ async function boot(world, bootName) {
   await selectWorkspace(b, 'e2e/bp396-1'); // two workspaces are seeded: every boot drives the first
   // controls: the app answering is OUR build, on OUR sway, in OUR scratch world
   clause(bootName, 'ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
-  const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
-  const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-  clause(bootName, 'ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
-    `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+  // What the driver HANDED the app, not a /proc/<pid>/environ read: Chromium rewrites its own environ area once a DBUS address is set (ledger #405, seat 2 F2).
+  clause(bootName, 'ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND && env.XDG_RUNTIME_DIR === `${RIG_DIR}/xdg`,
+    `handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
   // what the driver HANDED the app (not a /proc read: an Electron process may rewrite its own argv/environ area): the private bus pin and the basic password store
   const handed = { bus: env.DBUS_SESSION_BUS_ADDRESS, args: APP_ARGS };
   clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', handed.bus === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && !handed.bus.includes('/run/user/') && handed.args.includes('--password-store=basic'),
