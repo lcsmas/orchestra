@@ -283,12 +283,13 @@ keeps the shared debugger free of any long-lived event subscription.
   landing during a pick's screenshot, must not be wiped by the older operation (it would orphan overlay + lease). A
   disarm with nothing armed (after a pick / Escape — the page-side picker tore
   itself down) sends nothing and attaches nothing.
-- **The renderer addresses design mode by workspace, not tab, and the armed state FOLLOWS the active workspace** (`BrowserPanel`
-  is ONE un-keyed instance — `App.tsx` — whose `workspaceId` prop changes; its effect arms the new workspace). So: (a) a disarm
+- **The renderer addresses design mode by workspace, not tab, and one `BrowserPanel` instance exists per workspace** (`App.tsx`
+  keys it `key={active.id}` since #393: switching workspace UNMOUNTS the old instance). So: (a) a disarm
   with no `tabId` disarms EVERY tab of the workspace it is armed on (`armedTabs`), not the active one (an agent opening an
   activated tab mid-pick moves "active" away from the armed tab); (b) a pick or Escape is one-shot for the whole workspace
-  (`designModePoll` tears down any other armed tab); (c) `BrowserPanel` disarms the workspace it LEAVES (cleanup effect on
-  `[workspaceId]`) — before #398's lease this only left an orphan overlay on the old page, now it would also leave the lease. A
+  (`designModePoll` tears down any other armed tab); (c) `BrowserPanel`'s cleanup effect on `[workspaceId]` is the ONLY thing that disarms the workspace it LEAVES (the new
+  instance's effects only touch its own workspace) — before #398's lease this only left an orphan overlay on the old page, now it
+  would also leave the lease. A
   poll for a workspace with no panel returns null and builds nothing.
 - `designModeDisarm` **swallows evaluation failures**. The renderer disarms on
   unmount, on going inactive, and after every pick, so it routinely lands on a
@@ -593,11 +594,11 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   pick/cancel/disarm release, arm/disarm order, tab switch, no debugger without the seat), wiring pins in
   `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (28 registry mutants) and
   `scripts/mutate-cdp-seat.mjs` (20 seat/lease mutants); and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>`
-  (5 arms, 49 clauses: the static gate on source + bundle, the REAL toolbar → hover → click → composer pick on
-  `pages/design.html`, toolbar-off / Escape / archive-while-armed / workspace-switch lifecycle, a pick while an
+  (5 arms, 50 clauses: the static gate on source + bundle, the REAL toolbar → hover → click → composer pick on
+  `pages/design.html`, toolbar-off / Escape / archive-while-armed / switch-workspace-while-armed / re-arm-inside-the-grace lifecycle, a pick while an
   `orchestra browser wait --fn` runs on the same tab, and design-armed-first with the agent attaching second; oracle = the app's
-  own debug port + Electron's `isAttached()` in the trace; `ORCHESTRA_CDP_RELEASE_GRACE_MS=1500`) with
-  `scripts/e2e-browser-design-proxy-mutants.sh <app-dir>` (8 bundle mutants: second attacher, detach skipped, lease leak, lease
-  removed, screenshot dropped, reset without an agent, switch leaves the old workspace armed (renderer chunk), release
-  detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
+  own debug port + Electron's `isAttached()` in the trace; `ORCHESTRA_CDP_RELEASE_GRACE_MS=1500`; private-runtime world via `scripts/lib/rig-runtime.mjs`, the env HANDED to the app is asserted, not its `/proc/environ`) with
+  `scripts/e2e-browser-design-proxy-mutants.sh <app-dir>` (9 bundle mutants: second attacher, detach skipped, lease leak, lease
+  removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
+  armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.

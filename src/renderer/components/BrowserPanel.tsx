@@ -184,9 +184,9 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     }
   }, [designArmed, isActive, workspaceId]);
 
-  // The component is NOT keyed by workspace: switching workspace re-renders it with a new `workspaceId` and the armed
-  // state follows (the effect above arms the NEW workspace). Without this, the workspace we leave keeps its overlay —
-  // and, since #398, its lease on the proxy's debugger attach — until its panel is destroyed. Also fires on unmount.
+  // Leaving a workspace unmounts this component (App keys it by workspace, #393) — and nothing else disarms the picker on that
+  // workspace: the effect above only runs for the NEW instance. Without this cleanup the workspace we leave keeps its overlay —
+  // and, since #398, its lease on the proxy's debugger attach — until its panel is destroyed. (Also covers a changed `workspaceId`.)
   useEffect(() => {
     return () => {
       void window.orchestra.browserDesignDisarm(workspaceId).catch(() => {

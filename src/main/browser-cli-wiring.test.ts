@@ -70,14 +70,14 @@ test('production wiring of the proxy lease (#398): the seat is registered, every
   assert.match(host, /return sendOnLease\(await attachLease\(wsId, tabId\), method, params, LEASE_SEND_MAX_MS\)/, 'the lease is given back when the command settles — or is abandoned');
   assert.match(host, /async hold\(wsId, tabId\) \{\s*return \(await attachLease\(wsId, tabId\)\)\.release;/);
   assert.match(host, /if \(!bp\.tabContents\(wsId, tabId\)\) throw new Error\(`browser tab \$\{tabId\} has no live view`\);\s*const ep = await ensureEndpoint\(wsId\);/, 'no lease (hence no rebuilt panel/proxy) for a panel destroyed an instant ago');
-  assert.match(host, /ep\.daemon = true;[^\n]*\n\s*await ensureDaemon\(/, 'the flag is set BEFORE ensureDaemon: a connect that fails after spawning its daemon is still closed at dispose');
+  assert.match(host, /ep\.daemon = true;[^\n]*\n[\s\S]{0,700}await ensureDaemon\(/, 'the flag is set BEFORE ensureDaemon: a connect that fails after spawning its daemon is still closed at dispose');
   assert.match(host, /release: \(tabId, agentTouched\) => \{[\s\S]{0,200}seatRelease\(live, RELEASE_GRACE_MS, agentTouched \?\? true\)/, 'the reset runs only when an agent session held the tab');
 });
 
-test('the renderer disarms the workspace it LEAVES (BrowserPanel is not keyed by workspace; its armed state follows the active one)', () => {
+test('the renderer disarms the workspace it LEAVES (BrowserPanel is keyed per workspace since #393: the old one unmounts and only this cleanup disarms it)', () => {
   const src = fs.readFileSync(new URL('../renderer/components/BrowserPanel.tsx', import.meta.url), 'utf8');
   assert.match(src, /useEffect\(\(\) => \{\s*return \(\) => \{\s*void window\.orchestra\.browserDesignDisarm\(workspaceId\)[\s\S]{0,200}\}, \[workspaceId\]\);/);
-  assert.match(fs.readFileSync(new URL('../renderer/App.tsx', import.meta.url), 'utf8'), /<BrowserPanel\s+workspaceId=\{active\.id\}/, 'the premise: one un-keyed instance follows the active workspace');
+  assert.match(fs.readFileSync(new URL('../renderer/App.tsx', import.meta.url), 'utf8'), /<BrowserPanel\s+key=\{active\.id[^}]*\}\s+workspaceId=\{active\.id\}/, 'the premise (#393): one instance PER workspace — switching unmounts the old one, and nothing but this cleanup disarms it');
 });
 
 test('the legacy mcp__browser__* tools are still built per session and still define their eight tools', () => {

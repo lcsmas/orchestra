@@ -315,11 +315,11 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
     if (endpoints.get(id) !== pending || !again || again.archived) {
       return { ok: false, code: 'unknown-workspace', error: `workspace ${id} was closed while its browser endpoint was starting` };
     }
+    ep.daemon = true; // before ensureDaemon below: a connect that fails after spawning its daemon must still be closed at dispose
     bp.revealForAgent(id);
     const l = layout();
     prepareLayout(l); // idempotent mkdir: a socket dir that vanished (runtime dir cleaned, a rig's teardown) must not fail every call until restart
     const binary = agentBrowserBinary();
-    ep.daemon = true; // before the call: a connect that fails after spawning its daemon must still be closed at dispose
     await ensureDaemon(binary, l, ep.session, ep.server.wsUrl);
     const shot = typeof msg.shotDir === 'string' && path.isAbsolute(msg.shotDir) ? msg.shotDir : undefined;
     // the URL travels in the client's ENVIRONMENT (AGENT_BROWSER_CDP), not its argv: cmdline is world-readable on this host, environ is not

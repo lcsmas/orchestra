@@ -17,6 +17,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { abLayout as abLayoutFor } from '../src/main/agent-browser-daemon.ts';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -35,6 +36,7 @@ const MUTANTS = {
   'pick-screenshot-dropped': { edits: [[/Promise\.race\(\[([\w$]+)\.channel\.send\(([\w$]+),([\w$]+)\),new Promise/, 'Promise.race([$2==="Page.captureScreenshot"?Promise.resolve({}):$1.channel.send($2,$3),new Promise']], arms: ['design-pick', 'design-while-agent'], why: 'the cropped element screenshot never reaches the pick' },
   'reset-without-agent': { edits: [[/if\(([\w$]+)\.reset\)\{([\w$]+)\(([\w$]+)\);for/, 'if(true){$2($3);for']], arms: ['design-pick', 'design-lifecycle'], why: 'the agent-override reset runs even though no agent session ever held the tab (design mode alone writes to the human\'s page)' },
   'switch-leaves-the-old-workspace-armed': { file: 'renderer', edits: [[/([\w$]+)\.useEffect\(\(\)=>\(\)=>\{window\.orchestra\.browserDesignDisarm\(([\w$]+)\)\.catch\(\(\)=>\{\}\)\},\[\2\]\),/, '']], arms: ['design-lifecycle'], why: 'switching workspace while armed leaves the picker (overlay + lease) on the workspace the user left' },
+  'reacquire-in-grace-attaches-again': { edits: [[/(function [\w$]+\(([\w$]+)\)\{)\2\.debugger\.isAttached\(\)\|\|(\2\.debugger\.attach\("1\.3"\)\})/, '$1$3']], arms: ['design-lifecycle'], why: 'the seat attaches on every acquire: a re-arm inside the grace (debugger still held) attaches twice and throws' },
   'lease-steals-attach': { edits: [[/this\.tabs\.get\(([\w$]+)\)===([\w$]+)&&this\.releaseTab\(\1\)/, 'this.port.release($1)']], arms: ['design-while-agent', 'design-then-agent'], why: 'releasing design mode\'s lease detaches the debugger from under the agent\'s session' },
 };
 if (argv.includes('--list')) {
@@ -181,7 +183,8 @@ function seedWorld(armDir) {
 function listProcsByHome(home) {
   const out = [];
   for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
-    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) { out.push(+p); continue; } } catch {}
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(home)) out.push(+p); } catch {} // Chromium rewrites environ once a bus address is set; its children still carry --user-data-dir=<home>/userData
   }
   return out.filter((p) => p !== process.pid);
 }
@@ -226,14 +229,12 @@ async function main() {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
-  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: privateRuntimeDir(), DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '', XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1', ORCHESTRA_CDP_RELEASE_GRACE_MS: String(GRACE_MS),
-    // Never the human's session bus (ledger #405, incident Q2): with the real XDG_RUNTIME_DIR an UNSET address lets libdbus fall back to $XDG_RUNTIME_DIR/bus
-    DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1', ORCHESTRA_CDP_RELEASE_GRACE_MS: String(GRACE_MS) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
-  if (!env.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR) || fs.existsSync(env.DBUS_SESSION_BUS_ADDRESS.slice('unix:path='.length))) refuse(`child D-Bus address ${env.DBUS_SESSION_BUS_ADDRESS} is not a nonexistent socket inside the rig dir`);
+  { const bus = env.DBUS_SESSION_BUS_ADDRESS, busPath = bus.startsWith('unix:path=') ? bus.slice('unix:path='.length) : ''; if (!busPath || !busPath.startsWith(RIG_DIR + path.sep) || fs.existsSync(busPath)) refuse(`child D-Bus address '${bus}' is not the rig's private nonexistent bus (it would reach the human's session bus)`); } // incident Q2
   const fd = fs.openSync(path.join(armDir, 'app.out'), 'w');
   const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`[rig] app pid ${app.pid} debug port ${port} log ${path.join(world.ohome, 'logs/orchestra.log')}`);
@@ -244,10 +245,11 @@ async function main() {
     clause('ctl', 'app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     ui = await Cdp.connect(target.webSocketDebuggerUrl);
     await ui.send('Page.enable');
-    const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
-    const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && ev('ORCHESTRA_CDP_TRACE') === '1' && ev('DBUS_SESSION_BUS_ADDRESS') === env.DBUS_SESSION_BUS_ADDRESS,
-      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'} ORCHESTRA_CDP_TRACE=${ev('ORCHESTRA_CDP_TRACE')} DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS') || '<unset>'}`);
+    // What the DRIVER handed the app: its /proc/<pid>/environ goes blind once DBUS_SESSION_BUS_ADDRESS is set (Chromium rewrites it, src/shared/browser-reliquats.ts)
+    const handed = env;
+    clause('ctl', 'scratch-env', handed.ORCHESTRA_HOME === world.ohome && handed.CLAUDE_CONFIG_DIR === world.cfg && handed.HOME === world.fakeHome && !('DISPLAY' in handed) && handed.WAYLAND_DISPLAY === RIG_WAYLAND && handed.ORCHESTRA_CDP_TRACE === '1'
+      && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && !handed.XDG_RUNTIME_DIR.startsWith('/run/user/') && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
+      `env handed to the app: ORCHESTRA_HOME=${handed.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${handed.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${handed.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in handed ? handed.DISPLAY : '<unset>'} XDG_RUNTIME_DIR=${handed.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${handed.DBUS_SESSION_BUS_ADDRESS} ORCHESTRA_CDP_TRACE=${handed.ORCHESTRA_CDP_TRACE}`);
     await runArms({ world, W1, W2, W3, FIX, port, app, ui, targets, env });
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
@@ -258,9 +260,9 @@ async function main() {
     try { process.kill(-app.pid, 'SIGKILL'); } catch {}
     try { fixture.kill('SIGKILL'); } catch {}
     { // agent-browser daemons the host started carry no ORCHESTRA_HOME: find them by the scratch socket dir, then remove that dir (only THIS ORCHESTRA_HOME's hashed one)
-      const l = abLayoutFor(world.ohome, process.env.XDG_RUNTIME_DIR);
+      const l = abLayoutFor(world.ohome, privateRuntimeDir());
       for (const pid of Object.values(daemonPids(l))) { if (environOf(pid)?.includes(`AGENT_BROWSER_SOCKET_DIR=${l.socketDir}`)) { try { process.kill(pid, 'SIGKILL'); } catch {} } }
-      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((process.env.XDG_RUNTIME_DIR ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
+      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith(privateRuntimeDir() + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
     }
     for (const p of listProcsByHome(world.ohome)) { try { process.kill(p, 'SIGKILL'); } catch {} }
     await sleep(500);
@@ -343,7 +345,7 @@ async function toggleDesign(ctx) {
   return pos.on;
 }
 const designPressed = (ctx) => ctx.ui.eval(`document.querySelector('.browser-panel:not(.browser-panel-hidden) button[aria-label="Design mode"]')?.getAttribute('aria-pressed') === 'true'`);
-const wholeScreen = (name) => { const f = path.join(OUT, name); fs.mkdirSync(OUT, { recursive: true }); sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: process.env.PATH, WAYLAND_DISPLAY: RIG_WAYLAND, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } }); shots.push({ file: f, md5: md5(fs.readFileSync(f)) }); return f; };
+const wholeScreen = (name) => { const f = path.join(OUT, name); fs.mkdirSync(OUT, { recursive: true }); sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: process.env.PATH, WAYLAND_DISPLAY: RIG_WAYLAND, XDG_RUNTIME_DIR: privateRuntimeDir() } }); shots.push({ file: f, md5: md5(fs.readFileSync(f)) }); return f; };
 
 /** Wait for the pick's text block, then its thumbnail; on a timeout say WHICH half is missing. */
 async function pickLanded(ctx, picksBefore) {
@@ -479,18 +481,37 @@ const ARM_FNS = {
     lines = seatLines(ctx, W3, log0);
     const tail = appLog(ctx).slice(log0);
     clause(A, 'archive-while-armed-leaves-no-seat-timer-or-proxy', fmtLines(lines) === 'acquire:attached/true force-detached/false' && /cdp proxy for [^\n]*b398-three closed/.test(tail) && !/\[ERROR\]/.test(tail), `seat: ${fmtLines(lines)}; proxy closed: ${/cdp proxy for [^\n]*b398-three closed/.test(tail)}; ERROR lines since arming: ${(tail.match(/\[ERROR\][^\n]*/g) ?? []).slice(0, 2).join(' | ') || 'none'}`);
-    // the renderer's armed state belongs to the BrowserPanel component, which FOLLOWS the active workspace (the old one is disarmed, the new one armed):
-    // the archive left it armed on whichever workspace became active. Put it off before the next arm.
+    // (d) switch workspace while the picker is armed (no toggle-off): BrowserPanel is keyed per workspace (#393), so the old instance UNMOUNTS and its
+    // cleanup effect is the only thing that disarms the workspace we leave — else its overlay stays in the page and its lease on the debugger never ends.
+    await selectWs(ctx, W2); await openPane(ctx);
+    const o2 = await oracle(ctx, `${FIX}/design.html?ws=2`);
+    const overlay2 = () => o2.eval(`!!document.getElementById('__orchestra_design_overlay__')`);
+    log0 = logMark(ctx);
+    if (await toggleDesign(ctx)) throw new Error('design mode was already armed on W2 (d)');
+    await waitFor(overlay2, 10000, 'the design overlay on W2 (d)');
+    await sleep(400);
+    await selectWs(ctx, ctx.W1); // leave W2 armed
+    await waitFor(async () => !(await overlay2()), 8000, 'the overlay on the workspace we left to be removed').catch(() => {});
+    await settle(W2, log0, 'detached');
+    lines = seatLines(ctx, W2, log0);
+    const overlayLeft = await overlay2();
+    o2.close();
+    clause(A, 'workspace-switch-while-armed-disarms-the-workspace-left', !overlayLeft && cleanSingleAttach(lines), `after switching W2 -> W1 with the picker armed: overlay in W2's page ${overlayLeft ? 'STILL THERE' : 'removed'}; seat: ${fmtLines(lines)} (BrowserPanel is keyed per workspace, #393: only the unmount cleanup disarms the one we leave)`);
     await selectWs(ctx, ctx.W1);
-    clause(A, 'ctl/app-still-answers-after-the-archive', await ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(ctx.W1.branch)}))`), 'the sidebar switched back to W1');
-    if (await designPressed(ctx)) await toggleDesign(ctx);
-    await waitFor(async () => !(await designPressed(ctx)), 8000, 'the toolbar to go off').catch(() => {});
-    await sleep(GRACE_MS + 1500);
-    for (const W of [ctx.W1, ctx.W2]) {
-      const all = seatLines(ctx, W, log0);
-      const heldNow = all.filter((l) => l.op === 'acquire').length - all.filter((l) => l.op === 'detached' || l.op === 'force-detached').length;
-      clause(A, `workspace-switch-while-armed-leaves-no-lease-on-${W.name}`, all.some((l) => l.op === 'acquire') && heldNow === 0 && !(await designPressed(ctx)), `${W.name} seat since the archive: ${fmtLines(all)} (every acquire matched by a detach; the BrowserPanel component follows the active workspace, so each one the picker moved off must be disarmed)`);
-    }
+    clause(A, 'ctl/the-workspace-we-arrived-on-starts-unarmed', !(await designPressed(ctx)), 'W1 toolbar not pressed (a fresh instance per workspace)');
+    // (e) arm, disarm, arm again INSIDE the grace (driven over the app's own IPC, one round trip, so it is deterministic): the seat still holds the debugger
+    // (release pending), so the second acquire must SHARE it — a second attach throws ("another debugger is already attached").
+    const o1 = await oracle(ctx, `${FIX}/design.html?ws=1`);
+    log0 = logMark(ctx);
+    const reArm = await ui.eval(`(async () => { try { await window.orchestra.browserDesignArm(${sel(ctx.W1.id)}); await window.orchestra.browserDesignDisarm(${sel(ctx.W1.id)}); await window.orchestra.browserDesignArm(${sel(ctx.W1.id)}); return 'ok'; } catch (e) { return 'ERR ' + e; } })()`);
+    const armedAgain = await o1.eval(`!!document.getElementById('__orchestra_design_overlay__')`);
+    lines = seatLines(ctx, ctx.W1, log0);
+    clause(A, 're-arm-inside-the-grace-shares-the-held-debugger', reArm === 'ok' && armedAgain && fmtLines(lines) === 'acquire:attached/true release:pending/true acquire:shared/true' && attachErrors(ctx, log0).length === 0, `arm → disarm → arm: ${reArm}; overlay ${armedAgain ? 'installed' : 'MISSING'}; seat: ${fmtLines(lines)} (the 2nd acquire shared the attach still held during the ${GRACE_MS} ms grace)`);
+    await ui.eval(`window.orchestra.browserDesignDisarm(${sel(ctx.W1.id)}).then(() => true)`);
+    await settle(ctx.W1, log0, 'detached');
+    const after = seatLines(ctx, ctx.W1, log0);
+    clause(A, 're-arm-in-grace-ends-detached-with-no-reset', after[after.length - 1]?.op === 'detached' && after[after.length - 1].attached === false && after.filter((l) => l.op === 'detached').length === 1 && !after.some((l) => l.op === 'reset-command'), `seat: ${fmtLines(after)} (one attach for the whole arm/disarm/arm/disarm, detached once, nothing written to the page)`);
+    o1.close();
   },
 
   async 'design-while-agent'(ctx) {
