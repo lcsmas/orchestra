@@ -107,6 +107,14 @@ env -u APPIMAGE ORCHESTRA_OZONE=wayland ORCHESTRA_OZONE_RELAUNCHED=1 \
   ./node_modules/electron/dist/electron .
 ```
 
+**Never launch Electron with the inherited `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS`** (the block above inherits
+both): `/run/user/<uid>` holds the human's gnome-keyring bus/keyring sockets, and a rig Electron crashing mid-call aborted
+their daemon twice (incident Q2, ledger #405). Go through `scripts/e2e-contained-rig.sh` — it runs sway + the app in a PRIVATE
+runtime dir with the D-Bus address pinned to a nonexistent path and a must-FAIL preflight
+([codebase-map/hooks-cli-socket.md](../../../docs/codebase-map/hooks-cli-socket.md) § The rig's PRIVATE runtime world); a driver takes
+`XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs`, never a literal. First run of a new rig: `RIG_HIDE_REAL_RUNTIME=1`;
+afterwards `journalctl --user` / `coredumpctl` must show no gnome-keyring line.
+
 When you launch the instance yourself, read
 [`LAUNCH-TRAPS.md`](LAUNCH-TRAPS.md) first — inherited AppImage env (which
 silently drives the INSTALLED build), port and tmp-dir collisions with sibling

@@ -57,6 +57,7 @@ const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definit
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
 const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
+if (EXERCISES.includes('memhog-app')) { console.error('PAUSE-CANARY-DRIVE REFUSED — memhog-app needs the human\'s systemd user manager (real memory scopes); the contained rig runs in a PRIVATE runtime dir with none (incident Q2, ledger #405). Nothing was run.'); process.exit(3); }
 if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
 if (!['on', 'off'].includes(MH_SWITCH)) { console.error('--memhog-switch on|off'); process.exit(2); }
 if (MH_APP) {

@@ -396,14 +396,14 @@ the same rig (7/12, 3/3, 5/6), so no arm can pass on both builds. Wired as
 `pnpm run test:cli-pipe`.
 
 **It refuses to run outside the contained rig (issue #76).** It requires
-`RIG_WAYLAND` to be set *and* to equal `WAYLAND_DISPLAY` — the signature only
+`RIG_WAYLAND` to be set *and* to equal `WAYLAND_DISPLAY` (both the alias `wayland-rig`) — the signature only
 `scripts/e2e-contained-rig.sh` produces — and otherwise exits **rc=3** with a
 NAMED precondition error naming the unmet condition and the command that
 satisfies it.
 
 **What that pairing does and does not prove.** The rig assigns both variables
 from the same value in one `CHILD_ENV` array (`scripts/e2e-contained-rig.sh`
-:171 and :180), so they agree *only* when the env came from the rig — that is
+`set_child_env WAYLAND_DISPLAY` / `RIG_WAYLAND`), so they agree *only* when the env came from the rig — that is
 the discriminator. It is **not** a liveness check: because they are set
 together, an env left over from a rig whose compositor has since exited still
 has them equal and passes. What makes that case safe is that the sway socket is
@@ -427,23 +427,67 @@ tmpfs `/tmp`) sets `E2E_RIG_BASE` to a btrfs path — `scripts/e2e-agent-view-re
 purpose (`/var/tmp/avr-<uid>`: a keeper socket path past 100 chars falls back to a shared hashed socket, which its
 driver refuses — see [activity-pty-terminal.md](activity-pty-terminal.md) § Removal rig). Default unchanged.
 
+### The rig's PRIVATE runtime world (incident Q2, ledger #405)
+
+The human's `gnome-keyring-daemon` aborted twice (00:03:53 and 00:18:59 on 2026-10-26, `gkd_secret_service_get_pkcs11_session:
+assertion 'client' failed` → GLib abort) seconds after rig Electrons crashed; every rig passed the REAL `XDG_RUNTIME_DIR=/run/user/<uid>`,
+which holds the daemon's `bus` / `keyring/` / `p11-kit/` sockets (GLib's libsecret resolves `$XDG_RUNTIME_DIR/bus` even with
+`DBUS_SESSION_BUS_ADDRESS` unset — Chromium's own "Could not parse server address" log speaks only for its OWN D-Bus client). So
+`scripts/e2e-contained-rig.sh` now runs **its sway and the child in `<rig dir>/xdg`** (mode 0700, fresh per rig, never reused):
+
+- **Env.** `SWAY_ENV` / `CHILD_ENV` are `env -i` arrays built before anything launches: `XDG_RUNTIME_DIR=<rig dir>/xdg`,
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=<rig dir>/no-session-bus` (a path that must never exist), no `/run/user/` in any value. The marker
+  pass (grim) lists only the private dir's sockets — the rig never lists or connects to `/run/user/<uid>`.
+- **Display name.** sway names its socket `wayland-1` in a fresh dir (also the human's compositor name; ~15 drivers refuse that name), so the
+  child connects through the alias `wayland-rig` → the marker-verified socket (created after the marker pass). A driver that mixes a
+  hard-coded real `XDG_RUNTIME_DIR` with the rig's name now fails closed (no `wayland-rig` in the human's dir) instead of landing on `wayland-1`.
+- **`preflight_runtime_world <array> <stage>`** (rc=90 before the child; run on `CHILD_ENV` and `SWAY_ENV` before sway, and on the final
+  `CHILD_ENV` right before launch): R0 no key twice (`env -i` lets the LAST duplicate win; the preflight reads the first) · R1 not `/run/user/*`
+  (string compare after `norm_path` collapses `//`, `/./`, `x/../`; uses `id -u`) · R2 exactly the rig's `xdg` · R3 not a symlink
+  nor resolving into `/run/user/` · R4 a directory I own, mode 0700 · R5 no `keyring*`/`bus*`/`pulse*`/`p11-kit*` entry · R6 the D-Bus var is exactly the
+  private nonexistent path and that path does not exist · R7 no env VALUE contains `/run/user/` (normalized) · R8 path ≤ 84 chars (room for the hooks socket
+  `orchestra-<12hex>.sock` in sun_path; the phone-access socket needs ≤ 66). Before any of it, an `E2E_RIG_BASE` under `/run/user/` (also after
+  `readlink -m`) aborts before a single `mkdir`.
+  `preflight_assert` (display) additionally refuses a `WAYLAND_DISPLAY` that is a path and checks the alias resolves to the verified socket.
+- **Teardown** reaps a `gnome-keyring-d*` / `p11-kit-*` process that LISTENS on a socket inside this rig's private dir (`ss -xlpn`, by identity;
+  never a `/proc/*/environ` scan — that opens the human's daemon's environ). `ss -p` still enumerates the unix-listener table and `readlink`s
+  `/proc/*/fd` of same-uid processes — read-only, no connection. It logs the private dir's contents at exit (a `keyring` entry there =
+  something reached for a keyring and found OUR empty dir).
+- **Drivers**: take `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs` `privateRuntimeDir()` (throws unless it is `$RIG_DIR/xdg`), never a
+  literal. `src/shared/rig-runtime-world.test.ts` is the ratchet: no script may hard-code `/run/user/<uid>` outside its reviewed `ALLOW` list
+  (the list only shrinks; the remaining entries build their own sway/env — see the ledger #405 report).
+- **Opt-in backstop** `RIG_HIDE_REAL_RUNTIME=1`: the rig re-execs under `bwrap --dev-bind / / --tmpfs /run/user/<uid>`, so the real dir is an
+  EMPTY tmpfs for the whole rig (a hard-coded path cannot reach anything; entries created there at exit are logged). Use it for a rig's first
+  Electron run. Default off. **Known cost of the private world:** the app inside a rig has no systemd user manager (`scopeSupport` ⇒ « no user manager socket »,
+  keepers start uncapped); `pause-canary --exercise memhog-app` therefore REFUSES (rc 3, `run.mjs` + `drive.mjs`) instead of reading 0 units;
+  rigs needing rootless docker through the contained rig get none either.
+- **Mutant stamp**: a mutation run stamps the file it breaks (`# RIG-MUTANT:`); the rig and the self-test refuse a stamped file outside the driver
+  (`RIG_SELFTEST_MUTANT_RUN=1`), so a SIGKILLed run cannot leave a hole behind.
+
 ### The rig's own self-test — `pnpm run test:rig-selftest`
 
-`scripts/e2e-contained-rig-selftest.sh` proves the rig's pre-flight assert can
-FAIL: four hostile arms (the human's `wayland-1`, a sibling socket, a bogus
-socket, an added `DISPLAY`) must each abort **rc=90 without launching the
-child**, and a fifth CONTROL arm must launch. The four arms exercise **three
-distinct refusal clauses** — the bogus-socket arm is a data variant of the
-sibling-socket one, both asserting the mismatch message — without it, an assert that
-aborted unconditionally would score 4/4. Each arm also requires its **own abort
-reason**, so an arm that aborts for a different reason than the one it tests is
-a failure, not a pass.
+`scripts/e2e-contained-rig-selftest.sh` proves the rig's two pre-flights can FAIL (30 arms). **Display (W1–W6):** a `WAYLAND_DISPLAY`
+that is a path to the human's compositor, a sibling socket, a bogus one, the raw sway name `wayland-1`, an alias pointing at the wrong
+socket, an added `DISPLAY` — each must abort **rc=90 without launching the child**. **Runtime world (R0–R9b, 20 arms):** forced real
+`XDG_RUNTIME_DIR` (and one under it, one disguised `/run/./user/<uid>`), a duplicated key, one outside the rig dir, a symlinked / 0755 private dir,
+planted `keyring`/`bus`/`pulse`/`p11-kit` entries, forced real/`disabled:` D-Bus address, an existing bus path, an env value containing
+`/run/user/<uid>` (pre-sway, added after sway, disguised), an over-long path, sway's own env carrying the real dir and a rig base under
+`/run/user/` (those two inside the hidden world) — hostile values go into the CHILD array only via `RIG_SELFTEST_*` and the rig aborts before launching; the pre-sway
+arms also assert `sway pid=` never appeared. **Controls (C1–C4):** normal run launches the child; the same run with `/run/user/<uid>`
+hidden behind an empty tmpfs (needs `bwrap`) passes and creates nothing in it; the child's REAL `env` (read from the child, not the array)
+is private; a keyring-named stand-in listening in the private dir is reaped at teardown. Each arm also requires its **own abort reason** (`grep -E`), so an arm that aborts for a different clause is a failure.
+`RIG_SELFTEST_ONLY="ID …"` runs a subset and can only print `PARTIAL-*` (never the gate's `PASSED`).
+
+Mutation proof: `node scripts/e2e-contained-rig-mutants.mjs --unfixed` edits the real rig in place (31 clause-removal / construction-drift
+mutants, byte-exact restore + `cmp`) and demands exactly the named arms go FAIL; `--unfixed` also runs the pre-Q2 rig through the same
+arms (it must fail them). One declared survivor: R3's resolved-path clause (needs a rig base symlinked into `/run/user/<uid>`, which the
+test must never create). Never run an Electron rig while it runs — it mutates the rig file.
 
 It needs a live compositor, so it is deliberately **not** in `pnpm run test`
 (which must stay runnable on a headless CI box). The wrapper
 `scripts/run-rig-selftest.sh` makes the two bad outcomes distinguishable:
 
-- **it never self-skips** — missing `sway`/`swaymsg`/`grim` is a NAMED failure,
+- **it never self-skips** — missing `sway`/`swaymsg`/`grim`/`bwrap` is a NAMED failure,
   **rc=2**, not a skip. A test that skips itself is an absent failure wearing a
   pass (wave-6 shipped exactly that: 12 self-skipping CLI tests inside a green
   suite, now guarded by the `pretest` hook);

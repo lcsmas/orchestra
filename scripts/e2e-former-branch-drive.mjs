@@ -16,6 +16,7 @@ import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const APP_DIR = fs.realpathSync(process.argv[2] ?? '');
 const RIG = { wayland: process.env.RIG_WAYLAND ?? '', swaysock: process.env.SWAYSOCK ?? '', base: process.env.ORCHESTRA_HOME ?? '', liveCfg: process.env.CLAUDE_CONFIG_DIR ?? '' };
@@ -152,7 +153,7 @@ async function bootApp(home, world, label) {
   const electron = [path.join(APP_DIR, 'node_modules/electron/dist/electron')].find((p) => fs.existsSync(p));
   if (!electron) throw new Error('no electron binary in the app dir');
   const env = {
-    PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`,
+    PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: privateRuntimeDir(),
     XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG.wayland, SWAYSOCK: RIG.swaysock, LANG: 'C.UTF-8',
     ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
