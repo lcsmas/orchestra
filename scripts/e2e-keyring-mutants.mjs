@@ -57,7 +57,11 @@ function makeCopy(id) {
   return dst;
 }
 function runRig(dir, arm, label) {
-  const r = spawnSync(path.join(HERE, 'e2e-keyring.sh'), [dir, '--arms', arm, '--label', label], { encoding: 'utf8', timeout: 420000, cwd: path.join(HERE, '..') });
+  // fleet rule: at most 3 contained-rig Electron trees at once — one slot per rig invocation (one mutant), when the semaphore exists on this host
+  const slot = '/var/tmp/orch-1000-b17728/gui-slot.sh';
+  const rig = path.join(HERE, 'e2e-keyring.sh');
+  const [cmd, pre] = fs.existsSync(slot) ? [slot, [rig]] : [rig, []];
+  const r = spawnSync(cmd, [...pre, dir, '--arms', arm, '--label', label], { encoding: 'utf8', timeout: 420000, cwd: path.join(HERE, '..') });
   const out = `${r.stdout}\n${r.stderr}`;
   const verdict = /^VERDICT: (.*)$/m.exec(out)?.[1] ?? `(no VERDICT line; rc ${r.status})`;
   const red = /^RED: (.*)$/.exec(verdict)?.[1]?.split(', ') ?? [];
