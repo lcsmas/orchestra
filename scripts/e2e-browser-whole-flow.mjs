@@ -22,20 +22,31 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
+/** `Merge #n` commit on <app>'s HEAD (the wave's integration branch merges one commit per ticket). */
+const mergedIn = (app, n) => { try { return execFileSync('git', ['-C', app, 'log', '-E', `--grep=^Merge #${n}([^0-9]|$)`, '-1', '--format=%h'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: process.env.HOME ?? '/nonexistent' } }).trim() !== ''; } catch { return false; } };
 const ARMS = ['human', 'agent', 'popup', 'design', 'cookies', 'memory', 'keyring', 'legacy', 'restart', 'profile'];
 /** Mutants patch the BUILT chunk; each regex must match EXACTLY once. `clauses` = the NAMED clause(s) that must go red. */
 const MUTANTS = {
   'strip-hides-agent-tabs': { edits: [[/([\w$]+)\.broadcast\("browser:event",([\w$]+)\.wsId,\2\.state\)/, '$1.broadcast("browser:event",$2.wsId,{...$2.state,tabs:$2.state.tabs.filter((t)=>t.openedBy!=="agent")})']],
     clauses: ['agent-tab-visible-in-the-human-strip'], why: 'the state pushed to the human\'s tab strip omits agent-opened tabs (the registry and the CLI still have them)' },
+  'popup-same-view': { needs: 396, edits: [[/function ([\w$]+)\(([\w$]+),t,([\w$]+),([\w$]+)\)\{const ([\w$]+)=\2\.wsId;if\([\w$]+\.get\(\5\)!==\2\)return\{action:"deny"\}/, '$&'],
+    [/case"new-tab":\{const ([\w$]+)=[\w$]+\([\w$]+,\{url:([\w$]+)\.url,openedBy:[\w$]+,activate:[\w$]+\.activate\}\);return [\w$]+\.pageInitiated&&\([\w$]+\.add\(\1\),[\w$]+\([\w$]+,[\w$]+\)\),\{action:"deny"\}\}/, 'case"new-tab":{void t.loadURL($2.url);return{action:"deny"}}']],
+    clauses: ['blank-link-becomes-a-tab'], why: 'a _blank link / unnamed popup loads in the SAME tab again (the pre-#396 same-view handler); the first edit pins that the opener variable really is `t`' },
+  'agent-closes-any-tab': { needs: 397, edits: [
+    ['if (view && !view.closable) {', 'if (false) {', 'cli'],
+    [/if\(([\w$]+)&&\1\.openedBy!=="agent"\)(throw new [\w$]+\(`\$\{[\w$]+\} is refused: tab)/, 'if(!1)$2'],
+    [/return ([\w$]+)\.actor==="agent"&&([\w$]+)\.openedBy!=="agent"\?\{ok:!1,reason:"not-owner"/, 'return !1&&$2.openedBy!=="agent"?{ok:!1,reason:"not-owner"']],
+    clauses: ['agent-cannot-close-the-humans-tab'], why: 'all three close-ownership layers (CLI pre-check, proxy Target.closeTarget guard, panel decideTabClose) let an agent close the human\'s tab' },
   'partition-shared': { edits: [[/function ([\w$]+)\(e\)\{return`orchestra-browser-\$\{e\}`\}/, 'function $1(e){return"orchestra-browser-shared"}']],
     clauses: ['agent-in-another-workspace-sees-anon'], why: 'every workspace shares ONE cookie jar: a sign-in in one reaches the agent of another' },
 };
 if (argv.includes('--list')) { console.log(`arms: ${ARMS.join(' ')}\nmutants: ${Object.keys(MUTANTS).join(' ')}`); process.exit(0); }
 const chunkOf = (app) => path.join(app, 'dist-electron', /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(app, 'dist-electron/main.js'), 'utf8'))?.[1] ?? 'MISSING');
+const fileOf = (app, kind) => (kind === 'cli' ? path.join(app, 'dist-electron/cli.js') : chunkOf(app));
 const hitsOf = (src, from) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length);
 if (argv[0] === '--check-anchors') { // no app, no compositor: every mutant edit still matches exactly once
-  const app = fs.realpathSync(argv[1] ?? '.'), src = fs.readFileSync(chunkOf(app), 'utf8'); let bad = 0;
-  for (const [n, m] of Object.entries(MUTANTS)) { const c = m.edits.map(([f]) => hitsOf(src, f)); if (!c.every((x) => x === 1)) bad++; console.log(`${c.every((x) => x === 1) ? 'OK ' : 'BAD'} ${n.padEnd(26)} matches=${c.join(',')}`); }
+  const app = fs.realpathSync(argv[1] ?? '.'); let bad = 0;
+  for (const [n, m] of Object.entries(MUTANTS)) { if (m.needs && !mergedIn(app, m.needs)) { console.log(`SKIP ${n.padEnd(26)} needs #${m.needs} (not merged in ${app})`); continue; } const c = m.edits.map(([f, , k]) => hitsOf(fs.readFileSync(fileOf(app, k), 'utf8'), f)); if (!c.every((x) => x === 1)) bad++; console.log(`${c.every((x) => x === 1) ? 'OK ' : 'BAD'} ${n.padEnd(26)} matches=${c.join(',')}`); }
   process.exit(bad ? 1 : 0);
 }
 
@@ -49,6 +60,7 @@ const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude*, ~/.config, ~/.orchestra)');
 for (const a of ARM_LIST) if (!ARMS.includes(a)) refuse(`unknown arm ${a} (have: ${ARMS.join(', ')})`);
+if (MUTANT && MUTANTS[MUTANT]?.needs && !(FORCE_MERGED.has(MUTANTS[MUTANT].needs) || mergedIn(APP_DIR, MUTANTS[MUTANT].needs))) refuse(`mutant ${MUTANT} needs #${MUTANTS[MUTANT].needs} merged in ${APP_DIR}`);
 if (MUTANT && !MUTANTS[MUTANT]) refuse(`unknown mutant ${MUTANT} (have: ${Object.keys(MUTANTS).join(', ')})`);
 const RIG_DIR = process.env.RIG_DIR, RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-whole-flow.sh (the contained rig)');
@@ -169,10 +181,7 @@ function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !
 const shots = [];
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
 /** merged = forced by --merged, or HEAD of <app-dir> carries a `Merge #n` commit. Audited by a ctl clause (a known-merged and a known-open ticket). */
-function isMerged(n) {
-  if (FORCE_MERGED.has(n)) return true;
-  try { return sh('git', ['-C', APP_DIR, 'log', '-E', `--grep=^Merge #${n}([^0-9]|$)`, '-1', '--format=%h'], { env: { PATH: process.env.PATH, HOME: process.env.HOME ?? '/nonexistent' } }).trim() !== ''; } catch { return false; }
-}
+function isMerged(n) { return FORCE_MERGED.has(n) || mergedIn(APP_DIR, n); }
 function nym(arm, ticket, what, today, planned) {
   console.log(`  NOT YET MERGED: #${ticket} — ${what}. today: ${today}. When it lands this clause must observe: ${planned}`);
   results.push({ arm, clause: `nym/#${ticket} ${what}`, ok: !REQUIRE_ALL, nym: true, ticket, detail: `NOT YET MERGED (${REQUIRE_ALL ? '--require-all: FAIL' : 'deferred'}); today: ${today}; planned: ${planned}` });
@@ -182,18 +191,25 @@ function nym(arm, ticket, what, today, planned) {
 let mutantRestore = null;
 const MARKER = path.join(APP_DIR ?? '/nonexistent', 'dist-electron', '.b388-flow-mutant-active');
 function applyMutant() {
-  if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore from that backup or rebuild, then delete the marker)`);
+  if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore from those backups or rebuild, then delete the marker)`);
   if (!MUTANT) return;
-  const m = MUTANTS[MUTANT], file = chunkOf(APP_DIR), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
-  let src = fs.readFileSync(file, 'utf8');
-  for (const [from, to] of m.edits) {
+  const m = MUTANTS[MUTANT], files = new Map();
+  for (const [from, to, kind] of m.edits) {
+    const file = fileOf(APP_DIR, kind); let src = files.get(file) ?? fs.readFileSync(file, 'utf8');
     const hits = hitsOf(src, from);
     if (hits !== 1) refuse(`mutant ${MUTANT}: ${String(from).slice(0, 70)} occurs ${hits}x in ${path.basename(file)} (must be exactly 1) — the bundle changed, update the mutant`);
-    src = typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to);
+    files.set(file, typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to));
   }
-  fs.copyFileSync(file, backup); fs.writeFileSync(MARKER, `${backup} -> ${file}\n`); fs.writeFileSync(file, src);
-  console.log(`[mutant] ${MUTANT} applied to ${path.basename(file)}: ${m.why}; backup ${backup}`);
-  mutantRestore = () => { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK)`); } catch { console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${APP_DIR}/dist-electron (marker kept)`); } };
+  const backups = [...files.keys()].map((file) => [file, path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`)]);
+  for (const [file, backup] of backups) fs.copyFileSync(file, backup);
+  fs.writeFileSync(MARKER, backups.map(([f, b]) => `${b} -> ${f}`).join('\n') + '\n');
+  for (const [file, src] of files) fs.writeFileSync(file, src);
+  console.log(`[mutant] ${MUTANT} applied to ${[...files.keys()].map((f) => path.basename(f)).join(', ')}: ${m.why}`);
+  mutantRestore = () => {
+    let ok = true;
+    for (const [file, backup] of backups) { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); } catch { ok = false; } }
+    if (ok) { fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK, ${backups.length} file(s))`); } else console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${APP_DIR}/dist-electron (marker kept)`);
+  };
 }
 process.on('uncaughtException', (e) => { clause('rig', 'uncaught-exception', false, String(e?.stack ?? e).slice(0, 400)); });
 process.on('exit', () => { try { mutantRestore?.(); } catch { /* reported above */ } });
@@ -266,11 +282,18 @@ const labelOf = (list, re) => (list.stdout.split('\n').find((l) => re.test(l)) ?
 /** Independent oracle: a 2nd CDP client on a panel page through the APP's own remote-debugging port. */
 async function oracle(ctx, urlPrefix, ms = 15000) {
   const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
-  return Cdp.connect(t.webSocketDebuggerUrl);
+  const c = await Cdp.connect(t.webSocketDebuggerUrl);
+  await softWait(() => c.eval(`document.readyState === 'complete'`), 8000, 'the oracle page to finish loading'); // a target exists before its DOM does
+  return c;
 }
 const centreOf = (o, s) => o.eval(`(() => { const e = document.querySelector(${sel(s)}); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
 const MB = 1024 * 1024;
 const vmRss = (pid) => { try { return Number(/VmRSS:\s+(\d+) kB/.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1]) * 1024 || null; } catch { return null; } };
+function swayWindows(pid) { // the app's native windows in MY sway (a popup child window is one; a tab is not)
+  const out = [];
+  (function walk(n) { for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) { if (c.pid === pid && c.type !== 'workspace' && c.type !== 'output' && !(c.nodes || []).length) out.push({ name: c.name, floating: c.type === 'floating_con' }); walk(c); } })(JSON.parse(sh('swaymsg', ['-t', 'get_tree'])));
+  return out;
+}
 
 // ── the story ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 const ARM_FNS = {
@@ -286,7 +309,7 @@ const ARM_FNS = {
     await typeUrl(ctx, `${FIX}/index.html`);
     const o = await oracle(ctx, `${FIX}/index.html`); ctx.humanPage = o;
     const h = await softWait(() => o.eval(`document.querySelector('h1')?.textContent ?? null`), 8000, 'the index page body');
-    const bar = await ctx.ui.eval(`document.querySelector('.browser-url-input').value`);
+    const bar = await softWait(() => ctx.ui.eval(`document.querySelector('.browser-url-input').value`).then((v) => (v.endsWith('/index.html') ? v : null)), 8000, 'the URL bar to show the page') ?? await ctx.ui.eval(`document.querySelector('.browser-url-input').value`);
     clause(A, 'human-url-bar-navigates-the-active-tab', h === 'Fixture home' && bar.endsWith('/index.html') && (await reg(ctx, W1))[1].url.endsWith('/index.html'), `oracle h1=${JSON.stringify(h)} · URL bar ${JSON.stringify(bar)} · registry t2 url ${JSON.stringify((await reg(ctx, W1))[1].url)}`);
     o.close();
   },
@@ -306,6 +329,16 @@ const ARM_FNS = {
     const s = await strip(ctx);
     clause(A, 'agent-tab-visible-in-the-human-strip', !!seen && s.length === 3 && seen.active, `human strip ${JSON.stringify(s.map((t) => [t.id, t.openedBy, t.label.slice(0, 14), t.active]))} (registry has ${r.length} tabs)`);
     saveShot('flow-strip.png', Buffer.from((await ui.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    const noticeOf = () => ui.eval(`document.querySelector('.browser-agent-switch-text')?.textContent ?? null`), backOf = () => ui.eval(`document.querySelector('.browser-agent-switch-back')?.textContent ?? null`);
+    if (isMerged(397)) {
+      const marks = await ui.eval(`({ agent: document.querySelectorAll('.browser-tab[data-opened-by="agent"] .browser-tab-agent-mark').length, human: document.querySelectorAll('.browser-tab[data-opened-by="human"] .browser-tab-agent-mark').length })`);
+      const note = await softWait(noticeOf, 5000, 'the agent-switch notice'), back = await backOf();
+      clause(A, 'strip-marks-the-agent-tab-and-the-human-is-told-it-took-the-screen', marks.agent === 1 && marks.human === 0 && /CLI fixture/.test(note ?? '') && /Flow fixture/.test(back ?? ''), `agent-marked tabs ${marks.agent}, human-marked ${marks.human}; notice ${JSON.stringify(note)}; back button ${JSON.stringify(back)}`);
+      await clickSel(ctx, '.browser-agent-switch-back');
+      await softWait(async () => (await reg(ctx, W1)).find((t) => t.active)?.openedBy === 'human', 8000, 'Back to give the human their tab');
+      const gone = await softWait(async () => (await noticeOf()) === null, 5000, 'the notice to clear');
+      clause(A, 'back-gives-the-human-their-tab-and-clears-the-notice', (await reg(ctx, W1)).find((t) => t.active)?.openedBy === 'human' && !!gone, `active tab ${JSON.stringify((await reg(ctx, W1)).find((t) => t.active)?.id)} (human); notice cleared ${!!gone}`);
+    } else nym(A, 397, 'an agent tab is marked in the strip, the human is told with a way back, an acting command brings its tab to the front', 'the agent tab shows in the strip (clause above) but no mark, notice or Back control exists', 'one agent-marked tab, a notice naming the agent page and a Back button naming the human page');
     const o = await oracle(ctx, `${FIX}/cli.html`);
     const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
     const pre = await o.eval(`document.getElementById('out').textContent`);
@@ -317,13 +350,35 @@ const ARM_FNS = {
     let img = null; try { img = decodePng(fs.readFileSync(dest)); } catch { /* reported below */ }
     clause(A, 'agent-screenshot-through-the-proxy', shot.code === 0 && !!img && img.w >= 300 && img.h >= 200 && inkPx(img) > 400, `${show(shot)} → ${img ? `${img.w}x${img.h}, ${inkPx(img)} ink px` : 'unreadable'}`);
     if (img) saveShot('flow-cli-screenshot.png', fs.readFileSync(dest));
+    if (isMerged(397)) {
+      const act = (await reg(ctx, W1)).find((t) => t.active);
+      const note2 = await softWait(noticeOf, 5000, 'the notice after an acting command');
+      clause(A, 'an-acting-command-brings-its-tab-to-the-front-and-says-so', act?.openedBy === 'agent' && /CLI fixture/.test(note2 ?? ''), `after the agent's click/screenshot the active tab is ${JSON.stringify(act && [act.id, act.openedBy])}; notice ${JSON.stringify(note2)}`);
+      const lst = await cli(ctx, W1, ['tab', 'list']), lines = lst.stdout.split('\n').map((l) => l.trim());
+      clause(A, 'tab-list-says-who-opened-which', lst.code === 0 && lines.some((l) => /cli\.html/.test(l) && /\(yours\)$/.test(l)) && lines.some((l) => /flow\.html/.test(l) && /\(the user's\)$/.test(l)), show(lst));
+      const humanId = labelOf(lst, /\/flow\.html/);
+      const closeH = await cli(ctx, W1, ['tab', 'close', humanId ?? 't0']);
+      const survives = (await reg(ctx, W1)).some((t) => /\/flow\.html$/.test(t.url) && t.openedBy === 'human'); // CLI labels are strip positions, registry ids are creation order: match by URL
+      clause(A, 'agent-cannot-close-the-humans-tab', !!humanId && closeH.code !== 0 && /opened by the user/.test(closeH.stdout + closeH.stderr) && survives, `tab close ${humanId}: ${show(closeH)} → human tab still in the registry: ${survives}`);
+      const ids0 = new Set((await reg(ctx, W1)).map((t) => t.id)), cap = Number(/BROWSER_TAB_CAP\s*=\s*(\d+)/.exec(fs.readFileSync(path.join(APP_DIR, 'src/shared/browser-tab-policy.ts'), 'utf8'))?.[1]);
+      let refused = null;
+      for (let i = 0; i < cap && !refused; i++) { const r = await cli(ctx, W1, ['tab', 'new', `${FIX}/index.html?cap=${i}`]); if (r.code !== 0) refused = r; }
+      const full = await reg(ctx, W1), views = (await ctx.targets()).filter((t) => t.type === 'page' && !t.url.includes('dist/index.html')).length;
+      clause(A, 'agent-tabs-count-against-the-cap-and-the-refusal-gives-the-reason', full.length === cap && !!refused && /\b8\b|cap|at most/i.test(refused.stdout + refused.stderr) && views === cap, `registry ${full.length} tabs (cap ${cap}); live views ${views}; the ${cap - ids0.size + 1}th agent open → ${refused ? show(refused) : 'NOT REFUSED'}`);
+      const lst2 = await cli(ctx, W1, ['tab', 'list']);
+      for (const l of lst2.stdout.split('\n').filter((l) => /index\.html\?cap=\d/.test(l) && /\(yours\)$/.test(l.trim()))) await cli(ctx, W1, ['tab', 'close', /\[(t\d+)\]/.exec(l)[1]]);
+      const back0 = await softWait(async () => (await reg(ctx, W1)).length === ids0.size, 10000, 'the agent to close its own tabs');
+      clause(A, 'agent-closes-the-tabs-it-opened', !!back0, `registry ${(await reg(ctx, W1)).length} tabs, was ${ids0.size} before the cap test`);
+    }
     o.close();
   },
 
   async popup(ctx) {
     const { W1, FIX } = ctx; const A = 'popup';
-    const list = await cli(ctx, W1, ['tab', 'list']); const flowTab = labelOf(list, /\/flow\.html/);
-    await cli(ctx, W1, ['tab', flowTab ?? 't2']);
+    const baseIds = new Set((await reg(ctx, W1)).map((t) => t.id));
+    const flowRegId = (await reg(ctx, W1)).find((t) => /\/flow\.html$/.test(t.url))?.id; // registry id of the human's flow tab (CLI labels are strip positions)
+    const list = await cli(ctx, W1, ['tab', 'list']); const flowLabel = labelOf(list, /\/flow\.html/) ?? 't2';
+    await cli(ctx, W1, ['tab', flowLabel]);
     const snap = await cli(ctx, W1, ['snapshot', '-i']); const link = refOf(snap.stdout, 'link', 'Open in new tab');
     const before = await reg(ctx, W1);
     const click = await cli(ctx, W1, ['click', link]);
@@ -331,9 +386,46 @@ const ARM_FNS = {
     const after = await reg(ctx, W1);
     const popupTab = after.find((t) => /\/index\.html\?from=popup$/.test(t.url) && !before.some((b) => b.id === t.id));
     clause(A, 'ctl/popup-link-found-and-clicked', !!link && click.code === 0, `link ref ${link} · ${show(click)}`);
-    if (isMerged(396)) clause(A, 'blank-link-becomes-a-tab', after.length === before.length + 1 && !!popupTab && !!(await strip(ctx)).find((t) => t.id === popupTab.id), `tabs ${before.length} → ${after.length}; new tab ${JSON.stringify(popupTab && [popupTab.id, popupTab.openedBy, popupTab.url])}; strip shows it: ${popupTab ? !!(await strip(ctx)).find((t) => t.id === popupTab.id) : false}`);
-    else nym(A, 396, 'a target=_blank link opens a new tab (popup → tab)', `tabs ${before.length} → ${after.length}; the link navigated the SAME tab (${after.find((t) => t.active)?.url.slice(-22)})`, 'tabs +1 with /index.html?from=popup, shown in the human strip');
-    if (popupTab) await cli(ctx, W1, ['tab', 'close', labelOf(await cli(ctx, W1, ['tab', 'list']), /from=popup/) ?? 't9']);
+    const policy = fs.readFileSync(path.join(APP_DIR, 'src/shared/browser-tab-policy.ts'), 'utf8');
+    const cap = Number(/BROWSER_TAB_CAP\s*=\s*(\d+)/.exec(policy)?.[1]), budget = Number(/POPUP_BUDGET\s*=\s*(\d+)/.exec(policy)?.[1]);
+    if (isMerged(396)) {
+      const inStrip = popupTab ? !!(await softWait(async () => (await strip(ctx)).find((t) => t.id === popupTab.id), 5000, 'the strip to show the popup tab')) : false;
+      clause(A, 'blank-link-becomes-a-tab', after.length === before.length + 1 && !!popupTab && inStrip && popupTab.active, `tabs ${before.length} → ${after.length}; new tab ${JSON.stringify(popupTab && [popupTab.id, popupTab.openedBy, popupTab.active, popupTab.url.slice(-22)])}; in the human strip: ${inStrip}`);
+    } else nym(A, 396, 'a target=_blank link opens a new tab (popup → tab)', `tabs ${before.length} → ${after.length}; the link navigated the SAME tab (${after.find((t) => t.active)?.url.slice(-22)})`, 'tabs +1 with /index.html?from=popup, active, shown in the human strip');
+    const tidy = async () => { for (const t of await reg(ctx, W1)) if (!baseIds.has(t.id)) await ctx.ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(t.id)})`).catch(() => {}); if (flowRegId) await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(flowRegId)})`).catch(() => {}); await sleep(300); };
+    if (isMerged(396)) {
+      await tidy(); // page-opened tabs belong to the human's opener: the HUMAN closes them (an agent may not)
+      // OAuth-style flow: a NAMED, sized popup keeps window.opener (native child window), posts the token back, closes
+      const openOp = await cli(ctx, W1, ['open', `${FIX}/popups-opener.html`]);
+      const op = await oracle(ctx, `${FIX}/popups-opener.html`);
+      clause(A, 'ctl/opener-fixture-loaded', openOp.code === 0 && await softWait(() => op.eval(`!!document.getElementById('status')`), 8000, 'the opener fixture DOM'), `${show(openOp)} · oracle at ${await op.eval('location.href + " " + document.readyState')}`);
+      const tabsBase = (await reg(ctx, W1)).length, winsBase = swayWindows(ctx.app.pid).length;
+      const press = async (name) => { const sn = await cli(ctx, W1, ['snapshot', '-i']); const r = refOf(sn.stdout, 'button', name); return r ? cli(ctx, W1, ['click', r]) : null; };
+      const hold = await press('Sign in \\(popup stays open\\)');
+      const signed = await softWait(async () => (await op.eval(`document.getElementById('status').textContent`)) === 'signed-in tok-hold', 15000, 'the OAuth popup to post its token back');
+      clause(A, 'oauth-popup-posts-the-token-back-to-window-opener', !!signed, `opener #status=${JSON.stringify(await op.eval(`document.getElementById('status').textContent`))} after the agent's click (${hold && show(hold)}); a same-view handler makes window.open return null → "no-window"`);
+      const child = (await ctx.targets()).filter((t) => t.type === 'page' && /popups-oauth\.html/.test(t.url));
+      const tabsNow = (await reg(ctx, W1)).length, winsNow = swayWindows(ctx.app.pid).length;
+      clause(A, 'oauth-popup-is-a-native-window-not-a-tab', child.length === 1 && tabsNow === tabsBase && winsNow === winsBase + 1, `popup targets ${child.length}; tabs ${tabsBase} → ${tabsNow}; app windows in my sway ${winsBase} → ${winsNow}`);
+      if (child[0]) { const cc = await Cdp.connect(child[0].webSocketDebuggerUrl); await cc.send('Runtime.evaluate', { expression: 'window.close()' }, 3000).catch(() => {}); cc.close(); }
+      const closed = await softWait(async () => (await op.eval(`document.getElementById('closed').textContent`)) === 'popup-closed' && swayWindows(ctx.app.pid).length === winsBase, 10000, 'the popup to close and the opener to notice');
+      clause(A, 'oauth-popup-closes-and-leaves-no-window', !!closed, `opener #closed=${JSON.stringify(await op.eval(`document.getElementById('closed').textContent`))}; app windows ${winsBase} → ${swayWindows(ctx.app.pid).length}`);
+      await op.eval(`document.getElementById('status').textContent = 'idle'; document.getElementById('closed').textContent = ''`);
+      await press('Sign in \\(popup closes itself\\)');
+      const full = await softWait(async () => (await op.eval(`document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)) === 'signed-in tok-auto|popup-closed', 15000, 'the unattended OAuth flow');
+      clause(A, 'oauth-unattended-flow-posts-back-and-closes-itself', !!full && swayWindows(ctx.app.pid).length === winsBase, `${await op.eval(`document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`)}; app windows ${winsBase} → ${swayWindows(ctx.app.pid).length}`);
+      op.close();
+      // popup storm: 20 window.open calls with NO user gesture on load → capped by the page-initiated budget (and the tab cap), no leaked window
+      await cli(ctx, W1, ['open', `${FIX}/popups-storm.html?auto=20&kind=tab`]);
+      await sleep(3500);
+      const storm = await reg(ctx, W1), added = storm.length - tabsBase;
+      clause(A, 'popup-storm-is-capped-by-the-budget-and-the-tab-cap', added === Math.min(budget, cap - tabsBase) && storm.length <= cap && swayWindows(ctx.app.pid).length === winsBase, `page-opened tabs +${added} from 20 gesture-less calls (POPUP_BUDGET ${budget}, cap ${cap}); tabs ${tabsBase} → ${storm.length}; app windows ${winsBase} → ${swayWindows(ctx.app.pid).length}`);
+      await tidy();
+    } else {
+      nym(A, 396, 'a window.opener popup (OAuth-style) completes in a native child window', 'not driven: a same-view handler returns null from window.open', '#status "signed-in tok-hold" in the opener, 1 popup target + 1 native window and no new tab, then no window left');
+      nym(A, 396, 'a page-initiated popup storm is capped by the budget and the tab cap', 'not driven', `exactly min(POPUP_BUDGET, cap − tabs) page-opened tabs from 20 gesture-less window.open calls, no leaked window`);
+      await cli(ctx, W1, ['tab', flowLabel]);
+    }
     await cli(ctx, W1, ['open', `${FIX}/flow.html`]); // leave the shared tab where the next arm expects it
   },
 
@@ -436,15 +528,13 @@ const ARM_FNS = {
       if (isMerged(t)) clause(A, `#${t} merged — drive clause body`, false, `#${t} is merged but this drive has no clause body for it yet — write it against the merged UI (scripts/e2e-browser-whole-flow.mjs, arm profile)`);
       else nym(A, t, what, today, planned);
     }
-    if (isMerged(397)) clause(A, '#397 merged — verify tab verbs now on the proxy path', true, 'the agent/tab clauses above already exercise tab new/list/switch/close; re-read them against #397');
-    else nym(A, 397, 'agent tab verbs (tab list/new/switch/close) on their final proxy path', 'the arm `agent` already drives `tab new/list/<label>/close` through the #395 interim path and PASSES', 'the same clauses green on the #397 implementation');
   },
 };
 
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir), [W1, W2] = world.workspaces;
-  const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const fixture = spawn(process.execPath, [path.join(fs.existsSync(path.join(APP_DIR, 'scripts/fixtures/browser-site/server.mjs')) ? APP_DIR : repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']); sh('swaymsg', ['default_border', 'none']);
