@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spawn fixture</title>
+<style>html,body{margin:0;height:100%;background:#9467bd}iframe{width:100%;height:60%;border:0}</style></head>
+<body><h1 style="color:#fff;font:700 28px sans-serif;padding:16px">spawn</h1><script>
+  // After 4 s the PAGE itself spawns children — the realistic shape (ads, embeds): ?worker=1 a dedicated worker, ?frame=1 a CROSS-SITE iframe (localhost vs 127.0.0.1).
+  const q = new URLSearchParams(location.search);
+  setTimeout(() => {
+    console.log('SPAWN-RUN');
+    if (q.get('worker') === '1') window.__w = new Worker(URL.createObjectURL(new Blob(['setInterval(() => {}, 1000)'], { type: 'text/javascript' })));
+    if (q.get('frame') === '1') { const f = document.createElement('iframe'); f.src = 'http://localhost:' + location.port + '/tabs-c.html'; document.body.append(f); }
+  }, 4000);
+</script></body></html>

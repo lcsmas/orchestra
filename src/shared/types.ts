@@ -2294,6 +2294,8 @@ export interface BrowserPanelState {
   tabs: BrowserTabInfo[];
   /** Id of the active tab; `''` while the panel has no tab. */
   activeTabId: BrowserTabId;
+  /** The last tab swap an AGENT caused on screen (#397): the human is told, the strip offers « back ». Absent once the human (or a page) changes the active tab. */
+  agentSwitch?: { from: BrowserTabId; to: BrowserTabId; at: number };
 }
 
 /** Why a tab operation was refused (#393). `cap`: the workspace already holds the maximum
