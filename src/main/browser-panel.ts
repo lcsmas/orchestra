@@ -21,7 +21,8 @@ import {
   shapePick,
   type DesignPick,
 } from '../shared/design-mode.ts';
-import { BROWSER_TAB_CAP, decideExternalProtocol, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl } from '../shared/browser-tab-policy.ts';
+import { AGENT_OPENER, BROWSER_TAB_CAP, decideExternalProtocol, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl } from '../shared/browser-tab-policy.ts';
+import { decideAgentFront } from '../shared/browser-agent-tabs.ts';
 import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import {
@@ -117,6 +118,10 @@ export interface Panel {
   pendingShow: boolean;
   /** Last computed panel state, for a fresh renderer to re-request. */
   state: BrowserPanelState;
+  /** The last tab swap an AGENT caused on screen (#397): shown to the human as a notice, cleared by any swap the human or the page makes. */
+  agentSwitch?: { from: BrowserTabId; to: BrowserTabId; at: number };
+  /** The tab the latest `read_page` outline (its `data-orch-ref` ids) came from (#397): a later `click ref_N` targets THIS tab, not whichever is active then. */
+  refTabId?: BrowserTabId;
   /** The ACTIVE tab's native view (compat accessor — the browser verify
    *  harnesses read `panel.view`). Only valid while the panel has a tab. */
   readonly view: WebContentsView;
@@ -400,6 +405,7 @@ function computeState(panel: Panel): BrowserPanelState {
     ...(n.error !== undefined ? { error: n.error } : {}),
     tabs: panel.tabs.map((t) => tabInfo(panel, t)),
     activeTabId: panel.activeId,
+    ...(panel.agentSwitch ? { agentSwitch: panel.agentSwitch } : {}),
   };
 }
 
@@ -737,15 +743,26 @@ export function createTab(
 ): Tab {
   const panel = ensurePanel(wsId);
   const tab = buildTab(panel, opts);
-  if (opts.activate) setActive(panel, tab);
+  // An agent-opened tab that takes the screen is an agent swap: the human is told (#397).
+  if (opts.activate) setActive(panel, tab, tab.openedBy === AGENT_OPENER);
   else publish(panel);
   if (opts.url) loadIn(tab, opts.url);
   return tab;
 }
 
-function setActive(panel: Panel, tab: Tab): void {
+/** Make `tab` the active one. `byAgent`: an agent caused it — the swap is recorded for the human's notice; any other swap clears the notice. */
+function setActive(panel: Panel, tab: Tab, byAgent = false): void {
   if (panel.activeId === tab.id) return;
+  const from = panel.activeId;
   panel.activeId = tab.id;
+  if (byAgent) {
+    // Chained agent swaps (B then C) keep « Back » pointing at the tab the HUMAN was last on, not at the agent's own previous stop —
+    // unless the agent has just returned TO that tab, where « Back » toggles to the tab it left.
+    const prev = panel.agentSwitch;
+    // …but only while that human tab still exists (the rig caught « Back » pointing at a tab closed in between: the button vanished).
+    const origin = prev && prev.to === from && panel.tabs.some((t) => t.id === prev.from) ? prev.from : from;
+    panel.agentSwitch = { from: origin === tab.id ? from : origin, to: tab.id, at: Date.now() };
+  } else delete panel.agentSwitch;
   if (panel.attachedId !== null) attachActive(panel);
   publish(panel);
 }
@@ -837,6 +854,40 @@ export function tryActivateTab(wsId: string, tabId: BrowserTabId): BrowserTabRes
   const panel = reapIfDead(wsId);
   if (!panel?.tabs.some((t) => t.id === tabId)) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);
   return { ok: true, state: activateTab(wsId, tabId) };
+}
+
+// ---------------------------------------------------------------------------
+// Agent-side tab operations (#397) — what the CDP proxy (browser-cdp-host.ts) calls. Policy first (cap, close ownership:
+// the same pure rules as the human's strip), then the focus rule: only the FOCUSED workspace's agent swaps the tab the human
+// looks at (and the human is told, `agentSwitch`); a background workspace's agent never attaches or shows a view.
+// ---------------------------------------------------------------------------
+
+/** Open a tab for the agent; shown (activated) only in the focused workspace. Refused (reason `cap`) over the cap, before any view exists. */
+export function agentOpenTab(wsId: string, opts: { url?: string }): BrowserTabResult {
+  return tryOpenTab(wsId, { ...(opts.url ? { url: opts.url } : {}), openedBy: AGENT_OPENER, activate: focusedWsId === wsId });
+}
+
+/** Close `tabId` for the agent: only a tab an agent opened (reason `not-owner` otherwise). */
+export function agentCloseTab(wsId: string, tabId: BrowserTabId): BrowserTabResult {
+  const wasActive = reapIfDead(wsId)?.activeId === tabId;
+  const r = tryCloseTab(wsId, tabId, AGENT_OPENER);
+  // Closing the tab on screen hands the screen to a neighbour: an agent-caused swap the human is told about (nothing to go « Back » to — `from` is gone).
+  const after = r.ok && wasActive && focusedWsId === wsId ? reapIfDead(wsId) : undefined;
+  if (after && after.activeId !== tabId) {
+    after.agentSwitch = { from: tabId, to: after.activeId, at: Date.now() };
+    publish(after);
+  }
+  return r;
+}
+
+/** The agent acts on `tabId`: bring it to the front when it is not active AND `wsId` is the focused workspace. Returns whether the screen changed. */
+export function agentActivateTab(wsId: string, tabId: BrowserTabId): { brought: boolean } {
+  const panel = reapIfDead(wsId);
+  const tab = panel?.tabs.find((t) => t.id === tabId);
+  const d = decideAgentFront({ wsFocused: focusedWsId === wsId, activeId: panel?.activeId ?? null, tabId, tabExists: !!tab });
+  if (d.act !== 'activate' || !panel || !tab) return { brought: false };
+  setActive(panel, tab, true);
+  return { brought: true };
 }
 
 /** Resolve the tab a primitive should drive: `tabId` when given (throws if the
@@ -1181,7 +1232,27 @@ export async function readPage(wsId: string, tabId?: BrowserTabId): Promise<stri
     walk(document.body, 0);
     return document.title + '\\n' + document.location.href + '\\n' + out.join('\\n');
   })()`;
-  return String(await evaluate(wsId, script, tabId));
+  // Pin the tab the refs were stamped on (#397): `data-orch-ref` ids are per PAGE, so a later `click ref_N` must go to this tab
+  // even when the human has switched to another one since.
+  const tab = resolveTab(wsId, tabId);
+  const out = String(await evaluate(wsId, script, tab?.id ?? tabId));
+  const panel = getPanel(wsId); // evaluate may have just created the panel (first read_page): pin whatever it read
+  const read = tab ?? (panel ? activeTabOf(panel) : undefined);
+  if (panel && read) panel.refTabId = read.id;
+  return out;
+}
+
+/** The tab a `ref_N` belongs to: the explicit one, else the tab the latest {@link readPage} came from (even if another tab is active now), else the active tab. */
+function refTab(wsId: string, tabId?: BrowserTabId): BrowserTabId | undefined {
+  if (tabId !== undefined) return tabId;
+  const panel = getPanel(wsId);
+  if (panel?.refTabId !== undefined) {
+    if (!panel.tabs.some((t) => t.id === panel.refTabId)) {
+      throw new Error('the tab this ref came from was closed (call read_page again)');
+    }
+    return panel.refTabId;
+  }
+  return resolveTab(wsId)?.id;
 }
 
 /** Resolve a `ref_N` (from {@link readPage}) to viewport center coordinates. */
@@ -1223,8 +1294,9 @@ export async function clickAt(
 
 /** Click a `ref_N` element (resolves its center, then clickAt). */
 export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId): Promise<void> {
-  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the point and the click hit the same tab
-  const p = await refToPoint(wsId, ref, pin);
+  const pin = refTab(wsId, tabId); // resolve once: the point and the click hit the same tab, the one the ref came from
+  const p = await refToPoint(wsId, ref, pin); // a stale ref fails HERE, before anything is swapped on the human's screen
+  if (pin !== undefined) agentActivateTab(wsId, pin); // a click needs its tab on screen: bring it (focused workspace only) — the human is told
   await clickAt(wsId, p.x, p.y, pin);
 }
 
@@ -1243,20 +1315,24 @@ export async function formInput(
   value: string,
   tabId?: BrowserTabId,
 ): Promise<void> {
-  await evaluate(
+  const pin = refTab(wsId, tabId);
+  const found = await evaluate(
     wsId,
     `(() => {
       const el = document.querySelector('[data-orch-ref="${ref}"]');
-      if (!el) return;
+      if (!el) return false;
       el.focus();
       const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value');
       if (setter && setter.set) setter.set.call(el, ${JSON.stringify(value)}); else el.value = ${JSON.stringify(value)};
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
     })()`,
-    tabId,
+    pin,
   );
+  if (found === false) throw new Error(`ref_${ref} not found (call read_page again)`); // before any swap on the human's screen
+  if (pin !== undefined) agentActivateTab(wsId, pin);
 }
 
 /** Scroll the page (or a wheel gesture) via CDP. */

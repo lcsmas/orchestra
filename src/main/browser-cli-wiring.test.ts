@@ -25,7 +25,8 @@ test('seam review m2: everything the client prints passes through redactEndpoint
 
 test('M2: the proxy URL reaches agent-browser through its environment only — neither the CLI nor the host puts it in an argv', () => {
   const cli = read('../cli/index.ts');
-  assert.match(cli, /spawnChild\(binary, plan\.args, /);
+  assert.match(cli, /spawnChild\(binary, argv, /); // #397: runAb(argv) — called with plan.args (the final argv) or the fixed `--json tab list` pre-flight, never with a --cdp
+  assert.match(cli, /runAb\(plan\.args\)/);
   assert.doesNotMatch(cli, /'--cdp'/, 'the CLI no longer passes --cdp');
   const host = read('./browser-cdp-host.ts');
   assert.match(host, /env: \{ \.\.\.abEnv\(l, ep\.session, shot\), AGENT_BROWSER_CDP: ep\.server\.wsUrl \}/);
