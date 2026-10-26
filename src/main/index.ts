@@ -167,9 +167,10 @@ if (!ORCHESTRA_CLI_MODE) {
 if (!ORCHESTRA_CLI_MODE && process.env.ORCHESTRA_HOME) {
   app.setPath('userData', path.join(process.env.ORCHESTRA_HOME, 'userData'));
 }
-import { initPlatform } from './platform';
+import { initPlatform, platform } from './platform';
 import { createElectronPlatform } from './platform/electron';
-import { initBrowserPanels } from './browser-panel';
+import { flushBrowserTabs, initBrowserPanels } from './browser-panel';
+import { createBrowserTabsStore } from './browser-tabs-store';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { sweepAgentTmpDirs } from './agent-tmpdir';
@@ -280,7 +281,13 @@ initPlatform(createElectronPlatform(() => mainWindow));
 
 // The embedded browser panel attaches its per-workspace WebContentsView to the
 // main window's content view; give it the same live accessor.
-initBrowserPanels(() => mainWindow);
+initBrowserPanels(
+  () => mainWindow,
+  createBrowserTabsStore({
+    file: () => path.join(platform.getUserDataDir(), 'orchestra', 'browser-tabs.json'),
+    warn: (m, e) => log.warn(m, e),
+  }),
+);
 
 // Voice dictation (composer mic). Registers its own ipcMain handlers; the
 // feature self-gates on the local STT models existing (voiceAvailable).
@@ -934,6 +941,7 @@ async function reconcileKeepersAtStartup(): Promise<void> {
 }
 
 function shutdownSubsystems(): void {
+  flushBrowserTabs(); // #393: the debounced tab snapshot must reach disk before the process goes
   stopAll();
   stopAllWatchers(); // #330: cancels every pending watcher retry (each subsystem's own stop below is then a no-op for its watch)
   stopLoopScan();

@@ -3345,6 +3345,94 @@ input:focus, textarea:focus, select:focus {
      hidden from main; collapse the chrome too so nothing bleeds through. */
   visibility: hidden;
 }
+/* Tab strip (#393) — above the toolbar, so the URL bar below always belongs to the active tab. */
+.browser-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 5px 8px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 160px;
+  min-width: 56px;
+  height: 28px;
+  padding: 0 4px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--text-dim, var(--text));
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.browser-tab:hover {
+  background: var(--bg-3);
+}
+.browser-tab-active {
+  background: var(--bg-2);
+  border-color: var(--border);
+  color: var(--text);
+  /* Sits over the strip's bottom border so the active tab reads as joined to the toolbar. */
+  margin-bottom: -1px;
+  padding-bottom: 1px;
+}
+.browser-tab-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-tab-loading {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: browser-spin 0.7s linear infinite;
+}
+.browser-tab-close,
+.browser-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 5px;
+  line-height: 1;
+}
+.browser-tab-close {
+  width: 18px;
+  height: 18px;
+  font-size: 15px;
+  opacity: 0.6;
+}
+.browser-tab-close:hover {
+  opacity: 1;
+  background: var(--bg-4);
+}
+.browser-tab-new {
+  width: 26px;
+  height: 26px;
+  align-self: center;
+  font-size: 17px;
+  color: var(--text);
+}
+.browser-tab-new:hover {
+  background: var(--bg-4);
+  color: var(--accent);
+}
 .browser-toolbar {
   display: flex;
   align-items: center;
