@@ -886,7 +886,9 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   A tab's whole debugger going away (`onDebuggerDetached`: DevTools took it, tab destroyed, #400's `replaced` swap) settles every child command in flight too (`abortAll`).
   `#397` F4's `Page.getNavigationHistory` lookup on a child goes through the same tracking, and the tab state is re-read after its await (a tab replaced meanwhile → `Target closed.`).
   Limits (accepted, documented): a NESTED child (worker inside an iframe) is settled only if Chromium announces its own detach — the cheap close (remember the parent, cascade the abort) is not done;
-  the retired window is 1024 ids, so an id older than 1024 newer detaches could be re-admitted by a late event (none observed).
+  the retired window is 1024 ids, so an id older than 1024 newer detaches could be re-admitted by a late event, and the late `Target.attachedToTarget` branch of `onTabEventFromDebugger` is not guarded
+  (none observed; harmless: the policy hook sees the command but `track` still refuses it while the id is retired); `releaseTab` (refs → 0) drops the tab state without `abortAll()`, so a re-acquire between
+  a tracked send and its settle leaves that OLD command unsettled for a still-connected client (no live consumer: the daemon keeps its root session) — follow-up, not changed.
 - **Screenshots** (`shared/cdp-capture.ts`): `invalidate()` → keep the real `Page.captureScreenshot` pending with 1×1 probes
   at 250/750/1750/3750 ms → deadline 5 s → `capturePage()` (1 s bound) → a NAMED error. A clip /
   `captureBeyondViewport` request has no fallback (never a wrong image). Fault: the primary hanging has NOT been
