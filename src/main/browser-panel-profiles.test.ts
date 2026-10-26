@@ -379,6 +379,7 @@ test('stopSignInPersistence detaches the listener and cancels pending promotions
   assert.equal(ses.cookieListeners.length, 0, 'listener removed');
   await settle();
   assert.equal(ses.cookieSets, undefined, 'the pending promotion was cancelled');
+  assert.equal(ses.cookieGets, undefined, 'and its timer never fired: not even the live READ was issued after the stop');
   // a later panel on the same partition re-arms it (one listener, again)
   bp.createTab(ws, { openedBy: 'agent' });
   assert.equal(ses.cookieListeners.length, 1);
