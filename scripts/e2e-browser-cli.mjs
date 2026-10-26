@@ -946,9 +946,10 @@ Object.assign(ARM_FNS, ARM_FNS5);
  *  every one of those requests, so "is a command on a child that was announced detached still unanswered?" is a COUNT, not a daemon stall that may or may not happen. */
 async function rawChildClient(wsUrl, urlRe) {
   const ws = new WS(wsUrl); await new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); });
-  let id = 0, attachedN = 0, childSent = 0; const waiters = new Map(), childReqs = new Map(), detachedSids = new Set();
+  let id = 0, attachedN = 0, childSent = 0, onTarget = null; const waiters = new Map(), childReqs = new Map(), detachedSids = new Set();
   ws.on('message', (d) => {
     const m = JSON.parse(String(d));
+    if ((m.method === 'Target.targetCreated' || m.method === 'Target.targetInfoChanged') && m.params?.targetInfo?.type === 'page' && urlRe.test(m.params.targetInfo.url) && onTarget) { const f = onTarget; onTarget = null; f(m.params.targetInfo.targetId); return; }
     if (m.id !== undefined) { if (waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); } else childReqs.delete(m.id); return; }
     if (m.method === 'Target.attachedToTarget' && m.params?.targetInfo?.type === 'iframe') {
       attachedN++;
@@ -956,9 +957,12 @@ async function rawChildClient(wsUrl, urlRe) {
     } else if (m.method === 'Target.detachedFromTarget') detachedSids.add(m.params?.sessionId);
   });
   const call = (method, params = {}, session) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { waiters.delete(n); res({ error: { message: `timeout ${method}` } }); }, 10000); waiters.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(session ? { sessionId: session } : {}) })); });
-  const tid = (await call('Target.getTargets')).result?.targetInfos?.find((t) => urlRe.test(t.url))?.targetId;
+  // Started BEFORE the CLI creates the tab and waiting for it, so a daemon that stalls on an earlier run cannot make this client late: it attaches the moment the tab exists.
+  const found = new Promise((res) => { onTarget = res; setTimeout(() => res(null), 45000); });
+  await call('Target.setDiscoverTargets', { discover: true });
+  const tid = (await call('Target.getTargets')).result?.targetInfos?.find((t) => urlRe.test(t.url))?.targetId ?? (await found);
   const sid = tid ? (await call('Target.attachToTarget', { targetId: tid, flatten: true })).result?.sessionId : null;
-  if (!sid) { ws.close(); throw new Error('raw client: no session on the churn tab'); }
+  if (!sid) { ws.close(); throw new Error('raw client: the churn tab never appeared'); }
   await call('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sid);
   return { stuck: () => [...childReqs.values()].filter((r) => detachedSids.has(r.sid)).length, attachedN: () => attachedN, detachedN: () => detachedSids.size, childSent: () => childSent, close: () => { try { ws.close(); } catch {} } };
 }
@@ -977,10 +981,12 @@ const ARM_FNS6 = {
       for (const t of (await reg()).filter((x) => x.openedBy === 'agent')) await ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(t.id)}).then(() => true)`);
       await waitFor(async () => (await reg()).every((t) => t.openedBy === 'human'), 10000, 'only the human tab to remain').catch(() => {});
       const stamp = async (f) => { const t = Date.now(); const r = await f(); return Object.assign(r, { t0: t, t1: Date.now() }); };
+      let rawErr = null;
+      const rawP = hostCall(ctx, '/browser', { id: W1.id, key: W1.key }).then((ep) => rawChildClient(ep.wsUrl, new RegExp(`/iframe-churn\\.html\\?i=${i}$`))).catch((e) => { rawErr = String(e?.message ?? e).slice(0, 100); return null; });
+      await sleep(400); // the raw client is connected and watching before the tab exists
       const nw = await stamp(() => cli(ctx, W1, ['tab', 'new', `${FIX}/iframe-churn.html?i=${i}`], { timeoutMs: 60000 }));
       await waitFor(async () => (await reg()).some((t) => /Churn fixture/.test(t.title)), 15000, 'the churn tab').catch(() => {});
-      let raw = null, rawErr = null;
-      try { const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key }); raw = await rawChildClient(ep.wsUrl, new RegExp(`/iframe-churn\\.html\\?i=${i}$`)); } catch (e) { rawErr = String(e?.message ?? e).slice(0, 100); }
+      const raw = await Promise.race([rawP, sleep(50000).then(() => null)]);
       const sn = await stamp(() => cli(ctx, W1, ['snapshot', '-i'], { timeoutMs: 60000 })); // the daemon is attached from here on
       await sleep(250 + (i % 4) * 400); // inside the 3 s churn
       const gt = await stamp(() => cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 }));
