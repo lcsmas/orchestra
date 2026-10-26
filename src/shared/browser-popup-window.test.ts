@@ -130,9 +130,9 @@ test('title: the ORIGIN comes first, then the sanitised page title; the page can
   assert.equal(popupWindowTitle('https://accounts.example.com/o/oauth2/auth?client_id=x&token=SECRET', 'Sign in'), 'https://accounts.example.com — Sign in');
   assert.equal(popupWindowTitle('http://127.0.0.1:8080/x', ''), 'http://127.0.0.1:8080');
   assert.equal(popupWindowTitle('https://a.example/', 'x'.repeat(500)).length, 'https://a.example — '.length + 80, 'cut at 80');
-  const spoof = popupWindowTitle('https://evil.example/', 'Google‮\u0007\n\tAccounts⁦ — https://accounts.google.com');
+  const spoof = popupWindowTitle('https://evil.example/', 'Google\u202e\u0007\n\tAccounts\u2066 — https://accounts.google.com');
   assert.ok(spoof.startsWith('https://evil.example — '), spoof);
-  assert.ok(!/[\u0000-\u001f‪-‮⁦-⁩]/.test(spoof), 'control and bidi characters are stripped');
+  assert.ok(!/[\u0000-\u001f\u202a-\u202e\u2066-\u2069]/.test(spoof), 'control and bidi characters are stripped');
   assert.equal(popupWindowTitle('https://x.example/', '   \n  '), 'https://x.example', 'a blank page title leaves just the origin');
 });
 

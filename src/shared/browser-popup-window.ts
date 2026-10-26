@@ -65,7 +65,7 @@ export function featuresSmuggleWebContents(features: string): boolean {
 
 const TITLE_MAX = 80;
 // control characters, and the bidi override / isolate marks a title could use to visually reorder the origin shown before it
-const TITLE_STRIP = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
+const TITLE_STRIP = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 /** What the origin looks like to the user: `https://accounts.example`, `about:blank` for a blank page, `unknown origin` for anything unparseable. */
 export function popupOrigin(url: string): string {

@@ -503,7 +503,7 @@ test('F2 — the child window\'s title carries the page\'s ORIGIN first, follows
   const win = openWin(wc, named('https://accounts.example.com/o/auth?token=SECRET', 'oauth'));
   assert.equal(win.title, 'https://accounts.example.com', 'before the page titles itself: just the origin, never the query');
   let prevented = false;
-  win.webContents.emitEvent('page-title-updated', { preventDefault: () => { prevented = true; } }, 'Sign in‮\u0007');
+  win.webContents.emitEvent('page-title-updated', { preventDefault: () => { prevented = true; } }, 'Sign in\u202e\u0007');
   assert.equal(prevented, true, 'Electron\'s own title update is cancelled: the title is ours');
   assert.equal(win.title, 'https://accounts.example.com — Sign in');
   win.webContents.url = 'https://evil.example/phish';
