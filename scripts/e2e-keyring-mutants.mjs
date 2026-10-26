@@ -30,7 +30,7 @@ const MUTANTS = [
   ['E1', MAIN, /(\w+)==="unlocked"\?\{store:"gnome-libsecret"/, '($1==="unlocked"||$1==="locked")?{store:"gnome-libsecret"', 'locked', 'locked/decision-logged', 'selects libsecret on a LOCKED collection'],
   ['E2', MAIN, /(\w+)==="unlocked"\?\{store:"gnome-libsecret"/, 'false?{store:"gnome-libsecret"', 'unlocked', 'unlocked/state-encrypted', 'never selects libsecret'],
   ['E3', MAIN, /if\(\w+\(e\.env\)\)return\{store:null,reason:"recognised-desktop"\};/, '', 'recognised', 'recognised/decision-logged', 'overrides a recognised desktop\'s own choice'],
-  ['E4', MAIN, /(\w+)\(\)\.then\((\w)=>\{\2\.reencrypted\|\|/, 'Promise.resolve({reencrypted:0,failed:0,skipped:null}).then($2=>{$2.reencrypted||', 'unlocked', 'unlocked/file-re-encrypted', 'no re-encryption at all (startup or Settings)'],
+  ['E4', MAIN, /([\w$]+)\(\)\.then\((\w)=>\{\2\.reencrypted\|\|/, 'Promise.resolve({reencrypted:0,failed:0,skipped:null}).then($2=>{$2.reencrypted||', 'unlocked', 'unlocked/file-re-encrypted', 'no re-encryption at all (startup or Settings)'],
   ['E12', MAIN, /if\(\w+\(e\.env\)\)return\{store:"basic",reason:"isolated-instance"\};/, '', 'isolated', 'isolated/decision-logged', 'an ORCHESTRA_HOME instance binds to a reachable keyring (the human\'s, in a real rig) — runs only against the PRIVATE world'],
   ['E14', MAIN, /\{store:"basic",reason:"isolated-instance"\}/, '{store:null,reason:"isolated-instance"}', 'isolated-gnome', 'isolated-gnome/state-not-encrypted', 'an isolated instance leaves Chromium\'s own choice in force (libsecret on a recognised desktop — private keyring here)'],
   ['E15', REND, /const (\w+)=(\w+)\.selectionReason==="isolated-instance"\?/, 'const $1=false?', 'isolated', 'isolated/notice-says-isolated-not-no-keyring', 'the notice ignores the selection reason ("no keyring is available" on an isolated instance)'],
@@ -38,7 +38,7 @@ const MUTANTS = [
   ['E10', MAIN, /return (\w+)\.encrypted&&\1\.plaintextEntries>0&&\w+\("settings"\),\1/, 'return $1', 'gnome', 'gnome/file-re-encrypted', 'Settings never re-attempts the re-encryption'],
   ['E11', MAIN, /\(\w+==null\?void 0:\w+\.store\)==="gnome-libsecret"&&(\w+\("startup"\))/, '$1', 'gnome', 'gnome/startup-did-not-touch-secrets', 'startup re-encryption without our own unlocked probe (touches a recognised desktop\'s keyring)'],
   ['E5', MAIN, /\w+&&e\.exportBusAddress\([^;]*\);/, '', 'unlocked', 'unlocked/state-encrypted', 'does not hand libsecret the probed bus (Electron\'s `disabled:` stays)'],
-  ['E6', MAIN, /while \[ "\$n" -lt "\$limit" \] && alive; do/, 'while alive; do', 'hung', 'hung/startup-bounded', 'the parent waits unboundedly on the probe child (a hung Secret Service stalls startup)'],
+  ['E6', MAIN, /while \[ "\$n" -lt "\$limit" \] && alive; do/, 'while alive; do', 'hung', 'hung/decision-logged', 'the parent waits unboundedly on the probe child — the 7 s wrapper backstop still bounds startup (measured 7002 ms), so the 5 s deadline is pinned by the logged probe-ms window'],
   ['E7', REND, /if\(!(\w+)\|\|\1\.encrypted\)return null;const (\w+)=\1\.selectionReason/, 'if(true)return null;const $2=$1.selectionReason', 'nosvc', 'nosvc/linear-warning', 'the warning is never shown'],
   ['E8', REND, /if\(!(\w+)\|\|\1\.encrypted\)return null;const (\w+)=\1\.selectionReason/, 'if(!$1)return null;const $2=$1.selectionReason', 'unlocked', 'unlocked/linear-no-warning', 'the warning is shown even when encryption works'],
   ['E9', MAIN, /encrypted:(\w+)\.isEncryptionAvailable\(\)/, 'encrypted:true', 'nosvc', 'nosvc/state-not-encrypted', 'the state always claims encrypted'],
@@ -93,6 +93,7 @@ for (const [id, bundle, re, rep, arm, clauseName, what] of MUTANTS) {
   if (!differs) { console.log(`${id}: VOID — the mutation changed nothing`); bad++; rows.push([id, 'VOID', what]); fs.rmSync(dir, { recursive: true, force: true }); continue; }
   console.log(`${id}: mutating ${rel}: "${matched.slice(0, 90)}" → "${txt.replace(re, rep).slice(matches[0].index, matches[0].index + rep.length + 10).slice(0, 90)}" · arm ${arm}`);
   const r = runRig(dir, arm, `M-${id}`);
+  fs.writeFileSync(path.join(BASE, 'mutants', `${id}.rig-output.log`), r.out); // kept: a RED-but-wrong-clause verdict needs the abort text, not just the clause names
   const killed = r.verdict.startsWith('RED') && r.red.includes(clauseName);
   const wrongReason = r.verdict.startsWith('RED') && !r.red.includes(clauseName);
   if (!killed) bad++;
