@@ -14,7 +14,10 @@ import ts from 'typescript';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const helperUrl = pathToFileURL(path.join(repo, 'scripts', 'lib', 'rig-runtime.mjs')).href;
-const { privateRuntimeDir } = (await import(helperUrl)) as { privateRuntimeDir: (env?: Record<string, string | undefined>) => string };
+const { privateRuntimeDir, handedEnvProblems } = (await import(helperUrl)) as {
+  privateRuntimeDir: (env?: Record<string, string | undefined>) => string;
+  handedEnvProblems: (env: Record<string, string>, want: Record<string, string>) => string[];
+};
 
 test('privateRuntimeDir: the rig dir passes; unset / real / foreign / bare all refuse', () => {
   const rig = '/var/tmp/avr-1000/e2e64c-42';
@@ -111,7 +114,7 @@ test('every migrated driver TOP-LEVEL-imports the helper (resolvable), calls it,
   const migrated = [
     'scripts/e2e-agent-view-removal.mjs', 'scripts/e2e-former-branch-drive.mjs', 'scripts/e2e-inherit-empty-boot.mjs', 'scripts/e2e-pinned-node-app.mjs',
     'scripts/pause-canary/lib.mjs', 'scripts/browser-reliquats/chip-screenshot.mjs', 'scripts/container-memory-screenshot.mjs', 'scripts/memcap-screenshot.mjs',
-    'scripts/memory-cap-row-screenshot.mjs', 'scripts/reliquats-screenshot.mjs',
+    'scripts/memory-cap-row-screenshot.mjs', 'scripts/reliquats-screenshot.mjs', 'scripts/e2e-browser-tabs.mjs',
   ];
   for (const rel of migrated) {
     const file = path.join(repo, rel);
@@ -147,4 +150,23 @@ test('no package.json script runs an ALLOW-listed (real-runtime) script directly
   assert.equal(r.status, 3);
   assert.match(r.stderr, /REFUSED: `pnpm run test:x`/);
   assert.match(r.stderr, /Nothing was run/);
+});
+
+test('handedEnvProblems: what a driver handed the app (the instrument that replaces the blind /proc/<pid>/environ read) passes the good env and names each bad one', () => {
+  const rig = '/var/tmp/avr-1000/e2e64c-42';
+  const want = { ohome: '/w/oh', cfg: '/w/cfg', home: '/w/home', wayland: 'wayland-rig', xdg: `${rig}/xdg`, noBusPath: `${rig}/no-session-bus` };
+  const good: Record<string, string> = { ORCHESTRA_HOME: '/w/oh', CLAUDE_CONFIG_DIR: '/w/cfg', HOME: '/w/home', WAYLAND_DISPLAY: 'wayland-rig', XDG_RUNTIME_DIR: `${rig}/xdg`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${rig}/no-session-bus`, PATH: '/usr/bin' };
+  assert.deepEqual(handedEnvProblems(good, want), [], 'control: the good env');
+  const cases: [string, Record<string, string>, RegExp][] = [
+    ['wrong ORCHESTRA_HOME', { ...good, ORCHESTRA_HOME: '/live/.orchestra' }, /ORCHESTRA_HOME=\/live/],
+    ['wrong CLAUDE_CONFIG_DIR', { ...good, CLAUDE_CONFIG_DIR: '/home/u/.claude' }, /CLAUDE_CONFIG_DIR=/],
+    ['wrong HOME', { ...good, HOME: '/home/u' }, /HOME=\/home\/u/],
+    ['human wayland name', { ...good, WAYLAND_DISPLAY: 'wayland-1' }, /WAYLAND_DISPLAY=wayland-1/],
+    ['real XDG_RUNTIME_DIR', { ...good, XDG_RUNTIME_DIR: '/run/user/1000' }, /XDG_RUNTIME_DIR=\/run\/user\/1000/],
+    ['DISPLAY set', { ...good, DISPLAY: ':0' }, /DISPLAY=:0 is set/],
+    ['DBUS unset', Object.fromEntries(Object.entries(good).filter(([k]) => k !== 'DBUS_SESSION_BUS_ADDRESS')), /DBUS_SESSION_BUS_ADDRESS=<unset>/],
+    ['DBUS the human\'s bus', { ...good, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' }, /DBUS_SESSION_BUS_ADDRESS=unix:path=\/run\/user\/1000\/bus/],
+    ['a /run/user value anywhere', { ...good, GNOME_KEYRING_CONTROL: '/run/user/1000/keyring' }, /GNOME_KEYRING_CONTROL contains \/run\/user\//],
+  ];
+  for (const [label, env, re] of cases) assert.match(handedEnvProblems(env, want).join(' | '), re, label);
 });

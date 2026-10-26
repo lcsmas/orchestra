@@ -25,6 +25,7 @@ import net from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { handedEnvProblems, privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -206,7 +207,7 @@ async function boot(world, bootName) {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${VIEWPORT.w}x${VIEWPORT.h}`]);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
-  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: privateRuntimeDir(), XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
     // Never the human's session bus (ledger #405, incident Q2): with the real XDG_RUNTIME_DIR (the sway socket lives there) an UNSET address lets libdbus
@@ -227,10 +228,12 @@ async function boot(world, bootName) {
   await selectWorkspace(b, 'e2e/bt393-1'); // two workspaces are seeded: every boot drives the first
   // controls: the app answering is OUR build, on OUR sway, in OUR scratch world
   clause(bootName, 'ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
-  const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
-  const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-  clause(bootName, 'ctl/scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && ev('DBUS_SESSION_BUS_ADDRESS') === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}`,
-    `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'} DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS') || '<unset>'}`);
+  // NOT /proc/<pid>/environ: it goes BLIND once DBUS_SESSION_BUS_ADDRESS is in the app's env (Chromium rewrites its title/environ — src/shared/browser-reliquats.ts:37).
+  // Assert what this driver HANDED the app (the spawn object), and prove the app HONOURED it by an effect: the seeded workspace of the world's store is the active row.
+  const handed = handedEnvProblems(env, { ohome: world.ohome, cfg: world.cfg, home: world.fakeHome, wayland: RIG_WAYLAND, xdg: privateRuntimeDir(), noBusPath: path.join(RIG_DIR, 'no-session-bus') });
+  clause(bootName, 'ctl/scratch-env', handed.length === 0, handed.length ? `env handed to the app: ${handed.join('; ')}` : `env handed to the app (spawn object): ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=<unset> DBUS=pinned nonexistent, XDG private`);
+  const honoured = await b.cdp.eval(`[...document.querySelectorAll('.ws-item.active')].some((e) => e.textContent.includes('e2e/bt393-1'))`);
+  clause(bootName, 'ctl/app-honoured-the-world', honoured === true, `the app loaded the seeded store from ORCHESTRA_HOME=${world.ohome}: active row e2e/bt393-1 = ${honoured}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
