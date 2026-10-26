@@ -512,4 +512,4 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
   `scripts/e2e-browser-cli.sh <app-dir>` (17 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
-  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (28 in-place bundle mutants, restored byte-exact + `cmp`).
+  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (27 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).

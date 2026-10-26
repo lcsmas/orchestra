@@ -38,8 +38,8 @@ const MUTANTS = {
   'allowlist-open': { file: 'cli', edits: [['if (!BROWSER_COMMANDS.has(command)) {', 'if (false) {'], ['if (command in REFUSED_COMMANDS) {', 'if (false) {'], ['if (REFUSED_FLAGS.has(name)) {', 'if (false) {']], arms: ['allowlist'], why: 'every agent-browser command and flag passes through' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['background'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes (the probe → deadline → capturePage chain runs for real)' },
   'acquire-always-attach': { file: 'chunk', edits: [[/(\w+)\.debugger\.isAttached\(\)\|\|\1\.debugger\.attach\("1\.3"\),(\w+)\.debuggerAttached=!0,\1\.debugger\.once\("detach"/, '$1.debugger.attach("1.3"),$2.debuggerAttached=!0,$1.debugger.once("detach"']], arms: ['legacy-coexist'], why: 'the proxy attaches even when the legacy tools / design mode already hold the debugger' },
-  'no-about-blank': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\),/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
-  'daemon-neuter': { file: 'chunk', edits: [[/(async function \w+\((\w+),(\w+),(\w+),(\w+),(\w+)=\w+\)\{)(if\(await \6\.canConnect)/, '$1return;$7']], arms: ['daemon-host-owned'], why: 'the host never starts the daemon; the first agent client does, with the agent\'s env, inside the member\'s scope' },
+  'no-about-blank': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\)[;,]/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
+  'daemon-neuter': { file: 'chunk', edits: [[/\(async\(\)=>\{if\(await (\w+)\.canConnect\((\w+)\)\)return;/, '(async()=>{return;']], arms: ['daemon-host-owned'], why: 'the host never starts the daemon; the first agent client does, with the agent\'s env, inside the member\'s scope' },
   'daemon-env-leak': { file: 'chunk', edits: [[/execFile\((\w+),(\w+),\{env:(\w+),timeout/, 'execFile($1,$2,{env:{...process.env,...$3},timeout']], arms: ['daemon-host-owned'], why: 'the host spawns the daemon with the app\'s whole environment' },
   'screenshot-truncated': { file: 'chunk', edits: [[/primary:async\(\)=>\(await (\w+)\.channel\.send\("Page\.captureScreenshot",(\w+)\)\)\.data/, 'primary:async()=>(await $1.channel.send("Page.captureScreenshot",$2)).data.slice(0,64)']], arms: ['screenshot'], why: 'the screenshot chain returns a truncated image' },
   'fill-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.insertText"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['fill'], why: 'text insertion is acknowledged but never reaches the page' },
@@ -47,7 +47,7 @@ const MUTANTS = {
   'dialog-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Page.handleJavaScriptDialog"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['dialog'], why: 'dialog accept/dismiss is acknowledged but the page stays blocked' },
   'archive-no-dispose': { file: 'chunk', edits: [[/\((\w+),(\w+),(\w+)\)=>\{\3&&(\w+)\(\1\)\}\),\(async\(\)=>\{try\{/, '($1,$2,$3)=>{}),(async()=>{try{']], arms: ['destroy-closes-daemon'], why: 'archiving a workspace leaves its CDP proxy and agent-browser daemon running' },
   'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
-  'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{const (\w+)=await/, 'try{const $3=await']], arms: ['destroy-closes-daemon'], why: 'a late /browser call for an archived workspace resurrects its panel, proxy and daemon' },
+  'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{/, 'try{']], arms: ['destroy-closes-daemon'], why: 'the up-front archived refusal is gone: a late /browser call for an archived workspace is only caught after its panel and proxy were rebuilt' },
   'bring-to-front-forwarded': { file: 'chunk', edits: [[/if\((\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, '']], arms: ['tabs'], why: 'Page.bringToFront reaches the real debugger (OS focus) instead of only activating the tab' },
   'relative-paths': { file: 'cli', edits: [[/absolutizeBrowserArgs\(plan\.args, [\w$.]+\(\)\)/, 'plan.args']], arms: ['screenshot'], why: 'a relative screenshot path is handed to the host-owned daemon and lands in the app\'s cwd' },
   'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
@@ -63,6 +63,22 @@ if (argv.includes('--list')) {
   process.exit(0);
 }
 
+// --check-anchors <app-dir>: NO app, NO compositor — prove every mutant's edit still matches EXACTLY once in the built bundle (a refactor must never leave a mutant silently inert or REFUSED mid-sweep)
+if (argv[0] === '--check-anchors') {
+  const app = fs.realpathSync(argv[1] ?? '.');
+  const chunk = /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(app, 'dist-electron/main.js'), 'utf8'))?.[1];
+  let bad = 0;
+  for (const [name, m] of Object.entries(MUTANTS)) {
+    const file = path.join(app, 'dist-electron', m.file === 'cli' ? 'cli.js' : chunk);
+    const src = fs.readFileSync(file, 'utf8');
+    const counts = m.edits.map(([from]) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length));
+    const ok = counts.every((c) => c === 1);
+    if (!ok) bad++;
+    console.log(`${ok ? 'OK ' : 'BAD'} ${name.padEnd(30)} ${path.basename(file)} matches=${counts.join(',')}`);
+  }
+  console.log(bad ? `${bad} mutant anchor(s) stale` : `all ${Object.keys(MUTANTS).length} mutant anchors match exactly once`);
+  process.exit(bad ? 1 : 0);
+}
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const ARM_LIST = (flag('--arm', null) ?? ARMS.join(',')).split(',');
