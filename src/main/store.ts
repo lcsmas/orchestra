@@ -488,6 +488,11 @@ class Store {
     return normalizeBrowserProfiles(this.data.browserProfiles);
   }
 
+  async setBrowserProfiles(next: BrowserProfile[]): Promise<void> {
+    this.data.browserProfiles = next;
+    await this.save();
+  }
+
   /** The default efforts new workspaces are pinned to, normalized. */
   getEffortDefaults(): EffortDefaults {
     return normalizeEffortDefaults(this.data.effortDefaults);
