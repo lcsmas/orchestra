@@ -223,6 +223,12 @@ arm R7b "an env value containing ${REAL_RT} added AFTER sway ABORTS at the launc
 arm R7c "a DISGUISED /run/user path (…/run/y/../user//<uid>/z) added after sway ABORTS" 90 no \
   "entry 'LATE_BAR' contains '/run/user/'" \
   RIG_SELFTEST_LATE_ADD_ENV="LATE_BAR=/x/run/y/../user//${UID_NOW}/z"
+# R7e. A caller-supplied path (CLAUDE_CONFIG_DIR_PIN) that is a LINK into the runtime dir: text tests pass, the kernel resolves it
+#      into /run/user. The link text names the real dir but is never followed outside the hidden world (empty tmpfs).
+ln -s "${REAL_RT}" "${ST_BASE}/lnk"
+ARM_ABSENT='sway pid=' arm R7e "CLAUDE_CONFIG_DIR_PIN through a symlink into ${REAL_RT} ABORTS (physical resolution)" 90 no \
+  "entry 'CLAUDE_CONFIG_DIR' value '${ST_BASE}/lnk/cfg' resolves physically to '${REAL_RT}/cfg'" \
+  RIG_HIDE_REAL_RUNTIME=1 CLAUDE_CONFIG_DIR_PIN="${ST_BASE}/lnk/cfg"
 # R9. The two guards that run before anything exists, each inside the HIDDEN world so that even a broken guard could
 #     only ever touch an empty tmpfs: sway's OWN env carrying the real runtime dir, and a rig base under /run/user.
 ARM_ABSENT='sway pid=' arm R9s "SWAY_ENV carrying the real XDG_RUNTIME_DIR ABORTS before sway starts" 90 no \
@@ -315,12 +321,12 @@ if [[ -n "${RIG_SELFTEST_ONLY:-}" ]]; then
   echo "RIG-SELFTEST: PARTIAL-FAIL arms=${ran} failed=${fails} only='${RIG_SELFTEST_ONLY}'"
   exit 1
 fi
-if (( ran < 30 )); then
-  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 30 — an arm did not run)"
+if (( ran < 31 )); then
+  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 31 — an arm did not run)"
   exit 1
 fi
 if (( fails == 0 )); then
-  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×20) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
+  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×21) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
   echo "RIG-SELFTEST: PASSED arms=${ran}"
   exit 0
 fi

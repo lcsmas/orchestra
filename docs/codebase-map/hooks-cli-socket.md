@@ -445,7 +445,7 @@ which holds the daemon's `bus` / `keyring/` / `p11-kit/` sockets (GLib's libsecr
   `CHILD_ENV` right before launch): R0 no key twice (`env -i` lets the LAST duplicate win; the preflight reads the first) · R1 not `/run/user/*`
   (string compare after `norm_path` collapses `//`, `/./`, `x/../`; uses `id -u`) · R2 exactly the rig's `xdg` · R3 not a symlink
   nor resolving into `/run/user/` · R4 a directory I own, mode 0700 · R5 no `keyring*`/`bus*`/`pulse*`/`p11-kit*` entry · R6 the D-Bus var is exactly the
-  private nonexistent path and that path does not exist · R7 no env VALUE contains `/run/user/` (normalized) · R8 path ≤ 84 chars (room for the hooks socket
+  private nonexistent path and that path does not exist · R7 no env VALUE contains `/run/user/` (normalized) and no absolute path in a value RESOLVES into it (`readlink -m`: a link — e.g. a caller-supplied `CLAUDE_CONFIG_DIR_PIN` — or `<link>/..` that passes every text test) · R8 path ≤ 84 chars (room for the hooks socket
   `orchestra-<12hex>.sock` in sun_path; the phone-access socket needs ≤ 66). Before any of it, an `E2E_RIG_BASE` under `/run/user/` (also after
   `readlink -m`) aborts before a single `mkdir`.
   `preflight_assert` (display) additionally refuses a `WAYLAND_DISPLAY` that is a path and checks the alias resolves to the verified socket.
@@ -466,19 +466,19 @@ which holds the daemon's `bus` / `keyring/` / `p11-kit/` sockets (GLib's libsecr
 
 ### The rig's own self-test — `pnpm run test:rig-selftest`
 
-`scripts/e2e-contained-rig-selftest.sh` proves the rig's two pre-flights can FAIL (30 arms). **Display (W1–W6):** a `WAYLAND_DISPLAY`
+`scripts/e2e-contained-rig-selftest.sh` proves the rig's two pre-flights can FAIL (31 arms). **Display (W1–W6):** a `WAYLAND_DISPLAY`
 that is a path to the human's compositor, a sibling socket, a bogus one, the raw sway name `wayland-1`, an alias pointing at the wrong
-socket, an added `DISPLAY` — each must abort **rc=90 without launching the child**. **Runtime world (R0–R9b, 20 arms):** forced real
+socket, an added `DISPLAY` — each must abort **rc=90 without launching the child**. **Runtime world (R0–R9b, 21 arms):** forced real
 `XDG_RUNTIME_DIR` (and one under it, one disguised `/run/./user/<uid>`), a duplicated key, one outside the rig dir, a symlinked / 0755 private dir,
 planted `keyring`/`bus`/`pulse`/`p11-kit` entries, forced real/`disabled:` D-Bus address, an existing bus path, an env value containing
-`/run/user/<uid>` (pre-sway, added after sway, disguised), an over-long path, sway's own env carrying the real dir and a rig base under
+`/run/user/<uid>` (pre-sway, added after sway, disguised, or reached through a symlink), an over-long path, sway's own env carrying the real dir and a rig base under
 `/run/user/` (those two inside the hidden world) — hostile values go into the CHILD array only via `RIG_SELFTEST_*` and the rig aborts before launching; the pre-sway
 arms also assert `sway pid=` never appeared. **Controls (C1–C4):** normal run launches the child; the same run with `/run/user/<uid>`
 hidden behind an empty tmpfs (needs `bwrap`) passes and creates nothing in it; the child's REAL `env` (read from the child, not the array)
 is private; a keyring-named stand-in listening in the private dir is reaped at teardown. Each arm also requires its **own abort reason** (`grep -E`), so an arm that aborts for a different clause is a failure.
 `RIG_SELFTEST_ONLY="ID …"` runs a subset and can only print `PARTIAL-*` (never the gate's `PASSED`).
 
-Mutation proof: `node scripts/e2e-contained-rig-mutants.mjs --unfixed` edits the real rig in place (31 clause-removal / construction-drift
+Mutation proof: `node scripts/e2e-contained-rig-mutants.mjs --unfixed` edits the real rig in place (32 clause-removal / construction-drift
 mutants, byte-exact restore + `cmp`) and demands exactly the named arms go FAIL; `--unfixed` also runs the pre-Q2 rig through the same
 arms (it must fail them). One declared survivor: R3's resolved-path clause (needs a rig base symlinked into `/run/user/<uid>`, which the
 test must never create). Never run an Electron rig while it runs — it mutates the rig file.

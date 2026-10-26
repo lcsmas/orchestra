@@ -214,7 +214,8 @@ norm_path() {  # lexical: collapse `//`, `/./` and `x/../` so /run//user/1000, /
 # tests is skipped — a failing string test dies first).
 #   $1 = array name (CHILD_ENV | SWAY_ENV) · $2 = stage label for the log
 preflight_runtime_world() {
-  local arr="$1" stage="$2" xdg xdgn dbus kv name k v seen=" " resolved real_rt="/run/user/${RIG_UID}"
+  local arr="$1" stage="$2" xdg xdgn dbus kv name k v seen=" " resolved phys part real_rt="/run/user/${RIG_UID}"
+  local -a parts
   local -n _chk="${arr}"
   xdg="$(env_get "${arr}" XDG_RUNTIME_DIR || true)"
   dbus="$(env_get "${arr}" DBUS_SESSION_BUS_ADDRESS || true)"
@@ -259,6 +260,15 @@ preflight_runtime_world() {
     v="$(norm_path "${kv#*=}")"
     [[ "${v}" != *"/run/user/"* ]] \
       || die "PREFLIGHT-RUNTIME FAILED: ${arr} entry '${kv%%=*}' contains '/run/user/' (value '${kv#*=}') — no path into the human's runtime dir may reach a rig process"
+    # …and not PHYSICALLY either: a link (e.g. a caller-supplied CLAUDE_CONFIG_DIR_PIN) or `<link>/..` that the kernel resolves
+    # into /run/user/ passes every text test. `readlink -m` follows links the way the kernel does; it reads link text, never connects.
+    IFS=: read -ra parts <<<"${kv#*=}"
+    for part in "${parts[@]}"; do
+      [[ "${part}" == /* ]] || continue
+      phys="$(readlink -m -- "${part}" 2>/dev/null || true)"
+      [[ "${phys}" != /run/user/* ]] \
+        || die "PREFLIGHT-RUNTIME FAILED: ${arr} entry '${kv%%=*}' value '${part}' resolves physically to '${phys}' — a link into the human's runtime dir"
+    done
   done
   # R8 — the private dir hosts the app's unix sockets: the hooks socket `/orchestra-<12hex>.sock` (23 chars) must fit sun_path (107) => dir <= 84.
   #      (The phone-access socket `/orchestra-acces-mobile-<12hex>.sock` is 41 chars => dir <= 66: its wrapper uses a short base.)

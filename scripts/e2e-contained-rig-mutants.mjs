@@ -58,6 +58,7 @@ const MUTANTS = [
   { name: 'r5d-p11kit-glob', find: ' "${xdg}"/p11-kit*; do', replace: '; do', red: ['R5d'], extra: ['R5a'] },
   { name: 'sway-presway-call-removed', find: 'preflight_runtime_world SWAY_ENV pre-sway\n', replace: '', red: ['R9s'] },
   { name: 'base-under-run-user-guard', find: '[[ "${RIG_BASE}" == /run/user/* || "${RIG_BASE_CANON}" == /run/user/* ]]', replace: 'false', red: ['R9b'] },
+  { name: 'r7-physical-resolution', find: '[[ "${phys}" != /run/user/* ]]', replace: 'true', red: ['R7e'], extra: ['R7a'] },
   // the display preflight (clauses touched by this change)
   { name: 'w-path-clause', find: line('  [[ "${got}" != */* ]]'), replace: line('  true'), red: ['W1'] },
   { name: 'w-equality-clause', find: line('  [[ "${got}" == "${want}" ]]'), replace: line('  true'), red: ['W2', 'W3'] },
