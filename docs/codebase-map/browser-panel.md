@@ -406,9 +406,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   of a profile), `Storage.deleteStorageBucket` (named, non-default buckets). Ephemeral workspaces are never refused. The caller passes the TARGET tab's url
   (`pageUrl`).
   The proxy asks it with `panelProfileId(wsId)` (`browser-panel.ts`, a pure read of what the OPEN panel runs on) before forwarding a page method, and
-  also denies `Target.sendMessageToTarget` + raw `get cdp-url` (#395) — a name-judged policy is only as strong as that. The wiring is in #395's proxy
-  (its files); the rule + accessor are #400's. **Confirm the real method names** the pinned agent-browser v0.39.2 emits (`ORCHESTRA_CDP_TRACE=1`) once
-  #395 is in the base — the list is one const.
+  also denies `Target.sendMessageToTarget` + raw `get cdp-url` (#395) — a name-judged policy is only as strong as that.  The real method names the pinned agent-browser v0.39.2 emits were MEASURED through the CLI (rig arm `cdp`, `ORCHESTRA_CDP_TRACE=1`); the wiring is `makePanelPort.refuseMethod` in `browser-cdp-host.ts` (strict verdict contract of #395's core: `null` or a NON-EMPTY string on every path — pinned by a refusal-message table and two must-FAIL mutants).
 - **Settings > Browser — `BrowserSettings.tsx`** (globe icon in the sidebar header, `store.browserSettingsOpen`): create / rename (id kept) /
   delete (the confirmation says how many workspaces lose it), the per-profile usage count, and — when `getSecretsState()` says not encrypted — the
   `[data-profile-warning="create"]` notice above the create field + a "not encrypted" tag per row (ADR 0010: warn, never refuse).
@@ -432,9 +430,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   human's live login keyring (G10b: the rig guards the collection listing before/after).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
-  `browser-profiles-wiring.test.ts`; 79 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
-  (arms `settings,attach,human,restore,delete,flush,session`, run ONLY through `scripts/e2e-contained-rig.sh` — the private runtime world of incident Q2 — with the driver taking `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs`, `--password-store=basic` handed to the app and its `ctl/scratch-env` clause asserting what the DRIVER handed it (`/proc/<pid>/environ` goes blind once a D-Bus address is set); oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
-  on disk, compositor pixels, store.json) + 14 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
+  `browser-profiles-wiring.test.ts`; 97 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  (arms `settings,attach,human,restore,delete,flush,session,cdp` — `cdp` drives the REAL `orchestra browser` CLI (host-resolved agent identity, pinned agent-browser) against a profile SHARED by two workspaces and reads the CDP methods it emitted from the proxy trace: `cookies get` → `Network.getCookies` (allowed), `cookies clear` → `Network.clearBrowserCookies` (refused, never reached the debugger), `cookies set --url <other site>` → `Network.setCookies` (refused) —, run ONLY through `scripts/e2e-contained-rig.sh` — the private runtime world of incident Q2 — with the driver taking `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs`, `--password-store=basic` handed to the app and its `ctl/scratch-env` clause asserting what the DRIVER handed it (`/proc/<pid>/environ` goes blind once a D-Bus address is set); oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
+  on disk, compositor pixels, store.json) + 17 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`.
 
 ## IPC / seam
 
