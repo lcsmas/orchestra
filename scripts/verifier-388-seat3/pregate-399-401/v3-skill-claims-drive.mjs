@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta', 'v3f3', 'v3hid'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'hidden-wait', 'focus', 'table', 'skill-tabs', 'skill-profile', 'skill', 'v3claims', 'v3hid', 'v3prof'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -194,7 +194,7 @@ class Cdp {
 }
 
 // ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const WS_NAMES = ['b399-one', 'b399-two', 'b399-three']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
+const WS_NAMES = ['b399-one', 'b399-two', 'b399-three', 'b399-four']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
@@ -276,7 +276,7 @@ process.on('SIGTERM', () => process.exit(143));
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir);
-  const [W1, W2, W3] = world.workspaces;
+  const [W1, W2, W3, W4] = world.workspaces;
   const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
@@ -303,7 +303,7 @@ async function main() {
     // Assert what the DRIVER handed the app: Chromium may rewrite /proc/<pid>/environ once a bus var is present (seat 2 F2), so the process view is informational only
     clause('ctl', 'scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && env.XDG_RUNTIME_DIR === XDG && !('DISPLAY' in env) && !('DBUS_SESSION_BUS_ADDRESS' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND,
       `env handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} (the rig's private dir) WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'} DBUS=${'DBUS_SESSION_BUS_ADDRESS' in env ? 'SET' : '<unset>'}`);
-    const ctx = { world, W1, W2, W3, FIX, port, app, ui, targets, env, logFile };
+    const ctx = { world, W1, W2, W3, W4, FIX, port, app, ui, targets, env, logFile };
     await runArms(ctx);
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
@@ -713,38 +713,6 @@ const ARM_FNS3 = {
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
       clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0b - 300) <= 2, `${show(sc)}; oracle scrollY ${y0b} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
-      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
-      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
-      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
-      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
-      await o2.eval(late('late-sel'));
-      const wsel = await cli(ctx, W2, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
-      await o2.eval(late('late-fn'));
-      const wfn = await cli(ctx, W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
-      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
-      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
-      const wblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      const wctl = await cli(ctx, W2, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
-      const iw = await o2.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
-      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
-      await o2.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
-      await sleep(500);
-      const errs = await cli(ctx, W2, ['errors']);
-      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
-      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
-      await selectWs(ctx, W2); await openPane(ctx);
-      await o2.eval(late('late-vis'));
-      const wvis = await cli(ctx, W2, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
-      const wblockVis = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
-      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
-      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
-      await selectWs(ctx, W1);
-      await o2.eval(late('late-b'));
-      const wB = await cli(ctx, W2, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
-      const wBblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      const iwB = await o2.eval('innerWidth');
-      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W2 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
     } finally { o2.close(); }
   },
 };
@@ -1108,6 +1076,153 @@ ARM_FNS.v3hid = async function v3hid(ctx) {
   clause(A, 'shown-then-pane-closed: the skill says a pane shown once keeps its last size, where the wait works — same as switched-away', C.iw > 0 && okq(C['block-present']) && okq(C['h1-present']) && C['late-block'].ok, JSON.stringify(C));
   rN.o.close(); rS.o.close(); rC.o.close();
 };
+
+
+// ── seat 3 (#399 FINAL v2, e1603ce9): the skill's "On a workspace with a browser profile" claims against #400's real behaviour ──
+ARM_FNS.v3prof = async function v3prof(ctx) {
+  const { W1, W2, W3, FIX, ui } = ctx; const A = 'v3prof';
+  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 45000, ...(o2 ?? {}) });
+  const PORT = new URL(FIX).port; const H = (host, p = '') => `http://${host}:${PORT}${p}`;
+  const emb = (pageHost, frameUrl) => H(pageHost, `/v3-embed.html?f=${encodeURIComponent(frameUrl)}`);
+  const pid = await ui.eval(`window.orchestra.browserProfileCreate('v3-prof').then((r) => r.profile?.id ?? null)`);
+  const att = async (W, id) => ui.eval(`window.orchestra.browserProfileAttach(${sel(W.id)}, ${id === null ? 'null' : sel(id)}).then((r) => ({ ok: r.ok, profileId: r.state?.profileId ?? null }))`);
+  try {
+    const a1 = await att(W1, pid), a2 = await att(W2, pid);
+    const holders = await ui.eval(`window.orchestra.listWorkspaces().then((l) => l.filter((w) => w.browserProfileId === ${sel(pid)}).map((w) => w.id))`);
+    clause(A, 'ctl/the-human-IPC-attached-one-profile-to-W1-and-W2-and-W3-has-none', !!pid && a1.ok && a2.ok && holders.length === 2 && holders.includes(W1.id) && holders.includes(W2.id) && !holders.includes(W3.id), `profile ${pid}; holders on the workspace records ${JSON.stringify(holders)} (attach replies: W1 ${JSON.stringify(a1)} W2 ${JSON.stringify(a2)} — the reply's state.profileId is null for a workspace whose panel was not built yet)`);
+    await selectWs(ctx, W1); await openPane(ctx);
+    // 1 signed in + shared with another workspace + ephemeral workspace unchanged
+    await run(W1, ['open', H('127.0.0.1', '/signin')]); await run(W1, ['open', H('127.0.0.1', '/parity.html')]);
+    const g1 = await run(W1, ['cookies', 'get']); const sid = (/sid[^A-Za-z0-9]*([0-9a-f]{12,})/.exec(g1.stdout) || [])[1];
+    await run(W2, ['open', H('127.0.0.1', '/parity.html')]); const g2 = await run(W2, ['cookies', 'get']);
+    await run(W3, ['open', H('127.0.0.1', '/parity.html')]); const g3 = await run(W3, ['cookies', 'get']);
+    clause(A, 'the-pane-is-signed-in-and-the-sign-in-is-SHARED-with-the-other-workspace-on-the-profile-but-not-with-an-ephemeral-one', g1.code === 0 && !!sid && g2.stdout.includes(sid) && !g3.stdout.includes(sid), `W1 cookies get ${show(g1)}; W2 (same profile) has the sid: ${g2.stdout.includes(String(sid))}; W3 (ephemeral) has it: ${g3.stdout.includes(String(sid))}`);
+    // 2 cookies get while the page embeds a frame of another HOST
+    const frames = [
+      ['cross-site frame (127.0.0.1 page, localhost frame)', emb('127.0.0.1', H('localhost', '/v3-kinds.html')), true],
+      ['same-site-OTHER-HOST frame (localhost page, a.localhost frame)', emb('localhost', H('a.localhost', '/v3-kinds.html')), true],
+      ['same-host frame', emb('127.0.0.1', H('127.0.0.1', '/v3-kinds.html')), false],
+      ['about:blank frame', emb('127.0.0.1', 'about:blank'), false],
+      ['data: frame', emb('127.0.0.1', 'data:text/html,hello'), false],
+    ];
+    for (const [nm, url, refuse] of frames) {
+      await run(W1, ['open', url]); await sleep(1500); const g = await run(W1, ['cookies', 'get']);
+      const ok = refuse ? (g.code !== 0 && /frame|other than the page|embedded|profil/i.test(g.stderr)) : g.code === 0;
+      clause(A, `cookies-get-with-a-${nm}: ${refuse ? 'refused (exit 1, says why)' : 'works'}`, ok, show(g));
+    }
+    await run(W3, ['open', emb('127.0.0.1', H('localhost', '/v3-kinds.html'))]); await sleep(1500); const g3f = await run(W3, ['cookies', 'get']);
+    clause(A, 'ctl/the-ephemeral-workspace-reads-cookies-with-a-cross-site-frame', g3f.code === 0, show(g3f));
+    // 3 cookies clear + writes on another site; same-site writes allowed
+    await run(W1, ['open', H('127.0.0.1', '/parity.html')]);
+    const clr = await run(W1, ['cookies', 'clear']);
+    clause(A, 'cookies-clear-is-refused-exit-1-and-says-why-and-the-sign-in-survives', clr.code === 1 && /refus|profil|shared/i.test(clr.stderr) && (await run(W1, ['cookies', 'get'])).stdout.includes(String(sid)), `${show(clr)}`);
+    const sets = [['own page (default)', ['cookies', 'set', 'v3own', '1'], true], ['--url own host', ['cookies', 'set', 'v3own2', '1', '--url', H('127.0.0.1', '/')], true], ['--url another site', ['cookies', 'set', 'v3x', '1', '--url', 'https://other.example.invalid/'], false], ['--url localhost (another host on this machine)', ['cookies', 'set', 'v3x2', '1', '--url', H('localhost', '/')], false], ['--domain another site', ['cookies', 'set', 'v3x3', '1', '--domain', 'other.example.invalid'], false]];
+    for (const [nm, args, allowed] of sets) { const r = await run(W1, args); clause(A, `cookies-set ${nm}: ${allowed ? 'works' : 'refused (exit 1)'}`, allowed ? r.code === 0 : r.code === 1, show(r)); }
+    const gAfter = await run(W1, ['cookies', 'get']);
+    clause(A, 'the-allowed-writes-landed-and-the-refused-ones-did-not', /v3own\b/.test(gAfter.stdout) && /v3own2/.test(gAfter.stdout) && !/v3x/.test(gAfter.stdout), `cookies get → ${show(gAfter)}`);
+    // 4 "Delete one cookie by name instead": which command does that?
+    const cands = [['cookies', 'delete', 'v3own'], ['cookies', 'clear', 'v3own'], ['cookies', 'rm', 'v3own'], ['cookies', 'set', 'v3own', '', '--expires', '1']];
+    const res = []; for (const c of cands) { const r = await run(W1, c); const g = await run(W1, ['cookies', 'get']); res.push(`${c.slice(1).join(' ')} → rc ${r.code} stdout ${JSON.stringify(r.stdout.trim().slice(0, 60))} stderr ${JSON.stringify(r.stderr.trim().slice(0, 50))}, cookie ${/v3own\b/.test(g.stdout) ? 'STILL THERE' : 'gone'}`); if (!/v3own\b/.test(g.stdout)) break; }
+    console.log(`  INFO  [${A}] "delete one cookie by name" — candidates tried in order: ${res.join(' | ')}`);
+    clause(A, 'some-documented-command-deletes-one-cookie-by-name', res.length > 0 && /gone$/.test(res[res.length - 1]), res.join(' | '));
+    // 5 no verb attaches a profile
+    const nv = []; for (const c of [['profile', 'attach', 'x'], ['profiles'], ['get', 'url', '--profile', 'x']]) { const r = await run(W1, c); nv.push(`${c.join(' ')} → rc ${r.code} «${(r.stderr || r.stdout).trim().split('\n')[0].slice(0, 60)}»`); }
+    clause(A, 'no-agent-verb-attaches-a-profile', nv.every((s) => /rc [1-9]/.test(s)), nv.join(' | '));
+    // 6 the human detaches / re-attaches while the agent has an extra tab: the agent's CLI keeps working, the policy follows at the very next command
+    await run(W1, ['tab', 'new', H('127.0.0.1', '/tabs-a.html')]); await sleep(800);
+    const d = await att(W1, null); await sleep(2500);
+    const after = []; for (const c of [['tab', 'list'], ['get', 'url'], ['eval', '1 + 1'], ['snapshot', '-i']]) { const r = await run(W1, c); after.push(`${c[0]}: rc ${r.code}`); }
+    const clrE = await run(W1, ['cookies', 'clear']);
+    clause(A, 'detach-rebuilds-the-panel-the-agents-CLI-keeps-working-and-the-ephemeral-rules-apply-at-once', d.profileId === null && after.every((s) => /rc 0/.test(s)) && clrE.code === 0, `detached ${JSON.stringify(d)}; ${after.join(' · ')}; cookies clear now → ${show(clrE)}`);
+    await run(W1, ['open', H('127.0.0.1', '/parity.html')]); const gE = await run(W1, ['cookies', 'get']);
+    clause(A, 'ctl/the-detached-workspace-no-longer-carries-the-profile-sign-in', !gE.stdout.includes(String(sid)), `cookies get after detach: ${show(gE)}`);
+    const re = await att(W1, pid); await sleep(2500);
+    const afterRe = []; for (const c of [['tab', 'list'], ['get', 'url'], ['eval', '1 + 1']]) { const r = await run(W1, c); afterRe.push(`${c[0]}: rc ${r.code}`); }
+    await run(W1, ['open', H('127.0.0.1', '/parity.html')]); const g4 = await run(W1, ['cookies', 'get']); const clr2 = await run(W1, ['cookies', 'clear']);
+    clause(A, 're-attach-the-CLI-keeps-working-the-sign-in-is-back-and-the-refusals-apply-again', re.profileId === pid && afterRe.every((s) => /rc 0/.test(s)) && g4.stdout.includes(String(sid)) && clr2.code === 1, `${afterRe.join(' · ')}; sid back: ${g4.stdout.includes(String(sid))}; cookies clear → ${show(clr2)}`);
+  } finally {
+    if (pid) { for (const W of [W1, W2]) await att(W, null).catch(() => {}); await ui.eval(`window.orchestra.browserProfileDelete(${sel(pid)})`).catch(() => {}); }
+  }
+};
+
+
+const ARM_FNS10 = {
+  async 'hidden-wait'(ctx) {
+    // Split out of hidden-panel on purpose: the frames-guard mutant makes hidden-panel's refusals HANG, which parks the daemon of THAT workspace; these clauses (and their visible
+    // controls) run on their own never-shown workspace W4, so a collateral queue-block cannot turn one of their controls red.
+    const { W1, W4, FIX } = ctx; const A = 'hidden-wait';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/index.html`]);
+    const U4 = `${FIX}/parity.html?w=${W4.name}`;
+    const w4 = await cli(ctx, W4, ['open', U4]);
+    const o4 = await oracle(ctx, U4);
+    try {
+      clause(A, 'ctl/w4-is-hidden-and-never-shown', w4.code === 0 && (await o4.eval('innerWidth')) === 0, `${W4.branch} has a panel on ${U4}; oracle innerWidth ${await o4.eval('innerWidth')} (never composited)`);
+      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
+      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
+      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
+      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
+      await o4.eval(late('late-sel'));
+      const wsel = await cli(ctx, W4, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
+      await o4.eval(late('late-fn'));
+      const wfn = await cli(ctx, W4, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
+      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
+      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
+      const wblock = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const wctl = await cli(ctx, W4, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iw = await o4.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
+      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
+      await o4.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
+      await sleep(500);
+      const errs = await cli(ctx, W4, ['errors']);
+      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
+      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
+      await selectWs(ctx, W4); await openPane(ctx);
+      await o4.eval(late('late-vis'));
+      const wvis = await cli(ctx, W4, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wblockVis = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
+      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
+      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
+      await selectWs(ctx, W1);
+      await o4.eval(late('late-b'));
+      const wB = await cli(ctx, W4, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wBblock = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iwB = await o4.eval('innerWidth');
+      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W4 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
+    } finally { o4.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS10);
+
+
+const ARM_FNS11 = {
+  async 'skill-profile'(ctx) {
+    // The skill's claims about a workspace WITH a browser profile (#400 policy seam), on the composed build: the HUMAN attaches (here: the app's own window IPC, as the Settings UI does);
+    // the agent can still read cookies of the page but cannot wipe the shared partition. Ephemeral workspace first = the control that the same command works without a profile.
+    const { W1, FIX, ui } = ctx; const A = 'skill-profile';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/cli.html?profile=1`]);
+    const before = await cli(ctx, W1, ['cookies', 'clear']);
+    clause(A, 'ctl/cookies-clear-works-on-an-ephemeral-workspace', before.code === 0, `no profile attached: ${show(before)}`);
+    const made = await ui.eval(`window.orchestra.browserProfileCreate('b399-profile').then((r) => r.profile?.id ?? null)`);
+    const att = made ? await ui.eval(`window.orchestra.browserProfileAttach(${sel(W1.id)}, ${sel(made)}).then((r) => ({ ok: r.ok, profileId: r.state?.profileId ?? null }))`) : null;
+    clause(A, 'ctl/the-human-ipc-created-and-attached-a-profile', !!made && att?.ok === true && att?.profileId === made, `create → ${made}; attach → ${JSON.stringify(att)}`);
+    try {
+      await waitFor(async () => (await cli(ctx, W1, ['get', 'url'])).code === 0, 15000, 'the rebuilt panel to answer');
+      await cli(ctx, W1, ['open', `${FIX}/cli.html?profile=2`]);
+      const get = await cli(ctx, W1, ['cookies', 'get']);
+      const clear = await cli(ctx, W1, ['cookies', 'clear']);
+      const other = await cli(ctx, W1, ['cookies', 'set', 'x399', 'y', '--url', 'https://other.example.invalid/']);
+      clause(A, 'cookies-get-works-cookies-clear-and-a-foreign-site-set-are-refused-on-a-profile-workspace', get.code === 0 && clear.code !== 0 && other.code !== 0 && /profile|partition|shared|human/i.test(clear.stderr), `cookies get → ${show(get)}; cookies clear → ${show(clear)}; cookies set --url <other site> → ${show(other)}`);
+      const noVerb = await cli(ctx, W1, ['profile', 'attach', 'x']);
+      clause(A, 'there-is-no-profile-verb-for-the-agent', noVerb.code !== 0 && /unknown command|not available/i.test(noVerb.stderr), `orchestra browser profile attach x → ${show(noVerb)}`);
+    } finally {
+      if (made) { await ui.eval(`window.orchestra.browserProfileAttach(${sel(W1.id)}, null)`); await ui.eval(`window.orchestra.browserProfileDelete(${sel(made)})`); }
+    }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS11);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
