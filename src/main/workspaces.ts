@@ -7,7 +7,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from './platform';
 import { store } from './store';
-import { hasSessionKey, forgetSessionKey } from './session-identity-host.ts';
+import { hasSessionKey, forgetSessionKey, sessionKeys } from './session-identity-host.ts';
+import { decideSpawnProfile, type SpawnProfileDecision } from '../shared/spawn-profile.ts';
+import { effectiveProfileId } from '../shared/browser-profile.ts';
+import { deletingProfiles } from './spawn-profile-gate.ts';
 import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
 import { stopMemberScopeIfAny } from './scope-stop-host';
 import { removeAgentTmpDir } from './agent-tmpdir';
@@ -137,7 +140,7 @@ import { forgetWorkspaceProbes } from './activity';
 import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
-import type { Account, AgentImage, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
+import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { canOrchestrate, isScratchLike } from '../shared/types';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
@@ -326,6 +329,10 @@ export async function createWorkspace(
   /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record.
    *  `exactName` = the agent route: when the requested name and all its suffixes are taken, REFUSE instead of falling back to a random branch. */
   naming?: { namedBy?: string; exactName?: boolean },
+  /** #401: asks the agent spawn route which profil navigateur this workspace inherits. Called SYNCHRONOUSLY at the record build — after the worktree
+   *  exists (the slow part), with no `await` before the first upsert — so a human detach / switch of the parent meanwhile is honoured. Deliberately not
+   *  a {@link CreateWorkspaceInput} field: that type crosses the renderer IPC. */
+  profileAtCreation?: () => BrowserProfileId | undefined,
 ): Promise<Workspace> {
   await ensureRoot();
   // REJECT a falsy repoPath before anything touches git. This is the durable
@@ -398,6 +405,7 @@ export async function createWorkspace(
   const port = store.allocatePort();
   const setupScript = store.getRepoScripts(input.repoPath).setup;
   const newEffort = input.effort ?? effortForNewWorkspace(store.getEffortDefaults(), defaultKind);
+  const inheritedProfile = profileAtCreation?.(); // sync, last read before the record is built and upserted (no await between)
 
   const ws: Workspace = {
     id,
@@ -432,6 +440,7 @@ export async function createWorkspace(
     model: modelForNewWorkspace(input.model, store.getModelDefaults(), defaultKind),
     // Same for the reasoning effort; "model default" leaves `sdkEffort` unset.
     ...(newEffort ? { sdkEffort: newEffort } : {}),
+    ...(inheritedProfile ? { browserProfileId: inheritedProfile } : {}),
   };
   await store.upsertWorkspace(ws);
   platform.broadcast('workspace:update', ws);
@@ -1473,6 +1482,9 @@ export interface SpawnResult {
   held?: { since: number };
   /** #375: with `ok:false` + `id` (the child was KEPT, stopped): the start failure's own message, without the CLI `restart` advice in `error`. */
   startError?: string;
+  /** #401: present only when the caller passed `--profile`: `applied` = the child's record carries the profile; otherwise the child is in
+   *  navigation éphémère and `message` says why. */
+  profile?: { applied: boolean; message: string };
 }
 
 /** The brief's model sentence, from the user's spawned-agent default model
@@ -1525,6 +1537,10 @@ export async function dispatchSpawnRequest(
     origin?: PauseOrigin;
     /** Images / PDFs the human attached to the task on the phone: they ride the agent's FIRST message (not kept for a Restart). */
     images?: AgentImage[];
+    /** #401: `orchestra spawn --profile` (a profile id or name) + the caller's `ORCHESTRA_SESSION_KEY`. Sent ONLY by the agent route (hooks `/spawn`);
+     *  the human paths and the sandbox wire pass neither, so their child is always ephemeral. What the caller HOLDS is read here from its record. */
+    profile?: string;
+    key?: string;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1567,6 +1583,23 @@ export async function dispatchSpawnRequest(
       error:
         'no repo: pass an explicit repoPath (this session owns no checkout to inherit — a repo ASSOCIATION only groups it in the sidebar and is deliberately not inherited; `orchestra adopt-repo` gives a coordinator a real checkout)',
     };
+  // #401: the profile pass is decided at the RECORD BUILD (`createWorkspace` calls this thunk synchronously, after the slow worktree add), from the LIVE
+  // records: the caller's `browserProfileId` and the profile list are read here, never taken from the CLI, and the caller must be the live session of `from`
+  // (ADR 0008). Honoured ⇒ written on the NEW record only (no attach path for agents). No `--profile` ⇒ no thunk: creation is byte-identical.
+  let profileDecision: SpawnProfileDecision = { kind: 'none' };
+  const decideProfile = (): BrowserProfileId | undefined => {
+    profileDecision = decideSpawnProfile({
+      requested: input.profile,
+      detached: input.detached === true,
+      caller: input.from ? store.getWorkspace(input.from) : undefined,
+      callerVouched: !!input.from && !!input.key && sessionKeys().verify(input.from, input.key) === 'ok',
+      profiles: store.getBrowserProfiles(),
+      deleting: deletingProfiles(), // a delete in flight scanned its carriers already — never hand its profile on meanwhile (#400 service)
+    });
+    return profileDecision.kind === 'honoured' ? profileDecision.profileId : undefined;
+  };
+  const profileReport = (): Pick<SpawnResult, 'profile'> =>
+    profileDecision.kind === 'none' ? {} : { profile: { applied: profileDecision.kind === 'honoured', message: profileDecision.message } };
   let created: { id: string; branch: string } | undefined;
   // #227: a failed start KEEPS the child (stopped, task retained) — carry id+branch so the caller can restart it; `startError` is the bare cause.
   const keptFailure = (id: string, branch: string, cause: string): SpawnResult => ({
@@ -1577,6 +1610,7 @@ export async function dispatchSpawnRequest(
     error:
       `the agent failed to start: ${cause}. Workspace ${branch} (${id}) was kept, stopped, ` +
       `with its task retained — fix the cause, then restart it (\`orchestra restart ${id}\`).`,
+    ...profileReport(), // #401: a kept child still says what became of its profile
   });
   try {
     // `detached` skips only the parent nesting — `from` above still drives
@@ -1590,11 +1624,11 @@ export async function dispatchSpawnRequest(
       model,
       ...(effort ? { effort } : {}),
       branch: input.branch,
-    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName });
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
     const started = await startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images);
     if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
-    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}) };
+    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...profileReport() };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'spawn failed';
     // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
@@ -2624,16 +2658,25 @@ export interface WhoamiResult {
   linkedPrUrls?: string[];
   /** Agent-reported Linear issue key, or null when unlinked. */
   linkedLinearKey?: string | null;
+  /** #401: the profil navigateur this workspace HOLDS (what `orchestra spawn --profile` can pass on); null = navigation éphémère (a dangling id reads null).
+   *  Present ONLY for the vouched live session of that workspace (session key); absent = the host could not vouch, which is NOT "ephemeral". */
+  browserProfile?: { id: string; name: string } | null;
   error?: string;
 }
 
 /** Socket entry point for `/whoami`: a workspace's view of its OWN record.
  * Read-only, synchronous store lookup. Never throws; answers `{ ok }`. */
-export function dispatchWhoamiRequest(input: { id?: string }): WhoamiResult {
+export function dispatchWhoamiRequest(input: { id?: string; key?: string }): WhoamiResult {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
+  // #401: the held profile is shown ONLY to the vouched live session of `id` (its session key) — `/whoami {id}` is otherwise any-id, and a profile
+  // name is the human's sign-in label. No key / superseded / unregistered ⇒ the field is OMITTED (never `null`: that would claim "ephemeral").
+  const vouched = !!input.key && sessionKeys().verify(id, input.key) === 'ok';
+  const profiles = vouched ? store.getBrowserProfiles() : [];
+  const heldId = effectiveProfileId(ws.browserProfileId, profiles);
+  const held = heldId === undefined ? undefined : profiles.find((p) => p.id === heldId);
   return {
     ok: true,
     id: ws.id,
@@ -2646,6 +2689,7 @@ export function dispatchWhoamiRequest(input: { id?: string }): WhoamiResult {
     baseBranch: ws.baseBranch,
     linkedPrUrls: (ws.linkedPrs ?? []).map((p) => p.url),
     linkedLinearKey: ws.linkedLinearKey ?? null,
+    ...(vouched ? { browserProfile: held ? { id: held.id, name: held.name } : null } : {}),
   };
 }
 
@@ -3849,6 +3893,10 @@ Optional flags:
   Short versioned forms like \`opus-4-8\` are rejected — override with a full
   wire id. Do NOT downgrade implementation workers on your own
   initiative to economize — that trade-off is the user's call, not yours.
+- \`--profile <id|name>\` — start the child's browser panel signed in with the
+  profil navigateur YOU hold (the human attaches one from your panel's URL bar;
+  see \`orchestra whoami\`). A profile you do not hold is refused with a warning
+  and the child is still created, in navigation éphémère. Omitted = ephemeral.
 - \`--detached\` — create the workspace with NO parent, so it appears as its own
   top-level section grouped under its repo instead of nesting under you.
   Default to nesting (no flag). Pass \`--detached\` only when the user's request

@@ -11,6 +11,7 @@ import { registerBrowserProfilesIpc, type ProfileIpcEvent } from './browser-prof
 import { log } from './logger';
 import { platform } from './platform';
 import { store } from './store';
+import { setDeletingProfilesProbe } from './spawn-profile-gate.ts';
 
 export function initBrowserProfiles(getMainWebContentsId: () => number | null): void {
   // A panel's identity comes from the workspace RECORD: a profile deleted since (dangling id) reads as ephemeral.
@@ -50,6 +51,9 @@ export function initBrowserProfiles(getMainWebContentsId: () => number | null): 
     mintId: () => `bp-${randomBytes(6).toString('hex')}`,
     now: () => Date.now(),
   });
+
+  // #401: an agent spawn hands its profile on only when that profile is not being deleted (the service knows; workspaces.ts asks through this probe).
+  setDeletingProfilesProbe(() => service.deleting());
 
   registerBrowserProfilesIpc({
     ipc: { handle: (channel, fn) => ipcMain.handle(channel, (e, ...args) => fn(e as unknown as ProfileIpcEvent, ...args)) },

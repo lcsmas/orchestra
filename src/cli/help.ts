@@ -95,7 +95,7 @@ with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long bo
     name: 'spawn',
     group: 'Workspaces',
     summary: 'Spawn a new worktree + agent',
-    detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--detached]
+    detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--detached]
 
 Spawn a new worktree + agent, nested under the caller by default.
   --name <name>     the child's name (required): ${NAME_CONVENTION}.
@@ -109,6 +109,11 @@ Spawn a new worktree + agent, nested under the caller by default.
                     spawned-agent default from Settings
   --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the
                     spawned-agent default from Settings
+  --profile <id|name>
+                    start the child's browser panel signed in with the profil navigateur YOU
+                    hold (the human attaches it from your panel's URL bar). Any other profile
+                    is refused: the child is still created, in navigation éphémère, and a
+                    warning says so. Omitted = navigation éphémère.
   --detached        top-level, not nested under the caller`,
   },
   {

@@ -171,8 +171,9 @@ export interface Workspace {
    *  own default (`high`). */
   sdkEffort?: AgentEffortLevel;
   /** The profil navigateur attached to this workspace's browser panel (#400, ADR 0010): all its tabs use that profile's
-   *  persistent partition. Absent = navigation éphémère (the default). Set ONLY by the human-facing IPC
-   *  (`browserProfileAttach`) — no CLI/agent path writes it. A dangling id (profile deleted) reads as ephemeral. */
+   *  persistent partition. Absent = navigation éphémère (the default). Set by the human-facing IPC
+   *  (`browserProfileAttach`), and at CREATION only by an agent spawn handing on the profile its spawner holds (#401); nothing attaches
+   *  one to an existing workspace but the human. A dangling id (profile deleted) reads as ephemeral. */
   browserProfileId?: BrowserProfileId;
   /** Last Claude Agent SDK session id for this workspace's structured session.
    *  Captured from the SDK stream and persisted so re-opening the structured view
