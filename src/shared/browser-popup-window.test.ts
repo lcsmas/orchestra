@@ -78,6 +78,7 @@ test('size: a benign request is kept, junk falls back to the default, nothing le
     assert.ok(Number.isInteger(o.width) && Number.isInteger(o.height), f);
     assert.ok(o.width >= POPUP_WINDOW_MIN.width && o.height >= POPUP_WINDOW_MIN.height, `${f}: never below the minimum (${o.width}x${o.height})`);
   }
+  assert.deepEqual([build('width=0,height=0').width, build('width=0,height=0').height], [POPUP_WINDOW_DEFAULT.width, POPUP_WINDOW_DEFAULT.height], 'a zero size is junk: the popup default, not the minimum');
   assert.deepEqual([build('width=abc,height=xyz').width, build('width=abc,height=xyz').height], [POPUP_WINDOW_DEFAULT.width, POPUP_WINDOW_DEFAULT.height], 'junk -> the popup default, not 800x600');
   for (const f of ['width=4000,height=3000', 'width=1e308,height=1e308', 'width=2147483648,height=2147483649', 'width=99999999999999999999,height=9e99']) {
     const o = build(f) as { width: number; height: number };

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   closePopupWindows,
   forgetPopupRate,
-  frameNameHeldElsewhere,
+  frameNameHeldByOther,
   notePageInitiatedOpen,
   recentPageInitiatedOpens,
   closePopupsOpenedBy,
@@ -139,16 +139,18 @@ test('registry: each window gets a stable, never-reused id (the memory attributi
   closePopupWindows('wsR6');
 });
 
-test('frame names: a live popup named N in workspace A is "held elsewhere" for B, never for A itself; unnamed and destroyed ones hold nothing', () => {
-  const p = registerPopupWindow('wsN1', popup(fakeWc(), { frameName: 'oauth' }));
-  registerPopupWindow('wsN1', popup(fakeWc(), { frameName: '' }));
-  assert.equal(frameNameHeldElsewhere('wsN2', 'oauth'), true);
-  assert.equal(frameNameHeldElsewhere('wsN1', 'oauth'), false, 'the holder itself may reuse its own popup');
-  assert.equal(frameNameHeldElsewhere('wsN2', ' oauth '), true, 'trimmed like the registry key');
-  assert.equal(frameNameHeldElsewhere('wsN2', 'other'), false);
-  assert.equal(frameNameHeldElsewhere('wsN2', ''), false, 'an unnamed popup never collides');
+test('frame names: a live popup named N is "held by another" for every OTHER opener — other workspace or the same one — never for its own opener; unnamed and destroyed ones hold nothing', () => {
+  const tabA = fakeWc(), tabB = fakeWc(), otherWsTab = fakeWc();
+  const p = registerPopupWindow('wsN1', popup(tabA, { frameName: 'oauth' }));
+  registerPopupWindow('wsN1', popup(tabA, { frameName: '' }));
+  assert.equal(frameNameHeldByOther('oauth', otherWsTab), true, 'another workspace');
+  assert.equal(frameNameHeldByOther('oauth', tabB), true, 'another tab of the SAME workspace (a hostile tab must not retarget the holder\'s popup)');
+  assert.equal(frameNameHeldByOther('oauth', tabA), false, 'the holder itself may reuse its own popup');
+  assert.equal(frameNameHeldByOther(' oauth ', tabB), true, 'trimmed like the registry key');
+  assert.equal(frameNameHeldByOther('other', tabB), false);
+  assert.equal(frameNameHeldByOther('', tabB), false, 'an unnamed popup never collides');
   (p.win as any).destroy();
-  assert.equal(frameNameHeldElsewhere('wsN2', 'oauth'), false, 'a closed popup frees its name');
+  assert.equal(frameNameHeldByOther('oauth', tabB), false, 'a closed popup frees its name');
   closePopupWindows('wsN1');
 });
 

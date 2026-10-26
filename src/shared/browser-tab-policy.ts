@@ -135,8 +135,8 @@ export interface PopupContext {
   pageInitiatedOpen: number;
   /** Page-initiated popups OPENED (not refused) by this workspace within the last `POPUP_RATE_WINDOW_MS`, closed or not. */
   recentPageInitiated?: number;
-  /** A live popup window with this request's frame name belongs to ANOTHER workspace: Electron's frame-name registry is process-global and would load this URL into it. */
-  nameHeldElsewhere?: boolean;
+  /** A live popup window with this request's frame name was opened by ANOTHER opener (tab / window, any workspace): Electron's frame-name registry is process-global and would load this URL into it. */
+  nameHeldByOtherOpener?: boolean;
   cap?: number;
   budget?: number;
   rateMax?: number;
@@ -208,8 +208,8 @@ export function decidePopup(req: PopupRequest, ctx: PopupContext): PopupRouteDec
     return { route: 'refuse', reason: 'cap', message: `Popup refused: a workspace holds at most ${cap} browser tabs and popup windows. Close one first.` };
   }
   const needsOpener = popupNeedsOpener(req);
-  if (needsOpener && ctx.nameHeldElsewhere) {
-    return { route: 'refuse', reason: 'name-in-use', message: 'Popup refused: another workspace holds a popup window with that name.' };
+  if (needsOpener && ctx.nameHeldByOtherOpener) {
+    return { route: 'refuse', reason: 'name-in-use', message: 'Popup refused: a window with that name is held by another page.' };
   }
   if (!req.userGesture && ctx.pageInitiatedOpen >= budget) {
     return { route: 'refuse', reason: 'budget', message: `Popup refused: a page may hold at most ${budget} popups it opened without a click.` };

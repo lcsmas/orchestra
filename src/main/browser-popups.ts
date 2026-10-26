@@ -77,13 +77,14 @@ export function registerPopupWindow(wsId: string, p: Omit<PopupWindow, 'id'>): P
   return entry;
 }
 
-/** Is a live popup window named `frameName` held by a workspace OTHER than `wsId`? (Electron would load a new popup's URL into it, across partitions.) */
-export function frameNameHeldElsewhere(wsId: string, frameName: string): boolean {
+/** Is a live popup window named `frameName` held by a DIFFERENT opener than `opener` (any workspace)? Electron's frame-name registry is process-global: it
+ *  loads a new popup's URL into ANY live window registered under that name — across tabs, workspaces and partitions — and that window's `window.opener` is still the
+ *  tab that created it, so a hostile tab could retarget another tab. The holder itself (same opener) may reuse its own window, as in any browser. */
+export function frameNameHeldByOther(frameName: string, opener: WebContents): boolean {
   const name = frameName.trim();
   if (name === '') return false;
-  for (const other of [...windows.keys()]) {
-    if (other === wsId) continue;
-    if (livePopupWindows(other).some((p) => p.frameName === name)) return true;
+  for (const wsId of [...windows.keys()]) {
+    if (livePopupWindows(wsId).some((p) => p.frameName === name && p.opener !== opener)) return true;
   }
   return false;
 }

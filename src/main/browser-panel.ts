@@ -28,7 +28,7 @@ import {
   closePopupWindows,
   closePopupsOpenedBy,
   consumeUserGesture,
-  frameNameHeldElsewhere,
+  frameNameHeldByOther,
   livePopupWindows,
   notePageInitiatedOpen,
   recentPageInitiatedOpens,
@@ -253,7 +253,7 @@ export function initBrowserPanels(
     tabs: () => [...panels.values()].flatMap((p) => [
       ...p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; }),
       // popup child windows hold cap slots and a renderer each: billed to their workspace like a tab (#396 review F7) — the chip counts them as tabs
-      ...livePopupWindows(p.wsId).map((w) => ({ wsId: p.wsId, tabId: w.id, pid: w.win.webContents.getOSProcessId() })),
+      ...livePopupWindows(p.wsId).map((w) => { const wc = w.win.webContents as Electron.WebContents | undefined; return { wsId: p.wsId, tabId: w.id, pid: wc && !wc.isDestroyed() ? wc.getOSProcessId() : null }; }),
     ]),
     nonTabPids: () => { const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents; return ui && !ui.isDestroyed() ? [ui.getOSProcessId()] : []; },
   });
@@ -438,7 +438,7 @@ function routePopup(
       openWindows: windows.length,
       pageInitiatedOpen: panel.tabs.filter((t) => pageOpenedTabs.has(t)).length + windows.filter((w) => w.pageInitiated).length,
       recentPageInitiated: recentPageInitiatedOpens(wsId, now),
-      nameHeldElsewhere: frameNameHeldElsewhere(wsId, d.frameName),
+      nameHeldByOtherOpener: frameNameHeldByOther(d.frameName, opener),
     },
   );
   switch (route.route) {
@@ -451,7 +451,6 @@ function routePopup(
       return { action: 'deny' };
     }
     case 'child-window': {
-      if (route.pageInitiated) notePageInitiatedOpen(wsId, now);
       return {
         action: 'allow',
         outlivesOpener: false,
@@ -502,8 +501,12 @@ function createPopupWindow(
     return guest;
   }
   const bounds = parent.getContentBounds();
-  const win = new electronNs.BrowserWindow(buildChildWindowOptions(given, { parent, parentSize: { width: bounds.width, height: bounds.height } }) as Electron.BrowserWindowConstructorOptions);
+  const built = buildChildWindowOptions(given, { parent, parentSize: { width: bounds.width, height: bounds.height } }) as Electron.BrowserWindowConstructorOptions;
+  // Guest-less path (Electron builds the contents itself): without a guest there is no inherited session, so pin the opener's — never the default one.
+  if (!guest) built.webPreferences = { ...built.webPreferences, session: opener.session };
+  const win = new electronNs.BrowserWindow(built);
   registerPopupWindow(wsId, { win, opener, openedBy, pageInitiated, frameName: d.frameName.trim() });
+  if (pageInitiated) notePageInitiatedOpen(wsId); // counted when a window REALLY opens (not at approval: a reused or refused one opens nothing)
   const wc = win.webContents;
   if (!guest) void win.loadURL(d.url, { httpReferrer: d.referrer }); // guest-less path: the factory loads the page itself
   const retitle = (pageTitle: string): void => {
@@ -528,6 +531,12 @@ function createPopupWindow(
 function watchPopups(panel: Panel, wc: Electron.WebContents, openedBy: BrowserTabOpener): void {
   trackUserGesture(wc);
   wc.setWindowOpenHandler((details) => routePopup(panel, wc, openedBy, details));
+  // Backstop: our `createWindow` factory never emits `did-create-window` (Electron skips it), so seeing it means Electron took its DEFAULT path for a popup — its
+  // per-embedder factory slot was consumed by another popup's approval (cross-process frames). That window carries the PAGE's features (the F1 hole): destroy it.
+  wc.on('did-create-window', (win) => {
+    log.warn(`browser-panel: popup window created outside the allowlist factory — destroyed (ws=${panel.wsId})`);
+    win.destroy();
+  });
   wc.once('destroyed', () => closePopupsOpenedBy(panel.wsId, wc));
 }
 

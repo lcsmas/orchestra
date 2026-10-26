@@ -260,15 +260,22 @@ test('rate: page-initiated popups OPENED per minute are capped even when each on
   assert.equal(POPUP_RATE_WINDOW_MS, 60_000);
 });
 
-test('name in use: a named popup is refused while ANOTHER workspace holds a live popup of that name (Electron\'s frame-name registry is global); a tab-route popup and an unnamed one are not', () => {
-  const held = { ...room, nameHeldElsewhere: true };
+test('name in use: a named popup is refused while a window of that name was opened by ANOTHER opener (Electron\'s frame-name registry is global and would load the URL into it); a tab-route and an unnamed popup are not', () => {
+  const held = { ...room, nameHeldByOtherOpener: true };
   const d = decidePopup(click({ frameName: 'oauth' }), held);
   assert.equal(d.route, 'refuse');
   if (d.route === 'refuse') assert.equal(d.reason, 'name-in-use');
   assert.equal(decidePopup(click({ frameName: 'oauth', disposition: 'new-window', features: 'width=400' }), held).route, 'refuse');
   assert.equal(decidePopup(click(), held).route, 'new-tab', 'unnamed: no registry entry involved');
   assert.equal(decidePopup(click({ frameName: 'oauth', features: 'noopener' }), held).route, 'new-tab', 'noopener -> a tab we build ourselves');
-  assert.equal(decidePopup(click({ frameName: 'oauth' }), { ...room, nameHeldElsewhere: false }).route, 'child-window');
+  assert.equal(decidePopup(click({ frameName: 'oauth' }), { ...room, nameHeldByOtherOpener: false }).route, 'child-window');
+});
+
+test('classifyUrl trims: surrounding whitespace never hides a scheme or turns a web URL into a refusal', () => {
+  assert.equal(decidePopup(click({ url: '  https://x.example/a  ' }), room).route, 'new-tab');
+  const d = decidePopup(click({ url: '  javascript:alert(1)' }), room);
+  assert.equal(d.route, 'refuse');
+  assert.deepEqual(decidePopup(click({ url: ' mailto:a@b.c ' }), room), { route: 'external' });
 });
 
 test('http and https are both web; the scheme match is case-insensitive', () => {

@@ -16,7 +16,7 @@ class WebContents {
   constructor(view) {
     this._view = view;
     this.destroyed = false; this.closed = 0; this.url = ''; this.title = '';
-    this.dbgAttached = false; this.loaded = []; this.handlers = {}; this.onceHandlers = {}; this.pid = ++pidSeq;
+    this.dbgAttached = false; this.loaded = []; this.handlers = {}; this.onceHandlers = {}; this.pid = ++pidSeq; this.session = { id: 'session-of-' + this.pid };
     this.debugger = { attach() {}, detach() {}, isAttached: () => false, sendCommand: () => Promise.resolve({}) };
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
@@ -84,7 +84,7 @@ register(
 const bp = await import('./browser-panel.ts');
 const popups = await import('./browser-popups.ts');
 const memory = await import('./browser-tab-memory.ts');
-const stub = (await import(stubUrl)) as { newGuest: () => any };
+const stub = (await import(stubUrl)) as { newGuest: () => any; BrowserWindow: new (opts: any) => any };
 
 const attached = new Set<unknown>();
 const PARENT_BOUNDS = { x: 0, y: 0, width: 1500, height: 950 };
@@ -478,21 +478,25 @@ test('a popup from INSIDE a child window is routed by the same policy: _blank ->
 
 // ---- F5: Electron's frame-name registry is process-global -------------------------------------------------------------------------------------------
 
-test('F5 — a named popup is refused while ANOTHER workspace holds a live popup of that name (Electron would load the URL into it, across partitions); the holder itself, other names and a freed name are fine', () => {
+test('F5 — a named popup is refused while ANOTHER OPENER holds a live window of that name (Electron\'s frame-name registry is process-global): another workspace, or another TAB of the same workspace; the holder itself, other names and a freed name are fine', () => {
   const a = newWs(), b = newWs();
-  const wcA = wcOf(bp.ensurePanel(a).tabs[0]), wcB = wcOf(bp.ensurePanel(b).tabs[0]);
+  const tA = bp.ensurePanel(a).tabs[0];
+  const tA2 = bp.createTab(a, { openedBy: 'agent' }); // a second tab of the SAME workspace
+  const wcA = wcOf(tA), wcA2 = wcOf(tA2), wcB = wcOf(bp.ensurePanel(b).tabs[0]);
   clickOn(wcA);
   const winA = openWin(wcA, named(`${base}/a`, 'oauth'));
   clickOn(wcB);
   assert.equal(wcB.openHandler(named(`${base}/b`, 'oauth')).action, 'deny', 'workspace B must not reuse A\'s live window');
-  assert.equal(g.__bpLog.filter((l: string) => l.includes('popup refused (name-in-use)')).length, 1);
+  clickOn(wcA2);
+  assert.equal(wcA2.openHandler(named(`${base}/evil`, 'oauth')).action, 'deny', 'a hostile tab of the SAME workspace must not load into (and retarget) the bank tab\'s popup');
+  assert.equal(g.__bpLog.filter((l: string) => l.includes('popup refused (name-in-use)')).length, 2);
   clickOn(wcB);
   assert.ok(open(wcB, named(`${base}/b`, 'other')).win, 'another name is fine');
   clickOn(wcA);
-  assert.equal(wcA.openHandler(named(`${base}/a2`, 'oauth')).action, 'allow', 'the holder itself may reuse its own named window (Electron loads into it)');
+  assert.equal(wcA.openHandler(named(`${base}/a2`, 'oauth')).action, 'allow', 'the holder itself may reuse its own named window (the browser resolves it)');
   winA.destroy();
-  clickOn(wcB);
-  assert.ok(open(wcB, named(`${base}/b2`, 'oauth')).win, 'a closed popup frees its name');
+  clickOn(wcA2);
+  assert.ok(open(wcA2, named(`${base}/b2`, 'oauth')).win, 'a closed popup frees its name');
 });
 
 // ---- F2: the origin in the title -----------------------------------------------------------------------------------------------------------------
@@ -617,4 +621,74 @@ test('a refusal is logged with its reason and the ORIGIN only (an OAuth URL carr
   assert.equal(refused.length, 3);
   assert.equal(refused.some((l: string) => l.includes('SECRET')), false);
   assert.equal(refused.some((l: string) => l.includes(`url=${base}`)), true);
+});
+
+// ---- pre-review round: Electron's per-embedder factory slot, the guest-less path, tabs() robustness, when the rate is counted ------------------------
+
+test('BACKSTOP — a window Electron creates through its DEFAULT path (`did-create-window`: our factory never emits it, so its per-embedder slot was consumed by another popup) is destroyed, on tabs and on popup windows alike', () => {
+  const ws = newWs();
+  openShown(ws);
+  const wc = wcOf(bp.getActiveTab(ws)!);
+  clickOn(wc);
+  const popupWin = openWin(wc);
+  for (const emitter of [wc, popupWin.webContents]) {
+    const stray = new stub.BrowserWindow({ webContents: stub.newGuest(), width: 4000, height: 3000, alwaysOnTop: true }); // what the page's features would have built
+    emitter.emitEvent('did-create-window', stray, {});
+    assert.equal(stray.isDestroyed(), true, 'the page-shaped window is destroyed on sight');
+  }
+  assert.equal(g.__bpLog.filter((l: string) => l.includes('created outside the allowlist factory')).length, 2);
+  assert.equal(popupWin.isDestroyed(), false, 'the legitimate popup is untouched');
+});
+
+test('guest-less path (Electron builds the contents itself): the window is pinned to the OPENER\'s session — never the default one — and loads the URL itself', () => {
+  const ws = newWs();
+  openShown(ws);
+  const wc = wcOf(bp.getActiveTab(ws)!);
+  clickOn(wc);
+  const r = wc.openHandler(named(`${base}/guestless`, 'oauth'));
+  assert.equal(r.action, 'allow');
+  const ret = r.createWindow({ show: true, width: 800, height: 600 }); // no `webContents` key
+  const win = g.__bpWins.find((w: any) => w.webContents === ret);
+  assert.ok(win, 'a window was built and its own contents returned');
+  assert.equal(win.opts.webPreferences.session, wc.session, 'same session as the opener (cookies, UA normalisation)');
+  assert.equal(win.opts.webPreferences.sandbox, true);
+  assert.deepEqual(g.__bpWinLoads, [`${base}/guestless`], 'the factory loads the page itself on this path');
+});
+
+test('#394 source robustness — a popup window whose contents are already destroyed does not break the sample for every workspace: it reads as unmeasured', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.ensurePanel(ws).tabs[0];
+  const wc = wcOf(t1);
+  clickOn(wc);
+  const win = openWin(wc);
+  win.webContents.destroyed = true; // contents gone, BrowserWindow object still alive (a crash / teardown window)
+  const MB = 1024 * 1024;
+  const table = (pids: number[]) => pids.map((pid) => ({ pid, ppid: 1, memBytes: 100 * MB, cpuPct: 0, rssPages: 0, comm: 'electron' })) as never;
+  const view = memory.currentBrowserTabMemory(undefined, undefined, table);
+  assert.ok(view, 'the sample still works (a throw inside the source would blank every workspace)');
+  const row = view!.byWorkspace.find((r) => r.wsId === ws)!;
+  assert.equal(row.tabs, 2);
+  assert.equal(row.unmeasured, 1, 'the dead window is unmeasured, not 0 bytes');
+  assert.equal(row.bytes, 100 * MB);
+  win.webContents.destroyed = false;
+});
+
+test('RATE is counted when a window REALLY opens, not at approval: approvals whose factory never runs (a reused named window, a refusal) consume none', () => {
+  const ws = newWs();
+  openShown(ws);
+  const wc = wcOf(bp.getActiveTab(ws)!);
+  const realNow = Date.now;
+  Date.now = () => 9_000_000;
+  try {
+    for (let i = 0; i < 10; i++) assert.equal(wc.openHandler(named(`${base}/approved${i}`, `ghost${i}`)).action, 'allow', 'approved, never created (Electron reused a window / the guest was dropped)');
+    let opened = 0;
+    for (let i = 0; i < 12; i++) {
+      const o = open(wc, named(`${base}/real${i}`, `real${i}`));
+      if (o.win) { opened++; o.win.destroy(); }
+    }
+    assert.equal(opened, 6, 'the 10 ghost approvals did not eat the rate: all 6 real openings were allowed, then the cap bit');
+  } finally {
+    Date.now = realNow;
+  }
 });
