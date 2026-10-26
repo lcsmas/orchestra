@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
+import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, splitEqualsFlags, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
 
 test('every allowed command plans through unchanged, with its refs listed', () => {
   for (const c of BROWSER_COMMANDS) assert.deepEqual(planBrowserCommand([c]), { ok: true, args: [c], refs: [] }, c);
@@ -98,4 +98,19 @@ test('mapBrowserFailure leaves success, ref-less failures and unrelated errors u
   const other = { code: 1, stdout: '', stderr: 'CDP error (Page.navigate): net::ERR_NAME_NOT_RESOLVED' };
   assert.equal(mapBrowserFailure(other, ['@e1'], false), other);
   assert.match(staleRefMessage([]), /the element ref no longer resolves/);
+});
+
+test('a value-taking flag before the path does not steal it, and --flag=value is split (#399 parity rig: G1)', () => {
+  const cwd = '/work/tree';
+  // `jpeg` is the VALUE of --screenshot-format, not the path; out.jpg is
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-format', 'jpeg', 'out.jpg'], cwd), ['screenshot', '--screenshot-format', 'jpeg', '/work/tree/out.jpg']);
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-format', 'jpeg', '--screenshot-quality', '20', 'out.jpg'], cwd), ['screenshot', '--screenshot-format', 'jpeg', '--screenshot-quality', '20', '/work/tree/out.jpg']);
+  // path-first keeps working
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', 'out.jpg', '--screenshot-format', 'jpeg'], cwd), ['screenshot', '/work/tree/out.jpg', '--screenshot-format', 'jpeg']);
+  // the = form becomes the spaced form (the client treated `--screenshot-quality=30` as the PATH and wrote a file of that name into the host's cwd)
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-format=jpeg', '--screenshot-quality=30', 'out.jpg'], cwd), ['screenshot', '--screenshot-format', 'jpeg', '--screenshot-quality', '30', '/work/tree/out.jpg']);
+  // a path-valued flag is made absolute too
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-dir', 'shots'], cwd), ['screenshot', '--screenshot-dir', '/work/tree/shots']);
+  assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-dir=shots', 'a.png'], cwd), ['screenshot', '--screenshot-dir', '/work/tree/shots', '/work/tree/a.png']);
+  assert.deepEqual(splitEqualsFlags(['click', '@e1', '--depth=3', 'plain=text', '-d=2']), ['click', '@e1', '--depth', '3', 'plain=text', '-d=2'], 'only long flags; data with = is untouched');
 });

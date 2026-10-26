@@ -100,8 +100,25 @@ export function planBrowserCommand(argv: readonly string[]): BrowserPlan {
   return { ok: true, args: [...argv], refs: argv.filter((a) => REF.test(a)) };
 }
 
-/** Flags whose NEXT token is a file path the client reads or writes. */
-const PATH_VALUE_FLAGS: ReadonlySet<string> = new Set(['--curl', '--baseline', '--output']);
+/** Flags whose NEXT token is a file/dir path the client reads or writes (made absolute). */
+const PATH_VALUE_FLAGS: ReadonlySet<string> = new Set(['--curl', '--baseline', '--output', '--screenshot-dir', '--download-path']);
+/** Other flags that take a value: that value is never a positional argument (`screenshot --screenshot-format jpeg out.jpg`). */
+const VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--screenshot-format', '--screenshot-quality', '--depth', '-d', '--selector', '-s', '--max-output', '--timeout', '--filter',
+  '--headers', '--color-scheme', '--input-mode', '--url', '--domain', '--path', '--expires', '--sameSite',
+]);
+
+/**
+ * agent-browser documents `--flag value`; its `--flag=value` form is not parsed as one flag (it became a positional and a file
+ * literally named `--screenshot-quality=30` appeared in the host's cwd — found by #399's parity rig). Split every `--name=value`
+ * into `--name value` before the path logic and before the client sees it.
+ */
+export function splitEqualsFlags(args: readonly string[]): string[] {
+  return args.flatMap((a) => {
+    const m = /^(--[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/.exec(a);
+    return m ? [m[1]!, m[2]!] : [a];
+  });
+}
 
 /**
  * The agent-browser daemon is owned by the HOST, so a relative path would resolve against the Electron process's cwd
@@ -110,7 +127,7 @@ const PATH_VALUE_FLAGS: ReadonlySet<string> = new Set(['--curl', '--baseline', '
  */
 export function absolutizeBrowserArgs(args: readonly string[], cwd: string): string[] {
   const abs = (p: string): string => (p.startsWith('/') || p.includes('://') ? p : `${cwd.replace(/\/$/, '')}/${p.replace(/^\.\//, '')}`);
-  const out = [...args];
+  const out = splitEqualsFlags(args);
   let ci = 0;
   while (ci < out.length && LEADING_OPTIONS.has(out[ci]!)) ci++;
   const command = out[ci];
@@ -120,6 +137,8 @@ export function absolutizeBrowserArgs(args: readonly string[], cwd: string): str
     if (PATH_VALUE_FLAGS.has(t) && i + 1 < out.length) {
       out[i + 1] = abs(out[i + 1]!);
       i++;
+    } else if (VALUE_FLAGS.has(t) && i + 1 < out.length) {
+      i++; // its value is not a positional (and not a path)
     } else if (!t.startsWith('-')) positionals.push(i);
   }
   if (command === 'screenshot' || command === 'pdf') {

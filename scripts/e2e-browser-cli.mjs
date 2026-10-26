@@ -477,6 +477,13 @@ const ARM_FNS = {
     const inCwd = path.join(ctx.world.fakeHome, 'rel-shot.png'), inApp = path.join(APP_DIR, 'rel-shot.png');
     clause(A, 'relative-path-lands-in-the-agents-cwd', rel.code === 0 && fs.existsSync(inCwd) && !fs.existsSync(inApp), `${show(rel)} → ${inCwd} ${fs.existsSync(inCwd) ? 'exists' : 'MISSING'}; ${inApp} ${fs.existsSync(inApp) ? 'EXISTS (wrong: the host\'s cwd)' : 'absent'}`);
     fs.rmSync(inApp, { force: true });
+    // #399 parity rig G1: a value-taking flag BEFORE the path must not steal it, and the = form must not leak a file named after the flag into the host's cwd
+    const fmt = await cli(ctx, W1, ['screenshot', '--screenshot-format=jpeg', '--screenshot-quality=30', 'fmt-shot.jpg']);
+    const fmtFile = path.join(ctx.world.fakeHome, 'fmt-shot.jpg');
+    const magic = fs.existsSync(fmtFile) ? fs.readFileSync(fmtFile).subarray(0, 2) : null;
+    const leaked = fs.readdirSync(APP_DIR).filter((n) => n.startsWith('--screenshot'));
+    clause(A, 'value-flags-before-the-path-keep-the-path', fmt.code === 0 && !!magic && magic[0] === 0xff && magic[1] === 0xd8 && leaked.length === 0, `${show(fmt)} → ${fmtFile} ${magic ? `starts ${magic.toString('hex')} (jpeg = ffd8)` : 'MISSING'}; files named --screenshot* in the host cwd: ${leaked.length ? leaked.join(',') : 'none'}`);
+    for (const n of leaked) fs.rmSync(path.join(APP_DIR, n), { force: true });
   },
 };
 
