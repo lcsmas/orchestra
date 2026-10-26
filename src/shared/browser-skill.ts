@@ -105,6 +105,10 @@ orchestra browser eval "(() => { const el = document.querySelector('#q'); Object
 
 Your commands were not observed to move the human's keyboard focus (they are built not to; no instrument here could force a steal, so this is an observation, not a guarantee): they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
 
+## On a workspace with a browser profile
+
+The human can attach a profile (a saved sign-in) to this workspace; other workspaces may share it. Then the pane is signed in, and you still drive it the same way, with these refusals (exit 1, the message says why): §cookies clear§ (it would wipe the shared sign-in), §cookies set … --url <another site>§, and §cookies get§ while the page embeds a frame from another host (an SSO iframe). Delete one cookie by name instead, or ask the human.
+
 ## What you cannot do
 
 - Sign in as the human. The pane starts signed out unless the human attached a browser profile to this workspace; you cannot attach, switch or create profiles — ask the human.

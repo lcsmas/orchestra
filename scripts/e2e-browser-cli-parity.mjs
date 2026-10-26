@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'hidden-wait', 'focus', 'table', 'skill-tabs', 'skill'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'hidden-wait', 'focus', 'table', 'skill-tabs', 'skill-profile', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -972,6 +972,35 @@ const ARM_FNS10 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS10);
+
+
+const ARM_FNS11 = {
+  async 'skill-profile'(ctx) {
+    // The skill's claims about a workspace WITH a browser profile (#400 policy seam), on the composed build: the HUMAN attaches (here: the app's own window IPC, as the Settings UI does);
+    // the agent can still read cookies of the page but cannot wipe the shared partition. Ephemeral workspace first = the control that the same command works without a profile.
+    const { W1, FIX, ui } = ctx; const A = 'skill-profile';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/cli.html?profile=1`]);
+    const before = await cli(ctx, W1, ['cookies', 'clear']);
+    clause(A, 'ctl/cookies-clear-works-on-an-ephemeral-workspace', before.code === 0, `no profile attached: ${show(before)}`);
+    const made = await ui.eval(`window.orchestra.browserProfileCreate('b399-profile').then((r) => r.profile?.id ?? null)`);
+    const att = made ? await ui.eval(`window.orchestra.browserProfileAttach(${sel(W1.id)}, ${sel(made)}).then((r) => ({ ok: r.ok, profileId: r.state?.profileId ?? null }))`) : null;
+    clause(A, 'ctl/the-human-ipc-created-and-attached-a-profile', !!made && att?.ok === true && att?.profileId === made, `create → ${made}; attach → ${JSON.stringify(att)}`);
+    try {
+      await waitFor(async () => (await cli(ctx, W1, ['get', 'url'])).code === 0, 15000, 'the rebuilt panel to answer');
+      await cli(ctx, W1, ['open', `${FIX}/cli.html?profile=2`]);
+      const get = await cli(ctx, W1, ['cookies', 'get']);
+      const clear = await cli(ctx, W1, ['cookies', 'clear']);
+      const other = await cli(ctx, W1, ['cookies', 'set', 'x399', 'y', '--url', 'https://other.example.invalid/']);
+      clause(A, 'cookies-get-works-cookies-clear-and-a-foreign-site-set-are-refused-on-a-profile-workspace', get.code === 0 && clear.code !== 0 && other.code !== 0 && /profile|partition|shared|human/i.test(clear.stderr), `cookies get → ${show(get)}; cookies clear → ${show(clear)}; cookies set --url <other site> → ${show(other)}`);
+      const noVerb = await cli(ctx, W1, ['profile', 'attach', 'x']);
+      clause(A, 'there-is-no-profile-verb-for-the-agent', noVerb.code !== 0 && /unknown command|not available/i.test(noVerb.stderr), `orchestra browser profile attach x → ${show(noVerb)}`);
+    } finally {
+      if (made) { await ui.eval(`window.orchestra.browserProfileAttach(${sel(W1.id)}, null)`); await ui.eval(`window.orchestra.browserProfileDelete(${sel(made)})`); }
+    }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS11);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
