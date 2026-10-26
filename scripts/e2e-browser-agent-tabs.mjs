@@ -10,6 +10,7 @@
 //   switch      `tab <ref>` to the user's tab: shown, announced, no keyboard-focus steal; « Back » (a human op) restores and clears the notice
 //   front       ANY acting command (get url — not frame-bound) on a non-active tab brings it to the front, visibly; `tab list` / idle do not
 //   children    the close verbs are refused on a CHILD (worker / frame) session of the user's tab (raw client, auto-attach, then navigate)
+//   attach      a PAGE of an agent tab spawns a worker + cross-site iframe while the human is on ANOTHER tab: the daemon's attach-time commands on the new child sessions must not flip the human's tab
 //   cap         the 8-tab cap is shared with the human and applies to agent-opened tabs; a refusal leaks no view
 //   ownership   `tab close <user's tab>` is refused BEFORE agent-browser (it would print "closed" and drop the tab from its own list), the
 //               tab stays loaded, the next `tab list` still has it, the agent's own tab still closes; the PROXY refuses a raw Target.closeTarget too
@@ -35,7 +36,8 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'ownership', 'children', 'background', 'refs']; // restart FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2
+// `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
+const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'ownership', 'children', 'attach', 'background', 'refs'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js.
  *  Each edit is a regex/string that must match EXACTLY once; `arms` must go RED, every ctl/* clause of those arms must stay GREEN. */
 const MUTANTS = {
@@ -48,6 +50,8 @@ const MUTANTS = {
   'notice-in-flow': { file: 'css', edits: [['.browser-agent-switch{position:absolute;', '.browser-agent-switch{position:static;']], arms: ['open'], why: 'the swap notice takes space in the tab strip: tabs and their × move when it appears or lapses (a mis-click closes the user\'s tab)' },
   'switch-unannotated': { file: 'cli', edits: [['(tab.op === "list" || tab.op === "close" || tab.op === "switch")', '(tab.op === "list" || tab.op === "close")']], arms: ['restart'], why: 'a `tab <ref>` switch no longer says whose tab it landed on: a stale tN silently drives the user\'s tab' },
   'child-close-allowed': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a)']], arms: ['children'], why: '#395\'s shared browser-level predicate is skipped for a CHILD (worker / frame) session: its Page.close / Browser.* / Target.* reach the page debugger' },
+  'attach-is-acting': { file: 'chunk', edits: [[/function ([\w$]+)\((\w+)\)\{return\/\\\.\(enable\|disable\)\$\/\.test\(\2\)\?!1:![\w$]+\.has\(\2\)\}/, 'function $1($2){return!0}']], arms: ['attach'], why: 'attach-time commands on a child session count as agent ACTIONS: a page that spawns an iframe / worker flips the human\'s tab with no agent command' },
+  'notice-over-strip': { file: 'css', edits: [['top:calc(100% + 4px)', 'top:3px']], arms: ['open'], why: 'the swap notice sits OVER the tab strip: it covers a tab / × / + and a click aimed at « Back » can close a human tab' },
   'silent-swap': { file: 'chunk', edits: [[/(\w+)\.agentSwitch=\{from:(\w+)===(\w+)\.id\?(\w+):\2,to:\3\.id,at:Date\.now\(\)\}/, 'void 0']], arms: ['open', 'front'], why: 'an agent swap of the tab on screen is not announced to the human' },
   'background-activates': { file: 'chunk', edits: [[/(\.\.\.\w+\.url\?\{url:\w+\.url\}:\{\},openedBy:\w+,)activate:\w+===\w+\}/, '$1activate:!0}'], [/\.wsFocused\?\{act:"activate"\}:\{act:"none",reason:"background-workspace"\}/, '.wsFocused||!0?{act:"activate"}:{act:"none",reason:"background-workspace"}']], arms: ['background'], why: 'a background workspace\'s agent activates tabs (the focus rule is gone)' },
   'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['refs'], why: 'a ref from another tab is reported as agent-browser\'s raw error, not browser_stale_ref' },
@@ -251,6 +255,7 @@ async function bootApp(world, armDir, tag) {
   const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: XDG, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
+    ...(ARM_LIST.includes('attach') ? { ORCHESTRA_CDP_TRACE: '1' } : {}), // the attach arm MEASURES what agent-browser sends (proxy trace in <ORCHESTRA_HOME>/logs/orchestra.log)
     // OPS freeze (ledger #405 incident Q2): the app must never reach the human's session bus / keyring. `disabled:` stops GLib/GDBus falling back to $XDG_RUNTIME_DIR/bus (libdbus already fails to parse it).
     DBUS_SESSION_BUS_ADDRESS: 'disabled:' };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
@@ -288,7 +293,7 @@ async function main() {
   console.log(`[rig] fixture ${FIX}`);
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1500x950']);
   sh('swaymsg', ['default_border', 'none']);
-  const ctx = { world, armDir, W1, W2, FIX, app: null, ui: null, port: 0, targets: null, env: null, URL: { a: `${FIX}/tabs-a.html`, b: `${FIX}/tabs-b.html`, c: `${FIX}/tabs-c.html`, hitA: `${FIX}/agent-tabs-hit-a.html`, hitB: `${FIX}/agent-tabs-hit-b.html`, frame: `${FIX}/agent-tabs-frame.html` } };
+  const ctx = { world, armDir, W1, W2, FIX, app: null, ui: null, port: 0, targets: null, env: null, URL: { a: `${FIX}/tabs-a.html`, b: `${FIX}/tabs-b.html`, c: `${FIX}/tabs-c.html`, hitA: `${FIX}/agent-tabs-hit-a.html`, hitB: `${FIX}/agent-tabs-hit-b.html`, spawn: `${FIX}/agent-tabs-spawn.html`, frame: `${FIX}/agent-tabs-frame.html` } };
   try {
     Object.assign(ctx, await bootApp(world, armDir, 'boot1'));
     await runArms(ctx);
@@ -428,6 +433,43 @@ async function rawProxyClient(url) {
   return { call: (method, params = {}) => send(method, params), callOn: (sessionId, method, params = {}) => send(method, params, sessionId), onEvent: (l) => listeners.push(l), close: () => ws.close() };
 }
 
+
+/** An agent tab on a page that SPAWNS children 4 s after load (a worker and/or a cross-site iframe), the daemon attached (snapshot), the HUMAN on their own tab (unless `background:false`). Measures the proxy trace around the spawn. */
+async function spawnChildrenInBackgroundTab(ctx, { worker, frame, background = true }) {
+  const { W1, URL: U } = ctx;
+  await reset(ctx);
+  await cli(ctx, W1, ['tab', 'new', `${U.spawn}?worker=${worker ? 1 : 0}&frame=${frame ? 1 : 0}`]);
+  await softWait(async () => !!titled(await reg(ctx, W1), /Spawn fixture/), 15000, 'the agent tab to show the spawn page');
+  const snap = await cli(ctx, W1, ['snapshot', '-i']); // the daemon is attached to the agent tab, auto-attach on
+  if (background) {
+    const idxH = await ctx.ui.eval(`[...document.querySelectorAll('.browser-tab')].findIndex((e) => e.dataset.openedBy === 'human')`);
+    await clickSel(ctx, '.browser-tab', idxH);
+    await softWait(async () => (await reg(ctx, W1)).tabs.find((t) => t.active)?.openedBy === 'human', 10000, 'the human tab to be active');
+  }
+  const before = await reg(ctx, W1);
+  const logFile = path.join(ctx.world.ohome, 'logs', 'orchestra.log');
+  // The log rotates at 5 MB with ONE backup: a command storm would rotate its own beginning away. A 40 ms follower copies every new byte (capped) so the FIRST requests survive.
+  let copied = ''; let last = (() => { try { return fs.statSync(logFile).size; } catch { return 0; } })();
+  const follow = setInterval(() => {
+    if (copied.length > 6e6) return;
+    try {
+      const size = fs.statSync(logFile).size;
+      if (size < last) last = 0; // rotated: the old bytes are in .1, read what the new file has
+      if (size > last) { const fd = fs.openSync(logFile, 'r'); const buf = Buffer.alloc(Math.min(size - last, 2e6)); fs.readSync(fd, buf, 0, buf.length, last); fs.closeSync(fd); copied += buf.toString('utf8'); last += buf.length; }
+    } catch {}
+  }, 40);
+  await sleep(7000); // the page spawns its children (4 s after load), the daemon answers them, and any (wrongful) bring-to-front lands
+  clearInterval(follow);
+  const after = await reg(ctx, W1); // BEFORE the probe below: `get title` is a real agent action and (correctly) brings its tab to the front
+  const probe = await cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 }); // does the daemon still answer a plain command?
+  const reqs = [...copied.matchAll(/client->proxy \{[^\n]*?"method":"([A-Za-z.]+)"/g)].map((m) => m[1]);
+  const hist = Object.entries(reqs.reduce((h, m) => ((h[m] = (h[m] ?? 0) + 1), h), {})).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(' ');
+  fs.writeFileSync(path.join(OUT, `children-trace-${frame ? 'frame' : 'worker'}-${background ? 'bg' : 'fg'}.txt`), copied.split('\n').slice(0, 400).join('\n'));
+  const spawnRuns = new Set((copied.match(/SPAWN-RUN/g) ?? []).length ? ['x'] : []).size; // the page logs once; replays of buffered console messages are not runs
+  const attached = (copied.match(/Target\.attachedToTarget/g) ?? []).length;
+  return { snap, before, after, probe, spawnErr: probe.code !== 0 ? `get title rc=${probe.code} ${probe.ms}ms` : null, spawnRuns, requests: reqs.length, methods: [...new Set(reqs)].sort(), hist, attached, kb: copied.length / 1024 };
+}
+
 const ARM_FNS = {
   async open(ctx) {
     const { W1, URL: U } = ctx; const A = 'open';
@@ -458,6 +500,10 @@ const ARM_FNS = {
     // Geometry of every tab + × is read while the notice is up (it lapses after 9 s) and again once it is gone.
     const geom = () => ctx.ui.eval(`({ notice: !!document.querySelector('.browser-agent-switch'), pos: getComputedStyle(document.querySelector('.browser-agent-switch') ?? document.body).position, tabs: [...document.querySelectorAll('.browser-tab')].map((e) => { const r = e.getBoundingClientRect(), x = e.querySelector('.browser-tab-close').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width), Math.round(x.left)].join(':'); }) })`);
     const up = await geom();
+    // Round-2 F6: « no reflow » is not « no occlusion ». While the notice is up, the point at the centre of every tab, every × and the + must hit THAT control (an overlay over the strip
+    // would take the click aimed at « Back » away from a × at the lapse — and close a HUMAN tab, no undo).
+    const occl = await ctx.ui.eval(`(() => { const bad = []; const hit = (el, name, root) => { const r = el.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!(e && (root ?? el).contains(e))) bad.push(name + '->' + (e?.className || e?.tagName)); }; document.querySelectorAll('.browser-tab').forEach((t, i) => { hit(t, 'tab' + i); hit(t.querySelector('.browser-tab-close'), 'x' + i); }); hit(document.querySelector('.browser-tab-new'), '+'); return { bad, noticeUp: !!document.querySelector('.browser-agent-switch'), tabs: document.querySelectorAll('.browser-tab').length }; })()`);
+    clause(A, 'the-notice-never-covers-a-tab-its-close-button-or-the-plus', occl.noticeUp && occl.bad.length === 0, `notice up over ${occl.tabs} tabs; elementFromPoint at the centre of every tab / × / +: ${occl.bad.length ? 'COVERED ' + occl.bad.join(', ') : 'each is the control itself'}`);
     const lapsed = await softWait(async () => !(await geom()).notice, 14000, 'the notice to lapse');
     const down = await geom();
     clause(A, 'the-notice-never-moves-a-tab-or-its-close-button', up.notice && lapsed && up.pos === 'absolute' && JSON.stringify(up.tabs) === JSON.stringify(down.tabs), `notice up: position ${up.pos}, tabs (left:width:×left) ${JSON.stringify(up.tabs)}; after it lapsed ${JSON.stringify(down.tabs)}`);
@@ -635,6 +681,16 @@ const ARM_FNS = {
     clause(A, 'ctl/a-child-frame-session-exists', !!child, `auto-attach on the user's page (a worker + a cross-site iframe) produced ${children.length} child session(s): ${children.map((c) => c.type).join(', ') || 'NONE'}`);
     const refused = closes.filter((c) => /opened by the user: an agent may close only the tabs it opened/.test(c.reply?.error?.message ?? '')); // #395's shared predicate: a child answers like the root — close ownership
     clause(A, 'a-child-session-cannot-close-the-users-tab', closes.length > 0 && refused.length >= 1 && closes.every((c) => refused.includes(c) || /^Session with given id not found\.$/.test(c.reply?.error?.message ?? '')) && !parentGone, `(a navigation leaves a stale first iframe the proxy no longer knows: 'not found' is fine, anything else than the refusal is not) Page.close on each child session → ${closes.map((c) => `${c.type}: ${JSON.stringify(c.reply?.error?.message ?? c.reply?.result ?? null).slice(0, 90)}`).join(' | ')}; the user's tab ${parentGone ? 'WAS CLOSED' : 'is still open'} · registry ${brief(r5)}`);
+  },
+
+  async attach(ctx) {
+    // Review round 2 (unmeasured risk): when a PAGE of an agent tab spawns children (a worker and a cross-site iframe, 4 s after load — the realistic shape) while the HUMAN is on another tab, the
+    // agent-browser daemon auto-attaches them and answers on the new child sessions. Any method outside the PASSIVE set counts as an ACTION and would flip the human's tab with no agent command at all.
+    // Measured from the proxy trace (recorded in browser-panel.md); the registry is read BEFORE any further agent command.
+    const A = 'attach';
+    const m = await spawnChildrenInBackgroundTab(ctx, { worker: true, frame: true });
+    clause(A, 'ctl/the-page-spawned-children-and-the-daemon-answered-them', m.snap.code === 0 && m.methods.includes('Runtime.runIfWaitingForDebugger') && m.attached >= 2 && !m.spawnErr, `snapshot ${m.snap.code}; ${m.attached} Target.attachedToTarget (worker + cross-site iframe); ${m.requests} client->proxy requests (${m.hist}); a plain get-title afterwards ${m.spawnErr ?? 'answered'}`);
+    clause(A, 'a-background-tabs-new-children-do-not-flip-the-humans-tab', m.before.tabs.find((t) => t.active)?.openedBy === 'human' && m.after.tabs.find((t) => t.active)?.openedBy === 'human' && m.after.agentSwitch === null, `human tab active before ${brief(m.before)} and after ${brief(m.after)}; agentSwitch ${JSON.stringify(m.after.agentSwitch)}. MEASURED client->proxy methods after the spawn: ${m.methods.join(' ')}`);
   },
 
   async background(ctx) {

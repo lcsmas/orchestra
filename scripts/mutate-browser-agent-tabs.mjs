@@ -80,7 +80,8 @@ const MUTANTS = [
   [F.pure, 'F4b: --json switch loses openedBy', "      doc.data.openedBy = owner;\n", "", [T.pure]],
   [F.pure, 'F4b: only the first candidate token is tried for the switch target', "  for (const r of refs) {\n    const t = resolveAbTab(abTabs, r);\n    if (t) return t;", "  for (const r of refs.slice(0, 1)) {\n    const t = resolveAbTab(abTabs, r);\n    if (t) return t;", [T.pure]],
   [F.cli, 'F4b: a switch is not pre-flighted (no annotation)', "if (tab && (tab.op === 'list' || tab.op === 'close' || tab.op === 'switch')) {", "if (tab && (tab.op === 'list' || tab.op === 'close')) {", [T.wiring]],
-  [F.css, 'F2: the swap notice is in the strip\'s flex flow again (reflows the tabs under a click)', "  position: absolute;\n  right: 8px;\n  top: 3px;\n  z-index: 2;", "  position: static;\n  right: 8px;\n  top: 3px;\n  z-index: 2;", [T.wiring]],
+  [F.css, 'F2: the swap notice is in the strip\'s flex flow again (reflows the tabs under a click)', "  position: absolute;\n  right: 8px;\n  top: calc(100% + 4px);\n  z-index: 3;", "  position: static;\n  right: 8px;\n  top: calc(100% + 4px);\n  z-index: 3;", [T.wiring]],
+  [F.css, 'F6: the swap notice sits OVER the tab strip again (covers tabs / × / +)', "  top: calc(100% + 4px);", "  top: 3px;", [T.wiring]],
   [F.tsx, 'F2: the strip row wrapper (the notice\'s containing block) is gone', '<div className="browser-tabs-row">', '<div className="browser-tabs-rowx">', [T.wiring]],
 ];
 

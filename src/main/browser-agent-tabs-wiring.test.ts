@@ -69,6 +69,7 @@ test('the renderer announces an agent swap and marks agent tabs', () => {
   const block = /\.browser-agent-switch \{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(block, /position:\s*absolute/, 'F2: the notice is OVERLAID — in the tab flow it would move the tabs and their × under the human\'s click when it appears, changes or lapses');
   assert.doesNotMatch(block, /\bflex:|margin-left:\s*auto/, 'and takes no part in the strip\'s flex layout');
+  assert.match(block, /top:\s*calc\(100% \+ \d+px\)/, 'F6: it hangs BELOW the strip (over the toolbar row): over the strip it would cover tabs / × / + and, at the lapse, a click aimed at « Back » would land on a × and close a human tab');
   assert.match(/\.browser-tabs-row \{([^}]*)\}/.exec(css)?.[1] ?? '', /position:\s*relative/, 'its containing block');
 });
 

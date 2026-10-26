@@ -3460,8 +3460,9 @@ input:focus, textarea:focus, select:focus {
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: 3px;
 }
-/* The notice is OVERLAID on the right end of the strip (position:absolute in .browser-tabs-row): it takes no space in the tab flow, so it appearing,
-   changing with a chained swap or vanishing never moves a tab or its × under the human's click (#397 review F2); a separate row would resize the native view. */
+/* The notice is OVERLAID (position:absolute in .browser-tabs-row) and hangs BELOW the strip, over the toolbar row: it takes no space in the tab flow (F2: appearing, changing
+   with a chained swap or vanishing never moves a tab or its ×) AND never covers a tab, its × or the + (round-2 F6: at the lapse the rectangle under a click aimed at « Back »
+   would turn into a × and close a HUMAN tab). What lies under it in the toolbar is harmless to mis-click (URL bar, reload). A separate row would resize the native view. */
 .browser-tabs-row {
   position: relative;
   flex: 0 0 auto;
@@ -3469,8 +3470,8 @@ input:focus, textarea:focus, select:focus {
 .browser-agent-switch {
   position: absolute;
   right: 8px;
-  top: 3px;
-  z-index: 2;
+  top: calc(100% + 4px);
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 8px;
