@@ -3,26 +3,33 @@
 <title>Profiles logout fixture</title>
 <!-- #400 (seat-1 finding): N independent login → logout cycles on session cookies L<i> (no expiry, as a stateless-token login). Cycle i sets L<i> at a random start
      offset and deletes it D ms later, D uniform in [lo, hi] — the band around the profile partition's 250 ms promotion debounce where a logout can land between the
-     promotion's read and its write. Afterwards (3 s settle) the cookies STILL alive are the resurrected ones. Usage: /profiles-logout.html?n=400&lo=238&hi=258&spread=4000 -->
+     promotion's read and its write. Afterwards (3 s settle) the cookies STILL alive are the resurrected ones. Usage: /profiles-logout.html?n=400&lo=238&hi=258&spread=4000
+     mode=rotate: the same band, but the second write is a ROTATION (L<i>=a → L<i>=b, both session cookies): afterwards a cookie still on `a` is a rotation that was overwritten by
+     the promotion's write (the jar ended on the PREVIOUS value); `fresh` counts those on `b`. -->
 <body style="margin:0;background:#16a085;color:#fff;font:14px monospace;padding:24px">
 <pre id="out">running</pre>
 <script>
   (function () {
     var q = new URLSearchParams(location.search);
-    var n = +q.get('n') || 200, lo = +q.get('lo') || 238, hi = +q.get('hi') || 258, spread = +q.get('spread') || 4000;
+    var n = +q.get('n') || 200, lo = +q.get('lo') || 238, hi = +q.get('hi') || 258, spread = +q.get('spread') || 4000, rotate = q.get('mode') === 'rotate';
     var seen = 0, done = 0;
     function cycle(i) {
       var name = 'L' + i;
-      document.cookie = name + '=1; path=/';
-      if (document.cookie.indexOf(name + '=1') >= 0) seen++;
+      document.cookie = name + (rotate ? '=a' : '=1') + '; path=/';
+      if (document.cookie.indexOf(name + (rotate ? '=a' : '=1')) >= 0) seen++;
       setTimeout(function () {
-        document.cookie = name + '=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+        if (rotate) document.cookie = name + '=b; path=/';
+        else document.cookie = name + '=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
         if (++done === n) setTimeout(finish, 3000);
       }, lo + Math.random() * (hi - lo));
     }
     function finish() {
       var alive = document.cookie.match(/L\d+(?==)/g) || [];
-      document.getElementById('out').textContent = JSON.stringify({ n: n, seen: seen, alive: alive.length, names: alive.slice(0, 5), band: [lo, hi] });
+      // only this sweep's own cookies (L0..L<n-1>): an earlier, longer sweep on the same origin may have left L<n>.. behind
+      var mine = document.cookie.split('; ').filter(function (c) { var m = /^L(\d+)=/.exec(c); return m && +m[1] < n; });
+      var stale = rotate ? mine.filter(function (c) { return /=a$/.test(c); }) : [];
+      var fresh = rotate ? mine.filter(function (c) { return /=b$/.test(c); }).length : 0;
+      document.getElementById('out').textContent = JSON.stringify({ n: n, seen: seen, alive: alive.length, names: alive.slice(0, 5), band: [lo, hi], rotate: rotate, stale: stale.length, staleNames: stale.slice(0, 5), fresh: fresh });
     }
     for (var i = 0; i < n; i++) setTimeout(cycle, Math.random() * spread, i);
   })();

@@ -22,7 +22,7 @@ import {
 import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import { partitionFor } from '../shared/browser-profile.ts';
-import { promoteSessionCookie } from '../shared/browser-cookie-promote.ts';
+import { promoteSessionCookie, restoreCookie } from '../shared/browser-cookie-promote.ts';
 import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { log } from './logger';
@@ -317,34 +317,53 @@ function persistSignIns(ses: Electron.Session): void {
    *  reconciliation's job (below). */
   let seq = 0;
   const changedSeq = new Map<string, number>();
-  /** Per cookie: the sequence number of its last GENUINE removal (a logout, an expiry, an eviction — not the `overwrite` that replaces a cookie with its promoted copy). */
-  const removedSeq = new Map<string, number>();
+  /** Per cookie: the NEWEST event from the SITE (or the user) that is not ours — a genuine removal (a logout, an expiry, an eviction; not the `overwrite` that replaces a
+   *  cookie with its promoted copy) or a change that is not an echo of one of our own writes. The post-write reconciliation acts on it. */
+  const foreign = new Map<string, { seq: number; removed: boolean; cookie: Electron.Cookie }>();
+  /** What we wrote per cookie (value + expiry, the last few): the insert event our own `set` emits must not read as the site's. */
+  const ownWrites = new Map<string, Array<{ value: string; exp: number }>>();
+  const noteOwnWrite = (key: string, d: { value: string; expirationDate: number }): void => {
+    const l = ownWrites.get(key) ?? [];
+    l.push({ value: d.value, exp: d.expirationDate });
+    if (l.length > 4) l.shift();
+    ownWrites.set(key, l);
+  };
+  const isOwnWrite = (key: string, c: Electron.Cookie): boolean =>
+    c.expirationDate !== undefined && (ownWrites.get(key) ?? []).some((w) => w.value === c.value && Math.abs(w.exp - (c.expirationDate as number)) < 2);
   /** A compensating `remove` of OUR OWN promoted copy emits a removal event too: it is expected ONCE and must be neither read as a logout nor promoted. Consumed by
    *  that first echo, and dropped {@link OWN_ECHO_MS} after the remove resolves (an echo that never comes must not swallow a later, genuine logout). */
   const ownRemoval = new Set<string>();
-  /** The promotion is read → write across the network service, and a removal it processes BETWEEN the two reaches us only AFTER the write was issued: the
-   *  pre-write guard cannot see it and the 30-day copy would resurrect a cookie the site just deleted (measured on the real app: login → logout at 243-250 ms,
-   *  12/200). So after the write, if a genuine removal for this cookie arrived since the READ STARTED and the live cookie is still exactly OUR copy, remove it.
-   *  A user who logged in again meanwhile has a different live cookie and is left alone. Checked right after the write and once more after a short settle
-   *  (the removal event can be delivered after the write's promise). */
+  /** The promotion is read → write across the network service, and what the SITE does BETWEEN the two reaches us only AFTER the write was issued: the pre-write guard
+   *  cannot see it. A logout would be undone by the 30-day copy (measured on the real app: login → logout at 243-250 ms, 12/200); a ROTATION would be overwritten by
+   *  the value that was read (seat 1: the jar ended on the PREVIOUS value, ~1/100). So after the write, if a foreign event for this cookie arrived since the READ STARTED
+   *  and the live cookie is still exactly OUR copy: a removal removes the copy; a change puts the site's newest value back (promoted if it is a session cookie).
+   *  A user who logged in again meanwhile has a different live cookie and is left alone. Checked right after the write and once more after a short settle (the event
+   *  can be delivered after the write's promise); an event delivered after the settle is NOT compensated. */
   const reconcile = (key: string, written: { url: string; name: string; value: string; expirationDate: number }, domain: string, path: string, started: number): void => {
-    if (!alive || (removedSeq.get(key) ?? 0) <= started) return;
+    if (!alive || (foreign.get(key)?.seq ?? 0) <= started) return;
     void ses.cookies
       .get({ name: written.name, domain, path })
       .then((live) => {
-        if (!alive || (removedSeq.get(key) ?? 0) <= started) return undefined;
+        const last = foreign.get(key);
+        if (!alive || !last || last.seq <= started) return undefined;
         const mine = live.find((c) => c.name === written.name && c.domain === domain && c.value === written.value && Math.abs((c.expirationDate ?? 0) - written.expirationDate) < 2);
         if (!mine) return undefined;
-        ownRemoval.add(key);
-        return ses.cookies.remove(written.url, written.name).finally(() => {
-          const t = setTimeout(() => {
-            settling.delete(t);
-            ownRemoval.delete(key);
-          }, OWN_ECHO_MS);
-          settling.add(t);
-        });
+        if (last.removed) {
+          ownRemoval.add(key);
+          return ses.cookies.remove(written.url, written.name).finally(() => {
+            const t = setTimeout(() => {
+              settling.delete(t);
+              ownRemoval.delete(key);
+            }, OWN_ECHO_MS);
+            settling.add(t);
+          });
+        }
+        const d = restoreCookie(last.cookie, Date.now() / 1000);
+        if (!d) return undefined;
+        noteOwnWrite(key, d);
+        return ses.cookies.set(d);
       })
-      .catch((err) => log.warn('browser-panel: undoing a promotion after a logout failed', err));
+      .catch((err) => log.warn('browser-panel: reconciling a promotion with a later change of the site failed', err));
   };
   const promote = (key: string, cookie: Electron.Cookie): void => {
     pending.delete(key);
@@ -357,6 +376,7 @@ function persistSignIns(ses: Electron.Session): void {
         const own = live.find((c) => c.name === cookie.name && c.domain === cookie.domain && (c.path ?? '/') === (cookie.path ?? '/'));
         const p = own ? promoteSessionCookie(own, Date.now() / 1000) : null;
         if (!p) return;
+        noteOwnWrite(key, p);
         await ses.cookies.set(p);
         const domain = cookie.domain ?? '';
         const path = cookie.path ?? '/';
@@ -377,7 +397,8 @@ function persistSignIns(ses: Electron.Session): void {
       return;
     }
     changedSeq.set(key, ++seq);
-    if (genuineRemoval) removedSeq.set(key, seq);
+    if (genuineRemoval) foreign.set(key, { seq, removed: true, cookie });
+    else if (!removed && !isOwnWrite(key, cookie)) foreign.set(key, { seq, removed: false, cookie });
     if (!removed && promoteSessionCookie(cookie, 0)) {
       if (!pending.has(key)) pending.set(key, setTimeout(() => promote(key, cookie), PROMOTE_DEBOUNCE_MS));
     }

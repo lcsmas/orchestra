@@ -43,6 +43,7 @@ const MUTANTS = [
   { id: 'P23-host-reads-no-view-identity-a-rebuild-is-a-bare-changed', file: 'src/main/browser-cdp-host.ts', arms: 'rebuild', from: 'view: bp.tabContents(wsId, t.id)?.id', to: 'view: undefined', red: ['agent-commands-keep-working-after-a-profile-attach', 'agent-commands-keep-working-after-a-profile-detach', 'agent-commands-keep-working-after-the-profile-is-deleted'] },
   { id: 'P24-replaced-page-keeps-its-target-id', file: 'src/shared/cdp-proxy-core.ts', arms: 'rebuild', from: "return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);", to: "return this.derive(`tab:${tabId}`);", red: ['recovery-never-opens-a-blank-tab-nor-meets-a-dead-session'] },
   { id: 'P25-publish-speaks-during-a-rebuild', file: PANEL, arms: 'rebuild', from: "  if (panel.rebuilding) return panel.state;\n", to: '', red: ['a-rebuild-replaces-every-tab-and-never-destroys-or-creates-one'] },
+  { id: 'P26-rotation-is-not-put-back-after-the-write', file: PANEL, arms: 'logout', from: "        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n", to: "        return undefined;\n        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n", red: ['rotation-ends-on-the-newest-value'] },
 ];
 
 const only = process.argv.slice(2).filter((a) => a !== '--check');

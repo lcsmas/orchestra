@@ -37,6 +37,10 @@ export interface CookieSetDetails {
  *  our earlier promotion — is left alone, which is also what stops `cookies.set` → `changed` from looping). */
 export function promoteSessionCookie(c: CookieLike, nowSec: number): CookieSetDetails | null {
   if (c.session !== true || c.expirationDate !== undefined) return null;
+  return detailsFor(c, Math.floor(nowSec) + PROMOTED_COOKIE_TTL_S);
+}
+
+function detailsFor(c: CookieLike, expirationDate: number): CookieSetDetails | null {
   const host = (c.domain ?? '').replace(/^\./, '');
   if (!host || !c.name) return null;
   const path = c.path || '/';
@@ -48,9 +52,17 @@ export function promoteSessionCookie(c: CookieLike, nowSec: number): CookieSetDe
     path,
     secure,
     httpOnly: c.httpOnly === true,
-    expirationDate: Math.floor(nowSec) + PROMOTED_COOKIE_TTL_S,
+    expirationDate,
   };
   if (c.hostOnly === false && c.domain) out.domain = c.domain;
   if (c.sameSite) out.sameSite = c.sameSite;
   return out;
+}
+
+/** Put a cookie back exactly as the SITE last wrote it, after our own promoted copy overwrote it (the rotation race): a session cookie in its promoted
+ *  form, a persistent one with its own expiry. Null when there is nothing to put back (already expired, nameless). */
+export function restoreCookie(c: CookieLike, nowSec: number): CookieSetDetails | null {
+  if (c.session === true && c.expirationDate === undefined) return promoteSessionCookie(c, nowSec);
+  if (c.expirationDate === undefined || c.expirationDate <= nowSec) return null;
+  return detailsFor(c, c.expirationDate);
 }

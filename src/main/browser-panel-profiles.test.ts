@@ -337,6 +337,100 @@ test('D1: a rollback that itself fails (a half-built view will not close) still 
   assert.deepEqual(seen, [['t1', 't2']], 'and the panel publishes again (the guard is released on the way out)');
 });
 
+// ── ROTATION RACE (seat 1, same read → write class as the logout): the site rotated the cookie after our read, the network service applied OUR write last ──────────
+/** What the main process hears for that order: the site's insert, the overwrite-removal our write causes, then the echo of OUR copy (the LAST event, as in the real order). */
+function rotationOrder(ses: any, first: any, second: any, atMs = 2) {
+  ses.onSet = (d: any) => {
+    if (d.value !== first.value) return; // only the first write is the racy one
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), second); // the site's rotation (applied BEFORE our write by the network service, delivered after it)
+      cookieEvent(PERSIST(P1), first, true, 'overwrite'); // …replaced by our copy
+      cookieEvent(PERSIST(P1), { ...first, session: false, expirationDate: d.expirationDate }); // …and the insert event of OUR copy: it must not read as the site's
+    }, atMs);
+  };
+}
+const days = (c: any) => ((c.expirationDate ?? 0) - Date.now() / 1000) / 86400;
+
+test('ROTATION RACE: a rotation applied between the read and the write (event delivered after the write) is put back — the jar ends on the NEWEST value, promoted, not on the one that was read; our own echo does not loop', async () => {
+  for (const atMs of [2, 200]) { // right after the write's promise, and late (the settle re-check must still catch it)
+    const ws = newWs(P1);
+    bp.ensurePanel(ws);
+    const ses = fresh(sessions().get(PERSIST(P1)));
+    const first = { ...SESSION_COOKIE, name: `rot-${atMs}`, value: 'R1' };
+    const second = { ...first, value: 'R2' };
+    ses.liveCookies = [first];
+    rotationOrder(ses, first, second, atMs);
+    cookieEvent(PERSIST(P1), first);
+    await settle(260 + atMs + 700);
+    assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1', 'R2'], `the read value was written, then the newest value put back (rotation delivered ${atMs} ms after the write)`);
+    const live = ses.liveCookies.filter((c: any) => c.name === first.name);
+    assert.deepEqual(live.map((c: any) => c.value), ['R2'], 'the jar ends on the LAST value');
+    assert.ok(days(live[0]) > 29, 'and it is the promoted (30-day) form');
+    await settle(700);
+    assert.equal(ses.cookieSets.length, 2, 'our own echoes are not read as more rotations (no loop)');
+    assert.equal(ses.cookieRemoves, undefined);
+    bp.destroyPanel(ws);
+  }
+});
+
+test('ROTATION RACE: a PERSISTENT cookie the site rotated is put back with ITS OWN expiry (not 30 days)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-persistent', value: 'R1' };
+  const exp = Date.now() / 1000 + 3600;
+  const second = { ...first, value: 'R2', session: false, expirationDate: exp };
+  ses.liveCookies = [first];
+  rotationOrder(ses, first, second);
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  const live = ses.liveCookies.filter((c: any) => c.name === first.name);
+  assert.deepEqual(live.map((c: any) => c.value), ['R2']);
+  assert.ok(Math.abs(live[0].expirationDate - exp) < 2, `the site's expiry kept (${live[0].expirationDate} vs ${exp})`);
+  bp.destroyPanel(ws);
+});
+
+test('ROTATION RACE: a rotation FOLLOWED by a logout (the newest foreign event is a removal) ends with nothing alive — the removal wins', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-then-logout', value: 'R1' };
+  const second = { ...first, value: 'R2' };
+  ses.liveCookies = [first];
+  ses.onSet = (d: any) => {
+    if (d.value !== 'R1') return;
+    setTimeout(() => {
+      cookieEvent(PERSIST(P1), second);
+      cookieEvent(PERSIST(P1), first, true, 'overwrite');
+      cookieEvent(PERSIST(P1), { ...first, session: false, expirationDate: d.expirationDate });
+      cookieEvent(PERSIST(P1), second, true, 'explicit'); // the logout that followed
+    }, 2);
+  };
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1'], 'the stale rotation was NOT put back over a later logout');
+  assert.equal(ses.liveCookies.some((c: any) => c.name === first.name), false, 'nothing of the cookie is alive');
+  bp.destroyPanel(ws);
+});
+
+test('ROTATION RACE: when the live cookie is no longer our copy (the user signed in again, another write landed) nothing is put back over it', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const first = { ...SESSION_COOKIE, name: 'rot-not-ours', value: 'R1' };
+  const second = { ...first, value: 'R2' };
+  ses.liveCookies = [first];
+  rotationOrder(ses, first, second, 100);
+  const otherLogin = { ...first, value: 'RX', session: false, expirationDate: Date.now() / 1000 + 7200 };
+  const realOnSet = ses.onSet;
+  ses.onSet = (d: any) => { realOnSet(d); setTimeout(() => { ses.liveCookies = [otherLogin]; }, 20); }; // someone else's write is the live one before our reconciliation runs
+  cookieEvent(PERSIST(P1), first);
+  await settle(260 + 700);
+  assert.deepEqual(ses.cookieSets.map((d: any) => d.value), ['R1'], 'only the read value was written: the rotation was NOT forced over the other write');
+  assert.deepEqual(ses.liveCookies.filter((c: any) => c.name === first.name).map((c: any) => c.value), ['RX']);
+  bp.destroyPanel(ws);
+});
+
 test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {
   const a = newWs(P1), b = newWs(P1), c = newWs(P2), d = newWs();
   for (const w of [a, b, c, d]) bp.ensurePanel(w);

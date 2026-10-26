@@ -124,19 +124,19 @@ const MUTANTS = [
   [PROMO, 'a secure cookie is set on an http url', "url: `${secure ? 'https' : 'http'}://${host}${path}`,", 'url: `http://${host}${path}`,'],
   [PROMO, 'the promoted lifetime is not 30 days', 'export const PROMOTED_COOKIE_TTL_S = 30 * 24 * 3600;', 'export const PROMOTED_COOKIE_TTL_S = 24 * 3600;'],
   [PROMO, 'the url host keeps the cookie domain\'s leading dot', "const host = (c.domain ?? '').replace(/^\\./, '');", "const host = (c.domain ?? '');"],
-  [PANEL, 'session cookies are never promoted', '        if (!p) return;\n        await ses.cookies.set(p);', '        void p;\n        return;\n        await ses.cookies.set(p);'],
+  [PANEL, 'session cookies are never promoted', '        if (!p) return;\n        noteOwnWrite(key, p);', '        void p;\n        return;\n        noteOwnWrite(key, p);'],
   // --- a logout is not undone by the pending promotion (seat-1 MAJOR, OPS lot 9020) ---
   // (no mutant for the outer-only or inner-only removal gate of `reconcile`: they are the SAME monotonic condition, so removing one is equivalent; the pair is mutated together)
   [PANEL, 'no post-write compensation at all (the logout is undone)', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", ''],
   [PANEL, 'no compensation right after the write (only the settle re-check)', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {", "        const t = setTimeout(() => {"],
   [PANEL, 'no settle re-check (a removal delivered after the write\'s promise is missed)', "        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", ''],
   [PANEL, 'compensation judges removals against the sequence at CHECK time, not the read start', "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);", "        reconcile(key, p, domain, path, seq);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, seq);"],
-  [PANEL, 'compensation runs without any removal seen since the read started', "    if (!alive || (removedSeq.get(key) ?? 0) <= started) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        if (!alive || (removedSeq.get(key) ?? 0) <= started) return undefined;", "    if (!alive) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        if (!alive) return undefined;"],
+  [PANEL, 'compensation runs without any foreign event seen since the read started', "    if (!alive || (foreign.get(key)?.seq ?? 0) <= started) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        const last = foreign.get(key);\n        if (!alive || !last || last.seq <= started) return undefined;", "    if (!alive) return;\n    void ses.cookies\n      .get({ name: written.name, domain, path })\n      .then((live) => {\n        const last = foreign.get(key) ?? { seq: 1e9, removed: true, cookie: {} as never };\n        if (!alive) return undefined;"],
   [PANEL, 'compensation removes whatever cookie is live (a re-login is deleted)', "        if (!mine) return undefined;", "        if (!live.length) return undefined;"],
   [PANEL, 'an overwrite (our own promotion replacing the cookie) counts as a logout', "    const genuineRemoval = removed && cause !== 'overwrite';", "    const genuineRemoval = removed;"],
   [PANEL, 'the echo of our own compensating remove is read as a logout', "    if (genuineRemoval && ownRemoval.has(key)) {", "    if (false as boolean) {"],
-  [PANEL, 'our compensating remove is not marked as ours', "        ownRemoval.add(key);\n        return ses.cookies.remove(", "        return ses.cookies.remove("],
-  [PANEL, 'the own-echo mark is never dropped (an echo that never comes swallows a later logout)', "            settling.delete(t);\n            ownRemoval.delete(key);\n          }, OWN_ECHO_MS);", "            settling.delete(t);\n          }, OWN_ECHO_MS);"],
+  [PANEL, 'our compensating remove is not marked as ours', "          ownRemoval.add(key);\n          return ses.cookies.remove(", "          return ses.cookies.remove("],
+  [PANEL, 'the own-echo mark is never dropped (an echo that never comes swallows a later logout)', "              settling.delete(t);\n              ownRemoval.delete(key);\n            }, OWN_ECHO_MS);", "              settling.delete(t);\n            }, OWN_ECHO_MS);"],
   // --- an in-place rebuild is a REPLACED page, not a changed one (seat-2 MAJOR: the agent's CLI met a dead session for good) ---
   [DIFF, 'the view identity is ignored (a rebuild reads as a bare `changed`)', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'false'],
   [DIFF, 'an unknown view counts as replaced', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'was.view !== now.view'],
@@ -156,6 +156,13 @@ const MUTANTS = [
   [PANEL, 'a failed rebuild keeps the half-built guard (released on the success path only — the pre-D1 shape)', "  } finally {\n    panel.rebuilding = false;\n  }\n  return publish(panel);", "  } catch (e) {\n    throw e;\n  }\n  panel.rebuilding = false;\n  return publish(panel);"],
   [PANEL, 'the rollback steps abort each other (a half-built view that will not close loses the original error)', "        try {\n          destroyTab(t);\n        } catch (err) {\n          log.warn('browser-panel: reprofilePanel rollback could not close a half-built view', err);\n        }", "        destroyTab(t);"],
   [PANEL, 'a finished rebuild keeps the half-built guard (its own publish is swallowed)', "  } finally {\n    panel.rebuilding = false;\n  }\n  return publish(panel);", "  } finally {\n  }\n  return publish(panel);"],
+  // --- the rotation race (seat 1: the jar ended on the PREVIOUS value; same read → write class as the logout) ---
+  [PANEL, 'a foreign CHANGE is never put back (only removals are compensated)', "        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n", "        return undefined;\n        const d = restoreCookie(last.cookie, Date.now() / 1000);\n        if (!d) return undefined;\n"],
+  [PANEL, 'the insert event of OUR copy reads as the site\'s (own writes are not recognised)', "else if (!removed && !isOwnWrite(key, cookie))", "else if (!removed)"],
+  [PANEL, 'our promoted write is not noted as ours (its echo reads as a rotation)', "        noteOwnWrite(key, p);\n        await ses.cookies.set(p);", "        await ses.cookies.set(p);"],
+  [PANEL, 'a genuine removal does not replace an older foreign change (the rotation wins over a later logout)', "if (genuineRemoval) foreign.set(key, { seq, removed: true, cookie });", "if (genuineRemoval && !foreign.has(key)) foreign.set(key, { seq, removed: true, cookie });"],
+  [PROMO, 'restore moves a persistent cookie to the 30-day expiry', "return detailsFor(c, c.expirationDate);", "return detailsFor(c, Math.floor(nowSec) + PROMOTED_COOKIE_TTL_S);"],
+  [PROMO, 'restore resurrects an already-expired cookie', "if (c.expirationDate === undefined || c.expirationDate <= nowSec) return null;", "if (c.expirationDate === undefined) return null;"],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', "          return refuse('storage', `Could not clear", "          void refuse('storage', `Could not clear"],
@@ -223,7 +230,7 @@ console.log(`baseline PASS (${baseTests} tests, ${/# skipped (\d+)/.exec(base.st
 let killed = 0;
 const survivors = [];
 for (const [file, name, find, replace] of MUTANTS) {
-  if (process.env.MUT_ONLY && !name.includes(process.env.MUT_ONLY)) continue;
+  if (process.env.MUT_ONLY && !process.env.MUT_ONLY.split('|').some((t) => name.includes(t))) continue; // MUT_ONLY=a|b: name substrings
   const src = orig.get(file);
   const n = src.split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x in ${file} (need exactly 1)`); restoreAll(); process.exit(2); }

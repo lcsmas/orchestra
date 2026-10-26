@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { promoteSessionCookie, PROMOTED_COOKIE_TTL_S, type CookieLike } from './browser-cookie-promote.ts';
+import { promoteSessionCookie, restoreCookie, PROMOTED_COOKIE_TTL_S, type CookieLike } from './browser-cookie-promote.ts';
 
 const NOW = 1_800_000_000;
 const base: CookieLike = { name: 'sid', value: 'abc', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
@@ -38,4 +38,19 @@ test('an unusable cookie (no host / no name) is not promoted rather than set on 
 
 test('expiry is sliding: promoting the same cookie later gives a later expiry', () => {
   assert.equal(promoteSessionCookie(base, NOW + 100)!.expirationDate - promoteSessionCookie(base, NOW)!.expirationDate, 100);
+});
+
+test('restoreCookie puts the SITE\'s last write back: a session cookie in its promoted 30-day form, a persistent one with its OWN expiry, nothing for an expired or nameless one', () => {
+  const now = 1_800_000_000;
+  const rbase = { name: 'sid', value: 'R2', domain: 'example.com', hostOnly: false, path: '/app', secure: true, httpOnly: true, sameSite: 'lax' as const };
+  const sess = restoreCookie({ ...rbase, session: true }, now)!;
+  assert.equal(sess.expirationDate, now + PROMOTED_COOKIE_TTL_S);
+  assert.deepEqual([sess.value, sess.url, sess.domain, sess.path, sess.secure, sess.httpOnly, sess.sameSite], ['R2', 'https://example.com/app', 'example.com', '/app', true, true, 'lax']);
+  const persistent = restoreCookie({ ...rbase, session: false, expirationDate: now + 3600 }, now)!;
+  assert.equal(persistent.expirationDate, now + 3600, 'the site\'s own expiry, not 30 days');
+  assert.equal(persistent.value, 'R2');
+  assert.equal(restoreCookie({ ...rbase, session: false, expirationDate: now - 1 }, now), null, 'an expired cookie is not resurrected');
+  assert.equal(restoreCookie({ ...rbase, session: false, expirationDate: now }, now), null);
+  assert.equal(restoreCookie({ ...rbase, name: '', session: true }, now), null);
+  assert.equal(restoreCookie({ ...rbase, domain: '', session: true }, now), null);
 });
