@@ -6,6 +6,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${1:-}"; [[ -n "${APP_DIR}" ]] || { echo "usage: $0 <app-dir> [mutant ...]" >&2; exit 2; }
 shift
+# Every mutant anchor must still match EXACTLY once in the built bundle BEFORE the first (minutes-long) mutant boots: a refactor that moved a target
+# (#397 moved three) would otherwise surface as a REFUSED run mid-sweep, or worse, be read as a surviving mutant.
+node --experimental-strip-types "${HERE}/e2e-browser-cli.mjs" --check-anchors "${APP_DIR}" > "${TMPDIR:-/var/tmp}/b395-anchors.$$" 2>&1 || { grep -E '^BAD|stale' "${TMPDIR:-/var/tmp}/b395-anchors.$$" >&2; rm -f "${TMPDIR:-/var/tmp}/b395-anchors.$$"; echo "ABORT: stale mutant anchor(s) — re-anchor them before sweeping" >&2; exit 2; }
+rm -f "${TMPDIR:-/var/tmp}/b395-anchors.$$"
 if [[ $# -gt 0 ]]; then MUTANTS=("$@"); else read -r -a MUTANTS <<< "$("${HERE}/e2e-browser-cli.sh" --list | sed -n 's/^mutants: //p')"; fi
 fail=0
 for m in "${MUTANTS[@]}"; do

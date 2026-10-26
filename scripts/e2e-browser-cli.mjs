@@ -48,9 +48,9 @@ const MUTANTS = {
   'archive-no-dispose': { file: 'chunk', edits: [[/\(([\w$]+),([\w$]+),([\w$]+)\)=>\{\3&&([\w$]+)\(\1\)\}\),\(async\(\)=>\{try\{/, '($1,$2,$3)=>{}),(async()=>{try{']], arms: ['destroy-closes-daemon'], why: 'archiving a workspace leaves its CDP proxy and agent-browser daemon running' },
   'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
   'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{/, 'try{']], arms: ['destroy-closes-daemon'], why: 'the up-front archived refusal is gone: a late /browser call for an archived workspace is only caught after its panel and proxy were rebuilt' },
-  'bring-to-front-forwarded': { file: 'chunk', edits: [[/if\((\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, '']], arms: ['tabs'], why: 'Page.bringToFront reaches the real debugger (OS focus) instead of only activating the tab' },
+  'bring-to-front-inert': { file: 'chunk', edits: [[/if\(!(\w+)&&(\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, 'if(!$1&&$2==="Page.bringToFront")return{};']], arms: ['tabs'], why: 'Page.bringToFront answers {} but activates nothing (the old `-forwarded` form — reaching the debugger instead — is observably EQUIVALENT since #397: acting methods activate the tab themselves and the forward is inert, measured by the arm)' },
   'auto-dialog-on': { file: 'chunk', edits: [[/AGENT_BROWSER_NO_AUTO_DIALOG:"1",?/, '']], arms: ['dialog'], why: 'the daemon auto-dismisses alert()/beforeunload again (it could answer the human\'s own dialog unseen)' },
-  'token-in-argv': { file: 'cli', edits: [['.spawn(binary, plan.args,', '.spawn(binary, ["--cdp", res.wsUrl, ...plan.args],']], arms: ['daemon-host-owned'], why: 'the CLI puts the token-bearing proxy URL in agent-browser\'s argv (world-readable /proc/<pid>/cmdline)' },
+  'token-in-argv': { file: 'cli', edits: [[/(node_child_process\.spawn)\(binary, (\w+), \{ env,/, '$1(binary, ["--cdp", res.wsUrl, ...$2], { env,']], arms: ['daemon-host-owned'], why: 'the CLI puts the token-bearing proxy URL in agent-browser\'s argv (world-readable /proc/<pid>/cmdline)' },
   'relative-paths': { file: 'cli', edits: [['return planBrowserCommand(absolutizeBrowserArgs(argv, cwd));', 'return planBrowserCommand(argv);']], arms: ['screenshot'], why: 'file arguments are not made absolute: a relative screenshot path lands in the host-owned daemon\'s cwd (the app dir)' },
   'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
   'command-not-first': { file: 'cli', edits: [['const command = argv[idx];', 'const command = argv.find((a) => !a.startsWith("-"));']], arms: ['allowlist'], why: 'the command is the first non-flag token again (a leading value-taking option shifts it)' },
@@ -59,11 +59,13 @@ const MUTANTS = {
   'tunnel-methods-allowed': { file: 'chunk', edits: [[/if\(([\w$]+)\.has\((\w+)\)\)throw new ([\w$]+)\(`\$\{\2\} is not supported: this proxy speaks flattened sessions only`/, 'if(false)throw new $3(`${$2} is not supported: this proxy speaks flattened sessions only`']], arms: ['allowlist'], why: 'Target.sendMessageToTarget / exposeDevToolsProtocol reach the page debugger (raw CDP past every per-method policy)' },
   'child-session-bypass': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a)']], arms: ['child-session'], why: 'a CHILD (worker/iframe) session skips the browser-level rules again: its Page.close / Target.closeTarget / Browser.* reach the debugger (close ownership bypass, #397 F1)' },
   'cdp-url-first-token-only': { file: 'cli', edits: [[/if \(argv\.slice\(idx \+ 1\)\.some\(\(a\) => a\.toLowerCase\(\)\.replace\(\/\['"`\]\/g, ""\)\.replace\(\/\[-_\]\/g, ""\) === "cdpurl"\)\) \{/, 'if ([argv.slice(idx + 1).find((a) => !a.startsWith("-"))].some((a) => a !== void 0 && a.toLowerCase().replace(/[-_]/g, "") === "cdpurl")) {']], arms: ['allowlist'], why: 'the get cdp-url refusal looks only at the first non-flag token: `get --max-output 100 cdp-url` passes the planner (layer 2, the redaction, still holds)' },
-  'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
+  'close-any-tab': { file: 'chunk', edits: [[/,(\w+)=(\w+)\((\w+),(\w+),(\w+)\)(?=,\w+=\1\.ok&&\w+&&\w+===\3\?)/, ',$1=$2($3,$4,"human")']], also: { file: 'cli', edits: [['decideCloseThroughCli(abTabs, tab.refs, hostTabs) : { run: true }', '{ run: true } : { run: true }']] }, arms: ['tabs'], why: 'an agent may close a tab the human opened: BOTH layers fall (the CLI gate refuses first, the host\'s ownership check second — acting as the human — so patching one leaves the other standing)' },
   'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
   'child-detach-unsettled': { file: 'chunk', edits: [[/;([\w$]+)&&([\w$]+)\.pending\.abort\(\1\)\}onDebuggerDetached/, ';}onDebuggerDetached']], arms: ['iframe-churn'], why: 'the proxy announces a child\'s detach but leaves the commands in flight on it pending: the daemon\'s awaited attach-time chain stalls for its whole timeout (seat-1 tchurn, ledger #405)' },
 };
+/** A mutant patches one built file (`file` + `edits`), or two when a defence-in-depth pair must fall together (`also`: {file, edits}). */
+const partsOf = (m) => [{ file: m.file, edits: m.edits }, ...(m.also ? [m.also] : [])];
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
   console.log(`mutants: ${Object.keys(MUTANTS).join(' ')}`);
@@ -76,12 +78,14 @@ if (argv[0] === '--check-anchors') {
   const chunk = /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(app, 'dist-electron/main.js'), 'utf8'))?.[1];
   let bad = 0;
   for (const [name, m] of Object.entries(MUTANTS)) {
-    const file = path.join(app, 'dist-electron', m.file === 'cli' ? 'cli.js' : chunk);
-    const src = fs.readFileSync(file, 'utf8');
-    const counts = m.edits.map(([from]) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length));
-    const ok = counts.every((c) => c === 1);
-    if (!ok) bad++;
-    console.log(`${ok ? 'OK ' : 'BAD'} ${name.padEnd(30)} ${path.basename(file)} matches=${counts.join(',')}`);
+    for (const part of partsOf(m)) {
+      const file = path.join(app, 'dist-electron', part.file === 'cli' ? 'cli.js' : chunk);
+      const src = fs.readFileSync(file, 'utf8');
+      const counts = part.edits.map(([from]) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length));
+      const ok = counts.every((c) => c === 1);
+      if (!ok) bad++;
+      console.log(`${ok ? 'OK ' : 'BAD'} ${name.padEnd(30)} ${path.basename(file)} matches=${counts.join(',')}`);
+    }
   }
   console.log(bad ? `${bad} mutant anchor(s) stale` : `all ${Object.keys(MUTANTS).length} mutant anchors match exactly once`);
   process.exit(bad ? 1 : 0);
@@ -234,18 +238,26 @@ const MARKER = path.join(APP_DIR ?? '/nonexistent', 'dist-electron', '.b395-muta
 function applyMutant() {
   if (fs.existsSync(MARKER)) refuse(`${MARKER} exists — an earlier mutant run died without restoring the bundle: ${fs.readFileSync(MARKER, 'utf8').trim()} (restore it from that backup, or rebuild, then delete the marker)`);
   if (!MUTANT) return;
-  const m = MUTANTS[MUTANT], file = mutantTarget(m.file), backup = path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`);
-  let src = fs.readFileSync(file, 'utf8');
-  for (const [from, to] of m.edits) {
-    const hits = typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length;
-    if (hits !== 1) refuse(`mutant ${MUTANT}: ${String(from).slice(0, 70)} occurs ${hits}x in ${path.basename(file)} (must be exactly 1) — the bundle changed, update the mutant`);
-    src = typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to);
-  }
-  fs.copyFileSync(file, backup);
-  fs.writeFileSync(MARKER, `${backup} -> ${file}\n`);
-  fs.writeFileSync(file, src);
-  console.log(`[mutant] ${MUTANT} applied to ${path.basename(file)} (${m.edits.length} edit(s)): ${m.why}; backup ${backup}`);
-  mutantRestore = () => { fs.copyFileSync(backup, file); try { sh('cmp', [backup, file]); fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK)`); } catch { console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${path.basename(file)}`); process.exitCode = 4; } };
+  const m = MUTANTS[MUTANT];
+  const plan = partsOf(m).map((part) => { // validate EVERY part before writing ANY (a refusal must leave the bundle untouched)
+    const file = mutantTarget(part.file);
+    let src = fs.readFileSync(file, 'utf8');
+    for (const [from, to] of part.edits) {
+      const hits = typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length;
+      if (hits !== 1) refuse(`mutant ${MUTANT}: ${String(from).slice(0, 70)} occurs ${hits}x in ${path.basename(file)} (must be exactly 1) — the bundle changed, update the mutant`);
+      src = typeof from === 'string' ? src.replace(from, () => to) : src.replace(from, to);
+    }
+    return { file, src, edits: part.edits.length, backup: path.join(RIG_DIR, `mutant-backup-${path.basename(file)}`) };
+  });
+  for (const x of plan) fs.copyFileSync(x.file, x.backup);
+  fs.writeFileSync(MARKER, plan.map((x) => `${x.backup} -> ${x.file}`).join('\n') + '\n');
+  for (const x of plan) fs.writeFileSync(x.file, x.src);
+  console.log(`[mutant] ${MUTANT} applied to ${plan.map((x) => `${path.basename(x.file)} (${x.edits} edit(s))`).join(' + ')}: ${m.why}; backup ${plan.map((x) => x.backup).join(' + ')}`);
+  mutantRestore = () => {
+    let exact = true;
+    for (const x of plan) { fs.copyFileSync(x.backup, x.file); try { sh('cmp', [x.backup, x.file]); } catch { exact = false; console.log(`[mutant] RESTORE NOT BYTE-EXACT — rebuild ${path.basename(x.file)}`); } }
+    if (exact) { fs.rmSync(MARKER, { force: true }); console.log(`[mutant] ${MUTANT} restored byte-exact (cmp OK${plan.length > 1 ? `, ${plan.length} files` : ''})`); } else process.exitCode = 4;
+  };
 }
 process.on('uncaughtException', (e) => { clause('rig', 'uncaught-exception', false, String(e?.stack ?? e).slice(0, 400)); });
 process.on('exit', () => { try { mutantRestore?.(); } catch {} });
