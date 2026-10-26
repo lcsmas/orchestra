@@ -680,3 +680,25 @@ One worktree per workspace · `accountId` pinned for life · `parentId` only
 persisted if parent exists (dangling → child floats to repo section) · setup is
 async/non-blocking · hooks idempotent (version stamp) · store writes atomic ·
 scrollback ring-buffered at 2 MB · all cleanup best-effort.
+
+## Keyring rig preflight (#389, after the Q2 incident of 2026-10-26 00:18)
+Every rig that starts a `gnome-keyring-daemon` or an app that may use libsecret runs in its OWN `dbus-run-session` (config with an empty
+service dir) with a PRIVATE `XDG_RUNTIME_DIR` under the rig dir, and calls a must-FAIL preflight BEFORE starting anything — a fleet process
+must never reach the human's `/run/user/<uid>/bus` or `…/keyring/control` (a stray property read can abort the human's daemon:
+`invoke_get_property_in_idle_cb`, journal 00:18:59). The rule set is PURE: `src/shared/keyring-rig-preflight.ts` — `checkWorld`
+(`runtime-dir-scratch`: realpath strictly inside the rig dir, 0700, never `/run/user/*`; `bus-address-private`: ONE `unix:path=` inside it —
+no list, abstract, tcp, `disabled:`; `bus-socket-private`), `checkChildEnv` (`child-env-clean`: no value naming `/run/user/<n>` except the rig's
+own `WAYLAND_DISPLAY`, no foreign `GNOME_KEYRING_CONTROL`/agent handle, a tool carries the private address), `checkOwners`
+(`bus-daemon-in-scratch`: its `--config-file` is inside the rig dir; `secrets-owner-in-scratch`: the owner of `org.freedesktop.secrets` is a
+`gnome-keyring-daemon` whose ORIGINAL `XDG_RUNTIME_DIR` is the scratch one; `owner-expected`: a no-service arm sees none). The string
+rules fire BEFORE any filesystem access, so the preflight never even stats the real runtime dir. `src/main/keyring-rig-preflight-host.ts`
+holds the real accessors and the ONE query: `queryPrivateBus` throws without spawning unless the address is a socket inside the verified
+scratch dir, and runs `gdbus` with an allowlist env of that address only. Phases: `pre` (nothing started — judges declared envs, contacts
+nothing) → `bus` → `daemon`. `selftest()` runs the ONE arm table (`buildArms`, 55 arms: positives + a must-FAIL arm per verdict clause) over a real scratch tree with a FAKE
+process table / private bus, through the same `evaluate`; `preflightOrDie(spec)` (host module; `scripts/keyring-rig-preflight.mjs` is its CLI and
+always runs — no main-module guard) runs it FIRST (exit 4 = a verdict clause is not armed), then the real world (exit 3 = ABORT naming each clause),
+then writes a phase marker; `requirePhase(rigDir, phase)` refuses the bus / daemon start without the earlier phases. Also refused: a mount point
+inside the rig dir, a bus path that is a symlink, a bus daemon whose config includes the host service dirs, any child env with `DISPLAY`, a real
+`HOME`, or a bus address that is a list. Mutants: `node scripts/keyring-rig-preflight-mutants.mjs` (47; the CLI self-test alone goes red under 33).
+A rig must not read the human's bus at all (no `Locked` probe, no G10b). NOT verified live: the real `dbus-run-session` argv shape (both
+`--config-file=X` and `--config-file X` are accepted) — the first rewired run settles it.
