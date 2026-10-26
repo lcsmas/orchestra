@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -900,6 +900,66 @@ const ARM_FNS8 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS8);
+
+// ── seat 3 (#399 delta gate a94f4476): each NEW sentence of the skill vs what the page/app does ──
+ARM_FNS.v3delta = async function v3delta(ctx) {
+  const { W1, W2, FIX } = ctx; const A = 'v3delta';
+  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 60000, ...(o2 ?? {}) });
+  const late = (o, id) => o.eval(`setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`);
+  await selectWs(ctx, W1); await openPane(ctx);
+  const u = `${FIX}/v3-claims.html`;
+  const hid = async (tag) => { const r = await openOn(ctx, W2, u); return r.o; };            // W2 is a background workspace: its pane is NOT on screen
+  const o = await hid();
+  clause(A, 'ctl/w2-is-hidden', await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`), `${W1.branch} is the active workspace`);
+  const has = await o.eval(`!!document.getElementById('h1')`);
+  // 1. the sentence: "wait "<selector>" … returns at once for an element that is already on the page"
+  const t1 = await run(W2, ['wait', '#h1', '--timeout', '6000']);                   // right after open
+  await run(W2, ['snapshot', '-i']); const t2 = await run(W2, ['wait', '#h1', '--timeout', '6000']);
+  await sleep(3000); const t3 = await run(W2, ['wait', '#h1', '--timeout', '6000']);
+  const t4 = await run(W2, ['wait', '#h1']);                                        // the default timeout
+  clause(A, 'skill-says-wait-selector-for-an-element-already-on-the-page-returns-at-once-on-a-hidden-pane', has && [t1, t2, t3, t4].every((r) => r.code === 0 && r.ms < 3000), `element present: ${has}; right after open ${show(t1)} | after snapshot ${show(t2)} | after 3 s ${show(t3)} | default timeout ${show(t4)}`);
+  // 2. late element: selector hangs, --fn/--text/ms work
+  await late(o, 'late-sel'); const wsel = await run(W2, ['wait', '#late-sel', '--timeout', '4000']);
+  await late(o, 'late-fn'); const wfn = await run(W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"]);
+  await late(o, 'late-txt'); const wtx = await run(W2, ['wait', '--text', 'late late-txt']);
+  const wms = await run(W2, ['wait', '500']);
+  clause(A, 'skill-says-late-element-selector-wait-times-out-but-fn-text-ms-work-on-a-hidden-pane', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wfn.code === 0 && wtx.code === 0 && wms.code === 0, `selector ${show(wsel)} | --fn ${show(wfn)} | --text ${show(wtx)} | ms ${show(wms)}`);
+  // 3. "--timeout 3000" bounds it (25 s by default)
+  const tb = await run(W2, ['wait', '#never-there', '--timeout', '3000']);
+  clause(A, 'skill-says---timeout-3000-bounds-the-hung-wait', tb.code !== 0 && tb.ms >= 2500 && tb.ms < 8000, `wait "#never-there" --timeout 3000 on the hidden pane → ${show(tb)}`);
+  const td = await run(W2, ['wait', '#never-there']);
+  clause(A, 'skill-says-the-default-timeout-is-25-s', td.code !== 0 && td.ms >= 24000 && td.ms <= 27000, `default → ${show(td)}`);
+  // 4. the errors workaround, VERBATIM from the skill, on the hidden pane and on a visible one
+  const L = BROWSER_SKILL.split('\n').flatMap((l) => l.match(/§?`?eval "(window\.addEventListener\('error'[^"]*)"`?/) ? [l] : []);
+  const m1 = /eval "(window\.addEventListener\('error', e => \(window\.__err = e\.message\)\))"/.exec(BROWSER_SKILL); const m2 = /eval "(window\.__err)"/.exec(BROWSER_SKILL);
+  clause(A, 'ctl/the-skill-text-carries-both-workaround-commands', !!m1 && !!m2, `listener ${m1?.[1]} | read ${m2?.[1]}`);
+  const errCase = async (W, oo, label) => {
+    await oo.eval(`window.__err = undefined; 1`);
+    const a = await run(W, ['eval', m1[1]]);
+    await oo.eval(`setTimeout(() => { throw new Error('workaround-${label}'); }, 80); 1`);
+    let b = null; const tt0 = Date.now(); for (let i = 0; i < 12; i++) { await sleep(700); b = await run(W, ['eval', m2[1]]); if (b.stdout.includes(`workaround-${label}`)) break; }
+    console.log(`  INFO  [${A}] workaround read (${label}) took ${Date.now() - tt0} ms from the throw`);
+    const e = await run(W, ['errors']);
+    return { a, b, e, ok: a.code === 0 && b.code === 0 && b.stdout.includes(`workaround-${label}`) };
+  };
+  const eh = await errCase(W2, o, 'hidden');
+  clause(A, 'skill-workaround-captures-an-uncaught-error-message-on-a-hidden-pane', eh.ok, `add ${show(eh.a)} | read ${show(eh.b)} | (errors still: ${JSON.stringify(eh.e.stdout.slice(0, 40))})`);
+  // 5. console "may lag on a hidden pane"
+  await o.eval(`console.log('lagprobe-hidden-1'); 1`);
+  const c0 = await run(W2, ['console']); await sleep(2500); const c1 = await run(W2, ['console']);
+  console.log(`  INFO  [${A}] console on the hidden pane: right after the page logged: has it ${c0.stdout.includes('lagprobe-hidden-1')}; 2.5 s later: ${c1.stdout.includes('lagprobe-hidden-1')}`);
+  // visible controls
+  await selectWs(ctx, W2); await openPane(ctx);
+  const ov = await oracle(ctx, `${u}?w=${W2.name}`);
+  await late(ov, 'late-vis'); const wvis = await run(W2, ['wait', '#late-vis', '--timeout', '4000']);
+  clause(A, 'ctl/the-same-late-selector-wait-succeeds-on-the-visible-pane', wvis.code === 0 && wvis.ms < 3000, show(wvis));
+  const ev = await errCase(W2, ov, 'visible');
+  clause(A, 'skill-workaround-captures-an-uncaught-error-message-on-a-visible-pane', ev.ok, `add ${show(ev.a)} | read ${show(ev.b)}`);
+  await ov.eval(`console.log('lagprobe-visible-1'); 1`);
+  const cv = await run(W2, ['console']);
+  console.log(`  INFO  [${A}] console on the visible pane, immediately after the page logged: has it ${cv.stdout.includes('lagprobe-visible-1')}`);
+  ov.close(); o.close();
+};
 // ── seat 3 (#399 gate): the SKILL's behavioural claims beyond the member's 15 arms, each against an INDEPENDENT oracle (a 2nd CDP client on the page) ──
 ARM_FNS.v3claims = async function v3claims(ctx) {
   const { W1, W2, FIX } = ctx; const A = 'v3claims';
