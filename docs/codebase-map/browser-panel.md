@@ -390,7 +390,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   id forever — `Session with given id not found`). The core (`cdp-proxy-core.ts` `onTabReplaced`) detaches the old sessions under the OLD target id, bumps the tab's
   `generation` (part of `targetIdFor`: the replacement is a NEW target), then emits `targetCreated(new)` BEFORE `targetDestroyed(old)` — the daemon (v0.39.2
   `drain_cdp_events`) drops a `targetCreated` for an id it still tracks when it lands in the same batch as that id's `targetDestroyed`, then empties its pages
-  and opens a blank tab; a new id never meets that (the intermittency). An attach in flight across the swap gets `Target closed.` Rig arm `rebuild`: 10 attach/detach
+  and opens a blank tab; a new id never meets that (the intermittency). `reprofilePanel` raises `panel.rebuilding` so `publish` says nothing until the registry is
+  whole: `loadURL` fires `did-start-loading` synchronously, which published the FIRST rebuilt tab alone — the diff read the others as closed, then reopened under the
+  SAME id (seat 1; the one-tab rig arm could not see it, the arm now holds two). An attach in flight across the swap gets `Target closed.` Rig arm `rebuild`: 10 attach/detach
   + 5 delete rebuilds in one boot, `get url` must answer the fixture page, and the daemon must never `Target.createTarget` nor meet a dead session. Lease holders
   (design mode, legacy tools) are not migrated: a lease taken across the swap errors on its next `send` (accepted gap).
   **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
@@ -446,9 +448,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   nothing reconciles `Partitions/orchestra-profile-*` against the profile list at boot (a lost `store.json` leaves unlisted sign-ins with no UI to delete them).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
-  `browser-profiles-wiring.test.ts`; 138 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
+  `browser-profiles-wiring.test.ts`; 142 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`
   (arms `settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp` — `logout` sweeps session-cookie login→logout cycles at 225–275 ms in a profile workspace and in an ephemeral control and requires 0 resurrected; `cdp` drives the REAL `orchestra browser` CLI (host-resolved agent identity, pinned agent-browser) against a profile SHARED by two workspaces and reads the CDP methods it emitted from the proxy trace: `cookies get` → `Network.getCookies` (allowed), `cookies clear` → `Network.clearBrowserCookies` (refused, never reached the debugger), `cookies set --url <other site>` → `Network.setCookies` (refused) —, run ONLY through `scripts/e2e-contained-rig.sh` — the private runtime world of incident Q2 — with the driver taking `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs`, `--password-store=basic` handed to the app and its `ctl/scratch-env` clause asserting what the DRIVER handed it (`/proc/<pid>/environ` goes blind once a D-Bus address is set); oracles: the cookie jar read FROM each tab's page (`/whoami`), `Partitions/` and the cookie DB
-  on disk, compositor pixels, store.json) + 24 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`, `pages/profiles-logout.html`.
+  on disk, compositor pixels, store.json) + 25 rebuilt-app mutants `node scripts/e2e-browser-profiles-mutants.mjs`. Fixture: shared site (#395) + `pages/profiles.html`, `pages/profiles-logout.html`.
 
 ## IPC / seam
 

@@ -52,7 +52,7 @@ const MUTANTS = [
   [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '      if (sn.url) {\n        restoreUrls.set(tab, sn.url);', '      if (false as boolean) {\n        restoreUrls.set(tab, sn.url);'],
   [PANEL, 'reprofilePanel loses the active tab', 'panel.activeId = oldActive;', 'panel.activeId = panel.tabs[0].id;'],
   [PANEL, 'reprofilePanel never re-composites the active view', '    if (wasAttached) attachActive(panel);\n  } catch (e) {\n    log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);', '    void wasAttached;\n  } catch (e) {\n    log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);'],
-  [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.partition = partition;', '  panel.partition = partition;'],
+  [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.rebuilding = true;\n  panel.partition = partition;', '  panel.rebuilding = true;\n  panel.partition = partition;'],
   [PANEL, 'reprofilePanel rebuilds even for the same identity', '  if (partition === panel.partition) return panel.state;\n', ''],
   [PANEL, 'reprofilePanel builds a panel that is not open', '  if (!panel) return getState(wsId);\n  const partition', '  if (!panel) { ensurePanel(wsId); return getState(wsId); }\n  const partition'],
   [PANEL, 'reprofilePanel keeps the old profileId in the state', '  panel.partition = partition;\n  panel.profileId = profileId;', '  panel.partition = partition;'],
@@ -60,7 +60,7 @@ const MUTANTS = [
   [PANEL, 'sign-in flushing also watches ephemeral sessions', 'if (panel.profileId !== undefined) persistSignIns(ses);', 'persistSignIns(ses);'],
   [PANEL, 'sign-in flushing adds a watcher per tab', '  if (signInSessions.has(ses)) return;\n', ''],
   [PANEL, 'flushProfileStorage also flushes ephemeral partitions', '    if (panel.profileId === undefined) continue;\n', ''],
-  [PANEL, 'a failed rebuild leaves a half-built panel', '    panel.tabs = oldTabs;\n    panel.partition = prev.partition;\n    panel.profileId = prev.profileId;\n    if (wasAttached) attachActive(panel);\n    throw e;', '    throw e;'],
+  [PANEL, 'a failed rebuild leaves a half-built panel', '    panel.tabs = oldTabs;\n    panel.partition = prev.partition;\n    panel.profileId = prev.profileId;\n    panel.rebuilding = false;\n    if (wasAttached) attachActive(panel);\n    throw e;', '    throw e;'],
   [PANEL, 'the closing views are not tracked', '  trackClose(wc);\n', ''],
   [PANEL, 'settleClosedViews never waits', '  const ok = await Promise.race([settled, timedOut]);', '  const ok = true as boolean; void settled; void timedOut;'],
   [PANEL, 'settleClosedViews can wait forever', '  const ok = await Promise.race([settled, timedOut]);', '  const ok = await settled;'],
@@ -150,6 +150,11 @@ const MUTANTS = [
   [CORE, 'an attach in flight across a replacement is registered on the dead page', "(this.generation.get(t.id) ?? 0) !== gen || this.tabs.get(t.id) !== st", "false"],
   [CORE, 'an attach in flight across a replacement keeps its hold', "      if (this.tabs.get(t.id) === st) this.releaseTab(t.id);\n", ''],
   ['src/main/browser-cdp-host.ts', 'the host reads no view identity (a rebuild is invisible to the diff)', "view: bp.tabContents(wsId, t.id)?.id", "view: undefined"],
+  // --- a rebuild publishes only WHOLE tab lists (seat-1 MAJOR: a half-built list read as a tab closed and reopened under the same id) ---
+  [PANEL, 'publish speaks during a rebuild (the half-built guard is gone)', "  if (panel.rebuilding) return panel.state;\n", ''],
+  [PANEL, 'a rebuild never raises the half-built guard', "  panel.rebuilding = true;\n", ''],
+  [PANEL, 'a failed rebuild keeps the half-built guard (the panel goes silent)', "    panel.rebuilding = false;\n    if (wasAttached) attachActive(panel);\n    throw e;", "    if (wasAttached) attachActive(panel);\n    throw e;"],
+  [PANEL, 'a finished rebuild keeps the half-built guard (its own publish is swallowed)', "  panel.rebuilding = false;\n  return publish(panel);", "  return publish(panel);"],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', "          return refuse('storage', `Could not clear", "          void refuse('storage', `Could not clear"],
@@ -217,6 +222,7 @@ console.log(`baseline PASS (${baseTests} tests, ${/# skipped (\d+)/.exec(base.st
 let killed = 0;
 const survivors = [];
 for (const [file, name, find, replace] of MUTANTS) {
+  if (process.env.MUT_ONLY && !name.includes(process.env.MUT_ONLY)) continue;
   const src = orig.get(file);
   const n = src.split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x in ${file} (need exactly 1)`); restoreAll(); process.exit(2); }

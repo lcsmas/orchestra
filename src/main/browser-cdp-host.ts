@@ -59,6 +59,8 @@ export function makePanelPort(wsId: string): CdpPanelPort {
         if (id !== wsId) return;
         const next = snapshot(tabs);
         const events = diffTabs(prev, next);
+        // rig/trace evidence: what the panel published and what the proxy was told (a half-built tab list reads as a tab closed and reopened)
+        if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`cdp[${wsId.slice(0, 8)}] panel-change ${JSON.stringify({ tabs: tabs.map((t) => t.id), views: [...next.values()].map((v) => v.view), events: events.map((e) => `${e.kind}:${e.tab.id}`) })}`);
         prev = next;
         void destroyed;
         for (const e of events) listener(e);

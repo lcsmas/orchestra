@@ -29,7 +29,7 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
   once(ev, fn) { (this.onceH ||= {})[ev] = ((this.onceH ||= {})[ev] || []).concat(fn); }
   setWindowOpenHandler() {}
-  loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
+  loadURL(u) { this.loaded.push(u); this.url = u; if (globalThis.__bpSyncStartLoading) for (const f of (this.handlers['did-start-loading'] || [])) f(); return Promise.resolve(); }
   reload() {}
   getURL() { return this.url; } getTitle() { return this.title; }
   close() {
@@ -280,6 +280,38 @@ test('a view that cannot be built leaves the panel EXACTLY as it was: old tabs a
   // and the panel still works: a later, successful move goes through
   bp.reprofilePanel(ws, P1);
   assert.deepEqual(bp.listTabs(ws).map((t) => partitionOf(bp.getTab(ws, t.id)!)), [PERSIST(P1), PERSIST(P1), PERSIST(P1)]);
+});
+
+test('seat-1 MAJOR: a rebuild of a MULTI-tab panel publishes only WHOLE tab lists — an observer never sees the first rebuilt tab alone (a tab missing from one publish and back in the next reads as closed + reopened to the CDP proxy)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  bp.createTab(ws, { openedBy: 'human', url: 'http://localhost:1/three', activate: true });
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  (globalThis as any).__bpSyncStartLoading = true; // real Electron starts the load (did-start-loading) inside loadURL: measured on the wire as a publish with ["t1"] alone
+  try {
+    bp.reprofilePanel(ws, P1);
+  } finally {
+    (globalThis as any).__bpSyncStartLoading = false;
+    off();
+  }
+  assert.ok(seen.length >= 1, 'the rebuild published');
+  for (const tabs of seen) assert.deepEqual(tabs, ['t1', 't2', 't3'], 'every publish carries the whole tab list');
+});
+
+test('a FAILED rebuild releases the half-built guard: the panel publishes again right after the rollback', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  (globalThis as any).__bpFailNext = 2;
+  assert.throws(() => bp.reprofilePanel(ws, P1), /cannot build a view/);
+  (globalThis as any).__bpFailNext = 0;
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  for (const f of wcOf(bp.getTab(ws, 't1')!).handlers['did-start-loading'] ?? []) f();
+  off();
+  assert.deepEqual(seen, [['t1', 't2']], 'a navigation event of the rolled-back panel is published');
 });
 
 test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {

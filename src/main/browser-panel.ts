@@ -108,6 +108,8 @@ export interface Panel {
   pendingShow: boolean;
   /** Last computed panel state, for a fresh renderer to re-request. */
   state: BrowserPanelState;
+  /** {@link reprofilePanel} is rebuilding the tabs: the registry is half-built, so {@link publish} says nothing until the rebuild is whole. */
+  rebuilding?: boolean;
   /** The ACTIVE tab's native view (compat accessor — the browser verify
    *  harnesses read `panel.view`). Only valid while the panel has a tab. */
   readonly view: WebContentsView;
@@ -529,6 +531,9 @@ function notifyPanelListeners(wsId: string, tabs: BrowserTabInfo[], destroyed = 
 
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
+  // A rebuild in progress holds a half-built registry (the first rebuilt tab's did-start-loading would publish ONE tab of two): the renderer, the tab
+  // persistence and the CDP proxy's diff must never see it — a tab missing from one publish and back in the next reads as closed and reopened (#400).
+  if (panel.rebuilding) return panel.state;
   panel.state = computeState(panel);
   savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
@@ -730,6 +735,7 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   const prev = { partition: panel.partition, profileId: panel.profileId };
   const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
   if (attachedTab) detachTab(panel, attachedTab);
+  panel.rebuilding = true;
   panel.partition = partition;
   panel.profileId = profileId;
   panel.tabs = [];
@@ -748,6 +754,7 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
     panel.tabs = oldTabs;
     panel.partition = prev.partition;
     panel.profileId = prev.profileId;
+    panel.rebuilding = false;
     if (wasAttached) attachActive(panel);
     throw e;
   }
@@ -765,6 +772,7 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   } catch (e) {
     log.warn('browser-panel: reprofilePanel could not re-composite the panel', e);
   }
+  panel.rebuilding = false;
   return publish(panel);
 }
 

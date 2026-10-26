@@ -826,9 +826,13 @@ try {
     await softWait(async () => (await tabs(b))[0]?.tip?.includes(PAGE), 15000, 'rebuild page');
     const show = (r) => `rc ${r.code} ${JSON.stringify(r.out.slice(0, 120))}`;
     const probe = () => { const r = browserCli(world, wsrec, ['get', 'url'], 30000); return { ...r, ok: r.code === 0 && r.out.includes(PAGE) }; };
-    const wire = (mark) => appLog(world).slice(mark).split('\n').filter((l) => /proxy->client|client->proxy|seat\[/.test(l) && !/Browser.getVersion|frameResized|executionContext|consoleAPI/.test(l)).map((l) => l.replace(/^.*?(cdp\[|seat\[)/, '$1').slice(0, 200));
+    const wire = (mark) => appLog(world).slice(mark).split('\n').filter((l) => /proxy->client|client->proxy|seat\[|panel-change/.test(l) && !/Browser.getVersion|frameResized|executionContext|consoleAPI/.test(l)).map((l) => l.replace(/^.*?(cdp\[|seat\[)/, '$1').slice(0, 200));
+    // TWO tabs (seat 1: a one-tab panel hid the half-built-list bug): the agent opens the second one through the real CLI, so the daemon holds sessions on both
+    const second = browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}&second=1`)], 30000);
+    await softWait(async () => (await tabs(b)).length === 2, 15000, 'the second tab');
+    await sleep(1500);
     const pre = probe();
-    clause('rebuild', 'ctl/agent-session-connected-before-the-rebuilds', pre.ok, `get url before any rebuild → ${show(pre)} (the daemon holds a session on the tab)`);
+    clause('rebuild', 'ctl/agent-session-connected-before-the-rebuilds', pre.ok && (await tabs(b)).length === 2, `tab new → ${show(second)}; ${(await tabs(b)).length} tabs; get url before any rebuild → ${show(pre)} (the daemon holds sessions on the tabs)`);
     const prof = await b.cdp.eval(`window.orchestra.browserProfileCreate('Rebuild').then((r) => r.profile?.id ?? null)`);
     const loopMark = appLog(world).length;
     const att = [], det = [];
@@ -860,6 +864,10 @@ try {
     clause('rebuild', 'ctl/agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
     clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0 && !dels.some((x) => x.revived), `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page (${dels.filter((x) => x.revived).length} cycles needed a revive after the attach); last: ${show(dels.at(-1))}`);
     const wl = wire(loopMark);
+    // every publish the panel made during the loop, as the proxy's diff read it: a rebuild must be `replaced` for EVERY tab, never a tab destroyed or created
+    const pc = wl.filter((l) => l.startsWith('cdp[') && l.includes('panel-change ')).map((l) => JSON.parse(l.slice(l.indexOf('panel-change ') + 13)));
+    const badPc = pc.filter((x) => x.events.some((e) => /^(destroyed|created):/.test(e)) || x.tabs.length !== 2);
+    clause('rebuild', 'a-rebuild-replaces-every-tab-and-never-destroys-or-creates-one', pc.length > 0 && badPc.length === 0, `${pc.length} panel publishes during ${CYCLES * 2 + DELETES} rebuilds (two tabs); ${badPc.length} showed a half-built tab list or a destroyed/created tab${badPc[0] ? `: ${JSON.stringify(badPc[0])}` : ''}`);
     const blanks = wl.filter((l) => /client->proxy .*"method":"Target\.createTarget"/.test(l)).length;
     const stale = wl.filter((l) => /proxy->client .*Session with given id not found/.test(l)).length;
     clause('rebuild', 'recovery-never-opens-a-blank-tab-nor-meets-a-dead-session', blanks === 0 && stale === 0, `over ${CYCLES * 2 + DELETES} rebuilds: Target.createTarget from the daemon ${blanks}×, "Session with given id not found" ${stale}×`);
