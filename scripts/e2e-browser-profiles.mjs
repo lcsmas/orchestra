@@ -866,9 +866,12 @@ try {
     clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0 && !dels.some((x) => x.revived), `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page (${dels.filter((x) => x.revived).length} cycles needed a revive after the attach); last: ${show(dels.at(-1))}`);
     const wl = wire(loopMark);
     // every publish the panel made during the loop, as the proxy's diff read it: a rebuild must be `replaced` for EVERY tab, never a tab destroyed or created
-    const pc = wl.filter((l) => l.startsWith('cdp[') && l.includes('panel-change ')).map((l) => JSON.parse(l.slice(l.indexOf('panel-change ') + 13)));
-    const badPc = pc.filter((x) => x.events.some((e) => /^(destroyed|created):/.test(e)) || x.tabs.length !== NT);
-    clause('rebuild', 'a-rebuild-replaces-every-tab-and-never-destroys-or-creates-one', pc.length > 0 && badPc.length === 0, `${pc.length} panel publishes during ${CYCLES * 2 + DELETES} rebuilds (${NT} tabs); ${badPc.length} showed a half-built tab list or a destroyed/created tab${badPc[0] ? `: ${JSON.stringify(badPc[0])}` : ''}`);
+    // read from the FULL log (not the display-trimmed `wl`); a line that does not parse is a finding, never a crash that aborts the whole rig
+    const pcRaw = appLog(world).slice(loopMark).split('\n').filter((l) => l.includes('panel-change '));
+    const pc = [], unparseable = [];
+    for (const l of pcRaw) { try { pc.push(JSON.parse(l.slice(l.indexOf('panel-change ') + 13))); } catch { unparseable.push(l.slice(-80)); } }
+    const badPc = pc.filter((x) => x.e.some((e) => /^(destroyed|created):/.test(e)) || x.t.length !== NT);
+    clause('rebuild', 'a-rebuild-replaces-every-tab-and-never-destroys-or-creates-one', pc.length > 0 && badPc.length === 0 && unparseable.length === 0, `${pc.length} panel publishes during ${CYCLES * 2 + DELETES} rebuilds (${NT} tabs); ${badPc.length} showed a half-built tab list or a destroyed/created tab${badPc[0] ? `: ${JSON.stringify(badPc[0])}` : ''}${unparseable.length ? `; UNPARSEABLE trace lines: ${unparseable.length} (…${unparseable[0]})` : ''}`);
     const blanks = wl.filter((l) => /client->proxy .*"method":"Target\.createTarget"/.test(l)).length;
     const stale = wl.filter((l) => /proxy->client .*Session with given id not found/.test(l)).length;
     clause('rebuild', 'recovery-never-opens-a-blank-tab-nor-meets-a-dead-session', blanks === 0 && stale === 0, `over ${CYCLES * 2 + DELETES} rebuilds: Target.createTarget from the daemon ${blanks}×, "Session with given id not found" ${stale}×`);
