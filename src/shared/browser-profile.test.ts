@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BROWSER_PROFILE_NAME_MAX,
   checkProfileName,
+  decideAgentCdp,
   decideAgentClear,
   decideAttach,
   decideDelete,
@@ -11,7 +12,7 @@ import {
   isBrowserProfileId,
   isHumanProfileCaller,
   normalizeBrowserProfiles,
-  PARTITION_WIDE_CDP_CLEARS,
+  PROFILE_REFUSED_CDP_METHODS,
   partitionFor,
   profileCreateWarning,
   profilePartition,
@@ -127,15 +128,18 @@ test('profileCreateWarning: only when secret storage is not encrypted (reuses #3
   assert.match(profileCreateWarning({ encrypted: false, backend: null, plaintextEntries: 0, encryptedEntries: 3 }) ?? '', /not encrypted/);
 });
 
-test('decideAgentClear: a partition-wide cookie clear is refused for a workspace that holds a profile, never for an ephemeral one; targeted ops pass', () => {
-  assert.deepEqual([...PARTITION_WIDE_CDP_CLEARS].sort(), ['Network.clearBrowserCookies', 'Storage.clearCookies']);
-  for (const method of PARTITION_WIDE_CDP_CLEARS) {
-    const r = decideAgentClear({ method, profileId: A });
+test('decideAgentCdp: partition-wide / origin-wide clears and partition-wide cookie reads are refused for a profile workspace, never for an ephemeral one; targeted ops pass', () => {
+  assert.deepEqual([...PROFILE_REFUSED_CDP_METHODS.keys()].sort(), [
+    'Network.clearBrowserCookies', 'Network.getAllCookies', 'Storage.clearCookies', 'Storage.clearDataForOrigin', 'Storage.clearDataForStorageKey', 'Storage.getCookies',
+  ]);
+  for (const [method, kind] of PROFILE_REFUSED_CDP_METHODS) {
+    const r = decideAgentCdp({ method, profileId: A });
     assert.equal(r.ok, false, method);
-    assert.match((r as { message: string }).message, /shared with other workspaces/);
-    assert.deepEqual(decideAgentClear({ method, profileId: undefined }), { ok: true }, `${method} on an ephemeral workspace`);
+    assert.match((r as { message: string }).message, kind === 'clear' ? /sign them all out/ : /expose sign-ins beyond this page/, method);
+    assert.deepEqual(decideAgentCdp({ method, profileId: undefined }), { ok: true }, `${method} on an ephemeral workspace`);
   }
-  for (const method of ['Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Storage.clearDataForOrigin', 'Network.getAllCookies', 'Runtime.evaluate']) {
-    assert.deepEqual(decideAgentClear({ method, profileId: A }), { ok: true }, `${method} names what it touches`);
+  for (const method of ['Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Network.getCookies', 'Storage.getStorageKeyForFrame', 'Runtime.evaluate', 'Page.navigate']) {
+    assert.deepEqual(decideAgentCdp({ method, profileId: A }), { ok: true }, `${method} names what it touches`);
   }
+  assert.equal(decideAgentClear, decideAgentCdp, 'the first interface name still resolves');
 });

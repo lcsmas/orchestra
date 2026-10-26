@@ -137,21 +137,39 @@ export function profileCreateWarning(state: SecretsState | null): string | null 
     : null;
 }
 
-/** CDP methods that wipe a WHOLE session partition's cookies — i.e. every sign-in of the profile, in every workspace that shares it.
- *  (Origin-scoped clears, `Network.deleteCookies` and `setCookie(s)` stay allowed: they name what they touch.) */
-export const PARTITION_WIDE_CDP_CLEARS: ReadonlySet<string> = new Set(['Network.clearBrowserCookies', 'Storage.clearCookies']);
+/** CDP methods an AGENT may not call while its workspace holds a profil navigateur (OPS ruling 2026-10-26, #400; names from #395's seam review).
+ *  The profile is SHARED — by other workspaces and across every site it holds a sign-in for — so these reach further than the agent's own page:
+ *  - CLEARS of the partition or of a whole origin/storage key (`Network.clearBrowserCookies`, `Storage.clearCookies`, `Storage.clearDataForOrigin`,
+ *    `Storage.clearDataForStorageKey` — whatever `storageTypes` says: "all" or "cookies" is a sign-out for every workspace on the profile);
+ *  - partition-wide READS of cookie values (`Network.getAllCookies`, `Storage.getCookies`): every origin's session token, not just this page's.
+ *  They name what they reach, so they are judged by name. `Network.deleteCookies` / `setCookie(s)` (a named cookie), `Network.getCookies` (the page's own urls) stay allowed.
+ *  The proxy ALSO denies `Target.sendMessageToTarget` and raw `get cdp-url` (#395), or none of this could be bypassed by name. */
+export const PROFILE_REFUSED_CDP_METHODS: ReadonlyMap<string, 'clear' | 'read'> = new Map([
+  ['Network.clearBrowserCookies', 'clear'],
+  ['Storage.clearCookies', 'clear'],
+  ['Storage.clearDataForOrigin', 'clear'],
+  ['Storage.clearDataForStorageKey', 'clear'],
+  ['Network.getAllCookies', 'read'],
+  ['Storage.getCookies', 'read'],
+]);
 
-export type AgentClearDecision = { ok: true } | { ok: false; message: string };
+export type AgentCdpDecision = { ok: true } | { ok: false; message: string };
 
-/** An AGENT's partition-wide cookie clear (`orchestra browser cookies clear` → CDP) is refused while its workspace holds a profil
- *  navigateur: the profile is shared, so one agent would sign out every workspace that carries it (OPS ruling 2026-10-26, #400).
- *  Ephemeral workspaces are unaffected — their jar is their own. `profileId` = what the workspace's panel RUNS on (`panelProfileId`). */
-export function decideAgentClear(input: { method: string; profileId: BrowserProfileId | undefined }): AgentClearDecision {
-  if (input.profileId === undefined || !PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };
+/** The decision for one CDP method an agent sent for `profileId`'s workspace (`panelProfileId`): refused for a profile workspace when the method is in
+ *  {@link PROFILE_REFUSED_CDP_METHODS}; ephemeral workspaces (undefined) are never refused — their jar is their own. */
+export function decideAgentCdp(input: { method: string; profileId: BrowserProfileId | undefined }): AgentCdpDecision {
+  const kind = input.profileId === undefined ? undefined : PROFILE_REFUSED_CDP_METHODS.get(input.method);
+  if (kind === undefined) return { ok: true };
   return {
     ok: false,
     message:
-      'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces — clearing every cookie would sign them all out. ' +
-      'Delete the cookie you mean (by name) or ask the human to delete or detach the profile.',
+      kind === 'clear'
+        ? 'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +
+          'Delete the one cookie you mean (by name) or ask the human to delete or detach the profile.'
+        : 'refused: this workspace\'s browser carries a profil navigateur — reading every site\'s cookies would expose sign-ins beyond this page. ' +
+          'Read the cookies of the page you are on (get cookies for its url) instead.',
   };
 }
+
+/** @deprecated name from the first #400 interface note — same function (reads are refused too since the #395 seam review). */
+export const decideAgentClear = decideAgentCdp;
