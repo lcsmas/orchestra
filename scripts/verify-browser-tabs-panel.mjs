@@ -200,13 +200,22 @@ const live = () => S.views.filter((v) => !v.webContents.destroyed).length;
     assert.strictEqual(bp.listTabs(W3).length, 1);
   });
 
-  await check('popup routing (policy seam): a web URL opened by a page loads in ITS tab; a non-web URL goes to the OS', () => {
+  await check('popup routing (#396): a clicked web link opens a NEW TAB (the opener tab is not navigated); a clicked non-web link goes to the OS, an unclicked one is refused', () => {
     const tab = bp.getActiveTab(W);
-    const h = tab.view.webContents.openHandler;
+    const wc = tab.view.webContents;
+    const h = wc.openHandler;
     assert.ok(h, 'no window-open handler installed');
+    const click = () => (wc.handlers['input-event'] ?? []).forEach((f) => f({}, { type: 'mouseDown' }));
+    const n = bp.listTabs(W).length;
+    click();
     assert.deepStrictEqual(h({ url: 'https://p.example/x', frameName: '_blank', disposition: 'foreground-tab', features: '' }), { action: 'deny' });
-    assert.strictEqual(tab.view.webContents.loads.at(-1), 'https://p.example/x');
+    assert.strictEqual(bp.listTabs(W).length, n + 1, 'the link opened a tab');
+    assert.notStrictEqual(wc.loads.at(-1), 'https://p.example/x', 'the opener tab was navigated (the old same-view handler)');
+    assert.strictEqual(bp.getActiveTab(W).view.webContents.loads.at(-1), 'https://p.example/x', 'the clicked popup tab is the active one and loaded the URL');
     S.opened.length = 0;
+    h({ url: 'mailto:a@b.c', frameName: '', disposition: 'foreground-tab', features: '' }); // no click: not handed to the OS
+    assert.deepStrictEqual(S.opened, []);
+    click();
     h({ url: 'mailto:a@b.c', frameName: '', disposition: 'foreground-tab', features: '' });
     assert.deepStrictEqual(S.opened, ['mailto:a@b.c']);
   });

@@ -65,6 +65,8 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   once from `index.ts` with the live main-window accessor. Reuses
   `login-browser.ts`'s session-partition + UA-normalization + context-menu
   pattern.
+- **`src/main/browser-popups.ts`** (#396) — user-gesture tracker (`trackUserGesture` / `consumeUserGesture`) + the per-workspace registry of popup child windows
+  (`registerPopupWindow` / `livePopupWindows` / `closePopupWindows` / `closePopupsOpenedBy` / `setPopupWindowsVisible`); the routing flow itself is `routePopup` in `browser-panel.ts` (see Popups).
 - **`scripts/spike-hidden-view.sh`** (+ `.mjs`, `-main.cjs`) — the #402 hidden-view measurement rig (no app code; see *Hidden-view spike*).
 - **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
   an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
@@ -160,8 +162,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   `designModePoll`): the tab is resolved once, so an `activateTab` between two
   CDP calls cannot split a click across tabs. `getState` reaps dead tabs.
 - `setBounds` sizes EVERY tab view (a tab swapped in later is already the right
-  size); `setWindowOpenHandler` still loads `target=_blank` in the SAME tab
-  (popup routing is #396).
+  size); popups are routed by `routePopup` (see Popups, #396).
 - **An explicit `tabId` never builds a panel**: `evaluate`/`designModeArm` (via `liveTabFor`)/…
   and `navigate` resolve it first and throw "not found" — a stale id after
   `closeTab(last)`/`destroyPanel` must fail, not resurrect a blank native view
@@ -199,12 +200,12 @@ attachment (image + fenced text block).
 BrowserPanel crosshair toggle          src/renderer/components/BrowserPanel.tsx
    │  browserDesignArm(wsId)
    ▼
-designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts
+designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts (script: design-mode-script.ts)
    │  in-page overlay: mousemove highlight + capturing click handler
-   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box}
+   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box, component}
 renderer polls browserDesignPoll (150ms while armed)
    │  main: reads+clears the global, Page.captureScreenshot with a padded clip
-   ▼  shapePick() — trim HTML, subset styles, build selector path
+   ▼  shapePick() — trim HTML, subset styles, build selector path, shapeComponent() (#403)
 store.addDesignPick(wsId, pick)                        src/renderer/store.ts
    ▼  queued per workspace; survives an unmounted composer
 Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/components/StructuredView.tsx
@@ -220,8 +221,17 @@ Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/component
   `nth-of-type`, drops hashed css-modules/styled-components/emotion classes and
   Tailwind arbitrary values, keeps the TAIL when too deep), `formatPickBlock`
   and `appendPickToDraft`.
+- **`src/main/design-mode-script.ts`** — the injected page script
+  (`DESIGN_MODE_SCRIPT` + `DESIGN_OVERLAY_ID` / `DESIGN_PICK_GLOBAL`), split out of
+  `browser-panel.ts` so the page script and the transport evolve apart. Its vm
+  unit test (`design-mode-script.test.ts`) runs the exact injected text against a
+  fake DOM and mutates each clause in place.
+- **`src/shared/design-source.ts`** — React source for a pick (#403), unit-tested
+  (`design-source.test.ts`): `reactSourceInPage` (the in-page fiber walk),
+  `looksSecret` / `normalizeSourcePath` / `shapeComponent` (validation + SECRET
+  FILTER), `formatComponentLine`.
 - **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
-  `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
+  `designModePoll`, injecting `DESIGN_MODE_SCRIPT` (from `design-mode-script.ts`). Goes through the
   SAME `cdp()` / `evaluate()` helpers the agent tools use, which run on a lease
   of the CDP proxy's debugger attach (#398) — design mode holds **no debugger of
   its own** (attaching twice to one target throws). While armed it keeps ONE
@@ -244,11 +254,102 @@ DevTools frontend attached never composites. A picker the user cannot see is not
 the feature, so the highlight + hit-testing live in the page instead. That also
 keeps the shared debugger free of any long-lived event subscription.
 
+### React component `file:line` (#403)
+
+A pick on a **React 17/18 dev build** carries `component: {name, file, line,
+column?}` and the composer block gets a `- component: \`Counter\` — \`/abs/Counter.jsx:5\``
+line, so the agent knows which file to edit.
+
+- The page script calls `reactSourceInPage(el)` (stringified into the script via
+  `Function.prototype.toString`, so it is plain ES5 with **no free identifier** —
+  the unit test runs the stringified text in an empty `vm` context). It finds the
+  `__reactFiber$…` key on the element (or the nearest DOM ancestor that has one),
+  reads `fiber._debugSource` (the JSX element's own `{fileName, lineNumber,
+  columnNumber}`), else walks `_debugOwner` for the first owner that has one.
+  The NAME always pairs with the source it came from: the immediate owner for
+  its own JSX site (`via: 'self'`), the owner that supplied the source for an
+  inherited one (`via: 'owner'`, printed as "rendered at" — a use-site, not the
+  element's line); an unnamed owner is `Anonymous`, never a far `.return`
+  ancestor. `displayName`/`name`, forwardRef/memo unwrapped.
+- **The DOM-cached fiber goes STALE across re-renders (HMR), and `.return` cannot say which alternate is current.**
+  `__reactFiber$…` is the first-mount fiber; React 18 writes a re-render's new
+  `_debugSource` / `_debugOwner` on whichever alternate is the work-in-progress one,
+  so every other re-render the cached fiber reports the OLD line (measured in a
+  real page: `[10,10,14,14]` for a line moved +2 per render). The first fix — "the
+  alternate whose `.return` chain ends at `root.current`" — is UNSOUND once a
+  component BAILS OUT (`React.memo`, `{children}`, `useMemo` JSX, `PureComponent`):
+  React does not rewrite `.return` on a bailed-out subtree, so the stale fiber's
+  chain can end at the new `root.current` too (measured: 10/18/18 for truth
+  12/20/20). The walker therefore ports React's own
+  `findCurrentFiberUsingSlowPath`: at each level it scans `parent.child → .sibling`
+  to see which alternate the parent actually LISTS (child pointers are reliable,
+  `.return` is not), and decides at the HostRoot by `stateNode.current === a`;
+  any inconsistency (detached tree, cycle, throwing getter, >5000 levels) degrades
+  to the cached fiber. Applied to the host fiber and to every owner consulted.
+  Pinned by `design-source-react18.test.ts` (REAL React 18.2 from the fixture page
+  over a fake DOM: edits-only and edits+bailout plans, two must-FAIL walker
+  mutants) and by rig arms `react18/rerender` + `react18/memo-bailout`
+  (mutants `stale-fiber`, `return-chain-rule`). Not covered: Suspense/Offscreen
+  hidden trees, keyed reorders under bailout, React 17 alternates.
+- **React 19 (`_debugStack`, no `_debugSource`), Vue, production builds → `null`:**
+  the pick has no `component` key and keeps the selector path, no error. React 19
+  owner-stack / source-map decoding is out of scope (#388).
+- **Secret filter** (`looksSecret`): in main, on what the page returned — a path
+  or name that looks like a token / password / key (known token shapes, JWT, PEM,
+  `userinfo:pw@`, `key=value`, ≥32-char mixed alnum runs — except kebab/snake
+  SLUGS of ≥4 short words, so an Orchestra worktree dir like
+  `orchestra-impl-…-403-a6a5fb9d` is not a "token") drops the WHOLE component.
+  Only `component.file`/`name` are filtered: `url`, `title` and `html` are the
+  pre-existing, unfiltered half of a pick. Both are PAGE-AUTHORED text (a page can
+  forge a fiber), so beyond the secret check: any control/format character
+  (bidi override, zero-width, Unicode tag chars, variation selectors, line
+  separators, backtick) or a run of 3+ combining marks rejects the path, the
+  stripped path must match a letters/digits/path-punctuation allowlist, and a name
+  must be an identifier-ish token (no spaces, so no sentence rides in a name; else
+  `Anonymous`). **Accepted gap:** a plain-text sentence of ≤400 allowed
+  characters, or an arbitrary absolute / `..` path (`/home/x/.ssh/id_ed25519`),
+  still passes as `file` — it is page-authored text on a line the agent reads as
+  "the file to edit", the same class as the already-unfiltered `url` / `title` /
+  `html` of a pick. The raw string is checked BEFORE the `?query` is stripped (a
+  `?token=…` lives only there). Names like `password.tsx` / `auth/` are fine.
+- `_debugSource.fileName` is whatever the JSX transform recorded (usually an
+  absolute fs path); `normalizeSourcePath` strips `webpack-internal:///`,
+  `file://`, `http://host/`, Next's `(app-pages-browser)/` layer and `?query#hash`.
+- The owner fallback returns the OWNER's own `_debugSource` — where that owner
+  was *used*, not defined. It is only reached when the host element itself has
+  no JSX source (an element built with plain `createElement`).
+
+### Page-CSS-proof overlay (#403)
+
+The highlight box + label live in a **closed shadow root** inside ONE host
+`<div id="__orchestra_design_overlay__">` appended to `<html>` (not `<body>`, so
+`body > *` rules and a transformed `body` do not touch it):
+
+- host styles are set inline with `!important` (`setProperty(k, v, 'important')`)
+  — an inline `!important` beats any stylesheet rule, layered or not — starting
+  with `all: initial` so inherited `visibility`/`opacity`/`transform` from the page
+  are wiped; then `display:block; position:fixed; inset:0; z-index:2147483647;
+  pointer-events:none`;
+- `popover="manual"` + `showPopover()` puts the host in the **top layer**, above
+  every z-index, stacking context and transformed ancestor — a later full-screen
+  max-z-index cover (cookie banner) cannot paint over the highlight;
+- nothing in the shadow tree is reachable from the page (`host.shadowRoot` is
+  `null`), so no selector can restyle the box.
+
+Rig: `scripts/e2e-browser-design-source.sh <built app>` (arms `react18`,
+`react19`, `hostile`, `ui`; `--mutant <name>` patches ONE clause of a COPY of the
+built chunk — 14 mutants, each must redden its named clause while every `ctl/`
+stays green). Fixtures: `scripts/fixtures/browser-site/pages/design-{react18,
+react19,hostile}.html` (React 18.2 UMD dev inlined verbatim; React 19 bundled from
+the repo's own copy; both compiled with esbuild's real automatic dev JSX
+transform — regenerate with `scripts/gen-browser-design-fixtures.mjs`).
+
 ### Design-mode gotchas
 
-- The overlay sets `pointer-events: none` on its own chrome, and picking starts
-  from `document.elementFromPoint` (which skips `pointer-events:none` nodes) —
-  so **design mode cannot capture its own highlight box**.
+- The overlay host has `pointer-events: none` and `hit()` in the page script
+  skips the host even when a hit-test returns it (`document.elementsFromPoint`) —
+  so **design mode cannot capture its own highlight box**. The two are
+  redundant; the rig's `overlay-pickable` mutant removes both.
 - **A navigation destroys the injected overlay** (new document), silently
   disarming the picker. `BrowserPanel` re-arms on every `state.url` change while
   armed.
@@ -274,7 +375,10 @@ keeps the shared debugger free of any long-lived event subscription.
   `subsetStyles surfaces the SHORTHAND box/border properties`.
 - **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
   backtick in a comment there silently terminates the string and breaks the
-  build (`TS1005`/esbuild parse error) far from the edit.
+  build (`TS1005`/esbuild parse error) far from the edit. It also embeds
+  `reactSourceInPage.toString()`: the BUILT chunk is minified, so any rig mutant
+  that targets the walker or `looksSecret` must match the minified text with a
+  regex, never the source spelling.
 - **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no
@@ -315,8 +419,7 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 
 - **Pure policy — `src/shared/browser-tab-policy.ts`** (unit-tested, `browser-tab-policy.test.ts`): `BROWSER_TAB_CAP`, `decideTabOpen`
   (the cap; refusal carries a user-facing message), `decideTabClose` (**the human closes any tab, an agent only `openedBy:'agent'`**;
-  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the #396 seam:
-  `PopupRouteDecision = {route:'same-view'|'external'}` today = the pre-tabs behaviour; #396 adds arms). #397 consumes the ownership rule.
+  what is active afterwards = right neighbour, else left; **closing the LAST tab → `replaceWithBlank`**), `decidePopup` (the popup routing, see Popups #396). #397 consumes the ownership rule.
 - **Main entry points — `tryOpenTab` / `tryCloseTab` / `tryActivateTab`** in `src/main/browser-panel.ts`: ask the policy FIRST, so a refused open
   allocates no `WebContentsView` (no leak) and a refused close destroys nothing. They RESOLVE `BrowserTabResult` (`{ok:true,state,tabId?}` |
   `{ok:false,reason:'cap'|'not-owner'|'unknown-tab',message,state}`) — never throw across IPC. Anything acting for the human or the agent
@@ -350,6 +453,61 @@ URL bar, and each workspace's tabs come back after an app restart. The tabs regi
 - **Traps:** a `WebContentsView` that is not the active tab of the focused workspace is NOT in the window (never composites); the rig's pixel
   clauses are the only oracle for that (DOM cannot see paint). `Browser.close` over the debug port is a graceful quit that reaches
   `before-quit` (the flush); a SIGKILL restart relies on the 400 ms debounce alone — both are driven.
+
+## Popups (#396) — `_blank` → tab, OAuth → native child window, budget
+
+A page-opened window never loads into the opener's view any more (that broke every `window.opener` OAuth flow). `setWindowOpenHandler` is installed
+per contents by `watchPopups` (tab views AND popup child windows) and answers through `routePopup` in `src/main/browser-panel.ts`.
+
+- **Pure policy — `decidePopup(req, ctx)` in `src/shared/browser-tab-policy.ts`** (`browser-tab-policy.test.ts`): `PopupRouteDecision` =
+  `new-tab{activate,pageInitiated}` | `child-window{pageInitiated}` | `external` | `refuse{reason: cap|budget|rate|unsafe-url|unsafe-features|no-gesture-external|name-in-use}`.
+  Rules, in order: **OS hand-off is an ALLOWLIST** — only `mailto:`/`tel:` (on a click) ever reach `shell.openExternal`; every other scheme (`javascript:`, `data:`, `file:`, `ssh:`, `smb:`, `zoommtg:`, internal pages…) is refused, because an agent's CDP click counts as a click
+  (review F3); a `webContents` key in the features string is refused (`featuresSmuggleWebContents`: Electron spreads the page's value over the real guest handle); **cap** = tabs + live popup windows ≥ `BROWSER_TAB_CAP` (8, shared, refuses even a click; the human's `+` / `tryOpenTab` counts the windows too);
+  a named popup whose name a window opened by ANOTHER OPENER holds is refused (`name-in-use`, F5); **budget** = a no-gesture popup while `POPUP_BUDGET` (3) page-initiated ones (tabs + windows) are still open; **rate** = a no-gesture popup once `POPUP_RATE_MAX` (6) page-initiated ones were OPENED
+  in the last `POPUP_RATE_WINDOW_MS` (60 s), closed or not — the budget alone is concurrent, so open/close churn was unbounded (F4). Route: a popup that needs
+  `window.opener` — **named** (`frameName` not ''/`_blank`/`_self`/`_parent`/`_top`) or **sized** (`disposition:'new-window'` WITH a features string — a features-less `new-window` is a shift-clicked link: a tab) and without an explicit
+  `noopener` feature — is a child window; everything else is a tab, activated only for a clicked foreground link (not `background-tab`, not page-initiated).
+  Electron reports `features:'noopener'` only for `window.open(…,'noopener')`, never for `rel=noopener` anchors (measured), so that is the only opt-out.
+- **User gesture — `src/main/browser-popups.ts`:** Electron's handler does not say whether a gesture started the popup, so `trackUserGesture`
+  records the last activating `input-event` (`mouseDown`/`keyDown`/`rawKeyDown`/`touchEnd`, also CDP-dispatched input = how the agent clicks) per
+  contents and `consumeUserGesture` reads it within `USER_GESTURE_WINDOW_MS` (5 s, Chromium's activation window) and **consumes it: one input opens
+  one popup** (a click that fires 20 `window.open` = 1 shown popup + 19 on the budget); **a main-frame `did-navigate` clears it** (a click on page A is no gesture for the page it navigated to — it would let that page open an OS handler or skip the budget). `evaluate(…, userGesture:true)` fires no input event: counted as page-initiated.
+  The gesture is per webContents, not per frame (accepted gap: a click anywhere lets a cross-origin iframe use it for 5 s).
+- **New tab:** `createTab(wsId,{url,openedBy,activate})` with `openedBy` **inherited from the opener tab** (an agent tab's popups are agent-closable, the human's are not);
+  the handler denies Electron's own window. Page-opened tabs are tracked in `pageOpenedTabs` (a WeakSet — closing the tab gives its budget back); the per-minute opens in `notePageInitiatedOpen` / `recentPageInitiatedOpens`.
+- **Child window — built by OUR `createWindow` factory, never from the page's features (review F1).** Electron builds a popup's options as `{ show:true, width:800, height:600, ...parseFeatures(<the PAGE's features>), ...ours }` — so
+  `alwaysOnTop,frame=no,transparent,fullscreen,kiosk,modal,closable=no,focusable=no,width=4000` would give a hostile page a screen-covering, frameless, un-closable window (measured on 33.4.11's shipped `guest-window-manager`). `routePopup`
+  therefore answers `{action:'allow', createWindow, overrideBrowserWindowOptions:{webPreferences:{sandbox,contextIsolation,nodeIntegration:false}}}` (the override is what Electron derives the GUEST's own preferences from) and
+  `createPopupWindow` (the factory) builds the window from **`buildChildWindowOptions`** (`src/shared/browser-popup-window.ts`, pure): an ALLOWLIST of `webContents` (the real guest, only when it is an object), `parent` = the app window, `show:false`, `resizable:false`
+  (**a resizable child window is TILED beside the app by sway — halving it; a fixed-size one floats**, measured), `autoHideMenuBar`, the pinned `webPreferences`, and a `width`/`height` clamped to [200×150, 90% of the app window] (junk or zero sizes fall back to 480×520; Electron itself merges 800×600 first, so a feature-less named popup is 800×600 clamped to 90%). No position, no frame / transparency / z-order / fullscreen / kiosk / modal /
+  closable / focusable key — they take their safe defaults by being absent. Electron REQUIRES the factory to return the guest it handed over (it throws "Invalid webContents" otherwise); a guest we may not give a window (panel gone, cap filled meanwhile) is `close()`d and handed back, never left windowless.
+  With `createWindow` there is no `did-create-window`: the factory registers the window itself (`registerPopupWindow`), installs the same handler on ITS contents (nested popups follow the same policy and budget) and shows it only if its workspace is the one on screen
+  (`focusedWsId`; a page-initiated one with `showInactive`; the gestured one with `show` — accepted gap: it takes OS focus). **The decision travels in the factory's closure** (the old per-opener `pendingPopup` slot could mix two approvals up across cross-process frames, F6).
+  The title is ours (`popupWindowTitle`: `<origin> — <sanitised page title>`; `page-title-updated` is prevented; control + bidi characters stripped, cut at 80) so a frameless-looking page cannot pass for someone else (F2).
+  Child windows are NOT in the tab registry (the CDP proxy #395 and agent tab tools do not see them), but they ARE billed to their workspace in the #394 tab-memory source (`setBrowserTabSource.tabs()` lists them as `w<n>`; the Resources chip counts them as tabs) and they hold cap slots.
+- **Page-driven bounds are vetoed (review F-a):** Electron APPLIES a page's `window.resizeTo` / `moveTo` by default and `resizable:false` does not stop it (measured on 33.4.11: a 400×329 popup became the whole 1600×1000 screen), so the creation-time clamp would last only until the page's first script.
+  `content-bounds-updated` is vetoed (`preventDefault`) on every popup window and, as defence in depth, on tabs (measured: a TAB's resizeTo does not move the app window).
+- **External protocols (review F-b):** a link click or a redirect to `ssh:` / `zoommtg:` / `smb:` … inside a tab or popup never goes through `window.open`: Chromium's external-protocol path asks the SESSION for the `openExternal` permission and then runs `xdg-open` (measured with a recording shim: a plain `ssh://` link
+  click reached it; a CDP agent click is a user activation). `guardExternalProtocols` (once per panel session; popup windows inherit the opener's session) answers that request through the pure `decideExternalProtocol`: the SAME allowlist as the popup path (`isOsHandoffUrl`: `mailto:`/`tel:`) AND a user gesture of the REQUESTING contents (`consumeUserGesture`: one input, one launch; a refused scheme does not eat the click's activation) —
+  a load-time `location.href = 'mailto:…'` or a programmatic `a.click()` on `tel:` has no gesture and never launches (seat-3 F1; measured with the recording shim). It logs a refusal with the SCHEME only (`(ssh:)`, `(mailto: no click)`) and keeps Electron's default (granted) for every other permission. A navigation within the 5 s activation window of a click is honoured, as in a normal browser. **Known limit (seat-3 F2, accepted):** a click on a `mailto:`/`tel:` link inside a CROSS-ORIGIN iframe does not launch (the gesture is tracked per requesting `webContents`, not per frame); it fails closed, no security impact.
+- **Electron's frame-name registry is process-global (F5):** `window.open(url, 'oauth')` loads into ANY live window registered under that name — across tabs, workspaces and partitions — and that window's `window.opener` is still the tab that created it, so a hostile tab could retarget another tab.
+  `PopupWindow.frameName` + `frameNameHeldByOther(name, opener)` make the policy refuse a named popup while a window of that name was opened by a DIFFERENT opener (another workspace OR another tab of the same one); the holder itself reuses its window (the browser resolves a same-context name natively; no new window, no cap slot).
+  Names held by windows Orchestra did not create (login windows) are unknown here.
+- **Electron's own per-embedder factory slot (backstop):** Electron keeps ONE `createWindow` / options slot per embedder, set in `-will-add-new-contents` and consumed in `-add-new-contents`; if another popup's approval lands in between (cross-process frames — NOT measured in the built app: a 40-call same-frame storm never overlapped), a popup takes Electron's DEFAULT path:
+  a window built from the PAGE's features, no registry, `did-create-window` emitted. Our factory never emits that event, so `watchPopups` destroys any window it announces (`popup window created outside the allowlist factory`). A rare OAuth popup lost in that interleave is the price of never leaving the hostile window up.
+- **Guest-less path:** if Electron ever calls the factory without a guest (the legacy `-new-window` path; unreachable today: it carries no frame name and no features), the factory builds the window pinned to the OPENER's session and loads the URL itself.
+- **Rate is counted when a window really opens** (in the factory / the tab creation), not at approval: a reused named window or a refused guest consumes none.
+- **No leaked windows:** the registry (`livePopupWindows`) prunes destroyed windows on read, so counts cannot drift; windows die with their opener (`wc.once('destroyed')` → `closePopupsOpenedBy`, recursive)
+  and with the workspace (`destroyPanel` → `closePopupWindows`, belt and braces for an opener that never announces its end; **every delete path reaches `destroyPanel`: `teardownWorkspace` calls it**, so the socket `orchestra delete`, bulk delete and repo removal no longer leak the panel — only archive and the two IPC wrappers did before); `hidePanel` hides them, `showPanel` brings them back (`showInactive`),
+  so a sign-in window never floats over another workspace's UI. A refusal is logged `popup refused (<reason>) ws=… url=<origin>` (origin only: OAuth URLs carry tokens in the query) — no UI notice.
+- **Not handled (accepted gaps):** no UI notice for a refused popup (log only) — in particular a `name-in-use` refusal is silent and keyed on library defaults (Auth0 `auth0:authorize:popup`, Google `oauth2`…): two tabs signing in at once, or an abandoned popup, block the second sign-in with a log line only; the `did-create-window` backstop destroys the stray window AFTER it was created (alive for a tick, uncounted by the rate cap) and a legitimate popup that loses that race dies with it (needs two cross-process frames; unmeasured); an UNNAMED, feature-less `window.open(url)` that relies on `window.opener` becomes a tab with no opener (spec: "unnamed → tab");
+  a `target=_blank` form POST loads as GET (pre-existing); `referrer` is not forwarded; the gesture is per webContents, not per frame; the namespace import of `electron` in `browser-panel.ts` exists because the #391/#393 stub harnesses do not export `BrowserWindow`.
+- **Tests:** `browser-tab-policy.test.ts` (every routing clause), `src/shared/browser-popup-window.test.ts` (the builder against Electron's own parse + merge, replicated in `electron-guest-window.testlib.ts`: hostile keys, sizes, smuggled webContents, prototype pollution, title), `src/main/browser-popups.test.ts` (gesture window/consume, registry, frame names, rate),
+  `src/main/browser-panel-popups.test.ts` (real `browser-panel.ts` over a stubbed `electron`, driven the way Electron 33 drives it — handler, then the factory with the merged options, which must return the guest: tab, budget / rate storms, cap shared with windows, hostile features, factory refusals, F5, F2, #394 billing, hide/show, no leaks),
+  `src/main/browser-popups-wiring.test.ts` (every delete path destroys the panel); `scripts/mutate-browser-popups.mjs` (in-place mutants, byte-exact restore; `browser-popups-wiring.test.ts` matches code only, anchored, with controls for the commented-out / conditional shapes). Hostile-features probe by verifier seat 3 (`hostile-features-probe.mjs` on the verifier branch `verif-barriere-navigateur-3-388`, not in this tree; adapter = `buildChildWindowOptions` fed by Electron's REAL shipped merge: 29 hostile strings, run 29/29 green).
+  Built app: `scripts/e2e-browser-popups.sh <app-dir>` (own headless sway in the private runtime world; arms `blank,oauth,xsite,hostile,extproto,storm,ws,cleanup` — `extproto` first loads `?nogesture=1` (load-time `mailto:`, programmatic `tel:` `a.click()`, `window.open(mailto:)`: nothing launches), then clicks `ssh://` / `zoommtg://` links in a tab and in a popup against a RECORDING `xdg-open` shim on the app's PATH, with ONE mailto click as the positive control (exactly one launch) — storm phases `s1,s2,s2b,s2c,s3,s4,churn` selectable alone: the rig itself spaces its page-initiated opens under the 6/min rate cap) —
+  the OAuth flow completes through a real child window, same-site and CROSS-SITE (`localhost` vs `127.0.0.1`), titled with its origin, floating, cookie in the opener's jar; a hostile `features` popup stays bounded and floating and its page's `resizeTo(4000,4000)`/`moveTo(0,0)` changes nothing; a `webContents` feature is refused; storms capped (script / mixed / named / near the cap / one click / churn); a click→navigate gives the next page no gesture; shift-click = tab; archive leaves nothing —
+  + `scripts/e2e-browser-popups-mutants.mjs` (rebuilt-app mutants incl. `R0-unfixed-same-view-handler`, today's handler, and R14–R21 for the hostile-features, bounds, external-protocol and no-click-mailto fixes). Fixture pages `scripts/fixtures/browser-site/pages/popups-{opener,oauth,blank,storm,hostile,extproto}.html`.
 
 ## IPC / seam
 
@@ -727,6 +885,11 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
   armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
+- **Whole-flow drive (#388 end gate)**: `scripts/e2e-browser-whole-flow.sh <app-dir>` — ONE built app in the contained rig, one story over 10 arms
+  (`human agent popup design cookies memory keyring legacy restart profile`); the fixture site is served from the app tree. A clause body activates when the app dir's HEAD carries a
+  `Merge #n` commit (or `--merged n,n`) — bodies exist for #396 popups, #397 agent tabs, #399 skill/legacy tools, #400 profiles, #401 `spawn --profile`; before that it prints `NOT YET MERGED: #n`
+  (`--require-all` turns each into a FAIL), and a merged ticket whose body is missing FAILS. Seam mutants (`--mutant strip-hides-agent-tabs | partition-shared | popup-same-view | agent-closes-any-tab |
+  skill-example-without-click | profile-not-persistent | agent-cdp-unscoped | spawn-profile-not-held`) must go red on the NAMED clause; `--check-anchors <app-dir>` proves each edit matches once.
 
 ## Agent tabs (#397) — policy entry points, ownership at the CLI, visible bring-to-front, ref pin
 
@@ -775,4 +938,3 @@ discovery and "create target" onto the panel tabs (Electron has no `Target.creat
 - **Traps:** the refs arm needs a page where a click ANYWHERE is counted (a wrong-tab click otherwise hides behind "nothing at those coordinates"); any
   ctl/ clause that runs AFTER a refusal depends on agent-browser's post-refusal state (desync) — keep controls before the refusals; `pnpm run test`'s
   `pretest` rebuilds `dist-electron/cli.js`, so never run it while a mutant rig is patching the bundle.
-
