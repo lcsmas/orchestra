@@ -159,9 +159,10 @@ export const PROFILE_SITE_SCOPED_CDP_METHODS: ReadonlySet<string> = new Set([
   'Network.getCookies', 'Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Storage.setCookies',
 ]);
 
-/** Every other cookie-carrying CDP method is refused by default for a profile workspace: an unknown one (a newer agent-browser routing `cookies set`
- *  through `Storage.setCookies`, `Network.setCookieControls`, …) must not silently bypass the site scope. */
-const COOKIE_CDP_METHOD = /^(?:Network|Storage)\.\w*[Cc]ookie/;
+/** Every other cookie-carrying CDP method — in ANY protocol domain (`Page.deleteCookie` is deprecated but still in the protocol) — is refused by default for a
+ *  profile workspace: an unknown one (a newer agent-browser routing `cookies set` through `Storage.setCookies`, `Network.setCookieControls`, …) must not silently
+ *  bypass the site scope. */
+const COOKIE_CDP_METHOD = /^\w+\.\w*[Cc]ookie/;
 
 const isHttp = (u: string): boolean => /^https?:\/\//i.test(u);
 

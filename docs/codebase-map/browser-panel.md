@@ -409,10 +409,10 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   `cookies get` → `Network.getCookies {}` (allowed on a page without foreign frames), `cookies clear` → `Network.clearBrowserCookies` (refused, never reached the debugger),
   `cookies set --url <other>` → `Network.setCookies` (refused). **What it does NOT stop (accepted, stated plainly):** the agent can navigate to another site of the profile and
   use that sign-in there (the point of a profile), and in-page script / `network requests|har` Cookie headers show what the page itself sends — it bounds what CDP can LIFT
-  from the jar, not what a page can do. Ephemeral workspaces are never refused.
+  from the jar, not what a page can do. Ephemeral workspaces are never refused. **Agent-visible friction (by design, the refusal text says so):** on a profile workspace `cookies get` is refused while the page embeds a frame from another host (an SSO / IdP iframe) and works again on a page without one; `cookies clear` is always refused — delete the one cookie by name or ask the human.
 - **Settings > Browser — `BrowserSettings.tsx`** (globe icon in the sidebar header, `store.browserSettingsOpen`): create / rename (id kept) /
   delete (the confirmation says how many workspaces lose it), the per-profile usage count, and the ALWAYS-on `[data-profile-warning="create"]` notice
-  above the create field + a "not encrypted on disk" tag per row (ADR 0010: warn, never refuse — see Keyring below for why it is unconditional).
+  above the create field + a "not encrypted on disk" tag per row (ADR 0010: warn, never refuse — see At rest below for why it is unconditional).
 - **URL bar — `BrowserPanel.tsx`**: a chip (`[data-browser-profile-chip]`, `data-profile-id`) beside the URL form shows the profile or
   "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
   would open under the native view, which paints above the DOM. Design mode is disarmed before the rebuild.

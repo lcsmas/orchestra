@@ -205,7 +205,7 @@ const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { r
 
 // ── one boot of the app on the world ─────────────────────────────────────────────────────────────
 const VIEWPORT = { w: 1500, h: 950 };
-async function boot(world, bootName, { inspect = false, trace = false } = {}) {
+async function boot(world, bootName, { inspect = true, trace = false } = {}) {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${VIEWPORT.w}x${VIEWPORT.h}`]);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
@@ -235,9 +235,11 @@ async function boot(world, bootName, { inspect = false, trace = false } = {}) {
   // What the DRIVER handed the app (Chromium rewrites the main process's environ once DBUS_SESSION_BUS_ADDRESS is set — /proc/<pid>/environ goes blind)
   clause(bootName, 'ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND && env.XDG_RUNTIME_DIR === XDG && env.XDG_RUNTIME_DIR === `${RIG_DIR}/xdg`,
     `handed env: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS ?? '<unset>'} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
-  // the explicit basic backend = never the human's Secret Service (G10b / incident Q2); argv, not environ (Chromium rewrites the main process's environ)
-  const argvOfApp = fs.readFileSync(`/proc/${app.pid}/cmdline`, 'utf8').split('\0');
-  clause(bootName, 'ctl/app-not-bound-to-a-keyring', argvOfApp.includes('--password-store=basic'), `app argv carries --password-store=basic: ${argvOfApp.includes('--password-store=basic')}`);
+  // the explicit basic backend = never the human's Secret Service (G10b / incident Q2). Asked of the MAIN process through its inspector: Chromium rewrites
+  // the main process's environ AND its /proc cmdline, so neither can be read back (measured: the flag is absent from both while the switch is honoured).
+  let kr = null;
+  try { kr = JSON.parse(await inMain(b, `(() => { const { app, safeStorage } = require('electron'); return JSON.stringify({ sw: app.commandLine.getSwitchValue('password-store'), backend: safeStorage.getSelectedStorageBackend() }); })()`)); } catch (e) { kr = { error: String(e.message ?? e).slice(0, 160) }; }
+  clause(bootName, 'ctl/app-not-bound-to-a-keyring', kr?.sw === 'basic' && kr?.backend === 'basic_text', `main process: --password-store switch = ${JSON.stringify(kr?.sw)}, safeStorage backend = ${JSON.stringify(kr?.backend)} (want basic / basic_text: no Secret Service)${kr?.error ? ' ' + kr.error : ''}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
@@ -432,7 +434,7 @@ const S = { staging: null, other: null, doomed: null }; // profile ids
 const MAIN = ['settings', 'attach', 'human', 'restore', 'delete'].some((a) => ARMS.has(a));
 try {
   // ────────────────────────────── boot 1 ──────────────────────────────
-  if (MAIN) b = await boot(world, 'boot1', { inspect: ARMS.has('human') });
+  if (MAIN) b = await boot(world, 'boot1');
   const ws1 = world.ws1.id, ws2 = world.ws2.id;
 
   // ── settings: Settings > Browser ──
@@ -857,6 +859,10 @@ try {
     await softWait(async () => (await tabs(b))[0]?.tip?.includes('profiles-frame.html'), 15000, 'ws1 on the frame page');
     await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('frame=1')) || (await b.cdp.eval('1')) === 1, 8000, 'the iframe to load');
     await sleep(1500);
+    // the reviewer's open question: does `framesInSubtree` cover an OUT-OF-PROCESS frame? Measure that the embedded site really IS one (a CDP `iframe` target), not a same-process frame.
+    const allTargets = await (await fetch(`http://127.0.0.1:${b.port}/json/list`)).json();
+    const oopif = allTargets.filter((t) => t.type === 'iframe' && /frame=1/.test(t.url));
+    clause('cdp', 'ctl/the-embedded-site-is-an-out-of-process-frame', oopif.length >= 1, `CDP targets of type iframe for the embedded http://localhost frame: ${JSON.stringify(oopif.map((t) => [t.type, t.url]))} (all target types: ${JSON.stringify([...new Set(allTargets.map((t) => t.type))])})`);
     const frameGet = browserCli(world, ws1rec, ['cookies', 'get']);
     clause('cdp', 'cookies-get-refused-when-the-page-embeds-another-site', frameGet.code !== 0 && /an embedded frame included/.test(frameGet.out), `cookies get on a page embedding http://localhost (the page is on 127.0.0.1) → rc ${frameGet.code} ${JSON.stringify(frameGet.out.slice(0, 220))}`);
     await typeUrl(b, P(1, '&c=4'));

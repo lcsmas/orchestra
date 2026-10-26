@@ -223,7 +223,12 @@ test('decideAgentCdp (F3): ANY other cookie-carrying Network/Storage method is r
     assert.deepEqual(cdp(m, {}, { profile: null }), { ok: true }, `${m} on an ephemeral workspace`);
   }
   assert.deepEqual(cdp('Network.getRequestPostData', {}), { ok: true }, 'a method that does not carry cookies');
-  assert.deepEqual(cdp('Page.getCookies', {}), { ok: true }, 'only Network.* / Storage.* are judged (Page.getCookies does not exist; no false positive on other domains)');
+  // review R1: ANY protocol domain — `Page.deleteCookie{cookieName,url}` (deprecated, still in the protocol) deletes another host's cookie by url
+  for (const m of ['Page.deleteCookie', 'Page.getCookies', 'Emulation.setCookie', 'Audits.someCookieMethod']) {
+    assert.match(refused(cdp(m, { cookieName: 'sid', url: 'https://example.com/' })), /cookie command is not available here/, m);
+    assert.deepEqual(cdp(m, {}, { profile: null }), { ok: true }, `${m} on an ephemeral workspace`);
+  }
+  assert.deepEqual(cdp('Page.navigate', { url: 'https://example.com/' }), { ok: true }, 'a non-cookie method of the same domain stays allowed');
 });
 
 test('decideAgentCdp: EVERY refusal carries a NON-EMPTY string message (the proxy core judges strictly — an empty one would refuse with a generic text, never explain) and every allowance is exactly {ok:true}', () => {

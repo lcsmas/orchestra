@@ -85,6 +85,7 @@ const MUTANTS = [
   [PURE, 'getCookies with an unknown frame tree passes', "return frameUrls ? frameUrls.filter(isHttp) : null;", "return frameUrls ? frameUrls.filter(isHttp) : [];"],
   [PURE, 'frames that are not http(s) are judged as sites', "return frameUrls ? frameUrls.filter(isHttp) : null;", "return frameUrls ?? null;"],
   [PURE, 'an empty urls list is treated as an explicit (empty) judgement', "if (p.urls === undefined || (Array.isArray(p.urls) && p.urls.length === 0)) return", "if (p.urls === undefined) return"],
+  [PURE, 'the default-deny regex is narrowed back to Network|Storage (Page.deleteCookie passes)', 'const COOKIE_CDP_METHOD = /^\\w+\\.\\w*[Cc]ookie/;', 'const COOKIE_CDP_METHOD = /^(?:Network|Storage)\\.\\w*[Cc]ookie/;'],
   [PURE, 'an unknown cookie-carrying method passes', "  if (COOKIE_CDP_METHOD.test(input.method)) return { ok: false, message: REFUSAL_UNKNOWN };", "  void COOKIE_CDP_METHOD;"],
   [PURE, 'Storage.setCookies is not site-scoped (so it falls to the unknown-method refusal for EVERY call, even the own site)', "'Network.setCookies', 'Storage.setCookies',\n]);", "'Network.setCookies',\n]);"],
   [PURE, 'the unknown-method refusal has an EMPTY message', "'refused: this workspace\\'s browser carries a profil navigateur — this cookie command is not available here. Use `cookies get` / `cookies set` on the page you are on.';", "'';"],

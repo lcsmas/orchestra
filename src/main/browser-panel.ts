@@ -715,7 +715,7 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
 }
 
 /** The profil navigateur `wsId`'s OPEN panel runs on, or undefined (ephemeral / no panel). A pure read — builds and reaps nothing; the CDP
- *  proxy asks it (with `decideAgentClear`) before it lets an agent clear a whole partition's cookies. */
+ *  proxy asks it (with `decideAgentCdp`) before it lets an agent clear a profile's jar or touch another site's cookies. */
 export function panelProfileId(wsId: string): BrowserProfileId | undefined {
   return panels.get(wsId)?.profileId;
 }
