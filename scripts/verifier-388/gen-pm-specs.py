@@ -7,13 +7,14 @@ out = os.environ['TMPDIR'] + '/v1/mut389f'
 os.makedirs(out, exist_ok=True)
 KR = 'src/main/linux-keyring.ts'
 RW = 'src/shared/keyring-rig-world.ts'
+RP = 'scripts/lib/rig-paths.mjs'
 M = [
-  ('pm1-retry-slow-failures', KR, "retry: quick && !reply,", "retry: !reply,"),
-  ('pm2-retry-replies', KR, "retry: quick && !reply,", "retry: quick,"),
-  ('pm3-never-retry', KR, "retry: quick && !reply,", "retry: false,"),
+  ('pm1-retry-the-deadline', KR, "retry: !reply && a.status !== 3,", "retry: !reply,"),
+  ('pm2-retry-replies', KR, "retry: !reply && a.status !== 3,", "retry: a.status !== 3,"),
+  ('pm3-never-retry', KR, "retry: !reply && a.status !== 3,", "retry: false,"),
   ('pm4-spawn-error-not-retried', KR, "return { state: 'unavailable', retry: true, note: `spawn ${a.spawnError} (${a.elapsedMs} ms)` };", "return { state: 'unavailable', retry: false, note: `spawn ${a.spawnError} (${a.elapsedMs} ms)` };"),
-  ('pm5-quick-ms-5000', KR, "export const QUICK_FAIL_MS = 50;", "export const QUICK_FAIL_MS = 5000;"),
-  ('pm6-retry-budget-check-off', KR, "if (attempt > 1 && remaining < 500) break;", "if (false) break;"),
+  ('pm5-budget-0', KR, "export const MIN_RETRY_BUDGET_MS = 500;", "export const MIN_RETRY_BUDGET_MS = 0;"),
+  ('pm6-budget-ignores-retry-delay', KR, "waitMs - (Date.now() - t0) - RETRY_DELAY_MS >= MIN_RETRY_BUDGET_MS", "waitMs - (Date.now() - t0) >= MIN_RETRY_BUDGET_MS"),
   ('pm7-second-attempt-full-wait', KR, "String(Math.ceil((attempt === 1 ? waitMs : remaining) / 10))", "String(Math.ceil(waitMs / 10))"),
   ('pm8-iteration-counted-wait', KR, "while alive; do tick; [ \"$t\" -lt \"$deadline\" ] || break; sleep ${WRAPPER_TICK}; done", "n=0; while alive; do n=$((n+1)); [ \"$n\" -lt \"$limit\" ] || break; sleep ${WRAPPER_TICK}; done"),
   ('pm9-kill-on-deadline', KR, "if alive; then exit 3; fi", "if alive; then kill $pid; exit 3; fi"),
@@ -23,13 +24,24 @@ M = [
   ('pm13-three-attempts', KR, "export const MAX_PROBE_ATTEMPTS = 2;", "export const MAX_PROBE_ATTEMPTS = 3;"),
   ('pm14-retry-on-unparseable-answer', KR, "return { state, retry: false, note: state === 'unavailable'", "return { state, retry: state === 'unavailable', note: state === 'unavailable'"),
   ('pm15-stderr-line-uncapped', KR, ".slice(0, 160);", ";"),
-  ('pm16-tick-0.1', KR, "export const WRAPPER_TICK = '0.01';", "export const WRAPPER_TICK = '0.1';"),
+  ('pm17-clean-misses-c1', KR, "const CONTROL_CHARS = /[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]/g;", "const CONTROL_CHARS = /[\\u0000-\\u001f\\u007f]/g;"),
+  ('pm18-notes-not-json-quoted', KR, "probe-notes=${JSON.stringify(notes.map(cleanNote).join('; '))}", "probe-notes=\"${notes.map(cleanNote).join('; ')}\""),
+  ('pm19-facts-notes-not-cleaned', KR, "JSON.stringify(notes.map(cleanNote).join('; '))", "JSON.stringify(notes.join('; '))"),
+  ('pm20-retry-note-always-says-retrying', KR, "const willRetry = last.retry && attempt < MAX_PROBE_ATTEMPTS && waitMs - (Date.now() - t0) - RETRY_DELAY_MS >= MIN_RETRY_BUDGET_MS;\n      if (last.note) note(`probe#${attempt} ${last.note}${willRetry ? ' — retrying once' : ''}`);", "const willRetry = last.retry && attempt < MAX_PROBE_ATTEMPTS && waitMs - (Date.now() - t0) - RETRY_DELAY_MS >= MIN_RETRY_BUDGET_MS;\n      if (last.note) note(`probe#${attempt} ${last.note}${last.retry ? ' — retrying once' : ''}`);"),
   ('rw1-samedev-check-off', RW, "if (sameDev.length > 0) return", "if (false) return"),
-  ('rw2-samedev-only-adjacent', RW, "const sameDev = here.filter((m) => m !== top && m.dev === top.dev);", "const sameDev = here.filter((m) => m !== top && m.dev === top.dev && m.id === top.parent);"),
-  ('rw3-known-filter-off', RW, "if (cands.length > 1) cands = cands.filter((k) => known.has(Number(tok[k])));", "if (cands.length > 1) cands = cands.slice(0, 1);"),
-  ('rw4-unique-shape-needs-known', RW, "if (cands.length === 1) pairs.push", "if (cands.length === 1 && known.has(Number(tok[cands[0]]))) pairs.push"),
-  ('rw5-proc-net-unix-byte-exact-trimmed', RW, "if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2] });", "if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2].trim() });"),
+  ('rw3-known-filter-off', RW, "if (cands.length > 1) cands = cands.filter((c) => known.has(c.localIno) && (c.peerIno === 0 || known.has(c.peerIno)));", "if (cands.length > 1) cands = cands.slice(0, 1);"),
+  ('rw4-known-filter-ignores-peer', RW, "(c.peerIno === 0 || known.has(c.peerIno))", "true"),
+  ('rw5-proc-net-unix-trimmed', RW, "if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2] });", "if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2].trim() });"),
   ('rw6-peer-path-dropped', RW, "const peerPath = peer ? scan.pathByIno.get(peer) : undefined;", "const peerPath = undefined as string | undefined;"),
+  ('rw7-tail-anything', RW, "const tailOk = (toks: readonly string[]): boolean => toks.every(", "const tailOk = (toks: readonly string[]): boolean => true || toks.every("),
+  ('rw8-marker-not-required', RW, "if (SS_MARKERS.has(tok[j + 1] ?? '') && tailOk(tok.slice(j + 1)))", "if (tailOk(tok.slice(j + 1)))"),
+  ('rw9-about-never', RW, "return unparsed.filter((row) => row.split(/\\s+/).some((t) => /^\\d+$/.test(t) && interest.has(Number(t))));", "return [];"),
+  ('rw10-about-always', RW, "return unparsed.filter((row) => row.split(/\\s+/).some((t) => /^\\d+$/.test(t) && interest.has(Number(t))));", "return [...unparsed];"),
+  ('rw11-embryonic-kept', RW, "    if (inode === 0) continue; // an embryonic socket", "    // an embryonic socket"),
+  ('rw12-marker-set-misses-dashes', RW, "const SS_MARKERS = new Set(['<->', '-->', '<--', '---']);", "const SS_MARKERS = new Set(['<->', '-->', '<--']);"),
+  ('rw13-ambiguity-takes-first', RW, "if (cands.length === 1) pairs.push(cands[0]);\n    else unparsed.push(line);", "if (cands.length >= 1) pairs.push(cands[0]);\n    else unparsed.push(line);"),
+  ('pa1-one-hop-only', RP, "for (let hops = 0; hops < 40; hops++)", "for (let hops = 0; hops < 1; hops++)"),
+  ('pa2-hop-forms-dropped', RP, "out.push(target, physicalPath(target));", "out.push(target);"),
 ]
 spec = []
 for name, f, old, new in M:

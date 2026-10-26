@@ -18,4 +18,5 @@ row('F9', 'MISS', P.absolutePieces('unix:path=%2Frun%2Fuser%2F9999%2Fbus%').some
 { const l = mk('c1', B + '/ok'); fs.mkdirSync(path.join(B, 'ok')); row('F10', 'MISS', hits(forms(path.join(l, 'bus'))) ? 'HIT' : 'MISS', 'CONTROL: link to a harmless dir'); }
 // 3-hop dangling (beyond a one/two-hop resolver)
 { mk('e3', `${T}/vv`); mk('e2', path.join(B, 'e3')); const l = mk('e1', path.join(B, 'e2')); row('F11', 'HIT', hits(forms(l)) ? 'HIT' : 'MISS', 'DANGLING 3-HOP chain', JSON.stringify(forms(l).map((x) => x.replace(B, '<B>')))); }
+{ const ld = mk('ldir', '/run/user'); const l = mk('hop1', path.join(B, 'ldir', '9999', 'zz')); row('F13', 'HIT', hits(forms(l)) ? 'HIT' : 'MISS', 'a hop whose TARGET runs through a linked EXISTING parent (hop1 -> <B>/ldir/9999/zz, ldir -> /run/user): the hop is resolved too', JSON.stringify(forms(l).map((x) => x.replace(B, '<B>')))); }
 console.log(`SUMMARY bypass=${bad}`); fs.rmSync(B, { recursive: true, force: true }); process.exit(bad ? 1 : 0);

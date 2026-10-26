@@ -12,10 +12,10 @@ echo "CONTROL(before) my table:    $(ctl "${TABLE[@]}")"
 echo "CONTROL(before) member tests:$(ctl "${MEMBER[@]}")"
 while IFS='|' read -r name file; do
   [[ -z "$name" ]] && continue
-  if [[ "$name" == pm* ]]; then cmds=("probe-final"); else cmds=("member-tests" "my-table"); fi
+  if [[ "$name" == pm* ]]; then cmds=("probe-final"); elif [[ "$name" == pa* ]]; then cmds=("member-tests" "phys-final"); else cmds=("member-tests" "my-table"); fi
   line="$(printf '%-38s' "$name")"
   for c in "${cmds[@]}"; do
-    case "$c" in probe-final) cmd=("${PROBE[@]}");; member-tests) cmd=("${MEMBER[@]}");; my-table) cmd=("${TABLE[@]}");; esac
+    case "$c" in probe-final) cmd=("${PROBE[@]}");; member-tests) cmd=("${MEMBER[@]}");; my-table) cmd=("${TABLE[@]}");; phys-final) cmd=(node "$V/rig/phys-final.mjs" "$PWD");; esac
     out="$(MUT_TAIL=4000 bash "$V/rig/mut.sh" "$name" "$file" "$M/$name.old" "$M/$name.new" -- "${cmd[@]}" 2>&1)"
     rc=$(sed -nE 's/.*cmd_rc=([0-9]+).*/\1/p' <<<"$out" | tail -1); rs=$(grep -c 'restored=yes' <<<"$out"); ap=$(grep -c '^APPLY: ok' <<<"$out")
     line+=" | $c: $([[ "$ap" == 1 ]] || echo NOAPPLY; [[ -n "$rc" && "$rc" != 0 ]] && echo KILLED || echo survived) restored=$rs"

@@ -1,0 +1,88 @@
+  // ── vhost (VERIFIER seat 1): logout-vs-promotion race sweep, rotation overwrite, delete-shred bytes — MY site, MY loops, the real app ──
+  if (ARMS.has('vhost') || ARMS.has('vhost-del') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep')) {
+    const RACE = ARMS.has('vhost') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep'); const BAND = ARMS.has('vhost-band'); const SWEEP = ARMS.has('vhost-sweep');
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-vhost');
+    let ctr = 0; const MARK = `SHRED${crypto.randomBytes(10).toString('hex')}`;
+    const vsite = http.createServer((req, res) => {
+      const u = new URL(req.url ?? '/', 'http://x');
+      const jar = Object.fromEntries((req.headers.cookie ?? '').split(/;\s*/).filter(Boolean).map((c) => { const i = c.indexOf('='); return [c.slice(0, i), c.slice(i + 1)]; }));
+      res.setHeader('cache-control', 'no-store'); res.setHeader('content-type', 'text/html');
+      if (u.pathname === '/login') { res.setHeader('set-cookie', `vsid=L${u.searchParams.get('n') ?? 0}; Path=/`); return res.end('ok'); }
+      if (u.pathname === '/logout') { res.setHeader('set-cookie', 'vsid=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT'); return res.end('bye'); }
+      if (u.pathname === '/rotate') { ctr++; res.setHeader('set-cookie', `vsid=R${ctr}; Path=/`); return res.end(String(ctr)); }
+      if (u.pathname === '/perm') { const v = MARK; res.setHeader('set-cookie', `pm=${v}; Path=/; Max-Age=86400`); return res.end(`<!doctype html><title>perm</title><body>perm<script>localStorage.setItem('shred', ${JSON.stringify(v)}); sessionStorage.setItem('shred', ${JSON.stringify(v)});</script>`); }
+      if (u.pathname === '/who') return res.end(jar.vsid ?? 'anon');
+      if (u.pathname === '/') return res.end('<!doctype html><title>vhost</title><body>vhost');
+      res.statusCode = 404; res.end('nope');
+    });
+    await new Promise((r) => vsite.listen(0, '127.0.0.1', r));
+    const VB = `http://127.0.0.1:${vsite.address().port}`;
+    const tabOf = async (urlPart) => { const t = (await viewTargets(b)).find((x) => x.url.startsWith(VB) && x.url.includes(urlPart)); if (!t) throw new Error(`no tab target ${urlPart}`); return Cdp.connect(t.webSocketDebuggerUrl); };
+    const mk = (name) => b.cdp.eval(`window.orchestra.browserProfileCreate(${JSON.stringify(name)}).then((r) => r.profile?.id ?? null)`);
+    if (RACE) {
+    const vp = await mk('VHost');
+    clause('vhost', 'ctl/profile-created', /^bp-[0-9a-f]{12}$/.test(vp ?? ''), `profile ${vp}`);
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b); await chooseProfile(b, vp);
+    await typeUrl(b, `${VB}/`);
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.startsWith(VB)), 15000, 'vhost page');
+    let tc = await tabOf('/');
+    // R-A: LOGOUT vs PENDING PROMOTION — the session cookie is promoted 250 ms after its last change; logout the site at 225..274 ms and look for a resurrected cookie
+    const sweep = async (n, label, delays) => {
+      const resurrected = []; const t0 = Date.now();
+      for (let i = 0; i < n; i++) {
+        const d = delays(i);
+        await tc.eval(`(async () => { await fetch('/login?n=${i}'); await new Promise((r) => setTimeout(r, ${d})); await fetch('/logout'); return 1; })()`);
+        await sleep(900);
+        const who = await tc.eval(`fetch('/who', { cache: 'no-store' }).then((r) => r.text())`);
+        if (who !== 'anon') { resurrected.push({ i, d, who }); await tc.eval(`fetch('/logout').then(() => 1)`); await sleep(400); }
+      }
+      console.log(`  MEASURED [vhost] ${label}: ${n} login→logout cycles in ${Math.round((Date.now() - t0) / 1000)} s, RESURRECTED after logout: ${resurrected.length} ${JSON.stringify(resurrected.slice(0, 8))}`);
+      return resurrected;
+    };
+    const resAfterPromo = await sweep(10, 'profile, logout at 700 ms (AFTER the promotion landed)', () => 700);
+    clause('vhost', 'ctl/logout-after-promotion-clears-the-promoted-cookie', resAfterPromo.length === 0, `resurrected ${resAfterPromo.length}/10`);
+    const NCYC = BAND ? 200 : SWEEP ? 250 : 150; const resRace = await sweep(NCYC, BAND ? 'profile, logout in the CRITICAL band 243..250 ms (25 cycles per value)' : SWEEP ? 'profile, logout swept across the 250 ms debounce (225..274 ms, 5 cycles per value)' : 'profile, logout swept across the 250 ms debounce (225..274 ms)', (i) => (BAND ? 243 + (i % 8) : 225 + (i % 50)));
+    results.push({ arm: 'vhost', clause: 'measured/logout-vs-promotion-resurrections', ok: true, detail: `${resRace.length}/${NCYC} cycles left the cookie alive after the logout: ${JSON.stringify(resRace.slice(0, 8))}` });
+    clause('vhost', 'logout-never-resurrected-by-a-pending-promotion', resRace.length === 0, `${resRace.length}/${NCYC} resurrected`);
+    // R-B: ROTATION — a site that rewrites its session cookie at every request: the jar must END on the last issued value
+    let overwritten = 0; const rb = [];
+    for (let k = 0; k < 8; k++) {
+      const last = await tc.eval(`(async () => { const t0 = performance.now(); let last = 0; while (performance.now() - t0 < 2500) last = await fetch('/rotate', { cache: 'no-store' }).then((r) => r.text()); return last; })()`);
+      await sleep(900);
+      const who = await tc.eval(`fetch('/who', { cache: 'no-store' }).then((r) => r.text())`);
+      rb.push([last, who]); if (who !== `R${last}`) overwritten++;
+    }
+    console.log(`  MEASURED [vhost] rotation storms (≈2.5 s of back-to-back /rotate): [last issued, jar] = ${JSON.stringify(rb)}`);
+    clause('vhost', 'rotating-cookie-jar-ends-on-the-last-issued-value', overwritten === 0, `${overwritten}/8 storms ended on a STALE value`);
+    // R-C: control — the SAME logout loop in the workspace WITHOUT a profile never resurrects (no promotion exists there)
+    tc.close();
+    await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b);
+    await typeUrl(b, `${VB}/`);
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.startsWith(VB) && !t.url.includes('profiles.html')), 15000, 'ws2 vhost page');
+    tc = await tabOf('/');
+    const resEph = await sweep(30, 'EPHEMERAL workspace (no profile), same sweep', (i) => 225 + (i % 50));
+    clause('vhost', 'ctl/ephemeral-workspace-never-resurrects', resEph.length === 0, `${resEph.length}/30 resurrected`);
+    tc.close();
+    }
+    if (!RACE) { await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b); }
+    // R-D: DELETE — what is left on DISK of a deleted profile (raw bytes, not rows)
+    const marker = MARK;
+    const sp = await mk('Shred');
+    await chooseProfile(b, sp);
+    await typeUrl(b, `${VB}/perm`);
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('/perm')), 15000, 'perm page');
+    await sleep(4500); // store flush (1.5 s) + leveldb write
+    const pdir = path.join(world.partitions, `orchestra-profile-${sp}`);
+    const scan = (dir) => { const hits = []; const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else { try { if (fs.readFileSync(p).includes(marker)) hits.push(path.relative(dir, p)); } catch {} } } }; walk(dir); return hits; };
+    const before = scan(pdir);
+    clause('vhost', 'ctl/marker-is-on-disk-before-the-delete', before.length > 0, `files holding the marker: ${JSON.stringify(before)}`);
+    const del = await b.cdp.eval(`window.orchestra.browserProfileDelete(${JSON.stringify(sp)}).then((r) => ({ ok: r.ok, reason: r.reason }))`);
+    await sleep(3500);
+    const after = scan(pdir); const dirLeft = fs.existsSync(pdir);
+    const whole = (() => { const hits = []; const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else { try { if (fs.readFileSync(p).includes(marker)) hits.push(path.relative(path.join(world.ohome, 'userData'), p)); } catch {} } } }; walk(path.join(world.ohome, 'userData')); return hits; })();
+    console.log(`  MEASURED [vhost] delete of profile ${sp}: result ${JSON.stringify(del)}; partition dir still present=${dirLeft}; files in the partition still holding the marker: ${JSON.stringify(after)}; anywhere in userData: ${JSON.stringify(whole)}`);
+    clause('vhost', 'deleted-profile-leaves-no-sign-in-bytes-on-disk', del.ok === true && whole.length === 0, `delete ok=${del.ok}; marker remains in ${whole.length} file(s): ${JSON.stringify(whole)}`);
+    try { vsite.close(); } catch {}
+    await teardown(b, 'term'); b = null;
+  }

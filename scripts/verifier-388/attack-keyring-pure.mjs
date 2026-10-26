@@ -131,7 +131,8 @@ phy('J9', 'PASS', 'CONTROL: path values that resolve inside the rig', { envPhysi
 // ── K. (rewritten for 39243f07) /proc/net/unix + ss pairing: parseProcNetUnix / parseSsPairs / buildSocketScan / socketPaths ───────────────────────────────
 const PNU_HEAD = 'Num       RefCount Protocol Flags    Type St Inode Path\n';
 const pn = (rows) => PNU_HEAD + rows.map(([ino, p]) => `0000000000000000: 00000002 00000000 00010000 0001 01 ${ino}${p === undefined ? '' : ' ' + p}`).join('\n') + '\n';
-const scanT = (id, expect, label, procnet, ss, inodes, check) => { let r, paths = null; try { r = W.buildSocketScan(procnet, ss); paths = W.socketPaths(inodes, r.scan); } catch (e) { r = { scan: null, unparsed: ['THROW ' + e.message] }; } const okv = check(paths, r.unparsed); row(id, expect, okv ? 'PASS' : 'FAIL', label, `paths=${JSON.stringify(paths)} unparsed=${r.unparsed.length}`); };
+const REALTAIL = (ss) => ss.split('\n').map((l) => (/^u_(str|dgr|seq)\s/.test(l) && !/(<->|-->|<--|---)/.test(l) ? `${l} <-> ino:5 dev:0/36 sk:1` : l)).join('\n'); // fixtures carry what the real producer prints
+const scanT = (id, expect, label, procnet, ss, inodes, check) => { let r, paths = null; try { r = W.buildSocketScan(procnet, REALTAIL(ss)); paths = W.socketPaths(inodes, r.scan); } catch (e) { r = { scan: null, unparsed: ['THROW ' + e.message] }; } const okv = check(paths, r.unparsed); row(id, expect, okv ? 'PASS' : 'FAIL', label, `paths=${JSON.stringify(paths)} unparsed=${r.unparsed.length}`); };
 const one = (id, expect, label, procnet, ss, inodes, want, wantUnparsed = 0) => scanT(id, expect, label, procnet, ss, inodes, (paths, un) => paths !== null && JSON.stringify(paths) === JSON.stringify(want) && un.length === wantUnparsed);
 // controls
 one('K1', 'PASS', 'CONTROL: client (unnamed) → listener path via the peer inode; accepted end carries the listener path', pn([[111, '/run/x/k-a/bus'], [222], [333, '/run/x/k-a/bus']]),
@@ -146,7 +147,7 @@ one('K7', 'PASS', 'FORGED shape: path "/run/x/a 123 /b" — 123 is NOT a real so
 one('K8', 'FAIL', 'FORGED shape where the embedded number IS another real socket inode → must NOT be silently placed (fail closed = unparsed)', pn([[555, '/run/x/a 123 /b'], [123, '/run/y/other']]), 'u_str LISTEN 0 4096 /run/x/a 123 /b 555 * 0\n', [555], ['/run/x/a 123 /b'], 0);
 one('K9', 'PASS', 'same forged row, both inodes real → UNPARSED (fail closed), nothing mis-attributed', pn([[555, '/run/x/a 123 /b'], [123, '/run/y/other']]), 'u_str LISTEN 0 4096 /run/x/a 123 /b 555 * 0\n', [], [], 1);
 one('K10', 'PASS', 'client whose PEER path has spaces + a number token', pn([[700], [701, '/run/x/p 9 q']]), 'u_str ESTAB 0 0 * 700 /run/x/p 9 q 701 <->\nu_str ESTAB 0 0 /run/x/p 9 q 701 * 700 <->\n', [700], ['/run/x/p 9 q']);
-one('K11', 'GAP', 'ss path with a marker lookalike (" <-> ") mid-path: REPORTED as unparsed = fail CLOSED (spurious abort), see K28+ ("…/x <->") on a listener', pn([[800, '/run/x/y <->']]), 'u_str LISTEN 0 4096 /run/x/y <-> 800 * 0\n', [800], ['/run/x/y <->']);
+one('K11', 'GAP', 'ss path ending with a marker lookalike ("…/x <->") on a listener is now PLACED', pn([[800, '/run/x/y <->']]), 'u_str LISTEN 0 4096 /run/x/y <-> 800 * 0\n', [800], ['/run/x/y <->']);
 one('K12', 'FAIL', 'garbage line must be REPORTED (unparsed), not dropped', pn([[900, '/a']]), 'this is not an ss row\nu_str LISTEN 0 4096 /a 900 * 0\n', [900], ['/a'], 0);
 one('K13', 'PASS', 'garbage line reported', pn([[900, '/a']]), 'this is not an ss row\nu_str LISTEN 0 4096 /a 900 * 0\n', [900], ['/a'], 1);
 one('K14', 'PASS', 'truncated row reported', pn([[901, '/a']]), 'u_str ESTAB 0 0 /run/x/y 33', [901], ['/a'], 1);
@@ -161,7 +162,7 @@ const pnT = (id, expect, label, text, check) => { let r; try { r = W.parseProcNe
 pnT('K21', 'PASS', 'header line is skipped, never counted as a socket', PNU_HEAD, (r) => r.sockets.length === 0 && r.inodes.size === 0);
 pnT('K22', 'PASS', 'two spaces inside the name survive byte-exact', pn([[1000, '/run/x/a  b']]), (r) => r.sockets[0]?.path === '/run/x/a  b');
 pnT('K23', 'PASS', 'a name with a newline-free quote/backslash', pn([[1001, '/run/x/a"b\\c']]), (r) => r.sockets[0]?.path === '/run/x/a"b\\c');
-pnT('K24', 'PASS', 'inode 0 / huge inode', pn([[0, '/a'], [4294967295, '/b']]), (r) => r.sockets.length === 2);
+pnT('K24', 'PASS', 'inode 0 (embryonic: ignored by design since 6456bd28) / huge inode', pn([[0, '/a'], [4294967295, '/b']]), (r) => r.sockets.length === 1 && r.sockets[0].inode === 4294967295);
 pnT('K25', 'PASS', 'garbage rows ignored, valid kept', 'junk\n' + pn([[1002, '/ok']]), (r) => r.sockets.length === 1);
 
 // K28+ (FINDING, real-kernel confirmed by ss-real.mjs): the unanchored SS_TAIL strips from the FIRST marker lookalike INSIDE the path, so a bound+connected socket named
@@ -171,14 +172,33 @@ pnT('K25', 'PASS', 'garbage rows ignored, valid kept', 'junk\n' + pn([[1002, '/o
   for (const [id, name] of [['K28', `${R}/p 1 /q 2 --- zz`], ['K29', `${R}/p 1 /q 2 <-> zz`], ['K30', `${R}/q 1 /r 2 --> zz`], ['K31', `${R}/d 5 /e 6 <-- w 7 * 8`]]) {
     const ss = `u_str ESTAB  0      0      ${name} 700 * 701 <-> ino:201225872 dev:0/36 sk:1\nu_str ESTAB  0      0      ${HUMAN} 701 * 700 <-> ino:5 dev:0/36 sk:2\n`;
     const { scan, unparsed } = W.buildSocketScan(pn([[700, name], [701, HUMAN]]), ss); const sees = W.socketPaths([700], scan).includes(HUMAN);
-    row(id, 'GAP', sees || unparsed.length ? 'FAIL' : 'PASS', `hostile socket name with marker lookalike keeps its link to the human socket (or is reported): ${JSON.stringify(name)}`, `sees=${sees} unparsed=${unparsed.length}`);
+    row(id, 'FAIL', sees || unparsed.length ? 'FAIL' : 'PASS', `F1 FIXED in 6456bd28: hostile socket name with marker lookalike keeps its link to the human socket (or is reported): ${JSON.stringify(name)}`, `sees=${sees} unparsed=${unparsed.length}`);
   }
   const ssc = `u_str ESTAB  0      0      ${R}/hostile 700 * 701 <-> ino:201225872 dev:0/36 sk:1\nu_str ESTAB  0      0      ${HUMAN} 701 * 700 <-> ino:5 dev:0/36 sk:2\n`;
   const c = W.buildSocketScan(pn([[700, `${R}/hostile`], [701, HUMAN]]), ssc); row('K32', 'PASS', W.socketPaths([700], c.scan).includes(HUMAN) ? 'PASS' : 'FAIL', 'CONTROL: the same row with a plain name sees the human socket');
 }
+
+// K40+ (6456bd28 delta, "can a STRANGER's row hide a connection of OURS?"): real-shaped ss rows (marker + ino:/dev: tail). exp GAP = hostile passes unnoticed.
+{
+  const TAIL = '<-> ino:5 dev:0/36 sk:1';
+  const HB = '/run/user/9999/bus'; // stand-in for the human's bus (never stat'd: pure strings)
+  const base = [[500], [502, HB], [801, '/stranger peer'], [803, '/stranger b']];
+  const ours = `u_str ESTAB 0 0 * 500 * 502 ${TAIL}\nu_str ESTAB 0 0 ${HB} 502 * 500 ${TAIL}\n`;
+  const see = (pnRows, ss, label, id, expect, extra = '') => { const { scan, unparsed } = W.buildSocketScan(pn(pnRows), ss); const got = W.socketPaths([500], scan); const about = W.unparsedAbout(unparsed, new Set([500])); const sees = got.includes(HB); row(id, expect, (sees || about.length) ? 'FAIL' : 'PASS', label, `sees=${sees} paths=${JSON.stringify(got)} unparsedAboutOurs=${about.length}${extra}`); };
+  see(base, ours, 'CONTROL: our client → the human bus, no stranger row', 'K40', 'FAIL');
+  // the stranger names a socket "/x 500 /y" (500 = OUR inode); its own local inode 800 is already CLOSED when /proc/net/unix is read (closed between the two snapshots)
+  const strangerRow = `u_str ESTAB 0 0 /x 500 /y 800 * 801 ${TAIL}\n`;
+  see(base, ours + strangerRow, 'stranger row AFTER ours, its real local inode (800) closed between the snapshots → fabricated pair (500→801) overwrites ours', 'K41', 'GAP');
+  see(base, strangerRow + ours, 'same stranger row BEFORE ours (ours wins the Map — order-dependent)', 'K42', 'FAIL');
+  see([...base, [800, '/x 500 /y']], ours + strangerRow, 'the stranger socket 800 still alive at the /proc/net/unix read → ambiguity → UNPARSED about our inode → abort (fail closed)', 'K43', 'FAIL');
+  // duplicate pairs for one local inode: the scan keeps the LAST silently
+  { const { scan } = W.buildSocketScan(pn(base), ours + `u_str ESTAB 0 0 * 500 * 803 ${TAIL}\n`); const peer = scan.peerOf.get(500); row('K44', 'GAP', peer === 502 ? 'FAIL' : 'PASS', 'two ss rows with the SAME local inode (500) and different peers: the later silently replaces the earlier (no conflict detection)', `peerOf(500)=${peer}`); }
+}
+
+{ const rows = `u_str ESTAB 0 0 /x 500 garbage ${'<-> ino:5 dev:0/36'}\n`; const { unparsed } = W.buildSocketScan(pn([[500]]), rows); const about = W.unparsedAbout(unparsed, new Set([500])); const aboutOther = W.unparsedAbout(unparsed, new Set([999])); row('K45', 'FAIL', about.length === 1 && aboutOther.length === 0 ? 'FAIL' : 'PASS', 'an unplaceable row mentioning OUR inode (500) is reported as about-us; one mentioning none of ours is not (the stranger rule, both directions)', `about=${about.length} aboutOther=${aboutOther.length}`); }
 // pathological input: time-boxed
 {
-  const t0 = Date.now(); const big = pn(Array.from({ length: 200000 }, (_, i) => [i + 1, `/run/x/s${i}`])); const ssBig = Array.from({ length: 200000 }, (_, i) => `u_str LISTEN 0 4096 /run/x/s${i} ${i + 1} * 0`).join('\n');
+  const t0 = Date.now(); const big = pn(Array.from({ length: 200000 }, (_, i) => [i + 1, `/run/x/s${i}`])); const ssBig = Array.from({ length: 200000 }, (_, i) => `u_str LISTEN 0 4096 /run/x/s${i} ${i + 1} * 0 <-> ino:5 dev:0/36`).join('\n');
   const r = W.buildSocketScan(big, ssBig); const ms = Date.now() - t0; row('K26', 'PASS', ms < 8000 && r.unparsed.length === 0 ? 'PASS' : 'FAIL', '200k-socket host: parse time + 0 unparsed', `${ms} ms`);
   const w = ' '.repeat(40000); const t1 = Date.now(); const r2 = W.parseSsPairs('u_str LISTEN 0 4096 /a' + w + 'b 5 * 0', new Set([5])); const ms2 = Date.now() - t1; row('K27', 'GAP', ms2 < 2000 ? 'PASS' : 'FAIL', 'whitespace-run line (quadratic SS_TAIL; moot: sun_path <= 108 bytes)', `${ms2} ms pairs=${r2.pairs.length} unparsed=${r2.unparsed.length}`);
 }
