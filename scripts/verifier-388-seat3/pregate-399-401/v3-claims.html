@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>V3 claims</title>
+<style>body{font:16px sans-serif;margin:8px} #panel{height:100px;overflow:auto;border:1px solid #888;width:300px} #panel div{height:1000px;background:linear-gradient(#fff,#ccf)} .gap{height:1400px}</style>
+<script>
+console.log('claims-log-load');
+setTimeout(function () { throw new Error('claims-uncaught-load'); }, 150);
+localStorage.setItem('claimkey', 'v1-claim');
+document.cookie = 'claimcookie=c1; path=/';
+window.__loads = (Number(sessionStorage.getItem('v3loads')) || 0) + 1; sessionStorage.setItem('v3loads', String(window.__loads));
+</script></head><body>
+<h1 id="h1">V3 claims heading</h1>
+<label>Colour <select id="sel"><option value="r">Red</option><option value="g">Green</option><option value="b">Blue</option></select></label>
+<label><input type="checkbox" id="chk"> Tick</label>
+<label><input type="checkbox" id="chk2" checked> Untick</label>
+<label>Attachment <input type="file" id="file"></label>
+<label>Name <input type="text" id="name"></label>
+<button id="conf" onclick="setTimeout(function(){ window.__c = confirm('claims?'); }, 60)">ask</button>
+<button id="logbtn" onclick="console.log('claims-log-click'); setTimeout(function(){ throw new Error('claims-uncaught-click'); }, 20)">log</button>
+<button id="netbtn" onclick="fetch('/index.html?claims-net=click').catch(function(){})">net</button>
+<div id="panel"><div>tall panel</div></div>
+<div class="gap"></div>
+<button id="bottom">bottom</button>
+</body></html>
