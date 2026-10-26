@@ -40,8 +40,11 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   // input isn't focused.
   const [urlInput, setUrlInput] = useState('');
   const urlFocused = useRef(false);
-  // The LATEST url main pushed — read by onBlur. `state.url` in a closure lags a render: the input blurs ~11 ms after a
-  // submit (the page takes focus) and used to reset the bar to the stale blank url, leaving it empty after the first navigation.
+  // The LATEST url main pushed — read by onBlur (a ref, so it is not a render behind like `state.url` in a closure).
+  // KNOWN PRE-EXISTING DEFECT, NOT FIXED here: after the first navigation of a blank tab the bar can stay EMPTY (seat 3: 8/26 on this
+  // code vs 3/26 on the code before it — not distinguishable). Trace: submit -> the input blurs 10-38 ms later -> onBlur resets the bar
+  // to latestUrl, still '' because main has not pushed the url yet -> the input is refocused 1-11 ms later -> the url event is skipped
+  // (urlFocused) -> '' stays. A ref cannot help: both are '' at blur. Ledger #405 (#393 verifier report, F1).
   const latestUrl = useRef('');
   /** Take a state from main: remember its url for onBlur, and let the bar follow it unless the user is typing. */
   const applyState = useCallback((s: BrowserPanelState, force = false) => {

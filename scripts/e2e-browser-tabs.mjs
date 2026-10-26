@@ -3,7 +3,7 @@
 // One scratch world (ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR, one seeded workspace, pinned scratch account, stub `claude`),
 // the shared fixture site (three pages, three distinct background colours) and THREE boots of the app on the same world:
 //   boot 1  tabs     new tab x2 via the strip, URL bar follows the ACTIVE tab, switching paints the right native view (compositor pixels)
-//           urlbar   12x: new blank tab -> type a URL -> the bar must SHOW it once loaded (the input blurs ~11 ms after submit; it used to reset to a stale blank)
+//           urlbar   PROBE of a KNOWN pre-existing defect (NOT fixed): 12x new blank tab -> type a URL -> does the bar SHOW it once loaded? It did not reproduce here (0/36); the verifier saw it 8/26
 //           cap      fill to 8, the 9th is refused: notice shown, 8 tabs, 8 page targets (no leaked view)
 //           paint    pane hidden / Help overlay up -> no fixture colour left over the app
 //           reopen   a BACKGROUND tab's title event must not re-open a pane the user closed; an agent-style navigation still does (F2)
@@ -372,7 +372,7 @@ try {
     clause('tabs', 'ctl/fixture-colours-distinct', !near(COLORS.a, COLORS.b, 40) && !near(COLORS.b, COLORS.c, 40) && !near(COLORS.a, COLORS.c, 40), `A ${hex(COLORS.a)} B ${hex(COLORS.b)} C ${hex(COLORS.c)}`);
     clause('tabs', 'three-live-views-three-tabs', (await viewTargets(b)).length === 3, `page targets = ${(await viewTargets(b)).length}, tabs = ${(await tabs(b)).length}`);
 
-    // ── urlbar: the bar shows the URL after the FIRST navigation of a blank tab (the 4/14 flake in the verifier baseline) ──
+    // ── urlbar: PROBE of a KNOWN pre-existing defect — the bar can stay empty after the FIRST navigation of a blank tab (verifier: 4/14 on the old code, 8/26 on this, 3/26 on the code before it). NOT a guard of a fix ──
     if (ARMS.has('urlbar')) {
       const empty = [];
       const N = 12;
@@ -381,8 +381,8 @@ try {
         await clickSel(b, '.browser-tab-new');
         await softWait(async () => (await tabs(b)).length === 4, 10000, 'a 4th (blank) tab');
         await typeUrl(b, URLS[letter]);
-        // The page takes focus ~11 ms after a submit in the verifier's drives; a CDP-driven Enter leaves the input focused, so force
-        // that blur at a varying delay (2..40 ms) to hit the window between main's first events and React's flush.
+        // In the verifier's drives the input blurs 10-38 ms after a submit (then is refocused 1-11 ms later); a CDP-driven Enter leaves it focused,
+        // so force a blur at a varying delay (2..40 ms) to try to hit the same window. It never reproduced the empty bar here.
         await sleep([2, 6, 11, 16, 25, 40][i % 6]);
         await b.cdp.eval(`document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
         await softWait(async () => (await tabs(b))[3]?.label === labelOf(letter), 20000, `blank tab to load fixture ${letter.toUpperCase()}`);
@@ -392,7 +392,7 @@ try {
         await clickSel(b, '.browser-tab-close', 3);
         await softWait(async () => (await tabs(b)).length === 3, 10000, 'the extra tab to close');
       }
-      clause('urlbar', 'url-bar-shows-the-url-after-the-first-navigation-of-a-blank-tab', empty.length === 0, `${N} blank-tab navigations, bar wrong in ${empty.length}${empty.length ? `: ${empty.join('; ')}` : ' (0/12 with a forced blur 2-40 ms after each submit — a regression net: the unfixed bar did NOT fail here either, the 4/14 race is not reachable from CDP)'}`);
+      clause('urlbar', 'url-bar-shows-the-url-after-the-first-navigation-of-a-blank-tab', empty.length === 0, `${N} blank-tab navigations, bar wrong in ${empty.length}${empty.length ? `: ${empty.join('; ')}` : ' (0/12 with a forced blur 2-40 ms after each submit. This is a PROBE of a known pre-existing defect, not evidence of a fix: the verifier measured the empty bar 8/26 on this code and 3/26 before it; CDP timing here never reproduced it)'}`);
       clause('urlbar', 'ctl/three-tabs-left-after-the-loop', (await tabs(b)).length === 3, `tabs ${(await tabs(b)).length}`);
     }
 

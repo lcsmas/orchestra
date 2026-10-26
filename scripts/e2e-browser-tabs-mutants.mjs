@@ -13,8 +13,8 @@ const OUT = process.env.MUT_OUT || path.join(process.env.TMPDIR || os.tmpdir(), 
 fs.mkdirSync(OUT, { recursive: true });
 const P = 'src/main/browser-panel.ts';
 
-// NOT here: the URL-bar blur fix (BrowserPanel.tsx `latestUrl`). Its unfixed form SURVIVED the rig (arm `urlbar`, even with a forced blur 2-40 ms after submit):
-// the race needs a blur between an IPC event and React's commit, which CDP timing cannot hit. The arm is a regression net, not a proof (ledger #405 #393 nomination).
+// NOT here: the URL-bar-empty-after-first-navigation defect (BrowserPanel.tsx). It is a KNOWN pre-existing defect, NOT fixed (seat 3 refuted the claimed fix, ledger #405);
+// there is no fix to mutate. Arm `urlbar` is only a probe: CDP timing never reproduced the empty bar here.
 const MUTANTS = [
   { id: 'B1-cap-ignored', file: P, arms: 'tabs,cap', from: '  if (!d.ok) return refused(wsId, d.reason, d.message);\n  const tab = createTab(wsId, opts);', to: '  const tab = createTab(wsId, opts);', red: ['ninth-tab-refused-with-a-clear-notice', 'ninth-tab-creates-no-tab-and-no-view'] },
   { id: 'B2-snapshot-never-saved', file: P, arms: 'tabs,restore', from: '  savePanelTabs(panel);\n  platform.broadcast', to: '  platform.broadcast', red: ['tabs-file-holds-three-tabs-and-the-active-index', 'graceful-restart-restores-three-tabs-same-urls', 'sigkill-restart-restores-three-tabs-with-the-active-one'] },
