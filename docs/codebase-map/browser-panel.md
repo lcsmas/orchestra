@@ -880,6 +880,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   those commands `Session with given id not found.` (the answer a command arriving a moment later already got) right after it emits the detach. Rig arm
   `iframe-churn` (`pages/iframe-churn.html`); unit arms `cdp-proxy-core-detach.test.ts`, `cdp-session-pending.test.ts`, mutants `scripts/mutate-cdp-session-pending.mjs`.
   A session whose detach was announced is RETIRED (bounded, 1024): a later command on it is refused at once instead of being forwarded into the void.
+  A tab's whole debugger going away (`onDebuggerDetached`: DevTools took it, tab destroyed, #400's `replaced` swap) settles every child command in flight too (`abortAll`).
   Limits: a nested child (worker inside an iframe) is settled only if Chromium announces its own detach; a tab's whole-debugger detach relies on Electron
   flushing the pending commands itself ("target closed while handling command", seen in the trace), not on the proxy.
 - **Screenshots** (`shared/cdp-capture.ts`): `invalidate()` → keep the real `Page.captureScreenshot` pending with 1×1 probes
