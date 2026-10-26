@@ -46,10 +46,10 @@ orchestra browser snapshot -i                        # the page changed → take
 | type | §type @e3 "text"§ appends to that element · §keyboard type "text"§ types into whatever is focused (neither sends key events: use §press§ for those) |
 | keys | §press Enter§ · §press Tab§ · §press Control+a§ |
 | choose, tick, upload | §select @e7 "Label"§ · §check @e8§ · §uncheck @e8§ · §upload @e9 ./report.pdf§ |
-| scroll | §scroll down 600§ · §scroll up 200§ · §scrollintoview @e12§ |
+| scroll | §scroll down 600§ · §scroll up 200§ · §scrollintoview @e12§ · inside a scrollable box: §scroll down 300 --selector "#panel"§ |
 | wait | §wait "#result"§ (until a selector appears) · §wait 500§ (milliseconds) |
 | read | §get text @e5§ · §get value @e3§ · §get url§ · §get title§ · §is visible @e5§ |
-| run JS | §eval "document.title"§ prints the value as JSON; a promise is awaited; a thrown error is exit 1 |
+| run JS | §eval "document.title"§ prints the value as JSON; a promise is awaited; a thrown error is exit 1. The page keeps ONE global scope: a top-level §const x§ / §let x§ declared in two calls fails the second ("already been declared") — wrap multi-statement scripts in §(() => { … })()§ |
 | dialogs | §dialog status§ · §dialog accept§ · §dialog dismiss§ (an open §confirm()§ blocks the page until you answer) |
 | debug | §console§ · §errors§ · §network requests§ · §cookies get§ · §storage local get <key>§ |
 | history | §back§ · §forward§ · §reload§ |
@@ -101,7 +101,7 @@ orchestra browser eval "(() => { const el = document.querySelector('#q'); Object
 
 ## Focus
 
-Your commands never move the human's keyboard focus: they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed.
+Your commands never move the human's keyboard focus: they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
 
 ## What you cannot do
 

@@ -18,6 +18,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { abLayout } from '../src/main/agent-browser-daemon.ts';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { BROWSER_SKILL, BROWSER_SKILL_EXAMPLE_HEADING, BROWSER_SKILL_NAME, shellWords } from '../src/shared/browser-skill.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -87,6 +88,7 @@ if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via sc
 if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
 if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
 const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
+const XDG = privateRuntimeDir(); // the contained rig's PRIVATE runtime dir (incident Q2): never the human's /run/user/<uid>
 
 // ── scratch-containment guard (live dirs are never handed to the app) ─────────────────────────────────────────────────────────
 const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
@@ -211,7 +213,7 @@ function listProcsByHome(home) {
   return out.filter((p) => p !== process.pid);
 }
 const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
-const daemonPids = (ctx) => { const l = abLayout(ctx.world.ohome, process.env.XDG_RUNTIME_DIR); const dir = path.join(l.socketDir, 'namespaces', 'orchestra', 'run'); const out = {}; try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.pid')) out[f.slice(0, -4)] = Number(fs.readFileSync(path.join(dir, f), 'utf8').trim()); } catch {} return out; };
+const daemonPids = (ctx) => { const l = abLayout(ctx.world.ohome, XDG); const dir = path.join(l.socketDir, 'namespaces', 'orchestra', 'run'); const out = {}; try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.pid')) out[f.slice(0, -4)] = Number(fs.readFileSync(path.join(dir, f), 'utf8').trim()); } catch {} return out; };
 
 const results = []; // {arm, clause, ok, detail}
 function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !!ok, detail }); console.log(`  ${ok ? 'PASS' : 'FAIL'}  [${arm}] ${name} — ${detail}`); }
@@ -268,7 +270,7 @@ async function main() {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
-  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: XDG, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_RELEASE_GRACE_MS: '1500', ...(TRACE ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
@@ -284,10 +286,9 @@ async function main() {
     clause('ctl', 'app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     ui = await Cdp.connect(target.webSocketDebuggerUrl);
     await ui.send('Page.enable');
-    const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
-    const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
-      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+    // Assert what the DRIVER handed the app: Chromium may rewrite /proc/<pid>/environ once a bus var is present (seat 2 F2), so the process view is informational only
+    clause('ctl', 'scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && env.XDG_RUNTIME_DIR === XDG && !('DISPLAY' in env) && !('DBUS_SESSION_BUS_ADDRESS' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND,
+      `env handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} (the rig's private dir) WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'} DBUS=${'DBUS_SESSION_BUS_ADDRESS' in env ? 'SET' : '<unset>'}`);
     const ctx = { world, W1, W2, FIX, port, app, ui, targets, env, logFile };
     await runArms(ctx);
   } catch (e) {
@@ -299,9 +300,9 @@ async function main() {
     try { process.kill(-app.pid, 'SIGKILL'); } catch {}
     try { fixture.kill('SIGKILL'); } catch {}
     { // daemons a refused-then-leaked mutant run may have left (they carry no ORCHESTRA_HOME), then the scratch socket dir — only ever THIS ORCHESTRA_HOME's hashed one
-      const l = abLayout(world.ohome, process.env.XDG_RUNTIME_DIR);
+      const l = abLayout(world.ohome, XDG);
       for (const pid of Object.values(daemonPids({ world }))) { if (environOf(pid)?.includes(`AGENT_BROWSER_SOCKET_DIR=${l.socketDir}`)) { try { process.kill(pid, 'SIGKILL'); } catch {} } }
-      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((process.env.XDG_RUNTIME_DIR ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
+      if (/\/orch-ab-[0-9a-f]{8}$/.test(l.socketDir) && l.socketDir.startsWith((XDG ?? '/nonexistent') + '/')) fs.rmSync(l.socketDir, { recursive: true, force: true });
     }
     for (const p of listProcsByHome(world.ohome)) { try { process.kill(p, 'SIGKILL'); } catch {} }
     let left = listProcsByHome(world.ohome);
@@ -357,7 +358,7 @@ async function oracle(ctx, urlPrefix, ms = 15000) {
   const t = await waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && x.url.startsWith(urlPrefix)) || null, ms, `a panel page at ${urlPrefix}`);
   return Cdp.connect(t.webSocketDebuggerUrl);
 }
-const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*\\[ref=(e\\d+)\\]`).exec(snapshot); return m ? `@${m[1]}` : null; };
+const refOf = (snapshot, role, name) => { const m = new RegExp(`${role} "${name}\\s*"[^\\n]*ref=(e\\d+)`).exec(snapshot); return m ? `@${m[1]}` : null; };
 /** Put the human's keyboard focus in the workspace composer (the CodeMirror editor in the renderer DOM) with a TRUSTED click, and report whether it is there. */
 const composerFocus = (ctx) => ctx.ui.eval(`(() => { const t = document.querySelector('.av-composer .cm-content'); return t ? { onComposer: document.activeElement === t, windowFocus: document.hasFocus() } : null; })()`);
 const focusComposer = async (ctx) => {
@@ -371,8 +372,9 @@ const focusComposer = async (ctx) => {
 const regTabs = async (ctx, W) => (await ctx.ui.eval(`window.orchestra.browserState(${sel(W.id)})`));
 /** Open `url` on W through the CLI and hand back a fresh oracle on the loaded page. */
 async function openOn(ctx, W, url) {
-  const r = await cli(ctx, W, ['open', url]);
-  const o = await oracle(ctx, url.split('?')[0]);
+  const u = `${url}${url.includes('?') ? '&' : '?'}w=${W.name}`; // one page per workspace: two panels on the same url would make the oracle ambiguous
+  const r = await cli(ctx, W, ['open', u]);
+  const o = await oracle(ctx, u);
   return { r, o };
 }
 
@@ -552,6 +554,11 @@ const ARM_FNS2 = {
       const m = await cli(ctx, W1, ['eval', "document.getElementById('out').textContent = 'evaled'; 'ok'"]);
       const after = await o.eval(`document.getElementById('out').textContent`);
       clause(A, 'runs-in-the-page', m.code === 0 && after === 'evaled', `${show(m)} → oracle #out ${JSON.stringify(after)}`);
+      const c1 = await cli(ctx, W1, ['eval', 'const zz399 = 1; zz399']);
+      const c2 = await cli(ctx, W1, ['eval', 'const zz399 = 2; zz399']);
+      const i1 = await cli(ctx, W1, ['eval', '(() => { const yy399 = 1; return yy399; })()']);
+      const i2 = await cli(ctx, W1, ['eval', '(() => { const yy399 = 2; return yy399; })()']);
+      clause(A, 'repeated-top-level-const-fails-an-iife-does-not', c1.code === 0 && c2.code !== 0 && /already been declared/.test(c2.stderr + c2.stdout) && i1.code === 0 && i2.code === 0 && i2.stdout.trim() === '2', `top-level const twice: ${show(c1)} then ${show(c2)}; the same in an IIFE: ${show(i1)} then ${show(i2)}`);
       const bad = await cli(ctx, W1, ['eval', "throw new Error('boom-399')"]);
       clause(A, 'page-error-is-reported', bad.code !== 0 && /boom-399/.test(bad.stderr + bad.stdout), show(bad));
     } finally { o.close(); }
@@ -618,15 +625,16 @@ const ARM_FNS3 = {
     const { W1, W2, FIX } = ctx; const A = 'hidden-panel';
     await selectWs(ctx, W1); await openPane(ctx);
     await cli(ctx, W1, ['open', `${FIX}/index.html`]);
-    const w2 = await cli(ctx, W2, ['open', `${FIX}/parity.html`]);
-    const o2 = await oracle(ctx, `${FIX}/parity.html`);
+    const U2 = `${FIX}/parity.html?w=${W2.name}`;
+    const w2 = await cli(ctx, W2, ['open', U2]);
+    const o2 = await oracle(ctx, U2);
     try {
-      clause(A, 'ctl/w2-is-in-the-background', w2.code === 0 && (await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`)), `${W1.branch} is the active workspace; ${W2.branch} has a panel on ${FIX}/parity.html that is not composited`);
+      clause(A, 'ctl/w2-is-in-the-background', w2.code === 0 && (await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`)), `${W1.branch} is the active workspace; ${W2.branch} has a panel on ${U2} that is not composited`);
       const snap = await cli(ctx, W2, ['snapshot', '-i']); const name = refOf(snap.stdout, 'textbox', 'Name'), go = refOf(snap.stdout, 'button', 'Go');
       clause(A, 'snapshot-keeps-working', snap.code === 0 && !!name && !!go, show(snap));
       const ev = await cli(ctx, W2, ['eval', 'document.title']);
       clause(A, 'eval-keeps-working', ev.code === 0 && /Parity fixture/.test(ev.stdout), show(ev));
-      const nav = await cli(ctx, W2, ['open', `${FIX}/parity.html`]);
+      const nav = await cli(ctx, W2, ['open', U2]);
       clause(A, 'open-keeps-working', nav.code === 0, show(nav));
       const snap2 = await cli(ctx, W2, ['snapshot', '-i']); const name2 = refOf(snap2.stdout, 'textbox', 'Name'), go2 = refOf(snap2.stdout, 'button', 'Go');
       const fill = await cli(ctx, W2, ['fill', name2 ?? '@e0', 'typed while hidden'], { timeoutMs: 45000 });
@@ -656,7 +664,7 @@ const ARM_FNS3 = {
       const st1 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
       clause(A, 'skill-workaround-updates-a-controlled-input-while-hidden', !!js && withSetter?.code === 0 && st1.value === 'via-skill' && st1.state === 'state:via-skill', `skill snippet found: ${!!js}; ${withSetter ? show(withSetter) : ''} → oracle ${JSON.stringify(st1)}`);
       await o2.eval(`document.getElementById('ctl').value = ''; document.getElementById('ctlstate').textContent = ''`);
-      await cli(ctx, W2, ['eval', "const el = document.querySelector('#ctl'); el.value = 'plain'; el.dispatchEvent(new Event('input', { bubbles: true })); 1"]);
+      await cli(ctx, W2, ['eval', "(() => { const el = document.querySelector('#ctl'); el.value = 'plain'; el.dispatchEvent(new Event('input', { bubbles: true })); })()"]);
       const st2 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
       clause(A, 'ctl/a-plain-assignment-leaves-the-controlled-state-stale', st2.value === 'plain' && st2.state === '', `plain value= + input event → oracle ${JSON.stringify(st2)} (the fixture discriminates the two forms, as React does)`);
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
@@ -664,9 +672,11 @@ const ARM_FNS3 = {
       const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']]];
       const outs = []; for (const [n, a] of keep) outs.push([n, await cli(ctx, W2, a, { timeoutMs: 45000 })]);
       clause(A, 'wait-get-cookies-storage-console-network-keep-working', outs.every(([, r]) => r.code === 0), outs.map(([n, r]) => `${n}: rc=${r.code}${r.code ? ' ' + JSON.stringify(r.stderr.slice(0, 80)) : ''}`).join(' · '));
+      await o2.eval(`window.scrollTo(0, 0)`); await sleep(300); // the hidden attempts above may have scrolled elements into view
+      const y0b = await o2.eval(`Math.round(window.scrollY)`);
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
-      clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0 - 300) <= 2, `${show(sc)}; oracle scrollY ${y0} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
+      clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0b - 300) <= 2, `${show(sc)}; oracle scrollY ${y0b} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
     } finally { o2.close(); }
   },
 };
@@ -770,9 +780,12 @@ const ARM_FNS6 = {
     try {
       const snap = await cli(ctx, W1, ['snapshot', '-i']);
       const r = { go: refOf(snap.stdout, 'button', 'Go'), name: refOf(snap.stdout, 'textbox', 'Name'), chk: refOf(snap.stdout, 'checkbox', 'Agree'), sel: refOf(snap.stdout, 'combobox', 'Country'), dbl: refOf(snap.stdout, 'button', 'Double') };
+      console.log(`    [probe] table snapshot -i:\n${snap.stdout.split('\n').map((l) => '      ' + l).join('\n')}`);
       clause(A, 'ctl/refs-found', Object.values(r).every(Boolean), `refs ${JSON.stringify(r)}`);
       const read = (expr) => o.eval(expr);
+      console.log(`    [probe] before dblclick: ${JSON.stringify(await read(`(() => { const r = document.getElementById('dbl').getBoundingClientRect(); return { scrollY: window.scrollY, innerW: innerWidth, innerH: innerHeight, dbl: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], url: location.href }; })()`))}`);
       const dc = await cli(ctx, W1, ['dblclick', r.dbl ?? '@e0']);
+      console.log(`    [probe] after dblclick: ${JSON.stringify(await read(`({ dblout: document.getElementById('dblout').textContent, scrollY: window.scrollY })`))}`);
       clause(A, 'dblclick', dc.code === 0 && (await read(`document.getElementById('dblout').textContent`)) === 'dbl', show(dc));
       const hv = await cli(ctx, W1, ['hover', r.dbl ?? '@e0']);
       clause(A, 'hover', hv.code === 0 && (await read(`document.getElementById('hovout').textContent`)) === 'hovered', show(hv));
@@ -801,7 +814,7 @@ const ARM_FNS6 = {
       const deep = await cli(ctx, W1, ['snapshot', '-d', '1']);
       clause(A, 'snapshot-depth', deep.code === 0 && deep.stdout.length < full.stdout.length, `full ${full.stdout.length} chars, -d 1 ${deep.stdout.length} chars`);
       const ann = await cli(ctx, W1, ['screenshot', '--annotate', path.join(ctx.world.fakeHome, 'ann.png')]);
-      clause(A, 'screenshot-annotate', ann.code === 0 && /\[1\] @e\d+/.test(ann.stdout) && fs.existsSync(path.join(ctx.world.fakeHome, 'ann.png')), show(ann));
+      clause(A, 'screenshot-annotate', ann.code === 0 && /\[\d+\] @e\d+/.test(ann.stdout) && fs.existsSync(path.join(ctx.world.fakeHome, 'ann.png')), show(ann));
       // MEASUREMENT for the skill (a container that scrolls on its own): --selector
       const box0 = await read(`document.getElementById('box').scrollTop`);
       const sb = await cli(ctx, W1, ['scroll', 'down', '200', '--selector', '#box']);
