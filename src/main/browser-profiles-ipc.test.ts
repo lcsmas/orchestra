@@ -18,7 +18,7 @@ function rig(mainId: number | null = 5) {
     create: async (n) => (served.push(`create:${String(n)}`), OK),
     rename: async (i, n) => (served.push(`rename:${String(i)}:${String(n)}`), OK),
     remove: async (i) => (served.push(`delete:${String(i)}`), OK),
-    attach: async (w, p) => (served.push(`attach:${String(w)}:${String(p)}`), OK),
+    assign: async (w, p) => (served.push(`assign:${String(w)}:${String(p)}`), OK),
   };
   registerBrowserProfilesIpc({
     ipc: { handle: (c, fn) => void handlers.set(c, fn) },
@@ -95,7 +95,7 @@ test('an unexpected service failure becomes a refusal the UI can show — the in
     service: {
       list: () => [],
       create: async () => { throw new Error('boom'); },
-      rename: async () => OK, remove: async () => OK, attach: async () => OK,
+      rename: async () => OK, remove: async () => OK, assign: async () => OK,
     },
     log: { warn() {}, error() {} },
   });

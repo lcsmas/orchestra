@@ -94,7 +94,7 @@ test('rename: keeps the id and the partition, refuses a clash with ANOTHER profi
 
 test('attach: records the id on the workspace THEN rebuilds its panel on that profile; returns the new state', async () => {
   const r = rig({ profiles: [P(A, 'Staging')], workspaces: [{ id: 'w1' }] });
-  const res = await r.svc.attach('w1', A);
+  const res = await r.svc.assign('w1', A);
   assert.equal(res.ok, true);
   assert.deepEqual(r.calls, [`record:w1=${A}`, `reprofile:w1=${A}`]);
   assert.equal((res as { state: BrowserPanelState }).state.profileId, A);
@@ -103,21 +103,21 @@ test('attach: records the id on the workspace THEN rebuilds its panel on that pr
 
 test('attach: switching and detaching; the same profile again rebuilds nothing new (reprofilePanel is told the same id)', async () => {
   const r = rig({ profiles: [P(A, 'Staging'), P(B, 'Prod')], workspaces: [{ id: 'w1', browserProfileId: A }] });
-  assert.equal((await r.svc.attach('w1', B)).ok, true);
+  assert.equal((await r.svc.assign('w1', B)).ok, true);
   assert.equal(r.workspaces[0].browserProfileId, B);
-  assert.equal((await r.svc.attach('w1', null)).ok, true);
+  assert.equal((await r.svc.assign('w1', null)).ok, true);
   assert.equal(r.workspaces[0].browserProfileId, undefined, 'detach clears the record');
   assert.equal(r.calls.at(-1), 'reprofile:w1=-');
   r.calls.length = 0;
-  assert.equal((await r.svc.attach('w1', null)).ok, true);
+  assert.equal((await r.svc.assign('w1', null)).ok, true);
   assert.deepEqual(r.calls, ['reprofile:w1=-'], 'already detached: no record write');
 });
 
 test('attach: an unknown profile or workspace is refused and NOTHING moves', async () => {
   const r = rig({ profiles: [P(A, 'Staging')], workspaces: [{ id: 'w1' }] });
-  const bad = await r.svc.attach('w1', 'bp-eeeeeeeeeeee');
+  const bad = await r.svc.assign('w1', 'bp-eeeeeeeeeeee');
   assert.equal((bad as { reason: string }).reason, 'unknown-profile');
-  const noWs = await r.svc.attach('ghost', A);
+  const noWs = await r.svc.assign('ghost', A);
   assert.equal((noWs as { reason: string }).reason, 'unknown-workspace');
   assert.deepEqual(r.calls, []);
 });
@@ -144,7 +144,7 @@ test('attach: when the panel cannot move, the record is rolled back and the erro
     now: () => 0,
   };
   const svc = createBrowserProfilesService(deps2);
-  await assert.rejects(() => svc.attach('w1', A), /main window not ready/);
+  await assert.rejects(() => svc.assign('w1', A), /main window not ready/);
   assert.equal(r.workspaces[0].browserProfileId, undefined, 'record restored');
   assert.deepEqual(r.calls, [`record:w1=${A}`, 'record:w1=-']);
 });

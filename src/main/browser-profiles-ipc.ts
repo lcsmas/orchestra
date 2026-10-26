@@ -71,6 +71,6 @@ export function registerBrowserProfilesIpc(deps: {
     guard('browserProfiles:delete', e) ?? run('browserProfiles:delete', () => service.remove(id)),
   );
   ipc.handle('browser:profileAttach', (e, wsId: unknown, profileId: unknown) =>
-    guard('browser:profileAttach', e) ?? run('browser:profileAttach', () => service.attach(wsId, profileId)),
+    guard('browser:profileAttach', e) ?? run('browser:profileAttach', () => service.assign(wsId, profileId)),
   );
 }

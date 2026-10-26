@@ -38,7 +38,7 @@ export interface BrowserProfilesService {
   rename(id: unknown, name: unknown): Promise<BrowserProfileResult>;
   remove(id: unknown): Promise<BrowserProfileResult>;
   /** `profileId === null` detaches (navigation éphémère). */
-  attach(wsId: unknown, profileId: unknown): Promise<BrowserProfileResult>;
+  assign(wsId: unknown, profileId: unknown): Promise<BrowserProfileResult>;
 }
 
 export function createBrowserProfilesService(deps: BrowserProfilesDeps): BrowserProfilesService {
@@ -118,7 +118,7 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
         return { ok: true, profiles: deps.getProfiles() };
       }),
 
-    attach: (wsId, profileId) =>
+    assign: (wsId, profileId) =>
       serial(async () => {
         const ws = deps.workspaces().find((w) => w.id === wsId);
         if (!ws || typeof wsId !== 'string') return refuse('unknown-workspace', 'That workspace no longer exists.');
