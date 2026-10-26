@@ -643,10 +643,86 @@ env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
   `{exitCode, lastStderrLine}`. `RepoScripts` = `{setup?, run?, archive?}`
   (`types.ts:173`). Run scripts get their own `<wsId>:run` PTY.
 
-## Secrets — secrets.ts (107 lines)
-Electron `safeStorage` (libsecret/Keychain/DPAPI) at `~/.orchestra/secrets.json`;
-falls back to 0600 plaintext with a warning if no keyring. Currently stores the
-Linear API key: `getLinearApiKey`/`setLinearApiKey`/`clearLinearApiKey`.
+## Secrets — secrets.ts, linux-keyring.ts, shared/password-store.ts (#389)
+`secrets.ts` stores the Linear key, each account's Anthropic API key and base URL in
+`<userData>/orchestra/secrets.json` (0600): per entry `{value, enc}` — `enc:true` = base64
+`safeStorage` ciphertext (platform seam `encryptString`/`decryptString`), `enc:false` = plaintext
+fallback with a warning when `isEncryptionAvailable()` is false. Every mutation runs under one
+`serial()` lock and lands via tmp-file + `rename` (a failed write leaves the previous bytes);
+the first disk read is single-flight (`loading`).
+- **Backend selection (before `ready`)** — on Linux Chromium picks `basic_text` on a desktop it does
+  not recognise (sway, Hyprland…), so safeStorage is unavailable and every secret is plaintext even
+  with a keyring on the bus. `shared/password-store.ts` is the PURE rule (`decidePasswordStore`):
+  explicit `--password-store` wins → no reachable session bus → recognised desktop
+  (`isRecognisedDesktop`: `XDG_CURRENT_DESKTOP`/`DESKTOP_SESSION` tokens + `KDE_FULL_SESSION` etc.,
+  Chromium keeps its choice) → probe: `gnome-libsecret` ONLY for an UNLOCKED default collection;
+  locked (libsecret would wait on a prompt nobody answers, a ~76 s stall) or no service → Chromium's
+  choice. `linux-keyring.ts` owns the impure half: `probeSecretService` (`gdbus … Properties.Get
+  org.freedesktop.Secret.Collection Locked` on `/org/freedesktop/secrets/aliases/default`, read-only,
+  synchronous but WAIT-ONLY — it never abandons an in-flight call: a client vanishing mid-`Properties.Get` aborted the human's gnome-keyring-daemon
+  twice on 2026-10-26. `WAIT_ONLY_SH` runs gdbus (`--timeout 30` per call: it sends an `Introspect` first, then the Get) in the background and
+  polls it every 10 ms against a WALL-CLOCK deadline (`/proc/uptime` via the `read` builtin: no fork, so a failing `sleep` under process pressure cannot
+  end the wait early) of `PROBE_WAIT_MS` = 5 s; past that it exits 3 WITHOUT signalling — `unavailable`, Chromium's default, the orphaned child finishes
+  its own call. Worst case a dead daemon blocks the main thread 5 s. A wrapper `kill` / `timeout` / SIGTERM-SIGKILL spawnSync timeout is the
+  mutant). The probe's output file needs a writable scratch dir: `makeProbeDir` tries `os.tmpdir()`, then `$XDG_RUNTIME_DIR`, then the userData dir
+  (`extraScratchDirs`, index.ts); each failure is logged as `probe-notes="mkdtemp <base>: <code>"` in the startup line, none writable ⇒ `unavailable` (round-4 MINOR).
+  `classifyProbeAttempt` (round-6 PRODUCT): ONE retry (`MAX_PROBE_ATTEMPTS` = 2, after 100 ms, inside the same overall wait) only for an IMMEDIATE failure (< 50 ms) that is
+  not a reply — a spawn error of `sh`, a connect failure, a premature wrapper exit — never for a real answer, a `GDBus.Error:` bus reply (a real "no service"),
+  or the deadline; gdbus stderr goes to a file and every abnormal attempt (status/errno + first stderr line) is reported in `probe-notes`.
+  `selectLinuxPasswordStore` (appends the switch; `index.ts` calls it at module scope, never in CLI
+  mode, and logs `[secrets] password-store: … — <reason> (probe N ms) [desktop=… bus=…]` after
+  `initLogger`). **Electron sets `DBUS_SESSION_BUS_ADDRESS=disabled:` in its main process when the
+  launcher exported none** — that is "no address" (`usableBusAddress`); the bus is then
+  `$XDG_RUNTIME_DIR/bus` (`sessionBusKind`), the probe is pointed at it (`probeEnv`) and, when libsecret
+  is selected, the address is exported into `process.env` (`exportBusAddress`) — without it libsecret is
+  selected but safeStorage stays unavailable (rig arm `unlocked`, verified).
+- **Isolated instances never bind to the human's keyring (review F1)** — `isIsolatedInstance(env)`: `ORCHESTRA_HOME` set
+  (the packaged app never sets it; every built-app rig and `pnpm run dev` does) ⇒ reason `isolated-instance`, `--password-store=basic` FORCED (Chromium's own
+  choice on a recognised desktop — GNOME/KDE — would still bind the real keyring), NO probe, NO bus export — otherwise a rig run with the
+  real `XDG_RUNTIME_DIR` would seal scratch secrets through the human's login keyring and carry his bus. Settings words it truthfully:
+  `setKeyringSelectionReason` (index.ts) → `SecretsState.selectionReason` → the notice says "isolated home (ORCHESTRA_HOME) … set
+  ORCHESTRA_KEYRING=probe", not "no keyring is available". Behaviour change: a dev/scratch home on a RECOGNISED desktop
+  (GNOME/KDE) used to seal through libsecret/kwallet by Chromium's own choice and now uses `basic` — entries sealed earlier are
+  unreadable there (API-key accounts then fail closed); no change on sway, where it already was `basic_text`. `ORCHESTRA_KEYRING=probe` opts in (only `scripts/e2e-keyring.sh`, which brings a private bus).
+- **Fail closed (review F3)** — `getAccountApiCredentials(id)` is the ONLY way agents (`agent-sdk.ts` `buildSdkEnv`) and the usage
+  probe read an API key: a key whose base URL is stored but undecryptable (a locked keyring after the key was re-typed in plaintext) is
+  `withheld: 'base-url-unreadable'` — never sent without its gateway URL; a stored-but-undecryptable key is `key-unreadable` (the
+  usage text says so, not "no API key stored"). Do not call `getAccountApiKey`/`getAccountBaseUrl` from a new consumer.
+- **File hygiene (review F2)** — a load sweeps `secrets.json.<pid>.tmp` (a killed writer's leftover plaintext copy, next to the
+  link target when `secrets.json` is a symlink; anchored name match, non-recursive); a symlinked `secrets.json` is written THROUGH
+  (`writeTarget`: the directory is `realpath`ed first, relative links resolve from it, the link survives). Known limit: a link whose
+  target DIRECTORY is read-only cannot get its temp file there — the save fails loudly (EACCES), the previous bytes are untouched.
+- **Usage text** — `accountKeyMissingMessage(withheld)` names "stored but unreadable" / "withheld: base URL unreadable" without
+  blaming a cause (locked wallet, no bus, other keyring all land there); it is data on `AccountUsageStatus.errorMessage` — the badges
+  still key on `errorKind` alone.
+- **Re-encryption at startup** — `reencryptPlaintextSecrets()` (fired after the window in `index.ts`):
+  a no-op that never touches safeStorage when nothing is plaintext; skipped while encryption is
+  unavailable; otherwise each plaintext entry is replaced only by ciphertext that DECRYPTS BACK TO THE
+  SAME VALUE, a failing entry stays plaintext (retried next start), and the file is rewritten once,
+  atomically. Ciphertext written under a keyring that is gone next boot is kept untouched (unreadable
+  until the keyring is back).
+- **State for Settings** — `getSecretsState()` → `SecretsState {encrypted, backend, plaintextEntries,
+  encryptedEntries, selectionReason}` (`shared/secrets-state.ts`), IPC `secrets:state` / `window.orchestra.getSecretsState()`.
+  `secretsNotice(state)` is the pure rule for the warning ("Secrets are stored unencrypted on this
+  machine…", plus an "N stored secrets are encrypted and unreadable until a keyring is available again"
+  variant — no cause named); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.
+  `isSecretStorageEncrypted` (`accounts:secretsEncrypted`, the old boolean) is kept.
+- **Rigs** — `scripts/e2e-keyring.sh` → `e2e-contained-rig.sh` (built app, own sway, ALWAYS in the hidden world: `RIG_HIDE_REAL_RUNTIME=1`
+  makes the human's runtime dir an empty tmpfs; the driver `scripts/e2e-keyring.mjs` reads NO real bus / keyring daemon / keyring file and never
+  scans `/proc/*/environ` — incident Q2, ledger #405). Each arm = its own `XDG_RUNTIME_DIR` `<rig>/xdg/k-<arm>` (bus socket + the daemon's
+  control/pkcs11 sockets; the wayland alias is symlinked in), a PRIVATE `dbus-run-session` (config with one empty `servicedir`), a private
+  gnome-keyring-daemon under scratch XDG dirs; arms forged (must-FAIL preflight: forced real XDG/DBUS/env value ⇒ `--preflight-only` REFUSED rc 3,
+  nothing started) / unlocked / locked / nosvc / recognised / hung / gnome / relock / isolated / isolated-gnome. World clauses are PURE in
+  `shared/keyring-rig-world.ts` (driver env — `%hh`-decoded, malformed escape ⇒ refuse; the hidden world PROVEN from `/proc/self/mountinfo`: a fresh
+  private tmpfs stacked on the human's runtime-dir mount — its own device (a bind of the real dir shares it), no propagation tags, nothing mounted on it — env var only
+  the precondition; PHYSICAL preflight through `scripts/lib/rig-paths.mjs` — a
+  symlinked xdg / RIG_DIR / env value — dangling link chains followed hop by hop, `%hh`-decoded — is refused; scratch guards run BEFORE any mkdir; arm world, bus config, secrets owner = our daemon by exe + a socket
+  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS (paths from `/proc/net/unix`, byte-exact; `ss -xnaeH` only for which inode is connected to which — candidate splits, a marker + well-formed `ino:/dev:/peers:` tail required after the peer inode, never
+  pattern-stripped; an unplaceable row that mentions one of the arm's own inodes aborts after 3 snapshots, a stranger's odd row is tolerated and counted; fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
+  `--preflight-only` + source pins); processes are tracked by (pid, start time) from the private bus peers / app tree. Mutants
+  `scripts/keyring-mutants.mjs` (unit; U*, W* world, D* driver/launcher) and `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps:
+  gnome-keyring needs `--login` (password on stdin) THEN `--start` to publish `org.freedesktop.secrets`; the oracle uses `gdbus --address`
+  (never `--session`); `/proc/<app>/environ` is clobbered once a bus address is set (Chromium rewrites its title).
 
 ## Base-branch sync — repo-sync.ts (113 lines)
 `syncAllRepos(window)` (parallel per repo) → `syncBaseBranch` (git.ts) +

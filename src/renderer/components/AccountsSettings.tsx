@@ -4,6 +4,7 @@ import type { Account, AccountInherit } from '../../shared/types';
 import { formatEnvLines, parseEnvLines, sanitizeAccountEnv } from '../../shared/accounts';
 import type { AccountAuth } from '../../shared/accounts';
 import { AccountLoginModal } from './AccountLoginModal';
+import { SecretsNotice } from './SecretsNotice';
 
 interface Props {
   onClose: () => void;
@@ -332,6 +333,7 @@ export function AccountsSettings({ onClose }: Props) {
           <div className="modal-body">Loading…</div>
         ) : (
           <div className="modal-body">
+            <SecretsNotice />
             <p className="modal-hint">
               Each account is a separate Claude Code config directory
               (<code>CLAUDE_CONFIG_DIR</code>) with its own login. Assign an account to a repo in its

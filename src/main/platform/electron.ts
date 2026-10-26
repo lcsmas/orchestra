@@ -120,6 +120,15 @@ export function createElectronPlatform(getWindow: () => BrowserWindow | null): O
       return safeStorage.isEncryptionAvailable();
     },
 
+    getSecretBackend() {
+      if (process.platform !== 'linux') return null;
+      try {
+        return safeStorage.getSelectedStorageBackend();
+      } catch {
+        return null;
+      }
+    },
+
     encryptString(plain) {
       return safeStorage.encryptString(plain);
     },

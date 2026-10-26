@@ -31,6 +31,14 @@ app.whenReady().then(async () => {
   const win = new BaseWindow({ width: 1000, height: 700, frame: false, show: true, backgroundColor: '#1a1f26' });
   const bp = require(BUNDLE);
   bp.initBrowserPanels(() => win);
+  // #398: the registry holds no debugger of its own — its CDP commands ride the proxy host's seat (browser-cdp-host.ts, Electron + the proxy).
+  // The probe bundles browser-panel.ts ALONE, so it stands in with a minimal seat over the REAL webContents.debugger (attach on first use) and the
+  // teardown hook the host installs (detach before the contents close), keeping the "destroyPanel detaches every tab's debugger" clause honest.
+  bp.setCdpSeat({
+    async send(ws, tabId, method, params) { const wc = bp.tabContents(ws, tabId); if (!wc) throw new Error('no live view'); if (!wc.debugger.isAttached()) wc.debugger.attach('1.3'); return wc.debugger.sendCommand(method, params ?? {}); },
+    async hold() { return () => undefined; },
+  });
+  bp.setTabTeardownHook((wc) => { try { if (wc.debugger.isAttached()) wc.debugger.detach(); } catch { /* already detached */ } });
   await sleep(1200); // let sway map + size the window
   const RECT = { x: 200, y: 150, width: 600, height: 400 };
   const INNER = { x: 260, y: 210, width: 480, height: 280 }; // well inside RECT: tolerant of any CSD offset

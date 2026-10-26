@@ -14,6 +14,8 @@
 // receives. The Electron side (browser-panel.ts) does the CDP calls and calls
 // into here to shape what it got.
 
+import { shapeComponent, formatComponentLine, type DesignPickComponent } from './design-source.ts';
+
 /** The properties we lift out of `getComputedStyle`.
  *
  *  A full computed style is ~340 declarations — nearly all of them defaults
@@ -71,6 +73,11 @@ export interface DesignPick {
   styles: Partial<Record<StyleProp, string>>;
   /** The element's viewport box (CSS px), as used for the screenshot clip. */
   box: DesignPickBox;
+  /** React 17/18 dev builds only (#403): the owning component + the source
+   *  `file:line` to edit. Absent on React 19, Vue, production builds and
+   *  anything the secret filter rejected — the selector path is then the whole
+   *  locator. See {@link shapeComponent}. */
+  component?: DesignPickComponent;
   /** Base64 PNG of the element, cropped to {@link box } (padded). Absent when
    *  the screenshot failed — the text half of a pick is still useful alone, so
    *  a capture failure degrades rather than aborting the pick. */
@@ -97,6 +104,9 @@ export interface RawPickedElement {
    *  the tests can assert against. */
   computed: Record<string, string>;
   box: DesignPickBox;
+  /** Whatever the in-page React walker returned (unvalidated; {@link shapeComponent}
+   *  filters it). Absent/null on non-React pages. */
+  component?: unknown;
 }
 
 /** Trim `outerHTML` to {@link HTML_CAP}, marking the cut explicitly.
@@ -129,6 +139,7 @@ export function shapePick(
   raw: RawPickedElement,
   screenshotBase64?: string,
 ): DesignPick {
+  const component = shapeComponent(raw.component);
   return {
     wsId,
     url: raw.url,
@@ -137,6 +148,7 @@ export function shapePick(
     html: trimHtml(raw.outerHTML),
     styles: subsetStyles(raw.computed),
     box: raw.box,
+    ...(component ? { component } : {}),
     ...(screenshotBase64 ? { screenshotBase64 } : {}),
   };
 }
@@ -256,6 +268,7 @@ export function formatPickBlock(pick: DesignPick): string {
   lines.push('Selected element from the browser pane (Design Mode):');
   lines.push('');
   lines.push(`- selector: \`${pick.selector}\``);
+  if (pick.component) lines.push(`- component: ${formatComponentLine(pick.component)}`);
   lines.push(`- url: ${pick.url}`);
   if (pick.title) lines.push(`- page: ${pick.title}`);
   lines.push(

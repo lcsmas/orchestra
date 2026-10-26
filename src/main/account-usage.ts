@@ -18,7 +18,8 @@ import {
   type AccountUsageStatus,
   type RawUsageResponse,
 } from '../shared/accounts';
-import { getAccountApiKey, getAccountBaseUrl } from './secrets';
+import { getAccountApiCredentials } from './secrets';
+import { accountKeyMissingMessage } from '../shared/secrets-state';
 import type { Account, WorkspaceAccount } from '../shared/types';
 
 // Per-account usage poller, config-dir model. Each configured account is a
@@ -303,13 +304,11 @@ async function refreshStale(
       const prev = cache.get(acc.id);
       const fresh = prev && prev.dir === dir && prev.status.ok && now - prev.status.fetchedAt < CACHE_MS && !force.has(acc.id);
       if (fresh) continue;
-      const [apiKey, baseUrl] = await Promise.all([
-        getAccountApiKey(acc.id),
-        getAccountBaseUrl(acc.id),
-      ]);
+      const { apiKey, baseUrl, withheld } = await getAccountApiCredentials(acc.id);
       if (!apiKey) {
-        if (!prev || prev.status.errorKind !== 'not-logged-in') {
-          cache.set(acc.id, { status: fail(acc.id, 'not-logged-in', 'no API key stored', now), dir });
+        const msg = accountKeyMissingMessage(withheld);
+        if (!prev || prev.status.errorKind !== 'not-logged-in' || prev.status.errorMessage !== msg) {
+          cache.set(acc.id, { status: fail(acc.id, 'not-logged-in', msg, now), dir });
           changed = true;
         }
         continue;

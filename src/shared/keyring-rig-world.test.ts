@@ -1,0 +1,424 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, normPath, parseUnixSockets,
+  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseProcNetUnix, parseSsPairs, buildSocketScan, unparsedAbout, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
+  type ArmWorld, type DriverWorldFacts, type OwnerEvidence, type TreeEvidence,
+} from './keyring-rig-world.ts';
+import { HIDDEN_MI, HOST_MI, REBIND_ON_HIDE_MI, SELF_BIND_MI } from './keyring-rig-world.fixtures.ts';
+
+// #389 — the pure world checks of the keyring rig. Each clause has a must-PASS (a good world) and a must-FAIL arm that names it.
+
+const HUMAN = humanRuntimeDir(1000);
+const RIG = '/var/tmp/e2e-keyring-389/e2e64c-42';
+const ids = (cs: ReturnType<typeof failed>): string[] => cs.map((c) => c.id);
+
+test('the module is pure: no fs / child_process / process access (it only decides what the driver observed)', () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, 'keyring-rig-world.ts'), 'utf8');
+  assert.doesNotMatch(src, /from 'node:(fs|child_process|net|os)'|require\(|process\./);
+});
+
+test('normPath / referencesHumanRuntime: every spelling of the human runtime dir is caught, in every container shape; look-alikes are not', () => {
+  assert.equal(normPath('/run//user/./1000/x/../bus'), '/run/user/1000/bus');
+  for (const v of [HUMAN, `${HUMAN}/bus`, `unix:path=${HUMAN}/bus`, `/usr/bin:${HUMAN}/x:/bin`, '/run//user/1000', '/run/./user/1000', '/run/x/../user/1000', `file://${HUMAN}/keyring`, `--socket=${HUMAN}/keyring/pkcs11`, '/run/user', `unix:abstract=x,guid=y;path=${HUMAN}/b`, '/run/user:/usr/bin', 'a,/run/user;b', `XDG_DATA_DIRS=${HUMAN}:/usr/share`]) {
+    assert.ok(referencesHumanRuntime(v), `must catch: ${v}`);
+  }
+  for (const v of ['/var/tmp/e2e/run/userdata', '/var/tmp/rigs/xdg/k-unlocked', 'unix:path=/var/tmp/rig/bus', 'disabled:', '', '/usr/bin:/bin', 'run/users/x']) {
+    assert.ok(!referencesHumanRuntime(v), `must NOT flag: ${v}`);
+  }
+  assert.deepEqual(envHumanRuntimeRefs({ A: '/x', GNOME_KEYRING_CONTROL: `${HUMAN}/keyring`, B: undefined, DBUS_SESSION_BUS_ADDRESS: `unix:path=${HUMAN}/bus` }), ['DBUS_SESSION_BUS_ADDRESS', 'GNOME_KEYRING_CONTROL']);
+});
+
+const goodDriver = (): DriverWorldFacts => ({
+  rigDir: RIG,
+  env: { RIG_DIR: RIG, XDG_RUNTIME_DIR: `${RIG}/xdg`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${RIG}/no-session-bus`, WAYLAND_DISPLAY: 'wayland-rig', PATH: '/usr/bin:/bin', HOME: `${RIG}/home` },
+  noBusExists: false,
+  hiddenWorld: true,
+  mountinfo: HIDDEN_MI,
+  uid: 1000,
+});
+
+test('driver world: the rig-exported env passes every clause (control)', () => {
+  const cs = driverWorldChecks(goodDriver());
+  assert.deepEqual(ids(failed(cs)), []);
+  assert.equal(cs.length, 7);
+});
+
+test('driver world: each forged input fails exactly the clause that names it (must-FAIL arms)', () => {
+  const run = (mut: (f: DriverWorldFacts) => void): string[] => { const f = goodDriver(); mut(f); return ids(failed(driverWorldChecks(f))); };
+  assert.ok(run((f) => { f.env.XDG_RUNTIME_DIR = HUMAN; }).includes('xdg-is-the-rigs-private-dir'), 'forced real XDG_RUNTIME_DIR');
+  assert.ok(run((f) => { f.env.XDG_RUNTIME_DIR = `${HUMAN}/x`; }).includes('xdg-is-the-rigs-private-dir'));
+  assert.ok(run((f) => { f.env.XDG_RUNTIME_DIR = `${RIG}/other`; }).includes('xdg-is-the-rigs-private-dir'), 'a foreign dir');
+  assert.ok(run((f) => { delete f.env.XDG_RUNTIME_DIR; }).includes('xdg-is-the-rigs-private-dir'), 'unset');
+  assert.ok(run((f) => { f.env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${HUMAN}/bus`; }).includes('dbus-is-the-rigs-nonexistent-address'), 'forced real DBUS address');
+  assert.ok(run((f) => { delete f.env.DBUS_SESSION_BUS_ADDRESS; }).includes('dbus-is-the-rigs-nonexistent-address'), 'unset DBUS address');
+  assert.ok(run((f) => { f.noBusExists = true; }).includes('dbus-is-the-rigs-nonexistent-address'), 'the private no-bus path exists (something could listen)');
+  assert.ok(run((f) => { f.env.GNOME_KEYRING_CONTROL = `${HUMAN}/keyring`; }).includes('no-env-value-reaches-the-human-runtime'), 'a stray value');
+  assert.ok(run((f) => { f.env.PATH = `/usr/bin:${HUMAN}/bin`; }).includes('no-env-value-reaches-the-human-runtime'), 'inside a PATH list');
+  assert.ok(run((f) => { f.env.WAYLAND_DISPLAY = `${HUMAN}/wayland-1`; }).includes('display-is-a-bare-private-name'), 'an absolute display path');
+  assert.ok(run((f) => { f.env.DISPLAY = ':0'; }).includes('display-is-a-bare-private-name'), 'X11 reachable');
+  assert.ok(run((f) => { f.hiddenWorld = false; }).includes('hidden-world'), 'not inside the hidden world');
+  assert.ok(run((f) => { f.rigDir = undefined; }).includes('rig-dir-set'), 'not run through the contained rig');
+  assert.ok(run((f) => { f.rigDir = `${HUMAN}/rig`; f.env.XDG_RUNTIME_DIR = `${HUMAN}/rig/xdg`; }).includes('rig-dir-set'), 'a rig dir inside the human runtime dir');
+});
+
+const goodArm = (): ArmWorld => {
+  const run = `${RIG}/xdg/k-unlocked`;
+  const address = `unix:path=${run}/bus`;
+  const base = { XDG_RUNTIME_DIR: run, PATH: '/usr/bin:/bin', HOME: `${RIG}/arm-unlocked/home` };
+  return {
+    rigDir: RIG,
+    run,
+    dirs: { arm: `${RIG}/arm-unlocked`, home: `${RIG}/arm-unlocked/home`, oh: `${RIG}/arm-unlocked/oh`, data: `${RIG}/arm-unlocked/data`, config: `${RIG}/arm-unlocked/config`, cache: `${RIG}/arm-unlocked/cache`, claude: `${RIG}/arm-unlocked/claude-config` },
+    address,
+    envs: { bus: { ...base }, tool: { ...base, DBUS_SESSION_BUS_ADDRESS: address }, app: { ...base, ORCHESTRA_HOME: `${RIG}/arm-unlocked/oh` } },
+  };
+};
+
+test('arm world: a good arm passes; each leak fails the clause that names it', () => {
+  assert.deepEqual(ids(failed(armWorldChecks(goodArm()))), [], 'control');
+  const run = (mut: (w: ArmWorld) => void): string[] => { const w = goodArm(); mut(w); return ids(failed(armWorldChecks(w))); };
+  assert.ok(run((w) => { w.run = `${HUMAN}/k`; w.address = `unix:path=${HUMAN}/k/bus`; }).includes('run-is-a-private-subdir-of-the-rig-runtime'));
+  assert.ok(run((w) => { w.run = `${RIG}/xdg`; w.address = `unix:path=${RIG}/xdg/bus`; }).includes('run-is-a-private-subdir-of-the-rig-runtime'), 'the rig root itself is not an arm dir');
+  assert.ok(run((w) => { w.dirs.home = '/home/someone/real'; }).includes('every-arm-dir-is-inside-the-rig-dir'));
+  assert.ok(run((w) => { w.dirs.data = `${RIG}/../elsewhere/data`; }).includes('every-arm-dir-is-inside-the-rig-dir'), '`..` out of the rig dir');
+  assert.ok(run((w) => { w.dirs.data = `${RIG}-evil/data`; }).includes('every-arm-dir-is-inside-the-rig-dir'), 'a sibling that merely shares the rig dir\'s name as a prefix');
+  assert.ok(run((w) => { w.address = `unix:path=${RIG}/elsewhere/bus`; }).includes('bus-address-is-inside-the-arm-runtime'));
+  assert.ok(run((w) => { w.envs.app.GNOME_KEYRING_CONTROL = `${HUMAN}/keyring`; }).includes('no-process-env-names-the-human-runtime'));
+  assert.ok(run((w) => { w.envs.tool.SSH_AUTH_SOCK = `${HUMAN}/keyring/ssh`; }).includes('no-process-env-names-the-human-runtime'));
+  assert.ok(run((w) => { w.envs.app.XDG_RUNTIME_DIR = `${RIG}/xdg`; }).includes('every-process-class-has-the-arms-runtime'), 'an app that took the rig root');
+  assert.ok(run((w) => { delete w.envs.bus.XDG_RUNTIME_DIR; }).includes('every-process-class-has-the-arms-runtime'), 'unset → libdbus falls back to the human dir');
+  assert.ok(run((w) => { w.envs.app.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/tmp/some-other-bus'; }).includes('no-process-class-carries-a-foreign-bus-address'));
+  assert.deepEqual(ids(failed(armWorldChecks((() => { const w = goodArm(); w.envs.app.DBUS_SESSION_BUS_ADDRESS = 'disabled:'; return w; })()))), [], '`disabled:` is what Electron puts in its own env — not an address');
+});
+
+const goodConf = (svc: string, address: string): string => `<!DOCTYPE busconfig PUBLIC "x" "y">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>${address}</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>${svc}</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+`;
+
+test('bus config: only the arm socket and the arm\'s empty service dir; anything that pulls in host services fails', () => {
+  const want = { svc: `${RIG}/arm/svc`, address: `unix:path=${RIG}/xdg/k-a/bus` };
+  assert.deepEqual(ids(failed(busConfigChecks(goodConf(want.svc, want.address), want))), [], 'control');
+  const conf = goodConf(want.svc, want.address);
+  const bad = (c: string): string[] => ids(failed(busConfigChecks(c, want)));
+  assert.ok(bad(conf.replace('<keep_umask/>', '<keep_umask/>\n  <standard_session_servicedirs/>')).includes('bus-config-pulls-in-nothing-else'), 'the host dbus-1/services dirs');
+  assert.ok(bad(conf.replace('<keep_umask/>', '<keep_umask/>\n  <standard_system_servicedirs/>')).includes('bus-config-pulls-in-nothing-else'));
+  assert.ok(bad(conf.replace('<keep_umask/>', '<keep_umask/>\n  <include>/usr/share/dbus-1/session.conf</include>')).includes('bus-config-pulls-in-nothing-else'));
+  assert.ok(bad(conf.replace('<keep_umask/>', '<keep_umask/>\n  <includedir>/etc/dbus-1/session.d</includedir>')).includes('bus-config-pulls-in-nothing-else'));
+  assert.ok(bad(conf.replace(`<servicedir>${want.svc}</servicedir>`, `<servicedir>${want.svc}</servicedir>\n  <servicedir>/usr/share/dbus-1/services</servicedir>`)).includes('bus-service-dir-is-only-the-arms-empty-dir'));
+  assert.ok(bad(conf.replace(`<servicedir>${want.svc}</servicedir>`, '')).includes('bus-service-dir-is-only-the-arms-empty-dir'));
+  assert.ok(bad(conf.replace(want.address, `unix:path=${HUMAN}/bus`)).includes('bus-listens-only-on-the-arm-socket'), 'a config listening on the real bus');
+  assert.ok(bad(conf.replace(`<listen>${want.address}</listen>`, `<listen>${want.address}</listen><listen>tcp:host=localhost</listen>`)).includes('bus-listens-only-on-the-arm-socket'));
+  assert.ok(bad(conf.replace('<type>session</type>', '<type>system</type>')).includes('bus-is-a-session-bus'));
+});
+
+const RUN = `${RIG}/xdg/k-unlocked`;
+const goodOwner = (): OwnerEvidence => ({
+  ownerPid: 5555,
+  driverPid: 100,
+  exeBase: 'gnome-keyring-daemon',
+  cmdline: ['/usr/bin/gnome-keyring-daemon', '--start', '--components=secrets'],
+  fdTargets: ['socket:[111]', 'socket:[222]', '/dev/null', 'anon_inode:[eventfd]'],
+  socketPaths: [`${RUN}/keyring/control`, `${RUN}/bus`],
+  envEntries: [`XDG_RUNTIME_DIR=${RUN}`, 'LANG=C.UTF-8'],
+  sockets: [{ inode: 111, path: `${RUN}/keyring/control` }, { inode: 333, path: `${RUN}/bus` }, { inode: 999, path: `${HUMAN}/keyring/control` }],
+  run: RUN,
+});
+
+test('secrets owner: our own daemon passes; a foreign / absent / mis-rooted owner fails the clause that names it', () => {
+  assert.deepEqual(ids(failed(secretsOwnerChecks(goodOwner()))), [], 'control');
+  const bad = (mut: (e: OwnerEvidence) => void): string[] => { const e = goodOwner(); mut(e); return ids(failed(secretsOwnerChecks(e))); };
+  assert.ok(bad((e) => { e.ownerPid = null; }).includes('owner-found-on-the-private-bus'));
+  assert.ok(bad((e) => { e.ownerPid = 100; }).includes('owner-found-on-the-private-bus'), 'the driver itself');
+  assert.ok(bad((e) => { e.exeBase = 'node'; e.cmdline = ['node', 'fake-secrets.js']; }).includes('owner-is-gnome-keyring-daemon'), 'an impostor on the private bus');
+  assert.ok(bad((e) => { e.exeBase = 'node'; }).includes('owner-is-gnome-keyring-daemon'), 'an impostor whose argv CLAIMS to be the daemon: the exe is what counts');
+  assert.ok(bad((e) => { e.cmdline = ['/usr/bin/node', 'x.js']; }).includes('owner-is-gnome-keyring-daemon'), 'and the argv must agree with the exe');
+  assert.ok(bad((e) => { e.fdTargets = ['socket:[999]', '/dev/null']; }).includes('owner-listens-inside-the-arm-keyring-dir'), 'its only socket is the HUMAN one (inode 999)');
+  assert.ok(bad((e) => { e.sockets = e.sockets.filter((s) => s.inode !== 111); }).includes('owner-listens-inside-the-arm-keyring-dir'), 'no arm control socket exists');
+  assert.ok(bad((e) => { e.fdTargets = ['socket:[333]']; }).includes('owner-listens-inside-the-arm-keyring-dir'), 'holding the arm BUS socket is not owning a keyring socket');
+  assert.ok(bad((e) => { e.fdTargets.push(`${HUMAN}/keyring/pkcs11`); }).includes('owner-env-and-fds-never-name-the-human-runtime'));
+  assert.ok(bad((e) => { e.socketPaths.push(`${HUMAN}/keyring/control`); }).includes('owner-env-and-fds-never-name-the-human-runtime'), 'a socket fd connected to the human keyring (fd link reads only `socket:[N]`)');
+  assert.ok(bad((e) => { e.socketPaths = []; }).includes('owner-socket-scan-sees-its-own-sockets'), 'seat-1 G-owner-2: holds socket fds but NOTHING resolved → the scan saw nothing and the leak clause would be vacuous');
+  assert.ok(bad((e) => { e.socketPaths = [`${HUMAN}/keyring/control`]; }).includes('owner-socket-scan-sees-its-own-sockets'), 'resolved paths exist but none under the arm run dir');
+  assert.deepEqual(ids(failed(secretsOwnerChecks({ ...goodOwner(), fdTargets: ['/dev/null'], socketPaths: [] }))), ['owner-listens-inside-the-arm-keyring-dir'], 'no socket fds at all: the scan clause is not the one that complains');
+  assert.ok(bad((e) => { e.envEntries.push(`GNOME_KEYRING_CONTROL=${HUMAN}/keyring`); }).includes('owner-env-and-fds-never-name-the-human-runtime'));
+  assert.ok(bad((e) => { e.envEntries = [`XDG_RUNTIME_DIR=${HUMAN}`]; }).includes('owner-runtime-env-is-the-arms'));
+  assert.deepEqual(ids(failed(secretsOwnerChecks({ ...goodOwner(), envEntries: [] }))), [], 'an unreadable environ is not a failure (the title rewrite); the fd/socket clauses still bind');
+});
+
+test('parseUnixSockets / socketInode: the shapes /proc/net/unix and /proc/<pid>/fd really have', () => {
+  const text = `Num       RefCount Protocol Flags    Type St Inode Path
+0000000000000000: 00000002 00000000 00010000 0001 01 111 ${RUN}/keyring/control
+0000000000000000: 00000003 00000000 00000000 0001 03 222
+0000000000000000: 00000002 00000000 00010000 0001 01 333 @abstract
+0000000000000000: 00000002 00000000 00010000 0001 01 444 /tmp/with space/sock
+`;
+  assert.deepEqual(parseUnixSockets(text), [{ inode: 111, path: `${RUN}/keyring/control` }, { inode: 444, path: '/tmp/with space/sock' }]);
+  assert.equal(socketInode('socket:[12345]'), 12345);
+  assert.equal(socketInode('/dev/null'), null);
+  assert.equal(socketInode('anon_inode:[eventfd]'), null);
+});
+
+test('app tree: clean tree with a positive control passes; a leaked fd/env, an empty tree, or a blind scan fails', () => {
+  const good = (): TreeEvidence => ({ pids: 12, fdTargets: ['socket:[7]', '/dev/null'], socketPaths: [`${RUN}/orchestra-0123456789ab.sock`, `${RUN}/bus`], envEntries: ['LANG=C'], run: RUN });
+  assert.deepEqual(ids(failed(treeChecks(good()))), [], 'control');
+  const bad = (mut: (t: TreeEvidence) => void): string[] => { const t = good(); mut(t); return ids(failed(treeChecks(t))); };
+  assert.ok(bad((t) => { t.fdTargets.push(`${HUMAN}/keyring/pkcs11`); }).includes('tree-fds-and-env-never-name-the-human-runtime'));
+  assert.ok(bad((t) => { t.socketPaths.push(`${HUMAN}/keyring/pkcs11`); }).includes('tree-fds-and-env-never-name-the-human-runtime'), 'a connection to the human keyring socket is visible only through the resolved socket paths');
+  assert.ok(bad((t) => { t.envEntries.push(`P11_KIT_SERVER_ADDRESS=unix:path=${HUMAN}/p11-kit/pkcs11`); }).includes('tree-fds-and-env-never-name-the-human-runtime'));
+  assert.ok(bad((t) => { t.pids = 1; }).includes('tree-has-processes'));
+  assert.ok(bad((t) => { t.socketPaths = []; }).includes('tree-scan-sees-the-private-runtime-dir'), 'a scan that cannot see the private dir proves nothing about the human one');
+  assert.ok(bad((t) => { t.socketPaths = []; t.fdTargets = [`${RUN}/x`]; }).includes('tree-scan-sees-the-private-runtime-dir'), 'a regular-file fd path is not the control: sockets are what a leak travels over');
+});
+
+test('rig root census: wayland sockets and arm dirs only; a keyring/bus/p11-kit/hooks entry at the root means something took the rig root as its runtime dir', () => {
+  const arms = ['k-unlocked', 'k-locked'];
+  assert.deepEqual(ids(failed(rootCensusChecks(['wayland-1', 'wayland-rig', 'k-unlocked'], arms))), [], 'control');
+  for (const stray of ['keyring', 'bus', 'p11-kit', 'pulse', 'orchestra-0123456789ab.sock', 'k-other']) {
+    assert.deepEqual(ids(failed(rootCensusChecks(['wayland-1', stray], arms))), ['rig-runtime-root-holds-only-wayland-and-arm-dirs'], stray);
+  }
+});
+
+/** a /proc/net/unix text for the given [inode, path|null] rows (real column layout) */
+const procNetUnix = (rows: Array<[number, string | null]>): string =>
+  `Num       RefCount Protocol Flags    Type St Inode Path\n${rows.map(([ino, p]) => `0000000000000000: 00000002 00000000 00010000 0001 01 ${ino}${p === null ? '' : ` ${p}`}`).join('\n')}\n`;
+
+test('buildSocketScan / socketPaths: a socket fd is `socket:[N]`; paths come from /proc/net/unix, the connection from ss — own bound path, or the PEER end\'s bound path', () => {
+  const net = procNetUnix([[500, `${RUN}/orchestra-0123456789ab.sock`], [600, null], [601, `${HUMAN}/keyring/control`], [700, null], [701, `${RUN}/bus`], [800, null]]);
+  const ss = `u_str LISTEN 0      511    ${RUN}/orchestra-0123456789ab.sock 500 * 0        <-> ino:1 dev:0/36 peers:
+u_str ESTAB  0      0                                        * 600 * 601 <->
+u_str ESTAB  0      0                         ${HUMAN}/keyring/control 601 * 600 <->
+u_str ESTAB  0      0                                        * 700 * 701 <->
+u_str ESTAB  0      0                      ${RUN}/bus 701 * 700 <->
+u_dgr UNCONN 0      0                                        * 800 * 0 <->
+`;
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.deepEqual(unparsed, []);
+  assert.deepEqual(socketPaths([500], scan), [`${RUN}/orchestra-0123456789ab.sock`], 'the app\'s own listener');
+  assert.deepEqual(socketPaths([600], scan), [`${HUMAN}/keyring/control`], 'a client end `*` reaches the path its PEER is bound to — the leak shape');
+  assert.deepEqual(socketPaths([700], scan), [`${RUN}/bus`], 'a connection to the arm bus');
+  assert.deepEqual(socketPaths([800, 9999], scan), [], 'unnamed / unknown sockets resolve to nothing');
+  assert.deepEqual(socketPaths([600, 700, 500], scan), [`${HUMAN}/keyring/control`, `${RUN}/bus`, `${RUN}/orchestra-0123456789ab.sock`].sort());
+  assert.deepEqual(socketPaths([], scan), []);
+});
+
+test('arm sockets must fit sun_path: the hooks socket `<run>/orchestra-<12hex>.sock` is 28 chars, not 23', () => {
+  assert.equal(`orchestra-xxxxxxxxxxxx.sock`.length + 1, 28);
+  const ok = goodArm();
+  assert.ok(longestSocket(ok.run) <= SUN_PATH_MAX);
+  assert.deepEqual(ids(failed(armWorldChecks(ok))), []);
+  const long = goodArm();
+  long.run = `${RIG}/xdg/` + 'k'.repeat(SUN_PATH_MAX - 28 - `${RIG}/xdg/`.length + 1);
+  long.address = `unix:path=${long.run}/bus`;
+  assert.equal(longestSocket(long.run), SUN_PATH_MAX + 1);
+  assert.ok(ids(failed(armWorldChecks(long))).includes('arm-socket-paths-fit-sun-path'), 'one char too long → refused');
+  const edge = goodArm();
+  edge.run = `${RIG}/xdg/` + 'k'.repeat(SUN_PATH_MAX - 28 - `${RIG}/xdg/`.length);
+  edge.address = `unix:path=${edge.run}/bus`;
+  assert.ok(!ids(failed(armWorldChecks(edge))).includes('arm-socket-paths-fit-sun-path'), 'exactly at the limit passes');
+});
+
+// ── round-5 m1: %hh escapes ─────────────────────────────────────────────────────────────────────────────────────────────
+test('m1: D-Bus `%hh` escapes are decoded — an escaped runtime dir is a reference in ANY key, double-encoded too; a malformed escape fails CLOSED', () => {
+  for (const v of ['unix:path=%2Frun%2Fuser%2F1000%2Fbus', '%2Frun%2Fuser%2F1000', 'unix:path=%252Frun%252Fuser%252F1000%252Fbus', `PATH=/usr/bin:%2Frun%2Fuser%2F1000%2Fbin`, 'unix:path=/run%2Fuser/1000/bus', 'unix:path=%2fRUN%2fuser%2f1000']) {
+    assert.equal(referencesHumanRuntime(v), v.includes('RUN') ? false : true, `escaped form: ${v}`);
+  }
+  for (const v of ['unix:path=%2Frun%2Fuser', '50%', 'unix:path=/var/tmp/%zz', 'x%2', '%FF']) assert.equal(referencesHumanRuntime(v), true, `malformed escape → refuse: ${v}`);
+  for (const v of ['unix:path=%2Fvar%2Ftmp%2Frig%2Fxdg%2Fbus', '/var/tmp/100%25/x', 'plain', '%2Fusr%2Fbin']) assert.equal(referencesHumanRuntime(v), false, `an innocent escaped value is not a reference: ${v}`);
+  assert.deepEqual(envHumanRuntimeRefs({ A: 'x', DBUS_SESSION_BUS_ADDRESS: 'unix:path=%2Frun%2Fuser%2F1000%2Fbus', B: '50%' }), ['B', 'DBUS_SESSION_BUS_ADDRESS']);
+  assert.ok(failed(driverWorldChecks({ ...goodDriver(), env: { ...goodDriver().env, SOME_KEY: 'unix:path=%2Frun%2Fuser%2F1000%2Fbus' } })).some((c) => c.id === 'no-env-value-reaches-the-human-runtime'), 'in a key the exact-match checks do not cover');
+});
+
+// ── round-5 m2: ss rows with spaces / unparsed rows ─────────────────────────────────────────────────────────────────────
+test('m2: ss rows whose path contains spaces AND digit tokens are placed by VALIDATED inode columns (paths from /proc/net/unix); an ambiguous or unplaceable row is REPORTED, never mis-parsed', () => {
+  const spaced = `${HUMAN}/my sock`;
+  const digits = `${HUMAN}/my 123 sock`; // reviewer round 6: ` <digits> ` inside the path made the old regex cut the path at `/my` and read 123 as the inode
+  const net = procNetUnix([[500, `${RUN}/orchestra-0123456789ab.sock`], [600, null], [601, spaced], [602, null], [603, digits], [77, '@/tmp/.X11-unix/X0'], [123, `${RUN}/other.sock`], [24739, '/run/systemd/journal/stdout'], [21049, null], [900, null]]);
+  const ss = `u_str LISTEN 0      511    ${RUN}/orchestra-0123456789ab.sock 500 * 0        <-> ino:1 dev:0/36 peers:
+u_str ESTAB  0      0                                        * 600 * 601 <->
+u_str ESTAB  0      0                         ${spaced} 601 * 600 <->
+u_str ESTAB  0      0                                        * 602 * 603 <->
+u_str ESTAB  0      0                         ${digits} 603 * 602 <->
+u_str LISTEN 0      4096   @/tmp/.X11-unix/X0 77 * 0 <-> ino:2 dev:0/4 peers:
+u_str ESTAB  0      0              /run/systemd/journal/stdout 24739    * 21049    <-- ino:49 dev:
+u_str ESTAB  0      0                                        * 900 * 0        ---
+`;
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.deepEqual(unparsed, [], 'every row placed, including the spaced one and the ` 123 ` one (123 is ALSO a real inode here — the validation, not the shape, picks the split)');
+  assert.equal(scan.peerOf.get(603), 602, 'the row with ` 123 ` in its path: local inode 603, not 123');
+  assert.equal(scan.peerOf.has(123), false);
+  assert.deepEqual(socketPaths([600], scan), [spaced], 'a client connected to a spaced path resolves to it');
+  assert.deepEqual(socketPaths([602], scan), [digits], 'and to a path with a digit token in it');
+  assert.equal(scan.pathByIno.get(603), digits, 'paths are byte-exact from /proc/net/unix');
+  // unplaceable rows are surfaced, not dropped
+  const bad = buildSocketScan(net, `${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\nu_str ESTAB 0 0 /x 5 /y 8 * 9 <->\n`);
+  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5', 'u_str ESTAB 0 0 /x 5 /y 8 * 9 <->'], 'junk, a non-number, and a row with TWO plausible splits where neither inode is a known socket all surface');
+  const churn = buildSocketScan(net, `${ss}u_str ESTAB 0 0 * 4242424 * 4242425 <->\n`);
+  assert.deepEqual(churn.unparsed, [], 'a UNIQUE shape needs no lookup: a socket pair that closed between the two snapshots does not abort the scan');
+  assert.equal(churn.scan.peerOf.get(4242424), 4242425);
+  const tie = buildSocketScan(procNetUnix([[8, null], [9, null]]), 'u_str ESTAB 0 0 /x 5 /y 8 * 9 <->\n');
+  assert.deepEqual(tie.unparsed, [], 'two plausible splits: the one whose local inode is a real socket wins');
+  assert.equal(tie.scan.peerOf.get(8), 9);
+  assert.deepEqual(parseSsPairs('\n  \n', new Set()).unparsed, [], 'blank lines are not rows');
+  // the real shutdown markers
+  const mk = buildSocketScan(procNetUnix([[11, null], [12, null], [13, null]]), 'u_seq ESTAB 0 0 * 11 * 12 -->\nu_str ESTAB 0 0 * 12 * 11 <--\nu_str ESTAB 0 0 * 13 * 0 ---\n');
+  assert.deepEqual(mk.unparsed, []);
+  assert.equal(mk.scan.peerOf.size, 3);
+});
+
+test('parseProcNetUnix: fixed columns, the path LAST and byte-exact (spaces and digits survive); abstract and unnamed sockets still count as sockets', () => {
+  const t = procNetUnix([[1, '/a b/c  d'], [2, null], [3, '@abstract'], [4, '/x 5 y']]);
+  const r = parseProcNetUnix(t);
+  assert.deepEqual(r.sockets, [{ inode: 1, path: '/a b/c  d' }, { inode: 4, path: '/x 5 y' }], 'two spaces inside a path are kept');
+  assert.deepEqual([...r.inodes].sort(), [1, 2, 3, 4], 'every socket inode, named or not');
+});
+
+// ── round-5 m3: the hidden-world proof is the mount namespace ───────────────────────────────────────────────────────────
+test('m3: hiddenRuntimeMountProof — the rig\'s real hidden-world mountinfo passes; the host\'s own, a propagated top, a non-tmpfs top, a re-bind on top, no mount, junk all fail', () => {
+  const ok = hiddenRuntimeMountProof(HIDDEN_MI, 1000);
+  assert.equal(ok.ok, true, ok.detail);
+  assert.match(ok.detail, /2 mounts stacked/);
+  const no = (text: string, uid = 1000): { ok: boolean; detail: string } => hiddenRuntimeMountProof(text, uid);
+  assert.match(no(HOST_MI).detail, /1 mount at .*\(the host's own\)/, 'the host: ONE mount');
+  assert.equal(no(HOST_MI).ok, false);
+  assert.equal(no('').ok, false);
+  assert.equal(no('garbage\nmore garbage').ok, false);
+  assert.match(no(HIDDEN_MI, 1001).detail, /no mount at \/run\/user\/1001/, 'another uid\'s dir is not the proof');
+  const propagated = HIDDEN_MI.replace('1392 1372 0:89 / ' + HUMAN + ' rw,nosuid,nodev,relatime -', '1392 1372 0:89 / ' + HUMAN + ' rw,nosuid,nodev,relatime shared:900 -');
+  assert.notEqual(propagated, HIDDEN_MI);
+  assert.match(no(propagated).detail, /propagation tags shared:900/, 'a propagated (non-private) top');
+  const notTmpfs = HIDDEN_MI.replace('- tmpfs tmpfs rw,seclabel,mode=755', '- ext4 /dev/x rw,seclabel,mode=755');
+  assert.notEqual(notTmpfs, HIDDEN_MI);
+  assert.match(no(notTmpfs).detail, /is ext4, not a tmpfs/);
+  const rebound = `${HIDDEN_MI}1500 1392 0:64 / ${HUMAN}/keyring rw - tmpfs tmpfs rw\n`;
+  assert.match(no(rebound).detail, /is mounted ON the hiding tmpfs/, 'the real dir re-bound into the hiding tmpfs would re-expose it');
+  const swappedOrder = HIDDEN_MI.split('\n').filter(Boolean).reverse().join('\n');
+  assert.equal(no(swappedOrder).ok, true, 'the stack is read from parent ids, not line order');
+  // round-6 MAJOR: a namespace that EXPOSES the real dir must not pass — its topmost mount is a private untagged tmpfs too, but shares the real device
+  const selfBind = no(SELF_BIND_MI);
+  assert.equal(selfBind.ok, false, selfBind.detail);
+  assert.match(selfBind.detail, /shares device 0:64 with a lower mount \(id 472\) — a bind of the real dir/, '(a) `mount --bind P P`');
+  const rebind = no(REBIND_ON_HIDE_MI);
+  assert.equal(rebind.ok, false, rebind.detail);
+  assert.match(rebind.detail, /shares device 0:64 with a lower mount/, '(b) host + hide + re-bind: 3 mounts, the re-bind is topmost');
+  assert.equal(parseMountinfo(HIDDEN_MI).find((m) => m.id === 1392)?.dev, '0:89', 'maj:min is parsed');
+  assert.deepEqual(parseMountinfo(HOST_MI).map((m) => [m.id, m.point, m.fstype, m.tags]), [[472, HUMAN, 'tmpfs', ['shared:223']], [473, `${HUMAN}/doc`, 'fuse.portal', ['shared:889']]]);
+});
+
+test('driver world: the env var alone is NOT the proof — a host mountinfo fails hidden-world-mount-proof; unreadable mountinfo fails closed', () => {
+  const host = driverWorldChecks({ ...goodDriver(), mountinfo: HOST_MI });
+  assert.deepEqual(ids(failed(host)), ['hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), mountinfo: null }))), ['hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), hiddenWorld: false, mountinfo: HOST_MI }))).sort(), ['hidden-world', 'hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), hiddenWorld: false }))), ['hidden-world'], 'a hidden namespace without the env var is still refused: the variable is the cheap precondition');
+});
+
+// ── round-5 seat-1 F2: the physical view ──────────────────────────────────────────────────────────────────────────────────
+test('F2: physicalWorldChecks — a clean rig passes; a symlinked xdg / RIG_DIR / link-valued env entry (all LEXICALLY fine) each fail their own clause', () => {
+  const good = { rigDir: RIG, rigReal: RIG, xdgReal: `${RIG}/xdg`, envPhysical: { PATH: ['/usr/bin', '/usr/local/bin'], SWAYSOCK: [`${RIG}/sway.sock`] } };
+  assert.deepEqual(ids(failed(physicalWorldChecks(good))), [], 'control');
+  const bad = (mut: (f: typeof good) => void): string[] => { const f = structuredClone(good); mut(f); return ids(failed(physicalWorldChecks(f))); };
+  assert.ok(bad((f) => { f.xdgReal = HUMAN; }).includes('xdg-is-physically-the-rigs-dir'), '<rig>/xdg is a link to the human runtime dir');
+  assert.ok(bad((f) => { f.xdgReal = `${RIG}/elsewhere`; }).includes('xdg-is-physically-the-rigs-dir'), 'a link to anywhere else');
+  assert.ok(bad((f) => { f.xdgReal = null; }).includes('xdg-is-physically-the-rigs-dir'), 'does not resolve');
+  assert.ok(bad((f) => { f.rigReal = `/standin${HUMAN}/rig`; f.xdgReal = `/standin${HUMAN}/rig/xdg`; }).includes('rig-dir-resolves-physically-clean'), 'RIG_DIR itself is a link into it (the stand-in shape /…/run/user/…)');
+  assert.ok(bad((f) => { f.rigReal = null; }).includes('rig-dir-resolves-physically-clean'));
+  assert.ok(bad((f) => { f.envPhysical.GNOME_KEYRING_CONTROL = [`${HUMAN}/keyring`]; }).includes('env-path-values-resolve-physically-clean'), 'an env value that is a link into it');
+  assert.ok(bad((f) => { f.envPhysical.PATH.push(`${HUMAN}/bin`); }).includes('env-path-values-resolve-physically-clean'), 'a PATH element that is a link into it');
+  assert.ok(ids(failed(physicalWorldChecks({ ...good, rigReal: '/mnt/real/rig', xdgReal: '/mnt/real/rig/xdg' }))).length === 0, 'a rig dir under a symlinked BASE is fine as long as xdg sits right under the physical rig dir');
+});
+
+// ── round-7 seat-1 F1: marker lookalikes inside a path must not fabricate a pair ─────────────────────────────────────────────────
+test('F1 (seat 1): a path containing ` --- ` / ` <-> ` / ` --> ` / ` <-- ` plus shape tokens cannot make a fabricated pair — the REAL link (700 → 701 → the human socket) is found, or the row is reported', () => {
+  const HUMAN_BUS = `${HUMAN}/bus`;
+  const R = '/scratch/rig';
+  const names = [`${R}/hostile`, `${R}/p 1 /q 2 --- zz`, `${R}/p 1 /q 2 <-> zz`, `${R}/q 1 /r 2 --> zz`, `${R}/d 5 /e 6 <-- w 7 * 8`, `${R}/m 9 /n 10 --- 11 * 12`, `${R}/a --- b`];
+  for (const name of names) {
+    const net = procNetUnix([[700, name], [701, HUMAN_BUS]]);
+    const ss = `u_str ESTAB  0      0      ${name} 700 * 701 <-> ino:201225872 dev:0/36 sk:1\nu_str ESTAB  0      0      ${HUMAN_BUS} 701 * 700 <-> ino:5 dev:0/36 sk:2\n`;
+    const { scan, unparsed } = buildSocketScan(net, ss);
+    assert.deepEqual(unparsed, [], `placed: ${name}`);
+    assert.deepEqual([...scan.peerOf].filter(([k]) => k !== 700 && k !== 701), [], `no fabricated pair for: ${name}`);
+    assert.equal(scan.peerOf.get(700), 701, `the true link survives: ${name}`);
+    assert.ok(socketPaths([700], scan).includes(HUMAN_BUS), `the client end sees the human socket: ${name}`);
+  }
+});
+
+test('F1: ambiguity FAILS CLOSED — a name carrying the inode numbers of ANOTHER real pair gives two plausible splits, and the row is reported, never guessed', () => {
+  const net = procNetUnix([[700, '/s/p 600 /q 601 --- zz'], [701, `${HUMAN}/bus`], [600, null], [601, null]]);
+  const ss = 'u_str ESTAB 0 0 /s/p 600 /q 601 --- zz 700 * 701 <-> ino:1 dev:0/36\nu_str ESTAB 0 0 * 600 * 601 <->\nu_str ESTAB 0 0 * 601 * 600 <->\n';
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.equal(unparsed.length, 1, 'the hostile row has TWO plausible splits whose inodes are all real: refuse to pick');
+  assert.match(unparsed[0], /^u_str ESTAB 0 0 \/s\/p 600/);
+  assert.equal(scan.peerOf.get(700), undefined, 'and nothing was guessed for it');
+  // the same numbers, but the lookalike pair names unknown inodes → the known one wins
+  const ok = buildSocketScan(procNetUnix([[700, '/s/p 1 /q 2 --- zz'], [701, `${HUMAN}/bus`]]), 'u_str ESTAB 0 0 /s/p 1 /q 2 --- zz 700 * 701 <-> ino:1 dev:0/36\n');
+  assert.deepEqual(ok.unparsed, []);
+  assert.equal(ok.scan.peerOf.get(700), 701);
+  // a name that merely repeats the real pair's own numbers is harmless (same pair either way)
+  const same = buildSocketScan(procNetUnix([[700, '/s/p 700 /q 701 --- zz'], [701, null]]), 'u_str ESTAB 0 0 /s/p 700 /q 701 --- zz 700 * 701 <->\n');
+  assert.deepEqual(same.unparsed, []);
+  assert.equal(same.scan.peerOf.get(700), 701);
+});
+
+test('F3 (seat 1): /proc/net/unix paths are byte-exact — a trailing / leading space in the name is NOT trimmed', () => {
+  const t = procNetUnix([[1, '/a/trail '], [2, '/a/two  spaces'], [3, '/a/ lead']]);
+  assert.deepEqual(parseProcNetUnix(t).sockets, [{ inode: 1, path: '/a/trail ' }, { inode: 2, path: '/a/two  spaces' }, { inode: 3, path: '/a/ lead' }]);
+});
+
+test('final-run finding: a LISTENING row with a backlog (`peers: <inode>…` after the marker) is ONE pair; the tail grammar rejects splits that would swallow real columns', () => {
+  const net = procNetUnix([[87321665, '/a/keepers/ws.sock'], [87321667, null]]);
+  const row = 'u_str LISTEN 1      511                   /a/keepers/ws.sock 87321665 * 0        <-> ino:2293473 dev:0/64 peers: 87321667 87321668\n';
+  const { scan, unparsed } = buildSocketScan(net, row);
+  assert.deepEqual(unparsed, [], 'the numbers after `peers:` are tail, not a second peer inode');
+  assert.equal(scan.peerOf.get(87321665), 0);
+  // the same rows without any marker are not real ss output: reported, never guessed
+  assert.equal(buildSocketScan(net, 'u_str LISTEN 1 511 /a/keepers/ws.sock 87321665 * 0\n').unparsed.length, 1);
+  // a row whose tail holds something that is not tail (`zz`, `*`, a path) cannot be a candidate's tail
+  const hostile = buildSocketScan(procNetUnix([[700, '/s/p 1 /q 2 --- zz'], [701, null]]), 'u_str ESTAB 0 0 /s/p 1 /q 2 --- zz 700 * 701 <-> ino:1 dev:0/36 peers: 702\n');
+  assert.deepEqual(hostile.unparsed, []);
+  assert.equal(hostile.scan.peerOf.get(700), 701, 'the true pair, with a peers list in the tail as well');
+});
+
+test('F1 + tail grammar: when the row\'s TRUE inodes are not known (closed between the two snapshots) and the name carries two REAL inodes, the fabricated pair is rejected by the tail grammar — the row is reported, not mis-read', () => {
+  const net = procNetUnix([[600, null], [601, null]]); // 700 / 701 (this row's real sockets) are gone from /proc/net/unix
+  const { scan, unparsed } = buildSocketScan(net, 'u_str ESTAB 0 0 /s/p 600 /q 601 --- zz 700 * 701 <-> ino:1 dev:0/36\n');
+  assert.equal(unparsed.length, 1, 'no candidate survives: the split (600 → 601) leaves `zz 700 * 701` as its "tail", which is not a tail');
+  assert.equal(scan.peerOf.size, 0, 'and NO pair was fabricated from the numbers inside the name');
+});
+
+test('relevance: an unplaceable ss row aborts a scan only if it mentions one of OUR socket inodes as a whole token (the FULL row is kept, so a long path cannot hide it); a stranger\'s odd row does not', () => {
+  const longPath = '/x/' + 'd'.repeat(200);
+  const net = procNetUnix([[500, longPath], [900, null]]);
+  const rows = [`u_str ESTAB 0 0 ${longPath} 500 weird-peer-addr 900 <->`, 'u_str ESTAB 0 0 /stranger/odd 77777 weird 88888 <->'];
+  const { unparsed } = buildSocketScan(net, rows.join('\n') + '\n');
+  assert.equal(unparsed.length, 2, 'both rows are unplaceable (a peer address that is neither `*`, `/…` nor `@…`)');
+  assert.ok(unparsed[0].length > 200, 'the FULL row is kept — its inode tokens are past char 160');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([500])), [unparsed[0]], 'mentions our inode 500 (beyond the display cut) → relevant');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([900])), [unparsed[0]], 'also by the peer end');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([123])), [], 'mentions none of ours → tolerated');
+  assert.deepEqual(unparsedAbout(unparsed, new Set([5])), [], 'a substring of a number is not the token (5 vs 500)');
+  assert.deepEqual(unparsedAbout(unparsed, new Set()), [], 'no interest, nothing relevant');
+});
+
+test('/proc/net/unix: an embryonic socket (inode 0, a connection waiting in a listener\'s backlog) is not a socket entry — it must not shadow its listener\'s path', () => {
+  const t = procNetUnix([[0, '/a/listen.sock'], [321, '/a/listen.sock'], [0, null]]);
+  const r = parseProcNetUnix(t);
+  assert.deepEqual(r.sockets, [{ inode: 321, path: '/a/listen.sock' }], 'only the real listener');
+  assert.deepEqual([...r.inodes], [321]);
+  const { scan } = buildSocketScan(t, 'u_str LISTEN 1 511 /a/listen.sock 321 * 0 <-> ino:1 dev:0/36 peers: 322\n');
+  assert.equal([...scan.pathByIno].filter(([, p]) => p === '/a/listen.sock').length, 1, 'one entry, keyed by the real inode');
+  assert.equal(scan.pathByIno.get(321), '/a/listen.sock');
+});
