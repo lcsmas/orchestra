@@ -16,7 +16,6 @@ import type {
   LinearIssue,
   PinnedTicket,
   ChecksForBranch,
-  PRsForBranch,
   RepoEntry,
   RepoSyncState,
   UsageSnapshot,
@@ -73,13 +72,8 @@ interface State {
   /** True when `sizes` are btrfs exclusive (reclaimable) bytes; false when
    *  they're apparent `du` sizes (non-btrfs fallback). Drives tooltip copy. */
   sizesExclusive: boolean;
-  prs: Record<string, PRsForBranch>;
   /** Per-workspace CI verdict (GitHub Actions) — only `fail` renders a badge. */
   checks: Record<string, ChecksForBranch>;
-  /** Linear issue confirmed to exist for a workspace's branch, keyed by
-   *  workspace id. Absent until verified; explicit null means "checked, no real
-   *  issue" — so the sidebar shows a badge only on a present, non-null value. */
-  linear: Record<string, LinearIssue | null>;
   /** Pinned Linear tickets — the sidebar's Tickets section. Ordered as the
    *  main process stores them (pin order), and replaced wholesale on every
    *  `tickets:update` push, so the renderer never merges ticket state. */
@@ -260,11 +254,7 @@ interface State {
   refreshStats: (id: string) => Promise<void>;
   refreshAllStats: () => Promise<void>;
   refreshSizes: () => Promise<void>;
-  refreshPR: (id: string) => Promise<void>;
-  refreshAllPRs: () => Promise<void>;
   refreshAllChecks: () => Promise<void>;
-  refreshLinear: (id: string) => Promise<void>;
-  refreshAllLinear: () => Promise<void>;
   refreshTickets: () => Promise<void>;
   removeTicket: (identifier: string) => Promise<void>;
   spawnFromTicket: (identifier: string, repoPath: string) => Promise<void>;
@@ -284,9 +274,7 @@ export const useStore = create<State>((set, get) => ({
   stats: {},
   sizes: {},
   sizesExclusive: false,
-  prs: {},
   checks: {},
-  linear: {},
   tickets: [],
   tools: {},
   contextTokens: {},
@@ -694,29 +682,6 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  refreshPR: async (id) => {
-    try {
-      const pr = await window.orchestra.findPR(id);
-      set((s) => ({ prs: { ...s.prs, [id]: pr } }));
-    } catch {
-      /* gh missing, no remote, etc. — ignore */
-    }
-  },
-
-  refreshAllPRs: async () => {
-    // Gather all PR lookups, then commit once — see refreshAllStats.
-    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    const entries = await mapBounded(ids, async (id) => {
-      try {
-        return [id, await window.orchestra.findPR(id)] as const;
-      } catch {
-        return null; // gh missing, no remote, etc. — ignore
-      }
-    });
-    const next = Object.fromEntries(entries.filter((e) => e !== null));
-    if (Object.keys(next).length) set((s) => ({ prs: { ...s.prs, ...next } }));
-  },
-
   refreshAllChecks: async () => {
     // Gather all CI lookups, then commit once — see refreshAllStats. Main
     // serves these from a repo-wide 60s cache, so N workspaces on one repo
@@ -731,29 +696,6 @@ export const useStore = create<State>((set, get) => ({
     });
     const next = Object.fromEntries(entries.filter((e) => e !== null));
     if (Object.keys(next).length) set((s) => ({ checks: { ...s.checks, ...next } }));
-  },
-
-  refreshLinear: async (id) => {
-    try {
-      const issue = await window.orchestra.verifyLinear(id);
-      set((s) => ({ linear: { ...s.linear, [id]: issue } }));
-    } catch {
-      /* no API key / unauthenticated / offline — leave as-is */
-    }
-  },
-
-  refreshAllLinear: async () => {
-    // Gather all Linear lookups, then commit once — see refreshAllStats.
-    const ids = get().workspaces.filter((w) => !w.archived).map((w) => w.id);
-    const entries = await mapBounded(ids, async (id) => {
-      try {
-        return [id, await window.orchestra.verifyLinear(id)] as const;
-      } catch {
-        return null; // no API key / unauthenticated / offline — leave as-is
-      }
-    });
-    const next = Object.fromEntries(entries.filter((e) => e !== null));
-    if (Object.keys(next).length) set((s) => ({ linear: { ...s.linear, ...next } }));
   },
 
   refreshTickets: async () => {
@@ -823,26 +765,6 @@ window.orchestra.onWorkspaceUpdate((w) => {
     else if (prev.status !== w.status)
       dlog('status', `${w.id.slice(0, 8)} ${prev.status} → ${w.status} (${w.name})`);
   }
-  // Did the agent-reported PR links themselves change? Compared BEFORE the
-  // state write, since afterwards the previous value is gone.
-  //
-  // `s.prs[id]` is derived from `linkedPrs` but cached separately, refreshed by
-  // the 12s poll. Nothing invalidated it here, so `orchestra link` took up to a
-  // full poll interval to show its badge — measured at ~9s to link and ~11s to
-  // clear, which reads as the command having silently failed. Re-deriving on
-  // the broadcast that carries the change closes that gap.
-  //
-  // Gated on the links actually differing, NOT fired on every update:
-  // `workspace:update` also carries status-dot transitions, which arrive
-  // constantly, and each refresh is a `gh` call per linked PR. Comparing by
-  // canonical URL is sound because that is the identity the badge renders from.
-  const prevWs = useStore.getState().workspaces.find((x) => x.id === w.id);
-  const linkKey = (ws?: { linkedPrs?: { url: string }[] }) =>
-    (ws?.linkedPrs ?? []).map((p) => p.url).join('\u0000');
-  // A workspace this renderer has never seen has no cached PRs to invalidate;
-  // the poll picks it up. Only a CHANGE to an existing record needs the nudge.
-  const linksChanged = !!prevWs && linkKey(prevWs) !== linkKey(w);
-
   useStore.setState((s) => {
     // Upsert, not just patch: a workspace created by the main process — the
     // agent-driven /spawn flow — is unknown to this renderer, so a pure map()
@@ -857,12 +779,6 @@ window.orchestra.onWorkspaceUpdate((w) => {
     if (w.archived && s.activeId === w.id) return { workspaces, activeId: pickFallbackActive(workspaces, s.openHistory, w.id) };
     return { workspaces };
   });
-
-  if (linksChanged) {
-    // Fire-and-forget: a failed refresh just leaves the poll to catch up, and
-    // this runs inside an IPC listener that must not reject.
-    void useStore.getState().refreshPR(w.id);
-  }
 });
 window.orchestra.onWorkspaceRemoved((id) => {
   noteWorkspacesRemoved([id]);
@@ -872,16 +788,14 @@ window.orchestra.onWorkspaceRemoved((id) => {
       s.activeId === id
         ? pickFallbackActive(workspaces, s.openHistory, id)
         : s.activeId;
-    const { [id]: _gonePr, ...prs } = s.prs;
     const { [id]: _goneChecks, ...checks } = s.checks;
-    const { [id]: _goneLinear, ...linear } = s.linear;
     const { [id]: _goneStat, ...stats } = s.stats;
     const { [id]: _goneTool, ...tools } = s.tools;
     const { [id]: _goneCtx, ...contextTokens } = s.contextTokens;
     const { [id]: _goneSession, ...agentSessions } = s.agentSessions;
     const { [id]: _goneInbox, ...parkedInbox } = s.parkedInbox;
     const { [id]: _goneInboxGen, ...parkedInboxGen } = s.parkedInboxGen;
-    return { workspaces, activeId, prs, checks, linear, stats, tools, contextTokens, agentSessions, parkedInbox, parkedInboxGen };
+    return { workspaces, activeId, checks, stats, tools, contextTokens, agentSessions, parkedInbox, parkedInboxGen };
   });
 });
 window.orchestra.onWorkspacesRemoved((ids) => {
@@ -898,9 +812,7 @@ window.orchestra.onWorkspacesRemoved((ids) => {
     return {
       workspaces,
       activeId,
-      prs: prune(s.prs),
       checks: prune(s.checks),
-      linear: prune(s.linear),
       stats: prune(s.stats),
       tools: prune(s.tools),
       contextTokens: prune(s.contextTokens),

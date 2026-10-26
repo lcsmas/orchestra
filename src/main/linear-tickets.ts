@@ -319,12 +319,6 @@ export async function dispatchLinearPinRequest(input: {
 /**
  * Refresh every pinned ticket from Linear in ONE batched request.
  *
- * Deliberately does not reuse `verifyLinearIssue`: that path caches by key for
- * the whole session, which is correct for "does this issue exist?" (an answer
- * that never changes) and wrong here, where the mutable workflow STATE is the
- * entire reason the row exists — a cached hit would pin a ticket at "Todo"
- * forever.
- *
  * A ticket Linear doesn't return keeps its previous values rather than being
  * dropped: a row vanishing on a transient blip is worse than a slightly stale
  * state chip.

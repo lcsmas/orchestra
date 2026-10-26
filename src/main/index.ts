@@ -217,7 +217,6 @@ import {
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { startAccesMobileHost, stopAccesMobileHost } from './acces-mobile-host';
-import { backfillWorkspaceLinks } from './link-backfill';
 import { installCliShim, installAgentCliShim } from './cli-shim';
 import {
   installKeeper,
@@ -686,11 +685,6 @@ async function createMainWindow() {
   // Veille and Reliquats (#326): an idle member with live Reliquats waits the Reliquat delay (Garde mémoire setting), then its Veille stops + lists them. Registered BEFORE the first sweep.
   setVeilleReliquatPort(productionVeilleReliquatPort());
   startHibernationSweeper();
-  // One-shot migration to agent-reported PR/Linear links. The Linear badge no
-  // longer reads the branch name, so without this every pre-existing workspace
-  // would silently lose its badge on upgrade. Fire-and-forget: it makes network
-  // calls and must never delay window creation.
-  void backfillWorkspaceLinks().catch(() => {});
 
   // NOTE: these two handlers are independent and NOT deduped against each
   // other. A `target="_blank"` click normally routes only through the

@@ -47,7 +47,7 @@ export async function probeDependencies(): Promise<DepsStatus> {
   }
   if (!claude) {
     messages.push(
-      '❌ claude\n   Claude Code CLI\n   Install:\n   npm install -g @anthropic-ai/claude-code\nOr: https://docs.anthropic.com/claude-code',
+      '❌ claude\n   Claude Code CLI (agent sessions cannot start without it)\n   Install:\n   curl -fsSL https://claude.ai/install.sh | bash\nOr: https://code.claude.com/docs/en/setup',
     );
   }
   return { git, gh, claude, messages };

@@ -18,7 +18,7 @@ export async function getEnvStatus(): Promise<EnvStatusItem[]> {
       label: 'Linear',
       ok: linearSource !== 'none',
       detail:
-        'Linear issue badges are off. Add a Linear personal API key in ' +
+        'Pinned Linear tickets are off. Add a Linear personal API key in ' +
         'Orchestra’s Linear settings (or set the LINEAR_API_KEY env var). ' +
         'This is separate from the Linear MCP login.',
       docsUrl: 'https://linear.app/settings/account/security',

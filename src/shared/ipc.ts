@@ -47,7 +47,6 @@ import type {
   LinearKeyCheck,
   LinearKeySource,
   ChecksForBranch,
-  PRsForBranch,
   RepoEntry,
   RepoScripts,
   RepoSyncState,
@@ -650,7 +649,6 @@ export interface OrchestraAPI {
    *  over the data dirs. The Resources page polls this every ~2s while open;
    *  there is no push channel — sampling only happens on demand. */
   sampleResources: () => Promise<ResourceSnapshot>;
-  findPR: (id: string) => Promise<PRsForBranch>;
   /** Per-branch CI verdict (GitHub Actions), from the repo-wide cached feed. */
   findChecks: (id: string) => Promise<ChecksForBranch>;
   /** Hand the branch's failing CI run to the workspace's agent to fix — live
@@ -679,10 +677,6 @@ export interface OrchestraAPI {
    *  agent as one revision turn — live SDK turn, live PTY type-in, or wake,
    *  whichever applies. Same delivery seam as `fixChecks`. */
   sendReviewToAgent: (id: string, prompt: string) => Promise<{ status: 'requested' }>;
-  /** Verify the branch's candidate Linear key against Linear's GraphQL API.
-   *  Resolves the real issue, or null if the branch encodes no issue, the issue
-   *  doesn't exist, or there's no/invalid LINEAR_API_KEY. */
-  verifyLinear: (id: string) => Promise<LinearIssue | null>;
   /** Pinned Linear tickets — the sidebar's Tickets section. */
   listTickets: () => Promise<PinnedTicket[]>;
   /** The two default models new workspaces are pinned to (CONTEXT.md "Default model"). */

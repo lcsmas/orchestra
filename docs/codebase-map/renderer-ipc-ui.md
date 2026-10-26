@@ -75,8 +75,7 @@ IPC handlers: the request/response BODIES live in the shared table
 `src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
 workspaces CRUD, sandbox, PTY (`ptyWrite` / `ptyResize` only — the Run, nvim and login terminals; the
 agent-PTY channels (start, repaint, stopped, agent stop, clipboard image save) and their handlers and
-preload wrappers were deleted with the launcher, #233), git (stats poll piggybacks merge+branch refresh; findPR
-piggybacks release detection), scripts, linear, accounts, usage, deps).
+preload wrappers were deleted with the launcher, #233), git (stats poll piggybacks merge+branch refresh; CI checks), scripts, linear, accounts, usage, deps).
 index.ts wires the table to its historical channels in one loop over
 `METHOD_IPC_CHANNELS` (every registration still goes through the logging
 `handle` wrapper); `dialog:pickDir` stays an inline handler. Startup also
@@ -117,22 +116,11 @@ disappears (archive/delete/`onWorkspace(s)Removed`), the fallback selection uses
 `pickFallbackActive` (`active-fallback.ts`, pure + node-tested) to reopen the
 *previous* workspace instead of snapping to the first sidebar row. `load()` `:115`
 hydrates in parallel and seeds context badges from persisted `contextTokens`.
-Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
+Refreshers (`refreshAllStats`/`Sizes`/`AllChecks`/`Tickets`) are driven
 by **visibility-aware polls** and commit once. Live event subscriptions `:381+`
 patch state (note `onWorkspaceUpdate` merges to avoid clobbering a local create).
 
-**Derived maps must be invalidated by the event that changes their source.**
-`prs` is derived from `Workspace.linkedPrs` but cached separately on the 12s
-poll, and `onWorkspaceUpdate` originally patched `workspaces` without touching
-it — so `orchestra link` took a full poll interval to show its badge (measured
-~9.0s to link, ~10.9s to clear), which reads as the command having failed. The
-handler now calls `refreshPR(id)` when the linked-PR URLs differ, compared
-BEFORE the state write (afterwards the previous value is gone). The gate
-matters: the same channel carries status-dot transitions, which arrive
-constantly, and each refresh costs a `gh` call per linked PR — firing
-unconditionally would put the PR poll on the status-dot cadence. Note
-`onWorkspaceRemoved` already prunes `prs`/`checks`/`linear`/`stats`; the update
-path is the one that needed the equivalent. **Removed-id tombstone (#205):** both
+**Removed-id tombstone (#205):** both
 removal handlers record ids in `removed-workspaces.ts`, and the update handler
 drops any `workspace:update` for a recorded id — it UPSERTS unknown ids, so a
 stale update after `workspace:removed` would otherwise paint a ghost row.
@@ -268,11 +256,8 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `orchestra.collapsedOrchestrators` (workspace ids). In the PINNED sections a
   collapsed row shows a `.ws-hidden-count` pill (hidden descendant count via
   `collectDescendants`) tinted by the most urgent hidden status
-  (error > waiting > running). REPO rows carry no such pill: their
-  `.orchestrator-pill` glyph count is itself recursive (`collectDescendants`,
-  not `kids.length`), so a separate badge only repeated the same number on a
-  flat tree — the glyph takes over the urgency tint when collapsed
-  (`.orchestrator-pill.running/.waiting/.error`).
+  (error > waiting > running). REPO rows show the same collapsed-only pill;
+  an EXPANDED row shows no agent count at all (removed 2026-10-26 as clutter).
   The chevron is rendered ONLY on rows that have children and lives at the row's
   right edge, so no left gutter is reserved on leaf rows; `.ws-row-actions`
   shifts to `right: 26px` on such rows (`.ws-item:has(.ws-chevron)`) so the
@@ -282,7 +267,7 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   `position: fixed`, anchored to the hovered row's measured rect and offset past
   the sidebar's right edge. They used to be an absolutely-positioned strip
   inside the row, sitting on top of the row's own clickable content (account
-  badge, PR/Linear badges, chevron) — reaching for a badge could hit Delete. A
+  badge, chevron) — reaching for a badge could hit Delete. A
   portal is required, not stylistic: `.ws-list` scrolls (clips) and `.app` is a
   grid, so in-row layout cannot paint past the sidebar. `useRowActionsPopover`
   holds hover intent — a ~220ms close delay so the pointer can cross the gap,
@@ -299,40 +284,23 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **`LinearIcon` is Linear's real mark** — the four-band sliced disc (path from
   simple-icons), NOT the rotated square it used to be. It is a FILLED path, so
   it deliberately does not spread `ICON_PROPS` (`fill: none` + stroke would
-  outline each band or render nothing). The PR icons are genuine lucide
-  `git-pull-request` / `git-merge` / `git-pull-request-closed` shapes.
+  outline each band or render nothing). Used by the Tickets section + settings.
 - **Row tooltip shows `ex-<previous name>` (#384).** The `ws-name` `title` on BOTH row render paths (pinned spawn trees, repo sections) goes through the one helper `withExLabel(title, w.formerBranch)` (`shared/former-branch.ts`): the existing "(locked)" / "double-click to rename" text is kept and ` · ex-<previous>` appended only for a renamed workspace (`former-branch-wiring.test.ts` pins both call sites). The archived-row `.ws-name` (a third render path) gets a `title` ONLY for a renamed workspace — an unrenamed archived row keeps its DOM unchanged. The mobile list and the structured-view header title still show the bare branch (out of #384's scope).
 - **`.ws-name` has a `min-width` floor** (7.5em, 5em under 1100px). With enough
   badges the branch name was shrinking to ~40px — a couple of characters, i.e.
   an unidentifiable row. The floor makes the BADGES yield space first; they are
   fixed-size marks that survive being pushed out of view better than a nameless
   row does.
-- **Every badge in `.ws-pills` is a flat glyph + number** — no pill chrome. PR
-  and Linear badges get this from `.ws-item .pr-badge` (border/background/padding
-  stripped); `.released-pill` and `.unpushed-pill` are authored flat outright
-  (`ReleaseTagIcon`/`UnpushedIcon`, both Lucide on the shared 24-viewBox
-  `ICON_PROPS`). Colour alone carries state: green shipped, amber ready-to-push.
-  A bordered chip beside a flat badge reads a size larger and pulls rank from
-  the branch name, which is what the previous filled release/unpushed pills did.
-  **Only the newest release renders**, with older ones collapsed into a dim
-  `.released-more` `+N` (full list on the `title`), mirroring `.pr-badge.more`
-  for extra PRs — `releasedVersions` is oldest-first, so newest is the LAST
-  element. There is no standalone "merged" pill: `mergedAt` is conveyed by the
-  merged PR badge, and the pill duplicated it.
-- **PR/Linear badges are NOT gated on being a git row; CI is.** In
-  `renderSpawnTreeRows` the `.ws-pills.mini` strip renders unconditionally, with
-  only `<CiBadge>` still behind `childIsGit` (`isChild && !isScratchLike(w)`).
-  The two badge families answer different questions: PR/Linear links are
-  AGENT-REPORTED (`orchestra link --pr`, stored in `linkedPrs` with their own
-  `owner/repo/number`), so `findPR` deliberately dropped every `kind`/`repoPath`
-  guard — an orchestrator coordinating a metarepo milestone owns the submodule
-  PRs while having no repo or branch itself. CI, by contrast, needs a branch to
-  query, and `findChecks` hard-returns `{state:'none'}` for scratch/orchestrator
-  rows. Gating the whole strip on `childIsGit` hid PR badges on exactly the rows
-  that link cross-repo PRs — both orchestrator/scratch ROOTS (depth 0 fails
-  `isChild`) and repo-less nested coordinators. Safe to render always because
-  `PrLinearBadges` returns `null` when nothing is linked and `.ws-pills:empty`
-  collapses the strip, so unlinked rows keep their exact previous layout.
+- **No PR / Linear / release / agent-count badges on sidebar rows**, and no
+  toolbar `PR #N` button (removed 2026-10-26, user ask: clutter) — with the
+  whole PR / release / Linear-link pipeline behind them (no `gh` PR or release
+  calls, no `orchestra link`). Rig: `scripts/e2e-sidebar-declutter-drive.sh`.
+- **Every badge in `.ws-pills` is a flat glyph + number** — no pill chrome. CI
+  gets this from `.ws-item .ci-badge`; `.unpushed-pill` is authored flat
+  (`UnpushedIcon`, Lucide on the shared 24-viewBox `ICON_PROPS`, amber).
+- **CI is gated on being a git row** (`childIsGit` in `renderSpawnTreeRows`):
+  `findChecks` needs a branch and hard-returns `{state:'none'}` for
+  scratch/orchestrator rows.
 - **Row layout is a single 24px line.** Name, badges, context and account all
   share one line, with metadata right-aligned. `.ws-pills` was previously
   `flex-basis: 100%`, which inside a `flex-wrap: wrap` row ALWAYS starts a new

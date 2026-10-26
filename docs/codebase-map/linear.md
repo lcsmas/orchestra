@@ -1,76 +1,21 @@
 # Linear integration
 
-Turns an **agent-reported** issue key into a verified Linear issue badge in the
-sidebar. Files: `src/main/linear.ts`, `src/shared/linear.ts` (+ `.test.ts`, pure
-logic). UI: `LinearSettings.tsx`.
+Pinned Linear tickets only. The per-workspace Linear badge (`orchestra link
+--linear`, `verifyLinear`, the link backfill and the SessionStart link nudge) was
+removed on 2026-10-26 as UI clutter. Files: `src/main/linear.ts`,
+`src/main/linear-tickets.ts`, `src/shared/linear.ts` (+ `.test.ts`). UI:
+`LinearSettings.tsx`, the Tickets section in `Sidebar.tsx`.
 
-## The badge is reported, not derived
-
-The sidebar badge reads **`ws.linkedLinearKey`** — set only by `orchestra link
---linear <KEY>` (see [hooks-cli-socket.md](hooks-cli-socket.md)). Branch-name
-derivation was **removed**: it guessed in both directions, inventing `POLL-429`
-from `usage-poll-429-backoff` while being structurally blind to any ticket whose
-key was never typed into the branch. No link → no badge.
-
-`parseLinearIssueCandidate` still exists and is still tested, but no longer
-feeds the badge — it serves the *other* direction (`ticketBranchName`, so
-`orchestra linear add --spawn` names branches key-first), the one-time backfill
-below, and the **nudge** (next section), where the same shape is a suggestion
-the agent confirms rather than a value Orchestra writes.
-
-### Branch key → suggestion, never inference
-
-Removing derivation traded a wrong badge for a *missing* one: an agent handed
-`MC-4204` spawns onto `verify-mc-4204-…`, reads the SessionStart link nudge on
-turn 1, does the work, and never links — badge blank forever on a branch that
-spells the key. `link-instruction.sh` closes that loop from the other side: in
-`prompt` mode (UserPromptSubmit) it greps the live branch with a bash mirror of
-`parseLinearIssueCandidate` and, when the key is unlinked, re-asks with the
-candidate and the exact command filled in — capped at `LINK_PROMPT_NUDGE_BUDGET`
-(3) asks, charged only when a nudge prints. Orchestra still writes nothing; the
-agent confirms. Bash/TS parity is pinned by `src/main/link-nudge.test.ts`.
-Details and gating order: [hooks-cli-socket.md](hooks-cli-socket.md).
-
-## Flow
-- `verifyLinear` IPC (`api-handlers.ts:935`) → returns null unless
-  `ws.linkedLinearKey` is set, then calls…
-- `verifyLinearIssueByKey(key)` (`main/linear.ts`) — queries Linear GraphQL
-  (`https://api.linear.app/graphql`, `Authorization: <key>` no Bearer) and only
-  returns a `LinearIssue` (`types.ts`) if the returned `identifier` matches. An
-  agent-supplied key is an assertion, not proof, so a hallucinated or mistyped
-  key renders nothing rather than a badge that opens a 404.
-  Caches hits *and* misses; `noApiKey` latch (`:32`) stops retrying after 401/403
-  until the user saves a new key (`resetLinearAuthState` `:52`).
-- `verifyLinearIssue(branch)` remains as a thin wrapper (parse → by-key) for the
-  backfill; the cache was always keyed on the issue key, so both routes share it.
-- **Backfill** (`src/main/link-backfill.ts`) — one-shot migration run at startup,
-  gated on `store.linkBackfillVersion` vs `LINK_BACKFILL_VERSION`. Runs the OLD
-  derivations once (Linear regex + `findPullRequestsByBranch`) and persists only
-  **verified** hits, so existing workspaces keep their badges after upgrade
-  instead of going blank until an agent happens to re-link them. Only ever fills
-  empty fields; never overwrites an agent's link.
-  **Versioned, not a boolean** — revision 1 (v0.5.197) seeded the single
-  `linkedPrUrl`; revision 2 seeds the `linkedPrs` list carrying
-  `owner/repo/number`. A bare done-flag cannot express "done, but by an older
-  version", so every workspace revision 1 had marked would have been stranded
-  with a shape the badge path no longer reads — and those are mostly finished
-  workspaces whose agent will never run again, i.e. exactly the population the
-  backfill exists to serve. Revision 2 also stores **every** PR a branch matched,
-  not just `latest`, since the badge renders up to three.
-  Bounded on purpose: repos are warmed in parallel under a 20s timeout and each
-  workspace lookup under 5s, so one slow repo (a ~9.6k-PR fetch was measured
-  running for minutes) cannot stall startup. The flag is set even when individual
-  lookups failed — retrying forever would re-run a full fetch per workspace on
-  every launch, the exact quota drain this subsystem already got burned by, and
-  an unresolved workspace is simply asked by the SessionStart hook.
-- Key resolution (`:37`): stored key → `LINEAR_API_KEY` env → none.
-  `getLinearKeySource` `:46`. Stored via `secrets.ts` (encrypted when a keyring answers — see `workspaces.md` § Secrets; the dialog shows `SecretsNotice` when it does not). UI:
-  `LinearSettings.tsx` (test/save/clear). IPC: `linear:keySource`/`checkKey`/
-  `saveKey`/`clearKey`.
+## API key
+Linear GraphQL (`https://api.linear.app/graphql`, `Authorization: <key>`, no
+Bearer). Key resolution (`resolveApiKey`): stored key → `LINEAR_API_KEY` env →
+none; `getLinearKeySource` drives the "Linear not configured" notice
+(`env-status.ts`). Stored via `secrets.ts` (encrypted when a keyring answers — see `workspaces.md` § Secrets; the dialog shows `SecretsNotice` when it does not). UI: `LinearSettings.tsx`
+(test/save/clear). IPC: `linear:keySource`/`checkKey`/`saveKey`/`clearKey`.
 
 ## Pinned tickets — the sidebar's Tickets section
 
-A *second*, independent Linear surface: issues pinned into the sidebar as rows
+Issues pinned into the sidebar as rows
 of their own, so work that has **not started** is visible next to running
 agents. Files: `src/main/linear-tickets.ts`, `src/shared/linear-tickets-queue.ts`
 (+ `.test.ts`), store collection in `store.ts`, UI in `Sidebar.tsx`.
@@ -85,11 +30,9 @@ delete/archive/rename paths, none of which mean anything for a ticket.
   `reconcileTicketWorkspaces` (clears a `workspaceId` pointing at a deleted
   workspace, so a ticket can't be stranded invisibly).
 - **Fetch**: `fetchLinearIssue` / `fetchLinearIssues` (BATCHED — one request for
-  every pinned key) / `fetchMyLinearIssues` in `main/linear.ts`. These
-  deliberately **bypass the badge path's by-key session cache** (which would
-  freeze a ticket's mutable workflow state) and its `noApiKey` latch, throwing
-  `LinearRequestError` so an explicit CLI command fails **loud** rather than
-  resolving to an indistinguishable `null`.
+  every pinned key) / `fetchMyLinearIssues` in `main/linear.ts`. Uncached (the
+  row shows mutable workflow state), throwing `LinearRequestError` so an
+  explicit CLI command fails **loud** rather than resolving to `null`.
 - **Dispatch** (`linear-tickets.ts`): `dispatchLinearAdd/List/Remove/Pin` +
   `spawnWorkspaceForTicket` + `refreshPinnedTickets`. Routes `/linearAdd`,
   `/linearList`, `/linearRemove`, `/linearPin` (`hooks-server.ts`).
@@ -106,9 +49,8 @@ delete/archive/rename paths, none of which mean anything for a ticket.
   main pane).
 
 **Graduation** — the one interesting transition. Spawning from a ticket names
-the branch key-first via `ticketBranchName` (`shared/linear.ts`), so the
-*existing* branch-derived badge recognises the issue with no extra bookkeeping.
-The ticket then carries a `workspaceId`, leaves the queue
+the branch key-first via `ticketBranchName` (`shared/linear.ts`). The ticket
+then carries a `workspaceId`, leaves the queue
 (`shared/linear-tickets-queue.ts` `queuedTickets`), and its work shows as an
 ordinary workspace row — an issue is never displayed twice.
 
@@ -127,8 +69,7 @@ v0.5.184 the CLI path hardcoded `detached: true`, so an orchestrator's
 ticket-spawns always landed top-level with no way to override.
 
 ## Tests
-`linear.test.ts` covers `parseLinearIssueCandidate` (normalization, path-style,
-whole-token, permissiveness), the strict `parseLinearTicketRef` (URL + bare id,
+`linear.test.ts` covers the strict `parseLinearTicketRef` (URL + bare id,
 rejects branch names and lookalike hosts), and `ticketBranchName` (key-first,
 total, capped). `linear-tickets-queue.test.ts` covers the queue rule including
 the dangling-workspace case. Both suites are mutation-checked.

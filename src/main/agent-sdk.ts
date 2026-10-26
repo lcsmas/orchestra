@@ -23,6 +23,7 @@ import type {
   UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk';
 import { platform } from './platform';
+import { isPackaged } from './native-pin.ts';
 import { store } from './store';
 import { getAccountApiCredentials } from './secrets';
 import { log, scoped } from './logger';
@@ -643,8 +644,8 @@ function emit(wsId: string, event: AgentEvent): void {
 
 /** Find the `claude` executable on the session env's PATH (the shim dir the
  *  env prepends holds only the `orchestra` CLI, so this lands on the user's
- *  real install). Returns null when absent — callers fall back to the SDK's
- *  bundled default, which only works outside the packaged asar. */
+ *  real install). Returns null when absent — dev falls back to the SDK's own
+ *  binary; the packaged app ships none and refuses (ensureSessionInner). */
 function resolveClaudeBinary(env: Record<string, string>): string | null {
   for (const dir of (env.PATH ?? '').split(path.delimiter)) {
     if (!dir) continue;
@@ -1811,9 +1812,14 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // which, in the packaged app, is a bundled chunk inside app.asar. Spawning
   // through the asar (a file, not a directory) fails with `spawn ENOTDIR`,
   // invisible in dev where there is no asar. Drive the user's real `claude`
-  // (the same binary the user's shell runs from PATH) instead; only fall
-  // back to the SDK default when none is on PATH (dev-friendly).
+  // (the same binary the user's shell runs from PATH) instead. The packaged app
+  // ships no SDK binary (excluded in package.json build.files), so no fallback there.
   const claudeBin = resolveClaudeBinary(sdkEnv);
+  if (!claudeBin && !remote && isPackaged()) {
+    throw new Error(
+      '`claude` (Claude Code CLI) not found on PATH. Install it (curl -fsSL https://claude.ai/install.sh | bash), then restart Orchestra.',
+    );
+  }
   // Per-session debug black box (#177): every LOCAL session — HEADLESS included
   // — writes the CLI's verbose debug/stderr to a file under
   // `<ORCHESTRA_HOME>/logs/sessions/`, which OUTLIVES workspace deletion (unlike

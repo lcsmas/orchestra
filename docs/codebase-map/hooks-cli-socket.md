@@ -33,8 +33,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/setRepoAssociation` | `id` (+ `repoPath?`) | `{ ok, id?, branch?, repoAssociation? }` — files an orchestrator under a repo's sidebar section (omit `repoPath` to clear). DISPLAY ONLY: writes `repoAssociation`, never `repoPath`, so the coordinator stays repo-less and `/spawn` still won't inherit from it. |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? The route never throws and answers `{ ok }`; the CLI maps that to exit `0` LANDED / `2` NOT LANDED / `1` could-not-check (see the `verify-landed` entry below). |
-| `/link` | `id` (+ `prUrls?: string[]`, `linearKey?`, `clear?`) | `{ ok, prUrls?, linearKey?, cleared? }` — attach the PR(s) / Linear issue this workspace is working on. The **only** writer of `linkedPrs`/`linkedLinearKey`; both badges are agent-reported, never derived. Validates strictly (`parsePrUrl`, `parseLinearTicketRef`) and rejects a branch name or non-PR URL. PRs **accumulate**: each call appends, deduped on `prLinkKey` (`owner/repo#number`), because one workspace can own several PRs across different repos. `clear:true` + a *named* `prUrls` drops those PRs; `prUrls: []` (flag present, no value) drops them **all** — so the route must not collapse an empty array to `undefined`, which would silently turn clear-all into a no-op. `prUrls` in the reply is the resulting full set, not the delta. |
-| `/whoami` | `id` (+ `key` — #401: the caller's `ORCHESTRA_SESSION_KEY`, sent by the CLI when set) | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, linkedPrUrls?: string[], linkedLinearKey?, browserProfile?: {id, name}\|null }` — a workspace's own record (**`browserProfile` #401 = the profil navigateur it HOLDS (a dangling id reads null), returned ONLY when `sessionKeys().verify(id, key) === 'ok'` — the vouched live session of that workspace; otherwise the field is OMITTED (never `null`, which would claim "ephemeral"), since `/whoami {id}` is any-id and a profile name is the human's sign-in label. The CLI prints it as the `browser` row — `<name> (<id>)` · `ephemeral` · `(not vouched)` — i.e. the value `orchestra spawn --profile` accepts**); the only in-band way an agent learns its `parentId` (peers excludes the caller). The two link fields are what `link-instruction.sh` reads to decide whether to nudge. |
+| `/whoami` | `id` (+ `key` — #401: the caller's `ORCHESTRA_SESSION_KEY`, sent by the CLI when set) | `{ ok, id?, name?, branch?, kind?, orchestrator?, parentId?, repoPath?, baseBranch?, browserProfile?: {id, name}\|null }` — a workspace's own record (**`browserProfile` #401 = the profil navigateur it HOLDS (a dangling id reads null), returned ONLY when `sessionKeys().verify(id, key) === 'ok'` — the vouched live session of that workspace; otherwise the field is OMITTED (never `null`, which would claim "ephemeral"), since `/whoami {id}` is any-id and a profile name is the human's sign-in label. The CLI prints it as the `browser` row — `<name> (<id>)` · `ephemeral` · `(not vouched)` — i.e. the value `orchestra spawn --profile` accepts**); the only in-band way an agent learns its `parentId` (peers excludes the caller). |
 | `/status` | `id` (+ `text?`) | `{ ok, statusText? }` — set/clear the workspace's agent-authored one-line status note (`Workspace.statusText`, shown under the sidebar row and in `/peers`). Empty/absent `text` clears; sanitized to a single ≤160-char line (`shared/status-text.ts`). |
 | `/migrateAccount` | `id` (+ `accountId?` — null/'' = default login) | `{ ok, id?, branch?, accountId?, warnings? }` — stops the SDK session, moves the transcript (by dir IDENTITY, never deleting what was not moved, #240), re-pins; a 2nd call while one is in flight → `ok:false` "already in progress"; **no main-side resume (#232)**: the old `resumed` field and the CLI's `(resumed)` suffix are gone |
 | `/accounts` | — | `{ ok, accounts?: {id,label,configDir}[] }` |
@@ -146,44 +145,6 @@ Scripts and the Claude Code events they fire on:
   via `orchestra whoami` each fire — `parentId` is mutable (`/attach`), so
   baking it into env/sentinel would go stale. Self-silences without a
   parent/guide/CLI.
-- **`link-instruction.sh`** — SessionStart **and** UserPromptSubmit (the latter
-  passes the arg `prompt`; two distinct hook command strings so both register).
-  Asks the agent to report its PR(s)
-  (`orchestra link --pr`, repeatable) and/or Linear issue (`--linear`), because
-  neither badge is derived from the branch name any more — this hook is the sole
-  discovery path for the capability, and it explicitly tells the agent to link
-  **every** PR when work spans several repos. **Gated on being unlinked**: it
-  parses `orchestra whoami`'s padded `key  value` table (NOT json — the CLI
-  prints a text table) for the `pr` / `linear` rows and prints nothing once both
-  are set, so a linked workspace pays zero tokens forever. Multiple PRs render
-  space-separated on the one `pr` row, so the gate stays a simple `http*`
-  presence test regardless of count. Rows are read anchored to line start, so a
-  branch named e.g. `pr-linear-stuff` can't be mistaken for a row. Fails
-  **silent** (not nagging) when `whoami` is unreachable or returns a non-table
-  body — a restarting daemon must not nag every SessionStart.
-  **Branch-mined suggestion**: it greps the LIVE git branch (never
-  `$ORCHESTRA_BRANCH`, stale after a rename) for a `TEAM-123` shape, mirroring
-  `parseLinearIssueCandidate` in `src/shared/linear.ts`, and names that key plus
-  the exact command in the message. The badge is still never *inferred* — the
-  hook suggests, the agent confirms with `orchestra link`.
-  **`prompt` mode** (`workspaces.ts:3604` `LINK_PROMPT_NUDGE_BUDGET = 3`)
-  is the only per-turn part and is deliberately the narrowest possible. Gates
-  run strictly **cheapest-first**, because this fires on every turn of every
-  workspace: spent budget (`.orchestra/.link-nudges`, one stat) → branch
-  candidate (one local `git rev-parse`) → `whoami` (the only socket
-  round-trip). It exists because SessionStart alone loses the link: an agent
-  handed a ticket reads the turn-1 nudge, works, and never returns to it. The
-  budget is charged when a nudge prints — so a false-positive branch nags 3
-  times and goes quiet — and is **spent outright when the link is found**, which
-  is what stops a linked, key-named branch from re-querying `whoami` every turn
-  forever to rediscover the same answer (a cleared link is still covered by the
-  SessionStart ask). A branch with *no* candidate deliberately does NOT retire:
-  a rename can introduce the key at any turn, and that is the case this exists
-  to catch. The generic
-  full ask (including the PR half) stays SessionStart-only. Covered by
-  `src/main/link-nudge.test.ts`, which extracts the real script from
-  `workspaces.ts` and runs it against a fake `orchestra` + real git repo.
-  Paired skill: `orchestra-link`.
 - **`self-modify-instruction.sh`** — SessionStart ONLY. Self-modification
   notice for agents working on **Orchestra's own repo**: tells the agent this
   repo is the app currently running it, that changes only land after a
@@ -280,20 +241,8 @@ v0.5.209 `fail()` bug). Gate: `scripts/verify-verify-landed-exit.mjs`, which
 drives the built bundle under real Electron — a plain-Node unit test cannot
 observe this),
 `browser <cmd>` (#395, ADR 0009 — drive THIS workspace's Browser panel through the bundled agent-browser: `prepareBrowserCommand` (split known `--flag=value`, make file arguments absolute, THEN allowlist the final argv; `--cdp/--session/--profile/…` and `connect/install/plugin/batch/…` refused BEFORE any socket I/O) → `POST /browser {id: $ORCHESTRA_WS_ID, key: $ORCHESTRA_SESSION_KEY}` (45 s) → spawns `agent-browser <args>` with a scrubbed env that carries `AGENT_BROWSER_CDP=<wsUrl>` from the host (never in argv: `/proc/<pid>/cmdline` is world-readable), buffers its output, maps a stale-ref failure to `browser_stale_ref`, exits with the client's code. Not in `HOST_IDENTITY_VERBS`: it never reads the run/generation. Pure half: `src/shared/browser-cli.ts`; rig `scripts/e2e-browser-cli.sh`),
-`whoami` (this workspace's own record: kind, orchestrator role, parent, and the
-`pr`/`linear` link rows), `link [--pr <url>]... [--linear <KEY>] [--clear] [id]`
-(report which PR(s) / Linear issue this workspace is working on — defaults to
-**self**, since the common caller is the agent linking its own work; an explicit
-id is for a coordinator fixing up a child. `--pr` REPEATS and appends, deduped
-on `owner/repo#number`, because one workspace can own several PRs across
-different repos; `--clear --pr <url>` drops one, a bare `--clear --pr` drops
-all. Argument parsing lives in the pure exported **`parseLinkArgs`**
-(`link-args.test.ts`) because the two modes parse the same flags differently and
-that asymmetry has already shipped a bug: in CLEAR mode `--linear` is a
-*valueless selector*, so parsing it as a value-flag silently consumes the next
-token — the positional workspace id — and the command reports "unknown
-workspace" while looking well-formed. Only the explicit-id form breaks, so an
-agent clearing its own links via `$ORCHESTRA_WS_ID` never sees it),
+`whoami` (this workspace's own record: kind, orchestrator role, parent;
+`orchestra link` was removed 2026-10-26 with the PR / Linear badges),
 `status <text…>` / `status --clear` (set/clear THIS workspace's one-line status
 note — rendered under its sidebar row and surfaced to peers; self-targeted via
 the identity env vars; whitespace-only text is REJECTED at the CLI — `--clear`

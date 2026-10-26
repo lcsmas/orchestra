@@ -550,82 +550,6 @@ export interface Workspace {
    * not-pushed work without leaving the workspace tab. Recomputed alongside
    * `divergedFromBase` on every Stop hook. */
   unpushedAhead?: number;
-  /** Tag of the published GitHub Release that first shipped this branch's own
-   * (authored) work (e.g. `v0.1.11`). Drives the sidebar "released" pill.
-   * Always the earliest entry of `releasedVersions`. */
-  releasedVersion?: string;
-  /** Published-release tags this workspace wears as pills, oldest-first: the
-   * release that first shipped the branch's authored work, plus every release
-   * the branch itself cut (it authored the version-bump tag commit) — so a
-   * branch that ships in phases gets one pill per phase, while a stray
-   * follow-up commit riding along in another branch's release earns none.
-   * Recomputed each poll while merged, so the list tracks later ships. Absent
-   * on pre-upgrade records → the UI falls back to the single `releasedVersion`
-   * pill. */
-  releasedVersions?: string[];
-  /** Epoch ms the shipping release was published (GitHub `publishedAt`), or
-   * detection time as a fallback. Presence is the "released" signal — strictly
-   * stronger than `mergedAt`: merged-into-base isn't enough, a published
-   * release must have actually shipped past this branch's tip. Never cleared
-   * back to unset (a branch that shipped stays shipped), but the version it
-   * points at is refreshed when the tip advances past the recorded release.
-   * Only ever set on a branch that has also been merged — so a fresh branch
-   * sitting on an already-shipped base commit doesn't false-fire. Recomputed
-   * lazily on the same gh-based cadence as PR state, never on the hot stats
-   * poll, and only pays for a gh call once the cheap local ancestry check sees
-   * the recorded version no longer contains the tip. */
-  releasedAt?: number;
-  /** Pull requests the AGENT reported for this workspace, via
-   * `orchestra link --pr <url>` (the only writer — see `dispatchLinkRequest`).
-   * The ONLY source for the sidebar's PR badges.
-   *
-   * Replaces the previous branch-name derivation, which matched the branch
-   * against every PR's head ref by exact string equality (`fetchRepoPRs`
-   * indexed `byBranch`). That silently lost the PR the moment the branch was
-   * renamed — and Orchestra actively *nudges* every agent to rename its branch
-   * (`rename-instruction.sh`), often after the PR already exists, so its own
-   * feature broke its own PR detection. The agent is the one actor that knows
-   * which PR is its own; asking it beats guessing.
-   *
-   * An ARRAY because one workspace legitimately owns several PRs: a metarepo
-   * branch spans submodules, so a single ticket lands as one PR per submodule
-   * repo. Each entry carries its own `owner`/`repo`, so those PRs are polled
-   * independently of the workspace's `repoPath` — which is precisely what the
-   * old repo-wide fetch, rooted at that one path, could never see.
-   *
-   * Entries are POINTERS, never a status cache: `open`/`merged`/`closed` is
-   * re-read from GitHub every poll (`gh api repos/<owner>/<repo>/pulls/<n>`),
-   * so a link cannot go stale the way a stored state would — the badge keeps
-   * telling the truth on an idle workspace whose agent will never run again.
-   * The four fields are written and cleared as a unit and all come from one
-   * parse of one URL (`parsePrUrl`), so they cannot disagree with each other.
-   *
-   * Sticky by design: never auto-cleared (not on rename — that's the whole
-   * point — and not on a failed lookup, which usually means `gh` couldn't be
-   * asked). Absent on records predating this field and on workspaces whose
-   * agent has never linked one; a one-shot backfill (`link-backfill.ts`) seeds
-   * it from the retired branch match so existing rows keep their badges. */
-  linkedPrs?: PrLink[];
-  /** Linear issue key (e.g. `NMC-261`) the AGENT reported for this workspace,
-   * via `orchestra link --linear <KEY>`. The ONLY source for the sidebar's
-   * Linear badge.
-   *
-   * Replaces the previous branch-name derivation, which mined a `TEAM-NUMBER`
-   * token out of the branch with a regex. That was a guess in both directions:
-   * it invented candidates from branches that encode no issue at all
-   * (`usage-poll-429-backoff` → `POLL-429`), and it was structurally blind to
-   * any ticket whose key was never typed into the branch name — the common
-   * case, since nothing tells an agent its branch must carry one. An agent
-   * that was handed a ticket knows its key; asking it beats guessing.
-   *
-   * Still verified against the Linear API before anything renders
-   * (`verifyLinearIssueByKey`), so a hallucinated or mistyped key shows no
-   * badge rather than a wrong one — the key is an assertion, not proof.
-   *
-   * Note `parseLinearIssueCandidate` remains in use for the *other* direction:
-   * `orchestra linear add --spawn` names branches key-first so a spawned
-   * ticket's branch is meaningful. It just no longer feeds the badge. */
-  linkedLinearKey?: string;
   /** Auto-allocated dev-server port handed to setup/run scripts as
    * `$ORCHESTRA_PORT`. Lets multiple workspaces run dev servers in parallel
    * without colliding. Allocated at creation, freed on hard delete. */
@@ -786,46 +710,8 @@ export interface RepoEntry {
   remoteUrl?: string;
 }
 
-/** A pull request an AGENT reported for a workspace (`orchestra link --pr`),
- * resolved into everything needed to both open it and poll it.
- *
- * Re-exported from `shared/linear.ts`, where {@link parsePrUrl} produces it —
- * all four fields come from one parse of one URL, so they cannot disagree.
- * `owner`/`repo` are what let a linked PR be polled with a direct
- * `gh api repos/<owner>/<repo>/pulls/<number>` call, needing no local checkout,
- * which is how one workspace can track PRs living in several different repos. */
-import type { PrLink } from './linear';
-export type { PrLink };
-
-interface PRInfo {
-  url: string;
-  number: number;
-  state: 'OPEN' | 'CLOSED' | 'MERGED';
-  title: string;
-}
-
-export interface PRsForBranch {
-  /** All PRs ever opened from this branch, newest-first (capped). */
-  all: PRInfo[];
-  /** The currently-open PR for this branch, if any. */
-  open: PRInfo | null;
-  /** Most recent PR for this branch in any state (may equal `open`). */
-  latest: PRInfo | null;
-  /** Count of merged PRs ever opened from this branch. */
-  mergedCount: number;
-  /** Set when the `gh` query itself FAILED (gh missing, bad/expired token, rate
-   * limit, network) — carries the first stderr line for the badge tooltip.
-   * Distinguishes "we could not ask" from "we asked and there are no PRs": both
-   * yield empty `all`, and without this the PR badge silently vanishes on a
-   * broken `gh`, which reads as "no PR exists". Absent on every successful
-   * query, so a present `error` always means the other fields are unknown, not
-   * empty. */
-  error?: string;
-}
-
 /** CI (GitHub Actions) verdict for a branch, reduced from the repo-wide runs
- * feed (`shared/ci-state.ts`) on the same repo-wide-fetch + cache pattern as
- * PRs. Only `fail` renders a badge — green CI is quiet by design (Orca-style:
+ * feed (`shared/ci-state.ts`), fetched once per repo and cached. Only `fail` renders a badge — green CI is quiet by design (Orca-style:
  * failures are signal, passes are noise). */
 export interface ChecksForBranch {
   /** Aggregated over the branch's newest head sha: any fail → `fail`, else any
@@ -840,14 +726,11 @@ export interface ChecksForBranch {
    * `gh run view <id> --log-failed`. */
   runId?: number;
   /** Set when the gh query itself failed — same semantics as
-   * {@link PRsForBranch.error}: "could not ask", not "no runs". */
+   * "could not ask", not "no runs". */
   error?: string;
 }
 
-/** A Linear issue confirmed to exist, resolved by querying Linear for the
- *  candidate key parsed from a branch name. The renderer only ever renders a
- *  Linear badge from one of these — a branch whose candidate key doesn't
- *  resolve to a real issue yields `null` and shows nothing. */
+/** A Linear issue as returned by the Linear API (pinned tickets). */
 export interface LinearIssue {
   /** Canonical issue identifier as Linear returns it, e.g. `NMC-261`. */
   identifier: string;
@@ -887,8 +770,8 @@ export interface LinearIssueState {
  *
  *  Lifecycle: pinned by `orchestra linear add` → rendered in the sidebar's
  *  Tickets section → once a workspace is spawned for it (`workspaceId` set) it
- *  "graduates": it leaves the Tickets section and the existing branch-derived
- *  Linear badge on that workspace row takes over. A ticket is never shown
+ *  "graduates": it leaves the Tickets section (the workspace row stands for
+ *  it). A ticket is never shown
  *  twice, so the queue only ever holds work that hasn't started. */
 export interface PinnedTicket {
   /** Canonical Linear identifier (e.g. `NMC-261`) — the primary key. Pinning

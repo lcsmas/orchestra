@@ -156,7 +156,7 @@ test('usage text and the spawn help name --profile', needsBuild, () => {
   assert.match(help, /navigation éphémère/);
 });
 
-const WHOAMI = (extra: string) => `return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', orchestrator: false, parentId: null, repoPath: '/r', baseBranch: 'main', linkedPrUrls: [], linkedLinearKey: null${extra} };`;
+const WHOAMI = (extra: string) => `return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', orchestrator: false, parentId: null, repoPath: '/r', baseBranch: 'main'${extra} };`;
 
 test('whoami prints the held profile (the value spawn --profile accepts), `ephemeral`, or `(not vouched)` when the host omits the row', needsBuild, () => {
   const held = driveCli(['whoami'], WHOAMI(", browserProfile: { id: 'bp-0123456789ab', name: 'Staging admin' }"), 'k-live');

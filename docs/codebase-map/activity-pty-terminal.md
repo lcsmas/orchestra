@@ -573,10 +573,10 @@ ignored flag would run the default mode, which is `after` since #230 (`args_self
   logging argv). No-PR: control = main reports `unpushedAhead>=1` AND the sidebar paints its pill; then the toolbar has no
   create button / "ready to push" surface / PR control, `window.orchestra.mergeWorktree` is `undefined`, and no loaded CSS rule
   names `.pr-link-create`/`.primed`. `toolbar_no_pr_fresh` = the commonest no-PR state (0 commits ahead; controls: main
-  reports 0 unpushed + `findPR` empty, and the `.toolbar-actions` buttons rendered). The toolbar checks are a literal
+  reports 0 unpushed, and the `.toolbar-actions` buttons rendered). The toolbar checks are a literal
   deny-list (`button.pr-link`, `/Open PR|ready to push|create a PR/`, `.primed`): a reworded, re-classed replacement
-  button is NOT caught (review F3, accepted gap). With-PR (same in both modes): control = `findPR` returns the open PR via the stub `gh`;
-  exactly one `PR #4242` button, no create button, and a trusted click makes main log `open external (renderer-ipc): <url>`. And #226's `sandbox_paused`
+  button is NOT caught (review F3, accepted gap). `toolbar_with_pr` (PR tracking removed 2026-10-26): a store carrying a legacy `linkedPrs` entry shows NO
+  PR control, the stub `gh` is never asked about `pulls` (waits past the retired 12 s poll), and `window.orchestra.findPR` is gone. And #226's `sandbox_paused`
   (`boot: { sandbox: true }` → sandbox-hosted records `gone` / `live` / `legacy` + the local control; drives a trusted-input Agent-view send, the REAL
   `dist-electron/cli.js` `restart` (default, `--fresh`, legacy ws) / `message` against the boot's socket via `runCli`, `sendReviewToAgent` / `fixChecks` /
   `restartAgent` / `agentSdkClear` over IPC, and a local send as positive control; `EXPECT.sandboxPaused` flips the message clauses — see [sandbox-transport.md](sandbox-transport.md) § PAUSED;

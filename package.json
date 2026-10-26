@@ -1,6 +1,6 @@
 {
   "name": "orchestra",
-  "version": "0.5.353",
+  "version": "0.5.356",
   "description": "Run parallel Claude Code agents in isolated git worktrees",
   "license": "Apache-2.0",
   "author": "Lucas Mas",
@@ -179,7 +179,16 @@
     "productName": "Orchestra",
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+      "!**/node_modules/better-sqlite3/deps/**",
+      "!**/node_modules/better-sqlite3/src/**",
+      "!**/node_modules/better-sqlite3/build/Release/obj/**",
+      "!**/node_modules/better-sqlite3/build/Release/test_extension.node"
+    ],
+    "electronLanguages": [
+      "en-US",
+      "fr"
     ],
     "directories": {
       "output": "release"

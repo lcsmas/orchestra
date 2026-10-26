@@ -3,8 +3,6 @@ import { useStore } from '../store';
 import type {
   ChecksForBranch,
   EnvStatusItem,
-  LinearIssue,
-  PRsForBranch,
   PinnedTicket,
   RepoEntry,
   Workspace,
@@ -392,72 +390,12 @@ const ICON_PROPS = {
   shapeRendering: 'geometricPrecision',
 };
 
-function PROpenIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M6 9v6" />
-      <circle cx="18" cy="18" r="3" />
-      <path d="M13 6h3a2 2 0 0 1 2 2v7" />
-    </svg>
-  );
-}
-
-function PRMergedIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <circle cx="18" cy="18" r="3" />
-      <circle cx="6" cy="6" r="3" />
-      <path d="M6 21V9a9 9 0 0 0 9 9" />
-    </svg>
-  );
-}
-
-/** Lucide `tag` — a released version. Pairs a glyph with its number the way the
- * PR/Linear badges do, which is what lets the release badge drop its pill
- * chrome and still read as a distinct kind of fact rather than loose text. */
-function ReleaseTagIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
-      <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
-    </svg>
-  );
-}
-
 /** Lucide `arrow-up` — commits made locally that origin has not seen yet. */
 function UnpushedIcon() {
   return (
     <svg {...ICON_PROPS}>
       <path d="m5 12 7-7 7 7" />
       <path d="M12 19V5" />
-    </svg>
-  );
-}
-
-function PRClosedIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <circle cx="6" cy="6" r="3" />
-      <circle cx="18" cy="18" r="3" />
-      <path d="M6 9v12" />
-      <path d="m21 3-6 6" />
-      <path d="m21 9-6-6" />
-      <path d="M18 11.5V15" />
-    </svg>
-  );
-}
-
-// Warning triangle — shown when the `gh` PR query failed, so PR state is
-// unknown rather than empty. Deliberately NOT a PR-branch glyph: this badge
-// means "could not ask", and reusing the PR shape would read as a real PR.
-function PRErrorIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0" />
-      <path d="M12 9v4" />
-      <path d="M12 17h.01" />
     </svg>
   );
 }
@@ -620,91 +558,6 @@ function ResourcesIcon() {
   );
 }
 
-/** PRs for a branch, ordered open-first then gh's newest-first, capped at the
- * three we surface. */
-function orderedVisiblePRs(prRecord?: PRsForBranch): {
-  visible: PRsForBranch['all'];
-  hidden: number;
-} {
-  const all = (prRecord?.all ?? []).slice().sort((a, b) => {
-    if (a.state === 'OPEN' && b.state !== 'OPEN') return -1;
-    if (b.state === 'OPEN' && a.state !== 'OPEN') return 1;
-    return 0;
-  });
-  return { visible: all.slice(0, 3), hidden: Math.max(0, all.length - 3) };
-}
-
-/** The Linear-issue and PR-link badge spans for a workspace — a bare fragment
- * with no row/container wrapper, so it drops straight into the `.ws-pills` strip
- * alongside the other status pills, keeping the PR/Linear badges inline with
- * `↑ahead`, merged, released, etc. Returns null when the workspace has neither a
- * verified Linear issue nor any PR. */
-function PrLinearBadges({
-  prRecord,
-  linearIssue,
-}: {
-  prRecord?: PRsForBranch;
-  linearIssue: LinearIssue | null;
-}) {
-  const { visible: visiblePRs, hidden: hiddenPRs } = orderedVisiblePRs(prRecord);
-  const prError = prRecord?.error;
-  if (visiblePRs.length === 0 && !linearIssue && !prError) return null;
-  return (
-    <>
-      {prError && (
-        <span
-          className="pr-badge error"
-          title={`Could not query GitHub for PRs — PR status is unknown, not absent.\n${prError}`}
-        >
-          <PRErrorIcon />
-          <span className="pr-badge-num">PR?</span>
-        </span>
-      )}
-      {linearIssue && (
-        <span
-          className="pr-badge linear"
-          title={`Linear ${linearIssue.identifier}: ${linearIssue.title} — open in Linear`}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.orchestra.openExternal(linearIssue.url);
-          }}
-        >
-          <LinearIcon />
-          <span className="pr-badge-num">{linearIssue.identifier}</span>
-        </span>
-      )}
-      {visiblePRs.map((p) => (
-        <span
-          key={p.number}
-          className={`pr-badge ${p.state.toLowerCase()}`}
-          title={`PR #${p.number} · ${p.state.toLowerCase()} · ${p.title}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.orchestra.openExternal(p.url);
-          }}
-        >
-          {p.state === 'MERGED' ? (
-            <PRMergedIcon />
-          ) : p.state === 'CLOSED' ? (
-            <PRClosedIcon />
-          ) : (
-            <PROpenIcon />
-          )}
-          <span className="pr-badge-num">#{p.number}</span>
-        </span>
-      ))}
-      {hiddenPRs > 0 && (
-        <span
-          className="pr-badge more"
-          title={`${hiddenPRs} more linked PR${hiddenPRs === 1 ? '' : 's'}`}
-        >
-          +{hiddenPRs}
-        </span>
-      )}
-    </>
-  );
-}
-
 /** A workspace paired with its depth in the orchestrator→children tree. Depth 0
  * is a root (no live parent); each spawned child sits one level deeper than the
  * orchestrator that spawned it. */
@@ -847,9 +700,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     repos,
     activeId,
     stats,
-    prs,
     checks,
-    linear,
     tickets,
     removeTicket,
     spawnFromTicket,
@@ -1729,26 +1580,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     The repo tag is dropped here (under a pinned tree the repo
                     is already implied); it is kept in the repo sections, where
                     it marks a genuinely cross-repo child. */}
-                {/* PR/Linear badges are NOT gated on being a git child. Links
-                    are agent-reported (`orchestra link --pr`) and carry their
-                    own owner/repo/number, so main's `findPR` deliberately
-                    dropped every kind/repoPath guard — an orchestrator
-                    coordinating a metarepo milestone links the submodule PRs it
-                    owns while having no repo or branch of its own. Gating on
-                    `childIsGit` hid exactly those. `PrLinearBadges` already
-                    renders null when there is nothing linked, so repo-less rows
-                    with no links stay blank as before.
-                    CI stays git-only: `findChecks` needs a branch to query and
-                    hard-returns `none` for scratch/orchestrator rows. */}
-                <span className="ws-pills mini">
-                  <PrLinearBadges
-                    prRecord={prs[w.id]}
-                    linearIssue={linear[w.id] ?? null}
-                  />
-                  {childIsGit && (
+                {/* PR / Linear / agent-count badges are deliberately not
+                    shown on rows (UI clutter, user ask 2026-10-26); the link
+                    data still lives in the store for the toolbar. */}
+                {childIsGit && (
+                  <span className="ws-pills mini">
                     <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
-                  )}
-                </span>
+                  </span>
+                )}
                 <PauseRowBadge wsId={w.id} />
                 <HibernatedChip w={w} />
                 {/* #88 — "N deliveries waiting, no turn started in X". Renders
@@ -2259,30 +2098,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 const renderWs = ({ ws: w, depth }: TreeRow) => {
               const s = stats[w.id];
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
-              const prRecord = prs[w.id];
-              // Linear issue badge — shown ONLY for an issue the main process
-              // verified to exist via Linear's GraphQL API. A branch whose name
-              // merely looks like it carries a key (`usage-poll-429`) resolves to
-              // null and shows nothing. URL/identifier come straight from Linear,
-              // so they're never fabricated.
-              const linearIssue = linear[w.id] ?? null;
-              // A promoted worktree is a coordinator: it can be collapsed, it
-              // shows a child count, and it is a valid re-parent DROP TARGET.
-              // `canOrchestrate` is the TREE question — it stays true for a
-              // 'worktree' kind, which is exactly why this row still gets the
-              // full git chrome below (branch, diff pills, PR badges).
-              const isOrchestratorRow = canOrchestrate(w);
               const kids = forest.childrenOf.get(w.id) ?? [];
               const collapsible = kids.length > 0;
               const isCollapsed = collapsible && collapsedOrch.has(w.id);
-              // Every agent under this row, however deep. The orchestrator glyph
-              // shows THIS count (not `kids.length`) so a row nesting a
-              // sub-orchestrator still accounts for the agents below it — the
-              // separate collapsed-only count badge that used to carry the
-              // recursive number was removed as redundant, since on a flat tree
-              // it just repeated the glyph's own number.
-              const descendants = collectDescendants(w.id, forest.childrenOf);
-              const hiddenKids = isCollapsed ? descendants : [];
+              // Every agent under this row, however deep — counted only when
+              // collapsed, as the hidden-agents pill (same as the pinned tree).
+              const hiddenKids = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
               const hiddenUrgency = hiddenKids.some((h) => h.status === 'error')
                 ? 'error'
                 : hiddenKids.some((h) => h.status === 'waiting' || h.autoUnread || h.markedUnread)
@@ -2465,31 +2286,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <WorkspaceContextBadge workspaceId={w.id} />
                       <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
                       <span className="ws-pills">
-                      {/* A promoted worktree's ONLY "I coordinate agents" cue.
-                          Now the same network glyph the Orchestrators section
-                          header uses, so one shape means "orchestrator"
-                          everywhere, and styled as a bare glyph+count to match
-                          the PR/Linear badges beside it rather than shouting
-                          over them with a bordered pill. */}
-                      {isOrchestratorRow && (
+                      {isCollapsed && hiddenKids.length > 0 && (
                         <span
-                          className={`orchestrator-pill${
-                            isCollapsed && hiddenUrgency ? ` ${hiddenUrgency}` : ''
-                          }`}
-                          title={
-                            isCollapsed && hiddenKids.length > 0
-                              ? `${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
-                                  .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
-                                  .join(', ')}`
-                              : w.kind === 'orchestrator'
-                                ? 'Orchestrator session — coordinates the agents nested under it'
-                                : `Promoted worktree — coordinates ${descendants.length} nested agent${descendants.length === 1 ? '' : 's'} while keeping its own branch`
-                          }
+                          className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                          title={`${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
+                            .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
+                            .join(', ')}`}
                         >
-                          <OrchestratorIcon />
-                          {descendants.length > 0 && (
-                            <span className="orch-count">{descendants.length}</span>
-                          )}
+                          {hiddenKids.length}
                         </span>
                       )}
                       {crossRepoChild && (
@@ -2500,48 +2304,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {repoLabel(w.repoPath)}
                         </span>
                       )}
-                      {w.releasedAt &&
-                        (() => {
-                          // Fall back to the single releasedVersion for
-                          // pre-upgrade records, then to a bare "released" when
-                          // no tag is known.
-                          const versions =
-                            w.releasedVersions && w.releasedVersions.length > 0
-                              ? w.releasedVersions
-                              : w.releasedVersion
-                                ? [w.releasedVersion]
-                                : [];
-                          if (versions.length === 0) {
-                            return (
-                              <span className="released-pill" title="Shipped in a published release">
-                                <ReleaseTagIcon />
-                                <span className="released-v">released</span>
-                              </span>
-                            );
-                          }
-                          // Only the NEWEST version is shown, with the rest
-                          // collapsed into a dim `+N` — the same treatment
-                          // `.pr-badge.more` already gives extra PRs. A branch
-                          // that shipped in three releases otherwise spent three
-                          // full pills of row width to say one thing, and the
-                          // branch name is what gives up that space.
-                          const newest = versions[versions.length - 1];
-                          const extra = versions.length - 1;
-                          return (
-                            <span
-                              className="released-pill"
-                              title={
-                                extra > 0
-                                  ? `Shipped in releases ${versions.join(', ')}`
-                                  : `Shipped in release ${newest}`
-                              }
-                            >
-                              <ReleaseTagIcon />
-                              <span className="released-v">{newest}</span>
-                              {extra > 0 && <span className="released-more">+{extra}</span>}
-                            </span>
-                          );
-                        })()}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
                           className="unpushed-pill"
@@ -2574,7 +2336,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           setup…
                         </span>
                       )}
-                      <PrLinearBadges prRecord={prRecord} linearIssue={linearIssue} />
                       <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                       </span>
                     </div>
@@ -2935,7 +2696,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         <button
           className="sidebar-footer-link"
           onClick={() => setLinearSettingsOpen(true)}
-          title="Linear API key — verify branch issue keys against Linear"
+          title="Linear API key — used by pinned tickets"
           aria-label="Linear settings"
         >
           <LinearIcon />

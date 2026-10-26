@@ -522,8 +522,8 @@ try {
       await bootChain();
       const dir = path.join(wt, '.orchestra');
       fs.writeFileSync(path.join(dir, '.hooks-version'), 'digest-of-the-previous-build');
-      fs.rmSync(path.join(dir, 'link-instruction.sh'), { force: true });
-      fs.mkdirSync(path.join(dir, 'link-instruction.sh'));
+      fs.rmSync(path.join(dir, 'fieldguide-instruction.sh'), { force: true });
+      fs.mkdirSync(path.join(dir, 'fieldguide-instruction.sh'));
       const { installOrchestraHooks } = await import(`${REPO}/src/main/workspaces.ts`);
       await installOrchestraHooks(wt);
       const tmps = () => fs.readdirSync(dir).filter((n) => n.endsWith('.tmp'));
