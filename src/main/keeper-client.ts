@@ -36,7 +36,7 @@ import {
 } from '../shared/keeper-protocol';
 import { isKeeperCmdline, isSameLiveProcess } from '../shared/resource-monitor';
 import { gatherRuntimeInputs, pickKeeperRuntime } from '../shared/keeper-runtime';
-import { installBundledRuntime } from './keeper-runtime-install.ts';
+import { createRuntimeTrust, installBundledRuntime } from './keeper-runtime-install.ts';
 import { relayHoldFile, relaySocketPath, relayUpstreamFile, type DockerRelaySpec } from '../shared/docker-relay';
 import {
   OOM_TOOL_WRAPPER_FILE,
@@ -503,16 +503,21 @@ export function installKeeper(): void {
 
 /** The pinned Node installed under `<ORCHESTRA_HOME>/bin/node-<version>-<hash>/` (#390), or null (dev run, mac/win, install refused). */
 let bundledNodePath: string | null = null;
+/** What this app run already verified about the installed runtime (content hash + executable + `node -p 1`): once per run, not per launch (#390 -fu F2). */
+const runtimeTrust = createRuntimeTrust();
+/** The last refusal we logged: a refused runtime is asked again at every launch, but its warning is not repeated. */
+let lastRuntimeRefusal: string | null = null;
 
 /** Copy the pinned Node out of the package (idempotent, atomic, hash-verified) and remember where it is. Best-effort: failure only means the next runtime in the pick order. */
 function refreshBundledRuntime(): string | null {
   const resourcesDir = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  const r = installBundledRuntime({ resourcesDir, binDir: path.join(orchestraHome(), 'bin') });
+  const r = installBundledRuntime({ resourcesDir, binDir: path.join(orchestraHome(), 'bin'), trust: runtimeTrust });
   if (r.ok) {
     if (r.copied) log.info(`installed pinned node v${r.manifest.version} at ${r.path}`);
     bundledNodePath = r.path;
   } else {
-    if (!r.absent) log.warn(`pinned node not installed (${r.reason}) — keepers fall back to a PATH node / the app binary`);
+    if (!r.absent && r.reason !== lastRuntimeRefusal) log.warn(`pinned node not used (${r.reason}) — keepers fall back to a PATH node / the app binary`);
+    if (!r.absent) lastRuntimeRefusal = r.reason;
     bundledNodePath = null;
   }
   return bundledNodePath;
