@@ -248,7 +248,7 @@ async function main() {
     // What the DRIVER handed the app: its /proc/<pid>/environ goes blind once DBUS_SESSION_BUS_ADDRESS is set (Chromium rewrites it, src/shared/browser-reliquats.ts)
     const handed = env;
     clause('ctl', 'scratch-env', handed.ORCHESTRA_HOME === world.ohome && handed.CLAUDE_CONFIG_DIR === world.cfg && handed.HOME === world.fakeHome && !('DISPLAY' in handed) && handed.WAYLAND_DISPLAY === RIG_WAYLAND && handed.ORCHESTRA_CDP_TRACE === '1'
-      && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && !handed.XDG_RUNTIME_DIR.startsWith('/run/user/') && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
+      && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && handed.XDG_RUNTIME_DIR.startsWith(RIG_DIR + path.sep) && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
       `env handed to the app: ORCHESTRA_HOME=${handed.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${handed.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${handed.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in handed ? handed.DISPLAY : '<unset>'} XDG_RUNTIME_DIR=${handed.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${handed.DBUS_SESSION_BUS_ADDRESS} ORCHESTRA_CDP_TRACE=${handed.ORCHESTRA_CDP_TRACE}`);
     await runArms({ world, W1, W2, W3, FIX, port, app, ui, targets, env });
   } catch (e) {
