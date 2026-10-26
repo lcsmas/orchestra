@@ -907,6 +907,9 @@ discovery and "create target" onto the panel tabs (Electron has no `Target.creat
   old tool refused); the screenshot is a FILE (`screenshot` prints its path under `$ORCHESTRA_AGENT_TMPDIR`; the agent `Read`s it) instead of an
   image block; a bare host gets `https://` as before. **Open gap reported to #395 (ledger #405)**: `fill` on a hidden pane is refused (prints `GAP` in the rig, never gates it). The other
   one the rig found — `screenshot --screenshot-format jpeg out.jpg` mangled by `absolutizeBrowserArgs`, and the `--flag=value` form writing a file named like the flag into the host's cwd — is fixed in #395 (`e7750089`) and is now a regular clause.
+- **Measured by the seat-3 pre-gate (skill sentences were wrong, now fixed + pinned by hidden-panel clauses)**: on a HIDDEN pane `wait "<selector>"` for an element that still has to
+  appear hangs to its timeout (25 s default; an element already there returns at once; `--fn` / `--text` / ms are fine) — the selector wait is frame-driven; and `errors` prints blank lines
+  (the page-error text never reaches it, nor `console`; visible pane too). `console` can lag on a hidden pane. Tracked with the other hidden-pane limits in #406.
 - **`open` waits for the load (measured, AC1)**: agent-browser 0.39.2's `open` returns after `Page.loadEventFired`, which the proxy forwards from the debugger
   (`CdpProxyCore.emit`), like the removed `navigate` awaited `loadURL`. Rig arm `load-wait` (a page with one 1.5 s image; a fast page as the control that the wait is the
   load, not a fixed sleep); mutant `load-events-dropped`. Content a script renders after the load still needs `wait`.

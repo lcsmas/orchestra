@@ -691,6 +691,24 @@ const ARM_FNS3 = {
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
       clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0b - 300) <= 2, `${show(sc)}; oracle scrollY ${y0b} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
+      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
+      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
+      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
+      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
+      await o2.eval(late('late-sel'));
+      const wsel = await cli(ctx, W2, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
+      await o2.eval(late('late-fn'));
+      const wfn = await cli(ctx, W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
+      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
+      await o2.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
+      await sleep(500);
+      const errs = await cli(ctx, W2, ['errors']);
+      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
+      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
+      await selectWs(ctx, W2); await openPane(ctx);
+      await o2.eval(late('late-vis'));
+      const wvis = await cli(ctx, W2, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
+      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
     } finally { o2.close(); }
   },
 };

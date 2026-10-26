@@ -48,11 +48,11 @@ orchestra browser snapshot -i                        # the page changed → take
 | keys | §press Enter§ · §press Tab§ · §press Control+a§ |
 | choose, tick, upload | §select @e7 "Label"§ · §check @e8§ · §uncheck @e8§ · §upload @e9 ./report.pdf§ |
 | scroll | §scroll down 600§ · §scroll up 200§ · §scrollintoview @e12§ · inside a scrollable box: §scroll down 300 --selector "#panel"§ |
-| wait | §wait "#result"§ (until a selector appears) · §wait 500§ (milliseconds) |
+| wait | §wait "#result"§ (until a selector appears) · §wait --fn "document.querySelector('#x') !== null"§ · §wait --text "Welcome"§ · §wait 500§ (milliseconds) |
 | read | §get text @e5§ · §get value @e3§ · §get url§ · §get title§ · §is visible @e5§ |
 | run JS | §eval "document.title"§ prints the value as JSON; a promise is awaited; a thrown error is exit 1. The page keeps ONE global scope: a top-level §const x§ / §let x§ declared in two calls fails the second ("already been declared") — wrap multi-statement scripts in §(() => { … })()§ |
 | dialogs | §dialog status§ · §dialog accept§ · §dialog dismiss§ (an open §confirm()§ blocks the page until you answer) |
-| debug | §console§ · §errors§ · §network requests§ · §cookies get§ · §storage local get <key>§ |
+| debug | §console§ (console.* output; it may lag on a hidden pane) · §network requests§ · §cookies get§ · §storage local get <key>§ — §errors§ prints blank lines instead of the message and an uncaught page error does not reach §console§: catch one yourself with §eval "window.addEventListener('error', e => (window.__err = e.message))"§, read §eval "window.__err"§ later |
 | history | §back§ · §forward§ · §reload§ |
 
 ## Seeing the page
@@ -95,7 +95,7 @@ Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-read
 
 ## When the pane is not on screen
 
-The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §scrollintoview§, §wait§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §dblclick§, §hover§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once and do nothing — with "this workspace's Browser pane is not on screen", or (§click§) "Element … is outside the viewport". Do not answer that with §scrollintoview§ and a retry, and do not retry in a loop: wait for the pane to come back. To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
+The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §scrollintoview§, §wait --fn§ / §wait --text§ / §wait <ms>§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §dblclick§, §hover§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once and do nothing — with "this workspace's Browser pane is not on screen", or (§click§) "Element … is outside the viewport". Do not answer that with §scrollintoview§ and a retry, and do not retry in a loop: wait for the pane to come back. §wait "<selector>"§ is the exception to avoid there: it returns at once for an element that is already on the page but hangs until its timeout (25 s by default) when the element still has to appear — use §wait --fn§ or §--text§ instead, or add §--timeout 3000§ (lifting the hidden-pane limits is tracked in #406). To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
 
 §§§bash
 orchestra browser eval "(() => { const el = document.querySelector('#q'); Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set.call(el, 'x'); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()"
