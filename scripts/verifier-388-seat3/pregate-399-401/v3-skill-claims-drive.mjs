@@ -10,7 +10,7 @@
 // Usage (via scripts/e2e-browser-cli-parity.sh): <app-dir> --live-home <real $HOME> [--arm a,b] [--list] [--mutant <name>] [--trace] [--out dir]
 //   --mutant <name>: patch the BUILT bundle in place (byte-exact backup, `cmp`-verified restore), run, and require the mutant's arms RED
 //   (and every ctl/* clause of those arms GREEN). Without it the run must be all green.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill', 'v3claims', 'v3delta', 'v3f3'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -900,6 +900,48 @@ const ARM_FNS8 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS8);
+
+// ── seat 3 (#399 F3 delta, 0dbc2b35): which elements does a hidden-pane `wait "<selector>"` pass for; the stale-ref and help sentences ──
+ARM_FNS.v3f3 = async function v3f3(ctx) {
+  const { W1, W2, FIX } = ctx; const A = 'v3f3';
+  const run = (W, args, o2) => cli(ctx, W, args, { timeoutMs: 60000, ...(o2 ?? {}) });
+  await selectWs(ctx, W1); await openPane(ctx);
+  const u = `${FIX}/v3-kinds.html`;
+  const { r: op, o } = await openOn(ctx, W2, u);
+  clause(A, 'ctl/w2-is-hidden', op.code === 0 && await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`), show(op));
+  const geo = await o.eval(`({ innerWidth, innerHeight, bodyW: Math.round(document.body.getBoundingClientRect().width), kinds: Object.fromEntries([...document.querySelectorAll('[id^=k-]')].map((e) => [e.id, Math.round(e.getBoundingClientRect().width)])) })`);
+  console.log(`  INFO  [${A}] hidden page geometry: innerWidth ${geo.innerWidth} innerHeight ${geo.innerHeight} body ${geo.bodyW}; widths ${JSON.stringify(geo.kinds)}`);
+  const ids = Object.keys(geo.kinds); const hidden = {};
+  for (const id of ids) { const r = await run(W2, ['wait', `#${id}`, '--timeout', '2500']); hidden[id] = { ok: r.code === 0, ms: r.ms }; }
+  const passH = ids.filter((i) => hidden[i].ok), failH = ids.filter((i) => !hidden[i].ok);
+  console.log(`  INFO  [${A}] hidden pane, wait "#id" --timeout 2500: RETURNS for [${passH.join(', ')}]; TIMES OUT for [${failH.join(', ')}]`);
+  const sentenceOnly = passH.every((i) => /^k-(input|btn)$/.test(i)) && ['k-input', 'k-btn'].every((i) => passH.includes(i));
+  clause(A, 'skill-says-hidden-wait-selector-returns-ONLY-for-inputs-and-buttons', sentenceOnly, `returns for [${passH.join(', ')}]`);
+  const sentenceFail = ['k-h1', 'k-p', 'k-div'].every((i) => failH.includes(i));
+  clause(A, 'skill-says-text-blocks-and-divs-time-out', sentenceFail, `h1 ${JSON.stringify(hidden['k-h1'])} p ${JSON.stringify(hidden['k-p'])} div ${JSON.stringify(hidden['k-div'])}`);
+  const bodyR = await run(W2, ['wait', 'body', '--timeout', '2500']); clause(A, 'skill-says-the-body-times-out', bodyR.code !== 0, show(bodyR));
+  const lateR = await (async () => { await o.eval(`setTimeout(() => { const d = document.createElement('input'); d.id = 'late-input'; document.body.appendChild(d); }, 700); 1`); return run(W2, ['wait', '#late-input', '--timeout', '3000']); })();
+  console.log(`  INFO  [${A}] hidden pane, a LATE <input> (skill: "an element that still has to appear" times out): ${show(lateR)}`);
+  // visible controls
+  await selectWs(ctx, W2); await openPane(ctx);
+  const ov = await oracle(ctx, `${u}?w=${W2.name}`);
+  const vis = {}; for (const id of ['k-h1', 'k-p', 'k-div', 'k-input']) { const r = await run(W2, ['wait', `#${id}`, '--timeout', '2500']); vis[id] = r.code === 0 && r.ms < 2000; }
+  clause(A, 'ctl/visible-pane-every-kind-returns-at-once', Object.values(vis).every(Boolean), JSON.stringify(vis));
+  // stale-ref sentence: "after a re-render the old ref may still resolve (by role and name) or may not"
+  const sn = await run(W2, ['snapshot', '-i']); const go = (/button "Go" \[ref=(e\d+)\]/.exec(sn.stdout) || [])[1];
+  await ov.eval(`document.getElementById('host').innerHTML = '<button id="bgo2" onclick="document.getElementById(\\'out\\').textContent=\\'clicked-new-node\\'">Go</button>'; 1`);
+  const c1 = await run(W2, ['click', `@${go}`]); const out1 = await ov.eval(`document.getElementById('out').textContent`);
+  console.log(`  INFO  [${A}] re-render with the SAME role+name, old ref @${go}: ${show(c1)} → #out ${JSON.stringify(out1)}`);
+  await ov.eval(`document.getElementById('host').innerHTML = '<button id="bgo3">Stop</button>'; 1`);
+  const c2 = await run(W2, ['click', `@${go}`]);
+  console.log(`  INFO  [${A}] re-render with ANOTHER name, old ref: ${show(c2)}`);
+  clause(A, 'skill-says-after-a-rerender-the-old-ref-may-resolve-or-may-not', (c1.code === 0 && /clicked-new-node/.test(out1)) && c2.code !== 0, `same role+name → ${c1.code === 0 ? 'resolved and clicked the NEW node' : 'failed'}; another name → rc ${c2.code}`);
+  // help sentence
+  const h = await run(W2, ['help'], {}); const hb = await new Promise((res) => { const r = spawnSync(process.execPath, [path.join(APP_DIR, 'dist-electron/cli.js'), 'help', 'browser'], { encoding: 'utf8', env: cliEnv(ctx, W2), cwd: ctx.world.fakeHome }); res(r); });
+  console.log(`  INFO  [${A}] orchestra help browser → rc ${hb.status}, ${hb.stdout.split('\n').length} lines, head ${JSON.stringify(hb.stdout.split('\n').slice(0, 4).join(' | ').slice(0, 220))}`);
+  clause(A, 'skill-says-help-browser-prints-a-short-reference', hb.status === 0 && hb.stdout.trim().length > 0 && hb.stdout.split('\n').length < 60, `${hb.stdout.split('\n').length} lines`);
+  ov.close(); o.close();
+};
 
 // ── seat 3 (#399 delta gate a94f4476): each NEW sentence of the skill vs what the page/app does ──
 ARM_FNS.v3delta = async function v3delta(ctx) {
