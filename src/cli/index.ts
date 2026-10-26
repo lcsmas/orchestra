@@ -1950,7 +1950,9 @@ async function main(argv: string[]): Promise<void> {
       // checkable by the agent they address.
       const id = selfWorkspaceId();
       if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
-      const res = await request('/whoami', { id });
+      // #401: the session key lets the host vouch for us — it shows the held profile row only to a vouched self.
+      const whoamiKey = process.env[SESSION_KEY_ENV]?.trim();
+      const res = await request('/whoami', { id, ...(whoamiKey ? { key: whoamiKey } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to look up this workspace');
       const orchestrator = res.orchestrator === true;
       const kind = (res.kind as string | undefined) ?? 'worktree';
@@ -1974,7 +1976,7 @@ async function main(argv: string[]): Promise<void> {
         ['pr', ((res.linkedPrUrls as string[] | undefined) ?? []).join(' ') || '(none)'],
         ['linear', (res.linkedLinearKey as string | null | undefined) || '(none)'],
         // #401: the profil navigateur this workspace holds — the value `orchestra spawn --profile` accepts. (Key kept ≤ the widest one: no re-pad.)
-        ['browser', ((p) => (p ? `${p.name} (${p.id})` : 'ephemeral'))(res.browserProfile as { id: string; name: string } | null | undefined)],
+        ['browser', ((p) => (p === undefined ? '(not vouched)' : p ? `${p.name} (${p.id})` : 'ephemeral'))(res.browserProfile as { id: string; name: string } | null | undefined)],
       ];
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');

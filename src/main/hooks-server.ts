@@ -535,7 +535,7 @@ export async function startHooksServer(): Promise<void> {
             );
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
-              send(200, dispatchWhoamiRequest({ id: msg.id }));
+              send(200, dispatchWhoamiRequest({ id: msg.id, key: typeof msg.key === 'string' ? msg.key : undefined })); // #401: the key vouches the caller for the held-profile row
             } else {
               send(200, { ok: false, error: 'missing id' });
             }

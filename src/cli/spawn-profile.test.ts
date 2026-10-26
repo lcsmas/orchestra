@@ -156,12 +156,19 @@ test('usage text and the spawn help name --profile', needsBuild, () => {
   assert.match(help, /navigation éphémère/);
 });
 
-test('whoami prints the held profile (the value spawn --profile accepts), or ephemeral', needsBuild, () => {
-  const held = driveCli(['whoami'], "return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', orchestrator: false, parentId: null, repoPath: '/r', baseBranch: 'main', linkedPrUrls: [], linkedLinearKey: null, browserProfile: { id: 'bp-0123456789ab', name: 'Staging admin' } };");
+const WHOAMI = (extra: string) => `return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', orchestrator: false, parentId: null, repoPath: '/r', baseBranch: 'main', linkedPrUrls: [], linkedLinearKey: null${extra} };`;
+
+test('whoami prints the held profile (the value spawn --profile accepts), `ephemeral`, or `(not vouched)` when the host omits the row', needsBuild, () => {
+  const held = driveCli(['whoami'], WHOAMI(", browserProfile: { id: 'bp-0123456789ab', name: 'Staging admin' }"), 'k-live');
   assert.match(held.stdout, /^browser {2,}Staging admin \(bp-0123456789ab\)$/m);
-  const none = driveCli(['whoami'], "return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', orchestrator: false, parentId: null, repoPath: '/r', baseBranch: 'main', linkedPrUrls: [], linkedLinearKey: null, browserProfile: null };");
+  const none = driveCli(['whoami'], WHOAMI(', browserProfile: null'), 'k-live');
   assert.match(none.stdout, /^browser {2,}ephemeral$/m);
-  // an app older than #401 answers no field: still ephemeral, no crash
-  const old = driveCli(['whoami'], "return { ok: true, id: 'caller-1', name: 'n', branch: 'b', kind: 'worktree', parentId: null, repoPath: '/r', baseBranch: 'main', linkedPrUrls: [], linkedLinearKey: null };");
-  assert.match(old.stdout, /^browser {2,}ephemeral$/m);
+  // the host OMITS the row for a session it cannot vouch (or an app older than #401): never read as "ephemeral"
+  const omitted = driveCli(['whoami'], WHOAMI(''), 'k-live');
+  assert.match(omitted.stdout, /^browser {2,}\(not vouched\)$/m);
+});
+
+test('whoami sends the session key (so the host can vouch) only when the env has one', needsBuild, () => {
+  assert.equal(driveCli(['whoami'], WHOAMI(', browserProfile: null'), 'k-live').seen[0].key, 'k-live');
+  assert.equal('key' in driveCli(['whoami'], WHOAMI(''), '').seen[0], false);
 });

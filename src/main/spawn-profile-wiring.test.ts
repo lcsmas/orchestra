@@ -34,26 +34,38 @@ test('CONTROL: the extractor finds the real bodies', () => {
 });
 
 test('dispatchSpawnRequest decides from the LIVE records: caller = store.getWorkspace(from), profiles = store.getBrowserProfiles(), caller vouched by the session key', () => {
-  const call = /decideSpawnProfile\(\{([\s\S]*?)\n  \}\);/.exec(dispatch)?.[1] ?? '';
+  const call = /decideSpawnProfile\(\{([\s\S]*?)\n    \}\);/.exec(dispatch)?.[1] ?? '';
   assert.ok(call, 'decideSpawnProfile call found');
   assert.match(call, /requested: input\.profile,/);
   assert.match(call, /detached: input\.detached === true,/, 'a parentless (--detached) worker is never handed a profile');
   assert.match(call, /caller: input\.from \? store\.getWorkspace\(input\.from\) : undefined,/, 'what the caller holds is read from ITS record, never from the request');
   assert.match(call, /callerVouched: !!input\.from && !!input\.key && sessionKeys\(\)\.verify\(input\.from, input\.key\) === 'ok',/, 'ADR 0008: only the live session of `from`');
   assert.match(call, /profiles: store\.getBrowserProfiles\(\),/);
-  assert.match(ws, /import \{ decideSpawnProfile \} from '\.\.\/shared\/spawn-profile\.ts';/, 'the pure function, not a copy');
+  assert.match(ws, /import \{ decideSpawnProfile, type SpawnProfileDecision \} from '\.\.\/shared\/spawn-profile\.ts';/, 'the pure function, not a copy');
 });
 
-test('the decision PRECEDES createWorkspace, and only an honoured one reaches the new record', () => {
-  const decide = dispatch.indexOf('decideSpawnProfile(');
-  const make = dispatch.indexOf('await createWorkspace(');
-  assert.ok(decide !== -1 && make !== -1 && decide < make);
-  assert.match(dispatch, /profileDecision\.kind === 'honoured' \? \{ browserProfileId: profileDecision\.profileId \} : undefined\);/);
+test('the decision is a THUNK handed to createWorkspace (only when --profile was given) and returns the id only when honoured', () => {
+  assert.match(dispatch, /input\.profile !== undefined \? decideProfile : undefined\);/, 'no --profile ⇒ no thunk ⇒ creation is untouched');
+  assert.match(dispatch, /return profileDecision\.kind === 'honoured' \? profileDecision\.profileId : undefined;/);
+  assert.equal(dispatch.split('decideSpawnProfile(').length - 1, 1, 'one decision site — not also made up front (a stale t0 decision is the TOCTOU)');
+});
+
+test('M1 TOCTOU: createWorkspace asks the thunk AFTER the worktree exists and with NO await before the first upsert', () => {
+  const ask = create.indexOf('const inheritedProfile = profileAtCreation?.();');
+  const wt = create.indexOf('await createWorktree(');
+  const hooks = create.indexOf('await installOrchestraHooks(');
+  const upsert = create.indexOf('await store.upsertWorkspace(ws);');
+  assert.ok(wt !== -1 && hooks !== -1 && upsert !== -1 && ask !== -1, 'controls: all four landmarks found');
+  assert.ok(ask > wt && ask > hooks, 'after the slow part (worktree add + hooks)');
+  const between = create.slice(ask, upsert).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''); // comments may say "await"
+  assert.ok(between.includes('store.allocatePort') === false && between.includes('const ws: Workspace = {'), 'control: the slice is the record build');
+  assert.ok(!/\bawait\b/.test(between), 'no await between the profile read and the record upsert');
+  assert.match(create, /\.\.\.\(inheritedProfile \? \{ browserProfileId: inheritedProfile \} : \{\}\),/);
 });
 
 test('createWorkspace writes browserProfileId from the spawn decision ONLY, as part of the initial record', () => {
-  assert.equal(create.split('browserProfileId').length - 1, 4, 'param type + condition + key + value — no other mention');
-  assert.match(create, /\.\.\.\(inherited\?\.browserProfileId \? \{ browserProfileId: inherited\.browserProfileId \} : \{\}\),\n  \};\n  await store\.upsertWorkspace\(ws\);/, 'inside the record literal persisted by the first upsert');
+  assert.equal(create.split('browserProfileId').length - 1, 1, 'one mention: the record key — nothing else in createWorkspace writes a profile');
+  assert.match(create, /\.\.\.\(inheritedProfile \? \{ browserProfileId: inheritedProfile \} : \{\}\),\n  \};\n  await store\.upsertWorkspace\(ws\);/, 'inside the record literal persisted by the first upsert');
   assert.doesNotMatch(types.slice(types.indexOf('export interface CreateWorkspaceInput'), types.indexOf('\n}\n', types.indexOf('export interface CreateWorkspaceInput'))), /browserProfile/, 'CreateWorkspaceInput crosses the renderer IPC: it carries no profile');
 });
 
@@ -88,12 +100,16 @@ test('only the hooks /spawn route sends profile + key; the sandbox wire and the 
 
 test('the reply carries the decision: a profile report on success AND on a kept (failed-start) child', () => {
   assert.match(dispatch, /profileDecision\.kind === 'none' \? \{\} : \{ profile: \{ applied: profileDecision\.kind === 'honoured', message: profileDecision\.message \} \}/);
-  assert.equal(dispatch.split('...profileReport').length - 1, 2, 'ok result + keptFailure (which both failed-start returns go through — #375 pins those return lines verbatim)');
-  assert.match(dispatch, /startError: cause,[\s\S]*?\.\.\.profileReport,/, 'the kept child\'s reply carries the report');
+  assert.equal(dispatch.split('...profileReport()').length - 1, 2, 'ok result + keptFailure (which both failed-start returns go through — #375 pins those return lines verbatim)');
+  assert.match(dispatch, /startError: cause,[\s\S]*?\.\.\.profileReport\(\),/, 'the kept child\'s reply carries the report');
 });
 
-test('whoami exposes the HELD profile through effectiveProfileId (a dangling id reads null)', () => {
+test('whoami shows the HELD profile only to the VOUCHED live session of that workspace (M2) — never `null` for an unvouched caller', () => {
   const who = bodyOf(ws, 'export function dispatchWhoamiRequest(');
-  assert.match(who, /const heldId = effectiveProfileId\(ws\.browserProfileId, profiles\);/);
-  assert.match(who, /browserProfile: held \? \{ id: held\.id, name: held\.name \} : null,/);
+  assert.match(who, /const vouched = !!input\.key && sessionKeys\(\)\.verify\(id, input\.key\) === 'ok';/);
+  assert.match(who, /const profiles = vouched \? store\.getBrowserProfiles\(\) : \[\];/, 'an unvouched caller never even reads the profile list');
+  assert.match(who, /const heldId = effectiveProfileId\(ws\.browserProfileId, profiles\);/, 'a dangling id reads null');
+  assert.match(who, /\.\.\.\(vouched \? \{ browserProfile: held \? \{ id: held\.id, name: held\.name \} : null \} : \{\}\),/, 'omitted (not null) when unvouched');
+  const route = hooks.slice(hooks.indexOf("route === '/whoami'"), hooks.indexOf("route === '/migrateAccount'"));
+  assert.match(route, /dispatchWhoamiRequest\(\{ id: msg\.id, key: typeof msg\.key === 'string' \? msg\.key : undefined \}\)/);
 });
