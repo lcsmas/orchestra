@@ -123,9 +123,18 @@ test('the host stops sign-in persistence for a deleted profile before its wipe, 
 test('the CDP proxy host asks the profile policy for EVERY agent command: decideAgentCdp(method, params, panelProfileId(wsId) read at call time, the TARGETED tab\'s url) — the answer is the refusal text', () => {
   const host = code('main/browser-cdp-host.ts');
   assert.match(host, /import \{ decideAgentCdp \} from '\.\.\/shared\/browser-profile\.ts';/);
-  assert.match(host, /refuseMethod: \(method, params, tab\) => \{\s*const d = decideAgentCdp\(\{ method, params, profileId: bp\.panelProfileId\(wsId\), pageUrl: tab\.url \}\);\s*return d\.ok \? null : d\.message \|\| 'refused: the profil navigateur policy of this workspace forbids this command';\s*\},/);
+  assert.match(host, /refuseMethod: \(method, params, tab\) => \{\s*const d = decideAgentCdp\(\{ method, params, profileId: bp\.panelProfileId\(wsId\), pageUrl: tab\.url, frameUrls: bp\.tabFrameUrls\(wsId, tab\.id\) \}\);\s*return d\.ok \? null : d\.message \|\| 'refused: the profil navigateur policy of this workspace forbids this command';\s*\},/);
   // the core calls it for every tab command BEFORE the debugger sees it, and a throwing hook fails closed (#395's seam)
   const core = code('shared/cdp-proxy-core.ts');
   assert.match(core, /this\.port\.refuseMethod/);
   assert.ok(core.indexOf('this.port.refuseMethod') < core.indexOf("method === 'Page.bringToFront'"), 'asked before any command is handled');
+});
+
+test('F9 wiring: the host clears the workspace\'s EPHEMERAL session (its own in-memory partition) — and Settings no longer depends on the keyring state (the at-rest warning is unconditional)', () => {
+  const host = code('main/browser-profiles-host.ts');
+  assert.match(host, /clearEphemeral: async \(wsId\) => \{\s*const ses = session\.fromPartition\(ephemeralPartition\(wsId\)\);\s*await ses\.clearStorageData\(\);\s*await ses\.clearCache\(\);\s*await ses\.clearAuthCache\(\);\s*\},/);
+  const ui = code('renderer/components/BrowserSettings.tsx');
+  assert.match(ui, /const warning = PROFILE_AT_REST_WARNING;/);
+  assert.doesNotMatch(ui, /useSecretsState|SecretsNotice|getSecretsState/, 'story 25 is met without #389\'s state: the warning is always on');
+  assert.doesNotMatch(code('shared/browser-profile.ts'), /secrets-state|SecretsState/);
 });

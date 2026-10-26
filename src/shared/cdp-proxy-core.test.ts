@@ -610,3 +610,31 @@ test('sendOnLease: gives the lease back when the command settles, rejects or nev
   assert.match(String(outcome), /did not settle within 1000 ms/);
   assert.equal(hung.released(), 1, 'a command that never settles cannot pin the tab\'s debugger');
 });
+
+test('#400 review F5: the policy hook receives the TARGET tab — not the first tab, not the active one; a tab that left the registry answers `Target closed.` and the hook is never asked', async () => {
+  const p = fakePanel([
+    { id: 't1', url: 'http://first/', title: 'first', active: true, openedBy: 'human' },
+    { id: 't2', url: 'http://second/page', title: 'second', active: false, openedBy: 'agent' },
+    { id: 't3', url: 'http://third/', title: 'third', active: false, openedBy: 'agent' },
+  ]);
+  const seen: string[] = [];
+  (p.port as any).refuseMethod = (_m: string, _p: unknown, tab: CdpTab) => (seen.push(`${tab.id}@${tab.url}`), null);
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const infos = (await c.call('Target.getTargets')).result.targetInfos as Array<{ targetId: string; url: string }>;
+  const target = (url: string) => infos.find((i) => i.url === url)!.targetId;
+  const s2 = (await c.call('Target.attachToTarget', { targetId: target('http://second/page') })).result.sessionId;
+  const s3 = (await c.call('Target.attachToTarget', { targetId: target('http://third/') })).result.sessionId;
+  await c.call('Runtime.evaluate', { expression: '1' }, s2);
+  await c.call('Runtime.evaluate', { expression: '1' }, s3);
+  assert.deepEqual(seen, ['t2@http://second/page', 't3@http://third/'], 'each command is judged against ITS tab (neither tabs[0] = t1 nor the active tab = t1)');
+  // stale: the registry drops t2 but the proxy still holds its session (the destroyed event has not reached it yet)
+  p.tabs.splice(p.tabs.findIndex((t) => t.id === 't2'), 1);
+  const ch = p.channels.get('t2')!;
+  const sent = ch.sent.length;
+  seen.length = 0;
+  const r = await c.call('Runtime.evaluate', { expression: '2' }, s2);
+  assert.match(r.error.message, /^Target closed\.$/);
+  assert.deepEqual(seen, [], 'the policy was NOT asked about a tab that is gone');
+  assert.equal(ch.sent.length, sent, 'nothing reached the debugger');
+});

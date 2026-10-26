@@ -15,6 +15,8 @@ class WebContents {
     this.destroyed = false; this.closed = 0; this.url = ''; this.title = '';
     this.dbgAttached = false; this.detachCalls = 0; this.loaded = [];
     this.handlers = {};
+    this.frameUrls = [];
+    { const self = this; this.mainFrame = { get framesInSubtree() { if (self.frameBoom) throw new Error('frame tree exploded'); return self.frameUrls.map((url) => ({ url })); } }; }
     this.debugger = {
       attach: () => { this.dbgAttached = true; },
       detach: () => { this.dbgAttached = false; this.detachCalls++; },
@@ -54,7 +56,7 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return Promise.resolve((s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
     return s;
@@ -320,7 +322,7 @@ const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed =
   return ses;
 };
 /** The stub sessions are shared per partition name across arms: forget what an earlier arm recorded on this one. */
-const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.liveCookies = undefined; return ses; };
+const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.liveCookies = undefined; ses.getGate = undefined; return ses; };
 const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms)); // past the 250 ms per-cookie debounce + the re-read
 
@@ -428,4 +430,84 @@ test('a throw while closing an old view or re-compositing after a committed re-p
   assert.equal(bp.panelProfileId(ws), P1);
   assert.deepEqual(bp.listTabs(ws).map((t) => partitionOf(bp.getTab(ws, t.id)!)), [PERSIST(P1), PERSIST(P1)]);
   assert.equal(wcOf(olds[1]).closed, 1, 'the other old view was still closed');
+});
+
+/** Hold the next `cookies.get` open until released: the window between the live READ and the WRITE (review F4). */
+function gateReads(ses: any): () => void {
+  let release!: () => void;
+  ses.getGate = new Promise<void>((r) => (release = r));
+  return release;
+}
+
+test('F4(B): a REMOVAL (logout) that lands while the live read is in flight is never undone by the write that follows', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  const release = gateReads(ses);
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  await settle(); // the debounce fired: the read is now pending on the gate
+  assert.equal(ses.cookieGets.length, 1);
+  cookieEvent(PERSIST(P1), SESSION_COOKIE, true); // the site logs the user out
+  release();
+  await settle();
+  assert.equal(ses.cookieSets, undefined, 'the stale read was NOT written back');
+});
+
+test('F4(B): a NEWER value that lands while the read is in flight is not overwritten by the stale one — the newer change promotes its own, once', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [{ ...SESSION_COOKIE, value: 'old' }];
+  const release = gateReads(ses);
+  cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, value: 'old' });
+  await settle();
+  ses.liveCookies = [{ ...SESSION_COOKIE, value: 'rotated' }];
+  cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, value: 'rotated' });
+  release();
+  await settle(700);
+  assert.deepEqual((ses.cookieSets ?? []).map((d: any) => d.value), ['rotated'], 'only the newest value is ever written');
+});
+
+test('F4(A): stopSignInPersistence while a promotion\'s read is in flight ⇒ nothing is written afterwards (a deleted profile gets no 30-day cookie)', async () => {
+  const ws = newWs(P2);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P2)));
+  ses.liveCookies = [SESSION_COOKIE];
+  const release = gateReads(ses);
+  cookieEvent(PERSIST(P2), SESSION_COOKIE);
+  await settle();
+  bp.stopSignInPersistence(PERSIST(P2));
+  release();
+  await settle();
+  assert.equal(ses.cookieSets, undefined);
+  bp.createTab(ws, { openedBy: 'agent' }); // re-arm for the next arm that uses P2
+});
+
+test('F4(C): the cookie promoted is the one the EVENT named — never a same-name sibling on a subdomain that `cookies.get({domain})` also returns', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const own = { name: 'sid', value: 'own', domain: 'example.com', hostOnly: false, path: '/', secure: true, httpOnly: true, session: true, sameSite: 'lax' };
+  const sibling = { ...own, value: 'sibling', domain: 'a.example.com', hostOnly: true };
+  ses.liveCookies = [sibling, own]; // the sibling is listed FIRST
+  cookieEvent(PERSIST(P1), own);
+  await settle();
+  assert.equal(ses.cookieSets.length, 1);
+  assert.deepEqual([ses.cookieSets[0].value, ses.cookieSets[0].url, ses.cookieSets[0].domain], ['own', 'https://example.com/', 'example.com']);
+});
+
+test('tabFrameUrls: the live frame tree of ONE tab (main + subframes), a pure read; unknown tab / dead view / unreadable tree ⇒ undefined (the policy then refuses what it cannot judge)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  wcOf(t1).frameUrls = ['https://app.example.com/', 'https://idp.other.org/sso'];
+  const viewsBefore = (globalThis as any).__bpViews.length;
+  assert.deepEqual(bp.tabFrameUrls(ws, 't1'), ['https://app.example.com/', 'https://idp.other.org/sso']);
+  assert.equal(bp.tabFrameUrls(ws, 't99'), undefined, 'unknown tab');
+  assert.equal(bp.tabFrameUrls('ws-nope', 't1'), undefined, 'unknown workspace — and nothing is built for it');
+  wcOf(t1).frameBoom = true;
+  assert.equal(bp.tabFrameUrls(ws, 't1'), undefined, 'a throwing tree');
+  wcOf(t1).frameBoom = false;
+  assert.equal((globalThis as any).__bpViews.length, viewsBefore, 'a read builds nothing');
 });

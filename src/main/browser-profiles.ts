@@ -26,6 +26,9 @@ export interface BrowserProfilesDeps {
   settleViews(): Promise<boolean>;
   /** Stop promoting / flushing the profile's cookies: a late cookie event must not re-create one in a partition about to be wiped. */
   stopSignIns(profileId: BrowserProfileId): void;
+  /** Forget everything the workspace's own EPHEMERAL session holds. A workspace returning to navigation éphémère (detach, or its profile deleted) gets back its old
+   *  in-memory session, which lives as long as the process: sign-ins made there BEFORE the attach would resurface and contradict « reload signed out » (story 24). */
+  clearEphemeral(wsId: string): Promise<void>;
   /** Wipe a profile partition's cookies and storage. */
   clearStorage(profileId: BrowserProfileId): Promise<void>;
   mintId(): BrowserProfileId;
@@ -95,10 +98,14 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
         //    views (the only writers into the partition) are destroyed before anything is wiped;
         for (const wsId of d.detach) {
           await deps.setWorkspaceProfile(wsId, undefined);
+          await deps.clearEphemeral(wsId);
           deps.reprofilePanel(wsId, undefined);
         }
         //    …and so is any OPEN panel still running on it though its workspace record says otherwise (a half-failed earlier move);
-        for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);
+        for (const wsId of deps.openPanelsOn(profileId)) {
+          await deps.clearEphemeral(wsId);
+          deps.reprofilePanel(wsId, undefined);
+        }
         //    …then we wait for the closed views to be really gone (async unload) so none can write the partition back;
         if (!(await deps.settleViews())) {
           // a view is still closing and could write the partition after the wipe: keep the profile, say so, the delete can simply be retried
@@ -126,6 +133,8 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
         const d = decideAttach({ profiles: deps.getProfiles(), current: ws.browserProfileId, target });
         if (!d.ok) return refuse(d.reason, d.message);
         const prev = ws.browserProfileId;
+        // Back to navigation éphémère from a profile: its old ephemeral session must not resurface with sign-ins made before the attach (F9).
+        if (d.changed && d.profileId === undefined) await deps.clearEphemeral(wsId);
         if (prev !== d.profileId) await deps.setWorkspaceProfile(wsId, d.profileId);
         let state: BrowserPanelState;
         try {

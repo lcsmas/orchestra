@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Profiles frame fixture</title>
+<!-- #400: a page embedding ANOTHER SITE (the same fixture server under the other loopback host name: 127.0.0.1 <-> localhost) as an iframe — the
+     shape of an SSO / IdP embed. `Network.getCookies` without `urls` also returns the frame's cookies, so the agent CDP policy must judge the frame tree. -->
+<body style="margin:0;background:#2c3e50;color:#fff;font:16px monospace;padding:24px">
+<h1>profiles frame fixture</h1>
+<script>
+  var f = document.createElement('iframe');
+  f.width = 300; f.height = 120;
+  f.src = location.protocol + '//' + (location.hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1') + ':' + location.port + '/profiles.html?frame=1';
+  document.body.appendChild(f);
+</script>

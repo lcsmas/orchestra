@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { BrowserProfile, BrowserProfileResult } from '../../shared/types';
-import { BROWSER_PROFILE_NAME_MAX, profileCreateWarning } from '../../shared/browser-profile';
+import { BROWSER_PROFILE_NAME_MAX, PROFILE_AT_REST_WARNING } from '../../shared/browser-profile';
 import { useStore } from '../store';
 import { dialog } from './Dialog';
-import { useSecretsState } from './SecretsNotice';
 
 interface Props {
   onClose: () => void;
@@ -20,8 +19,8 @@ export function BrowserSettings({ onClose }: Props) {
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const secrets = useSecretsState();
-  const warning = profileCreateWarning(secrets);
+  // ALWAYS shown (review F1): cookies are not encrypted at rest on this build whatever the keyring says — no state to wait for (story 25: choose knowingly).
+  const warning = PROFILE_AT_REST_WARNING;
   const workspaces = useStore((s) => s.workspaces);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -157,12 +156,10 @@ export function BrowserSettings({ onClose }: Props) {
                     )}
                     <span className="bp-meta">
                       {n === 0 ? 'unused' : `${n} workspace${n === 1 ? '' : 's'}`}
-                      {warning && (
-                        <span className="bp-unencrypted" title={warning} data-profile-unencrypted>
-                          {' '}
-                          ⚠ not encrypted
-                        </span>
-                      )}
+                      <span className="bp-unencrypted" title={warning} data-profile-unencrypted>
+                        {' '}
+                        ⚠ not encrypted on disk
+                      </span>
                     </span>
                     {isEditing ? (
                       <>
@@ -211,14 +208,12 @@ export function BrowserSettings({ onClose }: Props) {
           )}
 
           <form className="bp-create" onSubmit={create}>
-            {warning && (
-              <div className="secrets-notice bp-warning" role="status" data-profile-warning="create">
-                <span className="secrets-notice-icon" aria-hidden="true">
-                  ⚠
-                </span>
-                <span>{warning}</span>
-              </div>
-            )}
+            <div className="bp-warning" role="status" data-profile-warning="create">
+              <span className="bp-warning-icon" aria-hidden="true">
+                ⚠
+              </span>
+              <span>{warning}</span>
+            </div>
             <div className="bp-create-row">
               <input
                 ref={nameRef}

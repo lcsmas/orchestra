@@ -6238,7 +6238,9 @@ button.danger-primary:active {
 .bp-meta { flex: 0 0 auto; font-size: 11.5px; color: var(--text-dim); }
 .bp-unencrypted { color: var(--yellow); }
 .bp-create { display: flex; flex-direction: column; gap: 8px; }
-.bp-create .bp-warning { margin-bottom: 0; }
+/* the always-on at-rest warning (own rules: this dialog no longer borrows #389's .secrets-notice) */
+.bp-warning { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.5; color: var(--yellow); background: color-mix(in srgb, var(--yellow) 8%, transparent); border: 1px solid color-mix(in srgb, var(--yellow) 38%, transparent); border-radius: 6px; padding: 8px 10px; }
+.bp-warning-icon { flex: none; }
 .bp-create-row { display: flex; gap: 8px; }
 .bp-create-row .accounts-input { flex: 1 1 auto; min-width: 0; }
 .bp-create-row button { flex: 0 0 auto; white-space: nowrap; }

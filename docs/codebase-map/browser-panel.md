@@ -365,7 +365,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
 - **Pure rules — `src/shared/browser-profile.ts`** (`browser-profile.test.ts`): id/name validity (`checkProfileName`: 1..40 chars, unique
   case-insensitively among the OTHER profiles), `partitionFor(wsId, profileId|undefined)` / `profilePartition` (throws on a non-minted id — free
   text never reaches a partition name), `effectiveProfileId`, `decideAttach` (attach / switch / detach / unknown; `changed:false` = nothing to
-  rebuild), `decideDelete` (the carriers to detach), `isHumanProfileCaller`, `profileCreateWarning` (reuses #389's `secretsNotice`).
+  rebuild), `decideDelete` (the carriers to detach), `isHumanProfileCaller`, `PROFILE_AT_REST_WARNING` (the always-on create warning).
 - **Service — `src/main/browser-profiles.ts`** (Electron-free, `browser-profiles.test.ts`): `create/rename/remove/attach`, serialized (a second click
   waits for the first). **Delete order matters**: every carrier is detached (record cleared — as an explicit `undefined`, because the renderer MERGES a
   `workspace:update`, an absent key would keep the old id there — and the open panel rebuilt ephemeral; the only writers into
@@ -385,6 +385,9 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   Once the move is committed nothing may throw out of it (a close/re-composite failure is logged, never rolled back); `workspacesOnProfile` lets the delete
   also move off any OPEN panel that still runs on the profile though its record says otherwise.
   **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
+- **Back to navigation éphémère forgets the old ephemeral session (review F9).** A workspace's ephemeral partition is an in-memory session that lives as long as the process,
+  so detaching (or deleting its profile) would hand back sign-ins made BEFORE the attach. `assign(ws, null)` from a profile — and every carrier of a deleted profile — first
+  clears that session (`clearEphemeral`: storage + cache + auth cache); attach / switch / an already-ephemeral detach never do (that session may be on screen).
 - **ONLY the human can change a profile (story 26).** The five channels (`browserProfiles:list|create|rename|delete`, `browser:profileAttach`) are
   registered by `registerBrowserProfilesIpc` (`browser-profiles-ipc.ts`) — deliberately NOT in `api-handlers.ts`'s generic table (omitted from
   `ServableApi`; same split as `pause-ui-host.ts`). Every WRITE refuses (`not-human`, logged) unless the sender is the app's own main window top
@@ -393,23 +396,23 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   `scripts/e2e-browser-profiles.mjs` arm `human` drives them for real (CLI verbs → rc≠0, socket routes → `{}`, the agent's page has no bridge, a
   hidden FOREIGN window invoking all four write channels over the main-process inspector → `not-human`, nothing moved; the app's own window works).
   A spawn that names a profile is #401's rule (parent must hold it) and writes the record on the NEW workspace directly, never through this service.
-- **Partition-wide / cross-site cookie access is refused for a profile workspace** (OPS ruling 2026-10-26; #395's fix round + its seam review).
-  `agent-browser cookies clear` reaches the CDP as `Network.clearBrowserCookies` / `Storage.clearCookies`, which wipe the WHOLE partition — with a
-  profile shared by workspaces A and B, A's agent would sign B out. The rule is `decideAgentCdp({method, profileId})` (`shared/browser-profile.ts`,
-  `PROFILE_REFUSED_CDP_METHODS`, judged by method NAME): refused while the workspace's panel carries a profile — CLEARS `Network.clearBrowserCookies`,
-  `Storage.clearCookies`, `Storage.clearDataForOrigin`, `Storage.clearDataForStorageKey` (whatever `storageTypes` says: "all"/"cookies" of an origin is a
-  sign-out everywhere) and partition-wide READS `Network.getAllCookies`, `Storage.getCookies` (every site's session token, not just this page's).
-  The named-site methods (`Network.getCookies`, `deleteCookies`, `setCookie`, `setCookies`) are judged by their PARAMS too (`cdpSiteTargets` + `isPageSite`):
-  every url / cookie domain they name must be the targeted tab's own site (same host, or a parent domain of it — never a sibling, a bare TLD or a blank
-  page) — `getCookies{urls:[other site]}` would return that site's HttpOnly session token, which the page's own JS can never read; a malformed call is
-  refused. An agent holding a profile may USE a sign-in (navigate, click), not lift it. Accepted: in-page `Runtime.evaluate` / `Page.navigate` (the point
-  of a profile), `Storage.deleteStorageBucket` (named, non-default buckets). Ephemeral workspaces are never refused. The caller passes the TARGET tab's url
-  (`pageUrl`).
-  The proxy asks it with `panelProfileId(wsId)` (`browser-panel.ts`, a pure read of what the OPEN panel runs on) before forwarding a page method, and
-  also denies `Target.sendMessageToTarget` + raw `get cdp-url` (#395) — a name-judged policy is only as strong as that.  The real method names the pinned agent-browser v0.39.2 emits were MEASURED through the CLI (rig arm `cdp`, `ORCHESTRA_CDP_TRACE=1`); the wiring is `makePanelPort.refuseMethod` in `browser-cdp-host.ts` (strict verdict contract of #395's core: `null` or a NON-EMPTY string on every path — pinned by a refusal-message table and two must-FAIL mutants).
+- **Partition-wide / cross-site cookie access is refused for a profile workspace** (OPS ruling 2026-10-26; #395's fix round + its seam review + #400's review F2/F3).
+  `agent-browser cookies clear` reaches the CDP as `Network.clearBrowserCookies`, which wipes the WHOLE partition — with a profile shared by workspaces A and B, A's agent
+  would sign B out. The rule is `decideAgentCdp({method, params, profileId, pageUrl, frameUrls})` (`shared/browser-profile.ts`), asked by `makePanelPort.refuseMethod`
+  (`browser-cdp-host.ts`; strict core contract: `null` or a NON-EMPTY string) with `panelProfileId(wsId)` read at call time, the TARGET tab's url and its live frame tree
+  (`tabFrameUrls`). Refused while the panel carries a profile: CLEARS `Network.clearBrowserCookies`, `Storage.clearCookies`, `Storage.clearDataForOrigin`,
+  `Storage.clearDataForStorageKey` (whatever `storageTypes` says) and partition-wide READS `Network.getAllCookies`, `Storage.getCookies`; the NAMED-SITE methods
+  (`Network.getCookies|deleteCookies|setCookie|setCookies`, `Storage.setCookies`) only on the page's own HOST — **EXACT host, url-form and domain-form alike** (a url on the
+  parent host addresses its host-only HttpOnly cookies that the page's JS cannot see; no PSL, so no parent-domain leniency at all); **`getCookies` WITHOUT `urls` also
+  returns every SUBFRAME's cookies (CDP), so it is judged on the whole frame tree** (an SSO/IdP iframe on another host refuses it; an unknown tree refuses); and **every other
+  `Network|Storage.*Cookie*` method is refused by default**. The real names the pinned agent-browser v0.39.2 emits were MEASURED through the CLI (rig arm `cdp`):
+  `cookies get` → `Network.getCookies {}` (allowed on a page without foreign frames), `cookies clear` → `Network.clearBrowserCookies` (refused, never reached the debugger),
+  `cookies set --url <other>` → `Network.setCookies` (refused). **What it does NOT stop (accepted, stated plainly):** the agent can navigate to another site of the profile and
+  use that sign-in there (the point of a profile), and in-page script / `network requests|har` Cookie headers show what the page itself sends — it bounds what CDP can LIFT
+  from the jar, not what a page can do. Ephemeral workspaces are never refused.
 - **Settings > Browser — `BrowserSettings.tsx`** (globe icon in the sidebar header, `store.browserSettingsOpen`): create / rename (id kept) /
-  delete (the confirmation says how many workspaces lose it), the per-profile usage count, and — when `getSecretsState()` says not encrypted — the
-  `[data-profile-warning="create"]` notice above the create field + a "not encrypted" tag per row (ADR 0010: warn, never refuse).
+  delete (the confirmation says how many workspaces lose it), the per-profile usage count, and the ALWAYS-on `[data-profile-warning="create"]` notice
+  above the create field + a "not encrypted on disk" tag per row (ADR 0010: warn, never refuse — see Keyring below for why it is unconditional).
 - **URL bar — `BrowserPanel.tsx`**: a chip (`[data-browser-profile-chip]`, `data-profile-id`) beside the URL form shows the profile or
   "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
   would open under the native view, which paints above the DOM. Design mode is disarmed before the rebuild.
@@ -421,13 +424,17 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   rewrites a cookie every request costs one `set`) and done from the **LIVE cookie re-read** (`cookies.get`), never the event's snapshot — a cookie removed
   (logout) or rewritten with an expiry in the meantime is left alone, and the promoted copy's own expiry stops the `set → changed` echo from looping;
   (2) flushes the cookie store 1.5 s later (Chromium's own timer is ~30 s — a crash right after a sign-in lost it). `flushProfileStorage()` runs at quit;
-  `stopSignInPersistence(partition)` detaches (a deleted profile must not get a cookie re-created by a late event). Delete-profile clears everything
+  `stopSignInPersistence(partition)` detaches (a deleted profile must not get a cookie re-created by a late event). The read→write is guarded by a per-cookie event sequence + an `alive` flag: a removal or a newer value that lands while the live read is in flight cancels the stale write, and the cookie promoted is the one the EVENT named (`cookies.get({domain})` also returns subdomain siblings). Delete-profile clears everything
   including promoted cookies. The Settings copy says session-only cookies are kept 30 days after their last change.
   **Accepted gap:** a partitioned (CHIPS) cookie reaches `changed` without its partition key in Electron 33's `Cookie`, so its promoted copy would land in the
   unpartitioned jar (a rare same-name collision with a first-party cookie); not detectable through the 33 API.
-- **Keyring.** The cookie store is encrypted with the OS keyring when one answers (Chromium os_crypt, #389's selection); otherwise under a fixed key
-  — hence the warning. A built-app rig must pass `--password-store=basic` (and #389 skips its probe under a scratch `ORCHESTRA_HOME`), or it binds the
-  human's live login keyring (G10b: the rig guards the collection listing before/after).
+- **At rest (review F1).** The profile's Cookies DB holds every sign-in in CLEAR on this build: Electron's `EnableCookieEncryption` fuse is off (stock 33.4.11;
+  the repo flips none) so `value` is plaintext and `encrypted_value` empty WHATEVER the keyring state (measured by rig clause
+  `warning-matches-the-cookie-db-sign-in-is-stored-in-clear`; the same holds for `persist:claude-login-*`). Hence the create warning is unconditional and does not depend
+  on #389's `SecretsState` (which governs `secrets.json`). Flipping the fuse in `afterPack` is a ONE-WAY change for existing persistent partitions: a separate
+  decision (LEAD). A built-app rig must still pass `--password-store=basic` (the human's live keyring is never bound, G10b / incident Q2).
+- **Accepted gaps.** (F8) A delete is LOGICAL: the oracle is cookie rows; SQLite free pages / leveldb tombstones / `Network Persistent State` stay on disk unmeasured, and
+  nothing reconciles `Partitions/orchestra-profile-*` against the profile list at boot (a lost `store.json` leaves unlisted sign-ins with no UI to delete them).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
   Electron: which partition every tab is on; reprofile keeps ids/active/URLs, destroys old views, re-composites the new one),
   `browser-profiles-wiring.test.ts`; 97 in-place mutants `node scripts/mutate-browser-profiles.mjs` (`--check` = anchors live); built-app rig `scripts/e2e-browser-profiles.sh <app-dir>`

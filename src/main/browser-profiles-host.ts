@@ -4,7 +4,7 @@
 // browser-profiles.ts, the sender guard in browser-profiles-ipc.ts.
 import { ipcMain, session } from 'electron';
 import { randomBytes } from 'node:crypto';
-import { effectiveProfileId, profilePartition } from '../shared/browser-profile.ts';
+import { effectiveProfileId, ephemeralPartition, profilePartition } from '../shared/browser-profile.ts';
 import { reprofilePanel, settleClosedViews, setBrowserProfileResolver, stopSignInPersistence, workspacesOnProfile } from './browser-panel';
 import { createBrowserProfilesService } from './browser-profiles.ts';
 import { registerBrowserProfilesIpc, type ProfileIpcEvent } from './browser-profiles-ipc.ts';
@@ -30,6 +30,12 @@ export function initBrowserProfiles(getMainWebContentsId: () => number | null): 
       platform.broadcast('workspace:update', updated);
     },
     reprofilePanel,
+    clearEphemeral: async (wsId) => {
+      const ses = session.fromPartition(ephemeralPartition(wsId));
+      await ses.clearStorageData();
+      await ses.clearCache();
+      await ses.clearAuthCache();
+    },
     openPanelsOn: workspacesOnProfile,
     settleViews: () => settleClosedViews(3000),
     stopSignIns: (profileId) => stopSignInPersistence(profilePartition(profileId)),

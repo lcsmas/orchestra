@@ -184,7 +184,7 @@ function cookieRows(w, profileId) {
   if (!cand) return null;
   const tmp = fs.mkdtempSync(path.join(RIG_DIR, 'cookies-'));
   for (const suffix of ['', '-journal', '-wal', '-shm']) { try { fs.copyFileSync(cand + suffix, path.join(tmp, 'Cookies' + suffix)); } catch {} }
-  const py = 'import sqlite3,sys,json\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True,timeout=3)\nprint(json.dumps(c.execute("select host_key,name,is_persistent,expires_utc from cookies").fetchall()))\n';
+  const py = 'import sqlite3,sys,json\nc=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True,timeout=3)\nprint(json.dumps(c.execute("select host_key,name,is_persistent,expires_utc,value,length(encrypted_value) from cookies").fetchall()))\n';
   try { return JSON.parse(sh('python3', ['-I', '-c', py, path.join(tmp, 'Cookies')]).trim()); } catch (e) { return { error: String(e.message ?? e).slice(0, 200) }; }
 }
 
@@ -235,8 +235,9 @@ async function boot(world, bootName, { inspect = false, trace = false } = {}) {
   // What the DRIVER handed the app (Chromium rewrites the main process's environ once DBUS_SESSION_BUS_ADDRESS is set — /proc/<pid>/environ goes blind)
   clause(bootName, 'ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND && env.XDG_RUNTIME_DIR === XDG && env.XDG_RUNTIME_DIR === `${RIG_DIR}/xdg`,
     `handed env: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS ?? '<unset>'} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
-  const sec = await cdp.eval(`window.orchestra.getSecretsState()`);
-  clause(bootName, 'ctl/app-not-bound-to-a-keyring', sec?.backend === 'basic_text' && sec?.encrypted === false, `getSecretsState() = ${JSON.stringify(sec)} (the explicit basic backend: no Secret Service)`);
+  // the explicit basic backend = never the human's Secret Service (G10b / incident Q2); argv, not environ (Chromium rewrites the main process's environ)
+  const argvOfApp = fs.readFileSync(`/proc/${app.pid}/cmdline`, 'utf8').split('\0');
+  clause(bootName, 'ctl/app-not-bound-to-a-keyring', argvOfApp.includes('--password-store=basic'), `app argv carries --password-store=basic: ${argvOfApp.includes('--password-store=basic')}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
@@ -437,11 +438,9 @@ try {
   // ── settings: Settings > Browser ──
   if (MAIN) {
     await openSettings(b);
-    const secrets = await b.cdp.eval(`window.orchestra.getSecretsState()`);
     clause('settings', 'ctl/empty-start', (await b.cdp.eval(`!!document.querySelector('[data-bp-empty]')`)) && (await rows(b)).length === 0 && profilesOnDisk(world).length === 0, `no profile yet in the dialog (${(await rows(b)).length} rows) nor on disk (${profilesOnDisk(world).length})`);
-    clause('settings', 'ctl/secrets-state-read', typeof secrets?.encrypted === 'boolean', `getSecretsState() = ${JSON.stringify(secrets)} (the rig has no keyring: scratch ORCHESTRA_HOME skips the probe)`);
     const warn = await b.cdp.eval(`document.querySelector('[data-profile-warning="create"]')?.textContent ?? null`);
-    clause('settings', 'unencrypted-storage-warning-shown-at-creation', secrets.encrypted === false ? !!warn && /not encrypted/.test(warn) : warn === null, `secrets.encrypted=${secrets.encrypted} → create form warning ${JSON.stringify(warn)} (warning iff not encrypted)`);
+    clause('settings', 'unencrypted-storage-warning-shown-at-creation', !!warn && /UNENCRYPTED on disk/.test(warn), `create form warning (shown BEFORE any state could have loaded) = ${JSON.stringify(warn)}`);
 
     await createProfile(b, 'Staging');
     S.staging = await idOf(b, 'Staging');
@@ -449,7 +448,7 @@ try {
     await softWait(() => profilesOnDisk(world).length === 1, 8000, 'the profile on disk');
     clause('settings', 'create-persists-in-the-store', safe(() => profilesOnDisk(world)[0].id === S.staging && profilesOnDisk(world)[0].name === 'Staging'), `store.json browserProfiles = ${JSON.stringify(profilesOnDisk(world))}`);
     const rowWarn = await b.cdp.eval(`!!document.querySelector('.bp-row [data-profile-unencrypted]')`);
-    clause('settings', 'new-profile-row-carries-the-unencrypted-tag', secrets.encrypted === false ? rowWarn : !rowWarn, `row tag present=${rowWarn} (encrypted=${secrets.encrypted})`);
+    clause('settings', 'new-profile-row-carries-the-unencrypted-tag', rowWarn, `row tag present=${rowWarn}`);
 
     await createProfile(b, 'staging'); // duplicate (case-insensitive)
     const err = await b.cdp.eval(`document.querySelector('[data-bp-error]')?.textContent ?? null`);
@@ -522,6 +521,8 @@ try {
     // the SIGN-IN itself must land in the profile's persistent cookie DB (the partition DIRECTORY alone proves nothing: merely asking Electron for the session creates it)
     let rows1 = null;
     await softWait(() => { rows1 = cookieRows(world, S.staging); return Array.isArray(rows1) && rows1.some((r) => r[1] === 'sid'); }, 12000, 'the sign-in in the profile cookie DB');
+    const sidRow = Array.isArray(rows1) ? rows1.find((r) => r[1] === 'sid') : null;
+    clause('attach', 'warning-matches-the-cookie-db-sign-in-is-stored-in-clear', !!sidRow && sidRow[4] === sid && sidRow[5] === 0, `profile cookie DB row for sid: value=${sidRow ? JSON.stringify(sidRow[4]) : '<none>'} encrypted_value bytes=${sidRow ? sidRow[5] : '<none>'} — the always-on create warning says "UNENCRYPTED on disk": it must be TRUE (if this reads encrypted, the warning is stale: re-decide)`);
     clause('attach', 'profile-partition-holds-the-sign-in-on-disk', Array.isArray(rows1) && rows1.some((r) => r[1] === 'sid') && partDirs(world).every((d) => !d.startsWith('orchestra-browser-')), `Partitions/ = ${JSON.stringify(partDirs(world))}; cookie DB of "Staging admin" (copy) = ${JSON.stringify(rows1)}`);
 
     // a second workspace WITHOUT the profile is signed out
@@ -531,14 +532,22 @@ try {
     await waitFor(async () => (await tabs(b))[0]?.label.includes('Profiles fixture'), 20000, 'ws2 tab 1 to load');
     const c2 = await chip(b), j2 = await jarOf(b, PQ(2));
     clause('attach', 'second-workspace-without-the-profile-is-signed-out', c2.id === '' && j2 === 'anon', `ws2 chip ${JSON.stringify(c2)}; /whoami = ${j2} (ws1 is signed in as ${sid})`);
+    // F9: sign in to the EPHEMERAL session of ws2 BEFORE the attach — it must NOT resurface when ws2 returns to navigation éphémère
+    await typeUrl(b, `${BASE}/signin`);
+    await softWait(async () => (await pageText(b, '/signin'))?.startsWith('signed-in'), 15000, 'ws2 ephemeral sign-in');
+    S.ephSid = ((await pageText(b, '/signin')) ?? '').replace('signed-in ', '').trim();
+    await typeUrl(b, P(2, '&e=1'));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('&e=1'), 15000, 'ws2 back on the fixture');
+    const jEph = await jarOf(b, 'ws=2&e=1');
+    clause('attach', 'ctl/ephemeral-sign-in-visible-before-the-attach', /^[0-9a-f]{16}$/.test(S.ephSid) && jEph === S.ephSid && S.ephSid !== sid, `ws2 ephemeral /whoami = ${jEph} (its own sid ${S.ephSid}; the profile's is ${sid})`);
     // …and WITH the profile it shares the sign-in (one profile, several workspaces)
     await chooseProfile(b, S.staging);
-    const j2b = await jarOf(b, PQ(2));
+    const j2b = await jarOf(b, 'ws=2&e=1');
     clause('attach', 'two-workspaces-share-one-profile-and-its-sign-in', j2b === sid && wsRec(world, ws2).browserProfileId === S.staging, `ws2 attached to the same profile: /whoami = ${j2b} (want ${sid}); record ${wsRec(world, ws2).browserProfileId}`);
     // detach returns it to navigation éphémère; ws1 keeps its sign-in
     await chooseProfile(b, '');
-    const j2c = await jarOf(b, PQ(2));
-    clause('attach', 'detach-returns-to-ephemeral-signed-out', j2c === 'anon' && !wsRec(world, ws2).browserProfileId && (await chip(b)).id === '', `after detach: /whoami = ${j2c}; ws2 record profile=${wsRec(world, ws2).browserProfileId ?? '<none>'}`);
+    const j2c = await jarOf(b, 'ws=2&e=1');
+    clause('attach', 'detach-returns-to-ephemeral-signed-out', j2c === 'anon' && !wsRec(world, ws2).browserProfileId && (await chip(b)).id === '', `after detach: /whoami = ${j2c} (its OLD ephemeral sign-in ${S.ephSid} must not resurface — F9); ws2 record profile=${wsRec(world, ws2).browserProfileId ?? '<none>'}`);
     // the RENDERER's own view of who carries the profile (Settings counts from its workspace store): a detach must reach it
     await openSettings(b);
     const usage = (await rows(b)).find((r) => r.id === S.staging)?.meta ?? null;
@@ -842,6 +851,19 @@ try {
     const jarA1 = await jarOf(b, PQ(1)); await selectWorkspace(b, 'e2e/bp400-2'); await sleep(600); const jarB1 = await jarOf(b, PQ(2));
     clause('cdp', 'the-other-workspace-stays-signed-in-after-the-refused-clear', jarA1 === sidC && jarB1 === sidC, `after the refused clear: ws1 /whoami = ${jarA1}, ws2 /whoami = ${jarB1} (signed in as ${sidC})`);
     await selectWorkspace(b, 'e2e/bp400-1'); await sleep(600);
+
+    // review F2(b): `cookies get` (no `urls`) also returns every SUBFRAME's cookies — a page that embeds ANOTHER site is judged on that site too
+    await typeUrl(b, `${BASE}/profiles-frame.html?c=3`);
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('profiles-frame.html'), 15000, 'ws1 on the frame page');
+    await softWait(async () => (await viewTargets(b)).some((t) => t.url.includes('frame=1')) || (await b.cdp.eval('1')) === 1, 8000, 'the iframe to load');
+    await sleep(1500);
+    const frameGet = browserCli(world, ws1rec, ['cookies', 'get']);
+    clause('cdp', 'cookies-get-refused-when-the-page-embeds-another-site', frameGet.code !== 0 && /an embedded frame included/.test(frameGet.out), `cookies get on a page embedding http://localhost (the page is on 127.0.0.1) → rc ${frameGet.code} ${JSON.stringify(frameGet.out.slice(0, 220))}`);
+    await typeUrl(b, P(1, '&c=4'));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('&c=4'), 15000, 'ws1 back on a plain page');
+    await sleep(800);
+    const plainGet = browserCli(world, ws1rec, ['cookies', 'get']);
+    clause('cdp', 'cookies-get-allowed-again-on-a-page-without-foreign-frames', plainGet.code === 0 && plainGet.out.includes('sid'), `cookies get on a plain page → rc ${plainGet.code} ${JSON.stringify(plainGet.out.slice(0, 120))}`);
 
     const other = `http://localhost:${BASE.split(':').pop()}/`; // a DIFFERENT site (host) than the tab's 127.0.0.1
     const cross = browserCli(world, ws1rec, ['cookies', 'set', 'planted', 'x', '--url', other]);

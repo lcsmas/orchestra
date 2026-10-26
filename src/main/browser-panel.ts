@@ -301,23 +301,30 @@ const signInSessions = new WeakMap<Electron.Session, () => void>();
 function persistSignIns(ses: Electron.Session): void {
   if (signInSessions.has(ses)) return;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let alive = true;
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per cookie: the sequence number of its LAST event (a change OR a removal). A promotion whose read started before a later event never writes:
+   *  a logout after the read stays a logout, a rotated token is not overwritten by the value that was read, and the later change schedules its own. */
+  let seq = 0;
+  const changedSeq = new Map<string, number>();
   const promote = (key: string, cookie: Electron.Cookie): void => {
     pending.delete(key);
+    const started = seq;
     void ses.cookies
       .get({ name: cookie.name, domain: cookie.domain, path: cookie.path })
       .then((live) => {
-        for (const c of live) {
-          const p = promoteSessionCookie(c, Date.now() / 1000);
-          if (p) return ses.cookies.set(p);
-        }
-        return undefined;
+        if (!alive || (changedSeq.get(key) ?? 0) > started) return undefined;
+        // `get({domain})` also matches SUBDOMAINS: promote the cookie the EVENT named, never a same-name sibling.
+        const own = live.find((c) => c.name === cookie.name && c.domain === cookie.domain && (c.path ?? '/') === (cookie.path ?? '/'));
+        const p = own ? promoteSessionCookie(own, Date.now() / 1000) : null;
+        return p ? ses.cookies.set(p) : undefined;
       })
       .catch((err) => log.warn('browser-panel: promoting a session cookie failed', err));
   };
   const onChanged = (_e: unknown, cookie: Electron.Cookie, _cause: string, removed: boolean): void => {
+    const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+    changedSeq.set(key, ++seq);
     if (!removed && promoteSessionCookie(cookie, 0)) {
-      const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
       if (!pending.has(key)) pending.set(key, setTimeout(() => promote(key, cookie), PROMOTE_DEBOUNCE_MS));
     }
     if (flushTimer) return;
@@ -328,6 +335,7 @@ function persistSignIns(ses: Electron.Session): void {
   };
   ses.cookies.on('changed', onChanged);
   signInSessions.set(ses, () => {
+    alive = false;
     ses.cookies.removeListener('changed', onChanged);
     for (const t of pending.values()) clearTimeout(t);
     pending.clear();
@@ -710,6 +718,18 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
  *  proxy asks it (with `decideAgentClear`) before it lets an agent clear a whole partition's cookies. */
 export function panelProfileId(wsId: string): BrowserProfileId | undefined {
   return panels.get(wsId)?.profileId;
+}
+
+/** The urls of one tab's frame tree (main frame + every subframe), read LIVE — what `Network.getCookies` without `urls` would cover. A pure read; `undefined`
+ *  when the tab has no live view or the tree cannot be read (the agent CDP policy then refuses what it cannot judge). */
+export function tabFrameUrls(wsId: string, tabId: BrowserTabId): string[] | undefined {
+  const wc = liveContents(panels.get(wsId)?.tabs.find((t) => t.id === tabId));
+  try {
+    const main = wc?.mainFrame;
+    return main ? main.framesInSubtree.map((f) => f.url) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The workspaces whose OPEN panel runs on `profileId` right now (what the views do, not what a record says). */

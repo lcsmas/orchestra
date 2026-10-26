@@ -139,7 +139,7 @@ export function makePanelPort(wsId: string): CdpPanelPort {
     // read/alter another site's cookies — judged on the call's params and the TARGETED tab's url (shared/browser-profile.ts decideAgentCdp).
     // Read at call time (`panelProfileId`): a profile attached or deleted mid-session applies to the very next command.
     refuseMethod: (method, params, tab) => {
-      const d = decideAgentCdp({ method, params, profileId: bp.panelProfileId(wsId), pageUrl: tab.url });
+      const d = decideAgentCdp({ method, params, profileId: bp.panelProfileId(wsId), pageUrl: tab.url, frameUrls: bp.tabFrameUrls(wsId, tab.id) });
       // The core judges TRUTHINESS: a refusal must be a NON-EMPTY string on every path ('' / undefined would fail OPEN) — hence the fallback text.
       return d.ok ? null : d.message || 'refused: the profil navigateur policy of this workspace forbids this command';
     },

@@ -39,6 +39,9 @@ const subFrame = (): ProfileIpcEvent => ({ sender: { id: 5, mainFrame: frame }, 
 /** The frame was destroyed / unknown. */
 const noFrame = (): ProfileIpcEvent => ({ sender: { id: 5, mainFrame: frame }, senderFrame: null });
 
+/** The main window's id but NO frame on either side: `undefined === undefined` must not admit it (review F6 of #400). */
+const bareFrame = (): ProfileIpcEvent => ({ sender: { id: 5 }, senderFrame: undefined });
+
 const CALLS: Array<[string, any[]]> = [
   ['browserProfiles:create', ['Staging']],
   ['browserProfiles:rename', ['bp-aaaaaaaaaaaa', 'X']],
@@ -63,7 +66,7 @@ for (const [channel, args] of CALLS) {
     assert.equal(r.served.length, 1);
   });
 
-  for (const [who, mk] of [['a panel page / other window', panelPage], ['a sub-frame of the app window', subFrame], ['an unknown frame', noFrame]] as const) {
+  for (const [who, mk] of [['a panel page / other window', panelPage], ['a sub-frame of the app window', subFrame], ['an unknown frame', noFrame], ['a main-window sender with NO frame on either side (undefined === undefined)', bareFrame]] as const) {
     test(`${channel}: ${who} is REFUSED and nothing reaches the service`, async () => {
       const r = rig();
       const res = (await r.handlers.get(channel)!(mk(), ...args)) as BrowserProfileResult;

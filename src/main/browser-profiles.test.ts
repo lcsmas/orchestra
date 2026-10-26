@@ -40,6 +40,9 @@ function rig(init?: { profiles?: BrowserProfile[]; workspaces?: Array<{ id: stri
       if (profileId === undefined) onProfile.delete(wsId);
       return stateOf(wsId, profileId);
     },
+    clearEphemeral: async (wsId) => {
+      calls.push(`ephemeral:${wsId}`);
+    },
     openPanelsOn: () => [...onProfile],
     settleViews: async () => {
       calls.push('settle');
@@ -113,6 +116,19 @@ test('attach: switching and detaching; the same profile again rebuilds nothing n
   assert.deepEqual(r.calls, ['reprofile:w1=-'], 'already detached: no record write');
 });
 
+test('F9: leaving a profile for navigation éphémère first CLEARS the workspace\'s old ephemeral session (sign-ins made before the attach must not resurface); attach / switch / an already-ephemeral detach never clear it', async () => {
+  const r = rig({ profiles: [P(A, 'Staging'), P(B, 'Prod')], workspaces: [{ id: 'w1' }, { id: 'w2', browserProfileId: A }] });
+  await r.svc.assign('w1', A);   // ephemeral → profile: the ephemeral session is left alone (it may still be on screen until the rebuild)
+  await r.svc.assign('w1', B);   // profile → profile
+  assert.equal(r.calls.some((c) => c.startsWith('ephemeral:')), false, 'no clear on attach / switch');
+  r.calls.length = 0;
+  await r.svc.assign('w1', null); // profile → ephemeral: cleared BEFORE the panel is rebuilt on it
+  assert.deepEqual(r.calls, ['ephemeral:w1', 'record:w1=-', 'reprofile:w1=-']);
+  r.calls.length = 0;
+  await r.svc.assign('w1', null); // already ephemeral: nothing to clear (that session may be IN USE)
+  assert.deepEqual(r.calls, ['reprofile:w1=-']);
+});
+
 test('attach: an unknown profile or workspace is refused and NOTHING moves', async () => {
   const r = rig({ profiles: [P(A, 'Staging')], workspaces: [{ id: 'w1' }] });
   const bad = await r.svc.assign('w1', 'bp-eeeeeeeeeeee');
@@ -136,6 +152,7 @@ test('attach: when the panel cannot move, the record is rolled back and the erro
     reprofilePanel: () => {
       throw new Error('main window not ready');
     },
+    clearEphemeral: async () => {},
     openPanelsOn: () => [],
     settleViews: async () => true,
     stopSignIns: () => {},
@@ -157,8 +174,8 @@ test('delete: detaches every carrier, reloads ephemeral, clears storage, THEN fo
   const res = await r.svc.remove(A);
   assert.equal(res.ok, true);
   assert.deepEqual(r.calls, [
-    'record:w1=-', 'reprofile:w1=-',
-    'record:w4=-', 'reprofile:w4=-',
+    'record:w1=-', 'ephemeral:w1', 'reprofile:w1=-',
+    'record:w4=-', 'ephemeral:w4', 'reprofile:w4=-',
     'settle',
     `stop:${A}`,
     `clear:${A}`,
@@ -191,7 +208,7 @@ test('delete: an OPEN panel still on the profile though its record says otherwis
   const r = rig({ profiles: [P(A, 'Staging')], workspaces: [{ id: 'w1' }, { id: 'w2', browserProfileId: A }], openOn: ['w1', 'w2'] });
   await r.svc.remove(A);
   // w2 is a recorded carrier (record cleared + moved); w1's record is clean but its views still run on A (a half-failed earlier move): moved, nothing recorded
-  assert.deepEqual(r.calls, ['record:w2=-', 'reprofile:w2=-', 'reprofile:w1=-', 'settle', `stop:${A}`, `clear:${A}`, 'setProfiles:']);
+  assert.deepEqual(r.calls, ['record:w2=-', 'ephemeral:w2', 'reprofile:w2=-', 'ephemeral:w1', 'reprofile:w1=-', 'settle', `stop:${A}`, `clear:${A}`, 'setProfiles:']);
 });
 
 test('delete: views still closing after the wait ⇒ the profile is KEPT, nothing wiped, the delete can be retried (carriers are already ephemeral)', async () => {
