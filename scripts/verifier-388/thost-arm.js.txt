@@ -1,0 +1,142 @@
+  // ── VERIFIER (seat 1) arms: thostile = `tab close` of the USER's tab in every spelling I can think of; tflake = the member's `attach` flake ×N; tdetach = a command in flight on a child that detaches ──
+  async thostile(ctx) {
+    const { W1, URL: U } = ctx; const A = 'thostile';
+    const setup = async () => {
+      await reset(ctx);
+      await cli(ctx, W1, ['tab', 'new', U.a]);
+      await softWait(async () => !!titled(await reg(ctx, W1), /Tabs fixture A/), 15000, 'page A tab');
+      const r = await reg(ctx, W1); const human = r.tabs.find((t) => t.openedBy === 'human');
+      const abt = await abTabs(ctx, W1); const tB = abt.find((t) => /Tabs fixture B/.test(t.title)); const tA = abt.find((t) => /Tabs fixture A/.test(t.title));
+      return { human, tB, tA };
+    };
+    const variants = (tB, tA) => [
+      ['plain', ['tab', 'close', tB.tabId]],
+      ['UPPER', ['tab', 'close', tB.tabId.toUpperCase()]],
+      ['padded', ['tab', 'close', ` ${tB.tabId} `]],
+      ['tab-char', ['tab', 'close', `${tB.tabId}\t`]],
+      ['nbsp', ['tab', 'close', ` ${tB.tabId} `]],
+      ['target-id', ['tab', 'close', tB.targetId]],
+      ['TARGET-ID', ['tab', 'close', tB.targetId.toUpperCase()]],
+      ['flag-value-first', ['tab', 'close', '--timeout', '3000', tB.tabId]],
+      ['equals-flag', ['tab', 'close', '--timeout=3000', tB.tabId]],
+      ['ref-before-op', ['tab', tB.tabId, 'close']],
+      ['OP-upper', ['tab', 'CLOSE', tB.tabId]],
+      ['Op-capital', ['tab', 'Close', tB.tabId]],
+      ['json', ['--json', 'tab', 'close', tB.tabId]],
+      ['two-refs', ['tab', 'close', tA.tabId, tB.tabId]],
+      ['current-tab-after-switch', null],
+    ];
+    const first = await setup();
+    clause(A, 'ctl/setup-two-tabs-the-user-owns-B', !!first.human && !!first.tB && !!first.tA, `human ${first.human?.id}; agent-browser B=${first.tB?.tabId}/${first.tB?.targetId?.slice(0, 8)} A=${first.tA?.tabId}`);
+    const out = [];
+    for (let i = 0; i < variants(first.tB ?? {}, first.tA ?? {}).length; i++) {
+      const s = await setup();
+      if (!s.human || !s.tB || !s.tA) { out.push({ name: `#${i}`, err: 'setup failed' }); continue; }
+      const [name, args] = variants(s.tB, s.tA)[i];
+      let r;
+      if (args === null) { await cli(ctx, W1, ['tab', s.tB.tabId]); r = await cli(ctx, W1, ['tab', 'close']); } else r = await cli(ctx, W1, args);
+      await sleep(700);
+      const after = await reg(ctx, W1); const abAfter = await abTabs(ctx, W1);
+      const stillOpen = after.tabs.some((t) => t.id === s.human.id);
+      const gate = /browser_tab_not_owner/.test(r.stderr + r.stdout);
+      const listed = abAfter.some((t) => t.targetId === s.tB.targetId);
+      out.push({ name, rc: r.code, gate, stillOpen, listed, msg: (r.stderr + r.stdout).trim().slice(0, 110) });
+    }
+    for (const o of out) console.log(`  MEASURED [${A}] ${o.name.padEnd(26)} rc=${o.rc} cliGate=${o.gate} userTabStillOpen=${o.stillOpen} agent-browser-still-lists-it=${o.listed} ${JSON.stringify(o.msg)}`);
+    clause(A, 'the-users-tab-survives-every-spelling-of-tab-close', out.length >= 14 && out.every((o) => o.stillOpen), `${out.filter((o) => o.stillOpen).length}/${out.length} variants left the user's tab open: ${out.filter((o) => !o.stillOpen).map((o) => o.name).join(', ') || 'none closed'}`);
+    clause(A, 'agent-browser-never-desyncs-from-the-registry', out.every((o) => o.listed), `variants after which agent-browser's own list lost the user's tab (printed "closed", dropped it, the PROXY still refused): ${out.filter((o) => !o.listed).map((o) => o.name).join(', ') || 'none'}`);
+    clause(A, 'every-spelling-is-refused-by-the-CLI-gate-or-rejected-by-agent-browser-itself', out.every((o) => o.gate || (o.rc !== 0 && o.stillOpen && o.listed)), `variants that reached agent-browser without the CLI gate: ${out.filter((o) => !o.gate).map((o) => `${o.name}(rc ${o.rc}: ${o.msg.slice(0, 60)})`).join(' | ') || 'none'} — each must be rejected by agent-browser itself (inert)`);
+  },
+
+  async tflake(ctx) {
+    const A = 'tflake'; const N = Number(process.env.TFLAKE_N ?? 20);
+    const rows = [];
+    for (let i = 0; i < N; i++) {
+      const m = await spawnChildrenInBackgroundTab(ctx, { worker: true, frame: true });
+      rows.push({ i, spawnErr: m.spawnErr, probeMs: m.probe.ms, attached: m.attached });
+      console.log(`  MEASURED [${A}] run ${i}: get title rc=${m.probe.code} ${m.probe.ms} ms attached-children=${m.attached}${m.spawnErr ? '  ← ' + m.spawnErr : ''}`);
+    }
+    const bad = rows.filter((r) => r.spawnErr);
+    clause(A, 'get-title-answers-after-attach-time-commands-on-children-x' + N, bad.length === 0, `${bad.length}/${N} runs timed out: ${bad.map((r) => r.i).join(',') || 'none'}`);
+  },
+
+  async tdetach(ctx) {
+    const { W1, URL: U } = ctx; const A = 'tdetach'; const N = Number(process.env.TDETACH_N ?? 30);
+    await reset(ctx);
+    const humanTab = (await reg(ctx, W1)).tabs[0];
+    const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const outcomes = [];
+    for (let i = 0; i < N; i++) {
+      const raw = await rawProxyClient(ep.wsUrl);
+      try {
+        const ev = []; raw.onEvent((m) => ev.push(m));
+        const gt = await raw.call('Target.getTargets');
+        const tid = gt.result?.targetInfos?.find((t) => t.type === 'page')?.targetId;
+        const att = tid ? await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }) : null;
+        const rootSid = att?.result?.sessionId;
+        if (!rootSid) { outcomes.push({ i, err: 'no root session' }); continue; }
+        await raw.callOn(rootSid, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+        await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.frame)}).then(() => true)`);
+        await softWait(async () => ev.some((m) => m.method === 'Target.attachedToTarget' && m.params?.targetInfo?.type === 'iframe'), 12000, 'an iframe child session');
+        const child = ev.find((m) => m.method === 'Target.attachedToTarget' && m.params?.targetInfo?.type === 'iframe')?.params?.sessionId;
+        if (!child) { outcomes.push({ i, err: 'no iframe child' }); continue; }
+        const method = ['Page.enable', 'Runtime.enable', 'Network.enable', 'Page.getFrameTree', 'DOM.getDocument'][i % 5];
+        const delay = [0, 1, 2, 5, 10, 20][i % 6];
+        // the command is IN FLIGHT on the child while its iframe is removed from the parent (the child target detaches)
+        const t0 = Date.now();
+        const inflight = raw.callOn(child, method, {});
+        await sleep(delay);
+        await raw.callOn(rootSid, 'Runtime.evaluate', { expression: `document.querySelector('iframe')?.remove(); 1`, returnByValue: true });
+        const reply = await inflight;
+        outcomes.push({ i, method, delay, ms: Date.now() - t0, hung: /timed out/.test(reply.error?.message ?? ''), reply: reply.error?.message ?? (reply.result ? 'result' : 'empty') });
+      } finally { raw.close(); }
+      await sleep(250);
+    }
+    const hung = outcomes.filter((o) => o.hung);
+    for (const o of outcomes.slice(0, 12)) console.log(`  MEASURED [${A}] #${o.i} ${o.method} +${o.delay}ms → ${o.err ?? `${o.ms} ms ${JSON.stringify(o.reply)}`}`);
+    console.log(`  MEASURED [${A}] ${outcomes.length} races, HUNG (no reply in 6 s): ${hung.length} ${JSON.stringify(hung.slice(0, 6))}`);
+    clause(A, 'ctl/the-race-ran-with-an-iframe-child', outcomes.filter((o) => !o.err).length >= N * 0.8, `${outcomes.filter((o) => !o.err).length}/${N} races had a live iframe child (errors: ${JSON.stringify(outcomes.filter((o) => o.err).slice(0, 3))})`);
+    clause(A, 'an-in-flight-command-on-a-detaching-child-is-always-answered', hung.length === 0, `${hung.length}/${outcomes.length} commands never got a reply (6 s) after their child detached`);
+    const warm = await cli(ctx, W1, ['get', 'url'], { timeoutMs: 60000 }); console.log(`  MEASURED [${A}] first CLI call after the races (cold daemon start, 60 s allowed): ${show(warm)}`);
+    const after = await cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 });
+    clause(A, 'the-agent-cli-still-answers-afterwards', after.code === 0, `get title → ${show(after)}`);
+    void humanTab;
+  },
+
+  async tchurn(ctx) {
+    const { W1, URL: U } = ctx; const A = 'tchurn'; const N = Number(process.env.TCHURN_N ?? 12);
+    const fixPort = new URL(U.a).port;
+    const site = http.createServer((req, res) => { res.setHeader('content-type', 'text/html'); res.end(`<!doctype html><title>Churn fixture</title><body style="background:#345"><script>
+      // cross-site iframes created and REMOVED within a few ms, for ~3 s: every one is an auto-attachable child that detaches while the daemon's attach-time commands are in flight
+      let n = 0; const t0 = Date.now();
+      (function loop() { if (Date.now() - t0 > 3000) return; const f = document.createElement('iframe'); f.src = 'http://localhost:${fixPort}/tabs-c.html?n=' + (n++); document.body.append(f); setTimeout(() => f.remove(), Math.floor(Math.random() * 25)); setTimeout(loop, 15); })();
+    </script>`); });
+    await new Promise((r) => site.listen(0, '127.0.0.1', r));
+    const CH = `http://127.0.0.1:${site.address().port}/churn`;
+    const rows = [];
+    for (let i = 0; i < N; i++) {
+      await reset(ctx);
+      const logFile = path.join(ctx.world.ohome, 'logs', 'orchestra.log'); let off0 = 0; try { off0 = fs.statSync(logFile).size; } catch {}
+      const nw = await cli(ctx, W1, ['tab', 'new', `${CH}?i=${i}`], { timeoutMs: 60000 });
+      await softWait(async () => !!titled(await reg(ctx, W1), /Churn fixture/), 15000, 'the churn tab');
+      const sn = await cli(ctx, W1, ['snapshot', '-i'], { timeoutMs: 60000 }); // the daemon attaches, auto-attach on
+      await sleep(250 + (i % 4) * 400); // inside the 3 s churn
+      const gt = await cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 });
+      await sleep(3200);
+      const gt2 = await cli(ctx, W1, ['get', 'title'], { timeoutMs: 8000 });
+      let slice = ''; try { const size = fs.statSync(logFile).size; const start = size >= off0 ? off0 : 0; const fd = fs.openSync(logFile, 'r'); const buf = Buffer.alloc(Math.min(size - start, 12e6)); fs.readSync(fd, buf, 0, buf.length, start); fs.closeSync(fd); slice = buf.toString('utf8'); } catch {}
+      const reqs = new Map(), answered = new Set(), detachedSids = new Set(); let attachedN = 0, detachedN = 0;
+      for (const line of slice.split('\n')) { let m; if ((m = /client->proxy (\{.*\})\s*$/.exec(line))) { try { const j = JSON.parse(m[1]); if (j.id !== undefined) reqs.set(j.id, { method: j.method, sid: j.sessionId }); } catch {} } else if ((m = /proxy->client (\{.*\})\s*$/.exec(line))) { try { const j = JSON.parse(m[1]); if (j.id !== undefined) answered.add(j.id); else if (j.method === 'Target.attachedToTarget') attachedN++; else if (j.method === 'Target.detachedFromTarget') { detachedN++; detachedSids.add(j.params?.sessionId); } } catch {} } }
+      const unanswered = [...reqs].filter(([id]) => !answered.has(id)).map(([id, r]) => `${id}:${r.method}@${(r.sid || 'root').slice(0, 6)}${detachedSids.has(r.sid) ? '(DETACHED session)' : ''}`);
+      if (gt.code !== 0 || gt2.code !== 0) fs.writeFileSync(path.join(OUT, `churn-trace-run${i}.txt`), slice.split('\n').slice(-1500).join('\n'));
+      console.log(`  MEASURED [${A}] run ${i} trace: attachedToTarget=${attachedN} detachedToClient=${detachedN} requests=${reqs.size} UNANSWERED=${unanswered.length} ${JSON.stringify(unanswered.slice(0, 8))}`);
+      rows.push({ i, nw: nw.code, sn: sn.code, during: gt.code, duringMs: gt.ms, after: gt2.code, afterMs: gt2.ms, unanswered });
+      console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING churn rc=${gt.code} ${gt.ms} ms | AFTER churn rc=${gt2.code} ${gt2.ms} ms`);
+    }
+    const hungDuring = rows.filter((r) => r.during !== 0), hungAfter = rows.filter((r) => r.after !== 0);
+    clause(A, 'ctl/every-run-attached-the-daemon', rows.every((r) => r.nw === 0 && r.sn === 0), `tab new + snapshot rc 0 in ${rows.filter((r) => r.nw === 0 && r.sn === 0).length}/${N}`);
+    clause(A, 'get-title-answers-DURING-child-churn', hungDuring.length === 0, `${hungDuring.length}/${N} timed out (8 s): ${hungDuring.map((r) => r.i).join(',') || 'none'}`);
+    clause(A, 'get-title-answers-AFTER-child-churn', hungAfter.length === 0, `${hungAfter.length}/${N} timed out (8 s): ${hungAfter.map((r) => r.i).join(',') || 'none'}`);
+    try { site.close(); } catch {}
+  },
+

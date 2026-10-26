@@ -1,14 +1,14 @@
   // ── vhost (VERIFIER seat 1): logout-vs-promotion race sweep, rotation overwrite, delete-shred bytes — MY site, MY loops, the real app ──
-  if (ARMS.has('vhost') || ARMS.has('vhost-del') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep')) {
-    const RACE = ARMS.has('vhost') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep'); const BAND = ARMS.has('vhost-band'); const SWEEP = ARMS.has('vhost-sweep');
+  if (ARMS.has('vhost') || ARMS.has('vhost-del') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep') || ARMS.has('vhost-storm') || ARMS.has('vhost-freeze')) {
+    const STORM = ARMS.has('vhost-storm'); const FREEZE = ARMS.has('vhost-freeze'); const RACE = ARMS.has('vhost') || ARMS.has('vhost-band') || ARMS.has('vhost-sweep') || STORM || FREEZE; const BAND = ARMS.has('vhost-band') || STORM || FREEZE; const SWEEP = ARMS.has('vhost-sweep');
     if (b) { await teardown(b, 'term'); b = null; }
     b = await boot(world, 'boot-vhost');
-    let ctr = 0; const MARK = `SHRED${crypto.randomBytes(10).toString('hex')}`;
+    let ctr = 0; let freezePlan = null; const MARK = `SHRED${crypto.randomBytes(10).toString('hex')}`;
     const vsite = http.createServer((req, res) => {
       const u = new URL(req.url ?? '/', 'http://x');
       const jar = Object.fromEntries((req.headers.cookie ?? '').split(/;\s*/).filter(Boolean).map((c) => { const i = c.indexOf('='); return [c.slice(0, i), c.slice(i + 1)]; }));
       res.setHeader('cache-control', 'no-store'); res.setHeader('content-type', 'text/html');
-      if (u.pathname === '/login') { res.setHeader('set-cookie', `vsid=L${u.searchParams.get('n') ?? 0}; Path=/`); return res.end('ok'); }
+      if (u.pathname === '/login') { if (freezePlan) { const pl = freezePlan; freezePlan = null; setTimeout(() => { try { process.kill(b.app.pid, 'SIGSTOP'); } catch {} setTimeout(() => { try { process.kill(b.app.pid, 'SIGCONT'); } catch {} }, pl.hold); }, pl.at); } res.setHeader('set-cookie', `vsid=L${u.searchParams.get('n') ?? 0}; Path=/`); return res.end('ok'); }
       if (u.pathname === '/logout') { res.setHeader('set-cookie', 'vsid=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT'); return res.end('bye'); }
       if (u.pathname === '/rotate') { ctr++; res.setHeader('set-cookie', `vsid=R${ctr}; Path=/`); return res.end(String(ctr)); }
       if (u.pathname === '/perm') { const v = MARK; res.setHeader('set-cookie', `pm=${v}; Path=/; Max-Age=86400`); return res.end(`<!doctype html><title>perm</title><body>perm<script>localStorage.setItem('shred', ${JSON.stringify(v)}); sessionStorage.setItem('shred', ${JSON.stringify(v)});</script>`); }
@@ -31,8 +31,8 @@
     const sweep = async (n, label, delays) => {
       const resurrected = []; const t0 = Date.now();
       for (let i = 0; i < n; i++) {
-        const d = delays(i);
-        await tc.eval(`(async () => { await fetch('/login?n=${i}'); await new Promise((r) => setTimeout(r, ${d})); await fetch('/logout'); return 1; })()`);
+        const d = delays(i); if (FREEZE) freezePlan = { at: 236 + (i % 24), hold: 450 };
+        await tc.eval(`(async () => { ${STORM ? "const iv = setInterval(() => { for (let k = 0; k < 60; k++) document.cookie = 'st' + ((Math.random() * 400) | 0) + '=' + Date.now() + '; path=/'; }, 4);" : 'const iv = null;'} await fetch('/login?n=${i}'); await new Promise((r) => setTimeout(r, ${d})); await fetch('/logout'); ${STORM ? 'await new Promise((r) => setTimeout(r, 300)); clearInterval(iv);' : ''} return 1; })()`);
         await sleep(900);
         const who = await tc.eval(`fetch('/who', { cache: 'no-store' }).then((r) => r.text())`);
         if (who !== 'anon') { resurrected.push({ i, d, who }); await tc.eval(`fetch('/logout').then(() => 1)`); await sleep(400); }
@@ -42,7 +42,7 @@
     };
     const resAfterPromo = await sweep(10, 'profile, logout at 700 ms (AFTER the promotion landed)', () => 700);
     clause('vhost', 'ctl/logout-after-promotion-clears-the-promoted-cookie', resAfterPromo.length === 0, `resurrected ${resAfterPromo.length}/10`);
-    const NCYC = BAND ? 200 : SWEEP ? 250 : 150; const resRace = await sweep(NCYC, BAND ? 'profile, logout in the CRITICAL band 243..250 ms (25 cycles per value)' : SWEEP ? 'profile, logout swept across the 250 ms debounce (225..274 ms, 5 cycles per value)' : 'profile, logout swept across the 250 ms debounce (225..274 ms)', (i) => (BAND ? 243 + (i % 8) : 225 + (i % 50)));
+    const NCYC = BAND ? 200 : SWEEP ? 250 : 150; const resRace = await sweep(NCYC, BAND ? 'profile, logout in the CRITICAL band 243..250 ms (25 cycles per value)' : SWEEP ? 'profile, logout swept across the 250 ms debounce (225..274 ms, 5 cycles per value)' : 'profile, logout swept across the 250 ms debounce (225..274 ms)', (i) => (BAND ? 243 + (i % (STORM ? 10 : 8)) : 225 + (i % 50)));
     results.push({ arm: 'vhost', clause: 'measured/logout-vs-promotion-resurrections', ok: true, detail: `${resRace.length}/${NCYC} cycles left the cookie alive after the logout: ${JSON.stringify(resRace.slice(0, 8))}` });
     clause('vhost', 'logout-never-resurrected-by-a-pending-promotion', resRace.length === 0, `${resRace.length}/${NCYC} resurrected`);
     // R-B: ROTATION — a site that rewrites its session cookie at every request: the jar must END on the last issued value
@@ -83,6 +83,7 @@
     const whole = (() => { const hits = []; const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else { try { if (fs.readFileSync(p).includes(marker)) hits.push(path.relative(path.join(world.ohome, 'userData'), p)); } catch {} } } }; walk(path.join(world.ohome, 'userData')); return hits; })();
     console.log(`  MEASURED [vhost] delete of profile ${sp}: result ${JSON.stringify(del)}; partition dir still present=${dirLeft}; files in the partition still holding the marker: ${JSON.stringify(after)}; anywhere in userData: ${JSON.stringify(whole)}`);
     clause('vhost', 'deleted-profile-leaves-no-sign-in-bytes-on-disk', del.ok === true && whole.length === 0, `delete ok=${del.ok}; marker remains in ${whole.length} file(s): ${JSON.stringify(whole)}`);
+    try { process.kill(b.app.pid, 'SIGCONT'); } catch {}
     try { vsite.close(); } catch {}
     await teardown(b, 'term'); b = null;
   }
