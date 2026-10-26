@@ -454,8 +454,9 @@ which holds the daemon's `bus` / `keyring/` / `p11-kit/` sockets (GLib's libsecr
   `/proc/*/fd` of same-uid processes — read-only, no connection. It logs the private dir's contents at exit (a `keyring` entry there =
   something reached for a keyring and found OUR empty dir).
 - **Drivers**: take `XDG_RUNTIME_DIR` from `scripts/lib/rig-runtime.mjs` `privateRuntimeDir()` (throws unless it is `$RIG_DIR/xdg`), never a
-  literal. `src/shared/rig-runtime-world.test.ts` is the ratchet: no script may hard-code `/run/user/<uid>` outside its reviewed `ALLOW` list
-  (the list only shrinks; the remaining entries build their own sway/env — see the ledger #405 report).
+  literal. `src/shared/rig-runtime-world.test.ts` is the ratchet: no script may keep the literal `/run/user` in a CODE line (pattern `\/run\/user\b`: also `'/run/user/' + uid`; split forms like `'/run/' + 'user/'` are uncatchable by regex — the hidden-world backstop is the only net) outside its reviewed `ALLOW` list
+  (the list only shrinks; the remaining entries build their own sway/env — see the ledger #405 report). The 7 of them one `pnpm run test:*` away are
+  routed through `scripts/refuse-real-runtime.mjs` in `package.json` (prints why, exits 3) until migrated.
 - **Opt-in backstop** `RIG_HIDE_REAL_RUNTIME=1`: the rig re-execs under `bwrap --dev-bind / / --tmpfs /run/user/<uid>`, so the real dir is an
   EMPTY tmpfs for the whole rig (a hard-coded path cannot reach anything; entries created there at exit are logged). Use it for a rig's first
   Electron run. Default off. **Known cost of the private world:** the app inside a rig has no systemd user manager (`scopeSupport` ⇒ « no user manager socket »,
@@ -466,22 +467,21 @@ which holds the daemon's `bus` / `keyring/` / `p11-kit/` sockets (GLib's libsecr
 
 ### The rig's own self-test — `pnpm run test:rig-selftest`
 
-`scripts/e2e-contained-rig-selftest.sh` proves the rig's two pre-flights can FAIL (31 arms). **Display (W1–W6):** a `WAYLAND_DISPLAY`
+`scripts/e2e-contained-rig-selftest.sh` proves the rig's two pre-flights can FAIL (32 arms). **Display (W1–W6):** a `WAYLAND_DISPLAY`
 that is a path to the human's compositor, a sibling socket, a bogus one, the raw sway name `wayland-1`, an alias pointing at the wrong
-socket, an added `DISPLAY` — each must abort **rc=90 without launching the child**. **Runtime world (R0–R9b, 21 arms):** forced real
+socket, an added `DISPLAY` — each must abort **rc=90 without launching the child**. **Runtime world (R0–R10, 22 arms):** forced real
 `XDG_RUNTIME_DIR` (and one under it, one disguised `/run/./user/<uid>`), a duplicated key, one outside the rig dir, a symlinked / 0755 private dir,
 planted `keyring`/`bus`/`pulse`/`p11-kit` entries, forced real/`disabled:` D-Bus address, an existing bus path, an env value containing
 `/run/user/<uid>` (pre-sway, added after sway, disguised, or reached through a symlink), an over-long path, sway's own env carrying the real dir and a rig base under
-`/run/user/` (those two inside the hidden world) — hostile values go into the CHILD array only via `RIG_SELFTEST_*` and the rig aborts before launching; the pre-sway
+`/run/user/` and one through a SYMLINK into it (those three inside the hidden world) — hostile values go into the CHILD array only via `RIG_SELFTEST_*` and the rig aborts before launching; the pre-sway
 arms also assert `sway pid=` never appeared. **Controls (C1–C4):** normal run launches the child; the same run with `/run/user/<uid>`
 hidden behind an empty tmpfs (needs `bwrap`) passes and creates nothing in it; the child's REAL `env` (read from the child, not the array)
 is private; a keyring-named stand-in listening in the private dir is reaped at teardown. Each arm also requires its **own abort reason** (`grep -E`), so an arm that aborts for a different clause is a failure.
 `RIG_SELFTEST_ONLY="ID …"` runs a subset and can only print `PARTIAL-*` (never the gate's `PASSED`).
 
-Mutation proof: `node scripts/e2e-contained-rig-mutants.mjs --unfixed` edits the real rig in place (32 clause-removal / construction-drift
-mutants, byte-exact restore + `cmp`) and demands exactly the named arms go FAIL; `--unfixed` also runs the pre-Q2 rig through the same
-arms (it must fail them). One declared survivor: R3's resolved-path clause (needs a rig base symlinked into `/run/user/<uid>`, which the
-test must never create). Never run an Electron rig while it runs — it mutates the rig file.
+Mutation proof: `node scripts/e2e-contained-rig-mutants.mjs --unfixed` edits the real rig in place (33 clause-removal / construction-drift
+mutants (one PAIRED: R3's resolved-path clause and the canonicalised base guard shadow each other), byte-exact restore + `cmp`) and demands exactly the named arms go FAIL; `--unfixed` also runs the pre-Q2 rig through the same
+arms (it must fail them). No survivor: R3's resolved-path clause is killed together with the base guard (arm R10). Never run an Electron rig while it runs — it mutates the rig file.
 
 It needs a live compositor, so it is deliberately **not** in `pnpm run test`
 (which must stay runnable on a headless CI box). The wrapper

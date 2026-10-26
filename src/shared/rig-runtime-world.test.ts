@@ -6,6 +6,7 @@
 // longer matches fails the test too, so a fixed script must leave the list.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -31,6 +32,7 @@ const NAMES_IT_TO_REFUSE = new Set([
   'scripts/e2e-contained-rig-selftest.sh',
   'scripts/e2e-contained-rig-mutants.mjs',
   'scripts/lib/rig-runtime.mjs',
+  'scripts/refuse-real-runtime.mjs',
 ]);
 // Reviewed bypasses, NOT yet migrated (each builds its own sway/env under the real runtime dir, or needs the
 // real systemd user manager). A new entry needs a reason a reviewer accepts; the goal is an empty list.
@@ -54,7 +56,10 @@ const ALLOW: Record<string, string> = {
   'scripts/e2e-usage-resume-drive.mjs': OWN_SWAY,
 };
 
-const REAL_RUNTIME = /\/run\/user\/(\d+|\$)/;
+// `\b` after `user`: `/run/user/1000`, `/run/user/${uid}`, AND `'/run/user/' + uid` / `'/run/user' + '/' + uid` all keep the literal.
+// Split/joined forms (`'/run/' + 'user/'`, `['run','user'].join('/')`) are NOT catchable by a regex: the hidden-world backstop (RIG_HIDE_REAL_RUNTIME) is the only net.
+const REAL_RUNTIME = /\/run\/user\b/;
+const OLD_REAL_RUNTIME = /\/run\/user\/(\d+|\$)/;   // the first version: kept only as the ratchet's own must-FAIL mutant
 /** CODE lines only: a line that is wholly a `//` / `#` comment names the path to explain it (e.g. #393's rig), it does not hard-code it. */
 const codeOnly = (src: string): string => src.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
 function scriptFiles(dir: string): string[] {
@@ -67,21 +72,37 @@ function scriptFiles(dir: string): string[] {
   }
   return out;
 }
+/** Files under `dir` (paths relative to it) whose CODE lines match `re`. */
+function offenders(dir: string, re: RegExp): string[] {
+  return scriptFiles(dir).map((f) => path.relative(dir, f)).filter((rel) => re.test(codeOnly(fs.readFileSync(path.join(dir, rel), 'utf8')))).sort();
+}
 
 test('no script hard-codes the human\'s /run/user/<uid> outside the reviewed allowlist (and the allowlist has no stale entry)', () => {
-  const hits = scriptFiles(path.join(repo, 'scripts'))
-    .map((f) => path.relative(repo, f))
-    .filter((rel) => REAL_RUNTIME.test(codeOnly(fs.readFileSync(path.join(repo, rel), 'utf8'))) && !NAMES_IT_TO_REFUSE.has(rel))
-    .sort();
+  const hits = offenders(path.join(repo, 'scripts'), REAL_RUNTIME).map((r) => `scripts/${r}`).filter((rel) => !NAMES_IT_TO_REFUSE.has(rel));
   const unexpected = hits.filter((h) => !(h in ALLOW));
-  assert.deepEqual(unexpected, [], `a script hard-codes /run/user/<uid> — take XDG_RUNTIME_DIR from scripts/lib/rig-runtime.mjs (privateRuntimeDir) or run it through scripts/e2e-contained-rig.sh; if it genuinely cannot, add it to ALLOW with a reason: ${unexpected.join(', ')}`);
+  assert.deepEqual(unexpected, [], `a script hard-codes /run/user<…> — take XDG_RUNTIME_DIR from scripts/lib/rig-runtime.mjs (privateRuntimeDir) or run it through scripts/e2e-contained-rig.sh; if it genuinely cannot, add it to ALLOW with a reason: ${unexpected.join(', ')}`);
   const stale = Object.keys(ALLOW).filter((k) => !hits.includes(k));
   assert.deepEqual(stale, [], `ALLOW lists a script that no longer matches (fixed or removed) — delete the entry: ${stale.join(', ')}`);
 });
 
+test('scratch-tree arms: concatenated literal fails, commented mention passes, slash-less form fails — and the OLD pattern misses the concatenations (mutant)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ratchet-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'concat.mjs'), "const d = '/run/user/' + process.getuid();\n");
+    fs.writeFileSync(path.join(dir, 'slashless.mjs'), "const d = '/run/user' + '/' + String(process.getuid());\n");
+    fs.writeFileSync(path.join(dir, 'commented.mjs'), "// never '/run/user/' + uid\n# /run/user/1000\nconst ok = 1;\n");
+    fs.writeFileSync(path.join(dir, 'clean.mjs'), "const d = process.env.XDG_RUNTIME_DIR;\n");
+    assert.deepEqual(offenders(dir, REAL_RUNTIME), ['concat.mjs', 'slashless.mjs'], 'concat + slash-less are caught, the commented mention and the clean file are not');
+    // the mutant: the first-version pattern lets both concatenations through — so these arms distinguish the two patterns
+    assert.deepEqual(offenders(dir, OLD_REAL_RUNTIME), [], 'the old pattern misses both (this is the gap the arms pin)');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the ratchet can fail: the pattern matches the real shapes seen in the tree, and not the placeholder', () => {
-  for (const s of ["'/run/user/1000'", '`/run/user/${process.getuid()}`', '/run/user/$(id -u)', 'unix:path=/run/user/1000/bus']) assert.ok(REAL_RUNTIME.test(s), s);
-  for (const s of ['/run/user/<uid>', 'XDG_RUNTIME_DIR', 'run/user']) assert.ok(!REAL_RUNTIME.test(s), s);
+  for (const s of ["'/run/user/1000'", '`/run/user/${process.getuid()}`', '/run/user/$(id -u)', 'unix:path=/run/user/1000/bus', "'/run/user/' + uid", '/run/user/<uid>']) assert.ok(REAL_RUNTIME.test(s), s);
+  for (const s of ['XDG_RUNTIME_DIR', 'run/user', '/run/users']) assert.ok(!REAL_RUNTIME.test(s), s);
   assert.ok(!REAL_RUNTIME.test(codeOnly('  // never /run/user/1000/bus\n# /run/user/1000')), 'a wholly-commented mention is not a hard-code');
   assert.ok(REAL_RUNTIME.test(codeOnly('const x = 1; // fine\nconst d = `/run/user/${uid}`;')), 'a code line still counts');
 });
@@ -108,4 +129,22 @@ test('every migrated driver TOP-LEVEL-imports the helper (resolvable), calls it,
     assert.match(src, /privateRuntimeDir\(\)/, `${rel} calls it`);
     assert.doesNotMatch(codeOnly(src), REAL_RUNTIME, `${rel} has no hard-coded real runtime dir`);
   }
+});
+
+// An ALLOW-listed script must not be one `pnpm run test:*` away: package.json routes it through the refusal shim instead.
+function directRefs(pkgScripts: Record<string, string>, rels: string[]): string[] {
+  return Object.entries(pkgScripts).filter(([, cmd]) => rels.some((r) => cmd.includes(r))).map(([name]) => name).sort();
+}
+test('no package.json script runs an ALLOW-listed (real-runtime) script directly; the refusal shim exits 3 naming why', async () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+  assert.deepEqual(directRefs(pkg.scripts, Object.keys(ALLOW)), [], 'a pnpm script reaches a real-runtime script — route it through scripts/refuse-real-runtime.mjs');
+  const shimmed = Object.entries(pkg.scripts).filter(([, c]) => c.includes('scripts/refuse-real-runtime.mjs')).map(([n]) => n).sort();
+  assert.deepEqual(shimmed, ['test:bus-pane', 'test:ctx-scroll-shot', 'test:disk-guard-ui', 'test:human-gates-shot', 'test:network-visibility-shot', 'test:renderer-cpu', 'test:restart-row-shot'], 'the seven one-command-away scripts are refused');
+  // must-FAIL arm: the detector does flag a direct reference
+  assert.deepEqual(directRefs({ 'test:x': 'node scripts/verify-bus-pane.mjs', 'test:y': 'node scripts/other.mjs' }, ['scripts/verify-bus-pane.mjs']), ['test:x']);
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync(process.execPath, [path.join(repo, 'scripts', 'refuse-real-runtime.mjs'), 'test:x'], { encoding: 'utf8' });
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /REFUSED: `pnpm run test:x`/);
+  assert.match(r.stderr, /Nothing was run/);
 });
