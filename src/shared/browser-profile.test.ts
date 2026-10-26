@@ -158,7 +158,10 @@ test('isPageSite: the page\'s own host or a parent domain of it — never a sibl
   assert.equal(isPageSite(PAGE, 'https://admin.example.com/'), false, 'a sibling subdomain');
   assert.equal(isPageSite(PAGE, 'https://other.org/'), false);
   assert.equal(isPageSite(PAGE, 'com'), false, 'a bare TLD');
-  assert.equal(isPageSite(PAGE, 'https://evilexample.com/'), false, 'suffix without a dot boundary');
+  assert.equal(isPageSite(PAGE, 'https://evilexample.com/'), false, 'a different site that merely looks similar');
+  assert.equal(isPageSite('https://notexample.com/', 'example.com'), false, 'the PAGE host ends with the target but not on a dot boundary');
+  assert.equal(isPageSite('https://notexample.com/', '.example.com'), false);
+  assert.equal(isPageSite('https://a.example.com/', 'example.com'), true, 'control: on a dot boundary it is the parent domain');
   assert.equal(isPageSite('http://localhost:3000/', 'http://localhost:9/'), true);
   assert.equal(isPageSite('http://127.0.0.1:1/', 'http://127.0.0.1:2/'), true);
   assert.equal(isPageSite('about:blank', 'https://example.com/'), false, 'a page with no host owns no site');

@@ -63,7 +63,10 @@ for (const m of MUTANTS) {
   try { built = sh('nice', ['-n', '10', 'pnpm', 'run', 'build:bundles']); } finally { fs.copyFileSync(backup, abs); }
   let restored = true; try { execFileSync('cmp', [abs, backup]); } catch { restored = false; }
   if (built.status !== 0) { rows.push(['BUILD-FAILED', `${m.id}: ${built.stderr.split('\n').slice(-5).join(' ')}`]); bad++; continue; }
-  const rig = sh(path.join(ROOT, 'scripts/e2e-browser-profiles.sh'), [ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT]);
+  // fleet rule (ledger #405, 2026-10-26): at most 3 contained-rig Electron trees at once — ONE slot per rig run (this mutant), not per sweep
+  const SLOT = process.env.GUI_SLOT || '/var/tmp/orch-1000-b17728/gui-slot.sh';
+  const rigArgs = [path.join(ROOT, 'scripts/e2e-browser-profiles.sh'), ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT];
+  const rig = fs.existsSync(SLOT) ? sh(SLOT, rigArgs) : sh(rigArgs[0], rigArgs.slice(1));
   fs.writeFileSync(path.join(OUT, `${m.id}.log`), rig.stdout + rig.stderr);
   let res = null; try { res = JSON.parse(fs.readFileSync(path.join(OUT, `${m.id}-result.json`), 'utf8')); } catch {}
   if (!res) { rows.push(['RIG-NO-RESULT', `${m.id} rc=${rig.status} (see ${m.id}.log)`]); bad++; continue; }
