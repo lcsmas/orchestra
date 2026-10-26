@@ -23,7 +23,7 @@ const VERBS = /profile[s]?\s+(?:attach|create|switch|use|set|delete|rename)\b|at
 const AGENT_SURFACES = [
   ...fs.readdirSync(path.join(SRC, 'cli')).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts')).map((f) => `cli/${f}`),
   'main/hooks-server.ts',
-  'main/agent-browser-tools.ts',
+  // (main/agent-browser-tools.ts — the in-process MCP browser tools — was removed by #399: that surface no longer exists)
   'main/agent-sdk.ts',
   'main/acces-mobile-routes.ts',
   'main/acces-mobile-host.ts',

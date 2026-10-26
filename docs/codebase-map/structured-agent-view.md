@@ -286,8 +286,8 @@ never appeared in `mcpServerStatus()`, while a *fresh* session over the same
 file booted it `connected` (the control proving the fixture was valid). Since
 account-level `claude.ai` connector changes are the ONLY thing ↻ exists to
 pick up, swapping in `setMcpServers` would make the button a silent no-op for
-its entire purpose. Orchestra's only dynamically-added server is the
-in-process `browser` one, which ↻ is never for. Guarded by
+its entire purpose. Orchestra adds no MCP server of its own (the in-process
+`browser` one was removed by #399), so `setMcpServers` has nothing to do. Guarded by
 `src/main/mcp-refresh-mechanism.test.ts`, which fails if the restart steps
 (`sdkStop` + `killKeeper` + `ensureSession`) leave `sdkMcpRefresh` or if
 `setMcpServers` appears in it.

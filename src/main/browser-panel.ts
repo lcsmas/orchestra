@@ -58,9 +58,9 @@ import { DESIGN_MODE_SCRIPT, DESIGN_PICK_GLOBAL } from './design-mode-script.ts'
 // in-process against a view Orchestra owns.
 //
 // Isolation: the registry keys every panel by `wsId`, and each panel holds an
-// ordered list of tabs (one native view each) with one ACTIVE tab. The agent's
-// browser tools (agent-browser-tools.ts) close over their session's `wsId` and
-// route through the registry, so a workspace's agent can only drive that
+// ordered list of tabs (one native view each) with one ACTIVE tab. The host
+// resolves the panel of an `orchestra browser` call from {workspace id, session key}
+// (ADR 0008) and routes it through the registry, so a workspace's agent can only drive that
 // workspace's panel — multiple workspaces each get an independent browser by
 // construction. Every primitive acts on the active tab unless handed a `tabId`.
 //
@@ -1216,7 +1216,7 @@ export function showPanel(wsId: string): BrowserPanelState {
   setPopupWindowsVisible(wsId, true);
   const win = getWindow?.();
   // Never composite a view that has never been positioned: an agent can call
-  // this (via its MCP browser tools) while the renderer's pane is closed, so no
+  // this (an `orchestra browser` call) while the renderer's pane is closed, so no
   // placeholder has been measured and the view would land at a garbage rect
   // over the app. Defer the attach to the first setBounds.
   if (!panel.bounded) {
@@ -1385,8 +1385,8 @@ export function destroyPanel(wsId: string): void {
 // Agent driving layer — CDP commands, sent through the CDP proxy's debugger seat.
 // ---------------------------------------------------------------------------
 //
-// These are the primitives the agent's browser tools (agent-browser-tools.ts)
-// and design mode call. They operate on the SAME view the user sees, so the
+// These are the primitives design mode calls (and, until #399 removed them, the
+// agent's `mcp__browser__*` tools; the other primitives are now test-only). They operate on the SAME view the user sees, so the
 // agent and the user share one surface. None of them attaches a debugger: the
 // proxy (`browser-cdp-host.ts`) is the only attacher (#398, ADR 0009) and every
 // command below rides a lease on its attach (`cdpSeat`).

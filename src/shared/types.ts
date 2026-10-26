@@ -171,8 +171,9 @@ export interface Workspace {
    *  own default (`high`). */
   sdkEffort?: AgentEffortLevel;
   /** The profil navigateur attached to this workspace's browser panel (#400, ADR 0010): all its tabs use that profile's
-   *  persistent partition. Absent = navigation éphémère (the default). Set ONLY by the human-facing IPC
-   *  (`browserProfileAttach`) — no CLI/agent path writes it. A dangling id (profile deleted) reads as ephemeral. */
+   *  persistent partition. Absent = navigation éphémère (the default). Set by the human-facing IPC
+   *  (`browserProfileAttach`), and at CREATION only by an agent spawn handing on the profile its spawner holds (#401); nothing attaches
+   *  one to an existing workspace but the human. A dangling id (profile deleted) reads as ephemeral. */
   browserProfileId?: BrowserProfileId;
   /** Last Claude Agent SDK session id for this workspace's structured session.
    *  Captured from the SDK stream and persisted so re-opening the structured view
@@ -2252,9 +2253,9 @@ export interface BackgroundTask {
 // forward) AND the agent drives via native Electron `webContents.debugger`
 // (in-process CDP) — no external Chrome, no debug port, no puppeteer. Modeled
 // on the Claude Code desktop app's "Browser pane". One independent browser per
-// workspace: the main-process registry keys every view by `wsId`, and the
-// agent's browser tools close over their own session's `wsId`, so a workspace's
-// agent can only ever drive that workspace's panel.
+// workspace: the main-process registry keys every view by `wsId`, and the host
+// resolves the panel of an `orchestra browser` call from {workspace id, session
+// key}, so a workspace's agent can only ever drive that workspace's panel.
 
 /** Id of one browser tab within a workspace's panel. Minted by main per
  *  workspace (`t1`, `t2`, …) and never reused while the main process lives, so

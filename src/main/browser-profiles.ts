@@ -42,6 +42,9 @@ export interface BrowserProfilesService {
   remove(id: unknown): Promise<BrowserProfileResult>;
   /** `profileId === null` detaches (navigation éphémère). */
   assign(wsId: unknown, profileId: unknown): Promise<BrowserProfileResult>;
+  /** Profiles whose delete is RUNNING (set when it starts on the serial chain, cleared when it ends — ok, refused or thrown). Read-only: #401's spawn asks it
+   *  at the record build so it never hands a worker a profile whose carriers this delete already scanned. */
+  deleting(): BrowserProfileId[];
 }
 
 export function createBrowserProfilesService(deps: BrowserProfilesDeps): BrowserProfilesService {
@@ -54,6 +57,18 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
     return run;
   };
 
+  const deleting = new Set<BrowserProfileId>();
+  /** Marks `id` as deleting for the whole run of `fn` (the flag is up in the SAME synchronous turn as `fn`'s carrier scan, so no record can slip between). */
+  const whileDeleting = async <T>(id: unknown, fn: () => Promise<T>): Promise<T> => {
+    const profileId = id as BrowserProfileId;
+    deleting.add(profileId);
+    try {
+      return await fn();
+    } finally {
+      deleting.delete(profileId);
+    }
+  };
+
   const refuse = (reason: BrowserProfileRefusal, message: string): BrowserProfileResult => ({
     ok: false,
     reason,
@@ -63,6 +78,8 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
 
   return {
     list: () => deps.getProfiles(),
+
+    deleting: () => [...deleting],
 
     create: (name) =>
       serial(async () => {
@@ -89,7 +106,7 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
       }),
 
     remove: (id) =>
-      serial(async () => {
+      serial(() => whileDeleting(id, async () => {
         const profiles = deps.getProfiles();
         const d = decideDelete({ profiles, workspaces: deps.workspaces(), profileId: id as BrowserProfileId });
         if (!d.ok) return refuse(d.reason, d.message);
@@ -123,7 +140,7 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
         // 3b. only then is the profile forgotten.
         await deps.setProfiles(profiles.filter((p) => p.id !== profileId));
         return { ok: true, profiles: deps.getProfiles() };
-      }),
+      })),
 
     assign: (wsId, profileId) =>
       serial(async () => {

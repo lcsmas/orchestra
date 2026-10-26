@@ -41,7 +41,7 @@ const blog = scoped('browser-cli');
 /** How long a tab keeps the agent's CDP state after its last session left (`ORCHESTRA_CDP_RELEASE_GRACE_MS` overrides it for rigs). */
 const RELEASE_GRACE_MS = Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) > 0 ? Number(process.env.ORCHESTRA_CDP_RELEASE_GRACE_MS) : 15_000;
 
-/** A lease command that has not settled by now is abandoned and its lease given back (the legacy tools' own `withTimeout`s are 10 s; this is the backstop for any command). */
+/** A lease command that has not settled by now is abandoned and its lease given back (the pre-CLI primitives' own `withTimeout`s are 10 s; this is the backstop for any command). */
 const LEASE_SEND_MAX_MS = 120_000;
 
 const toCdpTab = (t: BrowserTabInfo): CdpTab => ({ id: t.id, url: t.url, title: t.title, active: t.active, openedBy: t.openedBy });
@@ -73,7 +73,7 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       if (!wc.getURL() && !wc.isLoading()) {
         await Promise.race([wc.loadURL('about:blank').catch(() => undefined), new Promise((r) => setTimeout(r, 5000))]);
       }
-      // The proxy is the ONLY attacher (#398): design mode and the legacy tools lease this same attach (`attachLease`). The seat
+      // The proxy is the ONLY attacher (#398): design mode and the pre-CLI primitives lease this same attach (`attachLease`). The seat
       // shares it by refcount; the last holder leaving starts the grace period, then the agent's overrides are reset and it detaches.
       const live = bp.tabContents(wsId, tabId);
       if (!live) throw new Error(`browser tab ${tabId} has no live view`);
@@ -238,7 +238,7 @@ export async function disposeAllEndpoints(): Promise<void> {
   }
 }
 
-// ── in-process access (#398): design mode + the legacy tools ride the proxy's attach ──────────
+// ── in-process access (#398): design mode + the pre-CLI primitives ride the proxy's attach ──────────
 
 async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpTabChannel; release(): void }> {
   // Same tick as `ensureEndpoint`'s `ensurePanel`: a panel destroyed an instant ago (archive/delete) must not be rebuilt for a late poll.

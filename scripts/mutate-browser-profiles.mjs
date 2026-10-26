@@ -202,7 +202,8 @@ const MUTANTS = [
   [PURE, 'a malformed id reaches a partition name', 'if (!isBrowserProfileId(id) || seen.has(id)) continue;', 'if (seen.has(id as string)) continue;'],
   [PURE, 'a repeated id is kept twice', 'if (!isBrowserProfileId(id) || seen.has(id)) continue;', 'if (!isBrowserProfileId(id)) continue;'],
   // --- wiring: an agent surface reaching a profile operation, the generic table serving a write, no module-scope init ---
-  ['src/main/agent-browser-tools.ts', 'an MCP browser tool can re-profile a panel', "import * as bp from './browser-panel';", "import * as bp from './browser-panel';\nvoid bp.reprofilePanel;"],
+  // the in-process MCP browser tools (agent-browser-tools.ts) were removed by #399; the same "an agent surface re-profiles a panel" mutant now targets the CDP host, which `orchestra browser` reaches the panel through
+  ['src/main/browser-cdp-host.ts', 'the agent CDP host can re-profile a panel', "import * as bp from './browser-panel.ts';", "import * as bp from './browser-panel.ts';\nvoid bp.reprofilePanel;"],
   ['src/main/hooks-server.ts', 'a socket route can attach a profile', "const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : 4096;", "const maxBytes = route === '/spawn' || route === '/message' || route === '/profileAttach' ? 1_048_576 : 4096;"],
   ['src/main/api-handlers.ts', 'the generic table serves a profile write', "  browserTabClose: 'browser:tabClose',", "  browserTabClose: 'browser:tabClose',\n  browserProfileAttach: 'browser:profileAttach',"],
   ['src/main/index.ts', 'the human wiring is never installed', 'initBrowserProfiles(() => mainWindow?.webContents.id ?? null);', ''],

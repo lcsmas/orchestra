@@ -102,7 +102,10 @@ export interface SessionBudgetReport {
   /** Instrument facts proving the SUBJECT mounted (a vacuous 0 must not pass). */
   /** `firstModelRequestMcpTools`: distinct fixture `mcp__<srv>__<tool>` names in the main request — as tool defs or, since CLI
    *  2.1.310, the deferred ToolSearch listing (the request then carries ~13 tools). */
-  subject: { firstModelRequestTools: number; firstModelRequestMcpTools: number; firstModelRequestBytes: number; markersSeen: string[]; mcpServersConnected: number; toolsAtInit: number };
+  subject: { firstModelRequestTools: number; firstModelRequestMcpTools: number; firstModelRequestBytes: number; markersSeen: string[]; mcpServersConnected: number; toolsAtInit: number;
+    /** #399: what the session loaded (`session/init`) and what the model was sent, restricted to the removed in-process `browser` MCP server.
+     *  `observed` = the init event AND the main request were both seen (else "none" is a vacuous 0). */
+    browserMcp?: { observed: boolean; initTools: string[]; initServers: string[]; requestNames: string[] } };
 }
 
 /** Sentinels the fixture plants and the fake API greps for in the FIRST model request body — proof the
@@ -159,6 +162,9 @@ export const SESSION_BUDGETS = Object.freeze({
     /** Refused attempts to reach a host OUTSIDE the fake API BEFORE the main request starts, at most N per `host:port`
      *  (the CLI's AND the app process's); an unlisted host is allowed 0. */
     startupEgressAttempts: Object.freeze({ 'api.anthropic.com:443': 3 } as Record<string, number>),
+    /** #399: agents drive the browser through `orchestra browser` (a skill), so a fresh session loads NO `browser` MCP server, lists NO
+     *  `mcp__browser__*` tool at init and the first model request names none. Counted separately for the three places it would show. */
+    browserMcp: 0,
   }),
 });
 
@@ -241,6 +247,15 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
   // Instrument checks: the subject really was a heavy, mounted session with a first reply.
   const f = report.fixture;
   const s = report.subject;
+  {
+    const bm = s?.browserMcp;
+    verdicts.push(flagVerdict('instrument.browserMcpObserved', !!bm?.observed, 'session/init and the main model request were both inspected for the browser MCP server',
+      'the runner did not report a browserMcp observation (no session/init event or no main request): "no browser tool" would be a vacuous 0'));
+    const bctx = `a fresh session must not carry the removed in-process browser MCP server (#399): init tools [${(bm?.initTools ?? []).join(', ')}], init servers [${(bm?.initServers ?? []).join(', ')}], names in the first model request [${(bm?.requestNames ?? []).join(', ')}]`;
+    for (const [k, list] of [['initTools', bm?.initTools], ['initServers', bm?.initServers], ['requestNames', bm?.requestNames]] as const) {
+      verdicts.push(budgetVerdict(`session.beforeFirstReply.browserMcp.${k}`, 'max', b.browserMcp, list?.length ?? 0, bctx));
+    }
+  }
   // F1: egress containment is part of the measurement; F4: a run that raised is never a pass.
   const weakOk = report.containmentOptOut === true;
   verdicts.push(flagVerdict('instrument.containment', report.containment === 'netns+pidns' || weakOk,

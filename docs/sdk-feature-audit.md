@@ -5,7 +5,7 @@ Audited 2026-08-24 on branch `bump-anthropic-sdk-check`. Installed SDK: **0.3.21
 Latest npm: **0.3.241** (2026-08-22). Ground truth for the 0.3.216 surface is the installed
 `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` (7,087 lines); Orchestra's consumption
 was enumerated from `src/main/agent-sdk.ts` (2,810 lines, read end-to-end),
-`src/main/agent-browser-tools.ts`, and `src/shared/agent-events.ts` (the normalizer).
+and `src/shared/agent-events.ts` (the normalizer). (`src/main/agent-browser-tools.ts` was also read when this audit was written; removed by #399.)
 
 ## TL;DR
 
@@ -19,8 +19,7 @@ was enumerated from `src/main/agent-sdk.ts` (2,810 lines, read end-to-end),
 
 ## What Orchestra USES today (baseline)
 
-**Options passed to `query()`** (agent-sdk.ts:953–1067): `mcpServers` (in-process browser
-server), `cwd`, `includePartialMessages`, `agentProgressSummaries`, `settingSources`,
+**Options passed to `query()`** (agent-sdk.ts:953–1067): `cwd`, `includePartialMessages`, `agentProgressSummaries`, `settingSources`,
 `permissionMode`, `allowDangerouslySkipPermissions`, `canUseTool`, `env`,
 `pathToClaudeCodeExecutable`, `spawnClaudeCodeProcess` (keeper), `model`, `effort`,
 `resume`, `resumeSessionAt`, `systemPrompt` (preset+append), `enableFileCheckpointing`,
@@ -33,7 +32,7 @@ server), `cwd`, `includePartialMessages`, `agentProgressSummaries`, `settingSour
 **undocumented** methods typed locally: `enableRemoteControl` (2054–2056, 2107) and
 `mcpAuthenticate` (2432, 2497).
 
-**Top-level exports used**: `createSdkMcpServer` + `tool` (agent-browser-tools.ts:15–28).
+**Top-level exports used**: `query` (loaded by `loadSdk`). (`createSdkMcpServer` + `tool` were used by agent-browser-tools.ts until #399 removed it.)
 
 **Message kinds handled** by `normalizeSdkMessage` (agent-events.ts:501–820): `system/init`,
 `stream_event`, `assistant`, `user`, `result`, `auth_status`, `rate_limit_event`, `status`,
@@ -136,7 +135,7 @@ Relevant to Orchestra (changelog version in parens):
 | `command_lifecycle` state `refused` for declined cross-session messages | 0.3.238 | Sender-side feedback if Orchestra adopts native cross-session messaging (`command_lifecycle` is not in the 0.3.216 sdk.d.ts at all — 0 matches) |
 | `api_error_status: 529` on repeated-overload results (and 429/529 mid-stream, 0.3.218) | 0.3.223 | Orchestra already threads `api_error_status` → `apiErrorStatus` (agent-events.ts:634); after the bump overload terminations become structurally detectable (auto-retry / backoff UI) |
 | `resumeDropsTurn` option | 0.3.223 | Safety check for `sdkRewind`'s truncating resume — CLI refuses if the cut would drop more than intended |
-| External `mcpServers` connected before first turn — FIX | 0.3.221 | Guards against tool-calls-as-literal-text; Orchestra's browser server is an in-process SDK server so likely unaffected, but future external servers via `setMcpServers` benefit |
+| External `mcpServers` connected before first turn — FIX | 0.3.221 | Guards against tool-calls-as-literal-text; Orchestra passes no `mcpServers` of its own since #399 (the in-process browser server was removed), but future external servers via `setMcpServers` benefit |
 | Notification hooks fire for pending permission prompts on the SDK path | 0.3.233 | Parity for needs-input notification if SDK hooks are adopted |
 | `terminal_slash_commands` on init | 0.3.229 | Hide terminal-only commands from composer autocomplete if `supportedCommands()` is adopted |
 | Cost fields: US-inference 1.1× multiplier in `total_cost_usd` (0.3.239); `canonicalModel`/`provider` in `modelUsage` (0.3.218); `usage` vs `modelUsage` semantics documented (0.3.223) | 0.3.218–239 | More accurate `costUsd` in TurnFooter; `modelUsage` (cumulative) is the documented field for cost accounting — relevant to the known cumulative-usage gotcha (memory: SDK result.usage is cumulative) |
@@ -193,7 +192,7 @@ mode), `suppressOriginalPrompt` (0.3.238), prompt-suggestion near-limit fix (0.3
 
 - Installed SDK version is 0.3.216 — `node -e "require('./node_modules/@anthropic-ai/claude-agent-sdk/package.json').version"` → `0.3.216`; `package.json` pins `0.3.216`.
 - Full `Options` field list (63 fields) — extracted from sdk.d.ts:1295–2036; full `Query` method list — read verbatim at sdk.d.ts:2252–2558.
-- Orchestra's used option set and Query-method set — `src/main/agent-sdk.ts` read end-to-end (options object at 953–1067; each method call cited by line above); the only other SDK importer is `src/main/agent-browser-tools.ts` (`createSdkMcpServer` + `tool`, lines 7–28), confirmed by `grep -rn "claude-agent-sdk" src/` (3 files incl. a comment in types.ts:846).
+- Orchestra's used option set and Query-method set — `src/main/agent-sdk.ts` read end-to-end (options object at 953–1067; each method call cited by line above); the only other SDK importer at the time was `src/main/agent-browser-tools.ts` (`createSdkMcpServer` + `tool`; removed by #399), confirmed by `grep -rn "claude-agent-sdk" src/` (3 files incl. a comment in types.ts:846).
 - Handled message kinds — case labels enumerated from `src/shared/agent-events.ts` (lines 273–818); unhandled kinds confirmed by `grep "command_lifecycle\|hook_started\|tool_progress\|files_persisted\|tool_use_summary\|memory_recall\|prompt_suggestion\|session_state_changed\|commands_changed\|conversation_reset\|elicitation"` → 0 matches in agent-events.ts/agent-sdk.ts.
 - No SDK `hooks` option, no `onUserDialog`/`onElicitation`/`includeHookEvents`/`outputFormat`/`fallbackModel`/`allowedTools` anywhere in src (grep, 0 hits, with positive controls matching in the same batches).
 - `bypass_permissions_disabled` and `ExitReason`: 0 hits in src/ (positive control passed).

@@ -564,7 +564,7 @@ export interface OrchestraAPI {
 
   // --- Embedded browser panel ---
   // A per-workspace in-window browser (an Electron WebContentsView) the user
-  // drives manually AND the agent drives via its browser tools. The renderer
+  // drives manually AND the agent drives with `orchestra browser`. The renderer
   // owns opening/positioning; navigation state pushes back on `onBrowserEvent`.
   /** Show the panel for `wsId` (creating the native view on first call) and
    *  return its current state. Hides any other workspace's panel. */

@@ -192,6 +192,13 @@ const report = {
     markersSeen: mainModel?.marks ?? [],
     mcpServersConnected: (initEvent?.mcpServers ?? []).filter((s) => fx.mcpServerNames.includes(s.name) && s.status === 'connected').length,
     toolsAtInit: initEvent?.tools?.length ?? 0,
+    // #399: what the session itself says it loaded (system/init) and what the model was sent — no `browser` MCP server, no `mcp__browser__*` tool
+    browserMcp: {
+      observed: initEvent !== null && mainModel !== undefined,
+      initTools: (initEvent?.tools ?? []).filter((n) => /^mcp__browser__/.test(n)),
+      initServers: (initEvent?.mcpServers ?? []).map((m) => m.name).filter((n) => n === 'browser'),
+      requestNames: (mainModel?.mcpToolNames ?? []).filter((n) => n.startsWith('mcp__browser__')),
+    },
   },
   timeline: { initMs: tInit === null ? null : Math.round(tInit), turnEndMs: tTurnEnd === null ? null : Math.round(tTurnEnd) },
   ...(secondTurn ? { secondTurn: (() => {

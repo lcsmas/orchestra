@@ -1027,7 +1027,7 @@ export const apiHandlers: ApiHandlerTable = {
 
   // --- Embedded browser panel (see browser-panel.ts) ---
   // The renderer opens/positions the native WebContentsView; navigation can also
-  // come from the agent's browser tools, which reach the same panel directly.
+  // come from the agent's `orchestra browser` calls, which reach the same panel through the CDP proxy.
   browserShow: async (wsId: string): Promise<BrowserPanelState> => browserPanel.showPanel(wsId),
   browserHide: async (wsId: string): Promise<void> => browserPanel.hidePanel(wsId),
   browserNavigate: (wsId: string, url: string): Promise<BrowserPanelState> =>

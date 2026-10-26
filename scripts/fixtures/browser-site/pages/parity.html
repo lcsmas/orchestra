@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Parity fixture</title>
+<style>body{margin:0;height:4200px;font:16px sans-serif}#coord{position:absolute;left:240px;top:330px;width:160px;height:48px;background:#2b6cb0;color:#fff}#far{position:absolute;left:20px;top:4000px}</style></head>
+<body>
+<h1>Parity fixture</h1>
+<p id="out">idle</p>
+<button id="go" onclick="document.getElementById('out').textContent='clicked'">Go</button>
+<label>Name <input id="name"></label>
+<label>Message <textarea id="msg"></textarea></label>
+<p id="evlog"></p>
+<label>Typed <input id="typed"></label>
+<p id="keys"></p>
+<p id="tin"></p>
+<button id="coord" onclick="document.getElementById('out').textContent='coord:'+Math.round(event.clientX)+','+Math.round(event.clientY)">Coord target</button>
+<a id="home" href="/index.html">Home</a>
+<div id="more" style="position:absolute;top:520px;left:20px;width:560px">
+<label>Controlled <input id="ctl"></label> <span id="ctlstate"></span><br>
+<input type="checkbox" id="chk"><label for="chk">Agree</label>
+<label>Country <select id="sel"><option value="fr">France</option><option value="de">Germany</option></select></label><br>
+<button id="dbl">Double</button> <span id="dblout"></span> <span id="hovout"></span>
+<div id="box" style="height:80px;overflow:auto;border:1px solid #888"><div style="height:600px">Scrollable box</div></div>
+</div>
+<p id="far">Far down the page</p>
+<script>
+// events a framework listens to, per field (order matters: fill must fire input, and a later Tab must fire change)
+function log(id, ev) { document.getElementById('evlog').textContent += id + ':' + ev + ';'; }
+for (var id of ['name', 'msg']) for (var ev of ['input', 'change']) document.getElementById(id).addEventListener(ev, log.bind(null, id, ev));
+document.getElementById('typed').addEventListener('input', function () { document.getElementById('tin').textContent += 'in;'; });
+document.getElementById('typed').addEventListener('keydown', function (e) { document.getElementById('keys').textContent += e.key + ','; });
+// a React-style controlled input: its value tracker ignores an 'input' event whose value was set through the INSTANCE setter (what React does)
+(function () {
+  var inp = document.getElementById('ctl'), desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'), tracked = '';
+  Object.defineProperty(inp, 'value', { configurable: true, get: function () { return desc.get.call(this); }, set: function (v) { tracked = '' + v; desc.set.call(this, v); } });
+  inp.addEventListener('input', function () { var cur = desc.get.call(inp); if (cur !== tracked) { tracked = cur; document.getElementById('ctlstate').textContent = 'state:' + cur; } });
+})();
+document.getElementById('dbl').addEventListener('dblclick', function () { document.getElementById('dblout').textContent = 'dbl'; });
+document.getElementById('dbl').addEventListener('mouseover', function () { document.getElementById('hovout').textContent = 'hovered'; });
+</script>
+</body></html>

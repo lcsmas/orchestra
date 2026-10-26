@@ -94,7 +94,6 @@ import { interleaveStartErrors } from '../shared/start-errors.ts';
 import { interleaveMemNotices, makeMemNotice, type MemNoticeEntry } from '../shared/mem-notice.ts';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { clearHibernated } from './hibernation.ts';
-import { buildBrowserToolServer } from './agent-browser-tools';
 import {
   normalizeSdkMessage,
   makePermissionRequest,
@@ -1815,12 +1814,6 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
   // (the same binary the user's shell runs from PATH) instead; only fall
   // back to the SDK default when none is on PATH (dev-friendly).
   const claudeBin = resolveClaudeBinary(sdkEnv);
-  // In-process browser tools: give the agent an embedded Browser pane it can
-  // drive (navigate/read_page/screenshot/click/type), scoped to THIS wsId so it
-  // can only touch its own workspace's panel. Built via the SDK's
-  // createSdkMcpServer (no subprocess/port). Local (non-remote) sessions only —
-  // a sandboxed/remote agent has no WebContentsView on this host to drive.
-  const browserServer = remote ? null : await buildBrowserToolServer(wsId);
   // Per-session debug black box (#177): every LOCAL session — HEADLESS included
   // — writes the CLI's verbose debug/stderr to a file under
   // `<ORCHESTRA_HOME>/logs/sessions/`, which OUTLIVES workspace deletion (unlike
@@ -1840,7 +1833,6 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // #177 — set BEFORE the rest so a future edit can't accidentally drop it
       // behind a conditional. `debugFile` implicitly enables debug mode.
       ...(debugFile ? { debugFile } : {}),
-      ...(browserServer ? { mcpServers: { browser: browserServer } } : {}),
       cwd: remote ? '/workspace' : ws.worktreePath,
       includePartialMessages: true,
       // Emit periodic AI-generated one-line progress summaries for running
@@ -4880,9 +4872,9 @@ export async function sdkMcpToggle(
  *  settings changes — the ONLY reason this function exists — are exactly the
  *  class `setMcpServers` cannot see. Swapping it in would turn the popover's ↻
  *  into a silent no-op for its whole purpose, with no error and no failing
- *  test. Orchestra's only dynamically-added server is the in-process `browser`
- *  one (see the `mcpServers` option at the query() launch site), which is never
- *  what ↻ is for — so `setMcpServers` has nothing useful to do here today.
+ *  test. Orchestra adds no MCP server of its own to a session (the in-process
+ *  `browser` one was removed by #399: agents use `orchestra browser`), so
+ *  `setMcpServers` has nothing useful to do here today.
  *  Guarded by src/main/mcp-refresh-mechanism.test.ts. */
 export async function sdkMcpRefresh(wsId: string): Promise<AgentMcpServer[]> {
   const live = sessions.get(wsId);

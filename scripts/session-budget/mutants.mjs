@@ -28,6 +28,12 @@ export const MUTANTS = {
     find: /(  void consume\(session\);\n)(?=(?:  \/\/[^\n]*\n)*  return session;\n)/g,
     replace: '$1  void session.q.getContextUsage().catch(() => {});\n',
   },
+  // #399 re-added: the removed in-process `browser` MCP server (one `navigate` tool is enough to show at session/init and in the model request).
+  'browser-mcp-registered': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(  session\.q = query\(\{\n    prompt: promptStream\(session\),\n    options: \{\n)/g,
+    replace: "  const { createSdkMcpServer: __csms, tool: __tool } = (await import('@anthropic-ai/claude-agent-sdk')) as any;\n  const __sbBrowser = __csms({ name: 'browser', version: '1.0.0', tools: [__tool('navigate', 'x', {}, async () => ({ content: [{ type: 'text', text: 'ok' }] }))] });\n$1      mcpServers: { browser: __sbBrowser },\n",
+  },
   // #317 re-added: the pre-fix turn-end getContextUsage() (git show 743f9ab0:src/main/agent-sdk.ts, consume() result branch).
   'turn-end-context-read': {
     file: '/src/main/agent-sdk.ts',

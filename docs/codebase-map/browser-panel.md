@@ -1,53 +1,57 @@
 # Embedded browser panel
 
 A per-workspace in-window browser — an Electron `WebContentsView` overlaid on
-the React renderer — that **both** the user drives manually (URL bar, back /
-forward, reload) **and** the agent drives programmatically (navigate, read the
-page, screenshot, click, type). It mirrors the Claude Code desktop app's
-"Browser pane": that app's bundle carries the comment *"Adapted from
-chrome-devtools-mcp patterns but using Electron's internal `webContents.debugger`
-API instead of an external CDP connection"* — Orchestra does exactly that, so
-there is **no `--remote-debugging-port`, no spawned Chromium, no puppeteer, and
-no MCP subprocess**. Everything runs in-process against a view Orchestra owns.
+the React renderer — that **both** the user drives manually (URL bar, tabs, back /
+forward, reload) **and** the agent drives from Bash with `orchestra browser <cmd>`
+(snapshot with element refs, click, fill, press, wait, screenshot, tabs …). There
+is **one** agent surface: the in-process `mcp__browser__*` MCP server of the first
+version was removed by #399 (spec #388) once the CLI passed the same rig, and a
+bundled skill (`orchestra-browser`) documents the CLI for agents. Everything runs
+in-process against a view Orchestra owns: no spawned Chromium, no puppeteer, no
+app-wide `--remote-debugging-port`; the only CDP surface is the per-workspace
+loopback proxy described below.
 
 ## Why this shape
 
-- **Native `webContents.debugger` (in-process CDP), not an external MCP.** The
-  agent's browser tools call CDP commands (`Input.dispatchMouseEvent`,
-  `Runtime.evaluate`, …) on the panel view's own debugger, and screenshot via
-  the native `webContents.capturePage()`. No debug port means no security
-  surface and no target-ambiguity problem (an app-wide debug port would expose
-  Orchestra's own renderer as a CDP target too). **Since #398 the CDP proxy is
-  the ONLY debugger attacher** (`browser-cdp-seat.ts`, see *Single attacher*
-  below): `browser-panel.ts` holds no debugger and runs every command through a
-  proxy lease.
+- **Native `webContents.debugger` (in-process CDP) behind a per-workspace loopback
+  proxy, not an app-wide debug port.** An app-wide port would expose Orchestra's own
+  renderer as a CDP target too. The proxy (`browser-cdp-proxy.ts`, ADR 0009) serves
+  only the workspace's tabs, refuses any `Origin` / foreign `Host`, and puts an
+  unguessable token in every path; the off-the-shelf `agent-browser` client talks to
+  it, so agents get the full automation surface (wait, press, fill, upload, dialogs,
+  cookies, tabs …) instead of 8 hand-written tools. **Since #398 the CDP proxy is the ONLY debugger attacher** (`browser-cdp-seat.ts`, see *Single attacher* below): `browser-panel.ts` holds no debugger and runs every command through a proxy lease.
 - **One independent browser per workspace, by construction.** `browser-panel.ts`
   keys every panel by `wsId` (a panel = an ordered list of tabs, each its own
-  `WebContentsView`, with one ACTIVE tab — see *Tabs registry* below); the
-  agent's browser MCP server is built per-session in `agent-sdk.ts` and each tool
-  closes over its own `wsId`. So a workspace's agent can only ever drive that
-  workspace's panel — multiple workspaces get fully isolated browsers.
+  `WebContentsView`, with one ACTIVE tab — see *Tabs registry* below). A CLI call
+  carries `{workspace id, ORCHESTRA_SESSION_KEY}` and the HOST resolves the panel
+  (ADR 0008): no argument names another workspace, so a workspace's agent can only
+  ever drive that workspace's panel.
 
 ## Data path
 
 ```
-Agent (SDK query) ── mcp__browser__navigate / read_page / screenshot / click …
-   │  in-process SDK MCP server (createSdkMcpServer)      src/main/agent-browser-tools.ts
+Agent (Bash) ── orchestra browser snapshot -i | click @e2 | fill @e3 "x" | screenshot …   src/cli/index.ts  case 'browser'
+   │  planBrowserCommand (allowlist, refused flags) ─► POST /browser {id, key} on the hooks socket   src/shared/browser-cli.ts
    ▼
-browser-panel.ts primitives (navigate / capture / evaluate / clickAt …)
-   │  CDP commands = a proxy lease (cdpSeat.send); capturePage() for screenshots
-   ▼
-WebContentsView (contentView.addChildView)               src/main/browser-panel.ts
+dispatchBrowserRequest ── ensureEndpoint(wsId) ──► {binary, wsUrl, env}            src/main/browser-cdp-host.ts
+   ▼  the CLI runs  agent-browser --cdp <wsUrl> <cmd>   (daemon HOST-owned)
+loopback CDP proxy  ws://127.0.0.1:<port>/<token>/devtools/browser/<id>            src/main/browser-cdp-proxy.ts · src/shared/cdp-proxy-core.ts
+   ▼  CdpPanelPort (makePanelPort — the ONLY code mapping CDP onto the panel)
+browser-panel.ts tabs registry ──► WebContentsView (the debugger is attached ONLY by the proxy seat, #398)
    │  did-navigate / page-title-updated / did-*-loading
    ▼
 platform.broadcast('browser:event', wsId, BrowserPanelState)
    ▼
-preload onBrowserEvent → BrowserPanel URL bar / tab       src/renderer/components/BrowserPanel.tsx
+preload onBrowserEvent → BrowserPanel URL bar / tab strip / auto-open of the pane   src/renderer/components/BrowserPanel.tsx · App.tsx
 
-User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Back,…}(wsId)
+User ── URL bar / tab strip / nav buttons ──► window.orchestra.browser{Navigate,Back,…}(wsId)
    │  IPC (browser:*), same handler table                 src/main/api-handlers.ts
    ▼  drive the SAME WebContentsView — one surface, shared by user + agent
 ```
+
+A new session loads **no** browser MCP server and lists no `mcp__browser__*` tool: `agent-sdk.ts` passes no `mcpServers` to `query()`
+(gate: `scripts/verify-answerable-wiring.mjs` on the real launch-site options, must-FAIL `scripts/mutate-no-browser-mcp.mjs`; and the
+session-budget suite's `session.beforeFirstReply.browserMcp.*` on a real session's `session/init` + first model request — `session-budget.md`).
 
 ## Key files
 
@@ -57,29 +61,28 @@ User ── URL bar / nav buttons ──► window.orchestra.browser{Navigate,Ba
   Owns navigation (`navigate`/`goBack`/`goForward`/`reload`), visibility
   (`showPanel`/`hidePanel` — only the active workspace's panel composits at a
   time), bounds sync (`setBounds` — the native view is positioned over the
-  renderer's `.browser-pane` placeholder rect), and the **agent-driving
-  primitives** over CDP commands leased from the proxy (`cdp()` → `cdpSeat`, #398): `capture` (JPEG via `capturePage`),
-  `evaluate` (`Runtime.evaluate`), `readPage` (in-page DOM walk → `[ref_N]`
-  accessibility outline), `clickAt`/`clickRef` (`Input.dispatchMouseEvent`),
-  `typeText`/`formInput`, `scrollBy`. `initBrowserPanels(accessor)` is called
-  once from `index.ts` with the live main-window accessor. Reuses
-  `login-browser.ts`'s session-partition + UA-normalization + context-menu
-  pattern.
+  renderer's `.browser-pane` placeholder rect), and the **debugger primitives**
+(CDP commands leased from the proxy — `cdp()` → `cdpSeat`, #398): `capture` (JPEG via `capturePage`), `evaluate`
+(`Runtime.evaluate`), and the pre-CLI agent primitives `readPage` (in-page DOM walk →
+`[ref_N]` outline), `clickAt`/`clickRef`, `typeText`/`formInput`, `scrollBy`,
+`revealForAgent`. Since #399 NO production caller drives the last group (the
+`mcp__browser__*` tools were their only users; the CLI goes through
+`browser-cdp-host.ts`'s `makePanelPort` and the proxy, which `capture`/`evaluate`
+also serve) — they stay because the registry/harness tests
+(`browser-panel-tabs.test.ts`, `scripts/verify-browser-panel-*.mjs`) use them as probes;
+deleting them is a follow-up. `initBrowserPanels(accessor)` is called
+once from `index.ts` with the live main-window accessor. Reuses
+`login-browser.ts`'s session-partition + UA-normalization + context-menu
+pattern.
 - **`src/main/browser-popups.ts`** (#396) — user-gesture tracker (`trackUserGesture` / `consumeUserGesture`) + the per-workspace registry of popup child windows
   (`registerPopupWindow` / `livePopupWindows` / `closePopupWindows` / `closePopupsOpenedBy` / `setPopupWindowsVisible`); the routing flow itself is `routePopup` in `browser-panel.ts` (see Popups).
 - **`scripts/spike-hidden-view.sh`** (+ `.mjs`, `-main.cjs`) — the #402 hidden-view measurement rig (no app code; see *Hidden-view spike*).
-- **`src/main/agent-browser-tools.ts`** — `buildBrowserToolServer(wsId)` returns
-  an **in-process SDK MCP server** (`createSdkMcpServer` + `tool()`), loaded via
-  a **cached dynamic `import()`** (the SDK is pure-ESM; a static value import
-  would emit `require()` in the CJS main bundle and crash Electron at boot with
-  `ERR_REQUIRE_ESM`). Tools: `navigate`, `read_page`, `screenshot`, `click`,
-  `type`, `form_input`, `evaluate`, `scroll` — all routed through
-  `browser-panel.ts` against the captured `wsId`. Uses `zod` (added as a direct
-  dep, pinned to the SDK's peer version) for the tool input schemas.
-- **`src/main/agent-sdk.ts`** — builds the browser MCP server per local session
-  and passes it into `query({ mcpServers: { browser: … } })` (so the tools
-  appear to the model as `mcp__browser__*`). Skipped for remote/sandbox sessions
-  (no local `WebContentsView` to drive).
+- **`src/shared/browser-skill.ts`** — the bundled `orchestra-browser` skill text (`BROWSER_SKILL`) + `lintBrowserSkill`, which holds every
+  command the text documents to `planBrowserCommand` (usable ones accepted, the "cannot do" list refused). Written into every
+  worktree's `.claude/skills/orchestra-browser/SKILL.md` by `installOrchestraHooks` (`workspaces.ts`) and part of the `HOOKS_VERSION`
+  digest, so already-installed worktrees pick it up on their next spawn. See *Skill + parity rig (#399)* below.
+- **`src/main/agent-sdk.ts`** — registers **no** MCP server for the browser: the launch-site `query()` options carry no `mcpServers`
+  (the first version's `buildBrowserToolServer` / `agent-browser-tools.ts` and the direct `zod` dependency only it used are gone).
 - **`src/renderer/components/BrowserPanel.tsx`** — the renderer chrome: URL bar
   (controlled input, only synced from state when unfocused), back/forward/reload
   buttons, loading spinner, error strip, and a `.browser-holder` placeholder.
@@ -548,6 +551,7 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   `warning-matches-the-cookie-db-sign-in-is-stored-in-clear`; the same holds for `persist:claude-login-*`). Hence the create warning is unconditional and does not depend
   on #389's `SecretsState` (which governs `secrets.json`). Flipping the fuse in `afterPack` is a ONE-WAY change for existing persistent partitions: a separate
   decision (LEAD). A built-app rig must still pass `--password-store=basic` (the human's live keyring is never bound, G10b / incident Q2).
+- **Passed at spawn (#401, spec stories 27-28).** `orchestra spawn --profile <id|name>` hands the SPAWNER's profile to the worker; nothing else does. The pure rule is `decideSpawnProfile` (`shared/spawn-profile.ts`, `spawn-profile.test.ts`): honoured only when the spawning workspace holds that profile (`effectiveProfileId(caller.browserProfileId, store.getBrowserProfiles())`), the caller is the vouched live session of `from` (ADR 0008 session key), and the spawn is not `--detached`; else the worker is still created in navigation éphémère and the CLI warns (refusal text names only the profile the caller holds). The decision runs at the RECORD BUILD (`createWorkspace`'s `profileAtCreation` thunk, after the worktree add) and the id is written straight into the NEW record — no panel exists yet, so the worker's first `ensurePanel` resolves the partition from the record; it never goes through the human-only attach IPC (`browser-profiles-wiring.test.ts` keeps `hooks-server.ts`/CLI profile-op-free; `spawn-profile-wiring.test.ts` pins the spawn path). The profile service (`browser-profiles.ts`) exposes read-only `deleting()` (raised in the same synchronous turn as `remove()`'s carrier scan via `whileDeleting`, cleared in `finally`) which the spawn reads through `spawn-profile-gate.ts`, so a worker is never handed a profile whose delete already scanned its carriers; a delete merely queued behind another op finds the new child in its own scan and detaches it. An agent can neither name a profile its spawner does not hold nor attach one to an EXISTING workspace. `/whoami` shows the held profile only to its vouched self. Proof: `scripts/verify-spawn-profile-host.mjs` (real dispatch, spawn HELD inside `git worktree add` while the parent/profile/session changes), built-app rig `scripts/e2e-spawn-profile.sh` (worker panel `who:` == parent's sid; refused ⇒ `anon`), 59 mutants `scripts/spawn-profile-mutants.mjs`.
 - **Accepted gaps.** (F8) A delete is LOGICAL: the oracle is cookie rows; SQLite free pages / leveldb tombstones / `Network Persistent State` stay on disk unmeasured, and
   nothing reconciles `Partitions/orchestra-profile-*` against the profile list at boot (a lost `store.json` leaves unlisted sign-ins with no UI to delete them).
 - **Tests.** `browser-profile.test.ts`, `browser-profiles.test.ts`, `browser-profiles-ipc.test.ts`, `browser-panel-profiles.test.ts` (REAL panel over a stub
@@ -636,9 +640,8 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
   z-index. Hide it (drive `isActive=false`) whenever an overlay covers the pane
   row; `BrowserPanel` already does this.
 - **A leaked view paints BLACK over the app.** The renderer's `BrowserPanel`
-  hides the view on unmount, but an AGENT can open a panel through its MCP
-  browser tools (`agent-browser-tools.ts` calls `showPanel` directly) with **no
-  renderer component ever mounted** — so there is no React cleanup, and any
+  hides the view on unmount, but an AGENT can open a panel (a CLI call reaches
+  `ensureEndpoint` → `ensurePanel`) with **no renderer component ever mounted** — so there is no React cleanup, and any
   main-side lifecycle event that removes the workspace from the UI must tear the
   panel down explicitly. Missing that on `archiveWorkspace` is what made
   archiving paint a black rectangle over the whole window (fixed; regression
@@ -686,21 +689,21 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
   `Input.insertText` are NOT affected on a view detached after it was shown —
   the #402 spike measured them landing at once (5/5); only `mouseWheel` hangs
   (a never-attached view has no layout: text never lands, a click only with throttling on).
-  A hidden view CAN be made to answer — see *Hidden-view spike*. `Runtime.evaluate` / `loadURL` work fine detached. So `capture`, `clickAt`,
-  `typeText` and `scrollBy` guard with `requireComposited()` (a clear,
-  actionable error naming the tools that DO still work) and every
-  capture/input CDP call is wrapped in `withTimeout` — a hung promise here is
-  an agent tool call that never returns. `navigate`/`read_page`/`evaluate`/
-  `form_input` remain fully usable from a background workspace.
-- The SDK MCP builder must be loaded via dynamic `import()` — a static import of
-  `@anthropic-ai/claude-agent-sdk` crashes the packaged app at boot
-  (`ERR_REQUIRE_ESM`). Verify the emitted bundle has **0**
-  `require("@anthropic-ai/claude-agent-sdk")` and **≥1**
-  `import("@anthropic-ai/claude-agent-sdk")`.
+  A hidden view CAN be made to answer — see *Hidden-view spike*; the product's refusals are
+  UNCHANGED by that finding (lifting them is tracked in #406). `Runtime.evaluate` / `loadURL` work
+  fine detached. So the proxy's `framesError`
+  makes `Input.*` and `Page.captureScreenshot` fail FAST with a clear error naming the
+  commands that DO still work (`snapshot`/`eval`/`get`/`open`/`scroll`/`wait`), and every
+  capture/input CDP call is bounded — a hung promise here is a CLI call that never
+  returns (the legacy `requireComposited()` guard of `capture`/`clickAt`/`typeText`/
+  `scrollBy` is the same rule for the pre-CLI primitives). `fill` is on the refused side
+  (`Input.insertText`); the removed `form_input` set the value through the DOM and worked
+  hidden — the skill gives `eval` as the workaround (parity rig clause
+  `eval-sets-a-field-while-hidden`).
 - `Target.createTarget` is unsupported in Electron, so a CDP client cannot open
   a tab itself — new tabs come from `createTab` (the registry), which the CDP
-  proxy (#395) will expose. Until agent tabs land the agent's `navigate` reuses
-  the one (active) tab.
+  proxy (#395) exposes (`tab new`). Without a tab command the agent's `open` navigates the
+  active tab.
 - Bounds are device-independent pixels relative to the window content; apply
   them **after** the view is added (next animation frame) so the placeholder has
   laid out.
@@ -830,8 +833,8 @@ Not committed (so not re-derivable from the repo): the per-run `late` lists (whi
 ## CDP proxy + `orchestra browser` CLI (#395, ADR 0009)
 
 Agents drive the panel from Bash with `orchestra browser <cmd>` (snapshot, click `@eN`, fill, press, wait, upload,
-dialog, screenshot, cookies/storage, console/network, tabs…). The `mcp__browser__*` tools keep working beside it
-(removed by #399). Spec #388; ledger #405.
+dialog, screenshot, cookies/storage, console/network, tabs…). It is the ONLY agent browser surface: the `mcp__browser__*` tools
+were removed by #399 after the parity rig below passed. Spec #388; ledger #405.
 
 ```
 agent Bash ── orchestra browser click @e2                       src/cli/index.ts  case 'browser'
@@ -844,7 +847,7 @@ agent-browser CLIENT ──unix socket──► agent-browser DAEMON (HOST-owned
    ▼  WebSocket  ws://127.0.0.1:<port>/<token>/devtools/browser/<id>
 startCdpProxy  (Host/Origin/token guard) ──► CdpProxyCore (fake Target.* + /json)    src/main/browser-cdp-proxy.ts · src/shared/cdp-proxy-core.ts
    ▼  CdpPanelPort → browser-panel.ts tabs registry (listTabs/getTab/createTab/activateTab/closeTab, tabContents)
-webContents.debugger.sendCommand(method, params, sessionId)   (one attach per tab, shared with the legacy tools / design mode)
+webContents.debugger.sendCommand(method, params, sessionId)   (one attach per tab, through the proxy seat; design mode shares it)
 ```
 
 - **One loopback proxy per workspace** (`127.0.0.1:0`), created lazily by the first `/browser` call, closed by
@@ -940,7 +943,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   session attaches and passes it as `port.release(tabId, agentTouched)`; the mark is sticky until the seat drops), so design
   mode and the legacy tools alone write NOTHING to the human's page; a holder coming back cancels it; `seatForceDetach` at tab
   destroy via `bp.setTabTeardownHook`; `seatChannel` = the proxy's send/subscribe/onDetach). `makePanelPort.acquire/release` pair with it; the core takes ONE `port.acquire` per tab however many sessions attach at once (single-flight — a raced second acquire used to be released while the tab was held, arming the reset under a live session) and calls `port.release` once, when the last session goes. The app's own callers —
-  design mode and the legacy `mcp__browser__*` tools (`browser-panel.ts` `cdp()`) — never attach: they call `cdpSeat.send` /
+  design mode and the pre-CLI primitives (`browser-panel.ts` `cdp()`) — never attach: they call `cdpSeat.send` /
   `cdpSeat.hold` (registered by `initBrowserCliHost`, `panelCdpSeat` in `browser-cdp-host.ts`), which take an in-process
   **lease** on the workspace proxy (`CdpProxyCore.lease`, refcounted with the WebSocket clients; a lease that outlived a detach
   never decrements a newer attach) and send straight on the tab's channel (no bring-to-front, no screenshot chain: the legacy
@@ -1034,9 +1037,9 @@ discovery and "create target" onto the panel tabs (Electron has no `Target.creat
   appends ` (yours)` / ` (the user's)`; `--json tab list` adds `openedBy` + `closable`.
 - **Refs and tabs:** agent-browser clears its ref map on EVERY tab switch (even back to the tab a ref came from) and a snapshot replaces it, so a
   ref from another tab is `Unknown ref` → `browser_stale_ref`, never a wrong click; its daemon pointer is its own (a user's tab click does not move
-  it), so `click @eN` still lands on the tab the ref came from — and brings it to the front. The LEGACY `mcp__browser__*` path (until #399): `readPage`
+  it), so `click @eN` still lands on the tab the ref came from — and brings it to the front. The pre-CLI primitives (their only production caller, the removed `mcp__browser__*` tools, is gone — #399): `readPage`
   pins `Panel.refTabId`; `clickRef` / `formInput` resolve the pin (an explicit `tabId` wins; a closed pinned tab is an error, not a click on whichever
-  tab is active) and bring the pinned tab to the front first.
+  tab is active) and bring the pinned tab to the front first. Test-only now; they go with the follow-up that prunes them.
 - **agent-browser 0.39.2 vs the faked surface (tab commands, measured with the real binary):** `tab new [--label x] [url]` = `Target.createTarget` +
   attach (prints the url); `tab list` = browser-level only (`Browser.getVersion`; label shows as `[t2] docs <title> - <url>`); `tab <ref>` = tab-level
   `Runtime.evaluate` then `Page.bringToFront`; `tab close [ref]` (no ref = its current tab) = `Target.closeTarget`; refs accept `tN`, a label or a CDP
@@ -1054,3 +1057,37 @@ discovery and "create target" onto the panel tabs (Electron has no `Target.creat
 - **Traps:** the refs arm needs a page where a click ANYWHERE is counted (a wrong-tab click otherwise hides behind "nothing at those coordinates"); any
   ctl/ clause that runs AFTER a refusal depends on agent-browser's post-refusal state (desync) — keep controls before the refusals; `pnpm run test`'s
   `pretest` rebuilds `dist-electron/cli.js`, so never run it while a mutant rig is patching the bundle.
+
+## Skill + parity rig (#399, spec #388 stories 29, 38, 45)
+
+- **Skill** — `orchestra-browser` (`src/shared/browser-skill.ts`, installed per worktree by `installOrchestraHooks`; unit `browser-skill.test.ts`:
+  frontmatter, every documented command accepted by `planBrowserCommand`, every "cannot do" refused, a `must-FAIL` mutant per kind of wrong
+  documentation, the ticket's topics present, `HOOKS_VERSION` hashes it). Its worked example ("Several commands in one call") is run VERBATIM
+  by the rig's `skill` arm.
+- **Parity rig** — `scripts/e2e-browser-cli-parity.sh <app-dir>` (+ `-mutants.sh`; driver `e2e-browser-cli-parity.mjs`, page
+  `scripts/fixtures/browser-site/pages/parity.html`, `skill-flow.html`): the REAL CLI bundle against a BUILT app in its own headless sway, oracle =
+  a second CDP client on the app's own debug port. One arm per removed tool + the old server's documented rules:
+  `navigate` (url, bare host→https, file:, back/forward, unreachable), `read-page` (snapshot outline, text, refs resolve, live page), `screenshot`
+  (png painted, jpeg+quality, default path), `click` (ref, coordinates, miss control), `type`, `form-input` (fill replaces, input/change events),
+  `evaluate`, `scroll`, `load-wait` (`open` returns after the load), `reveal` (a navigation opens the pane for the user; a read-only command does not), `hidden-panel` (the removed server's
+  rule: screenshot/click/mouse/press/type/fill refused fast, nothing queued; open/snapshot/get/eval/wait/scroll/cookies/storage keep working),
+  `skill-profile` (the skill's profile section on the composed build: the human IPC attaches a profile, `cookies get` works, `cookies clear` / a foreign-site `cookies set` are refused, no agent profile verb; the ephemeral control runs `cookies clear` fine), `skill-tabs` (the skill's Tabs section on the composed build: `tab list` marks who opened each tab, a ref does not survive a tab switch, the human's tab cannot be closed — `browser_tab_not_owner`, the agent's own can), `focus` (the skill's "not observed to move the human's keyboard focus", per documented command — an OBSERVATION: nothing reachable in this rig moves the composer's focus, not a compositor click, a CDP click, `Page.bringToFront`, nor a main-process `webContents.focus()`, so the instrument has no positive control and no mutant), `table` (the skill's remaining commands: dblclick, hover, check/uncheck, select, focus, get value, is visible, reload, `snapshot -c/-s/-d`, `--annotate`, `scroll --selector`) and `skill` (the skill exists in a NEW worktree the app just
+  created, byte-equal to `BROWSER_SKILL`; its example completes the fixture flow; the same flow with a label not on the page / without the click / with the old bracket-only ref regex
+  FAILS). `hidden-wait` is the hidden-pane `wait`/`errors` observations on their OWN never-shown workspace (W4): split out of `hidden-panel` because the `frames-guard` mutant makes that arm's refusals hang, which parks the workspace's agent-browser daemon and turned a later visible-pane CONTROL red (INVALID verdict, found by the post-reboot sweep). 14 in-place bundle mutants (`--list`), each restored byte-exact + `cmp`.
+- **Measured differences from the removed tools** (all in the skill): `type` / `keyboard type` = `Input.insertText` exactly like the old `type` (no
+  key events; `press` sends them); `fill` fires `input`, `change` only when the field is left (`press Tab`); `scroll` also works on a hidden pane (the
+  old tool refused); the screenshot is a FILE (`screenshot` prints its path under `$ORCHESTRA_AGENT_TMPDIR`; the agent `Read`s it) instead of an
+  image block; a bare host gets `https://` as before. **Open gap reported to #395 (ledger #405)**: `fill` on a hidden pane is refused (prints `GAP` in the rig, never gates it). The other
+  one the rig found — `screenshot --screenshot-format jpeg out.jpg` mangled by `absolutizeBrowserArgs`, and the `--flag=value` form writing a file named like the flag into the host's cwd — is fixed in #395 (`e7750089`) and is now a regular clause.
+- **Measured by the seat-3 pre-gate (skill sentences were wrong, now fixed + pinned by hidden-panel clauses)**: on a HIDDEN pane that was NEVER on screen `wait "<selector>"` times out (25 s default) for every element without an intrinsic size — that view has `innerWidth` 0,
+  so a text block, a div, `body` or an element still to appear is never "visible"; an `<input>` / `<button>` keeps its intrinsic width and passes; a pane shown once and hidden again keeps its last size (measured on the composed tree: `innerWidth` 639) and the wait works there — an agent cannot tell which it has (`--fn` / `--text` / ms are fine); and `errors` prints blank lines
+  (the page-error text never reaches it, nor `console`; visible pane too). `console` can lag on a hidden pane. Tracked with the other hidden-pane limits in #406.
+- **`open` waits for the load (measured, AC1)**: agent-browser 0.39.2's `open` returns after `Page.loadEventFired`, which the proxy forwards from the debugger
+  (`CdpProxyCore.emit`), like the removed `navigate` awaited `loadURL`. Rig arm `load-wait` (a page with one 1.5 s image; a fast page as the control that the wait is the
+  load, not a fixed sleep); mutant `load-events-dropped`. Content a script renders after the load still needs `wait`.
+- **Upgrade survivors**: keepers outlive the app, so a CLI started BEFORE the upgrade (mid-turn, or within the 15-minute linger) still lists `mcp__browser__*` while the
+  re-attached `query()` carries no `browser` server — a call from it fails loudly in `sdk.mjs` (`SDK MCP server not found: browser`) and recovers on the next
+  fresh/resumed CLI, which lists none. Not measured end to end (the session-budget arms start fresh sessions).
+- **Gotcha found by running the skill verbatim**: an EMPTY ref (`fill "" x`, `click ""` — a `$(ref …)` that matched nothing) succeeds and does
+  nothing useful, so the skill's `ref` helper fails on no match and the example assigns its result (`email=$(ref …)`) so `set -e` sees it.
+

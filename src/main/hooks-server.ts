@@ -294,6 +294,9 @@ export async function startHooksServer(): Promise<void> {
                   model: typeof msg.model === 'string' ? msg.model : undefined,
                   effort: typeof msg.effort === 'string' ? msg.effort : undefined,
                   name: typeof msg.name === 'string' ? msg.name : undefined,
+                  // #401: the profile REQUEST + the caller's session key; what the caller holds is read host-side (never sent).
+                  profile: typeof msg.profile === 'string' ? msg.profile : undefined,
+                  key: typeof msg.key === 'string' ? msg.key : undefined,
                 }),
               );
             } else {
@@ -537,7 +540,7 @@ export async function startHooksServer(): Promise<void> {
             );
           } else if (route === '/whoami') {
             if (typeof msg.id === 'string') {
-              send(200, dispatchWhoamiRequest({ id: msg.id }));
+              send(200, dispatchWhoamiRequest({ id: msg.id, key: typeof msg.key === 'string' ? msg.key : undefined })); // #401: the key vouches the caller for the held-profile row
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
