@@ -594,7 +594,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
   `scripts/e2e-browser-cli.sh <app-dir>` (18 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
-  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (33 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).
+  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (32 in-place bundle mutants, restored byte-exact + `cmp` — `acquire-always-attach` moved to the #398 rig as `reacquire-in-grace-attaches-again`: the seat's shared-attach guard is only reachable by a re-acquire inside the grace, which that rig drives; `--check-anchors <app-dir>` proves each still matches once, no Electron).
   #398: `browser-cdp-seat.test.ts` (one attach per contents, refcount, force-detach, a fake debugger that THROWS on a second
   attach; grace, agent-only reset), `cdp-proxy-core.test.ts` (`lease`, `sendOnLease`, `agentTouched` arms),
   `browser-single-attacher.test.ts`, the registry arms in `browser-panel-tabs.test.ts` (design lease: no churn across polls,
