@@ -2296,6 +2296,17 @@ export interface BrowserPanelState {
   activeTabId: BrowserTabId;
 }
 
+/** Why a tab operation was refused (#393). `cap`: the workspace already holds the maximum
+ *  number of tabs. `not-owner`: an agent tried to close a tab the user opened. `unknown-tab`:
+ *  the id names no tab of that workspace (closed meanwhile / stale). */
+export type BrowserTabRefusal = 'cap' | 'not-owner' | 'unknown-tab';
+
+/** Result of a human-facing tab operation: either it happened (with the new panel state) or it
+ *  was REFUSED with a message safe to show the user as-is — never a throw across IPC. */
+export type BrowserTabResult =
+  | { ok: true; state: BrowserPanelState; tabId?: BrowserTabId }
+  | { ok: false; reason: BrowserTabRefusal; message: string; state: BrowserPanelState };
+
 /** Pixel bounds of the DOM placeholder the native `WebContentsView` must track.
  *  The renderer measures its `.browser-pane` rect and sends this to main so the
  *  native view is positioned/sized exactly over the placeholder. */

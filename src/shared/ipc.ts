@@ -34,6 +34,8 @@ import type {
   AgentSkillInfo,
   BrowserBounds,
   BrowserPanelState,
+  BrowserTabId,
+  BrowserTabResult,
   CreateWorkspaceInput,
   DiffStats,
   EnvStatusItem,
@@ -575,6 +577,17 @@ export interface OrchestraAPI {
   browserSetBounds: (wsId: string, bounds: BrowserBounds) => Promise<void>;
   /** Current navigation state (a freshly-mounted panel re-requests this). */
   browserState: (wsId: string) => Promise<BrowserPanelState>;
+
+  // --- Browser tabs (the human's tab strip, #393) ---
+  // The cap of 8 per workspace and who-closes-what live in src/shared/browser-tab-policy.ts;
+  // a refused operation RESOLVES `{ok:false, reason, message}` (never rejects) so the strip can
+  // show the message. Every change is also pushed on `onBrowserEvent` (state.tabs / activeTabId).
+  /** Open a new tab (activated), optionally loading `url`. Refused over the cap. */
+  browserTabNew: (wsId: string, url?: string) => Promise<BrowserTabResult>;
+  /** Make `tabId` the active tab (the one composited and the URL bar follows). */
+  browserTabActivate: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
+  /** Close `tabId`. Closing the last tab leaves one fresh blank tab. */
+  browserTabClose: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
 
   // --- Design mode (the browser pane's element picker) ---
   // The user arms design mode from the browser toolbar, hovers to highlight,

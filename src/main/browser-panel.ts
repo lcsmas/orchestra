@@ -5,6 +5,8 @@ import type {
   BrowserTabId,
   BrowserTabInfo,
   BrowserTabOpener,
+  BrowserTabRefusal,
+  BrowserTabResult,
 } from '../shared/types';
 // NOTE the .ts extension on this VALUE import: it matches the convention the
 // rest of main uses for shared modules (git.ts → ci-state.ts, workspaces.ts →
@@ -16,6 +18,9 @@ import {
   shapePick,
   type DesignPick,
 } from '../shared/design-mode.ts';
+import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
+import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { log } from './logger';
 import { setBrowserTabSource } from './browser-tab-memory.ts';
@@ -212,14 +217,48 @@ function reapIfDead(wsId: string): Panel | undefined {
  *  module (which must not import the window directly) can attach views to it. */
 let getWindow: (() => Electron.BaseWindow | null) | null = null;
 
-/** Called once from index.ts after the main window exists. */
-export function initBrowserPanels(accessor: () => Electron.BaseWindow | null): void {
+/** Where each workspace's tabs (URL + opener + active) are remembered across restarts (#393). Absent in the verify
+ *  harnesses, which then simply run without restore/persist. */
+let persistence: BrowserTabsPersistence | null = null;
+
+/** URL a restored tab was asked to load, until the tab has a URL of its own: a snapshot taken while that load is
+ *  still starting (or after it failed — server down at boot) must not blank the tab's remembered URL. */
+const restoreUrls = new WeakMap<Tab, string>();
+
+/** Called once from index.ts after the main window exists. `store` makes tabs survive an app restart. */
+export function initBrowserPanels(
+  accessor: () => Electron.BaseWindow | null,
+  store?: BrowserTabsPersistence,
+): void {
   getWindow = accessor;
+  persistence = store ?? null;
   // #394: the Resources sampler / monitor read each tab's renderer pid through this — a pure read, it never reaps or publishes.
   setBrowserTabSource({
     tabs: () => [...panels.values()].flatMap((p) => p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; })),
     nonTabPids: () => { const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents; return ui && !ui.isDestroyed() ? [ui.getOSProcessId()] : []; },
   });
+}
+
+/** Write any pending tab snapshot to disk now (app quit). */
+export function flushBrowserTabs(): void {
+  persistence?.flush();
+}
+
+function savePanelTabs(panel: Panel): void {
+  // Only a REGISTERED panel is remembered: a panel mid-restore (not yet in `panels`), a closed-last-tab husk and a
+  // destroyed panel must not overwrite what is on record.
+  if (!persistence || panels.get(panel.wsId) !== panel || panel.tabs.length === 0) return;
+  persistence.save(
+    panel.wsId,
+    snapshotTabs(
+      panel.tabs.map((t) => ({
+        id: t.id,
+        url: restorableUrl(t.nav.url) || restoreUrls.get(t) || '',
+        openedBy: t.openedBy,
+      })),
+      panel.activeId,
+    ),
+  );
 }
 
 /** The session partition holding a workspace's browser cookies/storage. Not
@@ -302,6 +341,7 @@ function computeState(panel: Panel): BrowserPanelState {
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
   panel.state = computeState(panel);
+  savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
   return panel.state;
 }
@@ -372,20 +412,45 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   if (panel.bounds) view.setBounds(panel.bounds);
 
   const wc = view.webContents;
-  // Keep external target=_blank / window.open navigations in-tab when they're
-  // web URLs; bounce anything else to the OS (mirrors login-browser.ts).
-  wc.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http:') || url.startsWith('https:')) {
-      void wc.loadURL(url);
-    } else {
-      void shell.openExternal(url);
+  // Where a page-opened window goes is decided by the pure tab policy (#396 fills the routing: today a
+  // web URL stays in THIS tab, anything else goes to the OS — mirrors login-browser.ts).
+  wc.setWindowOpenHandler((details) => {
+    const route = decidePopup({
+      url: details.url,
+      frameName: details.frameName,
+      disposition: details.disposition,
+      features: details.features,
+    });
+    switch (route.route) {
+      case 'same-view':
+        void wc.loadURL(details.url);
+        break;
+      case 'external':
+        void shell.openExternal(details.url);
+        break;
+      default: {
+        // #396 adds routes: an unhandled one must fail to COMPILE here, not fall through to the OS browser.
+        const unhandled: never = route;
+        log.warn(`browser-panel: unhandled popup route ${JSON.stringify(unhandled)}`);
+      }
     }
     return { action: 'deny' };
   });
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
   wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
-  wc.on('did-navigate', () => emitState(panel, tab, {}));
-  wc.on('did-navigate-in-page', () => emitState(panel, tab, {}));
+  // A restored tab keeps its remembered URL until a navigation COMMITS to a restorable URL: during the load, and after a
+  // failed one (server down at boot), `getURL()` can be the pending URL or a chrome-error:// page — neither may blank the record.
+  const committed = (url: string): void => {
+    if (restorableUrl(url)) restoreUrls.delete(tab);
+  };
+  wc.on('did-navigate', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
+  wc.on('did-navigate-in-page', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
   wc.on('page-title-updated', () => emitState(panel, tab, {}));
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     // -3 is ERR_ABORTED (a superseded navigation) — not a real failure.
@@ -421,8 +486,21 @@ export function ensurePanel(wsId: string): Panel {
       return activeTabOf(this)!.view;
     },
   };
-  const tab = buildTab(panel, { openedBy: 'human' });
-  panel.activeId = tab.id;
+  const saved = persistence?.load(wsId) ?? null;
+  if (saved) {
+    // Restore (#393): the tabs this workspace had when the app last ran, in order, with the same one active.
+    const built = saved.tabs.map((t) => {
+      const tab = buildTab(panel, { openedBy: t.openedBy });
+      if (t.url) {
+        restoreUrls.set(tab, t.url);
+        void loadIn(tab, t.url);
+      }
+      return tab;
+    });
+    panel.activeId = built[Math.min(saved.activeIndex, built.length - 1)].id;
+  } else {
+    panel.activeId = buildTab(panel, { openedBy: 'human' }).id;
+  }
   panel.state = computeState(panel);
   panels.set(wsId, panel);
   return panel;
@@ -493,9 +571,10 @@ export function activateTab(wsId: string, tabId: BrowserTabId): BrowserPanelStat
 
 /** Close `tabId`: detach its view, drop its debugger, destroy its contents. If
  *  it was active, its right neighbour (else the left) becomes active. Closing
- *  the LAST tab evicts the panel — the next ensurePanel builds a fresh one
- *  (what that should mean for the user is the human-tabs ticket's call).
- *  Throws if the workspace has no such tab. */
+ *  the LAST tab evicts the panel AND forgets its saved tabs (#393 F1: else the next
+ *  ensurePanel would restore the tab just closed) — the next ensurePanel builds a
+ *  fresh blank one. The human/agent paths go through {@link tryCloseTab}, which never
+ *  evicts (it replaces the last tab first). Throws if the workspace has no such tab. */
 export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
   const panel = reapIfDead(wsId);
   const tab = panel?.tabs.find((t) => t.id === tabId);
@@ -511,6 +590,7 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
     panels.delete(wsId);
     panel.attachedId = null;
     panel.pendingShow = false;
+    persistence?.save(wsId, null);
     const empty = emptyState(wsId);
     platform.broadcast('browser:event', wsId, empty);
     return empty;
@@ -522,6 +602,50 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
     if (wasAttached) attachActive(panel);
   }
   return publish(panel);
+}
+
+// ---------------------------------------------------------------------------
+// Policy-checked tab operations (#393). The bare createTab/closeTab/activateTab above have no cap and no
+// ownership rule; every caller that acts for the human or the agent goes through these, which ask the pure
+// policy (src/shared/browser-tab-policy.ts) FIRST — a refusal allocates nothing and destroys nothing.
+// ---------------------------------------------------------------------------
+
+function refused(wsId: string, reason: BrowserTabRefusal, message: string): BrowserTabResult {
+  return { ok: false, reason, message, state: getState(wsId) };
+}
+
+/** Open a tab for `opts.openedBy`, refused (reason `cap`) when the workspace already holds the maximum — the
+ *  decision is made before any view exists, so a refusal leaks nothing. */
+export function tryOpenTab(
+  wsId: string,
+  opts: { url?: string; openedBy: BrowserTabOpener; activate?: boolean },
+): BrowserTabResult {
+  const panel = ensurePanel(wsId);
+  const d = decideTabOpen({ openCount: panel.tabs.length, opener: opts.openedBy });
+  if (!d.ok) return refused(wsId, d.reason, d.message);
+  const tab = createTab(wsId, opts);
+  return { ok: true, state: panel.state, tabId: tab.id };
+}
+
+/** Close `tabId` on behalf of `actor`: the human any tab, an agent only the tabs it opened. Closing the LAST tab
+ *  leaves one fresh blank (human) tab, so the panel — and the agent primitives that drive "the active tab" — never
+ *  find it tab-less. */
+export function tryCloseTab(wsId: string, tabId: BrowserTabId, actor: BrowserTabOpener): BrowserTabResult {
+  const panel = reapIfDead(wsId);
+  if (!panel) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);
+  const d = decideTabClose({ tabs: panel.tabs, activeId: panel.activeId, tabId, actor });
+  if (!d.ok) return refused(wsId, d.reason, d.message);
+  // Replacement FIRST: closeTab on the only tab would evict the panel.
+  if (d.replaceWithBlank) createTab(wsId, { openedBy: 'human', activate: true });
+  const state = closeTab(wsId, tabId);
+  return { ok: true, state };
+}
+
+/** Make `tabId` the active tab; refused (`unknown-tab`) when the workspace has no such tab. */
+export function tryActivateTab(wsId: string, tabId: BrowserTabId): BrowserTabResult {
+  const panel = reapIfDead(wsId);
+  if (!panel?.tabs.some((t) => t.id === tabId)) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);
+  return { ok: true, state: activateTab(wsId, tabId) };
 }
 
 /** Resolve the tab a primitive should drive: `tabId` when given (throws if the
@@ -682,12 +806,19 @@ export function getState(wsId: string): BrowserPanelState {
 
 /** Destroy a workspace's panel entirely (workspace deleted / archived): every
  *  tab's debugger and contents, not just the active one. */
-export function destroyPanel(wsId: string): void {
+function destroyPanelViews(wsId: string): void {
   const panel = panels.get(wsId);
   if (!panel) return;
   hidePanel(wsId);
   panels.delete(wsId);
   for (const tab of panel.tabs) destroyTab(tab);
+}
+
+/** Destroy a workspace's panel (delete / archive) AND forget its remembered tabs (#393) — even when this process never
+ *  opened the panel (deleted straight after a restart). Forgetting comes after the teardown so no late event re-saves. */
+export function destroyPanel(wsId: string): void {
+  destroyPanelViews(wsId);
+  persistence?.save(wsId, null);
 }
 
 // ---------------------------------------------------------------------------
