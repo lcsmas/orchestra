@@ -10,10 +10,12 @@ if [[ $# -gt 0 ]]; then MUTANTS=("$@"); else read -r -a MUTANTS <<< "$("${HERE}/
 fail=0
 for m in "${MUTANTS[@]}"; do
   out="$(mktemp "${TMPDIR:-/var/tmp}/b399-mutant-XXXXXX.log")"
-  # rc=90 = the contained rig could not prove its display (a sibling's marker raced ours): infrastructure, not a verdict — retry up to 3x
+  # rc=90 = the contained rig could not prove its display (a sibling's marker raced ours); rc=75 = no GUI slot within the wait: infrastructure, not a verdict — retry up to 3x
   for attempt in 1 2 3; do
-    "${HERE}/e2e-browser-cli-parity.sh" "${APP_DIR}" --mutant "$m" > "$out" 2>&1; rc=$?
-    [[ $rc -eq 90 ]] || break
+    # fleet GUI-slot semaphore (ledger #405, 3 contained-rig Electron trees at a time): wrap PER MUTANT run so slots rotate; absent file = not in the fleet, run bare
+    SLOT=""; [[ -x /var/tmp/orch-1000-b17728/gui-slot.sh ]] && SLOT="/var/tmp/orch-1000-b17728/gui-slot.sh"
+    ${SLOT} "${HERE}/e2e-browser-cli-parity.sh" "${APP_DIR}" --mutant "$m" > "$out" 2>&1; rc=$?
+    [[ $rc -eq 90 || $rc -eq 75 ]] || break
     echo "[$m] rig abort rc=90 (attempt ${attempt}) — retrying" >&2
   done
   verdict="$(grep -E '^VERDICT:|^\[mutant\].*restored|REFUSED' "$out" | tr '\n' ' ')"
