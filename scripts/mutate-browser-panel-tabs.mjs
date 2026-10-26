@@ -77,8 +77,9 @@ const MUTANTS = [
     'const panel = panels.get(wsId);\n  return panel ? activeTabOf(panel) : undefined;'],
   ['reaping a dead active tab always promotes the first tab',
     'panel.activeId = panel.tabs[Math.min(activeIdx, panel.tabs.length - 1)].id;', 'panel.activeId = panel.tabs[0].id;'],
-  ['clickRef click is not pinned to the resolved tab',
-    'await clickAt(wsId, p.x, p.y, pin);', 'await clickAt(wsId, p.x, p.y, tabId);'],
+  // #397: the bring-back makes the pinned tab active, so an unpinned `clickAt` is now an EQUIVALENT mutant; the pin's load-bearing site is the bring-back itself.
+  ['clickRef does not bring the pinned tab back before the click',
+    'if (pin !== undefined) agentActivateTab(wsId, pin); // a click needs its tab on screen', '// (mutant) no bring-back // a click needs its tab on screen'],
   ['designModePoll screenshot is not pinned to the pick tab',
     "{ format: 'png', clip, captureBeyondViewport: false },\n        pin,", "{ format: 'png', clip, captureBeyondViewport: false },\n        tabId,"],
   ['default navigate no longer opens the panel on demand',
