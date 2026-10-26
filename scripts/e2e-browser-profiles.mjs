@@ -750,7 +750,9 @@ try {
     await typeUrl(b, P(1, '&signin=session'));
     await softWait(async () => /sid=sess/.test((await pageText(b, '&signin=session')) ?? ''), 15000, 'the session sign-in page');
     const sidS = (/sid=(sess[0-9a-f]+)/.exec((await pageText(b, '&signin=session')) ?? '') ?? [])[1];
-    const expProfile = await sidExpiry(b, '&signin=session');
+    // promotion is debounced per cookie (250 ms after its last change) and re-reads the live cookie: poll (bounded) for it, then assert the value
+    let expProfile = await sidExpiry(b, '&signin=session');
+    await softWait(async () => { expProfile = await sidExpiry(b, '&signin=session'); return typeof expProfile === 'number'; }, 6000, 'the promoted expiry');
     const daysAhead = typeof expProfile === 'number' ? (expProfile - Date.now()) / 86400000 : null;
     // control: the SAME page + cookie in a workspace WITHOUT a profile stays a true session cookie (expires = null) — so the promotion is what differs
     await selectWorkspace(b, 'e2e/bp400-2');
