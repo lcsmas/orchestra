@@ -79,7 +79,7 @@ const MUTANTS = [
   [F.core, 're-attack F4: navigation of the user\'s tab to an internal URL is not gated', "    if (method === 'Page.navigate' || method === 'Page.navigateToHistoryEntry') {", "    if (false && (method === 'Page.navigate' || method === 'Page.navigateToHistoryEntry')) {", [T.core]],
   [F.core, 're-attack F4: the navigation gate protects the AGENT\'s tab instead of the user\'s', "owner.openedBy !== 'agent' && (await this.navigatesToInternalUrl(", "owner.openedBy === 'agent' && (await this.navigatesToInternalUrl(", [T.core]],
   [F.core, 're-attack F4: a history entry is not resolved to its URL (navigateToHistoryEntry escapes)', "      return isBrowserInternalUrl(h?.entries?.find((e) => e.id === params?.entryId)?.url);", "      return false;", [T.core]],
-  [F.core, 're-attack F4: a failed history lookup fails OPEN', "    } catch {\n      return true;\n    }", "    } catch {\n      return false;\n    }", [T.core]],
+  [F.core, 're-attack F4: a failed history lookup fails OPEN', "      if (e === gone) throw e; // the child is gone: answer like any command on a dead session, not with an internal-URL refusal\n      return true;", "      if (e === gone) throw e; // the child is gone: answer like any command on a dead session, not with an internal-URL refusal\n      return false;", [T.core]],
   [F.core, 're-attack F4: a refused navigation still swaps the human\'s view (bring-to-front before the throw)', "        throw new CdpError(internalNavigationRefusal(method, tabId), ERR_SERVER);", "        this.bringToFrontIfBackground(tabId);\n        throw new CdpError(internalNavigationRefusal(method, tabId), ERR_SERVER);", [T.core]],
   [F.pure, 're-attack F4: devtools: is not an internal scheme', "'chrome-distiller', 'devtools'])", "'chrome-distiller'])", [T.pure]],
   [F.pure, 're-attack F4: about: is never internal (about:crash escapes — Chromium rewrites it to chrome://)', "if (m[1] === 'about') return !/^(blank|srcdoc)([?#].*)?$/s.test(m[2]!);", "if (m[1] === 'about') return false;", [T.pure, T.core]],
@@ -112,6 +112,16 @@ for (const f of new Set(MUTANTS.map((m) => m[0]))) {
 }
 const restoreAll = () => { for (const [f, bak] of backups) copyFileSync(bak, path.join(root, f)); };
 process.on('exit', () => { try { restoreAll(); } catch {} });
+
+// Every anchor must match EXACTLY once BEFORE anything runs (a stale one used to abort the sweep after minutes of baseline + mutants, once cbba639b rewrote a catch it anchored on).
+// `--check` stops here: no tests, nothing mutated.
+const staleAnchors = MUTANTS.map(([file, name, find]) => ({ file, name, n: readFileSync(path.join(root, file), 'utf8').split(find).length - 1 })).filter((m) => m.n !== 1);
+if (staleAnchors.length) {
+  for (const m of staleAnchors) console.log(`BAD  (${m.n}x in ${m.file}) ${m.name}`);
+  console.log(`${staleAnchors.length} mutant anchor(s) stale — re-anchor before sweeping`);
+  process.exit(2);
+}
+if (process.argv.includes('--check')) { console.log(`all ${MUTANTS.length} mutant anchors match exactly once`); process.exit(0); }
 
 const run = (tests) => spawnSync('node', ['--test', '--experimental-strip-types', ...tests], { cwd: root, encoding: 'utf8' });
 const allTests = Object.values(T);
