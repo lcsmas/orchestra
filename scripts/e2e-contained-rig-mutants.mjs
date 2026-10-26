@@ -33,7 +33,9 @@ const MUTANTS = [
   { name: 'r1-prefix-only-exact', find: '[[ "${xdgn}" != "${real_rt}" && "${xdgn}" != "${real_rt}/"* && "${xdgn}" != "/run/user/"* ]]', replace: '[[ "${xdgn}" != "${real_rt}" ]]', red: ['R1b'], extra: ['R1a'] },
   { name: 'r2-own-dir', find: line('  [[ "${xdg}" == "${RIG_XDG}" ]]'), replace: line('  true'), red: ['R2'] },
   { name: 'r3-symlink', find: '[[ ! -L "${xdg}" ]] || die', replace: 'true || die', red: ['R3'] },
-  { name: 'r3b-resolved-path', find: '[[ "${resolved}" != "/run/user/"* ]] || die', replace: 'true || die', red: [], extra: ['R3'], equivalent: 'only reachable through a rig base that symlinks into /run/user/<uid>, which the self-test must never create (accepted gap, ledger #405)' },
+  // R3's resolved-path clause is shadowed by the canonicalised rig-base guard (and vice versa): killed together, and the base guard alone
+  { name: 'r3b-resolved-path+base-canon', find: '[[ "${resolved}" != "/run/user/"* ]] || die', replace: 'true || die', also: { find: '|| "${RIG_BASE_CANON}" == /run/user/*', replace: '' }, red: ['R10'] },
+  { name: 'base-canon-removed', find: '|| "${RIG_BASE_CANON}" == /run/user/*', replace: '', red: ['R10'] },
   { name: 'r4-mode-owner-dir', find: line('  [[ -d "${xdg}" && -O "${xdg}" && "$(stat -c %a -- "${xdg}")" == "700" ]]'), replace: line('  true'), red: ['R4'] },
   { name: 'r5a-keyring-glob', find: '"${xdg}"/keyring* ', replace: '', red: ['R5a'], extra: ['R5b', 'R5c'] },
   { name: 'r5b-bus-glob', find: '"${xdg}"/bus* ', replace: '', red: ['R5b'], extra: ['R5a', 'R5c'] },
@@ -58,6 +60,7 @@ const MUTANTS = [
   { name: 'r5d-p11kit-glob', find: ' "${xdg}"/p11-kit*; do', replace: '; do', red: ['R5d'], extra: ['R5a'] },
   { name: 'sway-presway-call-removed', find: 'preflight_runtime_world SWAY_ENV pre-sway\n', replace: '', red: ['R9s'] },
   { name: 'base-under-run-user-guard', find: '[[ "${RIG_BASE}" == /run/user/* || "${RIG_BASE_CANON}" == /run/user/* ]]', replace: 'false', red: ['R9b'] },
+  { name: 'r7-physical-resolution', find: '[[ "${phys}" != /run/user/* ]]', replace: 'true', red: ['R7e'], extra: ['R7a'] },
   // the display preflight (clauses touched by this change)
   { name: 'w-path-clause', find: line('  [[ "${got}" != */* ]]'), replace: line('  true'), red: ['W1'] },
   { name: 'w-equality-clause', find: line('  [[ "${got}" == "${want}" ]]'), replace: line('  true'), red: ['W2', 'W3'] },
@@ -97,7 +100,11 @@ for (const mu of MUTANTS) {
   const nth = mu.nth ?? 1;
   const parts = src.split(mu.find);
   if (parts.length - 1 < nth) { console.log(`ERROR ${mu.name}: mutant string found ${parts.length - 1}× (need ≥ ${nth}) — NOT verified live`); bad++; continue; }
-  const mutated = parts.slice(0, nth).join(mu.find) + mu.replace + parts.slice(nth).join(mu.find);
+  let mutated = parts.slice(0, nth).join(mu.find) + mu.replace + parts.slice(nth).join(mu.find);
+  if (mu.also) {   // a PAIRED mutant: two redundant defences removed together (each alone is shadowed by the other)
+    if (mutated.split(mu.also.find).length - 1 < 1) { console.log(`ERROR ${mu.name}: paired mutant string not found — NOT verified live`); bad++; continue; }
+    mutated = mutated.replace(mu.also.find, () => mu.also.replace);
+  }
   if (mutated === src) { console.log(`ERROR ${mu.name}: mutation is a no-op`); bad++; continue; }
   const nl = mutated.indexOf('\n') + 1;
   fs.writeFileSync(RIG, `${mutated.slice(0, nl)}# RIG-MUTANT: ${mu.name}\n${mutated.slice(nl)}`); fs.chmodSync(RIG, mode); restored = false;
