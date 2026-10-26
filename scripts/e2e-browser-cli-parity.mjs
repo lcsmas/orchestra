@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'hidden-wait', 'focus', 'table', 'skill-tabs', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -194,7 +194,7 @@ class Cdp {
 }
 
 // ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const WS_NAMES = ['b399-one', 'b399-two', 'b399-three']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
+const WS_NAMES = ['b399-one', 'b399-two', 'b399-three', 'b399-four']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
@@ -276,7 +276,7 @@ process.on('SIGTERM', () => process.exit(143));
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir);
-  const [W1, W2, W3] = world.workspaces;
+  const [W1, W2, W3, W4] = world.workspaces;
   const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
@@ -303,7 +303,7 @@ async function main() {
     // Assert what the DRIVER handed the app: Chromium may rewrite /proc/<pid>/environ once a bus var is present (seat 2 F2), so the process view is informational only
     clause('ctl', 'scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && env.XDG_RUNTIME_DIR === XDG && !('DISPLAY' in env) && !('DBUS_SESSION_BUS_ADDRESS' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND,
       `env handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} (the rig's private dir) WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'} DBUS=${'DBUS_SESSION_BUS_ADDRESS' in env ? 'SET' : '<unset>'}`);
-    const ctx = { world, W1, W2, W3, FIX, port, app, ui, targets, env, logFile };
+    const ctx = { world, W1, W2, W3, W4, FIX, port, app, ui, targets, env, logFile };
     await runArms(ctx);
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
@@ -713,38 +713,6 @@ const ARM_FNS3 = {
       const sc = await cli(ctx, W2, ['scroll', 'down', '300'], { timeoutMs: 45000 });
       const y1 = await o2.eval(`Math.round(window.scrollY)`);
       clause(A, 'scroll-works-while-hidden', sc.code === 0 && Math.abs(y1 - y0b - 300) <= 2, `${show(sc)}; oracle scrollY ${y0b} → ${y1} (window.scrollBy needs no frames: better than the removed tool, which refused)`);
-      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
-      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
-      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
-      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
-      await o2.eval(late('late-sel'));
-      const wsel = await cli(ctx, W2, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
-      await o2.eval(late('late-fn'));
-      const wfn = await cli(ctx, W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
-      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
-      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
-      const wblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      const wctl = await cli(ctx, W2, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
-      const iw = await o2.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
-      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
-      await o2.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
-      await sleep(500);
-      const errs = await cli(ctx, W2, ['errors']);
-      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
-      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
-      await selectWs(ctx, W2); await openPane(ctx);
-      await o2.eval(late('late-vis'));
-      const wvis = await cli(ctx, W2, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
-      const wblockVis = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
-      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
-      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
-      await selectWs(ctx, W1);
-      await o2.eval(late('late-b'));
-      const wB = await cli(ctx, W2, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
-      const wBblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
-      const iwB = await o2.eval('innerWidth');
-      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W2 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
     } finally { o2.close(); }
   },
 };
@@ -954,6 +922,56 @@ const ARM_FNS8 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS8);
+
+
+const ARM_FNS10 = {
+  async 'hidden-wait'(ctx) {
+    // Split out of hidden-panel on purpose: the frames-guard mutant makes hidden-panel's refusals HANG, which parks the daemon of THAT workspace; these clauses (and their visible
+    // controls) run on their own never-shown workspace W4, so a collateral queue-block cannot turn one of their controls red.
+    const { W1, W4, FIX } = ctx; const A = 'hidden-wait';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/index.html`]);
+    const U4 = `${FIX}/parity.html?w=${W4.name}`;
+    const w4 = await cli(ctx, W4, ['open', U4]);
+    const o4 = await oracle(ctx, U4);
+    try {
+      clause(A, 'ctl/w4-is-hidden-and-never-shown', w4.code === 0 && (await o4.eval('innerWidth')) === 0, `${W4.branch} has a panel on ${U4}; oracle innerWidth ${await o4.eval('innerWidth')} (never composited)`);
+      // MEASURED (seat-3 pre-gate F1/F2, 2026-10-26) and stated in the skill: on a hidden pane `wait "<selector>"` for an element that still has to APPEAR hangs to its timeout
+      // (an element already there returns at once; --fn / --text / ms are fine), and `errors` prints blank lines instead of the message. Each clause is the observation that
+      // would DIFFER if the skill sentence were wrong — and goes red the day the product fixes it (then the skill sentence is stale).
+      const late = (id) => `setTimeout(() => { const d = document.createElement('div'); d.id = ${JSON.stringify(id)}; d.textContent = 'late ' + ${JSON.stringify(id)}; document.body.appendChild(d); }, 700); 1`;
+      await o4.eval(late('late-sel'));
+      const wsel = await cli(ctx, W4, ['wait', '#late-sel', '--timeout', '4000'], { timeoutMs: 40000 });
+      await o4.eval(late('late-fn'));
+      const wfn = await cli(ctx, W4, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
+      clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
+      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
+      const wblock = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const wctl = await cli(ctx, W4, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iw = await o4.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
+      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
+      await o4.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
+      await sleep(500);
+      const errs = await cli(ctx, W4, ['errors']);
+      clause(A, 'errors-prints-no-message-text-while-hidden', errs.code === 0 && !/uncaught-399-hidden/.test(errs.stdout + errs.stderr), `errors → ${JSON.stringify(errs.stdout.slice(0, 80))} (the message "uncaught-399-hidden" is not in it)`);
+      // control for the wait clause: the SAME late-element wait on the VISIBLE pane succeeds
+      await selectWs(ctx, W4); await openPane(ctx);
+      await o4.eval(late('late-vis'));
+      const wvis = await cli(ctx, W4, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wblockVis = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
+      clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
+      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
+      await selectWs(ctx, W1);
+      await o4.eval(late('late-b'));
+      const wB = await cli(ctx, W4, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wBblock = await cli(ctx, W4, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iwB = await o4.eval('innerWidth');
+      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W4 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
+    } finally { o4.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS10);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
