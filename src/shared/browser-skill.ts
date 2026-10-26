@@ -26,9 +26,9 @@ One command per call, run from Bash (also inside scripts and sub-agents). It act
 §§§bash
 orchestra browser open http://localhost:3000/login   # always a full URL (see Gotchas)
 orchestra browser snapshot -i                        # interactive elements, each with a ref
-#   - textbox "Email" [ref=e3]
+#   - textbox "Email" [required, ref=e3]
 #   - button "Sign in" [ref=e5]
-orchestra browser fill @e3 "me@example.com"          # [ref=e3] is addressed as @e3
+orchestra browser fill @e3 "me@example.com"          # …ref=e3] is addressed as @e3
 orchestra browser click @e5
 orchestra browser snapshot -i                        # the page changed → take fresh refs
 §§§
@@ -70,7 +70,7 @@ A multi-step flow costs one turn, not one per click. Use §set -e§ so it stops 
 §§§bash
 set -e
 b() { orchestra browser "$@"; }
-ref() { b snapshot -i | grep -m1 "$1" | sed -n 's/.*\[ref=\(e[0-9]*\)\].*/@\1/p' | grep .; }
+ref() { b snapshot -i | grep -m1 "$1" | sed -n 's/.*ref=\(e[0-9]*\).*/@\1/p' | grep .; }
 b open "$URL"
 email=$(ref 'textbox "Email')
 b fill "$email" "me@example.com"
@@ -93,7 +93,11 @@ Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-read
 
 ## When the pane is not on screen
 
-The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §wait§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once with "this workspace's Browser pane is not on screen" and do nothing. Meanwhile §eval "document.querySelector('#q').value = 'x'"§ can set a field. Do not retry in a loop — wait for the pane to come back.
+The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §scrollintoview§, §wait§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §dblclick§, §hover§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once and do nothing — with "this workspace's Browser pane is not on screen", or (§click§) "Element … is outside the viewport". Do not answer that with §scrollintoview§ and a retry, and do not retry in a loop: wait for the pane to come back. To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
+
+§§§bash
+orchestra browser eval "(() => { const el = document.querySelector('#q'); Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set.call(el, 'x'); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()"
+§§§
 
 ## Focus
 
@@ -102,7 +106,7 @@ Your commands never move the human's keyboard focus: they keep typing in the com
 ## What you cannot do
 
 - Sign in as the human. The pane starts signed out unless the human attached a browser profile to this workspace; you cannot attach, switch or create profiles — ask the human.
-- Reach another browser or another workspace's pane: §connect§, §close§, §session§, §install§, §batch§, §plugin§, §profiles§ and the flags §--cdp§, §--session§, §--profile§, §--headed§ are refused with "not available".
+- Reach another browser or another workspace's pane: §connect§, §close§, §session§, §install§, §batch§, §plugin§, §profiles§ and the flags §--cdp§, §--session§, §--profile§, §--headed§ are refused ("not available" for a command, "not allowed" for a flag).
 - Not yet available: §download§, §trace§, §record§, §profiler§, §clipboard§.
 
 ## Gotchas

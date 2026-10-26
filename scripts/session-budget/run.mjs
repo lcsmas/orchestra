@@ -14,6 +14,7 @@
 //                        (judged from the CLI's /proc environ, not the runner's own env).
 //   app-egress-new-host  an ensureSession edit fetch()es a new host: MUST FAIL naming that host in startupEgressAttempts
 //                        (the app process's traffic goes through the recording proxy too).
+//   browser-mcp-registered  the removed in-process `browser` MCP server re-registered at the launch site (#399): MUST FAIL naming browserMcp.initServers
 //   census-selftest    the pid-namespace census is exactly the runner's tree.
 //   smoke-flag-path    the optional real-API smoke's flag path, real CLI vs the fake API.
 // Exit: 0 all arms as expected · 1 an arm broke expectation or the run raised · 3 an arm was VOID (nothing measured:
@@ -38,6 +39,8 @@ const ARMS = {
   'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 }, mustExercise: { host: 'api.anthropic.com:443', min: 4 } },
   'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
+  // #399: the removed in-process `browser` MCP server re-registered at the launch site: a REAL session lists it at session/init and in the model request.
+  'browser-mcp-registered': { kind: 'session', mutant: 'browser-mcp-registered', expect: 'fail', mustBreak: 'session.beforeFirstReply.browserMcp.initServers', minBurst: 1 },
   'census-selftest': { kind: 'selftest', mode: 'census' },
   'smoke-flag-path': { kind: 'selftest', mode: 'smoke' },
 };

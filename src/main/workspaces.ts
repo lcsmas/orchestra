@@ -648,9 +648,9 @@ export async function archiveWorkspace(id: string): Promise<void> {
     // React and CSS: an archived workspace that still has one attached paints an
     // opaque rectangle over the app (a fresh view with no page loaded paints
     // BLACK). The renderer's BrowserPanel hides the view on unmount, but an
-    // AGENT can open a panel through its MCP browser tools with no renderer
-    // component ever mounted (agent-browser-tools.ts calls showPanel directly),
-    // and in that case nothing on the renderer side ever tears it down.
+    // AGENT can open a panel (an `orchestra browser` call reaches ensureEndpoint
+    // → ensurePanel) with no renderer component ever mounted, and in that case
+    // nothing on the renderer side ever tears it down.
     destroyBrowserPanel(ws.id);
     // #327: an archive of a member WITH a kernel scope also stops its session + keeper (a descendant's too — the caller only stops the root's) and then everything it left in the scope.
     // A member without a scope: exactly as before (nothing is stopped here).

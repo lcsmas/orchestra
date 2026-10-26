@@ -18,14 +18,14 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { abLayout } from '../src/main/agent-browser-daemon.ts';
-import { BROWSER_SKILL, BROWSER_SKILL_EXAMPLE_HEADING, BROWSER_SKILL_NAME } from '../src/shared/browser-skill.ts';
+import { BROWSER_SKILL, BROWSER_SKILL_EXAMPLE_HEADING, BROWSER_SKILL_NAME, shellWords } from '../src/shared/browser-skill.ts';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'skill'];
+const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -36,13 +36,13 @@ const MUTANTS = {
   'history-dropped': { ...dropCdp('Runtime.evaluate', '/history\\.(back|forward)\\(/.test($3.expression)'), arms: ['navigate'], why: 'back/forward (history.back()) are acknowledged but the history never moves' },
   'snapshot-dropped': { ...dropCdp('Accessibility.getFullAXTree'), arms: ['read-page'], why: 'the accessibility tree is acknowledged but empty: `snapshot` lists no element and no refs' },
   'screenshot-truncated': { file: 'chunk', edits: [[/primary:async\(\)=>\(await (\w+)\.channel\.send\("Page\.captureScreenshot",(\w+)\)\)\.data/, 'primary:async()=>(await $1.channel.send("Page.captureScreenshot",$2)).data.slice(0,64)']], arms: ['screenshot'], why: 'the screenshot chain returns a truncated image' },
-  'click-dropped': { ...dropCdp('Input.dispatchMouseEvent'), arms: ['click'], why: 'mouse events are acknowledged but never reach the page' },
+  'click-dropped': { ...dropCdp('Input.dispatchMouseEvent'), arms: ['click', 'table'], why: 'mouse events are acknowledged but never reach the page' },
   'insert-text-dropped': { ...dropCdp('Input.insertText'), arms: ['type', 'form-input'], why: 'text insertion (type / fill) is acknowledged but never reaches the page' },
   'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
   'skill-not-installed': { file: 'chunk', edits: [[/(\w+)\("orchestra-status",(\w+)\),\1\((\w+),(\w+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
-  'focus-steal-on-input': { file: 'chunk', edits: [[DROP_RE, '(($2.startsWith("Input.")&&require("electron").webContents.getAllWebContents().forEach((w)=>{try{if(/^https?:/.test(w.getURL()))w.focus()}catch{}}),0),$1.channel.send($2,$3,$4)).then(']], arms: ['focus'], why: 'every forwarded Input.* command focuses the panel page (the old focus-steal bug): the human loses the composer' },
+  'focus-steal-on-input': { file: 'chunk', edits: [[DROP_RE, '(($2.startsWith("Input.")&&(()=>{try{require("electron").webContents.getAllWebContents().forEach((w)=>{try{if(/^https?:/.test(w.getURL()))w.focus()}catch{}})}catch{}})(),0),$1.channel.send($2,$3,$4)).then(']], arms: ['focus'], why: 'every forwarded Input.* command focuses the panel page (the old focus-steal bug): the human loses the composer' },
   'no-auto-open': { file: 'renderer', edits: [[/onBrowserEvent\(\((\w+),(\w+)\)=>\{\2\.url&&/, 'onBrowserEvent(($1,$2)=>{!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -574,6 +574,16 @@ const ARM_FNS2 = {
     clause(A, 'navigation-opens-the-pane-for-the-user', nav.code === 0 && opened === true && /index\.html$/.test(String(urlInBar)), `${show(nav)} → pane visible ${opened}, URL bar ${JSON.stringify(urlInBar)} (the user sees what the agent opens)`);
     const shot = await ui.send('Page.captureScreenshot', { format: 'png' });
     saveShot('parity-reveal-app.png', Buffer.from(shot.data, 'base64'));
+    // the FIRST command ever on a workspace whose panel was never built: the host builds it (about:blank) — that must not open the pane either
+    const { W2 } = ctx;
+    await selectWs(ctx, W2);
+    if ((await paneToggle(ctx)).open) await clickToggle(ctx);
+    await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the fresh workspace pane to be closed').catch(() => {});
+    clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W2.branch} selected, its pane closed, no panel built yet`);
+    const first = await cli(ctx, W2, ['snapshot', '-i']);
+    await sleep(2000);
+    clause(A, 'first-read-only-command-on-a-fresh-panel-does-not-open-the-pane', first.code === 0 && !(await paneVisible(ctx)), `snapshot ${show(first)} → pane visible: ${await paneVisible(ctx)} (building the panel loads about:blank; a blank page must not count as "the agent navigated")`);
+    await selectWs(ctx, W1);
   },
 };
 Object.assign(ARM_FNS, ARM_FNS2);
@@ -614,6 +624,19 @@ const ARM_FNS3 = {
       const y0 = await o2.eval(`Math.round(window.scrollY)`);
       const pr = await cli(ctx, W2, ['press', 'Tab'], { timeoutMs: 45000 });
       clause(A, 'press-fails-fast', pr.code !== 0 && pr.ms < 9000 && /not on screen/.test(pr.stderr), show(pr));
+      const hv = await cli(ctx, W2, ['hover', go2 ?? '@e0'], { timeoutMs: 45000 });
+      const dc = await cli(ctx, W2, ['dblclick', go2 ?? '@e0'], { timeoutMs: 45000 });
+      clause(A, 'hover-and-dblclick-fail-fast', hv.code !== 0 && dc.code !== 0 && hv.ms < 9000 && dc.ms < 9000 && /not on screen|outside the viewport/.test(hv.stderr) && /not on screen|outside the viewport/.test(dc.stderr), `hover ${show(hv)} · dblclick ${show(dc)}`);
+      // the skill's hidden-pane workaround, extracted from the SKILL TEXT and pointed at a React-style controlled input (its value tracker ignores a plain assignment)
+      const line = BROWSER_SKILL.split('\n').find((l) => l.startsWith('orchestra browser eval "(() => { const el = document.querySelector(\'#q\')'));
+      const js = line ? shellWords(line.replace(/^orchestra browser /, ''))[1] : null;
+      const withSetter = js ? await cli(ctx, W2, ['eval', js.replace('#q', '#ctl').replace("'x'", "'via-skill'")]) : null;
+      const st1 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
+      clause(A, 'skill-workaround-updates-a-controlled-input-while-hidden', !!js && withSetter?.code === 0 && st1.value === 'via-skill' && st1.state === 'state:via-skill', `skill snippet found: ${!!js}; ${withSetter ? show(withSetter) : ''} → oracle ${JSON.stringify(st1)}`);
+      await o2.eval(`document.getElementById('ctl').value = ''; document.getElementById('ctlstate').textContent = ''`);
+      await cli(ctx, W2, ['eval', "const el = document.querySelector('#ctl'); el.value = 'plain'; el.dispatchEvent(new Event('input', { bubbles: true })); 1"]);
+      const st2 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
+      clause(A, 'ctl/a-plain-assignment-leaves-the-controlled-state-stale', st2.value === 'plain' && st2.state === '', `plain value= + input event → oracle ${JSON.stringify(st2)} (the fixture discriminates the two forms, as React does)`);
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
       clause(A, 'mouse-fails-fast', mv.code !== 0 && mv.ms < 9000 && /not on screen/.test(mv.stderr), show(mv));
       const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']]];
@@ -667,6 +690,9 @@ const ARM_FNS4 = {
     const wrongLabel = await runFlow('flow-wrong-label', block.replace(`'textbox "Email'`, `'textbox "Phone'`));
     const w0 = await welcome();
     clause(A, 'ctl/example-with-a-label-not-on-the-page-fails', block.includes(`'textbox "Email'`) && wrongLabel.code !== 0 && w0 === null, `ref lookup for a missing textbox → ${show({ code: wrongLabel.code, stdout: wrongLabel.stdout, stderr: wrongLabel.stderr, ms: wrongLabel.ms })}; oracle #welcome ${JSON.stringify(w0)} (the flow cannot pass by accident)`);
+    const oldRegex = await runFlow('flow-old-regex', block.replace("sed -n 's/.*ref=\\(e[0-9]*\\).*/@\\1/p'", "sed -n 's/.*\\[ref=\\(e[0-9]*\\)\\].*/@\\1/p'"));
+    const w0b = await welcome();
+    clause(A, 'ctl/example-with-the-bracket-only-ref-regex-fails-on-a-required-field', block.includes('ref=\\(e[0-9]*\\)') && oldRegex.code !== 0 && w0b === null, `the helper's old regex (matches only a bare [ref=eN]) on the page's <input required> (snapshot shows [required, ref=eN]) → ${show({ code: oldRegex.code, stdout: oldRegex.stdout, stderr: oldRegex.stderr, ms: oldRegex.ms })}; oracle #welcome ${JSON.stringify(w0b)}`);
     const noClick = await runFlow('flow-no-click', block.replace(/^b click .*\n/m, ''));
     const w1 = await welcome();
     clause(A, 'ctl/example-without-the-click-fails', /^b click /m.test(block) && noClick.code !== 0 && w1 === null, `flow minus its click → ${show({ code: noClick.code, stdout: noClick.stdout, stderr: noClick.stderr, ms: noClick.ms })}; oracle #welcome ${JSON.stringify(w1)}`);
@@ -704,12 +730,65 @@ const ARM_FNS5 = {
         clause(A, `ctl/${label}-composer-focused-before`, f0?.onComposer === true && f0?.windowFocus === true, `trusted click into the composer → ${JSON.stringify(f0)}`);
         const rr = await cli(ctx, W1, args);
         const f1 = await composerFocus(ctx);
-        clause(A, `${label}-keeps-the-composer-focused`, rr.code === 0 && f1?.onComposer === true && f1?.windowFocus === true, `${show(rr)} → composer focus ${JSON.stringify(f1)}`);
+        clause(A, `ctl/${label}-succeeds`, rr.code === 0, show(rr));
+        clause(A, `${label}-keeps-the-composer-focused`, f1?.onComposer === true && f1?.windowFocus === true, `composer focus after: ${JSON.stringify(f1)}`);
       }
     } finally { o.close(); }
   },
 };
 Object.assign(ARM_FNS, ARM_FNS5);
+
+
+const ARM_FNS6 = {
+  async table(ctx) {
+    // Every command of the skill's "Act on the page" table that no other arm exercises, against an oracle.
+    const { W1, FIX } = ctx; const A = 'table';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const { o } = await openOn(ctx, W1, `${FIX}/parity.html`);
+    try {
+      const snap = await cli(ctx, W1, ['snapshot', '-i']);
+      const r = { go: refOf(snap.stdout, 'button', 'Go'), name: refOf(snap.stdout, 'textbox', 'Name'), chk: refOf(snap.stdout, 'checkbox', 'Agree'), sel: refOf(snap.stdout, 'combobox', 'Country'), dbl: refOf(snap.stdout, 'button', 'Double') };
+      clause(A, 'ctl/refs-found', Object.values(r).every(Boolean), `refs ${JSON.stringify(r)}`);
+      const read = (expr) => o.eval(expr);
+      const dc = await cli(ctx, W1, ['dblclick', r.dbl ?? '@e0']);
+      clause(A, 'dblclick', dc.code === 0 && (await read(`document.getElementById('dblout').textContent`)) === 'dbl', show(dc));
+      const hv = await cli(ctx, W1, ['hover', r.dbl ?? '@e0']);
+      clause(A, 'hover', hv.code === 0 && (await read(`document.getElementById('hovout').textContent`)) === 'hovered', show(hv));
+      const ck = await cli(ctx, W1, ['check', r.chk ?? '@e0']);
+      const on = await read(`document.getElementById('chk').checked`);
+      const uc = await cli(ctx, W1, ['uncheck', r.chk ?? '@e0']);
+      clause(A, 'check-and-uncheck', ck.code === 0 && on === true && uc.code === 0 && (await read(`document.getElementById('chk').checked`)) === false, `check → ${show(ck)} (checked=${on}); uncheck → ${show(uc)}`);
+      const se = await cli(ctx, W1, ['select', r.sel ?? '@e0', 'Germany']);
+      clause(A, 'select-by-label', se.code === 0 && (await read(`document.getElementById('sel').value`)) === 'de', show(se));
+      const fo = await cli(ctx, W1, ['focus', r.name ?? '@e0']);
+      clause(A, 'focus', fo.code === 0 && (await read(`document.activeElement && document.activeElement.id`)) === 'name', show(fo));
+      await cli(ctx, W1, ['fill', r.name ?? '@e0', 'got it']);
+      const gv = await cli(ctx, W1, ['get', 'value', r.name ?? '@e0']);
+      clause(A, 'get-value', gv.code === 0 && gv.stdout.trim() === 'got it', show(gv));
+      const iv = await cli(ctx, W1, ['is', 'visible', r.go ?? '@e0']);
+      clause(A, 'is-visible', iv.code === 0 && /true/.test(iv.stdout), show(iv));
+      await read(`document.getElementById('out').textContent = 'changed-before-reload'`);
+      const rl = await cli(ctx, W1, ['reload']);
+      const back = await waitFor(async () => (await read(`document.getElementById('out').textContent`)) === 'idle', 8000, 'the reloaded page').then(() => true, () => false);
+      clause(A, 'reload', rl.code === 0 && back, `${show(rl)} → #out reset to idle: ${back}`);
+      const full = await cli(ctx, W1, ['snapshot']);
+      const compact = await cli(ctx, W1, ['snapshot', '-c']);
+      clause(A, 'snapshot-compact', compact.code === 0 && compact.stdout.length <= full.stdout.length && /button "Go"/.test(compact.stdout), `full ${full.stdout.length} chars, -c ${compact.stdout.length} chars`);
+      const scoped = await cli(ctx, W1, ['snapshot', '-s', '#more']);
+      clause(A, 'snapshot-scoped', scoped.code === 0 && /Controlled|Agree/.test(scoped.stdout) && !/heading "Parity fixture"/.test(scoped.stdout), `-s #more → ${scoped.stdout.length} chars; has the section's controls, not the page heading`);
+      const deep = await cli(ctx, W1, ['snapshot', '-d', '1']);
+      clause(A, 'snapshot-depth', deep.code === 0 && deep.stdout.length < full.stdout.length, `full ${full.stdout.length} chars, -d 1 ${deep.stdout.length} chars`);
+      const ann = await cli(ctx, W1, ['screenshot', '--annotate', path.join(ctx.world.fakeHome, 'ann.png')]);
+      clause(A, 'screenshot-annotate', ann.code === 0 && /\[1\] @e\d+/.test(ann.stdout) && fs.existsSync(path.join(ctx.world.fakeHome, 'ann.png')), show(ann));
+      // MEASUREMENT for the skill (a container that scrolls on its own): --selector
+      const box0 = await read(`document.getElementById('box').scrollTop`);
+      const sb = await cli(ctx, W1, ['scroll', 'down', '200', '--selector', '#box']);
+      const box1 = await read(`document.getElementById('box').scrollTop`);
+      clause(A, 'scroll-a-container-with-selector', sb.code === 0 && Math.abs(box1 - box0 - 200) <= 2, `${show(sb)} → #box.scrollTop ${box0} → ${box1}`);
+    } finally { o.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS6);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
@@ -753,7 +832,7 @@ fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ app: APP_DIR, m
 let verdict, rc;
 if (MUTANT) {
   const want = MUTANTS[MUTANT].arms;
-  const redArms = new Set(armRed.map((c) => c.arm));
+  const redArms = new Set(armRed.filter((c) => c.clause !== 'arm-completed').map((c) => c.arm)); // an aborted arm is not a kill: a NAMED clause must go red
   const missed = want.filter((a) => !redArms.has(a));
   ({ verdict, rc } = ctlRed.length === 0 && missed.length === 0
     ? { verdict: `MUTANT ${MUTANT} KILLED: arm(s) ${want.join(', ')} red (${armRed.filter((c) => want.includes(c.arm)).map((c) => c.clause).join(', ')}), every control green; other red arms: ${[...redArms].filter((a) => !want.includes(a)).join(', ') || 'none'}`, rc: 0 }

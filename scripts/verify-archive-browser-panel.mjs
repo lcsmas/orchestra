@@ -3,7 +3,7 @@
 // The bug: archiving a workspace left its native WebContentsView attached to the
 // window (it is composited ABOVE the renderer, so it paints an opaque black
 // rectangle over the app). The renderer's BrowserPanel hides the view on
-// unmount, but an AGENT can open a panel via its MCP browser tools with NO
+// unmount, but an AGENT can open a panel (an `orchestra browser` call) with NO
 // renderer component ever mounted, so nothing tore it down.
 //
 // We stub `electron` and load the REAL browser-panel module, then assert on the

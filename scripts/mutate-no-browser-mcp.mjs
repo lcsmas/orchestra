@@ -11,8 +11,10 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const target = path.join(root, 'src/main/agent-sdk.ts');
 const backup = path.join(fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'b399-nobmcp-')), 'agent-sdk.ts.orig');
+const marker = path.join(root, 'src/main/.b399-nobmcp-active');
 const gate = () => spawnSync(process.execPath, [path.join(root, 'scripts/verify-answerable-wiring.mjs')], { cwd: root, encoding: 'utf8', timeout: 280000 });
 
+if (fs.existsSync(marker)) { console.log(`RESULT: INVALID — ${marker} exists: an earlier run died with agent-sdk.ts mutated; restore it from ${fs.readFileSync(marker, 'utf8').trim()} (or git checkout src/main/agent-sdk.ts) and delete the marker`); process.exit(1); }
 const control = gate();
 console.log(`control (unmutated) → rc ${control.status}`);
 if (control.status !== 0) { console.log(control.stdout.slice(-1500), control.stderr.slice(-500)); console.log('RESULT: INVALID — the unmutated gate is not green'); process.exit(1); }
@@ -22,6 +24,7 @@ const anchor = '  session.q = query({\n    prompt: promptStream(session),\n    o
 const hits = src.split(anchor).length - 1;
 if (hits !== 1) { console.log(`RESULT: INVALID — anchor occurs ${hits}x in agent-sdk.ts (must be exactly 1)`); process.exit(1); }
 fs.copyFileSync(target, backup);
+fs.writeFileSync(marker, backup + '\n');
 let verdict = 'SURVIVED';
 try {
   fs.writeFileSync(target, src.replace(anchor, anchor + "      mcpServers: { browser: { type: 'stdio', command: 'true' } },\n"));
@@ -32,6 +35,6 @@ try {
 } finally {
   fs.copyFileSync(backup, target);
 }
-try { execFileSync('cmp', [backup, target]); console.log('restored byte-exact (cmp OK)'); } catch { console.log('RESTORE NOT BYTE-EXACT'); process.exit(2); }
+try { execFileSync('cmp', [backup, target]); fs.rmSync(marker, { force: true }); console.log('restored byte-exact (cmp OK)'); } catch { console.log('RESTORE NOT BYTE-EXACT'); process.exit(2); }
 console.log(`RESULT: ${verdict}`);
 process.exit(verdict === 'KILLED' ? 0 : 1);

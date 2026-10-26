@@ -623,8 +623,8 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   (png painted, jpeg+quality, default path), `click` (ref, coordinates, miss control), `type`, `form-input` (fill replaces, input/change events),
   `evaluate`, `scroll`, `reveal` (a navigation opens the pane for the user; a read-only command does not), `hidden-panel` (the removed server's
   rule: screenshot/click/mouse/press/type/fill refused fast, nothing queued; open/snapshot/get/eval/wait/scroll/cookies/storage keep working),
-  `focus` (the skill's "never moves the human's keyboard focus", per documented command) and `skill` (the skill exists in a NEW worktree the app just
-  created, byte-equal to `BROWSER_SKILL`; its example completes the fixture flow; the same flow with a label not on the page / without the click
+  `focus` (the skill's "never moves the human's keyboard focus", per documented command), `table` (the skill's remaining commands: dblclick, hover, check/uncheck, select, focus, get value, is visible, reload, `snapshot -c/-s/-d`, `--annotate`, `scroll --selector`) and `skill` (the skill exists in a NEW worktree the app just
+  created, byte-equal to `BROWSER_SKILL`; its example completes the fixture flow; the same flow with a label not on the page / without the click / with the old bracket-only ref regex
   FAILS). 12 in-place bundle mutants (`--list`), each restored byte-exact + `cmp`.
 - **Measured differences from the removed tools** (all in the skill): `type` / `keyboard type` = `Input.insertText` exactly like the old `type` (no
   key events; `press` sends them); `fill` fires `input`, `change` only when the field is left (`press Tab`); `scroll` also works on a hidden pane (the

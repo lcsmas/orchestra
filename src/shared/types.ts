@@ -2248,9 +2248,9 @@ export interface BackgroundTask {
 // forward) AND the agent drives via native Electron `webContents.debugger`
 // (in-process CDP) — no external Chrome, no debug port, no puppeteer. Modeled
 // on the Claude Code desktop app's "Browser pane". One independent browser per
-// workspace: the main-process registry keys every view by `wsId`, and the
-// agent's browser tools close over their own session's `wsId`, so a workspace's
-// agent can only ever drive that workspace's panel.
+// workspace: the main-process registry keys every view by `wsId`, and the host
+// resolves the panel of an `orchestra browser` call from {workspace id, session
+// key}, so a workspace's agent can only ever drive that workspace's panel.
 
 /** Id of one browser tab within a workspace's panel. Minted by main per
  *  workspace (`t1`, `t2`, …) and never reused while the main process lives, so
