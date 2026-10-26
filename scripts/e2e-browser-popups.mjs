@@ -525,7 +525,8 @@ try {
     const hw = wins.find((w) => isOauthWin(w));
     const out = await val(() => evalIn(page, `document.getElementById('out').textContent`), '<page gone>');
     const MAXW = Math.floor(1500 * 0.9), MAXH = Math.floor(950 * 0.9);
-    clause('hostile', 'hostile-popup-opens-as-a-bounded-window', up && out === 'opened' && !!hw && hw.rect.width <= MAXW && hw.rect.height <= MAXH, `page says ${JSON.stringify(out)}; child window ${hw ? `${hw.rect.width}x${hw.rect.height}` : 'none'} (asked 4000x3000; the cap is ${MAXW}x${MAXH} = 90% of the 1500x950 app window)`);
+    const DECO = 16; // sway's border/title around the content (a 480x520 popup reads 484x522 in the tree); a leak is 4000x3000 or at least the 1500x950 output
+    clause('hostile', 'hostile-popup-opens-as-a-bounded-window', up && out === 'opened' && !!hw && hw.rect.width <= MAXW + DECO && hw.rect.height <= MAXH + DECO, `page says ${JSON.stringify(out)}; child window ${hw ? `${hw.rect.width}x${hw.rect.height}` : 'none'} (asked 4000x3000; the cap is ${MAXW}x${MAXH} = 90% of the 1500x950 app window, + up to ${DECO}px of sway decoration)`);
     clause('hostile', 'hostile-popup-is-not-fullscreen-and-floats-over-the-app', !!hw && hw.fullscreen === 0 && hw.floating === true, `fullscreen_mode=${hw?.fullscreen} floating=${hw?.floating} (the features string said fullscreen,kiosk)`);
     clause('hostile', 'hostile-popup-does-not-resize-or-tile-the-app-window', !!hw && wins.find((w) => !isOauthWin(w))?.rect.width === mainBefore?.rect.width, `main window width ${mainBefore?.rect.width} -> ${wins.find((w) => !isOauthWin(w))?.rect.width}`);
     clause('hostile', 'hostile-popup-title-shows-the-origin', !!hw && hw.name === `${new URL(BASE).origin} — ${TITLES.oauth}`, `compositor name ${JSON.stringify(hw?.name)}`);
