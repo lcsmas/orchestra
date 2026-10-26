@@ -15,6 +15,7 @@ const PANEL = 'src/main/browser-panel.ts';
 const SVC = 'src/main/browser-profiles.ts';
 const HOST = 'src/main/browser-profiles-host.ts';
 const PURE = 'src/shared/browser-profile.ts';
+const CDPHOST = 'src/main/browser-cdp-host.ts';
 
 const MUTANTS = [
   { id: 'P1-partition-ignored', file: PANEL, arms: 'attach', from: '      partition: panel.partition,', to: '      partition: partitionFor(panel.wsId, undefined),', red: ['profile-partition-holds-the-sign-in-on-disk', 'two-workspaces-share-one-profile-and-its-sign-in'] },
@@ -31,6 +32,9 @@ const MUTANTS = [
   { id: 'P12-socket-grows-a-profile-route', file: 'src/main/hooks-server.ts', arms: 'human', from: "          if (route === '/rename') {", to: "          if (route === '/browserProfileAttach') {\n            send(200, { ok: true, attached: true });\n          } else if (route === '/rename') {", red: ['socket-has-no-profile-route'] },
   { id: 'P13-detach-broadcasts-a-deleted-key', file: HOST, arms: 'attach', from: 'const updated = { ...ws, browserProfileId: profileId };\n      await store.upsertWorkspace(updated);', to: 'const updated: typeof ws = { ...ws };\n      if (profileId === undefined) delete updated.browserProfileId; else updated.browserProfileId = profileId;\n      await store.upsertWorkspace(updated);', red: ['settings-usage-count-follows-a-detach'] },
   { id: 'P14-session-cookies-not-promoted', file: PANEL, arms: 'session', from: '          if (p) return ses.cookies.set(p);', to: '          void p;', red: ['profile-session-cookie-gets-a-30-day-expiry', 'session-cookie-sign-in-survives-the-restart'] },
+  { id: 'P15-proxy-never-asks-the-profile-policy', file: CDPHOST, arms: 'cdp', from: "      const d = decideAgentCdp({ method, params, profileId: bp.panelProfileId(wsId), pageUrl: tab.url });", to: "      const d = { ok: true } as ReturnType<typeof decideAgentCdp>; void method; void params; void tab;", red: ['cookies-clear-is-refused-for-a-profile-workspace', 'the-other-workspace-stays-signed-in-after-the-refused-clear', 'cookie-write-on-another-site-is-refused'] },
+  { id: 'P16-proxy-forgets-the-target-tab-url', file: CDPHOST, arms: 'cdp', from: "profileId: bp.panelProfileId(wsId), pageUrl: tab.url });", to: "profileId: bp.panelProfileId(wsId), pageUrl: undefined });", red: ['cookie-write-on-the-pages-own-site-is-allowed'] },
+  { id: 'P17-proxy-judges-an-ephemeral-workspace-as-a-profile-one', file: CDPHOST, arms: 'cdp', from: "profileId: bp.panelProfileId(wsId), pageUrl: tab.url });", to: "profileId: bp.panelProfileId(wsId) ?? 'bp-000000000000', pageUrl: tab.url });", red: ['ephemeral-workspace-may-clear-its-own-jar'] },
 ];
 
 const only = process.argv.slice(2).filter((a) => a !== '--check');
