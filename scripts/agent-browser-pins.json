@@ -1,0 +1,8 @@
+{
+  "version": "0.39.2",
+  "repo": "vercel-labs/agent-browser",
+  "assets": {
+    "linux-arm64": { "name": "agent-browser-linux-arm64", "sha256": "72be7bfed76bb03142d9fba9f3b0e5e9ae535ff1789f6be6bdfc26f8daa136e5" },
+    "linux-x64": { "name": "agent-browser-linux-x64", "sha256": "0f68e74e792bf7d0814c58ee4b86dbcacfd3997c27805cd12c2d15e0ca38638e" }
+  }
+}

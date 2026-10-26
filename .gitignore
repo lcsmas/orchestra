@@ -60,3 +60,6 @@ build/renderer-cpu/
 
 # #293 screenshot gate output (scripts/container-memory-screenshot.mjs) — evidence, not source
 build/container-memory-shots/
+
+# Pinned agent-browser binary for the build host (scripts/fetch-agent-browser.mjs); never committed.
+build/agent-browser/
