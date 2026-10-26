@@ -1,0 +1,1 @@
+webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: true },

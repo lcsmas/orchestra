@@ -1,0 +1,1 @@
+  for (const p of set) if (!alive(p)) set.delete(p);

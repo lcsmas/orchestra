@@ -1,0 +1,1 @@
+  wc.on('did-navigate', () => lastActivation.delete(wc));

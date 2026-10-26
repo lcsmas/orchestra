@@ -1,0 +1,1 @@
+openCount: panel.tabs.length + livePopupWindows(wsId).length,

@@ -1,0 +1,1 @@
+  destroyBrowserPanel(id); // #396: every delete path

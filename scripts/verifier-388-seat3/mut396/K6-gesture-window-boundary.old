@@ -1,0 +1,1 @@
+return now - at <= USER_GESTURE_WINDOW_MS;

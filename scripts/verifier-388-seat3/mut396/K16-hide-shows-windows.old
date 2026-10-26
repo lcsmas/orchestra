@@ -1,0 +1,2 @@
+    if (visible) p.win.showInactive();
+    else p.win.hide();
