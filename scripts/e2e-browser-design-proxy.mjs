@@ -360,6 +360,20 @@ async function pickLanded(ctx, picksBefore) {
   catch (e) { throw new Error(`${e.message}; the TEXT half landed but the cropped screenshot did not (thumbs: ${c.thumbs.length})`); }
 }
 
+/** Size of the design overlay's highlight box (first child inside the host's CLOSED shadow root), via DOM.getDocument({pierce}) + DOM.getBoxModel — or null while it is not yet sized. */
+async function highlightBox(o) {
+  const { root } = await o.send('DOM.getDocument', { depth: -1, pierce: true });
+  const find = (n) => { if (n.attributes && n.attributes.includes('__orchestra_design_overlay__')) return n; for (const c of [...(n.children ?? []), ...(n.shadowRoots ?? [])]) { const f = find(c); if (f) return f; } return null; };
+  const host = find(root);
+  const box = host?.shadowRoots?.[0]?.children?.[0];
+  if (!box) return null;
+  const bm = await o.send('DOM.getBoxModel', { backendNodeId: box.backendNodeId }).catch(() => null);
+  if (!bm) return null;
+  const q = bm.model.content; // content quad = the element's style width/height (the old `style.width` reading)
+  const w = Math.round(Math.hypot(q[2] - q[0], q[3] - q[1]) * 100) / 100, h = Math.round(Math.hypot(q[6] - q[0], q[7] - q[1]) * 100) / 100;
+  return w > 0 ? { w, h } : null;
+}
+
 /** Arm design mode from the real toolbar, hover + click the card in the page with trusted input, and wait for the pick to land in the composer. */
 async function pickCard(ctx, o, A, label, picksBefore) {
   if (await toggleDesign(ctx)) throw new Error('design mode was already armed');
@@ -368,7 +382,8 @@ async function pickCard(ctx, o, A, label, picksBefore) {
   const rect = await o.eval(`(() => { const r = document.getElementById('pick-me').getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; })()`);
   const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
   await o.move(cx, cy);
-  const hl = await waitFor(() => o.eval(`(() => { const b = document.getElementById('__orchestra_design_overlay__')?.firstChild; return b && parseFloat(b.style.width) > 0 ? { w: parseFloat(b.style.width), h: parseFloat(b.style.height) } : null; })()`), 5000, 'the hover highlight');
+  // #403: the highlight box lives in a CLOSED shadow root (page JS cannot reach it, by design) — read it the way DevTools does: pierce the shadow tree through the DOM domain
+  const hl = await waitFor(() => highlightBox(o), 5000, 'the hover highlight');
   clause(A, `${label}/hover-highlight-painted`, Math.abs(hl.w - rect.width) < 2 && Math.abs(hl.h - rect.height) < 2, `overlay box ${hl.w}x${hl.h} vs the card ${rect.width}x${rect.height}`);
   await sleep(1200); // ~8 renderer polls (150 ms) while armed: the lease must make them free
   const mark = logMark(ctx);

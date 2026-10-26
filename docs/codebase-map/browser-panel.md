@@ -74,6 +74,7 @@ deleting them is a follow-up. `initBrowserPanels(accessor)` is called
 once from `index.ts` with the live main-window accessor. Reuses
 `login-browser.ts`'s session-partition + UA-normalization + context-menu
 pattern.
+- **`scripts/spike-hidden-view.sh`** (+ `.mjs`, `-main.cjs`) — the #402 hidden-view measurement rig (no app code; see *Hidden-view spike*).
 - **`src/shared/browser-skill.ts`** — the bundled `orchestra-browser` skill text (`BROWSER_SKILL`) + `lintBrowserSkill`, which holds every
   command the text documents to `planBrowserCommand` (usable ones accepted, the "cannot do" list refused). Written into every
   worktree's `.claude/skills/orchestra-browser/SKILL.md` by `installOrchestraHooks` (`workspaces.ts`) and part of the `HOOKS_VERSION`
@@ -201,12 +202,12 @@ attachment (image + fenced text block).
 BrowserPanel crosshair toggle          src/renderer/components/BrowserPanel.tsx
    │  browserDesignArm(wsId)
    ▼
-designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts
+designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts (script: design-mode-script.ts)
    │  in-page overlay: mousemove highlight + capturing click handler
-   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box}
+   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box, component}
 renderer polls browserDesignPoll (150ms while armed)
    │  main: reads+clears the global, Page.captureScreenshot with a padded clip
-   ▼  shapePick() — trim HTML, subset styles, build selector path
+   ▼  shapePick() — trim HTML, subset styles, build selector path, shapeComponent() (#403)
 store.addDesignPick(wsId, pick)                        src/renderer/store.ts
    ▼  queued per workspace; survives an unmounted composer
 Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/components/StructuredView.tsx
@@ -222,8 +223,17 @@ Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/component
   `nth-of-type`, drops hashed css-modules/styled-components/emotion classes and
   Tailwind arbitrary values, keeps the TAIL when too deep), `formatPickBlock`
   and `appendPickToDraft`.
+- **`src/main/design-mode-script.ts`** — the injected page script
+  (`DESIGN_MODE_SCRIPT` + `DESIGN_OVERLAY_ID` / `DESIGN_PICK_GLOBAL`), split out of
+  `browser-panel.ts` so the page script and the transport evolve apart. Its vm
+  unit test (`design-mode-script.test.ts`) runs the exact injected text against a
+  fake DOM and mutates each clause in place.
+- **`src/shared/design-source.ts`** — React source for a pick (#403), unit-tested
+  (`design-source.test.ts`): `reactSourceInPage` (the in-page fiber walk),
+  `looksSecret` / `normalizeSourcePath` / `shapeComponent` (validation + SECRET
+  FILTER), `formatComponentLine`.
 - **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
-  `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
+  `designModePoll`, injecting `DESIGN_MODE_SCRIPT` (from `design-mode-script.ts`). Goes through the
   SAME `cdp()` / `evaluate()` helpers the agent tools use, which run on a lease
   of the CDP proxy's debugger attach (#398) — design mode holds **no debugger of
   its own** (attaching twice to one target throws). While armed it keeps ONE
@@ -246,11 +256,102 @@ DevTools frontend attached never composites. A picker the user cannot see is not
 the feature, so the highlight + hit-testing live in the page instead. That also
 keeps the shared debugger free of any long-lived event subscription.
 
+### React component `file:line` (#403)
+
+A pick on a **React 17/18 dev build** carries `component: {name, file, line,
+column?}` and the composer block gets a `- component: \`Counter\` — \`/abs/Counter.jsx:5\``
+line, so the agent knows which file to edit.
+
+- The page script calls `reactSourceInPage(el)` (stringified into the script via
+  `Function.prototype.toString`, so it is plain ES5 with **no free identifier** —
+  the unit test runs the stringified text in an empty `vm` context). It finds the
+  `__reactFiber$…` key on the element (or the nearest DOM ancestor that has one),
+  reads `fiber._debugSource` (the JSX element's own `{fileName, lineNumber,
+  columnNumber}`), else walks `_debugOwner` for the first owner that has one.
+  The NAME always pairs with the source it came from: the immediate owner for
+  its own JSX site (`via: 'self'`), the owner that supplied the source for an
+  inherited one (`via: 'owner'`, printed as "rendered at" — a use-site, not the
+  element's line); an unnamed owner is `Anonymous`, never a far `.return`
+  ancestor. `displayName`/`name`, forwardRef/memo unwrapped.
+- **The DOM-cached fiber goes STALE across re-renders (HMR), and `.return` cannot say which alternate is current.**
+  `__reactFiber$…` is the first-mount fiber; React 18 writes a re-render's new
+  `_debugSource` / `_debugOwner` on whichever alternate is the work-in-progress one,
+  so every other re-render the cached fiber reports the OLD line (measured in a
+  real page: `[10,10,14,14]` for a line moved +2 per render). The first fix — "the
+  alternate whose `.return` chain ends at `root.current`" — is UNSOUND once a
+  component BAILS OUT (`React.memo`, `{children}`, `useMemo` JSX, `PureComponent`):
+  React does not rewrite `.return` on a bailed-out subtree, so the stale fiber's
+  chain can end at the new `root.current` too (measured: 10/18/18 for truth
+  12/20/20). The walker therefore ports React's own
+  `findCurrentFiberUsingSlowPath`: at each level it scans `parent.child → .sibling`
+  to see which alternate the parent actually LISTS (child pointers are reliable,
+  `.return` is not), and decides at the HostRoot by `stateNode.current === a`;
+  any inconsistency (detached tree, cycle, throwing getter, >5000 levels) degrades
+  to the cached fiber. Applied to the host fiber and to every owner consulted.
+  Pinned by `design-source-react18.test.ts` (REAL React 18.2 from the fixture page
+  over a fake DOM: edits-only and edits+bailout plans, two must-FAIL walker
+  mutants) and by rig arms `react18/rerender` + `react18/memo-bailout`
+  (mutants `stale-fiber`, `return-chain-rule`). Not covered: Suspense/Offscreen
+  hidden trees, keyed reorders under bailout, React 17 alternates.
+- **React 19 (`_debugStack`, no `_debugSource`), Vue, production builds → `null`:**
+  the pick has no `component` key and keeps the selector path, no error. React 19
+  owner-stack / source-map decoding is out of scope (#388).
+- **Secret filter** (`looksSecret`): in main, on what the page returned — a path
+  or name that looks like a token / password / key (known token shapes, JWT, PEM,
+  `userinfo:pw@`, `key=value`, ≥32-char mixed alnum runs — except kebab/snake
+  SLUGS of ≥4 short words, so an Orchestra worktree dir like
+  `orchestra-impl-…-403-a6a5fb9d` is not a "token") drops the WHOLE component.
+  Only `component.file`/`name` are filtered: `url`, `title` and `html` are the
+  pre-existing, unfiltered half of a pick. Both are PAGE-AUTHORED text (a page can
+  forge a fiber), so beyond the secret check: any control/format character
+  (bidi override, zero-width, Unicode tag chars, variation selectors, line
+  separators, backtick) or a run of 3+ combining marks rejects the path, the
+  stripped path must match a letters/digits/path-punctuation allowlist, and a name
+  must be an identifier-ish token (no spaces, so no sentence rides in a name; else
+  `Anonymous`). **Accepted gap:** a plain-text sentence of ≤400 allowed
+  characters, or an arbitrary absolute / `..` path (`/home/x/.ssh/id_ed25519`),
+  still passes as `file` — it is page-authored text on a line the agent reads as
+  "the file to edit", the same class as the already-unfiltered `url` / `title` /
+  `html` of a pick. The raw string is checked BEFORE the `?query` is stripped (a
+  `?token=…` lives only there). Names like `password.tsx` / `auth/` are fine.
+- `_debugSource.fileName` is whatever the JSX transform recorded (usually an
+  absolute fs path); `normalizeSourcePath` strips `webpack-internal:///`,
+  `file://`, `http://host/`, Next's `(app-pages-browser)/` layer and `?query#hash`.
+- The owner fallback returns the OWNER's own `_debugSource` — where that owner
+  was *used*, not defined. It is only reached when the host element itself has
+  no JSX source (an element built with plain `createElement`).
+
+### Page-CSS-proof overlay (#403)
+
+The highlight box + label live in a **closed shadow root** inside ONE host
+`<div id="__orchestra_design_overlay__">` appended to `<html>` (not `<body>`, so
+`body > *` rules and a transformed `body` do not touch it):
+
+- host styles are set inline with `!important` (`setProperty(k, v, 'important')`)
+  — an inline `!important` beats any stylesheet rule, layered or not — starting
+  with `all: initial` so inherited `visibility`/`opacity`/`transform` from the page
+  are wiped; then `display:block; position:fixed; inset:0; z-index:2147483647;
+  pointer-events:none`;
+- `popover="manual"` + `showPopover()` puts the host in the **top layer**, above
+  every z-index, stacking context and transformed ancestor — a later full-screen
+  max-z-index cover (cookie banner) cannot paint over the highlight;
+- nothing in the shadow tree is reachable from the page (`host.shadowRoot` is
+  `null`), so no selector can restyle the box.
+
+Rig: `scripts/e2e-browser-design-source.sh <built app>` (arms `react18`,
+`react19`, `hostile`, `ui`; `--mutant <name>` patches ONE clause of a COPY of the
+built chunk — 14 mutants, each must redden its named clause while every `ctl/`
+stays green). Fixtures: `scripts/fixtures/browser-site/pages/design-{react18,
+react19,hostile}.html` (React 18.2 UMD dev inlined verbatim; React 19 bundled from
+the repo's own copy; both compiled with esbuild's real automatic dev JSX
+transform — regenerate with `scripts/gen-browser-design-fixtures.mjs`).
+
 ### Design-mode gotchas
 
-- The overlay sets `pointer-events: none` on its own chrome, and picking starts
-  from `document.elementFromPoint` (which skips `pointer-events:none` nodes) —
-  so **design mode cannot capture its own highlight box**.
+- The overlay host has `pointer-events: none` and `hit()` in the page script
+  skips the host even when a hit-test returns it (`document.elementsFromPoint`) —
+  so **design mode cannot capture its own highlight box**. The two are
+  redundant; the rig's `overlay-pickable` mutant removes both.
 - **A navigation destroys the injected overlay** (new document), silently
   disarming the picker. `BrowserPanel` re-arms on every `state.url` change while
   armed.
@@ -276,7 +377,10 @@ keeps the shared debugger free of any long-lived event subscription.
   `subsetStyles surfaces the SHORTHAND box/border properties`.
 - **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
   backtick in a comment there silently terminates the string and breaks the
-  build (`TS1005`/esbuild parse error) far from the edit.
+  build (`TS1005`/esbuild parse error) far from the edit. It also embeds
+  `reactSourceInPage.toString()`: the BUILT chunk is minified, so any rig mutant
+  that targets the walker or `looksSecret` must match the minified text with a
+  regex, never the source spelling.
 - **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no
@@ -422,9 +526,14 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
 - **A non-composited view produces NO frames — screenshots and CDP input hang
   or lie.** Measured on Electron 33: `capturePage()` on a never-attached view
   silently returns an empty 0x0 image; on a detached-after-shown view it
-  **hangs forever**; CDP `Page.captureScreenshot` hangs in both cases; CDP
-  mouse input hangs or queues events that fire on a later attach.
-  `Runtime.evaluate` / `loadURL` work fine detached. So the proxy's `framesError`
+  **hangs** (pending until the view is composited again); CDP
+  `Page.captureScreenshot` hangs in both cases. CDP `mousePressed/Released` and
+  `Input.insertText` are NOT affected on a view detached after it was shown —
+  the #402 spike measured them landing at once (5/5); only `mouseWheel` hangs
+  (a never-attached view has no layout: text never lands, a click only with throttling on).
+  A hidden view CAN be made to answer — see *Hidden-view spike*; the product's refusals are
+  UNCHANGED by that finding (lifting them is tracked in #406). `Runtime.evaluate` / `loadURL` work
+  fine detached. So the proxy's `framesError`
   makes `Input.*` and `Page.captureScreenshot` fail FAST with a clear error naming the
   commands that DO still work (`snapshot`/`eval`/`get`/`open`/`scroll`/`wait`), and every
   capture/input CDP call is bounded — a hung promise here is a CLI call that never
@@ -440,6 +549,120 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
 - Bounds are device-independent pixels relative to the window content; apply
   them **after** the view is added (next animation frame) so the placeholder has
   laid out.
+
+## Hidden-view spike (#402, spec #388)
+
+**Question.** Can a browser view that is not composited in the main window still produce frames on Electron 33 under sway — so that agents could drive background tabs / background workspaces without bringing them to the front? **Verdict: POSITIVE for a view that loaded at real size while attached, with the conditions below.** `view.setVisible(false)` with `backgroundThrottling` OFF keeps `capturePage()`, all three `Page.captureScreenshot` forms, click and type working on the hidden view, and nothing leaks onto the screen. NOT covered: (a) a view hidden before its page first loaded or never attached (`d2`, `a1`: no usable frame; a view loaded at real size under the active tab and hidden afterwards works through `captureBeyondViewport` — finding 7); (b) the Orchestra window on a sway workspace that is not displayed (even the foreground tab hangs there); (c) the app's current hide path (`removeChildView`), a hidden `BrowserWindow`, or re-hosting a view (all produce no usable frames). **Refusals unchanged tonight; lifting is tracked in [#406](https://github.com/lcsmas/orchestra/issues/406) (measure N hidden unthrottled surfaces first).** `browser-panel.ts` is untouched by #402.
+
+**Conditions measured (all must hold for a hidden view to answer):**
+1. The view **loaded at real size while attached** — even occluded under the active tab (`g2`). Hidden before its page first loaded (`d2`), never attached (`a1`), or a 2×2 first paint (`d4`) never gives a frame.
+2. `backgroundThrottling` is OFF when the capture runs: set before hiding (`d1-bt0`) or flipped right before the agent acts (`d3`, throttling back ON while idle: timers 1/s instead of 20/s). Without it CDP screenshots time out 5/5 and the first `capturePage` of a run is often a STALE pre-hide frame (the first capture of a run: 2/5, 4/5, 2/5 in the three committed N=5 sets of `d1`; `capturePage` itself stale 2/5, 3/5, 1/5).
+3. A 0.25–0.6 s warm-up for a view that was loaded under the active tab and then hidden (`g2`: `captureBeyondViewport` fresh after 239–291 ms, `capturePage` after 553–602 ms and only after a failed first attempt; 5 runs, `retry` fields of the evidence); a view that was already composited answers on the first try (`d1-bt0`: `capturePage` fresh after 16–69 ms, `captureBeyondViewport` after 227–1345 ms).
+4. The Orchestra window's sway workspace is displayed: otherwise nothing paints — not even the visible tab (`ctl-visible+away` 0/5) — and the `withTimeout` guard is the only protection.
+5. Hidden captures keep the last composited size (a resize while hidden is not reflected, `d5`), and `captureBeyondViewport` returns the whole scrollable page, not the viewport (`clip` untested while hidden).
+
+**Re-run.** Bare Electron 33.4.11 (Chromium 130), no app code, in the contained rig (own headless sway, private runtime). Needs `MemAvailable` ≥ 6 GB; one rig tree at a time, `nice -n 10`, wrapped per batch in the fleet `gui-slot.sh`; the first run of a new tree with `RIG_HIDE_REAL_RUNTIME=1`:
+- `scripts/spike-hidden-view.sh "$PWD" --arms key --n 5 --assert` — 13 arms, ~35 min; exit 1 if the positive control fails or any verdict class changes.
+- `scripts/spike-hidden-view.sh "$PWD" --n 5` — the full matrix (≈190 runs, ~2.5 h); `--arms a,b` for a subset (the control `ctl-visible` is always added).
+- `node scripts/spike-hidden-view.mjs "$PWD" --summarize-only --markdown --out <dir>` re-prints the table from `<dir>/*/result.json` (no rig needed); `--export-jsonl <file> --tag <set>` writes the compact per-run evidence.
+- Instrument self-test: `… --arms ctl-visible,d1-setvisible-false-bt0 --mutant noflip --assert` must exit 1 with `CONTROL FAILED`.
+- Files: `scripts/spike-hidden-view{.sh,.mjs}` (harness, aggregation, verdicts), `scripts/spike-hidden-view-main.cjs` (one arm per fresh Electron process). Per-run evidence of this measurement: `docs/evidence/402-hidden-view-spike.jsonl`.
+
+**Re-deriving the cited numbers** (every number below that is not read off the matrix comes from the committed evidence file; run from the repo root):
+```bash
+python3 -I - <<'PY'
+import json
+R = [json.loads(l) for l in open('docs/evidence/402-hidden-view-spike.jsonl')]
+S = lambda arm, s='table': sorted((r for r in R if r['arm'] == arm and r['set'] == s), key=lambda r: r['iter'])
+for s in ('table', 'key-run-1d614d01', 'c2-instruments-off'):  # d1 without bt0: caps keep the oracle order, first = first capture
+    rs = S('d1-setvisible-false', s)
+    print(s, 'first capture stale', sum(next(iter(r['caps'].values())).startswith('stale') for r in rs), 'capturePage stale', sum(r['caps']['capturePage'].startswith('stale') for r in rs), 'of', len(rs))
+print('sampler post-hide samples a2/d1-bt0/d3', [[r['leakSampler']['postHide'] for r in S(a, 'c1-leak-sampler')] for a in ('a2-detached-after-shown', 'd1-setvisible-false-bt0', 'd3-setvisible-false-bt-on-demand')])
+for a in ('d1-setvisible-false-bt0', 'g2-occluded-then-hidden-bt0'):
+    print(a, '+retry (capturePage ms, beyondViewport ms)', [(r['retry']['firstFreshMs'], r['retry']['beyondFirstFreshMs']) for r in S(a + '+retry')])
+print('retry attempts d2/a1', [[r['retry']['attempts'] for r in S(a + '-bt0+retry')] for a in ('d2-setvisible-false-first', 'a1-detached-never')])
+for a, s in (('c1-rehost-moved', 'key-run-1d614d01'), ('c1-rehost-moved', 'table'), ('c3-rehost-basewindow', 'table'), ('c4-rehost-browserview', 'table')):
+    print(a, s, 'wedged', sum(not r['recovers'] for r in S(a, s)), 'of', len(S(a, s)))
+PY
+```
+Not committed (so not re-derivable from the repo): the per-run `late` lists (which hung calls settled afterwards), the screenshots, and the first full N=5 run's `d1` rows (superseded in the table by the final-tree run).
+
+**Method.** One fresh Electron per (arm, iteration), iteration-major (all arms' run *i* before any run *i+1*); the capture-oracle order alternates fwd/rev (N=5 = 3 fwd + 2 rev, so first-position effects are not balanced). The page is a solid colour A with an animated square, a 50 ms timer and a rAF counter, an `<input>` and a 4000 px spacer; after the view is hidden it flips to colour B. A capture reads **fresh** (B), **stale** (A, the pre-hide frame), **empty** (0×0), **error** or **timeout** (4 s — a hung promise is data). Oracles: in-page rAF/timer ticks per second; `Page.startScreencast` frames, `beginFrameSubscription` callbacks and OSR `paint` events; `capturePage()`; `Page.captureScreenshot` default / `fromSurface:false` / `captureBeyondViewport`; `invalidate()`+`capturePage()`; the app's own input calls (`Input.dispatchMouseEvent` press+release on the `<input>`, `Input.insertText`, `mouseWheel`); `grim` on the compositor after every phase plus a compositor sampler for a transient flash (one `grim` per ≈ 80–270 ms: 49–163 post-hide samples over a hidden phase of ≈ 13 s, `leakSampler` in the evidence). **Controls:** `ctl-visible` (a composited view) must read PAINTS in every valid run or the matrix is voided (`CONTROL FAILED`, exit 1); a run is `valid` only if the page ticked and — for arms that start composited — its pre-hide capture read A (never-visible arms: a fresh show-back capture; offscreen arms: liveness only, `e1` being the control of `e2`); `x1` (a mapped `showInactive` window) is the positive control of the leak sampler (47 %). **Mutant:** `--mutant noflip` (never flip the colour) turns every `fresh` into `stale` and the control gate red — killed (`--assert` exit 1: CONTROL FAILED + 2 assertion failures).
+
+**Matrix.** Ticket arms and extras N=5, informational arms N=3 (`d4`, `f*`, `x1`, `+sw`, `e1-fs0`); the matrix is assembled from three sets and tagged per run in the evidence file: the first full N=5 run (earlier contained-rig revision with the real `XDG_RUNTIME_DIR`, run before the Q2 freeze; same bare Electron and headless sway), the confound controls, and the final-harness re-runs on the private-runtime rig, which REPLACE the rows of `c4`, `d5`, `g1`, `g2`, the `+retry` arms and the 13 key arms. Of the 194 runs behind the table, 81 ran on the earlier rig revision and 113 on the private-runtime rig. Columns: the page's own rAF/timer ticks per second while hidden and idle (8 s window); "landed" = runs in which the click / typed text / wheel scroll had reached the page within 700 ms; leak = max share of the page's colours on the whole compositor output while hidden.
+
+| arm | valid | capturePage | CDP shot | CDP shot beyondViewport | rAF/s · timers/s | screencast fr./4 s | click · type · wheel landed | leak | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| `ctl-visible` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 61.9 · 20.0 | 250 | 5 · 5 · 5 | 99% | PAINTS |
+| `m1-multi-hidden` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 24.9 · 20.0 | 250 | 5 · 5 · 5 | 98% | PAINTS-ON-DEMAND |
+| `a1-detached-never` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 1.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `a2-detached-after-shown` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b1-hidden-window` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.9 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b2-hidden-window-view` | 5/5 | error×3 empty×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `c1-rehost-moved` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 2/5 |
+| `c2-rehost-wrapped` | 5/5 | — | — | — | — | — | — | 0% | UNSUPPORTED (Electron refuses to wrap an owned webContents) |
+| `c3-rehost-basewindow` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 5/5 |
+| `c4-rehost-browserview` | 5/5 | fresh×3 timeout×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | ONE-SHOT  · wedged after capture 5/5 |
+| `d1-setvisible-false` | 5/5 | stale×2 fresh×3 | timeout×5 | timeout×5 | 0.0 · 1.0 | 1 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `d2-setvisible-false-first` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 1.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 60.0 · 20.0 | 243 | 5 · 5 · 5 | 0% | PAINTS |
+| `e2-offscreen-view` | 5/5 | empty×5 | timeout×5 | error×5 | 60.0 · 20.0 | 0 | 5 · 0 · 0 | 0% | NO FRAMES |
+| `a1-detached-never-bt0` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `a2-detached-after-shown-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b1-hidden-window-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.9 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `b2-hidden-window-view-bt0` | 5/5 | error×3 timeout×2 | timeout×5 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: beyondViewport) |
+| `c1-rehost-moved-bt0` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 1.0 · 20.0 | 1 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 3 | 0% | PAINTS-ON-DEMAND |
+| `d2-setvisible-false-first-bt0` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 59.4 · 20.0 | 242 | 5 · 5 · 5 | 0% | PAINTS |
+| `d3-setvisible-false-bt-on-demand` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 0.0 · 1.0 | 243 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `d5-resize-while-hidden-bt0` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 5 | 0% | PAINTS-ON-DEMAND |
+| `ctl-visible+away` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0+away` | 5/5 | timeout×5 | timeout×5 | timeout×5 | 0.0 · 20.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `e1-offscreen-window+away` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 60.0 · 20.0 | 243 | 5 · 5 · 5 | 0% | PAINTS |
+| `e1-offscreen-window-fs0` | 0/3 | n/a | n/a | n/a | n/a · n/a | n/a | 0 · 0 · 0 | 0% | CRASH (3/3 runs: signal=SIGSEGV, during cap:fromSurface:false;) |
+| `d4-tiny-first-paint-bt0` | 3/3 | other×3 | other×2 timeout×1 | error×3 | 60.0 · 20.0 | 1 | 3 · 0 · 0 | 0% | NO FRAMES |
+| `g1-occluded-new` | 5/5 | error×3 empty×2 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | NO FRAMES |
+| `g2-occluded-then-hidden-bt0` | 5/5 | error×3 fresh×2 | timeout×3 fresh×2 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 2 | 0% | PARTIAL (some capture oracle fresh: capturePage,cdpShot,fromSurface:false,beyondViewport,invalidate+capturePage) |
+| `d1-setvisible-false-bt0+retry` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 1.1 · 20.0 | 244 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `d2-setvisible-false-first-bt0+retry` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `g1-occluded-new+retry` | 5/5 | fresh×5 | timeout×5 | timeout×5 | 0.0 · 1.0 | 0 | 5 · 5 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `g2-occluded-then-hidden-bt0+retry` | 5/5 | fresh×5 | fresh×5 | fresh×5 | 0.0 · 20.0 | 0 | 5 · 5 · 4 | 0% | PAINTS-ON-DEMAND |
+| `a1-detached-never-bt0+retry` | 5/5 | empty×5 | timeout×5 | error×5 | 0.0 · 20.0 | 0 | 0 · 0 · 0 | 0% | NO FRAMES |
+| `f1-clipped-bounds` | 3/3 | stale×2 fresh×1 | timeout×3 | timeout×3 | 0.0 · 1.0 | 1 | 3 · 3 · 0 | 0% | PARTIAL (some capture oracle fresh: capturePage,invalidate+capturePage) |
+| `f2-zero-bounds` | 3/3 | other×3 | other×3 | error×3 | 59.8 · 20.0 | 1 | 3 · 0 · 0 | 0% | NO FRAMES |
+| `x1-showinactive-opacity0` | 3/3 | fresh×3 | fresh×3 | fresh×3 | 60.9 · 20.0 | 239 | 3 · 3 · 3 | 48% | PAINTS |
+| `b1-hidden-window-bt0+sw` | 3/3 | timeout×3 | timeout×3 | timeout×3 | 0.9 · 20.0 | 1 | 3 · 3 · 0 | 0% | NO FRAMES |
+| `c1-rehost-moved-bt0+sw` | 3/3 | timeout×3 | timeout×3 | timeout×3 | 1.0 · 20.0 | 1 | 3 · 3 · 0 | 0% | NO FRAMES |
+| `d1-setvisible-false-bt0+sw` | 3/3 | fresh×3 | fresh×3 | fresh×3 | 1.1 · 20.0 | 243 | 3 · 3 · 3 | 0% | PAINTS-ON-DEMAND |
+
+**Findings** (numbers from the matrix unless stated).
+1. **Detached (`a1`/`a2`) and every hidden `BrowserWindow` (`b1`/`b2`) give no usable frames.** `a2` — the app's background-workspace path (`removeChildView`): `capturePage` and every CDP screenshot time out 5/5 (they settled only after the view was composited again — read from the per-run `late` lists, which are NOT in the committed evidence); rAF 0/s, timers throttled to 1/s. Yet a click and `Input.insertText` still LAND in the page 5/5 (only `mouseWheel` dispatch hangs) — the old belief "CDP input hangs on a hidden view" was wrong for press/release/insertText. `b1`/`b2` (a `show:false` window hosting the page / a view): `capturePage` timeout / "Current display surface not available" 5/5; `backgroundThrottling:false` and `--disable-renderer-backgrounding`, `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows` change nothing for `b1`/`c1`; for `b2` only `Page.captureScreenshot {captureBeyondViewport:true}` becomes fresh (`b2-…-bt0`, 5/5) while rAF stays 0/s and `capturePage` still fails — a hidden window cannot be driven like a hidden view. `a1` (never attached): `capturePage` → 0×0 5/5, CDP "0 width".
+2. **Re-hosting a tab's view in a hidden window wedges it.** `c1`/`c3` (move the view into a hidden `BrowserWindow` / `BaseWindow`): the FIRST oracle of each run reads fresh 5/5 (capturePage in fwd runs, `invalidate`+`capturePage` in rev runs), every later one times out, and after moving the view back `capturePage` still timed out within 4 s in 5/5 runs of the earlier key run but only 2/5 of the final-tree run (`c3`, `c4`: 5/5) — the wedge is real but timing-dependent. `c2` (wrap the tab's `webContents` in a new `WebContentsView`) is refused by Electron 33: `options.webContents is already attached to a window` (the arm's other columns are meaningless). `c4` (adopt the webContents with a legacy `BrowserView` inside a hidden `BrowserWindow`) behaves like `c1`/`c3`: the first oracle reads fresh at the BrowserView's 800×600, every later one times out.
+3. **`setVisible(false)` + `backgroundThrottling:false` works** (`d1-bt0`): `capturePage` and all CDP forms fresh 5/5, click 5/5, typed text 5/5, `mouseWheel` dispatch resolves 5/5 but scrolled within 700 ms in only 3/5 (always by the next frame); screencast 244 frames/4 s; rAF ~1/s, timers 20/s; leak 0 %. **Without** `bt0` (`d1`) CDP screenshots time out 5/5 and `capturePage` is bimodal — fresh or a **stale** pre-hide frame: the FIRST capture of a run (`capturePage` in forward runs, `invalidate`+`capturePage` in reverse runs) was stale in 2/5, 4/5 and 2/5 runs of the three N=5 sets committed in the evidence file (final-tree run / earlier key run / instruments-off control; `capturePage` alone stale 2/5, 3/5, 1/5); later captures of the same run were mostly fresh — a silently wrong screenshot, worse than a hang.
+4. **The throttling switch can be flipped at action time** (`d3`): throttling ON while idle (timers 1/s), `wc.setBackgroundThrottling(false)` right before acting → `capturePage` and all CDP forms fresh 5/5, also with the screencast and frame subscription OFF and the capture issued immediately after the toggle (confound control C2, N=5). A 24 s hidden wait before acting changes nothing (C3, N=2, `d1-bt0` and `d3` fresh 2/2).
+5. **Resize while hidden** (`d5`): the capture stays fresh 5/5 but its size stays the PRE-resize frame (bounds set to 900×500 while hidden; every oracle returned 1400×900) — a window resize while a tab is hidden is NOT reflected in hidden captures (they keep the last composited size; `captureBeyondViewport` returns the page's content size, 1385×4000). **Several hidden views next to a visible one** (`m1`: V1/V2 hidden with `bt0`, V0 visible on top): V1 fresh 5/5, V2 answered (its colour was not flipped, so its freshness is untested); the visible V0 kept ~55 rAF/s, received 0 clicks/keys, stayed unscrolled and its own capture still read its colour (5/5).
+6. **No on-screen leak.** The compositor sampler (49–163 samples per run) read 0 samples above 1 % of the page's colours during the hidden phases of `a2`, `d1-bt0`, `d3` (3 runs each) while `ctl-visible` read 99 % and the mapped-window control `x1` 47 %; `grim` after every phase read 0 % in every hidden arm. `x1` (opacity-0 `showInactive` window) paints but maps a second toplevel in sway — not a product option.
+7. **A view must have LOADED at real size, attached, before it is hidden** — `d2` (`setVisible(false)` before the page loads) and `a1` (never attached) give no usable frame: 27 attempts over 8 s of `capturePage` AND `captureBeyondViewport` every 300 ms were all empty / "0 width" (5/5 runs each). `g1` (loaded UNDER an opaque active tab and left there; Chromium treats the occluded sibling as hidden, rAF 0/s) is not dependable: first attempts error/empty and CDP calls hit the 4 s deadline (some of them settled afterwards, at a time not measured; per-run `late` lists, not committed); in the `+retry` runs a `captureBeyondViewport` left pending for 2×4 s was followed by a fresh `capturePage` in 5/5 runs, so an occluded sibling can wake after a long pending capture — do not rely on it. **`g2` — loaded at real size under the active tab, then `setVisible(false)` + `bt0` — works once warmed:** `captureBeyondViewport` is fresh in 5/5 runs of the oracle matrix and within 239–291 ms of the first retry attempt (5/5), `capturePage` fails its first attempt (error ×3, fresh ×2 un-retried) and is fresh 553–602 ms into the retry loop (5/5), the default CDP screenshot timeouts 3/5. `captureBeyondViewport` returns the full scrollable page (1385×4000 here), not the viewport — viewport-sized output needs a `clip` (untested while hidden). `d4` (a 2×2 first paint, then hide + resize) keeps returning the 2×2 frame
+8. **The Orchestra window being off-screen stops everything, hiding or not.** With the window's sway workspace switched away (`+away`), the VISIBLE control `ctl-visible+away` reads rAF 0/s and times out 5/5, as does `d1-bt0+away` — a pre-existing limit of foreground screenshots too (presumably sway sends no frame callbacks to a surface on a non-displayed workspace), not caused by hiding. `document.visibilityState` stays `visible` there, so it is no usable signal; the `withTimeout` guard in `browser-panel.ts` stays.
+9. **Offscreen rendering paints regardless** (`e1`, a `show:false` window with `webPreferences.offscreen`): 60 rAF/s, 243 screencast frames, ~254 `paint` events, all captures fresh, input OK, also with the workspace switched away (`e1+away` 5/5). But OSR is chosen at `webContents` creation (a human-facing tab cannot be both), an OSR `WebContentsView` never attached stays empty (`e2`), and **CDP `Page.captureScreenshot {fromSurface:false}` on an OSR window SIGSEGVs the Electron main process** (`e1-fs0`, 3/3) — the harness skips that oracle on `e*` arms.
+10. `f1` (bounds moved off-window, view still "visible") behaves like `d1` without `bt0` (capturePage / `invalidate`+`capturePage` fresh or stale by order, CDP timeouts); `f2` (1×1) returns a non-page frame — neither is a hiding technique.
+
+**Confound controls.** C1 leak sampler (`ctl-visible`, `x1`, `a2`, `d1-bt0`, `d3`, `m1`, N=3, private rig); C2 instruments off + immediate capture (`--skip screencast,framesub --p2-ms 0`, N=5, private rig); C3 24 s tail (N=2, earlier rig revision); C4 `d4` (N=3, private rig). The key preset (`--arms key --n 5 --assert`) passed twice — at `1d614d01` and on the final tree (ASSERT OK, 13/13 arms, N=5, private-runtime rig) — and the `noflip` mutant exits 1 (CONTROL FAILED + 2 assertion failures) on both.
+
+**What the lift (#406) can build on this** (design input, not implemented): keep every tab of every workspace attached to the window and hide the non-active ones with `setVisible(false)` instead of `removeChildView`; call `setBackgroundThrottling(false)` only around an agent action (`d3`) and restore it after; treat a `stale` or wrong-size frame as failure (compare the page's own marker, not just "non-blank"); keep the `requireComposited`-style refusal for a view that never loaded at real size and the `withTimeout` guard for a window that produces no frames; attribute hidden views per workspace (the #394 tab-memory pattern already attributes the renderer processes).
+
+**How to measure the cost (#406 — write the go/no-go thresholds BEFORE the run).** Rig: this one — `scripts/e2e-contained-rig.sh` through `gui-slot.sh`, `RIG_HIDE_REAL_RUNTIME=1` on the first run, `nice -n 10`, bare Electron 33.4.11 — as a new `--cost` mode of `spike-hidden-view-main.cjs` reusing the harness (control gate, `--assert`, evidence jsonl). One fresh Electron per (N, flavour, repetition); N ∈ {0, 1, 8, 40, 160}, 5 repetitions (N=0 = the main window + its one visible view = baseline and control). Each hidden view: a `WebContentsView` attached at real bounds (1400×900), loaded, then `setVisible(false)`, in a per-workspace partition (8 views per partition, as the app); flavours **BUSY** (the spike page: animated square + 50 ms timer), **IDLE** (static colour), and the **THROTTLED** comparison (throttling ON, the `d3` design). Settle 10 s after the last load, then sample 30 s at 1 Hz:
+- **Memory**: for every pid of `app.getAppMetrics()`, PSS from `/proc/<pid>/smaps_rollup` (the truth for shared pages) AND RSS from the process table (what #394 bills), grouped browser / gpu / renderer / utility; total, per workspace, and marginal per view = (total(N) − total(0)) / N; the number of distinct renderer pids; host `MemAvailable` before the first view and after the settle (the memory guard's own signal: Admission holds below 6 GB, Pause below 3 GB).
+- **CPU**: Δ(utime+stime) of the same pids over the 30 s, as % of one core, total and per view.
+- **GPU**: no portable counter on this host — record the gpu-process PSS growth and any readable DRM debugfs counter, else write "not readable" (never 0).
+- **Frames**: a hidden BUSY view's rAF/s and screencast frames/4 s (is the unthrottled view actually rendering at 60/s, or at 1/s like `d1-bt0`?).
+- **What the human feels / what the agent pays**: the VISIBLE view's rAF/s (median and 5th percentile), and per N the latency of `capturePage` and `captureBeyondViewport` (20 actions on random hidden views, median / p95) plus the first-capture warm-up of a freshly added view (condition 3).
+- **Stop rule**: abort a run at k views when `MemAvailable` falls below 6 GB and record "aborted at k"; run N=160 only when `MemAvailable` ≥ projected (marginal(1, 8, 40) × 160 + baseline) + 6 GB, else report the projection with its fit residual. The box runs ~40 agents, so expect to need a quiet fleet for N=160.
+
+**Traps hit while measuring.** An unreferenced `WebContentsView`/`BrowserWindow` is garbage-collected and its `webContents` destroyed mid-run ("Object has been destroyed") — keep references. `capturePage()` returns a 0×0 image for a never-painted view and rejects with "Current display surface not available for capture" when the surface is gone. The rig's `env -i` strips any knob exported outside the harness — knobs are CLI flags. `pkill -f` on the harness matches its own wrapper (kill by pid). A 2×2 first-paint view paints scrollbars over the whole page. The hygiene hash of `~/.claude*` differs for the invoking session's own `.credentials.json`/`.claude.json` (its normal churn), never for anything the probe could address.
+
+**NOT VERIFIED.** GPU/RSS/CPU cost of N hidden surfaces (→ #406); another compositor/GPU, or other windows overlapping Orchestra's (floating windows covering it); macOS/Windows; a flash shorter than the sampler cadence (≈ 80–270 ms); the legacy `BrowserView` re-host and the wheel scroll timing beyond 700 ms; the `+away` mechanism (the cause "no frame callbacks" is inferred, not read from sway); the full matrix was measured in two rig revisions (see provenance) — the final harness re-ran the key preset and the new/changed arms only.
 
 ## Usage census (#392, spec #388 success metric)
 
