@@ -194,7 +194,7 @@ class Cdp {
 }
 
 // ── seeding ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-const WS_NAMES = ['b399-one', 'b399-two'];
+const WS_NAMES = ['b399-one', 'b399-two', 'b399-three']; // W3: the "never built" workspace of the reveal arm; W2 must stay NEVER-SHOWN until the hidden-panel arm
 function seedWorld(armDir) {
   const fakeHome = path.join(armDir, 'home'), ohome = path.join(armDir, 'oh'), cfg = path.join(armDir, 'claude-config'), repoDir = path.join(armDir, 'repo');
   for (const d of [fakeHome, ohome, cfg, repoDir]) fs.mkdirSync(d, { recursive: true });
@@ -276,7 +276,7 @@ process.on('SIGTERM', () => process.exit(143));
 async function main() {
   const armDir = path.join(RIG_DIR, 'world'); fs.mkdirSync(armDir, { recursive: true });
   const world = seedWorld(armDir);
-  const [W1, W2] = world.workspaces;
+  const [W1, W2, W3] = world.workspaces;
   const fixture = spawn(process.execPath, [path.join(repoRoot, 'scripts/fixtures/browser-site/server.mjs'), '0'], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'inherit'] });
   const FIX = await new Promise((res, rej) => { let b = ''; fixture.stdout.on('data', (d) => { b += d; const m = /LISTENING (\d+)/.exec(b); if (m) res(`http://127.0.0.1:${m[1]}`); }); fixture.on('exit', () => rej(new Error('fixture exited'))); setTimeout(() => rej(new Error('fixture never listened')), 8000); });
   console.log(`[rig] fixture ${FIX}`);
@@ -303,7 +303,7 @@ async function main() {
     // Assert what the DRIVER handed the app: Chromium may rewrite /proc/<pid>/environ once a bus var is present (seat 2 F2), so the process view is informational only
     clause('ctl', 'scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && env.XDG_RUNTIME_DIR === XDG && !('DISPLAY' in env) && !('DBUS_SESSION_BUS_ADDRESS' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND,
       `env handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} (the rig's private dir) WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'} DBUS=${'DBUS_SESSION_BUS_ADDRESS' in env ? 'SET' : '<unset>'}`);
-    const ctx = { world, W1, W2, FIX, port, app, ui, targets, env, logFile };
+    const ctx = { world, W1, W2, W3, FIX, port, app, ui, targets, env, logFile };
     await runArms(ctx);
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
@@ -423,6 +423,11 @@ const ARM_FNS = {
     const atFwd = await waitFor(() => ob.eval('location.pathname').then((p) => p === '/cli.html' ? p : null), 8000, 'forward to /cli.html').catch(() => null);
     clause(A, 'forward-moves-history', fw.code === 0 && atFwd === '/cli.html', `${show(fw)} → oracle path ${JSON.stringify(await ob.eval('location.pathname'))}`);
     ob.close();
+    // the human's tab cannot be sent to a browser-internal page (#397 F4): refused, the page stays (the skill's "What you cannot do")
+    const here = await cli(ctx, W1, ['get', 'url']);
+    const internal = await cli(ctx, W1, ['open', 'chrome://gpu'], { timeoutMs: 40000 });
+    const there = await cli(ctx, W1, ['get', 'url']);
+    clause(A, 'browser-internal-page-on-the-humans-tab-is-refused-and-the-page-stays', internal.code !== 0 && there.stdout.trim() === here.stdout.trim() && !/^chrome:/.test(there.stdout.trim()), `open chrome://gpu → ${show(internal)}; url before ${here.stdout.trim()} · after ${there.stdout.trim()}`);
     // a failing load is reported, not swallowed (old tool: "Navigated to … (error: …)")
     const dead = await freePort();
     const bad = await cli(ctx, W1, ['open', `http://127.0.0.1:${dead}/nothing`], { timeoutMs: 45000 });
@@ -630,12 +635,12 @@ const ARM_FNS2 = {
     const shot = await ui.send('Page.captureScreenshot', { format: 'png' });
     saveShot('parity-reveal-app.png', Buffer.from(shot.data, 'base64'));
     // the FIRST command ever on a workspace whose panel was never built: the host builds it (about:blank) — that must not open the pane either
-    const { W2 } = ctx;
-    await selectWs(ctx, W2);
+    const { W3 } = ctx;
+    await selectWs(ctx, W3);
     if ((await paneToggle(ctx)).open) await clickToggle(ctx);
     await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the fresh workspace pane to be closed').catch(() => {});
-    clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W2.branch} selected, its pane closed, no panel built yet`);
-    const first = await cli(ctx, W2, ['snapshot', '-i']);
+    clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W3.branch} selected, its pane closed, no panel built yet`);
+    const first = await cli(ctx, W3, ['snapshot', '-i']);
     const openedBlank = await waitFor(() => paneVisible(ctx), 4000, 'the pane to open for a fresh panel').catch(() => false);
     // MEASUREMENT: building a panel loads about:blank, and decideBrowserAutoOpen (#393-fu) counts a new (tab,url) key as "the agent drove it" — so the very
     // first command of a workspace opens its pane (blank). The skill does not promise otherwise; this clause pins what is true so a change is seen.
@@ -733,6 +738,13 @@ const ARM_FNS3 = {
       const wblockVis = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
       clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
       clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
+      // a pane that was SHOWN and then hidden keeps its last size (the oracle's innerWidth > 0): there the selector wait works — so "no width" is a property of a pane that was never on screen
+      await selectWs(ctx, W1);
+      await o2.eval(late('late-b'));
+      const wB = await cli(ctx, W2, ['wait', '#late-b', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wBblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iwB = await o2.eval('innerWidth');
+      clause(A, 'a-pane-shown-before-and-hidden-again-keeps-its-width-and-the-selector-wait-works', iwB > 0 && wB.code === 0 && wBblock.code === 0, `W2 shown once, hidden again: oracle innerWidth ${iwB}; wait "#late-b" → ${show(wB)}; wait "#out" → ${show(wBblock)}`);
     } finally { o2.close(); }
   },
 };
