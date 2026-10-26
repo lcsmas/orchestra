@@ -34,7 +34,7 @@ orchestra browser snapshot -i                        # the page changed → take
 §§§
 
 - §open§ returns once the page's load event has fired (measured: a page with a slow image returns after the image), so a §snapshot§ right after it sees the loaded document. Content a script renders AFTER the load still needs a §wait§. A page that never finishes loading makes §open§ time out.
-- A ref belongs to the snapshot that issued it. After a navigation, a re-render or a tab switch an old ref fails with §browser_stale_ref: @e5 no longer resolves…§ — run §snapshot§ again and use the new refs; never retry the stale one.
+- A ref belongs to the snapshot that issued it. After a navigation or a tab switch an old ref fails with §browser_stale_ref: @e5 no longer resolves…§ — run §snapshot§ again and use the new refs; never retry the stale one. After a re-render the old ref may still resolve (by role and name) or may not: when the page changed under you, snapshot again.
 - §snapshot -i§ lists interactive elements only (the cheapest); plain §snapshot§ also carries headings and text; §-c§ drops empty structure, §-s "<css>"§ scopes it to part of the page, §-d <n>§ limits the depth.
 - Prefer refs to coordinates. When you must: §mouse move X Y§, §mouse down§, §mouse up§ (viewport pixels).
 
@@ -95,7 +95,7 @@ Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-read
 
 ## When the pane is not on screen
 
-The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §scrollintoview§, §wait --fn§ / §wait --text§ / §wait <ms>§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §dblclick§, §hover§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once and do nothing — with "this workspace's Browser pane is not on screen", or (§click§) "Element … is outside the viewport". Do not answer that with §scrollintoview§ and a retry, and do not retry in a loop: wait for the pane to come back. §wait "<selector>"§ is the exception to avoid there: it returns at once for an element that is already on the page but hangs until its timeout (25 s by default) when the element still has to appear — use §wait --fn§ or §--text§ instead, or add §--timeout 3000§ (lifting the hidden-pane limits is tracked in #406). To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
+The human sees one workspace's pane at a time. For a workspace in the background, or with its pane closed: §open§, §snapshot§, §get§, §eval§, §scroll§, §scrollintoview§, §wait --fn§ / §wait --text§ / §wait <ms>§, §console§, §network§, §cookies§ and §storage§ keep working; §screenshot§, §click§, §dblclick§, §hover§, §mouse§, §press§, §fill§, §type§ and §keyboard type§ fail at once and do nothing — with "this workspace's Browser pane is not on screen", or (§click§) "Element … is outside the viewport". Do not answer that with §scrollintoview§ and a retry, and do not retry in a loop: wait for the pane to come back. §wait "<selector>"§ is the exception to avoid there: a hidden page has no width, so it times out (25 s by default) for any element without an intrinsic size — text blocks, divs, the body, an element that still has to appear — and returns only for inputs and buttons. Use §wait --fn§, §--text§ or §wait <ms>§ instead, or add §--timeout 3000§ (lifting the hidden-pane limits is tracked in #406). To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
 
 §§§bash
 orchestra browser eval "(() => { const el = document.querySelector('#q'); Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set.call(el, 'x'); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()"
@@ -118,7 +118,7 @@ Your commands were not observed to move the human's keyboard focus (they are bui
 - Relative file paths (§screenshot x.png§, §upload @e9 f.pdf§) resolve against your current directory.
 - The command comes first: §orchestra browser snapshot -i§, not §orchestra browser -i snapshot§ (only §--json§ may lead).
 - An EMPTY ref (§click ""§, §fill "" x§ — e.g. a lookup that matched nothing) is not an error: it succeeds and does not do what you meant. Check a variable before using it.
-- §orchestra help browser§ lists the same commands.
+- §orchestra help browser§ prints a short reference.
 `.replaceAll('§', '`');
 
 // ── lint: the skill may only document what the CLI accepts ───────────────────────────────────────────────────────────────────────

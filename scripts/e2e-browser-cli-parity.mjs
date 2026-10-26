@@ -525,6 +525,10 @@ const ARM_FNS2 = {
       const ty = await cli(ctx, W1, ['type', typed ?? '@e0', 'def']);
       const v2 = await o.eval(`document.getElementById('typed').value`);
       clause(A, 'type-into-an-element-by-ref', ty.code === 0 && v2 === 'abcdef', `type ${typed} def → ${show(ty)} → oracle value ${JSON.stringify(v2)}`);
+      await cli(ctx, W1, ['click', typed ?? '@e0']);
+      const sa = await cli(ctx, W1, ['press', 'Control+a']);
+      const sel2 = await o.eval(`({ s: document.getElementById('typed').selectionStart, e: document.getElementById('typed').selectionEnd, n: document.getElementById('typed').value.length })`);
+      clause(A, 'press-control-a-selects-the-field-content', sa.code === 0 && sel2.s === 0 && sel2.e === sel2.n && sel2.n > 0, `${show(sa)} → oracle selection ${sel2.s}..${sel2.e} of ${sel2.n} chars (the skill lists "press Control+a")`);
     } finally { o.close(); }
   },
 
@@ -568,6 +572,16 @@ const ARM_FNS2 = {
       const m = await cli(ctx, W1, ['eval', "document.getElementById('out').textContent = 'evaled'; 'ok'"]);
       const after = await o.eval(`document.getElementById('out').textContent`);
       clause(A, 'runs-in-the-page', m.code === 0 && after === 'evaled', `${show(m)} → oracle #out ${JSON.stringify(after)}`);
+      // the skill's recipe for catching an uncaught page error (`errors` prints blank lines): install a listener with eval, trigger an error, read it back later
+      const recipe = BROWSER_SKILL.split('\n').flatMap((l) => (/window\.addEventListener\('error'/.test(l) ? [l] : [])).join('\n');
+      const m1 = /eval "(window\.addEventListener\('error'[^"]*)"/.exec(recipe), m2 = /eval "(window\.__err)"/.exec(recipe);
+      if (m1 && m2) {
+        await cli(ctx, W1, ['eval', m1[1]]);
+        await o.eval(`setTimeout(() => { throw new Error('uncaught-399-recipe'); }, 30); 1`);
+        await sleep(400);
+        const got = await cli(ctx, W1, ['eval', m2[1]]);
+        clause(A, 'skill-recipe-catches-an-uncaught-page-error', got.code === 0 && /uncaught-399-recipe/.test(got.stdout), `listener installed with the skill's eval, an uncaught error thrown in the page, read back with the skill's second eval → ${show(got)}`);
+      } else clause(A, 'skill-recipe-catches-an-uncaught-page-error', false, `the recipe was not found in the skill text (${!!m1}/${!!m2})`);
       const c1 = await cli(ctx, W1, ['eval', 'const zz399 = 1; zz399']);
       const c2 = await cli(ctx, W1, ['eval', 'const zz399 = 2; zz399']);
       const i1 = await cli(ctx, W1, ['eval', '(() => { const yy399 = 1; return yy399; })()']);
@@ -681,9 +695,12 @@ const ARM_FNS3 = {
       await cli(ctx, W2, ['eval', "(() => { const el = document.querySelector('#ctl'); el.value = 'plain'; el.dispatchEvent(new Event('input', { bubbles: true })); })()"]);
       const st2 = await o2.eval(`({ value: document.getElementById('ctl').value, state: document.getElementById('ctlstate').textContent })`);
       clause(A, 'ctl/a-plain-assignment-leaves-the-controlled-state-stale', st2.value === 'plain' && st2.state === '', `plain value= + input event → oracle ${JSON.stringify(st2)} (the fixture discriminates the two forms, as React does)`);
+      const tyh = await cli(ctx, W2, ['type', name2 ?? '@e0', 'zzz'], { timeoutMs: 45000 });
+      const valh = await o2.eval(`document.getElementById('name').value`);
+      clause(A, 'type-by-ref-fails-fast-and-writes-nothing', tyh.code !== 0 && tyh.ms < 9000 && /not on screen/.test(tyh.stderr) && !/zzz/.test(valh), `type ${name2} zzz → ${show(tyh)}; oracle value ${JSON.stringify(valh)}`);
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
       clause(A, 'mouse-fails-fast', mv.code !== 0 && mv.ms < 9000 && /not on screen/.test(mv.stderr), show(mv));
-      const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']]];
+      const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']], ['scrollintoview', ['scrollintoview', '#far']]];
       const outs = []; for (const [n, a] of keep) outs.push([n, await cli(ctx, W2, a, { timeoutMs: 45000 })]);
       clause(A, 'wait-get-cookies-storage-console-network-keep-working', outs.every(([, r]) => r.code === 0), outs.map(([n, r]) => `${n}: rc=${r.code}${r.code ? ' ' + JSON.stringify(r.stderr.slice(0, 80)) : ''}`).join(' · '));
       await o2.eval(`window.scrollTo(0, 0)`); await sleep(300); // the hidden attempts above may have scrolled elements into view
@@ -700,6 +717,11 @@ const ARM_FNS3 = {
       await o2.eval(late('late-fn'));
       const wfn = await cli(ctx, W2, ['wait', '--fn', "document.querySelector('#late-fn') !== null"], { timeoutMs: 40000 });
       clause(A, 'wait-selector-for-a-late-element-times-out-while-hidden-wait-fn-does-not', wsel.code !== 0 && /timed out/i.test(wsel.stderr) && wsel.ms >= 3500 && wfn.code === 0, `wait "#late-sel" --timeout 4000 → ${show(wsel)}; wait --fn (same kind of element) → ${show(wfn)}`);
+      // seat-3 delta F3 (2026-10-26): a PRESENT element hangs too unless it has an intrinsic size — the hidden view has width 0 (innerWidth 0), so text blocks / divs / body are never "visible"
+      const wblock = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      const wctl = await cli(ctx, W2, ['wait', '#name', '--timeout', '3000'], { timeoutMs: 40000 });
+      const iw = await o2.eval(`({ innerWidth, outW: Math.round(document.getElementById('out').getBoundingClientRect().width), nameW: Math.round(document.getElementById('name').getBoundingClientRect().width) })`);
+      clause(A, 'wait-selector-for-a-PRESENT-text-block-times-out-while-hidden-an-input-passes', wblock.code !== 0 && /timed out/i.test(wblock.stderr) && wblock.ms >= 2500 && wctl.code === 0 && iw.innerWidth === 0 && iw.outW === 0 && iw.nameW > 0, `wait "#out" (a <p> with text, present since load) --timeout 3000 → ${show(wblock)}; wait "#name" (an <input>) → ${show(wctl)}; the oracle: ${JSON.stringify(iw)} (the hidden view has no width: a block has none, an input keeps its intrinsic one)`);
       await o2.eval(`setTimeout(() => { throw new Error('uncaught-399-hidden'); }, 50); 1`);
       await sleep(500);
       const errs = await cli(ctx, W2, ['errors']);
@@ -708,6 +730,8 @@ const ARM_FNS3 = {
       await selectWs(ctx, W2); await openPane(ctx);
       await o2.eval(late('late-vis'));
       const wvis = await cli(ctx, W2, ['wait', '#late-vis', '--timeout', '4000'], { timeoutMs: 40000 });
+      const wblockVis = await cli(ctx, W2, ['wait', '#out', '--timeout', '3000'], { timeoutMs: 40000 });
+      clause(A, 'ctl/the-present-text-block-wait-succeeds-on-a-visible-pane', wblockVis.code === 0 && wblockVis.ms < 2000, `visible: wait "#out" → ${show(wblockVis)}`);
       clause(A, 'ctl/the-same-selector-wait-succeeds-on-a-visible-pane', wvis.code === 0 && wvis.ms < 3000, `visible: wait "#late-vis" → ${show(wvis)}`);
     } finally { o2.close(); }
   },
