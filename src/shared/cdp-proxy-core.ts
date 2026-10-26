@@ -47,7 +47,8 @@ export interface CdpPanelPort {
    * Policy seam for page-level commands (#400: refuse partition-wide cookie clears while the workspace holds a shared profile).
    * Called for EVERY command a client sends to a tab — root and auto-attached child sessions — before it reaches the debugger;
    * a returned string refuses it (CDP error, the debugger never sees it). `tab` is the target tab AS THE REGISTRY SEES IT NOW (its url
-   * scopes origin-bound policies, #400). A hook that throws fails CLOSED. Absent = nothing refused.
+   * scopes origin-bound policies, #400). SYNCHRONOUS and STRICT: only `null` allows; a non-empty string refuses with that text; anything else
+   * (empty string, falsy value, undefined, a Promise, an object) or a throw refuses fail-CLOSED. Absent = nothing refused.
    */
   refuseMethod?(method: string, params: Record<string, unknown> | undefined, tab: CdpTab): string | null;
 }
@@ -81,6 +82,16 @@ const TAB_SESSION_BROWSER_LEVEL: ReadonlySet<string> = new Set([
 /** Methods that open a second, unfiltered CDP channel inside a flattened session: refused outright (seam review m1). `Target.sendMessageToTarget{message:'{"method":"Network.clearBrowserCookies"}'}`
  *  carried a command past every per-method policy; `Target.exposeDevToolsProtocol` hands the PAGE a `cdp` binding. Nothing legitimate uses either on a flatten-only client. */
 const TUNNEL_METHODS: ReadonlySet<string> = new Set(['Target.sendMessageToTarget', 'Target.exposeDevToolsProtocol']);
+
+/**
+ * THE shared predicate (#395 final-tip review M4; #397 F1): a method that the faked BROWSER surface owns — never the page debugger.
+ * Applies to a tab session AND to every auto-attached CHILD session of it (iframe / worker): a child that sent `Page.close`,
+ * `Target.closeTarget` or `Browser.close` used to reach the debugger and skip close ownership. Legit children only send page commands
+ * and `Target.setAutoAttach`, so this is safe to apply to all of them. Consumers (e.g. #397's close ownership) call THIS, not a copy.
+ */
+export function isBrowserLevelMethod(method: string): boolean {
+  return method === 'Page.close' || method.startsWith('Browser.') || TAB_SESSION_BROWSER_LEVEL.has(method);
+}
 
 const ERR_METHOD = -32601;
 const ERR_PARAMS = -32602;
@@ -293,20 +304,28 @@ export class CdpProxyCore {
     if (!sessionId) return this.browserCommand(c, method, params);
     const own = c.sessions.get(sessionId);
     if (own?.kind === 'browser') return this.browserCommand(c, method, params);
+    // Which tab does this session belong to — directly (a root tab session) or as an auto-attached child (iframe / worker) of a tab this client holds?
+    let tabId: string | undefined;
+    let childSessionId: string | undefined;
     if (own?.kind === 'tab') {
-      // A tab session reaches the page's debugger, which would honour browser-level / destructive methods itself
-      // (Browser.close, Page.close, Target.closeTarget …): those get the browser-level rules (ownership, no-op close).
-      if (method === 'Page.close') return this.browserCommand(c, 'Target.closeTarget', { targetId: this.targetIdFor(own.tabId!) });
-      if (method.startsWith('Browser.') || TAB_SESSION_BROWSER_LEVEL.has(method)) return this.browserCommand(c, method, params);
-      return this.tabCommand(own.tabId!, method, params, undefined);
-    }
-    // Not one of ours: an auto-attached child session of some tab this client holds.
-    for (const s of c.sessions.values()) {
-      if (s.tabId && this.tabs.get(s.tabId)?.children.has(sessionId)) {
-        return this.tabCommand(s.tabId, method, params, sessionId);
+      tabId = own.tabId!;
+    } else {
+      for (const s of c.sessions.values()) {
+        if (s.tabId && this.tabs.get(s.tabId)?.children.has(sessionId)) {
+          tabId = s.tabId;
+          childSessionId = sessionId;
+          break;
+        }
       }
     }
-    throw new CdpError('Session with given id not found.', ERR_SERVER);
+    if (!tabId) throw new CdpError('Session with given id not found.', ERR_SERVER);
+    // Root AND child sessions reach the page's debugger, which would honour browser-level / destructive methods itself (Browser.close, Page.close,
+    // Target.closeTarget …): those get the browser-level rules (close ownership, no-op Browser.close) BEFORE the child/root split.
+    if (isBrowserLevelMethod(method)) {
+      if (method === 'Page.close') return this.browserCommand(c, 'Target.closeTarget', { targetId: this.targetIdFor(tabId) });
+      return this.browserCommand(c, method, params);
+    }
+    return this.tabCommand(tabId, method, params, childSessionId);
   }
 
   // ── browser-level surface ───────────────────────────────────────────────────
@@ -467,13 +486,23 @@ export class CdpProxyCore {
     if (this.port.refuseMethod) {
       const tab = this.port.listTabs().find((t) => t.id === tabId);
       if (!tab) throw new CdpError('Target closed.', ERR_SERVER);
-      let refused: string | null;
+      // STRICT verdict contract: ONLY `null` allows. A non-empty string refuses with that text; EVERYTHING else — '', 0, false, undefined (a present
+      // hook that forgot to return), a Promise (an async hook), an object — and a throw refuse fail-CLOSED with a generic message (the exception text
+      // never reaches the agent: it may carry internals).
+      let verdict: unknown;
       try {
-        refused = this.port.refuseMethod(method, params, tab);
-      } catch (e) {
-        refused = `${method} refused: the policy check failed (${e instanceof Error ? e.message : String(e)})`; // fail CLOSED
+        verdict = this.port.refuseMethod(method, params, tab);
+      } catch {
+        throw new CdpError(`${method} refused: the policy check failed`, ERR_SERVER);
       }
-      if (refused) throw new CdpError(refused, ERR_SERVER);
+      if (verdict === null) {
+        /* allowed */
+      } else if (typeof verdict === 'string' && verdict !== '') {
+        throw new CdpError(verdict, ERR_SERVER);
+      } else {
+        if (verdict instanceof Promise) verdict.catch(() => undefined); // an async hook must not leave an unhandled rejection behind
+        throw new CdpError(`${method} refused: policy returned an invalid verdict`, ERR_SERVER);
+      }
     }
     if (!childSessionId) {
       if (method === 'Page.bringToFront') {

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CdpProxyCore,
+  isBrowserLevelMethod,
   type CdpEventListener,
   type CdpPanelPort,
   type CdpTab,
@@ -417,6 +418,93 @@ test('#400 seam: refuseMethod receives (method, params, tab) with the tab as the
   const ch = p.channels.get('t1')!;
   const before = ch.sent.length;
   const r = await c.call('Network.getAllCookies', undefined, sessionId);
-  assert.match(r.error.message, /policy check failed \(boom\)/);
+  assert.match(r.error.message, /^Network\.getAllCookies refused: the policy check failed$/);
+  assert.doesNotMatch(r.error.message, /boom/, 'the exception text never reaches the agent');
   assert.equal(ch.sent.length, before);
+});
+
+test('final-tip review M4: browser-level / destructive methods get the SAME rules on a CHILD (iframe/worker) session as on a root tab session — close ownership, no-op Browser.close, nothing reaches the debugger', async () => {
+  const p = fakePanel([
+    { id: 't1', url: 'http://a/', title: 'A', active: false, openedBy: 'human' },
+    { id: 't2', url: 'http://b/', title: 'B', active: true, openedBy: 'agent' },
+  ]);
+  const real = p.port.closeTab!;
+  const closed: string[] = [];
+  p.port.closeTab = async (id) => {
+    if (id === 't1') throw new Error('browser tab t1 was opened by the user: an agent may only close tabs it opened');
+    closed.push(id);
+    return real(id);
+  };
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const infos = (await c.call('Target.getTargets')).result.targetInfos;
+  const human = infos.find((i: any) => i.title === 'A');
+  const { sessionId: root } = (await c.call('Target.attachToTarget', { targetId: human.targetId })).result;
+  const ch = p.channels.get('t1')!;
+  ch.emit('Target.attachedToTarget', { sessionId: 'CHILD', targetInfo: {} }); // an iframe session of the HUMAN's tab
+  const destructive: Array<[string, object | undefined]> = [
+    ['Page.close', undefined], ['Target.closeTarget', { targetId: human.targetId }], ['Browser.close', undefined],
+    ['Browser.setDownloadBehavior', { behavior: 'allow' }], ['Browser.grantPermissions', { permissions: ['geolocation'] }],
+    ['Target.createBrowserContext', {}], ['Target.disposeBrowserContext', { browserContextId: 'x' }], ['Target.attachToTarget', { targetId: 'nope', flatten: false }],
+  ];
+  const outs: string[][] = [];
+  for (const sid of [root, 'CHILD']) {
+    const out: string[] = [];
+    for (const [m, params] of destructive) {
+      const r = await c.call(m, params, sid);
+      out.push(`${m}:${r.error ? r.error.message.slice(0, 40) : JSON.stringify(r.result)}`);
+    }
+    outs.push(out); // compared below: root and child must answer identically
+  }
+  const [rootOut, childOut] = outs as [string[], string[]];
+  assert.deepEqual(childOut, rootOut, 'a child session gets exactly the root session\'s answers');
+  assert.match(rootOut[0]!, /opened by the user/);
+  assert.match(rootOut[1]!, /opened by the user/);
+  assert.equal(rootOut[2], 'Browser.close:{}');
+  assert.deepEqual(ch.sent, [], 'NONE of the destructive methods reached the page debugger from either session');
+  assert.deepEqual(closed, [], 'the human\'s tab was never closed');
+  // an AGENT-opened tab may be closed through its child session too (ownership allows it) — and it is the tab, not just the iframe, that closes
+  const agent = infos.find((i: any) => i.title === 'B');
+  const { sessionId: root2 } = (await c.call('Target.attachToTarget', { targetId: agent.targetId })).result;
+  p.channels.get('t2')!.emit('Target.attachedToTarget', { sessionId: 'CHILD2', targetInfo: {} });
+  assert.equal((await c.call('Page.close', undefined, 'CHILD2')).error, undefined);
+  assert.deepEqual(closed, ['t2']);
+  void root2;
+  // the page's own child traffic still flows
+  await c.call('Target.setAutoAttach', { autoAttach: true, flatten: true }, 'CHILD');
+  await c.call('Runtime.enable', undefined, 'CHILD');
+  assert.deepEqual(ch.sent.map((x) => x.method), ['Target.setAutoAttach', 'Runtime.enable']);
+});
+
+test('isBrowserLevelMethod is the one shared predicate: Page.close, Browser.*, and the Target.* browser-level set — not page commands', () => {
+  for (const m of ['Page.close', 'Browser.close', 'Browser.grantPermissions', 'Target.closeTarget', 'Target.createTarget', 'Target.attachToTarget', 'Target.createBrowserContext']) assert.equal(isBrowserLevelMethod(m), true, m);
+  for (const m of ['Page.navigate', 'Runtime.evaluate', 'Target.setAutoAttach', 'Input.dispatchMouseEvent', 'Network.getAllCookies']) assert.equal(isBrowserLevelMethod(m), false, m);
+});
+
+test('reviewer addendum: the refuseMethod verdict contract is STRICT — only null allows; every other non-string-or-empty value fails CLOSED with a generic message', async () => {
+  const cases: Array<[string, unknown, 'allow' | 'refuse-text' | 'refuse-generic']> = [
+    ['null', null, 'allow'],
+    ['non-empty string', 'no cookies for you', 'refuse-text'],
+    ['empty string', '', 'refuse-generic'],
+    ['false', false, 'refuse-generic'],
+    ['0', 0, 'refuse-generic'],
+    ['undefined from a present hook', undefined, 'refuse-generic'],
+    ['a Promise (async hook)', Promise.resolve(null), 'refuse-generic'],
+    ['a rejected Promise', Promise.reject(new Error('late')), 'refuse-generic'],
+    ['an object', { refuse: true }, 'refuse-generic'],
+    ['a number', 1, 'refuse-generic'],
+    ['true', true, 'refuse-generic'],
+  ];
+  for (const [label, returned, want] of cases) {
+    const p = fakePanel();
+    (p.port as any).refuseMethod = () => returned;
+    const c = client(new CdpProxyCore(p.port));
+    const tid = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+    const sid = (await c.call('Target.attachToTarget', { targetId: tid })).result.sessionId;
+    const r = await c.call('Runtime.evaluate', { expression: '1' }, sid);
+    const reached = p.channels.get('t1')!.sent.length;
+    if (want === 'allow') { assert.equal(r.error, undefined, label); assert.equal(reached, 1, label); }
+    else if (want === 'refuse-text') { assert.equal(r.error.message, 'no cookies for you', label); assert.equal(reached, 0, label); }
+    else { assert.equal(r.error.message, 'Runtime.evaluate refused: policy returned an invalid verdict', label); assert.equal(reached, 0, `${label}: never reaches the debugger`); }
+  }
 });

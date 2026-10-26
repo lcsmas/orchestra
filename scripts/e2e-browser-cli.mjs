@@ -26,7 +26,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'breadth', 'tabs', 'daemon-lifecycle', 'destroy-closes-daemon'];
+const ARMS = ['smoke', 'legacy-coexist', 'snapshot-click', 'fill', 'upload', 'dialog', 'stale-ref', 'screenshot', 'loopback-guard', 'cross-workspace', 'background', 'daemon-host-owned', 'allowlist', 'breadth', 'tabs', 'daemon-lifecycle', 'child-session', 'destroy-closes-daemon'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires (hash changes per build), 'cli' = dist-electron/cli.js.
  *  Each edit is a regex that must match EXACTLY once (so a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* clause must stay GREEN. */
 const MUTANTS = {
@@ -56,8 +56,10 @@ const MUTANTS = {
   'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
   'command-not-first': { file: 'cli', edits: [['const command = argv[idx];', 'const command = argv.find((a) => !a.startsWith("-"));']], arms: ['allowlist'], why: 'the command is the first non-flag token again (a leading value-taking option shifts it)' },
   'release-no-reset': { file: 'chunk', edits: [[/of ([\w$]+)\((\w+)\.getUserAgent\(\)\)\)await/, 'of [])await']], arms: ['daemon-lifecycle'], why: 'the agent\'s Emulation overrides are not undone when its daemon leaves (detach alone does not clear them)' },
-  'cdp-url-allowed': { file: 'cli', edits: [[/if \(sub !== void 0 && sub\.toLowerCase\(\)\.replace\(\/\[-_\]\/g, ""\) === "cdpurl"\) \{/, 'if (false) {']], arms: ['allowlist'], why: '`get cdp-url` passes the planner: the token-bearing endpoint is printed to any shell step' },
+  'cdp-url-allowed': { file: 'cli', edits: [[/if \(argv\.slice\(idx \+ 1\)\.some\(\(a\) => a\.toLowerCase\(\)\.replace\(\/\['"`\]\/g, ""\)\.replace\(\/\[-_\]\/g, ""\) === "cdpurl"\)\) \{/, 'if (false) {']], arms: ['allowlist'], why: '`get cdp-url` passes the planner: the token-bearing endpoint is printed to any shell step' },
   'tunnel-methods-allowed': { file: 'chunk', edits: [[/if\(([\w$]+)\.has\((\w+)\)\)throw new ([\w$]+)\(`\$\{\2\} is not supported: this proxy speaks flattened sessions only`/, 'if(false)throw new $3(`${$2} is not supported: this proxy speaks flattened sessions only`']], arms: ['allowlist'], why: 'Target.sendMessageToTarget / exposeDevToolsProtocol reach the page debugger (raw CDP past every per-method policy)' },
+  'child-session-bypass': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a)']], arms: ['child-session'], why: 'a CHILD (worker/iframe) session skips the browser-level rules again: its Page.close / Target.closeTarget / Browser.* reach the debugger (close ownership bypass, #397 F1)' },
+  'cdp-url-first-token-only': { file: 'cli', edits: [[/if \(argv\.slice\(idx \+ 1\)\.some\(\(a\) => a\.toLowerCase\(\)\.replace\(\/\['"`\]\/g, ""\)\.replace\(\/\[-_\]\/g, ""\) === "cdpurl"\)\) \{/, 'if ([argv.slice(idx + 1).find((a) => !a.startsWith("-"))].some((a) => a !== void 0 && a.toLowerCase().replace(/[-_]/g, "") === "cdpurl")) {']], arms: ['allowlist'], why: 'the get cdp-url refusal looks only at the first non-flag token: `get --max-output 100 cdp-url` passes the planner (layer 2, the redaction, still holds)' },
   'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
   'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
@@ -658,7 +660,9 @@ const ARM_FNS2 = {
     const tok0 = new URL(own0.wsUrl).pathname.split('/')[1];
     const cu = await cli(ctx, W1, ['get', 'cdp-url']);
     const cuJson = await cli(ctx, W1, ['--json', 'get', 'cdp-url']);
-    clause(A, 'get-cdp-url-refused-and-endpoint-never-printed', cu.code !== 0 && cuJson.code !== 0 && /get cdp-url/.test(cu.stderr) && ![cu, cuJson].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0)), `${show(cu)}; --json → ${show(cuJson)}; the token appears in neither output: ${![cu, cuJson].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0))}`);
+    const cuShift = await cli(ctx, W1, ['get', '--max-output', '100', 'cdp-url']); // final-tip review m5: a value flag shifts the sub-command position
+    const cuTail = await cli(ctx, W1, ['get', 'cdp-url', '--json']);
+    clause(A, 'get-cdp-url-refused-and-endpoint-never-printed', [cu, cuJson, cuShift, cuTail].every((r) => r.code !== 0 && /get cdp-url/.test(r.stderr)) && ![cu, cuJson, cuShift, cuTail].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0)), `${show(cu)}; --json → ${show(cuJson)}; shifted by --max-output → ${show(cuShift)}; trailing --json → ${show(cuTail)}; the token appears in none of the outputs: ${![cu, cuJson, cuShift, cuTail].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0))}`);
     const ok = await cli(ctx, W1, ['get', 'url']);
     clause(A, 'ctl/allowed-command-passes', ok.code === 0 && /^http/.test(ok.stdout.trim()), show(ok));
   },
@@ -720,6 +724,46 @@ function rawCdpOnProxy(wsUrl, calls) {
         else if (m.id === 2) { sid = m.result.sessionId; send(calls[i].method, calls[i].params, sid); }
         else { replies.push(JSON.stringify(m.error ?? m.result)); i++; if (i < calls.length) send(calls[i].method, calls[i].params, sid); else { clearTimeout(t); ws.close(); resolve({ replies }); } }
       } catch (e) { clearTimeout(t); try { ws.close(); } catch {} resolve({ replies, error: e.message }); }
+    });
+  });
+}
+
+/** Raw CDP on the proxy: attach (flatten) to the page whose url matches, turn auto-attach on, let `spawn()` create a worker, wait for its CHILD session, then
+ *  send `calls` on the ROOT session and on the CHILD session; returns both reply lists. */
+function childSessionProbe(wsUrl, urlRe, spawn, calls) {
+  return new Promise((resolve) => {
+    const ws = new WS(wsUrl);
+    const out = { rootReplies: [], childReplies: [], childType: null, error: null };
+    let nextId = 0, root = null, child = null, pageTarget = null;
+    const pending = new Map();
+    const send = (method, params, sessionId) => new Promise((res) => { const id = ++nextId; pending.set(id, res); ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); });
+    const t = setTimeout(() => { out.error = out.error ?? 'timeout'; try { ws.terminate(); } catch {} resolve(out); }, 25000);
+    const finish = () => { clearTimeout(t); try { ws.close(); } catch {} resolve(out); };
+    let childWaiter = null;
+    ws.on('error', (e) => { out.error = e.message; finish(); });
+    ws.on('message', (d) => {
+      try {
+        const m = JSON.parse(String(d));
+        if (m.id !== undefined && pending.has(m.id)) { const r = pending.get(m.id); pending.delete(m.id); r(m); return; }
+        if (m.method === 'Target.attachedToTarget' && m.params?.sessionId && m.params.sessionId !== root && m.params?.targetInfo?.type !== 'page') { child = m.params.sessionId; out.childType = m.params.targetInfo?.type ?? null; childWaiter?.(); }
+      } catch (e) { out.error = e.message; finish(); }
+    });
+    ws.on('open', async () => {
+      try {
+        const targets = (await send('Target.getTargets')).result.targetInfos;
+        const pg = targets.find((i) => urlRe.test(i.url)) ?? targets[0];
+        pageTarget = pg.targetId;
+        root = (await send('Target.attachToTarget', { targetId: pg.targetId, flatten: true })).result.sessionId;
+        await send('Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false }, root);
+        const got = new Promise((r) => { childWaiter = r; });
+        await spawn();
+        await Promise.race([got, new Promise((r) => setTimeout(r, 8000))]);
+        if (!child) { out.error = 'no child session was auto-attached'; return finish(); }
+        const run = async (sid, list) => { for (const [method, params] of calls(pageTarget)) { const r = await send(method, params, sid); list.push(`${method}: ${JSON.stringify(r.error ?? r.result).slice(0, 110)}`); } };
+        await run(root, out.rootReplies);
+        await run(child, out.childReplies);
+        finish();
+      } catch (e) { out.error = e.message; finish(); }
     });
   });
 }
@@ -849,6 +893,40 @@ const ARM_FNS4 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS4);
+
+
+const ARM_FNS5 = {
+  async 'child-session'(ctx) {
+    // final-tip review M4: Browser.* / Page.close / Target.closeTarget … on an auto-attached CHILD session (a worker here) must get the same
+    // browser-level rules as on the root tab session — close ownership first. Before the fix a child's Page.close reached the debugger.
+    const { W1, FIX, ui } = ctx; const A = 'child-session';
+    const reg = async () => (await ui.eval(`window.orchestra.browserState(${sel(W1.id)})`)).tabs;
+    let o = null;
+    try {
+      // Precondition: ONLY the human's tab exists (earlier arms leave agent tabs behind, and the probe attaches to the first listed — the ACTIVE — page,
+      // which must be the human's: an agent tab is legitimately closable and would make the replies differ for the wrong reason).
+      // set up as the HUMAN (the pane's own IPC): the human may close any tab; the CLI could not (and must not) close the others
+      for (const t of (await reg()).filter((x) => x.openedBy === 'agent')) await ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(t.id)}).then(() => true)`);
+      const h0 = (await reg()).find((x) => x.openedBy === 'human'); if (h0 && !h0.active) await ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(h0.id)}).then(() => true)`);
+      await waitFor(async () => (await reg()).every((t) => t.openedBy === 'human'), 8000, 'only the human tab to remain').catch(() => {});
+      const humanId = (await reg()).find((t) => t.openedBy === 'human')?.id;
+      clause(A, 'ctl/only-the-humans-tab-exists', (await reg()).length === 1 && !!humanId, `registry: ${JSON.stringify((await reg()).map((t) => [t.id, t.openedBy, t.active]))}`);
+      await cli(ctx, W1, ['open', `${FIX}/cli.html`]); // the human's tab, fresh
+      o = await oracle(ctx, `${FIX}/cli.html`); // connected AFTER the setup: closing a tab kills an oracle attached to it
+      const ep = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+      const calls = (pageTarget) => [['Page.close', {}], ['Target.closeTarget', { targetId: pageTarget }], ['Browser.close', {}], ['Browser.grantPermissions', { permissions: ['geolocation'] }]];
+      const probe = await childSessionProbe(ep.wsUrl, /\/cli\.html/, () => o.eval(`(() => { window.__w = new Worker(URL.createObjectURL(new Blob(['setInterval(()=>{},1000)']))); return true; })()`), calls);
+      clause(A, 'ctl/a-real-child-session-was-auto-attached', !!probe.childType, `Electron auto-attached a child session of type ${probe.childType} (error: ${probe.error ?? 'none'})`);
+      clause(A, 'child-session-gets-the-root-sessions-rules', probe.rootReplies.length === 4 && JSON.stringify(probe.childReplies) === JSON.stringify(probe.rootReplies) && /opened by the user/.test(probe.childReplies[0]) && /opened by the user/.test(probe.childReplies[1]) && /Browser\.close: \{\}/.test(probe.childReplies[2]),
+        `root: ${probe.rootReplies.join(' | ')} — child: ${probe.childReplies.join(' | ')}`);
+      const tabs = await reg();
+      clause(A, 'the-humans-tab-is-still-open', tabs.some((t) => t.id === humanId), `registry after the child-session attempts: ${JSON.stringify(tabs.map((t) => [t.id, t.openedBy]))}`);
+      const ok = await cli(ctx, W1, ['get', 'url']);
+      clause(A, 'ctl/panel-still-drivable', ok.code === 0 && /cli\.html$/.test(ok.stdout.trim()), show(ok));
+    } finally { o?.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS5);
 
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');

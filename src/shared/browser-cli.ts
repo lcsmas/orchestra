@@ -93,8 +93,9 @@ export function planBrowserCommand(argv: readonly string[]): BrowserPlan {
   }
   // `get cdp-url` prints the full token-bearing websocket URL: any shell step could then speak raw CDP, past this allowlist (seam review m2)
   if (command === 'get') {
-    const sub = argv.slice(idx + 1).find((a) => !a.startsWith('-'));
-    if (sub !== undefined && sub.toLowerCase().replace(/[-_]/g, '') === 'cdpurl') {
+    // ANY later token that normalises to cdpurl (case / `-` / `_` / quotes stripped): `get --max-output 100 cdp-url`, `get cdp-url --json`, `get "cdp-url"` all print it
+    // (value-taking global flags shift the sub-command position, so the first non-flag token is not enough — final-tip review m5). Layer 2 is redactEndpoint.
+    if (argv.slice(idx + 1).some((a) => a.toLowerCase().replace(/['"`]/g, '').replace(/[-_]/g, '') === 'cdpurl')) {
       return { ok: false, error: "orchestra browser: 'get cdp-url' is not available — it would print the proxy endpoint, and the proxy is not meant to be reached except through this CLI." };
     }
   }

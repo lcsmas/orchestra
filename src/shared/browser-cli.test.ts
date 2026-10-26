@@ -150,7 +150,9 @@ test('M3: `--json=--cdp 9222` and every other way to land a refused flag in the 
 });
 
 test('seam review m2: `get cdp-url` (any case/spelling, with flags around it) is refused; ordinary `get` subcommands and data that mentions it pass', () => {
-  for (const argv of [['get', 'cdp-url'], ['get', 'CDP-URL'], ['get', 'cdp_url'], ['get', 'cdpurl'], ['--json', 'get', 'cdp-url'], ['get', '--json', 'cdp-url'], ['get', 'cdp-url', '--json']]) {
+  for (const argv of [['get', 'cdp-url'], ['get', 'CDP-URL'], ['get', 'cdp_url'], ['get', 'cdpurl'], ['--json', 'get', 'cdp-url'], ['get', '--json', 'cdp-url'], ['get', 'cdp-url', '--json'],
+    // final-tip review m5: a value-taking global flag shifts the sub-command position; quotes around it
+    ['get', '--max-output', '100', 'cdp-url'], ['get', '--color-scheme', 'dark', 'cdp-url'], ['get', '--input-mode', 'instant', 'cdp-url'], ['get', 'cdp-url', '--json'], ['get', '"cdp-url"'], ["get", "'cdp_URL'"], ['--json', 'get', '--max-output', '5', '`cdp-url`']]) {
     const r = prepareBrowserCommand(argv, '/w');
     assert.equal(r.ok, false, argv.join(' '));
     assert.match((r as any).error, /get cdp-url/);

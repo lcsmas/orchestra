@@ -533,12 +533,17 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   reached — #400/#401 must decide whether to refuse them for a workspace holding a profile.
 - **Policy seam** (`CdpPanelPort.refuseMethod?(method, params, tab)`, core `tabCommand`): called for EVERY page-level command of a tab
   session (root and auto-attached child sessions) BEFORE the debugger, with the tab as the registry sees it NOW (its url scopes
-  origin-bound policy); a returned string is a CDP error, a hook that throws fails CLOSED. `Target.sendMessageToTarget` and
+  origin-bound policy); the verdict contract is STRICT: only `null` allows, a non-empty string refuses with that text, and anything else (`''`, falsy values, `undefined` from a present hook, a Promise from an async hook, an object) or a throw refuses fail-CLOSED with a generic message — the exception text never reaches the agent. `Target.sendMessageToTarget` and
   `Target.exposeDevToolsProtocol` are refused outright (a command smuggled inside one would skip any per-method policy). The host's
-  `makePanelPort` does not set the hook yet: #400 wires its profile policy there. `orchestra browser get cdp-url` is refused and
+  `makePanelPort` does not set the hook yet: #400 wires its profile policy there. **One shared predicate**
+  `isBrowserLevelMethod(method)` (`src/shared/cdp-proxy-core.ts`, exported: `Page.close`, `Browser.*`, the browser-level `Target.*` set)
+  is applied to a root tab session AND to every auto-attached CHILD session (iframe / worker) BEFORE the root/child split in `dispatch`:
+  `Page.close` becomes `Target.closeTarget` of the owning tab (close ownership), `Browser.close` is a no-op, the rest answer "wasn't
+  found" — none reach the debugger. Without it a worker session's `Browser.close` reached Electron's debugger and tore the page down
+  (measured by the `child-session` arm's mutant). Consumers such as #397's close ownership call this predicate, never a copy. `orchestra browser get cdp-url` is refused and
   `redactEndpoint` scrubs the endpoint/token from all client output.
 - **Tracing**: `ORCHESTRA_CDP_TRACE=1` logs every client request / reply / forwarded command to the app log.
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
-  `scripts/e2e-browser-cli.sh <app-dir>` (17 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
-  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (29 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).
+  `scripts/e2e-browser-cli.sh <app-dir>` (18 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
+  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (33 in-place bundle mutants, restored byte-exact + `cmp`; `--check-anchors <app-dir>` proves each still matches once, no Electron).
