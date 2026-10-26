@@ -27,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill-tabs', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -45,6 +45,8 @@ const MUTANTS = {
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
   'skill-not-installed': { file: 'chunk', edits: [[/([\w$]+)\("orchestra-status",([\w$]+)\),\1\(([\w$]+),([\w$]+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'load-events-dropped': { file: 'chunk', edits: [[/emit\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{if\(!\1\.closed\)try\{/, 'emit($1,$2,$3,$4){if($2==="Page.loadEventFired"||$2==="Page.frameStoppedLoading")return;if(!$1.closed)try{']], arms: ['load-wait'], why: 'the proxy never tells the client the page loaded: `open` no longer returns at the load (it times out or returns early)' },
+  'tab-close-preflight-off': { file: 'cli', edits: [['if (!verdict.run) {', 'if (false) {']], arms: ['skill-tabs'], why: 'the CLI hands a forbidden `tab close` of the human\'s tab to agent-browser, which prints "closed" and forgets the tab: no browser_tab_not_owner' },
+  'tab-list-unannotated': { file: 'cli', edits: [['if (tab.op === "list" && run.code === 0 && abTabs && hostTabs.length > 0) {', 'if (false) {']], arms: ['skill-tabs'], why: '`tab list` no longer says who opened each tab (the skill tells the agent to read the marks before closing)' },
   'no-auto-open': { file: 'renderer', edits: [[/\.current\.set\((\w+),(\w+)\.next\),\2\.open&&/, '.current.set($1,$2.next),!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -862,6 +864,43 @@ const ARM_FNS7 = {
   },
 };
 Object.assign(ARM_FNS, ARM_FNS7);
+
+const ARM_FNS8 = {
+  async 'skill-tabs'(ctx) {
+    // The skill's "Tabs" section, claim by claim, on the composed build (#393 policy + #395 proxy + #397 agent tabs). The REGISTRY (app state over IPC) is the truth:
+    // agent-browser prints "closed" even when the proxy refused.
+    const { W1, FIX, ui } = ctx; const A = 'skill-tabs';
+    await selectWs(ctx, W1); await openPane(ctx);
+    await cli(ctx, W1, ['open', `${FIX}/cli.html?tabs=1`]);
+    const reg = async () => (await ui.eval(`window.orchestra.browserState(${sel(W1.id)})`)).tabs;
+    const labelOf = (list, re) => (list.stdout.split('\n').find((l) => re.test(l)) ?? '').match(/\[(t\d+)\]/)?.[1];
+    const t0 = await reg(); const human = t0.find((t) => t.openedBy === 'human');
+    clause(A, 'ctl/one-human-tab-to-start', t0.length === 1 && !!human, `registry ${JSON.stringify(t0.map((t) => [t.id, t.openedBy]))}`);
+    const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
+    const nw = await cli(ctx, W1, ['tab', 'new', `${FIX}/index.html?tabs=2`]);
+    await waitFor(async () => (await reg()).length === 2, 10000, 'the new tab').catch(() => {});
+    const list = await cli(ctx, W1, ['tab', 'list']);
+    const mine = labelOf(list, /index\.html/), theirs = labelOf(list, /cli\.html/);
+    const lines = list.stdout.split('\n');
+    clause(A, 'tab-list-marks-who-opened-each-tab', nw.code === 0 && !!mine && !!theirs && /\(yours\)/.test(lines.find((l) => /index\.html/.test(l)) ?? '') && /\(the user's\)/.test(lines.find((l) => /cli\.html/.test(l)) ?? ''), `${show(nw)}; tab list → ${JSON.stringify(list.stdout.trim().slice(0, 260))}`);
+    // refs do not survive a tab switch
+    const back = await cli(ctx, W1, ['tab', theirs ?? 't1']);
+    const stale = await cli(ctx, W1, ['click', go ?? '@e0']);
+    clause(A, 'refs-do-not-survive-a-tab-switch', back.code === 0 && stale.code !== 0 && /browser_stale_ref/.test(stale.stderr), `tab ${theirs}: ${show(back)}; click ${go} from before the switch → ${show(stale)}`);
+    // the human's tab: refused, still open
+    const closeHuman = await cli(ctx, W1, ['tab', 'close', theirs ?? 't1']);
+    await sleep(500);
+    const afterHuman = await reg();
+    clause(A, 'closing-the-humans-tab-fails-with-browser_tab_not_owner-and-it-stays', closeHuman.code !== 0 && /browser_tab_not_owner/.test(closeHuman.stderr) && afterHuman.some((t) => t.id === human.id), `tab close ${theirs} → ${show(closeHuman)}; registry still has the human tab: ${afterHuman.some((t) => t.id === human.id)}`);
+    // my own tab: closes
+    const closeMine = await cli(ctx, W1, ['tab', 'close', mine ?? 't2']);
+    await waitFor(async () => (await reg()).length === 1, 8000, 'my tab to leave the registry').catch(() => {});
+    const end = await reg();
+    clause(A, 'closing-my-own-tab-works', closeMine.code === 0 && end.length === 1 && end[0].id === human.id, `tab close ${mine} → ${show(closeMine)}; registry ${JSON.stringify(end.map((t) => [t.id, t.openedBy]))}`);
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS8);
+
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
   await sleep(1500);

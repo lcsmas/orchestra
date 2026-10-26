@@ -87,9 +87,10 @@ Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-read
 
 §tab list§ · §tab new [url]§ · §tab t2§ (switch; use the id §tab list§ printed) · §tab close t2§
 
-- At most 8 tabs per workspace, the human's and yours together; a refused §tab new§ says so.
-- You may close only the tabs YOU opened. Closing one of the human's is refused — do not try.
-- Acting on a tab that is not the active one brings it to the front, and the human sees a notice. Refs do not survive a tab switch: re-snapshot.
+- §tab list§ marks each tab §(yours)§ or §(the user's)§ — read it before closing anything.
+- At most 8 tabs per workspace, the human's and yours together; a refused §tab new§ says so (exit 1).
+- You may close only the tabs YOU opened. Closing one of the human's fails with §browser_tab_not_owner§ (exit 1) and the tab stays open — do not try again. A page the human's tab opened as a popup is the human's too.
+- Acting on a tab that is not the active one brings it to the front, and the human sees a notice (with a button to go back). Refs do not survive a tab switch: re-snapshot.
 - Tab ids are not stable across an app restart: run §tab list§ before using one.
 
 ## When the pane is not on screen

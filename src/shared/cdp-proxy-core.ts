@@ -267,7 +267,7 @@ export class CdpProxyCore {
 
   /**
    * In-process lease on a tab's debugger channel (#398): the app's own callers (design mode, the
-   * legacy `mcp__browser__*` tools) ride the proxy's one attach instead of making a second one.
+   * pre-CLI primitives) ride the proxy's one attach instead of making a second one.
    * Refcounted with the WebSocket clients; `release()` is idempotent and a lease that outlived a
    * detach never decrements a newer attach.
    */

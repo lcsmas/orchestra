@@ -1,7 +1,7 @@
 /**
  * The debugger seat (#398, ADR 0009): the ONLY file in `src/main` that touches a tab's
  * `webContents.debugger`. The CDP proxy host (`browser-cdp-host.ts`) acquires and releases the seat;
- * everything else — design mode, the legacy `mcp__browser__*` tools, agent-browser — reaches the page
+ * everything else — design mode, the pre-CLI primitives, agent-browser — reaches the page
  * through a proxy lease. A second `attach` on the same contents throws, so a second attacher cannot exist
  * unnoticed (`scripts/check-single-debugger-attacher.mjs` pins it). Electron-free: it takes a structural
  * `DebuggerHost`, so `node --test` drives it with a fake.
@@ -133,7 +133,7 @@ async function resetAndDetach(wc: DebuggerHost, seat: Seat): Promise<void> {
 
 /**
  * Give one hold back. The last one starts the grace period (`graceMs` > 0): after it the seat detaches — first resetting the agent's
- * overrides if an agent session held it (`agentTouched`; design mode and the legacy tools alone leave nothing to undo, so they write
+ * overrides if an agent session held it (`agentTouched`; design mode and the pre-CLI primitives alone leave nothing to undo, so they write
  * nothing to the human's tab) — unless a holder came back; `graceMs` 0 detaches at once without the reset (tests, force paths).
  */
 export function seatRelease(wc: DebuggerHost, graceMs: number, agentTouched = true): 'pending' | 'detached' | 'kept' | 'none' {
