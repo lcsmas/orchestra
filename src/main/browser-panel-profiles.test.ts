@@ -56,7 +56,7 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); const dom = d.domain ?? new URL(d.url).hostname; s.liveCookies = (s.liveCookies ?? []).filter((c) => !(c.name === d.name && c.domain === dom && (c.path ?? '/') === d.path)); s.liveCookies.push({ name: d.name, value: d.value, domain: dom, hostOnly: !d.domain, path: d.path, secure: d.secure, httpOnly: d.httpOnly, session: false, expirationDate: d.expirationDate }); if (s.onSet) s.onSet(d); return Promise.resolve(); },
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return (s.getGate ?? Promise.resolve()).then(() => (s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); const dom = d.domain ?? new URL(d.url).hostname; s.liveCookies = (s.liveCookies ?? []).filter((c) => !(c.name === d.name && c.domain === dom && (c.path ?? '/') === d.path)); s.liveCookies.push({ name: d.name, value: d.value, domain: dom, hostOnly: !d.domain, path: d.path, secure: d.secure, httpOnly: d.httpOnly, session: false, expirationDate: d.expirationDate }); if (s.onSet) s.onSet(d); return s.setDelayMs ? new Promise((r) => setTimeout(r, s.setDelayMs)) : Promise.resolve(); },
         remove(url, name) { (s.cookieRemoves ??= []).push({ url, name }); s.liveCookies = (s.liveCookies ?? []).filter((c) => c.name !== name); if (s.onRemove) s.onRemove(name); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
@@ -323,7 +323,7 @@ const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed =
   return ses;
 };
 /** The stub sessions are shared per partition name across arms: forget what an earlier arm recorded on this one. */
-const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.cookieRemoves = undefined; ses.liveCookies = undefined; ses.getGate = undefined; ses.onSet = undefined; ses.onRemove = undefined; return ses; };
+const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.cookieRemoves = undefined; ses.liveCookies = undefined; ses.getGate = undefined; ses.onSet = undefined; ses.onRemove = undefined; ses.setDelayMs = undefined; return ses; };
 const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms)); // past the 250 ms per-cookie debounce + the re-read
 
@@ -533,6 +533,21 @@ test('LOGOUT RACE: a removal delivered AFTER the write (read → write → remov
     assert.equal(ses.liveCookies.some((c: any) => c.name === cookie.name), false, 'nothing of the cookie is left alive');
     bp.destroyPanel(ws);
   }
+});
+
+test('LOGOUT RACE: a removal that reaches us BEFORE the write resolves is compensated right away — not left to the settle re-check (a 300 ms longer window)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const cookie = { ...SESSION_COOKIE, name: 'sid-early' };
+  ses.liveCookies = [cookie];
+  ses.setDelayMs = 40; // the write is slow: the site's logout is delivered while it is in flight
+  ses.onSet = () => setTimeout(() => cookieEvent(PERSIST(P1), cookie, true, 'expired-overwrite'), 10);
+  cookieEvent(PERSIST(P1), cookie);
+  await settle(250 + 40 + 120); // promotion at 250, write resolves ~40 ms later; the settle re-check is ~300 ms after that
+  assert.equal(ses.cookieRemoves?.length, 1, 'the copy was removed as soon as the write resolved, well before the settle re-check');
+  await settle(400); // let the settle re-check run inside this test: it finds nothing of ours left
+  assert.equal(ses.cookieRemoves.length, 1, 'removed exactly once');
 });
 
 test('LOGOUT RACE: the `overwrite` removal that OUR OWN write emits (the session cookie replaced by its promoted copy) is not a logout — the copy stays', async () => {
