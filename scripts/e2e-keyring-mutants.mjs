@@ -38,7 +38,7 @@ const MUTANTS = [
   ['E10', MAIN, /return (\w+)\.encrypted&&\1\.plaintextEntries>0&&\w+\("settings"\),\1/, 'return $1', 'gnome', 'gnome/file-re-encrypted', 'Settings never re-attempts the re-encryption'],
   ['E11', MAIN, /\(\w+==null\?void 0:\w+\.store\)==="gnome-libsecret"&&(\w+\("startup"\))/, '$1', 'gnome', 'gnome/startup-did-not-touch-secrets', 'startup re-encryption without our own unlocked probe (touches a recognised desktop\'s keyring)'],
   ['E5', MAIN, /\w+&&e\.exportBusAddress\([^;]*\);/, '', 'unlocked', 'unlocked/state-encrypted', 'does not hand libsecret the probed bus (Electron\'s `disabled:` stays)'],
-  ['E6', MAIN, /timeout:e\.timeoutMs\?\?\w+,killSignal:"SIGTERM"/, 'killSignal:"SIGTERM"', 'hung', 'hung/decision-logged', 'the probe has no timeout (a hung Secret Service stalls startup)'],
+  ['E6', MAIN, /while \[ "\$n" -lt "\$limit" \] && alive; do/, 'while alive; do', 'hung', 'hung/startup-bounded', 'the parent waits unboundedly on the probe child (a hung Secret Service stalls startup)'],
   ['E7', REND, /if\(!(\w+)\|\|\1\.encrypted\)return null;const (\w+)=\1\.selectionReason/, 'if(true)return null;const $2=$1.selectionReason', 'nosvc', 'nosvc/linear-warning', 'the warning is never shown'],
   ['E8', REND, /if\(!(\w+)\|\|\1\.encrypted\)return null;const (\w+)=\1\.selectionReason/, 'if(!$1)return null;const $2=$1.selectionReason', 'unlocked', 'unlocked/linear-no-warning', 'the warning is shown even when encryption works'],
   ['E9', MAIN, /encrypted:(\w+)\.isEncryptionAvailable\(\)/, 'encrypted:true', 'nosvc', 'nosvc/state-not-encrypted', 'the state always claims encrypted'],

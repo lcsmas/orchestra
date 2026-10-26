@@ -1,10 +1,11 @@
 // Linux keyring backend selection, applied before `app.ready` (#389). The decision is the pure
-// shared/password-store.ts; this file owns the two impure parts: the bounded Secret Service probe and
+// shared/password-store.ts; this file owns the two impure parts: the wait-only Secret Service probe and
 // the switch. Chromium fixes its os_crypt backend at `ready`, so a switch appended later is ignored.
 // Explicit `.ts` imports: this module is loaded by the type-stripping test runner too.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   decidePasswordStore,
@@ -13,39 +14,65 @@ import {
   type SecretServiceState,
 } from '../shared/password-store.ts';
 
-/** Backstop for the probe child (a gdbus that hangs BEFORE it even calls). The probe is SYNCHRONOUS on the main process before the window exists, so
- *  this is the worst-case startup cost of an unrecognised desktop with a dead service — a bounded wait, never a stall. */
-export const PROBE_TIMEOUT_MS = 8000;
-/** gdbus's own call timeout (seconds). It must be LONG: a client that vanishes while its `Properties.Get` is in flight made the human's
- *  gnome-keyring-daemon abort twice (2026-10-26, `gkd_secret_service_get_pkcs11_session: assertion 'client' failed`). `Locked` never prompts, so
- *  waiting costs nothing but a dead daemon — and a call is never abandoned (no SIGKILL) while the daemon is still answering. */
-export const DBUS_CALL_TIMEOUT_S = '5';
+/** How long the PARENT waits for the probe before deciding `unavailable` (the main thread is blocked, before the window exists: the worst-case startup
+ *  cost of an unrecognised desktop with a dead service). It only STOPS WAITING — it never signals the child (see {@link WAIT_ONLY_SH}). */
+export const PROBE_WAIT_MS = 5000;
+/** gdbus's own per-call timeout (seconds), deliberately LONG: gdbus sends an `Introspect` first and only then the `Properties.Get`, each with this
+ *  timeout, and a client that vanishes while a call is in flight made the human's gnome-keyring-daemon abort twice (2026-10-26, `gkd_secret_service_get_
+ *  pkcs11_session: assertion 'client' failed`). The child outlives our deadline and finishes (or times out) on its own. */
+export const DBUS_CALL_TIMEOUT_S = '30';
+/** Wall-clock backstop for the WRAPPER (`sh`), never for gdbus: the wrapper holds no call, so killing it abandons nothing. */
+const WRAPPER_BACKSTOP_SLACK_MS = 2000;
 
-/** Read `Locked` of the DEFAULT collection without prompting. Anything but a clean boolean answer (no `gdbus`, no owner, no default collection, a
- *  dead daemon past the timeout) is `unavailable`, and the decision falls back to Chromium's default. */
+/** Wait-only wrapper: starts the probe child in the background (output to a file, no pipe shared with us), polls it for at most `$2` × 0.1 s, then
+ *  either reports its exit status or exits 3 WITHOUT touching it — no signal is ever sent, the child finishes its own call and exits by itself.
+ *  (Linux: finished-ness is read from /proc, because `kill -0` succeeds on a zombie.) */
+export const WAIT_ONLY_SH = `out=$1; limit=$2; shift 2
+"$@" >"$out" 2>/dev/null </dev/null &
+pid=$!
+n=0
+alive() { [ -e "/proc/$pid" ] && ! grep -q '^State:[[:space:]]*Z' "/proc/$pid/status" 2>/dev/null; }
+while [ "$n" -lt "$limit" ] && alive; do sleep 0.1; n=$((n+1)); done
+if alive; then exit 3; fi
+wait "$pid"`;
+
+/** Read `Locked` of the DEFAULT collection without prompting, WITHOUT ever abandoning the call: the parent waits at most `waitMs`; past that the answer
+ *  is `unavailable` and the decision falls back to Chromium's default, while the orphaned gdbus completes on its own. Anything but a clean boolean
+ *  answer (no `gdbus`, no owner, no default collection, a dead daemon) is `unavailable` too. */
 export function probeSecretService(
-  opts: { program?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; spawn?: typeof spawnSync } = {},
+  opts: { program?: string; waitMs?: number; env?: NodeJS.ProcessEnv; spawn?: typeof spawnSync } = {},
 ): SecretServiceState {
-  const r = (opts.spawn ?? spawnSync)(
-    opts.program ?? 'gdbus',
-    [
-      'call', '--session', '--timeout', DBUS_CALL_TIMEOUT_S,
-      '--dest', 'org.freedesktop.secrets',
-      '--object-path', '/org/freedesktop/secrets/aliases/default',
-      '--method', 'org.freedesktop.DBus.Properties.Get',
-      'org.freedesktop.Secret.Collection', 'Locked',
-    ],
-    {
-      encoding: 'utf8',
-      timeout: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
-      killSignal: 'SIGTERM', // never SIGKILL a gdbus that may be mid-call; the backstop only ever fires for a hung child
-      maxBuffer: 4096,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: opts.env ?? process.env,
-    },
-  );
-  if (r.error || r.status !== 0) return 'unavailable'; // ENOENT, ETIMEDOUT, non-zero exit
-  return parseCollectionLocked(r.stdout);
+  const waitMs = opts.waitMs ?? PROBE_WAIT_MS;
+  let dir: string | null = null;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-secret-probe-'));
+    const out = path.join(dir, 'out');
+    const r = (opts.spawn ?? spawnSync)(
+      'sh',
+      [
+        '-c', WAIT_ONLY_SH, 'probe', out, String(Math.ceil(waitMs / 100)),
+        opts.program ?? 'gdbus',
+        'call', '--session', '--timeout', DBUS_CALL_TIMEOUT_S,
+        '--dest', 'org.freedesktop.secrets',
+        '--object-path', '/org/freedesktop/secrets/aliases/default',
+        '--method', 'org.freedesktop.DBus.Properties.Get',
+        'org.freedesktop.Secret.Collection', 'Locked',
+      ],
+      {
+        encoding: 'utf8',
+        timeout: waitMs + WRAPPER_BACKSTOP_SLACK_MS, // wedged-`sh` backstop only; the wrapper holds no call
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: opts.env ?? process.env,
+      },
+    );
+    if (r.error || r.status !== 0) return 'unavailable'; // sh missing, deadline (3), or gdbus failed
+    return parseCollectionLocked(fs.readFileSync(out, 'utf8'));
+  } catch {
+    return 'unavailable';
+  } finally {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true }); // an orphaned gdbus keeps its open fd; unlinking is safe
+  }
 }
 
 /** `DBUS_SESSION_BUS_ADDRESS` as an address someone can connect to. Electron itself sets the variable

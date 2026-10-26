@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import type { SecretServiceState } from '../shared/password-store.ts';
-import { DBUS_CALL_TIMEOUT_S, PROBE_TIMEOUT_MS, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
+import { DBUS_CALL_TIMEOUT_S, PROBE_WAIT_MS, WAIT_ONLY_SH, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
 
 // #389 — the impure half of the keyring selection: the REAL probe code path (a real child process) against a
 // stub `gdbus`, and the switch application against a fake `app.commandLine`.
@@ -41,36 +41,93 @@ test('probe: asks the DEFAULT collection for Locked over the session bus, read-o
 test('probe: error exit, junk output and a missing gdbus are all unavailable (never throws)', () => {
   assert.equal(probeSecretService({ program: stub('g-fail', 'echo "Error: ServiceUnknown" >&2; exit 1') }), 'unavailable');
   assert.equal(probeSecretService({ program: stub('g-junk', 'echo "something else"') }), 'unavailable');
+  assert.equal(probeSecretService({ program: stub('g-answer-then-fail', 'echo "(<false>,)"; exit 1') }), 'unavailable', 'the output of a call that FAILED is not trusted');
   assert.equal(probeSecretService({ program: path.join(scratch, 'no-such-gdbus') }), 'unavailable');
 });
 
-test('probe: a HUNG gdbus is killed at the timeout and reads unavailable — startup is bounded', () => {
-  const pidFile = path.join(scratch, 'hung.pid');
-  const hung = stub('g-hang', `echo $$ > '${pidFile}'; exec sleep 30`);
+/** Is `pid` a live, non-zombie process? */
+const alive = (pid: number) => {
+  try {
+    return !/^State:\s*Z/m.test(fs.readFileSync(`/proc/${pid}/status`, 'utf8'));
+  } catch {
+    return false;
+  }
+};
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function until(pred: () => boolean, ms: number): Promise<boolean> {
   const t0 = Date.now();
-  const state = probeSecretService({ program: hung, timeoutMs: 400 });
+  while (!pred()) {
+    if (Date.now() - t0 > ms) return false;
+    await sleepMs(50);
+  }
+  return true;
+}
+/** A stub daemon client that answers `answer` after `delaySec` seconds, records its pid, notes any signal it receives (a trap runs once its `sleep` ends,
+ *  so the test waits for `done`), and writes `done` when it has finished its own call. */
+function slowStub(name: string, delaySec: number, answer = '(<false>,)', extra = ''): { program: string; pidFile: string; sigFile: string; doneFile: string } {
+  const pidFile = path.join(scratch, `${name}.pid`), sigFile = path.join(scratch, `${name}.sig`), doneFile = path.join(scratch, `${name}.done`);
+  const program = stub(name, `echo $$ > '${pidFile}'\n${extra}trap 'echo SIGNALLED >> '${sigFile}'' TERM INT HUP\nsleep ${delaySec}\necho "${answer}"\necho finished > '${doneFile}'`);
+  return { program, pidFile, sigFile, doneFile };
+}
+
+test('probe: a daemon that answers LATE (after the parent stopped waiting) → unavailable at the deadline; the child is NEVER signalled, it finishes its own call and exits by itself', async () => {
+  const s = slowStub('g-late', 3);
+  const t0 = Date.now();
+  const state = probeSecretService({ program: s.program, waitMs: 1000 });
   const ms = Date.now() - t0;
   assert.equal(state, 'unavailable');
-  assert.ok(ms < 2500, `returned after ${ms} ms (timeout 400 ms; a 30 s hang would have been the stall)`);
-  const pid = Number(fs.readFileSync(pidFile, 'utf8'));
-  assert.throws(() => process.kill(pid, 0), /ESRCH/, 'the hung child was killed, not left running');
+  assert.ok(ms >= 900 && ms < 2500, `returned after ${ms} ms (deadline 1000 ms)`);
+  const pid = Number(fs.readFileSync(s.pidFile, 'utf8'));
+  assert.ok(alive(pid), 'the child is still running when the parent gives up — its call was not abandoned');
+  assert.ok(await until(() => fs.existsSync(s.doneFile), 8000), 'the orphaned child ran its call to completion');
+  assert.ok(!fs.existsSync(s.sigFile), 'no signal was ever sent to it');
+  assert.ok(await until(() => !alive(pid), 3000), 'and it exited by itself (no zombie left)');
 });
 
-test('the shipped probe NEVER abandons an in-flight call: gdbus waits ≥ 5 s itself, the child is not SIGKILLed, the backstop is > gdbus\'s own timeout and still bounded', () => {
-  assert.ok(Number(DBUS_CALL_TIMEOUT_S) >= 5, 'a vanished client mid-Properties.Get aborted the human\'s gnome-keyring-daemon twice');
-  assert.ok(PROBE_TIMEOUT_MS > Number(DBUS_CALL_TIMEOUT_S) * 1000 && PROBE_TIMEOUT_MS <= 10000, `backstop ${PROBE_TIMEOUT_MS} ms`);
+test('probe: a daemon that NEVER answers → unavailable at the deadline, child untouched (alive, unsignalled); startup block is the deadline, not the daemon', async () => {
+  const s = slowStub('g-never', 6);
+  const t0 = Date.now();
+  assert.equal(probeSecretService({ program: s.program, waitMs: 500 }), 'unavailable');
+  const ms = Date.now() - t0;
+  assert.ok(ms < 2000, `returned after ${ms} ms`);
+  const pid = Number(fs.readFileSync(s.pidFile, 'utf8'));
+  await sleepMs(600);
+  assert.ok(alive(pid), 'still alive well after the deadline');
+  assert.ok(!fs.existsSync(s.sigFile), 'never signalled');
+  process.kill(pid, 'SIGKILL'); // test cleanup only
+});
+
+test('probe: an answer INSIDE the deadline is used (the common case: a few ms)', () => {
+  const s = slowStub('g-quick', 0.3, '(<true>,)');
+  assert.equal(probeSecretService({ program: s.program, waitMs: 3000 }), 'locked');
+});
+
+test('probe: a child that IGNORES SIGTERM cannot block the main thread — the parent never waits on it past the deadline (and never signals it)', () => {
+  const pidFile = path.join(scratch, 'g-deaf.pid');
+  const deaf = stub('g-deaf', `echo $$ > '${pidFile}'; trap '' TERM INT HUP; sleep 4`);
+  const t0 = Date.now();
+  assert.equal(probeSecretService({ program: deaf, waitMs: 400 }), 'unavailable');
+  assert.ok(Date.now() - t0 < 1800, `returned after ${Date.now() - t0} ms`);
+});
+
+test('the shipped probe NEVER abandons an in-flight call: gdbus gets a LONG timeout (it sends an Introspect first, then the Get), the wrapper never kills, the parent only stops waiting', () => {
+  assert.ok(Number(DBUS_CALL_TIMEOUT_S) >= 25, 'a vanished client mid-Properties.Get aborted the human\'s gnome-keyring-daemon twice');
+  assert.ok(PROBE_WAIT_MS >= 1000 && PROBE_WAIT_MS <= 6000, `the main thread blocks at most ${PROBE_WAIT_MS} ms`);
+  assert.doesNotMatch(WAIT_ONLY_SH, /\bkill\b/, 'the wait-only wrapper contains no kill at all');
+  assert.doesNotMatch(WAIT_ONLY_SH, /\btimeout\b/, 'and no `timeout` wrapper (it SIGTERMs)');
   let seen: { args: string[]; opts: Record<string, unknown> } | null = null;
   const fake = ((_cmd: string, args: string[], opts: Record<string, unknown>) => {
     seen = { args, opts };
-    return { status: 0, stdout: '(<false>,)', error: undefined };
+    const out = args[args.indexOf('probe') + 1];
+    fs.writeFileSync(out, '(<false>,)');
+    return { status: 0, error: undefined };
   }) as unknown as typeof import('node:child_process').spawnSync;
   assert.equal(probeSecretService({ spawn: fake }), 'unlocked');
-  assert.ok(seen);
-  const { args, opts } = seen as { args: string[]; opts: Record<string, unknown> };
+  const { args, opts } = seen as unknown as { args: string[]; opts: Record<string, unknown> };
   assert.equal(args[args.indexOf('--timeout') + 1], DBUS_CALL_TIMEOUT_S, 'gdbus is told the long timeout');
-  assert.notEqual(opts.killSignal, 'SIGKILL', 'the child is never SIGKILLed');
-  assert.equal(opts.killSignal, 'SIGTERM');
-  assert.equal(opts.timeout, PROBE_TIMEOUT_MS);
+  assert.equal(args[args.indexOf('probe') + 2], String(Math.ceil(PROBE_WAIT_MS / 100)), 'the parent waits PROBE_WAIT_MS');
+  assert.ok(Number(opts.timeout) > PROBE_WAIT_MS, 'the wrapper backstop sits above the wait');
+  assert.deepEqual(opts.stdio, ['ignore', 'ignore', 'ignore'], 'no pipe is shared with the child (spawnSync would wait for its EOF)');
 });
 
 // ---- the switch ---------------------------------------------------------------------------------

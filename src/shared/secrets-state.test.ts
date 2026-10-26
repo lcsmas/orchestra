@@ -44,7 +44,19 @@ test('an ISOLATED instance does not claim "no keyring is available" — it says 
   assert.equal(u?.kind, 'unreadable');
   assert.match(u!.text, /2 stored secrets are encrypted and unreadable in this instance \(sealed by a keyring earlier\)\./);
   assert.doesNotMatch(u!.text, /no keyring is available|until a keyring is available again/, 'an isolated instance will not get a keyring back by itself');
-  for (const reason of [null, 'no-service', 'locked-service', 'no-session-bus', 'recognised-desktop'] as const) {
+  for (const reason of [null, 'no-service', 'no-session-bus', 'recognised-desktop', 'unlocked-service', 'explicit-switch'] as const) {
     assert.match(secretsNotice(st({ plaintextEntries: 1, selectionReason: reason }))!.text, /no keyring is available/, String(reason));
   }
+});
+
+test('a keyring the probe found LOCKED says so and what to do — never "no keyring is available" (the human\'s keyring was exactly that)', () => {
+  const n = secretsNotice(st({ plaintextEntries: 2, selectionReason: 'locked-service' }));
+  assert.equal(n?.kind, 'unencrypted');
+  assert.match(n!.text, /stored unencrypted on this machine/);
+  assert.match(n!.text, /the keyring is locked — unlock it, then restart Orchestra/);
+  assert.doesNotMatch(n!.text, /no keyring is available/);
+  const u = secretsNotice(st({ encryptedEntries: 3, selectionReason: 'locked-service' }));
+  assert.equal(u?.kind, 'unreadable');
+  assert.match(u!.text, /3 stored secrets are encrypted and unreadable until the keyring is unlocked and Orchestra restarted/);
+  assert.doesNotMatch(u!.text, /until a keyring is available again/);
 });

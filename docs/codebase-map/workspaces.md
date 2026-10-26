@@ -659,8 +659,11 @@ the first disk read is single-flight (`loading`).
   locked (libsecret would wait on a prompt nobody answers, a ~76 s stall) or no service → Chromium's
   choice. `linux-keyring.ts` owns the impure half: `probeSecretService` (`gdbus … Properties.Get
   org.freedesktop.Secret.Collection Locked` on `/org/freedesktop/secrets/aliases/default`, read-only,
-  synchronous; it NEVER abandons an in-flight call — gdbus `--timeout 5`, backstop `PROBE_TIMEOUT_MS` = 8 s with SIGTERM, never SIGKILL: a client vanishing
-  mid-`Properties.Get` aborted the human's gnome-keyring-daemon twice on 2026-10-26; worst case a dead daemon costs startup ~5 s, then Chromium's default) and
+  synchronous but WAIT-ONLY — it never abandons an in-flight call: a client vanishing mid-`Properties.Get` aborted the human's gnome-keyring-daemon
+  twice on 2026-10-26. `WAIT_ONLY_SH` runs gdbus (`--timeout 30` per call: it sends an `Introspect` first, then the Get) in the background and
+  polls it for `PROBE_WAIT_MS` = 5 s; past that it exits 3 WITHOUT signalling — `unavailable`, Chromium's default, the orphaned child finishes
+  its own call. Worst case a dead daemon blocks the main thread 5 s. A wrapper `kill` / `timeout` / SIGTERM-SIGKILL spawnSync timeout is the
+  mutant) and
   `selectLinuxPasswordStore` (appends the switch; `index.ts` calls it at module scope, never in CLI
   mode, and logs `[secrets] password-store: … — <reason> (probe N ms) [desktop=… bus=…]` after
   `initLogger`). **Electron sets `DBUS_SESSION_BUS_ADDRESS=disabled:` in its main process when the

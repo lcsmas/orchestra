@@ -26,19 +26,22 @@ export interface SecretsNotice {
 
 /** The warning to show, or null — nothing at all when encryption works. When it does not, stored
  *  ciphertext (written on an earlier run with a keyring) is unreadable until a keyring answers again, which
- *  is worth saying: the keys are not lost, but they do not work either. No cause is named — a locked
- *  wallet, no reachable session bus and no `gdbus` all end in the same state. */
+ *  is worth saying: the keys are not lost, but they do not work either. A cause is named only when the
+ *  startup decision KNEW it (`selectionReason`): an isolated instance, or a keyring found LOCKED by the probe;
+ *  otherwise (no bus, no `gdbus`, no service, a probe that timed out) none — they all end in the same state. */
 export function secretsNotice(state: SecretsState | null): SecretsNotice | null {
   if (!state || state.encrypted) return null;
   const text =
     state.selectionReason === 'isolated-instance'
       ? 'Secrets are stored unencrypted on this machine: this instance runs in an isolated home (ORCHESTRA_HOME) and does not use the keyring — set ORCHESTRA_KEYRING=probe to opt in.'
-      : 'Secrets are stored unencrypted on this machine: no keyring is available.';
+      : state.selectionReason === 'locked-service'
+        ? 'Secrets are stored unencrypted on this machine: the keyring is locked — unlock it, then restart Orchestra.'
+        : 'Secrets are stored unencrypted on this machine: no keyring is available.';
   if (state.encryptedEntries > 0) {
     const n = state.encryptedEntries;
     return {
       kind: 'unreadable',
-      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable ${state.selectionReason === 'isolated-instance' ? 'in this instance (sealed by a keyring earlier)' : 'until a keyring is available again'}.`,
+      text: `${text} ${n} stored secret${n === 1 ? ' is' : 's are'} encrypted and unreadable ${state.selectionReason === 'isolated-instance' ? 'in this instance (sealed by a keyring earlier)' : state.selectionReason === 'locked-service' ? 'until the keyring is unlocked and Orchestra restarted' : 'until a keyring is available again'}.`,
     };
   }
   return { kind: 'unencrypted', text };
