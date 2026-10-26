@@ -184,6 +184,17 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
     }
   }, [designArmed, isActive, workspaceId]);
 
+  // Leaving a workspace unmounts this component (App keys it by workspace, #393) — and nothing else disarms the picker on that
+  // workspace: the effect above only runs for the NEW instance. Without this cleanup the workspace we leave keeps its overlay —
+  // and, since #398, its lease on the proxy's debugger attach — until its panel is destroyed. (Also covers a changed `workspaceId`.)
+  useEffect(() => {
+    return () => {
+      void window.orchestra.browserDesignDisarm(workspaceId).catch(() => {
+        /* nothing armed / no live view */
+      });
+    };
+  }, [workspaceId]);
+
   // A navigation replaces the document, taking the injected overlay with it —
   // so an armed picker silently stops working. Re-arm on every URL change while
   // armed, so design mode survives the user clicking a link mid-pick.

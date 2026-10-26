@@ -70,6 +70,17 @@ const MUTANTS = [
     red: ['webcontents-feature-is-refused-without-a-window'] },
 ];
 
+// `--check`: static anchor proof (no build, no rig, nothing written): every edit's `from` must occur EXACTLY ONCE in its current file.
+if (process.argv.includes('--check')) {
+  let bad = 0, total = 0;
+  for (const m of MUTANTS) for (const [f, from] of m.edits) {
+    total++;
+    const n = fs.readFileSync(path.join(ROOT, f), 'utf8').split(from).length - 1;
+    if (n !== 1) { bad++; console.log(`ANCHOR ${n === 0 ? 'MISSING' : `x${n}`}  ${m.id}  [${path.basename(f)}] ${from.slice(0, 70).replace(/\n/g, '⏎')}`); }
+  }
+  console.log(`${total - bad}/${total} edit anchors live`);
+  process.exit(bad ? 1 : 0);
+}
 const only = process.argv.slice(2);
 const sh = (cmd, args, opt = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, ...opt });
 const files = [...new Set(MUTANTS.flatMap((m) => m.edits.map((e) => e[0])))];

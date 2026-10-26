@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Design fixture</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; background: #f4f6fa; color: #1b2330; }
+  #pick-me { margin: 18px 12px; padding: 14px 22px; border: 3px solid #1d4ed8; border-radius: 12px; background: #fde68a; width: 240px; }
+  #pick-me strong { color: #9a3412; }
+  button { padding: 6px 12px; }
+</style></head>
+<body>
+<h1 id="h">Design fixture</h1>
+<div id="pick-me" class="card promo" data-testid="promo"><strong>Pick this card</strong> — design mode must report its HTML, styles and a cropped shot.</div>
+<p><button id="count" onclick="this.textContent='clicked '+(window.__n=(window.__n||0)+1)">count</button> <span id="release-flag">waiting</span></p>
+<script>window.__release = false;</script>
+</body></html>

@@ -134,6 +134,17 @@ export const MUTANTS = [
   [WS, 'a socket / bulk delete leaves the workspace\'s browser panel (and popup windows)', '  destroyBrowserPanel(id); // #396: every delete path (socket `orchestra delete`, bulk, repo removal) — its tabs and popup windows must not outlive it\n', ''],
 ];
 
+// `--check`: the static anchor proof (no test run, nothing written): every mutant's find-string must occur EXACTLY ONCE in the current source — run after a merge / rebase moved lines.
+if (process.argv.includes('--check')) {
+  let bad = 0;
+  for (const [file, name, find, replace] of MUTANTS) {
+    const src = readFileSync(path.join(root, file), 'utf8');
+    const n = src.split(find).length - 1;
+    if (n !== 1 || find === replace) { bad++; console.log(`ANCHOR ${n === 1 ? 'NO-OP' : n === 0 ? 'MISSING' : `x${n}`}  [${path.basename(file)}] ${name}`); }
+  }
+  console.log(`${MUTANTS.length - bad}/${MUTANTS.length} anchors live (each find-string exactly once)`);
+  process.exit(bad ? 1 : 0);
+}
 if (process.argv.includes('--list')) { for (const [f, n] of MUTANTS) console.log(`${path.basename(f)}  ${n}`); process.exit(0); }
 
 const dir = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'popup-mut-'));

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   CdpProxyCore,
   isBrowserLevelMethod,
+  sendOnLease,
   type CdpEventListener,
   type CdpPanelPort,
   type CdpTab,
@@ -29,13 +30,13 @@ function fakePanel(initial: CdpTab[] = [{ id: 't1', url: 'http://a/', title: 'A'
   const tabs = [...initial];
   const channels = new Map<string, FakeChannel>();
   const subs = new Set<(e: CdpTabEvent) => void>();
-  const log = { acquire: [] as string[], release: [] as string[], activate: [] as string[], invalidate: [] as string[], fallback: [] as string[] };
+  const log = { acquire: [] as string[], release: [] as string[], touched: [] as boolean[], activate: [] as string[], invalidate: [] as string[], fallback: [] as string[] };
   let frames: string | null = null;
   const port: CdpPanelPort = {
     listTabs: () => tabs.map((t) => ({ ...t })),
     subscribeTabs: (l) => { subs.add(l); return () => subs.delete(l); },
     acquire: async (id) => { log.acquire.push(id); if (!channels.has(id)) channels.set(id, new FakeChannel()); return channels.get(id)!; },
-    release: (id) => { log.release.push(id); },
+    release: (id, agent) => { log.release.push(id); log.touched.push(!!agent); },
     createTab: async (url) => { const t: CdpTab = { id: `t${tabs.length + 1}`, url: url ?? 'about:blank', title: '', active: false, openedBy: 'agent' }; tabs.push(t); for (const s of subs) s({ kind: 'created', tab: t }); return t; },
     closeTab: async (id) => { const i = tabs.findIndex((t) => t.id === id); const [t] = tabs.splice(i, 1); for (const s of subs) s({ kind: 'destroyed', tab: t! }); },
     activateTab: (id) => { log.activate.push(id); },
@@ -377,6 +378,52 @@ test('#400 seam: port.refuseMethod refuses a page-level command on a root AND a 
   assert.equal((await c2.call('Network.clearBrowserCookies', undefined, s2)).error, undefined);
 });
 
+test('lease (#398): an in-process holder shares the ONE acquire with a WebSocket client; the debugger is released only when both are gone', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const { targetInfos } = (await c.call('Target.getTargets')).result;
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId: targetInfos[0].targetId })).result;
+  const l = await core.lease('t1');
+  assert.deepEqual(p.log.acquire, ['t1'], 'one attach for the client AND the lease');
+  await l.channel.send('Runtime.evaluate', { expression: '1' });
+  assert.deepEqual(p.channels.get('t1')!.sent.map((s) => [s.method, s.sessionId]), [['Runtime.evaluate', undefined]]);
+  await c.call('Target.detachFromTarget', { sessionId });
+  assert.deepEqual(p.log.release, [], 'the lease still holds the debugger after the client left');
+  l.release();
+  l.release(); // idempotent
+  assert.deepEqual(p.log.release, ['t1'], 'released once, when the last holder left');
+  assert.deepEqual(core.attachedTabIds(), []);
+});
+
+test('lease (#398): a lease alone attaches and detaches; concurrent leases acquire once', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const [a, b] = await Promise.all([core.lease('t1'), core.lease('t1')]);
+  assert.equal(core.attachedTabIds().length, 1);
+  const outstanding = () => p.log.acquire.length - p.log.release.length; // what a refcounting port still holds
+  assert.equal(outstanding(), 1, 'the lost race released its extra acquire at once');
+  a.release();
+  assert.equal(outstanding(), 1, 'one holder left: the port still holds the debugger');
+  b.release();
+  assert.equal(outstanding(), 0, 'every port acquire is paired with a release');
+  assert.deepEqual(core.attachedTabIds(), []);
+});
+
+test('lease (#398): a lease that outlived a detach never decrements the NEXT attach', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const stale = await core.lease('t1');
+  p.channels.get('t1')!.detach('target closed'); // DevTools / destroy: the debugger is gone
+  assert.deepEqual(core.attachedTabIds(), []);
+  const fresh = await core.lease('t1');
+  stale.release(); // must not touch `fresh`
+  assert.deepEqual(core.attachedTabIds(), ['t1'], 'the new attach still stands');
+  assert.deepEqual(p.log.release, []);
+  fresh.release();
+  assert.deepEqual(core.attachedTabIds(), []);
+});
+
 test('seam review m1: no raw-CDP tunnel — Target.sendMessageToTarget / exposeDevToolsProtocol are refused on a root AND a child session and never reach the debugger', async () => {
   const p = fakePanel();
   const core = new CdpProxyCore(p.port);
@@ -507,4 +554,59 @@ test('reviewer addendum: the refuseMethod verdict contract is STRICT — only nu
     else if (want === 'refuse-text') { assert.equal(r.error.message, 'no cookies for you', label); assert.equal(reached, 0, label); }
     else { assert.equal(r.error.message, 'Runtime.evaluate refused: policy returned an invalid verdict', label); assert.equal(reached, 0, `${label}: never reaches the debugger`); }
   }
+});
+
+test('lease (#398): releasing one lease twice gives back ONE hold — the other holder keeps the debugger', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const a = await core.lease('t1');
+  const b = await core.lease('t1');
+  a.release();
+  a.release(); // a stray double release must not eat b's hold
+  assert.deepEqual(core.attachedTabIds(), ['t1'], 'b still holds the tab');
+  assert.equal(p.log.acquire.length - p.log.release.length, 1, 'the port still holds exactly one attach');
+  b.release();
+  assert.deepEqual(core.attachedTabIds(), []);
+});
+
+test('release carries agentTouched: only a client SESSION marks the tab; leases alone do not (so design mode never triggers the agent reset)', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const l = await core.lease('t1');
+  l.release();
+  assert.deepEqual(p.log.touched, [false], 'a lease alone: nothing for a reset to undo');
+  const c = client(core);
+  const { targetInfos } = (await c.call('Target.getTargets')).result;
+  await c.call('Target.attachToTarget', { targetId: targetInfos[0].targetId });
+  c.close();
+  assert.deepEqual(p.log.touched, [false, true], 'an agent session attached: the release says so');
+  const l2 = await core.lease('t1');
+  const c2 = client(core);
+  await c2.call('Target.attachToTarget', { targetId: targetInfos[0].targetId });
+  c2.close();
+  assert.deepEqual(p.log.touched.length, 2, 'the lease still holds the debugger');
+  l2.release();
+  assert.deepEqual(p.log.touched, [false, true, true], 'the agent touched it while the lease held: the LAST release carries the mark');
+});
+
+test('sendOnLease: gives the lease back when the command settles, rejects or never settles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const mk = (answer: () => Promise<unknown>) => {
+    let released = 0;
+    const ch = new FakeChannel();
+    ch.answer = answer;
+    return { lease: { channel: ch, release: () => { released++; } }, released: () => released };
+  };
+  const ok = mk(async () => 'r');
+  assert.equal(await sendOnLease(ok.lease, 'X.y', {}, 1000), 'r');
+  assert.equal(ok.released(), 1);
+  const bad = mk(async () => { throw new Error('boom'); });
+  await assert.rejects(() => sendOnLease(bad.lease, 'X.y', {}, 1000), /boom/);
+  assert.equal(bad.released(), 1);
+  const hung = mk(() => new Promise(() => undefined));
+  const p = sendOnLease(hung.lease, 'Page.captureScreenshot', {}, 1000);
+  t.mock.timers.tick(1000);
+  const outcome = await Promise.race([p.then(() => 'resolved', (e: Error) => e.message), new Promise((r) => setImmediate(() => r('STILL PENDING')))]);
+  assert.match(String(outcome), /did not settle within 1000 ms/);
+  assert.equal(hung.released(), 1, 'a command that never settles cannot pin the tab\'s debugger');
 });
