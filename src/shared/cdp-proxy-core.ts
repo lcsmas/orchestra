@@ -668,6 +668,7 @@ export class CdpProxyCore {
     if (st) {
       for (const u of st.unsub) u();
       this.tabs.delete(tabId); // the debugger is gone: nothing to release
+      st.pending.abortAll(); // ... and it answers nothing more: settle what is in flight on its child sessions (replaced / destroyed / detached alike)
     }
     for (const c of this.clients) {
       for (const [csid, s] of [...c.sessions]) {

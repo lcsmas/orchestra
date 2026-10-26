@@ -41,6 +41,12 @@ const MUTANTS = [
     '    this.retired.add(sessionId);\n', ''],
   [PEND, 'the retired set is never trimmed',
     'if (this.retired.size > this.retiredCap)', 'if (false)'],
+  [CORE, 'a dropped debugger (replaced / destroyed / detached) leaves the commands in flight on its children pending',
+    'st.pending.abortAll();', ''],
+  [PEND, 'abortAll settles the first session only',
+    'for (const sessionId of [...this.bySession.keys()]) n += this.abortPending(sessionId);', 'for (const sessionId of [...this.bySession.keys()].slice(0, 1)) n += this.abortPending(sessionId);'],
+  [PEND, 'abortAll reports no count',
+    '    return n;\n  }\n\n  /** Commands in flight on', '    return 0;\n  }\n\n  /** Commands in flight on'],
 ];
 
 if (process.argv.includes('--check')) {

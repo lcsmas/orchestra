@@ -94,3 +94,14 @@ test('the retired set is bounded: the oldest id goes first', async () => {
   await assert.rejects(sp.track('B', () => Promise.resolve(0), gone), /gone/);
   assert.equal(await sp.track('A', () => Promise.resolve('forwarded'), gone), 'forwarded', 'A fell out of the 2-id window');
 });
+
+test('abortAll settles every command on every session and counts them; nothing is left tracked', async () => {
+  const sp = new SessionPending();
+  const d = deferred<void>();
+  const ps = [sp.track('A', () => d.promise, gone), sp.track('A', () => d.promise, gone), sp.track('B', () => d.promise, gone)];
+  assert.equal(sp.abortAll(), 3);
+  const r = await Promise.allSettled(ps);
+  assert.ok(r.every((x) => x.status === 'rejected' && /gone/.test(String(x.reason.message))));
+  assert.equal(sp.size(), 0);
+  assert.equal(sp.abortAll(), 0);
+});

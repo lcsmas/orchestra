@@ -56,11 +56,22 @@ export class SessionPending {
   abort(sessionId: string): number {
     this.retired.add(sessionId);
     if (this.retired.size > this.retiredCap) this.retired.delete(this.retired.values().next().value as string);
+    return this.abortPending(sessionId);
+  }
+
+  private abortPending(sessionId: string): number {
     const set = this.bySession.get(sessionId);
     if (!set) return 0;
     const all = [...set];
     for (const a of all) a();
     return all.length;
+  }
+
+  /** The whole debugger is gone (tab destroyed, replaced, DevTools took it): settle every command in flight on every session. Returns how many were settled. */
+  abortAll(): number {
+    let n = 0;
+    for (const sessionId of [...this.bySession.keys()]) n += this.abortPending(sessionId);
+    return n;
   }
 
   /** Commands in flight on `sessionId` (all sessions when omitted). */

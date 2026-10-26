@@ -23,15 +23,17 @@ class HeldChannel implements CdpTabChannel {
   subscribe(l: CdpEventListener) { this.listeners.add(l); return () => this.listeners.delete(l); }
   onDetach(l: (r: string) => void) { this.detachers.add(l); return () => this.detachers.delete(l); }
   emit(method: string, params: unknown, sessionId?: string) { for (const l of [...this.listeners]) l(method, params, sessionId); }
+  detach(reason: string) { for (const d of [...this.detachers]) d(reason); }
   last(method: string, sessionId?: string) { return [...this.sent].reverse().find((s) => s.method === method && s.sessionId === sessionId); }
 }
 
 function setup() {
   const tab: CdpTab = { id: 't1', url: 'http://a/', title: 'A', active: true, openedBy: 'human' };
   const ch = new HeldChannel();
+  const subs = new Set<(e: CdpTabEvent) => void>();
   const port: CdpPanelPort = {
     listTabs: () => [{ ...tab }],
-    subscribeTabs: () => () => undefined,
+    subscribeTabs: (l) => { subs.add(l); return () => subs.delete(l); },
     acquire: async () => ch,
     release: () => undefined,
     activateTab: () => undefined,
@@ -41,7 +43,7 @@ function setup() {
     framesError: () => null,
   };
   const core = new CdpProxyCore(port, { nonce: 'n' });
-  return { core, ch };
+  return { core, ch, emitTab: (e: CdpTabEvent) => { for (const s of [...subs]) s(e); }, tab };
 }
 
 /** A client that records everything it receives (in order) and awaits replies by id. */
@@ -195,3 +197,27 @@ test('a late event carrying a detached child\'s session id does not bring it bac
   assert.equal(r.error.message, 'Session with given id not found.');
   assert.equal(ch.sent.filter((s) => s.sessionId === 'CH1').length, 0);
 });
+
+// The whole debugger going away (tab replaced by #400, destroyed, DevTools took it): the old TabState is dropped and unsubscribed, so no child detach will ever
+// arrive for what is in flight on its children — the proxy settles those commands itself.
+for (const how of ['debugger detach', 'replaced', 'destroyed'] as const) {
+  test(`${how}: a command in flight on a child is answered, behind the client's session detach — and a later command on that child never reaches the (new) debugger`, async () => {
+    const { core, ch, emitTab, tab } = setup();
+    const { c, root, child } = await attached(core, ch);
+    child('CH1');
+    const cmd = c.call('Runtime.enable', {}, 'CH1');
+    await tick();
+    assert.equal(ch.sent.filter((s) => s.sessionId === 'CH1').length, 1);
+    if (how === 'debugger detach') ch.detach('target closed');
+    else emitTab({ kind: how, tab });
+    const r = await answered(cmd.reply);
+    assert.ok(!r.wedged, 'the command in flight on the child was never answered');
+    assert.equal(r.error.message, 'Session with given id not found.');
+    const iDetach = c.inbox.findIndex((m) => m.method === 'Target.detachedFromTarget' && m.params?.sessionId === root);
+    const iReply = c.inbox.findIndex((m) => m.id === cmd.id);
+    assert.ok(iDetach >= 0 && iReply > iDetach, `the root session's detach (#${iDetach}) comes before the error reply (#${iReply})`);
+    const late = c.call('Page.enable', {}, 'CH1');
+    assert.equal((await answered(late.reply)).error?.message, 'Session with given id not found.');
+    assert.equal(ch.sent.filter((s) => s.sessionId === 'CH1' && s.method === 'Page.enable').length, 0);
+  });
+}
