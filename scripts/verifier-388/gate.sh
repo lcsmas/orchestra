@@ -29,10 +29,10 @@ echo "== harnesses"
 for h in verify-archive-browser-panel verify-browser-panel-dead-view verify-browser-panel-focus-steal; do node --experimental-strip-types "scripts/$h.mjs" > "$L/$h.log" 2>&1; echo "$h RC=$? $(grep -E 'passed$' "$L/$h.log")"; done
 if (( ! NODRIVE )); then
   echo "== G5/G10 baseline drive on the BUILT candidate"
-  node "$RIGDIR/g10.mjs" snap "$L/g10-before.json"; node "$RIGDIR/g10b.mjs" snap "$L/g10b-before.json"
+  node "$RIGDIR/g10.mjs" snap "$L/g10-before.json"; [[ "${G10B:-0}" == 1 ]] && node "$RIGDIR/g10b.mjs" snap "$L/g10b-before.json"
   export E2E_RIG_BASE="/var/tmp/v388-$(id -u)"; mkdir -p -m 700 "$E2E_RIG_BASE"; export CLAUDE_CONFIG_DIR_PIN="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   nice -n 10 bash scripts/e2e-contained-rig.sh node "$RIGDIR/bp-drive.mjs" "$ROOT" "cand-${HEAD_SHA:0:8}" > "$L/drive.log" 2>&1; echo "drive RC=$?"
   grep -E '^(FAIL|RIG-RESULT)' "$L/drive.log" | cut -c1-300
-  node "$RIGDIR/g10.mjs" snap "$L/g10-after.json"; node "$RIGDIR/g10.mjs" diff "$L/g10-before.json" "$L/g10-after.json"; node "$RIGDIR/g10b.mjs" snap "$L/g10b-after.json" >/dev/null; node "$RIGDIR/g10b.mjs" diff "$L/g10b-before.json" "$L/g10b-after.json" "bp-drive"
+  node "$RIGDIR/g10.mjs" snap "$L/g10-after.json"; node "$RIGDIR/g10.mjs" diff "$L/g10-before.json" "$L/g10-after.json"; [[ "${G10B:-0}" == 1 ]] && { node "$RIGDIR/g10b.mjs" snap "$L/g10b-after.json" >/dev/null; node "$RIGDIR/g10b.mjs" diff "$L/g10b-before.json" "$L/g10b-after.json" "bp-drive"; } || echo "G10b SUSPENDED (OPS freeze Q2: no contact with the real bus/keyring)"
 fi
 echo "logs: $L"
