@@ -55,6 +55,8 @@ const ALLOW: Record<string, string> = {
 };
 
 const REAL_RUNTIME = /\/run\/user\/(\d+|\$)/;
+/** CODE lines only: a line that is wholly a `//` / `#` comment names the path to explain it (e.g. #393's rig), it does not hard-code it. */
+const codeOnly = (src: string): string => src.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
 function scriptFiles(dir: string): string[] {
   const out: string[] = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -69,7 +71,7 @@ function scriptFiles(dir: string): string[] {
 test('no script hard-codes the human\'s /run/user/<uid> outside the reviewed allowlist (and the allowlist has no stale entry)', () => {
   const hits = scriptFiles(path.join(repo, 'scripts'))
     .map((f) => path.relative(repo, f))
-    .filter((rel) => REAL_RUNTIME.test(fs.readFileSync(path.join(repo, rel), 'utf8')) && !NAMES_IT_TO_REFUSE.has(rel))
+    .filter((rel) => REAL_RUNTIME.test(codeOnly(fs.readFileSync(path.join(repo, rel), 'utf8'))) && !NAMES_IT_TO_REFUSE.has(rel))
     .sort();
   const unexpected = hits.filter((h) => !(h in ALLOW));
   assert.deepEqual(unexpected, [], `a script hard-codes /run/user/<uid> — take XDG_RUNTIME_DIR from scripts/lib/rig-runtime.mjs (privateRuntimeDir) or run it through scripts/e2e-contained-rig.sh; if it genuinely cannot, add it to ALLOW with a reason: ${unexpected.join(', ')}`);
@@ -80,6 +82,8 @@ test('no script hard-codes the human\'s /run/user/<uid> outside the reviewed all
 test('the ratchet can fail: the pattern matches the real shapes seen in the tree, and not the placeholder', () => {
   for (const s of ["'/run/user/1000'", '`/run/user/${process.getuid()}`', '/run/user/$(id -u)', 'unix:path=/run/user/1000/bus']) assert.ok(REAL_RUNTIME.test(s), s);
   for (const s of ['/run/user/<uid>', 'XDG_RUNTIME_DIR', 'run/user']) assert.ok(!REAL_RUNTIME.test(s), s);
+  assert.ok(!REAL_RUNTIME.test(codeOnly('  // never /run/user/1000/bus\n# /run/user/1000')), 'a wholly-commented mention is not a hard-code');
+  assert.ok(REAL_RUNTIME.test(codeOnly('const x = 1; // fine\nconst d = `/run/user/${uid}`;')), 'a code line still counts');
 });
 
 test('every migrated driver TOP-LEVEL-imports the helper (resolvable), calls it, and keeps no literal fallback', () => {
@@ -102,6 +106,6 @@ test('every migrated driver TOP-LEVEL-imports the helper (resolvable), calls it,
     assert.ok(fs.existsSync(path.resolve(path.dirname(file), spec.from)), `${rel}: import '${spec.from}' does not resolve`);
     assert.equal(path.resolve(path.dirname(file), spec.from), path.join(repo, 'scripts', 'lib', 'rig-runtime.mjs'), `${rel}: imports the wrong module`);
     assert.match(src, /privateRuntimeDir\(\)/, `${rel} calls it`);
-    assert.doesNotMatch(src, REAL_RUNTIME, `${rel} has no hard-coded real runtime dir`);
+    assert.doesNotMatch(codeOnly(src), REAL_RUNTIME, `${rel} has no hard-coded real runtime dir`);
   }
 });
