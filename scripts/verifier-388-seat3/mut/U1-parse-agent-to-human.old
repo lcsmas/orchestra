@@ -1,0 +1,1 @@
+openedBy: e.openedBy === 'agent' ? 'agent' : 'human' });

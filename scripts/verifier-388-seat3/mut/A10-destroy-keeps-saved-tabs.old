@@ -1,0 +1,2 @@
+  persistence?.save(wsId, null);
+}

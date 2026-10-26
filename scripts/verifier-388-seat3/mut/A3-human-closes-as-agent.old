@@ -1,0 +1,1 @@
+browserPanel.tryCloseTab(wsId, tabId, HUMAN_OPENER),

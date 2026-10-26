@@ -1,0 +1,1 @@
+  flushBrowserTabs(); // #393: the debounced tab snapshot must reach disk before the process goes

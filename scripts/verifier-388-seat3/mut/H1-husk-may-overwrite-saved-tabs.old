@@ -1,0 +1,1 @@
+panels.get(panel.wsId) !== panel || panel.tabs.length === 0

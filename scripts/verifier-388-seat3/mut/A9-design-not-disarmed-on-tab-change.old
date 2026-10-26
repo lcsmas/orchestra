@@ -1,0 +1,5 @@
+    if (designArmed) {
+      await window.orchestra.browserDesignDisarm(workspaceId).catch(() => {});
+      setDesignArmed(false);
+    }
+    const r = await op();

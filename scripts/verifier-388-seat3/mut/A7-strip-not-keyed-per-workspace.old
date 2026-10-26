@@ -1,0 +1,1 @@
+      key={active.id /* #393: tab ids restart per workspace — never carry A's tab strip / state into B */}
