@@ -62,6 +62,8 @@ const MUTANTS = [
     red: ['child-window-title-shows-the-origin-first'] },
   { id: 'R19-page-resize-applies-to-popup-windows', arms: 'hostile', edits: [[BP, "  wc.on('content-bounds-updated', (e) => e.preventDefault());\n  watchPopups(panel, wc, openedBy);", '  watchPopups(panel, wc, openedBy);']],
     red: ['page-resizeTo-moveTo-cannot-change-the-popup-bounds'] },
+  { id: 'R21-mailto-tel-need-no-click', arms: 'extproto', edits: [[BP, 'const userGesture = isOsHandoffUrl(url) && !!wc && consumeUserGesture(wc);', 'const userGesture = true;']],
+    red: ['no-click-mailto-and-tel-by-load-time-navigation-or-a-click-or-window-open-launch-nothing'] },
   { id: 'R20-external-protocols-reach-the-os', arms: 'extproto', edits: [[BP, '  guardExternalProtocols(ses);\n', '']],
     red: ['ssh-and-zoom-link-clicks-in-a-tab-launch-nothing', 'ssh-and-zoom-link-clicks-in-a-popup-window-launch-nothing'] },
   { id: 'R17-no-per-minute-rate-cap', arms: 'churn', edits: [[POL, "if (!req.userGesture && (ctx.recentPageInitiated ?? 0) >= rateMax) {", 'if (false) {']],

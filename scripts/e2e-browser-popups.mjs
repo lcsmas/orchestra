@@ -560,14 +560,20 @@ try {
   if (ARMS.has('extproto')) await runArm('extproto', async () => {
     const launches = () => { try { return fs.readFileSync(world.xdgLog, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+    // seat-3 F1, BEFORE anything has clicked: mailto:/tel: asked by a load-time navigation, a programmatic a.click() and window.open — no user click, so nothing may launch
+    const nNo = launches().length;
+    await typeUrl(b, `${BASE}/popups-extproto.html?nogesture=1`);
+    await waitFor(async () => (await tabs(b))[0]?.label === 'Popups fixture extproto', 20000, 'tab 1 to load the nogesture extproto fixture');
+    await sleep(3500);
+    clause('extproto', 'no-click-mailto-and-tel-by-load-time-navigation-or-a-click-or-window-open-launch-nothing', launches().length === nNo, `xdg-open calls with NO user click (location.href=mailto, programmatic tel a.click(), window.open(mailto)): ${JSON.stringify(launches().slice(nNo))} (a gesture-less session launches all three)`);
     await typeUrl(b, `${BASE}/popups-extproto.html`);
-    await waitFor(async () => (await tabs(b))[0]?.label === 'Popups fixture extproto', 20000, 'tab 1 to load the extproto fixture');
+    await waitFor(async () => (await tabs(b))[0]?.label === 'Popups fixture extproto' && (await tabs(b))[0]?.tip === `${BASE}/popups-extproto.html`, 20000, 'tab 1 to load the plain extproto fixture');
     const page = await pageOf(b, /popups-extproto\.html$/);
     // positive control: the instrument SEES a launch (an allow-listed mailto: click reaches the recording xdg-open)
     let n = launches().length;
     await clickIn(page, '#mail'); await sleep(1800);
     const mailCalls = launches().slice(n);
-    clause('extproto', 'ctl/the-instrument-sees-a-launch-mailto-click-reaches-xdg-open', mailCalls.some((l) => l.includes('mailto:a@b.c')), `xdg-open calls after the mailto click: ${JSON.stringify(mailCalls)}`);
+    clause('extproto', 'ctl/the-instrument-sees-a-launch-mailto-click-reaches-xdg-open', mailCalls.filter((l) => l.includes('mailto:a@b.c')).length === 1, `xdg-open calls after ONE mailto click (exactly one launch expected): ${JSON.stringify(mailCalls)}`);
     const refusedBefore = logLines(world).filter((l) => l.includes('external protocol refused')).length;
     n = launches().length;
     await clickIn(page, '#ssh'); await sleep(1800);

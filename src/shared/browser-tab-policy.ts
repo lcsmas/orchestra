@@ -166,6 +166,16 @@ export function isOsHandoffUrl(url: string): boolean {
   return OS_HANDOFF_SCHEMES.test(url.trim());
 }
 
+export type ExternalProtocolDecision = { allow: true } | { allow: false; reason: 'scheme' | 'no-gesture' };
+
+/** The session-level `openExternal` permission (a link click, a redirect, `location.href = 'mailto:…'`, a programmatic `a.click()` — everything that does NOT go through `window.open`):
+ *  only `mailto:` / `tel:`, and only on a user gesture of the requesting contents — the same rule `decidePopup` applies to `window.open(url)`. Without the gesture a page could pop the
+ *  user's mail composer / dialer at will, in a loop (#396 seat-3 F1). */
+export function decideExternalProtocol(input: { url: string; userGesture: boolean }): ExternalProtocolDecision {
+  if (!isOsHandoffUrl(input.url)) return { allow: false, reason: 'scheme' };
+  return input.userGesture ? { allow: true } : { allow: false, reason: 'no-gesture' };
+}
+
 function classifyUrl(url: string): UrlKind {
   const u = url.trim();
   if (/^https?:\/\//i.test(u)) return 'web';

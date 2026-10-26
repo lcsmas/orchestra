@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl, POPUP_BUDGET, POPUP_RATE_MAX, POPUP_RATE_WINDOW_MS, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decideExternalProtocol, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl, POPUP_BUDGET, POPUP_RATE_MAX, POPUP_RATE_WINDOW_MS, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
 
 const tabs = (spec: string): PolicyTab[] => spec.split(' ').map((s) => ({ id: s.slice(1), openedBy: s[0] === 'h' ? 'human' : 'agent' }));
 
@@ -327,4 +327,24 @@ test('decideBrowserAutoOpen (review MAJOR): an agent navigate / reload to the ur
 test('isOsHandoffUrl — the ONE allowlist behind the popup path AND the session `openExternal` permission: mailto:/tel: (any case, surrounding whitespace) and nothing else', () => {
   for (const u of ['mailto:a@b.c', 'MAILTO:a@b.c', ' tel:+33123456789 ', 'Tel:1']) assert.equal(isOsHandoffUrl(u), true, u);
   for (const u of ['', 'ssh://x', 'zoommtg://x', 'smb://x', 'slack://x', 'vscode://x', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://x/', 'http://x/', 'about:blank', 'xmailto:a@b.c', 'mailto', 'tel']) assert.equal(isOsHandoffUrl(u), false, u || '(empty)');
+});
+
+test('decideExternalProtocol — the session `openExternal` permission: mailto:/tel: only AND only with a user gesture; every other scheme refused with or without one (seat-3 F1)', () => {
+  const rows: [string, boolean, ReturnType<typeof decideExternalProtocol>][] = [
+    // url, user gesture, expected
+    ['mailto:a@b.c', true, { allow: true }],
+    ['MAILTO:a@b.c', true, { allow: true }],
+    [' tel:+33123456789 ', true, { allow: true }],
+    ['mailto:a@b.c', false, { allow: false, reason: 'no-gesture' }], // a load-time location.href = 'mailto:…'
+    ['tel:+999', false, { allow: false, reason: 'no-gesture' }], // a programmatic a.click()
+    ['ssh://x/a', true, { allow: false, reason: 'scheme' }],
+    ['ssh://x/a', false, { allow: false, reason: 'scheme' }],
+    ['zoommtg://zoom.us/join', true, { allow: false, reason: 'scheme' }],
+    ['smb://h/s', false, { allow: false, reason: 'scheme' }],
+    ['javascript:alert(1)', true, { allow: false, reason: 'scheme' }],
+    ['file:///etc/passwd', true, { allow: false, reason: 'scheme' }],
+    ['', true, { allow: false, reason: 'scheme' }],
+    ['', false, { allow: false, reason: 'scheme' }],
+  ];
+  for (const [url, userGesture, want] of rows) assert.deepEqual(decideExternalProtocol({ url, userGesture }), want, `${url || '(empty)'} gesture=${userGesture}`);
 });

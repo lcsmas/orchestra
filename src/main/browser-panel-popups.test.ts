@@ -709,21 +709,41 @@ test('F-a — a page\'s window.resizeTo / moveTo is VETOED on popup windows and 
   }
 });
 
-test('F-b — link clicks and redirects to external protocols inside a tab or popup (Electron asks the SESSION for the `openExternal` permission) are refused unless mailto:/tel:; every other permission keeps its default; one handler per session', () => {
+test('F-b — link clicks and redirects to external protocols inside a tab or popup (Electron asks the SESSION for the `openExternal` permission) are refused unless mailto:/tel: AND the requesting contents had a user gesture (one input, one launch); every other permission keeps its default; one handler per session', () => {
   const ws = newWs();
   const t1 = bp.ensurePanel(ws).tabs[0];
   bp.createTab(ws, { openedBy: 'agent' }); // a second tab of the SAME session
   const ses = g.__bpSessions[`orchestra-browser-${ws}`];
   assert.equal(typeof ses.permHandler, 'function', 'the panel session is guarded');
   assert.equal(ses.permCalls, 1, 'installed once per session, however many tabs share it');
-  const ask = (permission: string, details?: object) => { let out: boolean | undefined; ses.permHandler(wcOf(t1), permission, (ok: boolean) => { out = ok; }, details); return out; };
-  for (const url of ['ssh://root@h', 'zoommtg://zoom.us/join?confno=1', 'smb://h/s', 'vscode://file/x', 'slack://x', 'javascript:alert(1)', 'file:///etc/passwd', '']) assert.equal(ask('openExternal', { externalURL: url }), false, url || '(empty)');
+  const wc = wcOf(t1);
+  const ask = (permission: string, details?: object, requester: any = wc) => { let out: boolean | undefined; ses.permHandler(requester, permission, (ok: boolean) => { out = ok; }, details); return out; };
+  // mailto:/tel: with NO gesture (a load-time location.href / a programmatic a.click(): no input event) — before anything has clicked
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), false, 'a load-time location.href / a programmatic a.click(): no input event, no gesture');
+  assert.equal(ask('openExternal', { externalURL: 'tel:+999' }), false);
+  // other schemes: refused with AND without a click (and a refusal must not eat the click's activation)
+  for (const url of ['ssh://root@h', 'zoommtg://zoom.us/join?confno=1', 'smb://h/s', 'vscode://file/x', 'slack://x', 'javascript:alert(1)', 'file:///etc/passwd', '']) {
+    assert.equal(ask('openExternal', { externalURL: url }), false, `${url || '(empty)'} without a click`);
+    clickOn(wc);
+    assert.equal(ask('openExternal', { externalURL: url }), false, `${url || '(empty)'} WITH a click`);
+  }
   assert.equal(ask('openExternal'), false, 'no details at all: refused');
-  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), true);
-  assert.equal(ask('openExternal', { externalURL: ' TEL:+33123456789' }), true);
+  // a refused link leaves the click's activation unconsumed (an ordinary browser honours a navigation within the activation window): spend it before the next assertions
+  assert.equal(ask('openExternal', { externalURL: 'mailto:spend@b.c' }), true, 'the unconsumed activation of the last click above');
+  // mailto:/tel: — only with a gesture of the REQUESTING contents
+  clickOn(wc);
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), true, 'a clicked mailto: launches');
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), false, 'one input, one launch: the gesture was consumed');
+  clickOn(wc);
+  assert.equal(ask('openExternal', { externalURL: ' TEL:+33123456789' }), true, 'a clicked tel: launches');
+  clickOn(wcOf(bp.getTab(ws, 't2')!));
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), false, 'a click on ANOTHER tab is no gesture for this one');
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }, null), false, 'no requesting contents: refused');
   for (const permission of ['geolocation', 'notifications', 'media', 'clipboard-read']) assert.equal(ask(permission, {}), true, `${permission}: unchanged (granted by default)`);
-  assert.equal(g.__bpLog.filter((l: string) => l.includes('external protocol refused (ssh:)')).length, 1, 'refusals are logged with the SCHEME only (the rest can carry tokens)');
-  assert.equal(g.__bpLog.some((l: string) => l.includes('root@h') || l.includes('confno')), false);
+  const refusals = g.__bpLog.filter((l: string) => l.includes('external protocol refused'));
+  assert.ok(refusals.some((l: string) => l.includes('(ssh:)')), 'a refused scheme is logged with the SCHEME only');
+  assert.ok(refusals.some((l: string) => l.includes('(mailto: no click)')), 'a no-click refusal says so');
+  assert.equal(g.__bpLog.some((l: string) => l.includes('root@h') || l.includes('confno') || l.includes('a@b.c') || l.includes('+999')), false, 'never the rest of the URL');
 });
 
 test('F-d (1) — a popup\'s frame name is registered TRIMMED: a holder named " sso " still blocks another opener asking for "sso" (and for " sso ")', () => {
