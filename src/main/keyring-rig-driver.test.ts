@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import { humanRuntimeDir } from '../shared/keyring-rig-world.ts';
+import { HIDDEN_MI, HOST_MI } from '../shared/keyring-rig-world.fixtures.ts';
 
 // #389 — the keyring rig's DRIVER, without a compositor, a bus or a daemon: (1) `--preflight-only` black-box (the same entry the rig's `forged`
 // arm runs under a hostile env) and (2) source pins for the properties the pure checks cannot see — what the driver is allowed to read.
@@ -31,10 +32,15 @@ function fakeRig(name: string): { rig: string; env: Record<string, string> } {
     },
   };
 }
-function preflight(env: Record<string, string | undefined>): { rc: number | null; out: string } {
+// `--mountinfo-file` (honoured only with --preflight-only) stands in for the namespace this unit suite does not run in: the rig's own hidden-world mountinfo
+const hiddenMi = path.join(scratch, 'hidden-mountinfo');
+const hostMi = path.join(scratch, 'host-mountinfo');
+fs.writeFileSync(hiddenMi, HIDDEN_MI);
+fs.writeFileSync(hostMi, HOST_MI);
+function preflight(env: Record<string, string | undefined>, mountinfo: string | null = hiddenMi): { rc: number | null; out: string } {
   const clean: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined) clean[k] = v;
-  const r = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(repo, 'scripts/e2e-keyring.mjs'), '--preflight-only'], { env: clean, encoding: 'utf8', timeout: 30000 });
+  const r = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(repo, 'scripts/e2e-keyring.mjs'), '--preflight-only', ...(mountinfo ? ['--mountinfo-file', mountinfo] : [])], { env: clean, encoding: 'utf8', timeout: 30000 });
   return { rc: r.status, out: `${r.stdout}${r.stderr}` };
 }
 
@@ -42,7 +48,7 @@ test('driver --preflight-only: the rig-shaped env is accepted (control) and crea
   const { rig, env } = fakeRig('ok');
   const r = preflight(env);
   assert.equal(r.rc, 0, r.out);
-  assert.match(r.out, /\[preflight\] keyring rig world: 6\/6 clauses ok/);
+  assert.match(r.out, /\[preflight\] keyring rig world: 7\/7 clauses ok/);
   assert.match(r.out, /PREFLIGHT-OK/);
   assert.deepEqual(fs.readdirSync(rig).sort(), ['xdg'], 'no arm dir, no bus, no daemon state');
   assert.deepEqual(fs.readdirSync(path.join(rig, 'xdg')), [], 'the private runtime dir stays empty');
@@ -54,7 +60,7 @@ test('hand-off through `env -i` (the rig\'s real shape): RIG_HIDDEN_WORLD lives 
   const kv = Object.entries(childEnv).map(([k, v]) => `${k}=${v}`);
   const run = (parentEnv: Record<string, string>): { rc: number | null; out: string } => {
     // two statements, so bash stays the PARENT of `env … node` (a lone last command would be exec'd); mirrors the rig's `env -i "${CHILD_ENV[@]}" "$@"`
-    const r = spawnSync('bash', ['-c', 'env -i "$@"; echo "child-rc=$?"', '_', ...kv, process.execPath, '--no-warnings', '--experimental-strip-types', path.join(repo, 'scripts/e2e-keyring.mjs'), '--preflight-only'], { env: parentEnv, encoding: 'utf8', timeout: 30000 });
+    const r = spawnSync('bash', ['-c', 'env -i "$@"; echo "child-rc=$?"', '_', ...kv, process.execPath, '--no-warnings', '--experimental-strip-types', path.join(repo, 'scripts/e2e-keyring.mjs'), '--preflight-only', '--mountinfo-file', hiddenMi], { env: parentEnv, encoding: 'utf8', timeout: 30000 });
     return { rc: Number(/child-rc=(\d+)/.exec(r.stdout)?.[1] ?? NaN), out: `${r.stdout}${r.stderr}` };
   };
   const hidden = run({ PATH: '/usr/bin:/bin', RIG_HIDDEN_WORLD: '1' });
@@ -64,6 +70,49 @@ test('hand-off through `env -i` (the rig\'s real shape): RIG_HIDDEN_WORLD lives 
   assert.equal(plain.rc, 3, plain.out);
   assert.match(plain.out, /hidden-world/, 'a parent that never ran the hidden-world rig is refused');
   assert.deepEqual(fs.readdirSync(rig).sort(), ['xdg']);
+});
+
+test('m3: the hidden-world proof is the namespace — env says hidden but a host mountinfo is REFUSED naming hidden-world-mount-proof; the knob is refused outside --preflight-only; unreadable mountinfo fails closed', () => {
+  const { rig, env } = fakeRig('mountproof');
+  const host = preflight(env, hostMi);
+  assert.equal(host.rc, 3, host.out);
+  assert.match(host.out, /hidden-world-mount-proof \(1 mount at .*\(the host's own\)/);
+  assert.doesNotMatch(host.out, /PREFLIGHT-OK/);
+  const missing = preflight(env, path.join(scratch, 'no-such-mountinfo'));
+  assert.equal(missing.rc, 3, missing.out);
+  assert.match(missing.out, /hidden-world-mount-proof \(\/proc\/self\/mountinfo unreadable\)/);
+  // a REAL run (no --preflight-only) never honours the knob: it refuses before anything else
+  const real = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(repo, 'scripts/e2e-keyring.mjs'), '--mountinfo-file', hiddenMi, '/nonexistent-app'], { env: Object.fromEntries(Object.entries(env)), encoding: 'utf8', timeout: 30000 });
+  assert.equal(real.status, 3);
+  assert.match(`${real.stdout}${real.stderr}`, /--mountinfo-file is a --preflight-only test flag/);
+  assert.deepEqual(fs.readdirSync(rig).sort(), ['xdg'], 'nothing created');
+  // WITHOUT the knob the driver reads its own namespace — this suite is not in the hidden world, so the real mountinfo must be refused
+  const unhidden = preflight(env, null);
+  assert.equal(unhidden.rc, 3, unhidden.out);
+  assert.match(unhidden.out, /hidden-world-mount-proof/);
+});
+
+test('F2 (seat 1): a SYMLINKED xdg / RIG_DIR / env value passes every lexical clause and is REFUSED physically — through a stand-in for the runtime dir, nothing real is touched', () => {
+  const standin = path.join(scratch, 'standin');
+  const fakeRuntime = path.join(standin, 'run/user/1000');
+  fs.mkdirSync(path.join(fakeRuntime, 'xdg'), { recursive: true, mode: 0o700 });
+  const mk = (name: string): { rig: string; env: Record<string, string> } => fakeRig(name);
+  // 1. <rig>/xdg is a link into the stand-in
+  { const { rig, env } = mk('phys-xdg'); fs.rmSync(path.join(rig, 'xdg'), { recursive: true }); fs.symlinkSync(path.join(fakeRuntime, 'xdg'), path.join(rig, 'xdg'));
+    const r = preflight(env); assert.equal(r.rc, 3, r.out); assert.match(r.out, /keyring rig physical preflight failed — .*xdg-is-physically-the-rigs-dir/); assert.doesNotMatch(r.out, /PREFLIGHT-OK/); }
+  // 2. RIG_DIR itself is a link into the stand-in (xdg then sits physically under it, lexically under the link)
+  { const real = path.join(fakeRuntime, 'rig'); fs.mkdirSync(path.join(real, 'xdg'), { recursive: true, mode: 0o700 });
+    const link = path.join(scratch, 'phys-rigdir-link'); fs.symlinkSync(real, link);
+    const env = { PATH: '/usr/bin:/bin', RIG_DIR: link, XDG_RUNTIME_DIR: `${link}/xdg`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${link}/no-session-bus`, WAYLAND_DISPLAY: 'wayland-rig', RIG_WAYLAND: 'wayland-rig', RIG_HIDDEN_WORLD: '1' };
+    const r = preflight(env); assert.equal(r.rc, 3, r.out); assert.match(r.out, /keyring rig physical preflight failed — .*rig-dir-resolves-physically-clean/); }
+  // 3. a path-valued env entry that is a link into the stand-in (lexically innocent)
+  { const { rig, env } = mk('phys-env'); const link = path.join(rig, 'innocent-looking'); fs.symlinkSync(path.join(fakeRuntime, 'xdg'), link);
+    const r = preflight({ ...env, GNOME_KEYRING_CONTROL: link }); assert.equal(r.rc, 3, r.out); assert.match(r.out, /env-path-values-resolve-physically-clean \(env keys whose value is a link\/path into it: GNOME_KEYRING_CONTROL\)/);
+    const dangling = path.join(rig, 'dangling'); fs.symlinkSync(path.join(fakeRuntime, 'does-not-exist'), dangling);
+    const d = preflight({ ...env, SOME_SOCKET: dangling }); assert.equal(d.rc, 3, `a DANGLING link into it is refused by its target: ${d.out}`); }
+  // control: the same shapes with innocent targets pass
+  { const { rig, env } = mk('phys-ok'); const ok = path.join(rig, 'ok-link'); fs.mkdirSync(path.join(rig, 'real-target')); fs.symlinkSync(path.join(rig, 'real-target'), ok);
+    const r = preflight({ ...env, SOME_DIR: ok }); assert.equal(r.rc, 0, r.out); assert.match(r.out, /\[preflight\] physical: 3\/3 clauses ok/); }
 });
 
 test('driver --preflight-only: every forged world is REFUSED (rc 3, naming the clause) before anything is created — forced real XDG_RUNTIME_DIR / DBUS / values', () => {
@@ -97,6 +146,29 @@ test('driver --preflight-only: every forged world is REFUSED (rc 3, naming the c
   }
 });
 
+test('driver source (m2/m3): ss is read strictly (a row that does not parse aborts), the mountinfo knob is gated on --preflight-only, the real run reads /proc/self/mountinfo', () => {
+  const d = driver();
+  assert.match(d, /const \{ rows, unparsed \} = parseSsStrict\(r\.stdout\);\n  if \(unparsed\.length\) throw new Error\(/);
+  assert.match(d, /if \(r\.status !== 0 \|\| !r\.stdout\) throw new Error\(`ss -xnaeH failed/);
+  assert.match(d, /if \(miFlag && !PREFLIGHT_ONLY\) refuse\(/);
+  assert.match(d, /fs\.readFileSync\(miFlag \?\? '\/proc\/self\/mountinfo', 'utf8'\)/);
+  assert.match(d, /mountinfo, uid: process\.getuid\(\) \}\);/);
+  assert.match(d, /clause\('forged\/host-mountinfo-is-refused', fm\.rc === 3 && \/\^REFUSED: \/m\.test\(fm\.out\) && \/hidden-world-mount-proof\/\.test\(fm\.out\) && !\/PREFLIGHT-OK\/\.test\(fm\.out\),/);
+});
+
+test('F3 (seat 1): seedWorld runs EVERY scratch guard before its first mkdir / symlink, and the guard resolves through links', () => {
+  const d = driver();
+  const seed = d.slice(d.indexOf('function seedWorld'), d.indexOf('async function') > 0 ? d.indexOf("const account = { id: 'rig-kr389'") : undefined);
+  const guard = seed.search(/mustBeScratch\(`world\.\$\{k\}`, v\)/);
+  assert.ok(guard > 0, 'the guard is in seedWorld');
+  for (const later of [/fs\.mkdirSync\(/, /fs\.symlinkSync\(/, /fs\.chmodSync\(/]) assert.ok(guard < seed.search(later), `guard precedes ${later}`);
+  assert.match(d, /const liveReal = physicalPath;/, 'a path under a symlinked parent resolves to where it would land');
+  assert.match(d, /if \(referencesHumanRuntime\(r\)\) return \{ ok: false, clause: 'human-runtime' \};/, 'and the PHYSICAL landing place is tested too');
+  assert.match(d, /const pcs = physicalWorldChecks\(\{ rigDir: RIG_DIR, rigReal, xdgReal: physicalPath\(RIG_XDG\), envPhysical \}\);/);
+  assert.ok(d.search(/const pcs = physicalWorldChecks/) > d.search(/const cs = driverWorldChecks/), 'physical facts are gathered only after the lexical clauses');
+  assert.match(d, /for \(const c of ownerChecksOf\(w\)\)|secretsOwnerChecks\(ownerEvidence\(w\)\)/);
+});
+
 test('driver source: the world preflight is the FIRST thing — before the app dir, any arm dir, any bus, any daemon, any /proc read', () => {
   const d = driver();
   const pos = (re: RegExp): number => { const i = d.search(re); assert.ok(i >= 0, String(re)); return i; };
@@ -119,8 +191,8 @@ test('driver source: it reads nothing of the human\'s — no real bus, no real d
   assert.doesNotMatch(d, /readdirSync\(['"`]\/proc['"`]\)/, 'no scan of /proc/*: processes are tracked by (pid, start time) from the private bus peers and the app tree');
   for (const f of ['scripts/e2e-keyring.mjs', 'scripts/lib/rig-procs.mjs']) {
     const reads = codeOnly(read(f)).match(/\/proc\/[^'"`\s)]*/g) ?? [];
-    const stray = reads.filter((r) => !/^\/proc\/(\$\{(pid|p|hp|process\.ppid|a\.app\.pid|t)\}\/(fd|environ|cmdline|exe|stat|task)|\$\{p\}\/task\/\$\{t\}\/children|net\/unix)/.test(r));
-    assert.deepEqual(stray, [], `${f}: every /proc read is per-pid (a pid obtained from the driver's own children / the private bus) or /proc/net/unix`);
+    const stray = reads.filter((r) => !/^\/proc\/(\$\{(pid|p|hp|process\.ppid|a\.app\.pid|t)\}\/(fd|environ|cmdline|exe|stat|task)|\$\{p\}\/task\/\$\{t\}\/children|net\/unix|self\/mountinfo)/.test(r));
+    assert.deepEqual(stray, [], `${f}: every /proc read is per-pid (a pid obtained from the driver's own children / the private bus) or /proc/net/unix, or this process's own /proc/self/mountinfo`);
     assert.doesNotMatch(codeOnly(read(f)), /readdirSync\(['"`]\/proc['"`]/, f);
   }
   assert.doesNotMatch(d, /\/run\/user/, 'the path is named only in src/shared/keyring-rig-world.ts (to refuse it)');

@@ -27,6 +27,8 @@ const T_RW = ['src/shared/keyring-rig-world.test.ts'];
 const T_RD = ['src/main/keyring-rig-driver.test.ts'];
 const RP = 'scripts/lib/rig-procs.mjs';
 const T_RP = ['src/main/rig-procs.test.ts'];
+const RPA = 'scripts/lib/rig-paths.mjs';
+const T_RPA = ['src/main/rig-paths.test.ts'];
 
 /** [id, file, find, replace, tests that must go red, what clause it removes] */
 const MUTANTS = [
@@ -97,7 +99,7 @@ const MUTANTS = [
   // ---- the rewired rig (round-4 rewire, ledger #405 incident Q2): pure world checks + the driver + the launcher ----
   ['W1', RW, "if (out.length > 0 && out[out.length - 1] !== '..') out.pop();", "if (false) out.pop();", T_RW, 'a `..` collapses (a /run/x/../user/1000 spelling cannot slip the human-runtime test)'],
   ['W2', RW, "const HUMAN_RT = /(^|\\/)run\\/user(\\/|$)/;", "const HUMAN_RT = /^\\/run\\/user\\/\\d/;", T_RW, 'the human-runtime pattern also catches the bare dir and any container shape'],
-  ['W3', RW, "  return value.split(/[:=,;\\s]+/).some((piece) => piece.includes('/') && HUMAN_RT.test(normPath(piece)));", "  return false;", T_RW, 'a path INSIDE `unix:path=…` / a PATH list / a URL is found'],
+  ['W3', RW, " || value.split(/[:=,;\\s]+/).some((piece) => piece.includes('/') && HUMAN_RT.test(normPath(piece)));", " || false;", T_RW, 'a path INSIDE `unix:path=…` / a PATH list / a URL is found'],
   ['W4', RW, "return n.startsWith(d + '/');", "return n.startsWith(d);", T_RW, 'containment is by path segment (a sibling sharing the rig dir\'s name as a prefix is outside)'],
   ['W5', RW, "{ id: 'hidden-world', ok: f.hiddenWorld,", "{ id: 'hidden-world', ok: true,", T_RW, 'the rig refuses to run outside the hidden world'],
   ['W6', RW, "dbus === `unix:path=${rig}/no-session-bus` && !f.noBusExists,", "dbus === `unix:path=${rig}/no-session-bus`,", T_RW, 'the private no-bus path must not exist'],
@@ -110,7 +112,7 @@ const MUTANTS = [
   ['W13', RW, "under(s.path, `${e.run}/keyring`)", "under(s.path, '/')", T_RW, 'the owner holds a socket under the ARM\'s keyring dir (not just any socket)'],
   ['W14', RW, "const sawPrivate = t.socketPaths.some((x) => under(x, t.run));", "const sawPrivate = true;", T_RW, 'the tree scan has a positive control (it can see the private dir)'],
   ['W15', RW, "|| armDirs.includes(n);", "|| true;", T_RW, 'the rig runtime root holds only wayland sockets and arm dirs'],
-  ['D1', DR, "hiddenWorld: hiddenWorldProof() });", "hiddenWorld: true });", T_RD, 'the driver refuses outside the hidden world'],
+  ['D1', DR, "hiddenWorld: hiddenWorldProof(), mountinfo", "hiddenWorld: true, mountinfo", T_RD, 'the driver refuses outside the hidden world'],
   ['D2', DR, "try { RIG_XDG = privateRuntimeDir(); } catch (e) { refuse(e.message); }", "RIG_XDG = `${RIG_DIR}/xdg`;", T_RD, 'the driver takes XDG_RUNTIME_DIR through privateRuntimeDir() (refuses a real/foreign one)'],
   ['D3', DR, "if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); process.exit(0); }", "if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); }", T_RD, '--preflight-only stops right after the checks (nothing else may start)'],
   ['D4', DR, "    if (failed(worldCs).length) throw new Error('the arm world is not private — nothing was started');\n", '', T_RD, 'an arm whose world is not private starts nothing'],
@@ -131,6 +133,33 @@ const MUTANTS = [
   ['W16', RW, "    const peer = byIno.get(x.peerIno);\n    if (peer?.localPath) out.add(peer.localPath);\n", "", T_RW, 'a client end (`*`) resolves to the path its PEER end is bound to — the shape of a connection to a keyring/bus socket'],
   ['W17', RW, "ok: longestSocket(w.run) <= SUN_PATH_MAX,", "ok: true,", T_RW, 'every arm socket path fits sun_path (the hooks socket is 28 chars)'],
   ['W18', RW, "const sawPrivate = t.socketPaths.some((x) => under(x, t.run));", "const sawPrivate = t.fdTargets.some((x) => under(x, t.run));", T_RW, 'the tree-scan positive control is a SOCKET under the arm dir (fd links never show socket paths)'],
+  // ---- round-5 review of the rewire (m1 %hh escapes, m2 spaced ss paths, m3 mountinfo proof) ----
+  ['W19', RW, "    try { cur = decodeURIComponent(cur); } catch { return null; }\n    forms.push(cur);\n    // a further round", "    forms.push(cur);\n    // a further round", T_RW, 'a D-Bus `%hh`-escaped runtime dir is decoded before it is compared (m1)'],
+  ['W20', RW, "  return forms === null || forms.some(referencesLiteral);", "  return forms !== null && forms.some(referencesLiteral);", T_RW, 'a malformed escape fails CLOSED (m1)'],
+  ['W21', RW, "for (let i = 0; i < 2 && /%[0-9a-fA-F]{2}/.test(cur); i++) {", "for (let i = 0; i < 0 && /%[0-9a-fA-F]{2}/.test(cur); i++) {", T_RW, 'a double-encoded escape is decoded again (m1)'],
+  ['W22', RW, "const SS_ROW = /^\\S+\\s+\\S+\\s+\\d+\\s+\\d+\\s+(.+?)\\s+(\\d+)", "const SS_ROW = /^\\S+\\s+\\S+\\s+\\d+\\s+\\d+\\s+(\\S+?)\\s+(\\d+)", T_RW, 'an ss row whose path contains a space still parses (m2)'],
+  ['W23', RW, "    else unparsed.push(line.slice(0, 160));\n", "", T_RW, 'a row that does not parse is REPORTED, not dropped (m2)'],
+  ['W24', RW, "  if (here.length < 2) return { ok: false,", "  if (here.length < 1) return { ok: false,", T_RW, 'the host\'s single mount at the runtime dir is not a hidden world (m3)'],
+  ['W25', RW, "  if (top.fstype !== 'tmpfs') return", "  if (false) return", T_RW, 'the topmost mount must be a tmpfs (m3)'],
+  ['W26', RW, "  if (top.tags.length > 0) return", "  if (false) return", T_RW, 'the hiding tmpfs is private, not a propagated mount (m3)'],
+  ['W27', RW, "  if (onTop.length > 0) return", "  if (false) return", T_RW, 'nothing is mounted on the hiding tmpfs (a re-bind re-exposes the dir) (m3)'],
+  ['W28', RW, "const m = f.mountinfo === null ? { ok: false, detail: '/proc/self/mountinfo unreadable' } : hiddenRuntimeMountProof(f.mountinfo, f.uid);", "const m = { ok: true, detail: 'skipped' };", T_RW, 'the driver refuses unless the namespace PROVES the hiding (m3)'],
+  ['D19', DR, "fs.readFileSync(miFlag ?? '/proc/self/mountinfo', 'utf8')", "fs.readFileSync(miFlag ?? '/proc/1/mountinfo', 'utf8')", T_RD, 'the real run reads ITS OWN namespace (/proc/self/mountinfo) (m3)'],
+  ['D20', DR, "  if (miFlag && !PREFLIGHT_ONLY) refuse(", "  if (false) refuse(", T_RD, '--mountinfo-file can never steer a real run (m3)'],
+  ['D21', DR, "  if (unparsed.length) throw new Error(`ss -xnaeH:", "  if (false) throw new Error(`ss -xnaeH:", T_RD, 'the driver aborts on an ss row that does not parse (m2)'],
+  // ---- round-5 seat-1 findings: F2 physical preflight, F3 guard before mkdir, G-owner-2 scan control ----
+  ['W29', RW, "{ id: 'rig-dir-resolves-physically-clean', ok: f.rigReal !== null && !referencesHumanRuntime(f.rigReal),", "{ id: 'rig-dir-resolves-physically-clean', ok: true,", T_RW, 'a RIG_DIR that is a link into the runtime dir is refused physically (F2)'],
+  ['W30', RW, "ok: f.rigReal !== null && f.xdgReal !== null && f.xdgReal === `${f.rigReal}/xdg` && !referencesHumanRuntime(f.xdgReal),", "ok: f.xdgReal !== null && !referencesHumanRuntime(f.xdgReal),", T_RW, 'the private runtime dir is physically <rig>/xdg — a symlink anywhere in it differs (F2)'],
+  ['W31', RW, "const leaks = Object.entries(f.envPhysical).filter(([, forms]) => forms.some(referencesHumanRuntime))", "const leaks = Object.entries(f.envPhysical).filter(([, forms]) => false)", T_RW, 'a link-valued env entry into the runtime dir is refused physically (F2)'],
+  ['W32', RW, "ok: sockFds === 0 || e.socketPaths.some((x) => under(x, e.run)),", "ok: true,", T_RW, 'the owner fd scan has a positive control of its own: sockets held but none resolved = vacuous (G-owner-2)'],
+  ['D22', DR, "const liveReal = physicalPath;", "const liveReal = (p) => path.resolve(p);", T_RD, 'the scratch guard resolves a not-yet-created path through its symlinked parent (F3)'],
+  ['D23', DR, "  for (const [k, v] of Object.entries({ ...w.dirs, run: w.run })) mustBeScratch(`world.${k}`, v);\n  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) fs.mkdirSync(w[k], { recursive: true });\n", "  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) fs.mkdirSync(w[k], { recursive: true });\n  for (const [k, v] of Object.entries({ ...w.dirs, run: w.run })) mustBeScratch(`world.${k}`, v);\n", T_RD, 'seedWorld runs every scratch guard BEFORE the first mkdir (F3)'],
+  ['D24', DR, "  if (referencesHumanRuntime(r)) return { ok: false, clause: 'human-runtime' }; // …and the PHYSICAL landing place of a path that goes through a link\n", "", T_RD, 'the scratch guard tests the PHYSICAL landing place too (F3)'],
+  ['D25', DR, "xdgReal: physicalPath(RIG_XDG), envPhysical", "xdgReal: RIG_XDG, envPhysical", T_RD, 'the driver resolves XDG_RUNTIME_DIR physically in its preflight (F2)'],
+  ['D26', DR, "const forms = absolutePieces(v ?? '').flatMap(physicalForms);", "const forms = absolutePieces(v ?? '');", T_RD, 'the driver resolves path-valued env entries physically in its preflight (F2)'],
+  ['D27', DR, "const rigReal = physicalPath(RIG_DIR);", "const rigReal = RIG_DIR;", T_RD, 'the driver resolves RIG_DIR physically in its preflight (F2)'],
+  ['P1', RPA, "    rest.push(path.basename(cur));\n", "", T_RPA, 'physicalPath keeps the not-yet-existing remainder (F3)'],
+  ['P2', RPA, "    if (fs.lstatSync(piece).isSymbolicLink()) out.push(path.resolve(path.dirname(piece), fs.readlinkSync(piece)));", "    void 0;", T_RPA, 'a dangling link into the runtime dir is read by its target (F2)'],
 ];
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');

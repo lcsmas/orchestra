@@ -709,8 +709,11 @@ the first disk read is single-flight (`loading`).
   control/pkcs11 sockets; the wayland alias is symlinked in), a PRIVATE `dbus-run-session` (config with one empty `servicedir`), a private
   gnome-keyring-daemon under scratch XDG dirs; arms forged (must-FAIL preflight: forced real XDG/DBUS/env value ⇒ `--preflight-only` REFUSED rc 3,
   nothing started) / unlocked / locked / nosvc / recognised / hung / gnome / relock / isolated / isolated-gnome. World clauses are PURE in
-  `shared/keyring-rig-world.ts` (driver env, arm world, bus config, secrets owner = our daemon by exe + a socket under `<run>/keyring`, app-tree
-  fds/env clean + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
+  `shared/keyring-rig-world.ts` (driver env — `%hh`-decoded, malformed escape ⇒ refuse; the hidden world PROVEN from `/proc/self/mountinfo`: a fresh
+  private tmpfs stacked on the human's runtime-dir mount, env var only the precondition; PHYSICAL preflight through `scripts/lib/rig-paths.mjs` — a
+  symlinked xdg / RIG_DIR / env value is refused; scratch guards run BEFORE any mkdir; arm world, bus config, secrets owner = our daemon by exe + a socket
+  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS through `ss -xnaeH` (strict: an unparsed row aborts;
+  fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
   `--preflight-only` + source pins); processes are tracked by (pid, start time) from the private bus peers / app tree. Mutants
   `scripts/keyring-mutants.mjs` (unit; U*, W* world, D* driver/launcher) and `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps:
   gnome-keyring needs `--login` (password on stdin) THEN `--start` to publish `org.freedesktop.secrets`; the oracle uses `gdbus --address`

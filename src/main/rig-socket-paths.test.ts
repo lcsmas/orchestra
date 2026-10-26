@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
-import { parseSs, socketInode, socketPaths } from '../shared/keyring-rig-world.ts';
+import { parseSsStrict, socketInode, socketPaths } from '../shared/keyring-rig-world.ts';
 
 // #389 — the fd → inode → `ss` → path chain on REAL kernel output (not a fixture): a unix listener and a connected client in this very process,
 // resolved by the same code the keyring rig uses to see which socket path an app's fds reach. Nothing outside the scratch dir is connected to.
@@ -29,8 +29,9 @@ test('real kernel output: the listener resolves to its own path, and a CLIENT en
     assert.ok(mine.length >= 3, `listener + client + accepted end: ${mine.length} new socket fds`);
     const ss = spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     assert.equal(ss.status, 0, `ss: ${ss.stderr}`);
-    const rows = parseSs(ss.stdout);
+    const { rows, unparsed } = parseSsStrict(ss.stdout);
     assert.ok(rows.length > 0, 'ss produced rows');
+    assert.deepEqual(unparsed, [], 'EVERY row of the real, host-wide `ss -xnaeH` output parses (the rig aborts on one that does not: a vanished row is a connection it cannot see)');
     assert.deepEqual(socketPaths(mine, rows), [sock], 'every new fd of this process reaches exactly the listener path');
     // the client end alone — the shape of "an app connected to a keyring/bus socket": its fd link is only `socket:[N]`
     const clientIno = rows.find((r) => r.localPath === null && r.peerIno !== 0 && rows.some((p) => p.localIno === r.peerIno && p.localPath === sock) && mine.includes(r.localIno))?.localIno;

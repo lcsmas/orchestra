@@ -29,10 +29,31 @@ export function normPath(p: string): string {
 
 const HUMAN_RT = /(^|\/)run\/user(\/|$)/;
 
-/** Does this env/fd/argv value reach under `/run/user/…` — as a path, inside `unix:path=…`, in a `:`-list, in a `file://` URL? */
+const referencesLiteral = (value: string): boolean =>
+  HUMAN_RT.test(normPath(value)) || value.split(/[:=,;\s]+/).some((piece) => piece.includes('/') && HUMAN_RT.test(normPath(piece)));
+
+/** The value and its `%hh`-decoded forms (D-Bus addresses escape bytes that way: `unix:path=%2Frun%2Fuser%2F1000%2Fbus`; up to 3 rounds for a double
+ *  encoding). null = a malformed escape (`50%`, `%zz`, a non-UTF-8 byte): not something to guess about. */
+function decodedForms(value: string): string[] | null {
+  const forms = [value];
+  let cur = value;
+  if (cur.includes('%')) {
+    try { cur = decodeURIComponent(cur); } catch { return null; }
+    forms.push(cur);
+    // a further round only while a well-formed escape remains (`%252F` → `%2F` → `/`); a lone `%` left by `%25` is a literal percent, not malformed
+    for (let i = 0; i < 2 && /%[0-9a-fA-F]{2}/.test(cur); i++) {
+      try { cur = decodeURIComponent(cur); } catch { return null; }
+      forms.push(cur);
+    }
+  }
+  return forms;
+}
+
+/** Does this env/fd/argv value reach under `/run/user/…` — as a path, inside `unix:path=…`, in a `:`-list, in a `file://` URL, `%hh`-escaped?
+ *  A malformed escape FAILS CLOSED (counts as a reference): this is the check that decides whether a keyring rig may start. */
 export function referencesHumanRuntime(value: string): boolean {
-  if (HUMAN_RT.test(normPath(value))) return true;
-  return value.split(/[:=,;\s]+/).some((piece) => piece.includes('/') && HUMAN_RT.test(normPath(piece)));
+  const forms = decodedForms(value);
+  return forms === null || forms.some(referencesLiteral);
 }
 
 /** Keys of `env` whose value reaches the human's runtime dir. */
@@ -55,6 +76,49 @@ const under = (p: string, dir: string): boolean => {
 
 // ── 1. the driver's own world (the contained rig exports it; the driver re-proves it before doing anything) ─────────────────────
 
+export interface MountEntry {
+  id: number;
+  parent: number;
+  point: string;
+  /** optional propagation fields (`shared:N`, `master:N`, …) */
+  tags: string[];
+  fstype: string;
+}
+
+/** `/proc/self/mountinfo` → entries (`id parent maj:min root point opts [tags…] - fstype source superopts`); unparseable lines are skipped (the proof then simply lacks them). */
+export function parseMountinfo(text: string): MountEntry[] {
+  const out: MountEntry[] = [];
+  for (const line of text.split('\n')) {
+    const sep = line.indexOf(' - ');
+    if (sep < 0) continue;
+    const head = line.slice(0, sep).split(' ');
+    const tail = line.slice(sep + 3).split(' ');
+    const id = Number(head[0]), parent = Number(head[1]);
+    if (!Number.isInteger(id) || !Number.isInteger(parent) || head.length < 6 || !tail[0]) continue;
+    out.push({ id, parent, point: head[4], tags: head.slice(6), fstype: tail[0] });
+  }
+  return out;
+}
+
+/** The hidden-world PROOF, from the mount namespace itself (a pure read of /proc/self/mountinfo — no bus, no socket, no stat of the dir): the env
+ *  variable the rig sets is only the cheap precondition. In the hidden world `bwrap --tmpfs` stacks a FRESH, private tmpfs over the human's
+ *  runtime-dir mount. So: ≥ 2 mounts at the point, the topmost is a tmpfs with no propagation tags (the real mount is `shared:`/`master:`), and
+ *  nothing is mounted on top of the hiding tmpfs (a re-bind of the real dir would re-expose it). On the host there is exactly ONE mount there. */
+export function hiddenRuntimeMountProof(mountinfo: string, uid: number): { ok: boolean; detail: string } {
+  const point = humanRuntimeDir(uid);
+  const all = parseMountinfo(mountinfo);
+  const here = all.filter((m) => m.point === point);
+  if (here.length === 0) return { ok: false, detail: `no mount at ${point} in this namespace's mountinfo` };
+  if (here.length < 2) return { ok: false, detail: `${here.length} mount at ${point} (the host's own) — nothing hides it in this namespace` };
+  const top = here.find((m) => !here.some((o) => o.parent === m.id));
+  if (!top) return { ok: false, detail: `mounts at ${point} form no stack` };
+  if (top.fstype !== 'tmpfs') return { ok: false, detail: `the topmost mount at ${point} is ${top.fstype}, not a tmpfs` };
+  if (top.tags.length > 0) return { ok: false, detail: `the topmost tmpfs carries propagation tags ${top.tags.join(' ')} — a propagated mount, not a private one` };
+  const onTop = all.filter((m) => m.parent === top.id);
+  if (onTop.length > 0) return { ok: false, detail: `${onTop.map((m) => m.point).join(', ')} is mounted ON the hiding tmpfs` };
+  return { ok: true, detail: `${here.length} mounts stacked at ${point}; topmost = private tmpfs (mount ${top.id}), nothing mounted on it` };
+}
+
 export interface DriverWorldFacts {
   rigDir: string | undefined;
   /** The driver's own env (a plain object), exactly as received. */
@@ -63,6 +127,9 @@ export interface DriverWorldFacts {
   noBusExists: boolean;
   /** `RIG_HIDDEN_WORLD=1`: the rig re-exec'd inside the mount namespace where the human's runtime dir is an empty tmpfs. */
   hiddenWorld: boolean;
+  /** `/proc/self/mountinfo` text of this process, or null when unreadable. */
+  mountinfo: string | null;
+  uid: number;
 }
 
 export function driverWorldChecks(f: DriverWorldFacts): Check[] {
@@ -79,6 +146,30 @@ export function driverWorldChecks(f: DriverWorldFacts): Check[] {
     { id: 'no-env-value-reaches-the-human-runtime', ok: refs.length === 0, detail: refs.length ? `env keys naming it: ${refs.join(', ')}` : 'none of the driver env values names it' },
     { id: 'display-is-a-bare-private-name', ok: wl !== '' && !wl.includes('/') && env.DISPLAY === undefined, detail: `WAYLAND_DISPLAY=${wl || '<unset>'} DISPLAY=${env.DISPLAY ?? '<unset>'}` },
     { id: 'hidden-world', ok: f.hiddenWorld, detail: f.hiddenWorld ? 'RIG_HIDDEN_WORLD=1 (the human runtime dir is an empty tmpfs in this namespace)' : 'RIG_HIDDEN_WORLD is not 1 — this rig runs only inside the hidden world (scripts/e2e-keyring.sh sets RIG_HIDE_REAL_RUNTIME=1)' },
+    (() => {
+      const m = f.mountinfo === null ? { ok: false, detail: '/proc/self/mountinfo unreadable' } : hiddenRuntimeMountProof(f.mountinfo, f.uid);
+      return { id: 'hidden-world-mount-proof', ok: m.ok, detail: m.detail };
+    })(),
+  ];
+}
+
+export interface PhysicalFacts {
+  rigDir: string;
+  /** realpath of the rig dir / of XDG_RUNTIME_DIR, null when it does not resolve. */
+  rigReal: string | null;
+  xdgReal: string | null;
+  /** env key → the physical forms (realpath, symlink target) of every absolute path piece its value names (gathered only AFTER the lexical checks passed). */
+  envPhysical: Record<string, string[]>;
+}
+
+/** The LEXICAL checks pass `<rig>/xdg -> /run/user/1000`, a symlinked RIG_DIR, or an env value that is a link into it. These read the same facts
+ *  physically (the shipped wrapper's R3/R7 do the same): the rig's private runtime dir must be a real directory right under the real rig dir. */
+export function physicalWorldChecks(f: PhysicalFacts): Check[] {
+  const leaks = Object.entries(f.envPhysical).filter(([, forms]) => forms.some(referencesHumanRuntime)).map(([k]) => k).sort();
+  return [
+    { id: 'rig-dir-resolves-physically-clean', ok: f.rigReal !== null && !referencesHumanRuntime(f.rigReal), detail: `realpath(RIG_DIR) = ${f.rigReal ?? '<does not resolve>'}` },
+    { id: 'xdg-is-physically-the-rigs-dir', ok: f.rigReal !== null && f.xdgReal !== null && f.xdgReal === `${f.rigReal}/xdg` && !referencesHumanRuntime(f.xdgReal), detail: `realpath(XDG_RUNTIME_DIR) = ${f.xdgReal ?? '<does not resolve>'} (want ${f.rigReal ?? '?'}/xdg — a symlink anywhere in it differs)` },
+    { id: 'env-path-values-resolve-physically-clean', ok: leaks.length === 0, detail: leaks.length ? `env keys whose value is a link/path into it: ${leaks.join(', ')}` : `${Object.keys(f.envPhysical).length} path-valued env keys resolve physically clean` },
   ];
 }
 
@@ -155,14 +246,25 @@ export interface SsSocket {
 
 /** `ss -xnaeH` rows (`Netid State Recv-Q Send-Q <local path|*> <local inode> <peer path|*> <peer inode> <-> …`). A listener has a local path; the
  *  ACCEPTED end of a connection carries the listener's path; a client's own end has `*` — its peer's inode is the way to the path it reached. */
-export function parseSs(text: string): SsSocket[] {
-  const out: SsSocket[] = [];
-  for (const line of text.split('\n')) {
-    const m = /^\S+\s+\S+\s+\d+\s+\d+\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)\b/.exec(line.trim());
-    if (m) out.push({ localPath: m[1] === '*' ? null : m[1], localIno: Number(m[2]), peerIno: Number(m[4]) });
+const SS_ROW = /^\S+\s+\S+\s+\d+\s+\d+\s+(.+?)\s+(\d+)\s+(\*|.+?)\s+(\d+)(?:\s+(?:<->|-->|<--|---)(?:\s.*)?)?$/; // the trailing marker is the shutdown state: `<->`, `-->`, `<--` or `---` (measured on this host)
+
+/** Rows of `ss -xnaeH`; a path may contain spaces (`/run/user/1000/my sock`). Lines that do not parse are returned in `unparsed` — the caller must
+ *  fail CLOSED on any: a row that silently disappears is a connection the scan cannot see. */
+export function parseSsStrict(text: string): { rows: SsSocket[]; unparsed: string[] } {
+  const rows: SsSocket[] = [];
+  const unparsed: string[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '') continue;
+    const m = SS_ROW.exec(line);
+    if (m) rows.push({ localPath: m[1] === '*' ? null : m[1], localIno: Number(m[2]), peerIno: Number(m[4]) });
+    else unparsed.push(line.slice(0, 160));
   }
-  return out;
+  return { rows, unparsed };
 }
+
+/** {@link parseSsStrict}, rows only (for tests / callers that handle `unparsed` themselves). */
+export const parseSs = (text: string): SsSocket[] => parseSsStrict(text).rows;
 
 /** The paths a process's socket fds are bound to or connected to: for each socket inode, its own bound path and the path its peer end is bound to.
  *  (`/proc/<pid>/fd` shows a socket only as `socket:[N]`, never a path — so a fd scan by path alone cannot see a connection.) */
@@ -206,12 +308,14 @@ export interface OwnerEvidence {
 export function secretsOwnerChecks(e: OwnerEvidence): Check[] {
   const mine = new Set(e.sockets.filter((s) => under(s.path, `${e.run}/keyring`)).map((s) => s.inode)); // the daemon's control/pkcs11/ssh sockets — not the bus socket it merely connects to
   const held = e.fdTargets.map(socketInode).filter((i): i is number => i !== null && mine.has(i));
+  const sockFds = e.fdTargets.map(socketInode).filter((i) => i !== null).length;
   const refs = [...e.fdTargets, ...e.socketPaths, ...e.envEntries, ...e.cmdline].filter(referencesHumanRuntime);
   const xdgEntry = e.envEntries.find((x) => x.startsWith('XDG_RUNTIME_DIR='));
   return [
     { id: 'owner-found-on-the-private-bus', ok: e.ownerPid !== null && e.ownerPid > 1 && e.ownerPid !== e.driverPid, detail: `owner pid ${e.ownerPid}` },
     { id: 'owner-is-gnome-keyring-daemon', ok: e.exeBase === 'gnome-keyring-daemon' && e.cmdline.some((a) => a.endsWith('gnome-keyring-daemon')), detail: `exe ${e.exeBase}, argv ${JSON.stringify(e.cmdline)}` },
     { id: 'owner-listens-inside-the-arm-keyring-dir', ok: held.length > 0, detail: `holds ${held.length} socket(s) bound under ${e.run}/keyring (arm keyring sockets: ${mine.size})` },
+    { id: 'owner-socket-scan-sees-its-own-sockets', ok: sockFds === 0 || e.socketPaths.some((x) => under(x, e.run)), detail: `${sockFds} socket fd(s); resolved socket paths under ${e.run}: ${e.socketPaths.filter((x) => under(x, e.run)).length} — an owner that holds sockets but resolves to none means the scan saw nothing, so the next clause would be vacuous` },
     { id: 'owner-env-and-fds-never-name-the-human-runtime', ok: refs.length === 0, detail: refs.length ? `names it: ${refs.slice(0, 3).join(' | ')}` : `${e.fdTargets.length} fds (${e.socketPaths.length} socket path(s) resolved), ${e.envEntries.length} env entries clean` },
     { id: 'owner-runtime-env-is-the-arms', ok: xdgEntry === undefined || xdgEntry === `XDG_RUNTIME_DIR=${e.run}`, detail: xdgEntry ?? 'environ not readable (daemon rewrote its title)' },
   ];

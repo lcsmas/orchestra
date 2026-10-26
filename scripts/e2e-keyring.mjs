@@ -21,8 +21,9 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { descendantsOf, isAlive, procStat, signalIfSame } from './lib/rig-procs.mjs';
+import { absolutePieces, physicalForms, physicalPath } from './lib/rig-paths.mjs';
 import {
-  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, parseSs, parseUnixSockets, referencesHumanRuntime,
+  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, parseSsStrict, parseUnixSockets, physicalWorldChecks, referencesHumanRuntime,
   rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, treeChecks,
 } from '../src/shared/keyring-rig-world.ts';
 
@@ -44,10 +45,29 @@ try { RIG_XDG = privateRuntimeDir(); } catch (e) { refuse(e.message); }
 {
   let noBusExists = true;
   try { fs.lstatSync(path.join(RIG_DIR, 'no-session-bus')); } catch { noBusExists = false; }
-  const cs = driverWorldChecks({ rigDir: RIG_DIR, env: process.env, noBusExists, hiddenWorld: hiddenWorldProof() });
+  // The hidden-world PROOF is the mount namespace itself (pure read of /proc/self/mountinfo); the env var above is only the cheap precondition.
+  // `--mountinfo-file` (a synthetic mountinfo, for the unit tests and the forged arm) is honoured ONLY with `--preflight-only`, which exits right
+  // after these checks — it can never steer a real run, which refuses the flag outright.
+  const miFlag = flag('--mountinfo-file', null);
+  if (miFlag && !PREFLIGHT_ONLY) refuse('--mountinfo-file is a --preflight-only test flag: a real run reads its own /proc/self/mountinfo');
+  let mountinfo = null;
+  try { mountinfo = fs.readFileSync(miFlag ?? '/proc/self/mountinfo', 'utf8'); } catch {}
+  const cs = driverWorldChecks({ rigDir: RIG_DIR, env: process.env, noBusExists, hiddenWorld: hiddenWorldProof(), mountinfo, uid: process.getuid() });
   const bad = failed(cs);
   if (bad.length) refuse(`keyring rig world preflight failed — ${bad.map((c) => `${c.id} (${c.detail})`).join('; ')}`);
   console.log(`[preflight] keyring rig world: ${cs.length}/${cs.length} clauses ok (${cs.map((c) => c.id).join(', ')})`);
+  // The same facts, PHYSICALLY (symlinks resolved): a link `<rig>/xdg -> <human runtime dir>`, a symlinked RIG_DIR or a link-valued env entry passes every lexical
+  // clause above. Gathered only now — after the lexical clauses passed — so a hostile string is refused before anything is resolved.
+  const rigReal = physicalPath(RIG_DIR);
+  const envPhysical = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    const forms = absolutePieces(v ?? '').flatMap(physicalForms);
+    if (forms.length) envPhysical[k] = forms;
+  }
+  const pcs = physicalWorldChecks({ rigDir: RIG_DIR, rigReal, xdgReal: physicalPath(RIG_XDG), envPhysical });
+  const pbad = failed(pcs);
+  if (pbad.length) refuse(`keyring rig physical preflight failed — ${pbad.map((c) => `${c.id} (${c.detail})`).join('; ')}`);
+  console.log(`[preflight] physical: ${pcs.length}/${pcs.length} clauses ok (${pcs.map((c) => c.id).join(', ')})`);
   if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); process.exit(0); }
 }
 
@@ -66,11 +86,12 @@ const UID = process.getuid();
 
 // ── scratch-containment guard (same shape as e2e-memory-guard-ui.mjs) ───────────────────────────────────────────────────
 const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
-const liveReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+const liveReal = physicalPath; // realpath of the deepest EXISTING ancestor + the remainder: a path about to be created under a symlinked parent resolves to where it would land
 const LIVE_DIRS = [...fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n)), path.join(LIVE_HOME, '.orchestra'), path.join(LIVE_HOME, '.config')].map(liveReal);
 function checkScratch(p) {
   if (referencesHumanRuntime(p)) return { ok: false, clause: 'human-runtime' }; // string test FIRST: nothing under the human's runtime dir is ever stat'ed
   const r = liveReal(p);
+  if (referencesHumanRuntime(r)) return { ok: false, clause: 'human-runtime' }; // …and the PHYSICAL landing place of a path that goes through a link
   for (const l of LIVE_DIRS) if (r === l || r.startsWith(l + path.sep) || l.startsWith(r + path.sep)) return { ok: false, clause: 'live-dir' };
   if (!(r === RIG_BASE || r.startsWith(RIG_BASE + path.sep))) return { ok: false, clause: 'outside-rig-base' };
   return { ok: true, clause: 'scratch' };
@@ -162,16 +183,18 @@ const SEED = {
 function seedWorld(name, spec) {
   const armDir = path.join(RIG_DIR, `arm-${name}`);
   const w = { name, armDir, tracked: new Map() };
-  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) { w[k] = path.join(armDir, k); fs.mkdirSync(w[k], { recursive: true }); }
+  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) w[k] = path.join(armDir, k);
   // The arm's PRIVATE XDG_RUNTIME_DIR, inside the rig's own private runtime dir (0700): the bus socket and the keyring daemon's control/pkcs11 sockets live here.
   w.run = path.join(RIG_XDG, `k-${name}`);
-  fs.mkdirSync(w.run, { mode: 0o700 }); fs.chmodSync(w.run, 0o700);
-  // The app's display NAME is bare (the rig refuses a path); inside its own runtime dir that name leads to the rig's marker-verified socket.
-  fs.symlinkSync(path.join(RIG_XDG, RIG_WAYLAND), path.join(w.run, RIG_WAYLAND));
   w.bus = path.join(w.run, 'bus');
   w.address = `unix:path=${w.bus}`;
   w.dirs = { arm: armDir, home: w.home, oh: w.oh, claude: w['claude-config'], data: w.data, config: w.config, cache: w.cache };
+  // EVERY guard runs BEFORE the first mkdir / symlink: with a symlinked parent the creation itself would write THROUGH the link before the refusal.
   for (const [k, v] of Object.entries({ ...w.dirs, run: w.run })) mustBeScratch(`world.${k}`, v);
+  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) fs.mkdirSync(w[k], { recursive: true });
+  fs.mkdirSync(w.run, { mode: 0o700 }); fs.chmodSync(w.run, 0o700);
+  // The app's display NAME is bare (the rig refuses a path); inside its own runtime dir that name leads to the rig's marker-verified socket.
+  fs.symlinkSync(path.join(RIG_XDG, RIG_WAYLAND), path.join(w.run, RIG_WAYLAND));
   const account = { id: 'rig-kr389', label: 'rig (scratch config dir)', configDir: w['claude-config'] };
   const dir = path.join(w.oh, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [], workspaces: [], accounts: [account], selfTuneRuns: [] }, null, 2));
@@ -245,7 +268,13 @@ function secretsOwnerPid(w) {
   return m ? +m[1] : null;
 }
 /** `ss -xnaeH`: every unix socket on the host as NAMES only (a netlink dump — nothing is connected to) — the only way to turn a `socket:[N]` fd into the path it is bound / connected to. */
-const ssRows = () => parseSs(spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 }).stdout || '');
+function ssRows() {
+  const r = spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 });
+  if (r.status !== 0 || !r.stdout) throw new Error(`ss -xnaeH failed (rc ${r.status}) — the socket scan cannot run, so no clause may rely on it`);
+  const { rows, unparsed } = parseSsStrict(r.stdout);
+  if (unparsed.length) throw new Error(`ss -xnaeH: ${unparsed.length} row(s) did not parse (first: ${JSON.stringify(unparsed[0])}) — a row that vanishes is a connection the scan cannot see`);
+  return rows;
+}
 const inodesOf = (fds) => fds.map(socketInode).filter((i) => i !== null);
 function ownerEvidence(w) {
   const pid = secretsOwnerPid(w);
@@ -411,9 +440,9 @@ function runForged() {
   const rootBefore = fs.readdirSync(RIG_XDG).sort().join(',');
   const listenersBefore = unixListenersUnder([RIG_XDG]).length;
   const hidden = hiddenWorldProof(); // proved by THIS driver's own preflight already; the children inherit it explicitly (a child's parent is this driver, not the rig)
-  const child = (mut) => {
+  const child = (mut, extra = []) => {
     const env = { ...process.env, ...(hidden ? { RIG_HIDDEN_WORLD: '1' } : {}) }; mut(env);
-    const r = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', fs.realpathSync(process.argv[1]), '--preflight-only'], { env, encoding: 'utf8', timeout: 20000 });
+    const r = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', fs.realpathSync(process.argv[1]), '--preflight-only', ...extra], { env, encoding: 'utf8', timeout: 20000 });
     return { rc: r.status, out: `${r.stdout}${r.stderr}` };
   };
   const ctl = child(() => {});
@@ -435,6 +464,11 @@ function runForged() {
     const r = child(mut);
     clause(`forged/${name}-is-refused`, r.rc === 3 && /^REFUSED: /m.test(r.out) && why.test(r.out) && !/PREFLIGHT-OK/.test(r.out), `rc ${r.rc} (3 = REFUSED), wanted ${why}: ${r.out.trim().split('\n').pop().slice(0, 220)}`);
   }
+  // the mount proof, forged: the env var says hidden, the namespace says otherwise (a host-shaped mountinfo with ONE mount at the runtime dir)
+  const forgedMi = path.join(RIG_DIR, 'forged-mountinfo');
+  fs.writeFileSync(forgedMi, `472 50 0:64 / ${human} rw,nosuid,nodev,relatime shared:223 - tmpfs tmpfs rw,size=3241904k,mode=700,uid=${UID},gid=${UID}\n`);
+  const fm = child(() => {}, ['--mountinfo-file', forgedMi]);
+  clause('forged/host-mountinfo-is-refused', fm.rc === 3 && /^REFUSED: /m.test(fm.out) && /hidden-world-mount-proof/.test(fm.out) && !/PREFLIGHT-OK/.test(fm.out), `env says hidden, a host-shaped mountinfo (one mount at the runtime dir) says not → rc ${fm.rc}: ${fm.out.trim().split('\n').pop().slice(0, 220)}`);
   const rootAfter = fs.readdirSync(RIG_XDG).sort().join(',');
   clause('forged/nothing-was-started', rootAfter === rootBefore && unixListenersUnder([RIG_XDG]).length === listenersBefore && !fs.existsSync(path.join(RIG_DIR, 'arm-forged')), `rig runtime root before [${rootBefore}] / after [${rootAfter}]; unix listeners under it ${listenersBefore} → ${unixListenersUnder([RIG_XDG]).length}; no arm dir created`);
 }

@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, normPath, parseUnixSockets,
-  longestSocket, parseSs, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
+  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseSs, parseSsStrict, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
   type ArmWorld, type DriverWorldFacts, type OwnerEvidence, type TreeEvidence,
 } from './keyring-rig-world.ts';
+import { HIDDEN_MI, HOST_MI } from './keyring-rig-world.fixtures.ts';
 
 // #389 — the pure world checks of the keyring rig. Each clause has a must-PASS (a good world) and a must-FAIL arm that names it.
 
@@ -35,12 +36,14 @@ const goodDriver = (): DriverWorldFacts => ({
   env: { RIG_DIR: RIG, XDG_RUNTIME_DIR: `${RIG}/xdg`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${RIG}/no-session-bus`, WAYLAND_DISPLAY: 'wayland-rig', PATH: '/usr/bin:/bin', HOME: `${RIG}/home` },
   noBusExists: false,
   hiddenWorld: true,
+  mountinfo: HIDDEN_MI,
+  uid: 1000,
 });
 
 test('driver world: the rig-exported env passes every clause (control)', () => {
   const cs = driverWorldChecks(goodDriver());
   assert.deepEqual(ids(failed(cs)), []);
-  assert.equal(cs.length, 6);
+  assert.equal(cs.length, 7);
 });
 
 test('driver world: each forged input fails exactly the clause that names it (must-FAIL arms)', () => {
@@ -147,6 +150,9 @@ test('secrets owner: our own daemon passes; a foreign / absent / mis-rooted owne
   assert.ok(bad((e) => { e.fdTargets = ['socket:[333]']; }).includes('owner-listens-inside-the-arm-keyring-dir'), 'holding the arm BUS socket is not owning a keyring socket');
   assert.ok(bad((e) => { e.fdTargets.push(`${HUMAN}/keyring/pkcs11`); }).includes('owner-env-and-fds-never-name-the-human-runtime'));
   assert.ok(bad((e) => { e.socketPaths.push(`${HUMAN}/keyring/control`); }).includes('owner-env-and-fds-never-name-the-human-runtime'), 'a socket fd connected to the human keyring (fd link reads only `socket:[N]`)');
+  assert.ok(bad((e) => { e.socketPaths = []; }).includes('owner-socket-scan-sees-its-own-sockets'), 'seat-1 G-owner-2: holds socket fds but NOTHING resolved → the scan saw nothing and the leak clause would be vacuous');
+  assert.ok(bad((e) => { e.socketPaths = [`${HUMAN}/keyring/control`]; }).includes('owner-socket-scan-sees-its-own-sockets'), 'resolved paths exist but none under the arm run dir');
+  assert.deepEqual(ids(failed(secretsOwnerChecks({ ...goodOwner(), fdTargets: ['/dev/null'], socketPaths: [] }))), ['owner-listens-inside-the-arm-keyring-dir'], 'no socket fds at all: the scan clause is not the one that complains');
   assert.ok(bad((e) => { e.envEntries.push(`GNOME_KEYRING_CONTROL=${HUMAN}/keyring`); }).includes('owner-env-and-fds-never-name-the-human-runtime'));
   assert.ok(bad((e) => { e.envEntries = [`XDG_RUNTIME_DIR=${HUMAN}`]; }).includes('owner-runtime-env-is-the-arms'));
   assert.deepEqual(ids(failed(secretsOwnerChecks({ ...goodOwner(), envEntries: [] }))), [], 'an unreadable environ is not a failure (the title rewrite); the fd/socket clauses still bind');
@@ -219,4 +225,84 @@ test('arm sockets must fit sun_path: the hooks socket `<run>/orchestra-<12hex>.s
   edge.run = `${RIG}/xdg/` + 'k'.repeat(SUN_PATH_MAX - 28 - `${RIG}/xdg/`.length);
   edge.address = `unix:path=${edge.run}/bus`;
   assert.ok(!ids(failed(armWorldChecks(edge))).includes('arm-socket-paths-fit-sun-path'), 'exactly at the limit passes');
+});
+
+// ── round-5 m1: %hh escapes ─────────────────────────────────────────────────────────────────────────────────────────────
+test('m1: D-Bus `%hh` escapes are decoded — an escaped runtime dir is a reference in ANY key, double-encoded too; a malformed escape fails CLOSED', () => {
+  for (const v of ['unix:path=%2Frun%2Fuser%2F1000%2Fbus', '%2Frun%2Fuser%2F1000', 'unix:path=%252Frun%252Fuser%252F1000%252Fbus', `PATH=/usr/bin:%2Frun%2Fuser%2F1000%2Fbin`, 'unix:path=/run%2Fuser/1000/bus', 'unix:path=%2fRUN%2fuser%2f1000']) {
+    assert.equal(referencesHumanRuntime(v), v.includes('RUN') ? false : true, `escaped form: ${v}`);
+  }
+  for (const v of ['unix:path=%2Frun%2Fuser', '50%', 'unix:path=/var/tmp/%zz', 'x%2', '%FF']) assert.equal(referencesHumanRuntime(v), true, `malformed escape → refuse: ${v}`);
+  for (const v of ['unix:path=%2Fvar%2Ftmp%2Frig%2Fxdg%2Fbus', '/var/tmp/100%25/x', 'plain', '%2Fusr%2Fbin']) assert.equal(referencesHumanRuntime(v), false, `an innocent escaped value is not a reference: ${v}`);
+  assert.deepEqual(envHumanRuntimeRefs({ A: 'x', DBUS_SESSION_BUS_ADDRESS: 'unix:path=%2Frun%2Fuser%2F1000%2Fbus', B: '50%' }), ['B', 'DBUS_SESSION_BUS_ADDRESS']);
+  assert.ok(failed(driverWorldChecks({ ...goodDriver(), env: { ...goodDriver().env, SOME_KEY: 'unix:path=%2Frun%2Fuser%2F1000%2Fbus' } })).some((c) => c.id === 'no-env-value-reaches-the-human-runtime'), 'in a key the exact-match checks do not cover');
+});
+
+// ── round-5 m2: ss rows with spaces / unparsed rows ─────────────────────────────────────────────────────────────────────
+test('m2: an ss row whose path contains a space parses (a client connected to `/run/user/1000/my sock` resolves to it); an unparseable line is REPORTED, never dropped', () => {
+  const spaced = `${HUMAN}/my sock`;
+  const ss = `u_str LISTEN 0      511    ${RUN}/orchestra-0123456789ab.sock 500 * 0        <-> ino:1 dev:0/36 peers:
+u_str ESTAB  0      0                                        * 600 * 601 <->
+u_str ESTAB  0      0                         ${spaced} 601 * 600 <->
+u_str LISTEN 0      4096   @/tmp/.X11-unix/X0 77 * 0 <-> ino:2 dev:0/4 peers:
+u_seq ESTAB  0      0                                        * 73815517 * 73815518 -->
+u_str ESTAB  0      0              /run/systemd/journal/stdout 24739    * 21049    <-- ino:49 dev:
+u_str ESTAB  0      0                                        * 17369113 * 0        ---
+`;
+  const { rows, unparsed } = parseSsStrict(ss);
+  assert.deepEqual(unparsed, []);
+  assert.equal(rows.length, 7, 'all seven rows, including the spaced one and the `-->` / `<--` / `---` shutdown markers measured on a real host');
+  assert.deepEqual(socketPaths([600], rows), [spaced], 'the client end reaches the spaced path through its peer row');
+  const bad = parseSsStrict(`${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\n`);
+  assert.equal(bad.rows.length, 7);
+  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5'], 'both surface — the caller fails closed');
+  assert.deepEqual(parseSsStrict('\n  \n').unparsed, [], 'blank lines are not rows');
+  assert.equal(parseSs(ss).length, 7);
+});
+
+// ── round-5 m3: the hidden-world proof is the mount namespace ───────────────────────────────────────────────────────────
+test('m3: hiddenRuntimeMountProof — the rig\'s real hidden-world mountinfo passes; the host\'s own, a propagated top, a non-tmpfs top, a re-bind on top, no mount, junk all fail', () => {
+  const ok = hiddenRuntimeMountProof(HIDDEN_MI, 1000);
+  assert.equal(ok.ok, true, ok.detail);
+  assert.match(ok.detail, /2 mounts stacked/);
+  const no = (text: string, uid = 1000): { ok: boolean; detail: string } => hiddenRuntimeMountProof(text, uid);
+  assert.match(no(HOST_MI).detail, /1 mount at .*\(the host's own\)/, 'the host: ONE mount');
+  assert.equal(no(HOST_MI).ok, false);
+  assert.equal(no('').ok, false);
+  assert.equal(no('garbage\nmore garbage').ok, false);
+  assert.match(no(HIDDEN_MI, 1001).detail, /no mount at \/run\/user\/1001/, 'another uid\'s dir is not the proof');
+  const propagated = HIDDEN_MI.replace('1392 1372 0:89 / ' + HUMAN + ' rw,nosuid,nodev,relatime -', '1392 1372 0:89 / ' + HUMAN + ' rw,nosuid,nodev,relatime shared:900 -');
+  assert.notEqual(propagated, HIDDEN_MI);
+  assert.match(no(propagated).detail, /propagation tags shared:900/, 'a propagated (non-private) top');
+  const notTmpfs = HIDDEN_MI.replace('- tmpfs tmpfs rw,seclabel,mode=755', '- ext4 /dev/x rw,seclabel,mode=755');
+  assert.notEqual(notTmpfs, HIDDEN_MI);
+  assert.match(no(notTmpfs).detail, /is ext4, not a tmpfs/);
+  const rebound = `${HIDDEN_MI}1500 1392 0:64 / ${HUMAN}/keyring rw - tmpfs tmpfs rw\n`;
+  assert.match(no(rebound).detail, /is mounted ON the hiding tmpfs/, 'the real dir re-bound into the hiding tmpfs would re-expose it');
+  const swappedOrder = HIDDEN_MI.split('\n').filter(Boolean).reverse().join('\n');
+  assert.equal(no(swappedOrder).ok, true, 'the stack is read from parent ids, not line order');
+  assert.deepEqual(parseMountinfo(HOST_MI).map((m) => [m.id, m.point, m.fstype, m.tags]), [[472, HUMAN, 'tmpfs', ['shared:223']], [473, `${HUMAN}/doc`, 'fuse.portal', ['shared:889']]]);
+});
+
+test('driver world: the env var alone is NOT the proof — a host mountinfo fails hidden-world-mount-proof; unreadable mountinfo fails closed', () => {
+  const host = driverWorldChecks({ ...goodDriver(), mountinfo: HOST_MI });
+  assert.deepEqual(ids(failed(host)), ['hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), mountinfo: null }))), ['hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), hiddenWorld: false, mountinfo: HOST_MI }))).sort(), ['hidden-world', 'hidden-world-mount-proof']);
+  assert.deepEqual(ids(failed(driverWorldChecks({ ...goodDriver(), hiddenWorld: false }))), ['hidden-world'], 'a hidden namespace without the env var is still refused: the variable is the cheap precondition');
+});
+
+// ── round-5 seat-1 F2: the physical view ──────────────────────────────────────────────────────────────────────────────────
+test('F2: physicalWorldChecks — a clean rig passes; a symlinked xdg / RIG_DIR / link-valued env entry (all LEXICALLY fine) each fail their own clause', () => {
+  const good = { rigDir: RIG, rigReal: RIG, xdgReal: `${RIG}/xdg`, envPhysical: { PATH: ['/usr/bin', '/usr/local/bin'], SWAYSOCK: [`${RIG}/sway.sock`] } };
+  assert.deepEqual(ids(failed(physicalWorldChecks(good))), [], 'control');
+  const bad = (mut: (f: typeof good) => void): string[] => { const f = structuredClone(good); mut(f); return ids(failed(physicalWorldChecks(f))); };
+  assert.ok(bad((f) => { f.xdgReal = HUMAN; }).includes('xdg-is-physically-the-rigs-dir'), '<rig>/xdg is a link to the human runtime dir');
+  assert.ok(bad((f) => { f.xdgReal = `${RIG}/elsewhere`; }).includes('xdg-is-physically-the-rigs-dir'), 'a link to anywhere else');
+  assert.ok(bad((f) => { f.xdgReal = null; }).includes('xdg-is-physically-the-rigs-dir'), 'does not resolve');
+  assert.ok(bad((f) => { f.rigReal = `/standin${HUMAN}/rig`; f.xdgReal = `/standin${HUMAN}/rig/xdg`; }).includes('rig-dir-resolves-physically-clean'), 'RIG_DIR itself is a link into it (the stand-in shape /…/run/user/…)');
+  assert.ok(bad((f) => { f.rigReal = null; }).includes('rig-dir-resolves-physically-clean'));
+  assert.ok(bad((f) => { f.envPhysical.GNOME_KEYRING_CONTROL = [`${HUMAN}/keyring`]; }).includes('env-path-values-resolve-physically-clean'), 'an env value that is a link into it');
+  assert.ok(bad((f) => { f.envPhysical.PATH.push(`${HUMAN}/bin`); }).includes('env-path-values-resolve-physically-clean'), 'a PATH element that is a link into it');
+  assert.ok(ids(failed(physicalWorldChecks({ ...good, rigReal: '/mnt/real/rig', xdgReal: '/mnt/real/rig/xdg' }))).length === 0, 'a rig dir under a symlinked BASE is fine as long as xdg sits right under the physical rig dir');
 });
