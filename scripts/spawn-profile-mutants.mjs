@@ -86,7 +86,10 @@ const buildCli = () => execFileSync('pnpm', ['run', 'build:cli'], { cwd: ROOT, s
 const buildBundles = () => execFileSync('pnpm', ['run', 'build:bundles'], { cwd: ROOT, stdio: 'pipe' });
 const host = () => spawnSync(process.execPath, ['--experimental-strip-types', '--import', './scripts/.r2-register.mjs', 'scripts/verify-spawn-profile-host.mjs', '.'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 5 * 60_000 });
 const failedHostIds = (out) => [...out.matchAll(/^ {2}FAIL (\S+) /gm)].map((m) => m[1]);
-const rig = (arms) => spawnSync('nice', ['-n', '10', path.join(ROOT, 'scripts/e2e-spawn-profile.sh'), ROOT, '--arms', arms], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 25 * 60_000 });
+// fleet rule (vague #388): at most 3 contained-rig Electron trees at once — wrap each rig run in the GUI-slot semaphore when it exists (GUI_SLOT overrides the path)
+const GUI_SLOT = process.env.GUI_SLOT ?? '/var/tmp/orch-1000-b17728/gui-slot.sh';
+const slot = fs.existsSync(GUI_SLOT) ? [GUI_SLOT] : [];
+const rig = (arms) => spawnSync(slot[0] ?? 'nice', [...slot.slice(1), ...(slot.length ? ['nice'] : []), '-n', '10', path.join(ROOT, 'scripts/e2e-spawn-profile.sh'), ROOT, '--arms', arms], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 60 * 60_000 });
 const failedNames = (out) => [...out.matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1]);
 const failedClauses = (out) => [...out.matchAll(/^ {2}FAIL {2}(\S+) — /gm)].map((m) => m[1]);
 const passedClauses = (out) => [...out.matchAll(/^ {2}PASS {2}(\S+) — /gm)].map((m) => m[1]);
