@@ -41,13 +41,15 @@ export function newGuest() { return new WebContents(null); }
 // A popup child window, built by OUR createWindow factory: \`opts\` is exactly what the factory passed to the constructor.
 export class BrowserWindow {
   constructor(opts) {
-    this.opts = opts; this.destroyedFlag = false; this.visible = false; this.shown = []; this.closedHandlers = []; this.title = '';
+    this.opts = opts; this.destroyedFlag = false; this.visible = false; this.shown = []; this.closedHandlers = []; this.handlers = {}; this.title = '';
     this.webContents = opts.webContents ?? new WebContents(null);
     globalThis.__bpWins.push(this);
   }
   isDestroyed() { return this.destroyedFlag; }
   destroy() { this.destroyedFlag = true; this.webContents.destroyed = true; for (const f of this.webContents.onceHandlers.destroyed || []) f(); for (const f of this.closedHandlers) f(); }
   once(ev, fn) { if (ev === 'closed') this.closedHandlers.push(fn); }
+  on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
+  emitEvent(ev, ...a) { for (const f of (this.handlers[ev] || [])) f(...a); }
   setTitle(t) { this.title = t; }
   loadURL(u) { globalThis.__bpWinLoads = [...(globalThis.__bpWinLoads || []), u]; return Promise.resolve(); }
   show() { this.visible = true; this.shown.push('show'); }
@@ -503,7 +505,7 @@ test('F2 — the child window\'s title carries the page\'s ORIGIN first, follows
   const win = openWin(wc, named('https://accounts.example.com/o/auth?token=SECRET', 'oauth'));
   assert.equal(win.title, 'https://accounts.example.com', 'before the page titles itself: just the origin, never the query');
   let prevented = false;
-  win.webContents.emitEvent('page-title-updated', { preventDefault: () => { prevented = true; } }, 'Sign in\u202e\u0007');
+  win.emitEvent('page-title-updated', { preventDefault: () => { prevented = true; } }, 'Sign in\u202e\u0007'); // the BrowserWindow's event: only its preventDefault stops the native title
   assert.equal(prevented, true, 'Electron\'s own title update is cancelled: the title is ours');
   assert.equal(win.title, 'https://accounts.example.com — Sign in');
   win.webContents.url = 'https://evil.example/phish';

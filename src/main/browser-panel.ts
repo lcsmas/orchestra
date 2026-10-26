@@ -510,7 +510,8 @@ function createPopupWindow(
     if (!win.isDestroyed()) win.setTitle(popupWindowTitle(wc.getURL() || d.url, pageTitle));
   };
   retitle('');
-  wc.on('page-title-updated', (e, title) => {
+  // The BrowserWindow's own event (a webContents one cannot veto the native title): preventDefault is what stops Electron setting the raw page title itself.
+  win.on('page-title-updated', (e, title) => {
     e.preventDefault(); // the title is ours: the origin first, so a page cannot dress its window up as someone else
     retitle(title);
   });

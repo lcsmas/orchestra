@@ -103,6 +103,7 @@ export const MUTANTS = [
   [BP, 'a page-initiated child window steals focus', 'if (pageInitiated) win.showInactive();', 'if (false) win.showInactive();'],
   [BP, 'the child window title never shows the origin', "  retitle('');\n", ''],
   [BP, 'the page may retitle the child window', '    e.preventDefault(); // the title is ours: the origin first, so a page cannot dress its window up as someone else\n', ''],
+  [BP, 'the title is set on the webContents event, which cannot veto the native title', "  win.on('page-title-updated', (e, title) => {", "  wc.on('page-title-updated', (e, title) => {"],
   [BP, 'the popup\'s frame name is not recorded', 'frameName: d.frameName.trim() });', "frameName: '' });"],
   [BP, 'popup windows are not billed to their workspace (#394)', '      ...livePopupWindows(p.wsId).map((w) => ({ wsId: p.wsId, tabId: w.id, pid: w.win.webContents.getOSProcessId() })),\n', ''],
   [BP, 'tryOpenTab ignores popup windows for the cap', 'openCount: panel.tabs.length + livePopupWindows(wsId).length,', 'openCount: panel.tabs.length,'],
