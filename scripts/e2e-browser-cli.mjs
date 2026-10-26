@@ -19,6 +19,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { WebSocket as WS } from 'ws';
 import { abLayout } from '../src/main/agent-browser-daemon.ts';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -204,7 +205,8 @@ function seedWorld(armDir) {
 function listProcsByHome(home) {
   const out = [];
   for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
-    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) out.push(+p); } catch {}
+    try { const env = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (env.includes(`ORCHESTRA_HOME=${home}`)) { out.push(+p); continue; } } catch {}
+    try { if (fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(home)) out.push(+p); } catch {} // Chromium rewrites environ once a bus address is set; its children still carry --user-data-dir=<home>/userData
   }
   return out.filter((p) => p !== process.pid);
 }
@@ -255,11 +257,12 @@ async function main() {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
-  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+  const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: privateRuntimeDir(), DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS ?? '', XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_RELEASE_GRACE_MS: '1500', ...(argv.includes('--trace') ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
+  { const bus = env.DBUS_SESSION_BUS_ADDRESS, busPath = bus.startsWith('unix:path=') ? bus.slice('unix:path='.length) : ''; if (!busPath || !busPath.startsWith(RIG_DIR + path.sep) || fs.existsSync(busPath)) refuse(`child D-Bus address '${bus}' is not the rig's private nonexistent bus (it would reach the human's session bus)`); }
   const logFile = path.join(armDir, 'app.log');
   const fd = fs.openSync(logFile, 'w');
   const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
@@ -271,10 +274,10 @@ async function main() {
     clause('ctl', 'app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
     ui = await Cdp.connect(target.webSocketDebuggerUrl);
     await ui.send('Page.enable');
-    const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
-    const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND,
-      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`);
+    // What the DRIVER handed the app (its /proc/<pid>/environ goes blind once DBUS_SESSION_BUS_ADDRESS is set: Chromium rewrites it, see src/shared/browser-reliquats.ts)
+    const handed = env;
+    clause('ctl', 'scratch-env', handed.ORCHESTRA_HOME === world.ohome && handed.CLAUDE_CONFIG_DIR === world.cfg && handed.HOME === world.fakeHome && !('DISPLAY' in handed) && handed.WAYLAND_DISPLAY === RIG_WAYLAND && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && !handed.XDG_RUNTIME_DIR.startsWith('/run/user/') && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
+      `env handed to the app: ORCHESTRA_HOME=${handed.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${handed.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${handed.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in handed ? handed.DISPLAY : '<unset>'} XDG_RUNTIME_DIR=${handed.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${handed.DBUS_SESSION_BUS_ADDRESS}`);
     const ctx = { world, W1, W2, FIX, port, app, ui, targets, env };
     await runArms(ctx);
   } catch (e) {
