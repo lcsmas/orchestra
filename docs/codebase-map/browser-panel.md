@@ -621,16 +621,22 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   a second CDP client on the app's own debug port. One arm per removed tool + the old server's documented rules:
   `navigate` (url, bare host→https, file:, back/forward, unreachable), `read-page` (snapshot outline, text, refs resolve, live page), `screenshot`
   (png painted, jpeg+quality, default path), `click` (ref, coordinates, miss control), `type`, `form-input` (fill replaces, input/change events),
-  `evaluate`, `scroll`, `reveal` (a navigation opens the pane for the user; a read-only command does not), `hidden-panel` (the removed server's
+  `evaluate`, `scroll`, `load-wait` (`open` returns after the load), `reveal` (a navigation opens the pane for the user; a read-only command does not), `hidden-panel` (the removed server's
   rule: screenshot/click/mouse/press/type/fill refused fast, nothing queued; open/snapshot/get/eval/wait/scroll/cookies/storage keep working),
-  `focus` (the skill's "never moves the human's keyboard focus", per documented command — an OBSERVATION: nothing reachable in this rig moves the composer's focus, not a compositor click, a CDP click, `Page.bringToFront`, nor a main-process `webContents.focus()`, so the instrument has no positive control and no mutant), `table` (the skill's remaining commands: dblclick, hover, check/uncheck, select, focus, get value, is visible, reload, `snapshot -c/-s/-d`, `--annotate`, `scroll --selector`) and `skill` (the skill exists in a NEW worktree the app just
+  `focus` (the skill's "not observed to move the human's keyboard focus", per documented command — an OBSERVATION: nothing reachable in this rig moves the composer's focus, not a compositor click, a CDP click, `Page.bringToFront`, nor a main-process `webContents.focus()`, so the instrument has no positive control and no mutant), `table` (the skill's remaining commands: dblclick, hover, check/uncheck, select, focus, get value, is visible, reload, `snapshot -c/-s/-d`, `--annotate`, `scroll --selector`) and `skill` (the skill exists in a NEW worktree the app just
   created, byte-equal to `BROWSER_SKILL`; its example completes the fixture flow; the same flow with a label not on the page / without the click / with the old bracket-only ref regex
-  FAILS). 11 in-place bundle mutants (`--list`), each restored byte-exact + `cmp`.
+  FAILS). 12 in-place bundle mutants (`--list`), each restored byte-exact + `cmp`.
 - **Measured differences from the removed tools** (all in the skill): `type` / `keyboard type` = `Input.insertText` exactly like the old `type` (no
   key events; `press` sends them); `fill` fires `input`, `change` only when the field is left (`press Tab`); `scroll` also works on a hidden pane (the
   old tool refused); the screenshot is a FILE (`screenshot` prints its path under `$ORCHESTRA_AGENT_TMPDIR`; the agent `Read`s it) instead of an
   image block; a bare host gets `https://` as before. **Open gap reported to #395 (ledger #405)**: `fill` on a hidden pane is refused (prints `GAP` in the rig, never gates it). The other
   one the rig found — `screenshot --screenshot-format jpeg out.jpg` mangled by `absolutizeBrowserArgs`, and the `--flag=value` form writing a file named like the flag into the host's cwd — is fixed in #395 (`e7750089`) and is now a regular clause.
+- **`open` waits for the load (measured, AC1)**: agent-browser 0.39.2's `open` returns after `Page.loadEventFired`, which the proxy forwards from the debugger
+  (`CdpProxyCore.emit`), like the removed `navigate` awaited `loadURL`. Rig arm `load-wait` (a page with one 1.5 s image; a fast page as the control that the wait is the
+  load, not a fixed sleep); mutant `load-events-dropped`. Content a script renders after the load still needs `wait`.
+- **Upgrade survivors**: keepers outlive the app, so a CLI started BEFORE the upgrade (mid-turn, or within the 15-minute linger) still lists `mcp__browser__*` while the
+  re-attached `query()` carries no `browser` server — a call from it fails loudly in `sdk.mjs` (`SDK MCP server not found: browser`) and recovers on the next
+  fresh/resumed CLI, which lists none. Not measured end to end (the session-budget arms start fresh sessions).
 - **Gotcha found by running the skill verbatim**: an EMPTY ref (`fill "" x`, `click ""` — a `$(ref …)` that matched nothing) succeeds and does
   nothing useful, so the skill's `ref` helper fails on no match and the example assigns its result (`email=$(ref …)`) so `set -e` sees it.
 

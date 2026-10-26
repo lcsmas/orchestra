@@ -33,6 +33,7 @@ orchestra browser click @e5
 orchestra browser snapshot -i                        # the page changed → take fresh refs
 §§§
 
+- §open§ returns once the page's load event has fired (measured: a page with a slow image returns after the image), so a §snapshot§ right after it sees the loaded document. Content a script renders AFTER the load still needs a §wait§. A page that never finishes loading makes §open§ time out.
 - A ref belongs to the snapshot that issued it. After a navigation, a re-render or a tab switch an old ref fails with §browser_stale_ref: @e5 no longer resolves…§ — run §snapshot§ again and use the new refs; never retry the stale one.
 - §snapshot -i§ lists interactive elements only (the cheapest); plain §snapshot§ also carries headings and text; §-c§ drops empty structure, §-s "<css>"§ scopes it to part of the page, §-d <n>§ limits the depth.
 - Prefer refs to coordinates. When you must: §mouse move X Y§, §mouse down§, §mouse up§ (viewport pixels).
@@ -101,7 +102,7 @@ orchestra browser eval "(() => { const el = document.querySelector('#q'); Object
 
 ## Focus
 
-Your commands are built not to move the human's keyboard focus (measured on the documented commands): they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
+Your commands were not observed to move the human's keyboard focus (they are built not to; no instrument here could force a steal, so this is an observation, not a guarantee): they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
 
 ## What you cannot do
 

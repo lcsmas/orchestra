@@ -195,10 +195,12 @@ Scripts and the Claude Code events they fire on:
   an unrelated repo named "orchestra" stays silent). Exception to the
   `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
-Also installs 10 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
-(orchestra-spawn / -comms / -repos / -promote / -attach / -set-repo / -rename /
--link / -migrate-account / -status) so the agent discovers them. They are
-template literals in `workspaces.ts`, NOT tracked `.md` files — each is hashed
+Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
+(orchestra-spawn / -comms / -workspace-admin / -rename / -link / -status in
+`workspaces.ts`, and **orchestra-browser** from `src/shared/browser-skill.ts` — #399;
+the former -repos / -promote / -attach / -set-repo / -migrate-account are folded into
+-workspace-admin and evicted via `RETIRED_SKILLS`) so the agent discovers them. They are
+template literals, NOT tracked `.md` files — each is hashed
 into `HOOKS_VERSION`, so adding one forces exactly one reinstall per workspace.
 The old SessionStart readiness-sentinel hook (it touched a ready file for the PTY task
 injector) is retired (#233): the installer no longer writes it and EVICTS it (`isRetiredReadyCmd`) from an

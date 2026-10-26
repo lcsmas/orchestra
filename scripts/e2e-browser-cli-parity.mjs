@@ -14,6 +14,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
+import http from 'node:http';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
-const ARMS = ['navigate', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill'];
+const ARMS = ['navigate', 'load-wait', 'read-page', 'screenshot', 'click', 'type', 'form-input', 'evaluate', 'scroll', 'reveal', 'hidden-panel', 'focus', 'table', 'skill'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js, 'renderer' = dist/assets/index-*.js.
  *  Each edit is a regex/string that must match EXACTLY once (a refactor can never leave a mutant silently inert); `arms` must go RED, every ctl/* of those arms GREEN. */
 const DROP_RE = /(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/;
@@ -43,6 +44,7 @@ const MUTANTS = {
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
   'skill-not-installed': { file: 'chunk', edits: [[/([\w$]+)\("orchestra-status",([\w$]+)\),\1\(([\w$]+),([\w$]+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
+  'load-events-dropped': { file: 'chunk', edits: [[/emit\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{if\(!\1\.closed\)try\{/, 'emit($1,$2,$3,$4){if($2==="Page.loadEventFired"||$2==="Page.frameStoppedLoading")return;if(!$1.closed)try{']], arms: ['load-wait'], why: 'the proxy never tells the client the page loaded: `open` no longer returns at the load (it times out or returns early)' },
   'no-auto-open': { file: 'renderer', edits: [[/\.current\.set\((\w+),(\w+)\.next\),\2\.open&&/, '.current.set($1,$2.next),!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -117,6 +119,17 @@ async function waitFor(fn, ms, what) {
   throw new Error(`timeout ${ms}ms waiting for ${what}${last instanceof Error ? `: ${last.message}` : ''}`);
 }
 const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); s.on('error', rej); });
+/** A page whose load takes SLOW_MS (one slow image): the oracle's `document.readyState` right after `open` tells whether `open` waited for the load (the removed `navigate` awaited loadURL). */
+const SLOW_MS = 1500;
+async function startSlowSite() {
+  const srv = http.createServer((req, res) => {
+    if (req.url?.startsWith('/slow.png')) { setTimeout(() => { res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==', 'base64')); }, SLOW_MS); return; }
+    if (req.url?.startsWith('/page')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end('<!doctype html><title>Slow page</title><h1>Slow page</h1><img src="/slow.png" width="1" height="1"><script>window.addEventListener("load", function () { window.__loadedAt = Date.now(); });</script>'); return; }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  return { srv, url: `http://127.0.0.1:${srv.address().port}/page` };
+}
 const sh = (cmd, args, opt = {}) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt });
 const git = (cwd, args, home) => sh('git', ['-c', 'user.name=rig', '-c', 'user.email=rig@example.invalid', ...args], { cwd, env: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1' } });
 
@@ -638,7 +651,7 @@ const ARM_FNS3 = {
       const snap2 = await cli(ctx, W2, ['snapshot', '-i']); const name2 = refOf(snap2.stdout, 'textbox', 'Name'), go2 = refOf(snap2.stdout, 'button', 'Go');
       const fill = await cli(ctx, W2, ['fill', name2 ?? '@e0', 'typed while hidden'], { timeoutMs: 45000 });
       const val = await o2.eval(`document.getElementById('name').value`);
-      knownGap(A, 'fill-keeps-working-while-hidden', fill.code === 0 && val === 'typed while hidden', `${show(fill)} → oracle value ${JSON.stringify(val)} (the removed form_input set the value through the DOM and worked on a hidden pane; fill uses Input.insertText, which the proxy refuses without frames)`, 'reported to #395');
+      knownGap(A, 'fill-keeps-working-while-hidden', fill.code === 0 && val === 'typed while hidden', `${show(fill)} → oracle value ${JSON.stringify(val)} (the removed form_input set the value through the DOM and worked on a hidden pane; fill uses Input.insertText, which the proxy refuses without frames)`, 'ACCEPTED-GAP, OPS disposition; hidden-pane limits tracked in #406');
       clause(A, 'fill-on-a-hidden-pane-fails-fast-and-writes-nothing', fill.code !== 0 && fill.ms < 9000 && /not on screen/.test(fill.stderr) && val === '', `fill refused in ${fill.ms} ms with the reason; oracle value ${JSON.stringify(val)} (nothing was queued)`);
       const evs = await cli(ctx, W2, ['eval', "const el = document.getElementById('name'); el.value = 'set by eval'; el.dispatchEvent(new Event('input', { bubbles: true })); el.value"]);
       const val2 = await o2.eval(`document.getElementById('name').value`);
@@ -827,6 +840,28 @@ const ARM_FNS6 = {
 };
 Object.assign(ARM_FNS, ARM_FNS6);
 
+
+const ARM_FNS7 = {
+  async 'load-wait'(ctx) {
+    // AC1 (ledger #405, early review): the removed `navigate` awaited loadURL. MEASURED on agent-browser 0.39.2: `open` returns only after the page's load event
+    // (it waits for Page.loadEventFired, which the proxy forwards from the debugger) — so a page with a slow subresource is `complete` when `open` returns.
+    const { W1, FIX } = ctx; const A = 'load-wait';
+    await selectWs(ctx, W1); await openPane(ctx);
+    const slow = await startSlowSite();
+    try {
+      const fastUrl = `${FIX}/index.html?lw=1`;
+      const f0 = Date.now(); const fast = await cli(ctx, W1, ['open', fastUrl], { timeoutMs: 40000 }); const fastMs = Date.now() - f0;
+      clause(A, 'a-fast-page-opens-well-under-the-slow-page-time', fast.code === 0 && fastMs < SLOW_MS, `open ${fastUrl} → ${show(fast)} (${fastMs} ms < ${SLOW_MS} ms: the wait is for the load, not a fixed sleep)`);
+      const u = `${slow.url}?lw=1`;
+      const t0 = Date.now(); const r = await cli(ctx, W1, ['open', u], { timeoutMs: 40000 }); const took = Date.now() - t0;
+      const o = await oracle(ctx, u, 8000).catch(() => null);
+      const st = o ? await o.eval(`({ rs: document.readyState, loaded: typeof window.__loadedAt === 'number' })`) : null;
+      o?.close();
+      clause(A, 'open-returns-after-the-page-loaded', r.code === 0 && took >= SLOW_MS - 300 && st?.rs === 'complete' && st?.loaded === true, `open ${u} (one image that takes ${SLOW_MS} ms) → ${show(r)}; took ${took} ms; the oracle right after: ${JSON.stringify(st)}`);
+    } finally { slow.srv.close(); }
+  },
+};
+Object.assign(ARM_FNS, ARM_FNS7);
 async function runArms(ctx) {
   await waitFor(() => ctx.ui.eval(`document.body.innerText.includes(${sel(ctx.W1.branch)})`), 60000, 'the seeded workspaces in the sidebar');
   await sleep(1500);

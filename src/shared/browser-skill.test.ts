@@ -32,7 +32,7 @@ test('the skill covers every topic the ticket names (compact snapshot-with-refs,
   const need: Array<[string, RegExp]> = [
     ['snapshot with refs', /snapshot -i/], ['refs addressed as @eN', /@e3/], ['click', /click @e5/], ['fill', /fill @e3/], ['type', /keyboard type/], ['press', /press Enter/], ['wait', /wait "#result"/],
     ['tab commands', /tab list.*tab new.*tab close/s], ['tab ownership', /only the tabs YOU opened/], ['screenshot to a file read with Read', /screenshot.*\*\*Read\*\*/s], ['stale ref recovery', /browser_stale_ref[\s\S]*snapshot[\s\S]*again/],
-    ['chaining in one call', new RegExp(BROWSER_SKILL_EXAMPLE_HEADING)], ['set -e', /set -e/], ['cannot attach or switch profiles', /cannot attach, switch or create profiles/], ['focus', /built not to move the human's keyboard focus/],
+    ['chaining in one call', new RegExp(BROWSER_SKILL_EXAMPLE_HEADING)], ['set -e', /set -e/], ['cannot attach or switch profiles', /cannot attach, switch or create profiles/], ['focus', /not observed to move the human's keyboard focus/],
     ['bring to front', /brings it to the front/], ['hidden pane', /not on screen/],
   ];
   for (const [what, re] of need) assert.match(BROWSER_SKILL, re, what);
