@@ -2,7 +2,7 @@
 # #396 — popups, driven on the BUILT app inside its OWN headless sway (scripts/e2e-contained-rig.sh:
 # marker-verified compositor, `env -i` allowlist, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR). Driver: scripts/e2e-browser-popups.mjs.
 #
-# Usage: scripts/e2e-browser-popups.sh <app-dir> [--out <dir>] [--label <name>] [--arms blank,oauth,xsite,storm,ws,cleanup]
+# Usage: scripts/e2e-browser-popups.sh <app-dir> [--out <dir>] [--label <name>] [--arms blank,oauth,xsite,hostile,extproto,storm,ws,cleanup]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js); run `pnpm run build:bundles` and
 #              `pnpm run build:bus-abi` first (the test run leaves node_modules at the Node ABI).
 #   --arms     subset of arms (mutant builds only need the arm their mutant reddens); default = all.
@@ -11,7 +11,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 APP_DIR="${1:-}"
-[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms blank,oauth,xsite,storm,ws,cleanup]" >&2; exit 2; }
+[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms blank,oauth,xsite,hostile,extproto,storm,ws,cleanup]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
 for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js; do

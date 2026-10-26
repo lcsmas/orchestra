@@ -13,7 +13,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* controls (identity, scratch containment, own sway, trusted click, the page really fired
 // its popups) are separate clauses so a red clause can only be blamed on the behaviour. Must-FAIL builds: scripts/e2e-browser-popups-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,xsite,hostile,s1|s2|s2b|s2c|s3|s4|churn (storm phases),storm,ws,cleanup]
+// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,xsite,hostile,extproto,s1|s2|s2b|s2c|s3|s4|churn (storm phases),storm,ws,cleanup]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'blank,oauth,xsite,hostile,storm,ws,cleanup').split(','));
+const ARMS = new Set(flag('--arms', 'blank,oauth,xsite,hostile,extproto,storm,ws,cleanup').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -180,7 +180,11 @@ function seedWorld(armDir) {
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'bp396-repo', defaultBranch: 'main', accountId: account.id }], workspaces: [ws, ws2], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho BP396-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
-  return { fakeHome, ohome, cfg, account, ws, ws2, stubDir, tabsFile: path.join(ohome, 'userData', 'orchestra', 'browser-tabs.json'), logFile: path.join(ohome, 'logs', 'orchestra.log') };
+  // An `xdg-open` that only RECORDS: Chromium/Electron launch external protocols through it (found on PATH, which starts with this dir) — nothing is ever really opened.
+  const xdgLog = path.join(armDir, 'xdg-open.log');
+  fs.writeFileSync(xdgLog, '');
+  fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${xdgLog}'\nexit 0\n`, { mode: 0o755 });
+  return { fakeHome, ohome, cfg, account, ws, ws2, stubDir, xdgLog, tabsFile: path.join(ohome, 'userData', 'orchestra', 'browser-tabs.json'), logFile: path.join(ohome, 'logs', 'orchestra.log') };
 }
 
 function procsByHome(home) {
@@ -366,7 +370,7 @@ async function closeExtraTabs(b, keep = 1) {
 /** Close the popup child WINDOWS (page targets that are not a tab) the way the page itself would. */
 async function closeAllPopupWindows(b) {
   const tabUrls = new Set((await tabs(b)).map((x) => x.tip));
-  for (const t of await byUrl(b, /popups-(oauth|blank)\.html/)) {
+  for (const t of await byUrl(b, /popups-(oauth|blank|extproto)\.html/)) {
     if (!tabUrls.has(t.url)) { try { await evalIn(t, 'window.close()'); } catch {} }
   }
   await sleep(600);
@@ -534,6 +538,13 @@ try {
     clause('hostile', 'app-still-answers-while-the-hostile-popup-is-up', (await b.cdp.eval('1 + 1')) === 2 && (await tabs(b)).length === 1, 'renderer alive, one tab (the popup is not a tab)');
     saveShot('hostile-renderer.png', await b.cdp.shot());
     if (hw) grim('hostile-compositor.png');
+    // F-a: the creation-time clamp must hold for the window's whole life — Electron APPLIES a page's window.resizeTo / moveTo by default (measured: 400x329 -> the whole screen)
+    const ctRz = (await byUrl(b, /popups-oauth\.html/))[0];
+    if (ctRz) { const c = await Cdp.connect(ctRz.webSocketDebuggerUrl); try { await c.send('Runtime.evaluate', { expression: 'window.resizeTo(4000, 4000); window.moveTo(0, 0); 1', userGesture: true }); } finally { c.close(); } }
+    await sleep(1800);
+    const hw2 = swayWindows(b.app.pid).find((w) => isOauthWin(w));
+    const same = (p, q) => !!p && !!q && p.rect.x === q.rect.x && p.rect.y === q.rect.y && p.rect.width === q.rect.width && p.rect.height === q.rect.height;
+    clause('hostile', 'page-resizeTo-moveTo-cannot-change-the-popup-bounds', same(hw, hw2), `before ${hw ? `${hw.rect.width}x${hw.rect.height}@${hw.rect.x},${hw.rect.y}` : 'none'}; after window.resizeTo(4000,4000)+moveTo(0,0): ${hw2 ? `${hw2.rect.width}x${hw2.rect.height}@${hw2.rect.x},${hw2.rect.y}` : 'none'}`);
     // the page can still close its own popup (a closable=no feature must not take that away)
     for (const t of await byUrl(b, /popups-oauth\.html/)) { try { await evalIn(t, 'window.close()'); } catch {} }
     await softWait(async () => swayWindows(b.app.pid).length === baseWins.length, 8000, 'the hostile popup to close');
@@ -543,6 +554,38 @@ try {
     await clickIn(page, '#goweb');
     await sleep(1200);
     clause('hostile', 'webcontents-feature-is-refused-without-a-window', (await val(() => evalIn(page, `document.getElementById('out').textContent`))) === 'no-window' && swayWindows(b.app.pid).length === baseWins.length && refusals(world, 'unsafe-features') - logBefore === 1 && (await pageTargets(b)).length === 1, `page says ${JSON.stringify(await val(() => evalIn(page, `document.getElementById('out').textContent`)))}; app windows ${JSON.stringify(winNames(b))}; page targets ${(await pageTargets(b)).length}; "(unsafe-features)" +${refusals(world, 'unsafe-features') - logBefore}`);
+  });
+
+  // ────────────────────────────── extproto: a link click / redirect to an external protocol never reaches the OS (review F-b) ──────────────────────────────
+  if (ARMS.has('extproto')) await runArm('extproto', async () => {
+    const launches = () => { try { return fs.readFileSync(world.xdgLog, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
+    await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+    await typeUrl(b, `${BASE}/popups-extproto.html`);
+    await waitFor(async () => (await tabs(b))[0]?.label === 'Popups fixture extproto', 20000, 'tab 1 to load the extproto fixture');
+    const page = await pageOf(b, /popups-extproto\.html$/);
+    // positive control: the instrument SEES a launch (an allow-listed mailto: click reaches the recording xdg-open)
+    let n = launches().length;
+    await clickIn(page, '#mail'); await sleep(1800);
+    const mailCalls = launches().slice(n);
+    clause('extproto', 'ctl/the-instrument-sees-a-launch-mailto-click-reaches-xdg-open', mailCalls.some((l) => l.includes('mailto:a@b.c')), `xdg-open calls after the mailto click: ${JSON.stringify(mailCalls)}`);
+    const refusedBefore = logLines(world).filter((l) => l.includes('external protocol refused')).length;
+    n = launches().length;
+    await clickIn(page, '#ssh'); await sleep(1800);
+    await clickIn(page, '#zoom'); await sleep(1800);
+    clause('extproto', 'ssh-and-zoom-link-clicks-in-a-tab-launch-nothing', launches().length === n, `xdg-open calls after the ssh:// and zoommtg:// clicks: ${JSON.stringify(launches().slice(n))} (a default-permission session launches both)`);
+    // the same clicks inside a POPUP window (it shares the workspace session)
+    await clickIn(page, '#openpop');
+    await softWait(async () => !!(await pageOf(b, /popups-extproto\.html\?in=popup/)), 10000, 'the popup window with the extproto page');
+    const pop = await pageOf(b, /popups-extproto\.html\?in=popup/);
+    n = launches().length;
+    if (pop) { await clickIn(pop, '#ssh'); await sleep(1800); await clickIn(pop, '#zoom'); await sleep(1800); }
+    clause('extproto', 'ssh-and-zoom-link-clicks-in-a-popup-window-launch-nothing', !!pop && launches().length === n, `popup page found: ${!!pop}; xdg-open calls: ${JSON.stringify(launches().slice(n))}`);
+    const refused = logLines(world).filter((l) => l.includes('external protocol refused')).length - refusedBefore;
+    clause('extproto', 'refusals-are-logged-with-the-scheme-only', refused >= 4 && !logLines(world).some((l) => l.includes('zoom.us/join') || l.includes('ssh://x')), `${refused} "external protocol refused (<scheme>:)" lines; no URL in the log`);
+    n = launches().length;
+    if (pop) { await clickIn(pop, '#mail'); await sleep(1800); }
+    clause('extproto', 'mailto-click-in-a-popup-window-still-works', !!pop && launches().slice(n).some((l) => l.includes('mailto:a@b.c')), `xdg-open calls after the mailto click in the popup: ${JSON.stringify(launches().slice(n))}`);
+    await closeAllPopupWindows(b);
   });
 
   // ────────────────────────────── storm: page-initiated popups -> budget + cap, nothing leaked ──────────────────────────────
