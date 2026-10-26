@@ -321,3 +321,33 @@ test('destructive / browser-level methods sent on a TAB session get the browser-
   await c.call('Target.setAutoAttach', { autoAttach: true, flatten: true }, sessionId);
   assert.deepEqual(ch.sent.map((s) => s.method), ['Target.setAutoAttach']);
 });
+
+test('M1: two attaches in flight on one tab share ONE acquire; the port is released only when the LAST session goes (never while a session is live)', async () => {
+  const p = fakePanel();
+  let open!: (c: CdpTabChannel) => void;
+  const gate = new Promise<CdpTabChannel>((r) => { open = r; });
+  p.port.acquire = (id) => { p.log.acquire.push(id); return gate; };
+  const core = new CdpProxyCore(p.port);
+  const a = client(core);
+  const b = client(core);
+  const tid = (await a.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const pa = a.call('Target.attachToTarget', { targetId: tid });
+  const pb = b.call('Target.attachToTarget', { targetId: tid });
+  open(new FakeChannel());
+  const [ra, rb] = await Promise.all([pa, pb]);
+  assert.ok(ra.result.sessionId && rb.result.sessionId);
+  assert.deepEqual(p.log.acquire, ['t1'], 'single flight: one acquire for two concurrent attaches');
+  assert.deepEqual(p.log.release, [], 'nothing released while two sessions hold the tab');
+  a.close();
+  assert.deepEqual(p.log.release, [], 'still held by b');
+  b.close();
+  assert.deepEqual(p.log.release, ['t1'], 'released exactly once, by the last session');
+  // a failed acquire reaches every waiter and leaves no poisoned flight behind
+  const q = fakePanel();
+  let n = 0;
+  q.port.acquire = async () => { if (n++ === 0) throw new Error('DevTools is open on this tab'); return new FakeChannel(); };
+  const c2 = client(new CdpProxyCore(q.port));
+  const t2 = (await c2.call('Target.getTargets')).result.targetInfos[0].targetId;
+  assert.match((await c2.call('Target.attachToTarget', { targetId: t2 })).error.message, /DevTools is open/);
+  assert.ok((await c2.call('Target.attachToTarget', { targetId: t2 })).result.sessionId, 'the next attach retries');
+});

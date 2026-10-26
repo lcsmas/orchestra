@@ -127,3 +127,67 @@ test('close() releases the port and drops live sockets', async () => {
   });
   assert.equal(refused, true);
 });
+
+// ── pre-review m2: unauthenticated sockets are reaped and bounded ───────────────────────────────────────────────────────────
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function rawSocket(port: number): Promise<{ s: net.Socket; closed: () => boolean }> {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(port, '127.0.0.1');
+    let closed = false;
+    s.on('close', () => { closed = true; });
+    s.on('error', () => undefined);
+    s.once('connect', () => resolve({ s, closed: () => closed }));
+    s.once('error', reject);
+  });
+}
+
+test('m2: silent and half-sent sockets are destroyed by the pre-auth clock; a slow-header dribble is dropped; a legit request still gets 200', async () => {
+  const srv = await startCdpProxy(panel(), { limits: { preAuthTimeoutMs: 300, headersTimeoutMs: 600, requestTimeoutMs: 1000, maxConnections: 64 } });
+  try {
+    const silent = await Promise.all(Array.from({ length: 30 }, () => rawSocket(srv.port)));
+    const partial = await rawSocket(srv.port);
+    partial.s.write('GET /x HTTP/1.1\r\nHost: ');
+    const dribble = await rawSocket(srv.port);
+    const timer = setInterval(() => { try { dribble.s.write('X'); } catch { /* closed */ } }, 80);
+    dribble.s.write('GET /y HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: ');
+    const token = new URL(srv.wsUrl).pathname.split('/')[1]!;
+    assert.equal((await get(srv.port, `/${token}/json/version`, { Host: `127.0.0.1:${srv.port}` })).status, 200, 'legit traffic is served while the junk is open');
+    await sleep(1800);
+    clearInterval(timer);
+    assert.equal(silent.filter((x) => x.closed()).length, 30, 'every silent socket was reaped');
+    assert.equal(partial.closed(), true, 'the half-sent request was reaped');
+    assert.equal(dribble.closed(), true, 'the slow-header dribble was dropped');
+    assert.equal((await get(srv.port, `/${token}/json/version`, { Host: `127.0.0.1:${srv.port}` })).status, 200);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('m2: maxConnections bounds the sockets a stranger can hold', async () => {
+  const srv = await startCdpProxy(panel(), { limits: { maxConnections: 6, preAuthTimeoutMs: 5000 } });
+  try {
+    const socks = await Promise.all(Array.from({ length: 20 }, () => rawSocket(srv.port).catch(() => null)));
+    await sleep(300);
+    const alive = socks.filter((x) => x && !x.closed()).length;
+    assert.ok(alive <= 6, `at most 6 held, got ${alive}`);
+    assert.ok(alive >= 1);
+    for (const x of socks) x?.s.destroy();
+  } finally {
+    await srv.close();
+  }
+});
+
+test('m2: the pre-auth clock does NOT kill an admitted websocket that idles (the daemon sits connected for minutes)', async () => {
+  const srv = await startCdpProxy(panel(), { limits: { preAuthTimeoutMs: 250, headersTimeoutMs: 500, requestTimeoutMs: 800 } });
+  try {
+    const ws = new WebSocket(srv.wsUrl);
+    await new Promise((r) => ws.once('open', r));
+    await sleep(1200); // 4x the pre-auth timeout
+    const reply = new Promise<any>((r) => ws.once('message', (d) => r(JSON.parse(String(d)))));
+    ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
+    assert.equal((await reply).result.protocolVersion, '1.3');
+    ws.close();
+  } finally {
+    await srv.close();
+  }
+});

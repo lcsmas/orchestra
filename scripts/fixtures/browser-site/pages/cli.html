@@ -10,6 +10,7 @@
 <p id="upres">no upload</p>
 <button id="ask" onclick="document.getElementById('dlg').textContent=String(confirm('sure?'))">Ask</button>
 <p id="dlg">no dialog</p>
+<button id="alertbtn" onclick="alert('hi'); document.getElementById('dlg').textContent='alerted'">Alert</button>
 <a id="next" href="/index.html">Home</a>
 <script>
 async function up(i){const f=i.files[0],b=new FormData();b.append('f',f,f.name);

@@ -77,7 +77,7 @@ import {
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
-import { absolutizeBrowserArgs, browserChildEnv, mapBrowserFailure, planBrowserCommand } from '../shared/browser-cli.ts';
+import { browserChildEnv, mapBrowserFailure, prepareBrowserCommand } from '../shared/browser-cli.ts';
 import { spawn as spawnChild } from 'node:child_process';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
@@ -1924,7 +1924,7 @@ async function main(argv: string[]): Promise<void> {
     case 'browser': {
       // #395 / ADR 0009: drive THIS workspace's Browser panel through the bundled agent-browser. The host resolves the workspace from
       // {id, session key} on every call and answers with the proxy URL; no argument names another workspace, and flags that re-point the client are refused.
-      const plan = planBrowserCommand(args);
+      const plan = prepareBrowserCommand(args, process.cwd()); // rewrite first, validate the FINAL argv last
       if (!plan.ok) fail(plan.error);
       const id = selfWorkspaceId();
       if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
@@ -1938,7 +1938,7 @@ async function main(argv: string[]): Promise<void> {
       const binary = res.binary as string;
       const env = browserChildEnv(process.env, res.env as Record<string, string>);
       const run = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawnChild(binary, ['--cdp', res.wsUrl as string, ...absolutizeBrowserArgs(plan.args, process.cwd())], { env, stdio: ['inherit', 'pipe', 'pipe'] });
+        const child = spawnChild(binary, plan.args, { env, stdio: ['inherit', 'pipe', 'pipe'] }); // the proxy URL rides env.AGENT_BROWSER_CDP (from the host), never argv
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8').on('data', (c: string) => (stdout += c));

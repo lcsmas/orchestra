@@ -109,6 +109,7 @@ export class CdpProxyCore {
   readonly browserContextId: string;
   private readonly clients = new Set<ClientState>();
   private readonly tabs = new Map<string, TabState>();
+  private readonly acquiring = new Map<string, Promise<TabState>>();
   private readonly unsubTabs: () => void;
   private readonly known = new Map<string, CdpTab>();
 
@@ -392,23 +393,28 @@ export class CdpProxyCore {
   }
 
   // ── tab sessions ────────────────────────────────────────────────────────────
+  /** Single-flight per tab: ONE `port.acquire` however many sessions attach at once (pre-review M1 — a second concurrent acquire used to be
+   *  released while the tab was still held, arming the host's reset + detach under a live session). Every caller then takes its own ref. */
   private async acquireTab(tabId: string): Promise<TabState> {
     const have = this.tabs.get(tabId);
     if (have) {
       have.refs++;
       return have;
     }
-    const channel = await this.port.acquire(tabId);
-    const raced = this.tabs.get(tabId); // another attach finished while we awaited
-    if (raced) {
-      raced.refs++;
-      this.port.release(tabId);
-      return raced;
+    let flight = this.acquiring.get(tabId);
+    if (!flight) {
+      flight = (async () => {
+        const channel = await this.port.acquire(tabId);
+        const st: TabState = { channel, refs: 0, unsub: [], children: new Set() };
+        st.unsub.push(channel.subscribe((m, p, sid) => this.onTabEventFromDebugger(tabId, st, m, p, sid)));
+        st.unsub.push(channel.onDetach((reason) => this.onDebuggerDetached(tabId, reason)));
+        this.tabs.set(tabId, st);
+        return st;
+      })().finally(() => this.acquiring.delete(tabId));
+      this.acquiring.set(tabId, flight);
     }
-    const st: TabState = { channel, refs: 1, unsub: [], children: new Set() };
-    st.unsub.push(channel.subscribe((m, p, sid) => this.onTabEventFromDebugger(tabId, st, m, p, sid)));
-    st.unsub.push(channel.onDetach((reason) => this.onDebuggerDetached(tabId, reason)));
-    this.tabs.set(tabId, st);
+    const st = await flight;
+    st.refs++;
     return st;
   }
   private releaseTab(tabId: string): void {

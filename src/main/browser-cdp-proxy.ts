@@ -29,7 +29,20 @@ function refuseUpgrade(socket: Duplex, code: number, why: string): void {
   socket.destroy();
 }
 
-export async function startCdpProxy(panel: CdpPanelPort, opts: { trace?: CdpTrace } = {}): Promise<CdpProxyServer> {
+/** Pre-auth limits: any local process can open sockets on a loopback port, and an unauthenticated socket must not be able to hold an fd of the MAIN process forever. */
+export interface CdpProxyLimits {
+  /** Concurrent sockets (HTTP + websockets); one workspace needs a handful. */
+  maxConnections: number;
+  /** A socket that has not sent a complete request (and been admitted) within this is destroyed. Lifted once admitted: an upgraded websocket may idle for the daemon's 10 minutes. */
+  preAuthTimeoutMs: number;
+  /** Slow-header (slowloris) bound: a request whose headers are not complete by then is dropped. */
+  headersTimeoutMs: number;
+  requestTimeoutMs: number;
+}
+export const DEFAULT_CDP_PROXY_LIMITS: CdpProxyLimits = { maxConnections: 64, preAuthTimeoutMs: 10_000, headersTimeoutMs: 10_000, requestTimeoutMs: 30_000 };
+
+export async function startCdpProxy(panel: CdpPanelPort, opts: { trace?: CdpTrace; limits?: Partial<CdpProxyLimits> } = {}): Promise<CdpProxyServer> {
+  const limits: CdpProxyLimits = { ...DEFAULT_CDP_PROXY_LIMITS, ...opts.limits };
   const token = randomBytes(18).toString('base64url');
   const core = new CdpProxyCore(panel, opts.trace ? { trace: opts.trace } : {});
   const wss = new WebSocketServer({ noServer: true });
@@ -54,7 +67,7 @@ export async function startCdpProxy(panel: CdpPanelPort, opts: { trace?: CdpTrac
   };
 
   const base = (): string => `127.0.0.1:${boundPort}`;
-  const server = http.createServer((req, res) => {
+  const server = http.createServer({ headersTimeout: limits.headersTimeoutMs, requestTimeout: limits.requestTimeoutMs, connectionsCheckingInterval: Math.min(2000, limits.headersTimeoutMs) }, (req, res) => {
     const rest = admit(req, (c, w) => refuse(res, c, w));
     if (rest === null) return;
     const path = rest.split('?')[0]!;
@@ -78,6 +91,10 @@ export async function startCdpProxy(panel: CdpPanelPort, opts: { trace?: CdpTrac
       refuse(res, 404, 'not found');
     })().catch((e) => refuse(res, 500, e instanceof Error ? e.message : String(e)));
   });
+
+  server.maxConnections = limits.maxConnections;
+  // Every accepted socket starts on the pre-auth clock (silent sockets, partial requests); `ws`'s handleUpgrade lifts it for an ADMITTED upgrade (the idle-websocket test pins that).
+  server.on('connection', (socket) => socket.setTimeout(limits.preAuthTimeoutMs, () => socket.destroy()));
 
   server.on('upgrade', (req, socket, head) => {
     const rest = admit(req, (c, w) => refuseUpgrade(socket, c, w));

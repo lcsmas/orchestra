@@ -12,9 +12,26 @@ test('the hooks socket serves /browser through dispatchBrowserRequest (and only 
   assert.equal((src.match(/dispatchBrowserRequest/g) ?? []).length, 2, 'one import + one call: no second path to the endpoint');
 });
 
+test('m4: every /browser call re-prepares the layout, and quit removes only our own socket dir after the daemons are gone', () => {
+  const host = read('./browser-cdp-host.ts');
+  assert.match(host, /const l = layout\(\);\s*prepareLayout\(l\);[\s\S]{0,200}await ensureDaemon\(/);
+  assert.match(host, /terminateDaemonsOf\(layout\(\)\)[\s\S]{0,400}await Promise\.all\(\[\.\.\.endpoints\.keys\(\)\]\.map\(\(id\) => disposeEndpoint\(id\)\)\);[\s\S]{0,200}removeSocketDir\(layout\(\)\)/);
+});
+
+test('M2: the proxy URL reaches agent-browser through its environment only — neither the CLI nor the host puts it in an argv', () => {
+  const cli = read('../cli/index.ts');
+  assert.match(cli, /spawnChild\(binary, plan\.args, /);
+  assert.doesNotMatch(cli, /'--cdp'/, 'the CLI no longer passes --cdp');
+  const host = read('./browser-cdp-host.ts');
+  assert.match(host, /env: \{ \.\.\.abEnv\(l, ep\.session, shot\), AGENT_BROWSER_CDP: ep\.server\.wsUrl \}/);
+  const daemon = read('./agent-browser-daemon.ts');
+  assert.match(daemon, /deps\.run\(binary, \['get', 'url'\], \{ \.\.\.abEnv\(layout, session, undefined\), AGENT_BROWSER_CDP: wsUrl \}/);
+  assert.doesNotMatch(daemon, /\['connect', wsUrl\]/);
+});
+
 test('the CLI verb is registered with help, sends the session key, refuses before the socket, and is NOT a bus-identity verb', () => {
   const cli = read('../cli/index.ts');
-  assert.match(cli, /case 'browser': \{[\s\S]*planBrowserCommand\(args\)[\s\S]*if \(!plan\.ok\) fail\(plan\.error\)[\s\S]*request\(\s*'\/browser'/);
+  assert.match(cli, /case 'browser': \{[\s\S]*prepareBrowserCommand\(args, process\.cwd\(\)\)[\s\S]*if \(!plan\.ok\) fail\(plan\.error\)[\s\S]*request\(\s*'\/browser'/);
   assert.match(cli, /key: process\.env\.ORCHESTRA_SESSION_KEY/);
   assert.ok(COMMANDS.some((c) => c.name === 'browser' && c.group === 'Browser'));
   const m = /const HOST_IDENTITY_VERBS[^\n]*\n/.exec(cli);

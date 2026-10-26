@@ -49,6 +49,9 @@ export function abEnv(layout: AbLayout, session: string, screenshotDir: string |
     AGENT_BROWSER_NAMESPACE: AB_NAMESPACE,
     AGENT_BROWSER_SESSION: session,
     AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AB_IDLE_TIMEOUT_MS),
+    // The daemon stays attached for minutes after the last command and by default auto-dismisses alert()/beforeunload dialogs: on a panel the HUMAN
+    // shares, that would answer THEIR dialogs unseen. Off: every dialog (like confirm() already) waits for an explicit `dialog accept|dismiss|status`.
+    AGENT_BROWSER_NO_AUTO_DIALOG: '1',
     ...(screenshotDir ? { AGENT_BROWSER_SCREENSHOT_DIR: screenshotDir } : {}),
   };
 }
@@ -130,7 +133,10 @@ export function ensureDaemon(
   if (inflight) return inflight;
   const p = (async () => {
     if (await deps.canConnect(key)) return;
-    const r = await deps.run(binary, ['connect', wsUrl], abEnv(layout, session, undefined), 20_000);
+    // The proxy URL carries the token and /proc/<pid>/cmdline is world-readable (environ is 0400): hand it over as AGENT_BROWSER_CDP,
+    // never as an argument (`connect <url>` / `--cdp <url>`). `get url` is the cheapest command that makes the client start the daemon
+    // and connect it (`connect` insists on an argument). Verified on v0.39.2: the daemon's own cmdline is empty, its environ 0400.
+    const r = await deps.run(binary, ['get', 'url'], { ...abEnv(layout, session, undefined), AGENT_BROWSER_CDP: wsUrl }, 20_000);
     if (r.code !== 0) throw new Error(`agent-browser could not connect to the panel (${r.out.slice(0, 300) || `exit ${r.code}`})`);
   })().finally(() => ensuring.delete(key));
   ensuring.set(key, p);
@@ -178,6 +184,16 @@ export function terminateDaemonsOf(
     }
   }
   return done;
+}
+
+/**
+ * Remove THIS ORCHESTRA_HOME's socket dir (quit). Refuses anything that is not a hashed `orch-ab-<8 hex>` directory: the runtime dir
+ * itself, or a sibling's dir under another name, can never be passed through here.
+ */
+export function removeSocketDir(layout: AbLayout, rm: (p: string) => void = (p) => fs.rmSync(p, { recursive: true, force: true })): boolean {
+  if (!/^orch-ab-[0-9a-f]{8}$/.test(path.basename(layout.socketDir))) return false;
+  rm(layout.socketDir);
+  return true;
 }
 
 /** Ask the daemon to exit (it only disconnects: the proxy turns `Browser.close` into a no-op). Never throws. */

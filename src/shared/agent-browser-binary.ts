@@ -1,7 +1,7 @@
 /**
  * Which pinned `agent-browser` release asset runs on a platform (#395, ADR 0009), and the
  * resolution order of the binary on disk. Pins live in `scripts/agent-browser-pins.json`
- * (version + SHA-256 per asset); `scripts/fetch-agent-browser.mjs` downloads and verifies them.
+ * (version + SHA-256 per asset); `scripts/agent-browser-fetch.cjs` downloads and verifies them.
  */
 /** The pinned release; `agent-browser-binary.test.ts` asserts it equals `scripts/agent-browser-pins.json`. */
 export const AGENT_BROWSER_VERSION = '0.39.2';

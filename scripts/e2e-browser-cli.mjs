@@ -49,6 +49,8 @@ const MUTANTS = {
   'blank-overwrites-pending-load': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await/, '!$1.getURL()&&await']], arms: ['tabs'], why: 'a tab created with a url is overwritten by the about:blank kick while its load is still in flight' },
   'archived-guard-removed': { file: 'chunk', edits: [[/if\((\w+)\.archived\)return\{ok:!1,code:"unknown-workspace",error:`workspace \$\{(\w+)\} is archived`\};try\{/, 'try{']], arms: ['destroy-closes-daemon'], why: 'the up-front archived refusal is gone: a late /browser call for an archived workspace is only caught after its panel and proxy were rebuilt' },
   'bring-to-front-forwarded': { file: 'chunk', edits: [[/if\((\w+)==="Page\.bringToFront"\)return this\.port\.activateTab\((\w+)\),\{\};/, '']], arms: ['tabs'], why: 'Page.bringToFront reaches the real debugger (OS focus) instead of only activating the tab' },
+  'auto-dialog-on': { file: 'chunk', edits: [[/AGENT_BROWSER_NO_AUTO_DIALOG:"1",?/, '']], arms: ['dialog'], why: 'the daemon auto-dismisses alert()/beforeunload again (it could answer the human\'s own dialog unseen)' },
+  'token-in-argv': { file: 'cli', edits: [['.spawn(binary, plan.args,', '.spawn(binary, ["--cdp", res.wsUrl, ...plan.args],']], arms: ['daemon-host-owned'], why: 'the CLI puts the token-bearing proxy URL in agent-browser\'s argv (world-readable /proc/<pid>/cmdline)' },
   'relative-paths': { file: 'cli', edits: [[/absolutizeBrowserArgs\(plan\.args, [\w$.]+\(\)\)/, 'plan.args']], arms: ['screenshot'], why: 'a relative screenshot path is handed to the host-owned daemon and lands in the app\'s cwd' },
   'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
   'command-not-first': { file: 'cli', edits: [['const command = argv[idx];', 'const command = argv.find((a) => !a.startsWith("-"));']], arms: ['allowlist'], why: 'the command is the first non-flag token again (a leading value-taking option shifts it)' },
@@ -436,6 +438,15 @@ const ARM_FNS = {
     await Promise.race([clickP, sleep(8000)]); // a page that stays blocked must turn into a RED clause below, not an aborted arm
     const t1 = await readOrBlocked(ctx.o1, `document.getElementById('dlg').textContent`);
     clause(A, 'accept-resolves-true', acc.code === 0 && t1 === 'true', `${show(acc)} → oracle #dlg=${JSON.stringify(t1)}`);
+    // pre-review m3: an alert() stays OPEN until an explicit `dialog accept` (the daemon must not auto-dismiss it: on a shared panel it could be the human's)
+    const alertRef = refOf((await cli(ctx, W1, ['snapshot', '-i'])).stdout, 'button', 'Alert');
+    const alertClick = cli(ctx, W1, ['click', alertRef], { timeoutMs: 40000 });
+    await sleep(1500);
+    const stillOpen = await cli(ctx, W1, ['dialog', 'status']);
+    const accAlert = await cli(ctx, W1, ['dialog', 'accept']);
+    await Promise.race([alertClick, sleep(8000)]);
+    const t3 = await readOrBlocked(ctx.o1, `document.getElementById('dlg').textContent`);
+    clause(A, 'alert-waits-for-an-explicit-accept', /alert dialog is open|dialog is open/.test(stillOpen.stdout) && accAlert.code === 0 && t3 === 'alerted', `1.5 s after the click: ${show(stillOpen)}; accept → ${show(accAlert)} → oracle #dlg=${JSON.stringify(t3)}`);
     const click2 = cli(ctx, W1, ['click', ask], { timeoutMs: 40000 });
     await waitFor(async () => { const s = await cli(ctx, W1, ['dialog', 'status']); return /confirm dialog is open/.test(s.stdout) ? s : null; }, 15000, 'the second confirm');
     const dis = await cli(ctx, W1, ['dialog', 'dismiss']); await Promise.race([click2, sleep(8000)]);
@@ -599,6 +610,19 @@ const ARM_FNS2 = {
         `pid ${pid}: SESSION/SOCKET_DIR/HOME are the host's, no ORCHESTRA_*/ANTHROPIC secrets, no inherited PATH (the daemon was started by the host's \`connect\`, not by an agent's client); env keys: ${env.map((e) => e.split('=')[0]).join(',')}`);
       clause(A, `daemon-${session}-is-not-a-cli-child`, ppidOf(pid) !== process.pid, `ppid ${ppidOf(pid)} (rig pid ${process.pid})`);
     }
+    // pre-review M2: the token-bearing proxy URL is in NO process's argv (/proc/<pid>/cmdline is world-readable here; environ is 0400) while a client call runs
+    const own = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const token = new URL(own.wsUrl).pathname.split('/')[1];
+    const scan = () => fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)).filter((n) => { try { return fs.readFileSync(`/proc/${n}/cmdline`, 'utf8').includes(token); } catch { return false; } });
+    const ctlProc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 4000)', token], { stdio: 'ignore' }); // positive control: the scan CAN see a token in an argv
+    const during = cli(ctx, W1, ['wait', '1500']);
+    await sleep(600);
+    const seen = scan();
+    await during;
+    const ctlPid = String(ctlProc.pid);
+    try { ctlProc.kill('SIGKILL'); } catch {}
+    clause(A, 'ctl/scan-sees-a-token-in-an-argv', seen.includes(ctlPid), `scanning /proc/*/cmdline for the proxy token found pid(s) ${seen.join(',') || 'none'}; the planted control process is ${ctlPid}`);
+    clause(A, 'token-in-no-cmdline-while-a-call-runs', seen.filter((n) => n !== ctlPid).length === 0, `during \`orchestra browser wait 1500\` no process other than the planted control carries the token in its argv: ${seen.filter((n) => n !== ctlPid).join(',') || 'none'}`);
   },
 
   async allowlist(ctx) {
@@ -606,7 +630,9 @@ const ARM_FNS2 = {
     const before = sockets(ctx).length;
     const cases = [['profiles'], ['--session', 'x', 'get', 'url'], ['connect', 'ws://127.0.0.1:1/x'], ['plugin', 'list'], ['batch', 'get url'], ['frobnicate'],
       // verified bypasses of an earlier planner (pre-review B2): a flag after `--`, and a leading value-taking option that shifts the command
-      ['get', 'url', '--', '--session', 'x'], ['session', '--', '--session', 'x'], ['--screenshot-dir', 'open', 'session', 'info']];
+      ['get', 'url', '--', '--session', 'x'], ['session', '--', '--session', 'x'], ['--screenshot-dir', 'open', 'session', 'info'],
+      // pre-review M3: a known value flag is split and its VALUE is then judged (`--x=--cdp`), judged on the final argv
+      ['snapshot', '--screenshot-format=--cdp', '9222']];
     const outs = [];
     for (const args of cases) { const r = await cli(ctx, W1, args, { timeoutMs: 20000 }); outs.push({ args: args.join(' '), r }); }
     const refused = outs.every(({ r }) => r.code !== 0 && /not available|not allowed|unknown command|put the command first/.test(r.stderr) && r.stdout.trim() === '');

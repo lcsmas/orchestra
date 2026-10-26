@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, splitEqualsFlags, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
+import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, prepareBrowserCommand, splitEqualsFlags, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
 
 test('every allowed command plans through unchanged, with its refs listed', () => {
   for (const c of BROWSER_COMMANDS) assert.deepEqual(planBrowserCommand([c]), { ok: true, args: [c], refs: [] }, c);
@@ -112,5 +112,39 @@ test('a value-taking flag before the path does not steal it, and --flag=value is
   // a path-valued flag is made absolute too
   assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-dir', 'shots'], cwd), ['screenshot', '--screenshot-dir', '/work/tree/shots']);
   assert.deepEqual(absolutizeBrowserArgs(['screenshot', '--screenshot-dir=shots', 'a.png'], cwd), ['screenshot', '--screenshot-dir', '/work/tree/shots', '/work/tree/a.png']);
-  assert.deepEqual(splitEqualsFlags(['click', '@e1', '--depth=3', 'plain=text', '-d=2']), ['click', '@e1', '--depth', '3', 'plain=text', '-d=2'], 'only long flags; data with = is untouched');
+  assert.deepEqual(splitEqualsFlags(['click', '@e1', '--depth=3', 'plain=text', '-d=2']), ['click', '@e1', '--depth', '3', 'plain=text', '-d=2'], 'only long KNOWN value flags; data with = is untouched');
+  // reviewer m1: data that merely looks like a flag stays ONE token
+  assert.deepEqual(splitEqualsFlags(['type', '@e2', '--api-key=sk-123']), ['type', '@e2', '--api-key=sk-123']);
+  assert.deepEqual(absolutizeBrowserArgs(['fill', '@e1', '--foo=bar'], cwd), ['fill', '@e1', '--foo=bar']);
+});
+
+// ── pre-review M3: the allowlist judges the FINAL argv ──────────────────────────────────────────────────────────────────
+const REFUSED_SAMPLE = [
+  '--cdp', '--session', '--namespace', '--profile', '--auto-connect', '--executable-path', '--engine', '--provider', '-p', '--headed',
+  '--config', '--state', '--extension', '--args', '--proxy', '--user-agent', '--init-script', '--enable', '--allow-file-access', '--device',
+  '--idle-timeout', '--session-name', '--restore', '--allowed-domains',
+];
+const VALUE_CARRIERS = ['--screenshot-format', '--screenshot-quality', '--depth', '--selector', '--max-output', '--timeout', '--filter', '--headers', '--color-scheme', '--curl', '--baseline', '--output', '--screenshot-dir'];
+
+test('M3: `--json=--cdp 9222` and every other way to land a refused flag in the FINAL argv is refused; an ok plan never contains one', () => {
+  const smuggles: string[][] = [];
+  for (const f of REFUSED_SAMPLE) {
+    smuggles.push(['snapshot', f], ['snapshot', `${f}=x`], ['snapshot', '--', f], ['snapshot', '--json', f, 'x']);
+    smuggles.push(['snapshot', `--json=${f}`, '9222'], ['snapshot', `--full=${f}`], ['snapshot', `--annotate=${f}`, 'x'], ['snapshot', `--pin-tab=${f}`]);
+    for (const c of VALUE_CARRIERS) smuggles.push(['snapshot', c, f, 'x'], ['snapshot', `${c}=${f}`, 'x'], ['screenshot', `${c}=${f}`, 'out.png']);
+  }
+  let refused = 0, ok = 0;
+  for (const argv of smuggles) {
+    const plan = prepareBrowserCommand(argv, '/work/tree');
+    if (!plan.ok) { refused++; continue; }
+    ok++;
+    // the exact tokens the client would receive: no refused flag, bare or `=`-joined, anywhere
+    for (const t of plan.args) assert.equal(REFUSED_SAMPLE.some((f) => t === f || t.startsWith(`${f}=`)), false, `${argv.join(' ')} → ${plan.args.join(' ')} carries ${t}`);
+  }
+  assert.ok(refused > 400, `most forms are refused outright (${refused}/${smuggles.length}); the rest stay inert single tokens (${ok})`);
+  // the exact reproduction from the review
+  const r = prepareBrowserCommand(['snapshot', '--json=--cdp', '9222'], '/w');
+  assert.deepEqual(r.ok && r.args, ['snapshot', '--json=--cdp', '9222'], 'not split: one inert token, no standalone --cdp');
+  assert.equal(prepareBrowserCommand(['snapshot', '--screenshot-format=--cdp', '9222'], '/w').ok, false, 'a KNOWN value flag IS split, and the value is then judged');
+  assert.equal(prepareBrowserCommand(['snapshot', '--cdp=9222'], '/w').ok, false);
 });

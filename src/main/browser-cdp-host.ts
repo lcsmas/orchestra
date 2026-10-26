@@ -17,6 +17,7 @@ import {
   closeDaemon,
   ensureDaemon,
   terminateDaemonsOf,
+  removeSocketDir,
   installBinary,
   listSessions,
   prepareLayout,
@@ -276,6 +277,11 @@ export async function disposeAllEndpoints(): Promise<void> {
     blog.warn('terminating agent-browser daemons at quit failed', e);
   }
   await Promise.all([...endpoints.keys()].map((id) => disposeEndpoint(id)));
+  try {
+    removeSocketDir(layout()); // this ORCHESTRA_HOME's hashed dir only; the daemons are gone, nothing else lives there
+  } catch (e) {
+    blog.warn('removing the agent-browser socket dir failed', e);
+  }
 }
 
 let started = false;
@@ -339,10 +345,12 @@ export async function dispatchBrowserRequest(msg: Record<string, unknown>): Prom
     }
     bp.revealForAgent(id);
     const l = layout();
+    prepareLayout(l); // idempotent mkdir: a socket dir that vanished (runtime dir cleaned, a rig's teardown) must not fail every call until restart
     const binary = agentBrowserBinary();
     await ensureDaemon(binary, l, ep.session, ep.server.wsUrl);
     const shot = typeof msg.shotDir === 'string' && path.isAbsolute(msg.shotDir) ? msg.shotDir : undefined;
-    return { ok: true, binary, wsUrl: ep.server.wsUrl, env: abEnv(l, ep.session, shot) };
+    // the URL travels in the client's ENVIRONMENT (AGENT_BROWSER_CDP), not its argv: cmdline is world-readable on this host, environ is not
+    return { ok: true, binary, wsUrl: ep.server.wsUrl, env: { ...abEnv(l, ep.session, shot), AGENT_BROWSER_CDP: ep.server.wsUrl } };
   } catch (e) {
     return { ok: false, code: 'unavailable', error: e instanceof Error ? e.message : String(e) };
   }

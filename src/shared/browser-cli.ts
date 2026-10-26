@@ -108,16 +108,29 @@ const VALUE_FLAGS: ReadonlySet<string> = new Set([
   '--headers', '--color-scheme', '--input-mode', '--url', '--domain', '--path', '--expires', '--sameSite',
 ]);
 
+const KNOWN_EQUALS_FLAGS: ReadonlySet<string> = new Set([...VALUE_FLAGS, ...PATH_VALUE_FLAGS].filter((f) => f.startsWith('--')));
+
 /**
  * agent-browser documents `--flag value`; its `--flag=value` form is not parsed as one flag (it became a positional and a file
- * literally named `--screenshot-quality=30` appeared in the host's cwd — found by #399's parity rig). Split every `--name=value`
- * into `--name value` before the path logic and before the client sees it.
+ * literally named `--screenshot-quality=30` appeared in the host's cwd — found by #399's parity rig). Split `--name=value` into
+ * `--name value` ONLY for the value flags we know: anything else is data (`fill @e1 --api-key=sk-123`) or an unknown flag the client
+ * treats as an inert positional, and splitting it would manufacture tokens the agent never typed (`--json=--cdp` → `--json --cdp`).
  */
 export function splitEqualsFlags(args: readonly string[]): string[] {
   return args.flatMap((a) => {
     const m = /^(--[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/.exec(a);
-    return m ? [m[1]!, m[2]!] : [a];
+    return m && KNOWN_EQUALS_FLAGS.has(m[1]!) ? [m[1]!, m[2]!] : [a];
   });
+}
+
+/**
+ * THE entry point of the CLI: rewrite first (split known `--flag=value`, make file arguments absolute), validate LAST. The allowlist
+ * must judge the argv the client will actually receive — validating a pre-transform copy let `--screenshot-format=--cdp` become
+ * `--screenshot-format --cdp` after the check (pre-review M3). Invariant (unit-tested over every refused flag in every position/form):
+ * a plan that is ok contains no refused flag token.
+ */
+export function prepareBrowserCommand(argv: readonly string[], cwd: string): BrowserPlan {
+  return planBrowserCommand(absolutizeBrowserArgs(argv, cwd));
 }
 
 /**

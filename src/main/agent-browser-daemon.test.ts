@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { abEnv, abLayout, closeDaemon, ensureDaemon, installBinary, listSessions, prepareLayout, sockPath, terminateDaemonsOf, type AbDeps } from './agent-browser-daemon.ts';
+import { abEnv, abLayout, closeDaemon, ensureDaemon, installBinary, listSessions, prepareLayout, removeSocketDir, sockPath, terminateDaemonsOf, type AbDeps } from './agent-browser-daemon.ts';
 
 const layout = abLayout('/home/u/.orchestra', '/run/user/1000');
 
@@ -25,6 +25,7 @@ test('abEnv pins session, namespace, socket dir, scratch HOME and the empty conf
   assert.equal(e.HOME, layout.home);
   assert.equal(e.AGENT_BROWSER_CONFIG, layout.config);
   assert.equal(e.AGENT_BROWSER_SCREENSHOT_DIR, '/shots');
+  assert.equal(e.AGENT_BROWSER_NO_AUTO_DIALOG, '1', 'm3: the daemon never answers the human\'s own alert()/beforeunload');
   assert.equal('AGENT_BROWSER_SCREENSHOT_DIR' in abEnv(layout, 's', undefined), false);
 });
 
@@ -46,7 +47,10 @@ test('ensureDaemon: a live socket is left alone; a dead one is (re)connected to 
   assert.equal(a.calls.length, 0);
   const b = fakeDeps(false);
   await ensureDaemon('/bin/ab', layout, 's1', 'ws://127.0.0.1:1/t/devtools/browser/x', b.deps);
-  assert.deepEqual(b.calls[0]!.args, ['connect', 'ws://127.0.0.1:1/t/devtools/browser/x']);
+  // M2: the token-bearing URL is in the ENVIRONMENT (0400 under /proc), never in argv (0444)
+  assert.deepEqual(b.calls[0]!.args, ['get', 'url']);
+  assert.equal(b.calls[0]!.env.AGENT_BROWSER_CDP, 'ws://127.0.0.1:1/t/devtools/browser/x');
+  assert.equal(b.calls[0]!.args.some((a) => a.includes('ws://')), false);
   assert.equal(b.calls[0]!.env.AGENT_BROWSER_SESSION, 's1');
 });
 
@@ -119,4 +123,15 @@ test('terminateDaemonsOf signals only pids whose environment names THIS socket d
   assert.deepEqual(out, [111]);
   assert.deepEqual(killed, [111], 'pid 222 belongs to another socket dir, junk and pid 1 are skipped, a vanished /proc entry is skipped');
   assert.deepEqual(terminateDaemonsOf(l, { readdir: () => { throw new Error('ENOENT'); }, read: () => '', environ: () => null, kill: () => undefined }), []);
+});
+
+test('removeSocketDir deletes only a hashed orch-ab-<8 hex> dir and refuses everything else (pre-review m4: the freeze-time bulk rm was unscoped)', () => {
+  const removed: string[] = [];
+  assert.equal(removeSocketDir(abLayout('/h/.orchestra', '/run/user/1000'), (p) => removed.push(p)), true);
+  assert.match(removed[0]!, /^\/run\/user\/1000\/orch-ab-[0-9a-f]{8}$/);
+  for (const bad of ['/run/user/1000', '/run/user/1000/keyring', '/run/user/1000/orch-ab-', '/run/user/1000/orch-ab-XYZ12345', '/run/user/1000/orch-ab-0123456789', '/']) {
+    const calls: string[] = [];
+    assert.equal(removeSocketDir({ ...layout, socketDir: bad }, (p) => calls.push(p)), false, bad);
+    assert.deepEqual(calls, [], bad);
+  }
 });
