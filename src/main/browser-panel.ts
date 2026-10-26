@@ -208,6 +208,8 @@ function destroyTab(tab: Tab): void {
   } catch {
     /* already detached */
   }
+  // `close()` is ASYNC (unload / pagehide handlers still run): remember it, a profile delete waits for it (settleClosedViews).
+  trackClose(wc);
   // WebContentsView has no close(); destroying its webContents releases it.
   (wc as unknown as { close?: () => void }).close?.();
 }
@@ -285,27 +287,63 @@ export function setBrowserProfileResolver(fn: ((wsId: string) => BrowserProfileI
 }
 
 const FLUSH_COOKIES_MS = 1500;
-const signInSessions = new WeakSet<Electron.Session>();
+/** A cookie is promoted this long after its LAST change: a site that rewrites it at every request costs one `set`, and what is promoted is the
+ *  cookie as it is THEN (re-read), never the snapshot the event carried — so a logout in between is never undone. */
+const PROMOTE_DEBOUNCE_MS = 250;
+const signInSessions = new WeakMap<Electron.Session, () => void>();
 
 /** What keeps a profile signed in across a restart (PROFILE sessions only — never an ephemeral workspace's), once per session:
- *  1. a SESSION cookie (no expiry; Electron drops these at quit) is re-set with a sliding 30-day expiry (OPS ruling, #400);
+ *  1. a SESSION cookie (no expiry; Electron drops these at quit) is re-set with a sliding 30-day expiry (OPS ruling, #400) — debounced per cookie,
+ *     and only if it is STILL that session cookie when re-read (removed / rewritten with an expiry in the meantime = left alone);
  *  2. Chromium writes its cookie store on its own ~30 s timer — a crash or SIGKILL right after signing in would lose the sign-in —
- *     so the store is flushed shortly after any change. */
+ *     so the store is flushed shortly after any change.
+ *  {@link stopSignInPersistence} detaches it (a deleted profile must not get cookies re-created by a late event). */
 function persistSignIns(ses: Electron.Session): void {
   if (signInSessions.has(ses)) return;
-  signInSessions.add(ses);
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  ses.cookies.on('changed', (_e, cookie, _cause, removed) => {
-    if (!removed) {
-      const promoted = promoteSessionCookie(cookie, Date.now() / 1000);
-      if (promoted) ses.cookies.set(promoted).catch((err) => log.debug('browser-panel: promoting a session cookie failed', err));
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const promote = (key: string, cookie: Electron.Cookie): void => {
+    pending.delete(key);
+    void ses.cookies
+      .get({ name: cookie.name, domain: cookie.domain, path: cookie.path })
+      .then((live) => {
+        for (const c of live) {
+          const p = promoteSessionCookie(c, Date.now() / 1000);
+          if (p) return ses.cookies.set(p);
+        }
+        return undefined;
+      })
+      .catch((err) => log.warn('browser-panel: promoting a session cookie failed', err));
+  };
+  const onChanged = (_e: unknown, cookie: Electron.Cookie, _cause: string, removed: boolean): void => {
+    if (!removed && promoteSessionCookie(cookie, 0)) {
+      const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+      if (!pending.has(key)) pending.set(key, setTimeout(() => promote(key, cookie), PROMOTE_DEBOUNCE_MS));
     }
-    if (timer) return;
-    timer = setTimeout(() => {
-      timer = null;
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
       void ses.cookies.flushStore().catch(() => {});
     }, FLUSH_COOKIES_MS);
+  };
+  ses.cookies.on('changed', onChanged);
+  signInSessions.set(ses, () => {
+    ses.cookies.removeListener('changed', onChanged);
+    for (const t of pending.values()) clearTimeout(t);
+    pending.clear();
   });
+}
+
+/** Stop promoting / flushing a profile partition's cookies (called before its storage is wiped: a late `changed` must not re-create a promoted
+ *  cookie in a partition the human just deleted). A later panel on that partition would re-attach it. */
+export function stopSignInPersistence(partition: string): void {
+  try {
+    const ses = session.fromPartition(partition);
+    signInSessions.get(ses)?.();
+    signInSessions.delete(ses);
+  } catch (e) {
+    log.debug('browser-panel: stopSignInPersistence', e);
+  }
 }
 
 /** Write every open profile's cookies / storage to disk now (app quit). */
@@ -651,12 +689,20 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
     if (wasAttached) attachActive(panel);
     throw e;
   }
+  // Committed from here: nothing below may throw, or the record would be rolled back while the panel already runs on the new partition.
   panel.activeId = oldActive;
   for (const t of oldTabs) {
-    trackClose(t);
-    destroyTab(t);
+    try {
+      destroyTab(t);
+    } catch (e) {
+      log.warn('browser-panel: reprofilePanel could not close an old view', e);
+    }
   }
-  if (wasAttached) attachActive(panel);
+  try {
+    if (wasAttached) attachActive(panel);
+  } catch (e) {
+    log.warn('browser-panel: reprofilePanel could not re-composite the panel', e);
+  }
   return publish(panel);
 }
 
@@ -671,21 +717,24 @@ export function workspacesOnProfile(profileId: BrowserProfileId): string[] {
   return [...panels.values()].filter((p) => p.profileId === profileId).map((p) => p.wsId);
 }
 
-/** Views being closed by a re-profile: `webContents.close()` is ASYNC (unload / pagehide handlers still run), so a storage wipe
- *  must wait for their `destroyed` or a page could write the partition back after it was cleared. */
+/** Views being closed (a re-profile, a tab close, a panel teardown): `webContents.close()` is ASYNC (unload / pagehide handlers still run), so a
+ *  storage wipe must wait for their `destroyed` or a page could write the partition back after it was cleared. */
 const closing = new Set<Promise<void>>();
-function trackClose(tab: Tab): void {
-  const wc = liveContents(tab);
-  if (!wc) return;
+function trackClose(wc: Electron.WebContents): void {
   const p = new Promise<void>((resolve) => wc.once('destroyed', () => resolve()));
   closing.add(p);
   void p.then(() => closing.delete(p));
 }
 
-/** Resolve once every view closed by a re-profile is gone (or after `timeoutMs`: a hung page must not block a delete forever). */
-export async function settleClosedViews(timeoutMs: number): Promise<void> {
-  if (closing.size === 0) return;
-  await Promise.race([Promise.all([...closing]).then(() => undefined), new Promise<void>((r) => setTimeout(r, timeoutMs))]);
+/** Resolve `true` once every view closed so far is really gone, `false` after `timeoutMs` (a hung page must not block forever — the caller decides). */
+export async function settleClosedViews(timeoutMs: number): Promise<boolean> {
+  if (closing.size === 0) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), timeoutMs); });
+  const settled = Promise.all([...closing]).then(() => true);
+  const ok = await Promise.race([settled, timedOut]);
+  clearTimeout(timer);
+  return ok;
 }
 
 // ---------------------------------------------------------------------------

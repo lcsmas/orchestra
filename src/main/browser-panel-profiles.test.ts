@@ -54,7 +54,7 @@ export const session = {
       s = { name, uaSets: 0, flushedStorage: 0, flushedCookies: 0, cookieListeners: [],
         setUserAgent() { this.uaSets++; }, getUserAgent: () => 'UA',
         flushStorageData() { this.flushedStorage++; },
-        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
+        cookies: { on(ev, fn) { s.cookieListeners.push([ev, fn]); }, removeListener(ev, fn) { s.cookieListeners = s.cookieListeners.filter(([e, f]) => !(e === ev && f === fn)); }, get(filter) { (s.cookieGets ??= []).push(filter); return Promise.resolve((s.liveCookies ?? []).filter((c) => c.name === filter.name)); }, set(d) { (s.cookieSets ??= []).push(d); return Promise.resolve(); }, flushStore() { s.flushedCookies++; return Promise.resolve(); } } };
       sessions.set(name, s);
     }
     return s;
@@ -296,7 +296,7 @@ test('settleClosedViews waits for the views a re-profile closed to be really des
   (globalThis as any).__bpHeld = [];
   bp.reprofilePanel(ws, P1); // closes the old view; its 'destroyed' is held back
   let settled = false;
-  const waiting = bp.settleClosedViews(5000).then(() => { settled = true; });
+  const waiting = bp.settleClosedViews(5000).then((ok) => { settled = ok; });
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(settled, false, 'still waiting while the old view has not finished closing');
   (globalThis as any).__bpHoldClose = false;
@@ -307,33 +307,79 @@ test('settleClosedViews waits for the views a re-profile closed to be really des
   (globalThis as any).__bpHoldClose = true;
   bp.reprofilePanel(ws, undefined);
   const t0 = Date.now();
-  await bp.settleClosedViews(60);
+  assert.equal(await bp.settleClosedViews(60), false, 'reports that it gave up');
   assert.ok(Date.now() - t0 >= 50 && Date.now() - t0 < 2000, `gave up after its timeout (${Date.now() - t0} ms)`);
   (globalThis as any).__bpHoldClose = false;
   for (const fire of (globalThis as any).__bpHeld.splice(0)) fire();
-  await bp.settleClosedViews(10);
+  assert.equal(await bp.settleClosedViews(500), true, 'true again once the views are gone');
 });
 
 const cookieEvent = (sesName: string, cookie: Record<string, unknown>, removed = false) => {
   const ses = sessions().get(sesName);
-  for (const [, fn] of ses.cookieListeners) fn({}, cookie, 'explicit', removed);
+  for (const [, fn] of [...ses.cookieListeners]) fn({}, cookie, 'explicit', removed);
   return ses;
 };
+/** The stub sessions are shared per partition name across arms: forget what an earlier arm recorded on this one. */
+const fresh = (ses: any) => { ses.cookieSets = undefined; ses.cookieGets = undefined; ses.liveCookies = undefined; return ses; };
 const SESSION_COOKIE = { name: 'sid', value: 'v1', domain: '127.0.0.1', hostOnly: true, path: '/', secure: false, httpOnly: false, session: true, sameSite: 'unspecified' };
+const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms)); // past the 250 ms per-cookie debounce + the re-read
 
-test('PROFILE partition: a session cookie is re-set with a sliding ~30-day expiry (Electron would drop it at quit); a cookie with an expiry or a removal is left alone', () => {
+test('PROFILE partition: a session cookie is re-set with a sliding ~30-day expiry — after a debounce, from the LIVE cookie (Electron would drop it at quit)', async () => {
   const ws = newWs(P1);
   bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [{ ...SESSION_COOKIE, value: 'v2-newer' }]; // the cookie as it is when the debounce fires, not the event's snapshot
   const t0 = Date.now() / 1000;
-  const ses = cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  cookieEvent(PERSIST(P1), SESSION_COOKIE);
+  assert.equal(ses.cookieSets, undefined, 'nothing set synchronously: debounced');
+  await settle();
   assert.equal(ses.cookieSets?.length, 1, 'one promotion');
   const d = ses.cookieSets[0];
-  assert.deepEqual([d.url, d.name, d.value, d.path], ['http://127.0.0.1/', 'sid', 'v1', '/']);
+  assert.deepEqual([d.url, d.name, d.value, d.path], ['http://127.0.0.1/', 'sid', 'v2-newer', '/'], 'the LIVE value is promoted');
   assert.ok(d.expirationDate >= t0 + 30 * 86400 - 5 && d.expirationDate <= t0 + 30 * 86400 + 5, `expiry ${d.expirationDate - t0}s ahead`);
   assert.equal('domain' in d, false, 'host-only stays host-only');
+});
+
+test('PROFILE partition: a removal, an echo of the promoted copy and a cookie that vanished or got an expiry before the debounce fired are NEVER promoted (a logout stays a logout)', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  const t0 = Date.now() / 1000;
+  ses.liveCookies = [];
   cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, session: false, expirationDate: t0 + 99 }); // the promoted copy coming back: no loop
-  cookieEvent(PERSIST(P1), SESSION_COOKIE, true); // a removal (logout): nothing re-created
-  assert.equal(ses.cookieSets.length, 1, 'still just the one promotion');
+  cookieEvent(PERSIST(P1), SESSION_COOKIE, true); // a removal (logout)
+  cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, name: 'gone' }); // session cookie in the event … but deleted by the time the debounce fires
+  ses.liveCookies = [{ ...SESSION_COOKIE, name: 'rewritten', session: false, expirationDate: t0 + 5 }];
+  cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, name: 'rewritten' }); // … or rewritten with an expiry of its own
+  await settle();
+  assert.equal(ses.cookieSets, undefined, 'nothing promoted at all');
+  assert.ok(ses.cookieGets.length >= 2, 'the live cookie WAS re-read before deciding');
+});
+
+test('PROFILE partition: a cookie rewritten many times is promoted ONCE per debounce window, not once per rewrite', async () => {
+  const ws = newWs(P1);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P1)));
+  ses.liveCookies = [SESSION_COOKIE];
+  for (let i = 0; i < 40; i++) cookieEvent(PERSIST(P1), { ...SESSION_COOKIE, value: `v${i}` });
+  await settle();
+  assert.equal(ses.cookieSets.length, 1);
+  assert.equal(ses.cookieGets.length, 1);
+});
+
+test('stopSignInPersistence detaches the listener and cancels pending promotions (a deleted profile must not get a cookie re-created by a late event)', async () => {
+  const ws = newWs(P2);
+  bp.ensurePanel(ws);
+  const ses = fresh(sessions().get(PERSIST(P2)));
+  ses.liveCookies = [SESSION_COOKIE];
+  cookieEvent(PERSIST(P2), SESSION_COOKIE);
+  bp.stopSignInPersistence(PERSIST(P2));
+  assert.equal(ses.cookieListeners.length, 0, 'listener removed');
+  await settle();
+  assert.equal(ses.cookieSets, undefined, 'the pending promotion was cancelled');
+  // a later panel on the same partition re-arms it (one listener, again)
+  bp.createTab(ws, { openedBy: 'agent' });
+  assert.equal(ses.cookieListeners.length, 1);
 });
 
 test('EPHEMERAL partition: session cookies are never promoted (no listener at all)', () => {
@@ -355,4 +401,31 @@ test('panelProfileId reads what an OPEN panel runs on — a pure read that never
   assert.equal((globalThis as any).__bpViews.length, viewsBefore);
   bp.reprofilePanel(prof, undefined);
   assert.equal(bp.panelProfileId(prof), undefined, 'follows a re-profile');
+});
+
+test('EVERY view close is tracked (closeTab, destroyPanel — not only a re-profile): a delete issued right after a tab close still waits for it', async () => {
+  const ws = newWs(P1);
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  (globalThis as any).__bpHoldClose = true;
+  (globalThis as any).__bpHeld = [];
+  bp.closeTab(ws, 't2');
+  assert.equal(await bp.settleClosedViews(60), false, 'the closed tab\'s unload is still pending');
+  bp.destroyPanel(ws);
+  assert.equal(await bp.settleClosedViews(60), false);
+  (globalThis as any).__bpHoldClose = false;
+  for (const fire of (globalThis as any).__bpHeld.splice(0)) fire();
+  assert.equal(await bp.settleClosedViews(500), true);
+});
+
+test('a throw while closing an old view or re-compositing after a committed re-profile does NOT roll the move back: the panel stays on the new partition', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  const olds = bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!);
+  wcOf(olds[0]).close = () => { throw new Error('close exploded'); };
+  assert.doesNotThrow(() => bp.reprofilePanel(ws, P1));
+  assert.equal(bp.panelProfileId(ws), P1);
+  assert.deepEqual(bp.listTabs(ws).map((t) => partitionOf(bp.getTab(ws, t.id)!)), [PERSIST(P1), PERSIST(P1)]);
+  assert.equal(wcOf(olds[1]).closed, 1, 'the other old view was still closed');
 });

@@ -108,3 +108,10 @@ test('the host moves open panels off a deleted profile, waits for the closed vie
   assert.doesNotMatch(host, /delete updated\.browserProfileId/);
   assert.match(host, /platform\.broadcast\('workspace:update', updated\)/);
 });
+
+test('the host stops sign-in persistence for a deleted profile before its wipe, and settle is boolean (a timeout keeps the profile)', () => {
+  const host = code('main/browser-profiles-host.ts');
+  assert.match(host, /stopSignIns: \(profileId\) => stopSignInPersistence\(profilePartition\(profileId\)\),/);
+  const svc = code('main/browser-profiles.ts');
+  assert.ok(svc.indexOf('deps.stopSignIns(profileId)') > svc.indexOf('deps.settleViews()') && svc.indexOf('deps.stopSignIns(profileId)') < svc.indexOf('deps.clearStorage(profileId)'), 'settle → stop → clear, in that order');
+});

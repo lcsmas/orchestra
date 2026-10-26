@@ -155,21 +155,95 @@ export const PROFILE_REFUSED_CDP_METHODS: ReadonlyMap<string, 'clear' | 'read'> 
 
 export type AgentCdpDecision = { ok: true } | { ok: false; message: string };
 
-/** The decision for one CDP method an agent sent for `profileId`'s workspace (`panelProfileId`): refused for a profile workspace when the method is in
- *  {@link PROFILE_REFUSED_CDP_METHODS}; ephemeral workspaces (undefined) are never refused — their jar is their own. */
-export function decideAgentCdp(input: { method: string; profileId: BrowserProfileId | undefined }): AgentCdpDecision {
-  const kind = input.profileId === undefined ? undefined : PROFILE_REFUSED_CDP_METHODS.get(input.method);
-  if (kind === undefined) return { ok: true };
-  return {
-    ok: false,
-    message:
-      kind === 'clear'
-        ? 'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +
-          'Delete the one cookie you mean (by name) or ask the human to delete or detach the profile.'
-        : 'refused: this workspace\'s browser carries a profil navigateur — reading every site\'s cookies would expose sign-ins beyond this page. ' +
-          'Read the cookies of the page you are on (get cookies for its url) instead.',
+/** CDP methods that NAME a site (a url / a cookie domain). They are allowed for a profile workspace only on the PAGE's own site — what the page's
+ *  own script could address — because the shared jar also holds the OTHER sites the profile is signed in to, and `Network.getCookies` returns their
+ *  HttpOnly session tokens (a page's JS never sees those): an agent holding the profile may use a sign-in (navigate, click), not lift it. */
+export const PROFILE_SITE_SCOPED_CDP_METHODS: ReadonlySet<string> = new Set([
+  'Network.getCookies', 'Network.deleteCookies', 'Network.setCookie', 'Network.setCookies',
+]);
+
+/** The urls / domains a site-scoped call names (`null` = malformed params: refuse). An absent `urls` on `getCookies` means "the page's own url". */
+export function cdpSiteTargets(method: string, params: unknown): string[] | null {
+  const p = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>;
+  const one = (v: unknown): string[] | null => (v === undefined ? [] : typeof v === 'string' ? [v] : null);
+  const both = (o: Record<string, unknown>): string[] | null => {
+    const u = one(o.url), d = one(o.domain);
+    return u && d ? [...u, ...d] : null;
   };
+  switch (method) {
+    case 'Network.getCookies':
+      if (p.urls === undefined) return [];
+      return Array.isArray(p.urls) && p.urls.every((x) => typeof x === 'string') ? (p.urls as string[]) : null;
+    case 'Network.deleteCookies':
+    case 'Network.setCookie':
+      return both(p);
+    case 'Network.setCookies': {
+      if (!Array.isArray(p.cookies)) return null;
+      const out: string[] = [];
+      for (const c of p.cookies) {
+        if (!c || typeof c !== 'object') return null;
+        const t = both(c as Record<string, unknown>);
+        if (!t) return null;
+        out.push(...t);
+      }
+      return out;
+    }
+    default:
+      return [];
+  }
 }
 
-/** @deprecated name from the first #400 interface note — same function (reads are refused too since the #395 seam review). */
+/** Is `target` (a url or a cookie domain) on the page's own site? Same host, or a parent domain the page's host sits under (`.example.com` for
+ *  `app.example.com`) — never a bare TLD, never a sibling. A page with no host (blank tab) owns no site. */
+export function isPageSite(pageUrl: string | undefined, target: string): boolean {
+  let pageHost: string;
+  try {
+    pageHost = new URL(pageUrl ?? '').hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!pageHost) return false;
+  let h: string;
+  try {
+    h = (target.includes('://') ? new URL(target).hostname : target).replace(/^\./, '').toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!h) return false;
+  return pageHost === h || (h.includes('.') && pageHost.endsWith(`.${h}`));
+}
+
+/** The decision for one CDP call an agent sent for a workspace whose panel runs on `profileId` (`panelProfileId`):
+ *  - refused: {@link PROFILE_REFUSED_CDP_METHODS} (clears / partition-wide reads), and the site-scoped methods that name a site other than
+ *    the targeted tab's (`pageUrl`);
+ *  - allowed otherwise. Ephemeral workspaces (profileId undefined) are never refused — their jar is their own. */
+export function decideAgentCdp(input: { method: string; params?: unknown; profileId: BrowserProfileId | undefined; pageUrl?: string }): AgentCdpDecision {
+  if (input.profileId === undefined) return { ok: true };
+  const kind = PROFILE_REFUSED_CDP_METHODS.get(input.method);
+  if (kind !== undefined) {
+    return {
+      ok: false,
+      message:
+        kind === 'clear'
+          ? 'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +
+            'Delete the one cookie you mean (by name) or ask the human to delete or detach the profile.'
+          : 'refused: this workspace\'s browser carries a profil navigateur — reading every site\'s cookies would expose sign-ins beyond this page. ' +
+            'Read the cookies of the page you are on (get cookies for its url) instead.',
+    };
+  }
+  if (PROFILE_SITE_SCOPED_CDP_METHODS.has(input.method)) {
+    const targets = cdpSiteTargets(input.method, input.params);
+    if (targets === null || targets.some((t) => !isPageSite(input.pageUrl, t))) {
+      return {
+        ok: false,
+        message:
+          'refused: this workspace\'s browser carries a profil navigateur — cookies of a site other than the page you are on are not yours to read or change from here. ' +
+          'Navigate to that site first, or ask the human.',
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** @deprecated name from the first #400 interface note — same function. */
 export const decideAgentClear = decideAgentCdp;

@@ -227,7 +227,7 @@ async function boot(world, bootName, { inspect = false } = {}) {
   await selectWorkspace(b, 'e2e/bp400-1');
   clause(bootName, 'ctl/app-identity-path', target.url.includes(APP_DIR) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${APP_DIR}`);
   // What the DRIVER handed the app (Chromium rewrites the main process's environ once DBUS_SESSION_BUS_ADDRESS is set — /proc/<pid>/environ goes blind)
-  clause(bootName, 'ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND && env.XDG_RUNTIME_DIR === XDG && !env.XDG_RUNTIME_DIR.startsWith('/run/user/'),
+  clause(bootName, 'ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND && env.XDG_RUNTIME_DIR === XDG && env.XDG_RUNTIME_DIR === `${RIG_DIR}/xdg`,
     `handed env: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS ?? '<unset>'} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
   const sec = await cdp.eval(`window.orchestra.getSecretsState()`);
   clause(bootName, 'ctl/app-not-bound-to-a-keyring', sec?.backend === 'basic_text' && sec?.encrypted === false, `getSecretsState() = ${JSON.stringify(sec)} (the explicit basic backend: no Secret Service)`);

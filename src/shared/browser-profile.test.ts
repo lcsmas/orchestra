@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   BROWSER_PROFILE_NAME_MAX,
   checkProfileName,
+  cdpSiteTargets,
   decideAgentCdp,
+  isPageSite,
   decideAgentClear,
   decideAttach,
   decideDelete,
@@ -138,8 +140,75 @@ test('decideAgentCdp: partition-wide / origin-wide clears and partition-wide coo
     assert.match((r as { message: string }).message, kind === 'clear' ? /sign them all out/ : /expose sign-ins beyond this page/, method);
     assert.deepEqual(decideAgentCdp({ method, profileId: undefined }), { ok: true }, `${method} on an ephemeral workspace`);
   }
-  for (const method of ['Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Network.getCookies', 'Storage.getStorageKeyForFrame', 'Runtime.evaluate', 'Page.navigate']) {
+  for (const method of ['Network.deleteCookies', 'Network.setCookie', 'Network.getCookies', 'Storage.getStorageKeyForFrame', 'Runtime.evaluate', 'Page.navigate']) {
     assert.deepEqual(decideAgentCdp({ method, profileId: A }), { ok: true }, `${method} names what it touches`);
   }
   assert.equal(decideAgentClear, decideAgentCdp, 'the first interface name still resolves');
+});
+
+const PAGE = 'https://app.example.com/dashboard';
+// `null` = an ephemeral workspace (a default parameter would swallow an `undefined`)
+const cdp = (method: string, params: unknown, pageUrl: string | undefined = PAGE, profileId: string | null = A) => decideAgentCdp({ method, params, profileId: profileId ?? undefined, pageUrl });
+
+test('isPageSite: the page\'s own host or a parent domain of it — never a sibling, a bare TLD, another site, or a blank page', () => {
+  assert.equal(isPageSite(PAGE, 'https://app.example.com/x'), true);
+  assert.equal(isPageSite(PAGE, '.example.com'), true, 'a domain cookie the page itself could set');
+  assert.equal(isPageSite(PAGE, 'example.com'), true);
+  assert.equal(isPageSite(PAGE, 'https://example.com/'), true);
+  assert.equal(isPageSite(PAGE, 'https://admin.example.com/'), false, 'a sibling subdomain');
+  assert.equal(isPageSite(PAGE, 'https://other.org/'), false);
+  assert.equal(isPageSite(PAGE, 'com'), false, 'a bare TLD');
+  assert.equal(isPageSite(PAGE, 'https://evilexample.com/'), false, 'suffix without a dot boundary');
+  assert.equal(isPageSite('http://localhost:3000/', 'http://localhost:9/'), true);
+  assert.equal(isPageSite('http://127.0.0.1:1/', 'http://127.0.0.1:2/'), true);
+  assert.equal(isPageSite('about:blank', 'https://example.com/'), false, 'a page with no host owns no site');
+  assert.equal(isPageSite(undefined, 'https://example.com/'), false);
+  assert.equal(isPageSite(PAGE, ''), false);
+  assert.equal(isPageSite(PAGE, 'http://[bad'), false, 'an unparsable target');
+});
+
+test('cdpSiteTargets: what each site-scoped method names; malformed params = null', () => {
+  assert.deepEqual(cdpSiteTargets('Network.getCookies', {}), [], 'no urls = the page\'s own');
+  assert.deepEqual(cdpSiteTargets('Network.getCookies', { urls: ['https://a.com/', 'https://b.com/'] }), ['https://a.com/', 'https://b.com/']);
+  assert.equal(cdpSiteTargets('Network.getCookies', { urls: 'https://a.com/' }), null);
+  assert.equal(cdpSiteTargets('Network.getCookies', { urls: [1] }), null);
+  assert.deepEqual(cdpSiteTargets('Network.deleteCookies', { name: 'x', url: 'https://a.com/', domain: 'b.com' }), ['https://a.com/', 'b.com']);
+  assert.deepEqual(cdpSiteTargets('Network.setCookie', { name: 'x', value: 'y' }), []);
+  assert.equal(cdpSiteTargets('Network.setCookie', { url: 5 }), null);
+  assert.deepEqual(cdpSiteTargets('Network.setCookies', { cookies: [{ name: 'a', url: 'https://a.com/' }, { name: 'b', domain: 'c.com' }] }), ['https://a.com/', 'c.com']);
+  assert.equal(cdpSiteTargets('Network.setCookies', { cookies: 'nope' }), null);
+  assert.equal(cdpSiteTargets('Network.setCookies', { cookies: [null] }), null);
+  assert.deepEqual(cdpSiteTargets('Runtime.evaluate', { expression: 'x' }), []);
+  assert.deepEqual(cdpSiteTargets('Network.getCookies', undefined), []);
+});
+
+test('decideAgentCdp (site scope): another site\'s cookies are refused for a profile workspace on every named-site method; the page\'s own site and a no-url read pass; ephemeral never refused', () => {
+  const other = 'https://prod-admin.other.org/';
+  for (const [method, params] of [
+    ['Network.getCookies', { urls: [other] }],
+    ['Network.getCookies', { urls: [PAGE, other] }],
+    ['Network.deleteCookies', { name: 'sid', url: other }],
+    ['Network.deleteCookies', { name: 'sid', domain: '.other.org' }],
+    ['Network.setCookie', { name: 'sid', value: 'x', url: other }],
+    ['Network.setCookies', { cookies: [{ name: 'a', url: PAGE }, { name: 'b', url: other }] }],
+    ['Network.getCookies', { urls: 'not-an-array' }],
+  ] as Array<[string, unknown]>) {
+    const r = cdp(method, params);
+    assert.equal(r.ok, false, `${method} ${JSON.stringify(params)}`);
+    assert.match((r as { message: string }).message, /site other than the page you are on/);
+    assert.deepEqual(cdp(method, params, PAGE, null), { ok: true }, 'ephemeral workspace');
+  }
+  for (const [method, params] of [
+    ['Network.getCookies', {}],
+    ['Network.getCookies', { urls: [PAGE] }],
+    ['Network.getCookies', { urls: ['https://example.com/'] }],
+    ['Network.deleteCookies', { name: 'sid', url: PAGE }],
+    ['Network.deleteCookies', { name: 'sid', domain: '.example.com', path: '/' }],
+    ['Network.setCookie', { name: 'a', value: 'b' }],
+    ['Network.setCookies', { cookies: [{ name: 'a', url: PAGE }] }],
+  ] as Array<[string, unknown]>) {
+    assert.deepEqual(cdp(method, params), { ok: true }, `${method} ${JSON.stringify(params)}`);
+  }
+  assert.equal(cdp('Network.getCookies', { urls: [PAGE] }, 'about:blank').ok, false, 'a blank tab owns no site');
+  assert.deepEqual(cdp('Runtime.evaluate', { expression: 'document.cookie' }), { ok: true }, 'in-page JS is the page\'s own business');
 });

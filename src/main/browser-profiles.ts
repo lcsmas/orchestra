@@ -22,8 +22,10 @@ export interface BrowserProfilesDeps {
   reprofilePanel(wsId: string, profileId: BrowserProfileId | undefined): BrowserPanelState;
   /** Workspaces whose OPEN panel runs on that profile right now (what the views do, not what a record says). */
   openPanelsOn(profileId: BrowserProfileId): string[];
-  /** Resolve once the views a re-profile closed are really gone (their unload handlers can still write the partition). */
-  settleViews(): Promise<void>;
+  /** `true` once the views closed so far are really gone (their unload handlers can still write the partition), `false` on a timeout. */
+  settleViews(): Promise<boolean>;
+  /** Stop promoting / flushing the profile's cookies: a late cookie event must not re-create one in a partition about to be wiped. */
+  stopSignIns(profileId: BrowserProfileId): void;
   /** Wipe a profile partition's cookies and storage. */
   clearStorage(profileId: BrowserProfileId): Promise<void>;
   mintId(): BrowserProfileId;
@@ -98,7 +100,11 @@ export function createBrowserProfilesService(deps: BrowserProfilesDeps): Browser
         //    …and so is any OPEN panel still running on it though its workspace record says otherwise (a half-failed earlier move);
         for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);
         //    …then we wait for the closed views to be really gone (async unload) so none can write the partition back;
-        await deps.settleViews();
+        if (!(await deps.settleViews())) {
+          // a view is still closing and could write the partition after the wipe: keep the profile, say so, the delete can simply be retried
+          return refuse('storage', 'Some of the profile’s tabs are still closing. Wait a moment and delete it again.');
+        }
+        deps.stopSignIns(profileId);
         // 2. the partition's cookies and storage are cleared;
         try {
           await deps.clearStorage(profileId);

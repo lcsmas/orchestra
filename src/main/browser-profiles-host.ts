@@ -5,7 +5,7 @@
 import { ipcMain, session } from 'electron';
 import { randomBytes } from 'node:crypto';
 import { effectiveProfileId, profilePartition } from '../shared/browser-profile.ts';
-import { reprofilePanel, settleClosedViews, setBrowserProfileResolver, workspacesOnProfile } from './browser-panel';
+import { reprofilePanel, settleClosedViews, setBrowserProfileResolver, stopSignInPersistence, workspacesOnProfile } from './browser-panel';
 import { createBrowserProfilesService } from './browser-profiles.ts';
 import { registerBrowserProfilesIpc, type ProfileIpcEvent } from './browser-profiles-ipc.ts';
 import { log } from './logger';
@@ -32,6 +32,7 @@ export function initBrowserProfiles(getMainWebContentsId: () => number | null): 
     reprofilePanel,
     openPanelsOn: workspacesOnProfile,
     settleViews: () => settleClosedViews(3000),
+    stopSignIns: (profileId) => stopSignInPersistence(profilePartition(profileId)),
     clearStorage: async (profileId) => {
       const ses = session.fromPartition(profilePartition(profileId));
       await ses.clearStorageData();

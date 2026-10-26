@@ -379,9 +379,11 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   is NOT built (it takes the identity from the record at its first `ensurePanel`, restored tabs included). The rebuilt tabs of a workspace that
   is not on screen broadcast like any tab events do (the renderer's auto-open of a pane on a real URL is pre-existing, #393 review F2).
   A view that cannot be built rolls the whole move back (old tabs alive, old identity, old view composited, error surfaced — never a half-built
-  panel). `webContents.close()` is ASYNC, so the closed views are tracked (`trackClose`) and a delete waits for them (`settleClosedViews`, 3 s cap)
-  before wiping the partition — a page's `pagehide` write must not repopulate a "deleted" profile; `workspacesOnProfile` lets the delete also move
-  off any OPEN panel that still runs on the profile though its record says otherwise.
+  panel). `webContents.close()` is ASYNC, so EVERY view close (`destroyTab`: a re-profile, a tab close, a panel teardown) is tracked (`trackClose`) and a
+  delete waits for them (`settleClosedViews` → boolean, 3 s cap) before wiping the partition — a page's `pagehide` write must not repopulate a "deleted"
+  profile; on a timeout the delete REFUSES (`storage`: profile kept, carriers already ephemeral, retry). Then `stopSignInPersistence`, then the wipe.
+  Once the move is committed nothing may throw out of it (a close/re-composite failure is logged, never rolled back); `workspacesOnProfile` lets the delete
+  also move off any OPEN panel that still runs on the profile though its record says otherwise.
   **#395/#397 note:** a CDP session / tab handle held across an attach or delete is on a destroyed view — re-list, re-attach.
 - **ONLY the human can change a profile (story 26).** The five channels (`browserProfiles:list|create|rename|delete`, `browser:profileAttach`) are
   registered by `registerBrowserProfilesIpc` (`browser-profiles-ipc.ts`) — deliberately NOT in `api-handlers.ts`'s generic table (omitted from
@@ -397,7 +399,12 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   `PROFILE_REFUSED_CDP_METHODS`, judged by method NAME): refused while the workspace's panel carries a profile — CLEARS `Network.clearBrowserCookies`,
   `Storage.clearCookies`, `Storage.clearDataForOrigin`, `Storage.clearDataForStorageKey` (whatever `storageTypes` says: "all"/"cookies" of an origin is a
   sign-out everywhere) and partition-wide READS `Network.getAllCookies`, `Storage.getCookies` (every site's session token, not just this page's).
-  Allowed: `Network.deleteCookies` / `setCookie(s)` (a named cookie), `Network.getCookies` (the page's own urls). Ephemeral workspaces are never refused.
+  The named-site methods (`Network.getCookies`, `deleteCookies`, `setCookie`, `setCookies`) are judged by their PARAMS too (`cdpSiteTargets` + `isPageSite`):
+  every url / cookie domain they name must be the targeted tab's own site (same host, or a parent domain of it — never a sibling, a bare TLD or a blank
+  page) — `getCookies{urls:[other site]}` would return that site's HttpOnly session token, which the page's own JS can never read; a malformed call is
+  refused. An agent holding a profile may USE a sign-in (navigate, click), not lift it. Accepted: in-page `Runtime.evaluate` / `Page.navigate` (the point
+  of a profile), `Storage.deleteStorageBucket` (named, non-default buckets). Ephemeral workspaces are never refused. The caller passes the TARGET tab's url
+  (`pageUrl`).
   The proxy asks it with `panelProfileId(wsId)` (`browser-panel.ts`, a pure read of what the OPEN panel runs on) before forwarding a page method, and
   also denies `Target.sendMessageToTarget` + raw `get cdp-url` (#395) — a name-judged policy is only as strong as that. The wiring is in #395's proxy
   (its files); the rule + accessor are #400's. **Confirm the real method names** the pinned agent-browser v0.39.2 emits (`ORCHESTRA_CDP_TRACE=1`) once
@@ -409,13 +416,17 @@ panel's URL bar. A workspace with none keeps **navigation éphémère** (the def
   "Ephemeral"; it opens an INLINE bar (`[data-browser-profile-bar]`: Ephemeral + every profile + "Manage profiles…") — inline on purpose, a dropdown
   would open under the native view, which paints above the DOM. Design mode is disarmed before the rebuild.
 - **Persistence.** Cookies/localStorage live in the profile's `persist:` partition; a restart restores each workspace's tabs (#393) on it, signed in.
-  `persistSignIns` (PROFILE sessions only, never an ephemeral one) does two things on every cookie `changed`: (1) **promotes SESSION cookies** —
-  Electron 33 drops cookies without an expiry at quit (`persist_session_cookies` false; measured), and most admin/staging sites sign in with exactly
-  those — by re-setting them with a **sliding 30-day expiry** (OPS ruling 2026-10-26; pure rule `shared/browser-cookie-promote.ts`: only
-  `session && no expirationDate`, host-only stays host-only, secure → https url; the promoted copy has an expiry so the `set → changed` echo never
-  loops; a removal — logout — is never undone); (2) flushes the cookie store 1.5 s later (Chromium's own timer is ~30 s — a crash right after a
-  sign-in lost it). `flushProfileStorage()` runs at quit. Delete-profile clears everything including promoted cookies. The Settings copy says
-  session-only cookies are kept 30 days after their last change.
+  `persistSignIns` (PROFILE sessions only, never an ephemeral one; one listener per session) does two things on every cookie `changed`: (1) **promotes
+  SESSION cookies** — Electron 33 drops cookies without an expiry at quit (`persist_session_cookies` false; measured), and most admin/staging sites sign
+  in with exactly those — by re-setting them with a **sliding 30-day expiry** (OPS ruling 2026-10-26; pure rule `shared/browser-cookie-promote.ts`: only
+  `session && no expirationDate`, host-only stays host-only, secure → https url). It is **debounced per cookie** (250 ms after its last change: a site that
+  rewrites a cookie every request costs one `set`) and done from the **LIVE cookie re-read** (`cookies.get`), never the event's snapshot — a cookie removed
+  (logout) or rewritten with an expiry in the meantime is left alone, and the promoted copy's own expiry stops the `set → changed` echo from looping;
+  (2) flushes the cookie store 1.5 s later (Chromium's own timer is ~30 s — a crash right after a sign-in lost it). `flushProfileStorage()` runs at quit;
+  `stopSignInPersistence(partition)` detaches (a deleted profile must not get a cookie re-created by a late event). Delete-profile clears everything
+  including promoted cookies. The Settings copy says session-only cookies are kept 30 days after their last change.
+  **Accepted gap:** a partitioned (CHIPS) cookie reaches `changed` without its partition key in Electron 33's `Cookie`, so its promoted copy would land in the
+  unpartitioned jar (a rare same-name collision with a first-party cookie); not detectable through the 33 API.
 - **Keyring.** The cookie store is encrypted with the OS keyring when one answers (Chromium os_crypt, #389's selection); otherwise under a fixed key
   — hence the warning. A built-app rig must pass `--password-store=basic` (and #389 skips its probe under a scratch `ORCHESTRA_HOME`), or it binds the
   human's live login keyring (G10b: the rig guards the collection listing before/after).
