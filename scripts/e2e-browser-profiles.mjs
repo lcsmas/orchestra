@@ -862,7 +862,7 @@ try {
       await sleep(1200);
       const d = probe(); dels.push({ ...d, ctl: ctl.ok, revived }); if (!d.ok || !ctl.ok) console.log(`  MEASURED [rebuild] delete #${i}: before ${ctl.ok} · after ${show(d)}`);
     }
-    clause('rebuild', 'ctl/agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
+    clause('rebuild', 'agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
     clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0 && !dels.some((x) => x.revived), `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page (${dels.filter((x) => x.revived).length} cycles needed a revive after the attach); last: ${show(dels.at(-1))}`);
     const wl = wire(loopMark);
     // every publish the panel made during the loop, as the proxy's diff read it: a rebuild must be `replaced` for EVERY tab, never a tab destroyed or created
