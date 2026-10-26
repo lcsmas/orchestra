@@ -11,6 +11,7 @@
 //   front       ANY acting command (get url — not frame-bound) on a non-active tab brings it to the front, visibly; `tab list` / idle do not
 //   children    the close verbs are refused on a CHILD (worker / frame) session of the user's tab (raw client, auto-attach, then navigate)
 //   attach      a PAGE of an agent tab spawns a worker + cross-site iframe while the human is on ANOTHER tab: the daemon's attach-time commands on the new child sessions must not flip the human's tab
+//   strip       8 tabs x {agent early, agent last, mixed} x two pane widths: every tab / x / + is the control at its own centre, no x leaves its tab, a REAL click on + at the cap shows the cap notice and closes nothing
 //   cap         the 8-tab cap is shared with the human and applies to agent-opened tabs; a refusal leaks no view
 //   ownership   `tab close <user's tab>` is refused BEFORE agent-browser (it would print "closed" and drop the tab from its own list), the
 //               tab stays loaded, the next `tab list` still has it, the agent's own tab still closes; the PROXY refuses a raw Target.closeTarget too
@@ -37,7 +38,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['stale', 'routes', 'capshare', 'strip8', 'notice', 'bg', 'crash']; // seat 3 (verifier) drive for #397: helpers copied from the member's rig, ARMS/oracles are mine
+const ARMS = ['stale', 'routes', 'capshare', 'strip8', 'notice', 'bg', 'killers', 'kill2', 'popuptab', 'crash']; // seat 3 (verifier) drive for #397: helpers copied from the member's rig, ARMS/oracles are mine
 const MUTANTS = {};
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -412,7 +413,8 @@ async function rawProxyClient(url) {
   let id = 0; const pending = new Map();
   const listeners = [];
   ws.on('message', (d) => { const m = JSON.parse(String(d)); const p = m.id && pending.get(m.id); if (p) { pending.delete(m.id); p(m); } else if (m.method) for (const l of listeners) l(m); });
-  const send = (method, params, sessionId) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  // a command whose target died (a mutant that lets Page.crash through) never answers: every call is bounded, a timeout is a plain `error` the clause reads as a failure
+  const send = (method, params, sessionId) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); res({ error: { message: `timed out after 6000ms (${method})` } }); }, 6000); pending.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
   return { call: (method, params = {}) => send(method, params), callOn: (sessionId, method, params = {}) => send(method, params, sessionId), onEvent: (l) => listeners.push(l), close: () => ws.close() };
 }
 
@@ -658,6 +660,7 @@ const ARM_FNS = {
     const outs = []; for (let i = 0; i < 3; i++) outs.push(await cli(ctx, W1, ['tab', 'new', U.c]));
     r = await reg(ctx, W1);
     clause(A, 'ctl/the-agent-fills-the-remaining-3-slots', outs.every((o) => o.code === 0) && r.tabs.length === 8 && r.tabs.filter((t) => t.openedBy === 'agent').length === 3 && (await vtc()) === 8, `rc ${outs.map((o) => o.code).join('')} · registry ${brief(r)} · page targets ${await vtc()}`);
+    await softWait(async () => { const g = await gridColors(ctx, 'cap-0-settle'); return !g.none && g.uniq.length === 1 && 'abc'.includes(g.uniq); }, 12000, 'the visible page to finish loading');
     const g0 = await gridColors(ctx, 'cap-0-eight');
     const over = await cli(ctx, W1, ['tab', 'new', U.a]); await sleep(600);
     clause(A, 'agent-9th-via-cli-is-refused-with-the-reason', over.code !== 0 && /Tab limit reached: a workspace holds at most 8/.test(over.stderr + over.stdout), show(over));
@@ -824,6 +827,125 @@ const ARM_FNS = {
     await sleep(1500);
     clause(A, 'the-app-is-still-alive-after-the-crash-verbs', await ctx.ui.eval('1+1').then((v) => v === 2, () => false), 'renderer eval(1+1)');
   },
+  // ── seat 3 (final tip): renderer-killers on the USER's tab, root + child sessions — asserted now that the member gated them ───────────────
+  async killers(ctx) {
+    const { W1, URL: U } = ctx; const A = 'killers';
+    const liveOn = async (url) => { try { const o = await oracle(ctx, url, 5000); try { return await Promise.race([o.eval('1+1'), new Promise((r) => setTimeout(() => r('NO ANSWER'), 4000))]); } finally { o.close(); } } catch (e) { return `ERR ${String(e.message).slice(0, 60)}`; } };
+    const isRefused = (rep) => !!rep?.error && /refused|opened by the user|may only destroy/i.test(rep.error.message ?? '');
+    // root session
+    {
+      const st = await fresh(ctx); const vt0 = (await viewTargets(ctx)).length; const { raw } = await openRaw(ctx, W1); const out = {};
+      try {
+        const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const sid = att.result?.sessionId;
+        out.crash = await raw.callOn(sid, 'Page.crash', {}); out.term = await raw.callOn(sid, 'Runtime.terminateExecution', {});
+        out.viaSend = await raw.callOn(sid, 'Target.sendMessageToTarget', { sessionId: sid, message: JSON.stringify({ id: 21, method: 'Page.crash' }) });
+      } finally { raw.close(); }
+      await sleep(1500); const live = await liveOn(U.b); const s = await survives(ctx, st, vt0);
+      clause(A, 'root-session-Page.crash-and-Runtime.terminateExecution-on-the-users-tab-are-refused', isRefused(out.crash) && isRefused(out.term), `crash ${J(out.crash).slice(0, 150)} | terminate ${J(out.term).slice(0, 150)}`);
+      console.log(`  INFO  [${A}] Target.sendMessageToTarget(Page.crash) on a root session: ${J(out.viaSend).slice(0, 160)}`);
+      clause(A, 'the-users-tab-renderer-is-alive-after-them', live === 2 && s.ok, `eval(1+1) in the user's page → ${J(live)}; registry/targets ok=${s.ok} (${brief(s.r)}, page targets ${vt0}→${s.vt})`);
+    }
+    // positive control: on the AGENT's own tab the same methods are NOT refused (the gate is by ownership, not a blanket ban)
+    {
+      const st = await fresh(ctx); const { raw } = await openRaw(ctx, W1); let rep;
+      try { const tid = await targetOf(raw, /Tabs fixture A/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); rep = await raw.callOn(att.result?.sessionId, 'Runtime.terminateExecution', {}); } finally { raw.close(); }
+      clause(A, 'ctl/terminateExecution-on-the-agents-own-tab-is-not-refused', !!rep && !isRefused(rep), `reply ${J(rep).slice(0, 160)}`);
+    }
+    // child sessions (worker + cross-site iframe) of the user's tab
+    {
+      const st = await fresh(ctx, true); const humanId = st.human?.id; const { raw } = await openRaw(ctx, W1); const evs = []; raw.onEvent((m) => evs.push(m)); const outs = [];
+      try {
+        await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(humanId ?? '')}).then(() => true)`);
+        const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const rootSid = att.result?.sessionId;
+        await raw.callOn(rootSid, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+        await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.frame)}).then(() => true)`);
+        await softWait(async () => evs.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid), 15000, 'a child session'); await sleep(800);
+        const kids = evs.filter((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid).map((m) => ({ sid: m.params?.sessionId, type: m.params?.targetInfo?.type }));
+        clause(A, 'ctl/child-sessions-exist', kids.length > 0, kids.map((k) => k.type).join(',') || 'NONE');
+        for (const k of kids) for (const m of ['Page.crash', 'Runtime.terminateExecution']) outs.push({ type: k.type, m, rep: await raw.callOn(k.sid, m, {}) });
+      } finally { raw.close(); }
+      await sleep(1500); const live = await liveOn(U.frame); const r = await reg(ctx, W1);
+      const gone = (rep) => /Session with given id not found/i.test(rep?.error?.message ?? ''); clause(A, 'child-sessions-Page.crash-and-terminateExecution-are-never-accepted (refused, or the session is already gone)', outs.length > 0 && outs.every((o) => isRefused(o.rep) || gone(o.rep)) && outs.some((o) => isRefused(o.rep)), outs.map((o) => `${o.type}:${o.m.split('.')[1]}→${isRefused(o.rep) ? 'refused' : J(o.rep).slice(0, 60)}`).join(' | '));
+      clause(A, 'the-users-tab-is-alive-after-the-child-session-attempts', live === 2 && r.tabs.some((t) => t.id === humanId), `eval(1+1) → ${J(live)}; ${brief(r)}`);
+    }
+    // other ways to kill a renderer that are NOT in the gated list: navigate the user's tab to a renderer-killing chrome:// URL through the proxy
+    for (const url of ['chrome://crash', 'chrome://kill', 'chrome://hang']) {
+      const st = await fresh(ctx); const vt0 = (await viewTargets(ctx)).length; const { raw } = await openRaw(ctx, W1); let rep;
+      try { const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); rep = await raw.callOn(att.result?.sessionId, 'Page.navigate', { url }); } finally { raw.close(); }
+      await sleep(2500); const live = await liveOn(U.b); const s = await survives(ctx, st, vt0); const r = await reg(ctx, W1);
+      const dead = live !== 2;
+      clause(A, `Page.navigate-${url}-on-the-users-tab-does-not-kill-its-renderer`, !dead, `reply ${J(rep).slice(0, 140)}; eval(1+1) on the user's page → ${J(live)}; registry ${brief(r)}; ${dead ? 'RENDERER KILLED — a route past the gate' : 'alive'}`);
+    }
+    clause(A, 'the-app-is-still-alive', await ctx.ui.eval('1+1').then((v) => v === 2, () => false), 'renderer eval(1+1)');
+  },
+
+  // ── seat 3 (final tip, #396 merged): who owns a tab that a popup / target=_blank opened ───────────────────────────────────────────────
+  async popuptab(ctx) {
+    const { W1 } = ctx; const A = 'popuptab'; const PU = `${ctx.FIX}/popups-opener.html`;
+    const blankTab = (r) => r.tabs.find((t) => /Popups fixture blank/.test(t.title));
+    const refFor = (snap) => (/link "open in a new tab"[^\n]*ref=(e\d+)/.exec(snap) || [])[1];
+    // H — a HUMAN click (trusted CDP click on the page) in the human's own tab
+    {
+      await hardReset(ctx);
+      await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(PU)}).then(() => true)`);
+      await waitFor(async () => /Popups fixture opener/.test((await reg(ctx, W1)).tabs[0]?.title ?? ''), 15000, 'the opener page in the human tab'); await sleep(500);
+      const o = await oracle(ctx, PU, 8000); const pos = await o.eval(`(() => { const r = document.getElementById('blank').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); await o.click(pos.x, pos.y); o.close();
+      await softWait(async () => !!blankTab(await reg(ctx, W1)), 15000, 'the popup tab'); const r = await reg(ctx, W1); const bt = blankTab(r);
+      clause(A, 'ctl/a-human-click-on-target=_blank-opens-a-tab-owned-by-the-human', !!bt && bt.openedBy === 'human', `registry ${brief(r)}`);
+      const lst = await cli(ctx, W1, ['tab', 'list']); const line = lst.stdout.split('\n').find((l) => /Popups fixture blank/.test(l)) ?? '';
+      clause(A, 'tab-list-marks-the-popup-tab-as-the-users', /\(the user's\)/.test(line), `tab list line ${J(line)}`);
+      const ab = (await abTabs(ctx, W1)).find((t) => /Popups fixture blank/.test(t.title));
+      const vt0 = (await viewTargets(ctx)).length;
+      const c1 = await cli(ctx, W1, ['tab', 'close', ab?.tabId ?? 't9']); await sleep(500);
+      const c2 = await cli(ctx, W1, ['tab', 'close', String(ab?.tabId ?? 't9').toUpperCase()]); await sleep(500);
+      const { raw } = await openRaw(ctx, W1); let rc; try { const tid = await targetOf(raw, /Popups fixture blank/); rc = await raw.call('Target.closeTarget', { targetId: tid }); } finally { raw.close(); }
+      await sleep(700); const r2 = await reg(ctx, W1);
+      clause(A, 'closing-the-popup-tab-by-cli-ref-uppercase-ref-and-raw-closeTarget-is-refused-and-it-stays', c1.code !== 0 && c2.code !== 0 && /browser_tab_not_owner/.test(c1.stderr + c2.stderr) && refusedMsg(rc?.error?.message) && !!blankTab(r2) && (await viewTargets(ctx)).length === vt0, `cli ${show(c1)} | upper ${show(c2)} | raw ${J(rc).slice(0, 140)} | registry ${brief(r2)}`);
+    }
+    // HA — the AGENT clicks the same link inside the HUMAN's tab
+    {
+      await hardReset(ctx);
+      await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(PU)}).then(() => true)`);
+      await waitFor(async () => /Popups fixture opener/.test((await reg(ctx, W1)).tabs[0]?.title ?? ''), 15000, 'the opener page in the human tab'); await sleep(500);
+      const ab0 = (await abTabs(ctx, W1)).find((t) => /Popups fixture opener/.test(t.title)); await cli(ctx, W1, ['tab', ab0?.tabId ?? 't1']);
+      const sn = await cli(ctx, W1, ['snapshot', '-i']); const ref = refFor(sn.stdout);
+      const ck = await cli(ctx, W1, ['click', `@${ref}`]); await softWait(async () => !!blankTab(await reg(ctx, W1)), 15000, 'the popup tab after the agent click'); const r = await reg(ctx, W1); const bt = blankTab(r);
+      clause(A, 'an-agent-click-on-target=_blank-in-the-USERS-tab-opens-a-human-owned-tab', ck.code === 0 && !!bt && bt.openedBy === 'human', `click ${show(ck)}; registry ${brief(r)}`);
+      const ab = (await abTabs(ctx, W1)).find((t) => /Popups fixture blank/.test(t.title));
+      const c1 = await cli(ctx, W1, ['tab', 'close', ab?.tabId ?? 't9']); await sleep(500); const r2 = await reg(ctx, W1);
+      clause(A, 'and-the-agent-cannot-close-it', c1.code !== 0 && /browser_tab_not_owner/.test(c1.stderr + c1.stdout) && !!blankTab(r2), `close → ${show(c1)}; registry ${brief(r2)}`);
+    }
+    // A — the same link in an AGENT-opened tab
+    {
+      await hardReset(ctx);
+      await cli(ctx, W1, ['tab', 'new', PU]); await softWait(async () => !!titled(await reg(ctx, W1), /Popups fixture opener/), 15000, 'agent tab on the opener page'); await sleep(500);
+      const sn = await cli(ctx, W1, ['snapshot', '-i']); const ref = refFor(sn.stdout);
+      const ck = await cli(ctx, W1, ['click', `@${ref}`]); await softWait(async () => !!blankTab(await reg(ctx, W1)), 15000, 'the popup tab'); const r = await reg(ctx, W1); const bt = blankTab(r);
+      clause(A, 'an-agent-click-on-target=_blank-in-the-AGENTS-tab-opens-an-agent-owned-tab', ck.code === 0 && !!bt && bt.openedBy === 'agent', `click ${show(ck)}; registry ${brief(r)}`);
+      const ab = (await abTabs(ctx, W1)).find((t) => /Popups fixture blank/.test(t.title));
+      const c1 = await cli(ctx, W1, ['tab', 'close', ab?.tabId ?? 't9']); await sleep(700); const r2 = await reg(ctx, W1);
+      clause(A, 'and-the-agent-can-close-it', c1.code === 0 && !blankTab(r2), `close → ${show(c1)}; registry ${brief(r2)}`);
+    }
+  },
+
+  // ── seat 3: the agent's REAL path to a renderer-killer — `orchestra browser open chrome://…` on the user's tab (and the raw Page.navigate), measured ──
+  async kill2(ctx) {
+    const { W1, URL: U } = ctx; const A = 'kill2';
+    const live = async (url) => { try { const o = await oracle(ctx, url, 5000); try { return await Promise.race([o.eval('1+1'), new Promise((r) => setTimeout(() => r('NO ANSWER'), 4000))]); } finally { o.close(); } } catch (e) { return `ERR ${String(e.message).slice(0, 50)}`; } };
+    for (const url of ['chrome://crash', 'chrome://kill', 'chrome://hang', 'about:blank']) {
+      const st = await fresh(ctx); const humanId = st.human?.id;
+      const sw = await cli(ctx, W1, ['tab', st.abB?.tabId ?? 't1']);
+      const o = await cli(ctx, W1, ['open', url], { timeoutMs: 20000 });
+      await sleep(2500);
+      const pages = (await ctx.targets()).filter((x) => x.type === 'page').map((x) => `${x.url.slice(0, 48)}|${x.title.slice(0, 20)}`);
+      const lv = url === 'about:blank' ? 'n/a' : await live(U.b);
+      const ev = await cli(ctx, W1, ['eval', '1 + 1'], { timeoutMs: 9000 });
+      const r = await reg(ctx, W1);
+      console.log(`  INFO  [${A}] open ${url} on the user's tab: ${show(o)} · then eval(1+1) via the CLI ${show(ev)} · oracle on the old page ${J(lv)} · page targets ${J(pages)} · registry ${brief(r)}`);
+      if (url !== 'about:blank') clause(A, `cli-open-${url}-on-the-users-tab-leaves-its-renderer-alive`, ev.code === 0 && /2/.test(ev.stdout), `open → ${show(o)}; eval(1+1) afterwards → ${show(ev)}; the user's tab is ${ev.code === 0 ? 'answering' : 'NOT answering (renderer dead/hung)'}`);
+    }
+  },
+
 };
 
 
