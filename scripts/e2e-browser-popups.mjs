@@ -39,7 +39,7 @@ const RIG_WAYLAND = process.env.RIG_WAYLAND;
 if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-browser-tabs.sh (the contained rig)');
 if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
 if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
-const XDG = privateRuntimeDir(); // the rig's PRIVATE runtime dir (incident Q2, ledger #405): refuses the human's /run/user/<uid>
+const XDG = privateRuntimeDir(); // the rig's PRIVATE runtime dir (incident Q2, ledger #405): it refuses the human's one
 const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
 
 // ── scratch containment: a live dir is never handed to the app ───────────────────────────────────
@@ -223,14 +223,15 @@ async function boot(world, bootName) {
     `handed to the app: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
   // what the driver HANDED the app (not a /proc read: an Electron process may rewrite its own argv/environ area): the private bus pin and the basic password store
   const handed = { bus: env.DBUS_SESSION_BUS_ADDRESS, args: APP_ARGS };
-  clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', handed.bus === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && !handed.bus.includes('/run/user/') && handed.args.includes('--password-store=basic'),
+  clause(bootName, 'ctl/app-cannot-reach-the-real-session-bus-or-keyring', handed.bus === `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` && handed.bus.startsWith(`unix:path=${RIG_DIR}/`) && handed.args.includes('--password-store=basic'),
     `handed to the app: DBUS_SESSION_BUS_ADDRESS=${handed.bus}; argv ${JSON.stringify(handed.args)}`);
   // positive proof it tried ONLY the private bus: Chromium logs the failed connect with the address it used (set at start-up, so wait for it)
   await sleep(2500);
   const busLines = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('bus.cc'));
   const privateTried = busLines.some((l) => l.includes(path.join(RIG_DIR, 'no-session-bus')));
-  const realTouched = busLines.some((l) => l.includes('/run/user/') || /org\.freedesktop\.secrets/.test(l));
-  clause(bootName, 'ctl/app-tried-only-the-private-bus', privateTried && !realTouched, `bus.cc lines: ${busLines.length}; mention the private socket: ${privateTried}; mention /run/user or the secrets service: ${realTouched}; first: ${JSON.stringify(busLines[0]?.replace(/^\[[^\]]*\]/, '').slice(0, 160) ?? null)}`);
+  // positive form: EVERY connection attempt it logged names the rig's own dir (nothing else was tried), and none mentions the secrets service
+  const strayed = busLines.filter((l) => !l.includes(RIG_DIR) || /org\.freedesktop\.secrets/.test(l));
+  clause(bootName, 'ctl/app-tried-only-the-private-bus', privateTried && strayed.length === 0, `bus.cc lines: ${busLines.length}; mention the private socket: ${privateTried}; lines naming anything else or the secrets service: ${strayed.length}; first: ${JSON.stringify(busLines[0]?.replace(/^\[[^\]]*\]/, '').slice(0, 160) ?? null)}`);
   clause(bootName, 'ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   return b;
 }
