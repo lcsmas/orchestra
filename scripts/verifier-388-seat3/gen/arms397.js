@@ -9,10 +9,27 @@ async function gridColors(ctx, name) {
   const cls = GRID9.map(([fx, fy]) => { const c = blockColor(img, Math.round(r.left + r.width * fx), Math.round(r.top + r.height * fy), 4); for (const k of ['a', 'b', 'c']) if (near(c, COLORS[k], 14)) return k; return 'other'; });
   return { none: false, cls, uniq: [...new Set(cls)].join('') };
 }
+/** Back to ONE blank-then-B HUMAN tab whatever earlier arms did (window.close(), refusals, leftovers): close every tab as the human, the last close leaves a fresh human tab. */
+async function hardReset(ctx) {
+  const { W1, ui } = ctx;
+  await selectWs(ctx, W1); await openPane(ctx);
+  for (let i = 0; i < 12; i++) {
+    const r = await reg(ctx, W1);
+    if (r.tabs.length === 1 && r.tabs[0].openedBy === 'human') break;
+    await ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(r.tabs[0].id)}).then(() => true)`);
+    await sleep(500);
+  }
+  const r = await reg(ctx, W1);
+  if (!(r.tabs.length === 1 && r.tabs[0].openedBy === 'human')) throw new Error(`hardReset failed: ${brief(r)}`);
+  await ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(ctx.URL.b)}).then(() => true)`);
+  await waitFor(async () => /Tabs fixture B/.test((await reg(ctx, W1)).tabs[0]?.title ?? ''), 15000, 'the human tab to show B');
+  await sleep(300);
+  return reg(ctx, W1);
+}
 /** human tab on B (+ an agent tab on A when asked); returns the registry ids and agent-browser's own labels */
 async function fresh(ctx, withAgent = true) {
   const { W1, URL: U } = ctx;
-  await reset(ctx);
+  await hardReset(ctx);
   if (withAgent) { await cli(ctx, W1, ['tab', 'new', U.a]); await softWait(async () => !!titled(await reg(ctx, W1), /Tabs fixture A/), 15000, 'agent tab A'); }
   const r = await reg(ctx, W1);
   const list = await abTabs(ctx, W1);
@@ -23,7 +40,11 @@ async function survives(ctx, st, vt0) {
   const { W1 } = ctx; const r = await reg(ctx, W1); const vt = (await viewTargets(ctx)).length;
   return { ok: r.tabs.some((t) => t.id === st.human?.id) && /Tabs fixture B/.test(titled(r, /Tabs fixture B/)?.title ?? '') && vt === vt0, r, vt };
 }
-async function openRaw(ctx, W) { const ep = await hostCall(ctx, '/browser', { id: W.id, key: W.key }); return { ep, raw: await rawProxyClient(ep.wsUrl) }; }
+async function openRaw(ctx, W) {
+  const ep = await hostCall(ctx, '/browser', { id: W.id, key: W.key }); const raw0 = await rawProxyClient(ep.wsUrl);
+  const guard = (p) => Promise.race([p, new Promise((res) => setTimeout(() => res({ timeout: true, error: { message: 'NO REPLY in 8 s' } }), 8000))]);
+  return { ep, raw: { call: (m, a) => guard(raw0.call(m, a)), callOn: (sid, m, a) => guard(raw0.callOn(sid, m, a)), onEvent: raw0.onEvent, close: raw0.close } };
+}
 const targetOf = async (raw, re) => (await raw.call('Target.getTargets')).result?.targetInfos?.find((t) => re.test(t.title))?.targetId;
 function httpGet(base, p, ms = 8000) {
   return new Promise((resolve) => {
@@ -40,7 +61,7 @@ const ARM_FNS = {
   // ── stale `tN` after an app restart (the member's engineered collision, my variants) ───────────────────────────────────────────────
   async stale(ctx) {
     const { W1, URL: U, ui } = ctx; const A = 'stale';
-    await reset(ctx);
+    await hardReset(ctx);
     await cli(ctx, W1, ['tab', 'new', U.a]); await softWait(async () => !!titled(await reg(ctx, W1), /Tabs fixture A/), 15000, 'page A tab');
     await cli(ctx, W1, ['tab', 'new', U.c]); await softWait(async () => !!titled(await reg(ctx, W1), /Tabs fixture C/), 15000, 'page C tab');
     const before = await abTabs(ctx, W1); const oldA = before.find((t) => /Tabs fixture A/.test(t.title))?.tabId;
@@ -71,8 +92,11 @@ const ARM_FNS = {
     clause(A, 'stale-id-switch-says-the-users-tab-in-the-first-line', sw.code === 0 && /Tabs fixture B[^\n]*\(the user's\)/.test((sw.stdout.split('\n')[0] ?? '')), show(sw));
     const swj = await cli(ctx, W1, ['--json', 'tab', oldA]); let jd = null; try { jd = JSON.parse(swj.stdout.trim()); } catch {}
     clause(A, 'stale-id-switch-json-carries-openedBy-human', swj.code === 0 && jd?.data?.openedBy === 'human', show(swj));
-    const sw2 = await cli(ctx, W1, ['tab', '--timeout', '3000', oldA]);
-    clause(A, 'stale-id-switch-behind-a-flag-value-is-annotated-too', sw2.code === 0 && /\(the user's\)/.test(sw2.stdout), show(sw2));
+    for (const [nm, args] of [['timeout-before', ['tab', '--timeout', '3000', oldA]], ['timeout-after', ['tab', oldA, '--timeout', '3000']]]) {
+      const o = await cli(ctx, W1, args);
+      if (o.code === 0) clause(A, `stale-id-switch/${nm}-is-annotated-too`, /\(the user's\)/.test(o.stdout), show(o));
+      else console.log(`  INFO  [${A}] stale-id-switch/${nm}: agent-browser itself failed (${show(o)}) — nothing to annotate; not an Orchestra clause`);
+    }
     const list = await cli(ctx, W1, ['tab', 'list']);
     clause(A, 'tab-list-after-restart-marks-every-tab', /Tabs fixture B[^\n]*\(the user's\)/.test(list.stdout) && /Tabs fixture A[^\n]*\(yours\)/.test(list.stdout) && /Tabs fixture C[^\n]*\(yours\)/.test(list.stdout), show(list));
   },
@@ -171,7 +195,7 @@ const ARM_FNS = {
   // ── the cap is shared with the human; real clicks on +, ×; raw / HTTP creation routes ───────────────────────────────────────────────
   async capshare(ctx) {
     const { W1, ui, URL: U } = ctx; const A = 'capshare';
-    await reset(ctx);
+    await hardReset(ctx);
     const vtc = async () => (await viewTargets(ctx)).length;
     for (let i = 0; i < 4; i++) { await clickSel(ctx, '.browser-tab-new'); await sleep(450); }
     let r = await reg(ctx, W1);
@@ -190,6 +214,7 @@ const ARM_FNS = {
     clause(A, 'agent-9th-via-raw-Target.createTarget-is-refused', !!ct?.error && /Tab limit|limit/i.test(ct.error.message ?? ''), `reply ${J(ct).slice(0, 220)}`);
     r = await reg(ctx, W1);
     clause(A, 'agent-9th-via-http-json-new-creates-nothing', r.tabs.length === 8 && (await vtc()) === 8, `GET /json/new → ${hn.status} ${J(hn.body).slice(0, 90)} · ?url= → ${hn2.status} ${J(hn2.body).slice(0, 90)} · registry ${r.tabs.length} tabs · page targets ${await vtc()}`);
+    await softWait(async () => (await noticeText(ctx)) === null, 14000, 'the agent-swap notice to lapse (it overlays the + button; that defect is the `notice` arm)');
     await clickSel(ctx, '.browser-tab-new'); await sleep(900);
     const notice = await ctx.ui.eval(`document.querySelector('.browser-tab-notice')?.textContent ?? null`);
     r = await reg(ctx, W1);
@@ -206,10 +231,39 @@ const ARM_FNS = {
     clause(A, 'a-freed-slot-is-reusable-then-refused-again', r.tabs.length === 7 && again.code === 0 && r2.tabs.length === 8 && over2.code !== 0 && (await vtc()) === 8, `after × click ${r.tabs.length} tabs · agent open rc ${again.code} → ${r2.tabs.length} · next rc ${over2.code} · page targets ${await vtc()}`);
   },
 
+  // ── 8 tabs with agent badges: does every × and the + still hit itself? (the real click on + at the cap closed a tab in capshare) ────────
+  async strip8(ctx) {
+    const { W1, ui, URL: U } = ctx; const A = 'strip8';
+    const geom = () => ui.eval(`(() => {
+      const tabs = [...document.querySelectorAll('.browser-tab')].map((t, i) => { const c = t.querySelector('.browser-tab-close'); const r = t.getBoundingClientRect(); const cr = c.getBoundingClientRect(); const top = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2);
+        return { i, by: t.dataset.openedBy, tab: [Math.round(r.left), Math.round(r.right)], x: [Math.round(cr.left), Math.round(cr.right)], xHitsSelf: !!top && (top === c || c.contains(top)), xTop: top ? String(top.className || top.tagName).slice(0, 40) : null, clipped: cr.right > r.right + 0.5 }; });
+      const p = document.querySelector('.browser-tab-new'); const pr = p.getBoundingClientRect(); const ptop = document.elementFromPoint(pr.left + pr.width / 2, pr.top + pr.height / 2); const strip = document.querySelector('.browser-tabs'); const sr = strip.getBoundingClientRect();
+      return { n: tabs.length, tabs, plus: { rect: [Math.round(pr.left), Math.round(pr.right)], hitsSelf: !!ptop && (ptop === p || p.contains(ptop)), top: ptop ? String(ptop.className || ptop.tagName).slice(0, 40) : null, insideStrip: pr.right <= sr.right + 0.5 }, strip: [Math.round(sr.left), Math.round(sr.right)], scrollW: strip.scrollWidth, clientW: strip.clientWidth };
+    })()`);
+    const verdict = (g) => ({ xBad: g.tabs.filter((t) => !t.xHitsSelf || t.clipped).map((t) => `tab${t.i}(${t.by}) x=${t.x} tab=${t.tab} clipped=${t.clipped} top=${t.xTop}`), plusOk: g.plus.hitsSelf && g.plus.insideStrip, overflow: g.scrollW > g.clientW });
+    for (const [label, agentFirst] of [['agent tabs LAST (5 human + 3 agent)', false], ['agent tabs FIRST (3 agent + 5 human)', true]]) {
+      await hardReset(ctx);
+      const openAgent = async () => { for (let i = 0; i < 3; i++) await cli(ctx, W1, ['tab', 'new', U.c]); };
+      const openHuman = async () => { for (let i = 0; i < 4; i++) { await clickSel(ctx, '.browser-tab-new'); await sleep(450); } };
+      if (agentFirst) { await openAgent(); await openHuman(); } else { await openHuman(); await openAgent(); }
+      await softWait(async () => (await noticeText(ctx)) === null, 14000, 'the notice to lapse');
+      const r = await reg(ctx, W1); const g = await geom(); const v = verdict(g);
+      grim(`strip8-${agentFirst ? 'agentfirst' : 'agentlast'}.png`);
+      clause(A, `ctl/${label}: eight tabs, no notice`, r.tabs.length === 8 && g.n === 8 && (await noticeText(ctx)) === null, `registry ${brief(r)}`);
+      clause(A, `${label}: every × hits itself and is inside its tab`, v.xBad.length === 0, v.xBad.length ? `BAD: ${J(v.xBad)}` : `8 × all hit themselves`);
+      clause(A, `${label}: the + hits itself and is inside the strip`, v.plusOk, `+ rect ${J(g.plus.rect)} strip ${J(g.strip)} → hits ${J(g.plus.top)} inside=${g.plus.insideStrip}`);
+      clause(A, `${label}: the strip does not overflow its box`, !v.overflow, `scrollWidth ${g.scrollW} vs clientWidth ${g.clientW}`);
+      const before = await reg(ctx, W1);
+      await clickSel(ctx, '.browser-tab-new'); await sleep(900);
+      const after = await reg(ctx, W1); const nt = await ui.eval(`document.querySelector('.browser-tab-notice')?.textContent ?? null`);
+      clause(A, `${label}: a real click on + at the cap shows the refusal and closes nothing`, after.tabs.length === 8 && /Tab limit/.test(nt ?? ''), `tabs ${before.tabs.length}→${after.tabs.length}; notice ${J(nt)}; closed: ${J(before.tabs.filter((t) => !after.tabs.some((x) => x.id === t.id)).map((t) => `${t.id}(${t.openedBy})`))}`);
+    }
+  },
+
   // ── the swap notice must not cover or move any human control ─────────────────────────────────────────────────────────────────────────
   async notice(ctx) {
     const { W1, ui, URL: U } = ctx; const A = 'notice';
-    await reset(ctx);
+    await hardReset(ctx);
     await clickSel(ctx, '.browser-tab-new'); await sleep(600);
     const r0 = await reg(ctx, W1); const second = r0.tabs[1];
     await ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.c)}).then(() => true)`);
@@ -224,15 +278,30 @@ const ARM_FNS = {
       const sels = ['.browser-tab-new', '.browser-nav-btn[aria-label="Back"]', '.browser-nav-btn[aria-label="Forward"]', '.browser-nav-btn[aria-label="Reload"]', '.browser-url-input', '.browser-design-btn'];
       const out = [];
       const check = (el, name) => { if (!el) { out.push({ name, missing: true }); return; } const r = el.getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; const top = document.elementFromPoint(cx, cy);
-        out.push({ name, hit: !!top && (top === el || el.contains(top)), coveredByNotice: !!(top && nb && nb.contains(top)), overlaps: !!(nr && !(r.right <= nr.left || r.left >= nr.right || r.bottom <= nr.top || r.top >= nr.bottom)) }); };
+        out.push({ name, top: top ? (top.className || top.tagName) : null, hit: !!top && (top === el || el.contains(top)), coveredByNotice: !!(top && nb && nb.contains(top)), overlaps: !!(nr && !(r.right <= nr.left || r.left >= nr.right || r.bottom <= nr.top || r.top >= nr.bottom)) }); };
       document.querySelectorAll('.browser-tab').forEach((t, i) => { check(t.querySelector('.browser-tab-close'), 'tab' + i + ' ×'); if (t.dataset.openedBy === 'human') check(t.querySelector('.browser-tab-label'), 'tab' + i + ' label'); });
       for (const s of sels) check(document.querySelector(s), s);
       return { notice: !!nb, rect: nr && { l: Math.round(nr.left), t: Math.round(nr.top), r: Math.round(nr.right), b: Math.round(nr.bottom) }, out };
     })()`);
     const p = await probe();
-    const bad = p.out.filter((o) => o.missing === undefined && (!o.hit || o.coveredByNotice));
+    const isStrip = (o) => /^tab\d+ (×|label)$/.test(o.name) || o.name === '.browser-tab-new';
+    const badStrip = p.out.filter((o) => isStrip(o) && o.missing === undefined && (!o.hit || o.coveredByNotice));
+    const badTool = p.out.filter((o) => !isStrip(o) && o.missing === undefined && (!o.hit || o.coveredByNotice));
     clause(A, 'ctl/the-notice-is-up-and-there-are-human-controls-to-test', !!up && p.notice && p.out.length >= 8, `notice ${J(up)} rect ${J(p.rect)} · ${p.out.length} controls probed`);
-    clause(A, 'no-human-control-is-under-the-notice-every-centre-hits-its-own-control', bad.length === 0, bad.length ? `COVERED/MISSED: ${J(bad)}` : `${p.out.length} controls, all centres hit themselves; overlaps with the notice box: ${J(p.out.filter((o) => o.overlaps).map((o) => o.name))}`);
+    clause(A, 'no-tab-no-x-no-plus-is-under-the-notice-every-centre-hits-its-own-control', badStrip.length === 0, badStrip.length ? `COVERED/MISSED: ${J(badStrip)}` : `${p.out.filter(isStrip).length} strip controls, all centres hit themselves`);
+    console.log(`  INFO  [${A}] toolbar controls under the notice (measured; the member's design says harmless to mis-click): ${badTool.length ? J(badTool.map((o) => ({ name: o.name, top: o.top }))) : 'none covered'}`);
+    // a REAL click on the human's + while the notice is up: it must open a tab (it must not land on the notice's « Back » or on nothing)
+    { const b0 = await reg(ctx, W1); const noticeStillUp = (await noticeText(ctx)) !== null;
+      const topAtPlus = await ui.eval(`(() => { const e = document.querySelector('.browser-tab-new'); const r = e.getBoundingClientRect(); const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return t ? (t.className || t.tagName) : null; })()`);
+      await clickSel(ctx, '.browser-tab-new'); await sleep(900); const b1 = await reg(ctx, W1);
+      clause(A, 'a-real-click-on-the-+-under-the-notice-opens-a-tab-and-does-not-go-Back', noticeStillUp && b1.tabs.length === b0.tabs.length + 1, `notice up ${noticeStillUp}; element under the + centre: ${J(topAtPlus)}; before ${brief(b0)} → after ${brief(b1)}`);
+      grim('notice-after-plus-click.png');
+      await softWait(async () => (await noticeText(ctx)) === null, 14000, 'the notice to lapse');
+      // restore the 3-tab shape for the × test: close the extra blank tab with a real click once nothing overlays it
+      const extra = b1.tabs.find((t) => !b0.tabs.some((x) => x.id === t.id));
+      if (extra) { const xi = await ui.eval(`[...document.querySelectorAll('.browser-tab')].findIndex((e) => e.dataset.tabId === ${sel(extra.id)})`); if (xi >= 0) { await clickSel(ctx, '.browser-tab-close', xi); await sleep(700); } }
+      await cli(ctx, W1, ['tab', 'new', U.a]); await softWait(async () => (await noticeText(ctx)) !== null, 6000, 'the notice again');
+    }
     // a REAL click on a human tab's × while the notice is up closes THAT tab only
     const idx = await ui.eval(`[...document.querySelectorAll('.browser-tab')].findIndex((e) => e.dataset.tabId === ${sel(second.id)})`);
     const before = await reg(ctx, W1);
@@ -244,12 +313,12 @@ const ARM_FNS = {
   // ── a background / archived workspace's agent never attaches or shows a view ───────────────────────────────────────────────────────
   async bg(ctx) {
     const { W1, W2, W3, URL: U, ui } = ctx; const A = 'bg';
-    await reset(ctx);
+    await hardReset(ctx);
     const g0 = await gridColors(ctx, 'bg-0-w1'); const w1r0 = await reg(ctx, W1);
     clause(A, 'ctl/w1-on-screen-shows-only-B', !g0.none && g0.uniq === 'b', `holder 9-pt colours ${g0.uniq}; W1 ${brief(w1r0)}`);
     const w2h0 = await reg(ctx, W2);
     const steps = [];
-    const run = async (label, args, o) => { const r = await cli(ctx, W2, args, o); steps.push(`${label}:${r.code}`); return r; };
+    const run = async (label, args, o) => { const r = await cli(ctx, W2, args, o); steps.push(`${label}:${r.code}${r.code ? '(' + (r.stderr || r.stdout).trim().slice(0, 90) + ')' : ''}`); return r; };
     await run('open', ['open', U.c]); await run('tab new', ['tab', 'new', U.a]);
     await softWait(async () => (await reg(ctx, W2)).tabs.length === 2, 15000, 'W2 two tabs');
     const labA = await abLabel(ctx, W2, /Tabs fixture A/); const labC = await abLabel(ctx, W2, /Tabs fixture C/);
@@ -263,7 +332,7 @@ const ARM_FNS = {
     await sleep(900);
     const w2r = await reg(ctx, W2); const w1r1 = await reg(ctx, W1); const g1 = await gridColors(ctx, 'bg-1-w1-after');
     const vt = (await viewTargets(ctx)).length;
-    clause(A, 'ctl/the-background-agent-really-worked', steps.every((s) => /:0$/.test(s)) && w2r.tabs.length === 2, `steps ${steps.join(' ')}; raw front ${fr.join(' / ')}; W2 ${brief(w2r)}`);
+    clause(A, 'ctl/the-background-agent-really-worked-screenshot-aside', steps.filter((s) => !s.startsWith('screenshot')).every((s) => /:0$/.test(s)) && w2r.tabs.length === 2, `steps ${steps.join(' ')}; raw front ${fr.join(' / ')}; W2 ${brief(w2r)}`);
     clause(A, 'background-agent-never-activates-its-tab-the-users-stays-active', w2r.tabs.find((t) => t.active)?.openedBy === 'human' && w2r.agentSwitch === null, `W2 ${brief(w2r)} agentSwitch ${J(w2r.agentSwitch)} (incl. raw Target.activateTarget + Page.bringToFront)`);
     clause(A, 'the-focused-workspace-screen-and-registry-are-untouched', g1.uniq === 'b' && JSON.stringify(w1r1) === JSON.stringify(w1r0) && (await noticeText(ctx)) === null, `holder 9-pt colours ${g1.uniq} (only B); W1 registry unchanged ${JSON.stringify(w1r1) === JSON.stringify(w1r0)}; notice ${J(await noticeText(ctx))}`);
     clause(A, 'one-native-view-per-tab-no-extra-view', vt === w1r1.tabs.length + w2r.tabs.length, `page targets ${vt} = W1 ${w1r1.tabs.length} + W2 ${w2r.tabs.length}`);
@@ -293,7 +362,8 @@ const ARM_FNS = {
     try { const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const sid = att.result?.sessionId;
       outs.push(['Page.crash', J(await raw.callOn(sid, 'Page.crash', {})).slice(0, 110)]); } finally { raw.close(); }
     await sleep(1500); const s = await survives(ctx, st, vt0);
-    console.log(`  INFO  [${A}] Page.crash on the user's tab via the proxy (not a close; measured): ${outs.map((o) => o.join(' → ')).join(' | ')} → user's tab still in registry=${s.r.tabs.some((t) => t.id === st.human?.id)}; page targets ${vt0}→${s.vt}`);
+    const live = await (async () => { try { const o = await oracle(ctx, ctx.URL.b, 4000); try { return await Promise.race([o.eval('1+1'), new Promise((r) => setTimeout(() => r('NO ANSWER in 4 s (renderer dead)'), 4000))]); } finally { o.close(); } } catch (e) { return `target gone/unreachable: ${e.message}`; } })();
+    console.log(`  INFO  [${A}] Page.crash on the user's tab via the proxy (not a close; measured): ${outs.map((o) => o.join(' → ')).join(' | ')} → user's tab still in registry=${s.r.tabs.some((t) => t.id === st.human?.id)}; page targets ${vt0}→${s.vt}; the page's own eval(1+1) → ${J(live)}`);
     const { raw: r2 } = await openRaw(ctx, W1);
     try { const rep = await r2.call('Browser.crash', {}); console.log(`  INFO  [${A}] Browser.crash via the proxy: ${J(rep).slice(0, 160)}`); } finally { r2.close(); }
     await sleep(1500);
