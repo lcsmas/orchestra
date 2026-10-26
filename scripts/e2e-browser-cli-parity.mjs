@@ -87,7 +87,7 @@ if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via sc
 if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
 if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
 const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
-const XDG = privateRuntimeDir(); // the contained rig's PRIVATE runtime dir (incident Q2): never the human's /run/user/<uid>
+const XDG = privateRuntimeDir(); // the contained rig's PRIVATE runtime dir (incident Q2) — never the human's real one
 
 // ── scratch-containment guard (live dirs are never handed to the app) ─────────────────────────────────────────────────────────
 const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
