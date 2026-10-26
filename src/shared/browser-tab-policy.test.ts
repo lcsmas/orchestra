@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, POPUP_BUDGET, POPUP_RATE_MAX, POPUP_RATE_WINDOW_MS, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decideBrowserAutoOpen, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl, POPUP_BUDGET, POPUP_RATE_MAX, POPUP_RATE_WINDOW_MS, popupNeedsOpener, USER_GESTURE_WINDOW_MS, type PolicyTab, type PopupContext, type PopupRequest } from './browser-tab-policy.ts';
 
 const tabs = (spec: string): PolicyTab[] => spec.split(' ').map((s) => ({ id: s.slice(1), openedBy: s[0] === 'h' ? 'human' : 'agent' }));
 
@@ -322,4 +322,9 @@ test('decideBrowserAutoOpen (review MAJOR): an agent navigate / reload to the ur
   const done = decideBrowserAutoOpen(started.next, ev('t1', 'https://a/', false));
   assert.equal(done.open, false, 'load finished: falling edge never opens');
   assert.equal(decideBrowserAutoOpen(done.next, ev('t1', 'https://a/', true)).open, true, 'the next reload opens again');
+});
+
+test('isOsHandoffUrl — the ONE allowlist behind the popup path AND the session `openExternal` permission: mailto:/tel: (any case, surrounding whitespace) and nothing else', () => {
+  for (const u of ['mailto:a@b.c', 'MAILTO:a@b.c', ' tel:+33123456789 ', 'Tel:1']) assert.equal(isOsHandoffUrl(u), true, u);
+  for (const u of ['', 'ssh://x', 'zoommtg://x', 'smb://x', 'slack://x', 'vscode://x', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://x/', 'http://x/', 'about:blank', 'xmailto:a@b.c', 'mailto', 'tel']) assert.equal(isOsHandoffUrl(u), false, u || '(empty)');
 });

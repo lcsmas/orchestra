@@ -9,6 +9,7 @@ import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { electronMerge } from '../shared/electron-guest-window.testlib.ts';
 
+
 const STUB = `
 const views = (globalThis.__bpViews ??= []);
 let pidSeq = 1000;
@@ -60,7 +61,7 @@ globalThis.__bpWins = [];
 export const Menu = { buildFromTemplate: () => ({ popup() {} }) };
 export const clipboard = { writeText() {} };
 export const shell = { openExternal(u) { (globalThis.__bpExternal ??= []).push(u); } };
-export const session = { fromPartition: () => ({ setUserAgent() {}, getUserAgent: () => 'UA' }) };
+export const session = { fromPartition: (p) => ((globalThis.__bpSessions ??= {})[p] ??= { setUserAgent() {}, getUserAgent: () => 'UA', permCalls: 0, setPermissionRequestHandler(fn) { this.permHandler = fn; this.permCalls++; } }) };
 `;
 const stubUrl = 'data:text/javascript,' + encodeURIComponent(STUB);
 const platformUrl = 'data:text/javascript,' + encodeURIComponent(`export const platform = { broadcast() {} };`);
@@ -690,5 +691,67 @@ test('RATE is counted when a window REALLY opens, not at approval: approvals who
     assert.equal(opened, 6, 'the 10 ghost approvals did not eat the rate: all 6 real openings were allowed, then the cap bit');
   } finally {
     Date.now = realNow;
+  }
+});
+
+// ---- final round (review round 2): page-driven bounds, external protocols, two clauses no arm saw ------------------------------------------------------
+
+test('F-a — a page\'s window.resizeTo / moveTo is VETOED on popup windows and on tabs (`content-bounds-updated`), so the creation-time clamp holds for the whole life of the window', () => {
+  const ws = newWs();
+  openShown(ws);
+  const tabWc = wcOf(bp.getActiveTab(ws)!);
+  clickOn(tabWc);
+  const win = openWin(tabWc);
+  for (const [what, emitter] of [['popup window', win.webContents], ['tab', tabWc]] as const) {
+    let prevented = false;
+    emitter.emitEvent('content-bounds-updated', { preventDefault: () => { prevented = true; } }, { x: 0, y: 0, width: 4000, height: 4000 });
+    assert.equal(prevented, true, `${what}: the page-driven bounds change is cancelled (Electron applies it by default)`);
+  }
+});
+
+test('F-b — link clicks and redirects to external protocols inside a tab or popup (Electron asks the SESSION for the `openExternal` permission) are refused unless mailto:/tel:; every other permission keeps its default; one handler per session', () => {
+  const ws = newWs();
+  const t1 = bp.ensurePanel(ws).tabs[0];
+  bp.createTab(ws, { openedBy: 'agent' }); // a second tab of the SAME session
+  const ses = g.__bpSessions[`orchestra-browser-${ws}`];
+  assert.equal(typeof ses.permHandler, 'function', 'the panel session is guarded');
+  assert.equal(ses.permCalls, 1, 'installed once per session, however many tabs share it');
+  const ask = (permission: string, details?: object) => { let out: boolean | undefined; ses.permHandler(wcOf(t1), permission, (ok: boolean) => { out = ok; }, details); return out; };
+  for (const url of ['ssh://root@h', 'zoommtg://zoom.us/join?confno=1', 'smb://h/s', 'vscode://file/x', 'slack://x', 'javascript:alert(1)', 'file:///etc/passwd', '']) assert.equal(ask('openExternal', { externalURL: url }), false, url || '(empty)');
+  assert.equal(ask('openExternal'), false, 'no details at all: refused');
+  assert.equal(ask('openExternal', { externalURL: 'mailto:a@b.c' }), true);
+  assert.equal(ask('openExternal', { externalURL: ' TEL:+33123456789' }), true);
+  for (const permission of ['geolocation', 'notifications', 'media', 'clipboard-read']) assert.equal(ask(permission, {}), true, `${permission}: unchanged (granted by default)`);
+  assert.equal(g.__bpLog.filter((l: string) => l.includes('external protocol refused (ssh:)')).length, 1, 'refusals are logged with the SCHEME only (the rest can carry tokens)');
+  assert.equal(g.__bpLog.some((l: string) => l.includes('root@h') || l.includes('confno')), false);
+});
+
+test('F-d (1) — a popup\'s frame name is registered TRIMMED: a holder named " sso " still blocks another opener asking for "sso" (and for " sso ")', () => {
+  const ws = newWs();
+  const a = wcOf(bp.ensurePanel(ws).tabs[0]);
+  const b = wcOf(bp.createTab(ws, { openedBy: 'agent' }));
+  clickOn(a);
+  openWin(a, named(`${base}/a`, ' sso '));
+  clickOn(b);
+  assert.equal(b.openHandler(named(`${base}/evil`, 'sso')).action, 'deny', 'untrimmed registration would let Electron load the evil URL into the holder\'s window');
+  clickOn(b);
+  assert.equal(b.openHandler(named(`${base}/evil2`, ' sso ')).action, 'deny');
+});
+
+test('F-d (2) — ownership is inherited THROUGH a popup window: a popup opened from an AGENT tab\'s child window opens agent-owned tabs (the agent can close them); from a HUMAN tab\'s, human-owned', () => {
+  const ws = newWs();
+  openShown(ws);
+  const human = bp.ensurePanel(ws).tabs[0];
+  const agent = bp.createTab(ws, { openedBy: 'agent' });
+  for (const [tab, want] of [[agent, 'agent'], [human, human.openedBy]] as const) {
+    const before = tabsOf(ws).length;
+    clickOn(wcOf(tab));
+    const child = openWin(wcOf(tab), named(`${base}/c-${want}`, `child-${want}`));
+    clickOn(child.webContents);
+    assert.equal(child.webContents.openHandler(link(`${base}/from-child-${want}`)).action, 'deny');
+    const opened = tabsOf(ws).slice(before);
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].openedBy, want, `a tab opened from the child window of a ${want} tab`);
+    child.destroy();
   }
 });

@@ -21,7 +21,7 @@ import {
   shapePick,
   type DesignPick,
 } from '../shared/design-mode.ts';
-import { BROWSER_TAB_CAP, decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
+import { BROWSER_TAB_CAP, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl } from '../shared/browser-tab-policy.ts';
 import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import {
@@ -297,6 +297,25 @@ function normalizeUserAgent(ses: Electron.Session): void {
   ses.setUserAgent(ua);
 }
 
+/** Panel sessions already guarded (one handler per session; every tab and popup window of a workspace shares its session). */
+const guardedSessions = new WeakSet<Electron.Session>();
+
+/** A link click or a redirect to `ssh:` / `zoommtg:` / `smb:` … inside a tab or a popup goes through Chromium's external-protocol path (Electron asks the session for the
+ *  `openExternal` permission, `details.externalURL` = the target), NOT through `window.open` — and a CDP agent click is a user activation. Refused unless the URL passes the
+ *  same allowlist as the popup path (`mailto:` / `tel:`). Every other permission keeps Electron's default (granted). (#396 review F-b) */
+function guardExternalProtocols(ses: Electron.Session): void {
+  if (guardedSessions.has(ses)) return;
+  guardedSessions.add(ses);
+  // optional call: the stub-`electron` harnesses of #391/#393 have sessions without this method
+  ses.setPermissionRequestHandler?.((_wc, permission, callback, details) => {
+    if (permission !== 'openExternal') return callback(true);
+    const url = String((details as { externalURL?: string } | undefined)?.externalURL ?? '');
+    const ok = isOsHandoffUrl(url);
+    if (!ok) log.info(`browser-panel: external protocol refused (${url.split(':')[0].slice(0, 20) || 'unknown'}:)`); // scheme only: the rest can carry tokens
+    callback(ok);
+  });
+}
+
 function emptyState(wsId: string): BrowserPanelState {
   return {
     wsId,
@@ -519,6 +538,8 @@ function createPopupWindow(
     retitle(title);
   });
   wc.on('did-navigate', () => retitle(wc.getTitle()));
+  // The F1 clamp holds only at creation unless page-driven bounds are vetoed: Electron applies window.resizeTo / moveTo by default (#396 review F-a).
+  wc.on('content-bounds-updated', (e) => e.preventDefault());
   watchPopups(panel, wc, openedBy);
   if (focusedWsId === wsId) {
     if (pageInitiated) win.showInactive();
@@ -548,6 +569,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
 
   const ses = session.fromPartition(partitionFor(panel.wsId));
   normalizeUserAgent(ses);
+  guardExternalProtocols(ses);
   const view = new WebContentsView({
     webPreferences: {
       partition: partitionFor(panel.wsId),
@@ -574,6 +596,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   if (panel.bounds) view.setBounds(panel.bounds);
 
   const wc = view.webContents;
+  wc.on('content-bounds-updated', (e) => e.preventDefault()); // a page's window.resizeTo / moveTo never moves or resizes the app window (#396 review F-a)
   watchPopups(panel, wc, opts.openedBy);
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
   wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));

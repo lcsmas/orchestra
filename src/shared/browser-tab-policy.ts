@@ -160,11 +160,17 @@ type UrlKind = 'web' | 'blank' | 'external' | 'unsafe';
  *  is refused: an agent's CDP click counts as a click, so a blocklist would let a prompt-injected page launch any registered handler (#396 review F3). */
 const OS_HANDOFF_SCHEMES = /^(mailto|tel):/i;
 
+/** May the OS be handed this URL (a clicked `mailto:` / `tel:` — nothing else)? The one predicate behind BOTH guards: `decidePopup`'s `window.open(url)` and the panel
+ *  sessions' `openExternal` permission (a link click or a redirect inside a tab or popup goes through Chromium's external-protocol path, not through window.open). */
+export function isOsHandoffUrl(url: string): boolean {
+  return OS_HANDOFF_SCHEMES.test(url.trim());
+}
+
 function classifyUrl(url: string): UrlKind {
   const u = url.trim();
   if (/^https?:\/\//i.test(u)) return 'web';
   if (u === '' || /^about:blank$/i.test(u)) return 'blank';
-  if (OS_HANDOFF_SCHEMES.test(u)) return 'external';
+  if (isOsHandoffUrl(u)) return 'external';
   return 'unsafe';
 }
 
