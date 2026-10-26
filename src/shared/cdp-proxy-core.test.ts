@@ -394,3 +394,29 @@ test('seam review m1: no raw-CDP tunnel — Target.sendMessageToTarget / exposeD
   await c.call('Target.setAutoAttach', { autoAttach: true, flatten: true }, sessionId);
   assert.deepEqual(ch.sent.map((x) => x.method), ['Target.setAutoAttach']);
 });
+
+test('#400 seam: refuseMethod receives (method, params, tab) with the tab as the registry sees it NOW; a throwing hook fails CLOSED', async () => {
+  const p = fakePanel([{ id: 't1', url: 'http://a/start', title: 'A', active: true, openedBy: 'human' }]);
+  const seen: Array<{ method: string; params: unknown; tabId: string; url: string }> = [];
+  (p.port as any).refuseMethod = (method: string, params: unknown, tab: CdpTab) => {
+    seen.push({ method, params, tabId: tab.id, url: tab.url });
+    if (method === 'Network.getAllCookies') throw new Error('boom');
+    return null;
+  };
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const tid = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId: tid })).result;
+  await c.call('Network.deleteCookies', { name: 'sid', url: 'http://a/' }, sessionId);
+  assert.deepEqual(seen[0], { method: 'Network.deleteCookies', params: { name: 'sid', url: 'http://a/' }, tabId: 't1', url: 'http://a/start' });
+  // the tab navigated: the NEXT command sees the new url (policy is judged against where the tab is now)
+  p.tabs[0]!.url = 'http://b/next';
+  await c.call('Network.deleteCookies', { name: 'sid' }, sessionId);
+  assert.equal(seen[1]!.url, 'http://b/next');
+  // a throwing policy refuses (closed) and the command never reaches the debugger
+  const ch = p.channels.get('t1')!;
+  const before = ch.sent.length;
+  const r = await c.call('Network.getAllCookies', undefined, sessionId);
+  assert.match(r.error.message, /policy check failed \(boom\)/);
+  assert.equal(ch.sent.length, before);
+});

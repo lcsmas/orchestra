@@ -46,9 +46,10 @@ export interface CdpPanelPort {
   /**
    * Policy seam for page-level commands (#400: refuse partition-wide cookie clears while the workspace holds a shared profile).
    * Called for EVERY command a client sends to a tab — root and auto-attached child sessions — before it reaches the debugger;
-   * a returned string refuses it (CDP error, the debugger never sees it). Absent = nothing refused.
+   * a returned string refuses it (CDP error, the debugger never sees it). `tab` is the target tab AS THE REGISTRY SEES IT NOW (its url
+   * scopes origin-bound policies, #400). A hook that throws fails CLOSED. Absent = nothing refused.
    */
-  refuseMethod?(method: string, params: Record<string, unknown> | undefined): string | null;
+  refuseMethod?(method: string, params: Record<string, unknown> | undefined, tab: CdpTab): string | null;
 }
 export interface CdpClientLink {
   send(msg: Record<string, unknown>): void;
@@ -463,8 +464,17 @@ export class CdpProxyCore {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
     if (TUNNEL_METHODS.has(method)) throw new CdpError(`${method} is not supported: this proxy speaks flattened sessions only`, ERR_METHOD);
-    const refused = this.port.refuseMethod?.(method, params);
-    if (refused) throw new CdpError(refused, ERR_SERVER);
+    if (this.port.refuseMethod) {
+      const tab = this.port.listTabs().find((t) => t.id === tabId);
+      if (!tab) throw new CdpError('Target closed.', ERR_SERVER);
+      let refused: string | null;
+      try {
+        refused = this.port.refuseMethod(method, params, tab);
+      } catch (e) {
+        refused = `${method} refused: the policy check failed (${e instanceof Error ? e.message : String(e)})`; // fail CLOSED
+      }
+      if (refused) throw new CdpError(refused, ERR_SERVER);
+    }
     if (!childSessionId) {
       if (method === 'Page.bringToFront') {
         this.port.activateTab(tabId);

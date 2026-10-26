@@ -531,6 +531,12 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   last-tab / persisted-snapshot case) belongs to #397, which owns agent tabs against this seam. `cookies clear` / `storage clear`
   act on the tab's whole partition: harmless on the ephemeral per-workspace partition, but a shared profile (#400) would be
   reached — #400/#401 must decide whether to refuse them for a workspace holding a profile.
+- **Policy seam** (`CdpPanelPort.refuseMethod?(method, params, tab)`, core `tabCommand`): called for EVERY page-level command of a tab
+  session (root and auto-attached child sessions) BEFORE the debugger, with the tab as the registry sees it NOW (its url scopes
+  origin-bound policy); a returned string is a CDP error, a hook that throws fails CLOSED. `Target.sendMessageToTarget` and
+  `Target.exposeDevToolsProtocol` are refused outright (a command smuggled inside one would skip any per-method policy). The host's
+  `makePanelPort` does not set the hook yet: #400 wires its profile policy there. `orchestra browser get cdp-url` is refused and
+  `redactEndpoint` scrubs the endpoint/token from all client output.
 - **Tracing**: `ORCHESTRA_CDP_TRACE=1` logs every client request / reply / forwarded command to the app log.
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
