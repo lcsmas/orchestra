@@ -77,6 +77,10 @@ const TAB_SESSION_BROWSER_LEVEL: ReadonlySet<string> = new Set([
   'Target.getBrowserContexts', 'Target.createBrowserContext', 'Target.disposeBrowserContext',
 ]);
 
+/** Methods that open a second, unfiltered CDP channel inside a flattened session: refused outright (seam review m1). `Target.sendMessageToTarget{message:'{"method":"Network.clearBrowserCookies"}'}`
+ *  carried a command past every per-method policy; `Target.exposeDevToolsProtocol` hands the PAGE a `cdp` binding. Nothing legitimate uses either on a flatten-only client. */
+const TUNNEL_METHODS: ReadonlySet<string> = new Set(['Target.sendMessageToTarget', 'Target.exposeDevToolsProtocol']);
+
 const ERR_METHOD = -32601;
 const ERR_PARAMS = -32602;
 const ERR_SERVER = -32000;
@@ -458,6 +462,7 @@ export class CdpProxyCore {
   ): Promise<unknown> {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
+    if (TUNNEL_METHODS.has(method)) throw new CdpError(`${method} is not supported: this proxy speaks flattened sessions only`, ERR_METHOD);
     const refused = this.port.refuseMethod?.(method, params);
     if (refused) throw new CdpError(refused, ERR_SERVER);
     if (!childSessionId) {

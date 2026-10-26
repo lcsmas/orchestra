@@ -375,3 +375,22 @@ test('#400 seam: port.refuseMethod refuses a page-level command on a root AND a 
   const s2 = (await c2.call('Target.attachToTarget', { targetId: t2 })).result.sessionId;
   assert.equal((await c2.call('Network.clearBrowserCookies', undefined, s2)).error, undefined);
 });
+
+test('seam review m1: no raw-CDP tunnel — Target.sendMessageToTarget / exposeDevToolsProtocol are refused on a root AND a child session and never reach the debugger', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const tid = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId: tid })).result;
+  const ch = p.channels.get('t1')!;
+  ch.emit('Target.attachedToTarget', { sessionId: 'CHILD', targetInfo: {} });
+  const smuggled = { message: JSON.stringify({ id: 1, method: 'Network.clearBrowserCookies' }) };
+  for (const sid of [sessionId, 'CHILD']) {
+    assert.match((await c.call('Target.sendMessageToTarget', smuggled, sid)).error.message, /flattened sessions only/);
+    assert.match((await c.call('Target.exposeDevToolsProtocol', { targetId: tid, bindingName: 'cdp' }, sid)).error.message, /flattened sessions only/);
+  }
+  assert.deepEqual(ch.sent, [], 'nothing reached the page debugger');
+  // the page's own legitimate Target.* stays forwarded
+  await c.call('Target.setAutoAttach', { autoAttach: true, flatten: true }, sessionId);
+  assert.deepEqual(ch.sent.map((x) => x.method), ['Target.setAutoAttach']);
+});

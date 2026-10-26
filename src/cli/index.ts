@@ -77,7 +77,7 @@ import {
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
-import { browserChildEnv, mapBrowserFailure, prepareBrowserCommand } from '../shared/browser-cli.ts';
+import { browserChildEnv, mapBrowserFailure, prepareBrowserCommand, redactEndpoint } from '../shared/browser-cli.ts';
 import { spawn as spawnChild } from 'node:child_process';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
@@ -1946,7 +1946,8 @@ async function main(argv: string[]): Promise<void> {
         child.once('error', reject);
         child.once('close', (code, signal) => resolve({ code: code ?? (signal ? 1 : 0), stdout, stderr }));
       });
-      const out = mapBrowserFailure(run, plan.refs, plan.args.includes('--json'));
+      const wsUrl = res.wsUrl as string;
+      const out = mapBrowserFailure({ ...run, stdout: redactEndpoint(run.stdout, wsUrl), stderr: redactEndpoint(run.stderr, wsUrl) }, plan.refs, plan.args.includes('--json'));
       if (out.stdout) process.stdout.write(out.stdout);
       if (out.stderr) process.stderr.write(out.stderr);
       exitWith(out.code);

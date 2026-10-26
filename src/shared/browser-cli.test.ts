@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, prepareBrowserCommand, splitEqualsFlags, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
+import { BROWSER_COMMANDS, absolutizeBrowserArgs, browserChildEnv, prepareBrowserCommand, redactEndpoint, splitEqualsFlags, mapBrowserFailure, planBrowserCommand, staleRefMessage } from './browser-cli.ts';
 
 test('every allowed command plans through unchanged, with its refs listed', () => {
   for (const c of BROWSER_COMMANDS) assert.deepEqual(planBrowserCommand([c]), { ok: true, args: [c], refs: [] }, c);
@@ -147,4 +147,25 @@ test('M3: `--json=--cdp 9222` and every other way to land a refused flag in the 
   assert.deepEqual(r.ok && r.args, ['snapshot', '--json=--cdp', '9222'], 'not split: one inert token, no standalone --cdp');
   assert.equal(prepareBrowserCommand(['snapshot', '--screenshot-format=--cdp', '9222'], '/w').ok, false, 'a KNOWN value flag IS split, and the value is then judged');
   assert.equal(prepareBrowserCommand(['snapshot', '--cdp=9222'], '/w').ok, false);
+});
+
+test('seam review m2: `get cdp-url` (any case/spelling, with flags around it) is refused; ordinary `get` subcommands and data that mentions it pass', () => {
+  for (const argv of [['get', 'cdp-url'], ['get', 'CDP-URL'], ['get', 'cdp_url'], ['get', 'cdpurl'], ['--json', 'get', 'cdp-url'], ['get', '--json', 'cdp-url'], ['get', 'cdp-url', '--json']]) {
+    const r = prepareBrowserCommand(argv, '/w');
+    assert.equal(r.ok, false, argv.join(' '));
+    assert.match((r as any).error, /get cdp-url/);
+  }
+  for (const argv of [['get', 'url'], ['get', 'title'], ['get', 'text', '#out'], ['fill', '@e1', 'cdp-url'], ['eval', 'document.title // cdp-url']]) {
+    assert.equal(prepareBrowserCommand(argv, '/w').ok, true, argv.join(' '));
+  }
+});
+
+test('redactEndpoint hides the ws URL and the bare token from anything the client prints', () => {
+  const url = 'ws://127.0.0.1:41955/AbCdEf0123456789xyZ_-q/devtools/browser/4FB8D36BB1CFD6C33D679159CDA7D8D4';
+  assert.equal(redactEndpoint(`${url}\n`, url), '<proxy-endpoint>\n');
+  assert.equal(redactEndpoint('connect to ws://127.0.0.1:41955/AbCdEf0123456789xyZ_-q/json failed', url), 'connect to ws://127.0.0.1:41955/<redacted>/json failed');
+  assert.equal(redactEndpoint(JSON.stringify({ cdpUrl: url }), url), '{"cdpUrl":"<proxy-endpoint>"}');
+  assert.equal(redactEndpoint('nothing to hide', url), 'nothing to hide');
+  assert.equal(redactEndpoint('', url), '');
+  assert.equal(redactEndpoint('abc', 'not a url'), 'abc');
 });

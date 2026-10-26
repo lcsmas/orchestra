@@ -91,6 +91,13 @@ export function planBrowserCommand(argv: readonly string[]): BrowserPlan {
   if (!BROWSER_COMMANDS.has(command)) {
     return { ok: false, error: `orchestra browser: unknown command '${command}'.\n${usage}` };
   }
+  // `get cdp-url` prints the full token-bearing websocket URL: any shell step could then speak raw CDP, past this allowlist (seam review m2)
+  if (command === 'get') {
+    const sub = argv.slice(idx + 1).find((a) => !a.startsWith('-'));
+    if (sub !== undefined && sub.toLowerCase().replace(/[-_]/g, '') === 'cdpurl') {
+      return { ok: false, error: "orchestra browser: 'get cdp-url' is not available — it would print the proxy endpoint, and the proxy is not meant to be reached except through this CLI." };
+    }
+  }
   for (const a of argv) {
     const name = a.startsWith('--') || a.startsWith('-p=') ? a.split('=')[0]! : a;
     if (REFUSED_FLAGS.has(name)) {
@@ -220,4 +227,21 @@ export function mapBrowserFailure(run: BrowserRun, refs: readonly string[], json
   }
   const detail = text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3).join(' | ');
   return { code: run.code, stdout: '', stderr: `${msg}\n  (agent-browser: ${detail})\n` };
+}
+
+/**
+ * Defence in depth: whatever the client prints (an error quoting its connection, a command we did not think of), the proxy endpoint
+ * and its token never reach the agent's stdout/stderr. Replaces the full ws URL, then the bare token path segment.
+ */
+export function redactEndpoint(text: string, wsUrl: string): string {
+  if (!text) return text;
+  let out = text.split(wsUrl).join('<proxy-endpoint>');
+  let token = '';
+  try {
+    token = new URL(wsUrl).pathname.split('/')[1] ?? '';
+  } catch {
+    /* not a URL: nothing more to redact */
+  }
+  if (token.length >= 8) out = out.split(token).join('<redacted>');
+  return out;
 }

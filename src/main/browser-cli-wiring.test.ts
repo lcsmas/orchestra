@@ -18,6 +18,11 @@ test('m4: every /browser call re-prepares the layout, and quit removes only our 
   assert.match(host, /terminateDaemonsOf\(layout\(\)\)[\s\S]{0,400}await Promise\.all\(\[\.\.\.endpoints\.keys\(\)\]\.map\(\(id\) => disposeEndpoint\(id\)\)\);[\s\S]{0,200}removeSocketDir\(layout\(\)\)/);
 });
 
+test('seam review m2: everything the client prints passes through redactEndpoint with the host-issued URL before it reaches the agent', () => {
+  const cli = read('../cli/index.ts');
+  assert.match(cli, /const wsUrl = res\.wsUrl as string;\s*const out = mapBrowserFailure\(\{ \.\.\.run, stdout: redactEndpoint\(run\.stdout, wsUrl\), stderr: redactEndpoint\(run\.stderr, wsUrl\) \}/);
+});
+
 test('M2: the proxy URL reaches agent-browser through its environment only — neither the CLI nor the host puts it in an argv', () => {
   const cli = read('../cli/index.ts');
   assert.match(cli, /spawnChild\(binary, plan\.args, /);
