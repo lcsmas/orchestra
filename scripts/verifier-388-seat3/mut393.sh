@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # mut393.sh — clean control drive, then the own built-app mutants (seat 3). Run from the candidate tree. Each mutant: verified-live string, rebuild from clean dist, drive, byte-exact restore.
 set -uo pipefail
+[[ "${V3_FREEZE_LIFTED:-}" == 1 ]] || { echo "REFUSED: all-Electron freeze (ledger #405 Q2, OPS 9099) — export V3_FREEZE_LIFTED=1 only after OPS lifts it"; exit 99; }
 ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT" || exit 90; V="$TMPDIR/v3rig"; M="$V/mut"
 echo "CLEAN-FINGERPRINT main.js=$(md5sum dist-electron/main.js | cut -c1-12) renderer=$(cat dist/assets/index-*.js | md5sum | cut -c1-12)"
 echo "=== CONTROL (unmutated candidate, fixed driver)"; bash "$V/rigrun.sh" ctl-drive2 "$ROOT" "$V/tabs-drive.mjs" cand all 2>&1 | grep -E "^(FAIL|RIG-RESULT|G10|RIGRUN)" | cut -c1-300

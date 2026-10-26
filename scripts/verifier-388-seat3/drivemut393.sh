@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # drivemut393.sh <label> <arms|all> — run under mut.sh (source already mutated): CLEAN rebuild (rm dist*), bus-abi, fingerprint, drive the BUILT mutant with tabs-drive.mjs under G10/G10b.
 set -uo pipefail
+[[ "${V3_FREEZE_LIFTED:-}" == 1 ]] || { echo "REFUSED: all-Electron freeze (ledger #405 Q2, OPS 9099) — export V3_FREEZE_LIFTED=1 only after OPS lifts it"; exit 99; }
 LBL="$1"; ARMS="${2:-all}"; ROOT="$(git rev-parse --show-toplevel)"; V="$TMPDIR/v3rig"; cd "$ROOT" || exit 90
 rm -rf dist dist-electron
 nice -n 10 pnpm run build:bundles > "$TMPDIR/drivemut-build-$LBL.log" 2>&1 || { echo "BUILD FAILED"; tail -5 "$TMPDIR/drivemut-build-$LBL.log"; exit 97; }
