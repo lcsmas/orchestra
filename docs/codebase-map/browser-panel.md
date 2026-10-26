@@ -198,12 +198,12 @@ attachment (image + fenced text block).
 BrowserPanel crosshair toggle          src/renderer/components/BrowserPanel.tsx
    │  browserDesignArm(wsId)
    ▼
-designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts
+designModeArm → Runtime.evaluate(DESIGN_MODE_SCRIPT)   src/main/browser-panel.ts (script: design-mode-script.ts)
    │  in-page overlay: mousemove highlight + capturing click handler
-   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box}
+   ▼  click → window.__orchestraDesignPick = {chain, outerHTML, computed, box, component}
 renderer polls browserDesignPoll (150ms while armed)
    │  main: reads+clears the global, Page.captureScreenshot with a padded clip
-   ▼  shapePick() — trim HTML, subset styles, build selector path
+   ▼  shapePick() — trim HTML, subset styles, build selector path, shapeComponent() (#403)
 store.addDesignPick(wsId, pick)                        src/renderer/store.ts
    ▼  queued per workspace; survives an unmounted composer
 Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/components/StructuredView.tsx
@@ -219,8 +219,17 @@ Composer effect → takeDesignPicks() (atomic read+clear) src/renderer/component
   `nth-of-type`, drops hashed css-modules/styled-components/emotion classes and
   Tailwind arbitrary values, keeps the TAIL when too deep), `formatPickBlock`
   and `appendPickToDraft`.
+- **`src/main/design-mode-script.ts`** — the injected page script
+  (`DESIGN_MODE_SCRIPT` + `DESIGN_OVERLAY_ID` / `DESIGN_PICK_GLOBAL`), split out of
+  `browser-panel.ts` so the page script and the transport evolve apart. Its vm
+  unit test (`design-mode-script.test.ts`) runs the exact injected text against a
+  fake DOM and mutates each clause in place.
+- **`src/shared/design-source.ts`** — React source for a pick (#403), unit-tested
+  (`design-source.test.ts`): `reactSourceInPage` (the in-page fiber walk),
+  `looksSecret` / `normalizeSourcePath` / `shapeComponent` (validation + SECRET
+  FILTER), `formatComponentLine`.
 - **`src/main/browser-panel.ts`** — `designModeArm` / `designModeDisarm` /
-  `designModePoll`, plus the injected `DESIGN_MODE_SCRIPT`. Goes through the
+  `designModePoll`, injecting `DESIGN_MODE_SCRIPT` (from `design-mode-script.ts`). Goes through the
   SAME `cdp()` / `evaluate()` helpers the agent tools use, which run on a lease
   of the CDP proxy's debugger attach (#398) — design mode holds **no debugger of
   its own** (attaching twice to one target throws). While armed it keeps ONE
@@ -243,11 +252,102 @@ DevTools frontend attached never composites. A picker the user cannot see is not
 the feature, so the highlight + hit-testing live in the page instead. That also
 keeps the shared debugger free of any long-lived event subscription.
 
+### React component `file:line` (#403)
+
+A pick on a **React 17/18 dev build** carries `component: {name, file, line,
+column?}` and the composer block gets a `- component: \`Counter\` — \`/abs/Counter.jsx:5\``
+line, so the agent knows which file to edit.
+
+- The page script calls `reactSourceInPage(el)` (stringified into the script via
+  `Function.prototype.toString`, so it is plain ES5 with **no free identifier** —
+  the unit test runs the stringified text in an empty `vm` context). It finds the
+  `__reactFiber$…` key on the element (or the nearest DOM ancestor that has one),
+  reads `fiber._debugSource` (the JSX element's own `{fileName, lineNumber,
+  columnNumber}`), else walks `_debugOwner` for the first owner that has one.
+  The NAME always pairs with the source it came from: the immediate owner for
+  its own JSX site (`via: 'self'`), the owner that supplied the source for an
+  inherited one (`via: 'owner'`, printed as "rendered at" — a use-site, not the
+  element's line); an unnamed owner is `Anonymous`, never a far `.return`
+  ancestor. `displayName`/`name`, forwardRef/memo unwrapped.
+- **The DOM-cached fiber goes STALE across re-renders (HMR), and `.return` cannot say which alternate is current.**
+  `__reactFiber$…` is the first-mount fiber; React 18 writes a re-render's new
+  `_debugSource` / `_debugOwner` on whichever alternate is the work-in-progress one,
+  so every other re-render the cached fiber reports the OLD line (measured in a
+  real page: `[10,10,14,14]` for a line moved +2 per render). The first fix — "the
+  alternate whose `.return` chain ends at `root.current`" — is UNSOUND once a
+  component BAILS OUT (`React.memo`, `{children}`, `useMemo` JSX, `PureComponent`):
+  React does not rewrite `.return` on a bailed-out subtree, so the stale fiber's
+  chain can end at the new `root.current` too (measured: 10/18/18 for truth
+  12/20/20). The walker therefore ports React's own
+  `findCurrentFiberUsingSlowPath`: at each level it scans `parent.child → .sibling`
+  to see which alternate the parent actually LISTS (child pointers are reliable,
+  `.return` is not), and decides at the HostRoot by `stateNode.current === a`;
+  any inconsistency (detached tree, cycle, throwing getter, >5000 levels) degrades
+  to the cached fiber. Applied to the host fiber and to every owner consulted.
+  Pinned by `design-source-react18.test.ts` (REAL React 18.2 from the fixture page
+  over a fake DOM: edits-only and edits+bailout plans, two must-FAIL walker
+  mutants) and by rig arms `react18/rerender` + `react18/memo-bailout`
+  (mutants `stale-fiber`, `return-chain-rule`). Not covered: Suspense/Offscreen
+  hidden trees, keyed reorders under bailout, React 17 alternates.
+- **React 19 (`_debugStack`, no `_debugSource`), Vue, production builds → `null`:**
+  the pick has no `component` key and keeps the selector path, no error. React 19
+  owner-stack / source-map decoding is out of scope (#388).
+- **Secret filter** (`looksSecret`): in main, on what the page returned — a path
+  or name that looks like a token / password / key (known token shapes, JWT, PEM,
+  `userinfo:pw@`, `key=value`, ≥32-char mixed alnum runs — except kebab/snake
+  SLUGS of ≥4 short words, so an Orchestra worktree dir like
+  `orchestra-impl-…-403-a6a5fb9d` is not a "token") drops the WHOLE component.
+  Only `component.file`/`name` are filtered: `url`, `title` and `html` are the
+  pre-existing, unfiltered half of a pick. Both are PAGE-AUTHORED text (a page can
+  forge a fiber), so beyond the secret check: any control/format character
+  (bidi override, zero-width, Unicode tag chars, variation selectors, line
+  separators, backtick) or a run of 3+ combining marks rejects the path, the
+  stripped path must match a letters/digits/path-punctuation allowlist, and a name
+  must be an identifier-ish token (no spaces, so no sentence rides in a name; else
+  `Anonymous`). **Accepted gap:** a plain-text sentence of ≤400 allowed
+  characters, or an arbitrary absolute / `..` path (`/home/x/.ssh/id_ed25519`),
+  still passes as `file` — it is page-authored text on a line the agent reads as
+  "the file to edit", the same class as the already-unfiltered `url` / `title` /
+  `html` of a pick. The raw string is checked BEFORE the `?query` is stripped (a
+  `?token=…` lives only there). Names like `password.tsx` / `auth/` are fine.
+- `_debugSource.fileName` is whatever the JSX transform recorded (usually an
+  absolute fs path); `normalizeSourcePath` strips `webpack-internal:///`,
+  `file://`, `http://host/`, Next's `(app-pages-browser)/` layer and `?query#hash`.
+- The owner fallback returns the OWNER's own `_debugSource` — where that owner
+  was *used*, not defined. It is only reached when the host element itself has
+  no JSX source (an element built with plain `createElement`).
+
+### Page-CSS-proof overlay (#403)
+
+The highlight box + label live in a **closed shadow root** inside ONE host
+`<div id="__orchestra_design_overlay__">` appended to `<html>` (not `<body>`, so
+`body > *` rules and a transformed `body` do not touch it):
+
+- host styles are set inline with `!important` (`setProperty(k, v, 'important')`)
+  — an inline `!important` beats any stylesheet rule, layered or not — starting
+  with `all: initial` so inherited `visibility`/`opacity`/`transform` from the page
+  are wiped; then `display:block; position:fixed; inset:0; z-index:2147483647;
+  pointer-events:none`;
+- `popover="manual"` + `showPopover()` puts the host in the **top layer**, above
+  every z-index, stacking context and transformed ancestor — a later full-screen
+  max-z-index cover (cookie banner) cannot paint over the highlight;
+- nothing in the shadow tree is reachable from the page (`host.shadowRoot` is
+  `null`), so no selector can restyle the box.
+
+Rig: `scripts/e2e-browser-design-source.sh <built app>` (arms `react18`,
+`react19`, `hostile`, `ui`; `--mutant <name>` patches ONE clause of a COPY of the
+built chunk — 14 mutants, each must redden its named clause while every `ctl/`
+stays green). Fixtures: `scripts/fixtures/browser-site/pages/design-{react18,
+react19,hostile}.html` (React 18.2 UMD dev inlined verbatim; React 19 bundled from
+the repo's own copy; both compiled with esbuild's real automatic dev JSX
+transform — regenerate with `scripts/gen-browser-design-fixtures.mjs`).
+
 ### Design-mode gotchas
 
-- The overlay sets `pointer-events: none` on its own chrome, and picking starts
-  from `document.elementFromPoint` (which skips `pointer-events:none` nodes) —
-  so **design mode cannot capture its own highlight box**.
+- The overlay host has `pointer-events: none` and `hit()` in the page script
+  skips the host even when a hit-test returns it (`document.elementsFromPoint`) —
+  so **design mode cannot capture its own highlight box**. The two are
+  redundant; the rig's `overlay-pickable` mutant removes both.
 - **A navigation destroys the injected overlay** (new document), silently
   disarming the picker. `BrowserPanel` re-arms on every `state.url` change while
   armed.
@@ -273,7 +373,10 @@ keeps the shared debugger free of any long-lived event subscription.
   `subsetStyles surfaces the SHORTHAND box/border properties`.
 - **`DESIGN_MODE_SCRIPT` is a template literal — no backticks inside it.** A
   backtick in a comment there silently terminates the string and breaks the
-  build (`TS1005`/esbuild parse error) far from the edit.
+  build (`TS1005`/esbuild parse error) far from the edit. It also embeds
+  `reactSourceInPage.toString()`: the BUILT chunk is minified, so any rig mutant
+  that targets the walker or `looksSecret` must match the minified text with a
+  regex, never the source spelling.
 - **Arm and disarm run in order per tab** (`Tab.designOp`): the renderer fires
   `browserDesignArm` then (toggle off) `browserDesignDisarm` without awaiting, and
   arm now awaits its lease before injecting — an unordered disarm would find no

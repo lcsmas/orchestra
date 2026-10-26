@@ -1153,12 +1153,10 @@ export async function scrollBy(wsId: string, deltaY: number, tabId?: BrowserTabI
 // detach on every tick. The only CDP calls are the same `Runtime.evaluate` /
 // `Page.captureScreenshot` the agent tools use, through the same `cdp()` helper.
 //
-// The overlay is deliberately built to be un-pickable by itself: it sets
-// `pointer-events: none` on its own chrome and, at pick time, the walker starts
-// from `document.elementFromPoint`, which never returns a pointer-events:none
-// node. So design mode cannot capture its own highlight box.
-//
-// The injected script + its constants live in ./design-mode-script.ts.
+// The overlay is deliberately built to be un-pickable by itself (pointer-events:
+// none; the walker also skips its host) and page-CSS-proof (closed shadow root,
+// inline !important, top layer). The injected script + its constants live in
+// ./design-mode-script.ts.
 
 /** Give back design mode's lease on the proxy's attach (idempotent). */
 function releaseDesignHold(tab: Tab | undefined): void {
@@ -1332,6 +1330,7 @@ async function finishPick(wsId: string, pin: BrowserTabId | undefined, raw: any)
       outerHTML: String(raw.outerHTML ?? ''),
       computed: raw.computed ?? {},
       box: raw.box,
+      component: raw.component,
     },
     screenshot,
   );

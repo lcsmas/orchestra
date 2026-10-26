@@ -1,8 +1,9 @@
 // The page-side half of design mode: the self-contained IIFE the browser panel
-// injects (Runtime.evaluate) to draw the hover overlay and capture a pick.
-// Extracted verbatim from browser-panel.ts (#403) so the page script can evolve
-// without touching the panel's transport code. NOTE: it IS a template literal —
-// no backticks inside the script.
+// injects to draw the hover overlay and capture a pick. Split out of
+// browser-panel.ts (#403) so the page script evolves apart from the transport.
+// NOTE: it IS a template literal — no backticks inside the script.
+
+import { reactSourceInPage } from '../shared/design-source.ts';
 
 /** The id the injected overlay uses for its own DOM, so re-arming replaces
  *  rather than stacking overlays, and disarm can find and remove it. */
@@ -29,19 +30,38 @@ export const DESIGN_MODE_SCRIPT = `(() => {
   if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} }
   window[PICK_GLOBAL] = null;
 
+  // React 17/18 dev: component + source file:line of the picked element (#403).
+  // Plain-JS, self-contained function injected via toString() (shared/design-source.ts).
+  const reactSource = ${reactSourceInPage.toString()};
+
+  // The overlay is PAGE-CSS-PROOF (#403): the host's styles are inline !important
+  // (beats any stylesheet rule, layered or not), 'all: initial' drops inherited
+  // visibility/opacity/transform, the box + label live in a CLOSED shadow root
+  // (no selector reaches them), and the top layer lifts it over every z-index,
+  // stacking context and transformed ancestor.
   const host = document.createElement('div');
   host.id = OVERLAY_ID;
-  // pointer-events:none on the whole overlay is what makes the picker unable to
-  // pick ITSELF — elementFromPoint skips pointer-events:none nodes.
-  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
+  const pin = (el, decls) => { for (const d of decls) el.style.setProperty(d[0], d[1], 'important'); };
+  // pointer-events:none is what makes the picker unable to pick ITSELF —
+  // elementFromPoint skips such nodes (hit() below also skips the host).
+  pin(host, [['all', 'initial'], ['display', 'block'], ['position', 'fixed'], ['inset', '0'], ['z-index', '2147483647'], ['pointer-events', 'none']]);
+  const root = host.attachShadow({ mode: 'closed' });
   const box = document.createElement('div');
   box.style.cssText = 'position:fixed;border:2px solid #6aa9ff;background:rgba(106,169,255,0.18);border-radius:2px;transition:all 40ms linear;pointer-events:none;';
   const label = document.createElement('div');
   label.style.cssText = 'position:fixed;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#6aa9ff;color:#0b1020;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.35);';
-  host.appendChild(box); host.appendChild(label);
-  (document.body || document.documentElement).appendChild(host);
+  root.appendChild(box); root.appendChild(label);
+  document.documentElement.appendChild(host);
+  try { host.setAttribute('popover', 'manual'); host.showPopover(); } catch (e) {}
 
   let current = null;
+
+  // Top-most page element at a point, never the overlay host.
+  const hit = (x, y) => {
+    const all = document.elementsFromPoint(x, y);
+    for (let i = 0; i < all.length; i++) { if (all[i] !== host) return all[i]; }
+    return null;
+  };
 
   const describe = (el) => {
     const cls = (el.getAttribute && el.getAttribute('class')) || '';
@@ -67,14 +87,14 @@ export const DESIGN_MODE_SCRIPT = `(() => {
   };
 
   const onMove = (e) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const el = hit(e.clientX, e.clientY);
     if (!el || el === current) return;
     current = el; paint(el);
   };
 
   const onClick = (e) => {
     e.preventDefault(); e.stopPropagation();
-    const el = document.elementFromPoint(e.clientX, e.clientY) || current;
+    const el = hit(e.clientX, e.clientY) || current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     const cs = getComputedStyle(el);
@@ -110,6 +130,7 @@ export const DESIGN_MODE_SCRIPT = `(() => {
       computed: computed,
       box: { x: r.left, y: r.top, width: r.width, height: r.height },
       viewport: { width: window.innerWidth, height: window.innerHeight },
+      component: reactSource(el),
     };
     teardown();
   };
@@ -120,8 +141,7 @@ export const DESIGN_MODE_SCRIPT = `(() => {
     document.removeEventListener('mousemove', onMove, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', onKey, true);
-    const h = document.getElementById(OVERLAY_ID);
-    if (h && h.parentNode) h.parentNode.removeChild(h);
+    if (host.parentNode) host.parentNode.removeChild(host);
     window.__orchestraDesignTeardown = null;
   };
   window.__orchestraDesignTeardown = teardown;
