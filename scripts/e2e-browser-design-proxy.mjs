@@ -228,9 +228,12 @@ async function main() {
   const port = await freePort();
   const env = { PATH: `${world.stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1', ORCHESTRA_CDP_RELEASE_GRACE_MS: String(GRACE_MS) };
+    ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8', ORCHESTRA_CDP_TRACE: '1', ORCHESTRA_CDP_RELEASE_GRACE_MS: String(GRACE_MS),
+    // Never the human's session bus (ledger #405, incident Q2): with the real XDG_RUNTIME_DIR an UNSET address lets libdbus fall back to $XDG_RUNTIME_DIR/bus
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(RIG_DIR, 'no-session-bus')}` };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
+  if (!env.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR) || fs.existsSync(env.DBUS_SESSION_BUS_ADDRESS.slice('unix:path='.length))) refuse(`child D-Bus address ${env.DBUS_SESSION_BUS_ADDRESS} is not a nonexistent socket inside the rig dir`);
   const fd = fs.openSync(path.join(armDir, 'app.out'), 'w');
   const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`[rig] app pid ${app.pid} debug port ${port} log ${path.join(world.ohome, 'logs/orchestra.log')}`);
@@ -243,8 +246,8 @@ async function main() {
     await ui.send('Page.enable');
     const environ = fs.readFileSync(`/proc/${app.pid}/environ`, 'utf8').split('\0');
     const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
-    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && ev('ORCHESTRA_CDP_TRACE') === '1',
-      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'} ORCHESTRA_CDP_TRACE=${ev('ORCHESTRA_CDP_TRACE')}`);
+    clause('ctl', 'scratch-env', ev('ORCHESTRA_HOME') === world.ohome && ev('CLAUDE_CONFIG_DIR') === world.cfg && ev('HOME') === world.fakeHome && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && ev('ORCHESTRA_CDP_TRACE') === '1' && ev('DBUS_SESSION_BUS_ADDRESS') === env.DBUS_SESSION_BUS_ADDRESS,
+      `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'} ORCHESTRA_CDP_TRACE=${ev('ORCHESTRA_CDP_TRACE')} DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS') || '<unset>'}`);
     await runArms({ world, W1, W2, W3, FIX, port, app, ui, targets, env });
   } catch (e) {
     clause('rig', 'completed', false, `ABORTED: ${e.stack || e}`);
