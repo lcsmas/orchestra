@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import type { SecretServiceState } from '../shared/password-store.ts';
-import { PROBE_TIMEOUT_MS, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
+import { DBUS_CALL_TIMEOUT_S, PROBE_TIMEOUT_MS, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
 
 // #389 — the impure half of the keyring selection: the REAL probe code path (a real child process) against a
 // stub `gdbus`, and the switch application against a fake `app.commandLine`.
@@ -56,8 +56,21 @@ test('probe: a HUNG gdbus is killed at the timeout and reads unavailable — sta
   assert.throws(() => process.kill(pid, 0), /ESRCH/, 'the hung child was killed, not left running');
 });
 
-test('the shipped probe bound is short (a locked/hung service may never cost startup more than ~1.5 s)', () => {
-  assert.ok(PROBE_TIMEOUT_MS <= 2000);
+test('the shipped probe NEVER abandons an in-flight call: gdbus waits ≥ 5 s itself, the child is not SIGKILLed, the backstop is > gdbus\'s own timeout and still bounded', () => {
+  assert.ok(Number(DBUS_CALL_TIMEOUT_S) >= 5, 'a vanished client mid-Properties.Get aborted the human\'s gnome-keyring-daemon twice');
+  assert.ok(PROBE_TIMEOUT_MS > Number(DBUS_CALL_TIMEOUT_S) * 1000 && PROBE_TIMEOUT_MS <= 10000, `backstop ${PROBE_TIMEOUT_MS} ms`);
+  let seen: { args: string[]; opts: Record<string, unknown> } | null = null;
+  const fake = ((_cmd: string, args: string[], opts: Record<string, unknown>) => {
+    seen = { args, opts };
+    return { status: 0, stdout: '(<false>,)', error: undefined };
+  }) as unknown as typeof import('node:child_process').spawnSync;
+  assert.equal(probeSecretService({ spawn: fake }), 'unlocked');
+  assert.ok(seen);
+  const { args, opts } = seen as { args: string[]; opts: Record<string, unknown> };
+  assert.equal(args[args.indexOf('--timeout') + 1], DBUS_CALL_TIMEOUT_S, 'gdbus is told the long timeout');
+  assert.notEqual(opts.killSignal, 'SIGKILL', 'the child is never SIGKILLed');
+  assert.equal(opts.killSignal, 'SIGTERM');
+  assert.equal(opts.timeout, PROBE_TIMEOUT_MS);
 });
 
 // ---- the switch ---------------------------------------------------------------------------------

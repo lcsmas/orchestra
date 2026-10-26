@@ -376,7 +376,7 @@ async function runArm(name) {
       'isolated-gnome': /password-store: basic — isolated-instance \[desktop="GNOME" session="" bus=env\]$/m,
       fleet: /password-store: basic — isolated-instance \[desktop="" session="" bus=runtime-dir\]$/m,
       gnome: /password-store: Chromium default — recognised-desktop \[desktop="GNOME" session="" bus=env\]/,
-      hung: /password-store: Chromium default — no-service \(probe (1[5-9]\d\d|2\d\d\d) ms\)/, // killed at ~1.5 s, not 30 s
+      hung: /password-store: Chromium default — no-service \(probe (7[5-9]\d\d|8\d\d\d) ms\)/, // the 8 s backstop (the stub gdbus ignores --timeout), not the stub's 30 s
       relock: /password-store: gnome-libsecret — unlocked-service/,
     }[name];
     const dl = decisionLine(w);

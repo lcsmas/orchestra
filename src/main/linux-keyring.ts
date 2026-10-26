@@ -13,18 +13,20 @@ import {
   type SecretServiceState,
 } from '../shared/password-store.ts';
 
-/** Hard kill for the probe child. The probe is SYNCHRONOUS on the main process before the window
- *  exists, so this is the worst-case startup cost of an unrecognised desktop — never a stall. */
-export const PROBE_TIMEOUT_MS = 1500;
-/** gdbus's own call timeout (seconds), kept under our kill so it reports the error itself. */
-const DBUS_CALL_TIMEOUT_S = '1';
+/** Backstop for the probe child (a gdbus that hangs BEFORE it even calls). The probe is SYNCHRONOUS on the main process before the window exists, so
+ *  this is the worst-case startup cost of an unrecognised desktop with a dead service — a bounded wait, never a stall. */
+export const PROBE_TIMEOUT_MS = 8000;
+/** gdbus's own call timeout (seconds). It must be LONG: a client that vanishes while its `Properties.Get` is in flight made the human's
+ *  gnome-keyring-daemon abort twice (2026-10-26, `gkd_secret_service_get_pkcs11_session: assertion 'client' failed`). `Locked` never prompts, so
+ *  waiting costs nothing but a dead daemon — and a call is never abandoned (no SIGKILL) while the daemon is still answering. */
+export const DBUS_CALL_TIMEOUT_S = '5';
 
-/** Read `Locked` of the DEFAULT collection without prompting, in a killable child. Anything but a
- *  clean boolean answer (no `gdbus`, no owner, no default collection, timeout) is `unavailable`. */
+/** Read `Locked` of the DEFAULT collection without prompting. Anything but a clean boolean answer (no `gdbus`, no owner, no default collection, a
+ *  dead daemon past the timeout) is `unavailable`, and the decision falls back to Chromium's default. */
 export function probeSecretService(
-  opts: { program?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  opts: { program?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; spawn?: typeof spawnSync } = {},
 ): SecretServiceState {
-  const r = spawnSync(
+  const r = (opts.spawn ?? spawnSync)(
     opts.program ?? 'gdbus',
     [
       'call', '--session', '--timeout', DBUS_CALL_TIMEOUT_S,
@@ -36,7 +38,7 @@ export function probeSecretService(
     {
       encoding: 'utf8',
       timeout: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
+      killSignal: 'SIGTERM', // never SIGKILL a gdbus that may be mid-call; the backstop only ever fires for a hung child
       maxBuffer: 4096,
       stdio: ['ignore', 'pipe', 'ignore'],
       env: opts.env ?? process.env,
