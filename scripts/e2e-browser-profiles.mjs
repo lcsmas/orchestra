@@ -13,11 +13,12 @@
 //   boot 3  restore   the sign-in made seconds before the SIGKILL survived (cookie store flushed on change)
 //           flush     (own boots) the same, 9 s margin — the timing arm run 10x unmutated
 //           session   (own boots) a SESSION-cookie sign-in (no expiry): promoted to 30 days in the profile, survives a restart; the workspace without the profile does not
+//           cdp       (own boot) the REAL `orchestra browser` CLI (host-resolved agent identity) against a profile SHARED by two workspaces: `cookies clear` and a cookie write on another site are REFUSED (the other workspace stays signed in), the page's own cookie write works, an EPHEMERAL workspace may clear its own jar
 //           delete    delete an attached profile: carriers detached, tabs reloaded ephemeral & signed out, cookie DB emptied on disk, another profile untouched
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* clauses are controls (identity, scratch containment, own sway, instrument).
 // Mutant BUILDS that must redden each arm: scripts/e2e-browser-profiles-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session]
+// Usage (via scripts/e2e-browser-profiles.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms settings,attach,human,restore,delete,flush,session,cdp]
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -35,7 +36,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,cdp').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -163,11 +164,14 @@ function seedWorld(armDir) {
     git(repoDir, ['worktree', 'add', '-q', '-b', `e2e/bp400-${n}`, wt], fakeHome);
     return { id: `ws-bp400-${n}`, name: `bp400-${n}`, repoPath: repoDir, worktreePath: wt, branch: `e2e/bp400-${n}`, baseBranch: 'main', createdAt: Date.now() + n, status: 'idle', agent: 'claude', accountId: account.id };
   });
+  // the host vouches for a CLI only through this registry (ADR 0008): the HASH of each workspace's key, 0600 — what a fresh keeper spawn writes
+  const keys = { [wss[0].id]: crypto.randomBytes(24).toString('hex'), [wss[1].id]: crypto.randomBytes(24).toString('hex') };
+  fs.writeFileSync(path.join(ohome, 'session-keys.json'), JSON.stringify({ version: 1, sessions: Object.fromEntries(Object.entries(keys).map(([id, k]) => [id, { hash: crypto.createHash('sha256').update(k).digest('hex'), issuedAt: Date.now() }])) }), { mode: 0o600 });
   const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'bp400-repo', defaultBranch: 'main', accountId: account.id }], workspaces: wss, accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho BP400-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
-  return { fakeHome, ohome, cfg, account, ws1: wss[0], ws2: wss[1], stubDir, storeFile: path.join(dir, 'store.json'), partitions: path.join(ohome, 'userData', 'Partitions') };
+  return { fakeHome, ohome, cfg, account, ws1: wss[0], ws2: wss[1], keys, stubDir, storeFile: path.join(dir, 'store.json'), partitions: path.join(ohome, 'userData', 'Partitions') };
 }
 const readStore = (w) => JSON.parse(fs.readFileSync(w.storeFile, 'utf8'));
 const wsRec = (w, id) => readStore(w).workspaces.find((x) => x.id === id);
@@ -201,7 +205,7 @@ const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { r
 
 // ── one boot of the app on the world ─────────────────────────────────────────────────────────────
 const VIEWPORT = { w: 1500, h: 950 };
-async function boot(world, bootName, { inspect = false } = {}) {
+async function boot(world, bootName, { inspect = false, trace = false } = {}) {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', `${VIEWPORT.w}x${VIEWPORT.h}`]);
   sh('swaymsg', ['default_border', 'none']);
   const port = await freePort();
@@ -210,7 +214,9 @@ async function boot(world, bootName, { inspect = false } = {}) {
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
     // the contained rig pins this to a path that must never exist (private runtime world, incident Q2) — pass it through, never invent one
-    ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) };
+    ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}),
+    // every CDP request the proxy forwards lands in <ORCHESTRA_HOME>/logs/orchestra.log: the oracle for WHICH debugger method a CLI command used
+    ...(trace ? { ORCHESTRA_CDP_TRACE: '1' } : {}) };
   for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR']) mustBeScratch(`env.${k}`, env[k]);
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(RIG_DIR, `app-${bootName}.log`);
@@ -334,6 +340,16 @@ async function evalIn(b, urlPart, expr) {
 }
 /** `expires` of the page's `sid` cookie in ms (null = a SESSION cookie), straight from the page's CookieStore. */
 const sidExpiry = (b, urlPart) => evalIn(b, urlPart, `cookieStore.get('sid').then((c) => (c ? (c.expires ?? null) : 'absent'))`);
+/** The REAL bundled CLI as an agent's Bash tool would run it: `env -i` allowlist, the workspace's host-vouched session key, `orchestra browser <args>`. */
+function browserCli(world, wsRec, args, timeout = 90000) {
+  const tmp = path.join(world.fakeHome, 'agent-tmp', wsRec.name); fs.mkdirSync(tmp, { recursive: true });
+  const r = spawnSync(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'browser', ...args], { encoding: 'utf8', timeout, cwd: world.fakeHome,
+    env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_WS_ID: wsRec.id, ORCHESTRA_SESSION_KEY: world.keys[wsRec.id], ORCHESTRA_AGENT_TMPDIR: tmp, LANG: 'C.UTF-8' } });
+  return { code: r.status ?? (r.signal ? 137 : 1), out: ((r.stdout ?? '') + (r.stderr ?? '')).trim() };
+}
+const appLog = (world) => { try { return fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8'); } catch { return ''; } };
+/** CDP methods the proxy sent to the DEBUGGER since `mark` (an offset into the app log). */
+const debuggerMethodsSince = (world, mark) => [...appLog(world).slice(mark).matchAll(/proxy->debugger (\{.*)/g)].map((m) => /"method":"([^"]+)"/.exec(m[1])?.[1]).filter(Boolean);
 const SETTINGS_BTN = '[data-bp-open]';
 async function openSettings(b) {
   await clickSel(b, SETTINGS_BTN);
@@ -783,6 +799,66 @@ try {
     await sleep(1500);
     const jS2 = await jarOf(b, PQ(2));
     clause('session', 'workspace-without-the-profile-is-signed-out-after-the-restart', jS2 === 'anon', `ws2 /whoami = ${jS2}`);
+    await teardown(b, 'term'); b = null;
+  }
+  // ── cdp: the agent's CLI against a SHARED profile (policy wired in the CDP proxy host) ──
+  if (ARMS.has('cdp')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-cdp', { trace: true });
+    const shared = await b.cdp.eval(`window.orchestra.browserProfileCreate('Shared').then((r) => r.profile?.id ?? null)`);
+    const ws1rec = { ...world.ws1 }, ws2rec = { ...world.ws2 };
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b); await chooseProfile(b, shared);
+    await typeUrl(b, `${BASE}/signin`);
+    await softWait(async () => (await pageText(b, '/signin'))?.startsWith('signed-in'), 15000, 'ws1 sign-in');
+    const sidC = ((await pageText(b, '/signin')) ?? '').replace('signed-in ', '').trim();
+    await typeUrl(b, P(1, '&c=1'));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('&c=1'), 15000, 'ws1 page');
+    await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b); await chooseProfile(b, shared);
+    await typeUrl(b, P(2, '&c=1'));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes('&c=1'), 15000, 'ws2 page');
+    const jarB0 = await jarOf(b, 'ws=2&c=1');
+    clause('cdp', 'ctl/two-workspaces-share-the-signed-in-profile', /^[0-9a-f]{16}$/.test(sidC) && jarB0 === sidC, `ws1 signed in as ${sidC}; ws2 (same profile) /whoami = ${jarB0}`);
+    await selectWorkspace(b, 'e2e/bp400-1');
+    await sleep(800);
+
+    // ctl: the CLI reaches THIS workspace's panel through the proxy (a refusal below must come from the policy, not from a dead chain)
+    const mk = () => appLog(world).length;
+    let m0 = mk();
+    const snap = browserCli(world, ws1rec, ['get', 'url']);
+    clause('cdp', 'ctl/cli-reaches-the-panel-through-the-proxy', snap.code === 0 && snap.out.includes('c=1'), `orchestra browser get url (ws1) → rc ${snap.code} ${JSON.stringify(snap.out.slice(0, 160))}`);
+
+    m0 = mk();
+    const get = browserCli(world, ws1rec, ['cookies', 'get']);
+    const getMethods = debuggerMethodsSince(world, m0);
+    results.push({ arm: 'cdp', clause: 'measured/cookies-get-methods', ok: true, detail: JSON.stringify({ rc: get.code, methods: getMethods, out: get.out.slice(0, 200) }) });
+    console.log(`  MEASURED [cdp] \`cookies get\` on a profile workspace → rc ${get.code}; CDP methods ${JSON.stringify(getMethods.filter((m) => /ookie|Storage/.test(m)))}; out ${JSON.stringify(get.out.slice(0, 200))}`);
+    clause('cdp', 'own-page-cookies-can-be-read-by-the-agent', get.code === 0 && get.out.includes('sid'), `cookies get → rc ${get.code}, shows the page's own sid: ${get.out.includes('sid')}`);
+
+    m0 = mk();
+    const clr = browserCli(world, ws1rec, ['cookies', 'clear']);
+    const clrMethods = debuggerMethodsSince(world, m0);
+    clause('cdp', 'cookies-clear-is-refused-for-a-profile-workspace', clr.code !== 0 && /shared with other workspaces/.test(clr.out), `cookies clear (ws1, profile) → rc ${clr.code} ${JSON.stringify(clr.out.slice(0, 260))}`);
+    clause('cdp', 'refused-clear-never-reached-the-debugger', !clrMethods.some((m) => /clearBrowserCookies|Storage\.clearCookies|clearDataFor/.test(m)), `CDP methods sent to the debugger during the refused clear: ${JSON.stringify(clrMethods)}`);
+    const jarA1 = await jarOf(b, PQ(1)); await selectWorkspace(b, 'e2e/bp400-2'); await sleep(600); const jarB1 = await jarOf(b, PQ(2));
+    clause('cdp', 'the-other-workspace-stays-signed-in-after-the-refused-clear', jarA1 === sidC && jarB1 === sidC, `after the refused clear: ws1 /whoami = ${jarA1}, ws2 /whoami = ${jarB1} (signed in as ${sidC})`);
+    await selectWorkspace(b, 'e2e/bp400-1'); await sleep(600);
+
+    const other = `http://localhost:${BASE.split(':').pop()}/`; // a DIFFERENT site (host) than the tab's 127.0.0.1
+    const cross = browserCli(world, ws1rec, ['cookies', 'set', 'planted', 'x', '--url', other]);
+    clause('cdp', 'cookie-write-on-another-site-is-refused', cross.code !== 0 && /site other than the page you are on/.test(cross.out), `cookies set --url ${other} (page is on 127.0.0.1) → rc ${cross.code} ${JSON.stringify(cross.out.slice(0, 240))}`);
+    const own = browserCli(world, ws1rec, ['cookies', 'set', 'mine', '1']);
+    clause('cdp', 'cookie-write-on-the-pages-own-site-is-allowed', own.code === 0, `cookies set mine 1 (page url) → rc ${own.code} ${JSON.stringify(own.out.slice(0, 160))}`);
+
+    // the EPHEMERAL control: ws2 detached; its agent may clear its own jar, and the shared profile is untouched by it
+    await selectWorkspace(b, 'e2e/bp400-2'); await chooseProfile(b, '');
+    await typeUrl(b, `${BASE}/signin`);
+    await softWait(async () => (await pageText(b, '/signin'))?.startsWith('signed-in'), 15000, 'ws2 ephemeral sign-in');
+    const ephClr = browserCli(world, ws2rec, ['cookies', 'clear']);
+    await sleep(500);
+    const jarEph = await jarOf(b, '/signin');
+    clause('cdp', 'ephemeral-workspace-may-clear-its-own-jar', ephClr.code === 0 && jarEph === 'anon', `cookies clear (ws2, ephemeral) → rc ${ephClr.code} ${JSON.stringify(ephClr.out.slice(0, 120))}; its /whoami afterwards = ${jarEph}`);
+    await selectWorkspace(b, 'e2e/bp400-1'); await sleep(600);
+    clause('cdp', 'ephemeral-clear-did-not-touch-the-shared-profile', (await jarOf(b, PQ(1))) === sidC, `ws1 (profile) /whoami after ws2's ephemeral clear = ${await jarOf(b, PQ(1))} (signed in as ${sidC})`);
     await teardown(b, 'term'); b = null;
   }
 } catch (e) {

@@ -2,7 +2,7 @@
 # #400 — profils navigateur, driven on the BUILT app inside its OWN headless sway (scripts/e2e-contained-rig.sh:
 # marker-verified compositor, `env -i` allowlist, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR). Driver: scripts/e2e-browser-profiles.mjs.
 #
-# Usage: scripts/e2e-browser-profiles.sh <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session]
+# Usage: scripts/e2e-browser-profiles.sh <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,cdp]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js); run `pnpm run build:bus-abi` then `pnpm run build:bundles` first.
 #   --arms     subset of arms (mutant builds only need the arm their mutant reddens); default = all.
 # Needs the shared fixture site (scripts/fixtures/browser-site/server.mjs, owned by #395). Exit 0 = every clause green; the must-FAIL builds
@@ -11,21 +11,25 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 APP_DIR="${1:-}"
-[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session]" >&2; exit 2; }
+[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,cdp]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
 for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js dist-electron/cli.js; do
   [[ -f "${APP_DIR}/${f}" ]] || { echo "ABORT: ${APP_DIR}/${f} missing — build first (pnpm run build:bus-abi, pnpm run build:bundles)" >&2; exit 2; }
 done
+[[ -x "${APP_DIR}/build/agent-browser/agent-browser" ]] || echo "NOTE: ${APP_DIR}/build/agent-browser/agent-browser missing — arm cdp needs it (pnpm run fetch:agent-browser); the other arms do not" >&2
 [[ -f "${HERE}/fixtures/browser-site/server.mjs" ]] || { echo "ABORT: scripts/fixtures/browser-site/server.mjs missing (the shared fixture site is owned by #395)" >&2; exit 2; }
 
 # Rig bound (ledger #405 §Briefing): one Electron rig at a time per member, only with >= 6 GB available.
 avail_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
 (( avail_kb >= 6*1024*1024 )) || { echo "ABORT: MemAvailable ${avail_kb} kB < 6 GB — the machine runs ~20 other agents" >&2; exit 2; }
 
-# btrfs under ~ (never /tmp: tmpfs). Nothing here deletes anything.
-export E2E_RIG_BASE="${E2E_RIG_BASE:-$HOME/.cache/e2e-browser-profiles}"
-mkdir -p "${E2E_RIG_BASE}"
+# A SHORT disk-backed base (never /tmp: tmpfs): agent-browser's unix socket lives under the rig's private runtime dir and a socket path is capped at
+# 103 bytes — the old `~/.cache/e2e-browser-profiles` base made `orchestra browser` fail ("Socket path would be 117 bytes"). Nothing here deletes anything.
+export E2E_RIG_BASE="${E2E_RIG_BASE:-/var/tmp/b400-$(id -u)}"
+mkdir -p -m 700 "${E2E_RIG_BASE}"
+[[ -O "${E2E_RIG_BASE}" && ! -L "${E2E_RIG_BASE}" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is not a directory owned by me (or is a symlink)" >&2; exit 2; }
+chmod 700 "${E2E_RIG_BASE}"
 FSTYPE="$(findmnt -no FSTYPE -T "${E2E_RIG_BASE}")"
 [[ "${FSTYPE}" != "tmpfs" ]] || { echo "ABORT: rig base ${E2E_RIG_BASE} is on tmpfs — must be btrfs under ~" >&2; exit 2; }
 

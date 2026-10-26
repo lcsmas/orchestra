@@ -28,6 +28,10 @@ const AGENT_SURFACES = [
   'main/acces-mobile-routes.ts',
   'main/acces-mobile-host.ts',
   'main/cli-shim.ts',
+  // the CDP proxy host + the CLI host (#395): the agent's `orchestra browser` reaches the panel through them — they may ASK the profile policy, never change a profile
+  'main/browser-cdp-host.ts',
+  'main/browser-cdp-proxy.ts',
+  'shared/cdp-proxy-core.ts',
 ];
 
 test('NO agent-facing surface (CLI, socket routes, MCP browser tools, agent session, phone routes) names a profile operation', () => {
@@ -114,4 +118,14 @@ test('the host stops sign-in persistence for a deleted profile before its wipe, 
   assert.match(host, /stopSignIns: \(profileId\) => stopSignInPersistence\(profilePartition\(profileId\)\),/);
   const svc = code('main/browser-profiles.ts');
   assert.ok(svc.indexOf('deps.stopSignIns(profileId)') > svc.indexOf('deps.settleViews()') && svc.indexOf('deps.stopSignIns(profileId)') < svc.indexOf('deps.clearStorage(profileId)'), 'settle → stop → clear, in that order');
+});
+
+test('the CDP proxy host asks the profile policy for EVERY agent command: decideAgentCdp(method, params, panelProfileId(wsId) read at call time, the TARGETED tab\'s url) — the answer is the refusal text', () => {
+  const host = code('main/browser-cdp-host.ts');
+  assert.match(host, /import \{ decideAgentCdp \} from '\.\.\/shared\/browser-profile\.ts';/);
+  assert.match(host, /refuseMethod: \(method, params, tab\) => \{\s*const d = decideAgentCdp\(\{ method, params, profileId: bp\.panelProfileId\(wsId\), pageUrl: tab\.url \}\);\s*return d\.ok \? null : d\.message \|\| 'refused: the profil navigateur policy of this workspace forbids this command';\s*\},/);
+  // the core calls it for every tab command BEFORE the debugger sees it, and a throwing hook fails closed (#395's seam)
+  const core = code('shared/cdp-proxy-core.ts');
+  assert.match(core, /this\.port\.refuseMethod/);
+  assert.ok(core.indexOf('this.port.refuseMethod') < core.indexOf("method === 'Page.bringToFront'"), 'asked before any command is handled');
 });

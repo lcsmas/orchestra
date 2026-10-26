@@ -215,3 +215,21 @@ test('decideAgentCdp (site scope): another site\'s cookies are refused for a pro
   assert.equal(cdp('Network.getCookies', { urls: [PAGE] }, 'about:blank').ok, false, 'a blank tab owns no site');
   assert.deepEqual(cdp('Runtime.evaluate', { expression: 'document.cookie' }), { ok: true }, 'in-page JS is the page\'s own business');
 });
+
+test('decideAgentCdp: EVERY refusal carries a NON-EMPTY string message (the proxy core judges truthiness — an empty one would fail OPEN) and every allowance is exactly {ok:true}', () => {
+  const PAGE2 = 'https://app.example.com/';
+  const refusals: Array<[string, unknown]> = [
+    ...[...PROFILE_REFUSED_CDP_METHODS.keys()].map((m): [string, unknown] => [m, {}]),
+    ['Network.getCookies', { urls: ['https://x.org/'] }], ['Network.getCookies', { urls: 3 }], ['Network.deleteCookies', { name: 'a', domain: 'x.org' }],
+    ['Network.setCookie', { name: 'a', value: 'b', url: 'https://x.org/' }], ['Network.setCookies', { cookies: [{ url: 'https://x.org/' }] }], ['Network.setCookies', { cookies: null }],
+  ];
+  for (const [method, params] of refusals) {
+    const r = decideAgentCdp({ method, params, profileId: A, pageUrl: PAGE2 });
+    assert.equal(r.ok, false, `${method} ${JSON.stringify(params)}`);
+    assert.equal(typeof (r as { message: unknown }).message, 'string');
+    assert.ok((r as { message: string }).message.trim().length > 20, `${method}: a real sentence, not ''`);
+  }
+  for (const [method, params] of [['Runtime.evaluate', {}], ['Network.getCookies', {}], ['Page.navigate', { url: 'https://x.org/' }], ['Network.deleteCookies', { name: 'a', url: PAGE2 }]] as Array<[string, unknown]>) {
+    assert.deepEqual(decideAgentCdp({ method, params, profileId: A, pageUrl: PAGE2 }), { ok: true });
+  }
+});

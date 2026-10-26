@@ -22,6 +22,7 @@ const PANEL = 'src/main/browser-panel.ts';
 const SVC = 'src/main/browser-profiles.ts';
 const IPC = 'src/main/browser-profiles-ipc.ts';
 const PURE = 'src/shared/browser-profile.ts';
+const CDPHOST = 'src/main/browser-cdp-host.ts';
 const PROMO = 'src/shared/browser-cookie-promote.ts';
 const tmp = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'bprof-mut-'));
 const backups = new Map();
@@ -89,6 +90,9 @@ const MUTANTS = [
   [PANEL, 'a throw closing an old view rolls the committed move back', "      log.warn('browser-panel: reprofilePanel could not close an old view', e);", "      throw e;"],
   [SVC, 'a delete with views still closing wipes anyway', "          return refuse('storage', 'Some of the profile’s tabs are still closing. Wait a moment and delete it again.');", "          void 0;"],
   [SVC, 'sign-in persistence is not stopped before the wipe', "        deps.stopSignIns(profileId);\n", ''],
+  [PURE, 'a clear refusal has an EMPTY message (the proxy would fail open)', "'refused: this workspace\\'s browser carries a profil navigateur shared with other workspaces and sites — clearing it would sign them all out. ' +", "'' +"],
+  [PURE, 'a site-scope refusal has an EMPTY message (the proxy would fail open)', "          'refused: this workspace\\'s browser carries a profil navigateur — cookies of a site other than the page you are on are not yours to read or change from here. ' +\n          'Navigate to that site first, or ask the human.',", "          '',"],
+  [CDPHOST, 'the host drops the non-empty fallback (an empty message would fail open)', " d.message || 'refused: the profil navigateur policy of this workspace forbids this command';", " d.message;"],
   // (no mutant for the `!removed` early-out: the LIVE re-read is the real guard and makes it equivalent — a removed cookie reads back as nothing)
   // --- session cookies are promoted in a profile (OPS ruling) ---
   [PROMO, 'a cookie that already has an expiry is promoted again (set → changed loop)', 'if (c.session !== true || c.expirationDate !== undefined) return null;', 'if (c.session !== true) return null;'],
