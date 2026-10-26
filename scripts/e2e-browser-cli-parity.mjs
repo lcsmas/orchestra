@@ -993,6 +993,16 @@ const ARM_FNS11 = {
       const clear = await cli(ctx, W1, ['cookies', 'clear']);
       const other = await cli(ctx, W1, ['cookies', 'set', 'x399', 'y', '--url', 'https://other.example.invalid/']);
       clause(A, 'cookies-get-works-cookies-clear-and-a-foreign-site-set-are-refused-on-a-profile-workspace', get.code === 0 && clear.code !== 0 && other.code !== 0 && /profile|partition|shared|human/i.test(clear.stderr), `cookies get → ${show(get)}; cookies clear → ${show(clear)}; cookies set --url <other site> → ${show(other)}`);
+      // the skill's single-cookie recipe, taken from the SKILL TEXT, on the profile workspace; `cookies delete|rm` really do nothing (exit 0)
+      const rec = /§?cookies set NAME "" --expires 1/.test(BROWSER_SKILL.replace(/`/g, '§')) ? ['cookies', 'set', 'b399ck', '', '--expires', '1'] : null;
+      await cli(ctx, W1, ['cookies', 'set', 'b399ck', 'v1', '--url', `${FIX}/`]);
+      const has0 = (await cli(ctx, W1, ['cookies', 'get'])).stdout.includes('b399ck');
+      const del = await cli(ctx, W1, ['cookies', 'delete', 'b399ck']);
+      const rm = await cli(ctx, W1, ['cookies', 'rm', 'b399ck']);
+      const hasAfterDelete = (await cli(ctx, W1, ['cookies', 'get'])).stdout.includes('b399ck');
+      const gone = rec ? await cli(ctx, W1, rec) : null;
+      const hasAfterRecipe = (await cli(ctx, W1, ['cookies', 'get'])).stdout.includes('b399ck');
+      clause(A, 'single-cookie-recipe-removes-it-while-cookies-delete-and-rm-exit-0-and-do-nothing', !!rec && has0 && del.code === 0 && rm.code === 0 && hasAfterDelete && !!gone && gone.code === 0 && !hasAfterRecipe, `cookie present: ${has0}; cookies delete → rc ${del.code}, rm → rc ${rm.code}, still present: ${hasAfterDelete}; the skill's recipe (${rec ? rec.join(' ') : 'NOT IN THE SKILL TEXT'}) → ${gone ? show(gone) : 'n/a'}, present after: ${hasAfterRecipe}`);
       const noVerb = await cli(ctx, W1, ['profile', 'attach', 'x']);
       clause(A, 'there-is-no-profile-verb-for-the-agent', noVerb.code !== 0 && /unknown command|not available/i.test(noVerb.stderr), `orchestra browser profile attach x → ${show(noVerb)}`);
     } finally {

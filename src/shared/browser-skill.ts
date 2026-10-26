@@ -107,7 +107,7 @@ Your commands were not observed to move the human's keyboard focus (they are bui
 
 ## On a workspace with a browser profile
 
-The human can attach a profile (a saved sign-in) to this workspace; other workspaces may share it. Then the pane is signed in, and you still drive it the same way, with these refusals (exit 1, the message says why): §cookies clear§ (it would wipe the shared sign-in), §cookies set … --url <another site>§, and §cookies get§ while the page embeds a frame from another host (an SSO iframe). Delete one cookie by name instead, or ask the human.
+The human can attach a profile (a saved sign-in) to this workspace; other workspaces may share it. Then the pane is signed in, and you still drive it the same way, with these refusals (exit 1, the message says why): §cookies clear§ (it would wipe the shared sign-in), §cookies set … --url <another site>§, and §cookies get§ while the page embeds a frame from another host (an SSO iframe). To remove ONE cookie of the page you are on, expire it: §cookies set NAME "" --expires 1§ (check with §cookies get§). There is no §cookies delete NAME§ or §cookies rm NAME§: they exit 0, do nothing and just print the cookies like §get§ — never trust their exit code. Or ask the human.
 
 ## What you cannot do
 
