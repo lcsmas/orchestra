@@ -157,6 +157,30 @@ export function resolveAbTab(tabs: readonly AbTab[], ref: string | undefined): A
  */
 export const TAB_DESTROYING_METHODS: ReadonlySet<string> = new Set(['Page.crash', 'Runtime.terminateExecution']);
 
+/** Schemes whose pages Chromium treats as internal; `about:` is handled apart (only `about:blank`/`about:srcdoc` are plain pages). */
+const INTERNAL_URL_SCHEMES: ReadonlySet<string> = new Set(['chrome', 'chrome-untrusted', 'chrome-search', 'chrome-distiller', 'devtools']);
+
+/**
+ * Is `url` a navigation target that wedges or kills the renderer it is loaded in (`chrome://crash|kill|hang|shorthang`, `about:crash` — Chromium
+ * rewrites `about:` to `chrome://` —, the GPU/browser debug pages…)? Decided by SCHEME alone so no path spelling slips through: the URL parser's
+ * view is mirrored (leading/trailing C0 control + space trimmed, tab/newline dropped, scheme case-folded, nested `view-source:` unwrapped).
+ * #397 seat-3 F4: `Page.navigate chrome://crash` on the user's tab bypassed the {@link TAB_DESTROYING_METHODS} gate.
+ */
+export function isBrowserInternalUrl(url: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  let u = url.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '').replace(/[\t\n\r]/g, '').toLowerCase();
+  for (let i = 0; i < 4 && u.startsWith('view-source:'); i++) u = u.slice('view-source:'.length).replace(/^[\u0000-\u0020]+/, '');
+  const m = /^([a-z][a-z0-9+.-]*):(.*)$/s.exec(u);
+  if (!m) return false;
+  if (m[1] === 'about') return !/^(blank|srcdoc)([?#].*)?$/s.test(m[2]!);
+  return INTERNAL_URL_SCHEMES.has(m[1]!);
+}
+
+/** The refusal text for a navigation of a tab the agent did not open to a browser-internal URL (same family as the destroyer refusal). */
+export function internalNavigationRefusal(method: string, tabId: string): string {
+  return `${method} to a browser-internal URL (chrome:, about:, devtools:…) is refused: tab ${tabId} was opened by the user — such pages crash or hang the renderer, and an agent may only do that to the tabs it opened.`;
+}
+
 export type CloseVerdict = { run: true } | { run: false; message: string };
 
 /**
