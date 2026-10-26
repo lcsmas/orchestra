@@ -682,9 +682,11 @@ try {
     await clickSel(b, '.browser-tab-close', 1);
     const gone = await softWait(async () => (await tabs(b)).length === 1 && swayWindows(b.app.pid).length === baseWins.length, 10000, 'the child window to follow its closed opener tab');
     clause('cleanup', 'closing-the-opener-tab-closes-its-child-window', gone, `after closing tab 2: tabs ${(await tabs(b)).length}; app windows ${JSON.stringify(winNames(b))} (baseline ${JSON.stringify(baseWins)})`);
+    await rateRoom(3); // the storm below is page-initiated: stay inside the per-minute rate cap the earlier phases used up
     await typeUrl(b, URLS.storm('?auto=40&kind=mixed'));
     await waitFor(async () => (await tabs(b))[0]?.label === TITLES.storm, 20000, 'tab 1 on the storm fixture');
     await sleep(2500);
+    noteOpens(3);
     const tsB = await tabs(b); const winsB = swayWindows(b.app.pid).length - baseWins.length; const tgB = (await pageTargets(b)).length;
     clause('cleanup', 'ctl/surfaces-exist-before-the-archive', tsB.length + winsB >= 3 && winsB >= 1 && tgB >= 3, `tabs ${tsB.length}, child windows ${winsB}, page targets ${tgB}`);
     await b.cdp.eval(`window.orchestra.archiveWorkspace(${JSON.stringify(world.ws.id)})`);
