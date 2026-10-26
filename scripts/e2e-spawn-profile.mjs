@@ -20,6 +20,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { startFakeApi } from './session-budget/fake-anthropic-api.mjs';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -107,10 +108,10 @@ fs.writeFileSync(path.join(world.ohome, 'session-keys.json'), JSON.stringify({ v
 const stubDir = path.join(world.d, 'bin'); fs.mkdirSync(stubDir, { recursive: true });
 fs.symlinkSync(fs.realpathSync(path.join(LIVE_HOME, '.local/bin/claude')), path.join(stubDir, 'claude'));
 const cdpPort = await freePort();
-// incident Q2 (ledger #405): the app runs in the contained rig's PRIVATE runtime world — never the human's /run/user/<uid>, and the session bus is the rig's pinned, nonexistent one
-if (!process.env.XDG_RUNTIME_DIR || process.env.XDG_RUNTIME_DIR.startsWith('/run/user/') || !process.env.XDG_RUNTIME_DIR.startsWith(`${RIG_DIR}/`)) refuse(`XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR} is not the rig's private dir — run via scripts/e2e-spawn-profile.sh (the contained rig)`);
+// incident Q2 (ledger #405): the app runs in the contained rig's PRIVATE runtime world — privateRuntimeDir() REFUSES anything but `<rig dir>/xdg` (never the human's runtime dir); the session bus is the rig's pinned, nonexistent one
+const XDG = privateRuntimeDir();
 if (!process.env.DBUS_SESSION_BUS_ADDRESS || !process.env.DBUS_SESSION_BUS_ADDRESS.startsWith(`unix:path=${RIG_DIR}/`)) refuse(`DBUS_SESSION_BUS_ADDRESS=${process.env.DBUS_SESSION_BUS_ADDRESS} is not the rig's pinned nonexistent bus`);
-const env = { PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
+const env = { PATH: `${stubDir}:/usr/local/bin:/usr/bin:/bin`, HOME: world.fakeHome, XDG_RUNTIME_DIR: XDG, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
   WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
   ORCHESTRA_HOME: world.ohome, ORCHESTRA_DEBUG_PORT: String(cdpPort), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: world.cfg, LANG: 'C.UTF-8',
   ANTHROPIC_BASE_URL: fakeApi.url, ANTHROPIC_API_KEY: 'sk-ant-fake-rig-key', HTTPS_PROXY: fakeApi.proxyUrl, HTTP_PROXY: fakeApi.proxyUrl, NO_PROXY: '127.0.0.1,localhost' };
@@ -177,7 +178,7 @@ try {
   clause('ctl/cli-bundle-has-the-flag', /["']--profile["']/.test(fs.readFileSync(CLI, 'utf8')), `${CLI} parses --profile`);
   // What the DRIVER handed the app — Chromium rewrites the main process's environ once DBUS_SESSION_BUS_ADDRESS is set, so /proc/<pid>/environ goes blind (#400 measured the same).
   clause('ctl/scratch-env', env.ORCHESTRA_HOME === world.ohome && env.CLAUDE_CONFIG_DIR === world.cfg && env.HOME === world.fakeHome && !('DISPLAY' in env) && env.WAYLAND_DISPLAY === RIG_WAYLAND, `handed env: ORCHESTRA_HOME=${env.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${env.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in env ? env.DISPLAY : '<unset>'}`);
-  clause('ctl/private-runtime-world', env.XDG_RUNTIME_DIR.startsWith(`${RIG_DIR}/`) && !env.XDG_RUNTIME_DIR.startsWith('/run/user/') && env.DBUS_SESSION_BUS_ADDRESS.startsWith(`unix:path=${RIG_DIR}/`) && !fs.existsSync(env.DBUS_SESSION_BUS_ADDRESS.replace('unix:path=', '')), `handed env: XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS} (the socket path does not exist)`);
+  clause('ctl/private-runtime-world', env.XDG_RUNTIME_DIR === XDG && XDG === `${RIG_DIR}/xdg` && env.DBUS_SESSION_BUS_ADDRESS.startsWith(`unix:path=${RIG_DIR}/`) && !fs.existsSync(env.DBUS_SESSION_BUS_ADDRESS.replace('unix:path=', '')), `handed env: XDG_RUNTIME_DIR=${env.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${env.DBUS_SESSION_BUS_ADDRESS} (the socket path does not exist)`);
   clause('ctl/app-in-my-sway', new RegExp(`"pid":\\s*${app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${app.pid} present in my sway's get_tree`);
   const st0 = readStore();
   clause('ctl/account-pin', st0.accounts[0].id === st0.workspaces[0].accountId && !LIVE.some((l) => real(st0.accounts[0].configDir).startsWith(l)), `accountId ${st0.workspaces[0].accountId} == account.id ${st0.accounts[0].id}; configDir ${st0.accounts[0].configDir} (scratch)`);
