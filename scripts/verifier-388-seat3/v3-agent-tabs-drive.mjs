@@ -38,7 +38,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['stale', 'routes', 'capshare', 'strip8', 'notice', 'bg', 'killers', 'kill2', 'popuptab', 'crash']; // seat 3 (verifier) drive for #397: helpers copied from the member's rig, ARMS/oracles are mine
+const ARMS = ['stale', 'routes', 'capshare', 'strip8', 'notice', 'bg', 'killers', 'internal', 'recover', 'popuptab', 'crash']; // seat 3 (verifier) drive for #397: helpers copied from the member's rig, ARMS/oracles are mine
 const MUTANTS = {};
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -944,6 +944,131 @@ const ARM_FNS = {
       console.log(`  INFO  [${A}] open ${url} on the user's tab: ${show(o)} · then eval(1+1) via the CLI ${show(ev)} · oracle on the old page ${J(lv)} · page targets ${J(pages)} · registry ${brief(r)}`);
       if (url !== 'about:blank') clause(A, `cli-open-${url}-on-the-users-tab-leaves-its-renderer-alive`, ev.code === 0 && /2/.test(ev.stdout), `open → ${show(o)}; eval(1+1) afterwards → ${show(ev)}; the user's tab is ${ev.code === 0 ? 'answering' : 'NOT answering (renderer dead/hung)'}`);
     }
+  },
+
+  // ── seat 3 (F4 delta, de0d6a13): navigating a tab the agent did NOT open to a browser-internal URL — every spelling and route I can reach ────────────
+  async internal(ctx) {
+    const { W1, URL: U } = ctx; const A = 'internal';
+    const tabRef = (st) => st.abB?.tabId ?? 't1';
+    const alive = async (st, ms = 7000) => { await cli(ctx, W1, ['tab', tabRef(st)], { timeoutMs: 8000 }); const ev = await cli(ctx, W1, ['eval', '1 + 1'], { timeoutMs: ms }); return { ok: ev.code === 0 && /2/.test(ev.stdout), ev }; };
+    const first = (r) => (r.stderr || r.stdout).trim().split('\n')[0].slice(0, 130);
+    // (A) the agent's real path: `tab <user's tab>` then `open <url>`
+    for (const url of ['chrome://crash', 'chrome://kill', 'chrome://hang', 'chrome://shorthang', 'CHROME://CRASH', '  chrome://crash', 'chrome:\t//crash', 'chrome:/crash', 'about:crash', 'ABOUT:CRASH', 'view-source:chrome://crash', 'chrome-untrusted://crash', 'devtools://devtools/bundled/devtools_app.html']) {
+      const st = await fresh(ctx); await cli(ctx, W1, ['tab', tabRef(st)]);
+      const o = await cli(ctx, W1, ['open', url], { timeoutMs: 20000 }); await sleep(1200);
+      const a = await alive(st);
+      clause(A, `cli-open ${J(url)} on the user's tab: it survives`, a.ok, `open → ${show(o)}${/refus/i.test(o.stderr + o.stdout) ? ' [REFUSED by the gate]' : ' [not refused by the gate]'}; eval(1+1) → ${show(a.ev)}`);
+    }
+    // controls: a harmless internal-looking-but-plain URL and an agent-OPENED tab going to chrome://version (allowed by design)
+    {
+      const st = await fresh(ctx); await cli(ctx, W1, ['tab', tabRef(st)]); const o = await cli(ctx, W1, ['open', 'about:blank']); const a = await alive(st);
+      clause(A, 'ctl/open-about:blank-on-the-users-tab-works-and-it-answers', o.code === 0 && a.ok, `${show(o)}; ${show(a.ev)}`);
+      let okc = null; const tried = [];
+      for (const u of ['chrome://gpu', 'chrome://accessibility', 'chrome://process-internals']) {
+        const st2 = await fresh(ctx); await cli(ctx, W1, ['tab', st2.abA?.tabId ?? 't2']); const o2 = await cli(ctx, W1, ['open', u]); await sleep(1200);
+        const gu = await cli(ctx, W1, ['get', 'url']); tried.push(`${u}: ${first(o2)} → ${gu.stdout.trim().slice(0, 40)}`); if (o2.code === 0 && gu.stdout.includes(u.replace('chrome://', ''))) { okc = u; break; }
+      }
+      clause(A, 'ctl/an-agent-OPENED-tab-navigates-to-an-internal-page-the-gate-allows-it', !!okc, `loaded ${okc ?? 'NONE'}; tried ${J(tried)}`);
+    }
+    // (B) raw Page.navigate on the user's root session, and on an iframe CHILD session
+    for (const url of ['chrome://crash', 'CHROME://kill', 'about:crash', 'view-source:chrome://hang']) {
+      const st = await fresh(ctx); const { raw } = await openRaw(ctx, W1); let rep;
+      try { const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); rep = await raw.callOn(att.result?.sessionId, 'Page.navigate', { url }); } finally { raw.close(); }
+      await sleep(1500); const a = await alive(st);
+      clause(A, `raw root Page.navigate ${J(url)}: refused and the user's tab answers`, !!rep?.error && /refused/i.test(rep.error.message ?? '') && a.ok, `reply ${J(rep).slice(0, 170)}; ${show(a.ev)}`);
+    }
+    {
+      const st = await fresh(ctx, true); const humanId = st.human?.id; const { raw } = await openRaw(ctx, W1); const evs = []; raw.onEvent((m) => evs.push(m)); const outs = [];
+      try {
+        await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(humanId ?? '')}).then(() => true)`);
+        const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const rootSid = att.result?.sessionId;
+        await raw.callOn(rootSid, 'Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+        await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.frame)}).then(() => true)`);
+        await softWait(async () => evs.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid), 15000, 'a child session'); await sleep(800);
+        const kids = evs.filter((m) => m.method === 'Target.attachedToTarget' && m.sessionId === rootSid && m.params?.targetInfo?.type === 'iframe').map((m) => m.params?.sessionId);
+        for (const sid of kids) outs.push(await raw.callOn(sid, 'Page.navigate', { url: 'chrome://crash' }));
+        clause(A, 'ctl/an-iframe-child-session-exists', kids.length > 0, `${kids.length} iframe session(s)`);
+      } finally { raw.close(); }
+      await sleep(1500); const live = await (async () => { try { const o = await oracle(ctx, U.frame, 5000); try { return await Promise.race([o.eval('1+1'), new Promise((r) => setTimeout(() => r('NO ANSWER'), 4000))]); } finally { o.close(); } } catch (e) { return `ERR ${String(e.message).slice(0, 40)}`; } })();
+      const gone = (rep) => /Session with given id not found/i.test(rep?.error?.message ?? '');
+      clause(A, 'child (iframe) session Page.navigate chrome://crash: refused (or the session was gone) and the user\'s page answers', outs.length > 0 && outs.every((r) => (!!r?.error && /refused/i.test(r.error.message ?? '')) || gone(r)) && outs.some((r) => /refused/i.test(r?.error?.message ?? '')) && live === 2, `${outs.map((r) => J(r?.error?.message ?? r).slice(0, 70)).join(' | ')}; eval(1+1) → ${J(live)}`);
+    }
+    // (D) page-initiated and redirect routes to chrome://crash, the user's tab loaded on my page; none of them may wedge it
+    const http = await import('node:http'); const srv = http.createServer((req, res) => { if (req.url.startsWith('/to-crash')) { res.writeHead(302, { location: 'chrome://crash' }); return res.end(); } res.writeHead(404); res.end(); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r)); const P = srv.address().port;
+    const pageUrl = `${ctx.FIX}/v3-internal.html`;
+    const onPage = async () => { const st = await fresh(ctx); await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(st.human?.id ?? '')}).then(() => true)`); await sleep(300); await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(pageUrl)}).then(() => true)`); await waitFor(async () => /V3 internal nav/.test((await reg(ctx, W1)).tabs.find((t) => t.openedBy === 'human')?.title ?? ''), 15000, 'my page'); await sleep(400); const ab = (await abTabs(ctx, W1)).find((t) => /V3 internal nav/.test(t.title)); await cli(ctx, W1, ['tab', ab?.tabId ?? 't1']); return { ...st, abB: ab }; };
+    const vectors = [
+      ['page JS location.href = chrome://crash (agent eval)', async () => cli(ctx, W1, ['eval', "location.href = 'chrome://crash'; 'sent'"])],
+      ['page JS window.open(chrome://crash)', async () => cli(ctx, W1, ['eval', "window.open('chrome://crash'); 'sent'"])],
+      ['page JS iframe.src = chrome://crash', async () => cli(ctx, W1, ['eval', "(() => { const fr = document.createElement('iframe'); fr.src = 'chrome://crash'; document.body.appendChild(fr); return 'sent'; })()"])],
+      ['form POST to chrome://crash', async () => cli(ctx, W1, ['eval', "document.getElementById('f').submit(); 'sent'"])],
+      ['meta refresh to chrome://crash', async () => cli(ctx, W1, ['eval', "const m = document.createElement('meta'); m.httpEquiv = 'refresh'; m.content = '0;url=chrome://crash'; document.head.appendChild(m); 'sent'"])],
+      ['agent click on <a href=chrome://crash>', async () => { const sn = await cli(ctx, W1, ['snapshot', '-i']); const ref = (/link "link to chrome:\/\/crash"[^\n]*ref=(e\d+)/.exec(sn.stdout) || [])[1]; return cli(ctx, W1, ['click', `@${ref}`]); }],
+      ['open javascript:location.href=chrome://crash', async () => cli(ctx, W1, ['open', "javascript:location.href='chrome://crash'"], { timeoutMs: 15000 })],
+      ['open http 302 → chrome://crash', async () => cli(ctx, W1, ['open', `http://127.0.0.1:${P}/to-crash`], { timeoutMs: 15000 })],
+      ['open data: page with a meta refresh to chrome://crash', async () => cli(ctx, W1, ['open', "data:text/html,<meta http-equiv=refresh content='0;url=chrome://crash'>"], { timeoutMs: 15000 })],
+    ];
+    for (const [nm, run] of vectors) {
+      let st, o, a; try { st = await onPage(); o = await run(); await sleep(2500); a = await alive({ abB: { tabId: (await abTabs(ctx, W1)).find((t) => t.active)?.tabId ?? st.abB?.tabId } }); } catch (e) { clause(A, `${nm}: harness`, false, `${String(e.message).slice(0, 120)}; registry ${brief(await reg(ctx, W1))}; page targets ${J((await ctx.targets()).filter((x) => x.type === 'page' && !/dist\/index\.html/.test(x.url)).map((x) => x.url.slice(0, 50)))}`); continue; }
+      const pages = (await ctx.targets()).filter((x) => x.type === 'page' && !/dist\/index\.html/.test(x.url)).map((x) => x.url.slice(0, 40));
+      clause(A, `${nm}: the user's tab keeps answering`, a.ok, `${show(o)}; eval(1+1) → ${show(a.ev)}; page targets ${J(pages)}`);
+    }
+    srv.close();
+    // (E) the agent creates a NEW target at chrome://crash (allowed by design): what does it do to the USER's tab and to the agent's session?
+    for (const [nm, mk] of [['CLI tab new chrome://crash', async () => cli(ctx, W1, ['tab', 'new', 'chrome://crash'], { timeoutMs: 20000 })], ['raw Target.createTarget chrome://crash', async () => { const { raw } = await openRaw(ctx, W1); try { return await raw.call('Target.createTarget', { url: 'chrome://crash' }); } finally { raw.close(); } }]]) {
+      const st = await fresh(ctx); const o0 = await mk(); const o = o0 && typeof o0.code === 'number' ? o0 : { code: o0?.error ? 1 : 0, stdout: J(o0), stderr: '' }; await sleep(2500); const userPage = await (async () => { try { const oo = await oracle(ctx, U.b, 4000); try { return await Promise.race([oo.eval('1+1'), new Promise((rr) => setTimeout(() => rr('NO ANSWER'), 3500))]); } finally { oo.close(); } } catch (e) { return `ERR ${String(e.message).slice(0, 40)}`; } })(); const a = await alive(st); const lst = await cli(ctx, W1, ['tab', 'list'], { timeoutMs: 15000 }); const r = await reg(ctx, W1);
+      const appOk = await ctx.ui.eval('1+1').then((v) => v === 2, () => false);
+      console.log(`  INFO  [${A}] ${nm}: the user's renderer, asked by a SECOND client on the app's debug port: ${J(userPage)} (the CLI path: eval ${a.ok ? 'answers' : 'does NOT answer'}, tab list rc ${lst.code})`);
+      clause(A, `${nm}: the USER's renderer answers (second client) — the agent session may be wedged, say so`, userPage === 2 && appOk, `${show(o)}; user's tab ${show(a.ev)}; tab list ${show(lst).slice(0, 200)}; registry ${brief(r)}; app alive ${appOk}`);
+    }
+    // (C) history entries
+    {
+      const st = await fresh(ctx); const { raw } = await openRaw(ctx, W1); const out = {};
+      try {
+        const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const sid = att.result?.sessionId;
+        const h0 = await raw.callOn(sid, 'Page.getNavigationHistory', {}); const cur = h0.result?.entries?.[h0.result.currentIndex];
+        out.ctl = await raw.callOn(sid, 'Page.navigateToHistoryEntry', { entryId: cur?.id });       // control: a plain entry is allowed
+        out.bogus = await raw.callOn(sid, 'Page.navigateToHistoryEntry', { entryId: 987654321 });  // an entry that does not exist
+      } finally { raw.close(); }
+      await sleep(800); const a = await alive(st);
+      clause(A, 'ctl/navigateToHistoryEntry-to-a-plain-entry-is-allowed', !out.ctl?.error && a.ok, `reply ${J(out.ctl).slice(0, 120)}; ${show(a.ev)}`);
+      console.log(`  INFO  [${A}] navigateToHistoryEntry with an entryId that does not exist: ${J(out.bogus).slice(0, 200)}`);
+    }
+    for (const INT of ['chrome://version', 'chrome://gpu']) {
+      // the human visits an internal page, comes back; the agent tries to go FORWARD to that entry
+      const st = await fresh(ctx); const humanId = st.human?.id; await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W1.id)}, ${sel(humanId ?? '')}).then(() => true)`); await sleep(300);
+      await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(INT)}).then(() => true)`); await sleep(1500);
+      const r1 = await reg(ctx, W1);
+      await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W1.id)}, ${sel(U.b)}).then(() => true)`); await sleep(1200);
+      const { raw } = await openRaw(ctx, W1); let rep, hist;
+      try {
+        const tid = await targetOf(raw, /Tabs fixture B/); const att = await raw.call('Target.attachToTarget', { targetId: tid, flatten: true }); const sid = att.result?.sessionId;
+        hist = (await raw.callOn(sid, 'Page.getNavigationHistory', {})).result; const internal = hist?.entries?.find((e) => /^chrome:\/\/(version|gpu)/.test(e.url));
+        if (internal) rep = await raw.callOn(sid, 'Page.navigateToHistoryEntry', { entryId: internal.id }); else rep = { note: 'the human could not visit chrome://version: no internal entry in the history' };
+      } finally { raw.close(); }
+      await sleep(1000); const a = await alive(st);
+      const hasEntry = !!hist?.entries?.find((e) => /^chrome:\/\/(version|gpu)/.test(e.url));
+      console.log(`  INFO  [${A}] history entries ${J((hist?.entries ?? []).map((e) => e.url.slice(0, 40)))}`);
+      if (hasEntry) clause(A, `navigateToHistoryEntry to a ${INT} entry of the user\'s tab is refused`, !!rep?.error && /refused/i.test(rep.error.message ?? '') && a.ok, `reply ${J(rep).slice(0, 170)}; ${show(a.ev)}`);
+      else console.log(`  INFO  [${A}] history-entry route NOT exercised: ${J(rep)} (registry after the human's navigation: ${brief(r1)})`);
+    }
+    clause(A, 'the-app-is-still-alive', await ctx.ui.eval('1+1').then((v) => v === 2, () => false), 'renderer eval(1+1)');
+  },
+
+  // ── seat 3: after the agent creates a chrome://crash target, does ITS OWN session recover (the user's renderer is fine)? ──
+  async recover(ctx) {
+    const { W1 } = ctx; const A = 'recover';
+    const st = await fresh(ctx); const o = await cli(ctx, W1, ['tab', 'new', 'chrome://crash'], { timeoutMs: 20000 }); await sleep(1500);
+    const r0 = await reg(ctx, W1); const crashed = r0.tabs.find((t) => t.openedBy === 'agent' && !/Tabs fixture A/.test(t.title));
+    const probe = async () => (await cli(ctx, W1, ['tab', 'list'], { timeoutMs: 8000 })).code === 0;
+    const t0 = Date.now(); let recoveredAt = null; for (let i = 0; i < 6 && recoveredAt === null; i++) { if (await probe()) recoveredAt = Date.now() - t0; else await sleep(4000); }
+    console.log(`  INFO  [${A}] tab new chrome://crash → ${show(o)}; registry ${brief(r0)}; \`tab list\` recovered by itself within 50 s: ${recoveredAt === null ? 'NO' : recoveredAt + ' ms'}`);
+    // the human closes the crashed agent tab (what the × does); does the agent session come back?
+    await ctx.ui.eval(`window.orchestra.browserTabClose(${sel(W1.id)}, ${sel(crashed?.id ?? '')}).then(() => true)`); await sleep(2500);
+    let after = null; for (let i = 0; i < 4 && after === null; i++) { if (await probe()) after = true; else await sleep(3000); }
+    const ev = await cli(ctx, W1, ['eval', '1 + 1'], { timeoutMs: 8000 });
+    clause(A, 'once-the-human-closes-the-crashed-tab-the-agent-session-answers-again', after === true && ev.code === 0, `tab list ${after ? 'ok' : 'STILL HUNG'}; eval ${show(ev)}; registry ${brief(await reg(ctx, W1))}`);
   },
 
 };
