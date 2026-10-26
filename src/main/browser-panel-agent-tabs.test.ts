@@ -16,9 +16,13 @@ class WebContents {
     this.destroyed = false; this.closed = 0; this.url = ''; this.title = '';
     this.cmds = []; this.dbgAttached = false; this.detachCalls = 0; this.loaded = [];
     this.handlers = {};
+    this.dbgHandlers = {};
     this.debugger = {
-      attach: () => { this.dbgAttached = true; },
-      detach: () => { this.dbgAttached = false; this.detachCalls++; },
+      // Like Electron: a second attach throws, and detach emits 'detach' (the seat of #398 relies on both).
+      attach: () => { if (this.dbgAttached) throw new Error('Another debugger is already attached to this WebContents.'); this.dbgAttached = true; this.attachCalls = (this.attachCalls || 0) + 1; },
+      detach: () => { this.dbgAttached = false; this.detachCalls++; for (const f of [...(this.dbgHandlers.detach || [])]) f({}, 'client disconnected'); },
+      on: (ev, fn) => { (this.dbgHandlers[ev] ||= []).push(fn); },
+      off: (ev, fn) => { this.dbgHandlers[ev] = (this.dbgHandlers[ev] || []).filter((f) => f !== fn); },
       isAttached: () => this.dbgAttached,
       sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve(this.reply ? this.reply(m, p) : { result: { value: 'ev' } }); },
     };
@@ -69,6 +73,24 @@ register(
 );
 
 const bp = await import('./browser-panel.ts');
+const seat = await import('./browser-cdp-seat.ts');
+
+// The registry attaches no debugger (#398): its CDP commands ride the proxy host's seat. The real host imports Electron; this stands in with the REAL
+// `browser-cdp-seat.ts` over the stubbed debugger (same stand-in as browser-panel-tabs.test.ts).
+const lease = async (ws: string, tabId: string) => {
+  const wc = bp.tabContents(ws, tabId) as any;
+  if (!wc) throw new Error('no live view');
+  seat.seatAcquire(wc);
+  return { wc, release: () => seat.seatRelease(wc, 0) };
+};
+bp.setCdpSeat({
+  async send(ws, tabId, method, params) {
+    const l = await lease(ws, tabId);
+    try { return await l.wc.debugger.sendCommand(method, params); } finally { l.release(); }
+  },
+  async hold(ws, tabId) { return (await lease(ws, tabId)).release; },
+});
+bp.setTabTeardownHook((wc) => seat.seatForceDetach(wc as any));
 
 const attached = new Set<unknown>();
 bp.initBrowserPanels(() => ({

@@ -136,11 +136,26 @@ export function parseAbTabList(stdout: string): AbTab[] | null {
   }
 }
 
-/** The tab a `tab close [ref]` / `tab <ref>` names: by tN id, label or target id; no ref = the session's current tab. */
+/** How agent-browser spells a ref: it trims and case-folds (`T2`, ` t2 `, `t2\t` all name `t2`), so the CLI's gate must read the same spellings or `tab close T2` slips past it as « nothing resolved → the current tab → run » (round-2 F1). */
+const normRef = (r: string): string => r.trim().toLowerCase();
+
+/** The tab a `tab close [ref]` / `tab <ref>` names: by tN id, label or target id (trimmed, case-insensitive); no ref = the session's current tab. */
 export function resolveAbTab(tabs: readonly AbTab[], ref: string | undefined): AbTab | undefined {
   if (ref === undefined) return tabs.find((t) => t.active);
-  return tabs.find((t) => t.tabId === ref) ?? tabs.find((t) => t.label === ref) ?? tabs.find((t) => t.targetId === ref);
+  const r = normRef(ref);
+  if (r === '') return undefined;
+  return (
+    tabs.find((t) => normRef(t.tabId) === r) ??
+    tabs.find((t) => t.label !== null && normRef(t.label) === r) ??
+    tabs.find((t) => normRef(t.targetId) === r)
+  );
 }
+
+/**
+ * CDP methods that DESTROY or wedge the renderer of the tab they reach (not browser-level verbs: those are {@link isBrowserLevelMethod}'s in the core). An agent may send them only to a tab it
+ * opened; on the user's tab they are refused (round-2 INFO: `Page.crash` through the proxy killed the user's tab renderer). Page-JS `window.close()` is not a CDP method: an accepted gap.
+ */
+export const TAB_DESTROYING_METHODS: ReadonlySet<string> = new Set(['Page.crash', 'Runtime.terminateExecution']);
 
 export type CloseVerdict = { run: true } | { run: false; message: string };
 

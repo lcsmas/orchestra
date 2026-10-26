@@ -176,3 +176,20 @@ test('F3: an ACTING command on a CHILD session of a background tab brings that t
   await c.call('Runtime.enable', {}, 'CHILD1');
   assert.deepEqual(f.activated, ['t2'], 'a domain enable on the child is not an action');
 });
+
+// ---- #397 round-2 INFO: renderer-destroying CDP methods are ownership-gated too ------------------------------------------------------------------------
+
+test('Page.crash / Runtime.terminateExecution on the USER\'s tab are refused on the root AND a child session and never reach the debugger; the agent\'s own tab still gets them', async () => {
+  const { f, c, sid } = await withChild('t1'); // t1 = the user's tab, with a child session
+  for (const m of ['Page.crash', 'Runtime.terminateExecution']) {
+    const root = await c.call(m, {}, sid);
+    const child = await c.call(m, {}, 'CHILD1');
+    assert.match(root.error.message, /refused: tab t1 was opened by the user — an agent may only destroy the tabs it opened/, `${m} on the root`);
+    assert.equal(child.error.message, root.error.message, `${m}: the child answers like the root`);
+  }
+  assert.deepEqual(f.sent, [], 'nothing was forwarded to the page debugger');
+  const own = await withChild('t2'); // t2 = an agent-opened tab
+  const ok = await own.c.call('Page.crash', {}, own.sid);
+  assert.equal(ok.error, undefined, 'control: the agent may destroy a tab it opened');
+  assert.deepEqual(own.f.sent.map((s: any) => s.method), ['Page.crash']);
+});

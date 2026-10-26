@@ -202,3 +202,16 @@ test('F4b: resolveSwitchTarget takes the first candidate that resolves (a flag v
   assert.equal(resolveSwitchTarget([T1, T2], ['3000']), undefined);
   assert.equal(resolveSwitchTarget([T1, T2], []), undefined);
 });
+
+test('round-2 F1: the close gate reads the spellings agent-browser accepts — case and whitespace of the USER\'s tab cannot slip past the pre-flight', () => {
+  // the seat\'s deterministic table: control `t1` refused; every other spelling of the same tab refused too; the agent\'s own tab still RUNS under every spelling
+  for (const ref of ['t1', 'T1', ' t1 ', 't1\t', '\tT1\n', 'aaaa', 'AAAA', ' aaaa ']) {
+    const v = decideCloseThroughCli([T1, T2], [ref], HOST);
+    assert.equal(v.run, false, `user's tab spelled ${JSON.stringify(ref)} must be refused`);
+  }
+  for (const ref of ['t2', 'T2', ' t2 ', 'bbbb', 'DOCS', ' docs ']) assert.deepEqual(decideCloseThroughCli([T1, T2], [ref], HOST), { run: true }, `agent's tab ${JSON.stringify(ref)}`);
+  assert.equal(resolveAbTab([T1, T2], ' T2 '), T2);
+  assert.equal(resolveAbTab([T1, T2], '   '), undefined, 'a blank ref resolves to nothing (not the current tab)');
+  assert.equal(resolveAbTab([T1, { tabId: 't3', label: '', targetId: 'CCCC', active: false }], '  '), undefined, 'not even a tab whose label is the empty string');
+  assert.equal(resolveSwitchTarget([T1, T2], ['3000', ' T1 ']), T1, 'a switch reads the same spellings');
+});

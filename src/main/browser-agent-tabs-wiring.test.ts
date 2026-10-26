@@ -54,23 +54,26 @@ test('the proxy core brings a tab to the front on any ACTING command, before the
   assert.ok(acting > 0 && frames > acting, 'bring-to-front precedes the framesError check, so a click on a background tab succeeds instead of being refused');
 });
 
-test('the renderer announces an agent swap and marks agent tabs', () => {
+test('the renderer announces an agent swap in a ROW below the toolbar and marks agent tabs without taking width', () => {
   const tsx = read('../renderer/components/BrowserPanel.tsx');
   assert.match(tsx, /\{agentNoticeOn && agentSwitch && \(\s*<div className="browser-agent-switch" role="status"/);
   assert.match(tsx, /browserTabActivate\(workspaceId, agentSwitch\.from\)/, 'Back is a HUMAN tab activation (it clears the notice)');
-  const row = tsx.indexOf('className="browser-tabs-row"');
   const strip = tsx.indexOf('className="browser-tab-new"');
+  const toolbar = tsx.indexOf('<div className="browser-toolbar">');
   const notice = tsx.indexOf('className="browser-agent-switch"');
-  const nextRow = tsx.indexOf('{tabNotice && (');
-  assert.ok(row > 0 && strip > row && notice > strip && nextRow > notice, 'the notice lives inside the tabs ROW (beside the strip, overlaid by CSS): a row of its own would resize the native view under an in-flight click');
+  const holder = tsx.indexOf('className="browser-holder"');
+  assert.ok(strip > 0 && toolbar > strip && notice > toolbar && holder > notice, 'tabs, toolbar, notice row, page area — the notice is a ROW BELOW the toolbar: it never moves or covers a tab, ×, +, the URL bar or the design button');
+  assert.ok(!tsx.includes('browser-tabs-row'), 'no overlay wrapper');
   assert.match(tsx, /t\.openedBy === 'agent' && \(\s*<span className="browser-tab-agent-mark"/);
   const css = read('../renderer/styles.css');
-  for (const c of ['.browser-agent-switch {', '.browser-tab-agent-mark {']) assert.ok(css.includes(c), c);
-  const block = /\.browser-agent-switch \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(block, /position:\s*absolute/, 'F2: the notice is OVERLAID — in the tab flow it would move the tabs and their × under the human\'s click when it appears, changes or lapses');
-  assert.doesNotMatch(block, /\bflex:|margin-left:\s*auto/, 'and takes no part in the strip\'s flex layout');
-  assert.match(block, /top:\s*calc\(100% \+ \d+px\)/, 'F6: it hangs BELOW the strip (over the toolbar row): over the strip it would cover tabs / × / + and, at the lapse, a click aimed at « Back » would land on a × and close a human tab');
-  assert.match(/\.browser-tabs-row \{([^}]*)\}/.exec(css)?.[1] ?? '', /position:\s*relative/, 'its containing block');
+  const notice_css = /\.browser-agent-switch \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.doesNotMatch(notice_css, /position:/, 'F2/F6/F3: the notice is an in-flow ROW (an overlay can cover a tab, a ×, the URL bar or the design button; a row in the tab flow would move the tabs — it is neither)');
+  const mark = /\.browser-tab-agent-mark \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(mark, /position:\s*absolute/, 'round-2 F2: the agent mark takes NO width (a text badge widened every agent tab ~38 px: at 6-8 tabs its × overflowed onto the next tab / the +)');
+  assert.match(mark, /font-size:\s*0/);
+  const tab = /\.browser-tab \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(tab, /overflow:\s*hidden/, 'a tab clips its contents: the × can never leave its own tab');
+  assert.match(tab, /position:\s*relative/, 'the absolute mark\'s containing block');
 });
 
 test('F1/F3: #395\'s shared isBrowserLevelMethod decides the browser-level verbs BEFORE the root/child split (not copied here); the frame-bound + bring-to-front checks are not root-only', () => {
@@ -83,4 +86,15 @@ test('F1/F3: #395\'s shared isBrowserLevelMethod decides the browser-level verbs
   const tab = core.slice(core.indexOf('private async tabCommand('), core.indexOf('/** An agent action on a tab nobody is looking at'));
   assert.match(tab, /\n    if \(isActingCdpMethod\(method\)\) this\.bringToFrontIfBackground\(tabId\);\n    if \(FRAME_BOUND_METHODS\.has\(method\)\) \{/, 'neither is inside an `if (!childSessionId)` guard');
   assert.match(tab, /if \(!childSessionId && method === 'Page\.captureScreenshot'\)/, 'only the screenshot interception stays root-only');
+});
+
+test('round-2 INFO: tabCommand refuses TAB_DESTROYING_METHODS on a tab the agent did not open, before the debugger, for root AND child sessions', () => {
+  const core = read('../shared/cdp-proxy-core.ts');
+  const tab = core.slice(core.indexOf('private async tabCommand('), core.indexOf('/** An agent action on a tab nobody is looking at'));
+  const gate = tab.indexOf('if (TAB_DESTROYING_METHODS.has(method)) {');
+  const send = tab.indexOf('st.channel.send(method, params, childSessionId)');
+  assert.ok(gate > 0 && send > gate, 'the gate precedes the debugger send');
+  assert.match(tab, /owner && owner\.openedBy !== 'agent'/);
+  const pure = read('../shared/browser-agent-tabs.ts');
+  assert.match(pure, /TAB_DESTROYING_METHODS[^=]*= new Set\(\['Page\.crash', 'Runtime\.terminateExecution'\]\)/);
 });

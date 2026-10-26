@@ -3386,6 +3386,9 @@ input:focus, textarea:focus, select:focus {
   font-size: 12.5px;
   cursor: pointer;
   user-select: none;
+  /* A tab's contents never leave the tab: the × is clipped INSIDE it (round-2 F2: at 8 tabs an overflowing × sat on the next tab / the + and a click on « + » closed a tab). */
+  position: relative;
+  overflow: hidden;
 }
 .browser-tab:hover {
   background: var(--bg-3);
@@ -3448,40 +3451,37 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-4);
   color: var(--accent);
 }
-/* An agent-opened tab wears a mark; an agent swap of the tab on screen is announced (#397, ADR 0009: until hidden views paint, an agent action brings its tab to the front — never silently). */
+/* An agent-opened tab wears a mark that takes NO width (a dot in the tab's left padding + a top accent line): a text badge widened every agent tab by ~38 px, so at 6-8 tabs its × overflowed
+   onto the next tab / the + (round-2 F2). An agent swap of the tab on screen is announced in a ROW below the toolbar (#397, ADR 0009: until hidden views paint, an agent action brings its tab
+   to the front — never silently): a row, like the cap notice and the design hint, so it never moves or covers a tab, a ×, the +, the URL bar or the design button (F2/F6/F3). */
 .browser-tab-agent-mark {
-  flex: 0 0 auto;
-  padding: 0 4px;
-  font-size: 9.5px;
-  line-height: 14px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  border-radius: 3px;
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  padding: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+  color: transparent;
+  background: var(--accent);
+  border-radius: 50%;
 }
-/* The notice is OVERLAID (position:absolute in .browser-tabs-row) and hangs BELOW the strip, over the toolbar row: it takes no space in the tab flow (F2: appearing, changing
-   with a chained swap or vanishing never moves a tab or its ×) AND never covers a tab, its × or the + (round-2 F6: at the lapse the rectangle under a click aimed at « Back »
-   would turn into a × and close a HUMAN tab). What lies under it in the toolbar is harmless to mis-click (URL bar, reload). A separate row would resize the native view. */
-.browser-tabs-row {
-  position: relative;
-  flex: 0 0 auto;
+.browser-tab[data-opened-by="agent"] {
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 .browser-agent-switch {
-  position: absolute;
-  right: 8px;
-  top: calc(100% + 4px);
-  z-index: 3;
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 55%;
-  padding: 2px 8px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
   font-size: 11.5px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
-  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .browser-agent-switch-text {
   flex: 1;

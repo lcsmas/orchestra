@@ -11,6 +11,7 @@
 //   front       ANY acting command (get url — not frame-bound) on a non-active tab brings it to the front, visibly; `tab list` / idle do not
 //   children    the close verbs are refused on a CHILD (worker / frame) session of the user's tab (raw client, auto-attach, then navigate)
 //   attach      a PAGE of an agent tab spawns a worker + cross-site iframe while the human is on ANOTHER tab: the daemon's attach-time commands on the new child sessions must not flip the human's tab
+//   strip       8 tabs x {agent early, agent last, mixed} x two pane widths: every tab / x / + is the control at its own centre, no x leaves its tab, a REAL click on + at the cap shows the cap notice and closes nothing
 //   cap         the 8-tab cap is shared with the human and applies to agent-opened tabs; a refusal leaks no view
 //   ownership   `tab close <user's tab>` is refused BEFORE agent-browser (it would print "closed" and drop the tab from its own list), the
 //               tab stays loaded, the next `tab list` still has it, the agent's own tab still closes; the PROXY refuses a raw Target.closeTarget too
@@ -37,7 +38,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'ownership', 'children', 'attach', 'background', 'refs'];
+const ARMS = ['restart', 'open', 'switch', 'front', 'cap', 'strip', 'ownership', 'children', 'attach', 'background', 'refs'];
 /** Mutants patch the BUILT bundle in place. `file`: 'chunk' = the main-process chunk main.js requires, 'cli' = dist-electron/cli.js.
  *  Each edit is a regex/string that must match EXACTLY once; `arms` must go RED, every ctl/* clause of those arms must stay GREEN. */
 const MUTANTS = {
@@ -47,11 +48,14 @@ const MUTANTS = {
   'list-unannotated': { file: 'cli', edits: [['if (tab.op === "list" && run.code === 0 && abTabs && hostTabs.length > 0) {', 'if (false) {']], arms: ['open'], why: '`tab list` no longer says who opened each tab' },
   'no-front-on-acting': { file: 'chunk', edits: [[/(\w+)\((\w+)\)&&this\.bringToFrontIfBackground\((\w+)\),(?=\w+\.has\(\2\))/, '']], arms: ['front', 'refs'], why: 'only frame-bound commands bring a tab to the front: a get/eval/snapshot on a tab the user is not looking at runs invisibly' },
   'no-front-at-all': { file: 'chunk', edits: [[/(\w+)\((\w+)\)&&this\.bringToFrontIfBackground\((\w+)\),(?=\w+\.has\(\2\))/, ''], [/(async screenshot\(\w+,\w+,\w+\)\{)this\.bringToFrontIfBackground\(\w+\);/, '$1']], arms: ['front', 'refs'], why: 'not even a screenshot brings its tab to the front: the capture of a tab the user left is refused as "not on screen"' },
-  'notice-in-flow': { file: 'css', edits: [['.browser-agent-switch{position:absolute;', '.browser-agent-switch{position:static;']], arms: ['open'], why: 'the swap notice takes space in the tab strip: tabs and their × move when it appears or lapses (a mis-click closes the user\'s tab)' },
   'switch-unannotated': { file: 'cli', edits: [['(tab.op === "list" || tab.op === "close" || tab.op === "switch")', '(tab.op === "list" || tab.op === "close")']], arms: ['restart'], why: 'a `tab <ref>` switch no longer says whose tab it landed on: a stale tN silently drives the user\'s tab' },
   'child-close-allowed': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a)']], arms: ['children'], why: '#395\'s shared browser-level predicate is skipped for a CHILD (worker / frame) session: its Page.close / Browser.* / Target.* reach the page debugger' },
   'attach-is-acting': { file: 'chunk', edits: [[/function ([\w$]+)\((\w+)\)\{return\/\\\.\(enable\|disable\)\$\/\.test\(\2\)\?!1:![\w$]+\.has\(\2\)\}/, 'function $1($2){return!0}']], arms: ['attach'], why: 'attach-time commands on a child session count as agent ACTIONS: a page that spawns an iframe / worker flips the human\'s tab with no agent command' },
-  'notice-over-strip': { file: 'css', edits: [['top:calc(100% + 4px)', 'top:3px']], arms: ['open'], why: 'the swap notice sits OVER the tab strip: it covers a tab / × / + and a click aimed at « Back » can close a human tab' },
+  'agent-badge-wide': { file: 'css', edits: [[/\.browser-tab-agent-mark\{[^}]*\}/, '.browser-tab-agent-mark{flex:0 0 auto;padding:0 4px;font-size:9.5px;line-height:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-radius:3px}']], arms: ['strip'], why: 'the agent mark is a ~38 px text badge again: at 6-8 tabs every agent tab\'s × overflows its tab (and a click on the + closes a tab)' },
+  'notice-over-strip': { file: 'css', edits: [['.browser-agent-switch{display:flex;', '.browser-agent-switch{position:fixed;left:0;top:50px;width:100%;height:34px;z-index:5;box-sizing:border-box;display:flex;']], arms: ['open'], why: 'the swap notice is an overlay over the tab strip: it covers tabs / × / + (a click aimed at « Back » can close a human tab)' },
+  'notice-over-toolbar': { file: 'css', edits: [['.browser-agent-switch{display:flex;', '.browser-agent-switch{position:fixed;left:0;top:88px;width:100%;height:38px;z-index:5;box-sizing:border-box;display:flex;']], arms: ['open'], why: 'the swap notice is an overlay over the toolbar row: it covers the URL input and the design button' },
+  'ref-spelling-exact': { file: 'cli', edits: [['const normRef = (r) => r.trim().toLowerCase();', 'const normRef = (r) => r;']], arms: ['ownership'], why: 'the CLI gate matches refs exactly: `tab close T1` / ` t1 ` slip past it, agent-browser normalises and prints "closed" (the lie + desync the pre-flight exists to stop)' },
+  'destroyers-allowed': { file: 'chunk', edits: [[/if\((\w+)\.has\((\w+)\)\)\{const (\w+)=this\.port\.listTabs\(\)\.find\((\w+)=>\4\.id===(\w+)\);if\(\3&&\3\.openedBy!=="agent"\)throw new/, 'if(!1){const $3=this.port.listTabs().find($4=>$4.id===$5);if($3&&$3.openedBy!=="agent")throw new']], arms: ['ownership'], why: 'Page.crash / Runtime.terminateExecution reach the USER\'s tab renderer through the proxy' },
   'silent-swap': { file: 'chunk', edits: [[/(\w+)\.agentSwitch=\{from:(\w+)===(\w+)\.id\?(\w+):\2,to:\3\.id,at:Date\.now\(\)\}/, 'void 0']], arms: ['open', 'front'], why: 'an agent swap of the tab on screen is not announced to the human' },
   'background-activates': { file: 'chunk', edits: [[/(\.\.\.\w+\.url\?\{url:\w+\.url\}:\{\},openedBy:\w+,)activate:\w+===\w+\}/, '$1activate:!0}'], [/\.wsFocused\?\{act:"activate"\}:\{act:"none",reason:"background-workspace"\}/, '.wsFocused||!0?{act:"activate"}:{act:"none",reason:"background-workspace"}']], arms: ['background'], why: 'a background workspace\'s agent activates tabs (the focus rule is gone)' },
   'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['refs'], why: 'a ref from another tab is reported as agent-browser\'s raw error, not browser_stale_ref' },
@@ -429,7 +433,8 @@ async function rawProxyClient(url) {
   let id = 0; const pending = new Map();
   const listeners = [];
   ws.on('message', (d) => { const m = JSON.parse(String(d)); const p = m.id && pending.get(m.id); if (p) { pending.delete(m.id); p(m); } else if (m.method) for (const l of listeners) l(m); });
-  const send = (method, params, sessionId) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  // a command whose target died (a mutant that lets Page.crash through) never answers: every call is bounded, a timeout is a plain `error` the clause reads as a failure
+  const send = (method, params, sessionId) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); res({ error: { message: `timed out after 6000ms (${method})` } }); }, 6000); pending.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
   return { call: (method, params = {}) => send(method, params), callOn: (sessionId, method, params = {}) => send(method, params, sessionId), onEvent: (l) => listeners.push(l), close: () => ws.close() };
 }
 
@@ -496,17 +501,15 @@ const ARM_FNS = {
     let tabsJson = []; try { tabsJson = JSON.parse(js.stdout.trim()).data.tabs; } catch {}
     const jA = tabsJson.find((t) => /Tabs fixture A/.test(t.title)), jB = tabsJson.find((t) => /Tabs fixture B/.test(t.title));
     clause(A, 'tab-list-json-carries-openedBy-and-closable', jA?.openedBy === 'agent' && jA?.closable === true && jB?.openedBy === 'human' && jB?.closable === false, `A ${JSON.stringify({ o: jA?.openedBy, c: jA?.closable })} B ${JSON.stringify({ o: jB?.openedBy, c: jB?.closable })}`);
-    // F2 of the early review: the notice must not move a tab or its × when it appears or lapses (a mis-click closes a HUMAN tab, no undo).
-    // Geometry of every tab + × is read while the notice is up (it lapses after 9 s) and again once it is gone.
-    const geom = () => ctx.ui.eval(`({ notice: !!document.querySelector('.browser-agent-switch'), pos: getComputedStyle(document.querySelector('.browser-agent-switch') ?? document.body).position, tabs: [...document.querySelectorAll('.browser-tab')].map((e) => { const r = e.getBoundingClientRect(), x = e.querySelector('.browser-tab-close').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width), Math.round(x.left)].join(':'); }) })`);
+    // F2/F6/F3: while the notice is up it must not MOVE a tab or its x, and must not COVER any control — every tab, every x, the +, the nav buttons, the URL input and the design button are what
+    // elementFromPoint finds at their centre; a row below the toolbar takes space only from the page area (like the cap notice and the design hint). Geometry is read with the notice up and again after it lapses.
+    const geom = () => ctx.ui.eval(`({ notice: !!document.querySelector('.browser-agent-switch'), pos: getComputedStyle(document.querySelector('.browser-agent-switch') ?? document.body).position, tabs: [...document.querySelectorAll('.browser-tab')].map((e) => { const r = e.getBoundingClientRect(), x = e.querySelector('.browser-tab-close').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(x.left)].join(':'); }), toolbar: Math.round(document.querySelector('.browser-toolbar').getBoundingClientRect().top) })`);
     const up = await geom();
-    // Round-2 F6: « no reflow » is not « no occlusion ». While the notice is up, the point at the centre of every tab, every × and the + must hit THAT control (an overlay over the strip
-    // would take the click aimed at « Back » away from a × at the lapse — and close a HUMAN tab, no undo).
-    const occl = await ctx.ui.eval(`(() => { const bad = []; const hit = (el, name, root) => { const r = el.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!(e && (root ?? el).contains(e))) bad.push(name + '->' + (e?.className || e?.tagName)); }; document.querySelectorAll('.browser-tab').forEach((t, i) => { hit(t, 'tab' + i); hit(t.querySelector('.browser-tab-close'), 'x' + i); }); hit(document.querySelector('.browser-tab-new'), '+'); return { bad, noticeUp: !!document.querySelector('.browser-agent-switch'), tabs: document.querySelectorAll('.browser-tab').length }; })()`);
-    clause(A, 'the-notice-never-covers-a-tab-its-close-button-or-the-plus', occl.noticeUp && occl.bad.length === 0, `notice up over ${occl.tabs} tabs; elementFromPoint at the centre of every tab / × / +: ${occl.bad.length ? 'COVERED ' + occl.bad.join(', ') : 'each is the control itself'}`);
+    const occl = await ctx.ui.eval(`(() => { const bad = []; const hit = (el, name) => { if (!el) { bad.push(name + '->missing'); return; } const r = el.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!(e && el.contains(e))) bad.push(name + '->' + (e?.className || e?.tagName)); }; document.querySelectorAll('.browser-tab').forEach((t, i) => { hit(t, 'tab' + i); hit(t.querySelector('.browser-tab-close'), 'x' + i); }); hit(document.querySelector('.browser-tab-new'), '+'); document.querySelectorAll('.browser-nav-btn').forEach((b, i) => hit(b, 'btn' + i)); hit(document.querySelector('.browser-url-input'), 'url'); hit(document.querySelector('.browser-design-btn'), 'design'); return { bad, noticeUp: !!document.querySelector('.browser-agent-switch'), tabs: document.querySelectorAll('.browser-tab').length }; })()`);
     const lapsed = await softWait(async () => !(await geom()).notice, 14000, 'the notice to lapse');
     const down = await geom();
-    clause(A, 'the-notice-never-moves-a-tab-or-its-close-button', up.notice && lapsed && up.pos === 'absolute' && JSON.stringify(up.tabs) === JSON.stringify(down.tabs), `notice up: position ${up.pos}, tabs (left:width:×left) ${JSON.stringify(up.tabs)}; after it lapsed ${JSON.stringify(down.tabs)}`);
+    clause(A, 'the-notice-never-moves-or-covers-a-tab-a-close-button-the-plus-the-url-bar-or-the-design-button', up.notice && lapsed && occl.noticeUp && occl.bad.length === 0 && ['static', 'relative'].includes(up.pos) && JSON.stringify(up.tabs) === JSON.stringify(down.tabs) && up.toolbar === down.toolbar,
+      `notice up (position ${up.pos}) over ${occl.tabs} tabs: elementFromPoint at the centre of every tab / x / + / nav button / URL input / design button ${occl.bad.length ? 'COVERED ' + occl.bad.join(', ') : 'is the control itself'}; tabs (left:top:width:xleft) ${JSON.stringify(up.tabs)} up vs ${JSON.stringify(down.tabs)} after the lapse; toolbar top ${up.toolbar} vs ${down.toolbar}`);
   },
 
   async switch(ctx) {
@@ -593,6 +596,55 @@ const ARM_FNS = {
     clause(A, 'ctl/the-human-hits-the-same-cap', humanOver.ok === false && humanOver.reason === 'cap', `human tab-new at 8 → ${JSON.stringify(humanOver)}`);
   },
 
+  async strip(ctx) {
+    // Round-2 F2 (seat 3): with agent badges the strip broke at 6-8 tabs (an agent tab's x overflowed onto the next tab / the +; a real click on + at the cap CLOSED a tab, no cap notice).
+    // 8 tabs in three arrangements (H = human, A = agent; the first H is the tab the workspace starts with), each at two pane widths (the default ~640 px and 480 px, dragged with real mouse input).
+    const { W1, ui, URL: U } = ctx; const A = 'strip';
+    const paneWidth = () => ui.eval(`Math.round(document.querySelector('.browser-pane').getBoundingClientRect().width)`);
+    const setPaneWidth = async (target) => {
+      const cur = await paneWidth(); const r = await rectOf(ctx, '.pane-resizer');
+      const x1 = r.x + (cur - target);
+      await ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.x, y: r.y });
+      await ui.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: r.x, y: r.y, button: 'left', buttons: 1, clickCount: 1 });
+      for (const f of [0.25, 0.5, 0.75, 1]) { await ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.x + (x1 - r.x) * f, y: r.y, buttons: 1 }); await sleep(40); }
+      await ui.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x1, y: r.y, button: 'left', buttons: 0, clickCount: 1 });
+      await softWait(async () => Math.abs((await paneWidth()) - target) <= 3, 8000, `the pane to be ~${target} px wide`);
+      await sleep(400);
+      return paneWidth();
+    };
+    const measure = (scrollEnd) => ui.eval(`(() => { const sc = document.querySelector('.browser-tabs'); sc.scrollLeft = ${scrollEnd ? 'sc.scrollWidth' : '0'}; const bad = []; const hit = (el, name) => { const r = el.getBoundingClientRect(); const e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!(e && el.contains(e))) bad.push(name + '->' + (e?.className || e?.tagName)); }; const tabs = [...document.querySelectorAll('.browser-tab')]; tabs.forEach((t, i) => { const x = t.querySelector('.browser-tab-close'); const tr = t.getBoundingClientRect(), xr = x.getBoundingClientRect(); if (xr.left < tr.left - 0.5 || xr.right > tr.right + 0.5) bad.push('x' + i + '-leaves-its-tab'); if (${scrollEnd ? 'false' : 'true'}) { hit(t, 'tab' + i); hit(x, 'x' + i); } }); if (${scrollEnd ? 'true' : 'false'}) hit(document.querySelector('.browser-tab-new'), '+'); return { bad, n: tabs.length, agent: tabs.filter((t) => t.dataset.openedBy === 'agent').length, paneW: Math.round(document.querySelector('.browser-pane').getBoundingClientRect().width) }; })()`);
+    const arrangements = { 'agent-early': 'HAAAHHHH', 'agent-last': 'HHHHHAAA', 'mixed': 'HAHAHAHH' };
+    for (const [name, pattern] of Object.entries(arrangements)) {
+      await reset(ctx);
+      for (const ch of pattern.slice(1)) {
+        if (ch === 'H') await ui.eval(`window.orchestra.browserTabNew(${sel(W1.id)}).then((r) => r.ok)`);
+        else await cli(ctx, W1, ['tab', 'new', U.c]);
+      }
+      await softWait(async () => (await reg(ctx, W1)).tabs.length === 8, 15000, 'eight tabs');
+      const r8 = await reg(ctx, W1);
+      const order = r8.tabs.map((t) => t.openedBy[0].toUpperCase()).join('');
+      clause(A, `ctl/${name}-eight-tabs-in-the-requested-order`, order === pattern, `registry order ${order} (want ${pattern})`);
+      const results = [];
+      for (const width of [640, 480]) {
+        const w = await setPaneWidth(width);
+        const head = await measure(false);
+        const tail = await measure(true);
+        // a REAL click on the + at the cap: the cap notice, nothing closed
+        const plus = await rectOf(ctx, '.browser-tab-new');
+        await ctx.ui.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: plus.x, y: plus.y });
+        await ctx.ui.click(plus.x, plus.y);
+        await sleep(500);
+        const after = await reg(ctx, W1);
+        const notice = await ctx.ui.eval(`document.querySelector('.browser-tab-notice')?.textContent ?? null`);
+        results.push({ width, w, head, tail, tabsAfter: after.tabs.length, notice });
+      }
+      const ok = results.every((r) => r.head.bad.length === 0 && r.tail.bad.length === 0 && r.tabsAfter === 8 && /Tab limit reached/.test(r.notice ?? ''));
+      clause(A, `${name}-every-tab-x-and-plus-is-itself-no-x-leaves-its-tab-and-a-click-on-plus-at-the-cap-closes-nothing`, ok, results.map((r) => `${r.w}px: ${r.head.agent} agent tabs, ${r.head.bad.concat(r.tail.bad).join(',') || 'no overlap / no x outside its tab'}; click on + → ${r.tabsAfter} tabs, notice ${JSON.stringify((r.notice ?? '').slice(0, 40))}`).join(' | '));
+      await setPaneWidth(640);
+      grim(`strip-${name}.png`);
+    }
+  },
+
   async ownership(ctx) {
     const { W1, URL: U } = ctx; const A = 'ownership';
     await reset(ctx);
@@ -615,6 +667,13 @@ const ARM_FNS = {
     const r1 = await reg(ctx, W1);
     clause(A, 'closing-the-users-tab-is-refused-visibly', close.code !== 0 && /^browser_tab_not_owner: /.test(close.stderr) && /opened by the user/.test(close.stderr), `tab close ${labB}: ${show(close)}`);
     clause(A, 'the-users-tab-is-still-open-and-loaded', r1.tabs.length === 2 && r1.tabs.some((t) => t.id === humanTab?.id) && (await viewTargets(ctx)).length === vt0 && /Tabs fixture B/.test(titled(r1, /Tabs fixture B/)?.title ?? ''), `registry ${brief(r1)} · live page targets ${vt0} → ${(await viewTargets(ctx)).length}`);
+    // round-2 F1: the gate reads the spellings agent-browser accepts (it trims and case-folds): `T1` / ` t1 ` named the user's tab but resolved to nothing, fell back to the CURRENT (agent's) tab and RAN.
+    const upper = await cli(ctx, W1, ['tab', 'close', (labB ?? 't0').toUpperCase()]);
+    const padded = await cli(ctx, W1, ['tab', 'close', ` ${labB ?? 't0'} `]);
+    await sleep(500);
+    const rSp = await reg(ctx, W1);
+    const listSp = await cli(ctx, W1, ['tab', 'list']);
+    clause(A, 'cli-uppercase-and-padded-ids-of-the-users-tab-are-refused-too', upper.code !== 0 && padded.code !== 0 && /^browser_tab_not_owner: /.test(upper.stderr) && /^browser_tab_not_owner: /.test(padded.stderr) && rSp.tabs.some((t) => t.id === humanTab?.id) && /Tabs fixture B/.test(listSp.stdout), `tab close ${(labB ?? 't0').toUpperCase()} → ${show(upper)}; tab close " ${labB} " → ${show(padded)}; registry ${brief(rSp)}; agent-browser still lists B: ${/Tabs fixture B/.test(listSp.stdout)} (a slipped close prints "closed" and DROPS the tab from its own list)`);
     const list = await cli(ctx, W1, ['tab', 'list']);
     clause(A, 'agent-browser-still-lists-it-no-desync', list.code === 0 && /Tabs fixture B/.test(list.stdout) && /Tabs fixture A/.test(list.stdout), `tab list after the refusal: ${show(list)} (agent-browser alone prints "closed" and DROPS the tab from its list)`);
     const js = await cli(ctx, W1, ['--json', 'tab', 'close', labB ?? 't0']);
@@ -645,6 +704,23 @@ const ARM_FNS = {
     await sleep(600);
     const r4 = await reg(ctx, W1);
     clause(A, 'the-proxy-refuses-a-raw-closeTarget-of-the-users-tab', !!targetId && !!rawClose?.error && /opened by the user/.test(rawClose.error.message) && r4.tabs.some((t) => t.id === humanTab?.id), `Target.closeTarget(${targetId?.slice(0, 8)}…) → ${JSON.stringify(rawClose).slice(0, 200)} · registry ${brief(r4)}`);
+    // round-2 INFO (seat 3): a renderer-destroying CDP method reaches the user's tab like any command — refused unless the agent opened the tab.
+    const raw3 = await rawProxyClient(ep.wsUrl);
+    let crash = null, term = null;
+    try {
+      const gt3 = await raw3.call('Target.getTargets');
+      const tid3 = gt3.result?.targetInfos?.find((t) => /Tabs fixture B/.test(t.title))?.targetId;
+      const att3 = tid3 ? await raw3.call('Target.attachToTarget', { targetId: tid3, flatten: true }) : null;
+      const sid3 = att3?.result?.sessionId;
+      if (sid3) { crash = await raw3.callOn(sid3, 'Page.crash', {}); term = await raw3.callOn(sid3, 'Runtime.terminateExecution', {}); }
+    } finally { raw3.close(); }
+    await sleep(800);
+    // A mutant that lets the crash through leaves a dead renderer: nothing here may wait on it for ever (a hung eval / websocket would hold the rig and its mutated bundle).
+    const within = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${ms}ms`)), ms))]);
+    const oB = await within(oracle(ctx, U.b, 8000), 12000).catch(() => null);
+    const alive = oB ? await within(oB.eval('document.title'), 6000).catch(() => null) : null;
+    try { oB?.close(); } catch {}
+    clause(A, 'a-renderer-destroying-method-on-the-users-tab-is-refused', /opened by the user — an agent may only destroy the tabs it opened/.test(crash?.error?.message ?? '') && /opened by the user — an agent may only destroy the tabs it opened/.test(term?.error?.message ?? '') && alive === 'Tabs fixture B', `Page.crash → ${JSON.stringify(crash?.error?.message ?? crash).slice(0, 120)}; Runtime.terminateExecution → ${JSON.stringify(term?.error?.message ?? term).slice(0, 120)}; the user's page still answers: ${JSON.stringify(alive)}`);
   },
 
   async children(ctx) {

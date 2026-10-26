@@ -10,7 +10,7 @@
  */
 import { randomBytes, createHash } from 'node:crypto';
 import { captureWithFallback } from './cdp-capture.ts';
-import { isActingCdpMethod } from './browser-agent-tabs.ts';
+import { TAB_DESTROYING_METHODS, isActingCdpMethod } from './browser-agent-tabs.ts';
 
 export interface CdpTab {
   id: string;
@@ -532,6 +532,13 @@ export class CdpProxyCore {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
     if (TUNNEL_METHODS.has(method)) throw new CdpError(`${method} is not supported: this proxy speaks flattened sessions only`, ERR_METHOD);
+    if (TAB_DESTROYING_METHODS.has(method)) {
+      // Ownership is not only about closing (#397 round-2 INFO): a renderer-killer reaches the tab through the page debugger like any command, root or child session.
+      const owner = this.port.listTabs().find((t) => t.id === tabId);
+      if (owner && owner.openedBy !== 'agent') {
+        throw new CdpError(`${method} is refused: tab ${tabId} was opened by the user — an agent may only destroy the tabs it opened.`, ERR_SERVER);
+      }
+    }
     if (this.port.refuseMethod) {
       const tab = this.port.listTabs().find((t) => t.id === tabId);
       if (!tab) throw new CdpError('Target closed.', ERR_SERVER);
