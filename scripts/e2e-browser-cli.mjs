@@ -967,7 +967,7 @@ const ARM_FNS6 = {
       console.log(`  MEASURED [${A}] run ${i}: tab new rc=${nw.code} snapshot rc=${sn.code} | get title DURING rc=${gt.code} ${gt.ms} ms | AFTER rc=${gt2.code} ${gt2.ms} ms | iframes created=${created}`);
       for (const [what, r] of [['tab new', nw], ['snapshot', sn], ['get title DURING', gt], ['get title AFTER', gt2]]) if (r.code !== 0) console.log(`    ${what} failed: ${show(r)}`);
       rows.push({ i, nw: nw.code, sn: sn.code, during: gt.code, after: gt2.code, created, unanswered: unanswered.length,
-        duringInside: churn ? gt.t0 >= churn.t0 && gt.t0 < churn.t1 : null, afterOutside: churn ? gt2.t0 >= churn.t1 : null });
+        duringInside: churn ? gt.t0 >= churn.t0 && gt.t0 < churn.t1 : null, afterOutside: churn ? gt2.t0 >= churn.t1 : null, attachedAfterMs: churn ? sn.t1 - churn.t0 : null });
     }
     const hungDuring = rows.filter((r) => r.during !== 0), hungAfter = rows.filter((r) => r.after !== 0);
     const attachedRuns = rows.filter((r) => r.nw === 0 && r.sn === 0).length;
@@ -975,9 +975,11 @@ const ARM_FNS6 = {
     clause(A, 'ctl/a-real-daemon-was-driven', socks >= 1, `agent-browser daemon sockets of this ORCHESTRA_HOME: ${socks} (independent of how many commands stalled)`);
     clause(A, 'ctl/at-least-20-runs', N >= 20, `${N} runs (--churn-n)`);
     clause(A, 'ctl/the-churn-really-ran', rows.every((r) => (r.created ?? 0) >= 50), `iframes created per run (page oracle, window.__churn.created): ${rows.map((r) => r.created).join(',')} (>= 50 each)`);
-    // the commands must overlap the churn (a slow host that ate the 3 s before the daemon attached would make the arm green for nothing); judged only on runs whose attach steps returned, so a stall under test cannot void its own control
-    const judged = rows.filter((r) => r.nw === 0 && r.sn === 0 && r.duringInside !== null), inside = judged.filter((r) => r.duringInside).length;
-    clause(A, 'ctl/get-title-DURING-started-inside-the-churn', judged.length >= N / 2 && inside >= judged.length * 0.8, `${inside}/${judged.length} runs (page window.__churn.t0/t1 vs the call's start, same host clock; >= 80% of the ${judged.length} judged, which must be >= half of ${N})`);
+    // The commands must overlap the churn (a slow host that ate the 3 s before the daemon attached would make the arm green for nothing). An ARM clause, not a control: the failure under
+    // test also delays the attach, so on a broken build it is red with the others; on a healthy build it is red only when the host is too slow for the arm to mean anything.
+    // Judged on runs whose `tab new` + `snapshot` returned within 1.2 s of the churn start.
+    const fast = rows.filter((r) => r.nw === 0 && r.sn === 0 && r.attachedAfterMs !== null && r.attachedAfterMs < 1200);
+    clause(A, 'commands-overlapped-the-churn', fast.length >= 10 && fast.every((r) => r.duringInside), `${fast.filter((r) => r.duringInside).length}/${fast.length} fast-attach runs (snapshot back < 1.2 s after the page's window.__churn.t0; need >= 10) had the call start inside [t0, t1) — same host clock`);
     clause(A, 'ctl/get-title-AFTER-started-after-the-churn-ended', rows.every((r) => r.afterOutside !== false), `runs whose AFTER call started before the churn ended: ${rows.filter((r) => r.afterOutside === false).map((r) => r.i).join(',') || 'none'}`);
     clause(A, 'tab-new-and-snapshot-answer-under-churn', attachedRuns === N, `${N - attachedRuns}/${N} runs had \`tab new\` or \`snapshot\` fail (30 s daemon timeout): ${rows.filter((r) => r.nw !== 0 || r.sn !== 0).map((r) => r.i).join(',') || 'none'}`);
     clause(A, 'get-title-answers-DURING-child-churn', hungDuring.length === 0, `${hungDuring.length}/${N} timed out (8 s): ${hungDuring.map((r) => r.i).join(',') || 'none'}`);
