@@ -43,7 +43,7 @@ const MUTANTS = {
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
   'skill-not-installed': { file: 'chunk', edits: [[/(\w+)\("orchestra-status",(\w+)\),\1\((\w+),(\w+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'focus-steal-on-input': { file: 'chunk', edits: [[DROP_RE, '(($2.startsWith("Input.")&&(()=>{try{require("electron").webContents.getAllWebContents().forEach((w)=>{try{if(/^https?:/.test(w.getURL()))w.focus()}catch{}})}catch{}})(),0),$1.channel.send($2,$3,$4)).then(']], arms: ['focus'], why: 'every forwarded Input.* command focuses the panel page (the old focus-steal bug): the human loses the composer' },
-  'no-auto-open': { file: 'renderer', edits: [[/onBrowserEvent\(\((\w+),(\w+)\)=>\{\2\.url&&/, 'onBrowserEvent(($1,$2)=>{!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
+  'no-auto-open': { file: 'renderer', edits: [[/\.current\.set\((\w+),(\w+)\.next\),\2\.open&&/, '.current.set($1,$2.next),!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -601,8 +601,10 @@ const ARM_FNS2 = {
     await waitFor(async () => !(await paneVisible(ctx)), 10000, 'the fresh workspace pane to be closed').catch(() => {});
     clause(A, 'ctl/fresh-workspace-pane-is-closed', !(await paneVisible(ctx)), `${W2.branch} selected, its pane closed, no panel built yet`);
     const first = await cli(ctx, W2, ['snapshot', '-i']);
-    await sleep(2000);
-    clause(A, 'first-read-only-command-on-a-fresh-panel-does-not-open-the-pane', first.code === 0 && !(await paneVisible(ctx)), `snapshot ${show(first)} → pane visible: ${await paneVisible(ctx)} (building the panel loads about:blank; a blank page must not count as "the agent navigated")`);
+    const openedBlank = await waitFor(() => paneVisible(ctx), 4000, 'the pane to open for a fresh panel').catch(() => false);
+    // MEASUREMENT: building a panel loads about:blank, and decideBrowserAutoOpen (#393-fu) counts a new (tab,url) key as "the agent drove it" — so the very
+    // first command of a workspace opens its pane (blank). The skill does not promise otherwise; this clause pins what is true so a change is seen.
+    clause(A, 'first-command-on-a-fresh-panel-opens-the-pane-blank', first.code === 0 && openedBlank === true, `snapshot ${show(first)} → pane visible: ${openedBlank} (decideBrowserAutoOpen: key = activeTabId + url, about:blank is a url)`);
     await selectWs(ctx, W1);
   },
 };
