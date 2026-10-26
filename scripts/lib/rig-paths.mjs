@@ -22,11 +22,24 @@ export function physicalPath(p) {
 export function physicalForms(piece) {
   const out = [];
   try { out.push(fs.realpathSync(piece)); } catch { /* missing or dangling */ }
+  out.push(physicalPath(piece)); // a MISSING leaf under a linked parent (`<link>/bus`) still lands where the link points
   try {
     if (fs.lstatSync(piece).isSymbolicLink()) out.push(path.resolve(path.dirname(piece), fs.readlinkSync(piece)));
   } catch { /* not there */ }
   return out;
 }
 
-/** The absolute path pieces an env value names (a plain path, a `:`-list, `unix:path=…`). */
-export const absolutePieces = (value) => String(value).split(/[:=,;\s]+/).filter((x) => x.startsWith('/'));
+// split two ways: on whitespace too (a `:`/space separated list) and NOT on whitespace (one decoded path that has a space in it)
+const piecesOf = (v) => [...new Set([...v.split(/[:=,;\s]+/), ...v.split(/[:=,;]+/)])].filter((x) => x.startsWith('/'));
+
+/** The absolute path pieces an env value names (a plain path, a `:`-list, `unix:path=…`) — of the value AS GIVEN and of its single-pass `%hh`-decoded form
+ *  (a D-Bus address escapes bytes that way: `unix:path=%2Fsrv%2Flink%2Fbus` names `/srv/link/bus`). A malformed escape decodes to nothing here: the LEXICAL
+ *  stage (`referencesHumanRuntime`) already refuses it, fail closed, before this is ever reached. */
+export function absolutePieces(value) {
+  const v = String(value);
+  const out = piecesOf(v);
+  if (v.includes('%')) {
+    try { out.push(...piecesOf(decodeURIComponent(v))); } catch { /* malformed: refused lexically */ }
+  }
+  return [...new Set(out)];
+}

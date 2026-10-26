@@ -80,6 +80,8 @@ export interface MountEntry {
   id: number;
   parent: number;
   point: string;
+  /** `major:minor` of the filesystem instance (a bind of the real dir SHARES it; a fresh tmpfs gets its own). */
+  dev: string;
   /** optional propagation fields (`shared:N`, `master:N`, …) */
   tags: string[];
   fstype: string;
@@ -95,7 +97,7 @@ export function parseMountinfo(text: string): MountEntry[] {
     const tail = line.slice(sep + 3).split(' ');
     const id = Number(head[0]), parent = Number(head[1]);
     if (!Number.isInteger(id) || !Number.isInteger(parent) || head.length < 6 || !tail[0]) continue;
-    out.push({ id, parent, point: head[4], tags: head.slice(6), fstype: tail[0] });
+    out.push({ id, parent, point: head[4], dev: head[2], tags: head.slice(6), fstype: tail[0] });
   }
   return out;
 }
@@ -114,6 +116,10 @@ export function hiddenRuntimeMountProof(mountinfo: string, uid: number): { ok: b
   if (!top) return { ok: false, detail: `mounts at ${point} form no stack` };
   if (top.fstype !== 'tmpfs') return { ok: false, detail: `the topmost mount at ${point} is ${top.fstype}, not a tmpfs` };
   if (top.tags.length > 0) return { ok: false, detail: `the topmost tmpfs carries propagation tags ${top.tags.join(' ')} — a propagated mount, not a private one` };
+  // A bind of the real dir (`mount --bind P P`, or a re-bind at the same point on top of a hide) is ALSO a private, untagged tmpfs — but it SHARES the real
+  // mount's device. A genuine fresh tmpfs has its own: it must differ from EVERY lower mount at the point.
+  const sameDev = here.filter((m) => m !== top && m.dev === top.dev);
+  if (sameDev.length > 0) return { ok: false, detail: `the topmost mount at ${point} shares device ${top.dev} with a lower mount (id ${sameDev[0].id}) — a bind of the real dir, not a fresh tmpfs` };
   const onTop = all.filter((m) => m.parent === top.id);
   if (onTop.length > 0) return { ok: false, detail: `${onTop.map((m) => m.point).join(', ')} is mounted ON the hiding tmpfs` };
   return { ok: true, detail: `${here.length} mounts stacked at ${point}; topmost = private tmpfs (mount ${top.id}), nothing mounted on it` };
@@ -225,58 +231,75 @@ export interface UnixSocket {
   path: string;
 }
 
-/** `/proc/net/unix` → sockets that have a path (columns: Num RefCount Protocol Flags Type St Inode Path). */
-export function parseUnixSockets(text: string): UnixSocket[] {
-  const out: UnixSocket[] = [];
-  for (const line of text.split('\n').slice(1)) {
-    const cols = line.trim().split(/\s+/);
-    if (cols.length < 8) continue;
-    const inode = Number(cols[6]);
-    const p = cols.slice(7).join(' ');
-    if (Number.isInteger(inode) && p.startsWith('/')) out.push({ inode, path: p });
+/** `/proc/net/unix` (columns: Num RefCount Protocol Flags Type St Inode Path — fixed columns, the path LAST and kept byte-exact, so a path with spaces or
+ *  digits in it is not ambiguous). `sockets` = the ones bound to a filesystem path; `inodes` = EVERY socket (named or not). */
+export function parseProcNetUnix(text: string): { sockets: UnixSocket[]; inodes: Set<number> } {
+  const sockets: UnixSocket[] = [];
+  const inodes = new Set<number>();
+  for (const line of text.split('\n')) {
+    const m = /^\s*\S+:\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\d+)(?: (.*))?$/.exec(line);
+    if (!m) continue;
+    const inode = Number(m[1]);
+    inodes.add(inode);
+    if (m[2] !== undefined && m[2].startsWith('/')) sockets.push({ inode, path: m[2] });
   }
-  return out;
+  return { sockets, inodes };
 }
 
-export interface SsSocket {
-  localPath: string | null;
-  localIno: number;
-  peerIno: number;
+export const parseUnixSockets = (text: string): UnixSocket[] => parseProcNetUnix(text).sockets;
+
+/** Socket path ↔ inode comes from /proc/net/unix (above); `ss -xnaeH` is used ONLY for which inode is connected to which. */
+export interface SocketScan {
+  pathByIno: ReadonlyMap<number, string>;
+  /** local inode → the inode of its peer end (0 = none). */
+  peerOf: ReadonlyMap<number, number>;
 }
 
-/** `ss -xnaeH` rows (`Netid State Recv-Q Send-Q <local path|*> <local inode> <peer path|*> <peer inode> <-> …`). A listener has a local path; the
- *  ACCEPTED end of a connection carries the listener's path; a client's own end has `*` — its peer's inode is the way to the path it reached. */
-const SS_ROW = /^\S+\s+\S+\s+\d+\s+\d+\s+(.+?)\s+(\d+)\s+(\*|.+?)\s+(\d+)(?:\s+(?:<->|-->|<--|---)(?:\s.*)?)?$/; // the trailing marker is the shutdown state: `<->`, `-->`, `<--` or `---` (measured on this host)
+const SS_TAIL = /(?:\s+(?:<->|-->|<--|---)(?:\s.*)?)?$/; // the trailing marker is the shutdown state: `<->`, `-->`, `<--` or `---` (measured on this host)
+const addrOk = (tok: string | undefined): boolean => tok === '*' || (tok !== undefined && (tok.startsWith('/') || tok.startsWith('@')));
 
-/** Rows of `ss -xnaeH`; a path may contain spaces (`/run/user/1000/my sock`). Lines that do not parse are returned in `unparsed` — the caller must
- *  fail CLOSED on any: a row that silently disappears is a connection the scan cannot see. */
-export function parseSsStrict(text: string): { rows: SsSocket[]; unparsed: string[] } {
-  const rows: SsSocket[] = [];
+/** `ss -xnaeH` rows → (local inode, peer inode) pairs: `Netid State Recv-Q Send-Q <local addr> <local ino> <peer addr> <peer ino> [<-> …]`. An address may
+ *  contain spaces AND digit tokens (`/run/user/1000/my 123 sock`), so the inode columns are found by SHAPE (a numeric token followed by an address-looking
+ *  token `*` / `/…` / `@…`, with an address-looking first token before it) — and when that still leaves more than one split, by /proc/net/unix (the local
+ *  inode must be a real socket). A row left with zero or several splits goes to `unparsed` and the caller fails CLOSED (a row that silently disappears is a
+ *  connection the scan cannot see). A unique shape needs no lookup, so a socket that closed between the two snapshots does not abort a scan. */
+export function parseSsPairs(text: string, known: ReadonlySet<number>): { pairs: Array<{ localIno: number; peerIno: number }>; unparsed: string[] } {
+  const pairs: Array<{ localIno: number; peerIno: number }> = [];
   const unparsed: string[] = [];
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (line === '') continue;
-    const m = SS_ROW.exec(line);
-    if (m) rows.push({ localPath: m[1] === '*' ? null : m[1], localIno: Number(m[2]), peerIno: Number(m[4]) });
+    const tok = line.replace(SS_TAIL, '').trim().split(/\s+/);
+    const last = tok.length - 1;
+    const peerIno = Number(tok[last]);
+    let cands: number[] = [];
+    if (tok.length >= 8 && /^\d+$/.test(tok[last]) && addrOk(tok[4])) {
+      for (let k = 5; k <= last - 2; k++) if (/^\d+$/.test(tok[k]) && addrOk(tok[k + 1])) cands.push(k);
+    }
+    if (cands.length > 1) cands = cands.filter((k) => known.has(Number(tok[k])));
+    if (cands.length === 1) pairs.push({ localIno: Number(tok[cands[0]]), peerIno });
     else unparsed.push(line.slice(0, 160));
   }
-  return { rows, unparsed };
+  return { pairs, unparsed };
 }
 
-/** {@link parseSsStrict}, rows only (for tests / callers that handle `unparsed` themselves). */
-export const parseSs = (text: string): SsSocket[] => parseSsStrict(text).rows;
+/** Both sources → a {@link SocketScan}; `unparsed` lists every ss row that could not be placed unambiguously. */
+export function buildSocketScan(procNetUnix: string, ssText: string): { scan: SocketScan; unparsed: string[] } {
+  const net = parseProcNetUnix(procNetUnix);
+  const { pairs, unparsed } = parseSsPairs(ssText, net.inodes);
+  return { scan: { pathByIno: new Map(net.sockets.map((x) => [x.inode, x.path])), peerOf: new Map(pairs.map((x) => [x.localIno, x.peerIno])) }, unparsed };
+}
 
 /** The paths a process's socket fds are bound to or connected to: for each socket inode, its own bound path and the path its peer end is bound to.
  *  (`/proc/<pid>/fd` shows a socket only as `socket:[N]`, never a path — so a fd scan by path alone cannot see a connection.) */
-export function socketPaths(inodes: readonly number[], ss: readonly SsSocket[]): string[] {
-  const byIno = new Map(ss.map((x) => [x.localIno, x]));
+export function socketPaths(inodes: readonly number[], scan: SocketScan): string[] {
   const out = new Set<string>();
   for (const i of inodes) {
-    const x = byIno.get(i);
-    if (!x) continue;
-    if (x.localPath) out.add(x.localPath);
-    const peer = byIno.get(x.peerIno);
-    if (peer?.localPath) out.add(peer.localPath);
+    const own = scan.pathByIno.get(i);
+    if (own) out.add(own);
+    const peer = scan.peerOf.get(i);
+    const peerPath = peer ? scan.pathByIno.get(peer) : undefined;
+    if (peerPath) out.add(peerPath);
   }
   return [...out].sort();
 }

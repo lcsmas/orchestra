@@ -17,30 +17,73 @@ import {
 /** How long the PARENT waits for the probe before deciding `unavailable` (the main thread is blocked, before the window exists: the worst-case startup
  *  cost of an unrecognised desktop with a dead service). It only STOPS WAITING — it never signals the child (see {@link WAIT_ONLY_SH}). */
 export const PROBE_WAIT_MS = 5000;
-const defaultScratchDirs = (env: NodeJS.ProcessEnv): ScratchBase[] => [os.tmpdir(), ...(env.XDG_RUNTIME_DIR ? [env.XDG_RUNTIME_DIR] : [])];
 /** gdbus's own per-call timeout (seconds), deliberately LONG: gdbus sends an `Introspect` first and only then the `Properties.Get`, each with this
  *  timeout, and a client that vanishes while a call is in flight made the human's gnome-keyring-daemon abort twice (2026-10-26, `gkd_secret_service_get_
  *  pkcs11_session: assertion 'client' failed`). The child outlives our deadline and finishes (or times out) on its own. */
 export const DBUS_CALL_TIMEOUT_S = '30';
 /** Wall-clock backstop for the WRAPPER (`sh`), never for gdbus: the wrapper holds no call, so killing it abandons nothing. */
 const WRAPPER_BACKSTOP_SLACK_MS = 2000;
+/** A failed attempt that ended sooner than this was an IMMEDIATE spawn/connect failure, not a reply (measured: an answer takes >= ~15 ms of real
+ *  round trip, a spawn/connect failure 2-13 ms) — the only kind worth one retry. */
+export const QUICK_FAIL_MS = 50;
+export const RETRY_DELAY_MS = 100;
+/** One attempt + at most ONE retry. */
+export const MAX_PROBE_ATTEMPTS = 2;
+/** The wrapper's poll tick. */
+export const WRAPPER_TICK = '0.01';
 
-/** Wait-only wrapper: starts the probe child in the background (output to a file, no pipe shared with us), polls it for at most `$2` × 0.1 s, then
- *  either reports its exit status or exits 3 WITHOUT touching it — no signal is ever sent, the child finishes its own call and exits by itself.
- *  (Linux: finished-ness is read from /proc, because `kill -0` succeeds on a zombie.) */
-export const WAIT_ONLY_SH = `out=$1; limit=$2; shift 2
-"$@" >"$out" 2>/dev/null </dev/null &
+/** Wait-only wrapper: starts the probe child in the background (stdout / stderr to files, no pipe shared with us), polls it every 10 ms until it is gone or
+ *  a WALL-CLOCK deadline (`$3` centiseconds, read from /proc/uptime with the `read` builtin — no fork, so a failing `sleep`/`grep` under process pressure
+ *  cannot end the wait early), then either reports its exit status or exits 3 WITHOUT touching it — no signal is ever sent, the child finishes its own
+ *  call and exits by itself. (Linux: finished-ness is read from /proc, because `kill -0` succeeds on a zombie; also a builtin read.) */
+export const WAIT_ONLY_SH = `out=$1; err=$2; limit=$3; shift 3
+"$@" >"$out" 2>"$err" </dev/null &
 pid=$!
-n=0
-alive() { [ -e "/proc/$pid" ] && ! grep -q '^State:[[:space:]]*Z' "/proc/$pid/status" 2>/dev/null; }
-while [ "$n" -lt "$limit" ] && alive; do sleep 0.1; n=$((n+1)); done
+alive() { [ -e "/proc/$pid" ] || return 1; st=; while read -r k v; do if [ "$k" = "State:" ]; then st=$v; break; fi; done <"/proc/$pid/status" 2>/dev/null; case "$st" in Z*|"") return 1;; esac; return 0; }
+tick() { read -r up _ </proc/uptime; t=\${up%.*}\${up#*.}; while [ "\${t#0}" != "$t" ]; do t=\${t#0}; done; [ -n "$t" ] || t=0; }
+tick; deadline=$((t + limit))
+while alive; do tick; [ "$t" -lt "$deadline" ] || break; sleep ${WRAPPER_TICK}; done
 if alive; then exit 3; fi
 wait "$pid"`;
+
+export interface ProbeAttempt {
+  /** `spawnSync` could not even start `sh` (EAGAIN, ENOMEM, ENOENT…). */
+  spawnError?: string;
+  status: number | null;
+  elapsedMs: number;
+  stdout: string;
+  /** First non-empty line gdbus wrote to stderr (capped). */
+  stderrLine: string;
+}
+
+/** What one probe attempt means, and whether it is worth ONE retry. Retry only an IMMEDIATE failure that is not a reply: a spawn error, or a nonzero
+ *  exit in < {@link QUICK_FAIL_MS} whose stderr is not a D-Bus error reply (`GDBus.Error:…` = the bus answered: ServiceUnknown, NoSuchObject…). Never a real
+ *  answer (status 0) and never the wait-only deadline (it fires only after the whole wait). `note` = anything the startup log should show. */
+export function classifyProbeAttempt(a: ProbeAttempt): { state: SecretServiceState; retry: boolean; note: string | null } {
+  if (a.spawnError) return { state: 'unavailable', retry: true, note: `spawn ${a.spawnError} (${a.elapsedMs} ms)` };
+  if (a.status === 0) {
+    const state = parseCollectionLocked(a.stdout);
+    return { state, retry: false, note: state === 'unavailable' ? `unparseable reply "${a.stdout.trim().slice(0, 60)}"` : null };
+  }
+  const reply = /GDBus\.Error:/.test(a.stderrLine); // the bus (or the service) answered with an error: a real "no service", not a failure to ask
+  const quick = a.elapsedMs < QUICK_FAIL_MS;
+  const what = a.status === 3 ? 'wait deadline' : `exit ${a.status}`;
+  return { state: 'unavailable', retry: quick && !reply, note: reply ? null : `${what} (${a.elapsedMs} ms)${a.stderrLine ? `: ${a.stderrLine}` : ''}` };
+}
+
+const sleepSync = (ms: number): void => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const firstLine = (f: string): string => {
+  try {
+    return (fs.readFileSync(f, 'utf8').split('\n').find((l) => l.trim() !== '') ?? '').trim().slice(0, 160);
+  } catch {
+    return '';
+  }
+};
 
 /** A scratch-dir parent: a plain path (must already exist) or `{ dir, create: true }` (ours — made 0700 if missing; only the app's own userData). */
 export type ScratchBase = string | { dir: string; create: true };
 
-/** A private scratch dir for the probe's output file: the first of `bases` that accepts a `mkdtemp`. A read-only or missing TMPDIR must not turn a
+/** A private scratch dir for the probe's output files: the first of `bases` that accepts a `mkdtemp`. A read-only or missing TMPDIR must not turn a
  *  healthy keyring into `unavailable` silently — each failure is reported through `note` (it reaches the startup log) and the next base is tried.
  *  Only a `create` base is ever created: a missing `$XDG_RUNTIME_DIR` is the session's to make, not ours. null = none worked. */
 export function makeProbeDir(bases: readonly ScratchBase[], note: (msg: string) => void = () => {}): string | null {
@@ -56,9 +99,13 @@ export function makeProbeDir(bases: readonly ScratchBase[], note: (msg: string) 
   return null;
 }
 
-/** Read `Locked` of the DEFAULT collection without prompting, WITHOUT ever abandoning the call: the parent waits at most `waitMs`; past that the answer
- *  is `unavailable` and the decision falls back to Chromium's default, while the orphaned gdbus completes on its own. Anything but a clean boolean
- *  answer (no `gdbus`, no owner, no default collection, a dead daemon, no writable scratch dir) is `unavailable` too. */
+const defaultScratchDirs = (env: NodeJS.ProcessEnv): ScratchBase[] => [os.tmpdir(), ...(env.XDG_RUNTIME_DIR ? [env.XDG_RUNTIME_DIR] : [])];
+
+/** Read `Locked` of the DEFAULT collection without prompting, WITHOUT ever abandoning the call: the parent waits at most `waitMs` IN TOTAL; past that the
+ *  answer is `unavailable` and the decision falls back to Chromium's default, while the orphaned gdbus completes on its own. Anything but a clean boolean
+ *  answer (no `gdbus`, no owner, no default collection, a dead daemon, no writable scratch dir) is `unavailable` too. An IMMEDIATE spawn/connect failure
+ *  (not a reply, not the deadline) is retried ONCE after {@link RETRY_DELAY_MS} — under load a transient fork/connect failure must not silently make the app
+ *  pick the plaintext backend for a whole run; every failure, and the retry itself, is reported through `note`. */
 export function probeSecretService(
   opts: {
     program?: string;
@@ -72,36 +119,60 @@ export function probeSecretService(
 ): SecretServiceState {
   const waitMs = opts.waitMs ?? PROBE_WAIT_MS;
   const env = opts.env ?? process.env;
+  const note = opts.note ?? (() => {});
+  const t0 = Date.now();
   let dir: string | null = null;
   try {
     dir = makeProbeDir(opts.scratchDirs ?? defaultScratchDirs(env), opts.note);
     if (!dir) return 'unavailable';
     const out = path.join(dir, 'out');
-    const r = (opts.spawn ?? spawnSync)(
-      'sh',
-      [
-        '-c', WAIT_ONLY_SH, 'probe', out, String(Math.ceil(waitMs / 100)),
-        opts.program ?? 'gdbus',
-        'call', '--session', '--timeout', DBUS_CALL_TIMEOUT_S,
-        '--dest', 'org.freedesktop.secrets',
-        '--object-path', '/org/freedesktop/secrets/aliases/default',
-        '--method', 'org.freedesktop.DBus.Properties.Get',
-        'org.freedesktop.Secret.Collection', 'Locked',
-      ],
-      {
-        encoding: 'utf8',
-        timeout: waitMs + WRAPPER_BACKSTOP_SLACK_MS, // wedged-`sh` backstop only; the wrapper holds no call
-        killSignal: 'SIGKILL',
-        stdio: ['ignore', 'ignore', 'ignore'],
-        env,
-      },
-    );
-    if (r.error || r.status !== 0) return 'unavailable'; // sh missing, deadline (3), or gdbus failed
-    return parseCollectionLocked(fs.readFileSync(out, 'utf8'));
-  } catch {
+    const err = path.join(dir, 'err');
+    let last: { state: SecretServiceState; retry: boolean; note: string | null } = { state: 'unavailable', retry: false, note: null };
+    for (let attempt = 1; attempt <= MAX_PROBE_ATTEMPTS; attempt++) {
+      const remaining = waitMs - (Date.now() - t0);
+      if (attempt > 1 && remaining < 500) break; // the one retry must fit inside the same overall wait
+      fs.rmSync(out, { force: true });
+      fs.rmSync(err, { force: true });
+      const t = Date.now();
+      const r = (opts.spawn ?? spawnSync)(
+        'sh',
+        [
+          '-c', WAIT_ONLY_SH, 'probe', out, err, String(Math.ceil((attempt === 1 ? waitMs : remaining) / 10)),
+          opts.program ?? 'gdbus',
+          'call', '--session', '--timeout', DBUS_CALL_TIMEOUT_S,
+          '--dest', 'org.freedesktop.secrets',
+          '--object-path', '/org/freedesktop/secrets/aliases/default',
+          '--method', 'org.freedesktop.DBus.Properties.Get',
+          'org.freedesktop.Secret.Collection', 'Locked',
+        ],
+        {
+          encoding: 'utf8',
+          timeout: (attempt === 1 ? waitMs : remaining) + WRAPPER_BACKSTOP_SLACK_MS, // wedged-`sh` backstop only; the wrapper holds no call
+          killSignal: 'SIGKILL',
+          stdio: ['ignore', 'ignore', 'ignore'],
+          env,
+        },
+      );
+      const elapsedMs = Date.now() - t;
+      let stdout = '';
+      try { stdout = fs.readFileSync(out, 'utf8'); } catch { /* none */ }
+      last = classifyProbeAttempt({
+        spawnError: r.error ? ((r.error as NodeJS.ErrnoException).code ?? r.error.message) : undefined,
+        status: r.status,
+        elapsedMs,
+        stdout,
+        stderrLine: firstLine(err),
+      });
+      if (last.note) note(`probe#${attempt} ${last.note}${last.retry && attempt === 1 ? ' — retrying once' : ''}`);
+      if (!last.retry || attempt === MAX_PROBE_ATTEMPTS) break;
+      sleepSync(RETRY_DELAY_MS);
+    }
+    return last.state;
+  } catch (e) {
+    note(`probe error: ${(e as Error).message}`);
     return 'unavailable';
   } finally {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true }); // an orphaned gdbus keeps its open fd; unlinking is safe
+    if (dir) fs.rmSync(dir, { recursive: true, force: true }); // an orphaned gdbus keeps its open fds; unlinking is safe
   }
 }
 

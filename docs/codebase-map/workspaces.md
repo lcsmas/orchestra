@@ -661,10 +661,14 @@ the first disk read is single-flight (`loading`).
   org.freedesktop.Secret.Collection Locked` on `/org/freedesktop/secrets/aliases/default`, read-only,
   synchronous but WAIT-ONLY — it never abandons an in-flight call: a client vanishing mid-`Properties.Get` aborted the human's gnome-keyring-daemon
   twice on 2026-10-26. `WAIT_ONLY_SH` runs gdbus (`--timeout 30` per call: it sends an `Introspect` first, then the Get) in the background and
-  polls it for `PROBE_WAIT_MS` = 5 s; past that it exits 3 WITHOUT signalling — `unavailable`, Chromium's default, the orphaned child finishes
+  polls it every 10 ms against a WALL-CLOCK deadline (`/proc/uptime` via the `read` builtin: no fork, so a failing `sleep` under process pressure cannot
+  end the wait early) of `PROBE_WAIT_MS` = 5 s; past that it exits 3 WITHOUT signalling — `unavailable`, Chromium's default, the orphaned child finishes
   its own call. Worst case a dead daemon blocks the main thread 5 s. A wrapper `kill` / `timeout` / SIGTERM-SIGKILL spawnSync timeout is the
   mutant). The probe's output file needs a writable scratch dir: `makeProbeDir` tries `os.tmpdir()`, then `$XDG_RUNTIME_DIR`, then the userData dir
   (`extraScratchDirs`, index.ts); each failure is logged as `probe-notes="mkdtemp <base>: <code>"` in the startup line, none writable ⇒ `unavailable` (round-4 MINOR).
+  `classifyProbeAttempt` (round-6 PRODUCT): ONE retry (`MAX_PROBE_ATTEMPTS` = 2, after 100 ms, inside the same overall wait) only for an IMMEDIATE failure (< 50 ms) that is
+  not a reply — a spawn error of `sh`, a connect failure, a premature wrapper exit — never for a real answer, a `GDBus.Error:` bus reply (a real "no service"),
+  or the deadline; gdbus stderr goes to a file and every abnormal attempt (status/errno + first stderr line) is reported in `probe-notes`.
   `selectLinuxPasswordStore` (appends the switch; `index.ts` calls it at module scope, never in CLI
   mode, and logs `[secrets] password-store: … — <reason> (probe N ms) [desktop=… bus=…]` after
   `initLogger`). **Electron sets `DBUS_SESSION_BUS_ADDRESS=disabled:` in its main process when the
@@ -710,10 +714,11 @@ the first disk read is single-flight (`loading`).
   gnome-keyring-daemon under scratch XDG dirs; arms forged (must-FAIL preflight: forced real XDG/DBUS/env value ⇒ `--preflight-only` REFUSED rc 3,
   nothing started) / unlocked / locked / nosvc / recognised / hung / gnome / relock / isolated / isolated-gnome. World clauses are PURE in
   `shared/keyring-rig-world.ts` (driver env — `%hh`-decoded, malformed escape ⇒ refuse; the hidden world PROVEN from `/proc/self/mountinfo`: a fresh
-  private tmpfs stacked on the human's runtime-dir mount, env var only the precondition; PHYSICAL preflight through `scripts/lib/rig-paths.mjs` — a
+  private tmpfs stacked on the human's runtime-dir mount — its own device (a bind of the real dir shares it), no propagation tags, nothing mounted on it — env var only
+  the precondition; PHYSICAL preflight through `scripts/lib/rig-paths.mjs` — a
   symlinked xdg / RIG_DIR / env value is refused; scratch guards run BEFORE any mkdir; arm world, bus config, secrets owner = our daemon by exe + a socket
-  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS through `ss -xnaeH` (strict: an unparsed row aborts;
-  fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
+  under `<run>/keyring` with its own scan positive control, app-tree fds/env resolved to socket PATHS (paths from `/proc/net/unix`, byte-exact; `ss -xnaeH` only for which inode is connected to which, strict: an
+  unplaceable row aborts after 3 snapshots; fd links are only `socket:[N]`) + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
   `--preflight-only` + source pins); processes are tracked by (pid, start time) from the private bus peers / app tree. Mutants
   `scripts/keyring-mutants.mjs` (unit; U*, W* world, D* driver/launcher) and `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps:
   gnome-keyring needs `--login` (password on stdin) THEN `--start` to publish `org.freedesktop.secrets`; the oracle uses `gdbus --address`

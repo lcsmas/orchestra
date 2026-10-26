@@ -23,7 +23,7 @@ import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { descendantsOf, isAlive, procStat, signalIfSame } from './lib/rig-procs.mjs';
 import { absolutePieces, physicalForms, physicalPath } from './lib/rig-paths.mjs';
 import {
-  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, parseSsStrict, parseUnixSockets, physicalWorldChecks, referencesHumanRuntime,
+  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, buildSocketScan, parseUnixSockets, physicalWorldChecks, referencesHumanRuntime,
   rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, treeChecks,
 } from '../src/shared/keyring-rig-world.ts';
 
@@ -269,11 +269,21 @@ function secretsOwnerPid(w) {
 }
 /** `ss -xnaeH`: every unix socket on the host as NAMES only (a netlink dump — nothing is connected to) — the only way to turn a `socket:[N]` fd into the path it is bound / connected to. */
 function ssRows() {
-  const r = spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 });
-  if (r.status !== 0 || !r.stdout) throw new Error(`ss -xnaeH failed (rc ${r.status}) — the socket scan cannot run, so no clause may rely on it`);
-  const { rows, unparsed } = parseSsStrict(r.stdout);
-  if (unparsed.length) throw new Error(`ss -xnaeH: ${unparsed.length} row(s) did not parse (first: ${JSON.stringify(unparsed[0])}) — a row that vanishes is a connection the scan cannot see`);
-  return rows;
+  // Two snapshots (ss, then /proc/net/unix) of a host where sockets come and go: a row can name an inode that closed in between. A row that is STILL
+  // unplaceable on the 3rd try is a real ambiguity — abort (a row that vanishes is a connection the scan cannot see).
+  let unparsed = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const r = spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 });
+    if (r.status !== 0 || !r.stdout) throw new Error(`ss -xnaeH failed (rc ${r.status}) — the socket scan cannot run, so no clause may rely on it`);
+    const built = buildSocketScan(fs.readFileSync('/proc/net/unix', 'utf8'), r.stdout);
+    unparsed = built.unparsed;
+    if (!unparsed.length) {
+      if (built.scan.peerOf.size === 0) throw new Error('ss -xnaeH produced no (inode, peer) pairs — the socket scan saw nothing');
+      return built.scan;
+    }
+    spawnSync('sleep', ['0.05']);
+  }
+  throw new Error(`ss -xnaeH: ${unparsed.length} row(s) could not be placed after 3 snapshots (first: ${JSON.stringify(unparsed[0])}) — a row that vanishes is a connection the scan cannot see`);
 }
 const inodesOf = (fds) => fds.map(socketInode).filter((i) => i !== null);
 function ownerEvidence(w) {

@@ -30,12 +30,13 @@ test('physicalPath: a path that does not exist yet resolves to where it WOULD la
 test('physicalForms: realpath AND the literal target of a link — a dangling link into a directory is still read', () => {
   const l = path.join(scratch, 'to-real');
   fs.symlinkSync(path.join(standin, 'real'), l);
-  assert.deepEqual(physicalForms(l).sort(), [path.join(standin, 'real'), path.join(standin, 'real')].sort(), 'real + target agree');
+  assert.deepEqual([...new Set(physicalForms(l))], [path.join(standin, 'real')], 'real + target + physical landing place agree');
+  assert.deepEqual([...new Set(physicalForms(path.join(l, 'sock')))], [path.join(standin, 'real/sock')], 'a MISSING leaf under a linked parent lands where the link points');
   const dangling = path.join(scratch, 'dangling');
   fs.symlinkSync(path.join(standin, 'nothing-here'), dangling);
-  assert.deepEqual(physicalForms(dangling), [path.join(standin, 'nothing-here')], 'dangling: only the target');
-  assert.deepEqual(physicalForms(path.join(scratch, 'missing')), []);
-  assert.deepEqual(physicalForms(scratch), [scratch], 'a plain dir: its realpath only');
+  assert.ok(physicalForms(dangling).includes(path.join(standin, 'nothing-here')), 'dangling: its target is read');
+  assert.deepEqual([...new Set(physicalForms(path.join(scratch, 'missing')))], [path.join(scratch, 'missing')], 'a plain missing path lands on itself');
+  assert.deepEqual([...new Set(physicalForms(scratch))], [scratch], 'a plain dir: its realpath only');
 });
 
 test('absolutePieces: a plain path, a `:` list, `unix:path=…`, `KEY=/x` — only absolute pieces', () => {
@@ -43,4 +44,8 @@ test('absolutePieces: a plain path, a `:` list, `unix:path=…`, `KEY=/x` — on
   assert.deepEqual(absolutePieces('/usr/bin:/bin:rel/x'), ['/usr/bin', '/bin']);
   assert.deepEqual(absolutePieces('unix:path=/x/bus,guid=abc'), ['/x/bus']);
   assert.deepEqual(absolutePieces('wayland-rig'), []);
+  // round-6 minor: the %hh-decoded form is carried into the physical pass
+  assert.deepEqual(absolutePieces('unix:path=%2Fsrv%2Flink%2Fbus').sort(), ['/srv/link/bus'], 'an escaped address names its path');
+  for (const want of ['/plain dir', '/plain%20dir', '/x']) assert.ok(absolutePieces('/plain%20dir:/x').includes(want), `both the literal and the decoded form (a literal % is legal in a path): ${want}`);
+  assert.deepEqual(absolutePieces('unix:path=%2Fbad%zz%2Fbus'), [], 'malformed escape: nothing decoded, nothing guessed (refused lexically before this)');
 });

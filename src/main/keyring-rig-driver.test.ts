@@ -110,6 +110,9 @@ test('F2 (seat 1): a SYMLINKED xdg / RIG_DIR / env value passes every lexical cl
     const r = preflight({ ...env, GNOME_KEYRING_CONTROL: link }); assert.equal(r.rc, 3, r.out); assert.match(r.out, /env-path-values-resolve-physically-clean \(env keys whose value is a link\/path into it: GNOME_KEYRING_CONTROL\)/);
     const dangling = path.join(rig, 'dangling'); fs.symlinkSync(path.join(fakeRuntime, 'does-not-exist'), dangling);
     const d = preflight({ ...env, SOME_SOCKET: dangling }); assert.equal(d.rc, 3, `a DANGLING link into it is refused by its target: ${d.out}`); }
+  // 4. the same link given %hh-ESCAPED in a key no exact-match check covers (round-6 minor): lexical AND the raw physical pass miss it
+  { const { rig, env } = mk('phys-esc'); const link = path.join(rig, 'esc-link'); fs.symlinkSync(path.join(fakeRuntime, 'xdg'), link);
+    const r = preflight({ ...env, SOME_ADDRESS: `unix:path=${encodeURIComponent(link)}%2Fbus` }); assert.equal(r.rc, 3, r.out); assert.match(r.out, /env-path-values-resolve-physically-clean \(env keys whose value is a link\/path into it: SOME_ADDRESS\)/); }
   // control: the same shapes with innocent targets pass
   { const { rig, env } = mk('phys-ok'); const ok = path.join(rig, 'ok-link'); fs.mkdirSync(path.join(rig, 'real-target')); fs.symlinkSync(path.join(rig, 'real-target'), ok);
     const r = preflight({ ...env, SOME_DIR: ok }); assert.equal(r.rc, 0, r.out); assert.match(r.out, /\[preflight\] physical: 3\/3 clauses ok/); }
@@ -148,8 +151,11 @@ test('driver --preflight-only: every forged world is REFUSED (rc 3, naming the c
 
 test('driver source (m2/m3): ss is read strictly (a row that does not parse aborts), the mountinfo knob is gated on --preflight-only, the real run reads /proc/self/mountinfo', () => {
   const d = driver();
-  assert.match(d, /const \{ rows, unparsed \} = parseSsStrict\(r\.stdout\);\n  if \(unparsed\.length\) throw new Error\(/);
+  assert.match(d, /const built = buildSocketScan\(fs\.readFileSync\('\/proc\/net\/unix', 'utf8'\), r\.stdout\);\n    unparsed = built\.unparsed;\n    if \(!unparsed\.length\) \{/);
+  assert.match(d, /for \(let attempt = 1; attempt <= 3; attempt\+\+\) \{/, 'two snapshots of a churning host: retried, then abort');
+  assert.match(d, /throw new Error\(`ss -xnaeH: \$\{unparsed\.length\} row\(s\) could not be placed after 3 snapshots/);
   assert.match(d, /if \(r\.status !== 0 \|\| !r\.stdout\) throw new Error\(`ss -xnaeH failed/);
+  assert.match(d, /if \(built\.scan\.peerOf\.size === 0\) throw new Error\('ss -xnaeH produced no \(inode, peer\) pairs/, 'a scan that saw nothing is a failure, never a clean result');
   assert.match(d, /if \(miFlag && !PREFLIGHT_ONLY\) refuse\(/);
   assert.match(d, /fs\.readFileSync\(miFlag \?\? '\/proc\/self\/mountinfo', 'utf8'\)/);
   assert.match(d, /mountinfo, uid: process\.getuid\(\) \}\);/);

@@ -12,3 +12,12 @@ export const HIDDEN_MI = `1372 1369 0:64 / ${HUMAN} rw,nosuid,nodev,relatime mas
 1373 1372 0:85 / ${HUMAN}/doc rw,nosuid,nodev,relatime master:889 - fuse.portal portal rw,user_id=1000,group_id=1000
 1392 1372 0:89 / ${HUMAN} rw,nosuid,nodev,relatime - tmpfs tmpfs rw,seclabel,mode=755,uid=1000,gid=1000,inode64
 `;
+
+/** (a) `mount --bind P P` inside a private namespace: 2 mounts, private untagged tmpfs on top — but the SAME device as the real mount (round-6 MAJOR, real format) */
+export const SELF_BIND_MI = `472 50 0:64 / ${HUMAN} rw,nosuid,nodev,relatime shared:223 - tmpfs tmpfs rw,seclabel,size=3241904k,nr_inodes=810476,mode=700,uid=1000,gid=1000,inode64
+1500 472 0:64 / ${HUMAN} rw,nosuid,nodev,relatime - tmpfs tmpfs rw,seclabel,size=3241904k,nr_inodes=810476,mode=700,uid=1000,gid=1000,inode64
+`;
+
+/** (b) host + a hide + a RE-BIND of the real dir at the same point: the re-bind becomes the topmost mount and exposes it (3 mounts) */
+export const REBIND_ON_HIDE_MI = `${HIDDEN_MI}1500 1392 0:64 / ${HUMAN} rw,nosuid,nodev,relatime - tmpfs tmpfs rw,seclabel,size=3241904k,nr_inodes=810476,mode=700,uid=1000,gid=1000,inode64
+`;

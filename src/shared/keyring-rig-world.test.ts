@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, normPath, parseUnixSockets,
-  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseSs, parseSsStrict, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
+  hiddenRuntimeMountProof, longestSocket, physicalWorldChecks, parseMountinfo, parseProcNetUnix, parseSsPairs, buildSocketScan, referencesHumanRuntime, rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, SUN_PATH_MAX, treeChecks,
   type ArmWorld, type DriverWorldFacts, type OwnerEvidence, type TreeEvidence,
 } from './keyring-rig-world.ts';
-import { HIDDEN_MI, HOST_MI } from './keyring-rig-world.fixtures.ts';
+import { HIDDEN_MI, HOST_MI, REBIND_ON_HIDE_MI, SELF_BIND_MI } from './keyring-rig-world.fixtures.ts';
 
 // #389 — the pure world checks of the keyring rig. Each clause has a must-PASS (a good world) and a must-FAIL arm that names it.
 
@@ -191,24 +191,27 @@ test('rig root census: wayland sockets and arm dirs only; a keyring/bus/p11-kit/
   }
 });
 
-test('parseSs / socketPaths: a socket fd is `socket:[N]`; the path it reaches comes from `ss` — own bound path, or the PEER end\'s bound path', () => {
+/** a /proc/net/unix text for the given [inode, path|null] rows (real column layout) */
+const procNetUnix = (rows: Array<[number, string | null]>): string =>
+  `Num       RefCount Protocol Flags    Type St Inode Path\n${rows.map(([ino, p]) => `0000000000000000: 00000002 00000000 00010000 0001 01 ${ino}${p === null ? '' : ` ${p}`}`).join('\n')}\n`;
+
+test('buildSocketScan / socketPaths: a socket fd is `socket:[N]`; paths come from /proc/net/unix, the connection from ss — own bound path, or the PEER end\'s bound path', () => {
+  const net = procNetUnix([[500, `${RUN}/orchestra-0123456789ab.sock`], [600, null], [601, `${HUMAN}/keyring/control`], [700, null], [701, `${RUN}/bus`], [800, null]]);
   const ss = `u_str LISTEN 0      511    ${RUN}/orchestra-0123456789ab.sock 500 * 0        <-> ino:1 dev:0/36 peers:
 u_str ESTAB  0      0                                        * 600 * 601 <->
-u_str ESTAB  0      0                      ${HUMAN}/keyring/control 601 * 600 <->
+u_str ESTAB  0      0                         ${HUMAN}/keyring/control 601 * 600 <->
 u_str ESTAB  0      0                                        * 700 * 701 <->
 u_str ESTAB  0      0                      ${RUN}/bus 701 * 700 <->
 u_dgr UNCONN 0      0                                        * 800 * 0 <->
-garbage line
 `;
-  const rows = parseSs(ss);
-  assert.equal(rows.length, 6);
-  assert.deepEqual(rows[0], { localPath: `${RUN}/orchestra-0123456789ab.sock`, localIno: 500, peerIno: 0 });
-  assert.deepEqual(rows[1], { localPath: null, localIno: 600, peerIno: 601 });
-  assert.deepEqual(socketPaths([500], rows), [`${RUN}/orchestra-0123456789ab.sock`], 'the app\'s own listener');
-  assert.deepEqual(socketPaths([600], rows), [`${HUMAN}/keyring/control`], 'a client end `*` reaches the path its PEER is bound to — the leak shape');
-  assert.deepEqual(socketPaths([700], rows), [`${RUN}/bus`], 'a connection to the arm bus');
-  assert.deepEqual(socketPaths([800, 9999], rows), [], 'unnamed / unknown sockets resolve to nothing');
-  assert.deepEqual(socketPaths([600, 700, 500], rows), [`${HUMAN}/keyring/control`, `${RUN}/bus`, `${RUN}/orchestra-0123456789ab.sock`].sort());
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.deepEqual(unparsed, []);
+  assert.deepEqual(socketPaths([500], scan), [`${RUN}/orchestra-0123456789ab.sock`], 'the app\'s own listener');
+  assert.deepEqual(socketPaths([600], scan), [`${HUMAN}/keyring/control`], 'a client end `*` reaches the path its PEER is bound to — the leak shape');
+  assert.deepEqual(socketPaths([700], scan), [`${RUN}/bus`], 'a connection to the arm bus');
+  assert.deepEqual(socketPaths([800, 9999], scan), [], 'unnamed / unknown sockets resolve to nothing');
+  assert.deepEqual(socketPaths([600, 700, 500], scan), [`${HUMAN}/keyring/control`, `${RUN}/bus`, `${RUN}/orchestra-0123456789ab.sock`].sort());
+  assert.deepEqual(socketPaths([], scan), []);
 });
 
 test('arm sockets must fit sun_path: the hooks socket `<run>/orchestra-<12hex>.sock` is 28 chars, not 23', () => {
@@ -239,25 +242,47 @@ test('m1: D-Bus `%hh` escapes are decoded — an escaped runtime dir is a refere
 });
 
 // ── round-5 m2: ss rows with spaces / unparsed rows ─────────────────────────────────────────────────────────────────────
-test('m2: an ss row whose path contains a space parses (a client connected to `/run/user/1000/my sock` resolves to it); an unparseable line is REPORTED, never dropped', () => {
+test('m2: ss rows whose path contains spaces AND digit tokens are placed by VALIDATED inode columns (paths from /proc/net/unix); an ambiguous or unplaceable row is REPORTED, never mis-parsed', () => {
   const spaced = `${HUMAN}/my sock`;
+  const digits = `${HUMAN}/my 123 sock`; // reviewer round 6: ` <digits> ` inside the path made the old regex cut the path at `/my` and read 123 as the inode
+  const net = procNetUnix([[500, `${RUN}/orchestra-0123456789ab.sock`], [600, null], [601, spaced], [602, null], [603, digits], [77, '@/tmp/.X11-unix/X0'], [123, `${RUN}/other.sock`], [24739, '/run/systemd/journal/stdout'], [21049, null], [900, null]]);
   const ss = `u_str LISTEN 0      511    ${RUN}/orchestra-0123456789ab.sock 500 * 0        <-> ino:1 dev:0/36 peers:
 u_str ESTAB  0      0                                        * 600 * 601 <->
 u_str ESTAB  0      0                         ${spaced} 601 * 600 <->
+u_str ESTAB  0      0                                        * 602 * 603 <->
+u_str ESTAB  0      0                         ${digits} 603 * 602 <->
 u_str LISTEN 0      4096   @/tmp/.X11-unix/X0 77 * 0 <-> ino:2 dev:0/4 peers:
-u_seq ESTAB  0      0                                        * 73815517 * 73815518 -->
 u_str ESTAB  0      0              /run/systemd/journal/stdout 24739    * 21049    <-- ino:49 dev:
-u_str ESTAB  0      0                                        * 17369113 * 0        ---
+u_str ESTAB  0      0                                        * 900 * 0        ---
 `;
-  const { rows, unparsed } = parseSsStrict(ss);
-  assert.deepEqual(unparsed, []);
-  assert.equal(rows.length, 7, 'all seven rows, including the spaced one and the `-->` / `<--` / `---` shutdown markers measured on a real host');
-  assert.deepEqual(socketPaths([600], rows), [spaced], 'the client end reaches the spaced path through its peer row');
-  const bad = parseSsStrict(`${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\n`);
-  assert.equal(bad.rows.length, 7);
-  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5'], 'both surface — the caller fails closed');
-  assert.deepEqual(parseSsStrict('\n  \n').unparsed, [], 'blank lines are not rows');
-  assert.equal(parseSs(ss).length, 7);
+  const { scan, unparsed } = buildSocketScan(net, ss);
+  assert.deepEqual(unparsed, [], 'every row placed, including the spaced one and the ` 123 ` one (123 is ALSO a real inode here — the validation, not the shape, picks the split)');
+  assert.equal(scan.peerOf.get(603), 602, 'the row with ` 123 ` in its path: local inode 603, not 123');
+  assert.equal(scan.peerOf.has(123), false);
+  assert.deepEqual(socketPaths([600], scan), [spaced], 'a client connected to a spaced path resolves to it');
+  assert.deepEqual(socketPaths([602], scan), [digits], 'and to a path with a digit token in it');
+  assert.equal(scan.pathByIno.get(603), digits, 'paths are byte-exact from /proc/net/unix');
+  // unplaceable rows are surfaced, not dropped
+  const bad = buildSocketScan(net, `${ss}this is not an ss row\nu_str ESTAB 0 0 * notanumber * 5\nu_str ESTAB 0 0 /x 5 /y 8 * 9\n`);
+  assert.deepEqual(bad.unparsed, ['this is not an ss row', 'u_str ESTAB 0 0 * notanumber * 5', 'u_str ESTAB 0 0 /x 5 /y 8 * 9'], 'junk, a non-number, and a row with TWO plausible splits where neither inode is a known socket all surface');
+  const churn = buildSocketScan(net, `${ss}u_str ESTAB 0 0 * 4242424 * 4242425 <->\n`);
+  assert.deepEqual(churn.unparsed, [], 'a UNIQUE shape needs no lookup: a socket pair that closed between the two snapshots does not abort the scan');
+  assert.equal(churn.scan.peerOf.get(4242424), 4242425);
+  const tie = buildSocketScan(procNetUnix([[8, null], [9, null]]), 'u_str ESTAB 0 0 /x 5 /y 8 * 9\n');
+  assert.deepEqual(tie.unparsed, [], 'two plausible splits: the one whose local inode is a real socket wins');
+  assert.equal(tie.scan.peerOf.get(8), 9);
+  assert.deepEqual(parseSsPairs('\n  \n', new Set()).unparsed, [], 'blank lines are not rows');
+  // the real shutdown markers
+  const mk = buildSocketScan(procNetUnix([[11, null], [12, null], [13, null]]), 'u_seq ESTAB 0 0 * 11 * 12 -->\nu_str ESTAB 0 0 * 12 * 11 <--\nu_str ESTAB 0 0 * 13 * 0 ---\n');
+  assert.deepEqual(mk.unparsed, []);
+  assert.equal(mk.scan.peerOf.size, 3);
+});
+
+test('parseProcNetUnix: fixed columns, the path LAST and byte-exact (spaces and digits survive); abstract and unnamed sockets still count as sockets', () => {
+  const t = procNetUnix([[1, '/a b/c  d'], [2, null], [3, '@abstract'], [4, '/x 5 y']]);
+  const r = parseProcNetUnix(t);
+  assert.deepEqual(r.sockets, [{ inode: 1, path: '/a b/c  d' }, { inode: 4, path: '/x 5 y' }], 'two spaces inside a path are kept');
+  assert.deepEqual([...r.inodes].sort(), [1, 2, 3, 4], 'every socket inode, named or not');
 });
 
 // ── round-5 m3: the hidden-world proof is the mount namespace ───────────────────────────────────────────────────────────
@@ -281,6 +306,14 @@ test('m3: hiddenRuntimeMountProof — the rig\'s real hidden-world mountinfo pas
   assert.match(no(rebound).detail, /is mounted ON the hiding tmpfs/, 'the real dir re-bound into the hiding tmpfs would re-expose it');
   const swappedOrder = HIDDEN_MI.split('\n').filter(Boolean).reverse().join('\n');
   assert.equal(no(swappedOrder).ok, true, 'the stack is read from parent ids, not line order');
+  // round-6 MAJOR: a namespace that EXPOSES the real dir must not pass — its topmost mount is a private untagged tmpfs too, but shares the real device
+  const selfBind = no(SELF_BIND_MI);
+  assert.equal(selfBind.ok, false, selfBind.detail);
+  assert.match(selfBind.detail, /shares device 0:64 with a lower mount \(id 472\) — a bind of the real dir/, '(a) `mount --bind P P`');
+  const rebind = no(REBIND_ON_HIDE_MI);
+  assert.equal(rebind.ok, false, rebind.detail);
+  assert.match(rebind.detail, /shares device 0:64 with a lower mount/, '(b) host + hide + re-bind: 3 mounts, the re-bind is topmost');
+  assert.equal(parseMountinfo(HIDDEN_MI).find((m) => m.id === 1392)?.dev, '0:89', 'maj:min is parsed');
   assert.deepEqual(parseMountinfo(HOST_MI).map((m) => [m.id, m.point, m.fstype, m.tags]), [[472, HUMAN, 'tmpfs', ['shared:223']], [473, `${HUMAN}/doc`, 'fuse.portal', ['shared:889']]]);
 });
 
