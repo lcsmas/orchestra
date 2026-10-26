@@ -279,8 +279,15 @@ keeps the shared debugger free of any long-lived event subscription.
   arm now awaits its lease before injecting — an unordered disarm would find no
   lease, return, and leave an invisible click-swallowing overlay. `Tab.designArmed`
   is set synchronously by the arm so a disarm queued behind it targets that tab; `Tab.designGen` (bumped by every arm at call
-  time) makes a disarm / finished pick end only the arm it was issued against — an off→on inside one round trip, or a re-arm
-  landing during a pick's screenshot, must not be wiped by the older operation (it would orphan overlay + lease). A
+  time) makes EVERY path that clears arm state end only the arm it was issued against: `endDesign(tab, gen)` REQUIRES the
+  generation captured when that piece of work started and no-ops under a newer arm. The paths: the arm's own catch (A1 fails
+  mid-install, e.g. "Execution context was destroyed", while a URL-change re-arm A2 is queued), the disarm's finally (an arm
+  called while its teardown is in flight), the poll's finally (gen read BEFORE the `readRawPick` await, so a re-arm inside that
+  round trip is not folded into the pick's generation, nor one during the screenshot), and a disarm superseded by a later arm
+  (early return). Audited and not needing it: tab close / panel destroy (`destroyTab` voids the hold; the tab leaves the
+  registry), the 120 s `sendOnLease` backstop (surfaces as the arm's/poll's own error → the guarded paths), workspace switch
+  (`BrowserPanel` cleanup → `designModeDisarm` → `disarmTab`, guarded). Pinned by the table-driven `design arm ownership` test
+  (one row per path) and one registry mutant per path. A
   disarm with nothing armed (after a pick / Escape — the page-side picker tore
   itself down) sends nothing and attaches nothing.
 - **The renderer addresses design mode by workspace, not tab, and one `BrowserPanel` instance exists per workspace** (`App.tsx`
@@ -592,7 +599,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   attach; grace, agent-only reset), `cdp-proxy-core.test.ts` (`lease`, `sendOnLease`, `agentTouched` arms),
   `browser-single-attacher.test.ts`, the registry arms in `browser-panel-tabs.test.ts` (design lease: no churn across polls,
   pick/cancel/disarm release, arm/disarm order, tab switch, no debugger without the seat), wiring pins in
-  `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (28 registry mutants) and
+  `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (53 registry mutants) and
   `scripts/mutate-cdp-seat.mjs` (20 seat/lease mutants); and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>`
   (5 arms, 50 clauses: the static gate on source + bundle, the REAL toolbar → hover → click → composer pick on
   `pages/design.html`, toolbar-off / Escape / archive-while-armed / switch-workspace-while-armed / re-arm-inside-the-grace lifecycle, a pick while an

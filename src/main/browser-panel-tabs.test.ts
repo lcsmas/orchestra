@@ -833,3 +833,130 @@ test('design mode: a re-arm landing during a pick\'s screenshot is not wiped by 
   await bp.designModeDisarm(ws);
   assert.equal(wcOf(t1).dbgAttached, false, 'and a later disarm releases it (armed mark survived)');
 });
+
+// ── every path that clears design-arm state is keyed on the generation captured when ITS work started (round-2 review F5/F6) ──
+//
+// One table: a superseding re-arm lands INSIDE each clearing path's window. Whatever the path, the re-arm must own the tab afterwards
+// (lease held, overlay installed) and one later disarm must tear it down exactly once and release the debugger. A path that clears under
+// a newer arm leaves designArmed=false with the overlay up, so that later disarm no-ops: seatCount stays 1 and the click-swallowing overlay stays.
+
+const kindOf = (m: string, p: any): 'install' | 'teardown' | 'read' | 'shot' | 'other' =>
+  m === 'Page.captureScreenshot' ? 'shot'
+    : /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(p?.expression ?? '') ? 'teardown'
+    : /^\(\(\) => \{ const p = window\[/.test(p?.expression ?? '') ? 'read'
+    : /__orchestra_design_overlay__/.test(p?.expression ?? '') ? 'install'
+    : 'other';
+
+interface Gate { open(): void; wait: Promise<void> }
+const gate = (): Gate => { let open!: () => void; const wait = new Promise<void>((r) => (open = r)); return { open, wait }; };
+const ticks = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
+
+/** Script one tab's debugger: per command kind an optional gate to hold it, an optional failure, and the value to answer with. */
+function scripted(t: any, opts: { gates?: Partial<Record<string, Gate>>; failOnce?: Partial<Record<string, string>>; pick?: boolean } = {}) {
+  const count: Record<string, number> = {};
+  wcOf(t).reply = async (m: string, p: any) => {
+    const k = kindOf(m, p);
+    count[k] = (count[k] ?? 0) + 1;
+    const g = opts.gates?.[k];
+    if (g) { delete opts.gates![k]; await g.wait; }
+    const f = opts.failOnce?.[k];
+    if (f) { delete opts.failOnce![k]; throw new Error(f); }
+    if (k === 'shot') return { data: 'P' };
+    if (k === 'read') return { result: { value: opts.pick ? RAW_PICK : null } };
+    return { result: { value: true } };
+  };
+  return count;
+}
+const teardowns = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && kindOf(c.m, c.p) === 'teardown').length;
+
+const OWNERSHIP: Array<{ name: string; run: (ws: string, t1: any) => Promise<void>; teardownsBefore: number }> = [
+  {
+    // F5: the arm's own catch. A1 fails mid-install ("Execution context was destroyed") while A2 (a URL-change re-arm) is queued behind it.
+    name: 'arm catch: A1 fails mid-install while A2 is queued',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      scripted(t1, { failOnce: { install: 'Execution context was destroyed' } });
+      const a1 = bp.designModeArm(ws).catch((e) => e);
+      const a2 = bp.designModeArm(ws);
+      const r1: any = await a1;
+      assert.match(String(r1?.message), /Execution context was destroyed/, 'the failing arm still reports its failure');
+      await a2;
+    },
+  },
+  {
+    // the disarm's own finally: an arm called while the teardown evaluate is in flight
+    name: 'disarm finally: A2 is called while the disarm\'s teardown is in flight',
+    teardownsBefore: 1,
+    run: async (ws, t1) => {
+      const g = gate();
+      scripted(t1);
+      await bp.designModeArm(ws);
+      scripted(t1, { gates: { teardown: g } });
+      const d = bp.designModeDisarm(ws);
+      await ticks();
+      assert.equal(wcOf(t1).cmds.filter((x: any) => kindOf(x.m, x.p) === 'teardown').length, 1, 'setup: the teardown is in flight');
+      const a2 = bp.designModeArm(ws); // off→on while the first teardown is still on the wire
+      g.open();
+      await Promise.all([d, a2]);
+    },
+  },
+  {
+    // F6: the poll's read round trip. The gen must be read BEFORE it.
+    name: 'poll read: A2 lands inside the poll\'s readRawPick round trip',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      await bp.designModeArm(ws);
+      const g = gate();
+      scripted(t1, { gates: { read: g }, pick: true });
+      const poll = bp.designModePoll(ws);
+      await ticks();
+      const a2 = bp.designModeArm(ws);
+      await ticks();
+      g.open();
+      await Promise.all([poll, a2]);
+    },
+  },
+  {
+    // F2: the poll's screenshot
+    name: 'poll screenshot: A2 lands inside finishPick\'s screenshot',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      await bp.designModeArm(ws);
+      const g = gate();
+      scripted(t1, { gates: { shot: g }, pick: true });
+      const poll = bp.designModePoll(ws);
+      await ticks();
+      const a2 = bp.designModeArm(ws);
+      await ticks();
+      g.open();
+      await Promise.all([poll, a2]);
+    },
+  },
+  {
+    // F1: the disarm queued ahead of an arm
+    name: 'disarm→arm: the arm queued BEHIND a disarm',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      scripted(t1);
+      await bp.designModeArm(ws);
+      const d = bp.designModeDisarm(ws);
+      const a = bp.designModeArm(ws);
+      await Promise.all([d, a]);
+    },
+  },
+];
+
+for (const sc of OWNERSHIP) {
+  test(`design arm ownership — ${sc.name}: the later arm owns the tab, and ONE later disarm tears it down and frees the debugger`, async () => {
+    const ws = newWs();
+    openShown(ws);
+    const t1 = bp.getActiveTab(ws)!;
+    await sc.run(ws, t1);
+    assert.equal(wcOf(t1).dbgAttached, true, 'the re-armed picker still holds its lease');
+    const before = teardowns(t1);
+    scripted(t1);
+    await bp.designModeDisarm(ws);
+    assert.equal(teardowns(t1), before + 1, 'a later disarm still reaches the overlay (designArmed survived)');
+    assert.equal(wcOf(t1).dbgAttached, false, 'and gives the lease back (seat count 0, debugger detached)');
+  });
+}

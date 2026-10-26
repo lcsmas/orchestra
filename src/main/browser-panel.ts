@@ -1293,8 +1293,11 @@ function releaseDesignHold(tab: Tab | undefined): void {
   release();
 }
 
-/** The picker is gone from `tab` (picked, cancelled, torn down, never installed): drop the armed mark and the lease. */
-function endDesign(tab: Tab): void {
+/** The picker is gone from `tab` (picked, cancelled, torn down, never installed): drop the armed mark and the lease — but ONLY if `gen`, the
+ *  generation captured when THIS piece of work started, is still current. Every path that clears arm state passes it (the argument is
+ *  required on purpose): a later arm bumped the counter and owns the tab, and clearing under it would orphan its overlay + lease. */
+function endDesign(tab: Tab, gen: number): void {
+  if (tab.designGen !== gen) return;
   tab.designArmed = false;
   releaseDesignHold(tab);
 }
@@ -1316,7 +1319,7 @@ function inDesignOrder<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
  *  Holds the proxy's debugger attach until the pick, the cancel or the disarm. */
 export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
   const tab = liveTabFor(wsId, tabId);
-  tab.designGen++;
+  const gen = ++tab.designGen;
   tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed
   return inDesignOrder(tab, async () => {
     try {
@@ -1324,7 +1327,7 @@ export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise
       if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);
       await evaluate(wsId, DESIGN_MODE_SCRIPT, tab.id);
     } catch (err) {
-      endDesign(tab);
+      endDesign(tab, gen); // no-op when a later arm (a URL-change re-arm queued behind this one) already owns the tab
       throw err;
     }
   });
@@ -1344,7 +1347,7 @@ function disarmTab(wsId: string, tab: Tab): Promise<void> {
     } catch (err) {
       log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
     } finally {
-      endDesign(tab);
+      endDesign(tab, gen); // an arm called while this disarm's teardown was in flight bumped the counter: it owns the tab
     }
   });
 }
@@ -1404,9 +1407,9 @@ export async function designModePoll(
   const pinned = resolveTab(wsId, tabId);
   if (!pinned) return null; // no panel: nothing is armed, and a poll never builds one (a late poll after archive/delete)
   const pin = pinned.id; // resolve once: the pick and its screenshot come from the same tab
+  const gen = pinned.designGen; // BEFORE the first await: a re-arm landing inside the read round trip must not be folded into this pick's generation
   const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
-  const gen = pinned.designGen;
   // A pick or a cancel ends the arm (the page-side picker tore itself down): give the attach back,
   // but only after the screenshot, so the pick is one attach rather than detach-then-attach.
   // It is one-shot for the whole workspace: a picker still armed on another tab (the user switched tabs
@@ -1414,7 +1417,7 @@ export async function designModePoll(
   try {
     return await finishPick(wsId, pin, raw);
   } finally {
-    if (pinned.designGen === gen) endDesign(pinned); // a re-arm landing during the screenshot owns the tab now
+    endDesign(pinned, gen); // a re-arm landing during the read or the screenshot owns the tab now
     for (const other of armedTabs(wsId)) if (other !== pinned) void disarmTab(wsId, other);
   }
 }
