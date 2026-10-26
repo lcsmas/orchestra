@@ -37,6 +37,7 @@ class WebContents {
     // real Electron closes ASYNC: 'destroyed' fires later, when the harness releases it (globalThis.__bpHoldClose) or right away
     const fire = () => { for (const f of (this.onceH?.destroyed || [])) f(); };
     if (globalThis.__bpHoldClose) (globalThis.__bpHeld ??= []).push(fire); else fire();
+    if (globalThis.__bpCloseThrows) throw new Error('stub: close failed');
   }
 }
 export class WebContentsView {
@@ -312,6 +313,28 @@ test('a FAILED rebuild releases the half-built guard: the panel publishes again 
   for (const f of wcOf(bp.getTab(ws, 't1')!).handlers['did-start-loading'] ?? []) f();
   off();
   assert.deepEqual(seen, [['t1', 't2']], 'a navigation event of the rolled-back panel is published');
+});
+
+test('D1: a rollback that itself fails (a half-built view will not close) still restores the whole registry and releases the guard — the ORIGINAL error surfaces, the panel is neither half-restored nor silent', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent', url: 'http://localhost:1/two' });
+  const before = bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!);
+  (globalThis as any).__bpFailNext = 2; // the 2nd view of the rebuild cannot be built → rollback
+  (globalThis as any).__bpCloseThrows = true; // …and the 1st (half-built) view will not close
+  try {
+    assert.throws(() => bp.reprofilePanel(ws, P1), /cannot build a view/);
+  } finally {
+    (globalThis as any).__bpCloseThrows = false;
+    (globalThis as any).__bpFailNext = 0;
+  }
+  assert.deepEqual(bp.listTabs(ws).map((t) => bp.getTab(ws, t.id)!), before, 'the registry is the old one, whole');
+  assert.equal('profileId' in bp.getState(ws), false, 'old identity');
+  const seen: string[][] = [];
+  const off = bp.onPanelChange((id, tabs) => { if (id === ws) seen.push(tabs.map((t) => t.id)); });
+  for (const f of wcOf(bp.getTab(ws, 't1')!).handlers['did-start-loading'] ?? []) f();
+  off();
+  assert.deepEqual(seen, [['t1', 't2']], 'and the panel publishes again (the guard is released on the way out)');
 });
 
 test('workspacesOnProfile lists the OPEN panels that run on a profile — by what the views do, not by a record', () => {

@@ -736,43 +736,58 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
   if (attachedTab) detachTab(panel, attachedTab);
   panel.rebuilding = true;
-  panel.partition = partition;
-  panel.profileId = profileId;
-  panel.tabs = [];
+  // `rebuilding` is released on EVERY way out (a rollback that itself throws must not leave the panel silent for good).
   try {
-    for (const sn of snaps) {
-      const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
-      if (sn.url) {
-        restoreUrls.set(tab, sn.url);
-        void loadIn(tab, sn.url);
+    panel.partition = partition;
+    panel.profileId = profileId;
+    panel.tabs = [];
+    try {
+      for (const sn of snaps) {
+        const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
+        if (sn.url) {
+          restoreUrls.set(tab, sn.url);
+          void loadIn(tab, sn.url);
+        }
+      }
+    } catch (e) {
+      // A view could not be built: put the panel back EXACTLY as it was (old tabs alive, old identity, old view composited) and
+      // let the caller see the error — never a half-built panel whose record and views disagree. Each step stands alone: a view that
+      // will not close must not stop the registry from being restored.
+      const half = panel.tabs;
+      panel.tabs = oldTabs;
+      panel.partition = prev.partition;
+      panel.profileId = prev.profileId;
+      for (const t of half) {
+        try {
+          destroyTab(t);
+        } catch (err) {
+          log.warn('browser-panel: reprofilePanel rollback could not close a half-built view', err);
+        }
+      }
+      try {
+        if (wasAttached) attachActive(panel);
+      } catch (err) {
+        log.warn('browser-panel: reprofilePanel rollback could not re-composite the panel', err);
+      }
+      throw e;
+    }
+    // Committed from here: nothing below may throw, or the record would be rolled back while the panel already runs on the new partition.
+    panel.activeId = oldActive;
+    for (const t of oldTabs) {
+      try {
+        destroyTab(t);
+      } catch (e) {
+        log.warn('browser-panel: reprofilePanel could not close an old view', e);
       }
     }
-  } catch (e) {
-    // A view could not be built: put the panel back EXACTLY as it was (old tabs alive, old identity, old view composited) and
-    // let the caller see the error — never a half-built panel whose record and views disagree.
-    for (const t of panel.tabs) destroyTab(t);
-    panel.tabs = oldTabs;
-    panel.partition = prev.partition;
-    panel.profileId = prev.profileId;
-    panel.rebuilding = false;
-    if (wasAttached) attachActive(panel);
-    throw e;
-  }
-  // Committed from here: nothing below may throw, or the record would be rolled back while the panel already runs on the new partition.
-  panel.activeId = oldActive;
-  for (const t of oldTabs) {
     try {
-      destroyTab(t);
+      if (wasAttached) attachActive(panel);
     } catch (e) {
-      log.warn('browser-panel: reprofilePanel could not close an old view', e);
+      log.warn('browser-panel: reprofilePanel could not re-composite the panel', e);
     }
+  } finally {
+    panel.rebuilding = false;
   }
-  try {
-    if (wasAttached) attachActive(panel);
-  } catch (e) {
-    log.warn('browser-panel: reprofilePanel could not re-composite the panel', e);
-  }
-  panel.rebuilding = false;
   return publish(panel);
 }
 
