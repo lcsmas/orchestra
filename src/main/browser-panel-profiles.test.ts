@@ -343,3 +343,16 @@ test('EPHEMERAL partition: session cookies are never promoted (no listener at al
   assert.equal(ses.cookieListeners.length, 0);
   assert.equal(ses.cookieSets, undefined);
 });
+
+test('panelProfileId reads what an OPEN panel runs on — a pure read that never builds a panel', () => {
+  const eph = newWs(), prof = newWs(P1), none = newWs(P1);
+  bp.ensurePanel(eph);
+  bp.ensurePanel(prof);
+  const viewsBefore = (globalThis as any).__bpViews.length;
+  assert.equal(bp.panelProfileId(prof), P1);
+  assert.equal(bp.panelProfileId(eph), undefined);
+  assert.equal(bp.panelProfileId(none), undefined, 'a workspace with no panel yet: nothing to read, nothing built');
+  assert.equal((globalThis as any).__bpViews.length, viewsBefore);
+  bp.reprofilePanel(prof, undefined);
+  assert.equal(bp.panelProfileId(prof), undefined, 'follows a re-profile');
+});

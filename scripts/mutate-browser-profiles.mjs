@@ -64,6 +64,11 @@ const MUTANTS = [
   [SVC, 'delete ignores open panels the record does not know', '        for (const wsId of deps.openPanelsOn(profileId)) deps.reprofilePanel(wsId, undefined);\n', ''],
   ['src/main/browser-profiles-host.ts', 'the host never waits for the closed views', 'settleViews: () => settleClosedViews(3000),', 'settleViews: async () => {},'],
   ['src/main/browser-profiles-host.ts', 'a detach broadcasts a DELETED key (the renderer keeps the old id)', 'const updated = { ...ws, browserProfileId: profileId };\n      await store.upsertWorkspace(updated);', 'const updated: typeof ws = { ...ws };\n      if (profileId === undefined) delete updated.browserProfileId; else updated.browserProfileId = profileId;\n      await store.upsertWorkspace(updated);'],
+  [PURE, 'a partition-wide clear passes for a profile workspace', "if (input.profileId === undefined || !PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };", 'return { ok: true };'],
+  [PURE, 'an ephemeral workspace is refused too', "if (input.profileId === undefined || !PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };", "if (!PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };"],
+  [PURE, 'every CDP call is refused for a profile workspace', "if (input.profileId === undefined || !PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };", "if (input.profileId === undefined) return { ok: true };"],
+  [PURE, 'Storage.clearCookies is not counted as partition-wide', "new Set(['Network.clearBrowserCookies', 'Storage.clearCookies'])", "new Set(['Network.clearBrowserCookies'])"],
+  [PANEL, 'panelProfileId reads the wrong thing', 'return panels.get(wsId)?.profileId;', 'return undefined;'],
   // --- session cookies are promoted in a profile (OPS ruling) ---
   [PROMO, 'a cookie that already has an expiry is promoted again (set → changed loop)', 'if (c.session !== true || c.expirationDate !== undefined) return null;', 'if (c.session !== true) return null;'],
   [PROMO, 'a persistent cookie is promoted too', 'if (c.session !== true || c.expirationDate !== undefined) return null;', 'if (c.expirationDate !== undefined) return null;'],

@@ -136,3 +136,22 @@ export function profileCreateWarning(state: SecretsState | null): string | null 
     ? 'Storage is not encrypted on this machine: this profile’s cookies and sign-ins will sit on disk readable by anything running as you.'
     : null;
 }
+
+/** CDP methods that wipe a WHOLE session partition's cookies — i.e. every sign-in of the profile, in every workspace that shares it.
+ *  (Origin-scoped clears, `Network.deleteCookies` and `setCookie(s)` stay allowed: they name what they touch.) */
+export const PARTITION_WIDE_CDP_CLEARS: ReadonlySet<string> = new Set(['Network.clearBrowserCookies', 'Storage.clearCookies']);
+
+export type AgentClearDecision = { ok: true } | { ok: false; message: string };
+
+/** An AGENT's partition-wide cookie clear (`orchestra browser cookies clear` → CDP) is refused while its workspace holds a profil
+ *  navigateur: the profile is shared, so one agent would sign out every workspace that carries it (OPS ruling 2026-10-26, #400).
+ *  Ephemeral workspaces are unaffected — their jar is their own. `profileId` = what the workspace's panel RUNS on (`panelProfileId`). */
+export function decideAgentClear(input: { method: string; profileId: BrowserProfileId | undefined }): AgentClearDecision {
+  if (input.profileId === undefined || !PARTITION_WIDE_CDP_CLEARS.has(input.method)) return { ok: true };
+  return {
+    ok: false,
+    message:
+      'refused: this workspace\'s browser carries a profil navigateur shared with other workspaces — clearing every cookie would sign them all out. ' +
+      'Delete the cookie you mean (by name) or ask the human to delete or detach the profile.',
+  };
+}

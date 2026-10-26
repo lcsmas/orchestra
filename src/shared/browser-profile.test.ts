@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BROWSER_PROFILE_NAME_MAX,
   checkProfileName,
+  decideAgentClear,
   decideAttach,
   decideDelete,
   effectiveProfileId,
@@ -10,6 +11,7 @@ import {
   isBrowserProfileId,
   isHumanProfileCaller,
   normalizeBrowserProfiles,
+  PARTITION_WIDE_CDP_CLEARS,
   partitionFor,
   profileCreateWarning,
   profilePartition,
@@ -123,4 +125,17 @@ test('profileCreateWarning: only when secret storage is not encrypted (reuses #3
   const w = profileCreateWarning({ encrypted: false, backend: 'basic_text', plaintextEntries: 1, encryptedEntries: 0 });
   assert.match(w ?? '', /not encrypted/);
   assert.match(profileCreateWarning({ encrypted: false, backend: null, plaintextEntries: 0, encryptedEntries: 3 }) ?? '', /not encrypted/);
+});
+
+test('decideAgentClear: a partition-wide cookie clear is refused for a workspace that holds a profile, never for an ephemeral one; targeted ops pass', () => {
+  assert.deepEqual([...PARTITION_WIDE_CDP_CLEARS].sort(), ['Network.clearBrowserCookies', 'Storage.clearCookies']);
+  for (const method of PARTITION_WIDE_CDP_CLEARS) {
+    const r = decideAgentClear({ method, profileId: A });
+    assert.equal(r.ok, false, method);
+    assert.match((r as { message: string }).message, /shared with other workspaces/);
+    assert.deepEqual(decideAgentClear({ method, profileId: undefined }), { ok: true }, `${method} on an ephemeral workspace`);
+  }
+  for (const method of ['Network.deleteCookies', 'Network.setCookie', 'Network.setCookies', 'Storage.clearDataForOrigin', 'Network.getAllCookies', 'Runtime.evaluate']) {
+    assert.deepEqual(decideAgentClear({ method, profileId: A }), { ok: true }, `${method} names what it touches`);
+  }
 });

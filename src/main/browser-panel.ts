@@ -660,6 +660,12 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   return publish(panel);
 }
 
+/** The profil navigateur `wsId`'s OPEN panel runs on, or undefined (ephemeral / no panel). A pure read — builds and reaps nothing; the CDP
+ *  proxy asks it (with `decideAgentClear`) before it lets an agent clear a whole partition's cookies. */
+export function panelProfileId(wsId: string): BrowserProfileId | undefined {
+  return panels.get(wsId)?.profileId;
+}
+
 /** The workspaces whose OPEN panel runs on `profileId` right now (what the views do, not what a record says). */
 export function workspacesOnProfile(profileId: BrowserProfileId): string[] {
   return [...panels.values()].filter((p) => p.profileId === profileId).map((p) => p.wsId);
