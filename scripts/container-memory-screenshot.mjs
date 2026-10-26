@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const require_ = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,7 +57,6 @@ fs.writeFileSync(
   `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { AgentsTable } from ${JSON.stringify(path.join(repoRoot, 'src/renderer/components/ResourcesView.tsx'))};
 import { groupSessionsByWorkspace } from ${JSON.stringify(path.join(repoRoot, 'src/shared/resources.ts'))};
 import { accountingView, buildAccounting, emptyAccounting, unattributedWarning } from ${JSON.stringify(path.join(repoRoot, 'src/shared/container-accounting.ts'))};

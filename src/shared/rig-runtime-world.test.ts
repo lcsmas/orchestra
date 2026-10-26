@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import ts from 'typescript';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const helperUrl = pathToFileURL(path.join(repo, 'scripts', 'lib', 'rig-runtime.mjs')).href;
@@ -81,15 +82,25 @@ test('the ratchet can fail: the pattern matches the real shapes seen in the tree
   for (const s of ['/run/user/<uid>', 'XDG_RUNTIME_DIR', 'run/user']) assert.ok(!REAL_RUNTIME.test(s), s);
 });
 
-test('every migrated driver imports the helper and none of them keeps a literal fallback', () => {
+test('every migrated driver TOP-LEVEL-imports the helper (resolvable), calls it, and keeps no literal fallback', () => {
   const migrated = [
     'scripts/e2e-agent-view-removal.mjs', 'scripts/e2e-former-branch-drive.mjs', 'scripts/e2e-inherit-empty-boot.mjs', 'scripts/e2e-pinned-node-app.mjs',
     'scripts/pause-canary/lib.mjs', 'scripts/browser-reliquats/chip-screenshot.mjs', 'scripts/container-memory-screenshot.mjs', 'scripts/memcap-screenshot.mjs',
     'scripts/memory-cap-row-screenshot.mjs', 'scripts/reliquats-screenshot.mjs',
   ];
   for (const rel of migrated) {
-    const src = fs.readFileSync(path.join(repo, rel), 'utf8');
-    assert.match(src, /import \{ privateRuntimeDir \} from '[./]+\/(lib\/)?rig-runtime\.mjs'/, `${rel} imports the helper`);
+    const file = path.join(repo, rel);
+    const src = fs.readFileSync(file, 'utf8');
+    // AST, not a regex: the screenshot drivers embed an esbuild entry in a template literal, and an `import` line
+    // inside that literal is NOT a binding of the outer script (the call site would throw ReferenceError at run time).
+    const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const spec = sf.statements
+      .filter(ts.isImportDeclaration)
+      .map((d) => ({ from: (d.moduleSpecifier as ts.StringLiteral).text, names: d.importClause?.namedBindings && ts.isNamedImports(d.importClause.namedBindings) ? d.importClause.namedBindings.elements.map((e) => e.name.text) : [] }))
+      .find((i) => i.names.includes('privateRuntimeDir'));
+    assert.ok(spec, `${rel}: no TOP-LEVEL import binding privateRuntimeDir`);
+    assert.ok(fs.existsSync(path.resolve(path.dirname(file), spec.from)), `${rel}: import '${spec.from}' does not resolve`);
+    assert.equal(path.resolve(path.dirname(file), spec.from), path.join(repo, 'scripts', 'lib', 'rig-runtime.mjs'), `${rel}: imports the wrong module`);
     assert.match(src, /privateRuntimeDir\(\)/, `${rel} calls it`);
     assert.doesNotMatch(src, REAL_RUNTIME, `${rel} has no hard-coded real runtime dir`);
   }

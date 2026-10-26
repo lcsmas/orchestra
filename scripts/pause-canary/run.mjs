@@ -79,6 +79,7 @@ if (MH_ON) {
 if (MH_ON && HEAVY.startsWith('--')) { say(`PAUSE-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
 if (REHEARSAL && !(MH_CAP_ON && Number(opt('members', '6')) === 1)) { say('PAUSE-CANARY: usage — --rehearsal is the 1-member cap-ON plumbing try of `--exercise memhog-app` (--members 1, no --proof, no --memhog-switch off). Nothing was run.'); process.exit(2); }
 const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
+if (EX0.includes('memhog-app')) { say('PAUSE-CANARY: REFUSED — memhog-app needs the human\'s systemd user manager (real memory scopes); the contained rig now runs in a PRIVATE runtime dir with none (incident Q2, ledger #405), so the cap would silently not apply and every census would read 0 units. Nothing was run.'); process.exit(3); }   // fail loudly, never vacuously
 if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build
 // the Q11 envelope, checked HERE too (the same pure check the drive applies): a bad invocation must not cost a PACKAGED-app build first
 if (MH_ON) {

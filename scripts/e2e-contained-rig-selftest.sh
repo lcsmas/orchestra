@@ -24,6 +24,10 @@ set -uo pipefail
 
 RIG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-contained-rig.sh"
 [[ -x "${RIG}" ]] || { echo "FATAL: ${RIG} not executable"; exit 2; }
+# A stamped rig is a mutant left behind by a killed mutation run: gating it would certify a broken preflight.
+if grep -q '^# RIG-MUTANT:' "${RIG}" && [[ -z "${RIG_SELFTEST_MUTANT_RUN:-}" ]]; then
+  echo "RIG-SELFTEST: PRECONDITION-UNMET rig-is-a-stamped-mutant"; echo "FATAL: ${RIG} carries a RIG-MUTANT stamp — git checkout -- scripts/e2e-contained-rig.sh" >&2; exit 2
+fi
 
 # ── FAIL-CLOSED PRECONDITIONS (issue #76) ──────────────────────────────────
 # This self-test needs a REAL compositor: every sway-booting arm boots the rig's
@@ -189,6 +193,16 @@ ARM_ABSENT='sway pid=' arm R5b "a 'bus' entry in the private runtime dir ABORTS"
 ARM_ABSENT='sway pid=' arm R5c "a 'pulse' entry in the private runtime dir ABORTS" 90 no \
   "contains 'pulse'" \
   RIG_SELFTEST_PLANT_ENTRY=pulse
+ARM_ABSENT='sway pid=' arm R5d "a 'p11-kit' entry in the private runtime dir ABORTS" 90 no \
+  "contains 'p11-kit'" \
+  RIG_SELFTEST_PLANT_ENTRY=p11-kit
+# R0/R1c. A DUPLICATE key (env -i lets the last win; the preflight reads the first) and a disguised real path.
+ARM_ABSENT='sway pid=' arm R0 "a DUPLICATE XDG_RUNTIME_DIR (second entry /run//user/<uid>) ABORTS" 90 no \
+  "carries 'XDG_RUNTIME_DIR' more than once" \
+  RIG_SELFTEST_ADD_ENV="XDG_RUNTIME_DIR=/run//user/${UID_NOW}"
+ARM_ABSENT='sway pid=' arm R1c "forcing XDG_RUNTIME_DIR=/run/./user/<uid> (disguised real dir) ABORTS" 90 no \
+  "is the human's runtime dir" \
+  RIG_SELFTEST_FORCE_XDG_RUNTIME_DIR="/run/./user/${UID_NOW}"
 # R6. The child's session bus.
 ARM_ABSENT='sway pid=' arm R6a "forcing DBUS_SESSION_BUS_ADDRESS=unix:path=${REAL_RT}/bus (the human's bus) ABORTS" 90 no \
   "is not the private nonexistent" \
@@ -206,9 +220,20 @@ ARM_ABSENT='sway pid=' arm R7a "an env value containing ${REAL_RT} (GNOME_KEYRIN
 arm R7b "an env value containing ${REAL_RT} added AFTER sway ABORTS at the launch preflight" 90 no \
   "entry 'LATE_FOO' contains '/run/user/'" \
   RIG_SELFTEST_LATE_ADD_ENV="LATE_FOO=/x${REAL_RT}/y"
+arm R7c "a DISGUISED /run/user path (…/run/y/../user//<uid>/z) added after sway ABORTS" 90 no \
+  "entry 'LATE_BAR' contains '/run/user/'" \
+  RIG_SELFTEST_LATE_ADD_ENV="LATE_BAR=/x/run/y/../user//${UID_NOW}/z"
+# R9. The two guards that run before anything exists, each inside the HIDDEN world so that even a broken guard could
+#     only ever touch an empty tmpfs: sway's OWN env carrying the real runtime dir, and a rig base under /run/user.
+ARM_ABSENT='sway pid=' arm R9s "SWAY_ENV carrying the real XDG_RUNTIME_DIR ABORTS before sway starts" 90 no \
+  "SWAY_ENV XDG_RUNTIME_DIR='${REAL_RT}' is the human's runtime dir" \
+  RIG_HIDE_REAL_RUNTIME=1 RIG_SELFTEST_FORCE_SWAY_XDG="${REAL_RT}"
+ARM_ABSENT='disk-guard OK|sway pid=' arm R9b "E2E_RIG_BASE under /run/user/<uid> ABORTS before anything is created there" 90 no \
+  "is under /run/user/ — a rig dir there would sit inside the human's runtime dir" \
+  RIG_HIDE_REAL_RUNTIME=1 E2E_RIG_BASE="${REAL_RT}/rig-base-selftest"
 # R8. A private dir path too long for the sockets inside it.
-ARM_ABSENT='sway pid=' arm R8 "a private runtime dir path over 80 chars ABORTS" 90 no \
-  "\(> 80\)" \
+ARM_ABSENT='sway pid=' arm R8 "a private runtime dir path over 84 chars ABORTS" 90 no \
+  "\(> 84\)" \
   E2E_RIG_BASE="${LONG_BASE}"
 
 echo
@@ -250,6 +275,8 @@ fi
 # C4. The teardown reaper: a stand-in process named like the keyring daemon LISTENS on a socket inside the
 #     rig's private dir (what an NSS p11-kit module that auto-starts a daemon would leave behind). The rig must
 #     reap it by identity (socket in ITS private dir + comm) — and the arm cleans up after itself if it did not.
+#     The stand-in must NOT inherit the substitution's stdout: `$(…)` waits for every holder of the pipe, so a
+#     surviving daemon would stall the arm until it exited on its own and then read as 'dead' (a false PASS).
 if selected C4; then
   ran=$((ran + 1)); SEEN[C4]=1
   fk="${ST_BASE}/fake-keyring.py"; pidf="${ST_BASE}/c4.pid"; : > "${pidf}"
@@ -258,14 +285,19 @@ import ctypes, os, socket, sys, time
 ctypes.CDLL(None).prctl(15, b"gnome-keyring-daemon", 0, 0, 0)   # PR_SET_NAME -> /proc/<pid>/comm
 s = socket.socket(socket.AF_UNIX); s.bind(os.environ["XDG_RUNTIME_DIR"] + "/ctl"); s.listen(1)
 open(sys.argv[1], "w").write(str(os.getpid()))
-time.sleep(90)
+time.sleep(45)
 PY
-  out4="$(env E2E_RIG_BASE="${ST_BASE}" "${RIG}" /bin/sh -c "python3 '${fk}' '${pidf}' & i=0; while [ ! -s '${pidf}' ] && [ \$i -lt 40 ]; do sleep 0.25; i=\$((i+1)); done" 2>&1)"; rc4=$?
+  out4="$(env E2E_RIG_BASE="${ST_BASE}" "${RIG}" /bin/sh -c "python3 '${fk}' '${pidf}' </dev/null >/dev/null 2>&1 & i=0; while [ ! -s '${pidf}' ] && [ \$i -lt 40 ]; do sleep 0.25; i=\$((i+1)); done" 2>&1)"; rc4=$?
   pid4="$(cat "${pidf}" 2>/dev/null)"; why4=""
   [[ "${rc4}" == 0 ]] || why4+="rc=${rc4}; "
   [[ -n "${pid4}" ]] || why4+="the stand-in daemon never started; "
   grep -qE "teardown: reaping gnome-keyring-d\S* pid ${pid4:-X} " <<<"${out4}" || why4+="no reaping line for pid ${pid4:-?}; "
-  if [[ -n "${pid4}" ]] && kill -0 "${pid4}" 2>/dev/null; then why4+="the stand-in daemon pid ${pid4} SURVIVED the rig's teardown; "; kill "${pid4}" 2>/dev/null; fi
+  # Dead = gone or a zombie (SIGTERM'd, not yet reaped by init): poll up to 3 s so a reaped-a-moment-later process is not a false FAIL.
+  alive4() { local st; st="$(awk '{print $3}' "/proc/${pid4}/stat" 2>/dev/null)"; [[ -n "${st}" && "${st}" != "Z" ]]; }
+  if [[ -n "${pid4}" ]]; then
+    for _ in $(seq 1 30); do alive4 || break; sleep 0.1; done
+    if alive4; then why4+="the stand-in daemon pid ${pid4} SURVIVED the rig's teardown; "; kill "${pid4}" 2>/dev/null; fi
+  fi
   if [[ -z "${why4}" ]]; then pass "C4 CONTROL: the teardown reaps a keyring-named daemon listening in the private dir (pid ${pid4})"
   else fail "C4 CONTROL: the teardown reaps a keyring-named daemon listening in the private dir" "${why4}"; fi
 fi
@@ -283,12 +315,12 @@ if [[ -n "${RIG_SELFTEST_ONLY:-}" ]]; then
   echo "RIG-SELFTEST: PARTIAL-FAIL arms=${ran} failed=${fails} only='${RIG_SELFTEST_ONLY}'"
   exit 1
 fi
-if (( ran < 24 )); then
-  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 24 — an arm did not run)"
+if (( ran < 30 )); then
+  echo "RIG-SELFTEST: FAILED arms=${ran} (expected 30 — an arm did not run)"
   exit 1
 fi
 if (( fails == 0 )); then
-  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×14) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
+  echo "SELF-TEST PASSED: ${ran} arms — every hostile arm (display ×6, runtime-world ×20) aborted rc=90 for its OWN named clause without launching the child; the 4 controls ran."
   echo "RIG-SELFTEST: PASSED arms=${ran}"
   exit 0
 fi

@@ -6,8 +6,11 @@
 // backup and `cmp`-verified after every mutant (and on SIGINT/exit). A mutant string that is not
 // found live (or not found `nth` times) is an ERROR, never a silent no-op.
 //   node scripts/e2e-contained-rig-mutants.mjs [--only name,name] [--unfixed]
-//   --unfixed  also runs the pre-Q2 rig (git show <ref>:scripts/e2e-contained-rig.sh) through the SAME
-//              arms: the unfixed build must FAIL them (it is the must-FAIL counterpart of the controls).
+//   --unfixed  also runs the pre-Q2 rig (the parent of the commit that introduced preflight_runtime_world, or $UNFIXED_REF)
+//              through the SAME arms, inside a bwrap world that hides /run/user/<uid> (the old rig lists it): the unfixed
+//              build must FAIL them (it is the must-FAIL counterpart of the controls).
+// Every mutated file carries a `# RIG-MUTANT:` stamp that makes the rig and the self-test refuse to run outside this
+// driver (RIG_SELFTEST_MUTANT_RUN=1), so a SIGKILLed run cannot leave a silently broken preflight behind.
 // Exit 0 only when every mutant behaved as declared (a declared `equivalent` survivor is reported, not failed).
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,24 +24,24 @@ const SELFTEST = path.join(HERE, 'e2e-contained-rig-selftest.sh');
 const argv = process.argv.slice(2);
 const only = (argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : '').split(',').filter(Boolean);
 
-const RUNTIME_PRESWAY = ['R1a', 'R1b', 'R2', 'R3', 'R4', 'R5a', 'R5b', 'R5c', 'R6a', 'R6b', 'R6c', 'R7a', 'R8'];
+const RUNTIME_PRESWAY = ['R0', 'R1a', 'R1b', 'R1c', 'R2', 'R3', 'R4', 'R5a', 'R5b', 'R5c', 'R5d', 'R6a', 'R6b', 'R6c', 'R7a', 'R8'];
 const line = (s) => s + ' \\\n'; // a `[[ … ]] \` continuation line, as written in the rig
 // name · find · replace · nth occurrence (1-based) · red = arms that must go FAIL · extra = arms run + required PASS · equivalent = why it may survive
 const MUTANTS = [
-  { name: 'preflight-noop', find: '  local arr="$1" stage="$2" xdg dbus kv name resolved real_rt="/run/user/${RIG_UID}"\n', replace: '  local arr="$1" stage="$2" xdg dbus kv name resolved real_rt="/run/user/${RIG_UID}"\n  return 0\n', red: [...RUNTIME_PRESWAY, 'R7b'] },
-  { name: 'r1-real-dir', find: line('  [[ "${xdg}" != "${real_rt}" && "${xdg}" != "${real_rt}/"* && "${xdg}" != "/run/user/"* ]]'), replace: line('  true'), red: ['R1a', 'R1b'] },
-  { name: 'r1-prefix-only-exact', find: '[[ "${xdg}" != "${real_rt}" && "${xdg}" != "${real_rt}/"* && "${xdg}" != "/run/user/"* ]]', replace: '[[ "${xdg}" != "${real_rt}" ]]', red: ['R1b'], extra: ['R1a'] },
+  { name: 'preflight-noop', find: '  local -n _chk="${arr}"\n', replace: '  local -n _chk="${arr}"\n  return 0\n', red: [...RUNTIME_PRESWAY, 'R7b', 'R7c', 'R9s'] },
+  { name: 'r1-real-dir', find: line('  [[ "${xdgn}" != "${real_rt}" && "${xdgn}" != "${real_rt}/"* && "${xdgn}" != "/run/user/"* ]]'), replace: line('  true'), red: ['R1a', 'R1b', 'R1c'] },
+  { name: 'r1-prefix-only-exact', find: '[[ "${xdgn}" != "${real_rt}" && "${xdgn}" != "${real_rt}/"* && "${xdgn}" != "/run/user/"* ]]', replace: '[[ "${xdgn}" != "${real_rt}" ]]', red: ['R1b'], extra: ['R1a'] },
   { name: 'r2-own-dir', find: line('  [[ "${xdg}" == "${RIG_XDG}" ]]'), replace: line('  true'), red: ['R2'] },
   { name: 'r3-symlink', find: '[[ ! -L "${xdg}" ]] || die', replace: 'true || die', red: ['R3'] },
   { name: 'r3b-resolved-path', find: '[[ "${resolved}" != "/run/user/"* ]] || die', replace: 'true || die', red: [], extra: ['R3'], equivalent: 'only reachable through a rig base that symlinks into /run/user/<uid>, which the self-test must never create (accepted gap, ledger #405)' },
   { name: 'r4-mode-owner-dir', find: line('  [[ -d "${xdg}" && -O "${xdg}" && "$(stat -c %a -- "${xdg}")" == "700" ]]'), replace: line('  true'), red: ['R4'] },
   { name: 'r5a-keyring-glob', find: '"${xdg}"/keyring* ', replace: '', red: ['R5a'], extra: ['R5b', 'R5c'] },
   { name: 'r5b-bus-glob', find: '"${xdg}"/bus* ', replace: '', red: ['R5b'], extra: ['R5a', 'R5c'] },
-  { name: 'r5c-pulse-glob', find: ' "${xdg}"/pulse*; do', replace: '; do', red: ['R5c'], extra: ['R5a', 'R5b'] },
+  { name: 'r5c-pulse-glob', find: ' "${xdg}"/pulse*', replace: '', red: ['R5c'], extra: ['R5a', 'R5b'] },
   { name: 'r6-dbus-value', find: line('  [[ "${dbus}" == "unix:path=${RIG_NO_BUS}" ]]'), replace: line('  true'), red: ['R6a', 'R6b'] },
   { name: 'r6-dbus-path-exists', find: line('  [[ ! -e "${RIG_NO_BUS}" && ! -L "${RIG_NO_BUS}" ]]'), replace: line('  true'), red: ['R6c'] },
-  { name: 'r7-env-value-scan', find: line('    [[ "${kv#*=}" != *"/run/user/"* ]]'), replace: line('    true'), red: ['R7a', 'R7b'] },
-  { name: 'r8-length', find: line('  (( ${#xdg} <= 80 ))'), replace: line('  true'), red: ['R8'] },
+  { name: 'r7-env-value-scan', find: line('    [[ "${v}" != *"/run/user/"* ]]'), replace: line('    true'), red: ['R7a', 'R7b', 'R7c'] },
+  { name: 'r8-length', find: line('  (( ${#xdg} <= 84 ))'), replace: line('  true'), red: ['R8'] },
   { name: 'launch-stage-call-removed', find: 'preflight_runtime_world CHILD_ENV launch\n', replace: '', red: ['R7b'], extra: ['R7a'] },
   // R5 (planted entry) is a property of the dir both arrays share, so the SWAY_ENV pre-sway call still catches it: not part of this mutant's kill set
   { name: 'presway-child-call-removed', find: 'preflight_runtime_world CHILD_ENV pre-sway\n', replace: '', red: ['R1a', 'R6a', 'R7a'] },
@@ -49,12 +52,19 @@ const MUTANTS = [
   { name: 'alias-dropped', find: 'set_child_env WAYLAND_DISPLAY "${RIG_WL_ALIAS}"', replace: 'set_child_env WAYLAND_DISPLAY "${MINE}"', red: ['C1', 'C3'] },
   { name: 'alias-target-unverified', find: line('  [[ -S "${RIG_XDG}/${want}" && "$(readlink -- "${RIG_XDG}/${want}")" == "${target}" ]]'), replace: line('  true'), red: ['W6'] },
   { name: 'reap-kill-dropped', find: '    kill "${p}" 2>/dev/null || true\n', replace: '    :\n', red: ['C4'] },
+  { name: 'r0-duplicate-keys', find: '[[ "${seen}" != *" ${k} "* ]] || die', replace: 'true || die', red: ['R0'] },
+  { name: 'r1-no-normalize', find: 'xdgn="$(norm_path "${xdg}")"', replace: 'xdgn="${xdg}"', red: ['R1c'], extra: ['R1a'] },
+  { name: 'r7-no-normalize', find: 'v="$(norm_path "${kv#*=}")"', replace: 'v="${kv#*=}"', red: ['R7c'], extra: ['R7a'] },
+  { name: 'r5d-p11kit-glob', find: ' "${xdg}"/p11-kit*; do', replace: '; do', red: ['R5d'], extra: ['R5a'] },
+  { name: 'sway-presway-call-removed', find: 'preflight_runtime_world SWAY_ENV pre-sway\n', replace: '', red: ['R9s'] },
+  { name: 'base-under-run-user-guard', find: '[[ "${RIG_BASE}" == /run/user/* || "${RIG_BASE_CANON}" == /run/user/* ]]', replace: 'false', red: ['R9b'] },
   // the display preflight (clauses touched by this change)
   { name: 'w-path-clause', find: line('  [[ "${got}" != */* ]]'), replace: line('  true'), red: ['W1'] },
   { name: 'w-equality-clause', find: line('  [[ "${got}" == "${want}" ]]'), replace: line('  true'), red: ['W2', 'W3'] },
   { name: 'w-display-clause', find: '  if child_env_has DISPLAY; then', replace: '  if false; then', red: ['W4'] },
 ];
 
+if (/^# RIG-MUTANT:/m.test(fs.readFileSync(RIG, 'utf8'))) { console.error('FATAL: the rig already carries a RIG-MUTANT stamp (a killed run left it broken) — git checkout -- scripts/e2e-contained-rig.sh'); process.exit(3); }
 const backup = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rigmut-')), 'e2e-contained-rig.sh.orig');
 fs.copyFileSync(RIG, backup);
 const mode = fs.statSync(RIG).mode;
@@ -68,8 +78,11 @@ function restore() {
 process.on('exit', restore);
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { restore(); process.exit(130); });
 
-function runArms(arms) {
-  const r = spawnSync('bash', [SELFTEST], { encoding: 'utf8', env: { ...process.env, RIG_SELFTEST_ONLY: arms.join(' ') }, timeout: 600000 });
+function runArms(arms, { hidden = false } = {}) {
+  const env = { ...process.env, RIG_SELFTEST_ONLY: arms.join(' '), RIG_SELFTEST_MUTANT_RUN: '1' };
+  const uid = String(process.getuid());
+  const [cmd, args] = hidden ? ['bwrap', ['--dev-bind', '/', '/', '--tmpfs', `/run/user/${uid}`, '--die-with-parent', 'bash', SELFTEST]] : ['bash', [SELFTEST]];
+  const r = spawnSync(cmd, args, { encoding: 'utf8', env, timeout: 600000 });
   const out = `${r.stdout}\n${r.stderr}`;
   const result = {};
   for (const m of out.matchAll(/^\s+(PASS|FAIL)\s+(\S+)\s/gm)) result[m[2]] = m[1];
@@ -86,7 +99,8 @@ for (const mu of MUTANTS) {
   if (parts.length - 1 < nth) { console.log(`ERROR ${mu.name}: mutant string found ${parts.length - 1}× (need ≥ ${nth}) — NOT verified live`); bad++; continue; }
   const mutated = parts.slice(0, nth).join(mu.find) + mu.replace + parts.slice(nth).join(mu.find);
   if (mutated === src) { console.log(`ERROR ${mu.name}: mutation is a no-op`); bad++; continue; }
-  fs.writeFileSync(RIG, mutated); fs.chmodSync(RIG, mode); restored = false;
+  const nl = mutated.indexOf('\n') + 1;
+  fs.writeFileSync(RIG, `${mutated.slice(0, nl)}# RIG-MUTANT: ${mu.name}\n${mutated.slice(nl)}`); fs.chmodSync(RIG, mode); restored = false;
   if (spawnSync('bash', ['-n', RIG]).status !== 0) { restore(); console.log(`ERROR ${mu.name}: mutated rig has a syntax error (a mutant must be a real clause removal, not a parse failure)`); bad++; continue; }
   const arms = [...new Set([...mu.red, ...(mu.extra ?? [])])];
   const { result } = runArms(arms.length ? arms : ['C1']);
@@ -102,13 +116,19 @@ for (const mu of MUTANTS) {
 }
 
 if (argv.includes('--unfixed')) {
-  const ref = execFileSync('git', ['-C', path.join(HERE, '..'), 'rev-parse', '--verify', 'origin/ops-browser-orca-388'], { encoding: 'utf8' }).trim();
-  const old = execFileSync('git', ['-C', path.join(HERE, '..'), 'show', `${ref}:scripts/e2e-contained-rig.sh`], { encoding: 'utf8', maxBuffer: 1 << 24 });
-  if (old.includes('preflight_runtime_world')) { console.log('ERROR unfixed: the reference rig already has the runtime-world preflight'); bad++; }
+  const repo = path.join(HERE, '..');
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', maxBuffer: 1 << 24 }).trim();
+  let ref = process.env.UNFIXED_REF;
+  if (!ref) {
+    const intro = git('log', '--format=%H', '-S', 'preflight_runtime_world', '--', 'scripts/e2e-contained-rig.sh').split('\n').filter(Boolean).pop();
+    ref = intro ? git('rev-parse', `${intro}^`) : 'HEAD';
+  }
+  const old = execFileSync('git', ['-C', repo, 'show', `${ref}:scripts/e2e-contained-rig.sh`], { encoding: 'utf8', maxBuffer: 1 << 24 });
+  if (old.includes('preflight_runtime_world')) { console.log(`ERROR unfixed: the reference rig ${ref.slice(0, 8)} already has the runtime-world preflight`); bad++; }
   else {
-    fs.writeFileSync(RIG, old); fs.chmodSync(RIG, mode); restored = false;
+    fs.writeFileSync(RIG, `${old.slice(0, old.indexOf('\n') + 1)}# RIG-MUTANT: unfixed-${ref.slice(0, 8)}\n${old.slice(old.indexOf('\n') + 1)}`); fs.chmodSync(RIG, mode); restored = false;
     const arms = ['R1a', 'R6a', 'C2', 'C3'];
-    const { result } = runArms(arms);
+    const { result } = runArms(arms, { hidden: true });   // the old rig lists/greps /run/user/<uid>: show it an empty tmpfs instead
     restore();
     const notRed = arms.filter((a) => result[a] !== 'FAIL');
     if (notRed.length) { bad++; console.log(`BAD unfixed(${ref.slice(0, 8)}) arms NOT red: ${notRed.join(',')} got=${JSON.stringify(result)}`); }

@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { crop, decodePng, distinctColours, pixelsNear } from './pause-ui/lib.mjs';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const require_ = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,7 +38,6 @@ const C = (rel) => JSON.stringify(path.join(repoRoot, rel));
 fs.writeFileSync(entry, `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 import { AgentsTable } from ${C('src/renderer/components/ResourcesView.tsx')};
 import { MemoryGuardSettings } from ${C('src/renderer/components/MemoryGuardSettings.tsx')};
 import { groupSnapshot } from ${C('src/shared/resources.ts')};

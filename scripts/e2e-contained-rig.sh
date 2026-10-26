@@ -31,6 +31,12 @@
 #   hard-coded /run/user/<uid> in a driver re-opens the hole the preflight closes.
 set -Eeuo pipefail
 
+# A mutation run (scripts/e2e-contained-rig-mutants.mjs) stamps the file it breaks; if that run was SIGKILLed the
+# broken preflight would stay on disk for every rig user — so a stamped file refuses to run outside a mutation run.
+if grep -q '^# RIG-MUTANT:' "${BASH_SOURCE[0]}" 2>/dev/null && [[ -z "${RIG_SELFTEST_MUTANT_RUN:-}" ]]; then
+  echo "[rig] ABORT: ${BASH_SOURCE[0]} carries a RIG-MUTANT stamp (a killed mutation run left it broken) — git checkout -- scripts/e2e-contained-rig.sh" >&2; exit 90
+fi
+
 # OPT-IN BACKSTOP (RIG_HIDE_REAL_RUNTIME=1): re-exec inside a private mount namespace where the
 # human's /run/user/<uid> is an EMPTY tmpfs, so even a driver that hard-codes it cannot reach the
 # keyring/bus/wayland sockets. Used for a rig's FIRST Electron run and by the self-test's hidden
@@ -53,6 +59,11 @@ FAKE_HOME="${RIG_DIR}/home"
 RIG_XDG="${RIG_DIR}/xdg"                    # the private XDG_RUNTIME_DIR
 RIG_NO_BUS="${RIG_DIR}/no-session-bus"      # a path that must NEVER exist (the child's D-Bus address)
 RIG_UID="$(id -u)"
+# A rig base under /run/user is refused BEFORE anything is created there (strings + a path canonicalisation; no connection).
+RIG_BASE_CANON="$(readlink -m -- "${RIG_BASE}")"
+if [[ "${RIG_BASE}" == /run/user/* || "${RIG_BASE_CANON}" == /run/user/* ]]; then
+  echo "[rig] ABORT: E2E_RIG_BASE='${RIG_BASE}' (resolves to '${RIG_BASE_CANON}') is under /run/user/ — a rig dir there would sit inside the human's runtime dir" >&2; exit 90
+fi
 
 # ── 0. disk preflight (issue #87) ───────────────────────────────────────────
 # /tmp here is a SEPARATE tmpfs. It reached 100% during wave 6 and a verifier
@@ -168,16 +179,34 @@ CHILD_ENV=(
 # RIG_SELFTEST_* exist ONLY so the self-test can inject a hostile env into the CHILD array and
 # watch the preflight abort. Never set in normal operation; they never touch what sway gets.
 # The preflight reads the array either way, so the tested code path is the shipped one.
-set_child_env() {  # $1 = key, $2 = value — replace in place, or append
-  local i
-  for i in "${!CHILD_ENV[@]}"; do
-    if [[ "${CHILD_ENV[$i]}" == "$1="* ]]; then CHILD_ENV[$i]="$1=$2"; return 0; fi
+set_env_in() {  # $1 = array NAME, $2 = key, $3 = value — replace in place, or append
+  local -n _tgt="$1"; local i
+  for i in "${!_tgt[@]}"; do
+    if [[ "${_tgt[$i]}" == "$2="* ]]; then _tgt[$i]="$2=$3"; return 0; fi
   done
-  CHILD_ENV+=("$1=$2")
+  _tgt+=("$2=$3")
 }
+set_child_env() { set_env_in CHILD_ENV "$1" "$2"; }
+# self-test only; the arm that uses it ALWAYS runs inside the hidden world, so even a broken preflight could not start sway in the real dir
+[[ -z "${RIG_SELFTEST_FORCE_SWAY_XDG:-}" ]] || set_env_in SWAY_ENV XDG_RUNTIME_DIR "${RIG_SELFTEST_FORCE_SWAY_XDG}"
 [[ -z "${RIG_SELFTEST_FORCE_XDG_RUNTIME_DIR:-}" ]] || set_child_env XDG_RUNTIME_DIR "${RIG_SELFTEST_FORCE_XDG_RUNTIME_DIR}"
 [[ -z "${RIG_SELFTEST_FORCE_DBUS:-}" ]] || set_child_env DBUS_SESSION_BUS_ADDRESS "${RIG_SELFTEST_FORCE_DBUS}"
 [[ -z "${RIG_SELFTEST_ADD_ENV:-}" ]] || CHILD_ENV+=("${RIG_SELFTEST_ADD_ENV}")
+
+norm_path() {  # lexical: collapse `//`, `/./` and `x/../` so /run//user/1000, /run/./user/1000, /run/x/../user/1000 cannot slip a string compare
+  local - ; set -f
+  local v="$1" seg lead="" IFS=/
+  local -a out=()
+  [[ "${v}" == /* ]] && lead="/"
+  for seg in ${v}; do   # unquoted on purpose: splits on '/', empty segments vanish
+    case "${seg}" in
+      ''|.) ;;
+      ..) if (( ${#out[@]} > 0 )) && [[ "${out[-1]}" != .. ]]; then unset 'out[-1]'; else out+=(..); fi ;;
+      *) out+=("${seg}") ;;
+    esac
+  done
+  printf '%s%s' "${lead}" "${out[*]}"
+}
 
 # THE RUNTIME-WORLD PREFLIGHT (incident Q2). Aborts rc=90 unless the world the processes are
 # about to get is PRIVATE. Strings and the private dir only: it never connects to, stats, or
@@ -185,14 +214,24 @@ set_child_env() {  # $1 = key, $2 = value — replace in place, or append
 # tests is skipped — a failing string test dies first).
 #   $1 = array name (CHILD_ENV | SWAY_ENV) · $2 = stage label for the log
 preflight_runtime_world() {
-  local arr="$1" stage="$2" xdg dbus kv name resolved real_rt="/run/user/${RIG_UID}"
+  local arr="$1" stage="$2" xdg xdgn dbus kv name k v seen=" " resolved real_rt="/run/user/${RIG_UID}"
+  local -n _chk="${arr}"
   xdg="$(env_get "${arr}" XDG_RUNTIME_DIR || true)"
   dbus="$(env_get "${arr}" DBUS_SESSION_BUS_ADDRESS || true)"
   log "PREFLIGHT-RUNTIME[${stage}/${arr}]: XDG_RUNTIME_DIR='${xdg:-<unset>}' DBUS_SESSION_BUS_ADDRESS='${dbus:-<unset>}'"
 
+  # R0 — a key may appear once: `env -i` lets the LAST duplicate win while env_get reads the FIRST, so a duplicate
+  #      would let the child get a value this preflight never looked at.
+  for kv in "${_chk[@]}"; do
+    k="${kv%%=*}"
+    [[ "${seen}" != *" ${k} "* ]] || die "PREFLIGHT-RUNTIME FAILED: ${arr} carries '${k}' more than once — the last one would win and this preflight read the first"
+    seen+="${k} "
+  done
+
   [[ -n "${xdg}" ]] || die "PREFLIGHT-RUNTIME FAILED: ${arr} carries no XDG_RUNTIME_DIR (an unset one makes libdbus/NSS fall back to the human's /run/user/${RIG_UID})"
-  # R1 — the human's runtime dir, or anything under it. Compared as STRINGS, first.
-  [[ "${xdg}" != "${real_rt}" && "${xdg}" != "${real_rt}/"* && "${xdg}" != "/run/user/"* ]] \
+  # R1 — the human's runtime dir, or anything under it. Compared as STRINGS, first (after collapsing // and /./).
+  xdgn="$(norm_path "${xdg}")"
+  [[ "${xdgn}" != "${real_rt}" && "${xdgn}" != "${real_rt}/"* && "${xdgn}" != "/run/user/"* ]] \
     || die "PREFLIGHT-RUNTIME FAILED: ${arr} XDG_RUNTIME_DIR='${xdg}' is the human's runtime dir (${real_rt}) — it holds the keyring/PKCS#11 sockets a crashing rig Electron aborted twice (incident Q2)"
   # R2 — must be this rig's own private dir, under the rig dir.
   [[ "${xdg}" == "${RIG_XDG}" ]] \
@@ -205,7 +244,7 @@ preflight_runtime_world() {
   [[ -d "${xdg}" && -O "${xdg}" && "$(stat -c %a -- "${xdg}")" == "700" ]] \
     || die "PREFLIGHT-RUNTIME FAILED: private runtime dir '${xdg}' is not a directory owned by me with mode 0700 (mode '$(stat -c %a -- "${xdg}" 2>/dev/null || echo '?')')"
   # R5 — nothing in it may look like a keyring / session-bus / pulse endpoint.
-  for kv in "${xdg}"/keyring* "${xdg}"/bus* "${xdg}"/pulse*; do
+  for kv in "${xdg}"/keyring* "${xdg}"/bus* "${xdg}"/pulse* "${xdg}"/p11-kit*; do
     [[ -e "${kv}" || -L "${kv}" ]] || continue
     name="${kv##*/}"
     die "PREFLIGHT-RUNTIME FAILED: private runtime dir '${xdg}' contains '${name}' — a keyring/bus/pulse endpoint must never be reachable from a rig"
@@ -216,14 +255,15 @@ preflight_runtime_world() {
   [[ ! -e "${RIG_NO_BUS}" && ! -L "${RIG_NO_BUS}" ]] \
     || die "PREFLIGHT-RUNTIME FAILED: the private session-bus path '${RIG_NO_BUS}' exists — it must not (something could be listening on it)"
   # R7 — no value anywhere in the env may carry a /run/user path (GNOME_KEYRING_CONTROL, a PATH entry, …).
-  local -n _chk="${arr}"
   for kv in "${_chk[@]}"; do
-    [[ "${kv#*=}" != *"/run/user/"* ]] \
+    v="$(norm_path "${kv#*=}")"
+    [[ "${v}" != *"/run/user/"* ]] \
       || die "PREFLIGHT-RUNTIME FAILED: ${arr} entry '${kv%%=*}' contains '/run/user/' (value '${kv#*=}') — no path into the human's runtime dir may reach a rig process"
   done
-  # R8 — the private dir hosts unix sockets (wayland, the hooks socket orchestra-<12hex>.sock): its path must leave room.
-  (( ${#xdg} <= 80 )) \
-    || die "PREFLIGHT-RUNTIME FAILED: private runtime dir path is ${#xdg} chars (> 80) — a unix socket path inside it would exceed sun_path (107); use a shorter E2E_RIG_BASE"
+  # R8 — the private dir hosts the app's unix sockets: the hooks socket `/orchestra-<12hex>.sock` (23 chars) must fit sun_path (107) => dir <= 84.
+  #      (The phone-access socket `/orchestra-acces-mobile-<12hex>.sock` is 41 chars => dir <= 66: its wrapper uses a short base.)
+  (( ${#xdg} <= 84 )) \
+    || die "PREFLIGHT-RUNTIME FAILED: private runtime dir path is ${#xdg} chars (> 84) — the app's hooks socket path inside it would exceed sun_path (107); use a shorter E2E_RIG_BASE"
   log "PREFLIGHT-RUNTIME PASSED[${stage}/${arr}]: private world (xdg=${xdg}, bus=${dbus}, no /run/user/ in any value)"
 }
 preflight_runtime_world CHILD_ENV pre-sway
@@ -260,7 +300,7 @@ MARK_B="$(printf '%02X' $(( $$ % 251 + 5 )))"
 MARKER="FF${MARK_G}${MARK_B}"
 MARK_R_DEC=255; MARK_G_DEC=$((16#${MARK_G})); MARK_B_DEC=$((16#${MARK_B}))
 log "unique marker for this rig: #${MARKER} (rgb ${MARK_R_DEC},${MARK_G_DEC},${MARK_B_DEC})"
-swaymsg_mine() { SWAYSOCK="${SWAYSOCK_MINE}" swaymsg "$@" >/dev/null 2>&1; }
+swaymsg_mine() { env -i PATH="/usr/local/bin:/usr/bin:/bin" SWAYSOCK="${SWAYSOCK_MINE}" swaymsg "$@" >/dev/null 2>&1; }
 swaymsg_mine -- "output HEADLESS-1 background #${MARKER} solid_color" \
   || die "could not set the marker on my own output"
 

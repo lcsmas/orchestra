@@ -170,6 +170,10 @@ Either omit `repoPath` (as above) or make both fields real and verify with
 
 The headless sway recipe is owned by the **`headless-sway-e2e` skill** — invoke
 it for the compositor launch, the socket-discovery steps and its own gotchas.
+The compositor AND the app run under a PRIVATE `XDG_RUNTIME_DIR` (`scripts/e2e-contained-rig.sh` does this for you; the
+recipe's `/run/user/1000` socket listing is obsolete for anything that launches Electron/Chromium) — never hand either the real
+runtime dir or the real D-Bus address (incident Q2, ledger #405). sway names its socket `wayland-1` in a fresh private dir; the rig
+hands the child the alias `wayland-rig`.
 What that recipe needs from this app: `WAYLAND_DISPLAY=wayland-N`
 `ELECTRON_OZONE_PLATFORM_HINT=wayland` plus the sanitized-env launch above, and
 a minimal config of `output HEADLESS-1 resolution 1600x1000` (a "Could not find
