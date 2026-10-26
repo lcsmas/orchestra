@@ -9,6 +9,7 @@
  * Targets are flattened sessions only (`flatten: true`), which is all `agent-browser` speaks.
  */
 import { randomBytes, createHash } from 'node:crypto';
+import { SessionPending } from './cdp-session-pending.ts';
 import { captureWithFallback } from './cdp-capture.ts';
 
 export interface CdpTab {
@@ -113,6 +114,8 @@ interface TabState {
   agent: boolean;
   unsub: Array<() => void>;
   children: Set<string>;
+  /** Commands in flight on auto-attached child sessions: settled when the child's detach is announced (a dead child never answers them). */
+  pending: SessionPending;
 }
 interface Session {
   kind: 'tab' | 'browser';
@@ -482,7 +485,7 @@ export class CdpProxyCore {
     if (!flight) {
       flight = (async () => {
         const channel = await this.port.acquire(tabId);
-        const st: TabState = { channel, refs: 0, agent: false, unsub: [], children: new Set() };
+        const st: TabState = { channel, refs: 0, agent: false, unsub: [], children: new Set(), pending: new SessionPending() };
         st.unsub.push(channel.subscribe((m, p, sid) => this.onTabEventFromDebugger(tabId, st, m, p, sid)));
         st.unsub.push(channel.onDetach((reason) => this.onDebuggerDetached(tabId, reason)));
         this.tabs.set(tabId, st);
@@ -565,16 +568,19 @@ export class CdpProxyCore {
       if (method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
     }
     this.trace?.('proxy->debugger', { method, params, sessionId: childSessionId });
-    return st.channel.send(method, params, childSessionId).then(
-      (r) => {
-        this.trace?.('debugger->proxy', { method, result: r });
-        return r;
-      },
-      (e) => {
-        this.trace?.('debugger->proxy', { method, error: e instanceof Error ? e.message : String(e) });
-        throw e;
-      },
-    );
+    const forward = (): Promise<unknown> =>
+      st.channel.send(method, params, childSessionId).then(
+        (r) => {
+          this.trace?.('debugger->proxy', { method, result: r });
+          return r;
+        },
+        (e) => {
+          this.trace?.('debugger->proxy', { method, error: e instanceof Error ? e.message : String(e) });
+          throw e;
+        },
+      );
+    // A child that dies with this command in flight never answers it, and the client (agent-browser) waits on it: settle it when the detach is announced.
+    return childSessionId ? st.pending.track(childSessionId, forward, () => new CdpError('Session with given id not found.', ERR_SERVER)) : forward();
   }
 
   /** An agent action on a tab nobody is looking at brings it to the front first (no hidden-view painting yet, ADR 0009). */
@@ -608,15 +614,14 @@ export class CdpProxyCore {
       const child = (params as { sessionId?: string } | undefined)?.sessionId;
       if (child) st.children.add(child);
     }
-    if (method === 'Target.detachedFromTarget') {
-      const child = (params as { sessionId?: string } | undefined)?.sessionId;
-      if (child) st.children.delete(child);
-    }
+    const gone = method === 'Target.detachedFromTarget' ? (params as { sessionId?: string } | undefined)?.sessionId : undefined;
+    if (gone) st.children.delete(gone);
     for (const c of this.clients) {
       for (const [csid, s] of c.sessions) {
         if (s.kind === 'tab' && s.tabId === tabId) this.emit(c, method, params, sessionId ?? csid);
       }
     }
+    if (gone) st.pending.abort(gone); // the error replies are microtasks: they land behind the detach event emitted above
   }
 
   private onDebuggerDetached(tabId: string, reason: string): void {

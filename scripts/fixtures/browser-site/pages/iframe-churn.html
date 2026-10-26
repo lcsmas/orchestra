@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Churn fixture</title>
+<style>html,body{margin:0;height:100%;background:#345}iframe{width:120px;height:60px;border:0}</style></head>
+<body><h1 id="state" style="margin:0;padding:12px;font:700 20px sans-serif;color:#fff">churn: idle</h1><script>
+// Cross-SITE iframes (the page's host swapped 127.0.0.1 <-> localhost) created and REMOVED within 0-25 ms, every 15 ms, for ?ms= (default 3000):
+// every one is an auto-attachable child target of the tab that detaches while a CDP client's attach-time commands are still in flight.
+// ?wait=1 holds the churn until window.startChurn() (a rig starts it after its client attached). window.__churn is the oracle.
+const q = new URLSearchParams(location.search);
+const total = Number(q.get('ms') ?? 3000);
+const other = location.hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1';
+window.__churn = { created: 0, removed: 0, running: false, done: false, t0: 0, t1: 0 };
+window.startChurn = function () {
+  if (window.__churn.running || window.__churn.done) return false;
+  window.__churn.running = true;
+  document.getElementById('state').textContent = 'churn: running';
+  const t0 = (window.__churn.t0 = Date.now());
+  (function loop() {
+    if (Date.now() - t0 > total) { window.__churn.running = false; window.__churn.done = true; window.__churn.t1 = Date.now(); document.getElementById('state').textContent = 'churn: done'; return; }
+    const f = document.createElement('iframe');
+    f.src = 'http://' + other + ':' + location.port + '/tabs-c.html?n=' + (window.__churn.created++);
+    document.body.append(f);
+    setTimeout(() => { f.remove(); window.__churn.removed++; }, Math.floor(Math.random() * 25));
+    setTimeout(loop, 15);
+  })();
+  return true;
+};
+if (q.get('wait') !== '1') window.startChurn();
+</script></body></html>

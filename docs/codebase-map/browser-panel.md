@@ -769,6 +769,17 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   reach the page debugger (they would close the human's tab or the panel); only the page's own `Target.setAutoAttach` is forwarded.
   `Browser.getWindowForTarget|setWindowBounds|setContentsSize` are answered (fixed frame / ignored): erroring on `set viewport`
   made agent-browser drop its connection.
+  **A command in flight on a child that detaches is settled by the proxy** (`SessionPending`, `shared/cdp-session-pending.ts`; core `tabCommand` tail +
+  `onTabEventFromDebugger`): Chromium never answers a command whose iframe died while it was in flight, and Electron's `debugger.sendCommand` keeps that promise
+  until the WHOLE debugger detaches — agent-browser awaits each step of its attach-time chain (`runIfWaitingForDebugger → Page.enable → Runtime.enable → …`) on
+  every child it hears about, so an iframe created and removed within a few ms left the daemon idle for its whole timeout (`get title` timing out 8 s on 5/24 runs
+  of the churn page, both during and after the churn, 6/24 runs stalled in some step; with the settlement 0/60, with only it removed 10/30; measured in the trace: the child's `Target.detachedFromTarget` went out 1 ms after `Runtime.enable` was
+  forwarded and the next client command came 20 s later, when the tab closed and Electron flushed "target closed while handling command"). The proxy answers
+  those commands `Session with given id not found.` (the answer a command arriving a moment later already got) right after it emits the detach. Rig arm
+  `iframe-churn` (`pages/iframe-churn.html`); unit arms `cdp-proxy-core-detach.test.ts`, `cdp-session-pending.test.ts`, mutants `scripts/mutate-cdp-session-pending.mjs`.
+  A session whose detach was announced is RETIRED (bounded, 1024): a later command on it is refused at once instead of being forwarded into the void.
+  Limits: a nested child (worker inside an iframe) is settled only if Chromium announces its own detach; a tab's whole-debugger detach relies on Electron
+  flushing the pending commands itself ("target closed while handling command", seen in the trace), not on the proxy.
 - **Screenshots** (`shared/cdp-capture.ts`): `invalidate()` → keep the real `Page.captureScreenshot` pending with 1×1 probes
   at 250/750/1750/3750 ms → deadline 5 s → `capturePage()` (1 s bound) → a NAMED error. A clip /
   `captureBeyondViewport` request has no fallback (never a wrong image). Fault: the primary hanging has NOT been
@@ -869,8 +880,8 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
 - **Tracing**: `ORCHESTRA_CDP_TRACE=1` logs every client request / reply / forwarded command to the app log.
 - **Gates**: `shared/cdp-loopback-guard.test.ts`, `cdp-capture.test.ts`, `cdp-proxy-core.test.ts`, `browser-cli.test.ts`,
   `agent-browser-binary.test.ts`, `main/cdp-proxy` (`browser-cdp-proxy.test.ts`, `agent-browser-daemon.test.ts`); built-app rig
-  `scripts/e2e-browser-cli.sh <app-dir>` (18 arms against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
-  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (32 in-place bundle mutants, restored byte-exact + `cmp` — `acquire-always-attach` moved to the #398 rig as `reacquire-in-grace-attaches-again`: the seat's shared-attach guard is only reachable by a re-acquire inside the grace, which that rig drives; `--check-anchors <app-dir>` proves each still matches once, no Electron).
+  `scripts/e2e-browser-cli.sh <app-dir>` (18 arms + the opt-in `iframe-churn`, `--arm iframe-churn [--churn-n N]`, against the fixture site `scripts/fixtures/browser-site`, oracle = the app's
+  own debug port) and `scripts/e2e-browser-cli-mutants.sh <app-dir>` (33 in-place bundle mutants incl. `child-detach-unsettled`, restored byte-exact + `cmp` — `acquire-always-attach` moved to the #398 rig as `reacquire-in-grace-attaches-again`: the seat's shared-attach guard is only reachable by a re-acquire inside the grace, which that rig drives; `--check-anchors <app-dir>` proves each still matches once, no Electron).
   #398: `browser-cdp-seat.test.ts` (one attach per contents, refcount, force-detach, a fake debugger that THROWS on a second
   attach; grace, agent-only reset), `cdp-proxy-core.test.ts` (`lease`, `sendOnLease`, `agentTouched` arms),
   `browser-single-attacher.test.ts`, the registry arms in `browser-panel-tabs.test.ts` (design lease: no churn across polls,
