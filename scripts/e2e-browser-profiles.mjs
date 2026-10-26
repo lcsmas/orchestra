@@ -900,13 +900,13 @@ try {
     clause('logout', 'logout-is-never-undone-by-the-promotion', prof?.alive === 0 && wide?.alive === 0, `profile workspace, band 238-258 ms: ${prof?.alive}/${prof?.n} resurrected ${JSON.stringify(prof?.names)}; band 225-275 ms: ${wide?.alive}/${wide?.n} ${JSON.stringify(wide?.names)} (must be 0 — before the post-write reconciliation seat 1 measured 12/200 in the 243-250 band)`);
     // ── ROTATION (seat 1: the same read → write class): the cookie is rewritten at the same instants instead of deleted; the jar must end on the NEW value ──
     await selectWorkspace(b, 'e2e/bp400-2'); await openBrowserPane(b);
-    const rctl = await sweep(2, 'n=300&lo=238&hi=258&spread=3000&mode=rotate');
+    const rctl = await sweep(2, 'n=300&lo=238&hi=258&spread=6000&mode=rotate');
     await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b);
-    const rprof = await sweep(1, 'n=400&lo=238&hi=258&spread=4000&mode=rotate');
-    const rwide = await sweep(1, 'n=300&lo=225&hi=275&spread=3000&mode=rotate');
-    clause('logout', 'ctl/the-rotation-sweep-really-wrote-both-values', !!rctl && !!rprof && !!rwide && rctl.seen === rctl.n && rprof.seen === rprof.n && rwide.seen === rwide.n && rctl.fresh === rctl.n, `first value visible right after each write: ephemeral ${rctl?.seen}/${rctl?.n}, profile ${rprof?.seen}/${rprof?.n}, wide ${rwide?.seen}/${rwide?.n}; ephemeral ends on the new value ${rctl?.fresh}/${rctl?.n}`);
+    const rprof = await sweep(1, 'n=400&lo=238&hi=258&spread=8000&mode=rotate');
+    const rwide = await sweep(1, 'n=300&lo=225&hi=275&spread=6000&mode=rotate');
+    clause('logout', 'ctl/the-rotation-sweep-really-wrote-both-values', !!rctl && !!rprof && !!rwide && rctl.seen === rctl.n && rprof.seen === rprof.n && rwide.seen === rwide.n && rctl.fresh === rctl.n, `first value visible right after each write: ephemeral ${rctl?.seen}/${rctl?.n}, profile ${rprof?.seen}/${rprof?.n}, wide ${rwide?.seen}/${rwide?.n}; ephemeral ends on the new value ${rctl?.fresh}/${rctl?.n} (missing ${rctl?.missing})`);
     clause('logout', 'ctl/ephemeral-workspace-has-no-stale-rotation', rctl?.stale === 0, `ephemeral control (no promotion in its session): ${rctl?.stale}/${rctl?.n} cookies ended on the PREVIOUS value`);
-    clause('logout', 'rotation-ends-on-the-newest-value', rprof?.stale === 0 && rwide?.stale === 0 && rprof?.fresh === rprof?.n && rwide?.fresh === rwide?.n, `profile workspace, band 238-258 ms: ${rprof?.stale}/${rprof?.n} ended on the previous value ${JSON.stringify(rprof?.staleNames)}, ${rprof?.fresh}/${rprof?.n} on the new; band 225-275 ms: ${rwide?.stale}/${rwide?.n} stale ${JSON.stringify(rwide?.staleNames)}, ${rwide?.fresh}/${rwide?.n} new (must be 0 stale)`);
+    clause('logout', 'rotation-ends-on-the-newest-value', rprof?.stale === 0 && rwide?.stale === 0 && rprof?.fresh === rprof?.n && rwide?.fresh === rwide?.n && rprof?.missing === 0 && rwide?.missing === 0, `profile workspace, band 238-258 ms: ${rprof?.stale}/${rprof?.n} ended on the previous value ${JSON.stringify(rprof?.staleNames)}, ${rprof?.fresh}/${rprof?.n} on the new; band 225-275 ms: ${rwide?.stale}/${rwide?.n} stale ${JSON.stringify(rwide?.staleNames)}, ${rwide?.fresh}/${rwide?.n} new, missing ${rprof?.missing}+${rwide?.missing} (must be 0 stale)`);
     await selectWorkspace(b, 'e2e/bp400-1');
     // the promotion still WORKS for a cookie that is NOT logged out (the fix did not turn it off)
     await typeUrl(b, P(1, '&signin=session&lg=1'));
