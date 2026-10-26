@@ -9,6 +9,7 @@
 
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { register } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
@@ -20,12 +21,17 @@ class WebContents {
     this.destroyed = false; this.closed = 0; this.url = ''; this.title = '';
     this.cmds = []; this.dbgAttached = false; this.detachCalls = 0; this.loaded = [];
     this.handlers = {};
+    this.dbgHandlers = {};
     this.debugger = {
-      attach: () => { this.dbgAttached = true; },
-      detach: () => { this.dbgAttached = false; this.detachCalls++; },
+      // Like Electron: a second attach throws, and detach emits 'detach'.
+      attach: () => { if (this.dbgAttached) throw new Error('Another debugger is already attached to this WebContents.'); this.dbgAttached = true; this.attachCalls = (this.attachCalls || 0) + 1; },
+      detach: () => { this.dbgAttached = false; this.detachCalls++; for (const f of [...(this.dbgHandlers.detach || [])]) f({}, 'client disconnected'); },
+      on: (ev, fn) => { (this.dbgHandlers[ev] ||= []).push(fn); },
+      off: (ev, fn) => { this.dbgHandlers[ev] = (this.dbgHandlers[ev] || []).filter((f) => f !== fn); },
       isAttached: () => this.dbgAttached,
-      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return Promise.resolve({ result: { value: 'ev' } }); },
+      sendCommand: (m, p) => { this.cmds.push({ m, p }); if (this.onCmd) this.onCmd(m, p); return this.reply ? this.reply(m, p) : Promise.resolve({ result: { value: this.evalValue ?? 'ev' } }); },
     };
+    this.getUserAgent = () => 'UA';
     this.navigationHistory = { canGoBack: () => false, canGoForward: () => false, goBack() {}, goForward() {} };
   }
   isDestroyed() { return this.destroyed; }
@@ -36,7 +42,9 @@ class WebContents {
   reload() { this.reloaded = true; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
   getURL() { return this.url; } getTitle() { return this.title; }
-  close() { this.destroyed = true; this.closed++; this._view.webContents = undefined; }
+  // Real Electron closes ASYNCHRONOUSLY: with __bpAsyncClose the contents stay live until finishClose().
+  close() { this.closed++; if (globalThis.__bpAsyncClose) { this.pendingClose = true; return; } this.destroyed = true; this._view.webContents = undefined; }
+  finishClose() { this.destroyed = true; this._view.webContents = undefined; }
 }
 export class WebContentsView {
   constructor() { this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
@@ -73,6 +81,25 @@ register(
 );
 
 const bp = await import('./browser-panel.ts');
+const seat = await import('./browser-cdp-seat.ts');
+
+// The registry attaches no debugger (#398): its CDP commands ride the proxy host's seat. The real host
+// imports Electron; this stands in with the REAL `browser-cdp-seat.ts` over the stubbed debugger.
+const lease = async (ws: string, tabId: string) => {
+  const wc = bp.tabContents(ws, tabId) as any;
+  if (!wc) throw new Error('no live view');
+  seat.seatAcquire(wc);
+  return { wc, release: () => seat.seatRelease(wc, 0) }; // grace 0: the registry's contract is about WHO holds the attach, the grace has its own tests
+};
+const testSeat: Parameters<typeof bp.setCdpSeat>[0] = {
+  async send(ws, tabId, method, params) {
+    const l = await lease(ws, tabId);
+    try { return await l.wc.debugger.sendCommand(method, params); } finally { l.release(); }
+  },
+  async hold(ws, tabId) { return (await lease(ws, tabId)).release; },
+};
+bp.setCdpSeat(testSeat);
+bp.setTabTeardownHook((wc) => seat.seatForceDetach(wc as any));
 
 const attached = new Set<unknown>();
 bp.initBrowserPanels(() => ({
@@ -211,7 +238,7 @@ test('closeTab on a background tab leaves the active tab and the window alone, d
   openShown(ws);
   const t1 = bp.getActiveTab(ws)!;
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
-  await bp.evaluate(ws, '1', 't2'); // attaches t2's debugger
+  await bp.designModeArm(ws, 't2'); // design mode keeps t2's debugger attached while armed
   assert.equal(wcOf(t2).dbgAttached, true);
   bp.closeTab(ws, 't2');
   assert.equal(wcOf(t2).detachCalls, 1, 'debugger detached before the contents closed');
@@ -252,9 +279,10 @@ test('destroyPanel tears down EVERY tab: contents closed, debuggers detached, no
   const t1 = bp.getActiveTab(ws)!;
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   const t3 = bp.createTab(ws, { openedBy: 'human' });
-  await bp.evaluate(ws, '1', 't1');
-  await bp.evaluate(ws, '1', 't2');
-  await bp.evaluate(ws, '1', 't3');
+  await bp.designModeArm(ws, 't1');
+  await bp.designModeArm(ws, 't2');
+  await bp.designModeArm(ws, 't3');
+  for (const t of [t1, t2, t3]) assert.equal(wcOf(t).dbgAttached, true, `${t.id} armed: debugger held`);
   bp.destroyPanel(ws);
   for (const t of [t1, t2, t3]) {
     assert.equal(wcOf(t).closed, 1, `${t.id} contents closed`);
@@ -343,8 +371,7 @@ test('primitives hit the ACTIVE tab by default and the named tab with a trailing
   await bp.evaluate(ws, 'C');
   assert.deepEqual(evals(t2), ['B', 'C'], 'default follows the active tab');
   await assert.rejects(() => bp.evaluate(ws, 'D', 't99'), /not found/);
-  assert.equal(bp.attachDebugger(ws, 't1').wsId, ws);
-  assert.equal(wcOf(t1).dbgAttached, true);
+  assert.equal(wcOf(t1).dbgAttached, false, 'a one-shot command leaves no debugger behind (lease released)');
 });
 
 test('capture / input on a BACKGROUND tab are refused (only the active tab produces frames)', async () => {
@@ -408,3 +435,528 @@ test('a held Panel keeps a readable view after its LAST tab is closed (no TypeEr
   assert.doesNotThrow(() => panel.view);
   assert.equal(panel.view, viewOf(t1));
 });
+
+// ── follow-up (#391-fu): ghost state, explicit-tabId resurrection, reaping on every read, pinned multi-step ──
+
+test('a late did-* event from a closed LAST tab / destroyed panel publishes no ghost state', () => {
+  (globalThis as any).__bpAsyncClose = true; // the old contents outlive closeTab for a moment, like real Electron
+  try {
+    const ws = newWs();
+    openShown(ws);
+    const old = bp.getActiveTab(ws)!;
+    bp.closeTab(ws, 't1'); // last tab: panel evicted, old contents still live
+    const rebuilt = bp.ensurePanel(ws); // a fresh panel for the same workspace
+    const n = events().length;
+    wcOf(old).emitEvent('did-stop-loading');
+    assert.equal(events().length, n, 'no broadcast from the evicted panel (it would show t1 over the live one)');
+    assert.equal(rebuilt.tabs.length, 1, 'setup: the rebuilt panel is the live one');
+    const ws2 = newWs();
+    openShown(ws2);
+    const t = bp.getActiveTab(ws2)!;
+    bp.destroyPanel(ws2);
+    const m = events().length;
+    wcOf(t).emitEvent('did-navigate');
+    assert.equal(events().length, m, 'no ghost state for a deleted workspace');
+  } finally {
+    (globalThis as any).__bpAsyncClose = false;
+  }
+});
+
+test('an explicit tabId that no longer exists fails WITHOUT building a panel (closeTab-last, destroyPanel)', async () => {
+  const views = () => (globalThis as any).__bpViews.length as number;
+  const ws = newWs();
+  openShown(ws);
+  bp.closeTab(ws, 't1');
+  const before = views();
+  await assert.rejects(() => bp.evaluate(ws, '1', 't1'), /not found/);
+  await assert.rejects(() => bp.navigate(ws, 'http://localhost:9/x', 't1'), /not found/);
+  await assert.rejects(() => bp.designModeArm(ws, 't1'), /not found/);
+  assert.equal(bp.getPanel(ws), undefined, 'no panel resurrected');
+  assert.equal(views(), before, 'no native view built');
+  const ws2 = newWs();
+  openShown(ws2);
+  bp.destroyPanel(ws2);
+  const before2 = views();
+  await assert.rejects(() => bp.evaluate(ws2, '1', 't1'), /not found/);
+  assert.equal(bp.getPanel(ws2), undefined);
+  assert.equal(views(), before2);
+  // control: the DEFAULT (no tabId) form still opens the panel on demand, as before
+  const ws3 = newWs();
+  const b3 = views();
+  await bp.evaluate(ws3, '1');
+  assert.ok(bp.getPanel(ws3) && views() === b3 + 1, 'default evaluate builds the panel');
+  const ws4 = newWs();
+  await bp.navigate(ws4, 'http://localhost:9/y');
+  assert.ok(bp.getPanel(ws4), 'default navigate builds the panel');
+});
+
+test('listTabs / getTab / getActiveTab reap a dead tab themselves (no stale list for the CDP target list)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  (viewOf(t2) as any).killExternally();
+  assert.deepEqual(bp.listTabs(ws).map((t) => t.id), ['t1']);
+  const ws2 = newWs();
+  openShown(ws2);
+  const u2 = bp.createTab(ws2, { openedBy: 'agent' });
+  (viewOf(u2) as any).killExternally();
+  assert.equal(bp.getTab(ws2, 't2'), undefined, 'a dead tab is not returned by getTab');
+  const ws3 = newWs();
+  openShown(ws3);
+  const v1 = bp.getActiveTab(ws3)!;
+  bp.createTab(ws3, { openedBy: 'agent' });
+  (viewOf(v1) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws3)?.id, 't2', 'a dead active tab is not returned by getActiveTab');
+});
+
+test('reaping a dead ACTIVE tab promotes its right neighbour, else the left one (not always the first)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  const t3 = bp.createTab(ws, { openedBy: 'agent' });
+  bp.activateTab(ws, 't2');
+  (viewOf(bp.getTab(ws, 't2')!) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't3', 'middle tab died: the one that slid into its slot (t3), not t1');
+  assert.ok(attached.has(viewOf(t3)) && attached.size === 1);
+  bp.activateTab(ws, 't3');
+  (viewOf(t3) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't1', 'last tab died: the left neighbour');
+});
+
+test('reaping the dead LAST of 3 tabs promotes its left neighbour (t2), not the first tab (t1)', () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  const t3 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  (viewOf(t3) as any).killExternally();
+  assert.equal(bp.getActiveTab(ws)?.id, 't2');
+});
+
+test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking never lands on the new tab', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  wcOf(t1).evalValue = { x: 5, y: 6 };
+  wcOf(t1).onCmd = (m: string) => { if (m === 'Runtime.evaluate') bp.activateTab(ws, 't2'); };
+  await assert.rejects(() => bp.clickRef(ws, 1), /not the active tab/, 'the pinned click refuses a tab that is no longer composited');
+  const mouse = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent');
+  assert.deepEqual(mouse(t2), [], 'nothing was clicked on the tab that became active');
+  assert.deepEqual(mouse(t1), [], 'and the click was not half-delivered to the first tab either');
+});
+
+test('designModePoll pins ONE tab: the element screenshot comes from the tab the pick was read on', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  wcOf(t1).evalValue = { url: 'u', title: 't', chain: [], outerHTML: '<b/>', computed: {}, box: { x: 1, y: 1, width: 10, height: 10 }, viewport: { width: 100, height: 100 } };
+  wcOf(t1).onCmd = (m: string) => { if (m === 'Runtime.evaluate') bp.activateTab(ws, 't2'); };
+  const pick = await bp.designModePoll(ws);
+  assert.ok(pick && !('cancelled' in pick), 'a pick was shaped');
+  const shots = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Page.captureScreenshot').length;
+  assert.equal(shots(t1), 1, 'the screenshot was taken on the tab that held the pick');
+  assert.equal(shots(t2), 0, 'and not on the tab that became active meanwhile');
+});
+
+// ── explicit tabId NEVER builds a panel: every one of the 15 entry points, three stale situations ──
+
+const ENTRY_POINTS: Record<string, (ws: string) => unknown> = {
+  navigate: (ws) => bp.navigate(ws, 'http://localhost:9/x', 't1'),
+  goBack: (ws) => bp.goBack(ws, 't1'),
+  goForward: (ws) => bp.goForward(ws, 't1'),
+  reload: (ws) => bp.reload(ws, 't1'),
+  capture: (ws) => bp.capture(ws, 75, 't1'),
+  evaluate: (ws) => bp.evaluate(ws, '1', 't1'),
+  readPage: (ws) => bp.readPage(ws, 't1'),
+  clickAt: (ws) => bp.clickAt(ws, 1, 1, 't1'),
+  clickRef: (ws) => bp.clickRef(ws, 1, 't1'),
+  typeText: (ws) => bp.typeText(ws, 'x', 't1'),
+  formInput: (ws) => bp.formInput(ws, 1, 'v', 't1'),
+  scrollBy: (ws) => bp.scrollBy(ws, 5, 't1'),
+  designModeArm: (ws) => bp.designModeArm(ws, 't1'),
+  designModePoll: (ws) => bp.designModePoll(ws, 't1'),
+  designModeDisarm: (ws) => bp.designModeDisarm(ws, 't1'), // swallows "page gone" BY DESIGN: must still not build a panel
+};
+const SWALLOWS = new Set(['designModeDisarm']);
+
+test('the arm list covers EVERY exported function that takes a trailing tabId (a new entry point needs an arm)', () => {
+  const src = readFileSync(new URL('./browser-panel.ts', import.meta.url), 'utf8');
+  const found = [...src.matchAll(/export (?:async )?function (\w+)\(([^)]*)\)/g)]
+    .filter((m) => /tabId\?: BrowserTabId/.test(m[2]))
+    .map((m) => m[1]);
+  assert.equal(found.length, 15, `expected 15 explicit-tabId entry points (attachDebugger is gone: #398 — the proxy is the only attacher), found ${found.length}: ${found}`);
+  assert.deepEqual(found.sort(), Object.keys(ENTRY_POINTS).sort());
+});
+
+const STALE: Record<string, (ws: string) => void> = {
+  'after closeTab(last)': (ws) => { openShown(ws); bp.closeTab(ws, 't1'); },
+  'after destroyPanel': (ws) => { openShown(ws); bp.destroyPanel(ws); },
+  'on a workspace that never opened a panel': () => {},
+};
+for (const [situation, setup] of Object.entries(STALE)) {
+  for (const [name, call] of Object.entries(ENTRY_POINTS)) {
+    test(`explicit tabId ${situation}: ${name} fails "not found" and builds no panel / native view`, async () => {
+      const ws = newWs();
+      setup(ws);
+      const views = (globalThis as any).__bpViews.length as number;
+      if (SWALLOWS.has(name)) await call(ws);
+      else await assert.rejects(async () => { await call(ws); }, /not found/);
+      assert.equal(bp.getPanel(ws), undefined, `${name} resurrected a panel`);
+      assert.equal((globalThis as any).__bpViews.length, views, `${name} built a native view`);
+    });
+  }
+}
+// ── design mode rides the proxy's attach (#398) ─────────────────────────────
+
+const RAW_PICK = {
+  url: 'http://localhost:9/p', title: 'P', chain: [{ tag: 'BODY', classes: [], nthOfType: 1 }, { tag: 'BUTTON', id: 'go', classes: [], nthOfType: 1 }],
+  outerHTML: '<button id="go">Go</button>', computed: { color: 'red' }, box: { x: 10, y: 10, width: 50, height: 20 }, viewport: { width: 800, height: 600 },
+};
+
+test('design mode: arm takes ONE attach and the polling does not churn it; a pick delivers the shaped pick + screenshot, then detaches', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  assert.deepEqual([wcOf(t1).attachCalls, wcOf(t1).dbgAttached], [1, true], 'armed: attached by the seat');
+  wcOf(t1).reply = () => Promise.resolve({ result: { value: null } }); // nothing picked yet
+  for (let i = 0; i < 5; i++) assert.equal(await bp.designModePoll(ws), null);
+  assert.equal(wcOf(t1).attachCalls, 1, '5 polls reused the held attach');
+  assert.equal(wcOf(t1).detachCalls, 0);
+  wcOf(t1).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'PNGDATA' } : { result: { value: RAW_PICK } });
+  const pick: any = await bp.designModePoll(ws);
+  assert.equal(pick.selector, 'body > button#go');
+  assert.equal(pick.html, '<button id="go">Go</button>');
+  assert.equal(pick.styles.color, 'red');
+  assert.equal(pick.screenshotBase64, 'PNGDATA', 'the cropped element screenshot is delivered');
+  assert.ok(wcOf(t1).cmds.some((c: any) => c.m === 'Page.captureScreenshot' && c.p.clip));
+  assert.deepEqual([wcOf(t1).attachCalls, wcOf(t1).detachCalls, wcOf(t1).dbgAttached], [1, 1, false], 'one attach for arm+polls+pick+screenshot, detached when the pick ended');
+});
+
+test('design mode: Escape (cancel) and disarm give the attach back; a failing disarm still does', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  wcOf(t1).reply = () => Promise.resolve({ result: { value: { cancelled: true } } });
+  assert.deepEqual(await bp.designModePoll(ws), { cancelled: true });
+  assert.equal(wcOf(t1).dbgAttached, false, 'cancel detached');
+  wcOf(t1).reply = undefined;
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).dbgAttached, true);
+  wcOf(t1).reply = () => Promise.reject(new Error('Inspected target navigated or closed'));
+  await bp.designModeDisarm(ws); // swallowed
+  assert.equal(wcOf(t1).dbgAttached, false, 'disarm detached although its evaluate failed');
+});
+
+test('design mode: two concurrent arms (and a re-arm after navigation) hold ONE attach, released by ONE disarm', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await Promise.all([bp.designModeArm(ws), bp.designModeArm(ws)]);
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).attachCalls, 1);
+  await bp.designModeDisarm(ws);
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t1).detachCalls], [false, 1], 'one disarm drops every arm: no leaked hold keeps the debugger attached');
+});
+
+test('design mode: an arm whose script fails does not leave the attach held', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  wcOf(t1).reply = () => Promise.reject(new Error('boom'));
+  await assert.rejects(() => bp.designModeArm(ws), /boom/);
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('design mode: disarm on a workspace with no panel builds none; on a closed tab it is a no-op', async () => {
+  const ws = newWs();
+  await bp.designModeDisarm(ws);
+  assert.equal(bp.getPanel(ws), undefined, 'no panel was created just to disarm');
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  bp.closeTab(ws, 't2');
+  await bp.designModeDisarm(ws, 't2');
+});
+
+test('design mode + a proxy client on the SAME tab: one attach, neither side detaches the other', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const wc = bp.tabContents(ws, 't1') as any;
+  seat.seatAcquire(wc); // an agent-browser session holds the tab through the proxy
+  await bp.designModeArm(ws);
+  assert.equal(wcOf(t1).attachCalls, 1, 'design mode did not attach a second time');
+  await bp.designModeDisarm(ws);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the agent session still holds the debugger');
+  seat.seatRelease(wc, 0);
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('without the proxy host no command can run: a clear error, and still no debugger attached', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  bp.setCdpSeat(null);
+  try {
+    await assert.rejects(() => bp.evaluate(ws, '1'), /CDP proxy is not running/);
+    await assert.rejects(() => bp.designModeArm(ws), /CDP proxy is not running/);
+    assert.equal(wcOf(t1).attachCalls ?? 0, 0);
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
+
+test('design mode: the disarm that follows a pick (or Escape) sends nothing and takes no attach — there is nothing armed', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  wcOf(t1).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'P' } : { result: { value: RAW_PICK } });
+  await bp.designModePoll(ws);
+  const cmds = wcOf(t1).cmds.length, attaches = wcOf(t1).attachCalls;
+  await bp.designModeDisarm(ws); // the renderer's setDesignArmed(false) after the pick
+  await bp.designModeDisarm(ws, 't1'); // ...and the explicit-tab form
+  assert.deepEqual([wcOf(t1).cmds.length, wcOf(t1).attachCalls], [cmds, attaches], 'no command, no attach');
+  assert.equal(wcOf(t1).dbgAttached, false);
+});
+
+test('design mode: a disarm that lands while the arm is still attaching runs AFTER it (no orphan overlay, no leaked lease)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  let openGate!: () => void;
+  const gate = new Promise<void>((r) => (openGate = r));
+  const slow = { ...testSeat, async hold(w: string, t: string) { await gate; return testSeat.hold(w, t); } } as Parameters<typeof bp.setCdpSeat>[0];
+  bp.setCdpSeat(slow);
+  try {
+    const arm = bp.designModeArm(ws);
+    const disarm = bp.designModeDisarm(ws); // the user toggled off before the lease was even granted
+    openGate();
+    await Promise.all([arm, disarm]);
+    const exprs = wcOf(t1).cmds.filter((c: any) => c.m === 'Runtime.evaluate').map((c: any) => c.p.expression as string);
+    assert.equal(exprs.length, 2, 'arm script then teardown');
+    assert.match(exprs[0], /__orchestra_design_overlay__/);
+    assert.match(exprs[1], /__orchestraDesignTeardown/);
+    assert.equal(wcOf(t1).dbgAttached, false, 'the lease was given back');
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
+
+test('an explicit stale tabId reaches the proxy seat NEVER and builds NO panel (evaluate / design arm after the last tab closed)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.closeTab(ws, 't1'); // last tab: panel evicted
+  let sent = 0;
+  bp.setCdpSeat({ send: async () => { sent++; return {}; }, hold: async () => { sent++; return () => undefined; } });
+  try {
+    await assert.rejects(() => bp.evaluate(ws, '1', 't1'), /not found/);
+    await assert.rejects(() => bp.designModeArm(ws, 't1'), /not found/);
+    assert.equal(bp.getPanel(ws), undefined, 'no blank native view was resurrected');
+    assert.equal(sent, 0, 'nothing reached the seat');
+  } finally {
+    bp.setCdpSeat(testSeat);
+  }
+});
+
+test('design mode after a TAB SWITCH: the renderer addresses it by workspace, so disarm reaches every armed tab and a pick on one disarms the rest', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws); // armed on t1
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true }); // an agent opens + activates a tab (Target.createTarget)
+  await bp.designModeArm(ws); // the renderer re-arms on the new active tab (state.url changed)
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [true, true], 'one lease per armed tab');
+  await bp.designModeDisarm(ws); // the user toggles design mode off: resolves the ACTIVE tab (t2) only, before this fix
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [false, false], 'no lease (and no overlay) left on the tab that is no longer active');
+  const tore = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)).length;
+  assert.deepEqual([tore(t1), tore(t2)], [1, 1], 'the overlay was torn down on BOTH pages');
+});
+
+test('design mode: a pick on one tab tears the picker down on the others (one-shot per workspace)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  await bp.designModeArm(ws);
+  wcOf(t2).reply = (m: string) => Promise.resolve(m === 'Page.captureScreenshot' ? { data: 'P' } : { result: { value: RAW_PICK } });
+  const pick: any = await bp.designModePoll(ws); // polls the active tab (t2)
+  assert.ok(pick.selector);
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); // the pick itself tears t1 down; NO disarm call is made here
+  assert.deepEqual([wcOf(t1).dbgAttached, wcOf(t2).dbgAttached], [false, false]);
+  assert.equal(wcOf(t1).cmds.some((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)), true, 't1 overlay torn down');
+});
+
+test('design mode: a poll for a workspace with no panel returns null and builds nothing (a late poll after archive)', async () => {
+  const ws = newWs();
+  assert.equal(await bp.designModePoll(ws), null);
+  assert.equal(bp.getPanel(ws), undefined);
+});
+
+test('design mode: off→on inside one round trip (arm; disarm; arm) ends ARMED, and the next disarm still cleans up (no orphan overlay or lease)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  const d = bp.designModeDisarm(ws); // the user toggles off...
+  const a = bp.designModeArm(ws); // ...and on again before the first round trip returns
+  await Promise.all([d, a]);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the last intent (armed) wins: the lease is held');
+  const tore = () => wcOf(t1).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(c.p.expression)).length;
+  assert.equal(tore(), 0, 'the superseded disarm tore nothing down');
+  await bp.designModeDisarm(ws);
+  assert.equal(tore(), 1, 'a later disarm still reaches the overlay');
+  assert.equal(wcOf(t1).dbgAttached, false, 'and gives the lease back');
+});
+
+test('design mode: a re-arm landing during a pick\'s screenshot is not wiped by the pick finishing', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  await bp.designModeArm(ws);
+  let openShot!: () => void;
+  const shotGate = new Promise<void>((r) => (openShot = r));
+  wcOf(t1).reply = async (m: string) => {
+    if (m === 'Page.captureScreenshot') { await shotGate; return { data: 'P' }; }
+    return { result: { value: RAW_PICK } };
+  };
+  const poll = bp.designModePoll(ws);
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); // the poll is now inside finishPick's screenshot
+  const rearm = bp.designModeArm(ws); // BrowserPanel's url-change effect (or a toggle) re-arms mid-pick
+  openShot();
+  await Promise.all([poll, rearm]);
+  assert.equal(wcOf(t1).dbgAttached, true, 'the re-armed picker keeps its lease');
+  wcOf(t1).reply = undefined;
+  await bp.designModeDisarm(ws);
+  assert.equal(wcOf(t1).dbgAttached, false, 'and a later disarm releases it (armed mark survived)');
+});
+
+// ── every path that clears design-arm state is keyed on the generation captured when ITS work started (round-2 review F5/F6) ──
+//
+// One table: a superseding re-arm lands INSIDE each clearing path's window. Whatever the path, the re-arm must own the tab afterwards
+// (lease held, overlay installed) and one later disarm must tear it down exactly once and release the debugger. A path that clears under
+// a newer arm leaves designArmed=false with the overlay up, so that later disarm no-ops: seatCount stays 1 and the click-swallowing overlay stays.
+
+const kindOf = (m: string, p: any): 'install' | 'teardown' | 'read' | 'shot' | 'other' =>
+  m === 'Page.captureScreenshot' ? 'shot'
+    : /^\(\(\) => \{ if \(window\.__orchestraDesignTeardown\)/.test(p?.expression ?? '') ? 'teardown'
+    : /^\(\(\) => \{ const p = window\[/.test(p?.expression ?? '') ? 'read'
+    : /__orchestra_design_overlay__/.test(p?.expression ?? '') ? 'install'
+    : 'other';
+
+interface Gate { open(): void; wait: Promise<void> }
+const gate = (): Gate => { let open!: () => void; const wait = new Promise<void>((r) => (open = r)); return { open, wait }; };
+const ticks = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
+
+/** Script one tab's debugger: per command kind an optional gate to hold it, an optional failure, and the value to answer with. */
+function scripted(t: any, opts: { gates?: Partial<Record<string, Gate>>; failOnce?: Partial<Record<string, string>>; pick?: boolean } = {}) {
+  const count: Record<string, number> = {};
+  wcOf(t).reply = async (m: string, p: any) => {
+    const k = kindOf(m, p);
+    count[k] = (count[k] ?? 0) + 1;
+    const g = opts.gates?.[k];
+    if (g) { delete opts.gates![k]; await g.wait; }
+    const f = opts.failOnce?.[k];
+    if (f) { delete opts.failOnce![k]; throw new Error(f); }
+    if (k === 'shot') return { data: 'P' };
+    if (k === 'read') return { result: { value: opts.pick ? RAW_PICK : null } };
+    return { result: { value: true } };
+  };
+  return count;
+}
+const teardowns = (t: any) => wcOf(t).cmds.filter((c: any) => c.m === 'Runtime.evaluate' && kindOf(c.m, c.p) === 'teardown').length;
+
+const OWNERSHIP: Array<{ name: string; run: (ws: string, t1: any) => Promise<void>; teardownsBefore: number }> = [
+  {
+    // F5: the arm's own catch. A1 fails mid-install ("Execution context was destroyed") while A2 (a URL-change re-arm) is queued behind it.
+    name: 'arm catch: A1 fails mid-install while A2 is queued',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      scripted(t1, { failOnce: { install: 'Execution context was destroyed' } });
+      const a1 = bp.designModeArm(ws).catch((e) => e);
+      const a2 = bp.designModeArm(ws);
+      const r1: any = await a1;
+      assert.match(String(r1?.message), /Execution context was destroyed/, 'the failing arm still reports its failure');
+      await a2;
+    },
+  },
+  {
+    // the disarm's own finally: an arm called while the teardown evaluate is in flight
+    name: 'disarm finally: A2 is called while the disarm\'s teardown is in flight',
+    teardownsBefore: 1,
+    run: async (ws, t1) => {
+      const g = gate();
+      scripted(t1);
+      await bp.designModeArm(ws);
+      scripted(t1, { gates: { teardown: g } });
+      const d = bp.designModeDisarm(ws);
+      await ticks();
+      assert.equal(wcOf(t1).cmds.filter((x: any) => kindOf(x.m, x.p) === 'teardown').length, 1, 'setup: the teardown is in flight');
+      const a2 = bp.designModeArm(ws); // off→on while the first teardown is still on the wire
+      g.open();
+      await Promise.all([d, a2]);
+    },
+  },
+  {
+    // F6: the poll's read round trip. The gen must be read BEFORE it.
+    name: 'poll read: A2 lands inside the poll\'s readRawPick round trip',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      await bp.designModeArm(ws);
+      const g = gate();
+      scripted(t1, { gates: { read: g }, pick: true });
+      const poll = bp.designModePoll(ws);
+      await ticks();
+      const a2 = bp.designModeArm(ws);
+      await ticks();
+      g.open();
+      await Promise.all([poll, a2]);
+    },
+  },
+  {
+    // F2: the poll's screenshot
+    name: 'poll screenshot: A2 lands inside finishPick\'s screenshot',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      await bp.designModeArm(ws);
+      const g = gate();
+      scripted(t1, { gates: { shot: g }, pick: true });
+      const poll = bp.designModePoll(ws);
+      await ticks();
+      const a2 = bp.designModeArm(ws);
+      await ticks();
+      g.open();
+      await Promise.all([poll, a2]);
+    },
+  },
+  {
+    // F1: the disarm queued ahead of an arm
+    name: 'disarm→arm: the arm queued BEHIND a disarm',
+    teardownsBefore: 0,
+    run: async (ws, t1) => {
+      scripted(t1);
+      await bp.designModeArm(ws);
+      const d = bp.designModeDisarm(ws);
+      const a = bp.designModeArm(ws);
+      await Promise.all([d, a]);
+    },
+  },
+];
+
+for (const sc of OWNERSHIP) {
+  test(`design arm ownership — ${sc.name}: the later arm owns the tab, and ONE later disarm tears it down and frees the debugger`, async () => {
+    const ws = newWs();
+    openShown(ws);
+    const t1 = bp.getActiveTab(ws)!;
+    await sc.run(ws, t1);
+    assert.equal(wcOf(t1).dbgAttached, true, 'the re-armed picker still holds its lease');
+    const before = teardowns(t1);
+    scripted(t1);
+    await bp.designModeDisarm(ws);
+    assert.equal(teardowns(t1), before + 1, 'a later disarm still reaches the overlay (designArmed survived)');
+    assert.equal(wcOf(t1).dbgAttached, false, 'and gives the lease back (seat count 0, debugger detached)');
+  });
+}

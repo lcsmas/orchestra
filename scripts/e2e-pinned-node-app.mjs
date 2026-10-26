@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -174,7 +175,7 @@ async function boot(label, exe, home, world) {
   const claudeBin = path.join(REAL_HOME, '.local', 'bin');
   const env = {
     PATH: `${claudeBin}:/usr/local/bin:/usr/bin:/bin`,
-    HOME: world.fakeHome, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`,
+    HOME: world.fakeHome, XDG_RUNTIME_DIR: privateRuntimeDir(),
     XDG_CONFIG_HOME: path.join(world.fakeHome, '.config'), XDG_CACHE_HOME: path.join(world.fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG.wayland, SWAYSOCK: RIG.swaysock, LANG: 'C.UTF-8',
     ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',

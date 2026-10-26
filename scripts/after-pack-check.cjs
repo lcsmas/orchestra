@@ -163,6 +163,27 @@ exports.default = async function afterPack(context) {
 
   console.log(`  • afterPack: verified ${REQUIRED.length} required bundles in the package`);
 
+  // ── Bundled agent-browser (#395, ADR 0009): present, executable, byte-equal to the pin ──
+  // `orchestra browser` fails at the first call (not at build or boot) when this is missing, so it is checked here.
+  // (Pins are read from the JSON; the platform/arch key rule mirrors src/shared/agent-browser-binary.ts assetKey.)
+  {
+    const pins = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-browser-pins.json'), 'utf8'));
+    const key = context.electronPlatformName === 'linux' ? `linux-${{ 1: 'x64', 3: 'arm64' }[context.arch] ?? 'unknown'}` : null;
+    const pin = key ? pins.assets[key] : null;
+    if (!pin) {
+      console.log(`  • afterPack: no pinned agent-browser for ${context.electronPlatformName}/arch ${context.arch} — not bundled`);
+    } else {
+      const bin = path.join(resources, 'agent-browser', 'agent-browser');
+      let st;
+      try { st = fs.statSync(bin); } catch { st = null; }
+      if (!st) throw new Error(`afterPack: ${bin} is absent — run \`pnpm run fetch:agent-browser\` (the \`pnpm run build\` script does) so \`orchestra browser\` has its client`);
+      if ((st.mode & 0o111) === 0) throw new Error(`afterPack: ${bin} is not executable`);
+      const got = require('node:crypto').createHash('sha256').update(fs.readFileSync(bin)).digest('hex');
+      if (got !== pin.sha256) throw new Error(`afterPack: ${bin} sha256 ${got} != the pinned ${pin.sha256} (${pins.version} ${key})`);
+      console.log(`  • afterPack: agent-browser ${pins.version} (${key}) present, executable, sha256 == pin`);
+    }
+  }
+
   // ── Renderer purity: no Node builtins in the browser bundle (#93 fallout) ──
   //
   // WHY. `src/shared/*` is imported by BOTH main and the renderer. A

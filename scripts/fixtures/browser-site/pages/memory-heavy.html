@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>memory-heavy</title>
+<h1 id="status">allocating…</h1>
+<script>
+// #394 rig page: holds `?mb=N` (default 400) MiB of TOUCHED typed-array memory for the life of the page, so its renderer's RSS rises by ~N MiB.
+const mb = Math.max(1, Math.min(1024, Number(new URLSearchParams(location.search).get('mb') || 400)));
+window.__hog = [];
+for (let i = 0; i < mb; i++) { const a = new Uint8Array(1 << 20); a.fill((i % 250) + 1); window.__hog.push(a); }
+document.title = 'heavy ' + mb;
+document.getElementById('status').textContent = 'allocated ' + mb + ' MiB';
+</script>

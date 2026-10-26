@@ -5,6 +5,8 @@ import type {
   BrowserTabId,
   BrowserTabInfo,
   BrowserTabOpener,
+  BrowserTabRefusal,
+  BrowserTabResult,
 } from '../shared/types';
 // NOTE the .ts extension on this VALUE import: it matches the convention the
 // rest of main uses for shared modules (git.ts → ci-state.ts, workspaces.ts →
@@ -16,10 +18,15 @@ import {
   shapePick,
   type DesignPick,
 } from '../shared/design-mode.ts';
+import { decidePopup, decideTabClose, decideTabOpen } from '../shared/browser-tab-policy.ts';
+import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import type { BrowserTabsPersistence } from './browser-tabs-store';
 import { platform } from './platform';
 import { store } from './store';
 import { effectiveProfileId, partitionFor as profileAwarePartition } from '../shared/browser-profile';
 import { log } from './logger';
+import { setBrowserTabSource } from './browser-tab-memory.ts';
+import { DESIGN_MODE_SCRIPT, DESIGN_PICK_GLOBAL } from './design-mode-script.ts';
 
 // Per-workspace embedded browser panel — an Electron `WebContentsView` overlaid
 // on the React renderer inside the main window, that BOTH the user drives
@@ -64,8 +71,14 @@ export interface Tab {
   id: BrowserTabId;
   view: WebContentsView;
   openedBy: BrowserTabOpener;
-  /** Whether this tab's debugger has been attached for agent driving. */
-  debuggerAttached: boolean;
+  /** Design mode's lease on the proxy's debugger attach while the picker is armed (#398); `null` when not armed. */
+  designHold: (() => void) | null;
+  /** Design mode was armed on this tab and its overlay may still be in the page; set synchronously by the arm (a disarm queued behind it must see it). */
+  designArmed: boolean;
+  /** Bumped by every arm at CALL time. A disarm (or a finished pick) only ends the arm it was issued against: one superseded by a later arm is a no-op, or it would wipe the new arm's mark and orphan its overlay + lease. */
+  designGen: number;
+  /** Tail of this tab's arm/disarm chain: a disarm that lands while an arm is still attaching must run AFTER it. */
+  designOp: Promise<void>;
   nav: TabNav;
 }
 
@@ -165,12 +178,28 @@ function attachActive(panel: Panel): void {
   panel.attachedId = tab.id;
 }
 
-/** Release a tab's native resources: debugger first, then the contents. */
+/** The CDP proxy host's debugger seat (#398): this file holds NO debugger of its own. `send` runs one command on a tab through a proxy lease; `hold` keeps the attach for as long as design mode is armed. Registered by `initBrowserCliHost`. */
+export interface CdpSeat {
+  send(wsId: string, tabId: BrowserTabId, method: string, params: Record<string, unknown>): Promise<unknown>;
+  hold(wsId: string, tabId: BrowserTabId): Promise<() => void>;
+}
+let cdpSeat: CdpSeat | null = null;
+export function setCdpSeat(seat: CdpSeat | null): void {
+  cdpSeat = seat;
+}
+/** Told, just before a tab's contents close, to drop the debugger seat the proxy holds on them. */
+let tabTeardownHook: ((wc: Electron.WebContents) => void) | null = null;
+export function setTabTeardownHook(h: ((wc: Electron.WebContents) => void) | null): void {
+  tabTeardownHook = h;
+}
+
+/** Release a tab's native resources: the proxy's debugger seat first, then the contents. */
 function destroyTab(tab: Tab): void {
   const wc = liveContents(tab);
   if (!wc) return;
+  tab.designHold = null; // the seat below is force-detached: the hold is void
   try {
-    if (tab.debuggerAttached) wc.debugger.detach();
+    tabTeardownHook?.(wc);
   } catch {
     /* already detached */
   }
@@ -213,9 +242,48 @@ function reapIfDead(wsId: string): Panel | undefined {
  *  module (which must not import the window directly) can attach views to it. */
 let getWindow: (() => Electron.BaseWindow | null) | null = null;
 
-/** Called once from index.ts after the main window exists. */
-export function initBrowserPanels(accessor: () => Electron.BaseWindow | null): void {
+/** Where each workspace's tabs (URL + opener + active) are remembered across restarts (#393). Absent in the verify
+ *  harnesses, which then simply run without restore/persist. */
+let persistence: BrowserTabsPersistence | null = null;
+
+/** URL a restored tab was asked to load, until the tab has a URL of its own: a snapshot taken while that load is
+ *  still starting (or after it failed — server down at boot) must not blank the tab's remembered URL. */
+const restoreUrls = new WeakMap<Tab, string>();
+
+/** Called once from index.ts after the main window exists. `store` makes tabs survive an app restart. */
+export function initBrowserPanels(
+  accessor: () => Electron.BaseWindow | null,
+  store?: BrowserTabsPersistence,
+): void {
   getWindow = accessor;
+  persistence = store ?? null;
+  // #394: the Resources sampler / monitor read each tab's renderer pid through this — a pure read, it never reaps or publishes.
+  setBrowserTabSource({
+    tabs: () => [...panels.values()].flatMap((p) => p.tabs.flatMap((t) => { const wc = liveContents(t); return wc ? [{ wsId: p.wsId, tabId: t.id, pid: wc.getOSProcessId() }] : []; })),
+    nonTabPids: () => { const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents; return ui && !ui.isDestroyed() ? [ui.getOSProcessId()] : []; },
+  });
+}
+
+/** Write any pending tab snapshot to disk now (app quit). */
+export function flushBrowserTabs(): void {
+  persistence?.flush();
+}
+
+function savePanelTabs(panel: Panel): void {
+  // Only a REGISTERED panel is remembered: a panel mid-restore (not yet in `panels`), a closed-last-tab husk and a
+  // destroyed panel must not overwrite what is on record.
+  if (!persistence || panels.get(panel.wsId) !== panel || panel.tabs.length === 0) return;
+  persistence.save(
+    panel.wsId,
+    snapshotTabs(
+      panel.tabs.map((t) => ({
+        id: t.id,
+        url: restorableUrl(t.nav.url) || restoreUrls.get(t) || '',
+        openedBy: t.openedBy,
+      })),
+      panel.activeId,
+    ),
+  );
 }
 
 /** The session partition holding a workspace's browser cookies/storage. Not
@@ -296,10 +364,28 @@ function computeState(panel: Panel): BrowserPanelState {
   };
 }
 
+/** Main-process observers of a panel's tab list (the CDP proxy, #395): called with the new ordered tabs after every publish, and once with `destroyed` when `destroyPanel` removes the workspace's panel. */
+const panelListeners = new Set<(wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void>();
+export function onPanelChange(l: (wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void): () => void {
+  panelListeners.add(l);
+  return () => panelListeners.delete(l);
+}
+function notifyPanelListeners(wsId: string, tabs: BrowserTabInfo[], destroyed = false): void {
+  for (const l of [...panelListeners]) {
+    try {
+      l(wsId, tabs, destroyed);
+    } catch {
+      /* an observer must never break the panel */
+    }
+  }
+}
+
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
   panel.state = computeState(panel);
+  savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
+  notifyPanelListeners(panel.wsId, panel.state.tabs);
   return panel.state;
 }
 
@@ -308,8 +394,11 @@ function publish(panel: Panel): BrowserPanelState {
 function emitState(panel: Panel, tab: Tab, patch: Partial<TabNav>): void {
   // Reachable from webContents event handlers, which can still fire while the
   // contents are being torn down — so the view may already have lost them, or
-  // the tab may already have been closed out of the registry.
-  if (!liveContents(tab) || !panel.tabs.includes(tab)) return;
+  // the tab may already have been closed out of the registry. An evicted panel
+  // keeps its `tabs` (stale holders read `panel.view`), so also require that
+  // this panel is still THE registered one — else a late did-* event publishes
+  // a ghost state for a deleted workspace or over a rebuilt panel.
+  if (!liveContents(tab) || !panel.tabs.includes(tab) || panels.get(panel.wsId) !== panel) return;
   Object.assign(tab.nav, patch);
   publish(panel);
 }
@@ -360,26 +449,54 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
     id: nextTabId(panel.wsId),
     view,
     openedBy: opts.openedBy,
-    debuggerAttached: false,
+    designHold: null,
+    designArmed: false,
+    designGen: 0,
+    designOp: Promise.resolve(),
     nav: blankNav(),
   };
   if (panel.bounds) view.setBounds(panel.bounds);
 
   const wc = view.webContents;
-  // Keep external target=_blank / window.open navigations in-tab when they're
-  // web URLs; bounce anything else to the OS (mirrors login-browser.ts).
-  wc.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http:') || url.startsWith('https:')) {
-      void wc.loadURL(url);
-    } else {
-      void shell.openExternal(url);
+  // Where a page-opened window goes is decided by the pure tab policy (#396 fills the routing: today a
+  // web URL stays in THIS tab, anything else goes to the OS — mirrors login-browser.ts).
+  wc.setWindowOpenHandler((details) => {
+    const route = decidePopup({
+      url: details.url,
+      frameName: details.frameName,
+      disposition: details.disposition,
+      features: details.features,
+    });
+    switch (route.route) {
+      case 'same-view':
+        void wc.loadURL(details.url);
+        break;
+      case 'external':
+        void shell.openExternal(details.url);
+        break;
+      default: {
+        // #396 adds routes: an unhandled one must fail to COMPILE here, not fall through to the OS browser.
+        const unhandled: never = route;
+        log.warn(`browser-panel: unhandled popup route ${JSON.stringify(unhandled)}`);
+      }
     }
     return { action: 'deny' };
   });
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
   wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
-  wc.on('did-navigate', () => emitState(panel, tab, {}));
-  wc.on('did-navigate-in-page', () => emitState(panel, tab, {}));
+  // A restored tab keeps its remembered URL until a navigation COMMITS to a restorable URL: during the load, and after a
+  // failed one (server down at boot), `getURL()` can be the pending URL or a chrome-error:// page — neither may blank the record.
+  const committed = (url: string): void => {
+    if (restorableUrl(url)) restoreUrls.delete(tab);
+  };
+  wc.on('did-navigate', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
+  wc.on('did-navigate-in-page', (_e, url) => {
+    committed(url);
+    emitState(panel, tab, {});
+  });
   wc.on('page-title-updated', () => emitState(panel, tab, {}));
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
     // -3 is ERR_ABORTED (a superseded navigation) — not a real failure.
@@ -415,8 +532,21 @@ export function ensurePanel(wsId: string): Panel {
       return activeTabOf(this)!.view;
     },
   };
-  const tab = buildTab(panel, { openedBy: 'human' });
-  panel.activeId = tab.id;
+  const saved = persistence?.load(wsId) ?? null;
+  if (saved) {
+    // Restore (#393): the tabs this workspace had when the app last ran, in order, with the same one active.
+    const built = saved.tabs.map((t) => {
+      const tab = buildTab(panel, { openedBy: t.openedBy });
+      if (t.url) {
+        restoreUrls.set(tab, t.url);
+        void loadIn(tab, t.url);
+      }
+      return tab;
+    });
+    panel.activeId = built[Math.min(saved.activeIndex, built.length - 1)].id;
+  } else {
+    panel.activeId = buildTab(panel, { openedBy: 'human' }).id;
+  }
   panel.state = computeState(panel);
   panels.set(wsId, panel);
   return panel;
@@ -487,9 +617,10 @@ export function activateTab(wsId: string, tabId: BrowserTabId): BrowserPanelStat
 
 /** Close `tabId`: detach its view, drop its debugger, destroy its contents. If
  *  it was active, its right neighbour (else the left) becomes active. Closing
- *  the LAST tab evicts the panel — the next ensurePanel builds a fresh one
- *  (what that should mean for the user is the human-tabs ticket's call).
- *  Throws if the workspace has no such tab. */
+ *  the LAST tab evicts the panel AND forgets its saved tabs (#393 F1: else the next
+ *  ensurePanel would restore the tab just closed) — the next ensurePanel builds a
+ *  fresh blank one. The human/agent paths go through {@link tryCloseTab}, which never
+ *  evicts (it replaces the last tab first). Throws if the workspace has no such tab. */
 export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
   const panel = reapIfDead(wsId);
   const tab = panel?.tabs.find((t) => t.id === tabId);
@@ -505,6 +636,7 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
     panels.delete(wsId);
     panel.attachedId = null;
     panel.pendingShow = false;
+    persistence?.save(wsId, null);
     const empty = emptyState(wsId);
     platform.broadcast('browser:event', wsId, empty);
     return empty;
@@ -516,6 +648,50 @@ export function closeTab(wsId: string, tabId: BrowserTabId): BrowserPanelState {
     if (wasAttached) attachActive(panel);
   }
   return publish(panel);
+}
+
+// ---------------------------------------------------------------------------
+// Policy-checked tab operations (#393). The bare createTab/closeTab/activateTab above have no cap and no
+// ownership rule; every caller that acts for the human or the agent goes through these, which ask the pure
+// policy (src/shared/browser-tab-policy.ts) FIRST — a refusal allocates nothing and destroys nothing.
+// ---------------------------------------------------------------------------
+
+function refused(wsId: string, reason: BrowserTabRefusal, message: string): BrowserTabResult {
+  return { ok: false, reason, message, state: getState(wsId) };
+}
+
+/** Open a tab for `opts.openedBy`, refused (reason `cap`) when the workspace already holds the maximum — the
+ *  decision is made before any view exists, so a refusal leaks nothing. */
+export function tryOpenTab(
+  wsId: string,
+  opts: { url?: string; openedBy: BrowserTabOpener; activate?: boolean },
+): BrowserTabResult {
+  const panel = ensurePanel(wsId);
+  const d = decideTabOpen({ openCount: panel.tabs.length, opener: opts.openedBy });
+  if (!d.ok) return refused(wsId, d.reason, d.message);
+  const tab = createTab(wsId, opts);
+  return { ok: true, state: panel.state, tabId: tab.id };
+}
+
+/** Close `tabId` on behalf of `actor`: the human any tab, an agent only the tabs it opened. Closing the LAST tab
+ *  leaves one fresh blank (human) tab, so the panel — and the agent primitives that drive "the active tab" — never
+ *  find it tab-less. */
+export function tryCloseTab(wsId: string, tabId: BrowserTabId, actor: BrowserTabOpener): BrowserTabResult {
+  const panel = reapIfDead(wsId);
+  if (!panel) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);
+  const d = decideTabClose({ tabs: panel.tabs, activeId: panel.activeId, tabId, actor });
+  if (!d.ok) return refused(wsId, d.reason, d.message);
+  // Replacement FIRST: closeTab on the only tab would evict the panel.
+  if (d.replaceWithBlank) createTab(wsId, { openedBy: 'human', activate: true });
+  const state = closeTab(wsId, tabId);
+  return { ok: true, state };
+}
+
+/** Make `tabId` the active tab; refused (`unknown-tab`) when the workspace has no such tab. */
+export function tryActivateTab(wsId: string, tabId: BrowserTabId): BrowserTabResult {
+  const panel = reapIfDead(wsId);
+  if (!panel?.tabs.some((t) => t.id === tabId)) return refused(wsId, 'unknown-tab', `No such browser tab: ${tabId}.`);
+  return { ok: true, state: activateTab(wsId, tabId) };
 }
 
 /** Resolve the tab a primitive should drive: `tabId` when given (throws if the
@@ -625,17 +801,19 @@ function loadIn(tab: Tab, to: string): Promise<void> {
 
 /** Navigate the active tab (or `tabId`). `to` is a URL (http/https/file); a bare
  *  host gets https:// prepended, and a non-URL string is treated as a query is
- *  NOT done here (the renderer/agent decides). Opens the panel view if needed. */
+ *  NOT done here (the renderer/agent decides). The default (active-tab) form
+ *  opens the panel view if needed; an explicit `tabId` must already exist. */
 export async function navigate(
   wsId: string,
   to: string,
   tabId?: BrowserTabId,
 ): Promise<BrowserPanelState> {
-  const panel = ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
-  if (!tab) return panel.state;
+  // An explicit tabId must already exist (throws "not found"); only the
+  // default (active-tab) form opens the panel.
+  const tab = tabId === undefined ? (ensurePanel(wsId), getActiveTab(wsId)) : resolveTab(wsId, tabId);
+  if (!tab) return getState(wsId);
   await loadIn(tab, to);
-  return panel.state;
+  return getState(wsId);
 }
 
 /** Turn user/agent input into a loadable URL: pass through explicit schemes,
@@ -674,50 +852,66 @@ export function getState(wsId: string): BrowserPanelState {
 
 /** Destroy a workspace's panel entirely (workspace deleted / archived): every
  *  tab's debugger and contents, not just the active one. */
-export function destroyPanel(wsId: string): void {
+function destroyPanelViews(wsId: string): void {
   const panel = panels.get(wsId);
   if (!panel) return;
   hidePanel(wsId);
   panels.delete(wsId);
   for (const tab of panel.tabs) destroyTab(tab);
+  notifyPanelListeners(wsId, [], true);
+}
+
+/** The tab's live `webContents` for the CDP proxy (#395), or `undefined` when it has none. */
+export function tabContents(wsId: string, tabId: BrowserTabId): Electron.WebContents | undefined {
+  return liveContents(getTab(wsId, tabId));
+}
+
+/** Is `wsId` the workspace whose panel the renderer composites right now? (the agent bring-to-front rule) */
+export function isFocusedWorkspace(wsId: string): boolean {
+  return focusedWsId === wsId;
+}
+
+/** Destroy a workspace's panel (delete / archive) AND forget its remembered tabs (#393) — even when this process never
+ *  opened the panel (deleted straight after a restart). Forgetting comes after the teardown so no late event re-saves. */
+export function destroyPanel(wsId: string): void {
+  destroyPanelViews(wsId);
+  persistence?.save(wsId, null);
 }
 
 // ---------------------------------------------------------------------------
-// Agent driving layer — Electron in-process CDP over `webContents.debugger`.
+// Agent driving layer — CDP commands, sent through the CDP proxy's debugger seat.
 // ---------------------------------------------------------------------------
 //
 // These are the primitives the agent's browser tools (agent-browser-tools.ts)
-// call. They operate on the SAME view the user sees, so the agent and the user
-// share one surface.
+// and design mode call. They operate on the SAME view the user sees, so the
+// agent and the user share one surface. None of them attaches a debugger: the
+// proxy (`browser-cdp-host.ts`) is the only attacher (#398, ADR 0009) and every
+// command below rides a lease on its attach (`cdpSeat`).
 
-/** Attach a tab's debugger (idempotent; the active tab unless `tabId` is given).
- *  Enables the CDP domains the tools need. Returns the panel (creating it if the
- *  workspace has none) or throws if the tab has no live view. */
-export function attachDebugger(wsId: string, tabId?: BrowserTabId): Panel {
-  const panel = getPanel(wsId) ?? ensurePanel(wsId);
-  const tab = resolveTab(wsId, tabId);
-  const wc = liveContents(tab);
-  // A dead view surfaces to the agent as a clear error rather than a TypeError
-  // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
-  if (!tab || !wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
-  const dbg = wc.debugger;
-  if (!tab.debuggerAttached) {
-    if (!dbg.isAttached()) dbg.attach('1.3');
-    tab.debuggerAttached = true;
-  }
-  return panel;
+/** The tab a CDP primitive drives. The default form (no `tabId`) creates the
+ *  panel if the workspace has none; an EXPLICIT `tabId` must already exist —
+ *  resolved first, so a stale id after closeTab(last)/destroyPanel fails with
+ *  "not found" instead of resurrecting a blank native view. Throws if the tab
+ *  has no live view: a dead view surfaces to the agent as a clear error rather
+ *  than a TypeError about `isDestroyed`. */
+function liveTabFor(wsId: string, tabId?: BrowserTabId): Tab {
+  const explicit = tabId === undefined ? undefined : resolveTab(wsId, tabId);
+  const panel = getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);
+  const tab = explicit ?? (panel ? activeTabOf(panel) : undefined);
+  if (!panel || !tab || !liveContents(tab)) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  return tab;
 }
 
+/** Run one CDP command on a tab through the proxy's lease. */
 async function cdp(
   wsId: string,
   method: string,
   params?: Record<string, unknown>,
   tabId?: BrowserTabId,
 ): Promise<any> {
-  attachDebugger(wsId, tabId);
-  const wc = liveContents(resolveTab(wsId, tabId));
-  if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
-  return wc.debugger.sendCommand(method, params ?? {});
+  const tab = liveTabFor(wsId, tabId);
+  if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
+  return cdpSeat.send(wsId, tab.id, method, params ?? {});
 }
 
 /** Reject after `ms` if `p` hasn't settled. Screenshots and input dispatch on a
@@ -955,152 +1149,90 @@ export async function scrollBy(wsId: string, deltaY: number, tabId?: BrowserTabI
 // not the feature.
 //
 // So the highlight + hit-testing live in the page as an injected overlay
-// (`DESIGN_MODE_SCRIPT`), which also keeps the debugger session free: we add NO
-// second `debugger.attach` (attaching twice to one target throws) and no
-// long-lived CDP event subscription. The only CDP calls are the same
-// `Runtime.evaluate` / `Page.captureScreenshot` the agent tools already use,
-// through the same `cdp()` helper.
+// (`DESIGN_MODE_SCRIPT`), which needs no CDP event subscription. Design mode
+// attaches NO debugger (attaching twice to one target throws): the CDP proxy is
+// the only attacher (#398), and while the picker is armed design mode keeps a
+// lease on that attach (`Tab.designHold`) so the 150 ms poll does not attach and
+// detach on every tick. The only CDP calls are the same `Runtime.evaluate` /
+// `Page.captureScreenshot` the agent tools use, through the same `cdp()` helper.
 //
-// The overlay is deliberately built to be un-pickable by itself: it sets
-// `pointer-events: none` on its own chrome and, at pick time, the walker starts
-// from `document.elementFromPoint`, which never returns a pointer-events:none
-// node. So design mode cannot capture its own highlight box.
+// The overlay is deliberately built to be un-pickable by itself (pointer-events:
+// none; the walker also skips its host) and page-CSS-proof (closed shadow root,
+// inline !important, top layer). The injected script + its constants live in
+// ./design-mode-script.ts.
 
-/** The id the injected overlay uses for its own DOM, so re-arming replaces
- *  rather than stacking overlays, and disarm can find and remove it. */
-const DESIGN_OVERLAY_ID = '__orchestra_design_overlay__';
+/** Give back design mode's lease on the proxy's attach (idempotent). */
+function releaseDesignHold(tab: Tab | undefined): void {
+  const release = tab?.designHold;
+  if (!tab || !release) return;
+  tab.designHold = null;
+  release();
+}
 
-/** Where the in-page script stashes a completed pick for main to poll.
- *  A global (rather than a CDP event) because the picker deliberately holds NO
- *  debugger event subscription — see the block comment above. */
-const DESIGN_PICK_GLOBAL = '__orchestraDesignPick';
+/** The picker is gone from `tab` (picked, cancelled, torn down, never installed): drop the armed mark and the lease — but ONLY if `gen`, the
+ *  generation captured when THIS piece of work started, is still current. Every path that clears arm state passes it (the argument is
+ *  required on purpose): a later arm bumped the counter and owns the tab, and clearing under it would orphan its overlay + lease. */
+function endDesign(tab: Tab, gen: number): void {
+  if (tab.designGen !== gen) return;
+  tab.designArmed = false;
+  releaseDesignHold(tab);
+}
 
-/** Arm the in-page picker: inject the highlight overlay and start listening for
- *  a click. Idempotent — re-running replaces any existing overlay.
- *
- *  The script is a single self-contained IIFE (no build step reaches the page)
- *  that: draws a fixed-position outline + label box following `mousemove`,
- *  and on `click` (captured, prevented) walks the picked element's ancestor
- *  chain into a selector-node list, snapshots its computed style + outerHTML +
- *  box, stashes the result on `window[DESIGN_PICK_GLOBAL]`, and tears itself
- *  down. Escape disarms without picking. */
-const DESIGN_MODE_SCRIPT = `(() => {
-  const OVERLAY_ID = ${JSON.stringify(DESIGN_OVERLAY_ID)};
-  const PICK_GLOBAL = ${JSON.stringify(DESIGN_PICK_GLOBAL)};
-  // Re-arming: tear down any previous run first so listeners never stack.
-  if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} }
-  window[PICK_GLOBAL] = null;
+/** Every tab of `wsId` design mode is armed on. The renderer addresses design mode by workspace only, so after a tab switch (an agent tab
+ *  opened with activate, the user clicking another tab) the armed tab is not necessarily the active one. */
+function armedTabs(wsId: string): Tab[] {
+  return (panels.get(wsId)?.tabs ?? []).filter((t) => t.designArmed);
+}
 
-  const host = document.createElement('div');
-  host.id = OVERLAY_ID;
-  // pointer-events:none on the whole overlay is what makes the picker unable to
-  // pick ITSELF — elementFromPoint skips pointer-events:none nodes.
-  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
-  const box = document.createElement('div');
-  box.style.cssText = 'position:fixed;border:2px solid #6aa9ff;background:rgba(106,169,255,0.18);border-radius:2px;transition:all 40ms linear;pointer-events:none;';
-  const label = document.createElement('div');
-  label.style.cssText = 'position:fixed;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:#6aa9ff;color:#0b1020;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.35);';
-  host.appendChild(box); host.appendChild(label);
-  (document.body || document.documentElement).appendChild(host);
+/** Run `fn` after every earlier arm/disarm of `tab` has settled (their errors are theirs). */
+function inDesignOrder<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
+  const run = tab.designOp.then(fn);
+  tab.designOp = run.then(() => undefined, () => undefined);
+  return run;
+}
 
-  let current = null;
-
-  const describe = (el) => {
-    const cls = (el.getAttribute && el.getAttribute('class')) || '';
-    const classes = cls.split(/\\s+/).filter(Boolean);
-    let nth = 1;
-    let sib = el.previousElementSibling;
-    while (sib) { if (sib.tagName === el.tagName) nth++; sib = sib.previousElementSibling; }
-    return { tag: el.tagName, id: el.id || undefined, classes, nthOfType: nth };
-  };
-
-  const paint = (el) => {
-    const r = el.getBoundingClientRect();
-    box.style.left = r.left + 'px'; box.style.top = r.top + 'px';
-    box.style.width = r.width + 'px'; box.style.height = r.height + 'px';
-    const cls = el.classList && el.classList.length ? '.' + Array.from(el.classList).slice(0, 2).join('.') : '';
-    label.textContent = el.tagName.toLowerCase() + (el.id ? '#' + el.id : cls) +
-      '  ' + Math.round(r.width) + '×' + Math.round(r.height);
-    // Prefer the label ABOVE the box; flip below when the element is near the
-    // top edge, so the label never sits off-screen.
-    const above = r.top > 22;
-    label.style.left = Math.max(0, r.left) + 'px';
-    label.style.top = (above ? r.top - 20 : r.bottom + 4) + 'px';
-  };
-
-  const onMove = (e) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || el === current) return;
-    current = el; paint(el);
-  };
-
-  const onClick = (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const el = document.elementFromPoint(e.clientX, e.clientY) || current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const cs = getComputedStyle(el);
-    const computed = {};
-    // Snapshot the computed style as a plain map; main subsets it
-    // (shared/design-mode.ts STYLE_PROPS) so the property list lives in ONE
-    // place that the unit tests assert against.
-    //
-    // TWO passes, because ITERATING a CSSStyleDeclaration yields only LONGHAND
-    // properties: margin, padding, border and border-radius are SHORTHANDS and
-    // never appear in that enumeration, so a pure index walk silently drops
-    // exactly the four box/border values design mode exists to report.
-    // (Measured on a real page: 383 enumerated properties, 0 of them
-    // shorthands, while getPropertyValue('margin') returns 6px fine.) So walk
-    // the enumeration for everything, then explicitly ask for the shorthands.
-    // NOTE: no backticks anywhere in this script — it IS a template literal.
-    for (let i = 0; i < cs.length; i++) { const p = cs[i]; computed[p] = cs.getPropertyValue(p); }
-    for (const p of ['margin', 'padding', 'border', 'border-radius', 'font']) {
-      const v = cs.getPropertyValue(p);
-      if (v) computed[p] = v;
-    }
-    const chain = [];
-    let node = el;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      chain.unshift(describe(node));
-      node = node.parentElement;
-    }
-    window[PICK_GLOBAL] = {
-      url: location.href,
-      title: document.title,
-      chain: chain,
-      outerHTML: el.outerHTML || '',
-      computed: computed,
-      box: { x: r.left, y: r.top, width: r.width, height: r.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-    };
-    teardown();
-  };
-
-  const onKey = (e) => { if (e.key === 'Escape') { window[PICK_GLOBAL] = { cancelled: true }; teardown(); } };
-
-  const teardown = () => {
-    document.removeEventListener('mousemove', onMove, true);
-    document.removeEventListener('click', onClick, true);
-    document.removeEventListener('keydown', onKey, true);
-    const h = document.getElementById(OVERLAY_ID);
-    if (h && h.parentNode) h.parentNode.removeChild(h);
-    window.__orchestraDesignTeardown = null;
-  };
-  window.__orchestraDesignTeardown = teardown;
-
-  document.addEventListener('mousemove', onMove, true);
-  document.addEventListener('click', onClick, true);
-  document.addEventListener('keydown', onKey, true);
-  return true;
-})()`;
-
-/** Arm design mode in the panel's page. Returns once the overlay is installed. */
+/** Arm design mode in the panel's page. Returns once the overlay is installed.
+ *  Holds the proxy's debugger attach until the pick, the cancel or the disarm. */
 export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
-  await evaluate(wsId, DESIGN_MODE_SCRIPT, tabId);
+  const tab = liveTabFor(wsId, tabId);
+  const gen = ++tab.designGen;
+  tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed
+  return inDesignOrder(tab, async () => {
+    try {
+      if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
+      if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);
+      await evaluate(wsId, DESIGN_MODE_SCRIPT, tab.id);
+    } catch (err) {
+      endDesign(tab, gen); // no-op when a later arm (a URL-change re-arm queued behind this one) already owns the tab
+      throw err;
+    }
+  });
+}
+
+/** Tear the overlay down on one tab and give its lease back (a no-op when design mode is not armed there). */
+function disarmTab(wsId: string, tab: Tab): Promise<void> {
+  const gen = tab.designGen; // at call time: the arm this disarm is issued against
+  return inDesignOrder(tab, async () => {
+    if (!tab.designArmed || tab.designGen !== gen) return; // not armed, or a later arm (off→on inside one round trip) supersedes this disarm
+    try {
+      await evaluate(
+        wsId,
+        `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
+        tab.id,
+      );
+    } catch (err) {
+      log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
+    } finally {
+      endDesign(tab, gen); // an arm called while this disarm's teardown was in flight bumped the counter: it owns the tab
+    }
+  });
 }
 
 /** Disarm design mode (user toggled it off, or the panel is closing). Safe to
- *  call when it was never armed — the page-side teardown is guarded.
+ *  call when it was never armed — then there is nothing to tear down and no
+ *  debugger is attached just to find that out (a pick or Escape already tore the
+ *  overlay down and gave its lease back). Without a `tabId` it disarms EVERY tab
+ *  of the workspace it is armed on, not just the active one.
  *
  *  Swallows evaluation failures: the renderer disarms on unmount, on going
  *  inactive, and after a pick, so this routinely lands on a page that is
@@ -1109,15 +1241,13 @@ export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise
  *  overlay no longer exists — so surfacing it would log an ERROR on a perfectly
  *  normal path and train readers to ignore the channel. */
 export async function designModeDisarm(wsId: string, tabId?: BrowserTabId): Promise<void> {
+  let targets: Tab[];
   try {
-    await evaluate(
-      wsId,
-      `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
-      tabId,
-    );
-  } catch (err) {
-    log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
+    targets = tabId === undefined ? armedTabs(wsId) : [resolveTab(wsId, tabId)].filter((t): t is Tab => !!t);
+  } catch {
+    return; // the tab is gone: its lease died with it
   }
+  await Promise.all(targets.map((t) => disarmTab(wsId, t)));
 }
 
 /** Read a completed pick out of the page (and clear it), or `null` if the user
@@ -1150,9 +1280,26 @@ export async function designModePoll(
   wsId: string,
   tabId?: BrowserTabId,
 ): Promise<DesignPick | { cancelled: true } | null> {
-  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the pick and its screenshot come from the same tab
+  const pinned = resolveTab(wsId, tabId);
+  if (!pinned) return null; // no panel: nothing is armed, and a poll never builds one (a late poll after archive/delete)
+  const pin = pinned.id; // resolve once: the pick and its screenshot come from the same tab
+  const gen = pinned.designGen; // BEFORE the first await: a re-arm landing inside the read round trip must not be folded into this pick's generation
   const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
+  // A pick or a cancel ends the arm (the page-side picker tore itself down): give the attach back,
+  // but only after the screenshot, so the pick is one attach rather than detach-then-attach.
+  // It is one-shot for the whole workspace: a picker still armed on another tab (the user switched tabs
+  // mid-pick) is torn down too, so no overlay or lease is left behind on a tab nobody is polling.
+  try {
+    return await finishPick(wsId, pin, raw);
+  } finally {
+    endDesign(pinned, gen); // a re-arm landing during the read or the screenshot owns the tab now
+    for (const other of armedTabs(wsId)) if (other !== pinned) void disarmTab(wsId, other);
+  }
+}
+
+/** The second half of {@link designModePoll}: a raw page-side pick → cropped screenshot + shaped {@link DesignPick}. */
+async function finishPick(wsId: string, pin: BrowserTabId | undefined, raw: any): Promise<DesignPick | { cancelled: true }> {
   if (raw.cancelled) return { cancelled: true };
 
   const viewport = raw.viewport ?? { width: 1280, height: 800 };
@@ -1186,6 +1333,7 @@ export async function designModePoll(
       outerHTML: String(raw.outerHTML ?? ''),
       computed: raw.computed ?? {},
       box: raw.box,
+      component: raw.component,
     },
     screenshot,
   );

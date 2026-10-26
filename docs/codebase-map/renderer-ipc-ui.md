@@ -28,6 +28,11 @@ Bootstrap order matters; several steps run *before* the window:
   choice should apply to a dev build too); `src/main/app-image.ts` captures
   `APPIMAGE` at import time for the two places that still need it (the relaunch
   above, the CLI shim).
+- **Keyring selection** — after the audio switch, before `ready`: `selectLinuxPasswordStore(...)`
+  (`src/main/linux-keyring.ts`, #389) appends `--password-store=gnome-libsecret` when an unlocked
+  Secret Service answers on an unrecognised desktop; never in CLI mode; the decision is logged in the
+  ready handler, and `reencryptPlaintextSecrets()` runs after `createMainWindow()`. See
+  `workspaces.md` § Secrets.
 - **Shell env merge** `:95` — `$SHELL -ilc env` (via `shell-env`) so PATH/MCP
   secrets reach agent sessions, terminals and scripts even when launched from a desktop icon.
 - **`ORCHESTRA_HOME`** `:128` — relocate userData + events spool (dev isolation);
@@ -91,6 +96,10 @@ channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 `accounts:usageUpdate`, `accounts:workspaceAccounts`, `repos:update`,
 `sandbox:control` (cross-machine ownership broadcasts), and `human-gates:update`
 (#161 — the open human-directed decision gates, rebuilt from the bus DB), and `pause:update` (#257 — the whole fleet-Pause overview, rebuilt from the bus; the `pause:*` write channels are registered by `src/main/pause-ui-host.ts`, NOT through the read-only bus-pane registrar).
+
+`secrets:state` (`getSecretsState`, #389) answers `SecretsState` — whether the platform can encrypt now, the
+selected backend, the plaintext / ciphertext entry counts and why the backend was chosen (`selectionReason`); the Settings dialogs that hold a secret render
+`SecretsNotice` from it (the Linear key and Accounts dialogs; #400's profils navigateur reuse `useSecretsState`).
 
 ## Renderer state — store.ts (Zustand, ~479 lines)
 Single source of truth; **atomic selectors** so high-frequency events
@@ -429,6 +438,11 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
+- **SecretsNotice.tsx** (#389) — `useSecretsState()` (one `getSecretsState()` per mount; `null` until it
+  answers) and `<SecretsNotice state?>`: a yellow `.secrets-notice[data-secrets-notice=unencrypted|unreadable]`
+  row rendered ONLY when the platform cannot encrypt (text from `shared/secrets-state.ts`
+  `secretsNotice`). Mounted in `LinearSettings` (which no longer claims "stored encrypted" unless the state
+  says so) and `AccountsSettings`.
 - **DiffPane.tsx — the Diff review pane.** Replaces the removed Monaco-based
   `DiffView.tsx` (Monaco was the heaviest thing the agent view mounted and drove
   the GPU-crash black screen). **Do not reintroduce Monaco here**: this renders

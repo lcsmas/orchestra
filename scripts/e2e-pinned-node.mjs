@@ -6,7 +6,8 @@
 // Group A  fetch + hash        fetch_real_ok · fetch_corrupt_download · fetch_poisoned_cache · extract_binary_tamper · extract_size_tamper · pins_valid · pins_match_upstream
 // Group B  packaged runtime    pack_ok_real · pack_absent · pack_corrupt_byte · pack_truncated · pack_not_executable · pack_manifest_mismatch · pack_cross_arch_refused
 //                              smoke_ok_system_node · smoke_garbage_binary · smoke_stub_binary · smoke_wrong_version · smoke_exec_proxy · smoke_hello_only_keeper
-// Group C  launcher + updates  bundled_launch · update_keeps_running_keeper · reinstall_when_wiped · fallback_without_bundle · noexec_bin_refused
+// Group C  launcher + updates  bundled_launch · update_keeps_running_keeper · reinstall_when_wiped · fallback_without_bundle · noexec_bin_refused · unrunnable_runtime_falls_through
+// Group D  install races/heal  concurrent_install_keeps_winner (-fu F1) · corrupt_runtime_healed_at_start (-fu F2)
 //
 // Rig hygiene: scratch ORCHESTRA_HOME/HOME under $TMPDIR, `PATH` allowlist for children, no live config dir touched (ORCHESTRA_HOME is overridden BEFORE keeper-client loads).
 
@@ -15,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -41,7 +42,13 @@ Object.assign(process.env, { ORCHESTRA_KEEPER_LINGER_MS: '60000', ORCHESTRA_KEEP
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
-const flipByte = (file, at) => { const fd = fs.openSync(file, 'r+'); const b = Buffer.alloc(1); fs.readSync(fd, b, 0, 1, at); b[0] ^= 0xff; fs.writeSync(fd, b, 0, 1, at); fs.closeSync(fd); };
+// A just-executed binary stays ETXTBSY for a few ms after its process is reaped (measured 2–9 ms): retry, the product never opens the runtime for writing (it swaps by rename).
+const flipByte = (file, at) => {
+  const t0 = Date.now();
+  for (;;) {
+    try { const fd = fs.openSync(file, 'r+'); const b = Buffer.alloc(1); fs.readSync(fd, b, 0, 1, at); b[0] ^= 0xff; fs.writeSync(fd, b, 0, 1, at); fs.closeSync(fd); return; } catch (e) { if (e.code !== 'ETXTBSY' || Date.now() - t0 > 3000) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+  }
+};
 
 // ── the keeper bundle (rebuilt when stale, like keeper.test.ts) ─────────────────────────────────────────────────────────────────────────────────
 const KEEPER_JS = path.join(REPO, 'dist-electron', 'keeper.js');
@@ -403,7 +410,7 @@ const ARMS = {
     fs.writeFileSync(path.join(res, 'node'), body, { mode: 0o755 });
     fs.writeFileSync(path.join(res, 'manifest.json'), JSON.stringify({ version: '22.23.4', arch: HOST_ARCH, tarballSha256: 'a'.repeat(64), nodeSha256: sha(body), nodeBytes: Buffer.byteLength(body) }));
     const probeJs = path.join(SCR, 'noexec-probe.mjs');
-    fs.writeFileSync(probeJs, `import { installBundledRuntime } from ${JSON.stringify(`${REPO}/src/main/keeper-runtime-install.ts`)};\nconst bin = process.argv[3]; const first = installBundledRuntime({ resourcesDir: process.argv[2], binDir: bin }); const again = installBundledRuntime({ resourcesDir: process.argv[2], binDir: bin });\nconsole.log('RESULT ' + JSON.stringify({ first, again }));\n`);
+    fs.writeFileSync(probeJs, `import { installBundledRuntime } from ${JSON.stringify(`${REPO}/src/main/keeper-runtime-install.ts`)};\nconst bin = process.argv[3]; const first = installBundledRuntime({ resourcesDir: process.argv[2], binDir: bin, probe: () => null }); const again = installBundledRuntime({ resourcesDir: process.argv[2], binDir: bin, probe: () => null });\nconsole.log('RESULT ' + JSON.stringify({ first, again }));\n`);
     const nodeFlags = ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'];
     const run = (binDir, viaNoexec) => {
       const argv = viaNoexec
@@ -430,7 +437,100 @@ const ARMS = {
     }
     return `noexec bin/: refused twice (${nx.first.reason.slice(0, 70)}…); an ordinary dir installs`;
   },
+  async unrunnable_runtime_falls_through() {
+    // -fu F2: a runtime that passes X_OK and the hash but cannot RUN (here: an interpreter that does not exist ⇒ exec ENOENT). Picked, it would fail EVERY session start; the probe refuses it
+    // and the keeper starts on the app binary exactly as before the bundle existed.
+    const k = await loadKeeperClient();
+    for (const d of runtimeDirs()) fs.rmSync(path.join(HOME, 'bin', d), { recursive: true, force: true });
+    const body = '#!/nonexistent/interpreter-for-390\n';
+    const r = path.join(SCR, 'unrunnable', 'resources', 'pinned-node');
+    fs.mkdirSync(r, { recursive: true });
+    fs.writeFileSync(path.join(r, 'node'), body, { mode: 0o755 });
+    fs.writeFileSync(path.join(r, 'manifest.json'), JSON.stringify({ version: '22.77.0', arch: HOST_ARCH, tarballSha256: 'a'.repeat(64), nodeSha256: sha(body), nodeBytes: Buffer.byteLength(body) }));
+    setResources(path.dirname(r));
+    k.installKeeper(); // app start: copies it (the copy is verified), the probe refuses it
+    const x = await launch('ws-c5');
+    const argv0 = cmdline(x.pid)[0];
+    if (argv0 !== process.execPath) throw new Error(`the unrunnable runtime was picked or the start failed over: argv[0]=${argv0}`);
+    const dirs = runtimeDirs();
+    if (dirs.length !== 1 || !dirs[0].startsWith('node-22.77.0-')) throw new Error(`expected exactly the refused runtime's dir to stay on disk, got ${dirs}`);
+    return `keeper on the app binary (${path.basename(argv0)}); the unrunnable ${dirs[0]} was refused, not picked`;
+  },
+
+  // ---- Group D: the install itself, in separate processes (a race needs processes; "once per app start" needs a fresh process) ----
+  async concurrent_install_keeps_winner() {
+    // -fu F1: 4 instances install into ONE fresh bin/ at the same instant. Exactly ONE swaps in (copied:true); nobody renames the winner's dir aside, so a poller that sees the runtime
+    // appear never sees it vanish. (The mutant without the guard: every loser renames the winner aside → several copied:true and the runtime flickers.)
+    const big = path.join(SCR, 'race', 'resources', 'pinned-node');
+    fs.mkdirSync(big, { recursive: true });
+    const body = crypto.randomBytes(48 << 20); // 48 MB: copy + hash take long enough for all four to reach the swap together
+    fs.writeFileSync(path.join(big, 'node'), body, { mode: 0o755 });
+    fs.writeFileSync(path.join(big, 'manifest.json'), JSON.stringify({ version: '22.55.0', arch: HOST_ARCH, tarballSha256: 'a'.repeat(64), nodeSha256: sha(body), nodeBytes: body.length }));
+    const script = installProbeScript('race-probe.mjs');
+    const trials = [];
+    for (let t = 0; t < 4; t++) {
+      const bin = path.join(SCR, 'race', `bin-${t}`);
+      fs.mkdirSync(bin, { recursive: true });
+      const startAt = Date.now() + 1500;
+      const kids = Array.from({ length: 4 }, () => spawn(process.execPath, [...NODE_FLAGS, script, path.dirname(big), bin, 'noprobe', String(startAt)], { stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' } }));
+      const outs = kids.map(() => '');
+      kids.forEach((c, i) => c.stdout.on('data', (d) => { outs[i] += d; }));
+      const done = Promise.all(kids.map((c) => new Promise((res) => c.on('exit', res))));
+      let finished = false;
+      done.then(() => { finished = true; });
+      const dest = path.join(bin, `node-22.55.0-${sha(body).slice(0, 12)}`, 'node');
+      let appeared = false, vanished = 0;
+      while (!finished) {
+        let ok = true;
+        try { fs.accessSync(dest, fs.constants.X_OK); } catch { ok = false; }
+        if (ok) appeared = true; else if (appeared) vanished++;
+        await new Promise((r) => setImmediate(r));
+      }
+      const results = outs.map((o) => { const m = /RESULT (.*)/.exec(o); return m ? JSON.parse(m[1]) : null; });
+      if (results.some((r) => !r || !r.ok)) throw new Error(`trial ${t}: an instance reported no working runtime: ${JSON.stringify(results).slice(0, 240)}`);
+      trials.push({ copied: results.filter((r) => r.copied).length, vanished });
+    }
+    const bad = trials.filter((t) => t.copied !== 1 || t.vanished !== 0);
+    if (bad.length) throw new Error(`concurrent installs replaced each other: ${JSON.stringify(trials)}`);
+    return `4 trials × 4 processes: exactly one swapped in each time, the runtime never vanished ${JSON.stringify(trials)}`;
+  },
+  async corrupt_runtime_healed_at_start() {
+    // -fu F2: a same-size corrupted/planted binary under the versioned name is healed by the NEXT app start (a fresh process), and a healthy one is left alone (control).
+    const res = fakeResources('heal', '22.66.0');
+    const bin = path.join(SCR, 'heal', 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    const script = installProbeScript('heal-probe.mjs');
+    const run = () => {
+      const r = spawnSync(process.execPath, [...NODE_FLAGS, script, res, bin], { encoding: 'utf8', timeout: 120000, env: { PATH: '/usr/bin:/bin' } });
+      const m = /RESULT (.*)/.exec(r.stdout || '');
+      if (!m) throw new Error(`probe printed no RESULT (rc ${r.status}): ${(r.stderr || '').trim().slice(-200)}`);
+      return JSON.parse(m[1]);
+    };
+    const first = run();
+    if (!first.ok || !first.copied) throw new Error(`first start did not install: ${JSON.stringify(first).slice(0, 200)}`);
+    const control = run();
+    if (!control.ok || control.copied !== false) throw new Error(`control: a healthy runtime must be left alone: ${JSON.stringify(control).slice(0, 200)}`);
+    flipByte(first.path, 9_000_000); // same size, one byte off
+    if (lib.sha256File(first.path) === REAL_PIN.nodeSha256) throw new Error('control: the flip did not corrupt');
+    const healed = run();
+    if (!healed.ok || healed.copied !== true) throw new Error(`the next start did not heal the corrupted runtime: ${JSON.stringify(healed).slice(0, 200)}`);
+    if (lib.sha256File(healed.path) !== REAL_PIN.nodeSha256) throw new Error('healed runtime does not hash to the pin');
+    return 'healthy runtime left alone; one flipped byte → the next app start replaced it (hash == pin again)';
+  },
 };
+
+const NODE_FLAGS = ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON'];
+/** A child-process entry that runs ONE installBundledRuntime and prints `RESULT {ok,path,copied}`. argv: <resourcesDir> <binDir> [noprobe] [startAtMs]; the default probe is the real `node -p 1`. */
+function installProbeScript(name) {
+  const f = path.join(SCR, name);
+  fs.writeFileSync(f, `import { installBundledRuntime, createRuntimeTrust } from ${JSON.stringify(`${REPO}/src/main/keeper-runtime-install.ts`)};
+const [,, res, bin, mode, startAt] = process.argv;
+if (startAt) { while (Date.now() < Number(startAt)) { /* barrier: all instances start together */ } }
+const r = installBundledRuntime({ resourcesDir: res, binDir: bin, trust: createRuntimeTrust(), ...(mode === 'noprobe' ? { probe: () => null } : {}) });
+console.log('RESULT ' + JSON.stringify(r.ok ? { ok: true, path: r.path, copied: r.copied } : { ok: false, reason: r.reason }));
+`);
+  return f;
+}
 
 function injectedPins(nodeFile, version) {
   const body = fs.readFileSync(nodeFile);
@@ -451,7 +551,16 @@ const want = process.argv[2] && process.argv[2] !== 'all' ? process.argv[2].spli
 for (const w of want) if (!ARMS[w]) { console.log(`PINNED-NODE: FAIL unknown arm ${w}`); process.exit(2); }
 let pass = 0;
 const failed = [];
+let currentArm = '(none)';
+// A product bug that surfaces as an uncaught exception (e.g. a spawn 'error' event with no listener) must be an ARM failure, not a silent crash with no verdict.
+process.on('uncaughtException', (e) => {
+  console.log(`ARM ${currentArm}: FAIL uncaught exception: ${String(e?.message ?? e).split('\n')[0].slice(0, 200)}`);
+  spawnSync('rm', ['-rf', '--', SCR]);
+  console.log(`PINNED-NODE: FAIL (crashed in ${currentArm})`);
+  process.exit(1);
+});
 for (const name of want) {
+  currentArm = name;
   try {
     const detail = await ARMS[name]();
     console.log(`ARM ${name}: PASS ${detail ?? ''}`);

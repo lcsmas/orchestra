@@ -31,16 +31,17 @@
     "build:acces-mobile": "vite build --config vite.acces-mobile.config.ts",
     "disk-guard": "node scripts/disk-guard.cjs",
     "test:disk-guard": "node scripts/verify-disk-guard.mjs",
-    "test:disk-guard-ui": "node scripts/verify-disk-guard-ui.mjs",
+    "test:disk-guard-ui": "node scripts/refuse-real-runtime.mjs test:disk-guard-ui",
     "prebuild:bundles": "node scripts/disk-guard.cjs --preset build-bundles",
     "build:bundles": "vite build && pnpm run build:cli && pnpm run build:keeper && pnpm run build:acces-mobile",
+    "fetch:agent-browser": "node scripts/agent-browser-fetch.cjs",
     "build": "node scripts/disk-guard.cjs --preset build-package && pnpm run build:bundles && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
     "pretest": "pnpm run build:cli",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
     "test:render": "node scripts/context-gauge-render-smoke.mjs && node scripts/answerable-cards-render-smoke.mjs && node scripts/queue-tray-render-smoke.mjs && node scripts/peer-rows-render-smoke.mjs && node scripts/task-notice-rows-render-smoke.mjs && node scripts/bus-rows-render-smoke.mjs && node scripts/restart-row-render-smoke.mjs && node scripts/sidebar-boot-render-smoke.mjs && node scripts/bus-pane-render-smoke.mjs && node scripts/human-gates-render-smoke.mjs && node scripts/usage-warning-render-smoke.mjs && node scripts/pause-ui-render-smoke.mjs && node scripts/memcap-settings-render-smoke.mjs && node scripts/memory-cap-row-render-smoke.mjs && pnpm run test:wiring && node scripts/watchers-strip-render-smoke.mjs && node scripts/tool-lines-render-smoke.mjs",
-    "test:human-gates-shot": "node scripts/human-gates-screenshot.mjs",
+    "test:human-gates-shot": "node scripts/refuse-real-runtime.mjs test:human-gates-shot",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:hung-cli": "bash scripts/e2e-hung-cli-teardown.sh",
     "test:liveness-failed-call": "bash scripts/e2e-liveness-failed-call.sh",
@@ -104,8 +105,8 @@
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",
     "test:tool-lines": "pnpm run build:bundles && bash scripts/e2e-tool-lines.sh \"$PWD\"",
     "test:agent-view-removal": "pnpm run build:bundles && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
-    "test:network-visibility-shot": "node scripts/network-visibility-screenshot.mjs",
-    "test:renderer-cpu": "vite build && node scripts/renderer-cpu-profile.mjs \"$PWD\" fix 6",
+    "test:network-visibility-shot": "node scripts/refuse-real-runtime.mjs test:network-visibility-shot",
+    "test:renderer-cpu": "node scripts/refuse-real-runtime.mjs test:renderer-cpu",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",
     "test:command-output-mutants": "node scripts/command-output-mutants.mjs",
     "test:command-output-e2e": "bash scripts/command-output/e2e-command-output.sh .",
@@ -113,14 +114,14 @@
     "test:bus-wake-e2e": "scripts/verify-bus-wake-e2e.sh",
     "test:bus-contention": "node scripts/verify-bus-contention.mjs",
     "test:bus-status": "pnpm run build:cli && node scripts/verify-bus-status-cli.mjs",
-    "test:bus-pane": "node scripts/verify-bus-pane.mjs",
+    "test:bus-pane": "node scripts/refuse-real-runtime.mjs test:bus-pane",
     "test:bus-notice": "node scripts/verify-bus-startup-notice.mjs",
     "test:reparent-notice": "node scripts/verify-reparent-run-notice.mjs",
     "test:promote-refresh": "node scripts/verify-promote-run-refresh.mjs",
     "test:session-key-keeper": "pnpm run build:keeper && for a in key_registered_before_cli key_attach_keeps key_replaced_on_fresh key_register_failure; do node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/e2e-keeper-session-key.mjs $a | tail -1 || exit 1; done",
     "test:session-identity-mutants": "pnpm run build:cli && node scripts/session-identity-mutants.mjs",
-    "test:restart-row-shot": "node scripts/restart-row-screenshot.mjs",
-    "test:ctx-scroll-shot": "node scripts/context-panel-scroll-screenshot.mjs",
+    "test:restart-row-shot": "node scripts/refuse-real-runtime.mjs test:restart-row-shot",
+    "test:ctx-scroll-shot": "node scripts/refuse-real-runtime.mjs test:ctx-scroll-shot",
     "build:bus-abi": "node scripts/build-bus-abi.mjs",
     "test:native-manifest": "node scripts/verify-native-manifest.mjs",
     "test:rig-selftest": "bash scripts/run-rig-selftest.sh",
@@ -184,8 +185,14 @@
     "directories": {
       "output": "release"
     },
-    "beforePack": "scripts/pinned-node/before-pack.cjs",
+    "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack-check.cjs",
+    "extraResources": [
+      {
+        "from": "build/agent-browser",
+        "to": "agent-browser"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage"

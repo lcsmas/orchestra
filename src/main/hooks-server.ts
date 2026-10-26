@@ -38,6 +38,7 @@ import { listDockerHolds } from './docker-hold-host.ts';
 import { getContainerAccounting } from './container-accounting.ts';
 import { accountingView } from '../shared/container-accounting.ts';
 import { currentMemberMemory } from './member-memory-host.ts';
+import { currentBrowserTabMemory } from './browser-tab-memory.ts';
 import { watchersStatus } from './watchers.ts';
 import { heldStartLabel } from '../shared/admission.ts';
 import { store } from './store';
@@ -55,6 +56,7 @@ import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { dispatchIdentityRequest } from './session-identity-host.ts';
+import { dispatchBrowserRequest } from './browser-cdp-host.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
 
@@ -476,6 +478,7 @@ export async function startHooksServer(): Promise<void> {
             const memPausedRuns = memoryPausedRunViews(getBus(), (id) => { const w = store.getWorkspace(id); return w ? (w.name ?? w.branch ?? undefined) : undefined; });
             const containersView = accountingView(getContainerAccounting()); // ONE read: the view and its labels must come from the same snapshot (a read across the stale limit would pair 'ok' with no labels)
             const membersView = currentMemberMemory();
+            const browserTabsView = currentBrowserTabMemory(); // #394: a read of the tabs' own pids, not the table; undefined (no panel module) → the CLI prints no line
             const badDb = getBus();
             const allBad = badDb ? busBadRecipientRows(badDb) : [];
             const badRecipientCount = allBad.length;
@@ -508,6 +511,8 @@ export async function startHooksServer(): Promise<void> {
               // #328: per-member scope memory + live Reliquats (a fresh short-cached read; sysfs only); the CLI prints the `reliquats:` line.
               members: membersView,
               memberLabels: Object.fromEntries(membersView.tracked.map((m) => [m.wsId, heldStartLabel(store.getWorkspace(m.wsId), m.wsId)])),
+              // #394: browser tabs per workspace (renderer memory, already part of each workspace's row on the Resources page); the CLI prints the `browser tabs:` line.
+              ...(browserTabsView ? { browserTabs: browserTabsView, browserTabLabels: Object.fromEntries(browserTabsView.byWorkspace.map((w) => [w.wsId, heldStartLabel(store.getWorkspace(w.wsId), w.wsId)])) } : {}),
               // #330: the directory watchers' health (every armed watcher; a degraded one has its since / last error / fallback) — the CLI prints the `watchers:` block.
               watchers: watchersStatus(),
               // #321: container create/start HELD at a member's Docker relay for low memory; the CLI prints the `docker holds:` line (absent when none).
@@ -617,6 +622,10 @@ export async function startHooksServer(): Promise<void> {
             // #379 / ADR 0008: a session's CURRENT run + generation, resolved by the host on every bus CLI call
             // (`{id, key}` → `{ok, runId, generation}`; a replaced session's key → `superseded`). Never logs/echoes the key.
             send(200, dispatchIdentityRequest(msg));
+          } else if (route === '/browser') {
+            // #395 / ADR 0009: `orchestra browser` asks for ITS workspace's agent-browser endpoint — `{id, key}` is verified against
+            // the session-key registry (no key / stale key / another workspace's id = refused); the reply carries a proxy URL, never a key.
+            send(200, await dispatchBrowserRequest(msg));
           } else {
             // Unknown route (incl. the retired `/event` activity POST — activity rides the spool, #378): answered empty, as ever.
             send(200, {});

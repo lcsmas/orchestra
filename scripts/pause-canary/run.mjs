@@ -79,6 +79,7 @@ if (MH_ON) {
 if (MH_ON && HEAVY.startsWith('--')) { say(`PAUSE-CANARY: usage — --heavy-token takes the token reference, got a flag (${HEAVY})`); process.exit(2); }
 if (REHEARSAL && !(MH_CAP_ON && Number(opt('members', '6')) === 1)) { say('PAUSE-CANARY: usage — --rehearsal is the 1-member cap-ON plumbing try of `--exercise memhog-app` (--members 1, no --proof, no --memhog-switch off). Nothing was run.'); process.exit(2); }
 const EX0 = String(opt('exercise', '')).split(',').filter(Boolean);
+if (EX0.includes('memhog-app')) { say('PAUSE-CANARY: REFUSED — memhog-app needs the human\'s systemd user manager (real memory scopes); the contained rig now runs in a PRIVATE runtime dir with none (incident Q2, ledger #405), so the cap would silently not apply and every census would read 0 units. Nothing was run.'); process.exit(3); }   // fail loudly, never vacuously
 if (EX0.includes('memhog-app') && EX0.length > 1) { say('usage: --exercise memhog-app runs ALONE (its own store settings, its own report shape)'); process.exit(2); }   // before ensureApp: a bad invocation must not cost a build
 // the Q11 envelope, checked HERE too (the same pure check the drive applies): a bad invocation must not cost a PACKAGED-app build first
 if (MH_ON) {
@@ -180,7 +181,7 @@ async function drive({ appBin, appTree, exercise, cycles, members, label, pause,
   const driveArgs = ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'drive.mjs'), '--base', BASE, '--repo', REPO, '--app', appBin, '--claude', claudeBin, '--exercise', exercise, '--cycles', String(cycles), '--members', String(members), '--label', label, '--out', outJson, '--min-avail-gb', String(MIN_AVAIL_GB), ...(appTree ? ['--app-tree', appTree] : []), ...(pause ? ['--pause', pause] : []), ...(dwell ? ['--dwell-s', String(dwell)] : []), ...extra];
   fs.mkdirSync(path.join(BASE, 'rigs'), { recursive: true });
   fs.mkdirSync(path.join(BASE, 'pin-cfg'), { recursive: true });
-  const env = { PATH: process.env.PATH, HOME: REAL_HOME, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '/run/user/1000', E2E_RIG_BASE: path.join(BASE, 'rigs'), CLAUDE_CONFIG_DIR_PIN: path.join(BASE, 'pin-cfg') };
+  const env = { PATH: process.env.PATH, HOME: REAL_HOME, E2E_RIG_BASE: path.join(BASE, 'rigs'), CLAUDE_CONFIG_DIR_PIN: path.join(BASE, 'pin-cfg') };
   const log = fs.createWriteStream(logFile);
   const child = spawn('bash', [path.join(REPO, 'scripts', 'e2e-contained-rig.sh'), process.execPath, ...driveArgs], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const lines = [];

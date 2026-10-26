@@ -36,6 +36,8 @@ import {
   setAccountApiKey,
   clearAccountApiKey as clearAccountApiKeySecret,
   pruneAccountApiKeys,
+  getSecretsState,
+  reencryptInBackground,
 } from './secrets';
 import { getEnvStatus } from './env-status';
 import { busDivergenceReport } from './bus-mirror.ts';
@@ -150,6 +152,7 @@ import {
 } from './agent-sdk';
 import { log, revealLogs, getLogFile, getLogLevel, scoped } from './logger';
 import * as browserPanel from './browser-panel';
+import { HUMAN_OPENER } from '../shared/browser-tab-policy.ts';
 import type { OrchestraAPI } from '../shared/ipc';
 // NOTE the .ts extension: this is a VALUE import (the others from
 // ../shared/types below are type-only and erased at compile). Any main-process
@@ -169,6 +172,7 @@ import type {
   Account,
   BrowserBounds,
   BrowserPanelState,
+  BrowserTabResult,
   CreateWorkspaceInput,
   DiffFile,
   RepoScripts,
@@ -270,6 +274,7 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   listAccounts: 'accounts:list',
   setAccounts: 'accounts:set',
   isSecretStorageEncrypted: 'accounts:secretsEncrypted',
+  getSecretsState: 'secrets:state',
   listAccountApiKeyIds: 'accounts:apiKeyIds',
   saveAccountApiKey: 'accounts:saveApiKey',
   listAccountBaseUrlIds: 'accounts:baseUrlIds',
@@ -356,6 +361,9 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   browserReload: 'browser:reload',
   browserSetBounds: 'browser:setBounds',
   browserState: 'browser:state',
+  browserTabNew: 'browser:tabNew',
+  browserTabActivate: 'browser:tabActivate',
+  browserTabClose: 'browser:tabClose',
   browserDesignArm: 'browser:designArm',
   browserDesignDisarm: 'browser:designDisarm',
   browserDesignPoll: 'browser:designPoll',
@@ -567,6 +575,13 @@ export const apiHandlers: ApiHandlerTable = {
   // ---------- per-account Anthropic API keys (keystore, never in store.json) ----------
 
   isSecretStorageEncrypted: async () => platform.isEncryptionAvailable(),
+
+  getSecretsState: async () => {
+    const state = await getSecretsState();
+    // The keyring works but plaintext is still on disk (saved while it did not, or a startup skipped it): seal it now.
+    if (state.encrypted && state.plaintextEntries > 0) reencryptInBackground('settings');
+    return state;
+  },
 
   listAccountApiKeyIds: async () => accountApiKeyIds(),
 
@@ -1016,6 +1031,12 @@ export const apiHandlers: ApiHandlerTable = {
   browserSetBounds: async (wsId: string, bounds: BrowserBounds): Promise<void> =>
     browserPanel.setBounds(wsId, bounds),
   browserState: async (wsId: string): Promise<BrowserPanelState> => browserPanel.getState(wsId),
+  browserTabNew: async (wsId: string, url?: string): Promise<BrowserTabResult> =>
+    browserPanel.tryOpenTab(wsId, { url, openedBy: HUMAN_OPENER, activate: true }),
+  browserTabActivate: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
+    browserPanel.tryActivateTab(wsId, tabId),
+  browserTabClose: async (wsId: string, tabId: string): Promise<BrowserTabResult> =>
+    browserPanel.tryCloseTab(wsId, tabId, HUMAN_OPENER),
 
   // --- Design mode: the browser pane's element picker ---
   // Arm/disarm inject and tear down the in-page highlight overlay; poll drains

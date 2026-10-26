@@ -17,6 +17,7 @@ import type { DesignPick } from './design-mode';
 import type { WorktreeSizes } from './worktree-sizes';
 import type { InboxActionOutcome, InboxBlock } from './inbox-blocks';
 import type { BusDivergenceReport } from './bus-mirror';
+import type { SecretsState } from './secrets-state';
 import type {
   Account,
   AccountUsageStatus,
@@ -33,6 +34,8 @@ import type {
   AgentSkillInfo,
   BrowserBounds,
   BrowserPanelState,
+  BrowserTabId,
+  BrowserTabResult,
   CreateWorkspaceInput,
   DiffStats,
   EnvStatusItem,
@@ -204,6 +207,10 @@ export interface OrchestraAPI {
    *  back to a 0600 file — the settings UI must say so rather than promise
    *  encryption it isn't getting. */
   isSecretStorageEncrypted: () => Promise<boolean>;
+  /** Encrypted / not-encrypted state of the secrets file (#389): whether the platform can encrypt now,
+   *  the selected backend, and how many entries are plaintext vs ciphertext. Drives the "stored
+   *  unencrypted on this machine" warning in Settings (`secretsNotice`) and the profils-navigateur warning. */
+  getSecretsState: () => Promise<SecretsState>;
   /** Ids of the accounts that have an Anthropic API key stored in the keystore.
    *  The KEY itself never crosses this boundary — the settings UI only needs to
    *  know whether one is set (to show "key saved" and offer to replace it). */
@@ -570,6 +577,17 @@ export interface OrchestraAPI {
   browserSetBounds: (wsId: string, bounds: BrowserBounds) => Promise<void>;
   /** Current navigation state (a freshly-mounted panel re-requests this). */
   browserState: (wsId: string) => Promise<BrowserPanelState>;
+
+  // --- Browser tabs (the human's tab strip, #393) ---
+  // The cap of 8 per workspace and who-closes-what live in src/shared/browser-tab-policy.ts;
+  // a refused operation RESOLVES `{ok:false, reason, message}` (never rejects) so the strip can
+  // show the message. Every change is also pushed on `onBrowserEvent` (state.tabs / activeTabId).
+  /** Open a new tab (activated), optionally loading `url`. Refused over the cap. */
+  browserTabNew: (wsId: string, url?: string) => Promise<BrowserTabResult>;
+  /** Make `tabId` the active tab (the one composited and the URL bar follows). */
+  browserTabActivate: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
+  /** Close `tabId`. Closing the last tab leaves one fresh blank tab. */
+  browserTabClose: (wsId: string, tabId: BrowserTabId) => Promise<BrowserTabResult>;
 
   // --- Design mode (the browser pane's element picker) ---
   // The user arms design mode from the browser toolbar, hovers to highlight,

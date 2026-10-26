@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { uid, branchOf, namesOf } from './ids.mjs';
 import { isTurnStart } from './bars.mjs';
+import { privateRuntimeDir } from '../lib/rig-runtime.mjs';
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -247,7 +248,7 @@ export async function launchApp(rig, { extraEnv = {} } = {}) {
   const WL = process.env.WAYLAND_DISPLAY;
   const port = await new Promise((res) => { const s = net.createServer().listen(0, () => { const p = s.address().port; s.close(() => res(p)); }); });
   const baseEnv = {
-    PATH: `${rig.H}/bin:/usr/local/bin:/usr/bin:/bin`, HOME: path.join(rig.H, 'home'), XDG_RUNTIME_DIR: '/run/user/1000', LANG: 'C.UTF-8',
+    PATH: `${rig.H}/bin:/usr/local/bin:/usr/bin:/bin`, HOME: path.join(rig.H, 'home'), XDG_RUNTIME_DIR: privateRuntimeDir(), LANG: 'C.UTF-8',
     WAYLAND_DISPLAY: WL, SWAYSOCK: process.env.SWAYSOCK ?? '', ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
     ORCHESTRA_HOME: rig.H, CLAUDE_CONFIG_DIR: rig.cfg, ...extraEnv,
   };
@@ -264,7 +265,7 @@ export async function launchApp(rig, { extraEnv = {} } = {}) {
   if (env.some((l) => l.startsWith('DISPLAY='))) throw new Error('ABORT app env has DISPLAY');
   let swayHas = 0;
   for (let i = 0; i < 30 && !swayHas; i++) { // the window maps a moment after the page target appears: poll, still fail closed
-    try { swayHas = (execFileSync('swaymsg', ['-t', 'get_tree'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', SWAYSOCK: process.env.SWAYSOCK, XDG_RUNTIME_DIR: '/run/user/1000' } }).match(new RegExp(`"pid": ${app.pid}`, 'g')) ?? []).length; } catch { /* below */ }
+    try { swayHas = (execFileSync('swaymsg', ['-t', 'get_tree'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', SWAYSOCK: process.env.SWAYSOCK, XDG_RUNTIME_DIR: privateRuntimeDir() } }).match(new RegExp(`"pid": ${app.pid}`, 'g')) ?? []).length; } catch { /* below */ }
     if (!swayHas) await sleep(500);
   }
   say(`SWAY-HAS-APP-PID ${swayHas}`);

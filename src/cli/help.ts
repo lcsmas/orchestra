@@ -17,6 +17,7 @@ const GROUPS = [
   'Legacy messaging',
   'Structure',
   'Links & tickets',
+  'Browser',
   'Accounts',
   'Internal',
 ] as const;
@@ -39,6 +40,35 @@ A renamed workspace shows its previous name as 'ex-<previous>' (an 'ex' column
 beside the branch; absent while no peer was renamed) — an old ledger or message
 reference still finds it.
   --stats   also show each peer's committed diff vs its base`,
+  },
+  // ── Browser ───────────────────────────────────────────────────────────
+  {
+    name: 'browser',
+    group: 'Browser',
+    summary: "Drive THIS workspace's Browser panel (snapshot, click, fill, screenshot…)",
+    detail: `usage: orchestra browser <command> [args]
+
+Drive THIS workspace's Browser panel through the bundled agent-browser — the
+human sees every action. The host resolves your workspace on each call; you can
+only ever reach your own panel.
+
+  orchestra browser open <url>                 navigate
+  orchestra browser snapshot -i                interactive elements with refs (@e1, @e2…)
+  orchestra browser click @e2                  click a ref
+  orchestra browser fill @e6 "text"            clear + type into a field
+  orchestra browser press Enter | wait 500 | wait "#id" | scroll down
+  orchestra browser upload @e3 /abs/file       file input
+  orchestra browser dialog accept|dismiss|status
+  orchestra browser screenshot out.png         write a screenshot to a file you can read
+  orchestra browser get text|url|title … | eval "js" | console | network requests
+  orchestra browser cookies … | storage local|session … | tab list|new|close …
+
+Refs are per snapshot: after the page changes a stale ref fails with
+'browser_stale_ref' — snapshot again. Commands chain in one shell script.
+Refused: anything that re-points the client (--cdp, --session, --profile,
+--headed, …) or leaves the panel (connect, install, plugin, dashboard, batch…).
+A screenshot or click needs the Browser pane on screen; snapshot/eval/get/open
+work from a background workspace.`,
   },
   {
     name: 'whoami',

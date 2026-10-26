@@ -32,6 +32,7 @@ import { listKeeperRoots } from './keeper-client';
 import { accountingView } from '../shared/container-accounting';
 import { currentMemberMemory } from './member-memory-host';
 import { getBrowserReliquatView } from './resource-monitor';
+import { sampleBrowserTabMemory } from './browser-tab-memory';
 
 const execFileP = promisify(execFile);
 
@@ -188,5 +189,7 @@ export async function sampleResources(): Promise<ResourceSnapshot> {
     })(),
     // #331: browsers the resource monitor / a Pause dure stopped, per workspace (data layer; the chip on the page is D4-gated)
     browserReliquats: getBrowserReliquatView(),
+    // #394: each workspace's browser-tab renderer memory, measured against THIS sample's process table (the owning row adds it; the App tile leaves those renderers out).
+    browserTabs: sampleBrowserTabMemory(table),
   };
 }

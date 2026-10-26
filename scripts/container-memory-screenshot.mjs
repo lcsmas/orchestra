@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
 
 const require_ = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -187,7 +188,7 @@ try {
       '-i',
       `HOME=${tmp}`,
       'PATH=/usr/bin:/bin',
-      `XDG_RUNTIME_DIR=${process.env.XDG_RUNTIME_DIR || '/run/user/1000'}`,
+      `XDG_RUNTIME_DIR=${privateRuntimeDir()}`,
       `WAYLAND_DISPLAY=${rigWayland}`,
       'ELECTRON_OZONE_PLATFORM_HINT=wayland',
       'ELECTRON_DISABLE_SANDBOX=1',
