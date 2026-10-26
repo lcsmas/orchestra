@@ -138,3 +138,11 @@ test('F9 wiring: the host clears the workspace\'s EPHEMERAL session (its own in-
   assert.doesNotMatch(ui, /useSecretsState|SecretsNotice|getSecretsState/, 'story 25 is met without #389\'s state: the warning is always on');
   assert.doesNotMatch(code('shared/browser-profile.ts'), /secrets-state|SecretsState/);
 });
+
+test('seat-2 MAJOR: the CDP proxy host reads WHICH view stands behind each tab (webContents id) and diffs through the one pure `diffTabs` — an in-place rebuild is a `replaced` page, not a `changed` one', () => {
+  const host = code('main/browser-cdp-host.ts');
+  assert.match(host, /import \{ diffTabs \} from '\.\.\/shared\/cdp-tab-diff\.ts';/);
+  assert.match(host, /view: bp\.tabContents\(wsId, t\.id\)\?\.id/);
+  assert.match(host, /const events = diffTabs\(prev, next\);/);
+  assert.doesNotMatch(host, /kind: 'changed'/, 'no second hand-rolled tab diff beside diffTabs');
+});

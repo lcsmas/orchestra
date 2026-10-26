@@ -29,8 +29,9 @@ import { sessionKeys } from './session-identity-host.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { AGENT_BROWSER_VERSION, binaryCandidates } from '../shared/agent-browser-binary.ts';
-import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel, type CdpTabEvent } from '../shared/cdp-proxy-core.ts';
+import { sendOnLease, type CdpPanelPort, type CdpTab, type CdpTabChannel } from '../shared/cdp-proxy-core.ts';
 import { decideAgentCdp } from '../shared/browser-profile.ts';
+import { diffTabs } from '../shared/cdp-tab-diff.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
@@ -51,17 +52,13 @@ export function makePanelPort(wsId: string): CdpPanelPort {
   return {
     listTabs: () => bp.listTabs(wsId).map(toCdpTab),
     subscribeTabs: (listener) => {
-      let prev = new Map(bp.listTabs(wsId).map((t) => [t.id, t]));
+      // A tab id keeps its number across an in-place rebuild (#400 profile attach / detach / delete) but its webContents does not: the view id tells the diff.
+      const snapshot = (tabs: BrowserTabInfo[]) => new Map(tabs.map((t) => [t.id, { tab: toCdpTab(t), view: bp.tabContents(wsId, t.id)?.id }]));
+      let prev = snapshot(bp.listTabs(wsId));
       return bp.onPanelChange((id, tabs, destroyed) => {
         if (id !== wsId) return;
-        const next = new Map(tabs.map((t) => [t.id, t]));
-        const events: CdpTabEvent[] = [];
-        for (const [tid, t] of next) {
-          const was = prev.get(tid);
-          if (!was) events.push({ kind: 'created', tab: toCdpTab(t) });
-          else if (was.url !== t.url || was.title !== t.title || was.active !== t.active) events.push({ kind: 'changed', tab: toCdpTab(t) });
-        }
-        for (const [tid, t] of prev) if (!next.has(tid)) events.push({ kind: 'destroyed', tab: toCdpTab(t) });
+        const next = snapshot(tabs);
+        const events = diffTabs(prev, next);
         prev = next;
         void destroyed;
         for (const e of events) listener(e);

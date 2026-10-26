@@ -36,7 +36,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,logout,cdp').split(','));
+const ARMS = new Set(flag('--arms', 'settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -813,6 +813,60 @@ try {
     await teardown(b, 'term'); b = null;
   }
   // ── logout: a logout is never undone by the session-cookie promotion (seat-1 finding of #400: 12/200 resurrected at a logout 243-250 ms after the login) ──
+  // ── rebuild (#400, seat-2 MAJOR): the agent's CLI session on a workspace keeps working — AND stays on its own page — after the human attaches / detaches a profile
+  // or deletes it (every tab is rebuilt in place: same ids, NEW webContents). Probe = `get url` (cheapest call needing the tab's CDP session); it must answer the
+  // fixture page the agent was on, not an error and not a blank tab the daemon opened to recover. 10 attach/detach cycles + 5 deletes in ONE boot (the race is per-batch).
+  if (ARMS.has('rebuild')) {
+    if (b) { await teardown(b, 'term'); b = null; }
+    b = await boot(world, 'boot-rebuild', { trace: true });
+    const CYCLES = 10, DELETES = 5, PAGE = 'rb=1';
+    const wsrec = { ...world.ws1 };
+    await selectWorkspace(b, 'e2e/bp400-1'); await openBrowserPane(b);
+    await typeUrl(b, P(1, `&${PAGE}`));
+    await softWait(async () => (await tabs(b))[0]?.tip?.includes(PAGE), 15000, 'rebuild page');
+    const show = (r) => `rc ${r.code} ${JSON.stringify(r.out.slice(0, 120))}`;
+    const probe = () => { const r = browserCli(world, wsrec, ['get', 'url'], 30000); return { ...r, ok: r.code === 0 && r.out.includes(PAGE) }; };
+    const wire = (mark) => appLog(world).slice(mark).split('\n').filter((l) => /proxy->client|client->proxy|seat\[/.test(l) && !/Browser.getVersion|frameResized|executionContext|consoleAPI/.test(l)).map((l) => l.replace(/^.*?(cdp\[|seat\[)/, '$1').slice(0, 200));
+    const pre = probe();
+    clause('rebuild', 'ctl/agent-session-connected-before-the-rebuilds', pre.ok, `get url before any rebuild → ${show(pre)} (the daemon holds a session on the tab)`);
+    const prof = await b.cdp.eval(`window.orchestra.browserProfileCreate('Rebuild').then((r) => r.profile?.id ?? null)`);
+    const loopMark = appLog(world).length;
+    const att = [], det = [];
+    for (let i = 1; i <= CYCLES; i++) {
+      await chooseProfile(b, prof); const a = probe(); att.push(a); if (!a.ok) console.log(`  MEASURED [rebuild] attach #${i}: ${show(a)}`);
+      await chooseProfile(b, ''); const d = probe(); det.push(d); if (!d.ok) console.log(`  MEASURED [rebuild] detach #${i}: ${show(d)}`);
+    }
+    const bad = (xs) => xs.filter((x) => !x.ok).length;
+    clause('rebuild', 'agent-commands-keep-working-after-a-profile-attach', bad(att) === 0, `${CYCLES - bad(att)}/${CYCLES} attach rebuilds answered \`get url\` with the fixture page; last: ${show(att.at(-1))}`);
+    clause('rebuild', 'agent-commands-keep-working-after-a-profile-detach', bad(det) === 0, `${CYCLES - bad(det)}/${CYCLES} detach rebuilds answered \`get url\` with the fixture page; last: ${show(det.at(-1))}`);
+    const dels = [];
+    for (let i = 1; i <= DELETES; i++) {
+      const pid = await b.cdp.eval(`window.orchestra.browserProfileCreate(${JSON.stringify(`Doomed${i}`)}).then((r) => r.profile?.id ?? null)`);
+      await chooseProfile(b, pid);
+      // a build that cannot survive a rebuild leaves the session dead for the rest of the run: revive it (`tab new`, which works on such a build) so each
+      // delete is judged on its OWN rebuild and the ctl stays about the instrument, not about the earlier failure. A revive is counted and reported.
+      let ctl = probe(); let revived = false;
+      if (!ctl.ok) { browserCli(world, wsrec, ['tab', 'new', P(1, `&${PAGE}`)], 30000); await sleep(1500); ctl = probe(); revived = true; }
+      await openSettings(b);
+      const idx = (await rows(b)).findIndex((r) => r.id === pid);
+      await clickSel(b, '[data-bp-delete]', idx);
+      await waitFor(() => b.cdp.eval(`!!document.querySelector('.dialog-actions .danger-primary')`), 8000, 'the delete confirmation');
+      await clickSel(b, '.dialog-actions .danger-primary');
+      await softWait(async () => !(await rows(b)).some((r) => r.id === pid), 15000, 'the row to disappear');
+      await closeSettings(b);
+      await sleep(1200);
+      const d = probe(); dels.push({ ...d, ctl: ctl.ok, revived }); if (!d.ok || !ctl.ok) console.log(`  MEASURED [rebuild] delete #${i}: before ${ctl.ok} · after ${show(d)}`);
+    }
+    clause('rebuild', 'ctl/agent-connected-on-the-profile-before-each-delete', dels.every((x) => x.ctl), `${dels.filter((x) => x.ctl).length}/${DELETES} probes on the profile before the delete answered with the fixture page (${dels.filter((x) => x.revived).length} needed a revive)`);
+    clause('rebuild', 'agent-commands-keep-working-after-the-profile-is-deleted', bad(dels) === 0, `${DELETES - bad(dels)}/${DELETES} deletes: \`get url\` answered with the fixture page; last: ${show(dels.at(-1))}`);
+    const wl = wire(loopMark);
+    const blanks = wl.filter((l) => /client->proxy .*"method":"Target\.createTarget"/.test(l)).length;
+    const stale = wl.filter((l) => /proxy->client .*Session with given id not found/.test(l)).length;
+    clause('rebuild', 'recovery-never-opens-a-blank-tab-nor-meets-a-dead-session', blanks === 0 && stale === 0, `over ${CYCLES * 2 + DELETES} rebuilds: Target.createTarget from the daemon ${blanks}×, "Session with given id not found" ${stale}×`);
+    if (bad(att) + bad(det) + bad(dels) + blanks + stale > 0) { console.log('  WIRE [rebuild] (first 60 lines of the loop)'); for (const l of wl.slice(0, 60)) console.log(`    ${l}`); }
+    await teardown(b, 'term'); b = null;
+  }
+
   if (ARMS.has('logout')) {
     if (b) { await teardown(b, 'term'); b = null; }
     b = await boot(world, 'boot-logout');

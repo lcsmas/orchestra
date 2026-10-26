@@ -40,6 +40,8 @@ const MUTANTS = [
   { id: 'P20-getcookies-without-urls-judged-on-the-page-only', file: PURE, arms: 'cdp', from: 'return frameUrls ? frameUrls.filter(isHttp) : null;', to: 'return [];', red: ['cookies-get-refused-when-the-page-embeds-another-site'] },
   { id: 'P21-getcookies-refused-without-urls-always', file: PURE, arms: 'cdp', from: 'return frameUrls ? frameUrls.filter(isHttp) : null;', to: 'return null;', red: ['own-page-cookies-can-be-read-by-the-agent', 'cookies-get-allowed-again-on-a-page-without-foreign-frames'] },
   { id: 'P22-no-post-write-compensation-logout-is-undone', file: PANEL, arms: 'logout', from: "        reconcile(key, p, domain, path, started);\n        const t = setTimeout(() => {\n          settling.delete(t);\n          reconcile(key, p, domain, path, started);\n        }, RECONCILE_SETTLE_MS);\n        settling.add(t);\n", to: '', red: ['logout-is-never-undone-by-the-promotion'] },
+  { id: 'P23-host-reads-no-view-identity-a-rebuild-is-a-bare-changed', file: 'src/main/browser-cdp-host.ts', arms: 'rebuild', from: 'view: bp.tabContents(wsId, t.id)?.id', to: 'view: undefined', red: ['agent-commands-keep-working-after-a-profile-attach', 'agent-commands-keep-working-after-a-profile-detach', 'agent-commands-keep-working-after-the-profile-is-deleted'] },
+  { id: 'P24-replaced-page-keeps-its-target-id', file: 'src/shared/cdp-proxy-core.ts', arms: 'rebuild', from: "return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);", to: "return this.derive(`tab:${tabId}`);", red: ['recovery-never-opens-a-blank-tab-nor-meets-a-dead-session'] },
 ];
 
 const only = process.argv.slice(2).filter((a) => a !== '--check');

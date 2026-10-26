@@ -2,7 +2,7 @@
 # #400 — profils navigateur, driven on the BUILT app inside its OWN headless sway (scripts/e2e-contained-rig.sh:
 # marker-verified compositor, `env -i` allowlist, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR). Driver: scripts/e2e-browser-profiles.mjs.
 #
-# Usage: scripts/e2e-browser-profiles.sh <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,logout,cdp]
+# Usage: scripts/e2e-browser-profiles.sh <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js); run `pnpm run build:bus-abi` then `pnpm run build:bundles` first.
 #   --arms     subset of arms (mutant builds only need the arm their mutant reddens); default = all.
 # Needs the shared fixture site (scripts/fixtures/browser-site/server.mjs, owned by #395). Exit 0 = every clause green; the must-FAIL builds
@@ -11,7 +11,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 APP_DIR="${1:-}"
-[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,logout,cdp]" >&2; exit 2; }
+[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--out <dir>] [--label <name>] [--arms settings,attach,human,restore,delete,flush,session,logout,rebuild,cdp]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
 for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js dist-electron/cli.js; do

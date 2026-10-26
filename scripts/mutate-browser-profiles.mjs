@@ -18,6 +18,7 @@ const TESTS = [
   'src/main/browser-profiles-wiring.test.ts',
   'src/shared/browser-cookie-promote.test.ts',
   'src/shared/cdp-proxy-core.test.ts',
+  'src/shared/cdp-tab-diff.test.ts',
 ];
 const PANEL = 'src/main/browser-panel.ts';
 const SVC = 'src/main/browser-profiles.ts';
@@ -26,6 +27,7 @@ const PURE = 'src/shared/browser-profile.ts';
 const CDPHOST = 'src/main/browser-cdp-host.ts';
 const CORE = 'src/shared/cdp-proxy-core.ts';
 const PROMO = 'src/shared/browser-cookie-promote.ts';
+const DIFF = 'src/shared/cdp-tab-diff.ts';
 const tmp = mkdtempSync(path.join(process.env.TMPDIR || tmpdir(), 'bprof-mut-'));
 const backups = new Map();
 const orig = new Map();
@@ -135,6 +137,19 @@ const MUTANTS = [
   [PANEL, 'the echo of our own compensating remove is read as a logout', "    if (genuineRemoval && ownRemoval.has(key)) {", "    if (false as boolean) {"],
   [PANEL, 'our compensating remove is not marked as ours', "        ownRemoval.add(key);\n        return ses.cookies.remove(", "        return ses.cookies.remove("],
   [PANEL, 'the own-echo mark is never dropped (an echo that never comes swallows a later logout)', "            settling.delete(t);\n            ownRemoval.delete(key);\n          }, OWN_ECHO_MS);", "            settling.delete(t);\n          }, OWN_ECHO_MS);"],
+  // --- an in-place rebuild is a REPLACED page, not a changed one (seat-2 MAJOR: the agent's CLI met a dead session for good) ---
+  [DIFF, 'the view identity is ignored (a rebuild reads as a bare `changed`)', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'false'],
+  [DIFF, 'an unknown view counts as replaced', 'was.view !== undefined && now.view !== undefined && was.view !== now.view', 'was.view !== now.view'],
+  [DIFF, 'a replacement is announced as destroyed + created of the SAME id', "events.push({ kind: 'replaced', tab: now.tab });", "events.push({ kind: 'destroyed', tab: was.tab }, { kind: 'created', tab: now.tab });"],
+  [CORE, 'a replaced page keeps its target id (agent-browser drops the same-id create in one batch and opens a blank tab)', "return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);", "return this.derive(`tab:${tabId}`);"],
+  [CORE, 'a replacement does not detach the sessions on the old page', "    this.onDebuggerDetached(tab.id, 'target closed');\n    this.generation.set(", "    this.generation.set("],
+  [CORE, 'a replacement detaches under the NEW target id', "    const oldTarget = this.targetIdFor(tab.id);\n    this.onDebuggerDetached(tab.id, 'target closed');\n    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);", "    const oldTarget = this.targetIdFor(tab.id);\n    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);\n    this.onDebuggerDetached(tab.id, 'target closed');"],
+  [CORE, 'the old target is destroyed BEFORE the new one is created (an empty moment for the client)', "      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });\n      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });", "      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });\n      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });"],
+  [CORE, 'a replacement is announced to clients that never asked for discovery', "      if (!c.discover) continue;\n      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });", "      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });"],
+  [CORE, 'a replacement is never turned into events', "    if (e.kind === 'replaced') return this.onTabReplaced(e.tab);\n", ''],
+  [CORE, 'an attach in flight across a replacement is registered on the dead page', "(this.generation.get(t.id) ?? 0) !== gen || this.tabs.get(t.id) !== st", "false"],
+  [CORE, 'an attach in flight across a replacement keeps its hold', "      if (this.tabs.get(t.id) === st) this.releaseTab(t.id);\n", ''],
+  ['src/main/browser-cdp-host.ts', 'the host reads no view identity (a rebuild is invisible to the diff)', "view: bp.tabContents(wsId, t.id)?.id", "view: undefined"],
   // --- browser-profiles.ts: the orchestration ---
   [SVC, 'delete never clears the partition storage', '          await deps.clearStorage(profileId);', '          void profileId;'],
   [SVC, 'delete forgets the profile even when the clear failed', "          return refuse('storage', `Could not clear", "          void refuse('storage', `Could not clear"],
