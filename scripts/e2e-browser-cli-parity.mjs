@@ -42,8 +42,7 @@ const MUTANTS = {
   'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
   'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
-  'skill-not-installed': { file: 'chunk', edits: [[/(\w+)\("orchestra-status",(\w+)\),\1\((\w+),(\w+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
-  'focus-steal-on-input': { file: 'chunk', edits: [[DROP_RE, '(($2.startsWith("Input.")&&(()=>{try{require("electron").webContents.getAllWebContents().forEach((w)=>{try{if(/^https?:/.test(w.getURL()))w.focus()}catch{}})}catch{}})(),0),$1.channel.send($2,$3,$4)).then(']], arms: ['focus'], why: 'every forwarded Input.* command focuses the panel page (the old focus-steal bug): the human loses the composer' },
+  'skill-not-installed': { file: 'chunk', edits: [[/([\w$]+)\("orchestra-status",([\w$]+)\),\1\(([\w$]+),([\w$]+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'no-auto-open': { file: 'renderer', edits: [[/\.current\.set\((\w+),(\w+)\.next\),\2\.open&&/, '.current.set($1,$2.next),!1&&']], arms: ['reveal'], why: 'the renderer stops opening the pane when the agent navigates it: the user does not see what the agent browses' },
 };
 if (argv.includes('--list')) {
@@ -749,6 +748,9 @@ const ARM_FNS5 = {
     try {
       const snap = await cli(ctx, W1, ['snapshot', '-i']);
       const r = { go: refOf(snap.stdout, 'button', 'Go'), name: refOf(snap.stdout, 'textbox', 'Name'), typed: refOf(snap.stdout, 'textbox', 'Typed') };
+      // MEASURED (2026-10-26, this rig): NOTHING reachable here moves the renderer's keyboard focus off the composer — a compositor-level click (swaymsg seat cursor), a CDP
+      // click / Page.bringToFront / Target.activateTarget on the panel page, and a main-process webContents.focus()+sendInputEvent mutant all left it focused. So these clauses are
+      // OBSERVATIONS ("the documented commands did not move it"), not a proof the instrument can say FAIL; there is deliberately no mutant for them (a surviving one would be noise).
       const shotFile = path.join(ctx.world.fakeHome, 'focus-shot.png');
       const cmds = [
         ['snapshot', ['snapshot', '-i']], ['eval', ['eval', 'document.title']], ['get', ['get', 'text', r.go ?? '@e0']], ['click', ['click', r.go ?? '@e0']],

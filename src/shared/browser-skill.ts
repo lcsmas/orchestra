@@ -101,7 +101,7 @@ orchestra browser eval "(() => { const el = document.querySelector('#q'); Object
 
 ## Focus
 
-Your commands never move the human's keyboard focus: they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
+Your commands are built not to move the human's keyboard focus (measured on the documented commands): they keep typing in the composer while you drive the pane. §open§ and §tab new§ reveal the pane for them; on a page that is already loaded, read-only commands (§snapshot§, §get§, §eval§) do not re-open a pane they closed. The very first command on a workspace builds its pane (a blank page) and opens it for the human.
 
 ## What you cannot do
 
