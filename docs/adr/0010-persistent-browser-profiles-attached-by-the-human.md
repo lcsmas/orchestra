@@ -15,5 +15,5 @@ The panel's storage was deliberately non-persistent and per workspace (`partitio
 
 ## Consequences
 
-- Chromium encrypts profile cookies with the OS keyring. Without a Secret Service (this host's state on 2026-10-25), they are stored under a fixed key, so creating a profile shows a visible "storage not encrypted on this machine" warning instead of being refused; the keyring work ships first.
+- **Profile cookies are stored UNENCRYPTED on disk, whatever the keyring says** (amended 2026-10-26, #400 review F1). Chromium encrypts cookies at rest only when Electron's `EnableCookieEncryption` fuse is on; it is OFF in the shipped build (the repo flips no fuse — measured: the profile's Cookies DB holds the `value` in clear and an empty `encrypted_value`). Creating a profile therefore ALWAYS shows a visible warning instead of refusing it, and the human chooses knowingly; the keyring work (#389) protects `secrets.json`, not the cookie jar. Flipping the fuse is a one-way change for existing persistent partitions (login partitions included) and is a separate decision.
 - Tabs are restored at app restart (URL + active tab); a profile brings them back signed in.

@@ -610,3 +610,134 @@ test('sendOnLease: gives the lease back when the command settles, rejects or nev
   assert.match(String(outcome), /did not settle within 1000 ms/);
   assert.equal(hung.released(), 1, 'a command that never settles cannot pin the tab\'s debugger');
 });
+
+test('#400 review F5: the policy hook receives the TARGET tab — not the first tab, not the active one; a tab that left the registry answers `Target closed.` and the hook is never asked', async () => {
+  const p = fakePanel([
+    { id: 't1', url: 'http://first/', title: 'first', active: true, openedBy: 'human' },
+    { id: 't2', url: 'http://second/page', title: 'second', active: false, openedBy: 'agent' },
+    { id: 't3', url: 'http://third/', title: 'third', active: false, openedBy: 'agent' },
+  ]);
+  const seen: string[] = [];
+  (p.port as any).refuseMethod = (_m: string, _p: unknown, tab: CdpTab) => (seen.push(`${tab.id}@${tab.url}`), null);
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const infos = (await c.call('Target.getTargets')).result.targetInfos as Array<{ targetId: string; url: string }>;
+  const target = (url: string) => infos.find((i) => i.url === url)!.targetId;
+  const s2 = (await c.call('Target.attachToTarget', { targetId: target('http://second/page') })).result.sessionId;
+  const s3 = (await c.call('Target.attachToTarget', { targetId: target('http://third/') })).result.sessionId;
+  await c.call('Runtime.evaluate', { expression: '1' }, s2);
+  await c.call('Runtime.evaluate', { expression: '1' }, s3);
+  assert.deepEqual(seen, ['t2@http://second/page', 't3@http://third/'], 'each command is judged against ITS tab (neither tabs[0] = t1 nor the active tab = t1)');
+  // stale: the registry drops t2 but the proxy still holds its session (the destroyed event has not reached it yet)
+  p.tabs.splice(p.tabs.findIndex((t) => t.id === 't2'), 1);
+  const ch = p.channels.get('t2')!;
+  const sent = ch.sent.length;
+  seen.length = 0;
+  const r = await c.call('Runtime.evaluate', { expression: '2' }, s2);
+  assert.match(r.error.message, /^Target closed\.$/);
+  assert.deepEqual(seen, [], 'the policy was NOT asked about a tab that is gone');
+  assert.equal(ch.sent.length, sent, 'nothing reached the debugger');
+});
+
+// ── #400 (seat-2 MAJOR): a tab REPLACED in place — same id, new page (profile attach / detach / delete) ──────────────────────────────────────────
+/** Attach a client with discovery on to t1 and return what the replacement tests need. */
+async function attachedClient(p: ReturnType<typeof fakePanel>) {
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  await c.call('Target.setDiscoverTargets', { discover: true });
+  const targetId = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  const { sessionId } = (await c.call('Target.attachToTarget', { targetId })).result;
+  await tick();
+  c.inbox.length = 0; // from here on: only what the replacement tells the client
+  return { core, c, targetId, sessionId, oldChannel: p.channels.get('t1')! };
+}
+const names = (c: ReturnType<typeof client>) => c.inbox.filter((m) => m.method).map((m) => m.method as string);
+
+test('a tab REPLACED under a live session (the old debugger detached first, then `replaced`): the client hears detach(OLD id) → targetCreated(NEW id) → targetDestroyed(OLD id); the old session is dead; a fresh attach on the NEW target reaches the NEW view', async () => {
+  const p = fakePanel();
+  const { c, targetId, sessionId, oldChannel } = await attachedClient(p);
+  oldChannel.detach('target closed'); // the host force-detaches the old contents' debugger first
+  p.channels.delete('t1'); // the rebuilt tab is a new webContents: its debugger is a new channel
+  p.emitTab({ kind: 'replaced', tab: p.tabs[0]! });
+  await tick();
+  assert.deepEqual(names(c).filter((m) => /^Target\./.test(m)), ['Target.detachedFromTarget', 'Target.targetCreated', 'Target.targetDestroyed']);
+  assert.equal(c.events('Target.detachedFromTarget').length, 1, '`replaced` does not detach a second time');
+  assert.equal(c.events('Target.detachedFromTarget')[0].params.targetId, targetId, 'the detach names the OLD target');
+  assert.equal(c.events('Target.targetDestroyed')[0].params.targetId, targetId);
+  const newId = c.events('Target.targetCreated')[0].params.targetInfo.targetId;
+  assert.notEqual(newId, targetId, 'the replacement page is a NEW target (a client that still tracks the old id drops a same-id create)');
+  assert.match((await c.call('Runtime.evaluate', { expression: '1' }, sessionId)).error.message, /Session with given id not found/);
+  assert.match((await c.call('Target.attachToTarget', { targetId })).error.message, /No target with given id/, 'the old id is gone');
+  const fresh = (await c.call('Target.attachToTarget', { targetId: newId })).result.sessionId;
+  assert.notEqual(fresh, sessionId);
+  await c.call('Runtime.evaluate', { expression: '2' }, fresh);
+  assert.equal(p.log.acquire.filter((id) => id === 't1').length, 2, 'the new view was acquired again');
+  assert.deepEqual(oldChannel.sent.filter((s) => s.method === 'Runtime.evaluate'), [], 'nothing reached the OLD debugger after the replacement');
+  assert.equal(oldChannel.listeners.size, 0, 'the old channel is unsubscribed');
+  assert.equal(p.channels.get('t1')!.sent.filter((s) => s.method === 'Runtime.evaluate').length, 1, 'the new debugger got the command');
+  assert.equal((await c.call('Target.getTargets')).result.targetInfos[0].targetId, newId, 'getTargets lists the new id');
+});
+
+test('a tab REPLACED with NO debugger-detach event at all (nothing was attached to the old contents): `replaced` itself detaches the session, so the client is never left on a dead one', async () => {
+  const p = fakePanel();
+  const { c, targetId, sessionId, oldChannel } = await attachedClient(p);
+  p.channels.delete('t1');
+  p.emitTab({ kind: 'replaced', tab: p.tabs[0]! });
+  await tick();
+  assert.deepEqual(names(c).filter((m) => /^Target\./.test(m)), ['Target.detachedFromTarget', 'Target.targetCreated', 'Target.targetDestroyed']);
+  assert.equal(c.events('Target.detachedFromTarget')[0].params.sessionId, sessionId);
+  assert.equal(c.events('Target.detachedFromTarget')[0].params.targetId, targetId, 'under the OLD id');
+  assert.match((await c.call('Runtime.evaluate', { expression: '1' }, sessionId)).error.message, /Session with given id not found/);
+  const newId = c.events('Target.targetCreated')[0].params.targetInfo.targetId;
+  const fresh = (await c.call('Target.attachToTarget', { targetId: newId })).result.sessionId;
+  await c.call('Runtime.evaluate', { expression: '2' }, fresh);
+  assert.equal(oldChannel.sent.length, 0, 'the old debugger was never spoken to again');
+  assert.equal(p.log.acquire.filter((id) => id === 't1').length, 2);
+});
+
+test('a client WITHOUT discovery on is not sent targetCreated/targetDestroyed by a replacement (only the session detach), and the NEXT replacement mints yet another id', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const targetId = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  await c.call('Target.attachToTarget', { targetId });
+  c.inbox.length = 0;
+  p.channels.delete('t1');
+  p.emitTab({ kind: 'replaced', tab: p.tabs[0]! });
+  await tick();
+  assert.deepEqual(names(c), ['Target.detachedFromTarget']);
+  const second = core.targetIdFor('t1');
+  assert.notEqual(second, targetId);
+  p.emitTab({ kind: 'replaced', tab: p.tabs[0]! });
+  assert.notEqual(core.targetIdFor('t1'), second, 'each replacement is a new target');
+  assert.notEqual(core.targetIdFor('t1'), targetId);
+});
+
+test('a `changed` alone (the same page, new title) leaves the session alive and the target id unchanged — only a REPLACEMENT kills it', async () => {
+  const p = fakePanel();
+  const { c, core, targetId, sessionId, oldChannel } = await attachedClient(p);
+  p.emitTab({ kind: 'changed', tab: { ...p.tabs[0]!, title: 'renamed' } });
+  await tick();
+  assert.deepEqual(names(c), ['Target.targetInfoChanged']);
+  assert.equal(core.targetIdFor('t1'), targetId);
+  await c.call('Runtime.evaluate', { expression: '1' }, sessionId);
+  assert.equal(oldChannel.sent.filter((s) => s.method === 'Runtime.evaluate').length, 1);
+});
+
+test('an attach IN FLIGHT when the page is replaced does not register a session on the dead one: the client gets `Target closed.` and nothing stays held', async () => {
+  const p = fakePanel();
+  const core = new CdpProxyCore(p.port);
+  const c = client(core);
+  const targetId = (await c.call('Target.getTargets')).result.targetInfos[0].targetId;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const realAcquire = p.port.acquire.bind(p.port);
+  p.port.acquire = async (id) => { const ch = await realAcquire(id); await gate; return ch; };
+  const attaching = c.call('Target.attachToTarget', { targetId });
+  await tick();
+  p.emitTab({ kind: 'replaced', tab: p.tabs[0]! }); // while the acquire is still pending
+  release();
+  const r = await attaching;
+  assert.match(r.error.message, /Target closed/);
+  assert.deepEqual(core.attachedTabIds(), []);
+});

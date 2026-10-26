@@ -5,6 +5,7 @@ import * as electronNs from 'electron';
 import type {
   BrowserBounds,
   BrowserPanelState,
+  BrowserProfileId,
   BrowserTabId,
   BrowserTabInfo,
   BrowserTabOpener,
@@ -25,6 +26,8 @@ import { AGENT_OPENER, BROWSER_TAB_CAP, decideExternalProtocol, decidePopup, dec
 import { decideAgentFront } from '../shared/browser-agent-tabs.ts';
 import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import { partitionFor } from '../shared/browser-profile.ts';
+import { promoteSessionCookie, restoreCookie } from '../shared/browser-cookie-promote.ts';
 import {
   closePopupWindows,
   closePopupsOpenedBy,
@@ -102,6 +105,11 @@ export interface Tab {
  *  composited view at a time — the ACTIVE tab's). */
 export interface Panel {
   wsId: string;
+  /** The session partition ALL this panel's tabs use (#400): its profil navigateur's `persist:` one, else the
+   *  workspace's own ephemeral one. Fixed at panel creation; {@link reprofilePanel} swaps it by rebuilding the tabs. */
+  partition: string;
+  /** The profil navigateur behind {@link partition}; absent = navigation éphémère. */
+  profileId?: BrowserProfileId;
   tabs: Tab[];
   /** Id of the active tab — the one every un-suffixed primitive drives. */
   activeId: BrowserTabId;
@@ -118,6 +126,8 @@ export interface Panel {
   pendingShow: boolean;
   /** Last computed panel state, for a fresh renderer to re-request. */
   state: BrowserPanelState;
+  /** {@link reprofilePanel} is rebuilding the tabs: the registry is half-built, so {@link publish} says nothing until the rebuild is whole. */
+  rebuilding?: boolean;
   /** The last tab swap an AGENT caused on screen (#397): shown to the human as a notice, cleared by any swap the human or the page makes. */
   agentSwitch?: { from: BrowserTabId; to: BrowserTabId; at: number };
   /** The tab the latest `read_page` outline (its `data-orch-ref` ids) came from (#397): a later `click ref_N` targets THIS tab, not whichever is active then. */
@@ -222,6 +232,8 @@ function destroyTab(tab: Tab): void {
   } catch {
     /* already detached */
   }
+  // `close()` is ASYNC (unload / pagehide handlers still run): remember it, a profile delete waits for it (settleClosedViews).
+  trackClose(wc);
   // WebContentsView has no close(); destroying its webContents releases it.
   (wc as unknown as { close?: () => void }).close?.();
 }
@@ -292,6 +304,172 @@ export function flushBrowserTabs(): void {
   persistence?.flush();
 }
 
+/** Which profil navigateur a workspace carries (#400): the host reads the workspace record + the profile list
+ *  (`effectiveProfileId`). Absent in the verify harnesses → every panel is navigation éphémère. */
+let profileOf: ((wsId: string) => BrowserProfileId | undefined) | null = null;
+
+/** Install (index.ts) the resolver {@link ensurePanel} asks when it builds a panel. Human-facing wiring only: the
+ *  agent tools and the CLI never reach this (pinned by browser-profiles-wiring.test.ts). */
+export function setBrowserProfileResolver(fn: ((wsId: string) => BrowserProfileId | undefined) | null): void {
+  profileOf = fn;
+}
+
+const FLUSH_COOKIES_MS = 1500;
+/** A cookie is promoted this long after its LAST change: a site that rewrites it at every request costs one `set`, and what is promoted is the cookie as it is THEN
+ *  (re-read), never the snapshot the event carried. A logout or rotation the main process SEES before the write is honoured (pre-write guard); one that lands inside the
+ *  read → write window is put right within ~300 ms of the write (post-write reconciliation, seat-1) — unless its event is delivered more than 300 ms late. */
+const PROMOTE_DEBOUNCE_MS = 250;
+/** After a promotion's write, how long before the logout re-check runs a second time (the removal event can be delivered after the write's promise). */
+const RECONCILE_SETTLE_MS = 300;
+/** How long after our compensating `remove` resolves its own removal event is still expected. */
+const OWN_ECHO_MS = 500;
+const signInSessions = new WeakMap<Electron.Session, () => void>();
+
+/** What keeps a profile signed in across a restart (PROFILE sessions only — never an ephemeral workspace's), once per session:
+ *  1. a SESSION cookie (no expiry; Electron drops these at quit) is re-set with a sliding 30-day expiry (OPS ruling, #400) — debounced per cookie,
+ *     and only if it is STILL that session cookie when re-read (removed / rewritten with an expiry in the meantime = left alone);
+ *  2. Chromium writes its cookie store on its own ~30 s timer — a crash or SIGKILL right after signing in would lose the sign-in —
+ *     so the store is flushed shortly after any change.
+ *  {@link stopSignInPersistence} detaches it (a deleted profile must not get cookies re-created by a late event). */
+function persistSignIns(ses: Electron.Session): void {
+  if (signInSessions.has(ses)) return;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let alive = true;
+  const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const settling = new Set<ReturnType<typeof setTimeout>>();
+  /** Per cookie: the sequence number of its LAST event (a change OR a removal). A promotion whose read started before a later event SEEN BY THE MAIN PROCESS never
+   *  writes: a rotated token is not overwritten by the value that was read, and the later change schedules its own. An event not yet delivered is the post-write
+   *  reconciliation's job (below). */
+  let seq = 0;
+  const changedSeq = new Map<string, number>();
+  /** Per cookie: the NEWEST event from the SITE (or the user) that is not ours — a genuine removal (a logout, an expiry, an eviction; not the `overwrite` that replaces a
+   *  cookie with its promoted copy) or a change that is not an echo of one of our own writes. The post-write reconciliation acts on it. */
+  const foreign = new Map<string, { seq: number; removed: boolean; cookie: Electron.Cookie }>();
+  /** What we wrote per cookie (value + expiry, the last few): the insert event our own `set` emits must not read as the site's. */
+  const ownWrites = new Map<string, Array<{ value: string; exp: number }>>();
+  const noteOwnWrite = (key: string, d: { value: string; expirationDate: number }): void => {
+    const l = ownWrites.get(key) ?? [];
+    l.push({ value: d.value, exp: d.expirationDate });
+    if (l.length > 4) l.shift();
+    ownWrites.set(key, l);
+  };
+  const isOwnWrite = (key: string, c: Electron.Cookie): boolean =>
+    c.expirationDate !== undefined && (ownWrites.get(key) ?? []).some((w) => w.value === c.value && Math.abs(w.exp - (c.expirationDate as number)) < 2);
+  /** A compensating `remove` of OUR OWN promoted copy emits a removal event too: it is expected ONCE and must be neither read as a logout nor promoted. Consumed by
+   *  that first echo, and dropped {@link OWN_ECHO_MS} after the remove resolves (an echo that never comes must not swallow a later, genuine logout). */
+  const ownRemoval = new Set<string>();
+  /** The promotion is read → write across the network service, and what the SITE does BETWEEN the two reaches us only AFTER the write was issued: the pre-write guard
+   *  cannot see it. A logout would be undone by the 30-day copy (measured on the real app: login → logout at 243-250 ms, 12/200); a ROTATION would be overwritten by
+   *  the value that was read (seat 1: the jar ended on the PREVIOUS value, ~1/100). So after the write, if a foreign event for this cookie arrived since the READ STARTED
+   *  and the live cookie is still exactly OUR copy: a removal removes the copy; a change puts the site's newest value back (promoted if it is a session cookie).
+   *  A user who logged in again meanwhile has a different live cookie and is left alone. Checked right after the write and once more after a short settle (the event
+   *  can be delivered after the write's promise); an event delivered after the settle is NOT compensated. */
+  const reconcile = (key: string, written: { url: string; name: string; value: string; expirationDate: number }, domain: string, path: string, started: number): void => {
+    if (!alive || (foreign.get(key)?.seq ?? 0) <= started) return;
+    void ses.cookies
+      .get({ name: written.name, domain, path })
+      .then((live) => {
+        const last = foreign.get(key);
+        if (!alive || !last || last.seq <= started) return undefined;
+        const mine = live.find((c) => c.name === written.name && c.domain === domain && c.value === written.value && Math.abs((c.expirationDate ?? 0) - written.expirationDate) < 2);
+        if (!mine) return undefined;
+        if (last.removed) {
+          ownRemoval.add(key);
+          return ses.cookies.remove(written.url, written.name).finally(() => {
+            const t = setTimeout(() => {
+              settling.delete(t);
+              ownRemoval.delete(key);
+            }, OWN_ECHO_MS);
+            settling.add(t);
+          });
+        }
+        const d = restoreCookie(last.cookie, Date.now() / 1000);
+        if (!d) return undefined;
+        noteOwnWrite(key, d);
+        return ses.cookies.set(d);
+      })
+      .catch((err) => log.warn('browser-panel: reconciling a promotion with a later change of the site failed', err));
+  };
+  const promote = (key: string, cookie: Electron.Cookie): void => {
+    pending.delete(key);
+    const started = seq;
+    void ses.cookies
+      .get({ name: cookie.name, domain: cookie.domain, path: cookie.path })
+      .then(async (live) => {
+        if (!alive || (changedSeq.get(key) ?? 0) > started) return;
+        // `get({domain})` also matches SUBDOMAINS: promote the cookie the EVENT named, never a same-name sibling.
+        const own = live.find((c) => c.name === cookie.name && c.domain === cookie.domain && (c.path ?? '/') === (cookie.path ?? '/'));
+        const p = own ? promoteSessionCookie(own, Date.now() / 1000) : null;
+        if (!p) return;
+        noteOwnWrite(key, p);
+        await ses.cookies.set(p);
+        const domain = cookie.domain ?? '';
+        const path = cookie.path ?? '/';
+        reconcile(key, p, domain, path, started);
+        const t = setTimeout(() => {
+          settling.delete(t);
+          reconcile(key, p, domain, path, started);
+        }, RECONCILE_SETTLE_MS);
+        settling.add(t);
+      })
+      .catch((err) => log.warn('browser-panel: promoting a session cookie failed', err));
+  };
+  const onChanged = (_e: unknown, cookie: Electron.Cookie, cause: string, removed: boolean): void => {
+    const key = `${cookie.domain}|${cookie.path}|${cookie.name}`;
+    const genuineRemoval = removed && cause !== 'overwrite';
+    if (genuineRemoval && ownRemoval.has(key)) {
+      ownRemoval.delete(key); // the echo of our own compensating remove: not a logout, nothing to promote or flush on its account
+      return;
+    }
+    changedSeq.set(key, ++seq);
+    if (genuineRemoval) foreign.set(key, { seq, removed: true, cookie });
+    else if (!removed && !isOwnWrite(key, cookie)) foreign.set(key, { seq, removed: false, cookie });
+    if (!removed && promoteSessionCookie(cookie, 0)) {
+      if (!pending.has(key)) pending.set(key, setTimeout(() => promote(key, cookie), PROMOTE_DEBOUNCE_MS));
+    }
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void ses.cookies.flushStore().catch(() => {});
+    }, FLUSH_COOKIES_MS);
+  };
+  ses.cookies.on('changed', onChanged);
+  signInSessions.set(ses, () => {
+    alive = false;
+    ses.cookies.removeListener('changed', onChanged);
+    for (const t of pending.values()) clearTimeout(t);
+    pending.clear();
+    for (const t of settling) clearTimeout(t);
+    settling.clear();
+  });
+}
+
+/** Stop promoting / flushing a profile partition's cookies (called before its storage is wiped: a late `changed` must not re-create a promoted
+ *  cookie in a partition the human just deleted). A later panel on that partition would re-attach it. */
+export function stopSignInPersistence(partition: string): void {
+  try {
+    const ses = session.fromPartition(partition);
+    signInSessions.get(ses)?.();
+    signInSessions.delete(ses);
+  } catch (e) {
+    log.debug('browser-panel: stopSignInPersistence', e);
+  }
+}
+
+/** Write every open profile's cookies / storage to disk now (app quit). */
+export function flushProfileStorage(): void {
+  for (const panel of panels.values()) {
+    if (panel.profileId === undefined) continue;
+    try {
+      const ses = session.fromPartition(panel.partition);
+      ses.flushStorageData();
+      void ses.cookies.flushStore().catch(() => {});
+    } catch (e) {
+      log.debug('browser-panel: flushProfileStorage', e);
+    }
+  }
+}
+
 function savePanelTabs(panel: Panel): void {
   // Only a REGISTERED panel is remembered: a panel mid-restore (not yet in `panels`), a closed-last-tab husk and a
   // destroyed panel must not overwrite what is on record.
@@ -309,14 +487,8 @@ function savePanelTabs(panel: Panel): void {
   );
 }
 
-/** The session partition holding a workspace's browser cookies/storage. Not
- *  `persist:` — a panel is scratch browsing tied to the workspace's lifetime;
- *  we don't want authenticated sessions surviving a workspace delete. Keyed by
- *  wsId so two workspaces browsing the same site stay isolated. All tabs of a
- *  workspace share it (one cookie jar per panel). */
-function partitionFor(wsId: string): string {
-  return `orchestra-browser-${wsId}`;
-}
+/** The session partition holding a workspace's browser cookies/storage: a panel's is `Panel.partition` (#400) — its profil
+ *  navigateur's `persist:` one, else the workspace's own in-memory one (`partitionFor`, shared/browser-profile.ts). */
 
 /** Strip Electron/Orchestra tokens from the UA so sites (and their bot
  *  heuristics) see a plain Chromium — same reasoning as login-browser.ts. */
@@ -405,6 +577,7 @@ function computeState(panel: Panel): BrowserPanelState {
     ...(n.error !== undefined ? { error: n.error } : {}),
     tabs: panel.tabs.map((t) => tabInfo(panel, t)),
     activeTabId: panel.activeId,
+    ...(panel.profileId !== undefined ? { profileId: panel.profileId } : {}),
     ...(panel.agentSwitch ? { agentSwitch: panel.agentSwitch } : {}),
   };
 }
@@ -427,6 +600,9 @@ function notifyPanelListeners(wsId: string, tabs: BrowserTabInfo[], destroyed = 
 
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
+  // A rebuild in progress holds a half-built registry (the first rebuilt tab's did-start-loading would publish ONE tab of two): the renderer, the tab
+  // persistence and the CDP proxy's diff must never see it — a tab missing from one publish and back in the next reads as closed and reopened (#400).
+  if (panel.rebuilding) return panel.state;
   panel.state = computeState(panel);
   savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
@@ -595,16 +771,17 @@ function watchPopups(panel: Panel, wc: Electron.WebContents, openedBy: BrowserTa
 
 /** Build a tab (native view + handlers) for `panel` and append it to the
  *  registry. Does NOT change the active tab. */
-function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
+function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: BrowserTabId }): Tab {
   const win = getWindow?.();
   if (!win) throw new Error('browser-panel: main window not ready');
 
-  const ses = session.fromPartition(partitionFor(panel.wsId));
+  const ses = session.fromPartition(panel.partition);
   normalizeUserAgent(ses);
+  if (panel.profileId !== undefined) persistSignIns(ses);
   guardExternalProtocols(ses);
   const view = new WebContentsView({
     webPreferences: {
-      partition: partitionFor(panel.wsId),
+      partition: panel.partition,
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
@@ -619,7 +796,7 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
   view.setBackgroundColor('#1a1f26');
 
   const tab: Tab = {
-    id: nextTabId(panel.wsId),
+    id: opts.id ?? nextTabId(panel.wsId),
     view,
     openedBy: opts.openedBy,
     designHold: null,
@@ -670,8 +847,11 @@ export function ensurePanel(wsId: string): Panel {
   if (existing) return existing;
   if (!getWindow?.()) throw new Error('browser-panel: main window not ready');
 
+  const profileId = profileOf?.(wsId);
   const panel: Panel = {
     wsId,
+    partition: partitionFor(wsId, profileId),
+    profileId,
     tabs: [],
     activeId: '',
     attachedId: null,
@@ -707,6 +887,130 @@ export function ensurePanel(wsId: string): Panel {
  *  should only drive a panel the user/agent has already opened. */
 export function getPanel(wsId: string): Panel | undefined {
   return reapIfDead(wsId);
+}
+
+/** Move a workspace's panel onto another identity (#400): `profileId` = a profil navigateur, undefined = navigation
+ *  éphémère. A view's partition is fixed at creation, so EVERY tab is rebuilt in the new partition — same ids, same
+ *  openers, same active tab, each reloaded at its URL — and the old views (debuggers included) are destroyed. A panel
+ *  that is not open is not built here: it picks the identity from the workspace record at its first ensurePanel
+ *  (restored tabs included). HUMAN-FACING only (browser-profiles.ts); never reachable from the agent tools. */
+export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undefined): BrowserPanelState {
+  const panel = reapIfDead(wsId);
+  if (!panel) return getState(wsId);
+  const partition = partitionFor(wsId, profileId);
+  if (partition === panel.partition) return panel.state;
+  const oldTabs = panel.tabs;
+  const snaps = oldTabs.map((t) => ({
+    id: t.id,
+    openedBy: t.openedBy,
+    url: restorableUrl(refreshNav(t).url) || restoreUrls.get(t) || '',
+  }));
+  const oldActive = panel.activeId;
+  const wasAttached = panel.attachedId !== null;
+  const prev = { partition: panel.partition, profileId: panel.profileId };
+  const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
+  if (attachedTab) detachTab(panel, attachedTab);
+  panel.rebuilding = true;
+  // `rebuilding` is released on EVERY way out (a rollback that itself throws must not leave the panel silent for good).
+  try {
+    panel.partition = partition;
+    panel.profileId = profileId;
+    panel.tabs = [];
+    try {
+      for (const sn of snaps) {
+        const tab = buildTab(panel, { openedBy: sn.openedBy, id: sn.id });
+        if (sn.url) {
+          restoreUrls.set(tab, sn.url);
+          void loadIn(tab, sn.url);
+        }
+      }
+    } catch (e) {
+      // A view could not be built: put the panel back EXACTLY as it was (old tabs alive, old identity, old view composited) and
+      // let the caller see the error — never a half-built panel whose record and views disagree. Each step stands alone: a view that
+      // will not close must not stop the registry from being restored.
+      const half = panel.tabs;
+      panel.tabs = oldTabs;
+      panel.partition = prev.partition;
+      panel.profileId = prev.profileId;
+      for (const t of half) {
+        try {
+          destroyTab(t);
+        } catch (err) {
+          log.warn('browser-panel: reprofilePanel rollback could not close a half-built view', err);
+        }
+      }
+      try {
+        if (wasAttached) attachActive(panel);
+      } catch (err) {
+        log.warn('browser-panel: reprofilePanel rollback could not re-composite the panel', err);
+      }
+      throw e;
+    }
+    // Committed from here: nothing below may throw, or the record would be rolled back while the panel already runs on the new partition.
+    panel.activeId = oldActive;
+    // #397 pins these by TAB ID, and the ids survive the rebuild but the pages do not: the last outline's `ref_N` ids are gone with the old page, and the
+    // « the agent switched tabs » notice names a swap that no longer exists.
+    panel.refTabId = undefined;
+    delete panel.agentSwitch;
+    for (const t of oldTabs) {
+      try {
+        destroyTab(t);
+      } catch (e) {
+        log.warn('browser-panel: reprofilePanel could not close an old view', e);
+      }
+    }
+    try {
+      if (wasAttached) attachActive(panel);
+    } catch (e) {
+      log.warn('browser-panel: reprofilePanel could not re-composite the panel', e);
+    }
+  } finally {
+    panel.rebuilding = false;
+  }
+  return publish(panel);
+}
+
+/** The profil navigateur `wsId`'s OPEN panel runs on, or undefined (ephemeral / no panel). A pure read — builds and reaps nothing; the CDP
+ *  proxy asks it (with `decideAgentCdp`) before it lets an agent clear a profile's jar or touch another site's cookies. */
+export function panelProfileId(wsId: string): BrowserProfileId | undefined {
+  return panels.get(wsId)?.profileId;
+}
+
+/** The urls of one tab's frame tree (main frame + every subframe), read LIVE — what `Network.getCookies` without `urls` would cover. A pure read; `undefined`
+ *  when the tab has no live view or the tree cannot be read (the agent CDP policy then refuses what it cannot judge). */
+export function tabFrameUrls(wsId: string, tabId: BrowserTabId): string[] | undefined {
+  const wc = liveContents(panels.get(wsId)?.tabs.find((t) => t.id === tabId));
+  try {
+    const main = wc?.mainFrame;
+    return main ? main.framesInSubtree.map((f) => f.url) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The workspaces whose OPEN panel runs on `profileId` right now (what the views do, not what a record says). */
+export function workspacesOnProfile(profileId: BrowserProfileId): string[] {
+  return [...panels.values()].filter((p) => p.profileId === profileId).map((p) => p.wsId);
+}
+
+/** Views being closed (a re-profile, a tab close, a panel teardown): `webContents.close()` is ASYNC (unload / pagehide handlers still run), so a
+ *  storage wipe must wait for their `destroyed` or a page could write the partition back after it was cleared. */
+const closing = new Set<Promise<void>>();
+function trackClose(wc: Electron.WebContents): void {
+  const p = new Promise<void>((resolve) => wc.once('destroyed', () => resolve()));
+  closing.add(p);
+  void p.then(() => closing.delete(p));
+}
+
+/** Resolve `true` once every view closed so far is really gone, `false` after `timeoutMs` (a hung page must not block forever — the caller decides). */
+export async function settleClosedViews(timeoutMs: number): Promise<boolean> {
+  if (closing.size === 0) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), timeoutMs); });
+  const settled = Promise.all([...closing]).then(() => true);
+  const ok = await Promise.race([settled, timedOut]);
+  clearTimeout(timer);
+  return ok;
 }
 
 // ---------------------------------------------------------------------------

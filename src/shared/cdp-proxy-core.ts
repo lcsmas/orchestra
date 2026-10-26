@@ -28,7 +28,8 @@ export interface CdpTabChannel {
   /** Fired once when the debugger goes away (tab destroyed, DevTools took it). */
   onDetach(l: (reason: string) => void): () => void;
 }
-export type CdpTabEvent = { kind: 'created' | 'changed' | 'destroyed'; tab: CdpTab };
+/** `replaced`: the tab id survived but the PAGE behind it did not (an in-place rebuild — #400 profile attach / detach / delete): `tab` is the new page. */
+export type CdpTabEvent = { kind: 'created' | 'changed' | 'destroyed' | 'replaced'; tab: CdpTab };
 export interface CdpPanelPort {
   listTabs(): CdpTab[];
   subscribeTabs(l: (e: CdpTabEvent) => void): () => void;
@@ -166,6 +167,8 @@ export class CdpProxyCore {
   private readonly acquiring = new Map<string, Promise<TabState>>();
   private readonly unsubTabs: () => void;
   private readonly known = new Map<string, CdpTab>();
+  /** Per tab id: how many times the page behind it was replaced. It is part of the target id, so a replacement is a NEW target to the client. */
+  private readonly generation = new Map<string, number>();
 
   private readonly trace: CdpTrace | undefined;
 
@@ -183,8 +186,11 @@ export class CdpProxyCore {
   private derive(what: string): string {
     return createHash('sha1').update(`${this.nonce}:${what}`).digest('hex').slice(0, 32).toUpperCase();
   }
+  /** A replaced page gets a NEW target id: agent-browser drops a `targetCreated` for an id it still tracks when it arrives in the same batch as the
+   *  `targetDestroyed` of that id, then removes the page — and opens a blank tab (v0.39.2 `drain_cdp_events`). */
   targetIdFor(tabId: string): string {
-    return this.derive(`tab:${tabId}`);
+    const g = this.generation.get(tabId) ?? 0;
+    return this.derive(g === 0 ? `tab:${tabId}` : `tab:${tabId}:g${g}`);
   }
   private tabForTarget(targetId: unknown): CdpTab | undefined {
     if (typeof targetId !== 'string') return undefined;
@@ -508,8 +514,14 @@ export class CdpProxyCore {
   }
 
   private async attachTab(c: ClientState, t: CdpTab): Promise<string> {
+    const gen = this.generation.get(t.id) ?? 0;
     const st = await this.acquireTab(t.id);
     st.agent = true;
+    if ((this.generation.get(t.id) ?? 0) !== gen || this.tabs.get(t.id) !== st) {
+      // the page was REPLACED while the debugger was being acquired: the hold is on the old one (cleaned up with it, or given back here)
+      if (this.tabs.get(t.id) === st) this.releaseTab(t.id);
+      throw new CdpError('Target closed.', ERR_SERVER);
+    }
     if (c.closed) {
       // the client went away while the debugger was being acquired: nobody will ever detach this session
       this.releaseTab(t.id);
@@ -666,7 +678,22 @@ export class CdpProxyCore {
     }
   }
 
+  /** The page behind a tab id was replaced: its sessions are dead (detach, under the OLD target id), then the client hears the NEW target created BEFORE
+   *  the old one is destroyed, so a client that tracks pages never has an empty moment in between. */
+  private onTabReplaced(tab: CdpTab): void {
+    const oldTarget = this.targetIdFor(tab.id);
+    this.onDebuggerDetached(tab.id, 'target closed');
+    this.generation.set(tab.id, (this.generation.get(tab.id) ?? 0) + 1);
+    this.known.set(tab.id, tab);
+    for (const c of this.clients) {
+      if (!c.discover) continue;
+      this.emit(c, 'Target.targetCreated', { targetInfo: this.targetInfo(tab) });
+      this.emit(c, 'Target.targetDestroyed', { targetId: oldTarget });
+    }
+  }
+
   private onTabEvent(e: CdpTabEvent): void {
+    if (e.kind === 'replaced') return this.onTabReplaced(e.tab);
     if (e.kind === 'created') this.known.set(e.tab.id, e.tab);
     if (e.kind === 'destroyed') {
       this.known.delete(e.tab.id);

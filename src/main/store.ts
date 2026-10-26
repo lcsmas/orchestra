@@ -3,7 +3,7 @@ import { migrateBaseUrlsIntoKeystore } from './secrets';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import type { Account, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
+import type { Account, BrowserProfile, PinnedTicket, RepoEntry, RepoScripts, Workspace } from '../shared/types';
 import {
   legacyStoreBaseUrl,
   sanitizeAccountAuth,
@@ -15,6 +15,7 @@ import { normalizeModelDefaults, type ModelDefaults } from '../shared/model-defa
 import { normalizeEffortDefaults, type EffortDefaults } from '../shared/effort-defaults';
 import { normalizeMemoryGuardSettings, type MemoryGuardSettings } from '../shared/memory-guard';
 import { normalizeAccesMobileSettings, type AccesMobileSettings } from '../shared/acces-mobile';
+import { normalizeBrowserProfiles } from '../shared/browser-profile';
 import { scoped } from './logger';
 
 /** Store-scoped logger. Persistence failures are invisible at runtime — every
@@ -80,6 +81,9 @@ interface StoreShape {
   /** Accès mobile (#334): on/off, ports, allowed Tailscale login — raw, shared/acces-mobile.ts normalizes. Absent → OFF.
    *  The token is NOT here: it lives in its own 0600 file (main/acces-mobile-host.ts). */
   accesMobile?: Partial<AccesMobileSettings>;
+  /** Profils navigateur (#400, ADR 0010): the named persistent browser identities the human created. Raw —
+   *  shared/browser-profile.ts normalizes. Absent → none. A workspace refers to one by `browserProfileId`. */
+  browserProfiles?: BrowserProfile[];
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -478,6 +482,16 @@ class Store {
 
   async setAccesMobileSettings(next: AccesMobileSettings): Promise<void> {
     this.data.accesMobile = next;
+    await this.save();
+  }
+
+  /** The profils navigateur on record, normalized (a malformed entry never reaches a partition name). */
+  getBrowserProfiles(): BrowserProfile[] {
+    return normalizeBrowserProfiles(this.data.browserProfiles);
+  }
+
+  async setBrowserProfiles(next: BrowserProfile[]): Promise<void> {
+    this.data.browserProfiles = next;
     await this.save();
   }
 
