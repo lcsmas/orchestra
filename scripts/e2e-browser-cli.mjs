@@ -56,6 +56,8 @@ const MUTANTS = {
   'dashdash-exempt': { file: 'cli', edits: [['for (const a of argv) {\n    const name = a.startsWith("--")', 'for (const a of argv) {\n    if (a === "--") break;\n    const name = a.startsWith("--")']], arms: ['allowlist'], why: 'flags after `--` are not checked (session -- --session x re-points the client)' },
   'command-not-first': { file: 'cli', edits: [['const command = argv[idx];', 'const command = argv.find((a) => !a.startsWith("-"));']], arms: ['allowlist'], why: 'the command is the first non-flag token again (a leading value-taking option shifts it)' },
   'release-no-reset': { file: 'chunk', edits: [[/of ([\w$]+)\((\w+)\.getUserAgent\(\)\)\)await/, 'of [])await']], arms: ['daemon-lifecycle'], why: 'the agent\'s Emulation overrides are not undone when its daemon leaves (detach alone does not clear them)' },
+  'cdp-url-allowed': { file: 'cli', edits: [[/if \(sub !== void 0 && sub\.toLowerCase\(\)\.replace\(\/\[-_\]\/g, ""\) === "cdpurl"\) \{/, 'if (false) {']], arms: ['allowlist'], why: '`get cdp-url` passes the planner: the token-bearing endpoint is printed to any shell step' },
+  'tunnel-methods-allowed': { file: 'chunk', edits: [[/if\(([\w$]+)\.has\((\w+)\)\)throw new ([\w$]+)\(`\$\{\2\} is not supported: this proxy speaks flattened sessions only`/, 'if(false)throw new $3(`${$2} is not supported: this proxy speaks flattened sessions only`']], arms: ['allowlist'], why: 'Target.sendMessageToTarget / exposeDevToolsProtocol reach the page debugger (raw CDP past every per-method policy)' },
   'close-any-tab': { file: 'chunk', edits: [[/if\((\w+)\.openedBy!=="agent"\)throw new Error\(`browser tab \$\{(\w+)\} was opened by the user: an agent may only close tabs it opened`\);/, '']], arms: ['tabs'], why: 'an agent may close a tab the human opened' },
   'press-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchKeyEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['breadth'], why: 'key events are acknowledged but never reach the page' },
   'click-dropped': { file: 'chunk', edits: [[/(\w+)\.channel\.send\((\w+),(\w+),(\w+)\)\.then\(/, '($2==="Input.dispatchMouseEvent"?Promise.resolve({}):$1.channel.send($2,$3,$4)).then(']], arms: ['snapshot-click'], why: 'mouse events are acknowledged but never reach the page' },
@@ -277,7 +279,7 @@ async function main() {
     await ui.send('Page.enable');
     // What the DRIVER handed the app (its /proc/<pid>/environ goes blind once DBUS_SESSION_BUS_ADDRESS is set: Chromium rewrites it, see src/shared/browser-reliquats.ts)
     const handed = env;
-    clause('ctl', 'scratch-env', handed.ORCHESTRA_HOME === world.ohome && handed.CLAUDE_CONFIG_DIR === world.cfg && handed.HOME === world.fakeHome && !('DISPLAY' in handed) && handed.WAYLAND_DISPLAY === RIG_WAYLAND && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && !handed.XDG_RUNTIME_DIR.startsWith('/run/user/') && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
+    clause('ctl', 'scratch-env', handed.ORCHESTRA_HOME === world.ohome && handed.CLAUDE_CONFIG_DIR === world.cfg && handed.HOME === world.fakeHome && !('DISPLAY' in handed) && handed.WAYLAND_DISPLAY === RIG_WAYLAND && handed.XDG_RUNTIME_DIR === privateRuntimeDir() && handed.DBUS_SESSION_BUS_ADDRESS.includes(RIG_DIR),
       `env handed to the app: ORCHESTRA_HOME=${handed.ORCHESTRA_HOME} CLAUDE_CONFIG_DIR=${handed.CLAUDE_CONFIG_DIR} WAYLAND_DISPLAY=${handed.WAYLAND_DISPLAY} DISPLAY=${'DISPLAY' in handed ? handed.DISPLAY : '<unset>'} XDG_RUNTIME_DIR=${handed.XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${handed.DBUS_SESSION_BUS_ADDRESS}`);
     const ctx = { world, W1, W2, FIX, port, app, ui, targets, env };
     await runArms(ctx);
@@ -641,8 +643,22 @@ const ARM_FNS2 = {
     for (const args of cases) { const r = await cli(ctx, W1, args, { timeoutMs: 20000 }); outs.push({ args: args.join(' '), r }); }
     const refused = outs.every(({ r }) => r.code !== 0 && /not available|not allowed|unknown command|put the command first/.test(r.stderr) && r.stdout.trim() === '');
     clause(A, 'out-of-scope-commands-and-flags-refused', refused, outs.map(({ args, r }) => `[${args}] rc=${r.code} ${JSON.stringify(r.stderr.trim().slice(0, 70))}`).join(' · '));
+    // seam review m1: a command smuggled inside Target.sendMessageToTarget would pass every per-method policy; both tunnels are refused outright
+    const ep1 = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const tun = await rawCdpOnProxy(ep1.wsUrl, [
+      { method: 'Target.sendMessageToTarget', params: { message: JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'document.title' } }) } },
+      { method: 'Target.exposeDevToolsProtocol', params: { targetId: 'x', bindingName: 'cdp' } },
+      { method: 'Runtime.evaluate', params: { expression: '1+1', returnByValue: true } },
+    ]);
+    clause(A, 'raw-cdp-tunnels-refused-normal-commands-pass', tun.replies.length === 3 && /flattened sessions only/.test(tun.replies[0]) && /flattened sessions only/.test(tun.replies[1]) && /"value":2/.test(tun.replies[2]), `sendMessageToTarget → ${tun.replies[0]}; exposeDevToolsProtocol → ${tun.replies[1]}; a plain Runtime.evaluate → ${tun.replies[2]}${tun.error ? ` (error ${tun.error})` : ''}`);
     const after = sockets(ctx).length;
     clause(A, 'refusal-happens-before-the-host', before === after, `daemon sockets ${before} → ${after} (a refused command never reached the host or spawned a client)`);
+    // seam review m2: `get cdp-url` would print the token-bearing endpoint (raw CDP for any shell step, past the allowlist): refused before the host
+    const own0 = await hostCall(ctx, '/browser', { id: W1.id, key: W1.key });
+    const tok0 = new URL(own0.wsUrl).pathname.split('/')[1];
+    const cu = await cli(ctx, W1, ['get', 'cdp-url']);
+    const cuJson = await cli(ctx, W1, ['--json', 'get', 'cdp-url']);
+    clause(A, 'get-cdp-url-refused-and-endpoint-never-printed', cu.code !== 0 && cuJson.code !== 0 && /get cdp-url/.test(cu.stderr) && ![cu, cuJson].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0)), `${show(cu)}; --json → ${show(cuJson)}; the token appears in neither output: ${![cu, cuJson].some((r) => r.stdout.includes(tok0) || r.stderr.includes(tok0))}`);
     const ok = await cli(ctx, W1, ['get', 'url']);
     clause(A, 'ctl/allowed-command-passes', ok.code === 0 && /^http/.test(ok.stdout.trim()), show(ok));
   },
@@ -683,6 +699,27 @@ function bringToFrontViaProxy(wsUrl, urlRe) {
         else if (m.id === 2) { sid = m.result.sessionId; send('Page.bringToFront', {}, sid); }
         else if (m.id === 3) { clearTimeout(t); ws.close(); resolve({ reply: JSON.stringify(m.result ?? m.error) }); }
       } catch (e) { clearTimeout(t); try { ws.close(); } catch {} resolve({ reply: `driver error ${e.message}` }); }
+    });
+  });
+}
+
+/** Raw CDP on the proxy: attach (flatten) to the first page and send `calls` on that session; returns each reply as text. */
+function rawCdpOnProxy(wsUrl, calls) {
+  return new Promise((resolve) => {
+    const ws = new WS(wsUrl);
+    const replies = []; let nextId = 0, sid = null, i = 0;
+    const send = (method, params, sessionId) => ws.send(JSON.stringify({ id: ++nextId, method, params, ...(sessionId ? { sessionId } : {}) }));
+    const t = setTimeout(() => { try { ws.terminate(); } catch {} resolve({ replies, timeout: true }); }, 12000);
+    ws.on('error', (e) => { clearTimeout(t); resolve({ replies, error: e.message }); });
+    ws.on('open', () => send('Target.getTargets'));
+    ws.on('message', (d) => {
+      try {
+        const m = JSON.parse(String(d));
+        if (m.method || m.id === undefined) return;
+        if (m.id === 1) send('Target.attachToTarget', { targetId: m.result.targetInfos[0].targetId, flatten: true });
+        else if (m.id === 2) { sid = m.result.sessionId; send(calls[i].method, calls[i].params, sid); }
+        else { replies.push(JSON.stringify(m.error ?? m.result)); i++; if (i < calls.length) send(calls[i].method, calls[i].params, sid); else { clearTimeout(t); ws.close(); resolve({ replies }); } }
+      } catch (e) { clearTimeout(t); try { ws.close(); } catch {} resolve({ replies, error: e.message }); }
     });
   });
 }
