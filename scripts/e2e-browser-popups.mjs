@@ -13,7 +13,7 @@
 // Every clause prints PASS/FAIL with the value that proves it; ctl/* controls (identity, scratch containment, own sway, trusted click, the page really fired
 // its popups) are separate clauses so a red clause can only be blamed on the behaviour. Must-FAIL builds: scripts/e2e-browser-popups-mutants.mjs.
 //
-// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,xsite,storm,ws,cleanup]
+// Usage (via scripts/e2e-browser-popups.sh): <app-dir> --live-home <real $HOME> [--out dir] [--label name] [--arms blank,oauth,xsite,hostile,s1|s2|s2b|s2c|s3|s4|churn (storm phases),storm,ws,cleanup]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = new Set(flag('--arms', 'blank,oauth,xsite,storm,ws,cleanup').split(','));
+const ARMS = new Set(flag('--arms', 'blank,oauth,xsite,hostile,storm,ws,cleanup').split(','));
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -343,7 +343,7 @@ function swayWindows(pid) {
   const out = [];
   (function walk(n) {
     for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) {
-      if (c.pid === pid && c.type !== 'workspace' && c.type !== 'output' && !(c.nodes || []).length) out.push({ name: c.name, floating: c.type === 'floating_con', rect: c.rect, visible: c.visible });
+      if (c.pid === pid && c.type !== 'workspace' && c.type !== 'output' && !(c.nodes || []).length) out.push({ name: c.name, floating: c.type === 'floating_con', rect: c.rect, visible: c.visible, fullscreen: c.fullscreen_mode });
       walk(c);
     }
   })(tree);
@@ -371,6 +371,21 @@ async function closeAllPopupWindows(b) {
   await sleep(600);
 }
 const OPENER_RE = /popups-opener\.html/;
+/** A child window's compositor name is OUR title: `<origin> — <the page's own title>` (#396 F2) — never the bare page title. */
+const isOauthWin = (w) => typeof w.name === 'string' && w.name.endsWith(` — ${TITLES.oauth}`);
+/** The page-initiated opens THIS rig caused, to keep a phase inside the per-minute rate cap (POPUP_RATE_MAX = 6 per workspace): wait for the oldest to age out. */
+const RATE_MAX = 6, RATE_WINDOW_MS = 60000;
+const rigOpens = [];
+async function rateRoom(n) {
+  for (;;) {
+    while (rigOpens.length && Date.now() - rigOpens[0] >= RATE_WINDOW_MS + 1500) rigOpens.shift();
+    if (rigOpens.length + n <= RATE_MAX) return;
+    const wait = RATE_WINDOW_MS + 1500 - (Date.now() - rigOpens[0]);
+    console.log(`  (rate window: waiting ${Math.ceil(wait / 1000)}s for ${n} free page-initiated opens)`);
+    await sleep(wait + 200);
+  }
+}
+const noteOpens = (n) => { for (let i = 0; i < n; i++) rigOpens.push(Date.now()); };
 /** Read something that may be gone on a broken build (the page navigated away): a missing value is a red clause, not an aborted arm. */
 const val = async (fn, dflt = null) => { try { return await fn(); } catch { return dflt; } };
 /** Every arm starts from the same place: popup windows closed, ONE tab, on the opener fixture. */
@@ -459,9 +474,10 @@ try {
     clause('oauth', 'the-popup-kept-its-window-opener', sees === 'opener: yes', `child page says ${JSON.stringify(sees)}`);
     await sleep(900);
     const wins = swayWindows(b.app.pid);
-    const cw = wins.find((w) => w.name === TITLES.oauth);
+    const cw = wins.find((w) => isOauthWin(w));
+    clause('oauth', 'child-window-title-shows-the-origin-first', !!cw && cw.name === `${new URL(URLS.opener).origin} — ${TITLES.oauth}`, `compositor name of the child window: ${JSON.stringify(cw?.name)} (want "<origin> — <page title>")`);
     clause('oauth', 'a-real-native-window-appears-in-the-compositor', wins.length === baseWins.length + 1 && !!cw, `app windows in my sway: ${JSON.stringify(wins.map((w) => [w.name, w.floating, w.rect && `${w.rect.width}x${w.rect.height}`]))}`);
-    const mainW = wins.find((w) => w.name !== TITLES.oauth);
+    const mainW = wins.find((w) => !isOauthWin(w));
     clause('oauth', 'the-child-window-floats-instead-of-tiling-the-app', !!cw && cw.floating === true && mainW?.rect?.width === baseMainWidth, `child floating=${cw?.floating} ${cw && `${cw.rect.width}x${cw.rect.height}`}; main window width ${baseMainWidth} -> ${mainW?.rect?.width} (sway tiles a resizable child beside the app and halves it)`);
     if (cw) {
       const img = grim('oauth-child-window.png');
@@ -495,25 +511,65 @@ try {
     clause('xsite', 'cross-site-oauth-flow-completes-through-window-opener', cross && /from http:\/\/localhost:\d+$/.test(orig) && swayWindows(b.app.pid).length === baseWins.length, `status|closed = ${await val(() => evalIn(opener, `document.getElementById('status').textContent + '|' + document.getElementById('closed').textContent`))}; message origin ${JSON.stringify(orig)} (the opener is on 127.0.0.1); app windows ${JSON.stringify(winNames(b))}`);
   });
 
+  // ────────────────────────────── hostile: a hostile `features` string cannot shape the child window (review F1) ──────────────────────────────
+  if (ARMS.has('hostile')) await runArm('hostile', async () => {
+    await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+    await typeUrl(b, `${BASE}/popups-hostile.html`);
+    await waitFor(async () => (await tabs(b))[0]?.label === 'Popups fixture hostile', 20000, 'tab 1 to load the hostile fixture');
+    const page = await pageOf(b, /popups-hostile\.html/);
+    const mainBefore = swayWindows(b.app.pid).find((w) => !isOauthWin(w));
+    await clickIn(page, '#go');
+    const up = await softWait(async () => swayWindows(b.app.pid).some((w) => isOauthWin(w)), 10000, 'the hostile popup window');
+    await sleep(1000);
+    const wins = swayWindows(b.app.pid);
+    const hw = wins.find((w) => isOauthWin(w));
+    const out = await val(() => evalIn(page, `document.getElementById('out').textContent`), '<page gone>');
+    const MAXW = Math.floor(1500 * 0.9), MAXH = Math.floor(950 * 0.9);
+    clause('hostile', 'hostile-popup-opens-as-a-bounded-window', up && out === 'opened' && !!hw && hw.rect.width <= MAXW && hw.rect.height <= MAXH, `page says ${JSON.stringify(out)}; child window ${hw ? `${hw.rect.width}x${hw.rect.height}` : 'none'} (asked 4000x3000; the cap is ${MAXW}x${MAXH} = 90% of the 1500x950 app window)`);
+    clause('hostile', 'hostile-popup-is-not-fullscreen-and-floats-over-the-app', !!hw && hw.fullscreen === 0 && hw.floating === true, `fullscreen_mode=${hw?.fullscreen} floating=${hw?.floating} (the features string said fullscreen,kiosk)`);
+    clause('hostile', 'hostile-popup-does-not-resize-or-tile-the-app-window', !!hw && wins.find((w) => !isOauthWin(w))?.rect.width === mainBefore?.rect.width, `main window width ${mainBefore?.rect.width} -> ${wins.find((w) => !isOauthWin(w))?.rect.width}`);
+    clause('hostile', 'hostile-popup-title-shows-the-origin', !!hw && hw.name === `${new URL(BASE).origin} — ${TITLES.oauth}`, `compositor name ${JSON.stringify(hw?.name)}`);
+    clause('hostile', 'app-still-answers-while-the-hostile-popup-is-up', (await b.cdp.eval('1 + 1')) === 2 && (await tabs(b)).length === 1, 'renderer alive, one tab (the popup is not a tab)');
+    saveShot('hostile-renderer.png', await b.cdp.shot());
+    if (hw) grim('hostile-compositor.png');
+    // the page can still close its own popup (a closable=no feature must not take that away)
+    for (const t of await byUrl(b, /popups-oauth\.html/)) { try { await evalIn(t, 'window.close()'); } catch {} }
+    await softWait(async () => swayWindows(b.app.pid).length === baseWins.length, 8000, 'the hostile popup to close');
+    clause('hostile', 'hostile-popup-closes-when-the-page-closes-it', swayWindows(b.app.pid).length === baseWins.length, `app windows ${JSON.stringify(winNames(b))}`);
+    // a `webContents` feature (Electron would hand our factory a string for the real guest) is refused: no window, no leak
+    const logBefore = refusals(world, 'unsafe-features');
+    await clickIn(page, '#goweb');
+    await sleep(1200);
+    clause('hostile', 'webcontents-feature-is-refused-without-a-window', (await val(() => evalIn(page, `document.getElementById('out').textContent`))) === 'no-window' && swayWindows(b.app.pid).length === baseWins.length && refusals(world, 'unsafe-features') - logBefore === 1 && (await pageTargets(b)).length === 1, `page says ${JSON.stringify(await val(() => evalIn(page, `document.getElementById('out').textContent`)))}; app windows ${JSON.stringify(winNames(b))}; page targets ${(await pageTargets(b)).length}; "(unsafe-features)" +${refusals(world, 'unsafe-features') - logBefore}`);
+  });
+
   // ────────────────────────────── storm: page-initiated popups -> budget + cap, nothing leaked ──────────────────────────────
-  if (ARMS.has('storm')) await runArm('storm', async () => {
-    const stormTo = async (q) => {
+  const STORM_PHASES = ['s1', 's2', 's2b', 's2c', 's3', 's4', 'churn'];
+  const ph = (n) => ARMS.has('storm') || ARMS.has(n);
+  if (['storm', ...STORM_PHASES].some((a) => ARMS.has(a))) await runArm('storm', async () => {
+    const stormTo = async (q, n = 3) => {
+      await rateRoom(n); // keep this phase inside the per-minute rate cap (the rig's own earlier opens count against it)
       await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
       await typeUrl(b, URLS.storm(q));
       await waitFor(async () => (await tabs(b))[0]?.label === TITLES.storm, 20000, 'tab 1 to load the storm fixture');
       return pageOf(b, /popups-storm\.html/);
     };
+    let page, ts;
     // (1) 40 unnamed popups from a script, no click: the budget (3) binds
-    let page = await stormTo('?auto=40&kind=tab');
+    if (ph('s1')) {
+    page = await stormTo('?auto=40&kind=tab');
     await softWait(async () => (await evalIn(page, `document.getElementById('calls').textContent`)) === 'calls 40', 15000, 'the page to fire 40 window.open calls');
     await sleep(1500);
-    let ts = await tabs(b);
+    ts = await tabs(b);
     clause('storm', 'ctl/the-page-really-fired-40-popups', (await val(() => evalIn(page, `document.getElementById('calls').textContent`))) === 'calls 40', `${await val(() => evalIn(page, `document.getElementById('calls').textContent`), '<the storm page is gone>')}`);
     clause('storm', 'script-storm-capped-by-the-budget', ts.length === 4, `tabs after 40 window.open without a click: ${ts.length} (1 + the budget of 3)`);
     clause('storm', 'script-storm-never-steals-the-active-tab', ts[0]?.active === true && ts.filter((t) => t.active).length === 1, `active = ${JSON.stringify(ts.map((t) => [t.id, t.active]))}`);
     clause('storm', 'script-storm-leaks-no-view', (await pageTargets(b)).length === ts.length, `page targets ${(await pageTargets(b)).length} for ${ts.length} tabs`);
     clause('storm', 'refusals-are-logged-with-their-reason', refusals(world, 'budget') >= 30, `${refusals(world, 'budget')} "popup refused (budget)" lines in ${world.logFile}`);
+    noteOpens(3);
+    }
     // (2) mixed tabs + native windows: the budget counts both
+    if (ph('s2')) {
     page = await stormTo('?auto=40&kind=mixed');
     await softWait(async () => (await evalIn(page, `document.getElementById('calls').textContent`)) === 'calls 40', 15000, 'the mixed storm to fire');
     await sleep(2000);
@@ -523,7 +579,10 @@ try {
     clause('storm', 'mixed-storm-budget-counts-tabs-and-windows-together', (ts.length - 1) + wns === 3, `new tabs ${ts.length - 1} + new native windows ${wns} = ${(ts.length - 1) + wns} (budget 3)`);
     clause('storm', 'mixed-storm-window-handles-match-the-windows', handles === wns, `window.open returned a handle ${handles}x; native windows ${wns}`);
     clause('storm', 'mixed-storm-leaks-no-view-or-window', (await pageTargets(b)).length === ts.length + wns, `page targets ${(await pageTargets(b)).length} = ${ts.length} tabs + ${wns} windows`);
+    noteOpens(3);
+    }
     // (2b) 40 NAMED popups (native windows only): the budget counts windows alone, and every handle matches a real window
+    if (ph('s2b')) {
     page = await stormTo('?auto=40&kind=named');
     await softWait(async () => (await val(() => evalIn(page, `document.getElementById('calls').textContent`))) === 'calls 40', 15000, 'the named storm to fire');
     await sleep(2000);
@@ -531,7 +590,11 @@ try {
     const nHandles = Number(((await val(() => evalIn(page, `document.getElementById('handles').textContent`), 'handles -1')) ?? 'handles -1').split(' ')[1]);
     clause('storm', 'named-storm-opens-exactly-the-budget-of-windows', nTabs === 1 && nWins === 3 && nHandles === 3, `tabs ${nTabs}; new native windows ${nWins}; window.open handles ${nHandles} (budget 3; 40 calls)`);
     clause('storm', 'named-storm-leaks-no-view-or-window', (await pageTargets(b)).length === nTabs + nWins, `page targets ${(await pageTargets(b)).length} = ${nTabs} tab + ${nWins} windows`);
+    noteOpens(3);
+    }
     // (2c) a click on page A that NAVIGATES to the storm page gives the new page NO gesture: all 5 popups are page-initiated (budget 3), none shown
+    if (ph('s2c')) {
+    await rateRoom(3);
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
     opener = await gotoOpener(b);
     await clickIn(opener, '#to-storm');
@@ -539,7 +602,12 @@ try {
     await sleep(2500);
     ts = await tabs(b);
     clause('storm', 'a-click-on-page-A-is-no-gesture-for-the-page-it-navigated-to', ts.length === 4 && ts[0].active && ts.filter((t) => t.active).length === 1, `after click -> navigate -> 5 on-load window.open: tabs ${ts.length} (1 + budget 3; a stale gesture would add a 4th popup and show it); active ${JSON.stringify(ts.map((t) => [t.id, t.active]))}`);
+    noteOpens(3);
+    }
     // (3) the CAP binds before the budget: 6 tabs open, storm in tab 1 -> only 2 more surfaces
+    if (ph('s3')) {
+    await rateRoom(2);
+    page = await stormTo('?kind=tab', 0);
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
     for (let i = 0; i < 5; i++) { await clickSel(b, '.browser-tab-new'); await softWait(async () => (await tabs(b)).length === 2 + i, 10000, `blank tab ${2 + i}`); }
     await clickSel(b, '.browser-tab', 0); await sleep(400);
@@ -551,7 +619,10 @@ try {
     clause('storm', 'ctl/six-tabs-before-the-capped-storm', six === 6, `tabs before ${six}`);
     clause('storm', 'storm-near-the-cap-stops-at-eight-tabs', ts.length === 8 && (await pageTargets(b)).length === 8, `tabs ${six} -> ${ts.length}; page targets ${(await pageTargets(b)).length} (the cap is 8, the budget alone would allow 9)`);
     clause('storm', 'cap-refusals-are-logged', refusals(world, 'cap') >= 1, `${refusals(world, 'cap')} "popup refused (cap)" lines`);
+    noteOpens(2);
+    }
     // (4) ONE click, 20 window.open: the click opens ONE popup (shown), the other 19 are page-initiated (budget)
+    if (ph('s4')) {
     page = await stormTo('?kind=tab');
     await clickIn(page, '#go');
     await softWait(async () => (await tabs(b)).length >= 5, 15000, 'the click storm to open tabs');
@@ -560,6 +631,22 @@ try {
     clause('storm', 'one-click-opens-one-popup-plus-the-budget', ts.length === 5, `tabs after ONE click firing 20 window.open: ${ts.length} (1 + 1 gesture + 3 budget)`);
     clause('storm', 'the-clicked-popup-is-shown-the-rest-stay-in-the-background', ts[1]?.active === true && ts.filter((t) => t.active).length === 1, `active = ${JSON.stringify(ts.map((t) => [t.id, t.active]))}`);
     saveShot('storm-click-renderer.png', await b.cdp.shot());
+    noteOpens(3);
+    }
+    // (5) CHURN: popups that close themselves again never hold the budget, so only the per-minute RATE cap (6) can stop them (#396 review F4)
+    if (ph('churn')) {
+      for (const kind of ['named']) { // a TAB popup returns no handle to the page (we build the tab ourselves), so only windows can be closed by the page: the tab route's rate is pinned by the unit arms
+        await rateRoom(6);
+        const budgetBefore = refusals(world, 'budget'), rateBefore = refusals(world, 'rate');
+        page = await stormTo(`?churn=12&kind=${kind}`, 6);
+        await softWait(async () => (await val(() => evalIn(page, `document.getElementById('calls').textContent`))) === 'calls 12', 15000, `the ${kind} churn to fire 12 window.open calls`);
+        await sleep(1200);
+        const handlesN = Number(((await val(() => evalIn(page, `document.getElementById('handles').textContent`), 'handles -1')) ?? 'handles -1').split(' ')[1]);
+        clause('storm', `churn-${kind}-opens-at-most-6-per-minute`, handlesN === 6, `12 open+close cycles without a click: window.open returned a handle ${handlesN}x (the rate cap is 6/min; the budget of 3 never binds because each popup closes at once)`);
+        clause('storm', `churn-${kind}-refusals-are-rate-not-budget`, refusals(world, 'rate') - rateBefore === 6 && refusals(world, 'budget') === budgetBefore, `"popup refused (rate)" +${refusals(world, 'rate') - rateBefore}; "(budget)" +${refusals(world, 'budget') - budgetBefore}`);
+        noteOpens(6);
+      }
+    }
     await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
   });
 
@@ -567,14 +654,14 @@ try {
   if (ARMS.has('ws')) await runArm('ws', async () => {
     opener = await gotoOpener(b);
     await clickIn(opener, '#signin-hold');
-    await softWait(async () => swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 10000, 'the child window');
-    clause('ws', 'ctl/child-window-up-before-switching', swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), `app windows ${JSON.stringify(winNames(b))}`);
+    await softWait(async () => swayWindows(b.app.pid).some((w) => isOauthWin(w)), 10000, 'the child window');
+    clause('ws', 'ctl/child-window-up-before-switching', swayWindows(b.app.pid).some((w) => isOauthWin(w)), `app windows ${JSON.stringify(winNames(b))}`);
     await selectWorkspace(b, 'e2e/bp396-2');
-    const gone = await softWait(async () => !swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 8000, 'the child window to leave the compositor');
+    const gone = await softWait(async () => !swayWindows(b.app.pid).some((w) => isOauthWin(w)), 8000, 'the child window to leave the compositor');
     clause('ws', 'switching-workspace-takes-the-child-window-away', gone, `app windows after switching to workspace 2: ${JSON.stringify(winNames(b))}`);
     await selectWorkspace(b, 'e2e/bp396-1');
     await openBrowserPane(b).catch(() => {});
-    const back = await softWait(async () => swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 8000, 'the child window to come back');
+    const back = await softWait(async () => swayWindows(b.app.pid).some((w) => isOauthWin(w)), 8000, 'the child window to come back');
     clause('ws', 'switching-back-restores-the-child-window', back, `app windows after switching back: ${JSON.stringify(winNames(b))}`);
     await closeAllPopupWindows(b);
   });
@@ -589,7 +676,7 @@ try {
     await waitFor(async () => (await tabs(b))[1]?.label === TITLES.opener, 20000, 'tab 2 to load the opener fixture');
     const opener2 = await pageOf(b, /popups-opener\.html\?t=2/);
     await clickIn(opener2, '#signin-hold');
-    const up = await softWait(async () => swayWindows(b.app.pid).some((w) => w.name === TITLES.oauth), 10000, 'the child window of tab 2');
+    const up = await softWait(async () => swayWindows(b.app.pid).some((w) => isOauthWin(w)), 10000, 'the child window of tab 2');
     clause('cleanup', 'ctl/tab-two-has-a-child-window-before-it-is-closed', up && (await tabs(b)).length === 2, `app windows ${JSON.stringify(winNames(b))}; tabs ${(await tabs(b)).length}`);
     await clickSel(b, '.browser-tab-close', 1);
     const gone = await softWait(async () => (await tabs(b)).length === 1 && swayWindows(b.app.pid).length === baseWins.length, 10000, 'the child window to follow its closed opener tab');

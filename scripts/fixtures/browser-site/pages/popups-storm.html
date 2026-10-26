@@ -19,5 +19,17 @@ function storm(n = 20, kind = q.get('kind') || 'tab') {
   document.getElementById('handles').textContent = 'handles ' + handles;
 }
 if (q.get('auto')) setTimeout(() => storm(Number(q.get('auto'))), 300);
+// ?churn=<n>&kind=named: one popup every 350 ms, each closed again 150 ms later — no concurrent pressure on the budget, so only the per-minute rate cap can stop it.
+if (q.get('churn')) {
+  const n = Number(q.get('churn')), named = (q.get('kind') || 'tab') === 'named';
+  let i = 0;
+  const t = setInterval(() => {
+    const w = named ? window.open('popups-blank.html?c=' + i, 'churn' + i, 'width=300,height=200') : window.open('popups-blank.html?c=' + i);
+    calls++; if (w) { handles++; setTimeout(() => { try { w.close(); } catch (e) {} }, 150); }
+    document.getElementById('calls').textContent = 'calls ' + calls;
+    document.getElementById('handles').textContent = 'handles ' + handles;
+    if (++i >= n) clearInterval(t);
+  }, 350);
+}
 </script>
 </body></html>

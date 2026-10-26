@@ -93,6 +93,8 @@ test('size: clamped to 90% of the PARENT per axis when its size is known — a s
   assert.deepEqual([small.width, small.height], [500, 600], 'a request inside the parent is untouched');
   const tiny = build('width=4000,height=3000', { width: 100, height: 100 }) as { width: number; height: number };
   assert.deepEqual([tiny.width, tiny.height], [POPUP_WINDOW_MIN.width, POPUP_WINDOW_MIN.height], 'a parent smaller than the minimum never shrinks the popup below it');
+  const hugeParent = build('width=99999,height=99999', { width: 20000, height: 20000 }) as { width: number; height: number };
+  assert.deepEqual([hugeParent.width, hugeParent.height], [POPUP_WINDOW_MAX, POPUP_WINDOW_MAX], 'even a (wall-sized) parent never lifts the absolute ceiling');
   const junkParent = build('width=99999,height=99999', { width: NaN, height: Infinity }) as { width: number; height: number };
   assert.deepEqual([junkParent.width, junkParent.height], [POPUP_WINDOW_MAX, POPUP_WINDOW_MAX], 'an unusable parent size falls back to the absolute ceiling');
 });
