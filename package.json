@@ -34,6 +34,7 @@
     "test:disk-guard-ui": "node scripts/refuse-real-runtime.mjs test:disk-guard-ui",
     "prebuild:bundles": "node scripts/disk-guard.cjs --preset build-bundles",
     "build:bundles": "vite build && pnpm run build:cli && pnpm run build:keeper && pnpm run build:acces-mobile",
+    "fetch:agent-browser": "node scripts/agent-browser-fetch.cjs",
     "build": "node scripts/disk-guard.cjs --preset build-package && pnpm run build:bundles && electron-builder",
     "start": "electron .",
     "lint": "eslint src --ext .ts,.tsx",
@@ -184,8 +185,14 @@
     "directories": {
       "output": "release"
     },
-    "beforePack": "scripts/pinned-node/before-pack.cjs",
+    "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack-check.cjs",
+    "extraResources": [
+      {
+        "from": "build/agent-browser",
+        "to": "agent-browser"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage"

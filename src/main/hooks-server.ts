@@ -56,6 +56,7 @@ import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { dispatchIdentityRequest } from './session-identity-host.ts';
+import { dispatchBrowserRequest } from './browser-cdp-host.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
 
@@ -618,6 +619,10 @@ export async function startHooksServer(): Promise<void> {
             // #379 / ADR 0008: a session's CURRENT run + generation, resolved by the host on every bus CLI call
             // (`{id, key}` → `{ok, runId, generation}`; a replaced session's key → `superseded`). Never logs/echoes the key.
             send(200, dispatchIdentityRequest(msg));
+          } else if (route === '/browser') {
+            // #395 / ADR 0009: `orchestra browser` asks for ITS workspace's agent-browser endpoint — `{id, key}` is verified against
+            // the session-key registry (no key / stale key / another workspace's id = refused); the reply carries a proxy URL, never a key.
+            send(200, await dispatchBrowserRequest(msg));
           } else {
             // Unknown route (incl. the retired `/event` activity POST — activity rides the spool, #378): answered empty, as ever.
             send(200, {});

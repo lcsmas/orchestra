@@ -19,10 +19,10 @@ const orig = readFileSync(target, 'utf8');
 
 const MUTANTS = [
   ['destroyPanel tears down only the ACTIVE tab (leaks the rest)',
-    'for (const tab of panel.tabs) destroyTab(tab);\n}',
-    'destroyTab(activeTabOf(panel)!);\n}'],
-  ['destroyTab skips the debugger detach',
-    'if (tab.debuggerAttached) wc.debugger.detach();', ''],
+    'for (const tab of panel.tabs) destroyTab(tab);\n  notifyPanelListeners(wsId, [], true);',
+    'destroyTab(activeTabOf(panel)!);\n  notifyPanelListeners(wsId, [], true);'],
+  ['destroyTab skips the proxy seat\'s force-detach (#398: the debugger seat outlives its tab)',
+    'tabTeardownHook?.(wc);', ''],
   ['closeTab never destroys the closed tab contents',
     'panel.tabs.splice(idx, 1);\n  destroyTab(tab);', 'panel.tabs.splice(idx, 1);'],
   ['closing the LAST tab leaks its contents',
@@ -61,7 +61,7 @@ const MUTANTS = [
     '    destroyTab(tab);\n    panels.delete(wsId);', '    panel.tabs.splice(0, 1);\n    destroyTab(tab);\n    panels.delete(wsId);'],
   ['emitState publishes for an evicted panel (ghost state)',
     ' || panels.get(panel.wsId) !== panel) return;', ') return;'],
-  ['an explicit tabId resurrects a panel (attachDebugger)',
+  ['an explicit tabId resurrects a panel (liveTabFor, the CDP primitives\' resolver)',
     "  const explicit = tabId === undefined ? undefined : resolveTab(wsId, tabId);\n  const panel = getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);\n  const tab = explicit ?? (panel ? activeTabOf(panel) : undefined);",
     "  const panel = getPanel(wsId) ?? ensurePanel(wsId);\n  const tab = resolveTab(wsId, tabId);"],
   ['an explicit tabId resurrects a panel (navigate)',
@@ -84,7 +84,7 @@ const MUTANTS = [
   ['default navigate no longer opens the panel on demand',
     'const tab = tabId === undefined ? (ensurePanel(wsId), getActiveTab(wsId)) : resolveTab(wsId, tabId);',
     'const tab = tabId === undefined ? getActiveTab(wsId) : resolveTab(wsId, tabId);'],
-  ['default attachDebugger no longer opens the panel on demand',
+  ['default liveTabFor no longer opens the panel on demand',
     'getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);', 'getPanel(wsId);'],
   ['reaping the dead last tab promotes the first tab',
     'panel.activeId = panel.tabs[Math.min(activeIdx, panel.tabs.length - 1)].id;',
@@ -112,6 +112,40 @@ const MUTANTS = [
     'export function reload(wsId: string, tabId?: BrowserTabId): void {\n  ensurePanel(wsId);'],
   ['hidePanel leaves the view attached',
     'if (attached) detachTab(panel, attached);', ''],
+  // #398: design mode's lease on the proxy's debugger attach
+  ['design mode keeps no lease while armed (every poll attaches anew)',
+    'if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);', ''],
+  ['a pick or Escape never gives the lease back',
+    '    endDesign(pinned, gen); // a re-arm landing during the read or the screenshot owns the tab now\n', ''],
+  ['a disarm never gives the lease back',
+    "    } finally {\n      endDesign(tab, gen); // an arm called while this disarm's teardown was in flight bumped the counter: it owns the tab\n    }\n  });\n}", '    } finally {\n    }\n  });\n}'],
+  ['an arm whose script fails keeps the lease',
+    '    } catch (err) {\n      endDesign(tab, gen); // no-op when a later arm (a URL-change re-arm queued behind this one) already owns the tab\n      throw err;', '    } catch (err) {\n      throw err;'],
+  ['a disarm does not wait for the arm still attaching (orphan overlay)',
+    'const run = tab.designOp.then(fn);', 'const run = fn();'],
+  ['a disarm of an unarmed tab still attaches and evaluates',
+    '    if (!tab.designArmed || tab.designGen !== gen) return; // not armed, or a later arm (off→on inside one round trip) supersedes this disarm\n', ''],
+  ['a disarm reaches only the ACTIVE tab (a lease and an overlay stay on the tab armed before the switch)',
+    'targets = tabId === undefined ? armedTabs(wsId) :', 'targets = tabId === undefined ? (getActiveTab(wsId) ? [getActiveTab(wsId)!] : []) :'],
+  ['a pick leaves the picker armed on the other tabs',
+    '    for (const other of armedTabs(wsId)) if (other !== pinned) void disarmTab(wsId, other);\n', ''],
+  ['a poll for a workspace with no panel builds one',
+    'if (!pinned) return null;', 'if (!pinned) { getPanel(wsId) ?? ensurePanel(wsId); return null; }'],
+  ['the armed mark is set after the lease is granted (a disarm queued behind the arm finds nothing)',
+    '  tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed\n', ''],
+  ['a disarm superseded by a later arm still tears down (off→on orphans overlay + lease)',
+    'if (!tab.designArmed || tab.designGen !== gen) return;', 'if (!tab.designArmed) return;'],
+  ['a finished pick wipes a re-arm that landed during its screenshot (F2)',
+    '    endDesign(pinned, gen); // a re-arm landing during the read or the screenshot owns the tab now', '    endDesign(pinned, pinned.designGen); // a re-arm landing during the read or the screenshot owns the tab now'],
+  ['the arm\'s catch clears under a newer arm (F5: A1 fails mid-install while A2 is queued)',
+    '      endDesign(tab, gen); // no-op when a later arm', '      endDesign(tab, tab.designGen); // no-op when a later arm'],
+  ['the disarm\'s finally clears under an arm called during its teardown',
+    '      endDesign(tab, gen); // an arm called while this disarm', '      endDesign(tab, tab.designGen); // an arm called while this disarm'],
+  ['the poll reads its generation AFTER the read round trip (F6)',
+    "  const gen = pinned.designGen; // BEFORE the first await: a re-arm landing inside the read round trip must not be folded into this pick's generation\n  const raw = await readRawPick(wsId, pin);\n  if (!raw) return null;",
+    "  const raw = await readRawPick(wsId, pin);\n  if (!raw) return null;\n  const gen = pinned.designGen;"],
+  ['an arm call does not bump the generation (every clearing path is then current)',
+    'const gen = ++tab.designGen;', 'const gen = tab.designGen;'],
 ];
 
 let killed = 0;
@@ -125,6 +159,8 @@ function restore() {
   if (!same) throw new Error('RESTORE FAILED: browser-panel.ts differs from backup');
 }
 process.on('exit', () => { try { copyFileSync(backup, target); } catch {} });
+// a kill (Ctrl-C, a rejected tool call, a timeout) must not leave the last mutant in the tree: route signals through the exit handler above
+for (const [sig, rc] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => process.exit(rc));
 
 // Positive control: the UNMUTATED tree passes (a rig that cannot say PASS proves nothing).
 const base = run();

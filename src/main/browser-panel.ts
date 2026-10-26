@@ -68,8 +68,14 @@ export interface Tab {
   id: BrowserTabId;
   view: WebContentsView;
   openedBy: BrowserTabOpener;
-  /** Whether this tab's debugger has been attached for agent driving. */
-  debuggerAttached: boolean;
+  /** Design mode's lease on the proxy's debugger attach while the picker is armed (#398); `null` when not armed. */
+  designHold: (() => void) | null;
+  /** Design mode was armed on this tab and its overlay may still be in the page; set synchronously by the arm (a disarm queued behind it must see it). */
+  designArmed: boolean;
+  /** Bumped by every arm at CALL time. A disarm (or a finished pick) only ends the arm it was issued against: one superseded by a later arm is a no-op, or it would wipe the new arm's mark and orphan its overlay + lease. */
+  designGen: number;
+  /** Tail of this tab's arm/disarm chain: a disarm that lands while an arm is still attaching must run AFTER it. */
+  designOp: Promise<void>;
   nav: TabNav;
 }
 
@@ -169,12 +175,28 @@ function attachActive(panel: Panel): void {
   panel.attachedId = tab.id;
 }
 
-/** Release a tab's native resources: debugger first, then the contents. */
+/** The CDP proxy host's debugger seat (#398): this file holds NO debugger of its own. `send` runs one command on a tab through a proxy lease; `hold` keeps the attach for as long as design mode is armed. Registered by `initBrowserCliHost`. */
+export interface CdpSeat {
+  send(wsId: string, tabId: BrowserTabId, method: string, params: Record<string, unknown>): Promise<unknown>;
+  hold(wsId: string, tabId: BrowserTabId): Promise<() => void>;
+}
+let cdpSeat: CdpSeat | null = null;
+export function setCdpSeat(seat: CdpSeat | null): void {
+  cdpSeat = seat;
+}
+/** Told, just before a tab's contents close, to drop the debugger seat the proxy holds on them. */
+let tabTeardownHook: ((wc: Electron.WebContents) => void) | null = null;
+export function setTabTeardownHook(h: ((wc: Electron.WebContents) => void) | null): void {
+  tabTeardownHook = h;
+}
+
+/** Release a tab's native resources: the proxy's debugger seat first, then the contents. */
 function destroyTab(tab: Tab): void {
   const wc = liveContents(tab);
   if (!wc) return;
+  tab.designHold = null; // the seat below is force-detached: the hold is void
   try {
-    if (tab.debuggerAttached) wc.debugger.detach();
+    tabTeardownHook?.(wc);
   } catch {
     /* already detached */
   }
@@ -338,11 +360,28 @@ function computeState(panel: Panel): BrowserPanelState {
   };
 }
 
+/** Main-process observers of a panel's tab list (the CDP proxy, #395): called with the new ordered tabs after every publish, and once with `destroyed` when `destroyPanel` removes the workspace's panel. */
+const panelListeners = new Set<(wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void>();
+export function onPanelChange(l: (wsId: string, tabs: BrowserTabInfo[], destroyed: boolean) => void): () => void {
+  panelListeners.add(l);
+  return () => panelListeners.delete(l);
+}
+function notifyPanelListeners(wsId: string, tabs: BrowserTabInfo[], destroyed = false): void {
+  for (const l of [...panelListeners]) {
+    try {
+      l(wsId, tabs, destroyed);
+    } catch {
+      /* an observer must never break the panel */
+    }
+  }
+}
+
 /** Recompute the panel's state and push it to the renderer. */
 function publish(panel: Panel): BrowserPanelState {
   panel.state = computeState(panel);
   savePanelTabs(panel);
   platform.broadcast('browser:event', panel.wsId, panel.state);
+  notifyPanelListeners(panel.wsId, panel.state.tabs);
   return panel.state;
 }
 
@@ -406,7 +445,10 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener }): Tab {
     id: nextTabId(panel.wsId),
     view,
     openedBy: opts.openedBy,
-    debuggerAttached: false,
+    designHold: null,
+    designArmed: false,
+    designGen: 0,
+    designOp: Promise.resolve(),
     nav: blankNav(),
   };
   if (panel.bounds) view.setBounds(panel.bounds);
@@ -812,6 +854,17 @@ function destroyPanelViews(wsId: string): void {
   hidePanel(wsId);
   panels.delete(wsId);
   for (const tab of panel.tabs) destroyTab(tab);
+  notifyPanelListeners(wsId, [], true);
+}
+
+/** The tab's live `webContents` for the CDP proxy (#395), or `undefined` when it has none. */
+export function tabContents(wsId: string, tabId: BrowserTabId): Electron.WebContents | undefined {
+  return liveContents(getTab(wsId, tabId));
+}
+
+/** Is `wsId` the workspace whose panel the renderer composites right now? (the agent bring-to-front rule) */
+export function isFocusedWorkspace(wsId: string): boolean {
+  return focusedWsId === wsId;
 }
 
 /** Destroy a workspace's panel (delete / archive) AND forget its remembered tabs (#393) — even when this process never
@@ -822,46 +875,39 @@ export function destroyPanel(wsId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Agent driving layer — Electron in-process CDP over `webContents.debugger`.
+// Agent driving layer — CDP commands, sent through the CDP proxy's debugger seat.
 // ---------------------------------------------------------------------------
 //
 // These are the primitives the agent's browser tools (agent-browser-tools.ts)
-// call. They operate on the SAME view the user sees, so the agent and the user
-// share one surface.
+// and design mode call. They operate on the SAME view the user sees, so the
+// agent and the user share one surface. None of them attaches a debugger: the
+// proxy (`browser-cdp-host.ts`) is the only attacher (#398, ADR 0009) and every
+// command below rides a lease on its attach (`cdpSeat`).
 
-/** Attach a tab's debugger (idempotent; the active tab unless `tabId` is given).
- *  Enables the CDP domains the tools need. Returns the panel (the default form
- *  creates it if the workspace has none; an explicit `tabId` must already exist)
- *  or throws if the tab has no live view. */
-export function attachDebugger(wsId: string, tabId?: BrowserTabId): Panel {
-  // An EXPLICIT tabId addresses a tab that must already exist: resolve it first
-  // (throws "not found") and never build a panel for it — a stale id after
-  // closeTab(last)/destroyPanel must fail, not resurrect a blank native view.
+/** The tab a CDP primitive drives. The default form (no `tabId`) creates the
+ *  panel if the workspace has none; an EXPLICIT `tabId` must already exist —
+ *  resolved first, so a stale id after closeTab(last)/destroyPanel fails with
+ *  "not found" instead of resurrecting a blank native view. Throws if the tab
+ *  has no live view: a dead view surfaces to the agent as a clear error rather
+ *  than a TypeError about `isDestroyed`. */
+function liveTabFor(wsId: string, tabId?: BrowserTabId): Tab {
   const explicit = tabId === undefined ? undefined : resolveTab(wsId, tabId);
   const panel = getPanel(wsId) ?? (tabId === undefined ? ensurePanel(wsId) : undefined);
   const tab = explicit ?? (panel ? activeTabOf(panel) : undefined);
-  const wc = liveContents(tab);
-  // A dead view surfaces to the agent as a clear error rather than a TypeError
-  // about `isDestroyed` — the agent can act on "panel is gone", not on a crash.
-  if (!panel || !tab || !wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
-  const dbg = wc.debugger;
-  if (!tab.debuggerAttached) {
-    if (!dbg.isAttached()) dbg.attach('1.3');
-    tab.debuggerAttached = true;
-  }
-  return panel;
+  if (!panel || !tab || !liveContents(tab)) throw new Error(`browser panel for workspace ${wsId} has no live view`);
+  return tab;
 }
 
+/** Run one CDP command on a tab through the proxy's lease. */
 async function cdp(
   wsId: string,
   method: string,
   params?: Record<string, unknown>,
   tabId?: BrowserTabId,
 ): Promise<any> {
-  attachDebugger(wsId, tabId);
-  const wc = liveContents(resolveTab(wsId, tabId));
-  if (!wc) throw new Error(`browser panel for workspace ${wsId} has no live view`);
-  return wc.debugger.sendCommand(method, params ?? {});
+  const tab = liveTabFor(wsId, tabId);
+  if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
+  return cdpSeat.send(wsId, tab.id, method, params ?? {});
 }
 
 /** Reject after `ms` if `p` hasn't settled. Screenshots and input dispatch on a
@@ -1099,11 +1145,12 @@ export async function scrollBy(wsId: string, deltaY: number, tabId?: BrowserTabI
 // not the feature.
 //
 // So the highlight + hit-testing live in the page as an injected overlay
-// (`DESIGN_MODE_SCRIPT`), which also keeps the debugger session free: we add NO
-// second `debugger.attach` (attaching twice to one target throws) and no
-// long-lived CDP event subscription. The only CDP calls are the same
-// `Runtime.evaluate` / `Page.captureScreenshot` the agent tools already use,
-// through the same `cdp()` helper.
+// (`DESIGN_MODE_SCRIPT`), which needs no CDP event subscription. Design mode
+// attaches NO debugger (attaching twice to one target throws): the CDP proxy is
+// the only attacher (#398), and while the picker is armed design mode keeps a
+// lease on that attach (`Tab.designHold`) so the 150 ms poll does not attach and
+// detach on every tick. The only CDP calls are the same `Runtime.evaluate` /
+// `Page.captureScreenshot` the agent tools use, through the same `cdp()` helper.
 //
 // The overlay is deliberately built to be un-pickable by itself: it sets
 // `pointer-events: none` on its own chrome and, at pick time, the walker starts
@@ -1238,13 +1285,78 @@ const DESIGN_MODE_SCRIPT = `(() => {
   return true;
 })()`;
 
-/** Arm design mode in the panel's page. Returns once the overlay is installed. */
+/** Give back design mode's lease on the proxy's attach (idempotent). */
+function releaseDesignHold(tab: Tab | undefined): void {
+  const release = tab?.designHold;
+  if (!tab || !release) return;
+  tab.designHold = null;
+  release();
+}
+
+/** The picker is gone from `tab` (picked, cancelled, torn down, never installed): drop the armed mark and the lease — but ONLY if `gen`, the
+ *  generation captured when THIS piece of work started, is still current. Every path that clears arm state passes it (the argument is
+ *  required on purpose): a later arm bumped the counter and owns the tab, and clearing under it would orphan its overlay + lease. */
+function endDesign(tab: Tab, gen: number): void {
+  if (tab.designGen !== gen) return;
+  tab.designArmed = false;
+  releaseDesignHold(tab);
+}
+
+/** Every tab of `wsId` design mode is armed on. The renderer addresses design mode by workspace only, so after a tab switch (an agent tab
+ *  opened with activate, the user clicking another tab) the armed tab is not necessarily the active one. */
+function armedTabs(wsId: string): Tab[] {
+  return (panels.get(wsId)?.tabs ?? []).filter((t) => t.designArmed);
+}
+
+/** Run `fn` after every earlier arm/disarm of `tab` has settled (their errors are theirs). */
+function inDesignOrder<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
+  const run = tab.designOp.then(fn);
+  tab.designOp = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/** Arm design mode in the panel's page. Returns once the overlay is installed.
+ *  Holds the proxy's debugger attach until the pick, the cancel or the disarm. */
 export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise<void> {
-  await evaluate(wsId, DESIGN_MODE_SCRIPT, tabId);
+  const tab = liveTabFor(wsId, tabId);
+  const gen = ++tab.designGen;
+  tab.designArmed = true; // now, not after the lease: a disarm queued right behind this arm must find it armed
+  return inDesignOrder(tab, async () => {
+    try {
+      if (!cdpSeat) throw new Error('the browser CDP proxy is not running (initBrowserCliHost has not run)');
+      if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);
+      await evaluate(wsId, DESIGN_MODE_SCRIPT, tab.id);
+    } catch (err) {
+      endDesign(tab, gen); // no-op when a later arm (a URL-change re-arm queued behind this one) already owns the tab
+      throw err;
+    }
+  });
+}
+
+/** Tear the overlay down on one tab and give its lease back (a no-op when design mode is not armed there). */
+function disarmTab(wsId: string, tab: Tab): Promise<void> {
+  const gen = tab.designGen; // at call time: the arm this disarm is issued against
+  return inDesignOrder(tab, async () => {
+    if (!tab.designArmed || tab.designGen !== gen) return; // not armed, or a later arm (off→on inside one round trip) supersedes this disarm
+    try {
+      await evaluate(
+        wsId,
+        `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
+        tab.id,
+      );
+    } catch (err) {
+      log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
+    } finally {
+      endDesign(tab, gen); // an arm called while this disarm's teardown was in flight bumped the counter: it owns the tab
+    }
+  });
 }
 
 /** Disarm design mode (user toggled it off, or the panel is closing). Safe to
- *  call when it was never armed — the page-side teardown is guarded.
+ *  call when it was never armed — then there is nothing to tear down and no
+ *  debugger is attached just to find that out (a pick or Escape already tore the
+ *  overlay down and gave its lease back). Without a `tabId` it disarms EVERY tab
+ *  of the workspace it is armed on, not just the active one.
  *
  *  Swallows evaluation failures: the renderer disarms on unmount, on going
  *  inactive, and after a pick, so this routinely lands on a page that is
@@ -1253,15 +1365,13 @@ export async function designModeArm(wsId: string, tabId?: BrowserTabId): Promise
  *  overlay no longer exists — so surfacing it would log an ERROR on a perfectly
  *  normal path and train readers to ignore the channel. */
 export async function designModeDisarm(wsId: string, tabId?: BrowserTabId): Promise<void> {
+  let targets: Tab[];
   try {
-    await evaluate(
-      wsId,
-      `(() => { if (window.__orchestraDesignTeardown) { try { window.__orchestraDesignTeardown(); } catch (e) {} } window[${JSON.stringify(DESIGN_PICK_GLOBAL)}] = null; return true; })()`,
-      tabId,
-    );
-  } catch (err) {
-    log.debug(`design-mode disarm(${wsId}) — page gone or navigating`, err);
+    targets = tabId === undefined ? armedTabs(wsId) : [resolveTab(wsId, tabId)].filter((t): t is Tab => !!t);
+  } catch {
+    return; // the tab is gone: its lease died with it
   }
+  await Promise.all(targets.map((t) => disarmTab(wsId, t)));
 }
 
 /** Read a completed pick out of the page (and clear it), or `null` if the user
@@ -1294,9 +1404,26 @@ export async function designModePoll(
   wsId: string,
   tabId?: BrowserTabId,
 ): Promise<DesignPick | { cancelled: true } | null> {
-  const pin = resolveTab(wsId, tabId)?.id ?? tabId; // resolve once: the pick and its screenshot come from the same tab
+  const pinned = resolveTab(wsId, tabId);
+  if (!pinned) return null; // no panel: nothing is armed, and a poll never builds one (a late poll after archive/delete)
+  const pin = pinned.id; // resolve once: the pick and its screenshot come from the same tab
+  const gen = pinned.designGen; // BEFORE the first await: a re-arm landing inside the read round trip must not be folded into this pick's generation
   const raw = await readRawPick(wsId, pin);
   if (!raw) return null;
+  // A pick or a cancel ends the arm (the page-side picker tore itself down): give the attach back,
+  // but only after the screenshot, so the pick is one attach rather than detach-then-attach.
+  // It is one-shot for the whole workspace: a picker still armed on another tab (the user switched tabs
+  // mid-pick) is torn down too, so no overlay or lease is left behind on a tab nobody is polling.
+  try {
+    return await finishPick(wsId, pin, raw);
+  } finally {
+    endDesign(pinned, gen); // a re-arm landing during the read or the screenshot owns the tab now
+    for (const other of armedTabs(wsId)) if (other !== pinned) void disarmTab(wsId, other);
+  }
+}
+
+/** The second half of {@link designModePoll}: a raw page-side pick → cropped screenshot + shaped {@link DesignPick}. */
+async function finishPick(wsId: string, pin: BrowserTabId | undefined, raw: any): Promise<DesignPick | { cancelled: true }> {
   if (raw.cancelled) return { cancelled: true };
 
   const viewport = raw.viewport ?? { width: 1280, height: 800 };

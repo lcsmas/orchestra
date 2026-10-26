@@ -171,6 +171,7 @@ import { initPlatform, platform } from './platform';
 import { createElectronPlatform } from './platform/electron';
 import { flushBrowserTabs, initBrowserPanels } from './browser-panel';
 import { createBrowserTabsStore } from './browser-tabs-store';
+import { disposeAllEndpoints, initBrowserCliHost } from './browser-cdp-host';
 import { initVoice, disposeVoice } from './voice';
 import { store } from './store';
 import { sweepAgentTmpDirs } from './agent-tmpdir';
@@ -468,6 +469,7 @@ async function createMainWindow() {
   await startHooksServer();
   // Accès mobile (#334, ADR 0006): starts the phone server process only if the human turned it on — needs the socket (just bound) + the store.
   startAccesMobileHost();
+  initBrowserCliHost(); // #395: sweeps daemons of an earlier run, follows panel teardown
   // Memory guard (#285): measures MemAvailable (10 s below the Admission threshold, 60 s above), decides, logs every transition,
   // exposes the state to `bus-status` + Settings. Holds nothing yet. Started with the hooks server (store is loaded above) so the
   // first `bus-status` already has a reading; thresholds are read from the store at every sample, so a Settings change is hot.
@@ -948,6 +950,7 @@ function shutdownSubsystems(): void {
   stopEventsSpool();
   stopAccesMobileHost(); // before the socket it relays to goes away
   stopHooksServer();
+  void disposeAllEndpoints(); // #395: close each workspace's CDP proxy + its agent-browser daemon
   stopUsagePolling();
   stopAccountUsagePolling();
   stopPromptQueueFlusher();
