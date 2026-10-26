@@ -51,6 +51,24 @@ if (argv.includes('--list')) {
   process.exit(0);
 }
 
+// --check-anchors <app-dir>: NO app, NO compositor — prove every mutant's edit still matches EXACTLY once in the built bundle (mutated files: main chunk, renderer chunk)
+if (argv[0] === '--check-anchors') {
+  const app = fs.realpathSync(argv[1] ?? '.');
+  const chunk = /\.\/(index-[A-Za-z0-9_-]+\.js)/.exec(fs.readFileSync(path.join(app, 'dist-electron/main.js'), 'utf8'))?.[1];
+  const rdir = path.join(app, 'dist/assets');
+  const rchunk = fs.readdirSync(rdir).filter((n) => /^index-.*\.js$/.test(n) && fs.readFileSync(path.join(rdir, n), 'utf8').includes('onBrowserEvent'));
+  let bad = 0;
+  for (const [name, m] of Object.entries(MUTANTS)) {
+    const file = m.file === 'cli' ? path.join(app, 'dist-electron/cli.js') : m.file === 'renderer' ? path.join(rdir, rchunk[0] ?? 'MISSING') : path.join(app, 'dist-electron', chunk);
+    const src = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const counts = m.edits.map(([from]) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length));
+    const ok = counts.every((c) => c === 1) && (m.file !== 'renderer' || rchunk.length === 1);
+    if (!ok) bad++;
+    console.log(`${ok ? 'OK ' : 'BAD'} ${name.padEnd(26)} ${path.basename(file)} matches=${counts.join(',')}`);
+  }
+  console.log(bad ? `${bad} mutant anchor(s) stale` : `all ${Object.keys(MUTANTS).length} mutant anchors match exactly once`);
+  process.exit(bad ? 1 : 0);
+}
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const MUTANT = flag('--mutant', null);
@@ -443,7 +461,9 @@ const ARM_FNS2 = {
       const flagFirst = path.join(dir, 'flagfirst.jpg'); const ff = await cli(ctx, W1, ['screenshot', '--screenshot-format', 'jpeg', flagFirst]);
       const bf = fs.existsSync(flagFirst) ? fs.readFileSync(flagFirst) : Buffer.alloc(0);
       clause(A, 'extension-alone-writes-png-bytes', fs.existsSync(ext) && jpegSize(fs.readFileSync(ext)) === null, `screenshot x.jpg (no format flag) → ${fs.existsSync(ext) ? `${fs.readFileSync(ext).subarray(0, 4).toString('hex')} (PNG magic 89504e47): the extension does not choose the format` : 'no file'}`);
-      knownGap(A, 'format-flag-before-the-path-works', ff.code === 0 && jpegSize(bf) !== null, `screenshot --screenshot-format jpeg x.jpg → ${show(ff)}; magic ${bf.subarray(0, 4).toString('hex')} (absolutizeBrowserArgs absolutizes the flag VALUE "jpeg" as if it were the path)`, 'reported to #395');
+      clause(A, 'format-flag-before-the-path-works', ff.code === 0 && jpegSize(bf) !== null, `screenshot --screenshot-format jpeg x.jpg → ${show(ff)}; magic ${bf.subarray(0, 4).toString('hex')} (#395 e7750089 fixed the flag VALUE being taken for the path)`);
+      const eqf = path.join(dir, 'eq.jpg'); const eq = await cli(ctx, W1, ['screenshot', eqf, '--screenshot-format=jpeg', '--screenshot-quality=30']);
+      clause(A, 'equals-form-flags-are-honoured', eq.code === 0 && jpegSize(fs.existsSync(eqf) ? fs.readFileSync(eqf) : Buffer.alloc(0)) !== null && !fs.existsSync(path.join(APP_DIR, '--screenshot-quality=30')), `screenshot x.jpg --screenshot-format=jpeg --screenshot-quality=30 → ${show(eq)}; no file named like the flag in the host's cwd`);
       // a bare `screenshot` lands under the agent's own tmp dir and prints where
       const bare = await cli(ctx, W1, ['screenshot']);
       const printed = (/(\/\S+\.png)/.exec(bare.stdout) ?? [])[1];

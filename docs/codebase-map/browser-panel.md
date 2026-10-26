@@ -629,8 +629,8 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
 - **Measured differences from the removed tools** (all in the skill): `type` / `keyboard type` = `Input.insertText` exactly like the old `type` (no
   key events; `press` sends them); `fill` fires `input`, `change` only when the field is left (`press Tab`); `scroll` also works on a hidden pane (the
   old tool refused); the screenshot is a FILE (`screenshot` prints its path under `$ORCHESTRA_AGENT_TMPDIR`; the agent `Read`s it) instead of an
-  image block; a bare host gets `https://` as before. **Open gaps reported to #395 (ledger #405)**: `screenshot --screenshot-format jpeg out.jpg`
-  (flag before the path) is mangled by `absolutizeBrowserArgs`; `fill` on a hidden pane is refused. Both print `GAP` in the rig and never gate it.
+  image block; a bare host gets `https://` as before. **Open gap reported to #395 (ledger #405)**: `fill` on a hidden pane is refused (prints `GAP` in the rig, never gates it). The other
+  one the rig found — `screenshot --screenshot-format jpeg out.jpg` mangled by `absolutizeBrowserArgs`, and the `--flag=value` form writing a file named like the flag into the host's cwd — is fixed in #395 (`e7750089`) and is now a regular clause.
 - **Gotcha found by running the skill verbatim**: an EMPTY ref (`fill "" x`, `click ""` — a `$(ref …)` that matched nothing) succeeds and does
   nothing useful, so the skill's `ref` helper fails on no match and the example assigns its result (`email=$(ref …)`) so `set -e` sees it.
 

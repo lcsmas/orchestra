@@ -61,7 +61,7 @@ orchestra browser screenshot                    # writes a PNG under your scratc
 orchestra browser screenshot "$TMPDIR/page.png" # or choose the file
 §§§
 
-Then open the file with the **Read** tool — it shows images. JPEG: §screenshot out.jpg --screenshot-format jpeg --screenshot-quality 60§ (the path comes FIRST; the extension alone does not change the format). §--annotate§ overlays numbered labels on the interactive elements.
+Then open the file with the **Read** tool — it shows images. JPEG: §screenshot out.jpg --screenshot-format jpeg --screenshot-quality 60§ (the extension alone does not change the format). §--annotate§ overlays numbered labels on the interactive elements.
 
 ## Several commands in one call
 
