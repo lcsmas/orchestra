@@ -604,9 +604,9 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `Browser.getVersion`, `Browser.close` (no-op: an agent never closes the human's panel). Target ids are 32-hex derived
   from a per-proxy nonce (never the registry's `t1`); the ACTIVE tab is listed first. Page-level commands are forwarded
   to the tab's `webContents.debugger` with no session id; auto-attached child sessions (iframes) keep theirs.
-  `Target.createTarget` → `createTab({openedBy:'agent', activate:true})` (interim cap 8 in `makePanelPort` until the
-  tab policy #393/#397 sits in front); `closeTarget` refuses a tab the human opened. `Page.bringToFront` /
-  `Target.activateTarget` → `activateTab`; an input/capture command on a non-active tab activates it first. The same
+  `Target.createTarget` / `closeTarget` / `activateTarget` / `Page.bringToFront` go through the panel's POLICY-CHECKED agent entry
+  points (`agentOpenTab` / `agentCloseTab` / `agentActivateTab`, **Agent tabs (#397)** below); any acting command on a
+  non-active tab brings it to the front first. The same
   browser-level rules apply to a TAB session: `Page.close` / `Target.closeTarget|createTarget|…` / `Browser.*` sent on one never
   reach the page debugger (they would close the human's tab or the panel); only the page's own `Target.setAutoAttach` is forwarded.
   `Browser.getWindowForTarget|setWindowBounds|setContentsSize` are answered (fixed frame / ignored): erroring on `set viewport`
@@ -727,3 +727,51 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
   armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
+
+## Agent tabs (#397) — policy entry points, ownership at the CLI, visible bring-to-front, ref pin
+
+`orchestra browser tab list|new|<ref>|close` (agent-browser's `tab` command) work across the workspace's tabs; the proxy maps target
+discovery and "create target" onto the panel tabs (Electron has no `Target.createTarget`). Spec #388 stories 36-37, 41, 43-44; ADR 0009.
+
+- **Pure rules — `src/shared/browser-agent-tabs.ts`** (`browser-agent-tabs.test.ts`): `decideAgentFront` (activate only in the FOCUSED
+  workspace; a background workspace's agent never attaches or shows a view, story 44), `isActingCdpMethod` (what counts as an agent
+  ACTION on a tab: everything except `*.enable|disable`, `Runtime.runIfWaitingForDebugger`, `Target.setAutoAttach`, `Page.getFrameTree` —
+  the attach-time chatter measured on agent-browser 0.39.2; an unknown method is an action), `describeAgentTabs` (per tab: `openedBy`,
+  `closable` = `decideTabClose` with the agent actor), and the CLI half (`parseTabInvocation`, `parseAbTabList`, `resolveAbTab`,
+  `decideCloseThroughCli`, `tabCloseRefusal`, `annotateTabListText|Json`). The cap and close ownership stay in `browser-tab-policy.ts` (#393).
+- **Main — `browser-panel.ts`:** `agentOpenTab(wsId,{url?})` = `tryOpenTab(openedBy: AGENT_OPENER, activate: focusedWsId === wsId)`;
+  `agentCloseTab` = `tryCloseTab(…, AGENT_OPENER)` (refusal `not-owner` / `unknown-tab`); `agentActivateTab` = `decideAgentFront` then `setActive(…, byAgent=true)`.
+  `browser-cdp-host.ts`'s port calls ONLY these (never the bare `createTab`/`closeTab`/`activateTab`; the interim cap is gone) and throws the
+  policy message, which reaches agent-browser as a CDP error (`✗ CDP error (Target.createTarget): Tab limit reached: …`, rc 1).
+- **Bring to front, visibly (story 43):** `CdpProxyCore.tabCommand` calls `port.activateTab` for ANY acting command on a tab that is not active
+  (before the frame-bound `framesError` check, so a click on a background tab succeeds instead of being refused); explicit `tab <ref>` =
+  tab-level `Page.bringToFront`. An agent swap sets `Panel.agentSwitch {from,to,at}` → `BrowserPanelState.agentSwitch` (any tab swap that is not an
+  agent's clears it). Renderer: the agent's tabs wear an `agent` mark, and `.browser-agent-switch` ("The agent brought « X » to the
+  front." + « Back to « Y » », a HUMAN tab activation) shows for 9 s while `to` is still the active tab. Never silent.
+- **Close ownership is enforced twice.** agent-browser prints `✓ Tab [tN] closed` (rc 0) for a `Target.closeTarget` the proxy REFUSED and
+  drops the tab from its own list, so the next `tab close` of the agent's own tab says "Cannot close the last tab". The CLI therefore asks the
+  host first: `/browser {op:'tabs'}` (session-key verified like every `/browser` call; read-only, own workspace) → `describeAgentTabs`; a close of
+  a tab the user opened never reaches agent-browser: `browser_tab_not_owner: Tab t1 was opened by the user… (tab t1 is still open)` (rc 1; `--json`
+  carries the same `code`). Both fail OPEN to the native command if the host or agent-browser cannot say — the proxy refuses regardless. `tab list`
+  appends ` (yours)` / ` (the user's)`; `--json tab list` adds `openedBy` + `closable`.
+- **Refs and tabs:** agent-browser clears its ref map on EVERY tab switch (even back to the tab a ref came from) and a snapshot replaces it, so a
+  ref from another tab is `Unknown ref` → `browser_stale_ref`, never a wrong click; its daemon pointer is its own (a user's tab click does not move
+  it), so `click @eN` still lands on the tab the ref came from — and brings it to the front. The LEGACY `mcp__browser__*` path (until #399): `readPage`
+  pins `Panel.refTabId`; `clickRef` / `formInput` resolve the pin (an explicit `tabId` wins; a closed pinned tab is an error, not a click on whichever
+  tab is active) and bring the pinned tab to the front first.
+- **agent-browser 0.39.2 vs the faked surface (tab commands, measured with the real binary):** `tab new [--label x] [url]` = `Target.createTarget` +
+  attach (prints the url); `tab list` = browser-level only (`Browser.getVersion`; label shows as `[t2] docs <title> - <url>`); `tab <ref>` = tab-level
+  `Runtime.evaluate` then `Page.bringToFront`; `tab close [ref]` (no ref = its current tab) = `Target.closeTarget`; refs accept `tN`, a label or a CDP
+  target id; its `tN` ids are SESSION-local (not the registry's). A refused close is swallowed whatever the answer (error, `{success:false}`, a re-emitted
+  `Target.targetCreated|targetInfoChanged` — none repairs its list), which is why the CLI pre-flight exists. The cap refusal surfaces cleanly.
+- **Tests:** `browser-agent-tabs.test.ts` (pure, 21), `cdp-proxy-core-agent-tabs.test.ts` (core vs a fake port, 10), `main/browser-panel-agent-tabs.test.ts`
+  (the REAL panel over stub Electron, 15: focus rule, cap with no leaked view, ownership, notice, ref pin), `main/browser-agent-tabs-wiring.test.ts` (7 pins).
+  Must-FAIL: `node scripts/mutate-browser-agent-tabs.mjs` (54 source mutants, byte-exact restore). Built-app rig `scripts/e2e-browser-agent-tabs.sh <app-dir>`
+  (arms `restart open switch front cap ownership children background refs` — `restart` runs first: SIGKILL + re-boot, a stale agent-browser id that now names the user's tab cannot close it; oracles = the app's state IPC, a second CDP client on the page, compositor pixels via `grim`;
+  `--mutant <name>` patches the BUILT bundle, 12 mutants incl. a stylesheet one (`dist/assets`), restored byte-exact + `cmp`). Fixture pages `agent-tabs-hit-{a,b}.html` (one full-viewport button = a click counter), `agent-tabs-frame.html` (a cross-site iframe = an auto-attachable child session).
+- **Early-review round (reviewer review-onglets-agent-proxy-397):** F1 the close verbs are gated on EVERY session of a tab — #395's shared `isBrowserLevelMethod` (core `dispatch`, applied BEFORE the root/child split) answers a CHILD (worker / frame) session exactly like the root: `Page.close` → ownership of the owning tab, `Browser.close` no-op, nothing reaches the debugger (Chromium's `Page.close` would close the whole WebContents); #397 calls it, never copies it. `Target.sendMessageToTarget` is #395's deny. **Accepted gap:** page-JS `window.close()` on a user tab (history ≤ 1) is not gate-able by the proxy. F2 the swap notice is OVERLAID (`position:absolute` in `.browser-tabs-row`): it never moves a tab or its × under a click. F3 a frame session's `Input.*` meets `framesError` and its acting commands bring the tab front. F4b `tab <ref>` says `(yours)`/`(the user's)` so a stale `tN` that now names the user's tab is not silent. **Accepted gaps (ship note):** F4a a popup/`window.open` born in a HUMAN tab (#396) is human-owned: the agent cannot close it and it counts against the shared cap — `tab list` shows it `(the user's)`, the human closes it; F5 no human priority: any acting command re-swaps at once after the human's explicit tab click (visible + reversible via « Back », story 43), `type`/`press_key` of the legacy tools are not ref-pinned (they die with #399).
+- **Never cache a `tN` across an app restart** (#393 review F3): restored tabs are renumbered per process and agent-browser's ids are session-local, so a remembered `t5` can name another tab — re-run `tab list`. A stale id still cannot close the user's tab (ownership is by `openedBy`, not by id).
+- **Traps:** the refs arm needs a page where a click ANYWHERE is counted (a wrong-tab click otherwise hides behind "nothing at those coordinates"); any
+  ctl/ clause that runs AFTER a refusal depends on agent-browser's post-refusal state (desync) — keep controls before the refusals; `pnpm run test`'s
+  `pretest` rebuilds `dist-electron/cli.js`, so never run it while a mutant rig is patching the bundle.
+

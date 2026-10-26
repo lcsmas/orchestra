@@ -10,6 +10,7 @@
  */
 import { randomBytes, createHash } from 'node:crypto';
 import { captureWithFallback } from './cdp-capture.ts';
+import { isActingCdpMethod } from './browser-agent-tabs.ts';
 
 export interface CdpTab {
   id: string;
@@ -552,18 +553,19 @@ export class CdpProxyCore {
         throw new CdpError(`${method} refused: policy returned an invalid verdict`, ERR_SERVER);
       }
     }
-    if (!childSessionId) {
-      if (method === 'Page.bringToFront') {
-        this.port.activateTab(tabId);
-        return {};
-      }
-      if (FRAME_BOUND_METHODS.has(method)) {
-        this.bringToFrontIfBackground(tabId);
-        const why = this.port.framesError(tabId);
-        if (why) throw new CdpError(why, ERR_SERVER);
-      }
-      if (method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
+    if (!childSessionId && method === 'Page.bringToFront') {
+      this.port.activateTab(tabId);
+      return {};
     }
+    // Story 43 (#397): ANY agent action on a tab nobody looks at brings it to the front (the port applies the focus rule — a
+    // background workspace's agent never shows a view); domain enables and attach-time calls are not actions. A CHILD (frame) session
+    // is the same tab: its commands count too, and its Input.* meets the same fail-fast (review F3: a hidden pane queues them).
+    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);
+    if (FRAME_BOUND_METHODS.has(method)) {
+      const why = this.port.framesError(tabId);
+      if (why) throw new CdpError(why, ERR_SERVER);
+    }
+    if (!childSessionId && method === 'Page.captureScreenshot') return this.screenshot(tabId, st, params ?? {});
     this.trace?.('proxy->debugger', { method, params, sessionId: childSessionId });
     return st.channel.send(method, params, childSessionId).then(
       (r) => {

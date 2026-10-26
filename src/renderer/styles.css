@@ -3448,6 +3448,60 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-4);
   color: var(--accent);
 }
+/* An agent-opened tab wears a mark; an agent swap of the tab on screen is announced (#397, ADR 0009: until hidden views paint, an agent action brings its tab to the front — never silently). */
+.browser-tab-agent-mark {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font-size: 9.5px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 3px;
+}
+/* The notice is OVERLAID on the right end of the strip (position:absolute in .browser-tabs-row): it takes no space in the tab flow, so it appearing,
+   changing with a chained swap or vanishing never moves a tab or its × under the human's click (#397 review F2); a separate row would resize the native view. */
+.browser-tabs-row {
+  position: relative;
+  flex: 0 0 auto;
+}
+.browser-agent-switch {
+  position: absolute;
+  right: 8px;
+  top: 3px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 55%;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 5px;
+}
+.browser-agent-switch-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-agent-switch-back {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 1px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.browser-agent-switch-back:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
 .browser-toolbar {
   display: flex;
   align-items: center;
