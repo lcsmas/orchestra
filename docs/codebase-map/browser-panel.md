@@ -830,3 +830,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   removed, screenshot dropped, reset without an agent, re-acquire inside the grace attaches again, switch leaves the old workspace
   armed (renderer chunk), release detaching under the agent). Two traps: an agent-browser daemon runs ONE command at a time per workspace, so a second CLI command queues behind an
   in-flight `wait`; several workspaces' composers are mounted at once (hidden ones first in DOM order) — read the visible one.
+- **Whole-flow drive (#388 end gate)**: `scripts/e2e-browser-whole-flow.sh <app-dir>` — ONE built app in the contained rig, one story over 10 arms
+  (`human agent popup design cookies memory keyring legacy restart profile`), fixture `pages/flow.html`. A clause whose ticket has no `Merge #n` commit on the
+  app dir's HEAD (or is not in `--merged n,n`) prints `NOT YET MERGED: #n` (#396 #397 #399 #400 #401 at the time of writing); `--require-all` turns each into a FAIL, and a ticket that IS merged
+  without a clause body FAILS loudly. Seam mutants (`--mutant strip-hides-agent-tabs | partition-shared`) must go red on the NAMED clause; `--check-anchors <app-dir>` proves each edit matches once.
