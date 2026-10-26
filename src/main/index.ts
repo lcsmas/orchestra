@@ -368,6 +368,7 @@ const keyringDecision = ORCHESTRA_CLI_MODE
       exportBusAddress: (address) => {
         process.env.DBUS_SESSION_BUS_ADDRESS = address;
       },
+      extraScratchDirs: [app.getPath('userData')], // the probe's scratch dir if TMPDIR and $XDG_RUNTIME_DIR are unusable
     });
 
 setKeyringSelectionReason(keyringDecision?.reason ?? null);

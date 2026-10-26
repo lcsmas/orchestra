@@ -17,6 +17,7 @@ import {
 /** How long the PARENT waits for the probe before deciding `unavailable` (the main thread is blocked, before the window exists: the worst-case startup
  *  cost of an unrecognised desktop with a dead service). It only STOPS WAITING — it never signals the child (see {@link WAIT_ONLY_SH}). */
 export const PROBE_WAIT_MS = 5000;
+const defaultScratchDirs = (env: NodeJS.ProcessEnv): ScratchBase[] => [os.tmpdir(), ...(env.XDG_RUNTIME_DIR ? [env.XDG_RUNTIME_DIR] : [])];
 /** gdbus's own per-call timeout (seconds), deliberately LONG: gdbus sends an `Introspect` first and only then the `Properties.Get`, each with this
  *  timeout, and a client that vanishes while a call is in flight made the human's gnome-keyring-daemon abort twice (2026-10-26, `gkd_secret_service_get_
  *  pkcs11_session: assertion 'client' failed`). The child outlives our deadline and finishes (or times out) on its own. */
@@ -36,16 +37,45 @@ while [ "$n" -lt "$limit" ] && alive; do sleep 0.1; n=$((n+1)); done
 if alive; then exit 3; fi
 wait "$pid"`;
 
+/** A scratch-dir parent: a plain path (must already exist) or `{ dir, create: true }` (ours — made 0700 if missing; only the app's own userData). */
+export type ScratchBase = string | { dir: string; create: true };
+
+/** A private scratch dir for the probe's output file: the first of `bases` that accepts a `mkdtemp`. A read-only or missing TMPDIR must not turn a
+ *  healthy keyring into `unavailable` silently — each failure is reported through `note` (it reaches the startup log) and the next base is tried.
+ *  Only a `create` base is ever created: a missing `$XDG_RUNTIME_DIR` is the session's to make, not ours. null = none worked. */
+export function makeProbeDir(bases: readonly ScratchBase[], note: (msg: string) => void = () => {}): string | null {
+  for (const b of bases) {
+    const base = typeof b === 'string' ? b : b.dir;
+    try {
+      if (typeof b !== 'string') fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+      return fs.mkdtempSync(path.join(base, 'orch-secret-probe-'));
+    } catch (e) {
+      note(`mkdtemp ${base}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+    }
+  }
+  return null;
+}
+
 /** Read `Locked` of the DEFAULT collection without prompting, WITHOUT ever abandoning the call: the parent waits at most `waitMs`; past that the answer
  *  is `unavailable` and the decision falls back to Chromium's default, while the orphaned gdbus completes on its own. Anything but a clean boolean
- *  answer (no `gdbus`, no owner, no default collection, a dead daemon) is `unavailable` too. */
+ *  answer (no `gdbus`, no owner, no default collection, a dead daemon, no writable scratch dir) is `unavailable` too. */
 export function probeSecretService(
-  opts: { program?: string; waitMs?: number; env?: NodeJS.ProcessEnv; spawn?: typeof spawnSync } = {},
+  opts: {
+    program?: string;
+    waitMs?: number;
+    env?: NodeJS.ProcessEnv;
+    spawn?: typeof spawnSync;
+    /** Candidate parents of the scratch dir, in order (default: the OS temp dir, then $XDG_RUNTIME_DIR). */
+    scratchDirs?: readonly ScratchBase[];
+    note?: (msg: string) => void;
+  } = {},
 ): SecretServiceState {
   const waitMs = opts.waitMs ?? PROBE_WAIT_MS;
+  const env = opts.env ?? process.env;
   let dir: string | null = null;
   try {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-secret-probe-'));
+    dir = makeProbeDir(opts.scratchDirs ?? defaultScratchDirs(env), opts.note);
+    if (!dir) return 'unavailable';
     const out = path.join(dir, 'out');
     const r = (opts.spawn ?? spawnSync)(
       'sh',
@@ -63,7 +93,7 @@ export function probeSecretService(
         timeout: waitMs + WRAPPER_BACKSTOP_SLACK_MS, // wedged-`sh` backstop only; the wrapper holds no call
         killSignal: 'SIGKILL',
         stdio: ['ignore', 'ignore', 'ignore'],
-        env: opts.env ?? process.env,
+        env,
       },
     );
     if (r.error || r.status !== 0) return 'unavailable'; // sh missing, deadline (3), or gdbus failed
@@ -114,6 +144,8 @@ export interface KeyringSelectionDeps {
   /** Make the runtime-dir bus the process's session bus (`process.env.DBUS_SESSION_BUS_ADDRESS = …`). */
   exportBusAddress: (address: string) => void;
   probe?: () => SecretServiceState;
+  /** Extra fallback parents for the probe's scratch dir after the OS temp dir and $XDG_RUNTIME_DIR (index.ts: the userData dir). */
+  extraScratchDirs?: readonly string[];
 }
 
 /** Decide and apply `--password-store`. Returns null off Linux; otherwise the decision (for the
@@ -123,7 +155,15 @@ export function selectLinuxPasswordStore(
 ): (PasswordStoreDecision & { probeMs: number | null; facts: string }) | null {
   if (deps.platform !== 'linux') return null;
   let probeMs: number | null = null;
-  const probe = deps.probe ?? (() => probeSecretService({ env: probeEnv(deps.env) }));
+  const notes: string[] = [];
+  const probe =
+    deps.probe ??
+    (() =>
+      probeSecretService({
+        env: probeEnv(deps.env),
+        scratchDirs: [...defaultScratchDirs(deps.env), ...(deps.extraScratchDirs ?? []).map((dir) => ({ dir, create: true as const }))],
+        note: (m) => notes.push(m),
+      }));
   const decision = decidePasswordStore({
     env: deps.env,
     passwordStoreAlreadySelected:
@@ -146,6 +186,6 @@ export function selectLinuxPasswordStore(
   const exported = decision.store === 'gnome-libsecret' && bus === 'runtime-dir'; // never for `basic`: an isolated instance must not carry the bus
   if (exported) deps.exportBusAddress(probeEnv(deps.env).DBUS_SESSION_BUS_ADDRESS as string);
   // What the decision saw, for the startup log: a wrong guess about a user's desktop is diagnosable from it.
-  const facts = `desktop="${deps.env.XDG_CURRENT_DESKTOP ?? ''}" session="${deps.env.DESKTOP_SESSION ?? ''}" bus=${bus}${exported ? ' (exported)' : ''}`;
+  const facts = `desktop="${deps.env.XDG_CURRENT_DESKTOP ?? ''}" session="${deps.env.DESKTOP_SESSION ?? ''}" bus=${bus}${exported ? ' (exported)' : ''}${notes.length ? ` probe-notes="${notes.join('; ')}"` : ''}`;
   return { ...decision, probeMs, facts };
 }

@@ -20,6 +20,13 @@ const T_LK = ['src/main/linux-keyring.test.ts'];
 const T_SE = ['src/main/secrets.test.ts'];
 const T_SS = ['src/shared/secrets-state.test.ts'];
 const T_WI = ['src/main/keyring-wiring.test.ts'];
+const RW = 'src/shared/keyring-rig-world.ts';
+const DR = 'scripts/e2e-keyring.mjs';
+const SH = 'scripts/e2e-keyring.sh';
+const T_RW = ['src/shared/keyring-rig-world.test.ts'];
+const T_RD = ['src/main/keyring-rig-driver.test.ts'];
+const RP = 'scripts/lib/rig-procs.mjs';
+const T_RP = ['src/main/rig-procs.test.ts'];
 
 /** [id, file, find, replace, tests that must go red, what clause it removes] */
 const MUTANTS = [
@@ -80,6 +87,50 @@ const MUTANTS = [
   ['U55', LK, "stdio: ['ignore', 'ignore', 'ignore'],", "stdio: ['ignore', 'pipe', 'ignore'],", T_LK, 'no pipe shared with the orphaned child (spawnSync would wait for its EOF)'],
   ['U56', SS, "      : state.selectionReason === 'locked-service'\n        ? 'Secrets", "      : false\n        ? 'Secrets", T_SS, 'a keyring found LOCKED says so — not "no keyring is available" (review round 3 MINOR 2)'],
   ['U57', SS, "state.selectionReason === 'locked-service' ? 'until the keyring is unlocked and Orchestra restarted'", "false ? 'until the keyring is unlocked and Orchestra restarted'", T_SS, 'the unreadable-ciphertext variant for a locked keyring says how to get it back'],
+  ['U58', LK, "      if (typeof b !== 'string') fs.mkdirSync(base, { recursive: true, mode: 0o700 });\n", '', T_LK, 'a missing `create` base (userData) is created, so a missing TMPDIR cannot silence a healthy keyring'],
+  ['U64', LK, "      if (typeof b !== 'string') fs.mkdirSync(base, { recursive: true, mode: 0o700 });", "      fs.mkdirSync(base, { recursive: true, mode: 0o700 });", T_LK, 'a missing plain base ($XDG_RUNTIME_DIR) is never created (review round-4 rewire m8)'],
+  ['U59', LK, "    } catch (e) {\n      note(`mkdtemp ${base}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);", "    } catch (e) {\n      void e;", T_LK, 'every unusable scratch base is NOTED (never swallowed silently)'],
+  ['U60', LK, "for (const b of bases) {", "for (const b of bases.slice(0, 1)) {", T_LK, 'the probe falls back past the first unusable base'],
+  ['U61', LK, "${notes.length ? ` probe-notes=\"${notes.join('; ')}\"` : ''}", "", T_LK, 'the scratch failures reach the startup-log facts'],
+  ['U62', LK, "...(deps.extraScratchDirs ?? [])", "", T_LK, 'index.ts\'s extra fallback base (userData) is used by the real probe'],
+  ['U63', IX, "      extraScratchDirs: [app.getPath('userData')], // the probe's scratch dir if TMPDIR and $XDG_RUNTIME_DIR are unusable\n", '', T_WI, 'index.ts passes the userData fallback base'],
+  // ---- the rewired rig (round-4 rewire, ledger #405 incident Q2): pure world checks + the driver + the launcher ----
+  ['W1', RW, "if (out.length > 0 && out[out.length - 1] !== '..') out.pop();", "if (false) out.pop();", T_RW, 'a `..` collapses (a /run/x/../user/1000 spelling cannot slip the human-runtime test)'],
+  ['W2', RW, "const HUMAN_RT = /(^|\\/)run\\/user(\\/|$)/;", "const HUMAN_RT = /^\\/run\\/user\\/\\d/;", T_RW, 'the human-runtime pattern also catches the bare dir and any container shape'],
+  ['W3', RW, "  return value.split(/[:=,;\\s]+/).some((piece) => piece.includes('/') && HUMAN_RT.test(normPath(piece)));", "  return false;", T_RW, 'a path INSIDE `unix:path=…` / a PATH list / a URL is found'],
+  ['W4', RW, "return n.startsWith(d + '/');", "return n.startsWith(d);", T_RW, 'containment is by path segment (a sibling sharing the rig dir\'s name as a prefix is outside)'],
+  ['W5', RW, "{ id: 'hidden-world', ok: f.hiddenWorld,", "{ id: 'hidden-world', ok: true,", T_RW, 'the rig refuses to run outside the hidden world'],
+  ['W6', RW, "dbus === `unix:path=${rig}/no-session-bus` && !f.noBusExists,", "dbus === `unix:path=${rig}/no-session-bus`,", T_RW, 'the private no-bus path must not exist'],
+  ['W7', RW, "ok: rig !== '' && xdg === `${rig}/xdg` && !referencesHumanRuntime(xdg),", "ok: xdg !== '',", T_RW, 'the driver\'s XDG_RUNTIME_DIR is exactly the rig\'s private dir'],
+  ['W8', RW, " && !wl.includes('/') && env.DISPLAY === undefined,", " && !wl.includes('/'),", T_RW, 'X11 is unreachable (DISPLAY absent)'],
+  ['W9', RW, ".filter(([, d]) => !under(d, w.rigDir))", ".filter(([, d]) => false)", T_RW, 'every arm dir lies inside the rig dir'],
+  ['W10', RW, "|standard_system_servicedirs|include|includedir|servicehelper)", "|servicehelper)", T_RW, 'the private bus config pulls in no standard service dirs / includes'],
+  ['W11', RW, "ok: e.exeBase === 'gnome-keyring-daemon' && e.cmdline.some", "ok: e.cmdline.some", T_RW, 'the secrets owner is gnome-keyring-daemon by exe, not by claim'],
+  ['W12', RW, "&& e.ownerPid !== e.driverPid,", ",", T_RW, 'the owner is not the driver itself'],
+  ['W13', RW, "under(s.path, `${e.run}/keyring`)", "under(s.path, '/')", T_RW, 'the owner holds a socket under the ARM\'s keyring dir (not just any socket)'],
+  ['W14', RW, "const sawPrivate = t.socketPaths.some((x) => under(x, t.run));", "const sawPrivate = true;", T_RW, 'the tree scan has a positive control (it can see the private dir)'],
+  ['W15', RW, "|| armDirs.includes(n);", "|| true;", T_RW, 'the rig runtime root holds only wayland sockets and arm dirs'],
+  ['D1', DR, "hiddenWorld: hiddenWorldProof() });", "hiddenWorld: true });", T_RD, 'the driver refuses outside the hidden world'],
+  ['D2', DR, "try { RIG_XDG = privateRuntimeDir(); } catch (e) { refuse(e.message); }", "RIG_XDG = `${RIG_DIR}/xdg`;", T_RD, 'the driver takes XDG_RUNTIME_DIR through privateRuntimeDir() (refuses a real/foreign one)'],
+  ['D3', DR, "if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); process.exit(0); }", "if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); }", T_RD, '--preflight-only stops right after the checks (nothing else may start)'],
+  ['D4', DR, "    if (failed(worldCs).length) throw new Error('the arm world is not private — nothing was started');\n", '', T_RD, 'an arm whose world is not private starts nothing'],
+  ['D5', DR, "spawnSync('gdbus', ['call', '--address', w.address,", "spawnSync('gdbus', ['call', '--session',", T_RD, 'the oracle names the arm bus explicitly (never "the session bus")'],
+  ['D6', DR, "w.run = path.join(RIG_XDG, `k-${name}`);", "w.run = path.join(RIG_DIR, `k-${name}`);", T_RD, 'each arm\'s runtime dir is inside the rig\'s private runtime dir'],
+  ['D7', DR, "      ownerCs('/after-relock');\n", '', T_RD, 'a relocked (new) keyring daemon\'s ownership is proved again'],
+  ['D8', RP, "s.state !== 'Z' && s.start === start;", "s.state !== 'Z';", T_RP, 'teardown signals by identity (pid + start time), not by a recycled pid'],
+  ['D9', DR, "clause('ctl/hidden-runtime-dir-stayed-empty', hiddenEntries.length === 0,", "clause('ctl/hidden-runtime-dir-stayed-empty', true,", T_RD, 'anything created in the hidden stand-in of the human runtime dir is a finding'],
+  ['D10', DR, "  clause('forged/nothing-was-started', rootAfter === rootBefore &&", "  clause('forged/nothing-was-started', true ||", T_RD, 'the forged arm proves nothing was started'],
+  ['D11', SH, "export RIG_HIDE_REAL_RUNTIME=1\n", '', T_RD, 'the launcher hides the real runtime dir on every run'],
+  ['D12', DR, "|| readNul(`/proc/${process.ppid}/environ`).includes('RIG_HIDDEN_WORLD=1');", ";", T_RD, 'the hidden-world proof survives `env -i` by asking the rig bash (my parent) — without it every real run is refused (review BLOCKING 1)'],
+  ['D13', DR, "'--timeout', '30', ...args]", "'--timeout', '2', ...args]", T_RD, 'the arm oracle waits long: a client vanishing mid-call aborts the arm daemon (review MAJOR 3)'],
+  ['D14', DR, "if (holdsArmSocket(w, p, rows)) track(w, p);", "track(w, p);", T_RD, 'a pid the bus reports is signalled only if it holds a socket of THIS arm (review m5)'],
+  ['D15', DR, "t.socketPaths = socketPaths(inodesOf(t.fdTargets), ssRows());", "t.socketPaths = [];", T_RD, 'the app tree\'s sockets are resolved to paths (a fd link is only `socket:[N]`)'],
+  ['D16', DR, "  w.busProc = { pid: child.pid, start: procStat(child.pid)?.start };", "  void 0; w.busProc = null; w._x = { pid: child.pid, start: procStat(child.pid)?.start };", T_RD, 'the bus group leader is recorded before waiting for its socket (a bus that never starts is still reaped)'],
+  ['D17', DR, "throw new Error('child DBUS_SESSION_BUS_ADDRESS is not the private bus');", "refuse('child DBUS_SESSION_BUS_ADDRESS is not the private bus');", T_RD, 'a world violation inside an arm throws (the finally reaps), never process.exit'],
+  ['D18', DR, "clause(`forged/${name}-is-refused`, r.rc === 3 && /^REFUSED: /m.test(r.out) && why.test(r.out) &&", "clause(`forged/${name}-is-refused`, r.rc === 3 && /^REFUSED: /m.test(r.out) &&", T_RD, 'a forged world counts as caught only if the refusal NAMES the forged clause'],
+  ['W16', RW, "    const peer = byIno.get(x.peerIno);\n    if (peer?.localPath) out.add(peer.localPath);\n", "", T_RW, 'a client end (`*`) resolves to the path its PEER end is bound to — the shape of a connection to a keyring/bus socket'],
+  ['W17', RW, "ok: longestSocket(w.run) <= SUN_PATH_MAX,", "ok: true,", T_RW, 'every arm socket path fits sun_path (the hooks socket is 28 chars)'],
+  ['W18', RW, "const sawPrivate = t.socketPaths.some((x) => under(x, t.run));", "const sawPrivate = t.fdTargets.some((x) => under(x, t.run));", T_RW, 'the tree-scan positive control is a SOCKET under the arm dir (fd links never show socket paths)'],
 ];
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');

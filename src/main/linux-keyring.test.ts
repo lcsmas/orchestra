@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkHomeScratch } from '../shared/home-scratch.ts';
 import type { SecretServiceState } from '../shared/password-store.ts';
-import { DBUS_CALL_TIMEOUT_S, PROBE_WAIT_MS, WAIT_ONLY_SH, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
+import { DBUS_CALL_TIMEOUT_S, PROBE_WAIT_MS, WAIT_ONLY_SH, makeProbeDir, probeEnv, probeSecretService, selectLinuxPasswordStore, sessionBusKind, sessionBusReachable, usableBusAddress } from './linux-keyring.ts';
 
 // #389 — the impure half of the keyring selection: the REAL probe code path (a real child process) against a
 // stub `gdbus`, and the switch application against a fake `app.commandLine`.
@@ -128,6 +128,70 @@ test('the shipped probe NEVER abandons an in-flight call: gdbus gets a LONG time
   assert.equal(args[args.indexOf('probe') + 2], String(Math.ceil(PROBE_WAIT_MS / 100)), 'the parent waits PROBE_WAIT_MS');
   assert.ok(Number(opts.timeout) > PROBE_WAIT_MS, 'the wrapper backstop sits above the wait');
   assert.deepEqual(opts.stdio, ['ignore', 'ignore', 'ignore'], 'no pipe is shared with the child (spawnSync would wait for its EOF)');
+});
+
+// A scratch parent that cannot take a mkdtemp: a regular FILE (ENOTDIR) — a real error, no permissions trick needed.
+function unusableBase(name: string): string {
+  const f = path.join(scratch, name);
+  fs.writeFileSync(f, 'not a dir');
+  return path.join(f, 'tmp');
+}
+
+test('probe scratch dir: an unusable TMPDIR falls back to the next base, each failure is NOTED, and the first usable base wins (#389 round-4 MINOR)', () => {
+  const bad = unusableBase('tmpdir-is-a-file');
+  const good = { dir: path.join(scratch, 'fallback-base'), create: true as const }; // missing: a `create` base is made
+  const notes: string[] = [];
+  const dir = makeProbeDir([bad, good], (m) => notes.push(m));
+  assert.ok(dir && dir.startsWith(good.dir + path.sep) && fs.statSync(dir).isDirectory(), `got ${dir}`);
+  assert.equal(fs.statSync(good.dir).mode & 0o777, 0o700, 'a base we create is private');
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /^mkdtemp .*tmpdir-is-a-file\/tmp: ENOTDIR$/);
+  assert.equal(makeProbeDir([bad, unusableBase('also-a-file')], (m) => notes.push(m)), null, 'every base unusable → null, not a throw');
+  assert.equal(notes.length, 3);
+});
+
+test('probe: a healthy keyring is still READ when TMPDIR is unusable (fallback base), and the failure is reported; no base at all → unavailable', () => {
+  const notes: string[] = [];
+  const bad = unusableBase('tmp-bad-2');
+  const good = { dir: path.join(scratch, 'fallback-2'), create: true as const };
+  assert.equal(probeSecretService({ program: stub('g-fb', 'echo "(<false>,)"'), scratchDirs: [bad, good], note: (m) => notes.push(m) }), 'unlocked');
+  assert.equal(notes.length, 1, 'the unusable TMPDIR is logged, never swallowed');
+  const left = fs.readdirSync(good.dir).filter((n) => n.startsWith('orch-secret-probe-'));
+  assert.deepEqual(left, [], 'the fallback scratch dir is cleaned up');
+  assert.equal(probeSecretService({ program: stub('g-fb2', 'echo "(<false>,)"'), scratchDirs: [bad] }), 'unavailable', 'nowhere to write → unavailable (documented), never a throw');
+});
+
+test('probe scratch dir: a MISSING plain base (e.g. $XDG_RUNTIME_DIR) is never created — only a `create` base is', () => {
+  const missingRuntime = path.join(scratch, 'no-such-xdg-runtime');
+  const notes: string[] = [];
+  assert.equal(makeProbeDir([missingRuntime], (m) => notes.push(m)), null);
+  assert.equal(fs.existsSync(missingRuntime), false, 'the session\'s runtime dir is not ours to create');
+  assert.match(notes[0], /ENOENT/);
+  const userData = path.join(scratch, 'userdata-create');
+  const dir = makeProbeDir([missingRuntime, { dir: userData, create: true }]);
+  assert.ok(dir && dir.startsWith(userData + path.sep), `fell through to the create base: ${dir}`);
+});
+
+test('select: probe scratch failures reach the startup-log facts (real default probe, stub gdbus on PATH); a healthy TMPDIR adds nothing', () => {
+  const binDir = path.join(scratch, 'bin-sel');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'gdbus'), '#!/bin/sh\necho "(<false>,)"\n', { mode: 0o755 });
+  const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x', XDG_CURRENT_DESKTOP: 'sway', PATH: `${binDir}:/usr/bin:/bin` } as NodeJS.ProcessEnv;
+  const select = (extra: string[]) => {
+    const f = fakeDeps({ env, extraScratchDirs: extra });
+    return selectLinuxPasswordStore({ ...f.deps, probe: undefined });
+  };
+  const savedTmp = process.env.TMPDIR;
+  try {
+    process.env.TMPDIR = unusableBase('tmp-bad-3');
+    const broken = select([path.join(scratch, 'userdata-fb')]);
+    assert.equal(broken?.store, 'gnome-libsecret', 'the healthy keyring is still selected');
+    assert.match(broken?.facts ?? '', /probe-notes="mkdtemp .*tmp-bad-3\/tmp: ENOTDIR"/);
+    process.env.TMPDIR = scratch;
+    assert.doesNotMatch(select([])?.facts ?? '', /probe-notes/);
+  } finally {
+    if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+  }
 });
 
 // ---- the switch ---------------------------------------------------------------------------------

@@ -16,6 +16,7 @@ test('index.ts: selectLinuxPasswordStore runs at module scope BEFORE app.whenRea
   assert.ok(sel > 0 && ready > 0 && sel < ready, `selection @${sel} must precede whenReady @${ready}`);
   assert.match(index, /const keyringDecision = ORCHESTRA_CLI_MODE\s*\?\s*null\s*:\s*selectLinuxPasswordStore\(/);
   assert.match(index, /appendSwitch: \(name, value\) => app\.commandLine\.appendSwitch\(name, value\)/);
+  assert.match(index, /extraScratchDirs: \[app\.getPath\('userData'\)\]/, 'the probe falls back to the userData dir when TMPDIR and $XDG_RUNTIME_DIR are unusable');
 });
 
 test('index.ts hands the selection reason to the secrets state (Settings says an isolated instance skipped the keyring on purpose)', () => {

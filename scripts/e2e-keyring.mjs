@@ -1,42 +1,75 @@
 // #389 — Linux keyring selection / re-encryption / Settings warning, driven in a BUILT Orchestra (argv[2] = app dir) inside the
-// contained rig's own headless sway. One ARM = one private world: its own `dbus-run-session` (a bus config that lists NO host service
-// dirs), its own gnome-keyring-daemon under scratch XDG_DATA_HOME / XDG_RUNTIME_DIR, its own ORCHESTRA_HOME / HOME / claude config.
-// Arms: unlocked · locked · nosvc · recognised · hung · gnome · relock · isolated · fleet. Every arm but isolated/fleet opts in with ORCHESTRA_KEYRING=probe
-// (an ORCHESTRA_HOME instance never touches a keyring otherwise — review F1); `fleet` is the REAL fleet-rig env (real XDG_RUNTIME_DIR, no opt-in). Every clause is cross-read from independent surfaces: the app's log line,
-// the renderer's IPC answer (`getSecretsState`), the secrets file bytes, the PRIVATE keyring itself over D-Bus (Locked / item count), the DOM
-// and a screenshot. Positive controls: app identity, scratch env read back out of the running process, app present in MY sway, the private
-// bus really lacks / has org.freedesktop.secrets before the app starts. The host's real keyring files are hashed before/after.
+// contained rig's own headless sway, in the rig's HIDDEN WORLD (the human's runtime dir is an empty tmpfs: the real keyring daemon and bus are
+// unreachable by construction). One ARM = one private world: its own XDG_RUNTIME_DIR (<rig>/xdg/k-<arm>: the daemon's control + pkcs11 sockets
+// and the bus socket live there), its own `dbus-run-session` (a bus config that lists NO host service dirs), its own gnome-keyring-daemon under
+// scratch XDG_DATA_HOME, its own ORCHESTRA_HOME / HOME / claude config.
+// Arms: forged · unlocked · locked · nosvc · recognised · hung · gnome · relock · isolated · isolated-gnome. `forged` is the must-FAIL preflight arm
+// (a forced real XDG_RUNTIME_DIR / DBUS address / env value must be REFUSED before anything starts); every other arm but isolated* opts in with
+// ORCHESTRA_KEYRING=probe (an ORCHESTRA_HOME instance never touches a keyring otherwise — review F1). Every clause is cross-read from independent
+// surfaces: the app's log line, the renderer's IPC answer (`getSecretsState`), the secrets file bytes, the PRIVATE keyring itself over its own bus
+// (Locked / item count), the DOM and a screenshot. World clauses (`<arm>/world/*`, src/shared/keyring-rig-world.ts): the secrets owner on the
+// private bus is OUR daemon, no env/fd of any rig process names the human's runtime dir, the rig runtime root holds nothing but wayland + arm dirs.
+// This rig NEVER reads the human's bus, keyring daemon or keyring files, and never scans /proc/*/environ: processes are tracked by identity
+// (pid + start time, from the private bus's peer list and the app's own process tree).
 //
-// Usage (via scripts/e2e-keyring.sh): <app-dir> --live-home <real $HOME> [--arms a,b] [--out dir] [--label name]
+// Usage (via scripts/e2e-keyring.sh): <app-dir> --live-home <real $HOME> [--arms a,b] [--out dir] [--label name] | --preflight-only
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { privateRuntimeDir } from './lib/rig-runtime.mjs';
+import { descendantsOf, isAlive, procStat, signalIfSame } from './lib/rig-procs.mjs';
+import {
+  armWorldChecks, busConfigChecks, driverWorldChecks, envHumanRuntimeRefs, failed, humanRuntimeDir, parseSs, parseUnixSockets, referencesHumanRuntime,
+  rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, treeChecks,
+} from '../src/shared/keyring-rig-world.ts';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
+const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
+
+// ── the driver's OWN world, proved before anything is created or started ───────────────────────────────────────────────────
+// (scripts/e2e-contained-rig.sh already refuses a bad env; this re-proves it from the driver's side, and adds the keyring clauses. The forged
+// arm re-runs exactly this path with a hostile env via --preflight-only and requires REFUSED.)
+const PREFLIGHT_ONLY = argv.includes('--preflight-only');
+const RIG_DIR = process.env.RIG_DIR;
+// `env -i` strips RIG_HIDDEN_WORLD from this process, so the proof is ALSO asked of my parent: the contained rig's bash, which re-exec'd itself
+// under bwrap with it set and aborted unless the human's runtime dir was an empty tmpfs. Only MY OWN parent's environ is read (never a /proc scan).
+const readNul = (f) => { try { return fs.readFileSync(f, 'utf8').split('\0').filter(Boolean); } catch { return []; } };
+const hiddenWorldProof = () => process.env.RIG_HIDDEN_WORLD === '1' || readNul(`/proc/${process.ppid}/environ`).includes('RIG_HIDDEN_WORLD=1');
+let RIG_XDG;
+try { RIG_XDG = privateRuntimeDir(); } catch (e) { refuse(e.message); }
+{
+  let noBusExists = true;
+  try { fs.lstatSync(path.join(RIG_DIR, 'no-session-bus')); } catch { noBusExists = false; }
+  const cs = driverWorldChecks({ rigDir: RIG_DIR, env: process.env, noBusExists, hiddenWorld: hiddenWorldProof() });
+  const bad = failed(cs);
+  if (bad.length) refuse(`keyring rig world preflight failed — ${bad.map((c) => `${c.id} (${c.detail})`).join('; ')}`);
+  console.log(`[preflight] keyring rig world: ${cs.length}/${cs.length} clauses ok (${cs.map((c) => c.id).join(', ')})`);
+  if (PREFLIGHT_ONLY) { console.log('PREFLIGHT-OK'); process.exit(0); }
+}
+
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
 const LABEL = flag('--label', APP_DIR ? path.basename(APP_DIR) : 'app');
-const ARMS = (flag('--arms', 'unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome,fleet')).split(',').filter(Boolean);
-const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
+const ARMS = (flag('--arms', 'forged,unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome')).split(',').filter(Boolean);
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing');
-const RIG_DIR = process.env.RIG_DIR;
 const RIG_WAYLAND = process.env.RIG_WAYLAND;
-if (!RIG_DIR || !RIG_WAYLAND) refuse('RIG_DIR / RIG_WAYLAND unset — run via scripts/e2e-keyring.sh (the contained rig)');
-if (process.env.DISPLAY) refuse(`X11 DISPLAY=${process.env.DISPLAY} is set — Electron would reach the human's screen`);
-if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != marker-verified ${RIG_WAYLAND}`);
+if (!RIG_WAYLAND) refuse('RIG_WAYLAND unset — run via scripts/e2e-keyring.sh (the contained rig)');
+if (process.env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse(`WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY} != the rig's marker-verified alias ${RIG_WAYLAND}`);
+try { if (!fs.statSync(path.join(RIG_XDG, RIG_WAYLAND)).isSocket()) throw new Error('not a socket'); } catch (e) { refuse(`the display alias ${path.join(RIG_XDG, RIG_WAYLAND)} does not lead to a socket: ${e.message}`); }
 const OUT = flag('--out', null) || path.join(RIG_DIR, 'shots');
-const HUMAN_RUNTIME = '/run/user/1000'; // where the human's REAL bus + keyring control socket live — never an app input
+const UID = process.getuid();
 
 // ── scratch-containment guard (same shape as e2e-memory-guard-ui.mjs) ───────────────────────────────────────────────────
 const RIG_BASE = fs.realpathSync(path.dirname(RIG_DIR));
 const liveReal = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-const LIVE_DIRS = [...fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n)), path.join(LIVE_HOME, '.orchestra'), path.join(LIVE_HOME, '.config'), path.join(LIVE_HOME, '.local/share/keyrings'), HUMAN_RUNTIME].map(liveReal);
+const LIVE_DIRS = [...fs.readdirSync(LIVE_HOME).filter((n) => n === '.claude' || n.startsWith('.claude-')).map((n) => path.join(LIVE_HOME, n)), path.join(LIVE_HOME, '.orchestra'), path.join(LIVE_HOME, '.config')].map(liveReal);
 function checkScratch(p) {
+  if (referencesHumanRuntime(p)) return { ok: false, clause: 'human-runtime' }; // string test FIRST: nothing under the human's runtime dir is ever stat'ed
   const r = liveReal(p);
   for (const l of LIVE_DIRS) if (r === l || r.startsWith(l + path.sep) || l.startsWith(r + path.sep)) return { ok: false, clause: 'live-dir' };
   if (!(r === RIG_BASE || r.startsWith(RIG_BASE + path.sep))) return { ok: false, clause: 'outside-rig-base' };
@@ -44,9 +77,9 @@ function checkScratch(p) {
 }
 const mustBeScratch = (what, p) => { const r = checkScratch(p); if (!r.ok) refuse(`${what}=${p} [${r.clause}]`); };
 {
-  const a = checkScratch(path.join(LIVE_HOME, '.local/share/keyrings')), b = checkScratch(`${HUMAN_RUNTIME}/bus`), c = checkScratch('/tmp/not-in-the-rig'), d = checkScratch(path.join(RIG_DIR, 'x'));
-  if (a.clause !== 'live-dir' || b.clause !== 'live-dir' || c.clause !== 'outside-rig-base' || !d.ok) refuse(`scratch guard self-test failed: ${JSON.stringify({ a, b, c, d })}`);
-  console.log(`[guard] self-test: human keyrings -> ${a.clause} · human runtime bus -> ${b.clause} · /tmp path -> ${c.clause} · rig path -> ${d.clause}`);
+  const a = checkScratch(path.join(LIVE_HOME, '.config/orchestra')), b = checkScratch(path.join(humanRuntimeDir(UID), 'bus')), c = checkScratch(path.join(path.dirname(RIG_BASE), 'not-in-the-rig')), d = checkScratch(path.join(RIG_DIR, 'x'));
+  if (a.clause !== 'live-dir' || b.clause !== 'human-runtime' || c.clause !== 'outside-rig-base' || !d.ok) refuse(`scratch guard self-test failed: ${JSON.stringify({ a, b, c, d })}`);
+  console.log(`[guard] self-test: human app config -> ${a.clause} · human runtime bus -> ${b.clause} · outside path -> ${c.clause} · rig path -> ${d.clause}`);
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -108,6 +141,7 @@ function clause(name, ok, detail) { results.push({ clause: name, ok: !!ok, detai
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
 
 // ── what is on the human's host that this rig must leave byte-equal (G10) ─────────────────────────────────────────────
+// Config / secrets files of the human's Orchestra and Claude — never a keyring file, never the bus, never the runtime dir.
 function liveFiles() {
   const out = [];
   const add = (p) => { try { if (fs.statSync(p).isFile()) out.push(p); } catch {} };
@@ -115,20 +149,9 @@ function liveFiles() {
   for (const base of [path.join(LIVE_HOME, '.config/orchestra'), path.join(LIVE_HOME, '.orchestra')]) {
     try { for (const f of sh('find', [base, '-maxdepth', '4', '-name', 'secrets.json', '-type', 'f'], { stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)) add(f); } catch {}
   }
-  try { for (const f of fs.readdirSync(path.join(LIVE_HOME, '.local/share/keyrings'))) add(path.join(LIVE_HOME, '.local/share/keyrings', f)); } catch {}
   return out.sort();
 }
-function realItems() { // READ-ONLY metadata (labels + creation times, never a secret value) of the human's default collection — only used to ATTRIBUTE a changed keyring file
-  const env = { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: HUMAN_RUNTIME };
-  const g = (obj, iface, prop) => spawnSync('gdbus', ['call', '--session', '--timeout', '3', '--dest', 'org.freedesktop.secrets', '--object-path', obj, '--method', 'org.freedesktop.DBus.Properties.Get', iface, prop], { encoding: 'utf8', env, timeout: 6000 }).stdout || '';
-  const items = (g('/org/freedesktop/secrets/aliases/default', 'org.freedesktop.Secret.Collection', 'Items').replace(/\n/g, '').match(/\/org\/freedesktop\/secrets\/collection\/[^'\]]*/g) || []);
-  return items.map((it) => `${it.split('/').pop()}:"${/<'(.*)'>/.exec(g(it, 'org.freedesktop.Secret.Item', 'Label'))?.[1] ?? '?'}"@${new Date(Number(/\d{9,}/.exec(g(it, 'org.freedesktop.Secret.Item', 'Created'))?.[0] ?? 0) * 1000).toTimeString().slice(0, 8)}`).join(' ');
-}
 const liveHash = () => Object.fromEntries(liveFiles().map((f) => [f, sha(fs.readFileSync(f))]));
-function realLoginCollectionLocked() { // READ-ONLY: one Properties.Get Locked on the human's real bus (allowed by the brief); never a write
-  const r = spawnSync('gdbus', ['call', '--session', '--timeout', '3', '--dest', 'org.freedesktop.secrets', '--object-path', '/org/freedesktop/secrets/aliases/default', '--method', 'org.freedesktop.DBus.Properties.Get', 'org.freedesktop.Secret.Collection', 'Locked'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: HUMAN_RUNTIME }, timeout: 5000 });
-  return r.status === 0 ? r.stdout.trim() : `unavailable(${r.status ?? r.error?.code})`;
-}
 
 // ── the private world of one arm ─────────────────────────────────────────────────────────────────────────────────────
 const SEED = {
@@ -136,13 +159,19 @@ const SEED = {
   key: 'sk-ant-RIG389-PLAINTEXT-ACCOUNT',
   url: 'https://gateway-rig389.internal.example',
 };
-function seedWorld(armDir, spec) {
-  const w = { armDir };
-  for (const k of ['home', 'oh', 'claude-config', 'run', 'data', 'config', 'cache', 'stub-bin', 'svc']) { w[k] = path.join(armDir, k); fs.mkdirSync(w[k], { recursive: true }); }
-  fs.chmodSync(w.run, 0o700);
+function seedWorld(name, spec) {
+  const armDir = path.join(RIG_DIR, `arm-${name}`);
+  const w = { name, armDir, tracked: new Map() };
+  for (const k of ['home', 'oh', 'claude-config', 'data', 'config', 'cache', 'stub-bin', 'svc']) { w[k] = path.join(armDir, k); fs.mkdirSync(w[k], { recursive: true }); }
+  // The arm's PRIVATE XDG_RUNTIME_DIR, inside the rig's own private runtime dir (0700): the bus socket and the keyring daemon's control/pkcs11 sockets live here.
+  w.run = path.join(RIG_XDG, `k-${name}`);
+  fs.mkdirSync(w.run, { mode: 0o700 }); fs.chmodSync(w.run, 0o700);
+  // The app's display NAME is bare (the rig refuses a path); inside its own runtime dir that name leads to the rig's marker-verified socket.
+  fs.symlinkSync(path.join(RIG_XDG, RIG_WAYLAND), path.join(w.run, RIG_WAYLAND));
   w.bus = path.join(w.run, 'bus');
   w.address = `unix:path=${w.bus}`;
-  for (const [k, v] of Object.entries({ home: w.home, oh: w.oh, cfg: w['claude-config'], run: w.run, data: w.data, config: w.config, cache: w.cache })) mustBeScratch(`world.${k}`, v);
+  w.dirs = { arm: armDir, home: w.home, oh: w.oh, claude: w['claude-config'], data: w.data, config: w.config, cache: w.cache };
+  for (const [k, v] of Object.entries({ ...w.dirs, run: w.run })) mustBeScratch(`world.${k}`, v);
   const account = { id: 'rig-kr389', label: 'rig (scratch config dir)', configDir: w['claude-config'] };
   const dir = path.join(w.oh, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [], workspaces: [], accounts: [account], selfTuneRuns: [] }, null, 2));
@@ -151,7 +180,8 @@ function seedWorld(armDir, spec) {
   fs.writeFileSync(w.secretsFile, JSON.stringify({ linearApiKey: SEED.linear, enc: false, accountApiKeys: { [account.id]: { value: SEED.key, enc: false } }, accountBaseUrls: { [account.id]: { value: SEED.url, enc: false } } }), { mode: 0o600 });
   w.logFile = path.join(w.oh, 'logs', 'orchestra.log');
   fs.writeFileSync(path.join(w['stub-bin'], 'claude'), '#!/bin/sh\nsleep 3600\n', { mode: 0o755 });
-  if (spec.hungGdbus) fs.writeFileSync(path.join(w['stub-bin'], 'gdbus'), '#!/bin/sh\nsleep 30\n', { mode: 0o755 }); // a Secret Service probe that never answers
+  w.hungPidFile = path.join(armDir, 'hung-gdbus.pid');
+  if (spec.hungGdbus) fs.writeFileSync(path.join(w['stub-bin'], 'gdbus'), `#!/bin/sh\necho $$ > '${w.hungPidFile}'\nexec sleep 30\n`, { mode: 0o755 }); // a Secret Service probe that never answers (its pid is recorded so teardown can reap it by identity)
   fs.writeFileSync(path.join(armDir, 'session.conf'), `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
   <type>session</type>
@@ -168,11 +198,26 @@ function seedWorld(armDir, spec) {
 `);
   return w;
 }
-/** env for the helper tools (bus daemon, keyring daemon, gdbus oracle) — an allowlist, scratch XDG dirs, the PRIVATE bus */
-const toolEnv = (w) => ({ PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: w.run, XDG_DATA_HOME: w.data, XDG_CONFIG_HOME: w.config, XDG_CACHE_HOME: w.cache, DBUS_SESSION_BUS_ADDRESS: w.address, LANG: 'C.UTF-8' });
-const gdbus = (w, args, ms = 4000) => spawnSync('gdbus', ['call', '--session', '--timeout', '2', ...args], { encoding: 'utf8', env: toolEnv(w), timeout: ms });
+/** The env of each process class an arm starts — pure functions of the world, so the SAME objects are checked (armWorldChecks) and spawned. */
+const busEnv = (w) => ({ PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: w.run, XDG_DATA_HOME: w.data, XDG_CONFIG_HOME: w.config, XDG_CACHE_HOME: w.cache, LANG: 'C.UTF-8' });
+/** helper tools (keyring daemon, gdbus oracle) — an allowlist, scratch XDG dirs, the PRIVATE bus */
+const toolEnv = (w) => ({ ...busEnv(w), DBUS_SESSION_BUS_ADDRESS: w.address });
+function appEnv(w, spec, port) {
+  const env = { PATH: `${w['stub-bin']}:/usr/local/bin:/usr/bin:/bin`, HOME: w.home, XDG_RUNTIME_DIR: w.run, XDG_CONFIG_HOME: w.config, XDG_CACHE_HOME: w.cache, XDG_DATA_HOME: w.data,
+    XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
+    ORCHESTRA_HOME: w.oh, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: w['claude-config'], LANG: 'C.UTF-8' };
+  if (spec.desktop) env.XDG_CURRENT_DESKTOP = spec.desktop;
+  if (spec.optIn !== false) env.ORCHESTRA_KEYRING = 'probe'; // the rig's private bus is the point; isolated arms leave it unset
+  if (spec.bus === 'env') env.DBUS_SESSION_BUS_ADDRESS = w.address; // else: the host's shape — no address variable, the bus only at $XDG_RUNTIME_DIR/bus
+  return env;
+}
+// The oracle talks to the arm's bus by EXPLICIT address (`--address`), never the session-bus lookup: it cannot fall back to any other bus.
+// A LONG per-call timeout (30 s, like the shipped probe): a client that vanishes mid-call aborts a gnome-keyring-daemon, and under rig load a 2 s timeout would do exactly that to the arm's own
+// daemon. The spawnSync deadline sits above it as a wedged-process backstop only.
+const gdbus = (w, args, ms = 45000) => spawnSync('gdbus', ['call', '--address', w.address, '--timeout', '30', ...args], { encoding: 'utf8', env: toolEnv(w), timeout: ms, killSignal: 'SIGKILL' });
 const secretsGet = (w, prop) => gdbus(w, ['--dest', 'org.freedesktop.secrets', '--object-path', '/org/freedesktop/secrets/aliases/default', '--method', 'org.freedesktop.DBus.Properties.Get', 'org.freedesktop.Secret.Collection', prop]);
-const busNames = (w) => gdbus(w, ['--dest', 'org.freedesktop.DBus', '--object-path', '/org/freedesktop/DBus', '--method', 'org.freedesktop.DBus.ListNames']).stdout;
+const busCall = (w, method, ...a) => gdbus(w, ['--dest', 'org.freedesktop.DBus', '--object-path', '/org/freedesktop/DBus', '--method', `org.freedesktop.DBus.${method}`, ...a]);
+const busNames = (w) => busCall(w, 'ListNames').stdout;
 const lockedOf = (w) => { const r = secretsGet(w, 'Locked'); return r.status === 0 ? (/<true>/.test(r.stdout) ? 'locked' : /<false>/.test(r.stdout) ? 'unlocked' : `odd:${r.stdout.trim()}`) : 'no-service'; };
 const itemLabels = (w) => { // labels of the PRIVATE collection's items (metadata only) — attribution evidence: whose "<app> Safe Storage" is it
   const r = secretsGet(w, 'Items'); if (r.status !== 0) return [];
@@ -180,18 +225,71 @@ const itemLabels = (w) => { // labels of the PRIVATE collection's items (metadat
 };
 const itemCount = (w) => { const r = secretsGet(w, 'Items'); return r.status === 0 ? (r.stdout.match(/\/org\/freedesktop\/secrets\/collection\//g) || []).length : -1; };
 
-/** processes (any depth) whose ORIGINAL environment carries this exact XDG_RUNTIME_DIR — i.e. this arm's world and nothing else */
-function procsOfWorld(w) {
-  const out = [];
-  for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) { try { const e = fs.readFileSync(`/proc/${p}/environ`, 'utf8').split('\0'); if (e.includes(`XDG_RUNTIME_DIR=${w.run}`) || e.includes(`ORCHESTRA_HOME=${w.oh}`)) out.push(+p); } catch {} }
-  return out.filter((p) => p !== process.pid);
+// ── process identity: (pid, start time) via scripts/lib/rig-procs.mjs — never a host-wide /proc/*/environ scan ───────────────────
+function track(w, pid) { if (!pid || pid <= 1 || pid === process.pid || pid === process.ppid) return; const s = procStat(pid); if (s && s.state !== 'Z' && !w.tracked.has(pid)) w.tracked.set(pid, s.start); }
+const exeBaseOf = (pid) => { try { return path.basename(fs.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '')); } catch { return ''; } };
+const readList = readNul;
+const fdTargetsOf = (pid) => { try { return fs.readdirSync(`/proc/${pid}/fd`).map((f) => { try { return fs.readlinkSync(`/proc/${pid}/fd/${f}`); } catch { return null; } }).filter(Boolean); } catch { return []; } };
+
+/** pids of the connections on THIS arm's private bus (the bus daemon reports each peer's SO_PEERCRED pid) */
+function busPeerPids(w) {
+  const names = (busNames(w).match(/'([^']+)'/g) || []).map((s) => s.slice(1, -1)).filter((n) => n !== 'org.freedesktop.DBus');
+  const pids = new Set();
+  for (const n of names) { const m = /uint32 (\d+)/.exec(busCall(w, 'GetConnectionUnixProcessID', n).stdout || ''); if (m) pids.add(+m[1]); }
+  return [...pids];
 }
-const killWorld = async (w) => { for (const sig of ['SIGTERM', 'SIGKILL']) { for (const p of procsOfWorld(w)) { try { process.kill(p, sig); } catch {} } await sleep(sig === 'SIGTERM' ? 1500 : 300); } };
+function secretsOwnerPid(w) {
+  const name = /'(:[^']+)'/.exec(busCall(w, 'GetNameOwner', 'org.freedesktop.secrets').stdout || '')?.[1];
+  if (!name) return null;
+  const m = /uint32 (\d+)/.exec(busCall(w, 'GetConnectionUnixProcessID', name).stdout || '');
+  return m ? +m[1] : null;
+}
+/** `ss -xnaeH`: every unix socket on the host as NAMES only (a netlink dump — nothing is connected to) — the only way to turn a `socket:[N]` fd into the path it is bound / connected to. */
+const ssRows = () => parseSs(spawnSync('ss', ['-xnaeH'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15000 }).stdout || '');
+const inodesOf = (fds) => fds.map(socketInode).filter((i) => i !== null);
+function ownerEvidence(w) {
+  const pid = secretsOwnerPid(w);
+  const ev = { ownerPid: pid, driverPid: process.pid, exeBase: '', cmdline: [], fdTargets: [], socketPaths: [], envEntries: [], sockets: parseUnixSockets(fs.readFileSync('/proc/net/unix', 'utf8')), run: w.run };
+  if (pid) { track(w, pid); ev.exeBase = exeBaseOf(pid); ev.cmdline = readList(`/proc/${pid}/cmdline`); ev.fdTargets = fdTargetsOf(pid); ev.socketPaths = socketPaths(inodesOf(ev.fdTargets), ssRows()); ev.envEntries = readList(`/proc/${pid}/environ`); }
+  return ev;
+}
+/** the app's process tree: fds + env of every descendant (tracked for teardown as a side effect — keepers detach and outlive the app) */
+function treeEvidence(w, a) {
+  const pids = descendantsOf(a.app.pid);
+  const t = { pids: pids.length, fdTargets: [], socketPaths: [], envEntries: [], run: w.run };
+  for (const p of pids) { track(w, p); t.fdTargets.push(...fdTargetsOf(p)); t.envEntries.push(...readList(`/proc/${p}/environ`)); }
+  t.socketPaths = socketPaths(inodesOf(t.fdTargets), ssRows());
+  return t;
+}
+/** a bus peer is ours only if it holds a socket bound / connected under THIS arm's runtime dir (a pid reported by the bus could have been reused since) */
+const holdsArmSocket = (w, pid, rows) => socketPaths(inodesOf(fdTargetsOf(pid)), rows).some((x) => x === w.run || x.startsWith(w.run + path.sep));
+const unixListenersUnder = (dirs) => parseUnixSockets(fs.readFileSync('/proc/net/unix', 'utf8')).filter((s) => dirs.some((d) => s.path === d || s.path.startsWith(d + path.sep)));
+function signalTracked(w, pid, sig) { const st = w.tracked.get(pid); if (st) signalIfSame(pid, st, sig); } // identity re-read at signal time
+const groupAlive = (pid) => { try { process.kill(-pid, 0); return true; } catch { return false; } };
+/** kill a detached process GROUP only while its recorded leader is still the same process (a pgid is the leader's pid) */
+function killGroup(g, sig) { if (g && isAlive(g.pid, g.start)) { try { process.kill(-g.pid, sig); } catch {} } }
+async function reapWorld(w) {
+  try { const rows = ssRows(); for (const p of busPeerPids(w)) if (holdsArmSocket(w, p, rows)) track(w, p); } catch {}
+  if (w.busProc) for (const p of descendantsOf(w.busProc.pid)) track(w, p);
+  if (w.appProc) for (const p of descendantsOf(w.appProc.pid)) track(w, p); // keepers detach and outlive the app
+  try { const hp = +fs.readFileSync(w.hungPidFile, 'utf8'); if (hp > 1 && readList(`/proc/${hp}/cmdline`).join(' ') === 'sleep 30' && readList(`/proc/${hp}/environ`).includes(`XDG_RUNTIME_DIR=${w.run}`)) track(w, hp); } catch {}
+  for (const sig of ['SIGTERM', 'SIGKILL']) { killGroup(w.appProc, sig); killGroup(w.busProc, sig); for (const pid of w.tracked.keys()) signalTracked(w, pid, sig); await sleep(sig === 'SIGTERM' ? 1500 : 300); }
+}
+// A killed / interrupted driver must not strand an arm's bus, daemon or Electron: SIGKILL what the current arm tracked, by identity, then leave.
+let activeWorld = null;
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => {
+  const w = activeWorld;
+  if (w) { killGroup(w.appProc, 'SIGKILL'); killGroup(w.busProc, 'SIGKILL'); for (const [pid, st] of w.tracked) signalIfSame(pid, st, 'SIGKILL'); }
+  process.exit(130);
+});
 
 async function startBus(w) {
-  const child = spawn('dbus-run-session', [`--config-file=${path.join(w.armDir, 'session.conf')}`, '--', 'sleep', '7200'], { env: { PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: w.run, XDG_DATA_HOME: w.data, XDG_CONFIG_HOME: w.config, XDG_CACHE_HOME: w.cache, LANG: 'C.UTF-8' }, stdio: 'ignore', detached: true });
+  const child = spawn('dbus-run-session', [`--config-file=${path.join(w.armDir, 'session.conf')}`, '--', 'sleep', '7200'], { env: busEnv(w), stdio: 'ignore', detached: true });
   child.unref();
+  w.busProc = { pid: child.pid, start: procStat(child.pid)?.start }; // recorded BEFORE the wait: a bus that never comes up is still reaped
+  track(w, child.pid);
   await waitFor(() => { try { return fs.statSync(w.bus).isSocket(); } catch { return false; } }, 10000, 'the private session bus socket');
+  for (const p of descendantsOf(child.pid)) track(w, p);
   return child;
 }
 function keyringStart(w, { unlock }) {
@@ -203,28 +301,26 @@ function keyringStart(w, { unlock }) {
   const r2 = spawnSync('gnome-keyring-daemon', ['--start', '--components=secrets'], { env, encoding: 'utf8', timeout: 15000 });
   if (r2.status !== 0) throw new Error(`gnome-keyring-daemon --start rc=${r2.status} ${r2.stderr}`);
 }
-async function keyringStopOnly(w) { // stop JUST the keyring daemons, keep the bus up (the world's other processes are the bus + sleep)
-  for (const p of procsOfWorld(w)) { try { if (fs.readFileSync(`/proc/${p}/comm`, 'utf8').startsWith('gnome-keyring')) process.kill(p, 'SIGTERM'); } catch {} }
-  await waitFor(() => !procsOfWorld(w).some((p) => { try { return fs.readFileSync(`/proc/${p}/comm`, 'utf8').startsWith('gnome-keyring'); } catch { return false; } }), 8000, 'the keyring daemon to exit');
+async function keyringStopOnly(w) { // stop JUST the keyring daemon of THIS arm (found as a peer of the private bus), keep the bus up
+  const pids = busPeerPids(w).filter((p) => exeBaseOf(p) === 'gnome-keyring-daemon');
+  if (!pids.length) throw new Error('no gnome-keyring-daemon among the private bus peers');
+  for (const p of pids) { track(w, p); signalTracked(w, p, 'SIGTERM'); }
+  await waitFor(() => pids.every((p) => !isAlive(p, w.tracked.get(p))), 8000, 'the keyring daemon to exit');
 }
 
 // ── the app ────────────────────────────────────────────────────────────────────────────────────────────────────────
 async function bootApp(w, spec) {
   const port = await freePort();
-  const env = { PATH: `${w['stub-bin']}:/usr/local/bin:/usr/bin:/bin`, HOME: w.home, XDG_RUNTIME_DIR: spec.realRuntime ? HUMAN_RUNTIME : w.run, XDG_CONFIG_HOME: w.config, XDG_CACHE_HOME: w.cache, XDG_DATA_HOME: w.data,
-    XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: `${HUMAN_RUNTIME}/${RIG_WAYLAND}`, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland', ORCHESTRA_OZONE: 'wayland', ORCHESTRA_OZONE_RELAUNCHED: '1',
-    ORCHESTRA_HOME: w.oh, ORCHESTRA_DEBUG_PORT: String(port), ORCHESTRA_SELF_TUNE_CMD: '/bin/true', CLAUDE_CONFIG_DIR: w['claude-config'], LANG: 'C.UTF-8' };
-  if (spec.desktop) env.XDG_CURRENT_DESKTOP = spec.desktop;
-  if (spec.optIn !== false) env.ORCHESTRA_KEYRING = 'probe'; // the rig's private bus is the point; isolated/fleet arms leave it unset
-  if (spec.bus === 'env') env.DBUS_SESSION_BUS_ADDRESS = w.address; // else: the host's shape — no address variable, the bus only at $XDG_RUNTIME_DIR/bus
-  for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR', ...(spec.realRuntime ? [] : ['XDG_RUNTIME_DIR'])]) mustBeScratch(`env.${k}`, env[k]);
-  if (spec.realRuntime && (env.ORCHESTRA_KEYRING || env.DBUS_SESSION_BUS_ADDRESS || env.XDG_RUNTIME_DIR !== HUMAN_RUNTIME)) refuse('fleet arm env must be exactly the fleet shape: real runtime dir, no opt-in, no bus address');
-  if ('DISPLAY' in env || path.basename(env.WAYLAND_DISPLAY) !== RIG_WAYLAND || RIG_WAYLAND === 'wayland-1') refuse('child env would reach the human display');
-  if (env.DBUS_SESSION_BUS_ADDRESS && !env.DBUS_SESSION_BUS_ADDRESS.includes(w.run)) refuse('child DBUS_SESSION_BUS_ADDRESS is not the private bus');
-  if (Object.values(env).some((v) => String(v).includes(`${HUMAN_RUNTIME}/bus`) || String(v).includes(`${HUMAN_RUNTIME}/keyring`))) refuse('child env references the human\'s real bus/keyring');
+  const env = appEnv(w, spec, port);
+  for (const k of ['HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_RUNTIME_DIR']) mustBeScratch(`env.${k}`, env[k]);
+  if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND || env.WAYLAND_DISPLAY.includes('/')) throw new Error('child env would not use the rig\'s bare display alias');
+  if (env.DBUS_SESSION_BUS_ADDRESS && env.DBUS_SESSION_BUS_ADDRESS !== w.address) throw new Error('child DBUS_SESSION_BUS_ADDRESS is not the private bus');
+  if (envHumanRuntimeRefs(env).length) throw new Error(`child env names the human's runtime dir: ${envHumanRuntimeRefs(env).join(', ')}`);
   const logFile = path.join(w.armDir, `app-${Date.now()}.out`); const fd = fs.openSync(logFile, 'w');
   const t0 = Date.now();
   const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  w.appProc = { pid: app.pid, start: procStat(app.pid)?.start }; // recorded BEFORE any wait: a boot that throws still gets its group reaped
+  track(w, app.pid);
   console.log(`  app pid ${app.pid} port ${port} stdout ${logFile}`);
   const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); return (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null; }, 60000, 'the app page target');
   const tTarget = Date.now() - t0;
@@ -232,13 +328,15 @@ async function bootApp(w, spec) {
   await waitFor(() => cdp.eval('!!window.orchestra && !!document.querySelector(\'[aria-label="Linear settings"]\')'), 60000, 'the sidebar footer');
   return { app, port, cdp, target, tTarget, t0, env };
 }
-async function stopApp(a) {
-  a.cdp?.close();
-  try { process.kill(-a.app.pid, 'SIGTERM'); } catch {}
+async function stopApp(a, w) {
+  a?.cdp?.close();
+  if (w?.appProc) for (const p of descendantsOf(w.appProc.pid)) track(w, p); // keepers detach: record the whole tree BEFORE the main process dies
+  killGroup(w?.appProc, 'SIGTERM');
   await sleep(2500);
-  try { process.kill(-a.app.pid, 'SIGKILL'); } catch {}
+  killGroup(w?.appProc, 'SIGKILL');
   await sleep(300);
 }
+
 const appLog = (w) => { try { return fs.readFileSync(w.logFile, 'utf8'); } catch { return ''; } };
 const decisionLine = (w) => (appLog(w).split('\n').filter((l) => l.includes('[secrets] password-store:')).pop() ?? '(no [secrets] password-store line)');
 const diskEntries = (w) => { const d = JSON.parse(fs.readFileSync(w.secretsFile, 'utf8')); return { linear: d.enc === true, key: Object.values(d.accountApiKeys ?? {}).every((v) => v.enc === true), url: Object.values(d.accountBaseUrls ?? {}).every((v) => v.enc === true) }; };
@@ -262,8 +360,7 @@ const noticeIn = (cdp, dlgSel) => cdp.eval(`(() => { const n = document.querySel
 const textOf = (cdp, sel) => cdp.eval(`(document.querySelector(${JSON.stringify(sel)}) || {}).textContent || null`);
 
 /** the arm's shared opening clauses: identity, scratch env, my sway, and the private world's initial state */
-async function identity(a, w, tag, spec) {
-  const RUN = spec.realRuntime ? HUMAN_RUNTIME : w.run;
+async function identity(a, w, tag) {
   clause(`${tag}/ctl/app-identity-path`, a.target.url.includes(APP_DIR) && !a.target.url.includes('app.asar'), `target url ${a.target.url} ⊇ ${APP_DIR}`);
   const srcs = await a.cdp.eval(`[...document.querySelectorAll('script[src]')].map((s) => s.src)`); const bundle = srcs.find((s) => /assets\/index-.*\.js/.test(s));
   const onDisk = bundle && path.join(APP_DIR, 'dist', bundle.split('/dist/')[1]);
@@ -276,13 +373,15 @@ async function identity(a, w, tag, spec) {
   const environ = fs.readFileSync(`/proc/${a.app.pid}/environ`, 'utf8').split('\0'); const ev = (k) => (environ.find((e) => e.startsWith(k + '=')) || '').slice(k.length + 1);
   const environReadable = environ.includes(`ORCHESTRA_HOME=${w.oh}`);
   const logTxt = appLog(w); const homeFromLog = /=== Orchestra .* home=(\S+)/.exec(logTxt)?.[1]; const hookSock = /hooks server listening on (\S+)/.exec(logTxt)?.[1];
-  clause(`${tag}/ctl/scratch-env`, homeFromLog === w.oh && !!hookSock && hookSock.startsWith(RUN + path.sep) && (!environReadable || (ev('XDG_RUNTIME_DIR') === RUN && ev('HOME') === w.home && ev('CLAUDE_CONFIG_DIR') === w['claude-config'] && !environ.some((e) => e.startsWith('DISPLAY=')) && path.basename(ev('WAYLAND_DISPLAY')) === RIG_WAYLAND && !environ.some((e) => e.includes(`${HUMAN_RUNTIME}/bus`) || e.startsWith('DBUS_SESSION_BUS_ADDRESS=unix') && spec.realRuntime))),
+  clause(`${tag}/ctl/scratch-env`, homeFromLog === w.oh && !!hookSock && hookSock.startsWith(w.run + path.sep) && (!environReadable || (ev('XDG_RUNTIME_DIR') === w.run && ev('HOME') === w.home && ev('CLAUDE_CONFIG_DIR') === w['claude-config'] && !environ.some((e) => e.startsWith('DISPLAY=')) && ev('WAYLAND_DISPLAY') === RIG_WAYLAND && !environ.some(referencesHumanRuntime))),
     `app log home=${homeFromLog}, hooks socket ${hookSock}; environ ${environReadable ? `readable: DBUS_SESSION_BUS_ADDRESS=${ev('DBUS_SESSION_BUS_ADDRESS') || '<unset>'} XDG_CURRENT_DESKTOP=${ev('XDG_CURRENT_DESKTOP') || '<unset>'} DISPLAY=${ev('DISPLAY') || '<unset>'}` : 'clobbered by Chromium\'s title rewrite (expected when a bus address is set); the spawn env was asserted scratch before launch'}`);
   clause(`${tag}/ctl/app-in-my-sway`, new RegExp(`"pid":\\s*${a.app.pid}\\b`).test(sh('swaymsg', ['-t', 'get_tree'])), `app pid ${a.app.pid} in my sway's get_tree`);
+  const te = treeEvidence(w, a);
+  for (const c of treeChecks(te)) clause(`${tag}/world/${c.id}`, c.ok, c.detail);
 }
 async function grimShot(name) {
   const f = path.join(OUT, name); fs.mkdirSync(OUT, { recursive: true });
-  sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: HUMAN_RUNTIME, WAYLAND_DISPLAY: RIG_WAYLAND } });
+  sh('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: RIG_XDG, WAYLAND_DISPLAY: RIG_WAYLAND } });
   shots.push({ file: f, md5: md5(fs.readFileSync(f)) }); return f;
 }
 
@@ -297,74 +396,83 @@ const SPECS = {
   relock: { desktop: 'sway', keyring: 'unlocked', bus: 'runtime-dir' },
   'isolated-gnome': { desktop: 'GNOME', keyring: 'unlocked', bus: 'env', optIn: false }, // review m1: on a RECOGNISED desktop Chromium would pick libsecret itself — the isolated instance must force `basic`
   isolated: { desktop: 'sway', keyring: 'unlocked', bus: 'runtime-dir', optIn: false }, // review F1: the same world as `unlocked` minus the opt-in → the unlocked keyring must NOT be touched
-  fleet: { desktop: '', keyring: 'none', bus: 'runtime-dir', optIn: false, realRuntime: true, noBus: true }, // review F1: the real fleet-rig env — REAL XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME, no opt-in
 };
+const ARM_DIR_NAMES = () => ARMS.filter((n) => n in SPECS).map((n) => `k-${n}`);
 const STATE_BOUND_MS = 8000;       // getSecretsState must answer within this (a stall is tens of seconds)
 const TARGET_BOUND_MS = 30000;     // spawn → page target
 async function stateOf(a) { const t = Date.now(); const s = await a.cdp.eval('window.orchestra.getSecretsState()', 25000); return { s, ms: Date.now() - t }; }
 
-
-// ── review F1: the REAL fleet-rig env (real XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME, no opt-in) must never select libsecret or export the real bus ──
-/** Run the SHIPPED selection source (src/main/linux-keyring.ts) in a child node under `env`, with spies instead of the real appendSwitch / export. */
-function selectionUnder(w, env, { probeThrows = false, stubUnlocked = false } = {}) {
-  if (stubUnlocked) { // a `gdbus` that answers "unlocked": the control must not depend on the human's keyring being unlocked right now (it is not always — and then nothing real is read at all)
-    const dir = path.join(w.armDir, 'stub-gdbus'); fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'gdbus'), '#!/bin/sh\necho "(<false>,)"\n', { mode: 0o755 });
-    env = { ...env, PATH: `${dir}:/usr/bin:/bin` };
+// ── the must-FAIL preflight arm: the driver's own entry, run with a HOSTILE env, must be REFUSED before anything starts ──────────────────────
+// `--preflight-only` is the whole preflight and nothing else (no arm dir, no bus, no daemon, no app), so this arm cannot start a keyring daemon even
+// if the preflight under test were broken; it only runs in the hidden world (a stray string cannot name anything real there).
+function runForged() {
+  console.log('\n── arm forged (must-FAIL preflight: forced real XDG_RUNTIME_DIR / DBUS address / env value) ──');
+  const human = humanRuntimeDir(UID);
+  const rootBefore = fs.readdirSync(RIG_XDG).sort().join(',');
+  const listenersBefore = unixListenersUnder([RIG_XDG]).length;
+  const hidden = hiddenWorldProof(); // proved by THIS driver's own preflight already; the children inherit it explicitly (a child's parent is this driver, not the rig)
+  const child = (mut) => {
+    const env = { ...process.env, ...(hidden ? { RIG_HIDDEN_WORLD: '1' } : {}) }; mut(env);
+    const r = spawnSync(process.execPath, ['--no-warnings', '--experimental-strip-types', fs.realpathSync(process.argv[1]), '--preflight-only'], { env, encoding: 'utf8', timeout: 20000 });
+    return { rc: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const ctl = child(() => {});
+  clause('forged/ctl/the-true-rig-env-passes-the-same-entry', ctl.rc === 0 && /PREFLIGHT-OK/.test(ctl.out), `--preflight-only under THIS driver's own env → rc ${ctl.rc}: ${ctl.out.trim().split('\n').pop()}`);
+  // [mutation of the env, the refusal that MUST name it] — any other refusal (a plumbing slip) does not count as the forged case being caught
+  const forged = {
+    'real-xdg': [(e) => { e.XDG_RUNTIME_DIR = human; }, /human's runtime dir/],
+    'real-xdg-subdir': [(e) => { e.XDG_RUNTIME_DIR = `${human}/x`; }, /human's runtime dir/],
+    'unset-xdg': [(e) => { delete e.XDG_RUNTIME_DIR; }, /XDG_RUNTIME_DIR unset/],
+    'real-dbus': [(e) => { e.DBUS_SESSION_BUS_ADDRESS = `unix:path=${human}/bus`; }, /dbus-is-the-rigs-nonexistent-address/],
+    'unset-dbus': [(e) => { delete e.DBUS_SESSION_BUS_ADDRESS; }, /dbus-is-the-rigs-nonexistent-address/],
+    'stray-value': [(e) => { e.GNOME_KEYRING_CONTROL = `${human}/keyring`; }, /no-env-value-reaches-the-human-runtime \(env keys naming it: GNOME_KEYRING_CONTROL\)/],
+    'path-list-value': [(e) => { e.PATH = `${e.PATH}:${human}/bin`; }, /no-env-value-reaches-the-human-runtime/],
+    'absolute-display': [(e) => { e.WAYLAND_DISPLAY = `${human}/wayland-1`; }, /display-is-a-bare-private-name/],
+    'x11': [(e) => { e.DISPLAY = ':0'; }, /display-is-a-bare-private-name/],
+    'not-hidden': [(e) => { delete e.RIG_HIDDEN_WORLD; }, /hidden-world/],
+  };
+  for (const [name, [mut, why]] of Object.entries(forged)) {
+    const r = child(mut);
+    clause(`forged/${name}-is-refused`, r.rc === 3 && /^REFUSED: /m.test(r.out) && why.test(r.out) && !/PREFLIGHT-OK/.test(r.out), `rc ${r.rc} (3 = REFUSED), wanted ${why}: ${r.out.trim().split('\n').pop().slice(0, 220)}`);
   }
-  const code = `import { pathToFileURL } from 'node:url';
-const { selectLinuxPasswordStore } = await import(pathToFileURL(process.env.SEL_MODULE).href);
-const env = JSON.parse(process.env.SEL_ENV); const applied = []; let probed = false;
-const deps = { platform: 'linux', env, argv: [], hasSwitch: () => false, appendSwitch: (n, v) => applied.push('--' + n + '=' + v), exportBusAddress: (a) => applied.push('export DBUS_SESSION_BUS_ADDRESS=' + a) };
-if (process.env.SEL_THROW === '1') deps.probe = () => { probed = true; throw new Error('PROBE RAN'); };
-const d = selectLinuxPasswordStore(deps);
-console.log(JSON.stringify({ store: d.store, reason: d.reason, facts: d.facts, probeMs: d.probeMs, applied, probed }));`;
-  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--disable-warning=ExperimentalWarning', '--input-type=module', '-e', code],
-    { encoding: 'utf8', timeout: 20000, env: { PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: HUMAN_RUNTIME, LANG: 'C.UTF-8', SEL_ENV: JSON.stringify(env), SEL_THROW: probeThrows ? '1' : '0', SEL_MODULE: path.join(APP_DIR, 'src/main/linux-keyring.ts') } });
-  try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return { error: `rc ${r.status}: ${(r.stderr || r.stdout).slice(0, 300)}` }; }
+  const rootAfter = fs.readdirSync(RIG_XDG).sort().join(',');
+  clause('forged/nothing-was-started', rootAfter === rootBefore && unixListenersUnder([RIG_XDG]).length === listenersBefore && !fs.existsSync(path.join(RIG_DIR, 'arm-forged')), `rig runtime root before [${rootBefore}] / after [${rootAfter}]; unix listeners under it ${listenersBefore} → ${unixListenersUnder([RIG_XDG]).length}; no arm dir created`);
 }
-async function fleetPreflight(w) {
-  // The built bundle's behaviour is proven in the PRIVATE world first (arm `isolated`: same clause, nothing real reachable); only then may an app run against the real runtime dir.
-  const need = ['isolated/decision-logged', 'isolated/keyring-untouched-by-the-app', 'isolated-gnome/decision-logged', 'isolated-gnome/keyring-untouched-by-the-app'];
-  if (!need.every((c) => results.some((r) => r.clause === c && r.ok))) throw new Error(`fleet preflight: ${need.join(' + ')} must have PASSED on this build in this run — REFUSING to launch an app against the real runtime dir`);
-  const mainFile = path.join(APP_DIR, 'dist-electron', fs.readFileSync(path.join(APP_DIR, 'dist-electron/main.js'), 'utf8').match(/require\("\.\/(index-[^"]+\.js)"\)/)[1]);
-  const clauseCount = fs.readFileSync(mainFile, 'utf8').split('reason:"isolated-instance"').length - 1;
-  const fleetEnv = { PATH: '/usr/bin:/bin', HOME: w.home, XDG_RUNTIME_DIR: HUMAN_RUNTIME, LANG: 'C.UTF-8', ORCHESTRA_HOME: w.oh, DBUS_SESSION_BUS_ADDRESS: 'disabled:' }; // `disabled:` = what Electron puts in its own env
-  const iso = selectionUnder(w, fleetEnv, { probeThrows: true });
-  const ok = clauseCount === 1 && iso.store === 'basic' && iso.reason === 'isolated-instance' && JSON.stringify(iso.applied) === JSON.stringify(['--password-store=basic']) && iso.probed === false;
-  clause('fleet/preflight-isolated-forces-basic-never-probes-or-exports', ok, `built main bundle carries the isolation clause ${clauseCount}×; shipped source under the fleet env (real XDG_RUNTIME_DIR=${HUMAN_RUNTIME}, scratch ORCHESTRA_HOME) → ${JSON.stringify(iso)}`);
-  if (!ok) throw new Error('fleet preflight failed — REFUSING to launch an app against the real runtime dir');
-  const { ORCHESTRA_HOME: _drop, ...noHome } = fleetEnv;
-  const ctl = selectionUnder(w, noHome, { stubUnlocked: true }); // a STUBBED probe (answers unlocked): nothing of the human's is read and nothing is applied (spies)
-  console.log(`  [host] the human's REAL default collection answers ${realLoginCollectionLocked()} right now (informational — the control above does not depend on it)`);
-  clause('fleet/ctl/control-without-orchestra-home-selects-libsecret', ctl.store === 'gnome-libsecret' && ctl.reason === 'unlocked-service' && ctl.applied?.some((x) => x === `export DBUS_SESSION_BUS_ADDRESS=unix:path=${HUMAN_RUNTIME}/bus`) && ctl.applied?.includes('--password-store=gnome-libsecret'),
-    `the SAME env minus ORCHESTRA_HOME, probe stubbed unlocked → ${JSON.stringify(ctl)} (spied, not applied) — what the app would have done to the human's keyring without the rule`);
-}
+
 
 async function runArm(name) {
   const spec = SPECS[name];
   const tag = name;
   console.log(`\n── arm ${name} (desktop=${spec.desktop || '<unset>'}, keyring=${spec.keyring}, bus=${spec.bus}${spec.hungGdbus ? ', gdbus probe HUNG' : ''}) ──`);
-  const w = seedWorld(path.join(RIG_DIR, `arm-${LABEL}-${name}`), spec);
-  let busProc, a;
+  const w = seedWorld(name, spec);
+  let a;
+  activeWorld = w;
   try {
-    if (spec.realRuntime) await fleetPreflight(w);
-    if (!spec.noBus) busProc = await startBus(w);
-    if (!spec.noBus) clause(`${tag}/ctl/private-bus-empty`, !/org\.freedesktop\.secrets/.test(busNames(w)) && lockedOf(w) === 'no-service', `private bus names before any daemon: ${busNames(w).trim()} — no Secret Service yet (positive control for the nosvc state)`);
+    // The arm's world is proved private BEFORE a single process of it exists.
+    const worldCs = [
+      ...armWorldChecks({ rigDir: RIG_DIR, run: w.run, dirs: w.dirs, address: w.address, envs: { bus: busEnv(w), tool: toolEnv(w), app: appEnv(w, spec, 0) } }),
+      ...busConfigChecks(fs.readFileSync(path.join(w.armDir, 'session.conf'), 'utf8'), { svc: w.svc, address: w.address }),
+      { id: 'bus-service-dir-is-empty', ok: fs.readdirSync(w.svc).length === 0, detail: `${w.svc} holds ${fs.readdirSync(w.svc).length} entries (no service can be activated into this arm)` },
+    ];
+    for (const c of worldCs) clause(`${tag}/world/${c.id}`, c.ok, c.detail);
+    if (failed(worldCs).length) throw new Error('the arm world is not private — nothing was started');
+    await startBus(w);
+    clause(`${tag}/ctl/private-bus-empty`, !/org\.freedesktop\.secrets/.test(busNames(w)) && lockedOf(w) === 'no-service', `private bus names before any daemon: ${busNames(w).trim()} — no Secret Service yet (positive control for the nosvc state)`);
     if (spec.keyring !== 'none') { keyringStart(w, { unlock: true }); }
     if (spec.keyring === 'locked') { await keyringStopOnly(w); await sleep(300); keyringStart(w, { unlock: false }); }
     const want = { unlocked: 'unlocked', locked: 'locked', none: 'no-service' }[spec.keyring];
-    if (!spec.noBus) clause(`${tag}/ctl/private-keyring-state`, lockedOf(w) === want, `independent oracle (gdbus Properties.Get Locked on the PRIVATE default collection) = ${lockedOf(w)}, wanted ${want}`);
-    const itemsBefore = spec.noBus || spec.keyring === 'none' ? -1 : itemCount(w);
+    clause(`${tag}/ctl/private-keyring-state`, lockedOf(w) === want, `independent oracle (gdbus Properties.Get Locked on the PRIVATE default collection, explicit --address) = ${lockedOf(w)}, wanted ${want}`);
+    const ownerCs = (when) => {
+      if (spec.keyring === 'none') { const p = secretsOwnerPid(w); clause(`${tag}/world/no-secrets-owner-on-the-private-bus${when}`, p === null, `GetNameOwner(org.freedesktop.secrets) on the private bus → ${p === null ? 'no owner' : `pid ${p}`}`); return; }
+      for (const c of secretsOwnerChecks(ownerEvidence(w))) clause(`${tag}/world/${c.id}${when}`, c.ok, c.detail);
+    };
+    ownerCs('');
+    const itemsBefore = spec.keyring === 'none' ? -1 : itemCount(w);
     const fileBefore = fs.readFileSync(w.secretsFile);
     const live0 = liveHash();
 
     a = await bootApp(w, spec);
-    await identity(a, w, tag, spec);
-    if (spec.realRuntime) {
-      const env = fs.readFileSync(`/proc/${a.app.pid}/environ`, 'utf8').split('\0');
-      clause(`${tag}/ctl/uses-the-real-runtime-dir`, env.includes(`XDG_RUNTIME_DIR=${HUMAN_RUNTIME}`) && !env.some((e) => e.startsWith('DBUS_SESSION_BUS_ADDRESS=') || e.startsWith('ORCHESTRA_KEYRING=')), `app environ XDG_RUNTIME_DIR=${HUMAN_RUNTIME}, no DBUS_SESSION_BUS_ADDRESS, no ORCHESTRA_KEYRING — the fleet-rig shape`);
-    }
+    await identity(a, w, tag);
     clause(`${tag}/startup-bounded`, a.tTarget < TARGET_BOUND_MS, `spawn → renderer target in ${a.tTarget} ms (bound ${TARGET_BOUND_MS} ms; a locked-keyring stall is tens of seconds)`);
 
     const expectLine = {
@@ -374,7 +482,6 @@ async function runArm(name) {
       recognised: /password-store: Chromium default — recognised-desktop \[desktop="LXQt" session="" bus=env\]/,
       isolated: /password-store: basic — isolated-instance \[desktop="sway" session="" bus=runtime-dir\]$/m,
       'isolated-gnome': /password-store: basic — isolated-instance \[desktop="GNOME" session="" bus=env\]$/m,
-      fleet: /password-store: basic — isolated-instance \[desktop="" session="" bus=runtime-dir\]$/m,
       gnome: /password-store: Chromium default — recognised-desktop \[desktop="GNOME" session="" bus=env\]/,
       hung: /password-store: Chromium default — no-service \(probe (4[89]\d\d|5[0-4]\d\d) ms\)/, // the 5 s WAIT deadline (the stub gdbus ignores --timeout and is left running, never signalled), not the stub's 30 s
       relock: /password-store: gnome-libsecret — unlocked-service/,
@@ -448,7 +555,7 @@ async function runArm(name) {
 
     // ── a second boot: encrypted arms prove the entries survive a restart and are not re-sealed again ──
     if (name === 'unlocked') {
-      await stopApp(a); a = null;
+      await stopApp(a, w); a = null;
       const logLen = appLog(w).length;
       const fileMid = fs.readFileSync(w.secretsFile);
       a = await bootApp(w, spec);
@@ -459,8 +566,9 @@ async function runArm(name) {
     }
     // ── relock: the keyring is gone at the next boot — the encrypted entries become unreadable, and Settings says so ──
     if (name === 'relock') {
-      await stopApp(a); a = null;
+      await stopApp(a, w); a = null;
       await keyringStopOnly(w); await sleep(300); keyringStart(w, { unlock: false });
+      ownerCs('/after-relock');
       clause(`${tag}/ctl/keyring-now-locked`, lockedOf(w) === 'locked', `private keyring Locked → ${lockedOf(w)}`);
       const fileMid = fs.readFileSync(w.secretsFile);
       a = await bootApp(w, spec);
@@ -469,37 +577,42 @@ async function runArm(name) {
       clause(`${tag}/relocked-ciphertext-kept`, fs.readFileSync(w.secretsFile).equals(fileMid), 'secrets.json byte-identical: the ciphertext waits for the keyring, nothing was rewritten or dropped');
       await openDialog(a.cdp, SEL.linearBtn, SEL.linear);
       const n2 = await waitFor(() => noticeIn(a.cdp, SEL.linear), 8000, 'the unreadable notice');
-      clause(`${tag}/relocked-notice`, n2.kind === 'unreadable' && /3 stored secrets are encrypted and unreadable until a keyring is available again/.test(n2.text) && /stored unencrypted on this machine/.test(n2.text), `notice ${JSON.stringify(n2)}`);
+      clause(`${tag}/relocked-notice`, n2.kind === 'unreadable' && /3 stored secrets are encrypted and unreadable until the keyring is unlocked and Orchestra restarted/.test(n2.text) && /stored unencrypted on this machine: the keyring is locked — unlock it, then restart Orchestra/.test(n2.text) && !/no keyring is available/.test(n2.text), `notice ${JSON.stringify(n2)} (the probe found the keyring LOCKED, so the notice names that cause — #389 round-3 MINOR 2)`);
+      clause(`${tag}/relocked-decision-logged`, /password-store: Chromium default — locked-service \(probe \d+ ms\)/.test(decisionLine(w)), decisionLine(w));
       saveShot(`${LABEL}-${name}-relocked-linear-dialog.png`, await a.cdp.shot());
     }
 
+    for (const c of rootCensusChecks(fs.readdirSync(RIG_XDG), ARM_DIR_NAMES())) clause(`${tag}/world/${c.id}`, c.ok, c.detail);
     const live1 = liveHash();
-    clause(`${tag}/ctl/live-files-byte-equal`, JSON.stringify(live0) === JSON.stringify(live1), `${Object.keys(live0).length} host config/secrets/keyring files hashed before/after this arm: ${JSON.stringify(live0) === JSON.stringify(live1) ? 'identical' : 'CHANGED ' + JSON.stringify(Object.keys(live0).filter((k) => live0[k] !== live1[k])) + ' — real collection items now (read-only metadata): ' + realItems()}`);
+    clause(`${tag}/ctl/live-files-byte-equal`, JSON.stringify(live0) === JSON.stringify(live1), `${Object.keys(live0).length} host config/secrets files hashed before/after this arm: ${JSON.stringify(live0) === JSON.stringify(live1) ? 'identical' : 'CHANGED ' + JSON.stringify(Object.keys(live0).filter((k) => live0[k] !== live1[k]))}`);
   } catch (e) {
     clause(`${tag}/completed`, false, `ABORTED: ${e.stack || e}`);
   } finally {
-    if (a) await stopApp(a);
-    await killWorld(w);
-    if (spec.realRuntime) { // this arm's OWN hooks socket in the real runtime dir (parsed from its own log), nothing else
-      const m = /hooks server listening on (\S+)/.exec(appLog(w));
-      try { if (m && m[1].startsWith(`${HUMAN_RUNTIME}/orchestra-`) && fs.statSync(m[1]).isSocket()) fs.rmSync(m[1]); } catch {}
-    }
-    try { process.kill(-busProc?.pid, 'SIGKILL'); } catch {}
-    const left = procsOfWorld(w);
-    clause(`${tag}/teardown-no-survivors`, left.length === 0, `processes still carrying ${w.run}: ${left.length ? left.join(',') : 'none'}`);
+    await stopApp(a, w);
+    await reapWorld(w);
+    const left = [...w.tracked].filter(([pid, st]) => isAlive(pid, st)).map(([pid]) => pid);
+    const live = unixListenersUnder([w.run, w.oh]);
+    const groups = [w.appProc, w.busProc].filter((g) => g && groupAlive(g.pid)).map((g) => g.pid);
+    activeWorld = null;
+    clause(`${tag}/teardown-no-survivors`, left.length === 0 && live.length === 0 && groups.length === 0, `tracked processes (pid + start time) still alive: ${left.length ? left.join(',') : 'none'} of ${w.tracked.size}; process groups (app, bus) still populated: ${groups.length ? groups.join(',') : 'none'}; unix listeners still bound under ${w.run} / ${w.oh}: ${live.length ? live.map((s) => s.path).join(',') : 'none'}`);
   }
 }
 
 async function main() {
-  const before = liveHash(); const lockedBefore = realLoginCollectionLocked();
-  console.log(`[host] human's REAL default collection (read-only probe): ${lockedBefore}; ${Object.keys(before).length} live files hashed`);
+  const before = liveHash();
+  console.log(`[host] ${Object.keys(before).length} live config/secrets files hashed (this rig reads no keyring file, no real bus, no real runtime dir)`);
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1400x900']); sh('swaymsg', ['default_border', 'none']);
-  const order = [...ARMS]; // `fleet` always follows the two private isolated arms (see fleetPreflight)
-  if (order.includes('fleet')) for (const dep of ['isolated', 'isolated-gnome']) { const i = order.indexOf(dep); if (i < 0) order.splice(order.indexOf('fleet'), 0, dep); else if (i > order.indexOf('fleet')) { order.splice(i, 1); order.splice(order.indexOf('fleet'), 0, dep); } }
-  for (const name of order) { if (!SPECS[name]) refuse(`unknown arm ${name}`); await runArm(name); }
+  for (const name of ARMS) {
+    if (name === 'forged') { runForged(); continue; }
+    if (!SPECS[name]) refuse(`unknown arm ${name}`);
+    await runArm(name);
+  }
   const after = liveHash();
-  clause('ctl/host-files-byte-equal-whole-run', JSON.stringify(before) === JSON.stringify(after), `${Object.keys(before).length} host files (keyring files, secrets.json under ~/.config/orchestra + ~/.orchestra, ~/.claude* settings; credentials.json excluded as live-session churn) before/after the whole run: ${JSON.stringify(before) === JSON.stringify(after) ? 'identical' : 'CHANGED — real collection items now (read-only metadata): ' + realItems()}`);
-  clause('ctl/host-collection-unchanged', realLoginCollectionLocked() === lockedBefore, `real default collection Locked before ${lockedBefore} / after ${realLoginCollectionLocked()}`);
+  clause('ctl/host-files-byte-equal-whole-run', JSON.stringify(before) === JSON.stringify(after), `${Object.keys(before).length} host files (secrets.json of the human's Orchestra homes, Claude settings; credentials.json excluded as live-session churn) before/after the whole run: ${JSON.stringify(before) === JSON.stringify(after) ? 'identical' : 'CHANGED'}`);
+  for (const c of rootCensusChecks(fs.readdirSync(RIG_XDG), ARM_DIR_NAMES())) clause(`ctl/whole-run/${c.id}`, c.ok, c.detail);
+  // The hidden world's stand-in for the human's runtime dir (an empty tmpfs inside this namespace): ANYTHING in it was created by a rig process that reached for the real path.
+  const hiddenEntries = fs.readdirSync(humanRuntimeDir(UID));
+  clause('ctl/hidden-runtime-dir-stayed-empty', hiddenEntries.length === 0, `entries created in the hidden stand-in of the human's runtime dir: [${hiddenEntries.join(' ')}] (must be empty: nothing reached for it)`);
   // Same state → same pixels, so duplicates are only a no-op detector WITHIN an arm (linear / accounts / relock are three different frames).
   const byArm = {}; for (const sh of shots) (byArm[[...ARMS].sort((a, b) => b.length - a.length).find((x) => path.basename(sh.file).startsWith(`${LABEL}-${x}-`)) ?? '?'] ||= []).push(sh); // longest arm name wins (isolated vs isolated-gnome)
   const dups = Object.entries(byArm).map(([arm, l]) => [arm, l.length - new Set(l.map((x) => x.md5)).size]).filter(([, n]) => n > 0);

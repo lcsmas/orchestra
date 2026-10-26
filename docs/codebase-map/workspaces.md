@@ -663,7 +663,8 @@ the first disk read is single-flight (`loading`).
   twice on 2026-10-26. `WAIT_ONLY_SH` runs gdbus (`--timeout 30` per call: it sends an `Introspect` first, then the Get) in the background and
   polls it for `PROBE_WAIT_MS` = 5 s; past that it exits 3 WITHOUT signalling — `unavailable`, Chromium's default, the orphaned child finishes
   its own call. Worst case a dead daemon blocks the main thread 5 s. A wrapper `kill` / `timeout` / SIGTERM-SIGKILL spawnSync timeout is the
-  mutant) and
+  mutant). The probe's output file needs a writable scratch dir: `makeProbeDir` tries `os.tmpdir()`, then `$XDG_RUNTIME_DIR`, then the userData dir
+  (`extraScratchDirs`, index.ts); each failure is logged as `probe-notes="mkdtemp <base>: <code>"` in the startup line, none writable ⇒ `unavailable` (round-4 MINOR).
   `selectLinuxPasswordStore` (appends the switch; `index.ts` calls it at module scope, never in CLI
   mode, and logs `[secrets] password-store: … — <reason> (probe N ms) [desktop=… bus=…]` after
   `initLogger`). **Electron sets `DBUS_SESSION_BUS_ADDRESS=disabled:` in its main process when the
@@ -702,13 +703,18 @@ the first disk read is single-flight (`loading`).
   machine…", plus an "N stored secrets are encrypted and unreadable until a keyring is available again"
   variant — no cause named); `SecretsNotice.tsx` renders it (nothing when encrypted) in the Linear and Accounts dialogs.
   `isSecretStorageEncrypted` (`accounts:secretsEncrypted`, the old boolean) is kept.
-- **Rigs** — `scripts/e2e-keyring.sh` (built app, own sway, a PRIVATE `dbus-run-session` with no host
-  service dirs + a private gnome-keyring-daemon under scratch XDG dirs; arms unlocked / locked /
-  nosvc / recognised / hung / relock), mutants `scripts/keyring-mutants.mjs` (unit) and
-  `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps: gnome-keyring needs `--login` (password on
-  stdin) THEN `--start` to publish `org.freedesktop.secrets`; give it its own `XDG_RUNTIME_DIR` or
-  its control socket is the human's; `/proc/<app>/environ` is clobbered once a bus address is set
-  (Chromium rewrites its title).
+- **Rigs** — `scripts/e2e-keyring.sh` → `e2e-contained-rig.sh` (built app, own sway, ALWAYS in the hidden world: `RIG_HIDE_REAL_RUNTIME=1`
+  makes the human's runtime dir an empty tmpfs; the driver `scripts/e2e-keyring.mjs` reads NO real bus / keyring daemon / keyring file and never
+  scans `/proc/*/environ` — incident Q2, ledger #405). Each arm = its own `XDG_RUNTIME_DIR` `<rig>/xdg/k-<arm>` (bus socket + the daemon's
+  control/pkcs11 sockets; the wayland alias is symlinked in), a PRIVATE `dbus-run-session` (config with one empty `servicedir`), a private
+  gnome-keyring-daemon under scratch XDG dirs; arms forged (must-FAIL preflight: forced real XDG/DBUS/env value ⇒ `--preflight-only` REFUSED rc 3,
+  nothing started) / unlocked / locked / nosvc / recognised / hung / gnome / relock / isolated / isolated-gnome. World clauses are PURE in
+  `shared/keyring-rig-world.ts` (driver env, arm world, bus config, secrets owner = our daemon by exe + a socket under `<run>/keyring`, app-tree
+  fds/env clean + positive control, rig-root census), tested in `keyring-rig-world.test.ts` / `main/keyring-rig-driver.test.ts` (black-box
+  `--preflight-only` + source pins); processes are tracked by (pid, start time) from the private bus peers / app tree. Mutants
+  `scripts/keyring-mutants.mjs` (unit; U*, W* world, D* driver/launcher) and `scripts/e2e-keyring-mutants.mjs` (built-app copies). Traps:
+  gnome-keyring needs `--login` (password on stdin) THEN `--start` to publish `org.freedesktop.secrets`; the oracle uses `gdbus --address`
+  (never `--session`); `/proc/<app>/environ` is clobbered once a bus address is set (Chromium rewrites its title).
 
 ## Base-branch sync — repo-sync.ts (113 lines)
 `syncAllRepos(window)` (parallel per repo) → `syncBaseBranch` (git.ts) +

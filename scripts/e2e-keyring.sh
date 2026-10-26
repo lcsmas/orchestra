@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # #389 — Linux keyring selection + re-encryption + Settings warning, driven in a BUILT Orchestra under its OWN headless
-# sway (scripts/e2e-contained-rig.sh: marker-verified, `env -i` allowlist). Every arm gets a PRIVATE `dbus-run-session`
-# (own config: NO host service dirs, so no host service is ever D-Bus-activated INTO a rig), a private gnome-keyring-daemon under a
-# scratch XDG_DATA_HOME / XDG_RUNTIME_DIR, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR. The human's login keyring and bus
-# are never an input to an app: the host keyring files are hashed before/after, and the human's bus is only read — one
-# Properties.Get Locked per run, plus (arm `fleet`, whose app runs with the REAL XDG_RUNTIME_DIR) a spied selection control.
+# sway (scripts/e2e-contained-rig.sh: marker-verified, `env -i` allowlist, PRIVATE runtime dir) and ALWAYS inside the rig's
+# hidden world (RIG_HIDE_REAL_RUNTIME=1: the human's runtime dir is an empty tmpfs, so the real keyring daemon and bus cannot be
+# reached at all — incident Q2, ledger #405). Every arm gets its own XDG_RUNTIME_DIR under the rig's private one (the keyring
+# daemon's control + pkcs11 sockets and the bus socket live there), a PRIVATE `dbus-run-session` (own config: NO host service dirs),
+# a private gnome-keyring-daemon under a scratch XDG_DATA_HOME, scratch ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR. The driver
+# never reads the human's bus, keyring or runtime dir, and never scans /proc/*/environ.
 # Driver: scripts/e2e-keyring.mjs. HEAVY (an Electron app under a compositor): MemAvailable > 6 GB right before.
 #
-# Usage: scripts/e2e-keyring.sh <app-dir> [--arms unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome,fleet] [--out <dir>] [--label <name>]
+# Usage: scripts/e2e-keyring.sh <app-dir> [--arms forged,unlocked,locked,nosvc,recognised,hung,gnome,relock,isolated,isolated-gnome] [--out <dir>] [--label <name>]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. cli.js + keeper.js) with the Electron-ABI bus binding.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +20,7 @@ APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does n
 for f in package.json dist/index.html dist-electron/main.js dist-electron/cli.js dist-electron/keeper.js; do
   [[ -f "${APP_DIR}/${f}" ]] || { echo "ABORT: ${APP_DIR}/${f} missing — build first (pnpm run build:bundles, plus pnpm run build:bus-abi)" >&2; exit 2; }
 done
-for t in dbus-run-session gnome-keyring-daemon gdbus secret-tool sway grim swaymsg; do
+for t in dbus-run-session gnome-keyring-daemon gdbus sway grim swaymsg bwrap; do
   command -v "${t}" >/dev/null || { echo "ABORT: ${t} not installed (this rig installs nothing)" >&2; exit 2; }
 done
 
@@ -33,4 +34,6 @@ FSTYPE="$(findmnt -no FSTYPE -T "${E2E_RIG_BASE}")"
 
 SCRATCH_CFG="$(mktemp -d "${E2E_RIG_BASE}/cfg-XXXXXX")"
 export CLAUDE_CONFIG_DIR_PIN="${SCRATCH_CFG}"
-exec nice -n 10 "${HERE}/e2e-contained-rig.sh" node "${HERE}/e2e-keyring.mjs" "${APP_DIR}" --live-home "${HOME}" "$@"
+# Not optional for THIS rig: it starts a keyring daemon, so the real runtime dir is hidden in a mount namespace on every run.
+export RIG_HIDE_REAL_RUNTIME=1
+exec nice -n 10 "${HERE}/e2e-contained-rig.sh" node --no-warnings --experimental-strip-types "${HERE}/e2e-keyring.mjs" "${APP_DIR}" --live-home "${HOME}" "$@"
