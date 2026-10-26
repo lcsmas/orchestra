@@ -402,6 +402,20 @@ async function gotoOpener(b) {
 }
 
 // ═════════════════════════════════════ seat 3 hostile-page drive for #396 (helpers above are copied from the member's rig; arms + pages + oracles are mine) ═════════════════════════════════════
+// ── seat 3: REAL compositor pointer input (raw Wayland virtual-pointer helper, scripts/v3-vptr.py) — the rig's headless sway has no input device, `swaymsg seat cursor` reaches no client ──
+function startVptr() {
+  const o = JSON.parse(sh('swaymsg', ['-t', 'get_outputs']))[0];
+  const p = spawn('python3', ['-I', path.join(path.dirname(fileURLToPath(import.meta.url)), 'v3-vptr.py')], { env: { PATH: process.env.PATH, XDG_RUNTIME_DIR: XDG, WAYLAND_DISPLAY: RIG_WAYLAND, OUT_W: String(o.rect.width), OUT_H: String(o.rect.height) }, stdio: ['pipe', 'pipe', 'inherit'] });
+  const waiters = []; let acc = '';
+  p.stdout.on('data', (d) => { acc += d; let i; while ((i = acc.indexOf('\n')) >= 0) { const line = acc.slice(0, i); acc = acc.slice(i + 1); (waiters.shift() ?? (() => {}))(line); } });
+  p.on('exit', () => { while (waiters.length) waiters.shift()('err helper exited'); });
+  const next = () => new Promise((res) => waiters.push(res));
+  const ready = next();
+  const cmd = (c) => { const w = next(); p.stdin.write(c + '\n'); return Promise.race([w, sleep(6000).then(() => 'err timeout')]); };
+  return { ready, cmd, off: o.rect, p };
+}
+async function getVp() { if (!globalThis.__vp) { const v = startVptr(); const r = await v.ready; globalThis.__vp = v; globalThis.__vpReady = r; await sleep(900); } return globalThis.__vp; }
+function mkCur(vp) { let pos = { x: 0, y: 0 }; return async (op, a, b) => { if (op === 'set') { pos = { x: a, y: b }; return vp.cmd(`move ${a - vp.off.x} ${b - vp.off.y}`); } if (op === 'move') { pos = { x: pos.x + a, y: pos.y + b }; return vp.cmd(`move ${pos.x - vp.off.x} ${pos.y - vp.off.y}`); } return vp.cmd(op === 'press' ? 'press' : 'release'); }; }
 const J = (x) => JSON.stringify(x);
 const info396 = (arm, d) => console.log(`  INFO  [${arm}] ${d}`);
 const MY_ARMS = new Set(flag('--arms', 'oauthx,xdg,names,title,resize,storm').split(','));
@@ -438,6 +452,42 @@ if (new URLSearchParams(location.search).get('loop')) { window.__loops = 0; setI
 </script>`,
   '/h-idp.html': (q) => `<!doctype html><title>IdP login</title><body><h1>IdP</h1><script>setTimeout(function () { window.opener.postMessage({ token: 'T-' + Math.random().toString(36).slice(2, 8) }, decodeURIComponent(new URLSearchParams(location.search).get('o') || '*')); window.close(); }, 600);</script>`,
 };
+// ── seat 3, #396 F1 delta: pages for the "mailto:/tel: only on a user click" fix (gate of 15bfbfba) ──
+function f1Page(q) {
+  const v = q.get('v') ?? 'none';
+  const click = q.get('click') === '1';
+  const FIRE = {
+    loc: "location.href = 'mailto:v-loc@x.y';",
+    tel: "location.href = 'tel:+991';",
+    aclick: "var a = document.createElement('a'); a.href = 'mailto:v-aclick@x.y'; document.body.appendChild(a); a.click();",
+    dispatch: "var a = document.createElement('a'); a.href = 'tel:+992'; document.body.appendChild(a); a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));",
+    winopen: "window.open('mailto:v-winopen@x.y');",
+    form: "var f = document.createElement('form'); f.action = 'mailto:v-form@x.y'; f.method = 'get'; document.body.appendChild(f); f.submit();",
+    iframe: "var i = document.createElement('iframe'); i.src = 'mailto:v-iframe@x.y'; document.body.appendChild(i);",
+    redir: "location.href = '/h-redir?to=' + encodeURIComponent('mailto:v-redir@x.y');",
+    meta: "var m = document.createElement('meta'); m.httpEquiv = 'refresh'; m.content = '0;url=mailto:v-meta@x.y'; document.head.appendChild(m);",
+    none: '',
+  }[v] ?? '';
+  return `<!doctype html><title>H f1 ${v}${click ? ' click' : ''}</title><body style="margin:0;background:#def;font:20px sans-serif">
+<button id="go" style="font-size:30px;width:100%;height:90px">go</button>
+<button id="multi" style="font-size:24px" onclick="location.href='mailto:m1@x.y'; setTimeout(function(){location.href='mailto:m2@x.y'},120); setTimeout(function(){location.href='mailto:m3@x.y'},240);">three mailto navigations from ONE click</button>
+<button id="sshmail" style="font-size:24px" onclick="location.href='ssh://evil.example/x'; setTimeout(function(){location.href='mailto:after-ssh@x.y'},150);">ssh then mailto from ONE click</button>
+<a id="chain" href="/h-f1.html?v=loc" style="font-size:24px;display:block;padding:8px">click → next document that fires location=mailto at load</a>
+<a id="kmail" href="mailto:kbd@x.y" style="font-size:24px;display:block;padding:8px">kbd mail</a>
+<div id="status">f1</div>
+<script>
+function fire() { ${FIRE} }
+${click ? "document.getElementById('go').addEventListener('click', fire);" : 'setTimeout(fire, 500);'}
+</script>`;
+}
+PAGES['/h-f1.html'] = (q) => f1Page(q);
+PAGES['/h-big.html'] = (q) => `<!doctype html><title>H big ${q.get('k') ?? ''}</title><body style="margin:0;background:#fd8">
+<a id="big" href="${{ mailto: 'mailto:real@x.y', tel: 'tel:+993', ssh: 'ssh://evil.example/real' }[q.get('k') ?? 'mailto'] ?? 'mailto:real@x.y'}" style="position:fixed;left:0;top:0;right:0;bottom:0;display:block"></a>
+<script>window.__ev = []; ['pointerdown','pointerup','mousedown','mouseup','click','contextmenu','auxclick'].forEach(function (t) { document.addEventListener(t, function (e) { window.__ev.push(t + ':' + e.isTrusted + ':' + e.button + '@' + e.clientX + ',' + e.clientY); }, true); }); window.addEventListener('blur', function () { window.__ev.push('blur'); }); window.addEventListener('focus', function () { window.__ev.push('focus'); });
+window.__mm = null; window.__md = null; document.addEventListener('mousemove', function (e) { window.__mm = { x: e.clientX, y: e.clientY }; }, true); document.addEventListener('mousedown', function (e) { window.__md = { trusted: e.isTrusted, x: e.clientX, y: e.clientY }; }, true);</script>`;
+
+PAGES['/h-f1-inner.html'] = () => `<!doctype html><title>H f1 inner</title><body style="margin:0;background:#cfc"><a id="innermail" href="mailto:inner@x.y" style="position:fixed;left:0;top:0;right:50%;bottom:0;display:block;font:20px sans-serif">mailto link INSIDE the iframe</a><button id="innerwo" style="position:fixed;left:50%;top:0;right:0;bottom:0;font:20px sans-serif" onclick="window.open('mailto:innerwo@x.y')">window.open(mailto) INSIDE the iframe</button>`;
+PAGES['/h-f1-frame.html'] = (q) => `<!doctype html><title>H f1 frame ${q.get('h') ?? 'same'}</title><body style="margin:0;background:#eee"><iframe id="fr" src="${q.get('h') === 'cross' ? 'http://localhost:' + HP : ''}/h-f1-inner.html" style="position:fixed;left:0;top:0;width:100%;height:100%;border:0"></iframe>`;
 const hostSrv = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'); const p = PAGES[u.pathname];
   if (u.pathname === '/h-redir') { res.writeHead(302, { location: u.searchParams.get('to') }); return res.end(); }
@@ -524,6 +574,126 @@ try {
       info396('xdg', `mailto: by a timer 300 ms after a click (gesture window 5 s): xdg-open recorded ${J(got2)} — an ordinary browser also honours a navigation within the activation window`); }
     const lg = logLines(world).filter((l) => /external protocol refused/.test(l));
     clause('xdg', 'refusals-are-logged-with-the-scheme-only', lg.length >= 5 && lg.every((l) => !/evil\.example|confno|etc\/passwd/.test(l)), `${lg.length} refusal lines; sample ${J(lg.slice(-2).map((l) => l.slice(-60)))}`);
+  });
+
+  // ─────────── f1: #396 F1 FIX (gate of 15bfbfba) — mailto:/tel: reach the OS only on a user gesture of the REQUESTING contents ───────────
+  if (MY_ARMS.has('f1')) await runArm('f1', async () => {
+    let nonce = 0;
+    const openF1 = async (qs, label) => {
+      await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+      const nn = `${Date.now().toString(36)}${++nonce}`;
+      await typeUrl(b, `${HBASE}/h-f1.html${qs}${qs.includes('?') ? '&' : '?'}n=${nn}`);
+      await waitFor(async () => (await tabs(b))[0]?.label === label && !!(await T(new RegExp(`h-f1\\.html\\?.*n=${nn}`))), 20000, `tab 1 to load ${label} (n=${nn})`);
+      await sleep(400);
+      return T(new RegExp(`h-f1\\.html\\?.*n=${nn}`));
+    };
+    const vectors = ['loc', 'tel', 'aclick', 'dispatch', 'winopen', 'form', 'iframe', 'redir', 'meta'];
+    const ctlOK = {};
+    for (const v of vectors) {
+      // (1) WITH a click: the vector must launch exactly the licensed hand-off (the instrument can SEE this vector)
+      const pc = await openF1(`?v=${v}&click=1`, `H f1 ${v} click`);
+      const nc = xdgCount(); await clickIn(pc, '#go'); await softWait(async () => xdgCount() > nc, 5000, `${v}: xdg-open after the click`); await sleep(600);
+      const lc = xdgLines().slice(nc); ctlOK[v] = lc.length >= 1;
+      clause('f1', `ctl/${v}: WITH a click it launches (the vector and the spy work)`, lc.length === 1, `xdg-open after one click: ${J(lc)}`);
+      // (2) the same vector fired from a timer, NO click at all: nothing may launch
+      const n0 = xdgCount(); await openF1(`?v=${v}`, `H f1 ${v}`); await sleep(3500);
+      const l0 = xdgLines().slice(n0);
+      clause('f1', `${v}: no click → nothing reaches xdg-open`, l0.length === 0 && ctlOK[v], `xdg-open log grew by ${l0.length}: ${J(l0)}${ctlOK[v] ? '' : '  (UNINFORMATIVE: the licensed variant did not launch either)'}`);
+    }
+    // a click on a mailto link INSIDE an iframe (same-origin and cross-site/OOPIF): the user's own click must still launch — the gesture is tracked on the TOP contents
+    const noClickRefusals = () => logLines(world).filter((l) => /external protocol refused \((mailto|tel): no click\)/.test(l)).length;
+    const popRefusals = () => logLines(world).filter((l) => /popup refused/.test(l)).length;
+    const frameGeom = {};
+    for (const h of ['same', 'cross']) {
+      await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+      await typeUrl(b, `${HBASE}/h-f1-frame.html?h=${h}&n=${Date.now().toString(36)}`);
+      await waitFor(async () => (await tabs(b))[0]?.label === `H f1 frame ${h}`, 20000, `frame page ${h}`); await sleep(1500);
+      const top = await T(/h-f1-frame\.html/);
+      const r = await evalIn(top, `(() => { const r = document.getElementById('fr').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+      frameGeom[h] = r;
+      const linkPt = { x: r.x + r.w * 0.25, y: r.y + r.h * 0.5 }, woPt = { x: r.x + r.w * 0.75, y: r.y + r.h * 0.5 };
+      const clickAtTop = async (pt) => { const c = await Cdp.connect(top.webSocketDebuggerUrl); try { await c.click(pt.x, pt.y); } finally { c.close(); } };
+      let n = xdgCount(), r0 = noClickRefusals();
+      await clickAtTop(linkPt); await softWait(async () => xdgCount() > n, 6000, `iframe link click ${h}`); await sleep(500);
+      let l = xdgLines().slice(n);
+      clause('f1', `ctl/CDP-click-on-a-mailto-link-inside-a-${h}-origin-iframe-launches-once`, l.length === 1 && l[0].startsWith('mailto:inner@'), `xdg-open after ONE click in the ${h}-origin iframe: ${J(l)}; 'mailto: no click' refusals +${noClickRefusals() - r0}`);
+      n = xdgCount(); r0 = noClickRefusals(); const p0 = popRefusals();
+      await clickAtTop(woPt); await softWait(async () => xdgCount() > n, 6000, `iframe window.open click ${h}`); await sleep(500);
+      l = xdgLines().slice(n);
+      info396('f1', `CDP click on a window.open('mailto:') button inside the ${h}-origin iframe (the PRE-EXISTING popup path, same tracker): xdg-open ${J(l)}; popup refusals +${popRefusals() - p0}`);
+    }
+    // one input, one launch: a single click that navigates to mailto: three times launches ONCE
+    { const p = await openF1('?v=none', 'H f1 none'); const n = xdgCount(); await clickIn(p, '#multi'); await softWait(async () => xdgCount() > n, 5000, 'multi'); await sleep(1500);
+      const l = xdgLines().slice(n);
+      clause('f1', 'one-click-three-mailto-navigations-launch-once', l.length === 1 && l[0].startsWith('mailto:m1'), `xdg-open after ONE click: ${J(l)}`); }
+    // a refused scheme does not eat the click: ssh refused, the mailto of the same click (150 ms later) still launches
+    { const p = await openF1('?v=none', 'H f1 none'); const n = xdgCount(); await clickIn(p, '#sshmail'); await softWait(async () => xdgCount() > n, 5000, 'sshmail'); await sleep(1000);
+      const l = xdgLines().slice(n);
+      clause('f1', 'ssh-then-mailto-from-one-click-ssh-refused-mailto-launches', l.length === 1 && l[0].startsWith('mailto:after-ssh'), `xdg-open after ONE click: ${J(l)}`); }
+    // a click does not carry over a navigation: the NEXT document's load-time location=mailto has no gesture
+    { const p = await openF1('?v=none', 'H f1 none'); const n = xdgCount(); await clickIn(p, '#chain');
+      const nav = await softWait(async () => (await tabs(b))[0]?.label === 'H f1 loc', 15000, 'the chained document'); await sleep(3000);
+      const l = xdgLines().slice(n);
+      clause('f1', 'a-click-on-page-A-licenses-nothing-on-the-page-it-navigated-to', nav && l.length === 0, `navigated=${nav} (tab label ${J((await tabs(b))[0]?.label)}); xdg-open after click→navigate→load-time mailto: ${J(l)}`); }
+    // keyboard activation: a focused mailto link + Enter (keyDown is an activating input)
+    { const p = await openF1('?v=none', 'H f1 none'); await evalIn(p, `document.getElementById('kmail').focus(); document.activeElement.id`); const n = xdgCount();
+      const c = await Cdp.connect(p.webSocketDebuggerUrl); try { await c.key('Enter', 'Enter', 13); } finally { c.close(); }
+      await softWait(async () => xdgCount() > n, 5000, 'kbd'); const l = xdgLines().slice(n);
+      clause('f1', 'ctl/keyboard-Enter-on-a-focused-mailto-link-launches', l.length === 1 && l[0].startsWith('mailto:kbd'), `xdg-open after Enter: ${J(l)}`); }
+    // the REQUESTING contents: a click in the popup window does not license the opener's later mailto (and the opener's own click does)
+    { const op = await loadOpener(); await clickIn(op, '#named'); await softWait(async () => !!(await T(/h-child\.html\?w=named/)), 10000, 'the named child');
+      const child = await T(/h-child\.html\?w=named/); const n = xdgCount();
+      if (child) { await evalIn(op, `setTimeout(function () { location.href = 'mailto:xtab@x.y'; }, 900); 1`); await clickIn(child, 'h1'); }
+      await sleep(2500); const l = xdgLines().slice(n);
+      clause('f1', 'a-click-in-the-popup-window-does-not-license-the-opener', !!child && l.length === 0, `child ${!!child}; xdg-open: ${J(l)} (opener timer mailto at +900 ms, the click went to the popup contents)`);
+      const n2 = xdgCount(); await evalIn(op, `setTimeout(function () { location.href = 'mailto:own@x.y'; }, 900); 1`); await clickIn(op, '#status'); await softWait(async () => xdgCount() > n2, 5000, 'own click timer'); const l2 = xdgLines().slice(n2);
+      clause('f1', 'ctl/the-opener-own-click-licenses-its-own-mailto', l2.length === 1 && l2[0].startsWith('mailto:own'), `xdg-open: ${J(l2)}`);
+      for (const t of await TS(/h-child/)) { try { await evalIn(t, 'window.close()'); } catch {} } }
+    // REAL pointer input from the compositor (sway seat), not CDP: a human's click on a mailto/tel link must still launch; an ssh link must not
+    { const vp = await getVp(); const seatCmd = mkCur(vp); clause('f1', 'ctl/virtual-pointer-helper-is-up', /^ok ready/.test(globalThis.__vpReady), `helper: ${J(globalThis.__vpReady)}`);
+      for (const kind of ['mailto', 'tel', 'ssh']) {
+        await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+        await typeUrl(b, `${HBASE}/h-big.html?k=${kind}`);
+        await waitFor(async () => (await tabs(b))[0]?.label === `H big ${kind}`, 20000, `H big ${kind}`); await sleep(500);
+        const p = await T(/h-big\.html/); const mr = mainRect();
+        let hit = null;
+        for (const [fx, fy] of [[0.6, 0.5], [0.5, 0.5], [0.7, 0.6], [0.8, 0.4], [0.65, 0.75], [0.4, 0.6], [0.85, 0.8], [0.3, 0.5]]) {
+          const X = Math.round(mr.x + mr.width * fx), Y = Math.round(mr.y + mr.height * fy);
+          await evalIn(p, 'window.__mm = null; 1'); const rs = await seatCmd('set', X, Y); await sleep(250); const rm = await seatCmd('move', 3, 3); await sleep(350); if (!/^ok/.test(rs) || !/^ok/.test(rm)) console.log(`  (virtual pointer replies: ${J([rs, rm])})`);
+          const mm = await evalIn(p, 'window.__mm'); if (mm) { hit = { X: X + 3, Y: Y + 3, mm }; break; }
+        }
+        if (hit && !globalThis.__ptrOff) globalThis.__ptrOff = { dx: hit.X - hit.mm.x, dy: hit.Y - hit.mm.y };
+        if (!hit) { clause('f1', `ctl/real-pointer-${kind}: the compositor's pointer reaches the page`, false, `no mousemove reached the page from the virtual pointer (window rect ${J(mr)}) — the real-click control is UNVERIFIED, not a verdict`); continue; }
+        const n = xdgCount();
+        const rp = await seatCmd('press', 'button1'); await sleep(80); const rr = await seatCmd('release', 'button1');
+        info396('f1', `real-pointer ${kind}: helper replies ${J([rp, rr])}; page events ${J(await evalIn(p, 'window.__ev'))}; document.hasFocus()=${await evalIn(p, 'document.hasFocus()')}`);
+        await softWait(async () => xdgCount() > n, kind === 'ssh' ? 2500 : 6000, `real click on ${kind}`); await sleep(kind === 'ssh' ? 1500 : 500);
+        const l = xdgLines().slice(n); const md = await evalIn(p, 'window.__md');
+        clause('f1', `ctl/real-pointer-${kind}: a trusted mousedown reached the page`, !!md && md.trusted === true, `pointer at ${hit.X},${hit.Y} (client ${J(hit.mm)}); mousedown ${J(md)}`);
+        if (kind === 'ssh') clause('f1', 'real-pointer-click-on-an-ssh-link-launches-nothing', l.length === 0, `xdg-open: ${J(l)}`);
+        else clause('f1', `real-pointer-click-on-a-${kind}-link-launches-exactly-once`, l.length === 1 && l[0].startsWith(kind + ':'), `xdg-open after one compositor click: ${J(l)}`);
+      } }
+    // REAL compositor pointer on a mailto link INSIDE an iframe (the human's flow): offset calibrated on the top-level page above
+    if (globalThis.__ptrOff) {
+      const vp = await getVp();
+      for (const h of ['same', 'cross']) {
+        await closeAllPopupWindows(b); await closeExtraTabs(b, 1);
+        await typeUrl(b, `${HBASE}/h-f1-frame.html?h=${h}&n=r${Date.now().toString(36)}`);
+        await waitFor(async () => (await tabs(b))[0]?.label === `H f1 frame ${h}`, 20000, `frame page ${h}`); await sleep(1500);
+        const top = await T(/h-f1-frame\.html/);
+        const r = await evalIn(top, `(() => { const r = document.getElementById('fr').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+        const X = Math.round(r.x + r.w * 0.25 + globalThis.__ptrOff.dx), Y = Math.round(r.y + r.h * 0.5 + globalThis.__ptrOff.dy);
+        const cur = mkCur(vp);
+        await cur('set', X, Y); await sleep(300); await cur('move', 1, 1); await sleep(300);
+        const n = xdgCount(); const r0 = noClickRefusals();
+        await cur('press', 'button1'); await sleep(80); await cur('release', 'button1');
+        await softWait(async () => xdgCount() > n, 6000, `real click in the ${h} iframe`); await sleep(600);
+        const l = xdgLines().slice(n);
+        clause('f1', `real-pointer-click-on-a-mailto-link-inside-a-${h}-origin-iframe-launches-once`, l.length === 1 && l[0].startsWith('mailto:inner@'), `compositor click at ${X},${Y}: xdg-open ${J(l)}; 'mailto: no click' refusals +${noClickRefusals() - r0}`);
+      }
+    }
+    const rl = logLines(world).filter((l) => /external protocol refused/.test(l));
+    clause('f1', 'no-click-refusals-are-logged-without-the-URL', rl.some((l) => /\(mailto: no click\)|\(tel: no click\)/.test(l)) && rl.every((l) => !/@x\.y|\+99/.test(l)), `${rl.length} refusal lines; sample ${J(rl.slice(-3).map((l) => l.slice(-50)))}`);
   });
 
   // ─────────── names: a live popup name is not retargetable from another tab or another workspace ───────────
@@ -666,6 +836,7 @@ try {
   clause('rig', 'harness-completed', false, `ABORTED: ${String(e.stack || e).split('\n').slice(0, 4).join(' | ')}`);
   if (b) { try { await teardown(b, 'term'); } catch {} }
 } finally {
+  try { globalThis.__vp?.p.kill(); } catch {}
   try { hostSrv.close(); } catch {}
 }
 
