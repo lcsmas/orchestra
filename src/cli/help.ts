@@ -16,7 +16,7 @@ const GROUPS = [
   'Fleet bus',
   'Legacy messaging',
   'Structure',
-  'Links & tickets',
+  'Tickets',
   'Accounts',
   'Internal',
 ] as const;
@@ -401,23 +401,10 @@ Exit codes: 0 = landed, 2 = unmerged commits remain,
             1 = could not check (unknown id, no branch, …)`,
   },
 
-  // ── Links & tickets ───────────────────────────────────────────────────
-  {
-    name: 'link',
-    group: 'Links & tickets',
-    summary: 'Report the PR(s) / Linear issue this workspace works on',
-    detail: `usage: orchestra link [--pr <url>]... [--linear <KEY>] [id]
-       orchestra link --clear [--pr [<url>]] [--linear]
-
-Report the PR(s) / Linear issue THIS workspace is working on — the only
-source for the sidebar badges. --pr repeats and ADDS (link every PR when work
-spans several repos).
-  --clear --pr <url>   remove one PR; a bare --pr removes them all
-  --clear --linear     remove the Linear link`,
-  },
+  // ── Tickets ───────────────────────────────────────────────────────────
   {
     name: 'linear',
-    group: 'Links & tickets',
+    group: 'Tickets',
     summary: 'Pin / list / unpin Linear tickets in the sidebar',
     detail: `usage: orchestra linear add <url|TEAM-123> [--repo <path>] [--spawn] [--model <m>]
        orchestra linear list [--mine]

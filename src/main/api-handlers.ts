@@ -5,7 +5,6 @@ import { store } from './store';
 import {
   detectRemoteUrl,
   getDiff,
-  findPullRequest,
   findBranchChecks,
   listBranches,
   getDiffStats,
@@ -17,10 +16,8 @@ import {
   unstagePaths,
 } from './git';
 import {
-  verifyLinearIssueByKey,
   verifyLinearApiKey,
   getLinearKeySource,
-  resetLinearAuthState,
 } from './linear';
 import {
   dispatchLinearRemoveRequest,
@@ -101,7 +98,6 @@ import {
 import {
   detectAndUpdateBranchName,
   detectAndUpdateMergeState,
-  detectAndUpdateReleaseState,
 } from './activity';
 import { snapshotSyncStates, syncOneRepo } from './repo-sync';
 import { addQueuedPrompt, removeQueuedPrompt, flushQueuedPrompts } from './prompt-queue';
@@ -366,14 +362,12 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   getDiffStats: 'git:stats',
   getWorktreeSizes: 'workspaces:sizes',
   sampleResources: 'resources:sample',
-  findPR: 'git:findPR',
   findChecks: 'git:findChecks',
   fixChecks: 'git:fixChecks',
   getReviewDiff: 'git:reviewDiff',
   getStagedDiff: 'git:stagedDiff',
   applyReviewPatch: 'git:applyReviewPatch',
   sendReviewToAgent: 'git:sendReview',
-  verifyLinear: 'linear:verify',
   listTickets: 'tickets:list',
   modelDefaults: 'settings:modelDefaults',
   setModelDefaults: 'settings:setModelDefaults',
@@ -530,17 +524,10 @@ export const apiHandlers: ApiHandlerTable = {
 
   checkLinearKey: (key) => verifyLinearApiKey(key),
 
-  // Save the key (encrypted via safeStorage where available). Clears
-  // verification caches so the new key takes effect immediately.
-  saveLinearKey: async (key) => {
-    await setLinearApiKey(key);
-    resetLinearAuthState();
-  },
+  // Save the key (encrypted via safeStorage where available).
+  saveLinearKey: (key) => setLinearApiKey(key),
 
-  clearLinearKey: async () => {
-    await clearLinearApiKey();
-    resetLinearAuthState();
-  },
+  clearLinearKey: () => clearLinearApiKey(),
 
   // ---------- Usage ----------
 
@@ -1089,36 +1076,10 @@ export const apiHandlers: ApiHandlerTable = {
   // visible poll — no standing poller in main.
   sampleResources: () => sampleResources(),
 
-  findPR: async (id) => {
-    const ws = store.getWorkspace(id);
-    if (!ws) throw new Error('workspace not found');
-    // Release detection still needs the workspace's own repo (it compares the
-    // branch tip against local tags), so it stays gated on being a git
-    // workspace even though the PR lookup below no longer is. It remains
-    // piggybacked here rather than on the hot stats poll because the
-    // underlying computation is memoized on (branch tip, releases).
-    // `isScratchLike`, not `kind !== 'scratch'`: an orchestrator is equally
-    // repo-less, and this guard let it through. That was inert only because an
-    // orchestrator's `repoPath` is `''`, so the `&& ws.repoPath` half caught it
-    // by accident — a pre-existing hole that any repo-ish field on a
-    // coordinator would reopen, spending the shared gh/GraphQL budget resolving
-    // a branch that does not exist in that repo.
-    if (!isScratchLike(ws) && ws.repoPath) {
-      void detectAndUpdateReleaseState(id).catch(() => {});
-    }
-    // PRs are whatever the AGENT linked (`orchestra link --pr`) — no branch
-    // matching, and no dependence on `ws.repoPath`, so a workspace can track
-    // PRs that live in other repos entirely (metarepo submodules). Unlinked
-    // workspaces of every kind return empty here, which is why the old
-    // `kind === 'scratch'` early-return is no longer needed.
-    return findPullRequest(ws.linkedPrs);
-  },
-
   findChecks: async (id) => {
     const ws = store.getWorkspace(id);
     if (!ws) throw new Error('workspace not found');
-    // Non-git sessions have no branch to run CI on. Mirrors findPR's guard,
-    // extended to orchestrator (also repo-less).
+    // Non-git sessions (scratch, orchestrator) have no branch to run CI on.
     if (isScratchLike(ws) || !ws.repoPath) {
       return { state: 'none' as const };
     }
@@ -1238,21 +1199,6 @@ export const apiHandlers: ApiHandlerTable = {
       throw new Error(res.error ?? 'failed to spawn workspace for ticket');
     }
     return { workspaceId: res.workspaceId };
-  },
-
-  verifyLinear: async (id) => {
-    const ws = store.getWorkspace(id);
-    if (!ws) throw new Error('workspace not found');
-    // The badge is now driven SOLELY by what the agent reported via
-    // `orchestra link --linear` — the branch name is no longer mined for a
-    // key. Branch-name mining guessed in both directions: it invented issues
-    // from branches that encode none (`usage-poll-429-backoff` → `POLL-429`)
-    // and could never see a ticket whose key was never typed into the branch.
-    // No link → no badge, for scratch sessions and git worktrees alike.
-    if (!ws.linkedLinearKey) return null;
-    // Still verified against the API: the key is the agent's assertion, and an
-    // unverified assertion would render a badge that opens a 404.
-    return verifyLinearIssueByKey(ws.linkedLinearKey);
   },
 
   listBranches: async (id) => {

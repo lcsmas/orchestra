@@ -70,8 +70,7 @@ IPC handlers: the request/response BODIES live in the shared table
 `src/main/api-handlers.ts` (keyed by `OrchestraAPI` member name — repos,
 workspaces CRUD, sandbox, PTY (`ptyWrite` / `ptyResize` only — the Run, nvim and login terminals; the
 agent-PTY channels (start, repaint, stopped, agent stop, clipboard image save) and their handlers and
-preload wrappers were deleted with the launcher, #233), git (stats poll piggybacks merge+branch refresh; findPR
-piggybacks release detection), scripts, linear, accounts, usage, deps).
+preload wrappers were deleted with the launcher, #233), git (stats poll piggybacks merge+branch refresh; CI checks), scripts, linear, accounts, usage, deps).
 index.ts wires the table to its historical channels in one loop over
 `METHOD_IPC_CHANNELS` (every registration still goes through the logging
 `handle` wrapper); `dialog:pickDir` stays an inline handler. Startup also
@@ -108,22 +107,11 @@ disappears (archive/delete/`onWorkspace(s)Removed`), the fallback selection uses
 `pickFallbackActive` (`active-fallback.ts`, pure + node-tested) to reopen the
 *previous* workspace instead of snapping to the first sidebar row. `load()` `:115`
 hydrates in parallel and seeds context badges from persisted `contextTokens`.
-Refreshers (`refreshAllStats`/`Sizes`/`AllPRs`/`AllLinear`, `:292+`) are driven
+Refreshers (`refreshAllStats`/`Sizes`/`AllChecks`/`Tickets`) are driven
 by **visibility-aware polls** and commit once. Live event subscriptions `:381+`
 patch state (note `onWorkspaceUpdate` merges to avoid clobbering a local create).
 
-**Derived maps must be invalidated by the event that changes their source.**
-`prs` is derived from `Workspace.linkedPrs` but cached separately on the 12s
-poll, and `onWorkspaceUpdate` originally patched `workspaces` without touching
-it — so `orchestra link` took a full poll interval to show its badge (measured
-~9.0s to link, ~10.9s to clear), which reads as the command having failed. The
-handler now calls `refreshPR(id)` when the linked-PR URLs differ, compared
-BEFORE the state write (afterwards the previous value is gone). The gate
-matters: the same channel carries status-dot transitions, which arrive
-constantly, and each refresh costs a `gh` call per linked PR — firing
-unconditionally would put the PR poll on the status-dot cadence. Note
-`onWorkspaceRemoved` already prunes `prs`/`checks`/`linear`/`stats`; the update
-path is the one that needed the equivalent. **Removed-id tombstone (#205):** both
+**Removed-id tombstone (#205):** both
 removal handlers record ids in `removed-workspaces.ts`, and the update handler
 drops any `workspace:update` for a recorded id — it UPSERTS unknown ids, so a
 stale update after `workspace:removed` would otherwise paint a ghost row.
@@ -294,16 +282,13 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   an unidentifiable row. The floor makes the BADGES yield space first; they are
   fixed-size marks that survive being pushed out of view better than a nameless
   row does.
-- **No PR / Linear / agent-count badges on sidebar rows** (removed 2026-10-26,
-  user ask: clutter). The `prs`/`linear` store slices and `orchestra link` stay
-  (the toolbar still reads `prs`); only the row rendering is gone.
+- **No PR / Linear / release / agent-count badges on sidebar rows**, and no
+  toolbar `PR #N` button (removed 2026-10-26, user ask: clutter) — with the
+  whole PR / release / Linear-link pipeline behind them (no `gh` PR or release
+  calls, no `orchestra link`). Rig: `scripts/e2e-sidebar-declutter-drive.sh`.
 - **Every badge in `.ws-pills` is a flat glyph + number** — no pill chrome. CI
-  gets this from `.ws-item .ci-badge`; `.released-pill` and `.unpushed-pill` are
-  authored flat outright (`ReleaseTagIcon`/`UnpushedIcon`, both Lucide on the
-  shared 24-viewBox `ICON_PROPS`). Colour alone carries state: green shipped,
-  amber ready-to-push. **Only the newest release renders**, with older ones
-  collapsed into a dim `.released-more` `+N` (full list on the `title`) —
-  `releasedVersions` is oldest-first, so newest is the LAST element.
+  gets this from `.ws-item .ci-badge`; `.unpushed-pill` is authored flat
+  (`UnpushedIcon`, Lucide on the shared 24-viewBox `ICON_PROPS`, amber).
 - **CI is gated on being a git row** (`childIsGit` in `renderSpawnTreeRows`):
   `findChecks` needs a branch and hard-returns `{state:'none'}` for
   scratch/orchestrator rows.

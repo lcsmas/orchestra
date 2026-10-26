@@ -7,7 +7,6 @@ import {
   getBranchMergeState,
   getCurrentBranch,
   getRefShas,
-  getReleaseVersionsContaining,
 } from './git';
 import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/types';
 // Value import (not `import type`): the .ts extension is required for value
@@ -572,7 +571,7 @@ export async function detectAndUpdateMergeState(id: string): Promise<void> {
   // as a scratch session. The old `kind === 'scratch'` test let orchestrators
   // through and was saved only by their empty `repoPath` making the git call
   // fail; that is an accident, not a guard. (Pre-existing; see the matching
-  // fixes in detectAndUpdateBranchName/ReleaseState and api-handlers findPR.)
+  // fix in detectAndUpdateBranchName.)
   if (!ws || ws.archived || isScratchLike(ws)) return;
   const heads = await getRefShas(ws.repoPath, ws.branch, ws.baseBranch);
   if (heads) {
@@ -682,73 +681,6 @@ export async function detectAndUpdateBranchName(id: string): Promise<void> {
   };
   // Broadcast before persisting — see setStatus: don't gate the renamed-branch
   // UI on the serialized store-write chain.
-  void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
-  platform.broadcast('workspace:update', updated);
-}
-
-/** Detect the published GitHub Releases this branch's work shipped in and
- *  stamp `releasedAt` + `releasedVersions` (and `releasedVersion`, the
- *  earliest, for back-compat). An unmerged branch naturally yields no pills —
- *  its authored commits are in no release. The version list still tracks later
- *  ships and policy changes because `getReleaseVersionsContaining` recomputes
- *  whenever the branch tip or the release list moves — and serves a memoized
- *  result (one `rev-parse`) on every poll in between. `getPublishedReleases`
- *  is cached per-repo (30s) and shared across that repo's workspaces, so this
- *  stays at roughly one `gh` call per repo per TTL even on the PR poll
- *  cadence. Writes/broadcasts only when the version list actually changes.
- *  Deliberately NOT wired into `detectAndUpdateMergeState`, which runs on the
- *  hot 8s stats poll and must stay network-free. */
-export async function detectAndUpdateReleaseState(id: string): Promise<void> {
-  const ws = store.getWorkspace(id);
-  // See detectAndUpdateMergeState: orchestrators are repo-less too. This path
-  // reaches `gh`, so letting one through spends the shared (and exhaustible)
-  // GitHub budget on a branch that is not in the repo.
-  if (!ws || ws.archived || isScratchLike(ws)) return;
-  // One pill for the release that FIRST shipped this branch's own work, plus
-  // one per release this branch itself cut (it authored the version-bump tag
-  // commit). getReleaseVersionsContaining derives the branch's authored commit
-  // set (from its reflog, falling back to the base..branch range), so a fresh
-  // branch cut from an old release commit it never authored gets nothing, a
-  // merged/stale-pointer branch still gets exactly what it shipped, and a
-  // stray follow-up commit riding along in another branch's release earns no
-  // extra pill. An empty authored set already yields no versions.
-  // getPublishedReleases is cached per-repo (30s), so this costs at most one
-  // gh call per repo per TTL.
-  const { versions, releasedAt } = await getReleaseVersionsContaining(
-    ws.repoPath,
-    ws.branch,
-    ws.baseBranch,
-  );
-  const fresh = store.getWorkspace(id);
-  if (!fresh || fresh.archived) return;
-  const prev = fresh.releasedVersions ?? (fresh.releasedVersion ? [fresh.releasedVersion] : []);
-  // No change → avoid a redundant write/broadcast. (Covers both staying empty
-  // and staying identical.)
-  if (prev.length === versions.length && prev.every((v, i) => v === versions[i])) return;
-  if (versions.length === 0) {
-    // The branch shipped nothing (or a prior over-eager computation left stale
-    // pills): clear the release fields so the badges disappear.
-    const cleared: Workspace = {
-      ...fresh,
-      releasedAt: undefined,
-      releasedVersion: undefined,
-      releasedVersions: undefined,
-    };
-    void store.upsertWorkspace(cleared).catch((e) => alog.swallow("persist cleared context", e));
-    platform.broadcast('workspace:update', cleared);
-    return;
-  }
-  const updated: Workspace = {
-    ...fresh,
-    // Recompute releasedAt from the fresh result rather than preserving a stale
-    // one — the version list itself just changed, so the "shipped when" anchor
-    // should track it.
-    releasedAt: releasedAt ?? fresh.releasedAt ?? Date.now(),
-    releasedVersion: versions[0], // earliest = the "shipped when" signal
-    releasedVersions: versions,
-  };
-  // Broadcast before persisting — see setStatus: don't gate the released-version
-  // pill on the serialized store-write chain.
   void store.upsertWorkspace(updated).catch((e) => alog.swallow("persist status", e));
   platform.broadcast('workspace:update', updated);
 }

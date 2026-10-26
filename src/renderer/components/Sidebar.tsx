@@ -379,17 +379,6 @@ const ICON_PROPS = {
   shapeRendering: 'geometricPrecision',
 };
 
-/** Lucide `tag` — a released version. The glyph+number pair is what lets the
- * release badge drop its pill chrome and still read as a distinct fact. */
-function ReleaseTagIcon() {
-  return (
-    <svg {...ICON_PROPS}>
-      <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
-      <circle cx="7.5" cy="7.5" r=".5" fill="currentColor" />
-    </svg>
-  );
-}
-
 /** Lucide `arrow-up` — commits made locally that origin has not seen yet. */
 function UnpushedIcon() {
   return (
@@ -2292,44 +2281,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                           {repoLabel(w.repoPath)}
                         </span>
                       )}
-                      {w.releasedAt &&
-                        (() => {
-                          // Fall back to the single releasedVersion for
-                          // pre-upgrade records, then to a bare "released" when
-                          // no tag is known.
-                          const versions =
-                            w.releasedVersions && w.releasedVersions.length > 0
-                              ? w.releasedVersions
-                              : w.releasedVersion
-                                ? [w.releasedVersion]
-                                : [];
-                          if (versions.length === 0) {
-                            return (
-                              <span className="released-pill" title="Shipped in a published release">
-                                <ReleaseTagIcon />
-                                <span className="released-v">released</span>
-                              </span>
-                            );
-                          }
-                          // Only the NEWEST version is shown, the rest collapsed
-                          // into a dim `+N`, so the branch name keeps its width.
-                          const newest = versions[versions.length - 1];
-                          const extra = versions.length - 1;
-                          return (
-                            <span
-                              className="released-pill"
-                              title={
-                                extra > 0
-                                  ? `Shipped in releases ${versions.join(', ')}`
-                                  : `Shipped in release ${newest}`
-                              }
-                            >
-                              <ReleaseTagIcon />
-                              <span className="released-v">{newest}</span>
-                              {extra > 0 && <span className="released-more">+{extra}</span>}
-                            </span>
-                          );
-                        })()}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
                           className="unpushed-pill"

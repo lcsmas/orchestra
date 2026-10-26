@@ -118,8 +118,6 @@ import {
   type RenamePin,
 } from '../shared/naming-policy.ts';
 import { formerBranchPatch } from '../shared/former-branch.ts';
-import { parseLinearTicketRef, parsePrUrl, prLinkKey } from '../shared/linear';
-import type { PrLink } from '../shared/linear';
 import { syncAccountInheritance } from './account-inherit';
 import { sameDir } from './same-dir.ts';
 import { moveProjectTranscripts, type MoveReport } from './transcript-move.ts';
@@ -1187,145 +1185,6 @@ export async function dispatchSetBaseRequest(
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
   return { ok: true, baseBranch: target };
-}
-
-export interface LinkResult {
-  ok: boolean;
-  /** Every PR now linked to the workspace, not just the ones this call added —
-   * so the CLI can echo the resulting state rather than the delta. */
-  prUrls?: string[];
-  linearKey?: string;
-  /** True when the call cleared a link rather than setting one (`--clear`). */
-  cleared?: boolean;
-  error?: string;
-}
-
-/** Attach a pull-request URL and/or a Linear issue key to a workspace — the
- * agent reporting what it is actually working on, rather than Orchestra
- * inferring it from the branch name.
- *
- * This is the ONLY writer of `linkedPrs` / `linkedLinearKey`. Both were
- * previously derived: the PR by exact-matching the branch against every PR's
- * head ref, the Linear key by regex-mining the branch. Both derivations broke
- * in ways the agent can trivially fix, because the agent holds the ground
- * truth — it opened the PR, it was handed the ticket.
- *
- * PRs ACCUMULATE: each `--pr` appends rather than replaces, because one
- * workspace legitimately owns several pull requests (a metarepo branch lands
- * one PR per submodule repo). Re-linking a PR already present is a silent
- * no-op rather than a duplicate badge — identity is {@link prLinkKey}, which
- * treats owner/repo case-insensitively the way GitHub does. Linear stays
- * single-valued: a workspace implements one ticket.
- *
- * Validation is strict and REJECTS rather than normalizing, because a link is
- * an assertion the agent is making about its own work:
- *  - the PR must be a github.com pull-request URL, so a typo'd or non-PR link
- *    fails loudly at the CLI instead of pinning a badge that opens nowhere;
- *  - the Linear key must be a bare `TEAM-123` (via the strict
- *    `parseLinearTicketRef`, which also accepts a Linear issue URL and is
- *    already the parser `orchestra linear add` uses). A branch name like
- *    `nmc-261-foo` is correctly rejected — that permissive reading is exactly
- *    the guessing this replaces.
- *
- * The Linear key is NOT verified against the API here: that costs a network
- * round-trip on a socket route, and the badge path already verifies before
- * rendering (so a well-formed but nonexistent key simply shows nothing). Fail
- * fast on shape, lazily on existence.
- *
- * `clear` unsets whichever fields were named. With `--pr <url>` it drops just
- * that one PR (the others survive); with a bare `--pr` flag it drops them all.
- * Note it assigns `undefined` explicitly rather than deleting keys: the
- * renderer's `workspace:update` reducer is a merge (`{...old, ...incoming}`),
- * so an omitted key means "no opinion" and would leave a cleared link
- * rendering forever. An emptied list is stored as `undefined`, not `[]`, so
- * "no links" has exactly one representation. */
-export async function dispatchLinkRequest(opts: {
-  id: string;
-  /** Repeatable: `orchestra link --pr A --pr B` links both in one call. */
-  prUrls?: string[];
-  linearKey?: string;
-  clear?: boolean;
-}): Promise<LinkResult> {
-  const ws = store.getWorkspace(opts.id);
-  if (!ws || ws.archived) return { ok: false, error: 'unknown workspace' };
-
-  const existing = ws.linkedPrs ?? [];
-
-  if (opts.clear) {
-    // Clearing needs to know WHICH link to drop; clearing both on a bare
-    // `--clear` would let a fat-fingered call silently discard a good link.
-    const dropPr = opts.prUrls !== undefined;
-    const dropLinear = opts.linearKey !== undefined;
-    if (!dropPr && !dropLinear) {
-      return { ok: false, error: 'specify --pr and/or --linear with --clear' };
-    }
-    // `--clear --pr <url>` removes that one PR; `--clear --pr` (no value)
-    // removes every PR. Unparseable URLs are rejected rather than ignored, so
-    // a typo can't read as "cleared nothing" while reporting success.
-    let nextPrs: PrLink[] | undefined = existing;
-    if (dropPr) {
-      const named = opts.prUrls ?? [];
-      if (named.length === 0) {
-        nextPrs = undefined;
-      } else {
-        const drop = new Set<string>();
-        for (const raw of named) {
-          const parsed = parsePrUrl(raw);
-          if (!parsed) return { ok: false, error: `not a GitHub pull-request URL: ${raw}` };
-          drop.add(prLinkKey(parsed));
-        }
-        const kept = existing.filter((p) => !drop.has(prLinkKey(p)));
-        nextPrs = kept.length ? kept : undefined;
-      }
-    }
-    const updated: Workspace = {
-      ...ws,
-      ...(dropPr ? { linkedPrs: nextPrs } : {}),
-      ...(dropLinear ? { linkedLinearKey: undefined } : {}),
-    };
-    await store.upsertWorkspace(updated);
-    platform.broadcast('workspace:update', updated);
-    return { ok: true, cleared: true };
-  }
-
-  const prRaws = (opts.prUrls ?? []).map((s) => s.trim()).filter(Boolean);
-  const linearRaw = opts.linearKey?.trim();
-  if (!prRaws.length && !linearRaw) {
-    return { ok: false, error: 'nothing to link: pass --pr and/or --linear' };
-  }
-
-  // Append, deduped by PR identity. Existing entries keep their position so a
-  // re-link never reorders the badges; a repeat is simply a no-op.
-  let nextPrs: PrLink[] | undefined;
-  if (prRaws.length) {
-    const merged = [...existing];
-    const seen = new Set(merged.map(prLinkKey));
-    for (const raw of prRaws) {
-      const parsed = parsePrUrl(raw);
-      if (!parsed) return { ok: false, error: `not a GitHub pull-request URL: ${raw}` };
-      const key = prLinkKey(parsed);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(parsed);
-    }
-    nextPrs = merged;
-  }
-
-  let linearKey: string | undefined;
-  if (linearRaw) {
-    const key = parseLinearTicketRef(linearRaw);
-    if (!key) return { ok: false, error: `not a Linear issue key or URL: ${linearRaw}` };
-    linearKey = key;
-  }
-
-  const updated: Workspace = {
-    ...ws,
-    ...(nextPrs ? { linkedPrs: nextPrs } : {}),
-    ...(linearKey ? { linkedLinearKey: linearKey } : {}),
-  };
-  await store.upsertWorkspace(updated);
-  platform.broadcast('workspace:update', updated);
-  return { ok: true, prUrls: nextPrs?.map((p) => p.url), linearKey };
 }
 
 /** Record how many times the agent has auto-renamed, in a worktree sentinel the
@@ -2615,13 +2474,6 @@ export interface WhoamiResult {
   parentId?: string | null;
   repoPath?: string;
   baseBranch?: string;
-  /** Agent-reported PR URLs, empty when unlinked. Same live-read rationale as
-   * `parentId`: they are mutable at any moment (`orchestra link`), so the
-   * link-instruction hook must ask for them each fire rather than trust a value
-   * baked into the session env at start. */
-  linkedPrUrls?: string[];
-  /** Agent-reported Linear issue key, or null when unlinked. */
-  linkedLinearKey?: string | null;
   error?: string;
 }
 
@@ -2642,8 +2494,6 @@ export function dispatchWhoamiRequest(input: { id?: string }): WhoamiResult {
     parentId: ws.parentId ?? null,
     repoPath: ws.repoPath,
     baseBranch: ws.baseBranch,
-    linkedPrUrls: (ws.linkedPrs ?? []).map((p) => p.url),
-    linkedLinearKey: ws.linkedLinearKey ?? null,
   };
 }
 
@@ -3642,19 +3492,6 @@ const HOOK_ORCHESTRATOR_INSTRUCTION_CMD =
 const HOOK_FIELDGUIDE_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/fieldguide-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
-// PR/Linear link nudge, SessionStart. The script self-silences once both
-// links are set, so a linked workspace pays nothing.
-const HOOK_LINK_INSTRUCTION_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
-
-// Same script in `prompt` mode, on UserPromptSubmit: the narrow re-ask for a
-// Linear key the BRANCH NAME already spells out, budget-capped inside the
-// script (see LINK_INSTRUCTION_SCRIPT for why the per-turn cadence is worth it
-// here and nowhere else). A distinct command string from the SessionStart one,
-// so upsertHookCommand treats the two registrations as separate entries.
-const HOOK_LINK_PROMPT_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/link-instruction.sh"; [ -f "$f" ] && bash "$f" prompt || true';
-
 // Hard enforcement of the orchestrator contract: a PreToolUse hook on the
 // file-editing tools that DENIES the call (exit 2 → the agent sees the stderr
 // and must change course) when an orchestrator edits files belonging to
@@ -4167,98 +4004,6 @@ orchestra delete <workspace-id> --yes
 \`\`\`
 `;
 
-const LINK_SKILL = `---
-name: orchestra-link
-description: Report which pull request and/or Linear issue THIS workspace is working on, so Orchestra can show them as sidebar badges. Use right after opening a PR, or once you know the ticket this work implements.
----
-
-# Link this workspace to its PR / Linear issue
-
-Orchestra shows a PR badge and a Linear badge on each sidebar row. **Both are
-populated only by what the agent reports here** — Orchestra does not infer them
-from the branch name.
-
-That is deliberate. Branch-name inference guessed wrong in both directions: it
-invented issues from branches that encode none (\`usage-poll-429-backoff\` was
-read as issue \`POLL-429\`), and it could never see a ticket whose key was never
-typed into the branch name. You know which PR you opened and which ticket you
-were handed; reporting beats guessing.
-
-## Link a pull request
-
-Right after you open a PR for this workspace's work:
-
-\`\`\`bash
-orchestra link --pr https://github.com/<owner>/<repo>/pull/123
-\`\`\`
-
-Must be a full GitHub pull-request URL — a branch, compare or issue URL is
-rejected. The link identifies **which** PR; its live open/merged/closed state
-still comes from GitHub on every poll, so the badge stays accurate on its own.
-
-This also survives a branch rename. PRs used to be matched by comparing the
-branch name to the PR's head ref, so renaming a branch (which Orchestra
-actively nudges you to do) silently lost the badge. A linked URL does not care
-what the branch is called.
-
-### Several PRs, and PRs in other repos
-
-\`--pr\` repeats, and each call **adds** rather than replaces:
-
-\`\`\`bash
-orchestra link --pr https://github.com/acme/api/pull/12 --pr https://github.com/acme/web/pull/7
-\`\`\`
-
-Link **every** PR your work produced. A metarepo branch typically lands one PR
-per submodule, and those live in *different GitHub repos* — that is fully
-supported, because each link is polled by its own \`owner/repo/number\` rather
-than through this workspace's own repo. Re-linking a PR you already linked is a
-silent no-op, so it is safe to run again if you are unsure.
-
-Remove one without disturbing the others:
-
-\`\`\`bash
-orchestra link --clear --pr https://github.com/acme/api/pull/12   # just that one
-orchestra link --clear --pr                                       # every PR
-\`\`\`
-
-\`orchestra whoami\` shows what is currently linked.
-
-## Link a Linear issue
-
-\`\`\`bash
-orchestra link --linear NMC-261
-\`\`\`
-
-Accepts a bare \`TEAM-123\` key or a full Linear issue URL. A branch name like
-\`nmc-261-diagnosis-pictures\` is **rejected** — pass the key itself.
-
-The key is verified against the Linear API before any badge renders, so a
-mistyped or invented key simply shows nothing rather than a badge that opens a
-404. Both flags can be combined in one call:
-
-\`\`\`bash
-orchestra link --pr https://github.com/acme/app/pull/12 --linear NMC-261
-\`\`\`
-
-## Rules
-
-- **Only link what you actually know.** A wrong link is worse than a blank
-  badge. If you were not given a ticket and did not open a PR, link nothing —
-  neither badge is required to do the work.
-- Links are **sticky**: they survive branch renames and persist after you stop
-  running. They are never cleared automatically.
-- Targets **this** workspace by default. Pass a workspace id as the last
-  argument only when fixing up another workspace (e.g. a coordinator correcting
-  a child): \`orchestra link --pr <url> <workspace-id>\`.
-- To remove a link, name which one with \`--clear\`:
-
-\`\`\`bash
-orchestra link --clear --pr          # drop the PR link
-orchestra link --clear --linear      # drop the Linear link
-\`\`\`
-`;
-
 const RENAME_SKILL = `---
 name: orchestra-rename
 description: Rename THIS workspace's auto-generated git branch to a meaningful name. Use as soon as the work the conversation is about becomes clear, so the branch reflects the actual task. NOT for an agent spawned by another agent — its parent named it.
@@ -4481,155 +4226,6 @@ const BUS_SWITCHES_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 f="\${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches"
 [ -s "\$f" ] || exit 0
 cat "\$f"
-exit 0
-`;
-
-// Nudge to report which PR / Linear issue this workspace is working on.
-//
-// Orchestra no longer infers either from the branch name (that guessed wrong in
-// both directions — inventing `POLL-429` from `usage-poll-429-backoff`, and
-// blind to any ticket whose key was never typed into the branch), so the badges
-// are populated ONLY by the agent calling `orchestra link`. That makes this
-// hook the sole discovery path: without it the capability exists and nobody
-// uses it.
-//
-// GATED ON BEING UNLINKED, which is what keeps it affordable: it queries
-// `orchestra whoami` and prints nothing once BOTH links are set — so a linked
-// workspace pays zero tokens forever, and the reminder can never nag an agent
-// that already complied. The gate reads live state rather than an env var
-// because a link can land at any moment (same reasoning as the field guide
-// resolving parentId live).
-//
-// TWO CADENCES, deliberately asymmetric:
-//
-//   SessionStart (no arg) — the full ask, whenever EITHER link is missing. Once
-//     per context reset, matching the orchestrator reminder: cheap enough that
-//     the generic version can stay ungated beyond "is it already linked".
-//
-//   UserPromptSubmit (`prompt`) — a re-ask that fires ONLY when the branch name
-//     itself names a plausible `TEAM-123` that is still unlinked, and at most
-//     LINK_PROMPT_NUDGE_BUDGET times ever. This exists because SessionStart
-//     alone measurably loses the link: an agent handed a ticket at spawn reads
-//     the nudge on turn 1, is busy doing the actual work, and never comes back
-//     to it — the badge is then blank forever on a workspace whose branch
-//     literally spells the key (observed: `verify-mc-4204-…` with no MC-4204
-//     badge). Re-asking on the prompt boundary catches it once the agent is
-//     between tasks rather than mid-task.
-//
-// The branch-mined key is a SUGGESTION, not an inference: Orchestra still never
-// writes a badge from the branch (that guessing is exactly what `orchestra
-// link` replaced, and it invented `POLL-429` from `usage-poll-429-backoff`).
-// What changed is who resolves the ambiguity — the message names the candidate
-// and the exact command, and the AGENT confirms or ignores it. A concrete
-// "run: orchestra link --linear MC-4204" converts far better than an abstract
-// "<TEAM-123>", and a false positive costs one ignored line.
-//
-// The budget is what makes a per-prompt hook affordable in the bad case: a
-// workspace whose branch merely looks ticket-shaped, or whose agent decided
-// there is no ticket, nags a bounded number of times and then goes quiet for
-// good. Spent budget is a single stat() per prompt — no socket round-trip.
-const LINK_PROMPT_NUDGE_BUDGET = 3;
-
-const LINK_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
-# Auto-installed by orchestra. Asks the agent to report its PR / Linear issue.
-#   (no arg)  SessionStart : the full ask while either link is missing.
-#   prompt    UserPromptSubmit : re-ask ONLY when the branch names a plausible
-#             Linear key that is still unlinked — at most ${LINK_PROMPT_NUDGE_BUDGET} times ever.
-mode="\${1:-session}"
-[ -n "\${ORCHESTRA_WS_ID:-}" ] || exit 0
-command -v orchestra >/dev/null 2>&1 || exit 0
-# Scratch sessions have no branch and no PR; nothing to link.
-[ "\${ORCHESTRA_KIND:-}" = "scratch" ] && exit 0
-worktree="\${ORCHESTRA_WORKTREE:-.}"
-budget_file="\$worktree/.orchestra/.link-nudges"
-
-# The per-prompt path runs on EVERY turn of EVERY workspace, so its gates are
-# ordered strictly cheapest-first: a spent budget costs one stat and nothing
-# else — no fork for git, no socket round-trip. Everything below this is only
-# reached while the nudge is still live.
-spent=0
-if [ "\$mode" = prompt ]; then
-  [ -f "\$budget_file" ] && spent="\$(cat "\$budget_file" 2>/dev/null)"
-  case "\$spent" in ''|*[!0-9]*) spent=0 ;; esac
-  [ "\$spent" -ge ${LINK_PROMPT_NUDGE_BUDGET} ] && exit 0
-fi
-
-# Mine a plausible issue key out of the branch name. Mirrors
-# parseLinearIssueCandidate() in src/shared/linear.ts: a >=2-letter team, a
-# digit run, both delimiter-bounded — so \`v1-2-bump\` and \`feature/cleanup\`
-# yield nothing. Read LIVE from git, never from \$ORCHESTRA_BRANCH: that env is
-# frozen at spawn and every workspace renames its branch mid-session, which is
-# precisely when the key first appears.
-branch="\$(git -C "\$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-[ -n "\$branch" ] && [ "\$branch" != "HEAD" ] || branch="\${ORCHESTRA_BRANCH:-}"
-candidate=""
-if [ -n "\$branch" ]; then
-  candidate="\$(printf '%s' "\$branch" \\
-    | grep -Eio '(^|[-_/.])[a-z]{2,}-[0-9]+([-_/.]|\$)' \\
-    | head -1 \\
-    | grep -Eio '[a-z]{2,}-[0-9]+' \\
-    | tr '[:lower:]' '[:upper:]')"
-fi
-
-# No key in the branch → nothing to suggest, and the socket stays untouched.
-# NOT retired via the budget: a rename can introduce the key at any turn, which
-# is exactly the case this hook exists to catch, so the (local, cheap) branch
-# read repeats while the budget lasts.
-if [ "\$mode" = prompt ]; then
-  [ -n "\$candidate" ] || exit 0
-fi
-
-me="\$(orchestra whoami 2>/dev/null)" || exit 0
-# \`orchestra whoami\` prints a padded "key  value" table (NOT json), one row per
-# line, including \`pr\` and \`linear\` rows that read "(none)" when unlinked.
-#
-# A non-zero exit is not the only failure mode: an unreachable socket can yield
-# an empty or non-table body with status 0. Require a row we know is always
-# present, and stay SILENT otherwise — nagging on every SessionStart because
-# the daemon is restarting is worse than missing a link, and an unlinked
-# workspace gets asked again next session anyway.
-case "\$me" in *"branch"*) : ;; *) exit 0 ;; esac
-
-# Read the two link rows. Anchored to line start so the words "pr"/"linear"
-# appearing inside a branch name or repo path can't be mistaken for a row.
-link_row() { printf '%s\\n' "\$me" | sed -n "s/^\$1  *//p" | head -1; }
-pr_val="\$(link_row pr)"
-linear_val="\$(link_row linear)"
-# "(none)" (or an unexpectedly absent row) means unlinked.
-case "\$pr_val" in http*) has_pr=1 ;; *) has_pr=0 ;; esac
-case "\$linear_val" in ''|'(none)') has_linear=0 ;; *) has_linear=1 ;; esac
-
-# --- per-prompt re-ask: the branch-suggested Linear key only.
-if [ "\$mode" = prompt ]; then
-  if [ "\$has_linear" = 1 ]; then
-    # Linked — RETIRE the nudge by spending the budget outright, rather than
-    # just returning. Otherwise a linked workspace whose branch names a key
-    # would re-run \`orchestra whoami\` (a socket round-trip) on every prompt
-    # for the rest of its life to rediscover the same answer. Should the link
-    # later be cleared, the SessionStart ask still covers it.
-    printf '%s\\n' ${LINK_PROMPT_NUDGE_BUDGET} 2>/dev/null > "\$budget_file" || true
-    exit 0
-  fi
-  # Charge the budget only for a nudge actually PRINTED, so the count means
-  # "times the agent was asked", not "times the hook ran".
-  printf '%s\\n' "\$((spent + 1))" 2>/dev/null > "\$budget_file" || true
-  echo "[orchestra] This workspace is on branch '\$branch', which looks like it implements Linear issue \$candidate — but no Linear issue is linked, and Orchestra never infers the badge from a branch name. If \$candidate is the ticket, run: orchestra link --linear \$candidate — if the resemblance is a coincidence, ignore this (the reminder retires after ${LINK_PROMPT_NUDGE_BUDGET} asks)."
-  exit 0
-fi
-
-# --- SessionStart: the full ask.
-[ "\$has_pr" = 1 ] && [ "\$has_linear" = 1 ] && exit 0
-
-echo "[orchestra] This workspace's sidebar badges are populated only by what you report — Orchestra does NOT infer them from the branch name."
-[ "\$has_pr" = 0 ] && echo "- No PR linked. The moment you open a pull request for this work, run: orchestra link --pr <url> — and if your work spans several repos (a metarepo branch lands one PR per submodule), link EVERY one: orchestra link --pr <url> --pr <url>"
-if [ "\$has_linear" = 0 ]; then
-  if [ -n "\$candidate" ]; then
-    echo "- No Linear issue linked, but this branch names \$candidate. If that IS the ticket this work implements, run: orchestra link --linear \$candidate"
-  else
-    echo "- No Linear issue linked. If this work has a ticket, run: orchestra link --linear <TEAM-123>"
-  fi
-fi
-echo "Only link what you actually know — a guess is worse than a blank badge, and neither is required to do the work. See the orchestra-link skill for details."
 exit 0
 `;
 
@@ -4904,12 +4500,10 @@ const HOOKS_VERSION = createHash('sha256')
       SELF_MODIFY_INSTRUCTION_SCRIPT,
       BUS_SWITCHES_INSTRUCTION_SCRIPT,
       FIELDGUIDE_INSTRUCTION_SCRIPT,
-      LINK_INSTRUCTION_SCRIPT,
       SPAWN_SKILL,
       COMMS_SKILL,
       WORKSPACE_ADMIN_SKILL,
       RENAME_SKILL,
-      LINK_SKILL,
       STATUS_SKILL,
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
@@ -4929,8 +4523,6 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_SELF_MODIFY_CMD,
       HOOK_BUS_SWITCHES_CMD,
       HOOK_FIELDGUIDE_CMD,
-      HOOK_LINK_INSTRUCTION_CMD,
-      HOOK_LINK_PROMPT_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
       HOOK_HOME_ROOT_GUARD_CMD,
       HOME_ROOT_GUARD_MATCHER,
@@ -5216,14 +4808,13 @@ export async function installOrchestraHooks(
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
       w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
       w('fieldguide-instruction.sh', FIELDGUIDE_INSTRUCTION_SCRIPT),
-      w('link-instruction.sh', LINK_INSTRUCTION_SCRIPT),
     ]);
 
     // Evict the per-session capability instruction scripts + the ungated spawn
     // resurface — superseded by the capability skills below. Best-effort: a
     // missing file is fine (fresh workspace or already cleaned).
     await Promise.all(
-      ['spawn-instruction.sh', 'comms-instruction.sh', 'repo-routes-instruction.sh', 'spawn-resurface.sh'].map(
+      ['spawn-instruction.sh', 'comms-instruction.sh', 'repo-routes-instruction.sh', 'spawn-resurface.sh', 'link-instruction.sh', '.link-nudges'].map(
         (f) => rm(path.join(dir, f), { force: true }),
       ),
     );
@@ -5248,6 +4839,7 @@ export async function installOrchestraHooks(
       'orchestra-attach',
       'orchestra-set-repo',
       'orchestra-migrate-account',
+      'orchestra-link',
     ];
     await Promise.all(
       RETIRED_SKILLS.map((name) =>
@@ -5262,7 +4854,6 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-comms', COMMS_SKILL),
       writeSkill('orchestra-workspace-admin', WORKSPACE_ADMIN_SKILL),
       writeSkill('orchestra-rename', RENAME_SKILL),
-      writeSkill('orchestra-link', LINK_SKILL),
       writeSkill('orchestra-status', STATUS_SKILL),
     ]);
 
@@ -5296,12 +4887,14 @@ export async function installOrchestraHooks(
     // three full-prose SessionStart instruction scripts and the ungated
     // per-turn spawn resurface, all superseded by the capability skills. Their
     // .sh files are removed above; this drops their hook wiring so they stop
-    // firing on already-installed worktrees.
+    // firing on already-installed worktrees. Also the retired PR/Linear link
+    // nudge (`orchestra link` was removed with the sidebar badges).
     const isRetiredCapabilityCmd = (cmd: string) =>
       cmd.includes('.orchestra/spawn-instruction.sh') ||
       cmd.includes('.orchestra/comms-instruction.sh') ||
       cmd.includes('.orchestra/repo-routes-instruction.sh') ||
-      cmd.includes('.orchestra/spawn-resurface.sh');
+      cmd.includes('.orchestra/spawn-resurface.sh') ||
+      cmd.includes('.orchestra/link-instruction.sh');
 
     // Evict the legacy first-prompt.json writer from any pre-upgrade workspace
     // so prompts no longer get dumped to disk after this hook system landed.
@@ -5322,11 +4915,6 @@ export async function installOrchestraHooks(
     upsertHookCommand(submitList, HOOK_COMMS_RESURFACE_CMD);
     // Surface any queued peer messages right before the agent's next turn.
     upsertHookCommand(submitList, HOOK_INBOX_DELIVER_CMD);
-    // Re-ask for the Linear link when the BRANCH NAME already spells the key
-    // and it is still unlinked. The narrowest possible per-turn hook: silent
-    // without a branch-mined candidate, silent once linked, and budget-capped
-    // so a false-positive branch nags a bounded number of times and stops.
-    upsertHookCommand(submitList, HOOK_LINK_PROMPT_CMD);
     // The orchestrator reminder is deliberately NOT on UserPromptSubmit (a
     // per-turn injection compounds in the transcript); it lives on
     // SessionStart, and the PreToolUse guard enforces between resets. Evict
@@ -5395,11 +4983,6 @@ export async function installOrchestraHooks(
     // Parent's swarm field guide, re-injected at every context reset (the
     // script self-silences without a parent or a guide file).
     upsertHookCommand(sessionStartList, HOOK_FIELDGUIDE_CMD);
-    // Ask for the PR / Linear link when either is missing (the script queries
-    // whoami and self-silences once both are set). The generic full ask lives
-    // here, once per context reset; only the branch-suggests-a-key case earns
-    // the per-turn cadence above.
-    upsertHookCommand(sessionStartList, HOOK_LINK_INSTRUCTION_CMD);
     hooks.SessionStart = sessionStartList;
 
     settings.hooks = hooks;

@@ -335,71 +335,6 @@ button.ghost:hover {
   color: #fff;
 }
 
-button.pr-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: rgba(110, 168, 255, 0.08);
-  border: 1px solid rgba(110, 168, 255, 0.28);
-  color: var(--accent);
-  padding: 6px 12px;
-  font-weight: 600;
-  box-shadow: none;
-  transition: background 140ms var(--ease), border-color 140ms var(--ease),
-    color 140ms var(--ease), box-shadow 140ms var(--ease),
-    transform 140ms var(--ease);
-}
-button.pr-link::before {
-  content: '';
-  width: 14px;
-  height: 14px;
-  background-color: currentColor;
-  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill-rule='evenodd' d='M7.177 3.073L9.573.677A.25.25 0 0 1 10 .854v4.792a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354zM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm-2.25.75a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25zM11 2.5h-1V4h1a1 1 0 0 1 1 1v5.628a2.251 2.251 0 1 0 1.5 0V5A2.5 2.5 0 0 0 11 2.5zm1 10.25a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0zM3.75 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z'/></svg>") center / contain no-repeat;
-          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill-rule='evenodd' d='M7.177 3.073L9.573.677A.25.25 0 0 1 10 .854v4.792a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354zM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm-2.25.75a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25zM11 2.5h-1V4h1a1 1 0 0 1 1 1v5.628a2.251 2.251 0 1 0 1.5 0V5A2.5 2.5 0 0 0 11 2.5zm1 10.25a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0zM3.75 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z'/></svg>") center / contain no-repeat;
-  flex-shrink: 0;
-}
-button.pr-link::after {
-  content: '';
-  width: 10px;
-  height: 10px;
-  background-color: currentColor;
-  opacity: 0.7;
-  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill-rule='evenodd' d='M10.604 1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.75.75 0 0 1-1.06-1.06l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1zM3.75 2A1.75 1.75 0 0 0 2 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0 0 14 12.25v-3.5a.75.75 0 0 0-1.5 0v3.5a.25.25 0 0 1-.25.25h-8.5a.25.25 0 0 1-.25-.25v-8.5a.25.25 0 0 1 .25-.25h3.5a.75.75 0 0 0 0-1.5h-3.5z'/></svg>") center / contain no-repeat;
-          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill-rule='evenodd' d='M10.604 1h4.146a.25.25 0 0 1 .25.25v4.146a.25.25 0 0 1-.427.177L13.03 4.03 9.28 7.78a.75.75 0 0 1-1.06-1.06l3.75-3.75-1.543-1.543A.25.25 0 0 1 10.604 1zM3.75 2A1.75 1.75 0 0 0 2 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0 0 14 12.25v-3.5a.75.75 0 0 0-1.5 0v3.5a.25.25 0 0 1-.25.25h-8.5a.25.25 0 0 1-.25-.25v-8.5a.25.25 0 0 1 .25-.25h3.5a.75.75 0 0 0 0-1.5h-3.5z'/></svg>") center / contain no-repeat;
-  flex-shrink: 0;
-}
-button.pr-link:hover {
-  background: rgba(110, 168, 255, 0.16);
-  border-color: rgba(110, 168, 255, 0.55);
-  transform: translateY(-0.5px);
-  box-shadow: 0 4px 14px rgba(74, 140, 255, 0.18);
-}
-button.pr-link.merged {
-  color: #c4a8ff;
-  background: rgba(179, 139, 255, 0.08);
-  border-color: rgba(179, 139, 255, 0.28);
-}
-button.pr-link.merged:hover {
-  background: rgba(179, 139, 255, 0.16);
-  border-color: rgba(179, 139, 255, 0.55);
-  box-shadow: 0 4px 14px rgba(139, 124, 255, 0.22);
-}
-button.pr-link.closed {
-  color: #ff8a8a;
-  background: rgba(240, 128, 128, 0.08);
-  border-color: rgba(240, 128, 128, 0.3);
-}
-button.pr-link.closed:hover {
-  background: rgba(240, 128, 128, 0.16);
-  border-color: rgba(240, 128, 128, 0.55);
-  box-shadow: 0 4px 14px rgba(255, 107, 107, 0.2);
-}
-button.pr-link .pr-state {
-  font-weight: 500;
-  opacity: 0.75;
-  text-transform: capitalize;
-}
-
 button.restart-btn {
   display: inline-flex;
   align-items: center;
@@ -451,12 +386,8 @@ button.run-toggle-btn.running:hover {
   background: rgba(248, 113, 113, 0.1);
 }
 
-/* Release tag and unpushed-commits marks — glyph + number, NO pill chrome.
-   These deliberately match `.ws-item .ci-badge` (border/background/padding all
-   dropped, 10px glyph, 9px mono number) rather than carrying a filled track,
-   so the row's hierarchy leads with the branch name. Colour alone carries the
-   state — green "shipped", amber "ready to push". */
-.released-pill,
+/* Unpushed-commits mark — glyph + number, NO pill chrome (matches
+   `.ws-item .ci-badge`), so the row's hierarchy leads with the branch name. */
 .unpushed-pill {
   display: inline-flex;
   align-items: center;
@@ -471,25 +402,15 @@ button.run-toggle-btn.running:hover {
   font-weight: 600;
   letter-spacing: 0.2px;
   font-variant-numeric: tabular-nums;
+  color: #f5c46b;
 }
-.released-pill svg,
 .unpushed-pill svg {
   width: 10px;
   height: 10px;
   opacity: 0.95;
   flex-shrink: 0;
 }
-.released-pill { color: #7ee787; }
-.unpushed-pill { color: #f5c46b; }
-.released-v,
 .unpushed-n { line-height: 1; }
-/* Older releases collapse into a dim `+N` beside the newest version. Muted so the version the branch
-   actually shipped in reads first; the full list lives on the title tooltip. */
-.released-more {
-  color: var(--text-dim);
-  opacity: 0.85;
-  line-height: 1;
-}
 
 input, textarea, select {
   font-family: inherit;
@@ -2249,7 +2170,7 @@ input:focus, textarea:focus, select:focus {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* Status pills (merged / released / unpushed / diff / setup / PR / Linear / CI).
+/* Status pills (unpushed / diff / setup / CI).
    These STAY ON THE NAME LINE, right-aligned after the branch name.
 
    They previously carried `flex-basis: 100%`, which in a `flex-wrap: wrap` row

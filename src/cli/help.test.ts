@@ -22,7 +22,7 @@ function dispatchedVerbs(): string[] {
 
 test('every dispatched verb has a help entry, and every entry is dispatched', () => {
   const verbs = dispatchedVerbs();
-  assert.ok(verbs.length >= 30, `parsed only ${verbs.length} verbs — parser broken?`);
+  assert.ok(verbs.length >= 25, `parsed only ${verbs.length} verbs — parser broken?`);
   const documented = COMMANDS.map((c) => c.name);
   assert.deepEqual([...verbs].sort(), [...documented].sort());
 });

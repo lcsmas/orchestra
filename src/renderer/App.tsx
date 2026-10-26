@@ -116,10 +116,7 @@ export function App() {
   const createOrchestratorWorkspace = useStore((s) => s.createOrchestratorWorkspace);
   const refreshAllStats = useStore((s) => s.refreshAllStats);
   const refreshSizes = useStore((s) => s.refreshSizes);
-  const prs = useStore((s) => s.prs);
-  const refreshAllPRs = useStore((s) => s.refreshAllPRs);
   const refreshAllChecks = useStore((s) => s.refreshAllChecks);
-  const refreshAllLinear = useStore((s) => s.refreshAllLinear);
   const refreshTickets = useStore((s) => s.refreshTickets);
   const findRepo = (path: string): RepoEntry | undefined => repos.find((r) => r.path === path);
   // Whether the active workspace's `run` script PTY is live. Drives the
@@ -328,34 +325,15 @@ export function App() {
     return startVisiblePoll(refreshSizes, 30000);
   }, [loaded, page, wsSetRev, refreshSizes]);
 
-  useEffect(() => {
-    if (!loaded) return;
-    // startVisiblePoll already refreshes on the visible→hidden→visible
-    // transition (which covers refocus), so no separate focus listener.
-    return startVisiblePoll(refreshAllPRs, 12000);
-  }, [loaded, wsSetRev, refreshAllPRs]);
-
-  // CI verdicts change slower than PR state and main caches repo-wide for 60s,
-  // so a gentler cadence than the PR poll is plenty.
+  // CI verdicts: main caches repo-wide for 60s, so a 30s poll is plenty.
+  // startVisiblePoll also refreshes on refocus (hidden→visible).
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshAllChecks, 30000);
   }, [loaded, wsSetRev, refreshAllChecks]);
 
-  // Linear verification rides its own slow poll. The main process caches each
-  // key's existence for the session (it can't change), so steady-state ticks
-  // are nearly free — this cadence exists only to pick up workspaces added or
-  // renamed since the last pass. Re-runs when the workspace set changes.
-  useEffect(() => {
-    if (!loaded) return;
-    return startVisiblePoll(refreshAllLinear, 60000);
-  }, [loaded, wsSetRev, refreshAllLinear]);
-
-  // Pinned tickets change slowly (a human moves a Linear issue), so poll well
-  // below the badge cadence. Visibility-gated like every other poll. This does
-  // NOT reuse the badge path: that caches by key for the whole session, which
-  // would freeze a ticket's mutable workflow state — the very thing the row
-  // exists to show.
+  // Pinned tickets change slowly (a human moves a Linear issue), so a slow,
+  // visibility-gated poll. Not cached by key: the row shows mutable workflow state.
   useEffect(() => {
     if (!loaded) return;
     return startVisiblePoll(refreshTickets, 120000);
@@ -468,7 +446,6 @@ export function App() {
   // scratch and orchestrator sessions get the Agent tab, only lacking Run/Diff.
   const isScratch = !!active && isScratchLike(active);
   const isOrchestrator = active?.kind === 'orchestrator';
-  const openPR = active ? prs[active.id]?.open ?? null : null;
 
   // A scratch-like session is non-git and has no repo, so the git-only `run`
   // view is unavailable. If the user had it selected and then switches to such a
@@ -763,15 +740,6 @@ export function App() {
                       <path fill="currentColor" d="M8 5v14l11-7z" />
                     </svg>
                   )}
-                </button>
-              )}
-              {!isScratch && openPR && (
-                <button
-                  className="primary pr-link"
-                  onClick={() => window.orchestra.openExternal(openPR.url)}
-                  title={`OPEN · ${openPR.title}`}
-                >
-                  PR #{openPR.number}
                 </button>
               )}
               </div>

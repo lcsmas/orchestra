@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Sidebar declutter drive — a BUILT Orchestra shows NO PR / Linear / agent-count badges on sidebar rows, while a COLLAPSED
-// coordinator still shows its hidden-agents count (`.ws-hidden-count`, both render paths). Run on master to see the must-FAIL arm.
+// Sidebar declutter drive — a BUILT Orchestra shows NO PR / Linear / release / agent-count badges on sidebar rows, while a COLLAPSED
+// coordinator still shows its hidden-agents count (`.ws-hidden-count`, both render paths), and no PR / release lookup reaches `gh`.
+// The seed carries LEGACY linkedPrs / linkedLinearKey / releasedVersions fields. Run on an older build to see the must-FAIL arm.
 // Run through scripts/e2e-sidebar-declutter-drive.sh <app-dir>. Helpers COPIED from e2e-former-branch-drive.mjs.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -120,7 +121,7 @@ function seedWorld(home) {
   const opsDir = path.join(home, 'scratch', 'ops'); fs.mkdirSync(opsDir, { recursive: true });
   const ops = { ...base, id: ID.ops, name: 'ops-demo', kind: 'orchestrator', repoPath: '', worktreePath: opsDir, branch: 'ops-demo', baseBranch: '', setupStatus: 'ok', linkedPrs: [PR(2)], linkedLinearKey: 'NMC-298' };
   const mk = (key, extra) => ({ ...base, id: ID[key], name: `sdc-repo · ${BR[key]}`, repoPath: repoDir, worktreePath: wt(key, BR[key]), branch: BR[key], ...extra });
-  const c1 = mk('c1', { parentId: ID.ops, linkedPrs: [PR(1)], linkedLinearKey: 'NMC-2541' });
+  const c1 = mk('c1', { parentId: ID.ops, linkedPrs: [PR(1)], linkedLinearKey: 'NMC-2541', releasedAt: Date.now(), releasedVersion: 'v0.0.1', releasedVersions: ['v0.0.1'] });
   const c2 = mk('c2', { parentId: ID.ops });
   const p = mk('p', { canOrchestrate: true, linkedPrs: [PR(3)], linkedLinearKey: 'NMC-1902' });
   const k1 = mk('k1', { parentId: ID.p });
@@ -132,7 +133,10 @@ function seedWorld(home) {
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stubLog = path.join(home, 'stub-argv.log');
   fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\nsleep 3600\n`, { mode: 0o755 });
-  return { fakeHome, repoDir, account, stubDir, stubLog, storeFile };
+  // gh stub: logs every call and fails (unauthenticated), so any surviving PR / release lookup is observable in gh-calls.log.
+  const ghLog = path.join(home, 'gh-calls.log');
+  fs.writeFileSync(path.join(stubDir, 'gh'), `#!/bin/sh\necho "$*" >> '${ghLog}'\necho "gh: stub" >&2\nexit 1\n`, { mode: 0o755 });
+  return { fakeHome, repoDir, account, stubDir, stubLog, storeFile, ghLog };
 }
 
 async function bootApp(home, world, label) {
@@ -187,7 +191,7 @@ const rowsJs = `(() => [...document.querySelectorAll('.ws-name')].map((e) => { c
     inViewport: r.left >= 0 && r.right <= innerWidth }; }))()`;
 const rows = (app) => app.cdp.eval(rowsJs);
 const rowOf = async (app, text) => (await rows(app)).find((r) => r.text === text);
-const globalCounts = (app) => app.cdp.eval(`({ pr: document.querySelectorAll('.ws-list .pr-badge, .sidebar .pr-badge').length, orch: document.querySelectorAll('.orchestrator-pill').length, orchCount: document.querySelectorAll('.orch-count').length })`);
+const globalCounts = (app) => app.cdp.eval(`({ pr: document.querySelectorAll('.ws-list .pr-badge, .sidebar .pr-badge').length, orch: document.querySelectorAll('.orchestrator-pill').length, orchCount: document.querySelectorAll('.orch-count').length, released: document.querySelectorAll('.released-pill').length })`);
 async function mouse(app, type, x, y, extra = {}) { await app.cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', ...extra }); }
 async function shot(app, name) { const r = await app.cdp.send('Page.captureScreenshot', { format: 'png' }, 20000); const f = path.join(app.home, `${name}.png`); fs.writeFileSync(f, Buffer.from(r.data, 'base64')); return f; }
 function grim(app, name) { const f = path.join(app.home, `${name}.png`); execFileSync('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: app.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG.wayland }, timeout: 15000 }); return f; }
@@ -215,14 +219,16 @@ async function main() {
     const penv = procEnv(app.pid);
     clause('isolation/display', penv.WAYLAND_DISPLAY === RIG.wayland && penv.WAYLAND_DISPLAY !== 'wayland-1' && !('DISPLAY' in penv), `WAYLAND_DISPLAY=${penv.WAYLAND_DISPLAY}`);
     await waitFor('rows rendered', async () => { const r = await rows(app); return Object.values(BR).every((b) => r.some((x) => x.text === b)); }, 25000, 250);
-    // PR data reaches the renderer (the badge input is present, so an absent badge is the rendering's doing)
-    const prRec = await app.cdp.eval(`window.orchestra.findPR(${JSON.stringify(ID.c1)})`);
-    clause('data/pr-record-for-c1-present', prRec && (Array.isArray(prRec.all) && prRec.all.length > 0 || !!prRec.error), JSON.stringify(prRec).slice(0, 220));
-    await sleep(4000); // let the PR / Linear polls land in the store
+    const bridge = await app.cdp.eval(`({ findPR: typeof window.orchestra.findPR, verifyLinear: typeof window.orchestra.verifyLinear })`);
+    clause('bridge/pr-and-linear-lookups-gone', bridge.findPR === 'undefined' && bridge.verifyLinear === 'undefined', JSON.stringify(bridge));
+    await sleep(14000); // past the retired 12s PR poll: a surviving PR / release lookup would have hit gh by now
     await mouse(app, 'mouseMoved', 5, 5); await sleep(300);
     const all = await rows(app);
     for (const r of all) note(`row ${r.path.padEnd(4)} ${r.text.padEnd(18)} pr=${JSON.stringify(r.pr)} orch=${JSON.stringify(r.orch)} hidden=${JSON.stringify(r.hidden)}`);
     const g = await globalCounts(app);
+    clause('rows/no-release-badge', g.released === 0, `.released-pill=${g.released}`);
+    const ghCalls = fs.existsSync(world.ghLog) ? fs.readFileSync(world.ghLog, 'utf8').trim().split('\n').filter(Boolean) : [];
+    clause('gh/no-pr-or-release-calls', !ghCalls.some((l) => /pulls|releases/.test(l)), `gh calls=${JSON.stringify(ghCalls.slice(0, 5))} (CI 'actions/runs' calls are expected)`);
     clause('rows/no-pr-or-linear-badge', all.every((r) => r.pr.length === 0) && g.pr === 0, `.pr-badge in sidebar=${g.pr}`);
     clause('rows/no-agent-count-glyph', g.orch === 0 && g.orchCount === 0, `.orchestrator-pill=${g.orch} .orch-count=${g.orchCount}`);
     const pRow = all.find((r) => r.text === BR.p), opsRow = all.find((r) => r.text === 'ops-demo');

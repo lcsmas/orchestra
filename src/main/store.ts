@@ -42,25 +42,6 @@ interface StoreShape {
    *  its own collection. Absent on stores predating the feature → treated as
    *  `[]`, which renders no section at all. */
   tickets?: PinnedTicket[];
-  /** True once the FIRST PR/Linear link backfill has run (v0.5.197), which
-   *  seeded the now-superseded single `linkedPrUrl` field. Retained only so an
-   *  old store isn't misread as never-migrated; {@link linkBackfillVersion} is
-   *  what gates the backfill now.
-   *  @deprecated superseded by `linkBackfillVersion`. */
-  linkBackfillDone?: boolean;
-  /** Which revision of the one-shot PR/Linear link backfill has run
-   *  (src/main/link-backfill.ts). A NUMBER rather than a boolean because the
-   *  migration has needed to re-run once already: the first pass stored a
-   *  single PR URL, and the schema then became a list of PRs carrying
-   *  owner/repo/number. A bare "done" flag cannot express "done, but by an
-   *  older version" — it would silently strand every workspace the first pass
-   *  had already marked, which is the whole population it exists to serve.
-   *
-   *  Absent (or below the current revision) is what triggers a run. Lives here
-   *  rather than in a sidecar file so the marker travels with the data it
-   *  describes — a restored/copied store must not re-run a backfill it already
-   *  had, nor skip one it never did. */
-  linkBackfillVersion?: number;
   /** Per-mechanism fleet-bus flip switches (#118). One boolean per mechanism,
    *  ALL OFF by default — the coexistence ruling as data: the bus ships in
    *  shadow mode and an adopter turns a mechanism on deliberately. These are the
@@ -228,20 +209,6 @@ class Store {
 
   get workspaces() {
     return this.data.workspaces;
-  }
-
-  /** Which revision of the one-shot PR/Linear link backfill has run. Stores
-   * predating the versioned flag report 1 if the original boolean pass ran
-   * (so its Linear work isn't redone), else 0. */
-  get linkBackfillVersion() {
-    const v = this.data.linkBackfillVersion;
-    if (typeof v === 'number') return v;
-    return this.data.linkBackfillDone === true ? 1 : 0;
-  }
-
-  async markLinkBackfillVersion(version: number) {
-    this.data.linkBackfillVersion = version;
-    await this.save();
   }
 
   async addRepo(r: RepoEntry) {

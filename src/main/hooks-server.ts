@@ -6,7 +6,6 @@ import crypto from 'node:crypto';
 import {
   dispatchRenameRequest,
   dispatchSetBaseRequest,
-  dispatchLinkRequest,
   dispatchAgentSpawnRequest,
   dispatchPeersRequest,
   dispatchResolveHandleRequest,
@@ -251,27 +250,6 @@ export async function startHooksServer(): Promise<void> {
                 await dispatchRestartRequest({
                   id: msg.id,
                   fresh: msg.fresh === true,
-                }),
-              );
-            } else {
-              send(200, { ok: false, error: 'missing id' });
-            }
-          } else if (route === '/link') {
-            if (typeof msg.id === 'string') {
-              send(
-                200,
-                await dispatchLinkRequest({
-                  id: msg.id,
-                  // An ARRAY, and its presence is meaningful independently of
-                  // its contents: `--clear --pr` (flag, no value) arrives as
-                  // `[]` and means "drop every PR", while an absent key means
-                  // "leave PRs alone". Collapsing empty-to-undefined here would
-                  // silently turn a clear-all into a no-op.
-                  prUrls: Array.isArray(msg.prUrls)
-                    ? msg.prUrls.filter((u): u is string => typeof u === 'string')
-                    : undefined,
-                  linearKey: typeof msg.linearKey === 'string' ? msg.linearKey : undefined,
-                  clear: msg.clear === true,
                 }),
               );
             } else {

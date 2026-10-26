@@ -345,115 +345,6 @@ function takeFlag(args: string[], flag: string): { value?: string; rest: string[
   return { value, rest };
 }
 
-/** Pull EVERY `--flag value` occurrence out of args, in order.
- *
- * For flags that legitimately repeat (`orchestra link --pr A --pr B`), where
- * {@link takeFlag} would silently keep only the first and discard the rest —
- * a caller linking three submodule PRs in one call would see two vanish with
- * no error. `present` distinguishes "flag never given" from "given with no
- * value", which `--clear --pr` (drop them all) depends on. */
-function takeAllFlags(
-  args: string[],
-  flag: string,
-  accepts: (token: string) => boolean = (t) => !t.startsWith('--'),
-): { values: string[]; present: boolean; rest: string[] } {
-  const values: string[] = [];
-  const rest: string[] = [];
-  let present = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] !== flag) {
-      rest.push(args[i]);
-      continue;
-    }
-    present = true;
-    const value = args[i + 1];
-    // Whether the following token belongs to this flag. By default anything
-    // that isn't itself a flag (`--clear --pr --linear` → `--pr` had no value);
-    // callers whose flag takes an OPTIONAL value pass a narrower predicate, so
-    // a trailing positional argument isn't swallowed as a value.
-    if (value !== undefined && accepts(value)) {
-      values.push(value);
-      i++;
-    }
-  }
-  return { values, present, rest };
-}
-
-/** Does this token look like a GitHub PR URL (as opposed to a workspace id)?
- *
- * Deliberately loose — it only has to separate "a URL the user meant as a PR"
- * from "a workspace id". Strict validation is `parsePrUrl`'s job in the main
- * process, which still rejects a malformed URL with a precise message. Matching
- * loosely here means a typo'd URL is reported as a bad URL rather than silently
- * treated as a workspace id. */
-function isPrUrlish(token: string): boolean {
-  return /^https?:\/\//i.test(token) || token.includes('/pull/');
-}
-
-/** Parse `orchestra link`'s arguments.
- *
- * Extracted as a pure function so it can be tested without a socket: the two
- * modes parse the SAME flags differently, which is subtle enough that it has
- * already shipped a regression. In CLEAR mode `--linear` is a valueless
- * SELECTOR ("unset this field"), while in link mode it takes a value — so
- * parsing clear-mode `--linear` as a value-flag silently swallows the token
- * after it, which is the positional workspace id. `link --clear --pr --linear
- * <ID>` then reports "unknown workspace" while looking perfectly well-formed.
- *
- * `--pr` is the awkward one: it is value-taking in link mode, and in clear mode
- * takes an OPTIONAL value (`--pr <url>` drops that PR, bare `--pr` drops all),
- * so it uses {@link takeAllFlags} in both — that helper declines to consume a
- * following token that is itself a flag, which is what makes the optional-value
- * form safe.
- *
- * Returns `error` rather than exiting, so tests can assert the failure modes. */
-export function parseLinkArgs(args: string[]): {
-  clear: boolean;
-  prUrls?: string[];
-  linearKey?: string;
-  rest: string[];
-  error?: string;
-} {
-  const { present: clear, rest: afterClear } = takeBoolFlag(args, '--clear');
-  let prUrls: string[] | undefined;
-  let linearKey: string | undefined;
-
-  if (clear) {
-    // In clear mode `--pr` takes an OPTIONAL value, which makes
-    // `link --clear --pr <token>` genuinely ambiguous: is <token> the PR to
-    // drop, or the positional workspace id? Resolve it by SHAPE, not position —
-    // a PR value is always a github.com pull URL (`parsePrUrl` enforces that
-    // downstream anyway), so anything that isn't one is the id.
-    //
-    // Resolving it positionally instead made `link --clear --pr <ID>` eat the
-    // id and fail with "unknown workspace" — the same class of bug as the
-    // `--linear` swallow below, and it does not announce itself, because
-    // falling back to $ORCHESTRA_WS_ID means the command LOOKS well-formed.
-    const p = takeAllFlags(afterClear, '--pr', isPrUrlish);
-    const l = takeBoolFlag(p.rest, '--linear');
-    if (p.present) prUrls = p.values;
-    // Empty string = "named, no value", which the dispatcher reads as
-    // `!== undefined` to decide whether to unset the Linear key.
-    if (l.present) linearKey = '';
-    if (!p.present && !l.present) {
-      return { clear, rest: l.rest, error: '--clear needs --pr and/or --linear' };
-    }
-    return { clear, prUrls, linearKey, rest: l.rest };
-  }
-
-  // `--pr` repeats: one workspace can own several PRs (a metarepo branch lands
-  // one per submodule repo), so every occurrence is collected.
-  const p = takeAllFlags(afterClear, '--pr');
-  const l = takeFlag(p.rest, '--linear');
-  if (p.present && !p.values.length) {
-    return { clear, rest: l.rest, error: '--pr needs a pull-request URL' };
-  }
-  if (p.values.length) prUrls = p.values;
-  linearKey = l.value;
-  if (!prUrls && !linearKey) return { clear, rest: l.rest, error: 'nothing to link' };
-  return { clear, prUrls, linearKey, rest: l.rest };
-}
-
 /** Pull a valueless `--flag` out of args, returning its presence and the leftover args. */
 function takeBoolFlag(args: string[], flag: string): { present: boolean; rest: string[] } {
   const idx = args.indexOf(flag);
@@ -1454,7 +1345,7 @@ async function main(argv: string[]): Promise<void> {
       // #111). A rule added to ~/.claude/CLAUDE.md is read only at startup; a
       // live session never re-reads it — restart is how an agent (or a peer)
       // picks it up by script. Handled main-side. Defaults to THIS workspace,
-      // like `status`/`link`/`reload-skills`: the common caller is an agent
+      // like `status`/`reload-skills`: the common caller is an agent
       // restarting itself.
       const { present: fresh, rest } = takeBoolFlag(args, '--fresh');
       const target = rest[0] ?? selfWorkspaceId();
@@ -1494,7 +1385,7 @@ async function main(argv: string[]): Promise<void> {
       if (parsed.error) {
         fail(`${parsed.error}\nusage: orchestra reload-skills [<id>|--all] [--plugins]`);
       }
-      // No id and no --all → self, matching `orchestra status` / `orchestra link`.
+      // No id and no --all → self, matching `orchestra status`.
       const target = parsed.all ? undefined : (parsed.id ?? selfWorkspaceId());
       if (!parsed.all && !target) {
         fail(
@@ -1537,44 +1428,6 @@ async function main(argv: string[]): Promise<void> {
       const failed = results.filter((r) => r.outcome === 'failed');
       if (reloadExitCode(results) !== 0) {
         fail(`${failed.length} workspace(s) failed to reload`);
-      }
-      return;
-    }
-
-    case 'link': {
-      // Report which PR / Linear issue THIS workspace is working on. Defaults to
-      // self, because the overwhelmingly common caller is the agent linking its
-      // own work — an explicit id stays available for a coordinator fixing up a
-      // child. Orchestra no longer guesses either link from the branch name, so
-      // this is the only way the badges are ever populated.
-      const USAGE =
-        'usage: orchestra link [--pr <url>]... [--linear <KEY>] [--clear] [id]';
-      // Pull `--clear` FIRST: in clear mode `--pr`/`--linear` may be valueless
-      // selectors, so parsing them as value-flags would swallow the following
-      // argument (`--clear --pr --linear` would read "--linear" as the URL).
-      const parsed = parseLinkArgs(args);
-      if (parsed.error) fail(`${USAGE}\n  ${parsed.error}`);
-      const { clear, prUrls, linearKey, rest } = parsed;
-      const id = rest[0] ?? selfWorkspaceId();
-      if (!id) fail(`${USAGE}\n  (no id given and not running inside an Orchestra workspace)`);
-      const res = await request('/link', {
-        id,
-        ...(prUrls !== undefined ? { prUrls } : {}),
-        ...(linearKey !== undefined ? { linearKey } : {}),
-        ...(clear ? { clear: true } : {}),
-      });
-      if (!res.ok) fail(res.error ?? 'failed to link workspace');
-      if (res.cleared) {
-        process.stdout.write('Link cleared\n');
-      } else {
-        const parts: string[] = [];
-        // Echoes the resulting state, not just this call's additions, so a
-        // repeat link makes the full set visible rather than looking like a
-        // no-op that lost the others.
-        const linked = (res.prUrls as string[] | undefined) ?? [];
-        if (linked.length) parts.push(linked.length === 1 ? `PR ${linked[0]}` : `PRs ${linked.join(', ')}`);
-        if (res.linearKey) parts.push(`Linear ${res.linearKey as string}`);
-        process.stdout.write(`Linked ${parts.join(' and ')}\n`);
       }
       return;
     }
@@ -1942,13 +1795,6 @@ async function main(argv: string[]): Promise<void> {
         ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],
         ['repo', (res.repoPath as string | undefined) || '(none)'],
         ['base', (res.baseBranch as string | undefined) || '(none)'],
-        // Agent-reported links. `(none)` is load-bearing, not cosmetic: the
-        // link-instruction hook greps these rows to decide whether to nudge,
-        // so the unlinked state needs a stable, matchable token.
-        // Several PRs render space-separated on the one row, so the hook's
-        // `(none)` test stays a simple presence check regardless of count.
-        ['pr', ((res.linkedPrUrls as string[] | undefined) ?? []).join(' ') || '(none)'],
-        ['linear', (res.linkedLinearKey as string | null | undefined) || '(none)'],
       ];
       const w = Math.max(...lines.map(([k]) => k.length));
       process.stdout.write(lines.map(([k, v]) => `${k.padEnd(w)}  ${v}`).join('\n') + '\n');

@@ -149,15 +149,14 @@ materializing one. Once a coordinator has adopted a repo, `repoPath` supersedes
 any association for grouping and `/setRepoAssociation` refuses it (a second key
 could only disagree with where its checkout actually is).
 
-Three pollers were widened from `kind === 'scratch'` to `isScratchLike` in the
-same change (`activity.ts` merge-state / branch-name / release-state and
-`api-handlers.ts` `findPR`) — a pre-existing hole where an orchestrator reached
-`gh` and `git` calls for a branch that is not in the repo.
+The pollers were widened from `kind === 'scratch'` to `isScratchLike` in the
+same change (`activity.ts` merge-state / branch-name) — a pre-existing hole
+where an orchestrator reached `git` calls for a branch that is not in the repo.
 
 Key per-record fields: `accountId` (pinned at creation, never changes —
 preserves `claude --continue` history), `parentId` (nesting), `port`
 (auto-allocated dev-server port), `setupStatus`, `branchManuallySet` (rename
-lock; written only via `naming-policy.ts`), `divergedFromBase`/`mergedAt`/`unpushedAhead`/`releasedVersions`
+lock; written only via `naming-policy.ts`), `divergedFromBase`/`mergedAt`/`unpushedAhead`
 (sidebar pills), `contextTokens` (badge seed), `markedUnread`
 (manual come-back-later bookmark, toggled from the sidebar via
 `workspaces:setUnread`, auto-cleared on next selection), and **`host`**
