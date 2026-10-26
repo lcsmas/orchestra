@@ -106,7 +106,10 @@ for (const m of MUTANTS) {
   // is never worked around: the run stops. A VERDICT is never retried.
   let rig;
   for (let attempt = 1; attempt <= 4; attempt++) {
-    rig = sh(path.join(ROOT, 'scripts/e2e-browser-popups.sh'), [ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT]);
+    // fleet rule (ledger #405, 2026-10-26): at most 3 contained-rig Electron trees at once — one slot per rig RUN, never per sweep
+    const slot = process.env.GUI_SLOT ?? '/var/tmp/orch-1000-b17728/gui-slot.sh';
+    const rigArgs = [path.join(ROOT, 'scripts/e2e-browser-popups.sh'), ROOT, '--arms', m.arms, '--label', m.id, '--out', OUT];
+    rig = fs.existsSync(slot) ? sh(slot, rigArgs) : sh(rigArgs[0], rigArgs.slice(1));
     const out = rig.stdout + rig.stderr;
     // compositor start-up failures under load (my own sway died / never mapped): retried like the marker race; the private-runtime PREFLIGHT is neither of these
     const startupRace = out.includes('cannot prove which display is mine') || out.includes('could not set the marker on my own output');
