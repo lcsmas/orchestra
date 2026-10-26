@@ -41,6 +41,8 @@ test('dispatchSpawnRequest decides from the LIVE records: caller = store.getWork
   assert.match(call, /caller: input\.from \? store\.getWorkspace\(input\.from\) : undefined,/, 'what the caller holds is read from ITS record, never from the request');
   assert.match(call, /callerVouched: !!input\.from && !!input\.key && sessionKeys\(\)\.verify\(input\.from, input\.key\) === 'ok',/, 'ADR 0008: only the live session of `from`');
   assert.match(call, /profiles: store\.getBrowserProfiles\(\),/);
+  assert.match(call, /deleting: deletingProfiles\(\),/, 'a profile whose delete is running is never handed on (the delete scanned its carriers already)');
+  assert.match(ws, /import \{ deletingProfiles \} from '\.\/spawn-profile-gate\.ts';/);
   assert.match(ws, /import \{ decideSpawnProfile, type SpawnProfileDecision \} from '\.\.\/shared\/spawn-profile\.ts';/, 'the pure function, not a copy');
 });
 
@@ -112,4 +114,19 @@ test('whoami shows the HELD profile only to the VOUCHED live session of that wor
   assert.match(who, /\.\.\.\(vouched \? \{ browserProfile: held \? \{ id: held\.id, name: held\.name \} : null \} : \{\}\),/, 'omitted (not null) when unvouched');
   const route = hooks.slice(hooks.indexOf("route === '/whoami'"), hooks.indexOf("route === '/migrateAccount'"));
   assert.match(route, /dispatchWhoamiRequest\(\{ id: msg\.id, key: typeof msg\.key === 'string' \? msg\.key : undefined \}\)/);
+});
+
+test('the profile DELETE seam: the service raises `deleting` in the same synchronous turn as its carrier scan, the host registers the probe once, the gate is Electron-free', () => {
+  const svc = read('src/main/browser-profiles.ts');
+  assert.match(svc, /deleting: \(\) => \[\.\.\.deleting\],/, 'the service exposes the running deletes');
+  assert.match(svc, /remove: \(id\) =>\n      serial\(\(\) => whileDeleting\(id, async \(\) => \{/, 'the whole remove runs inside the flag');
+  const w = /const whileDeleting = async <T>\(id: unknown, fn: \(\) => Promise<T>\): Promise<T> => \{([\s\S]*?)\n  \};/.exec(svc)?.[1] ?? '';
+  assert.ok(w, 'control: found whileDeleting');
+  assert.match(w, /deleting\.add\(profileId\);\n    try \{\n      return await fn\(\);\n    \} finally \{\n      deleting\.delete\(profileId\);/, 'raised before fn, cleared in finally (ok, refused or thrown)');
+  assert.ok(!/\bawait\b/.test(w.slice(0, w.indexOf('try {'))), 'no await between raising the flag and the delete body');
+  const host = read('src/main/browser-profiles-host.ts');
+  assert.equal(host.split('setDeletingProfilesProbe(').length - 1, 1);
+  assert.match(host, /setDeletingProfilesProbe\(\(\) => service\.deleting\(\)\);/);
+  const gate = read('src/main/spawn-profile-gate.ts');
+  assert.doesNotMatch(gate, /from 'electron'|from '\.\/(store|platform|workspaces|browser-panel)/, 'the gate stays Electron-free (workspaces.ts must not import the host)');
 });

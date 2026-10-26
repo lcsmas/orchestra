@@ -15,9 +15,9 @@ const only = args.filter((a, i) => a !== '--tier' && args[i - 1] !== '--tier');
 const TMP = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'spawn-profile-mut-'));
 const F = {
   pure: 'src/shared/spawn-profile.ts', ws: 'src/main/workspaces.ts', hooks: 'src/main/hooks-server.ts', sandbox: 'src/main/transport/sandbox-manager.ts',
-  cli: 'src/cli/index.ts', types: 'src/shared/types.ts',
+  cli: 'src/cli/index.ts', types: 'src/shared/types.ts', profSvc: 'src/main/browser-profiles.ts', profHost: 'src/main/browser-profiles-host.ts',
 };
-const T = { unit: 'src/shared/spawn-profile.test.ts', wiring: 'src/main/spawn-profile-wiring.test.ts', cli: 'src/cli/spawn-profile.test.ts' };
+const T = { unit: 'src/shared/spawn-profile.test.ts', wiring: 'src/main/spawn-profile-wiring.test.ts', cli: 'src/cli/spawn-profile.test.ts', svc: 'src/main/browser-profiles-deleting.test.ts' };
 const ALL = Object.values(T);
 
 /** id, file, find (exactly once), to, rebuild (cli.js), tests, `expect` = substring of a failing test name — OR tier 'app' with `arms` + `expect` = a rig clause name. */
@@ -35,6 +35,7 @@ const MUTANTS = [
   { id: 'U9_message_names_the_unheld_profile', file: F.pure, find: 'not ${JSON.stringify(requested.slice(0, 40))}', to: 'not ${JSON.stringify(requested.slice(0, 40))} (${input.profiles.map((p) => p.name).join(", ")})', tests: [T.unit], expect: 'no existence oracle' },
   { id: 'U10_message_leaks_profile_ids', file: F.pure, find: 'not ${JSON.stringify(requested.slice(0, 40))}', to: 'not ${JSON.stringify(requested.slice(0, 40))} (${input.profiles.map((p) => p.id).join(", ")})', tests: [T.unit], expect: 'no existence oracle' },
   { id: 'U11_detached_ignored', file: F.pure, find: 'if (input.detached) {', to: 'if (false) {', tests: [T.unit], expect: 'detached:' },
+  { id: 'U12_deleting_profile_passed', file: F.pure, find: 'if (input.deleting.includes(held.id)) {', to: 'if (false) {', tests: [T.unit], expect: 'deleting:' },
   // ── CLI ──
   { id: 'C1_profile_not_sent', file: F.cli, find: 'body.profile = profile;', to: '', rebuild: true, tests: [T.cli], expect: 'POSTs profile=P' },
   { id: 'C2_key_not_sent', file: F.cli, find: 'if (key) body.key = key;', to: '', rebuild: true, tests: [T.cli], expect: 'POSTs profile=P' },
@@ -62,6 +63,11 @@ const MUTANTS = [
   { id: 'W15_whoami_route_drops_key', file: F.hooks, find: "dispatchWhoamiRequest({ id: msg.id, key: typeof msg.key === 'string' ? msg.key : undefined })", to: 'dispatchWhoamiRequest({ id: msg.id })', tests: [T.wiring], expect: 'whoami shows the HELD profile only' },
   { id: 'C9_whoami_cli_drops_key', file: F.cli, find: "{ id, ...(whoamiKey ? { key: whoamiKey } : {}) }", to: '{ id }', rebuild: true, tests: [T.cli], expect: 'whoami sends the session key' },
   { id: 'C10_whoami_unvouched_reads_ephemeral', file: F.cli, find: "p === undefined ? '(not vouched)'", to: "p === undefined ? 'ephemeral'", rebuild: true, tests: [T.cli], expect: 'whoami prints the held profile' },
+  { id: 'W16_gate_not_consulted', file: F.ws, find: 'deleting: deletingProfiles(),', to: 'deleting: [],', tests: [T.wiring], expect: 'decides from the LIVE records' },
+  { id: 'D1_service_flag_never_cleared', file: F.profSvc, find: '      deleting.delete(profileId);', to: '', tests: [T.svc, T.wiring], expect: 'cleared when the delete is REFUSED' },
+  { id: 'D2_service_flag_never_raised', file: F.profSvc, find: '    deleting.add(profileId);', to: '', tests: [T.svc, T.wiring], expect: 'names the profile for exactly the run' },
+  { id: 'D3_host_probe_not_registered', file: F.profHost, find: 'setDeletingProfilesProbe(() => service.deleting());', to: '', tests: [T.wiring], expect: 'profile DELETE seam' },
+  { id: 'D4_flag_raised_after_an_await', file: F.profSvc, find: '    const profileId = id as BrowserProfileId;\n    deleting.add(profileId);', to: '    const profileId = id as BrowserProfileId;\n    await Promise.resolve();\n    deleting.add(profileId);', tests: [T.wiring], expect: 'profile DELETE seam' },
   // ── host harness (real workspaces.ts, no GUI): `expect` = clause ids (the first token after FAIL); the control clause t1 must stay green ──
   { id: 'X1_decision_made_early_and_kept (stale t0)', tier: 'host', file: F.ws, find: 'input.profile !== undefined ? decideProfile : undefined);', to: 'input.profile !== undefined ? ((d) => () => d)(decideProfile()) : undefined);', expect: ['t2', 't3', 't4', 't5', 't6'] },
   { id: 'X2_whoami_vouch_dropped', tier: 'host', file: F.ws, find: "const vouched = !!input.key && sessionKeys().verify(id, input.key) === 'ok';", to: 'const vouched = true;', expect: ['w2'] },
@@ -69,6 +75,8 @@ const MUTANTS = [
   { id: 'X4_spawn_vouch_dropped', tier: 'host', file: F.ws, find: "callerVouched: !!input.from && !!input.key && sessionKeys().verify(input.from, input.key) === 'ok',", to: 'callerVouched: true,', expect: ['h4', 't5'] },
   { id: 'X5_detached_not_passed', tier: 'host', file: F.ws, find: 'detached: input.detached === true,', to: 'detached: false,', expect: ['h3'] },
   { id: 'X6_request_written_not_the_held_id', tier: 'host', file: F.ws, find: "return profileDecision.kind === 'honoured' ? profileDecision.profileId : undefined;", to: 'return input.profile;', expect: ['h1', 'h2'] },
+  { id: 'X8_deleting_not_passed_to_the_rule', tier: 'host', file: F.ws, find: 'deleting: deletingProfiles(),', to: 'deleting: [],', expect: ['d1'] },
+  { id: 'X9_service_never_flags (rig d1)', tier: 'host', file: F.profSvc, find: '    deleting.add(profileId);', to: '', expect: ['d1'] },
   { id: 'X7_report_dropped_on_success', tier: 'host', file: F.ws, find: "...(started.held ? { held: started.held } : {}), ...profileReport() };", to: '...(started.held ? { held: started.held } : {}) };', expect: ['h1', 'h2', 'h3', 'h4', 't2'], controlMayFail: true /* t1 asserts the success report too */ },
   // ── built app (rig): each must turn the NAMED clause RED while the controls (ctl/*, a0/*) stay green ──
   { id: 'A1_holds_check_removed (rig)', tier: 'app', file: F.pure, find: "if (requested === held.id || (requested !== '' && requested.toLowerCase() === held.name.toLowerCase())) {", to: 'if (true) {', arms: 'a2', expect: ['a2/record-has-no-profile', 'a2/refused-worker-panel-is-ephemeral'] },

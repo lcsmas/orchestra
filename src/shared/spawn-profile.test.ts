@@ -9,7 +9,7 @@ const profiles = [STAGING, PROD];
 const holder = { browserProfileId: STAGING.id };
 
 function decide(over: Partial<Parameters<typeof decideSpawnProfile>[0]> = {}) {
-  return decideSpawnProfile({ requested: STAGING.id, detached: false, caller: holder, callerVouched: true, profiles, ...over });
+  return decideSpawnProfile({ requested: STAGING.id, detached: false, caller: holder, callerVouched: true, profiles, deleting: [], ...over });
 }
 
 test('holds: the caller holds the requested profile (by id) → honoured, the id to write on the new record', () => {
@@ -67,6 +67,17 @@ test('detached: a parentless worker gets no profile even from a caller that hold
   assert.deepEqual(decide({ detached: true, requested: undefined }), { kind: 'none' }, 'no --profile: nothing to refuse');
 });
 
+test('deleting: a profile whose deletion is in flight is not passed on (its carriers were already scanned); another profile deleting does not matter', () => {
+  const d = decide({ deleting: [STAGING.id] });
+  assert.equal(d.kind === 'refused' && d.reason, 'deleting');
+  assert.ok(d.kind === 'refused' && /being deleted/.test(d.message) && /navigation éphémère/.test(d.message));
+  assert.equal(decide({ deleting: [PROD.id] }).kind, 'honoured', 'the one the caller holds is not the one being deleted');
+  assert.equal(decide({ deleting: [STAGING.id], requested: undefined }).kind, 'none', 'no --profile: nothing to refuse');
+  // a deleting profile the caller does NOT hold reads as not-held, never as "deleting" (no oracle on the human's other profiles)
+  const other = decide({ requested: PROD.id, deleting: [PROD.id] });
+  assert.equal(other.kind === 'refused' && other.reason, 'not-held');
+});
+
 test('no caller: an unknown/absent spawning workspace cannot pass a profile', () => {
   const d = decide({ caller: undefined });
   assert.equal(d.kind === 'refused' && d.reason, 'no-caller');
@@ -91,6 +102,7 @@ test('every refusal says the worker starts in navigation éphémère; an honoure
     decide({ caller: {} }),
     decide({ requested: PROD.id }),
     decide({ detached: true }),
+    decide({ deleting: [STAGING.id] }),
   ];
   for (const d of refusals) assert.ok(d.kind === 'refused' && /navigation éphémère/.test(d.message), JSON.stringify(d));
   const ok = decide();

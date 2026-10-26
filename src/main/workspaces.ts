@@ -10,6 +10,7 @@ import { store } from './store';
 import { hasSessionKey, forgetSessionKey, sessionKeys } from './session-identity-host.ts';
 import { decideSpawnProfile, type SpawnProfileDecision } from '../shared/spawn-profile.ts';
 import { effectiveProfileId } from '../shared/browser-profile.ts';
+import { deletingProfiles } from './spawn-profile-gate.ts';
 import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
 import { stopMemberScopeIfAny } from './scope-stop-host';
 import { removeAgentTmpDir } from './agent-tmpdir';
@@ -1591,6 +1592,7 @@ export async function dispatchSpawnRequest(
       caller: input.from ? store.getWorkspace(input.from) : undefined,
       callerVouched: !!input.from && !!input.key && sessionKeys().verify(input.from, input.key) === 'ok',
       profiles: store.getBrowserProfiles(),
+      deleting: deletingProfiles(), // a delete in flight scanned its carriers already — never hand its profile on meanwhile (#400 service)
     });
     return profileDecision.kind === 'honoured' ? profileDecision.profileId : undefined;
   };

@@ -7,6 +7,8 @@
 //   t1  CONTROL window (nothing changes while held) → honoured: the instrument can say yes
 //   t2  parent DETACHED by the human while the child is being created → child ephemeral    t3  profile DELETED meanwhile → ephemeral
 //   t4  parent SWITCHED to another profile meanwhile → ephemeral          t5  parent's session SUPERSEDED meanwhile → refused (unvouched)
+//   d1  (REAL profile service #400, serial chain) a delete of the profile is RUNNING at the record build (carriers already scanned) → refused 'deleting', child ephemeral
+//   d2  a delete is QUEUED behind another op (not started) at the record build → honoured, and the delete's carrier scan then DETACHES the child: no child ends up carrying a deleted profile
 //   w1  whoami: held profile shown ONLY to the vouched live session of that workspace (M2); omitted (never null) otherwise
 // Run: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/verify-spawn-profile-host.mjs <tree>     (rc 0 = every clause PASS; prints FAIL <label>)
 import path from 'node:path';
@@ -41,6 +43,8 @@ await store.load?.();
 const workspaces = await import(`${TREE}/src/main/workspaces.ts`);
 const identity = await import(`${TREE}/src/main/session-identity-host.ts`);
 await import(`${TREE}/src/main/restart-workspace.ts`);
+const profileSvcMod = await import(`${TREE}/src/main/browser-profiles.ts`);
+const gate = await import(`${TREE}/src/main/spawn-profile-gate.ts`);
 const delivery = await import(`${TREE}/src/main/sdk-delivery.ts`);
 delivery.registerSdkDelivery({ hasSession: () => false, hasBackgroundTask: () => false, send: async () => {}, sendAwaitingStart: async () => 'started', stop: async () => {}, start: async () => {} });
 
@@ -58,6 +62,24 @@ const wsRec = (id, over = {}) => {
   const wt = path.join(tmpHome, `wt-${id}`); git(repoDir, ['worktree', 'add', '-q', '-b', `b-${id}`, wt]);
   return { id, name: `repo · b-${id}`, repoPath: repoDir, worktreePath: wt, branch: `b-${id}`, baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', canOrchestrate: true, branchManuallySet: true, ...over };
 };
+// the REAL profile service (#400) over the real store: its serial chain + deleting() are what the spawn's decision reads (spawn-profile-gate.ts)
+const gates = { settle: null, setProfiles: null, record: null }; // a held promise per effect: the harness decides when each resolves
+const svc = profileSvcMod.createBrowserProfilesService({
+  getProfiles: () => store.getBrowserProfiles(),
+  setProfiles: async (next) => { if (gates.setProfiles) await gates.setProfiles; await store.setBrowserProfiles(next); },
+  workspaces: () => store.workspaces,
+  setWorkspaceProfile: async (id, pid) => { if (gates.record) await gates.record; const cur = store.getWorkspace(id); if (!cur) return; const u = { ...cur }; if (pid === undefined) delete u.browserProfileId; else u.browserProfileId = pid; await store.upsertWorkspace(u); },
+  reprofilePanel: (wsId) => ({ wsId, url: '', title: '', loading: false, canGoBack: false, canGoForward: false, tabs: [], activeTabId: '' }),
+  openPanelsOn: () => [],
+  settleViews: async () => { if (gates.settle) await gates.settle; return true; },
+  stopSignIns: () => {},
+  clearEphemeral: async () => {},
+  clearStorage: async () => {},
+  mintId: () => 'bp-999999999999',
+  now: () => 1,
+});
+gate.setDeletingProfilesProbe(() => svc.deleting());
+const hold = () => { let release; const p = new Promise((r) => (release = r)); return { p, release }; };
 const OPS = wsRec('ws-ops', { browserProfileId: P.id });
 await store.upsertWorkspace(OPS);
 await store.upsertWorkspace(wsRec('ws-bare'));
@@ -140,6 +162,42 @@ async function held(change, over = {}) {
   const r = await held(async () => { await store.removeWorkspace('ws-ops2'); }, { from: 'ws-ops2', key: KEY2 });
   // the parent is gone: the child is created (parentless, as before #401) and carries nothing
   check('t6 the parent is DELETED during creation → no caller: child ephemeral, still created', r.ok === true && r.profile?.applied === false && profileOf(r) === undefined, JSON.stringify(r).slice(0, 220));
+}
+
+console.log('\nd — a profile delete (#400 service) vs the spawn:');
+{
+  // d1 — the delete is RUNNING and is still inside its detach loop (the parent's record is not cleared yet): the flag is what refuses, the parent still holds the profile
+  await reset();
+  const rec = hold(); gates.record = rec.p; const settle = hold(); gates.settle = settle.p;
+  let del, flagUp = true;
+  const r = await held(async () => { del = svc.remove(P.id); await until(() => svc.deleting().includes(P.id), 3000, 'the delete to be RUNNING').catch(() => { flagUp = false; }); });
+  check('d1 a delete is RUNNING (parent not yet detached) at the record build → refused "deleting", the child is created ephemeral', flagUp && r.ok === true && r.profile?.applied === false && /being deleted/.test(r.profile.message) && profileOf(r) === undefined && store.getWorkspace('ws-ops')?.browserProfileId === P.id, JSON.stringify(r).slice(0, 240));
+  rec.release(); gates.record = null; settle.release(); gates.settle = null; const dr = await del;
+  check('d1b control: that delete then completed — profile gone, the parent detached', dr.ok === true && store.getBrowserProfiles().every((p) => p.id !== P.id) && store.getWorkspace('ws-ops')?.browserProfileId === undefined, JSON.stringify(dr).slice(0, 120));
+}
+{
+  // d1c — later in the same delete (the parent already detached, profile still listed, flag still up): the parent holds nothing, so the pass is refused anyway
+  await reset();
+  const settle = hold(); gates.settle = settle.p;
+  let del, flagUp = true;
+  const r = await held(async () => { del = svc.remove(P.id); await until(() => svc.deleting().includes(P.id) && store.getWorkspace('ws-ops')?.browserProfileId === undefined, 3000, 'the delete held in settleViews with the parent detached').catch(() => { flagUp = false; }); });
+  check('d1c later in the delete (parent detached, profile still listed): refused, child ephemeral', flagUp && r.ok === true && r.profile?.applied === false && profileOf(r) === undefined, JSON.stringify(r).slice(0, 200));
+  settle.release(); gates.settle = null; await del;
+}
+{
+  await reset();
+  const blockWrite = hold(); gates.setProfiles = blockWrite.p;
+  let ren, del;
+  const r = await held(async () => {
+    ren = svc.rename(Q.id, 'Prod renamed'); // an unrelated op holds the serial chain (its profile-list write is blocked)
+    await sleep(100);
+    del = svc.remove(P.id); // QUEUED behind it: not started, so no flag yet
+    await sleep(50);
+  });
+  check('d2 the delete is QUEUED (not started) at the record build → honoured: the flag is only up while a delete RUNS', r.ok === true && r.profile?.applied === true && profileOf(r) === P.id && svc.deleting().length === 0, JSON.stringify(r).slice(0, 200));
+  blockWrite.release(); gates.setProfiles = null;
+  await ren; const dr = await del;
+  check('d2b …and then the delete\'s carrier scan finds the child and DETACHES it: no child carries a deleted profile', dr.ok === true && store.getBrowserProfiles().every((p) => p.id !== P.id) && profileOf(r) === undefined && store.getWorkspace('ws-ops')?.browserProfileId === undefined, `child record browserProfileId ${profileOf(r)}; profiles ${store.getBrowserProfiles().map((p) => p.name).join(',')}`);
 }
 
 console.log('\nw — whoami (M2):');

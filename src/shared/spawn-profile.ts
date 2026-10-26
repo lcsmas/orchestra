@@ -9,6 +9,7 @@ export type SpawnProfileRefusal =
   | 'detached' // `--detached`: the worker has NO parent, and a profile is only handed from a parent to its nested worker
   | 'no-caller' // no spawning workspace on record (plain shell / unknown id): nothing to hold a profile
   | 'unvouched' // the host cannot vouch that this call comes from the live session of `from` (ADR 0008)
+  | 'deleting' // the held profile is being DELETED right now (its carriers were already scanned): a child handed it would outlive the wipe
   | 'holds-none' // the caller has no profile, or its recorded one was deleted (dangling id)
   | 'not-held'; // the caller holds a DIFFERENT profile (or the name/id matches nothing it holds)
 
@@ -30,6 +31,9 @@ export function decideSpawnProfile(input: {
   caller: { browserProfileId?: BrowserProfileId } | undefined;
   callerVouched: boolean;
   profiles: readonly BrowserProfile[];
+  /** Profiles whose deletion is IN FLIGHT (the profile service's serial chain). Their carriers were scanned when the delete started, so a record
+   *  written now would escape the detach and could open a panel on a partition about to be wiped. */
+  deleting: readonly BrowserProfileId[];
 }): SpawnProfileDecision {
   if (input.requested === undefined) return { kind: 'none' };
   const requested = input.requested.trim();
@@ -53,6 +57,9 @@ export function decideSpawnProfile(input: {
     return refuse('holds-none', 'you hold no profil navigateur (only the human attaches one, from the browser panel’s URL bar).');
   }
   if (requested === held.id || (requested !== '' && requested.toLowerCase() === held.name.toLowerCase())) {
+    if (input.deleting.includes(held.id)) {
+      return refuse('deleting', `“${held.name}” is being deleted — it cannot be passed on.`);
+    }
     return {
       kind: 'honoured',
       profileId: held.id,
