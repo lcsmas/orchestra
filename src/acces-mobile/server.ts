@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { sameLogin } from '../shared/acces-mobile.ts';
 import { MOBILE_LAUNCH_MAX_PATH, MOBILE_LAUNCH_TIMEOUT_MS, createLaunchLimiter, parseMobileLaunch } from '../shared/acces-mobile-launch.ts';
 import { MOBILE_ATTACH_MAX_BODY, MOBILE_SEND_MAX_BODY, MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validRewindId } from '../shared/acces-mobile-conversation.ts';
+import { REFUSED_DRAIN_MAX_BYTES, REFUSED_LINGER_MAX_MS, refusedDrainStep, type RefusedDrainStep } from '../shared/acces-mobile-refusal-drain.ts';
 import { APP_JS, INDEX_HTML, MANIFEST_JSON } from './page.ts';
 import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 import { LAUNCH_CSS, LAUNCH_JS } from './launch.ts';
@@ -32,6 +33,9 @@ export interface AccesMobileServerOptions {
   log?: (line: string) => void;
   /** Monotonic clock (ms) for the refusal-log windows; tests inject one. */
   now?: () => number;
+  /** #408 bounds of the post-413 drain (defaults: REFUSED_DRAIN_MAX_BYTES / REFUSED_LINGER_MAX_MS); tests and the rig shrink them. */
+  refusedDrainMaxBytes?: number;
+  refusedLingerMaxMs?: number;
 }
 
 /** A colleague on the tailnet can make the server refuse requests as fast as serve forwards them; each refusal used to be one line
@@ -131,6 +135,13 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       log(reason, `refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
     };
+    /** 413 (#408): the whole answer (no body) is flushed but the response is NOT ended — ending it makes node destroy the socket under a sender
+     *  that is still pushing, and the kernel's RST then costs it the unread 413. `Connection: close` tells the client not to reuse the socket. */
+    const refuseTooLarge = (): void => {
+      log('too-large', `refused 413 too-large ${method} ${pathOnly.slice(0, 80)}`);
+      res.writeHead(413, { ...SECURITY_HEADERS, 'Content-Length': '0', Connection: 'close' });
+      res.flushHeaders();
+    };
 
     // 1) Identity — every request, static shell included. A Tailscale-User-Login header can only come from `serve` (it strips
     //    client copies) or from a local process, which the token below still stops.
@@ -203,33 +214,52 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       const id = wsId();
       return id ? relay('/mobile/seen', { id }) : refuse(400, 'bad-id');
     }
-    /** The body is read ONLY after identity + token passed: JSON, capped at `maxBytes` (a readable 413, then a short drain).
-     *  Bytes are counted per chunk (a 20 MB send must not rescan its whole prefix on every chunk). */
+    /** The body is read ONLY after identity + token passed: JSON, capped at `maxBytes` (a readable 413, then a bounded drain — see
+     *  refusedDrainStep). Bytes are counted per chunk (a 20 MB send must not rescan its whole prefix on every chunk). */
     const readJson = (then: (body: Record<string, unknown>) => void, maxBytes = MOBILE_SEND_MAX_BODY): void => {
       if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) return refuse(415, 'not-json');
       let chunks: Buffer[] = [];
       let size = 0;
       let tooBig = false;
       let discarded = 0;
+      let lingerExpired = false;
+      let lingerTimer: NodeJS.Timeout | undefined;
+      // After the 413 the sender is read-and-discarded, then held unread, then cut at the deadline (#408) — never closed while it is still pushing.
+      const apply = (step: RefusedDrainStep): void => {
+        if (step === 'hold') req.pause();
+        else if (step === 'done') {
+          clearTimeout(lingerTimer);
+          res.end();
+        } else if (step === 'cut') {
+          clearTimeout(lingerTimer);
+          req.socket.destroy();
+        }
+      };
+      const stepNow = (requestEnded: boolean): RefusedDrainStep =>
+        refusedDrainStep({ discardedBytes: discarded, requestEnded, lingerExpired, maxBytes: opts.refusedDrainMaxBytes ?? REFUSED_DRAIN_MAX_BYTES });
       req.on('data', (c: Buffer) => {
         if (tooBig) {
-          // Answer 413 once, drain a little so the client can read it, then cut a sender that keeps pushing.
           discarded += c.length;
-          if (discarded > 8 * MOBILE_SEND_MAX_BODY) req.destroy();
+          apply(stepNow(false));
           return;
         }
         size += c.length;
         if (size > maxBytes) {
           tooBig = true;
           chunks = [];
-          res.setHeader('Connection', 'close');
-          refuse(413, 'too-large');
+          refuseTooLarge();
+          lingerTimer = setTimeout(() => {
+            lingerExpired = true;
+            apply(stepNow(false));
+          }, opts.refusedLingerMaxMs ?? REFUSED_LINGER_MAX_MS);
+          lingerTimer.unref();
+          res.on('close', () => clearTimeout(lingerTimer));
           return;
         }
         chunks.push(c);
       });
       req.on('end', () => {
-        if (tooBig) return;
+        if (tooBig) return apply(stepNow(true));
         let body: unknown;
         try {
           body = JSON.parse(Buffer.concat(chunks).toString('utf8'));

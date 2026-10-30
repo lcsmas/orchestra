@@ -22,6 +22,9 @@ FEEDCORE = 'src/main/acces-mobile-feed-core.test.ts'
 LAUNCHUI = 'src/acces-mobile/launch.test.ts'
 PAUSEW = 'src/main/pause-gates-wiring.test.ts'
 SLAUNCH = 'src/acces-mobile/server-launch.test.ts'
+RDS = 'src/acces-mobile/server-refusal-drain.test.ts'
+RDU = 'src/shared/acces-mobile-refusal-drain.test.ts'
+RDMOD = 'src/shared/acces-mobile-refusal-drain.ts'
 MLAUNCH = 'src/main/acces-mobile-launch.test.ts'
 SHLAUNCH = 'src/shared/acces-mobile-launch.test.ts'
 MUTANTS = [
@@ -197,6 +200,23 @@ MUTANTS = [
     ('LA3-launch-relays-raw-keys', 'src/acces-mobile/server.ts', "relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "relay('/mobile/launch', { ...body, ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", 'RED', SLAUNCH),
     ('LA4-launch-short-timeout', 'src/acces-mobile/server.ts', "relay('/mobile/launch', { ...parsed.launch }, MOBILE_LAUNCH_TIMEOUT_MS);", "relay('/mobile/launch', { ...parsed.launch });", 'RED', SLAUNCH),
     ('LA5-launch-not-an-in-flight-write', 'src/acces-mobile/server.ts', " || route === '/mobile/launch';\n      if (isWrite) {", ";\n      if (isWrite) {", 'RED', SLAUNCH),
+    # #408 — the 413 close policy. RDS = raw sockets through the real server; RDU = the pure decision table.
+    ('RD1-old-413-ends-the-response', 'src/acces-mobile/server.ts', "          refuseTooLarge();\n", "          res.setHeader('Connection', 'close');\n          refuse(413, 'too-large');\n", 'RED', RDS),
+    ('RD2-hold-destroys-early', 'src/acces-mobile/server.ts', "        if (step === 'hold') req.pause();", "        if (step === 'hold') req.destroy();", 'RED', RDS),
+    ('RD3-drain-bound-removed', 'src/acces-mobile/server.ts', "        if (step === 'hold') req.pause();\n        else if (step === 'done')", "        if (step === 'hold') void 0;\n        else if (step === 'done')", 'RED', RDS),
+    ('RD4-deadline-never-fires', 'src/acces-mobile/server.ts', "          }, opts.refusedLingerMaxMs ?? REFUSED_LINGER_MAX_MS);", "          }, 2 ** 31 - 1);", 'RED', RDS),
+    ('RD5-cut-does-not-destroy', 'src/acces-mobile/server.ts', "          clearTimeout(lingerTimer);\n          req.socket.destroy();", "          clearTimeout(lingerTimer);", 'RED', RDS),
+    ('RD6-finished-sender-held-to-deadline', 'src/acces-mobile/server.ts', "        if (tooBig) return apply(stepNow(true));", "        if (tooBig) return;", 'RED', RDS),
+    ('RD7-413-not-flushed', 'src/acces-mobile/server.ts', "      res.flushHeaders();\n    };", "    };", 'RED', RDS),
+    ('RD8-no-connection-close', 'src/acces-mobile/server.ts', "'Content-Length': '0', Connection: 'close' });", "'Content-Length': '0' });", 'RED', RDS),
+    ('RD9-timer-not-cleared-on-close', 'src/acces-mobile/server.ts', "          res.on('close', () => clearTimeout(lingerTimer));\n", "", 'EQUIV', RDS),
+    ('RDU1-finished-not-done', RDMOD, "  if (s.requestEnded) return 'done';\n", "", 'RED', RDU),
+    ('RDU2-expired-beats-finished', RDMOD, "  if (s.requestEnded) return 'done';\n  if (s.lingerExpired) return 'cut';", "  if (s.lingerExpired) return 'cut';\n  if (s.requestEnded) return 'done';", 'RED', RDU),
+    ('RDU3-bound-off-by-one', RDMOD, "s.discardedBytes >= (s.maxBytes ?? REFUSED_DRAIN_MAX_BYTES)", "s.discardedBytes > (s.maxBytes ?? REFUSED_DRAIN_MAX_BYTES)", 'RED', RDU),
+    ('RDU4-deadline-ignored', RDMOD, "  if (s.lingerExpired) return 'cut';\n", "", 'RED', RDU),
+    ('RDU5-no-hold', RDMOD, "  if (s.discardedBytes >= (s.maxBytes ?? REFUSED_DRAIN_MAX_BYTES)) return 'hold';\n", "", 'RED', RDU),
+    ('RDU6-drain-bound-widened', RDMOD, "export const REFUSED_DRAIN_MAX_BYTES = 8 * MOBILE_SEND_MAX_BODY;", "export const REFUSED_DRAIN_MAX_BYTES = 800 * MOBILE_SEND_MAX_BODY;", 'RED', RDU),
+    ('RDU7-deadline-minutes', RDMOD, "export const REFUSED_LINGER_MAX_MS = 10_000;", "export const REFUSED_LINGER_MAX_MS = 600_000;", 'RED', RDU),
     ('LA13-prompt-optional', 'src/shared/acces-mobile-launch.ts', "  if (!prompt || prompt.length > MOBILE_LAUNCH_MAX_PROMPT) return", "  if (prompt.length > MOBILE_LAUNCH_MAX_PROMPT) return", 'RED', SHLAUNCH),
     ('LA14-prompt-not-trimmed', 'src/shared/acces-mobile-launch.ts', "typeof b.prompt === 'string' ? b.prompt.trim() : ''", "typeof b.prompt === 'string' ? b.prompt : ''", 'RED', SHLAUNCH),
     ('LA16-repo-path-nul', 'src/shared/acces-mobile-launch.ts', " || repoPath.includes('\\0'))", ")", 'RED', SHLAUNCH),
