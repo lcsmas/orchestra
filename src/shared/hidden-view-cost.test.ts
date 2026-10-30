@@ -14,6 +14,7 @@ interface World {
   cpu?: Partial<Record<CostPage, Fn>>; // % of a core
   frames?: Fn; // idle frames A1 − A0
   ns?: number[];
+  skip160?: CostPage[]; // pages that were NOT measured at N=160 (projected only: they did not fit above the 8 GB floor)
   reps?: number;
   noPositive?: boolean; noNull?: boolean; nullNoise?: number; noCrashCtl?: boolean; noAbortCtl?: boolean;
   a2?: Partial<Record<CostPage, Fn>>; // cpu cost of A2 over A0 (set 'a2', busy N=40/160)
@@ -44,6 +45,7 @@ function world(o: World = {}): CostRun[] {
   };
   const rot = <T>(a: T[], k: number): T[] => [...a.slice(k % a.length), ...a.slice(0, k % a.length)];
   for (let rep = 0; rep < reps; rep++) for (const n of ns) for (const page of ['idle', 'busy', 'heavy'] as CostPage[]) {
+    if (n === 160 && o.skip160?.includes(page)) continue;
     const arms: CostArm[] = ['A0', 'A1'];
     if (page === 'idle' && n === 8 && !o.noPositive) arms.push('A1x');
     if (page === 'idle' && (n === 8 || n === 40) && !o.noNull) arms.push('A0b');
@@ -65,6 +67,15 @@ test('GO: every limit holds at N=160, measured', () => {
   assert.equal(v.policy, 'A1');
   assert.ok(v.checks.filter((c) => c.n === 160).every((c) => c.basis === 'measured'));
   assert.ok([...v.controls, ...v.method].every((c) => c.ok), JSON.stringify([...v.controls, ...v.method]));
+});
+
+test('N=160 measured for idle+busy, PROJECTED for heavy (did not fit above the floor): no phantom "no run" crash check, heavy rows projected', () => {
+  const v = computeVerdict(world({ ...ok, ns: [1, 8, 40, 160], skip160: ['heavy'] }));
+  assert.deepEqual(failing(v), []);
+  assert.equal(v.verdict, 'GO');
+  assert.equal(v.checks.find((c) => c.id === 'M2' && c.n === 160)!.basis, 'projected');
+  assert.equal(v.checks.find((c) => c.id === 'M1' && c.n === 160)!.basis, 'measured');
+  assert.ok(!v.checks.some((c) => c.id === 'G1-crash' && c.page === 'heavy' && c.n === 160));
 });
 
 test('GO may rest on a PROJECTED N=160 row when N=40 was measured (R² ≥ 0.98)', () => {

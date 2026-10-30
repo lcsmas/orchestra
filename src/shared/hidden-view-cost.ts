@@ -169,9 +169,10 @@ export function computeChecks(runs: CostRun[], arm: 'A1' | 'A2' = 'A1', cpuArm: 
     if (LIMITS.c2CpuPct[n] !== undefined) out.push(limitCheck(runs, 'C2', 'busy', n, cpuArm, 'cpu', LIMITS.c2CpuPct[n]!, '%core', cpuArm === 'A2' ? 'a2' : 'main', cpuArm === 'A2' ? 'a2' : 'main'));
     if (LIMITS.g1GpuRssBytes[n] !== undefined) for (const page of ['idle', 'busy', 'heavy'] as CostPage[]) out.push(limitCheck(runs, 'G1-gpu', page, n, arm, 'gpu', LIMITS.g1GpuRssBytes[n]!, 'B', 'main', 'main'));
     // crash / frames are COUNTS, not slopes: they are read only where runs exist (an unmeasured N=160 is projected for the continuous metrics only)
-    if (n === 160 && !runs.some((r) => r.kind === 'cell' && r.set === 'main' && r.n === 160)) continue;
-    for (const page of ['idle', 'busy', 'heavy'] as CostPage[]) out.push(crashCheck(runs, page, n, 'main'));
+    const measured = (page: CostPage): boolean => n !== 160 || runs.some((r) => r.kind === 'cell' && r.set === 'main' && r.n === 160 && r.page === page);
+    for (const page of ['idle', 'busy', 'heavy'] as CostPage[]) if (measured(page)) out.push(crashCheck(runs, page, n, 'main'));
     // idle frames from hidden views = A0 (±0), on the IDLE page (the one whose content never changes): the exact median difference
+    if (!measured('idle')) continue;
     const fd = delta(runs, arm, 'A0', 'idle', n, 'main', 'frames');
     out.push({ id: 'G1-frames', page: 'idle', n, arm, limit: LIMITS.g1IdleFramesDelta, unit: 'count', delta: fd ? fd.delta : null, worstRun: null, basis: fd ? 'measured' : 'missing', ok: !!fd && Math.abs(fd.delta) <= LIMITS.g1IdleFramesDelta, why: !fd ? 'fewer than 5 valid runs' : Math.abs(fd.delta) > 0 ? 'hidden views produced a different number of idle frames than A0' : undefined });
   }
