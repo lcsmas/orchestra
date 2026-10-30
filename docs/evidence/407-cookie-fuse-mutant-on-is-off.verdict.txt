@@ -1,0 +1,19 @@
+records: 195 · runs: 0,1,11,21 · controls: 117 (3 red)
+VERDICT: UNVERIFIED   [all scopes UNVERIFIED · host scope only UNVERIFIED]
+  - fuse control: the fuse-ON copy differs from the fuse-OFF copy by 0 byte(s), want exactly 1 (the arms must differ in the fuse and nothing else)
+  - control wire/driver-reads-off-disabled-on-enabled RED: fuse wires read by the DRIVER from the two copies before the run: off=disabled on=disabled (independent of the wrapper's meta)
+  - null control: need ≥3 same-arm pairs, have 0
+  - arm (c) locked: no run
+  - arm (c) none: no run
+  - arm (c) basic: no run
+  - cost arm (C2): 0 run(s), need ≥3
+  - (d) measured in 0 run(s), need ≥3
+H1 clear · H2 clear · H3 clear · H4 FIRED  |  (a) FAIL · (b) ok · (c) ok · (d) NOT measured
+cost (signed out until unlock): false · permanent loss: false · (d) fuse-OFF reads the encrypted cookies: null · re-flip recovers: null
+{"abortedRuns":0,"abortReasons":[],"positiveControl":{"runs":3,"partitionsRed":6,"partitionsChecked":6},"nullControl":{"pairs":0,"medianAbsDeltaMs":null,"maxAbsDeltaMs":null,"limitMs":2500},"restoreControl":{"runs":3},"a":{"runs":3,"encryptedNewCookies":0,"totalNewCookies":150},"b":{"preExistingLost":0,"loginsLost":0,"rowsStillPlainAfterFlip":153,"rowsEncryptedAfterFlip":0},"c":{},"cost":{"runs":0,"signedOutUntilUnlock":false,"permanentLoss":false},"d":{"runs":0,"fuseOffReadsEncrypted":null,"reflipRecovers":null,"oldReadableWithFuseOff":0,"newReadableWithFuseOff":0}}
+
+step  partition  runs  old readable  new readable  login kept  DB rows before→after   what
+A1    profile    3     26/26         0/0           yes         26→52                  ON · unlocked, first start after the upgrade
+A1    login      3     25/25         0/0           yes         25→51                  ON · unlocked, first start after the upgrade
+A2    profile    3     26/26         25/25         yes         52→52                  ON · unlocked, A1 bytes restored (restore control)
+A2    login      3     25/25         25/25         yes         51→51                  ON · unlocked, A1 bytes restored (restore control)

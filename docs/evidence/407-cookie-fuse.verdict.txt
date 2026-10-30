@@ -1,0 +1,55 @@
+records: 1830 · runs: 0,1,11,21,31,41 · controls: 800 (0 red)
+VERDICT: HARD-NO-GO   [all scopes HARD-NO-GO · host scope only HARD-NO-GO]
+  - H2: C2L runs 1,11,21,31,41 profile: pre-existing cookies lost at a locked start after the unlocked one — 0/26 pre-existing cookies readable at start, login LOST, 0/26 pre-existing rows left in the Cookies DB; C2L runs 1,11,21,31,41 login: pre-existing cookies lost at a locked start after the unlocked one — 0/25 pre-existing cookies readable at start, login LOST, 0/25 pre-existing rows left in the Cookies DB; C2N runs 1,11,21,31,41 profile: pre-existing cookies lost at a keyring-less start after the unlocked one — 0/26 pre-existing cookies readable at start, login LOST, 0/26 pre-existing rows left in the Cookies DB; C2N runs 1,11,21,31,41 login: pre-existing cookies lost at a keyring-less start after the unlocked one — 0/25 pre-existing cookies readable at start, login LOST, 0/25 pre-existing rows left in the Cookies DB; C2B runs 1,11,21,31,41 profile: pre-existing cookies lost at a basic_text start after the unlocked one — 0/26 pre-existing cookies readable at start, login LOST, 0/26 pre-existing rows left in the Cookies DB; C2B runs 1,11,21,31,41 login: pre-existing cookies lost at a basic_text start after the unlocked one — 0/25 pre-existing cookies readable at start, login LOST, 0/25 pre-existing rows left in the Cookies DB
+  - H3: runs 1,11,21,31,41 D2: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2L: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2U: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2N: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2NU: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2B: claude-login 0/25 pre-existing cookies readable, login LOST; runs 1,11,21,31,41 C2BU: claude-login 0/25 pre-existing cookies readable, login LOST
+H1 clear · H2 FIRED · H3 FIRED · H4 clear  |  (a) ok · (b) ok · (c) FAIL · (d) documented
+cost (signed out until unlock): true · permanent loss: true · (d) fuse-OFF reads the encrypted cookies: false · re-flip recovers: false
+{"abortedRuns":0,"abortReasons":[],"positiveControl":{"runs":5,"partitionsRed":10,"partitionsChecked":10},"nullControl":{"pairs":5,"medianAbsDeltaMs":151,"maxAbsDeltaMs":339,"limitMs":2500},"restoreControl":{"runs":5},"a":{"runs":5,"encryptedNewCookies":250,"totalNewCookies":250},"b":{"preExistingLost":0,"loginsLost":0,"rowsStillPlainAfterFlip":255,"rowsEncryptedAfterFlip":0},"c":{"host/locked":{"onBoots":5,"baselineMs":608,"stallMedianMs":5,"stallMaxMs":194},"host/none":{"onBoots":5,"baselineMs":591,"stallMedianMs":-118,"stallMaxMs":482},"host/basic":{"onBoots":5,"baselineMs":440,"stallMedianMs":64,"stallMaxMs":668},"recognised-desktop/locked":{"onBoots":5,"baselineMs":657,"stallMedianMs":-91,"stallMaxMs":343}},"cost":{"runs":5,"signedOutUntilUnlock":true,"permanentLoss":true},"d":{"runs":5,"fuseOffReadsEncrypted":false,"reflipRecovers":false,"oldReadableWithFuseOff":0,"newReadableWithFuseOff":0}}
+
+step  partition  runs  old readable  new readable  login kept  DB rows before→after   what
+A1    profile    5     26/26         0/0           yes         26→52                  ON · unlocked, first start after the upgrade
+A1    login      5     25/25         0/0           yes         25→51                  ON · unlocked, first start after the upgrade
+A2    profile    5     26/26         25/25         yes         52→52                  ON · unlocked, A1 bytes restored (restore control)
+A2    login      5     25/25         25/25         yes         51→51                  ON · unlocked, A1 bytes restored (restore control)
+D1    profile    5     0/26          0/25          NO          52→1                   fuse back OFF over A1 bytes
+D1    login      5     0/25          0/25          NO          51→1                   fuse back OFF over A1 bytes
+D2    profile    5     0/26          0/25          NO          1→1                    ON again after D1
+D2    login      5     0/25          0/25          NO          1→1                    ON again after D1
+C2L   profile    5     0/26          0/25          NO          52→1                   ON · LOCKED over A1 bytes
+C2L   login      5     0/25          0/25          NO          51→1                   ON · LOCKED over A1 bytes
+C2U   profile    5     0/26          0/25          NO          1→1                    ON · unlocked after C2L
+C2U   login      5     0/25          0/25          NO          1→1                    ON · unlocked after C2L
+C2N   profile    5     0/26          0/25          NO          52→1                   ON · no keyring over A1 bytes
+C2N   login      5     0/25          0/25          NO          51→1                   ON · no keyring over A1 bytes
+C2B   profile    5     0/26          0/25          NO          52→1                   ON · basic_text over A1 bytes
+C2B   login      5     0/25          0/25          NO          51→1                   ON · basic_text over A1 bytes
+CL1   profile    5     26/26         0/0           yes         26→52                  ON · locked, plaintext-only jar
+CL1   login      5     25/25         0/0           yes         25→51                  ON · locked, plaintext-only jar
+CN1   profile    5     26/26         0/0           yes         26→52                  ON · no keyring, plaintext-only jar
+CN1   login      5     25/25         0/0           yes         25→51                  ON · no keyring, plaintext-only jar
+CB1   profile    5     26/26         0/0           yes         26→52                  ON · basic_text, plaintext-only jar
+CB1   login      5     25/25         0/0           yes         25→51                  ON · basic_text, plaintext-only jar
+GL1   profile    5     26/26         0/0           yes         26→52                  ON · GNOME desktop, locked, plaintext-only jar
+GL1   login      5     25/25         0/0           yes         25→51                  ON · GNOME desktop, locked, plaintext-only jar
+GU1   profile    5     26/26         0/0           yes         26→52                  ON · GNOME desktop, UNLOCKED (can the arm reach libsecret at all?)
+GU1   login      5     25/25         0/0           yes         25→51                  ON · GNOME desktop, UNLOCKED (can the arm reach libsecret at all?)
+X1    profile    5     0/26          0/25          NO          27→1                   diag: A1 bytes minus all sealed rows but ONE, ON · locked
+X1    login      5     0/25          0/25          NO          26→1                   diag: A1 bytes minus all sealed rows but ONE, ON · locked
+X2    profile    5     26/26         1/25          yes         27→28                  diag: the same DB, ON · unlocked
+X2    login      5     25/25         1/25          yes         26→27                  diag: the same DB, ON · unlocked
+X3    profile    5     26/26         0/25          yes         26→27                  diag: A1 bytes minus ALL sealed rows, ON · locked
+X3    login      5     25/25         0/25          yes         25→26                  diag: A1 bytes minus ALL sealed rows, ON · locked
+X4    profile    5     0/26          0/25          NO          52→0                   diag: A1 bytes, ON · locked, NO write
+X4    login      5     0/25          0/25          NO          51→0                   diag: A1 bytes, ON · locked, NO write
+X5    profile    5     0/26          0/25          NO          0→0                    diag: ON · unlocked after X4
+X5    login      5     0/25          0/25          NO          0→0                    diag: ON · unlocked after X4
+Y1    profile    5     26/26         0/0           yes         26→52                  diag: ON · basic_text from the first start
+Y1    login      5     25/25         0/0           yes         25→51                  diag: ON · basic_text from the first start
+Y1b   profile    5     26/26         25/25         yes         52→52                  diag: ON · basic_text again (restart + write)
+Y1b   login      5     25/25         25/25         yes         51→51                  diag: ON · basic_text again (restart + write)
+Y2    profile    5     26/26         25/25         yes         52→52                  diag: ON · unlocked over the v10-only jar
+Y2    login      5     25/25         25/25         yes         51→51                  diag: ON · unlocked over the v10-only jar
+Y3    profile    5     26/26         25/25         yes         52→52                  diag: ON · locked
+Y3    login      5     25/25         25/25         yes         51→51                  diag: ON · locked
+Y4    profile    5     26/26         25/25         yes         52→52                  diag: ON · no keyring
+Y4    login      5     25/25         25/25         yes         51→51                  diag: ON · no keyring

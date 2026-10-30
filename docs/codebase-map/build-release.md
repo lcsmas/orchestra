@@ -126,6 +126,20 @@ The package ships a pinned Node (linux arm64 + x64) as `resources/pinned-node/{n
   electron-builder `--linux dir` chain under `flock $PKG_LOCK`: good pack passes; corrupted runtime and missing runtime FAIL the pack; with the `packCheck` call
   removed the corrupted runtime ships) · `pnpm run test:pinned-node-app` (built AppImage, see `session-keeper.md`). The AppImage grows by ~40 MB (measured 339 MB vs 298–304 MB for sibling builds of the same tree family; node is 28 MB xz / 44 MB gzip).
 
+## Cookie-encryption fuse (#407) — measured, NOT flipped (ADR 0010, `browser-panel.md` § At rest)
+
+- **State of the shipped binary:** `EnableCookieEncryption` is **disabled** (Electron 33.4.11; `package.json` `build` has no `electronFuses`). It is read from the packaged
+  `release/linux-arm64-unpacked/orchestra` by `scripts/lib/fuse-wire.cjs` `parseFuseWire` (CommonJS so `afterPack` and the `.mjs` rigs share it; pure, never throws, refuses a missing /
+  duplicated sentinel, an unknown version or a garbage state byte; `src/shared/fuse-wire.test.ts`), cross-checked against `@electron/fuses` `getCurrentFuseWire`. The wire is `sentinel
+  dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX · version · length · one byte per fuse ('0' disabled, '1' enabled)`.
+- **Where a flip + its check must live:** electron-builder 26.15.3 runs the app's `afterPack` hook BEFORE its own `electronFuses` flip (`app-builder-lib/out/platformPackager.js`:
+  `emitAfterPack` … `doAddElectronFuses` — "the fuses MUST be flipped right before signing"), so an `afterPack` wire check can never see an `electronFuses` flip. A flip and the
+  check that proves it both belong in `afterPack`, through `context.packager.addElectronFuses(context, { version: '1', 1: true })` (index 1 = `EnableCookieEncryption`) and a re-read.
+- **Rig:** `scripts/e2e-cookie-fuse.sh <unpacked-dir>` (never touches the source tree; copies the unpacked app twice under `E2E_RIG_BASE`, default `/var/tmp/c407-<uid>`), driver
+  `scripts/e2e-cookie-fuse.mjs`, flip helper `scripts/lib/flip-cookie-fuse.cjs` (resolves `@electron/fuses` THROUGH electron-builder: it is not a direct dependency). Needs the packaged
+  build (`pnpm run build:bus-abi && rm -rf dist-electron && flock /var/tmp/orch-1000-b17728/pkg-388.lock pnpm run build`), MemAvailable ≥ 8 GB, `gnome-keyring-daemon`, `dbus-run-session`,
+  `bwrap`, `sway`; runs behind the GUI-slot semaphore. Evidence `docs/evidence/407-cookie-fuse.jsonl` (+ `.verdict.txt`), must-FAIL build `docs/evidence/407-cookie-fuse-mutant-on-is-off.jsonl`.
+
 ## Release — scripts/release.sh (~265 lines)
 **Worktree-safe** (never checks out master). Invoke via
 `pnpm run release [patch|minor|major|X.Y.Z] [flags]`.
