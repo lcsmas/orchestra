@@ -1509,6 +1509,12 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 // frame (never attached, or navigated while hidden) is SURFACED under the visible tab (a pulse the human cannot see), or refused when nothing covers it.
 // ---------------------------------------------------------------------------
 
+/** Measured inside the built app (#406): a hidden composited tab can be DEAD (no frame from its subscription, no input lands) — and one `capturePage()` wakes it. Bounded: a wake that hangs must not hang the action. */
+const WAKE_MS = 900;
+async function wakeView(wc: Electron.WebContents): Promise<void> {
+  await Promise.race([wc.capturePage().then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, WAKE_MS))]);
+}
+
 export interface DriveLease {
   /** The action is over (idempotent): the linger before the flip-back starts. */
   end(): void;
@@ -1615,8 +1621,10 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const id = `${wsId}/${tab.id}`;
   tabKeys.set(tab, id);
   leaseTabs.set(id, tab);
-  if (driveLeases.acquire(id, Date.now()).flip) wc.setBackgroundThrottling(false);
+  const flipped = driveLeases.acquire(id, Date.now()).flip;
+  if (flipped) wc.setBackgroundThrottling(false);
   scheduleSweep();
+  if (flipped && kind !== 'other' && tab.surface === 'hidden') await wakeView(wc); // click / type / screenshot need a live view; evaluate does not
   let ended = false;
   return {
     end: () => {
@@ -1645,9 +1653,16 @@ export async function captureTabFrame(
     const tab = resolveTab(wsId, tabId);
     const wc = liveContents(tab);
     if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
-    let img: Electron.NativeImage;
+    let img: Electron.NativeImage | null = null;
     try {
-      img = await frameOf(wc, HIDDEN_FRAME_DEADLINE_MS);
+      // `capturePage()` of a hidden view under the lease is fresh and wakes a dead one (measured in the built app); the frame subscription is the fallback.
+      const c = await Promise.race([wc.capturePage(), new Promise<null>((r) => setTimeout(() => r(null), HIDDEN_FRAME_DEADLINE_MS))]);
+      if (c && !c.isEmpty()) img = c;
+    } catch {
+      /* fall through to the frame subscription */
+    }
+    try {
+      img = img ?? (await frameOf(wc, 600));
     } catch {
       log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} capture got NO frame in ${HIDDEN_FRAME_DEADLINE_MS} ms (surface ${tab.surface}, composited ${tab.composited})`);
       throw new Error(NO_FRAME_MESSAGE);

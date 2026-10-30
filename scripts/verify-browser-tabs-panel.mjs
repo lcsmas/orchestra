@@ -24,7 +24,7 @@ class WebContents {
   loadURL(u) { this.loads.push(u); if (globalThis.__tabsStub.errorPage) { this.url = 'chrome-error://chromewebdata/'; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); } if (!globalThis.__tabsStub.holdLoads) this.url = u; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return this.url; } getTitle() { return ''; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('jpeg') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') }); }
 }
 export class WebContentsView {
   constructor() { this.webContents = new WebContents(); this.bounds = null; S.views.push(this); }

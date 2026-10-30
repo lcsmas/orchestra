@@ -38,7 +38,7 @@ class WebContents {
   loadURL() { return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return ''; } getTitle() { return ''; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('jpeg-bytes') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg-bytes') }); }
 }
 export class WebContentsView {
   constructor() { this.webContents = new WebContents(); this.bounds = null; }

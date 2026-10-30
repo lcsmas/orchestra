@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['act', 'cpu', 'never', 'orphan'];
+const ARMS = ['diag', 'act', 'cpu', 'never', 'orphan'];
 const MUTANTS = {
   // filled from the built bundle by scripts/e2e-browser-hidden-drive.mjs --mutants-todo (each edit must match EXACTLY once)
 };
@@ -42,7 +42,7 @@ if (argv.includes('--list')) {
 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARM_LIST = (flag('--arm', null) ?? ARMS.join(',')).split(',').sort((a, b) => ARMS.indexOf(a) - ARMS.indexOf(b)); // canonical order whatever --arm lists: `restart` needs the daemon's FIRST ids
+const ARM_LIST = (flag('--arm', null) ?? ARMS.filter((a) => a !== 'diag').join(',')).split(',').sort((a, b) => ARMS.indexOf(a) - ARMS.indexOf(b)); // canonical order whatever --arm lists: `restart` needs the daemon's FIRST ids
 const MUTANT = flag('--mutant', null);
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
@@ -240,7 +240,8 @@ async function bootApp(world, armDir, tag) {
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(armDir, `app-${tag}.log`);
   const fd = fs.openSync(logFile, 'w');
-  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
+  const inspectPort = argv.includes('--inspect-main') ? await freePort() : 0; // DIAGNOSTIC ONLY: the main process's node inspector (run experiments inside the app)
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [...(inspectPort ? [`--inspect=127.0.0.1:${inspectPort}`] : []), APP_DIR, '--ozone-platform=wayland'], { cwd: APP_DIR, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`[rig] app (${tag}) pid ${app.pid} debug port ${port} log ${logFile}`);
   const targets = async () => (await (await fetch(`http://127.0.0.1:${port}/json`)).json());
   const target = await waitFor(async () => (await targets()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')) || null, 60000, 'the app page target');
@@ -260,7 +261,7 @@ async function bootApp(world, armDir, tag) {
     haveEnv
       ? `app environ: ORCHESTRA_HOME=${ev('ORCHESTRA_HOME')} CLAUDE_CONFIG_DIR=${ev('CLAUDE_CONFIG_DIR')} WAYLAND_DISPLAY=${ev('WAYLAND_DISPLAY')} DISPLAY=${ev('DISPLAY') || '<unset>'}`
       : `app environ blanked by the app (${environ.length} empty entries); judged by behaviour: hooks socket ${path.join(world.ohome, 'sock')} present=${sockUp}, userData under the scratch home, child env passed with WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY} and no DISPLAY`);
-  return { app, port, ui, targets, env };
+  return { app, port, ui, targets, env, inspectPort };
 }
 
 async function main() {
@@ -586,6 +587,29 @@ function judgeRuns(arm, label, runs) {
 }
 
 const ARM_FNS = {
+  /** DIAGNOSTIC (needs --inspect-main): experiments inside the real app's main process on a hidden, composited tab */
+  async diag(ctx) {
+    const A = 'diag';
+    ctx.ep = {}; for (const W of ctx.world.workspaces) ctx.ep[W.id] = await hostCall(ctx, '/browser', { id: W.id, key: W.key });
+    ctx.ids = await populate(ctx, [ctx.W1], 100);
+    await sleep(5000);
+    const list = await (await fetch(`http://127.0.0.1:${ctx.inspectPort}/json`)).json();
+    const main = await Cdp.connect(list[0].webSocketDebuggerUrl);
+    await main.send('Runtime.enable');
+    const ex = async (code) => { try { return await main.eval(`(async () => { ${code} })()`); } catch (e) { return `ERR ${e.message}`.slice(0, 300); } };
+    const pre = `const __req = process.getBuiltinModule('node:module').createRequire(${JSON.stringify(path.join(APP_DIR, 'package.json'))}); const { webContents, BaseWindow } = __req('electron'); const all = webContents.getAllWebContents(); const find = (id) => all.find((w) => !w.isDestroyed() && new RegExp('[?&]id=' + id + '&').test(w.getURL())); const win = (BaseWindow.getAllWindows())[0]; const viewOf = (wc) => win.contentView.children.find((v) => v.webContents === wc); const frame = (wc, ms) => new Promise((res) => { const t0 = Date.now(); let done = false; const fin = (v) => { if (done) return; done = true; try { wc.endFrameSubscription(); } catch {} res(v); }; wc.beginFrameSubscription(true, (img) => fin({ frameMs: Date.now() - t0, size: img.getSize() })); setTimeout(() => fin('NO FRAME'), ms); });`;
+    const id = ctx.ids[ctx.W1.id][2];
+    const out = {};
+    const px = `const centre = (img) => { const b = img.toBitmap(); const sz = img.getSize(); const o = ((sz.height >> 1) * sz.width + (sz.width >> 1)) * 4; return [b[o + 2], b[o + 1], b[o]]; };`;
+    const inp = `const input = async (wc) => { const m0 = await wc.executeJavaScript('__hd.mouse()'); const t0 = Date.now(); wc.sendInputEvent({ type: 'mouseDown', x: 320, y: 218, button: 'left', clickCount: 1 }); wc.sendInputEvent({ type: 'mouseUp', x: 320, y: 218, button: 'left', clickCount: 1 }); await wc.insertText('hello'); for (let i = 0; i < 40; i++) { const [m, v] = await wc.executeJavaScript('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') return { landedMs: Date.now() - t0 }; await new Promise((r) => setTimeout(r, 20)); } return 'NOT LANDED'; };`;
+    const T = (n) => ctx.ids[ctx.W1.id][n];
+    const aliveMap = async (label) => { const res = []; for (let n = 0; n < 7; n++) res.push(await ex(`${pre} ${inp} const wc = find(${T(n)}); wc.setBackgroundThrottling(false); const f = await frame(wc, 300); const i = f === 'NO FRAME' ? 'skipped' : await input(wc); wc.setBackgroundThrottling(true); return (f === 'NO FRAME' ? 'DEAD' : 'ok') + ' pid' + wc.getOSProcessId();`)); out[label] = res.join(' | '); };
+    out.pids = await ex(`${pre} return all.filter((w) => !w.isDestroyed()).map((w) => w.getOSProcessId() + ':' + (new URL(w.getURL() || 'about:blank', 'http://x').search.slice(0, 12) || w.getURL().slice(-12))).join(' ');`);
+    await aliveMap('alive@+5s'); await sleep(35000); await aliveMap('alive@+45s'); await sleep(40000); await aliveMap('alive@+90s');
+    for (const [k, v] of Object.entries(out)) console.log(`  [diag] ${k}: ${JSON.stringify(v)}`);
+    main.close();
+    clause(A, 'diag-ran', true, 'see [diag] lines');
+  },
   /** P1, P2, P3, P4, P8 latency: ≥ 20 runs per target kind at N≈8 hidden views, then again at N≈40 */
   async act(ctx) {
     const A = 'act';

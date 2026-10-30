@@ -39,7 +39,7 @@ function grimShare() {
 }
 
 app.whenReady().then(async () => {
-  const watchdog = setTimeout(() => { result.error = 'watchdog'; emit(); process.exit(3); }, 120000);
+  const watchdog = setTimeout(() => { result.error = 'watchdog'; emit(); process.exit(3); }, 120000 + Number(process.env.PROBE_IDLE_MS || 0));
   const win = new BrowserWindow({ width: 1000, height: 700, frame: false, show: true, backgroundColor: HEX(COL.HUMAN) });
   await win.loadURL('data:text/html,' + encodeURIComponent(`<body style="margin:0;background:${HEX(COL.HUMAN)}">`));
   await sleep(1500);
@@ -81,6 +81,7 @@ app.whenReady().then(async () => {
   const v0 = mk('human'); attach(v0); await v0.webContents.loadURL(page(COL.HUMAN, false)); await sleep(400);
   for (let i = 0; i < OTHERS; i++) { const v = mk('o' + i); attach(v); await v.webContents.loadURL(page(COL.C, true)); await sleep(150); v.setVisible(false); }
   const T = mk('target'); const wc = T.webContents; result.steps.push('others+human ready');
+  if (Number(process.env.PROBE_SETBOUNDS_MS || 0) > 0) setInterval(() => { for (const v of keep) { try { v.setBounds(rect()); } catch {} } }, Number(process.env.PROBE_SETBOUNDS_MS));
   const busy = true;
   if (SCEN === 'U' || SCEN === 'U2') { // navigation while the view is attached-visible UNDER the cover (born visible), U2 then hides it
     attach(T, 0); await wc.loadURL(page(COL.A, busy)); await sleep(600); await wc.loadURL(page(COL.C, busy)); await sleep(600); if (SCEN === 'U2') T.setVisible(false);
@@ -105,7 +106,7 @@ app.whenReady().then(async () => {
   else if (SCEN === 'C') { await wc.loadURL(page(COL.A, busy)); await sleep(300); attach(T); await sleep(700); T.setVisible(false); }
   else if (SCEN === 'D') { await wc.loadURL(page(COL.A, busy)); await sleep(300); attach(T, 0); result.leakDuringAttach = []; const t0 = Date.now(); while (Date.now() - t0 < ATTACH_MS) { result.leakDuringAttach.push(await grimShare()); await sleep(40); } T.setVisible(false); }
   result.leakMaxBlue = Math.max(0, ...((result.leakDuringAttach || []).filter(Boolean).map((g) => Math.max(g.A, g.B))));
-  await sleep(2500); // idle, hidden, THROTTLED
+  await sleep(Number(process.env.PROBE_IDLE_MS || 2500)); // idle, hidden, THROTTLED (a long idle = the app's reality: tabs stay hidden for minutes)
   const idle0 = await bounded(wc.executeJavaScript('JSON.stringify(__p.snap())'), 5000); result.idleSnapOk = idle0.ok;
   if (SCEN === 'B2' && FLIP) wc.setBackgroundThrottling(false); // the lease is taken at Page.navigate time
   if (SCEN === 'B' || SCEN === 'B2') { await wc.loadURL(page(COL.C, busy)); await sleep(300); }
@@ -116,8 +117,10 @@ app.whenReady().then(async () => {
   const tAct = Date.now();
   const sway = (...a) => execFileSync('swaymsg', a, { encoding: 'utf8', timeout: 8000 }); let awayFrom = null;
   if (process.env.PROBE_AWAY === '1') { awayFrom = JSON.parse(sway('-t', 'get_workspaces')).find((w) => w.focused).name; sway('workspace', 'probe-away'); await sleep(500); }
+  const dbg = wc.debugger;
+  if (process.env.PROBE_ATTACH_FIRST === '1') { try { dbg.attach('1.3'); } catch (e) { result.attachError = String(e.message || e).slice(0, 100); } await sleep(300); }
   if (FLIP) wc.setBackgroundThrottling(false);
-  const dbg = wc.debugger; try { dbg.attach('1.3'); } catch (e) { result.attachError = String(e.message || e).slice(0, 100); }
+  if (process.env.PROBE_ATTACH_FIRST !== '1') { try { dbg.attach('1.3'); } catch (e) { result.attachError = String(e.message || e).slice(0, 100); } }
   const cap = async (name, fn) => { const t = Date.now(); const r = await bounded(fn(), 5000); const o = { name, ms: Date.now() - t, outcome: r.ok ? 'ok' : r.e }; if (r.ok) Object.assign(o, analyze(r.v)); o.fresh = o.kind === want; return o; };
   const cdp = (params) => async () => { const r = await dbg.sendCommand('Page.captureScreenshot', { format: 'png', ...params }); return require('electron').nativeImage.createFromBuffer(Buffer.from(r.data, 'base64')); };
   const forms = [['capturePage', () => wc.capturePage()], ['cdp-default', cdp({})], ['cdp-fromSurfaceFalse', cdp({ fromSurface: false })], ['cdp-beyondViewport', cdp({ captureBeyondViewport: true, clip: { x: 0, y: 0, width: 400, height: 300, scale: 1 } })]];

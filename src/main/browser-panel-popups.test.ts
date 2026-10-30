@@ -30,7 +30,7 @@ class WebContents {
   setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() {} getURL() { return this.url; } getTitle() { return this.title; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('x') }); }
   close() { this.destroyed = true; this.closed++; if (this._view) this._view.webContents = undefined; for (const f of (this.onceHandlers.destroyed || [])) f(); }
 }
 export class WebContentsView {

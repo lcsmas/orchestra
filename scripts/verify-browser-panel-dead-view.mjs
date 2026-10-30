@@ -46,7 +46,7 @@ class WebContents {
   setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL() { return Promise.resolve(); }
   reload() { this.reloaded = true; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('x') }); }
   getURL() { return ''; } getTitle() { return ''; }
   // THE CRITICAL BEHAVIOUR: destroying the contents makes the VIEW drop its
   // reference, so view.webContents becomes undefined (real Electron 33 does this).

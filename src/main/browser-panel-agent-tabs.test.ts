@@ -35,7 +35,7 @@ class WebContents {
   setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() { this.reloaded = true; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('x') }); }
   getURL() { return this.url; } getTitle() { return this.title; }
   close() { this.destroyed = true; this.closed++; this._view.webContents = undefined; }
 }

@@ -44,7 +44,7 @@ class WebContents {
   endFrameSubscription() { this.subs = (this.subs ?? 1) - 1; }
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() { this.reloaded = true; }
-  capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
+  capturePage() { return Promise.resolve({ isEmpty: () => false, getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('x') }); }
   getURL() { return this.url; } getTitle() { return this.title; }
   // Real Electron closes ASYNCHRONOUSLY: with __bpAsyncClose the contents stay live until finishClose().
   close() { this.closed++; if (globalThis.__bpAsyncClose) { this.pendingClose = true; return; } this.destroyed = true; this._view.webContents = undefined; }
