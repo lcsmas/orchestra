@@ -39,6 +39,7 @@ class WebContents {
   emitEvent(ev, ...a) { for (const f of (this.handlers[ev] || [])) f(...a); }
   once() {} setWindowOpenHandler() {}
   setBackgroundThrottling(v) { (this.throttle ??= []).push(v); }
+  isLoading() { return !!this.loadingNow; }
   beginFrameSubscription(_dirty, cb) { this.subs = (this.subs ?? 0) + 1; setTimeout(() => cb({ getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') }), 1); }
   endFrameSubscription() { this.subs = (this.subs ?? 1) - 1; }
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
@@ -571,6 +572,33 @@ test('clickRef in a BACKGROUND workspace is driven in place (#406): the click la
   assert.ok(wcOf(t1).cmds.some((c: any) => c.m === 'Input.dispatchMouseEvent'), 'the click was dispatched');
   assert.equal(attached.has(viewOf(t1)), false, 'and no view is composited for it (hidden under the focused tab)');
   assert.equal(bp.isFocusedWorkspace(fg), true, 'the focused workspace is untouched');
+});
+
+test('a tab hidden while its page is STILL LOADING is taken out of the window (a document born hidden gets no frame), and the next agent action surfaces it (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true }); // t2 on screen …
+  wcOf(t2).loadingNow = true; // … its document still loading …
+  bp.activateTab(ws, 't1'); // … and the human switches back before it paints
+  assert.equal(children.has(viewOf(t2)), false, 'a loading document is NOT left attached-hidden');
+  wcOf(t2).loadingNow = false;
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'the next agent action surfaces it under the visible tab and answers');
+  assert.equal(children.has(viewOf(t2)) && viewOf(t2).visible === false, true, 'and leaves it attached + hidden');
+});
+
+test('a hidden tab that starts a main-frame navigation is detached so the new document loads detached (born hidden = dead), and is surfaced on the next action (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2'); // surfaced once: attached + hidden
+  assert.equal(children.has(viewOf(t2)), true);
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
+  assert.equal(children.has(viewOf(t2)), false, 'the navigation took the hidden view out of the window');
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: true });
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'surfaced again on the next action');
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: false, isSameDocument: false });
+  assert.equal(children.has(viewOf(t2)), true, 'a sub-frame navigation never detaches');
 });
 
 test('with NOTHING on screen to hide a first-paint pulse under, a never-composited tab refuses a screenshot FAST with a clear error (P6)', async () => {

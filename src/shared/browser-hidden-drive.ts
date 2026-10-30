@@ -9,11 +9,11 @@
 //   · `Page.captureScreenshot` on a hidden view is flaky even with the flip (1–2 of 3 runs): hidden captures come from the frame subscription instead;
 //   · a document that loaded while the view was hidden was never composited: it produces no frame and takes no input until it has been shown once
 //     ("surface": a short visible pulse BELOW the human's opaque tab, then hidden again);
-//   · when the sway workspace of the window is not displayed nothing paints at all: a capture that gets no frame is refused FAST and remembered.
+//   · a hidden-view capture that gets no frame in HIDDEN_FRAME_DEADLINE_MS fails with one honest message (a never-composited document, or a window on an undisplayed
+//     sway workspace where the CDP forms hang — measured: the frame subscription still delivers there). No verdict is cached: one dead tab must not refuse healthy ones.
 
 export const LINGER_MS = 600; // throttling stays off this long after the last action (an agent's next command usually follows within it)
 export const WATCHDOG_MS = 5000; // a lease nobody touched for this long is orphaned (its action died): force the flip-back — P7: linger + 5 s at most
-export const DISPLAY_TTL_MS = 4000; // how long "no frame arrived" / "a frame arrived" stays the answer to "is the window being displayed"
 export const HIDDEN_FRAME_DEADLINE_MS = 1200; // a hidden capture that has produced no frame by then is refused (measured: a fresh frame arrives in ≤ 45 ms)
 export const SURFACE_PULSE_MAX_MS = 1500; // the visible pulse under the human's tab ends at the first frame or here
 
@@ -29,40 +29,26 @@ export interface TabFacts {
   hasCover: boolean;
 }
 
-export type RefusalReason = 'window-not-displayed' | 'needs-first-paint' | 'no-view';
+export type RefusalReason = 'needs-first-paint' | 'no-view';
 export type ActionDecision =
   | { act: 'direct' } // composited on screen: no flip, nothing to do
   | { act: 'lease' } // hidden but drivable: throttling off around the action
   | { act: 'surface-then-lease' } // its document was never composited: show it once under the cover, then as `lease`
   | { act: 'refuse'; reason: RefusalReason; message: string };
 
-export const NOT_DISPLAYED_MESSAGE =
-  'the Orchestra window produced no frame: its sway workspace is probably not the one on display (nothing paints there, for any tab). ' +
-  'snapshot, eval, get, open, click and type still work; for a screenshot, switch to the workspace holding Orchestra.';
+export const NO_FRAME_MESSAGE =
+  'no frame arrived from this tab: either its page loaded while it was hidden and has not been on screen since, or the Orchestra window is on a desktop workspace that is not displayed (nothing paints there). ' +
+  'snapshot, eval, get, open, click and type still work; open the Browser pane (or switch to the desktop workspace holding Orchestra) and retry.';
 export const NEEDS_FIRST_PAINT_MESSAGE =
   'this tab has not been on screen since its page loaded, so it has no frame to capture and takes no input yet, and nothing is on screen to cover showing it briefly. ' +
   "snapshot, eval, get and open still work; ask the user to open this workspace's Browser pane once.";
 
-/** Is the window being displayed (frames can be produced)? Remembered observations only — never assumed. `null` = no recent evidence. */
-export interface DisplayEvidence {
-  okAt: number | null;
-  noFrameAt: number | null;
-}
-export function windowDisplayed(e: DisplayEvidence, now: number): boolean | null {
-  const ok = e.okAt !== null && now - e.okAt <= DISPLAY_TTL_MS ? e.okAt : null;
-  const bad = e.noFrameAt !== null && now - e.noFrameAt <= DISPLAY_TTL_MS ? e.noFrameAt : null;
-  if (ok === null && bad === null) return null;
-  if (ok !== null && bad !== null) return ok >= bad ? true : false;
-  return ok !== null;
-}
-
 /**
- * What an agent action on a tab needs. `displayed` is the remembered evidence (above): `false` refuses a CAPTURE at once (nothing can paint), while input
- * and everything else still go through (measured: click / type / evaluate land with the window off screen).
+
+ * What an agent action on a tab needs. Input and evaluate need no frame; a capture needs one, which a hidden composited tab delivers under a lease.
  */
-export function decideTabAction(i: { tab: TabFacts | null; kind: ActionKind; displayed: boolean | null }): ActionDecision {
+export function decideTabAction(i: { tab: TabFacts | null; kind: ActionKind }): ActionDecision {
   if (!i.tab) return { act: 'refuse', reason: 'no-view', message: 'the browser tab has no live view' };
-  if (i.kind === 'capture' && i.displayed === false) return { act: 'refuse', reason: 'window-not-displayed', message: NOT_DISPLAYED_MESSAGE };
   if (i.tab.surface === 'visible') return { act: 'direct' };
   if (i.kind === 'other') return { act: 'lease' }; // evaluate / navigate / get: they work on any state; the lease keeps timers and loads moving
   if (i.tab.composited && i.tab.surface === 'hidden') return { act: 'lease' };

@@ -30,12 +30,10 @@ import {
   LeaseBook,
   HIDDEN_FRAME_DEADLINE_MS,
   SURFACE_PULSE_MAX_MS,
-  NOT_DISPLAYED_MESSAGE,
+  NO_FRAME_MESSAGE,
   cropRect,
   decideTabAction,
-  windowDisplayed,
   type ActionKind,
-  type DisplayEvidence,
   type Surface,
 } from '../shared/browser-hidden-drive.ts';
 import { partitionFor } from '../shared/browser-profile.ts';
@@ -215,6 +213,12 @@ function removeView(tab: Tab): void {
 /** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
 function hideView(tab: Tab): void {
   if (tab.surface === 'detached') return;
+  // A document that is still loading when its view is hidden is born hidden: no first frame, no input (measured, #406). Take the view out instead: it loads detached
+  // and is surfaced under the cover by the next agent action, like a tab opened in a background workspace.
+  if (liveContents(tab)?.isLoading?.()) {
+    removeView(tab);
+    return;
+  }
   try {
     tab.view.setVisible(false);
   } catch {
@@ -1506,7 +1510,6 @@ const tabKeys = new WeakMap<Tab, string>();
 const tabKeyOf = (tab: Tab): string => tabKeys.get(tab) ?? '';
 const leaseTabs = new Map<string, Tab>();
 let leaseTimer: ReturnType<typeof setTimeout> | null = null;
-const displayEvidence: DisplayEvidence = { okAt: null, noFrameAt: null };
 
 function sweepLeases(): void {
   leaseTimer = null;
@@ -1592,7 +1595,7 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const wc = liveContents(tab);
   if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
   const cover = coverTab();
-  const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind, displayed: windowDisplayed(displayEvidence, Date.now()) });
+  const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind });
   if (d.act === 'refuse') throw new Error(d.message);
   if (d.act === 'direct') return NOOP_LEASE;
   if (d.act === 'surface-then-lease') await surfaceTab(tab, cover as Tab);
@@ -1633,10 +1636,8 @@ export async function captureTabFrame(
     try {
       img = await frameOf(wc, HIDDEN_FRAME_DEADLINE_MS);
     } catch {
-      displayEvidence.noFrameAt = Date.now();
-      throw new Error(NOT_DISPLAYED_MESSAGE);
+      throw new Error(NO_FRAME_MESSAGE);
     }
-    displayEvidence.okAt = Date.now();
     const size = img.getSize();
     const rect = cropRect(opts.clip, size.width, size.height, size.width / Math.max(1, tab.view.getBounds().width));
     const out = rect ? img.crop(rect) : img;

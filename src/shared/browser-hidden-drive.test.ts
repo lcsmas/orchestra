@@ -3,55 +3,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DISPLAY_TTL_MS, LINGER_MS, LeaseBook, NEEDS_FIRST_PAINT_MESSAGE, NOT_DISPLAYED_MESSAGE, WATCHDOG_MS, cropRect, decideTabAction, windowDisplayed,
+  LINGER_MS, LeaseBook, NEEDS_FIRST_PAINT_MESSAGE, NO_FRAME_MESSAGE, WATCHDOG_MS, cropRect, decideTabAction,
 } from './browser-hidden-drive.ts';
 import type { TabFacts } from './browser-hidden-drive.ts';
 
 const T = (o: Partial<TabFacts>): TabFacts => ({ surface: 'hidden', composited: true, hasCover: true, ...o });
 
 test('a tab on screen needs nothing (no flip, no surface)', () => {
-  assert.deepEqual(decideTabAction({ tab: T({ surface: 'visible' }), kind: 'capture', displayed: null }), { act: 'direct' });
-  assert.deepEqual(decideTabAction({ tab: T({ surface: 'visible' }), kind: 'input', displayed: true }), { act: 'direct' });
+  assert.deepEqual(decideTabAction({ tab: T({ surface: 'visible' }), kind: 'capture' }), { act: 'direct' });
+  assert.deepEqual(decideTabAction({ tab: T({ surface: 'visible' }), kind: 'input' }), { act: 'direct' });
 });
 
 test('a hidden tab whose document was composited is driven in place under a lease — screenshot, click, type and evaluate alike', () => {
-  for (const kind of ['capture', 'input', 'other'] as const) assert.deepEqual(decideTabAction({ tab: T({}), kind, displayed: null }), { act: 'lease' });
+  for (const kind of ['capture', 'input', 'other'] as const) assert.deepEqual(decideTabAction({ tab: T({}), kind }), { act: 'lease' });
 });
 
 test('a tab with no first frame (never attached, or navigated while hidden) is SURFACED under the cover; without a cover it is refused, fast and clearly', () => {
   for (const surface of ['detached', 'hidden'] as const) {
-    assert.deepEqual(decideTabAction({ tab: T({ surface, composited: false }), kind: 'capture', displayed: null }), { act: 'surface-then-lease' });
-    assert.deepEqual(decideTabAction({ tab: T({ surface, composited: false }), kind: 'input', displayed: null }), { act: 'surface-then-lease' });
-    const r = decideTabAction({ tab: T({ surface, composited: false, hasCover: false }), kind: 'capture', displayed: null });
+    assert.deepEqual(decideTabAction({ tab: T({ surface, composited: false }), kind: 'capture' }), { act: 'surface-then-lease' });
+    assert.deepEqual(decideTabAction({ tab: T({ surface, composited: false }), kind: 'input' }), { act: 'surface-then-lease' });
+    const r = decideTabAction({ tab: T({ surface, composited: false, hasCover: false }), kind: 'capture' });
     assert.deepEqual(r, { act: 'refuse', reason: 'needs-first-paint', message: NEEDS_FIRST_PAINT_MESSAGE });
   }
   assert.match(NEEDS_FIRST_PAINT_MESSAGE, /snapshot, eval, get and open still work/);
 });
 
 test('evaluate / navigate / get on a tab with no first frame need no pulse: they work on any state (lease only)', () => {
-  assert.deepEqual(decideTabAction({ tab: T({ surface: 'detached', composited: false, hasCover: false }), kind: 'other', displayed: null }), { act: 'lease' });
+  assert.deepEqual(decideTabAction({ tab: T({ surface: 'detached', composited: false, hasCover: false }), kind: 'other' }), { act: 'lease' });
 });
 
 test('a view that detached after being shown is surfaced like a never-attached one (a2: removeChildView gives no frames)', () => {
-  assert.deepEqual(decideTabAction({ tab: T({ surface: 'detached', composited: true }), kind: 'capture', displayed: null }), { act: 'surface-then-lease' });
+  assert.deepEqual(decideTabAction({ tab: T({ surface: 'detached', composited: true }), kind: 'capture' }), { act: 'surface-then-lease' });
 });
 
-test('a CAPTURE is refused at once when the window was recently seen producing no frame; input and everything else still go through', () => {
-  const r = decideTabAction({ tab: T({}), kind: 'capture', displayed: false });
-  assert.deepEqual(r, { act: 'refuse', reason: 'window-not-displayed', message: NOT_DISPLAYED_MESSAGE });
-  assert.equal(decideTabAction({ tab: T({}), kind: 'input', displayed: false }).act, 'lease');
-  assert.equal(decideTabAction({ tab: T({ surface: 'visible' }), kind: 'capture', displayed: false }).act, 'refuse', 'even the visible tab: nothing paints');
-  assert.equal(decideTabAction({ tab: T({}), kind: 'capture', displayed: true }).act, 'lease');
-  assert.equal(decideTabAction({ tab: null, kind: 'input', displayed: null }).act, 'refuse');
-});
-
-test('window-displayed evidence: the newest observation wins, an old one expires, no evidence = unknown', () => {
-  assert.equal(windowDisplayed({ okAt: null, noFrameAt: null }, 1000), null);
-  assert.equal(windowDisplayed({ okAt: 900, noFrameAt: null }, 1000), true);
-  assert.equal(windowDisplayed({ okAt: null, noFrameAt: 900 }, 1000), false);
-  assert.equal(windowDisplayed({ okAt: 800, noFrameAt: 900 }, 1000), false);
-  assert.equal(windowDisplayed({ okAt: 950, noFrameAt: 900 }, 1000), true);
-  assert.equal(windowDisplayed({ okAt: 1000 - DISPLAY_TTL_MS - 1, noFrameAt: null }, 1000), null, 'expired');
+test('no tab, no action; and the no-frame message names BOTH causes (a never-composited document, an undisplayed desktop workspace) without claiming either', () => {
+  assert.equal(decideTabAction({ tab: null, kind: 'input' }).act, 'refuse');
+  assert.match(NO_FRAME_MESSAGE, /loaded while it was hidden/);
+  assert.match(NO_FRAME_MESSAGE, /desktop workspace that is not displayed/);
+  assert.match(NO_FRAME_MESSAGE, /click and type still work/);
 });
 
 test('lease book: the FIRST holder flips throttling off, later holders do not; the flip-back waits for the LAST holder plus the linger', () => {

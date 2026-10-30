@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>hd</title>
+<style>html,body{margin:0;height:100%}</style></head>
+<body><input id="in" style="position:fixed;left:200px;top:200px;width:240px;height:36px"><div style="height:3000px"></div>
+<script>
+// #406 phase 2 fixture: a solid page (?c=<hex>) whose colour the rig changes while the tab is hidden (a STALE frame is then distinguishable), with
+// a 50 ms timer (its tick rate is the throttling oracle: ~20/s unthrottled, ~1/s throttled), a click counter and a typed value.
+const q = new URLSearchParams(location.search);
+document.title = 'hd-' + (q.get('id') || '0');
+const set = (c) => { document.documentElement.style.background = c; document.body.style.background = c; };
+set('#' + (q.get('c') || 'd62728'));
+let ticks = 0, mouse = 0;
+setInterval(() => { ticks++; }, 50);
+addEventListener('mousedown', () => { mouse++; }, true);
+window.__hd = { set, ticks: () => ticks, mouse: () => mouse, value: () => document.getElementById('in').value };
+</script></body></html>

@@ -82,7 +82,7 @@ test('F1/F3: #395\'s shared isBrowserLevelMethod decides the browser-level verbs
   assert.ok(!core.includes('isBrowserLevelOnTabSession'), 'no second predicate in #397');
   const dispatch = core.slice(core.indexOf('private async dispatch('), core.indexOf('// ── browser-level surface'));
   const pred = dispatch.indexOf('if (isBrowserLevelMethod(method)) {');
-  const split = dispatch.indexOf('return this.tabCommand(tabId, method, params, childSessionId);');
+  const split = dispatch.indexOf('return this.tabCommand(tabId, method, params, childSessionId, c);');
   assert.ok(pred > 0 && split > pred, 'the predicate is applied before the tab/child split');
   const tab = core.slice(core.indexOf('private async tabCommand('), core.indexOf('/** An agent action on a tab nobody is looking at'));
   assert.match(tab, /\n    if \(isActingCdpMethod\(method\)\) \{\n      if \(this\.port\.beginAction\) \{/, 'the lease is not inside an `if (!childSessionId …)`: a child (frame / worker) session is the same tab and its commands count too');
