@@ -506,11 +506,11 @@ async function populate(ctx, which, idBase) {
     ids[W.id] = [];
     const loaded = async (title) => waitFor(async () => (await reg(ctx, W)).tabs.some((t) => t.title === title), 20000, `${title} to load in ${W.branch}`);
     if (W === ctx.W1) { await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W.id)}, ${sel(ctx.URL.a)}).then(() => true)`); await loaded('Tabs fixture A'); }
-    else { id++; await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W.id)}, ${sel(hdUrl(ctx, id))}).then(() => true)`); ids[W.id].push(id); await loaded('hd-' + id); }
+    else { id++; await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W.id)}, ${sel(hdUrl(ctx, id))}).then(() => true)`); ids[W.id].push(id); await loaded('hd-' + id); await sleep(1000); }
     for (let i = (W === ctx.W1 ? 1 : 1); i < 8; i++) {
       id++; const res = await ctx.ui.eval(`window.orchestra.browserTabNew(${sel(W.id)}, ${sel(hdUrl(ctx, id, PALETTE[id % PALETTE.length].map((v) => v.toString(16).padStart(2, '0')).join('')))}).then((r) => ({ ok: r.ok, tabId: r.tabId }))`);
       if (!res.ok) throw new Error(`tab ${i} of ${W.branch} refused`); ids[W.id].push(id);
-      await loaded('hd-' + id); // the human looked at it: its page has painted before the next tab takes the screen
+      await loaded('hd-' + id); await sleep(1000); // the human looked at it: its page has painted before the next tab takes the screen
     }
     await waitFor(async () => (await reg(ctx, W)).tabs.length === 8, 20000, `${W.branch} to hold 8 tabs`);
     if (W === ctx.W1) { await ctx.ui.eval(`window.orchestra.browserTabActivate(${sel(W.id)}, ${sel(r0.tabs[0].id)}).then(() => true)`); }
@@ -621,6 +621,7 @@ const ARM_FNS = {
     const log = fs.readFileSync(path.join(ctx.armDir, 'app-boot1.log'), 'utf8');
     const crashes = (log.match(/render-process-gone|child-process-gone|GPU process exited unexpectedly|Lost UI shared context/g) ?? []).length;
     clause(A, 'P5-no-renderer-or-gpu-crash', crashes === 0, `${crashes} crash / context-lost lines in the app log over ${runs8.length + runs40.length} runs`);
+    for (const l of log.split('\n').filter((x) => /browser-panel: drive/.test(x)).slice(0, 14)) console.log(`  [app-log] ${l.slice(l.indexOf('browser-panel')).slice(0, 170)}`);
     ctx.actRuns = { runs8, runs40 };
   },
 

@@ -112,6 +112,9 @@ export interface Tab {
   surface: Surface;
   /** The tab's CURRENT document was composited (a hidden view whose document loaded while hidden has no first frame and takes no input: it is detached at navigation start and surfaced on the next agent action). */
   composited: boolean;
+  /** When the view was last put on screen / when its last load stopped (ms): a document hidden before its first frame is born hidden (see {@link hideView}). */
+  shownAt: number;
+  stoppedAt: number;
 }
 
 /** A workspace's browser panel: an ordered list of tabs with one active tab,
@@ -196,6 +199,9 @@ function activeTabOf(panel: Panel): Tab | undefined {
   return panel.tabs.find((t) => t.id === panel.activeId);
 }
 
+/** A tab shown / loaded for less than this when it is hidden has not painted yet (hiding it would leave its document without a first frame). */
+const FIRST_PAINT_MS = 400;
+
 /** Take `tab`'s view OUT of the window (any state). Used when the tab dies, closes, is rebuilt, or navigates while hidden. */
 function removeView(tab: Tab): void {
   if (tab.surface !== 'detached') {
@@ -213,9 +219,9 @@ function removeView(tab: Tab): void {
 /** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
 function hideView(tab: Tab): void {
   if (tab.surface === 'detached') return;
-  // A document that is still loading when its view is hidden is born hidden: no first frame, no input (measured, #406). Take the view out instead: it loads detached
-  // and is surfaced under the cover by the next agent action, like a tab opened in a background workspace.
-  if (liveContents(tab)?.isLoading?.()) {
+  // A document that is still loading — or has not had FIRST_PAINT_MS since it was shown / finished loading — when its view is hidden is born hidden: no first frame, no input
+  // (measured, #406). Take the view out instead: it settles detached and is surfaced under the cover by the next agent action, like a tab opened in a background workspace.
+  if (liveContents(tab)?.isLoading?.() || Date.now() - Math.max(tab.shownAt, tab.stoppedAt) < FIRST_PAINT_MS) {
     removeView(tab);
     return;
   }
@@ -236,6 +242,7 @@ function showView(panel: Panel, tab: Tab): void {
   tab.view.setVisible(true);
   tab.surface = 'visible';
   tab.composited = true;
+  tab.shownAt = Date.now();
 }
 
 /** Remove `tab`'s view from the window and clear the panel's "composited tab" mark if it was that one. */
@@ -855,6 +862,8 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: Browser
     nav: blankNav(),
     surface: 'detached',
     composited: false,
+    shownAt: 0,
+    stoppedAt: 0,
   };
   if (panel.bounds) view.setBounds(panel.bounds);
 
@@ -862,7 +871,10 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: Browser
   wc.on('content-bounds-updated', (e) => e.preventDefault()); // a page's window.resizeTo / moveTo never moves or resizes the app window (#396 review F-a)
   watchPopups(panel, wc, opts.openedBy);
   wc.on('did-start-loading', () => emitState(panel, tab, { loading: true, error: undefined }));
-  wc.on('did-stop-loading', () => emitState(panel, tab, { loading: false }));
+  wc.on('did-stop-loading', () => {
+    tab.stoppedAt = Date.now();
+    emitState(panel, tab, { loading: false });
+  });
   // A restored tab keeps its remembered URL until a navigation COMMITS to a restorable URL: during the load, and after a
   // failed one (server down at boot), `getURL()` can be the pending URL or a chrome-error:// page — neither may blank the record.
   const committed = (url: string): void => {
@@ -1596,6 +1608,7 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
   const cover = coverTab();
   const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind });
+  if (kind !== 'other' && d.act !== 'direct') log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} ${kind} → ${d.act} (surface ${tab.surface}, composited ${tab.composited}, cover ${!!cover}, loading ${!!wc.isLoading?.()})`);
   if (d.act === 'refuse') throw new Error(d.message);
   if (d.act === 'direct') return NOOP_LEASE;
   if (d.act === 'surface-then-lease') await surfaceTab(tab, cover as Tab);
@@ -1636,6 +1649,7 @@ export async function captureTabFrame(
     try {
       img = await frameOf(wc, HIDDEN_FRAME_DEADLINE_MS);
     } catch {
+      log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} capture got NO frame in ${HIDDEN_FRAME_DEADLINE_MS} ms (surface ${tab.surface}, composited ${tab.composited})`);
       throw new Error(NO_FRAME_MESSAGE);
     }
     const size = img.getSize();
