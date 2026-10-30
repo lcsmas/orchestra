@@ -218,7 +218,9 @@ if (!['main', 'n160', 'a2'].includes(STAGE)) refuse('--stage main|n160|a2');
 let schedule = buildSchedule(STAGE);
 const only = flag('--only', null); if (only) schedule = schedule.filter((s) => s.id.includes(only));
 const instValid = (r) => isValid(DEV ? { ...r, windowS: LIMITS.windowS, settleS: LIMITS.settleS } : r); // a DEV run is judged on every instrument fact except its (deliberately short) length
-const isDone = (s) => { const d = path.join(OUT, 'runs', s.id); if (!fs.existsSync(d)) return false; const as = fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort(); if (!as.length) return false; const last = JSON.parse(fs.readFileSync(path.join(d, as[as.length - 1]), 'utf8')); if (as.length >= 3) return true; return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
+const attemptsOf = (s) => { const d = path.join(OUT, 'runs', s.id); return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort().map((f) => JSON.parse(fs.readFileSync(path.join(d, f), 'utf8'))) : []; };
+const isDone = (s) => { const as = attemptsOf(s); if (!as.length) return false; const last = as[as.length - 1]; if (as.filter((a) => a.aborted !== 'memavail').length >= 3 || as.length >= 12) return true; // a memory-floor abort is the guard working, not an instrument failure: it never uses up the 3 attempts
+  return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
 // N=160 (memory-safety clause): measured directly only if the N=40 rows show the peak fits above 8 GB; else it stays PROJECTED.
 if (STAGE === 'n160') {
   // The rig tree's real draw is its summed PSS (MemAvailable swings ±2 GB with the other agents, RSS double-counts the pages the renderers share):
@@ -239,20 +241,36 @@ if (STAGE === 'n160') {
 
 // ---------------- the batch loop ----------------
 const BATCH_MIN = Number(flag('--batch-min', '40'));
-const estimateNeedKB = (spec) => { const prior = loadDir().filter((r) => r.kind === 'cell' && r.page === spec.page && r.n === spec.n && r.pssKB && !r.aborted); const d = prior.length ? Math.max(...prior.map((r) => r.pssKB)) * 1.25 : spec.n * 100 * 1024; return LIMITS.memFloorKB + d; }; // a run's draw = its summed PSS; first run of a cell: 100 MB per view
-async function waitForMemory(spec) {
-  if (spec.kind === 'control-abort') return true;
-  const need = estimateNeedKB(spec), t0 = Date.now(); let last = 0;
-  while (memAvail() < need) { if (Date.now() - t0 > 25 * 60000) return false; if (Date.now() - last > 60000) { console.error(`[measure] waiting for MemAvailable ≥ ${(need / GB_KB).toFixed(1)} GB (now ${(memAvail() / GB_KB).toFixed(1)} GB) before ${spec.id}`); last = Date.now(); } await sleep(10000); }
-  return true;
+// need = floor + the run's expected draw. A run's draw = its summed PSS (what the tree really holds); first run of a cell: extrapolate this page's measured PSS-per-view
+// from the nearest measured smaller N (a MemAvailable drop is useless here: other agents swing it ±2 GB) with a 1.4× + 0.5 GB margin for GPU / page cache.
+const estimateNeedKB = (spec) => {
+  const prior = loadDir().filter((r) => r.kind === 'cell' && r.page === spec.page && r.pssKB && !r.aborted);
+  const pssAt = (n) => { const v = prior.filter((r) => r.n === n).map((r) => r.pssKB); return v.length ? Math.max(...v) : null; };
+  const same = pssAt(spec.n); if (same !== null) return LIMITS.memFloorKB + same * 1.25;
+  const ns = [...new Set(prior.map((r) => r.n))].filter((n) => n < spec.n).sort((x, y) => x - y);
+  if (!ns.length) return LIMITS.memFloorKB + spec.n * 100 * 1024 + 512 * 1024;
+  const hi = ns[ns.length - 1], lo = ns.length > 1 ? ns[0] : null; const slope = lo !== null && hi > lo ? (pssAt(hi) - pssAt(lo)) / (hi - lo) : 100 * 1024;
+  return LIMITS.memFloorKB + (pssAt(hi) + (spec.n - hi) * slope) * 1.4 + 512 * 1024;
+};
+// the next run whose draw fits above the floor NOW; a cell that does not fit is deferred (the others go on), and only when nothing fits does the batch wait (≤ 25 min).
+async function nextFitting(pending) {
+  const t0 = Date.now(); let last = 0;
+  for (;;) {
+    const avail = memAvail(); const i = pending.findIndex((s) => s.kind === 'control-abort' || avail >= estimateNeedKB(s));
+    if (i >= 0) return pending.splice(i, 1)[0];
+    if (Date.now() - t0 > 25 * 60000) return null;
+    if (Date.now() - last > 60000) { const need = Math.min(...pending.map(estimateNeedKB)); console.error(`[measure] nothing fits: MemAvailable ${(avail / GB_KB).toFixed(1)} GB, the cheapest pending run needs ${(need / GB_KB).toFixed(1)} GB (${pending.length} pending)`); last = Date.now(); }
+    await sleep(10000);
+  }
 }
 const todo = schedule.filter((s) => !isDone(s));
 console.error(`[measure] stage ${STAGE}${DEV ? ' (DEV: short, never counted)' : ''}: ${schedule.length} scheduled, ${schedule.length - todo.length} done, ${todo.length} to run; settle ${SETTLE}s window ${WINDOW}s; out ${OUT}`);
-let ran = 0;
-for (const spec of todo) {
+let ran = 0; const pending = [...todo];
+while (pending.length) {
+  const spec = await nextFitting(pending);
+  if (!spec) { console.error(`[measure] MemAvailable never let a pending run start (${pending.length} left); stopping (exit 75)`); process.exitCode = 75; break; }
   const est = SETTLE + WINDOW + FRAME + 40 + spec.n * 1.2;
-  if ((Date.now() - T0) / 1000 + est + 30 > BATCH_MIN * 60) { console.error(`[measure] batch budget ${BATCH_MIN} min reached — ${todo.length - ran} left (resume with the same command)`); break; }
-  if (!(await waitForMemory(spec))) { console.error(`[measure] MemAvailable never reached the floor for ${spec.id}; stopping (exit 75)`); process.exitCode = 75; break; }
+  if ((Date.now() - T0) / 1000 + est + 30 > BATCH_MIN * 60) { console.error(`[measure] batch budget ${BATCH_MIN} min reached — ${pending.length + 1} left (resume with the same command)`); break; }
   const r = await runOne(spec); ran++;
   const ok = r.kind === 'cell' ? instValid(r) : r.kind === 'control-abort' ? r.aborted === 'memavail' : (r.crashes ?? 0) >= 1;
   console.error(`[measure] #${spec.seq} ${spec.id} attempt ${r.attempt} → ${ok ? 'ok' : 'NOT OK'}${r.aborted ? ` aborted=${r.aborted}` : ''} rss=${r.rssKB ? (r.rssKB / 1024).toFixed(0) + 'MB' : 'n/a'} gpu=${r.gpuRssKB ? (r.gpuRssKB / 1024).toFixed(0) + 'MB' : 'n/a'} cpu=${r.cpuPct ?? 'n/a'}% frames=${r.idleFrames} canary=${r.framesCanary} crashes=${r.crashes} ctx=${r.contextLost} procs=${r.treePidsMax ?? 'n/a'} avail-min=${r.memAvailMinKB ? (r.memAvailMinKB / GB_KB).toFixed(1) : 'n/a'}GB${r.error ? ' ERR ' + r.error.slice(0, 200) : ''}${r.errors?.length ? ' errs=' + r.errors.slice(0, 2).join(';').slice(0, 160) : ''}`);
