@@ -1,10 +1,12 @@
 // Accès mobile (#408): what the server does with a sender it just refused with a 413 while the sender is still pushing the body.
 // Closing at once makes the kernel RST the sender; its write error then discards the unread 413 (client reads -1). So the 413 goes out whole,
 // the rest is read and thrown away under these bounds, then the connection is held UNREAD until the deadline (a paused socket cannot see the sender hang up).
-import { MOBILE_SEND_MAX_BODY } from './acces-mobile-conversation.ts';
+import { MOBILE_ATTACH_MAX_BODY } from './acces-mobile-conversation.ts';
 
-/** Bytes read-and-discarded after the 413; past this the socket is paused (the sender stalls on TCP backpressure, nothing more is buffered). */
-export const REFUSED_DRAIN_MAX_BYTES = 8 * MOBILE_SEND_MAX_BODY;
+/** Bytes read-and-discarded after the 413 = the biggest body this server accepts (a legit attachment costs the same to read), so a body that fits the
+ *  kernel buffers is read to its END and closed cleanly. Past it the socket is paused (the sender stalls on TCP backpressure, nothing more is buffered) — a
+ *  paused request emits no 'end', so `done` is only reachable below this bound (#408 review F2). */
+export const REFUSED_DRAIN_MAX_BYTES = MOBILE_ATTACH_MAX_BODY;
 /** Hard deadline after the 413: whatever the sender is doing, the connection is destroyed then. */
 export const REFUSED_LINGER_MAX_MS = 10_000;
 
@@ -14,7 +16,7 @@ export type RefusedDrainStep =
   | 'done' // the sender finished its body: end the response, a clean close
   | 'cut'; // deadline: destroy the connection
 
-/** The only decision table of the post-413 close. `done` beats `cut` (a sender that finished is closed cleanly, never reset). */
+/** The only decision table of the post-413 close, a total function: `done` beats `cut` (a sender that finished is closed cleanly, never reset). */
 export function refusedDrainStep(s: { discardedBytes: number; requestEnded: boolean; lingerExpired: boolean; maxBytes?: number }): RefusedDrainStep {
   if (s.requestEnded) return 'done';
   if (s.lingerExpired) return 'cut';

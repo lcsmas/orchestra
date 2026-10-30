@@ -126,9 +126,12 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
   let writesInFlight = 0;
   // #376: at most MOBILE_LAUNCH_PER_WINDOW launches per rolling minute, whoever asks (this process is the only caller of main's launch).
   const launches = createLaunchLimiter(opts.now ?? (() => performance.now()));
+  // #408: a socket whose body was refused with a 413 is closing — a request pipelined behind it must not run (its answer would be orphaned, a stream leaked).
+  const refusedSockets = new WeakSet<object>();
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
+    if (refusedSockets.has(req.socket)) return void req.resume();
     const method = req.method ?? 'GET';
     const pathOnly = (req.url ?? '/').split('?')[0].split('#')[0];
     const refuse = (code: 400 | 401 | 403 | 404 | 405 | 413 | 415 | 429, reason: string): void => {
@@ -139,6 +142,7 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
      *  that is still pushing, and the kernel's RST then costs it the unread 413. `Connection: close` tells the client not to reuse the socket. */
     const refuseTooLarge = (): void => {
       log('too-large', `refused 413 too-large ${method} ${pathOnly.slice(0, 80)}`);
+      refusedSockets.add(req.socket);
       res.writeHead(413, { ...SECURITY_HEADERS, 'Content-Length': '0', Connection: 'close' });
       res.flushHeaders();
     };
