@@ -34,7 +34,7 @@ function fake(opts: { beginAction?: CdpPanelPort['beginAction']; captureView?: C
     invalidate: () => undefined,
     captureFallback: async () => 'FB',
     framesError: () => 'OLD-RULE REFUSAL',
-    ...(opts.beginAction ? { beginAction: async (id, kind) => { events.push(`begin:${id}:${kind}`); const l = await opts.beginAction!(id, kind); return { end: () => { events.push(`end:${id}`); l.end(); } }; } } : {}),
+    ...(opts.beginAction ? { beginAction: async (id, kind) => { events.push(`begin:${id}:${kind}`); const l = await opts.beginAction!(id, kind); return { end: () => { events.push(`end:${id}`); l.end(); }, ...(l.touch ? { touch: () => l.touch!() } : {}) }; } } : {}),
     ...(opts.captureView ? { captureView: opts.captureView } : {}),
   };
   return { port, sent, activated, events };
@@ -131,4 +131,23 @@ test('an explicit Page.bringToFront still brings the tab to the front (the switc
   const c = client(core);
   await c.call('Page.bringToFront', {}, await attachTo(core, c, 't2'));
   assert.deepEqual(f.activated, ['t2']);
+});
+
+test('P7: a command that is still running RENEWS its lease every beat; a client that disconnects mid-command has its lease ENDED at the next beat', async () => {
+  const touches: number[] = [];
+  let ended = 0;
+  const f = fake({ beginAction: async () => ({ end: () => { ended++; }, touch: () => { touches.push(Date.now()); } } as { end(): void }) });
+  const slow: CdpPanelPort = { ...f.port, acquire: async () => ({ send: async () => { await new Promise((r) => setTimeout(r, 2300)); return {}; }, subscribe: () => () => undefined, onDetach: () => () => undefined }) };
+  const core = new CdpProxyCore(slow);
+  const waiters = new Map<number, (m: any) => void>();
+  const c = core.connect({ send: (m) => waiters.get(m.id as number)?.(m) });
+  const call = (id: number, method: string, params: object, sessionId?: string) => { const p = new Promise<any>((res) => waiters.set(id, res)); void c.message(JSON.stringify({ id, method, params, sessionId })); return p; };
+  const sid = (await call(1, 'Target.attachToTarget', { targetId: core.targetIdFor('t2'), flatten: true })).result.sessionId;
+  void call(2, 'Runtime.evaluate', {}, sid); // takes 2.3 s
+  await new Promise((r) => setTimeout(r, 1300));
+  assert.ok(touches.length >= 1, `renewed at least once while running (${touches.length})`);
+  assert.equal(ended, 0, 'still running: the lease is held');
+  c.close(); // the client dies mid-command
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.ok(ended >= 1, 'the lease was ended at the next beat after the disconnect, long before the command finished');
 });

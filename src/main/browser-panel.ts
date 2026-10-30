@@ -1496,8 +1496,10 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export interface DriveLease {
   /** The action is over (idempotent): the linger before the flip-back starts. */
   end(): void;
+  /** The action is still running: renews the lease so the watchdog does not call it orphaned. */
+  touch(): void;
 }
-const NOOP_LEASE: DriveLease = { end: () => undefined };
+const NOOP_LEASE: DriveLease = { end: () => undefined, touch: () => undefined };
 const driveLeases = new LeaseBook();
 const leaseId = (tab: Tab): string => `${tabKeyOf(tab)}`;
 const tabKeys = new WeakMap<Tab, string>();
@@ -1606,6 +1608,12 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
       ended = true;
       driveLeases.release(id, Date.now());
       scheduleSweep();
+    },
+    touch: () => {
+      if (!ended) {
+        driveLeases.touch(id, Date.now());
+        scheduleSweep();
+      }
     },
   };
 }

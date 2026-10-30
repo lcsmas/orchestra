@@ -52,7 +52,7 @@ export interface CdpPanelPort {
    * cannot be driven (nothing on screen to show its first frame under, ...). A tab nobody looks at is driven in place — it is NOT brought to the front. Absent = the pre-#406 rule:
    * bring a background tab to the front and refuse frame-bound commands on a hidden pane.
    */
-  beginAction?(tabId: string, kind: 'capture' | 'input' | 'other'): Promise<{ end(): void }>;
+  beginAction?(tabId: string, kind: 'capture' | 'input' | 'other'): Promise<{ end(): void; touch?(): void }>;
   /** #406: a screenshot of a tab that is not on screen (from its frame subscription), as base64; `null` = take the normal chain. */
   captureView?(tabId: string, params: Record<string, unknown>): Promise<string | null>;
   /**
@@ -117,6 +117,8 @@ class CdpError extends Error {
   }
 }
 
+/** How often a running command renews its throttling lease (a client that vanished stops being served at the next beat). */
+export const LEASE_HEARTBEAT_MS = 1000;
 const sessionGone = (): CdpError => new CdpError('Session with given id not found.', ERR_SERVER);
 
 interface TabState {
@@ -392,7 +394,7 @@ export class CdpProxyCore {
       if (method === 'Page.close') return this.browserCommand(c, 'Target.closeTarget', { targetId: this.targetIdFor(tabId) });
       return this.browserCommand(c, method, params);
     }
-    return this.tabCommand(tabId, method, params, childSessionId);
+    return this.tabCommand(tabId, method, params, childSessionId, c);
   }
 
   // ── browser-level surface ───────────────────────────────────────────────────
@@ -568,6 +570,7 @@ export class CdpProxyCore {
     method: string,
     params: Record<string, unknown> | undefined,
     childSessionId: string | undefined,
+    c?: { closed: boolean },
   ): Promise<unknown> {
     const st = this.tabs.get(tabId);
     if (!st) throw new CdpError('Target closed.', ERR_SERVER);
@@ -616,7 +619,7 @@ export class CdpProxyCore {
     // background workspace's agent never shows a view); domain enables and attach-time calls are not actions. A CHILD (frame) session
     // is the same tab: its commands count too, and its Input.* meets the same fail-fast (review F3: a hidden pane queues them).
     // #406: a tab nobody looks at is DRIVEN IN PLACE under a throttling lease, not brought to the front (an explicit Page.bringToFront / `tab <ref>` still is).
-    let lease: { end(): void } | null = null;
+    let lease: { end(): void; touch?(): void } | null = null;
     if (isActingCdpMethod(method)) {
       if (this.port.beginAction) {
         try {
@@ -626,9 +629,22 @@ export class CdpProxyCore {
         }
       } else this.bringToFrontIfBackground(tabId);
     }
+    // P7: while the command runs its lease is renewed; when the client that sent it disconnects the lease ends at the next beat (the watchdog behind it forces the flip-back).
+    let beat: ReturnType<typeof setInterval> | null = null;
+    if (lease) {
+      const l = lease;
+      beat = setInterval(() => {
+        if (c?.closed) {
+          if (beat) clearInterval(beat);
+          l.end();
+        } else l.touch?.();
+      }, LEASE_HEARTBEAT_MS);
+      (beat as { unref?: () => void }).unref?.();
+    }
     try {
       return await this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
     } finally {
+      if (beat) clearInterval(beat);
       lease?.end();
     }
   }
