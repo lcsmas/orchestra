@@ -45,8 +45,16 @@ export interface CdpPanelPort {
   invalidate(tabId: string): void;
   /** `capturePage()` as base64 in the requested format. */
   captureFallback(tabId: string, format: 'png' | 'jpeg', quality?: number): Promise<string>;
-  /** A reason the tab cannot produce frames right now (panel hidden / workspace in background), else null. */
+  /** A reason the tab cannot produce frames right now (panel hidden / workspace in background), else null. Ports with `beginAction` (#406) never refuse here: the refusal, if any, comes from `beginAction`. */
   framesError(tabId: string): string | null;
+  /**
+   * #406: an agent ACTION on `tabId` begins. Resolves with its end (the proxy calls it when the command settles, success or not); REJECTS (the message reaches the agent as a CDP error) when the tab
+   * cannot be driven (nothing on screen to show its first frame under, ...). A tab nobody looks at is driven in place — it is NOT brought to the front. Absent = the pre-#406 rule:
+   * bring a background tab to the front and refuse frame-bound commands on a hidden pane.
+   */
+  beginAction?(tabId: string, kind: 'capture' | 'input' | 'other'): Promise<{ end(): void }>;
+  /** #406: a screenshot of a tab that is not on screen (from its frame subscription), as base64; `null` = take the normal chain. */
+  captureView?(tabId: string, params: Record<string, unknown>): Promise<string | null>;
   /**
    * Policy seam for page-level commands (#400: refuse partition-wide cookie clears while the workspace holds a shared profile).
    * Called for EVERY command a client sends to a tab — root and auto-attached child sessions — before it reaches the debugger;
@@ -607,8 +615,26 @@ export class CdpProxyCore {
     // Story 43 (#397): ANY agent action on a tab nobody looks at brings it to the front (the port applies the focus rule — a
     // background workspace's agent never shows a view); domain enables and attach-time calls are not actions. A CHILD (frame) session
     // is the same tab: its commands count too, and its Input.* meets the same fail-fast (review F3: a hidden pane queues them).
-    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);
-    if (FRAME_BOUND_METHODS.has(method)) {
+    // #406: a tab nobody looks at is DRIVEN IN PLACE under a throttling lease, not brought to the front (an explicit Page.bringToFront / `tab <ref>` still is).
+    let lease: { end(): void } | null = null;
+    if (isActingCdpMethod(method)) {
+      if (this.port.beginAction) {
+        try {
+          lease = await this.port.beginAction(tabId, method === 'Page.captureScreenshot' ? 'capture' : method.startsWith('Input.') ? 'input' : 'other');
+        } catch (e) {
+          throw new CdpError(e instanceof Error ? e.message : String(e), ERR_SERVER);
+        }
+      } else this.bringToFrontIfBackground(tabId);
+    }
+    try {
+      return await this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
+    } finally {
+      lease?.end();
+    }
+  }
+
+  private async tabCommandActing(tabId: string, st: TabState, method: string, params: Record<string, unknown> | undefined, childSessionId: string | undefined, sessionGone: () => Error): Promise<unknown> {
+    if (FRAME_BOUND_METHODS.has(method) && !this.port.beginAction) {
       const why = this.port.framesError(tabId);
       if (why) throw new CdpError(why, ERR_SERVER);
     }
@@ -636,8 +662,12 @@ export class CdpProxyCore {
   }
 
   private async screenshot(tabId: string, st: TabState, params: Record<string, unknown>): Promise<unknown> {
-    this.bringToFrontIfBackground(tabId);
-    const why = this.port.framesError(tabId);
+    if (this.port.captureView) {
+      const viaView = await this.port.captureView(tabId, params).catch((e: unknown) => { throw new CdpError(e instanceof Error ? e.message : String(e), ERR_SERVER); });
+      if (viaView !== null) return { data: viaView };
+    }
+    if (!this.port.beginAction) this.bringToFrontIfBackground(tabId);
+    const why = this.port.beginAction ? null : this.port.framesError(tabId);
     if (why) throw new CdpError(why, ERR_SERVER);
     const format: 'png' | 'jpeg' = params.format === 'jpeg' ? 'jpeg' : 'png';
     const quality = typeof params.quality === 'number' ? params.quality : undefined;

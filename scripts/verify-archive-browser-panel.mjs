@@ -22,6 +22,7 @@ class WebContents {
   constructor() { this.destroyed = false; this.debugger = { attach(){}, detach(){} }; this.navigationHistory = { canGoBack: () => false, canGoForward: () => false }; }
   isDestroyed() { return this.destroyed; }
   on() {} once() {} setWindowOpenHandler() {}
+  setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL() { return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return ''; } getTitle() { return ''; }
@@ -30,6 +31,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(); this.bounds = null; this.bg = null; }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor(c) { this.bg = c; }
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
 }
 export const Menu = { buildFromTemplate: () => ({ popup(){} }) };
 export const clipboard = { writeText(){} };
@@ -63,7 +66,14 @@ const bp = await import(
 );
 
 // --- Fake window recording attach/detach ----------------------------------
-const attached = new Set();
+const children = new Set(); // every CHILD of the window (visible or hidden — #406)
+const attached = { // the views composited on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => v.visible !== false).length; },
+  has: (v) => children.has(v) && v.visible !== false,
+  add: (v) => children.add(v),
+  delete: (v) => children.delete(v),
+  [Symbol.iterator]() { return [...children].filter((v) => v.visible !== false)[Symbol.iterator](); },
+};
 const win = {
   contentView: {
     addChildView: (v) => attached.add(v),

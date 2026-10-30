@@ -26,6 +26,18 @@ import { AGENT_OPENER, BROWSER_TAB_CAP, decideExternalProtocol, decidePopup, dec
 import { decideAgentFront } from '../shared/browser-agent-tabs.ts';
 import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
+import {
+  LeaseBook,
+  HIDDEN_FRAME_DEADLINE_MS,
+  SURFACE_PULSE_MAX_MS,
+  NOT_DISPLAYED_MESSAGE,
+  cropRect,
+  decideTabAction,
+  windowDisplayed,
+  type ActionKind,
+  type DisplayEvidence,
+  type Surface,
+} from '../shared/browser-hidden-drive.ts';
 import { partitionFor } from '../shared/browser-profile.ts';
 import { promoteSessionCookie, restoreCookie } from '../shared/browser-cookie-promote.ts';
 import {
@@ -98,6 +110,10 @@ export interface Tab {
   /** Tail of this tab's arm/disarm chain: a disarm that lands while an arm is still attaching must run AFTER it. */
   designOp: Promise<void>;
   nav: TabNav;
+  /** #406: `visible` = composited on screen; `hidden` = attached to the window + `setVisible(false)` (throttled while idle, driven under a lease); `detached` = not a child of the window. */
+  surface: Surface;
+  /** The tab's CURRENT document was composited (a hidden view whose document loaded while hidden has no first frame and takes no input: it is detached at navigation start and surfaced on the next agent action). */
+  composited: boolean;
 }
 
 /** A workspace's browser panel: an ordered list of tabs with one active tab,
@@ -182,28 +198,57 @@ function activeTabOf(panel: Panel): Tab | undefined {
   return panel.tabs.find((t) => t.id === panel.activeId);
 }
 
-/** Remove `tab`'s view from the window if it is the one attached. */
-function detachTab(panel: Panel, tab: Tab): void {
-  if (panel.attachedId !== tab.id) return;
-  try {
-    getWindow?.()?.contentView.removeChildView(tab.view);
-  } catch {
-    /* already detached / window gone */
+/** Take `tab`'s view OUT of the window (any state). Used when the tab dies, closes, is rebuilt, or navigates while hidden. */
+function removeView(tab: Tab): void {
+  if (tab.surface !== 'detached') {
+    try {
+      getWindow?.()?.contentView.removeChildView(tab.view);
+    } catch {
+      /* already detached / window gone */
+    }
   }
-  panel.attachedId = null;
+  tab.surface = 'detached';
+  tab.composited = false;
+  driveLeases.forget(leaseId(tab));
 }
 
-/** Composite the ACTIVE tab (swapping out whichever tab was attached). Only the
- *  active tab of a panel ever composits. */
+/** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
+function hideView(tab: Tab): void {
+  if (tab.surface === 'detached') return;
+  try {
+    tab.view.setVisible(false);
+  } catch {
+    /* view gone */
+  }
+  tab.surface = 'hidden';
+}
+
+/** Composite `tab`'s view on top of the window (adding it first if it is not a child). */
+function showView(panel: Panel, tab: Tab): void {
+  const win = getWindow?.();
+  if (!win) return;
+  if (panel.bounds) tab.view.setBounds(panel.bounds);
+  win.contentView.addChildView(tab.view); // re-adding a child moves it to the top
+  tab.view.setVisible(true);
+  tab.surface = 'visible';
+  tab.composited = true;
+}
+
+/** Remove `tab`'s view from the window and clear the panel's "composited tab" mark if it was that one. */
+function detachTab(panel: Panel, tab: Tab): void {
+  if (panel.attachedId === tab.id) panel.attachedId = null;
+  removeView(tab);
+}
+
+/** Composite the ACTIVE tab (hiding whichever tab was on screen — it stays attached, hidden). */
 function attachActive(panel: Panel): void {
   const win = getWindow?.();
   const tab = activeTabOf(panel);
   if (!win || !tab || panel.attachedId === tab.id) return;
   const prev = panel.tabs.find((t) => t.id === panel.attachedId);
-  if (prev) detachTab(panel, prev);
+  if (prev) hideView(prev);
   panel.attachedId = null;
-  if (panel.bounds) tab.view.setBounds(panel.bounds);
-  win.contentView.addChildView(tab.view);
+  showView(panel, tab);
   panel.attachedId = tab.id;
 }
 
@@ -804,6 +849,8 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: Browser
     designGen: 0,
     designOp: Promise.resolve(),
     nav: blankNav(),
+    surface: 'detached',
+    composited: false,
   };
   if (panel.bounds) view.setBounds(panel.bounds);
 
@@ -824,6 +871,12 @@ function buildTab(panel: Panel, opts: { openedBy: BrowserTabOpener; id?: Browser
   wc.on('did-navigate-in-page', (_e, url) => {
     committed(url);
     emitState(panel, tab, {});
+  });
+  // #406: a document that loads into a view nobody is looking at gets no first frame and takes no input (measured, Electron 33): take a HIDDEN tab out
+  // of the window when it starts a main-frame navigation, so the new document loads detached; the next agent action surfaces it under the cover.
+  wc.on('did-start-navigation', (event: unknown, _url?: string, isInPlace?: boolean, isMainFrame?: boolean) => {
+    const d = (event ?? {}) as { isMainFrame?: boolean; isSameDocument?: boolean };
+    if ((d.isMainFrame ?? isMainFrame) && !(d.isSameDocument ?? isInPlace) && tab.surface === 'hidden') removeView(tab);
   });
   wc.on('page-title-updated', () => emitState(panel, tab, {}));
   wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -908,8 +961,7 @@ export function reprofilePanel(wsId: string, profileId: BrowserProfileId | undef
   const oldActive = panel.activeId;
   const wasAttached = panel.attachedId !== null;
   const prev = { partition: panel.partition, profileId: panel.profileId };
-  const attachedTab = oldTabs.find((t) => t.id === panel.attachedId);
-  if (attachedTab) detachTab(panel, attachedTab);
+  for (const t of oldTabs) detachTab(panel, t); // every old view leaves the window (hidden ones included)
   panel.rebuilding = true;
   // `rebuilding` is released on EVERY way out (a rollback that itself throws must not leave the panel silent for good).
   try {
@@ -1245,7 +1297,7 @@ export function hidePanel(wsId: string): void {
   // caller has since hidden.
   panel.pendingShow = false;
   const attached = panel.tabs.find((t) => t.id === panel.attachedId);
-  if (attached) detachTab(panel, attached);
+  if (attached) hideView(attached); // #406: hidden, not removed — an agent can still drive it
   panel.attachedId = null;
 }
 
@@ -1359,7 +1411,10 @@ function destroyPanelViews(wsId: string): void {
   if (!panel) return;
   hidePanel(wsId);
   panels.delete(wsId);
-  for (const tab of panel.tabs) destroyTab(tab);
+  for (const tab of panel.tabs) {
+    removeView(tab);
+    destroyTab(tab);
+  }
   notifyPanelListeners(wsId, [], true);
 }
 
@@ -1430,36 +1485,157 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   ]);
 }
 
-/** Throw a clear, actionable error when the tab isn't composited. A hidden
- *  (background-workspace / closed-pane) `WebContentsView` produces NO frames:
- *  measured on Electron 33, `capturePage` returns an empty 0x0 image if the
- *  view was never attached and hangs forever if it was detached after showing;
- *  CDP `Page.captureScreenshot` hangs in both cases, and CDP mouse input hangs
- *  or silently queues. Failing fast with guidance beats a blank image, a
- *  phantom click, or an agent stuck on a tool call that never returns. */
-function requireComposited(wsId: string, what: string, tabId?: BrowserTabId): Tab {
-  const panel = getPanel(wsId);
+// ---------------------------------------------------------------------------
+// Driving a tab nobody is looking at (#406, policy A2 — ledger #409 §Decisions Q2). The pure rules live in shared/browser-hidden-drive.ts.
+// A hidden tab is attached + `setVisible(false)` and THROTTLED while idle; an agent action takes a LEASE that switches `backgroundThrottling` off
+// right before the action and back on after the last one (a short linger; a watchdog forces it if the action died). A hidden capture comes from the
+// frame subscription (Page.captureScreenshot on a hidden view is flaky); click / type go through CDP unchanged. A tab whose document has no first
+// frame (never attached, or navigated while hidden) is SURFACED under the visible tab (a pulse the human cannot see), or refused when nothing covers it.
+// ---------------------------------------------------------------------------
+
+export interface DriveLease {
+  /** The action is over (idempotent): the linger before the flip-back starts. */
+  end(): void;
+}
+const NOOP_LEASE: DriveLease = { end: () => undefined };
+const driveLeases = new LeaseBook();
+const leaseId = (tab: Tab): string => `${tabKeyOf(tab)}`;
+const tabKeys = new WeakMap<Tab, string>();
+const tabKeyOf = (tab: Tab): string => tabKeys.get(tab) ?? '';
+const leaseTabs = new Map<string, Tab>();
+let leaseTimer: ReturnType<typeof setTimeout> | null = null;
+const displayEvidence: DisplayEvidence = { okAt: null, noFrameAt: null };
+
+function sweepLeases(): void {
+  leaseTimer = null;
+  const { unflip, orphaned } = driveLeases.due(Date.now());
+  for (const id of unflip) {
+    const tab = leaseTabs.get(id);
+    leaseTabs.delete(id);
+    if (orphaned.includes(id)) log.warn(`browser-panel: lease on ${id} orphaned (its action died): forcing the flip-back`);
+    const wc = liveContents(tab);
+    if (wc) {
+      try {
+        wc.setBackgroundThrottling(true);
+      } catch {
+        /* contents gone */
+      }
+    }
+  }
+  scheduleSweep();
+}
+function scheduleSweep(): void {
+  if (leaseTimer) clearTimeout(leaseTimer);
+  leaseTimer = null;
+  const at = driveLeases.nextWakeAt();
+  if (at !== null) leaseTimer = setTimeout(sweepLeases, Math.max(25, at - Date.now()));
+}
+
+/** The visible tab of the focused workspace — what a pulse is hidden under — or null when nothing is on screen. */
+function coverTab(): Tab | null {
+  const fp = focusedWsId ? panels.get(focusedWsId) : undefined;
+  const t = fp?.tabs.find((x) => x.id === fp.attachedId);
+  return t && t.surface === 'visible' && liveContents(t) ? t : null;
+}
+
+/** Show `tab` once BELOW the cover (same rect, so the cover hides all of it) until its document has produced a frame, then hide it again. */
+async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
+  const win = getWindow?.();
+  const wc = liveContents(tab);
+  if (!win || !wc) throw new Error('the browser tab has no live view');
+  tab.view.setBounds(cover.view.getBounds());
+  win.contentView.addChildView(tab.view, 0);
+  tab.view.setVisible(true);
+  tab.surface = 'visible'; // composited for the length of the pulse only
+  const t0 = Date.now();
+  try {
+    await frameOf(wc, SURFACE_PULSE_MAX_MS).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, Math.max(0, 450 - (Date.now() - t0)))); // measured: attach + 800 ms under the cover; the frame callback alone is early
+  } finally {
+    if (tab.surface === 'visible' && tab !== coverTab()) hideView(tab);
+    tab.composited = true;
+  }
+}
+
+/** The first frame the view's compositor delivers after this call (a refresh of its current surface), as a NativeImage; rejects after `deadlineMs`. */
+function frameOf(wc: Electron.WebContents, deadlineMs: number): Promise<Electron.NativeImage> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn: () => void): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        wc.endFrameSubscription();
+      } catch {
+        /* contents gone */
+      }
+      fn();
+    };
+    const timer = setTimeout(() => finish(() => reject(new Error('no frame'))), deadlineMs);
+    try {
+      wc.beginFrameSubscription(true, (image) => finish(() => resolve(image)));
+    } catch (e) {
+      finish(() => reject(e));
+    }
+  });
+}
+
+/**
+ * An agent is about to act on `tabId`: the decision (pure) + its effects. A tab on screen needs nothing; a hidden one takes a throttling lease; one with no
+ * first frame is surfaced first; anything else is refused with a clear, FAST error. The caller MUST `end()` the lease (try/finally) — a watchdog backs that up.
+ */
+export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undefined, kind: ActionKind): Promise<DriveLease> {
   const tab = resolveTab(wsId, tabId);
-  if (!panel || !tab || !liveContents(tab)) {
-    throw new Error(`no browser panel open for workspace ${wsId}`);
+  const wc = liveContents(tab);
+  if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
+  const cover = coverTab();
+  const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind, displayed: windowDisplayed(displayEvidence, Date.now()) });
+  if (d.act === 'refuse') throw new Error(d.message);
+  if (d.act === 'direct') return NOOP_LEASE;
+  if (d.act === 'surface-then-lease') await surfaceTab(tab, cover as Tab);
+  const id = `${wsId}/${tab.id}`;
+  tabKeys.set(tab, id);
+  leaseTabs.set(id, tab);
+  if (driveLeases.acquire(id, Date.now()).flip) wc.setBackgroundThrottling(false);
+  scheduleSweep();
+  let ended = false;
+  return {
+    end: () => {
+      if (ended) return;
+      ended = true;
+      driveLeases.release(id, Date.now());
+      scheduleSweep();
+    },
+  };
+}
+
+/** A hidden tab's screenshot from its frame subscription (35–50 ms measured; fresh, never the pre-hide frame): PNG/JPEG base64, `clip` honoured. */
+export async function captureTabFrame(
+  wsId: string,
+  tabId: BrowserTabId | undefined,
+  opts: { format?: 'png' | 'jpeg'; quality?: number; clip?: { x: number; y: number; width: number; height: number } } = {},
+): Promise<string> {
+  const lease = await beginAgentAction(wsId, tabId, 'capture');
+  try {
+    const tab = resolveTab(wsId, tabId);
+    const wc = liveContents(tab);
+    if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
+    let img: Electron.NativeImage;
+    try {
+      img = await frameOf(wc, HIDDEN_FRAME_DEADLINE_MS);
+    } catch {
+      displayEvidence.noFrameAt = Date.now();
+      throw new Error(NOT_DISPLAYED_MESSAGE);
+    }
+    displayEvidence.okAt = Date.now();
+    const size = img.getSize();
+    const rect = cropRect(opts.clip, size.width, size.height, size.width / Math.max(1, tab.view.getBounds().width));
+    const out = rect ? img.crop(rect) : img;
+    return (opts.format === 'jpeg' ? out.toJPEG(Math.max(0, Math.min(100, opts.quality ?? 80))) : out.toPNG()).toString('base64');
+  } finally {
+    lease.end();
   }
-  if (panel.attachedId === null) {
-    throw new Error(
-      `${what} needs the Browser pane on screen, but this workspace's panel is not currently ` +
-        `composited (the workspace is in the background or its pane is closed). ` +
-        `read_page, evaluate, navigate and form_input still work; for ${what}, ask the user ` +
-        `to open this workspace's Browser pane.`,
-    );
-  }
-  // Only the ACTIVE tab composits; a background tab produces no frames either.
-  if (panel.attachedId !== tab.id) {
-    throw new Error(
-      `${what} needs tab ${tab.id} on screen, but it is not the active tab (only the active ` +
-        `tab of the Browser pane is composited). read_page, evaluate, navigate and form_input ` +
-        `still work on it; for ${what}, activate the tab first.`,
-    );
-  }
-  return tab;
 }
 
 /** Capture the panel as a JPEG (base64) — the agent's "screenshot" primitive.
@@ -1470,11 +1646,13 @@ export async function capture(
   quality = 75,
   tabId?: BrowserTabId,
 ): Promise<string> {
-  const tab = requireComposited(wsId, 'screenshot', tabId);
+  const q = Math.max(0, Math.min(100, quality));
+  const tab = resolveTab(wsId, tabId);
+  if (tab && tab.surface !== 'visible') return captureTabFrame(wsId, tab.id, { format: 'jpeg', quality: q });
   const wc = liveContents(tab);
   if (!wc) throw new Error(`no browser panel open for workspace ${wsId}`);
   const image = await withTimeout(wc.capturePage(), 10_000, 'capturePage');
-  return image.toJPEG(Math.max(0, Math.min(100, quality))).toString('base64');
+  return image.toJPEG(q).toString('base64');
 }
 
 /** Evaluate JS in the page and return the value (JSON-serialized by CDP). */
@@ -1583,17 +1761,22 @@ export async function clickAt(
   tabId?: BrowserTabId,
 ): Promise<void> {
   // Pin the tab ONCE: press and release must hit the same tab even if the active tab changes mid-click.
-  const pin = requireComposited(wsId, 'click', tabId).id;
-  await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, pin),
-    10_000,
-    'click (mousePressed)',
-  );
-  await withTimeout(
-    cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, pin),
-    10_000,
-    'click (mouseReleased)',
-  );
+  const pin = (resolveTab(wsId, tabId) ?? liveTabFor(wsId, tabId)).id;
+  const lease = await beginAgentAction(wsId, pin, 'input');
+  try {
+    await withTimeout(
+      cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, pin),
+      10_000,
+      'click (mousePressed)',
+    );
+    await withTimeout(
+      cdp(wsId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, pin),
+      10_000,
+      'click (mouseReleased)',
+    );
+  } finally {
+    lease.end();
+  }
 }
 
 /** Click a `ref_N` element (resolves its center, then clickAt). */
@@ -1606,8 +1789,12 @@ export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId):
 
 /** Type text into the currently-focused element via CDP (trusted input). */
 export async function typeText(wsId: string, text: string, tabId?: BrowserTabId): Promise<void> {
-  requireComposited(wsId, 'type', tabId);
-  await withTimeout(cdp(wsId, 'Input.insertText', { text }, tabId), 10_000, 'type (insertText)');
+  const lease = await beginAgentAction(wsId, tabId, 'input');
+  try {
+    await withTimeout(cdp(wsId, 'Input.insertText', { text }, tabId), 10_000, 'type (insertText)');
+  } finally {
+    lease.end();
+  }
 }
 
 /** Set the value of a form element identified by `ref` (matches CC's
@@ -1641,17 +1828,21 @@ export async function formInput(
 
 /** Scroll the page (or a wheel gesture) via CDP. */
 export async function scrollBy(wsId: string, deltaY: number, tabId?: BrowserTabId): Promise<void> {
-  requireComposited(wsId, 'scroll', tabId);
-  await withTimeout(
-    cdp(
-      wsId,
-      'Input.dispatchMouseEvent',
-      { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY },
-      tabId,
-    ),
-    10_000,
-    'scroll (mouseWheel)',
-  );
+  const lease = await beginAgentAction(wsId, tabId, 'input');
+  try {
+    await withTimeout(
+      cdp(
+        wsId,
+        'Input.dispatchMouseEvent',
+        { type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY },
+        tabId,
+      ),
+      10_000,
+      'scroll (mouseWheel)',
+    );
+  } finally {
+    lease.end();
+  }
 }
 
 // ---------------------------------------------------------------------------

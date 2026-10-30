@@ -29,6 +29,7 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
   once(ev, fn) { (this.onceH ||= {})[ev] = ((this.onceH ||= {})[ev] || []).concat(fn); }
   setWindowOpenHandler() {}
+  setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL(u) { this.loaded.push(u); this.url = u; if (globalThis.__bpSyncStartLoading) for (const f of (this.handlers['did-start-loading'] || [])) f(); return Promise.resolve(); }
   reload() {}
   getURL() { return this.url; } getTitle() { return this.title; }
@@ -46,6 +47,8 @@ export class WebContentsView {
     this.opts = opts; this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
 }
 export const Menu = { buildFromTemplate: () => ({ popup() {} }) };
 export const clipboard = { writeText() {} };
@@ -88,7 +91,13 @@ register(
 
 const bp = await import('./browser-panel.ts');
 
-const attached = new Set<unknown>();
+const children = new Set<unknown>(); // every view that is a CHILD of the window (visible or hidden — #406)
+const attached = { // the views COMPOSITED on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => (v as { visible?: boolean }).visible !== false).length; },
+  has: (v: unknown) => children.has(v) && (v as { visible?: boolean }).visible !== false,
+  add: (v: unknown) => children.add(v),
+  delete: (v: unknown) => children.delete(v),
+};
 const saved = new Map<string, unknown>();
 bp.initBrowserPanels(
   () => ({ contentView: { addChildView: (v: unknown) => attached.add(v), removeChildView: (v: unknown) => attached.delete(v) } }) as never,
@@ -113,7 +122,7 @@ afterEach(() => {
     bp.destroyPanel(ws);
     profileByWs.delete(ws);
   }
-  assert.equal(attached.size, 0, 'a composited view leaked past destroyPanel');
+  assert.equal(children.size, 0, 'a view (visible or hidden) leaked past destroyPanel');
 });
 const RECT = { x: 1, y: 2, width: 640, height: 480 };
 const wcOf = (tab: { view: unknown }) => (tab.view as { _wc: any })._wc;

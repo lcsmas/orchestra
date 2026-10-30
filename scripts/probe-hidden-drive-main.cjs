@@ -82,15 +82,35 @@ app.whenReady().then(async () => {
   for (let i = 0; i < OTHERS; i++) { const v = mk('o' + i); attach(v); await v.webContents.loadURL(page(COL.C, true)); await sleep(150); v.setVisible(false); }
   const T = mk('target'); const wc = T.webContents; result.steps.push('others+human ready');
   const busy = true;
-  if (SCEN === 'A' || SCEN === 'B') { attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(800); T.setVisible(false); }
+  if (SCEN === 'U' || SCEN === 'U2') { // navigation while the view is attached-visible UNDER the cover (born visible), U2 then hides it
+    attach(T, 0); await wc.loadURL(page(COL.A, busy)); await sleep(600); await wc.loadURL(page(COL.C, busy)); await sleep(600); if (SCEN === 'U2') T.setVisible(false);
+  } else if (SCEN === 'U3') { // hidden view; "surface on navigation": attach under + visible BEFORE the navigation, hide when the new document has painted
+    attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(600); T.setVisible(false); await sleep(1500);
+    win.contentView.removeChildView(T); win.contentView.addChildView(T, 0); T.setBounds(rect()); T.setVisible(true); await wc.loadURL(page(COL.C, busy)); await sleep(700); T.setVisible(false);
+  } else if (SCEN === 'W' || SCEN === 'W2' || SCEN === 'W3') { // genuinely VISIBLE but placed OUTSIDE the window's content area while the new document loads (no flash: nothing of it is inside the window)
+    const off = () => ({ x: -6000, y: 0, width: rect().width, height: rect().height });
+    if (SCEN === 'W3') { attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(600); T.setVisible(false); await sleep(1500); T.setBounds(off()); T.setVisible(true); }
+    else { attach(T); T.setBounds(off()); await wc.loadURL(page(COL.A, busy)); await sleep(600); }
+    result.leakDuringAttach = []; const t0 = Date.now(); const lk = (async () => { while (Date.now() - t0 < 900) { result.leakDuringAttach.push(await grimShare()); await sleep(40); } })();
+    await wc.loadURL(page(COL.C, busy)); await lk;
+    if (SCEN !== 'W2') { T.setVisible(false); T.setBounds(rect()); }
+  } else if (SCEN === 'B4') { // hidden view navigates: DETACH it first (the new document loads detached, as D), then surface it on the action (attach under the cover, hide)
+    attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(600); T.setVisible(false); await sleep(1500);
+    win.contentView.removeChildView(T); await wc.loadURL(page(COL.C, busy)); await sleep(400);
+    attach(T, 0); T.setVisible(true); await sleep(ATTACH_MS); T.setVisible(false);
+  } else if (SCEN === 'V2') { // CONTROL: a visible on-screen view navigates A -> C; if THIS fails the failures above are the probe's, not Chromium's
+    attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(600); await wc.loadURL(page(COL.C, busy)); await sleep(600);
+  } else if (SCEN === 'V') { attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(800); }
+  else if (SCEN === 'A' || SCEN === 'B' || SCEN === 'B2') { attach(T); await wc.loadURL(page(COL.A, busy)); await sleep(800); T.setVisible(false); }
   else if (SCEN === 'C') { await wc.loadURL(page(COL.A, busy)); await sleep(300); attach(T); await sleep(700); T.setVisible(false); }
   else if (SCEN === 'D') { await wc.loadURL(page(COL.A, busy)); await sleep(300); attach(T, 0); result.leakDuringAttach = []; const t0 = Date.now(); while (Date.now() - t0 < ATTACH_MS) { result.leakDuringAttach.push(await grimShare()); await sleep(40); } T.setVisible(false); }
   result.leakMaxBlue = Math.max(0, ...((result.leakDuringAttach || []).filter(Boolean).map((g) => Math.max(g.A, g.B))));
   await sleep(2500); // idle, hidden, THROTTLED
   const idle0 = await bounded(wc.executeJavaScript('JSON.stringify(__p.snap())'), 5000); result.idleSnapOk = idle0.ok;
-  if (SCEN === 'B') { await wc.loadURL(page(COL.C, busy)); await sleep(300); }
-  const want = SCEN === 'B' ? 'C' : 'B';
-  if (SCEN !== 'B') await bounded(wc.executeJavaScript(`__p.setBg('${HEX(COL.B)}')`), 5000); // the page changes while hidden: a STALE frame is distinguishable
+  if (SCEN === 'B2' && FLIP) wc.setBackgroundThrottling(false); // the lease is taken at Page.navigate time
+  if (SCEN === 'B' || SCEN === 'B2') { await wc.loadURL(page(COL.C, busy)); await sleep(300); }
+  const want = (SCEN === 'B' || SCEN === 'B2' || SCEN === 'U' || SCEN === 'U2' || SCEN === 'U3' || /^W/.test(SCEN) || SCEN === 'V2' || SCEN === 'B4') ? 'C' : 'B';
+  if (SCEN !== 'B' && SCEN !== 'B2' && !/^[UW]/.test(SCEN) && SCEN !== 'V2' && SCEN !== 'B4') await bounded(wc.executeJavaScript(`__p.setBg('${HEX(COL.B)}')`), 5000); // the page changes while hidden: a STALE frame is distinguishable
   await sleep(1200);
   // ---------------- the agent ACTION ----------------
   const tAct = Date.now();
@@ -103,6 +123,13 @@ app.whenReady().then(async () => {
   const forms = [['capturePage', () => wc.capturePage()], ['cdp-default', cdp({})], ['cdp-fromSurfaceFalse', cdp({ fromSurface: false })], ['cdp-beyondViewport', cdp({ captureBeyondViewport: true, clip: { x: 0, y: 0, width: 400, height: 300, scale: 1 } })]];
   if (process.env.PROBE_ORDER === 'rev') forms.reverse();
   result.caps = [];
+  if (process.env.PROBE_BFIX === 'invalidate') { wc.invalidate(); await sleep(250); }
+  if (process.env.PROBE_BFIX === 'reattach') { // the document loaded while hidden: take the view OUT, put it back BELOW the human's tab (as D: loaded detached, then attached under), hide it again
+    win.contentView.removeChildView(T); win.contentView.addChildView(T, 0); T.setBounds(rect()); T.setVisible(true); const t0 = Date.now();
+    await new Promise((res) => { let done = false; const fin = () => { if (!done) { done = true; try { wc.endFrameSubscription(); } catch {} res(); } }; wc.beginFrameSubscription(true, fin); setTimeout(fin, 1500); });
+    result.surfaceMs = Date.now() - t0; T.setVisible(false); await sleep(100);
+  }
+  if (process.env.PROBE_BFIX === 'pulse') { win.contentView.addChildView(T, 0); T.setBounds(rect()); T.setVisible(true); await sleep(250); T.setVisible(false); await sleep(100); } // a one-frame visible pulse BELOW the human's tab
   if (STRAT === 'fs0') { // every form with fromSurface:false (the renderer paints on demand: no compositor surface needed)
     const fs0 = [['fs0', {}], ['fs0+beyond', { captureBeyondViewport: true }], ['fs0+beyond+clip', { captureBeyondViewport: true, clip: { x: 0, y: 0, width: 400, height: 300, scale: 1 } }], ['fs0+clip', { clip: { x: 0, y: 0, width: 400, height: 300, scale: 1 } }]];
     if (process.env.PROBE_ORDER === 'rev') fs0.reverse();

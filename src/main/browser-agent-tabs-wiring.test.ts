@@ -47,11 +47,12 @@ test('the CLI refuses a close of the user\'s tab BEFORE agent-browser runs it, a
   assert.match(body, /annotateTabListJson\(run\.stdout, hostTabs\) : annotateTabListText\(run\.stdout, abTabs, hostTabs\)/);
 });
 
-test('the proxy core brings a tab to the front on any ACTING command, before the frame-bound refusal', () => {
+test('the proxy core drives a tab nobody looks at under a lease on any ACTING command (no bring-to-front, #406), before the frame-bound check', () => {
   const core = read('../shared/cdp-proxy-core.ts');
-  const acting = core.indexOf('if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);');
-  const frames = core.indexOf('if (FRAME_BOUND_METHODS.has(method)) {');
-  assert.ok(acting > 0 && frames > acting, 'bring-to-front precedes the framesError check, so a click on a background tab succeeds instead of being refused');
+  const acting = core.indexOf('lease = await this.port.beginAction(');
+  const frames = core.indexOf('if (FRAME_BOUND_METHODS.has(method) && !this.port.beginAction) {');
+  assert.ok(acting > 0 && frames > acting, 'the lease (flip + surface) precedes the pre-#406 framesError check, so a click / screenshot on a background tab is driven in place instead of being refused');
+  assert.match(core, /\} else this\.bringToFrontIfBackground\(tabId\);/, 'a port without leases keeps the pre-#406 bring-to-front rule');
 });
 
 test('the renderer announces an agent swap in a ROW below the toolbar and marks agent tabs without taking width', () => {
@@ -84,7 +85,7 @@ test('F1/F3: #395\'s shared isBrowserLevelMethod decides the browser-level verbs
   const split = dispatch.indexOf('return this.tabCommand(tabId, method, params, childSessionId);');
   assert.ok(pred > 0 && split > pred, 'the predicate is applied before the tab/child split');
   const tab = core.slice(core.indexOf('private async tabCommand('), core.indexOf('/** An agent action on a tab nobody is looking at'));
-  assert.match(tab, /\n    if \(isActingCdpMethod\(method\)\) this\.bringToFrontIfBackground\(tabId\);\n    if \(FRAME_BOUND_METHODS\.has\(method\)\) \{/, 'neither is inside an `if (!childSessionId)` guard');
+  assert.match(tab, /\n    if \(isActingCdpMethod\(method\)\) \{\n      if \(this\.port\.beginAction\) \{/, 'the lease is not inside an `if (!childSessionId …)`: a child (frame / worker) session is the same tab and its commands count too');
   assert.match(tab, /if \(!childSessionId && method === 'Page\.captureScreenshot'\)/, 'only the screenshot interception stays root-only');
 });
 

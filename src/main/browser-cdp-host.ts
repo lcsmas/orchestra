@@ -121,14 +121,14 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       if (img.isEmpty()) throw new Error('capturePage() returned an empty image (the view has no painted frame)');
       return (format === 'jpeg' ? img.toJPEG(Math.max(0, Math.min(100, quality ?? 80))) : img.toPNG()).toString('base64');
     },
-    framesError: (tabId) => {
-      const panel = bp.getPanel(wsId);
-      if (!panel) return 'the browser panel is gone';
-      if (panel.attachedId === null) {
-        return "this workspace's Browser pane is not on screen (the workspace is in the background or its pane is closed): clicks, typing and screenshots need it visible. snapshot, eval, get and open still work — ask the user to open this workspace's Browser pane.";
-      }
-      if (panel.attachedId !== tabId) return `tab ${tabId} is not on screen`;
-      return null;
+    // #406: nothing is refused here any more — a tab nobody looks at is driven in place (`beginAction`), and the cases that cannot be driven refuse THERE with a clear error.
+    framesError: () => (bp.getPanel(wsId) ? null : 'the browser panel is gone'),
+    beginAction: (tabId, kind) => bp.beginAgentAction(wsId, tabId, kind),
+    captureView: async (tabId, params) => {
+      const tab = bp.getTab(wsId, tabId);
+      if (!tab || tab.surface === 'visible') return null; // on screen: the normal Page.captureScreenshot chain
+      const clip = params.clip as { x: number; y: number; width: number; height: number } | undefined;
+      return bp.captureTabFrame(wsId, tabId, { format: params.format === 'jpeg' ? 'jpeg' : 'png', ...(typeof params.quality === 'number' ? { quality: params.quality } : {}), ...(clip ? { clip } : {}) });
     },
     // #400: while this workspace's panel runs on a profil navigateur (shared with other workspaces and sites), an agent may not clear its jar or
     // read/alter another site's cookies — judged on the call's params and the TARGETED tab's url (shared/browser-profile.ts decideAgentCdp).

@@ -20,6 +20,7 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ??= []).push(fn); }
   once() {}
   setWindowOpenHandler(fn) { this.openHandler = fn; }
+  setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL(u) { this.loads.push(u); if (globalThis.__tabsStub.errorPage) { this.url = 'chrome-error://chromewebdata/'; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); } if (!globalThis.__tabsStub.holdLoads) this.url = u; (this.handlers['did-navigate'] ?? []).forEach((f) => f({}, this.url)); return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return this.url; } getTitle() { return ''; }
@@ -29,6 +30,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(); this.bounds = null; S.views.push(this); }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
 }
 export const Menu = { buildFromTemplate: () => ({ popup(){} }) };
 export const clipboard = { writeText(){} };
@@ -72,7 +75,13 @@ const check = async (name, fn) => {
 
 function boot(tag, persistence) {
   return import(`${panelUrl}?boot=${tag}`).then((bp) => {
-    const attached = new Set();
+    const children = new Set(); // every CHILD of the window (visible or hidden — #406)
+    const attached = { // the views composited on screen: children that are not setVisible(false)
+      get size() { return [...children].filter((v) => v.visible !== false).length; },
+      has: (v) => children.has(v) && v.visible !== false,
+      add: (v) => children.add(v),
+      delete: (v) => children.delete(v),
+    };
     const win = { contentView: { addChildView: (v) => attached.add(v), removeChildView: (v) => attached.delete(v) } };
     bp.initBrowserPanels(() => win, persistence);
     return { bp, attached };

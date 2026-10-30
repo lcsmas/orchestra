@@ -27,6 +27,7 @@ class WebContents {
   once(ev, fn) { (this.onceHandlers[ev] ||= []).push(fn); }
   emitEvent(ev, ...a) { for (const f of (this.handlers[ev] || [])) f(...a); }
   setWindowOpenHandler(fn) { this.openHandler = fn; }
+  setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() {} getURL() { return this.url; } getTitle() { return this.title; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
@@ -36,6 +37,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
 }
 // The guest Electron creates for a window.open (no window yet): the factory must give it one.
 export function newGuest() { return new WebContents(null); }
@@ -87,7 +90,13 @@ const popups = await import('./browser-popups.ts');
 const memory = await import('./browser-tab-memory.ts');
 const stub = (await import(stubUrl)) as { newGuest: () => any; BrowserWindow: new (opts: any) => any };
 
-const attached = new Set<unknown>();
+const children = new Set<unknown>(); // every view that is a CHILD of the window (visible or hidden — #406)
+const attached = { // the views COMPOSITED on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => (v as { visible?: boolean }).visible !== false).length; },
+  has: (v: unknown) => children.has(v) && (v as { visible?: boolean }).visible !== false,
+  add: (v: unknown) => children.add(v),
+  delete: (v: unknown) => children.delete(v),
+};
 const PARENT_BOUNDS = { x: 0, y: 0, width: 1500, height: 950 };
 const mainWindow = {
   contentView: { addChildView: (v: unknown) => attached.add(v), removeChildView: (v: unknown) => attached.delete(v) },
@@ -107,7 +116,7 @@ const g = globalThis as any;
 afterEach(() => {
   for (const ws of used.splice(0)) bp.destroyPanel(ws);
   for (const w of g.__bpWins.splice(0)) assert.equal(w.isDestroyed(), true, 'a popup child window outlived destroyPanel');
-  assert.equal(attached.size, 0, 'a composited view leaked past destroyPanel');
+  assert.equal(children.size, 0, 'a view (visible or hidden) leaked past destroyPanel');
   g.__bpExternal = [];
   g.__bpWinLoads = [];
   g.__bpLog.length = 0; // the logger stub holds this very array

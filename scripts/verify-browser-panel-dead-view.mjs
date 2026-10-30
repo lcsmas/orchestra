@@ -43,6 +43,7 @@ class WebContents {
   on(ev, fn) { (this._handlers[ev] || (this._handlers[ev] = [])).push(fn); }
   emitEvent(ev, ...a) { for (const f of (this._handlers[ev] || [])) f(...a); }
   once() {} setWindowOpenHandler() {}
+  setBackgroundThrottling() {} beginFrameSubscription() {} endFrameSubscription() {}
   loadURL() { return Promise.resolve(); }
   reload() { this.reloaded = true; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
@@ -55,6 +56,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(this); this.bounds = null; }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
   /** Simulate an EXTERNAL death (renderer/GPU crash, Chromium reclaim) — the
    *  contents vanish without anyone calling destroyPanel. */
   killExternally() { this.webContents.destroyed = true; this.webContents = undefined; }
@@ -88,7 +91,14 @@ const bp = await import(
   pathToFileURL(new URL('../src/main/browser-panel.ts', import.meta.url).pathname).href
 );
 
-const attached = new Set();
+const children = new Set(); // every CHILD of the window (visible or hidden — #406)
+const attached = { // the views composited on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => v.visible !== false).length; },
+  has: (v) => children.has(v) && v.visible !== false,
+  add: (v) => children.add(v),
+  delete: (v) => children.delete(v),
+  [Symbol.iterator]() { return [...children].filter((v) => v.visible !== false)[Symbol.iterator](); },
+};
 const win = {
   contentView: {
     addChildView: (v) => attached.add(v),

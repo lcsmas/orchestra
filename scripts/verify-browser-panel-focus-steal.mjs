@@ -32,6 +32,9 @@ class WebContents {
   }
   isDestroyed() { return this.destroyed; }
   on() {} once() {} setWindowOpenHandler() {}
+  setBackgroundThrottling(v) { (this.throttle ??= []).push(v); }
+  beginFrameSubscription(_d, cb) { setTimeout(() => cb({ getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png-bytes'), toJPEG: () => Buffer.from('jpeg-bytes') }), 1); }
+  endFrameSubscription() {}
   loadURL() { return Promise.resolve(); }
   reload() {} close() { this.destroyed = true; }
   getURL() { return ''; } getTitle() { return ''; }
@@ -41,6 +44,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(); this.bounds = null; }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
 }
 export const Menu = { buildFromTemplate: () => ({ popup(){} }) };
 export const clipboard = { writeText(){} };
@@ -71,7 +76,14 @@ const bp = await import(
   pathToFileURL(new URL('../src/main/browser-panel.ts', import.meta.url).pathname).href
 );
 
-const attached = new Set();
+const children = new Set(); // every CHILD of the window (visible or hidden — #406)
+const attached = { // the views composited on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => v.visible !== false).length; },
+  has: (v) => children.has(v) && v.visible !== false,
+  add: (v) => children.add(v),
+  delete: (v) => children.delete(v),
+  [Symbol.iterator]() { return [...children].filter((v) => v.visible !== false)[Symbol.iterator](); },
+};
 const win = {
   contentView: {
     addChildView: (v) => attached.add(v),
@@ -124,25 +136,32 @@ await check('revealForAgent for the FOCUSED workspace is a no-op re-show (still 
   assert.ok(attached.has(activeView), 'the ACTIVE workspace view went away');
 });
 
-// Hidden-panel ops fail FAST with guidance (they used to hang / return blanks).
-await check('capture() on a hidden (background) panel rejects with a clear error', async () => {
-  await assert.rejects(
-    () => bp.capture(BACKGROUND),
-    (e) => /not currently composited/.test(e.message),
-    'expected a fast, explanatory rejection',
-  );
+// #406 (policy A2): a hidden panel's tab is DRIVEN IN PLACE — attached + setVisible(false), throttling off around the action — instead of refused. It was
+// shown once (the user had its pane open), so its document has a frame; nothing is brought to the front and the focused workspace's view is untouched.
+bp.setCdpSeat({ send: async () => ({}), hold: async () => () => {} });
+await check('capture() on a hidden (background) panel is served from its frame, and the focused view is untouched', async () => {
+  const b64 = await bp.capture(BACKGROUND);
+  assert.strictEqual(Buffer.from(b64, 'base64').toString(), 'jpeg-bytes');
+  assert.strictEqual(attached.size, 1, 'exactly the ACTIVE view is composited');
+  assert.ok(attached.has(activeView), 'the ACTIVE workspace view was replaced/hidden by the background capture');
 });
 
-await check('clickAt() on a hidden panel rejects instead of dispatching', async () => {
-  await assert.rejects(() => bp.clickAt(BACKGROUND, 5, 5), (e) => /not currently composited/.test(e.message));
+await check('clickAt() / typeText() / scrollBy() on a hidden panel dispatch (no refusal), and leave the focused view alone', async () => {
+  await bp.clickAt(BACKGROUND, 5, 5);
+  await bp.typeText(BACKGROUND, 'hi');
+  await bp.scrollBy(BACKGROUND, 100);
+  assert.strictEqual(attached.size, 1);
+  assert.ok(attached.has(activeView));
 });
 
-await check('typeText() on a hidden panel rejects instead of dispatching', async () => {
-  await assert.rejects(() => bp.typeText(BACKGROUND, 'hi'), (e) => /not currently composited/.test(e.message));
-});
-
-await check('scrollBy() on a hidden panel rejects instead of dispatching', async () => {
-  await assert.rejects(() => bp.scrollBy(BACKGROUND, 100), (e) => /not currently composited/.test(e.message));
+// What stays refused: a tab that was NEVER on screen when nothing is on screen to cover showing it once (P6) — fast, with a clear error.
+await check('a never-composited tab with nothing on screen to cover its first frame refuses a screenshot fast', async () => {
+  bp.ensurePanel('ws-never-shown'); // a panel nobody has looked at: its tab never composited
+  bp.hidePanel(ACTIVE);
+  const t0 = Date.now();
+  await assert.rejects(() => bp.capture('ws-never-shown'), (e) => /not been on screen since its page loaded/.test(e.message));
+  assert.ok(Date.now() - t0 < 500, 'fast');
+  bp.showPanel(ACTIVE);
 });
 
 // The composited panel keeps full capability.

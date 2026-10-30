@@ -38,6 +38,9 @@ class WebContents {
   on(ev, fn) { (this.handlers[ev] ||= []).push(fn); }
   emitEvent(ev, ...a) { for (const f of (this.handlers[ev] || [])) f(...a); }
   once() {} setWindowOpenHandler() {}
+  setBackgroundThrottling(v) { (this.throttle ??= []).push(v); }
+  beginFrameSubscription(_dirty, cb) { this.subs = (this.subs ?? 0) + 1; setTimeout(() => cb({ getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') }), 1); }
+  endFrameSubscription() { this.subs = (this.subs ?? 1) - 1; }
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() { this.reloaded = true; }
   capturePage() { return Promise.resolve({ toJPEG: () => Buffer.from('x') }); }
@@ -50,6 +53,8 @@ export class WebContentsView {
   constructor() { this.webContents = new WebContents(this); this._wc = this.webContents; this.bounds = null; views.push(this); }
   setBounds(b) { this.bounds = b; }
   setBackgroundColor() {}
+  setVisible(v) { this.visible = v; }
+  getBounds() { return this.bounds ?? { x: 0, y: 0, width: 800, height: 600 }; }
   killExternally() { this._wc.destroyed = true; this.webContents = undefined; }
 }
 export const Menu = { buildFromTemplate: () => ({ popup() {} }) };
@@ -101,7 +106,13 @@ const testSeat: Parameters<typeof bp.setCdpSeat>[0] = {
 bp.setCdpSeat(testSeat);
 bp.setTabTeardownHook((wc) => seat.seatForceDetach(wc as any));
 
-const attached = new Set<unknown>();
+const children = new Set<unknown>(); // every view that is a CHILD of the window (visible or hidden — #406)
+const attached = { // the views COMPOSITED on screen: children that are not setVisible(false)
+  get size() { return [...children].filter((v) => (v as { visible?: boolean }).visible !== false).length; },
+  has: (v: unknown) => children.has(v) && (v as { visible?: boolean }).visible !== false,
+  add: (v: unknown) => children.add(v),
+  delete: (v: unknown) => children.delete(v),
+};
 bp.initBrowserPanels(() => ({
   contentView: {
     addChildView: (v: unknown) => attached.add(v),
@@ -121,7 +132,7 @@ const newWs = () => {
 // that is a leak (it would paint black over the app), so assert it here.
 afterEach(() => {
   for (const ws of used.splice(0)) bp.destroyPanel(ws);
-  assert.equal(attached.size, 0, 'a composited view leaked past destroyPanel');
+  assert.equal(children.size, 0, 'a view (visible or hidden) leaked past destroyPanel');
 });
 const RECT = { x: 1, y: 2, width: 640, height: 480 };
 const wcOf = (tab: { view: unknown }) => (tab.view as { _wc: any })._wc;
@@ -374,18 +385,22 @@ test('primitives hit the ACTIVE tab by default and the named tab with a trailing
   assert.equal(wcOf(t1).dbgAttached, false, 'a one-shot command leaves no debugger behind (lease released)');
 });
 
-test('capture / input on a BACKGROUND tab are refused (only the active tab produces frames)', async () => {
+test('capture / input on a BACKGROUND tab are DRIVEN IN PLACE under a throttling lease (#406): nothing is refused or brought to the front', async () => {
   const ws = newWs();
   openShown(ws);
-  bp.createTab(ws, { openedBy: 'agent' });
-  await assert.rejects(() => bp.capture(ws, 75, 't2'), /not the active tab/);
-  await assert.rejects(() => bp.clickAt(ws, 1, 1, 't2'), /not the active tab/);
-  await assert.rejects(() => bp.typeText(ws, 'x', 't2'), /not the active tab/);
-  await assert.rejects(() => bp.scrollBy(ws, 5, 't2'), /not the active tab/);
+  bp.createTab(ws, { openedBy: 'agent' }); // never shown: detached, no first frame yet — surfaced under the visible tab 1, then hidden
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'a background tab answers a screenshot');
+  await bp.clickAt(ws, 1, 1, 't2');
+  await bp.typeText(ws, 'x', 't2');
+  await bp.scrollBy(ws, 5, 't2');
+  assert.equal(bp.getActiveTab(ws)!.id, 't1', 'the human\'s tab never changed');
+  assert.equal(attached.size, 1, 'and only the human\'s tab is composited (t2 is hidden)');
+  assert.equal(viewOf(bp.getTab(ws, 't2')!).visible, false);
+  const throttle = wcOf(bp.getTab(ws, 't2')!).throttle as boolean[];
+  assert.equal(throttle[0], false, 'throttling went OFF for the action');
+  await new Promise((r) => setTimeout(r, 1300)); // LINGER_MS 600 + the sweep
+  assert.equal(throttle[throttle.length - 1], true, 'and back ON after the last action (P3/P7)');
   assert.ok((await bp.capture(ws, 75, 't1')).length > 0, 'the active tab still captures');
-  bp.activateTab(ws, 't2');
-  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'and so does t2 once active');
-  await assert.rejects(() => bp.capture(ws, 75, 't1'), /not the active tab/);
 });
 
 test('navigate / reload honour tabId and default to the active tab', async () => {
@@ -546,15 +561,24 @@ test('clickRef pins ONE tab: a tab switch between resolving the ref and clicking
   assert.equal(bp.getActiveTab(ws)?.id, 't1', 'and it is the tab on screen again');
 });
 
-test('clickRef in a BACKGROUND workspace is refused with the reason and dispatches nothing (no bring-to-front outside the focused workspace)', async () => {
+test('clickRef in a BACKGROUND workspace is driven in place (#406): the click lands, nothing is brought to the front, no view stays composited for it', async () => {
   const fg = newWs();
   const ws = newWs();
   openShown(fg);
   const t1 = bp.ensurePanel(ws).tabs[0]!; // a panel nobody looks at
   wcOf(t1).evalValue = { x: 5, y: 6 };
-  await assert.rejects(() => bp.clickRef(ws, 1), /needs the Browser pane on screen/);
-  assert.deepEqual(wcOf(t1).cmds.filter((c: any) => c.m === 'Input.dispatchMouseEvent'), []);
-  assert.equal(attached.has(viewOf(t1)), false, 'and no view was attached for it');
+  await bp.clickRef(ws, 1);
+  assert.ok(wcOf(t1).cmds.some((c: any) => c.m === 'Input.dispatchMouseEvent'), 'the click was dispatched');
+  assert.equal(attached.has(viewOf(t1)), false, 'and no view is composited for it (hidden under the focused tab)');
+  assert.equal(bp.isFocusedWorkspace(fg), true, 'the focused workspace is untouched');
+});
+
+test('with NOTHING on screen to hide a first-paint pulse under, a never-composited tab refuses a screenshot FAST with a clear error (P6)', async () => {
+  const ws = newWs(); // no focused workspace, no visible tab
+  const t1 = bp.ensurePanel(ws).tabs[0]!;
+  const t0 = Date.now();
+  await assert.rejects(() => bp.capture(ws, 75, t1.id), /not been on screen since its page loaded/);
+  assert.ok(Date.now() - t0 < 500, 'fast');
 });
 
 test('designModePoll pins ONE tab: the element screenshot comes from the tab the pick was read on', async () => {
