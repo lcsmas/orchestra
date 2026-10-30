@@ -76,7 +76,7 @@ const HASH_BEFORE = liveHashes();
 // ---------------- the page server (outside the measured tree): N+1 distinct origins h<i>.localhost on one loopback port ----------------
 const T0 = Date.now(); const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SPIKE_PAGE = `<!doctype html><meta charset=utf-8><title>busy</title>
-<style>html,body{margin:0;height:100%;background:#c81e8a}
+<style>html,body{margin:0;height:100%;background:#1e8ac8}
 #sq{position:fixed;left:0;top:60px;width:40px;height:40px;background:#fff;animation:mv 1s linear infinite alternate}
 @keyframes mv{from{transform:translateX(0)}to{transform:translateX(200px)}}</style><div id=sq></div><input id=in style="position:fixed;left:300px;top:300px;width:200px;height:30px"><div style="height:4000px"></div>
 <script>
@@ -86,9 +86,10 @@ setInterval(()=>timer.push(performance.now()-T0),50);
 (function f(){raf.push(performance.now()-T0);requestAnimationFrame(f)})();
 window.__spike={now:()=>performance.now()-T0,snap(){return{now:performance.now()-T0,timer:timer.slice(),raf:raf.slice(),state:document.visibilityState}}};
 </script>`;
-const IDLE_PAGE = `<!doctype html><meta charset=utf-8><title>idle</title><body style="margin:0;background:#c81e8a"><input id=in style="position:fixed;left:300px;top:300px;width:200px;height:30px"><p style="margin:12px;font:16px sans-serif;color:#fff">static page</p>`;
-const HEAVY_PAGE = (() => { let rows = ''; for (let i = 0; i < 14000; i++) rows += `<div class="row" id="r${i}"><span class="a">row ${i} lorem ipsum dolor sit amet consectetur</span><b class="b">${(i * 2654435761 >>> 0).toString(36)}</b></div>\n`; return `<!doctype html><meta charset=utf-8><title>heavy</title><body style="margin:0;background:#c81e8a;font:12px sans-serif;color:#fff">${rows}<input id=in></body>`; })();
-const pages = { idle: IDLE_PAGE, busy: SPIKE_PAGE, heavy: HEAVY_PAGE };
+const VIS_PAGE = `<!doctype html><meta charset=utf-8><title>visible tab</title><body style="margin:0;background:#c81e8a"><input id=in style="position:fixed;left:300px;top:300px;width:200px;height:30px"><p style="margin:12px;font:16px sans-serif;color:#fff">the human's tab</p>`;
+const IDLE_PAGE = `<!doctype html><meta charset=utf-8><title>idle</title><body style="margin:0;background:#1e8ac8"><input id=in style="position:fixed;left:300px;top:300px;width:200px;height:30px"><p style="margin:12px;font:16px sans-serif;color:#fff">static page</p>`;
+const HEAVY_PAGE = (() => { let rows = ''; for (let i = 0; i < 14000; i++) rows += `<div class="row" id="r${i}"><span class="a">row ${i} lorem ipsum dolor sit amet consectetur</span><b class="b">${(i * 2654435761 >>> 0).toString(36)}</b></div>\n`; return `<!doctype html><meta charset=utf-8><title>heavy</title><body style="margin:0;background:#1e8ac8;font:12px sans-serif;color:#fff">${rows}<input id=in></body>`; })();
+const pages = { idle: IDLE_PAGE, busy: SPIKE_PAGE, heavy: HEAVY_PAGE, vis: VIS_PAGE }; // hidden pages are BLUE, the human's tab MAGENTA: the screen read proves which one paints
 let hostsSeen = new Set();
 const server = http.createServer((req, res) => {
   const host = (req.headers.host || '').split(':')[0]; const p = (req.url || '').split('?')[0].slice(1);
@@ -124,7 +125,7 @@ async function runOne(spec) {
   const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: fakeHome, XDG_RUNTIME_DIR: XDG, DBUS_SESSION_BUS_ADDRESS: BUS, XDG_CONFIG_HOME: path.join(fakeHome, '.config'), XDG_CACHE_HOME: path.join(fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
     MEASURE_ARM: spec.arm, MEASURE_PAGE: spec.page, MEASURE_N: String(spec.n), MEASURE_PORT: String(PORT), MEASURE_OUT: dir, MEASURE_SETTLE_S: String(SETTLE), MEASURE_WINDOW_S: String(WINDOW), MEASURE_FRAME_S: String(FRAME),
-    MEASURE_KILL: spec.kind === 'control-crash' ? '1' : '0', MEASURE_COST_MB: spec.arm === 'A1x' ? '100' : '0' };
+    MEASURE_KILL: spec.kind === 'control-crash' ? '1' : '0', MEASURE_MUTANT: flag('--mutant', ''), MEASURE_COST_MB: spec.arm === 'A1x' ? '100' : '0' };
   const handed = handedEnvProblems(env, { ohome: env.ORCHESTRA_HOME, cfg: env.CLAUDE_CONFIG_DIR, home: fakeHome, wayland: RIG_WAYLAND, xdg: XDG, noBusPath: BUS.replace(/^unix:path=/, '') });
   if (handed.length) refuse(`child env violates the rig runtime contract: ${handed.join('; ')}`);
   hostsSeen = new Set();
@@ -216,7 +217,8 @@ const STAGE = flag('--stage', 'main');
 if (!['main', 'n160', 'a2'].includes(STAGE)) refuse('--stage main|n160|a2');
 let schedule = buildSchedule(STAGE);
 const only = flag('--only', null); if (only) schedule = schedule.filter((s) => s.id.includes(only));
-const isDone = (s) => { const d = path.join(OUT, 'runs', s.id); if (!fs.existsSync(d)) return false; const as = fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort(); if (!as.length) return false; const last = JSON.parse(fs.readFileSync(path.join(d, as[as.length - 1]), 'utf8')); if (as.length >= 3) return true; return last.kind === 'cell' ? isValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
+const instValid = (r) => isValid(DEV ? { ...r, windowS: LIMITS.windowS, settleS: LIMITS.settleS } : r); // a DEV run is judged on every instrument fact except its (deliberately short) length
+const isDone = (s) => { const d = path.join(OUT, 'runs', s.id); if (!fs.existsSync(d)) return false; const as = fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort(); if (!as.length) return false; const last = JSON.parse(fs.readFileSync(path.join(d, as[as.length - 1]), 'utf8')); if (as.length >= 3) return true; return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
 // N=160 (memory-safety clause): measured directly only if the N=40 rows show the peak fits above 8 GB; else it stays PROJECTED.
 if (STAGE === 'n160') {
   const prior = loadDir().filter((r) => r.kind === 'cell' && r.set === 'main' && r.n === 40 && !r.aborted && r.memAvailStartKB && r.memAvailMinKB);
@@ -249,7 +251,7 @@ for (const spec of todo) {
   if ((Date.now() - T0) / 1000 + est + 30 > BATCH_MIN * 60) { console.error(`[measure] batch budget ${BATCH_MIN} min reached — ${todo.length - ran} left (resume with the same command)`); break; }
   if (!(await waitForMemory(spec))) { console.error(`[measure] MemAvailable never reached the floor for ${spec.id}; stopping (exit 75)`); process.exitCode = 75; break; }
   const r = await runOne(spec); ran++;
-  const ok = r.kind === 'cell' ? isValid(r) : r.kind === 'control-abort' ? r.aborted === 'memavail' : (r.crashes ?? 0) >= 1;
+  const ok = r.kind === 'cell' ? instValid(r) : r.kind === 'control-abort' ? r.aborted === 'memavail' : (r.crashes ?? 0) >= 1;
   console.error(`[measure] #${spec.seq} ${spec.id} attempt ${r.attempt} → ${ok ? 'ok' : 'NOT OK'}${r.aborted ? ` aborted=${r.aborted}` : ''} rss=${r.rssKB ? (r.rssKB / 1024).toFixed(0) + 'MB' : 'n/a'} gpu=${r.gpuRssKB ? (r.gpuRssKB / 1024).toFixed(0) + 'MB' : 'n/a'} cpu=${r.cpuPct ?? 'n/a'}% frames=${r.idleFrames} canary=${r.framesCanary} crashes=${r.crashes} ctx=${r.contextLost} procs=${r.treePidsMax ?? 'n/a'} avail-min=${r.memAvailMinKB ? (r.memAvailMinKB / GB_KB).toFixed(1) : 'n/a'}GB${r.error ? ' ERR ' + r.error.slice(0, 200) : ''}${r.errors?.length ? ' errs=' + r.errors.slice(0, 2).join(';').slice(0, 160) : ''}`);
 }
 server.close();

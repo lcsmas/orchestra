@@ -10,9 +10,12 @@
 const { app, BrowserWindow, WebContentsView } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { decodePng, share } = require('./e2e-browser-tabs-png.cjs');
 
 const ARM = process.env.MEASURE_ARM, PAGE = process.env.MEASURE_PAGE, N = Number(process.env.MEASURE_N), PORT = Number(process.env.MEASURE_PORT), OUT = process.env.MEASURE_OUT;
 const SETTLE_S = Number(process.env.MEASURE_SETTLE_S ?? 30), WINDOW_S = Number(process.env.MEASURE_WINDOW_S ?? 60), FRAME_S = Number(process.env.MEASURE_FRAME_S ?? 8);
+const MUTANT = process.env.MEASURE_MUTANT || ''; // dev self-test: 'nohide' = never hide a view — the state assertion must then read stateOk=false
 const KILL = process.env.MEASURE_KILL === '1', COST_MB = Number(process.env.MEASURE_COST_MB ?? 0);
 const result = { arm: ARM, page: PAGE, n: N, errors: [] };
 const emit = (obj) => { try { fs.writeSync(1, 'MEASURE_RESULT ' + JSON.stringify(obj) + '\n'); } catch {} };
@@ -44,7 +47,7 @@ app.whenReady().then(async () => {
   const url = (host) => `http://${host}.localhost:${PORT}/${PAGE}`;
   // the human's visible tab: one static page on its own origin, attached + composited in EVERY arm (it cancels in the A1−A0 delta)
   const v0 = mk('m406-vis'); keep.push(v0); win.contentView.addChildView(v0); v0.setBounds(fullRect());
-  const l0 = await bounded(v0.webContents.loadURL(`http://vis.localhost:${PORT}/idle`), 30000); if (!l0.ok) result.errors.push('visible load: ' + l0.e);
+  const l0 = await bounded(v0.webContents.loadURL(`http://vis.localhost:${PORT}/vis`), 30000); if (!l0.ok) result.errors.push('visible load: ' + l0.e);
   await sleep(500);
   // N loaded views, each attached at real size and LOADED while visible (spike condition 1), then hidden per arm. 8 views per partition, as the app's workspaces.
   const views = []; const t0 = Date.now(); let loadFail = 0;
@@ -55,14 +58,24 @@ app.whenReady().then(async () => {
     if (!l.ok) { loadFail++; result.errors.push(`load ${i}: ${l.e}`); }
     if (COST_MB > 0 && ARM === 'A1x' && i === 0) { const r = await bounded(v.webContents.executeJavaScript(`window.__cost = new Uint8Array(${COST_MB} * 1024 * 1024).fill(7); window.__cost.length`), 20000); result.costAlloc = r.ok ? r.v : r.e; }
     await sleep(200); // let the first surface commit before hiding
-    if (DETACH) win.contentView.removeChildView(v); else v.setVisible(false);
+    if (MUTANT === 'nohide') { /* mutant: leave the view painting on top */ } else if (DETACH) win.contentView.removeChildView(v); else v.setVisible(false);
   }
   result.loadMs = Date.now() - t0; result.loadFail = loadFail;
   // ---- the arm's own state assertion (a run whose arm was not really built is invalid, never a "result") ----
+  // Electron 33 has no View.getVisible(), and with backgroundThrottling:false document.visibilityState stays 'visible' on a hidden view (#402 finding 8),
+  // so the proof of "hidden" is the SCREEN: the compositor output must show the human's tab (magenta) and none of the hidden pages (blue) —
+  // a hide that did not take would leave the last-added view painting on top. A0 additionally reads the pages' own 'hidden' state.
   const kids = win.contentView.children.length;
-  const hiddenFlags = DETACH ? null : views.map((v) => (typeof v.getVisible === 'function' ? v.getVisible() : null));
-  result.state = { children: kids, wantChildren: DETACH ? 1 : N + 1, getVisibleAvailable: hiddenFlags ? hiddenFlags.every((x) => x !== null) : null, anyStillVisible: hiddenFlags ? hiddenFlags.some((x) => x === true) : false };
-  result.stateOk = loadFail === 0 && kids === result.state.wantChildren && !result.state.anyStillVisible && (DETACH || result.state.getVisibleAvailable === true);
+  await sleep(1200);
+  const screen = await new Promise((resolve) => { const f = path.join(OUT, 'screen.png'); execFile('grim', ['-s', '0.25', '-o', 'HEADLESS-1', f], { env: { PATH: process.env.PATH, WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }, timeout: 15000 }, (err) => {
+    if (err) return resolve({ error: String(err.message).slice(0, 120) });
+    try { const I = decodePng(fs.readFileSync(f)); const rect = { x: 0, y: 0, width: I.w, height: I.h }; resolve({ visibleTab: +share(I, rect, [200, 30, 138]).toFixed(3), hiddenPages: +share(I, rect, [30, 138, 200]).toFixed(3) }); } catch (e) { resolve({ error: String(e.message).slice(0, 120) }); } }); });
+  const vis = [];
+  for (let i = 0; i < views.length; i += 20) vis.push(...(await Promise.all(views.slice(i, i + 20).map((v) => bounded(v.webContents.executeJavaScript('document.visibilityState'), 10000)))));
+  const v0vis = await bounded(v0.webContents.executeJavaScript('document.visibilityState'), 10000);
+  const hiddenN = vis.filter((r) => r.ok && r.v === 'hidden').length;
+  result.state = { children: kids, wantChildren: DETACH ? 1 : N + 1, pagesReadingHidden: hiddenN, visibleTabState: v0vis.ok ? v0vis.v : v0vis.e, screen };
+  result.stateOk = loadFail === 0 && kids === result.state.wantChildren && v0vis.ok && v0vis.v === 'visible' && screen.visibleTab >= 0.9 && screen.hiddenPages <= 0.02 && (!DETACH || hiddenN === N);
   const pids = views.map((v) => v.webContents.getOSProcessId());
   result.distinctRenderers = new Set([...pids, v0.webContents.getOSProcessId()]).size;
   result.gpuFeatures = (() => { try { const f = app.getGPUFeatureStatus(); return { gpu_compositing: f.gpu_compositing, rasterization: f.rasterization, webgl: f.webgl, skia_graphite: f.skia_graphite }; } catch (e) { return String(e); } })();
