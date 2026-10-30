@@ -25,7 +25,7 @@ const DEV = has('--dev');
 const REPO = path.resolve(NO_RIG ? '.' : argv[0] || '');
 const OUT = path.resolve(flag('--out', path.join(process.env.TMPDIR || '/var/tmp', DEV ? 'measure-406-dev' : 'measure-406')));
 const SETTLE = Number(flag('--settle', DEV ? 5 : LIMITS.settleS)), WINDOW = Number(flag('--window', DEV ? 10 : LIMITS.windowS)), FRAME = Number(flag('--frame', DEV ? 3 : 8));
-const SET = DEV ? 'dev' : (flag('--stage', 'main') === 'a2' ? 'a2' : 'main');
+const SET = DEV ? 'dev' : (flag('--stage', 'main') === 'a2' ? 'a2' : 'main'); // ctl + n160 records join the 'main' set
 const MB = 1e6, GB_KB = 1024 * 1024;
 
 // ---------------- records -> table + verdict (shared by the run modes and the no-rig modes) ----------------
@@ -34,12 +34,12 @@ const loadJsonl = (f) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).
 function report(recs) {
   const runs = recs.filter((r) => r.kind);
   const f1 = (x) => (x === null || x === undefined || !Number.isFinite(x) ? 'n/a' : (+x).toFixed(1));
-  console.log('\nper (set,page,N,arm): valid/attempts · median RSS MB · GPU RSS MB · CPU %core · idle frames · crashes+ctxlost');
+  console.log('\nper (set,page,N,arm): valid/attempts · median RSS MB · PSS MB · GPU RSS MB · CPU %core · host MemAvailable drop start→window-end MB · idle frames (hidden, sampled views) · hidden-page timers/s · crashes+ctxlost');
   const keys = [...new Set(runs.filter((r) => r.kind === 'cell').map((r) => `${r.set}|${r.page}|${String(r.n).padStart(3)}|${r.arm}`))].sort();
   for (const k of keys) {
     const [set, page, n, arm] = k.split('|'); const rs = runs.filter((r) => r.kind === 'cell' && r.set === set && r.page === page && r.n === +n && r.arm === arm), v = rs.filter(isValid);
     const m = (g) => median(v.map(g));
-    console.log(`  ${set} ${page.padEnd(5)} N=${n} ${arm.padEnd(3)}: ${v.length}/${rs.length} · ${f1(m((r) => r.rssKB * 1024 / MB))} · ${f1(m((r) => r.gpuRssKB * 1024 / MB))} · ${f1(m((r) => r.cpuPct))} · ${f1(m((r) => r.idleFrames))} · ${rs.reduce((s, r) => s + (r.crashes ?? 0) + (r.contextLost ?? 0), 0)}${rs.some((r) => r.aborted) ? ` · aborted ${rs.filter((r) => r.aborted).length}` : ''}`);
+    console.log(`  ${set} ${page.padEnd(5)} N=${n} ${arm.padEnd(3)}: ${v.length}/${rs.length} · ${f1(m((r) => r.rssKB * 1024 / MB))} · ${f1(m((r) => (r.pssKB ?? NaN) * 1024 / MB))} · ${f1(m((r) => r.gpuRssKB * 1024 / MB))} · ${f1(m((r) => r.cpuPct))} · ${f1(m((r) => (r.memAvailStartKB - r.memAvailEndKB) * 1024 / MB))} · ${f1(m((r) => r.idleFrames))} · ${f1(m((r) => r.pageRates?.timerPerS?.med ?? NaN))} · ${rs.reduce((s, r) => s + (r.crashes ?? 0) + (r.contextLost ?? 0), 0)}${rs.some((r) => r.aborted) ? ` · aborted ${rs.filter((r) => r.aborted).length}` : ''}`);
   }
   const v = computeVerdict(runs);
   console.log('\nlimit checks (Δ = arm − A0, same page, same N):');
@@ -125,7 +125,7 @@ async function runOne(spec) {
   const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: fakeHome, XDG_RUNTIME_DIR: XDG, DBUS_SESSION_BUS_ADDRESS: BUS, XDG_CONFIG_HOME: path.join(fakeHome, '.config'), XDG_CACHE_HOME: path.join(fakeHome, '.cache'),
     WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK, ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
     MEASURE_ARM: spec.arm, MEASURE_PAGE: spec.page, MEASURE_N: String(spec.n), MEASURE_PORT: String(PORT), MEASURE_OUT: dir, MEASURE_SETTLE_S: String(SETTLE), MEASURE_WINDOW_S: String(WINDOW), MEASURE_FRAME_S: String(FRAME),
-    MEASURE_KILL: spec.kind === 'control-crash' ? '1' : '0', MEASURE_MUTANT: flag('--mutant', ''), MEASURE_COST_MB: spec.arm === 'A1x' ? '100' : '0' };
+    MEASURE_KILL: spec.kind === 'control-crash' ? '1' : spec.kind === 'control-gpu-crash' ? 'gpu' : '0', MEASURE_MUTANT: flag('--mutant', ''), MEASURE_COST_MB: spec.arm === 'A1x' ? '100' : '0' };
   const handed = handedEnvProblems(env, { ohome: env.ORCHESTRA_HOME, cfg: env.CLAUDE_CONFIG_DIR, home: fakeHome, wayland: RIG_WAYLAND, xdg: XDG, noBusPath: BUS.replace(/^unix:path=/, '') });
   if (handed.length) refuse(`child env violates the rig runtime contract: ${handed.join('; ')}`);
   hostsSeen = new Set();
@@ -204,6 +204,7 @@ function buildSchedule(stage) {
     mk({ kind: 'control-abort', arm: 'A1', page: 'idle', n: 8, rep: 0 });
     for (let r = 0; r < 2; r++) mk({ kind: 'control-crash', arm: 'A1', page: 'idle', n: 8, rep: r });
   }
+  if (stage === 'ctl') for (let r = 0; r < 2; r++) mk({ kind: 'control-gpu-crash', arm: 'A1', page: 'idle', n: 8, rep: r }); // the GPU-process / context-lost reader must fire on a killed GPU process
   const ns = stage === 'n160' ? [160] : stage === 'a2' ? NS : NS;
   for (let rep = 0; rep < REPS; rep++) for (const n of ns) for (const page of PAGES) {
     let arms = stage === 'a2' ? ['A0', 'A2'] : ['A0', 'A1'];
@@ -214,13 +215,13 @@ function buildSchedule(stage) {
   return sch;
 }
 const STAGE = flag('--stage', 'main');
-if (!['main', 'n160', 'a2'].includes(STAGE)) refuse('--stage main|n160|a2');
+if (!['main', 'n160', 'a2', 'ctl'].includes(STAGE)) refuse('--stage main|n160|a2|ctl');
 let schedule = buildSchedule(STAGE);
 const only = flag('--only', null); if (only) schedule = schedule.filter((s) => s.id.includes(only));
 const instValid = (r) => isValid(DEV ? { ...r, windowS: LIMITS.windowS, settleS: LIMITS.settleS } : r); // a DEV run is judged on every instrument fact except its (deliberately short) length
 const attemptsOf = (s) => { const d = path.join(OUT, 'runs', s.id); return fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort().map((f) => JSON.parse(fs.readFileSync(path.join(d, f), 'utf8'))) : []; };
 const isDone = (s) => { const as = attemptsOf(s); if (!as.length) return false; const last = as[as.length - 1]; if (as.filter((a) => a.aborted !== 'memavail').length >= 3 || as.length >= 12) return true; // a memory-floor abort is the guard working, not an instrument failure: it never uses up the 3 attempts
-  return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
+  return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : last.kind === 'control-gpu-crash' ? (last.crashes ?? 0) >= 1 && (last.contextLost ?? 0) >= 1 : (last.crashes ?? 0) >= 1); };
 // N=160 (memory-safety clause): measured directly only if the N=40 rows show the peak fits above 8 GB; else it stays PROJECTED.
 if (STAGE === 'n160') {
   // The rig tree's real draw is its summed PSS (MemAvailable swings ±2 GB with the other agents, RSS double-counts the pages the renderers share):
@@ -272,7 +273,7 @@ while (pending.length) {
   const est = SETTLE + WINDOW + FRAME + 40 + spec.n * 1.2;
   if ((Date.now() - T0) / 1000 + est + 30 > BATCH_MIN * 60) { console.error(`[measure] batch budget ${BATCH_MIN} min reached — ${pending.length + 1} left (resume with the same command)`); break; }
   const r = await runOne(spec); ran++;
-  const ok = r.kind === 'cell' ? instValid(r) : r.kind === 'control-abort' ? r.aborted === 'memavail' : (r.crashes ?? 0) >= 1;
+  const ok = r.kind === 'cell' ? instValid(r) : r.kind === 'control-abort' ? r.aborted === 'memavail' : r.kind === 'control-gpu-crash' ? (r.crashes ?? 0) >= 1 && (r.contextLost ?? 0) >= 1 : (r.crashes ?? 0) >= 1;
   console.error(`[measure] #${spec.seq} ${spec.id} attempt ${r.attempt} → ${ok ? 'ok' : 'NOT OK'}${r.aborted ? ` aborted=${r.aborted}` : ''} rss=${r.rssKB ? (r.rssKB / 1024).toFixed(0) + 'MB' : 'n/a'} gpu=${r.gpuRssKB ? (r.gpuRssKB / 1024).toFixed(0) + 'MB' : 'n/a'} cpu=${r.cpuPct ?? 'n/a'}% frames=${r.idleFrames} canary=${r.framesCanary} crashes=${r.crashes} ctx=${r.contextLost} procs=${r.treePidsMax ?? 'n/a'} avail-min=${r.memAvailMinKB ? (r.memAvailMinKB / GB_KB).toFixed(1) : 'n/a'}GB${r.error ? ' ERR ' + r.error.slice(0, 200) : ''}${r.errors?.length ? ' errs=' + r.errors.slice(0, 2).join(';').slice(0, 160) : ''}`);
 }
 server.close();

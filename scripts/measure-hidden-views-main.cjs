@@ -16,7 +16,7 @@ const { decodePng, share } = require('./e2e-browser-tabs-png.cjs');
 const ARM = process.env.MEASURE_ARM, PAGE = process.env.MEASURE_PAGE, N = Number(process.env.MEASURE_N), PORT = Number(process.env.MEASURE_PORT), OUT = process.env.MEASURE_OUT;
 const SETTLE_S = Number(process.env.MEASURE_SETTLE_S ?? 30), WINDOW_S = Number(process.env.MEASURE_WINDOW_S ?? 60), FRAME_S = Number(process.env.MEASURE_FRAME_S ?? 8);
 const MUTANT = process.env.MEASURE_MUTANT || ''; // dev self-test: 'nohide' = never hide a view — the state assertion must then read stateOk=false
-const KILL = process.env.MEASURE_KILL === '1', COST_MB = Number(process.env.MEASURE_COST_MB ?? 0);
+const KILL = process.env.MEASURE_KILL === '1' || process.env.MEASURE_KILL === 'gpu', KILL_GPU = process.env.MEASURE_KILL === 'gpu', COST_MB = Number(process.env.MEASURE_COST_MB ?? 0);
 const result = { arm: ARM, page: PAGE, n: N, errors: [] };
 const emit = (obj) => { try { fs.writeSync(1, 'MEASURE_RESULT ' + JSON.stringify(obj) + '\n'); } catch {} };
 if (!ARM || !PAGE || !(N >= 0) || !PORT || !OUT) { emit({ ...result, fatal: 'MEASURE_* env unset' }); process.exit(2); }
@@ -82,7 +82,7 @@ app.whenReady().then(async () => {
   phase('loaded-all');
   await sleep(SETTLE_S * 1000);
   const tWinStart = Date.now(); phase('window-start');
-  if (KILL && views[0]) { await sleep((WINDOW_S * 1000) / 2); try { process.kill(pids[0], 'SIGKILL'); } catch (e) { result.errors.push('kill: ' + e.message); } await sleep((WINDOW_S * 1000) / 2); }
+  if (KILL && views[0]) { await sleep((WINDOW_S * 1000) / 2); const target = KILL_GPU ? app.getAppMetrics().find((m) => m.type === 'GPU')?.pid : pids[0]; result.killed = { what: KILL_GPU ? 'gpu-process' : 'renderer', pid: target ?? null }; try { process.kill(target, 'SIGKILL'); } catch (e) { result.errors.push('kill: ' + e.message); } await sleep((WINDOW_S * 1000) / 2); }
   else await sleep(WINDOW_S * 1000);
   const tWinEnd = Date.now(); phase('window-end');
 
