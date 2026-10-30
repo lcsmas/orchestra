@@ -18,6 +18,8 @@ interface World {
   reps?: number;
   noPositive?: boolean; noNull?: boolean; nullNoise?: number; noCrashCtl?: boolean; noAbortCtl?: boolean; noGpuCtl?: boolean;
   a2?: Partial<Record<CostPage, Fn>>; // cpu cost of A2 over A0 (set 'a2', busy N=40/160)
+  a2Drift?: number; // host drift between the main stage and the a2 stage: extra CPU % on EVERY a2-set run (A0 and A2 alike)
+  nullNoiseOnly40?: number; // extra RSS noise on the A0b runs of the N=40 null cell ONLY
   crash?: (r: { arm: CostArm; page: CostPage; n: number }) => number;
   mutate?: (r: CostRun) => void;
 }
@@ -35,11 +37,11 @@ function world(o: World = {}): CostRun[] {
     const dGpu = isA1 ? (o.gpu?.[page] ?? zero)(n) : 0;
     const dCpu = arm === 'A2' ? (o.a2?.[page] ?? zero)(n) : isA1 ? (o.cpu?.[page] ?? zero)(n) : 0;
     const dFr = arm === 'A1' ? (o.frames ?? zero)(n) : 0;
-    const noise = arm === 'A0b' ? (o.nullNoise ?? 0) : 0;
+    const noise = arm === 'A0b' ? (o.nullNoise ?? 0) + (n === 40 ? (o.nullNoiseOnly40 ?? 0) : 0) : 0;
     const j = JIT[rep % 5]!;
     return {
       kind: 'cell', set, arm, page, n, rep, seq, t: new Date(Date.UTC(2026, 9, 30, 12, 0, 0) + seq++ * 120_000).toISOString(), windowS: 60, settleS: 30, cpuWindowS: 60.1, distinctRenderers: n + 1, stateOk: true, treeMissing: 0, livenessFail: 0, framesCanary: 40,
-      rssKB: (1_500_000 + n * 60_000 + (dRss + noise) / 1024 + j * 100) , gpuRssKB: 200_000 + n * 500 + (dGpu + noise) / 1024, cpuPct: 3 + n * 0.05 + dCpu + (arm === 'A0b' ? noise / MB : 0) + j * 0.01,
+      rssKB: (1_500_000 + n * 60_000 + (dRss + noise) / 1024 + j * 100) , gpuRssKB: 200_000 + n * 500 + (dGpu + noise) / 1024, cpuPct: 3 + n * 0.05 + dCpu + (arm === 'A0b' ? (o.nullNoise ?? 0) / MB : 0) + (set === 'a2' ? (o.a2Drift ?? 0) : 0) + j * 0.01,
       crashes: o.crash?.({ arm, page, n }) ?? 0, contextLost: 0, idleFrames: 3 + dFr, aborted: null,
     };
   };
@@ -405,4 +407,31 @@ test('method: the a2 set and a measured N=160 group need ≥ 5 valid runs per co
   const rs2 = world({ ...ok, ns: [1, 8, 40, 160] });
   rs2.find((r) => r.arm === 'A0' && r.page === 'idle' && r.n === 160 && r.rep === 0)!.stateOk = false;
   assert.match(readMethod(rs2).find((c) => c.id === 'runs-per-cell>=5')!.detail, /main\/A0\/idle\/160=4/);
+});
+
+test('X7: the N=40 null cell is pinned on its own — noise only on A0b@idle/40 (21 MB RSS) fails the null control', () => {
+  const v = computeVerdict(world({ ...ok, nullNoiseOnly40: 21 * MB }));
+  const c = readControls(world({ ...ok, nullNoiseOnly40: 21 * MB })).find((x) => x.id === 'null-A0-vs-A0')!;
+  assert.equal(c.ok, false);
+  assert.match(c.detail, /rss@idle\/40/);
+  assert.doesNotMatch(c.detail, /idle\/8:/);
+  assert.equal(v.verdict, 'NO-GO');
+  assert.equal(readControls(world({ ...ok, nullNoiseOnly40: 19 * MB })).find((x) => x.id === 'null-A0-vs-A0')!.ok, true);
+});
+
+test('X14b: A2 rows are compared against the a2-SET A0, not the main-set A0 (host drift between the stages must not read as an A2 cost)', () => {
+  const o = { ...ok, ns: [1, 8, 40, 160], cpu: { ...ok.cpu, busy: (n: number) => n * 0.3 }, a2: { busy: (n: number) => n * 0.01, idle: () => 0 }, a2Drift: 30 };
+  const v = computeVerdict(world(o));
+  assert.equal(v.policy, 'A2');
+  assert.equal(v.verdict, 'GO');
+  const c2 = v.checks.find((c) => c.id === 'C2' && c.n === 40)!;
+  assert.equal(c2.arm, 'A2');
+  assert.ok(Math.abs(c2.delta!) < 1, `A2 − a2-set A0 = ${c2.delta}`); // 30 % of drift cancels
+  // the same for C1: A1 breaches the idle CPU limit at N=160, A2 (idle) holds it against ITS OWN stage's A0
+  const v1 = computeVerdict(world({ ...o, cpu: { busy: (n: number) => n * 0.3, idle: (n: number) => (n === 160 ? 2.5 : n * 0.003) } }));
+  assert.equal(v1.policy, 'A2');
+  assert.equal(v1.verdict, 'GO');
+  const c1 = v1.checks.find((c) => c.id === 'C1' && c.n === 160)!;
+  assert.equal(c1.arm, 'A2');
+  assert.ok(Math.abs(c1.delta!) < 1, `C1: A2 − a2-set A0 = ${c1.delta}`);
 });

@@ -41,6 +41,9 @@ const MUTANTS = [
   ['alternation read off schedule seq not clock', 'r.t ? Date.parse(r.t) : r.seq', 'r.seq'],
   ['GPU RSS 0 accepted by isValid', 'r.gpuRssKB > 0 /* a gpu-process was sampled */', 'true'],
   ['null crash counters accepted by isValid', 'r.crashes !== null && r.contextLost !== null;', 'true;'],
+  ['X7: N=40 null cell dropped', "[['idle', 8], ['idle', 40]]", "[['idle', 8]]"],
+  ['X14b: C2 A2 rows compared against the main-set A0', "LIMITS.c2CpuPct[n]!, '%core', cpuArm === 'A2' ? 'a2' : 'main', cpuArm === 'A2' ? 'a2' : 'main')", "LIMITS.c2CpuPct[n]!, '%core', cpuArm === 'A2' ? 'a2' : 'main', 'main')"],
+  ['X14b: C1 A2 rows compared against the main-set A0', "LIMITS.c1CpuPct[n]!, '%core', cpuArm === 'A2' ? 'a2' : 'main', cpuArm === 'A2' ? 'a2' : 'main')", "LIMITS.c1CpuPct[n]!, '%core', cpuArm === 'A2' ? 'a2' : 'main', 'main')"],
   ['CPU window length not checked', 'r.cpuWindowS != null && r.cpuWindowS >= LIMITS.windowS - LIMITS.cpuWindowSlackS &&', ''],
 ];
 const orig = fs.readFileSync(SRC);
