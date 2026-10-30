@@ -231,13 +231,19 @@ export function computeVerdict(runs: CostRun[]): Verdict {
   for (const c of [...controls, ...method]) if (!c.ok) reasons.push(`UNVERIFIED ${c.id}: ${c.detail}`);
   let checks = computeChecks(runs, 'A1');
   const failing = (cs: Check[]): Check[] => cs.filter((c) => !c.ok);
-  // C1/C2 breach under A1 → the policy lifted is A2 (bt0 only around agent actions) if A2 holds the CPU limits.
+  // C1/C2 breach under A1 → the policy lifted is A2 (bt0 only around agent actions) IF A2 holds EVERY CPU limit A1 breached; the limits A1 held
+  // (and every memory / GPU / frame limit) stay on the A1 rows: A2 is measured only where A1 breached (§Go-no-go).
   let policy: 'A1' | 'A2' = 'A1';
-  const cpuFail = (cs: Check[]): boolean => cs.some((c) => (c.id === 'C1' || c.id === 'C2') && c.basis !== 'missing' && !c.ok);
-  if (cpuFail(checks)) {
-    const withA2 = computeChecks(runs, 'A1', 'A2');
-    const a2cpu = withA2.filter((c) => c.id === 'C1' || c.id === 'C2');
-    if (a2cpu.length && a2cpu.every((c) => c.ok)) { checks = withA2; policy = 'A2'; reasons.push('A1 breaches a CPU limit and A2 holds them: the policy lifted is A2'); }
+  const isCpu = (c: Check): boolean => c.id === 'C1' || c.id === 'C2';
+  const a1Breach = checks.filter((c) => isCpu(c) && c.basis !== 'missing' && !c.ok);
+  if (a1Breach.length) {
+    const a2 = computeChecks(runs, 'A1', 'A2').filter(isCpu);
+    const alt = a1Breach.map((c) => a2.find((x) => x.id === c.id && x.n === c.n && x.page === c.page));
+    if (alt.every((x) => x !== undefined && x.ok)) {
+      checks = checks.map((c) => alt.find((x) => x && x.id === c.id && x.n === c.n && x.page === c.page) ?? c);
+      policy = 'A2';
+      reasons.push('A1 breaches a CPU limit and A2 holds it: the policy lifted is A2');
+    }
   }
   const bad = failing(checks);
   const fail40 = bad.filter((c) => c.n <= 40);

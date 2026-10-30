@@ -154,6 +154,15 @@ test('C2: A1 breaches, A2 holds the CPU limits → the policy lifted is A2 and t
   assert.ok(v.checks.filter((c) => c.id === 'C2').every((c) => c.arm === 'A2' && c.ok));
 });
 
+test('C2: A2 is needed (and measured) only for the page A1 breached; the limits A1 held stay on A1 rows', () => {
+  const rs = world({ ...ok, ns: [1, 8, 40, 160], cpu: { ...ok.cpu, busy: (n) => n * 0.3 }, a2: { busy: (n) => n * 0.01, idle: () => 0 } }).filter((r) => !(r.set === 'a2' && r.page === 'idle')); // no A2 data for P-idle
+  const v = computeVerdict(rs);
+  assert.equal(v.policy, 'A2');
+  assert.equal(v.verdict, 'GO');
+  assert.ok(v.checks.filter((c) => c.id === 'C2').every((c) => c.arm === 'A2'));
+  assert.ok(v.checks.filter((c) => c.id === 'C1').every((c) => c.arm === 'A1'));
+});
+
 test('C2: A1 breaches AND A2 breaches → stays NO-GO on A1', () => {
   const v = computeVerdict(world({ ...ok, cpu: { ...ok.cpu, busy: (n) => n * 0.3 }, a2: { busy: (n) => n * 0.3, idle: () => 0 } }));
   assert.equal(v.verdict, 'NO-GO');
@@ -267,6 +276,14 @@ test('isValid: each instrument fact that could be misleading invalidates the run
   assert.equal(isValid(r), true);
   for (const patch of [{ distinctRenderers: r.n }, { stateOk: false }, { treeMissing: 1 }, { livenessFail: 1 }, { framesCanary: 0 }, { framesCanary: null }, { rssKB: 0 }, { cpuPct: NaN }, { idleFrames: null }, { kind: 'control-crash' as const }])
     assert.equal(isValid({ ...r, ...patch }), false, JSON.stringify(patch));
+});
+
+test('a GO may not rest on a projected N=160 when N=40 was never measured', () => {
+  const v = computeVerdict(world({ ...ok, ns: [1, 8] }));
+  const m1 = v.checks.find((c) => c.id === 'M1' && c.n === 160)!;
+  assert.equal(m1.ok, false);
+  assert.match(m1.why!, /N=40 not measured/);
+  assert.notEqual(v.verdict, 'GO');
 });
 
 test('linearFit / median helpers', () => {

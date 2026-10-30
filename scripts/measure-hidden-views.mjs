@@ -221,14 +221,17 @@ const instValid = (r) => isValid(DEV ? { ...r, windowS: LIMITS.windowS, settleS:
 const isDone = (s) => { const d = path.join(OUT, 'runs', s.id); if (!fs.existsSync(d)) return false; const as = fs.readdirSync(d).filter((f) => /^attempt-\d+\.json$/.test(f)).sort(); if (!as.length) return false; const last = JSON.parse(fs.readFileSync(path.join(d, as[as.length - 1]), 'utf8')); if (as.length >= 3) return true; return last.kind === 'cell' ? instValid(last) : (last.kind === 'control-abort' ? last.aborted === 'memavail' : (last.crashes ?? 0) >= 1); };
 // N=160 (memory-safety clause): measured directly only if the N=40 rows show the peak fits above 8 GB; else it stays PROJECTED.
 if (STAGE === 'n160') {
-  const prior = loadDir().filter((r) => r.kind === 'cell' && r.set === 'main' && r.n === 40 && !r.aborted && r.memAvailStartKB && r.memAvailMinKB);
+  // The rig tree's real draw is its summed PSS (MemAvailable swings ±2 GB with the other agents, RSS double-counts the pages the renderers share):
+  // slope = (PSS@40 − PSS@1)/39 per view from the main-stage rows; draw@160 = PSS@1 + 159·slope; direct only if MemAvailable-now − 1.25·draw@160 ≥ 8 GB.
+  const prior = loadDir().filter((r) => r.kind === 'cell' && r.set === 'main' && !r.aborted && r.pssKB);
   const avail = memAvail(); const keep = [];
   for (const page of PAGES) {
-    const drops = prior.filter((r) => r.page === page).map((r) => (r.memAvailStartKB - r.memAvailMinKB) / 40);
-    const slope = drops.length ? Math.max(...drops) : null; const proj = slope === null ? null : avail - slope * 160 * 1.15;
+    const at = (n) => median(prior.filter((r) => r.page === page && r.n === n).map((r) => r.pssKB));
+    const p1 = at(1), p40 = at(40);
+    const slope = p1 != null && p40 != null ? (p40 - p1) / 39 : null; const draw = slope === null ? null : p1 + 159 * slope; const proj = draw === null ? null : avail - 1.25 * draw;
     const fits = proj !== null && proj >= LIMITS.memFloorKB;
-    console.error(`[measure] N=160 ${page}: per-view MemAvailable drop (max over N=40 runs) ${slope === null ? 'n/a' : (slope / 1024).toFixed(1) + ' MB'} → projected MemAvailable at peak ${proj === null ? 'n/a' : (proj / GB_KB).toFixed(1) + ' GB'} (now ${(avail / GB_KB).toFixed(1)} GB, floor ${LIMITS.memFloorKB / GB_KB} GB) → ${fits ? 'MEASURE directly' : 'PROJECT (not measured)'}`);
-    fs.appendFileSync(path.join(OUT, 'decisions.jsonl'), JSON.stringify({ t: new Date().toISOString(), decision: 'n160', page, perViewDropKB: slope, projectedPeakAvailKB: proj, nowAvailKB: avail, direct: fits }) + '\n');
+    console.error(`[measure] N=160 ${page}: PSS@1 ${p1 === null ? 'n/a' : (p1 / 1024).toFixed(0)} MB, PSS@40 ${p40 === null ? 'n/a' : (p40 / 1024).toFixed(0)} MB → ${slope === null ? 'n/a' : (slope / 1024).toFixed(1)} MB/view → draw@160 ${draw === null ? 'n/a' : (draw / GB_KB).toFixed(1)} GB; projected MemAvailable at peak ${proj === null ? 'n/a' : (proj / GB_KB).toFixed(1)} GB (now ${(avail / GB_KB).toFixed(1)} GB, floor ${LIMITS.memFloorKB / GB_KB} GB) → ${fits ? 'MEASURE directly' : 'PROJECT (not measured)'}`);
+    fs.appendFileSync(path.join(OUT, 'decisions.jsonl'), JSON.stringify({ t: new Date().toISOString(), decision: 'n160', page, pss1KB: p1, pss40KB: p40, perViewKB: slope, drawAt160KB: draw, projectedPeakAvailKB: proj, nowAvailKB: avail, direct: fits }) + '\n');
     if (fits) keep.push(page);
   }
   schedule = schedule.filter((s) => keep.includes(s.page));
@@ -236,7 +239,7 @@ if (STAGE === 'n160') {
 
 // ---------------- the batch loop ----------------
 const BATCH_MIN = Number(flag('--batch-min', '40'));
-const estimateNeedKB = (spec) => { const prior = loadDir().filter((r) => r.kind === 'cell' && r.page === spec.page && r.n === spec.n && r.memAvailStartKB && r.memAvailMinKB && !r.aborted); const d = prior.length ? Math.max(...prior.map((r) => r.memAvailStartKB - r.memAvailMinKB)) * 1.2 : spec.n * 100 * 1024; return LIMITS.memFloorKB + d; };
+const estimateNeedKB = (spec) => { const prior = loadDir().filter((r) => r.kind === 'cell' && r.page === spec.page && r.n === spec.n && r.pssKB && !r.aborted); const d = prior.length ? Math.max(...prior.map((r) => r.pssKB)) * 1.25 : spec.n * 100 * 1024; return LIMITS.memFloorKB + d; }; // a run's draw = its summed PSS; first run of a cell: 100 MB per view
 async function waitForMemory(spec) {
   if (spec.kind === 'control-abort') return true;
   const need = estimateNeedKB(spec), t0 = Date.now(); let last = 0;
