@@ -1,6 +1,6 @@
 CONTROL unmutated tree: CLEAN
-RIG1-old-413-ends-the-response: rig DIRTY on ['same/raw-launch -1=15', 'split/raw -1=26', 'split/raw-launch -1=15', 'split/http -1=43'] OK
-RIG2-early-destroy-restored: rig DIRTY on ['same/raw-launch -1=3', 'same/http-launch -1=3', 'split/raw -1=1', 'split/raw-launch -1=9'] OK
+RIG1-old-413-ends-the-response: rig DIRTY on ['same/raw-launch -1=15', 'split/raw -1=13', 'split/raw-launch -1=24', 'split/http -1=50'] OK
+RIG2-early-destroy-restored: rig DIRTY on ['same/hostile held=0 early=6 unb=0', 'split/hostile held=0 early=6 unb=0'] OK
 RIG3-drain-bound-removed: rig DIRTY on ['same/hostile held=0 early=6 unb=6', 'split/hostile held=0 early=6 unb=6'] OK
 RIG4-deadline-never-fires: rig DIRTY on ['same/hostile held=6 early=0 unb=0', 'split/hostile held=6 early=0 unb=0'] OK
 RIG MUTANTS CLEAN
