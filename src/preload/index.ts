@@ -203,6 +203,7 @@ const api: OrchestraAPI = {
   browserTabActivate: (wsId, tabId) => ipcRenderer.invoke('browser:tabActivate', wsId, tabId),
   browserTabClose: (wsId, tabId) => ipcRenderer.invoke('browser:tabClose', wsId, tabId),
   browserProfiles: () => ipcRenderer.invoke('browserProfiles:list'),
+  browserProfileAtRest: () => ipcRenderer.invoke('browserProfiles:atRest'),
   browserProfileCreate: (name) => ipcRenderer.invoke('browserProfiles:create', name),
   browserProfileRename: (id, name) => ipcRenderer.invoke('browserProfiles:rename', id, name),
   browserProfileDelete: (id) => ipcRenderer.invoke('browserProfiles:delete', id),

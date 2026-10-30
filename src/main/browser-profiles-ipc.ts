@@ -6,9 +6,11 @@
 import type { BrowserProfileResult } from '../shared/types';
 import { isHumanProfileCaller } from '../shared/browser-profile.ts';
 import type { BrowserProfilesService } from './browser-profiles.ts';
+import type { CookieFuseState } from '../shared/cookie-fuse-policy.ts';
 
 export const BROWSER_PROFILE_IPC_CHANNELS: ReadonlyArray<{ channel: string; writes: boolean; what: string }> = [
   { channel: 'browserProfiles:list', writes: false, what: 'the profiles on record' },
+  { channel: 'browserProfiles:atRest', writes: false, what: 'the REAL at-rest state of cookies: the EnableCookieEncryption fuse of the running binary (#407)' },
   { channel: 'browserProfiles:create', writes: true, what: 'create a profile' },
   { channel: 'browserProfiles:rename', writes: true, what: 'rename a profile' },
   { channel: 'browserProfiles:delete', writes: true, what: 'delete a profile (detach, reload ephemeral, clear storage)' },
@@ -31,6 +33,8 @@ export function registerBrowserProfilesIpc(deps: {
   /** `webContents.id` of the app's main window, or null while there is none. */
   getMainWebContentsId: () => number | null;
   service: BrowserProfilesService;
+  /** The fuse state of the binary this process runs (src/main/cookie-fuse-state.ts). */
+  readCookieFuse: () => Promise<CookieFuseState>;
   log: ProfileIpcLog;
 }): void {
   const { ipc, service, log } = deps;
@@ -61,6 +65,7 @@ export function registerBrowserProfilesIpc(deps: {
   };
 
   ipc.handle('browserProfiles:list', () => service.list());
+  ipc.handle('browserProfiles:atRest', async () => ({ fuse: await deps.readCookieFuse().catch((): CookieFuseState => 'unknown') }));
   ipc.handle('browserProfiles:create', (e, name: unknown) =>
     guard('browserProfiles:create', e) ?? run('browserProfiles:create', () => service.create(name)),
   );

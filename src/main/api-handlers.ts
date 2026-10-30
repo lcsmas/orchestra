@@ -233,6 +233,7 @@ type ServableApi = Omit<
   // #400 — the profils navigateur channels are registered by registerBrowserProfilesIpc() (src/main/browser-profiles-ipc.ts): every write is sender-checked to
   // the app's own window, so none of them may be reachable as a "served" method.
   | 'browserProfiles'
+  | 'browserProfileAtRest'
   | 'browserProfileCreate'
   | 'browserProfileRename'
   | 'browserProfileDelete'

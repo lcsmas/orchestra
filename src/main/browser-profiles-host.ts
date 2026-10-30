@@ -8,6 +8,7 @@ import { effectiveProfileId, ephemeralPartition, profilePartition } from '../sha
 import { reprofilePanel, settleClosedViews, setBrowserProfileResolver, stopSignInPersistence, workspacesOnProfile } from './browser-panel';
 import { createBrowserProfilesService } from './browser-profiles.ts';
 import { registerBrowserProfilesIpc, type ProfileIpcEvent } from './browser-profiles-ipc.ts';
+import { readOwnCookieFuse } from './cookie-fuse-state.ts';
 import { log } from './logger';
 import { platform } from './platform';
 import { store } from './store';
@@ -59,6 +60,7 @@ export function initBrowserProfiles(getMainWebContentsId: () => number | null): 
     ipc: { handle: (channel, fn) => ipcMain.handle(channel, (e, ...args) => fn(e as unknown as ProfileIpcEvent, ...args)) },
     getMainWebContentsId,
     service,
+    readCookieFuse: () => readOwnCookieFuse(),
     log: { warn: (m) => log.warn(m), error: (m, e) => log.error(m, e) },
   });
 }

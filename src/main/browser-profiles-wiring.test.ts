@@ -62,7 +62,7 @@ test('the profile channels are NOT in the generic api-handlers table (a write mu
   assert.doesNotMatch(table, /rowserProfile/);
   assert.doesNotMatch(api.slice(api.indexOf('export const apiHandlers')), /rowserProfile(?!Id)/);
   // …and the omit list names all five, so the exhaustive table type does not demand them
-  for (const m of ['browserProfiles', 'browserProfileCreate', 'browserProfileRename', 'browserProfileDelete', 'browserProfileAttach']) {
+  for (const m of ['browserProfiles', 'browserProfileAtRest', 'browserProfileCreate', 'browserProfileRename', 'browserProfileDelete', 'browserProfileAttach']) {
     assert.match(api, new RegExp(`\\|\\s*'${m}'`), `${m} omitted from the servable table`);
   }
 });
@@ -72,6 +72,7 @@ test('preload ↔ registrar: each OrchestraAPI method invokes the channel the re
   const reg = code('main/browser-profiles-ipc.ts');
   const pairs: Array<[string, string]> = [
     ['browserProfiles', 'browserProfiles:list'],
+    ['browserProfileAtRest', 'browserProfiles:atRest'],
     ['browserProfileCreate', 'browserProfiles:create'],
     ['browserProfileRename', 'browserProfiles:rename'],
     ['browserProfileDelete', 'browserProfiles:delete'],
@@ -130,13 +131,17 @@ test('the CDP proxy host asks the profile policy for EVERY agent command: decide
   assert.ok(core.indexOf('this.port.refuseMethod') < core.indexOf("method === 'Page.bringToFront'"), 'asked before any command is handled');
 });
 
-test('F9 wiring: the host clears the workspace\'s EPHEMERAL session (its own in-memory partition) — and Settings no longer depends on the keyring state (the at-rest warning is unconditional)', () => {
+test('F9 wiring: the host clears the workspace\'s EPHEMERAL session (its own in-memory partition) — and (#407) the Settings warning is derived from the REAL state, failing closed to the always-on text', () => {
   const host = code('main/browser-profiles-host.ts');
   assert.match(host, /clearEphemeral: async \(wsId\) => \{\s*const ses = session\.fromPartition\(ephemeralPartition\(wsId\)\);\s*await ses\.clearStorageData\(\);\s*await ses\.clearCache\(\);\s*await ses\.clearAuthCache\(\);\s*\},/);
   const ui = code('renderer/components/BrowserSettings.tsx');
-  assert.match(ui, /const warning = PROFILE_AT_REST_WARNING;/);
-  assert.doesNotMatch(ui, /useSecretsState|SecretsNotice|getSecretsState/, 'story 25 is met without #389\'s state: the warning is always on');
+  assert.match(ui, /const warning = profileAtRestWarning\(atRest\);/);
+  assert.match(ui, /useState<AtRestState \| null>\(null\)/, 'no state yet = the always-on warning (fail closed)');
+  assert.match(ui, /window\.orchestra\.browserProfileAtRest\(\)/);
+  assert.doesNotMatch(ui, /SecretsNotice|useSecretsState/, 'the dialog reads only the two facts the pure rule takes (fuse, backend encrypted)');
   assert.doesNotMatch(code('shared/browser-profile.ts'), /secrets-state|SecretsState/);
+  // the fuse comes from the binary's own wire, read by main — not from the renderer, not from a build constant
+  assert.match(host, /readCookieFuse: \(\) => readOwnCookieFuse\(\)/);
 });
 
 test('seat-2 MAJOR: the CDP proxy host reads WHICH view stands behind each tab (webContents id) and diffs through the one pure `diffTabs` — an in-place rebuild is a `replaced` page, not a `changed` one', () => {

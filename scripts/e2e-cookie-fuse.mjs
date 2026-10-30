@@ -31,6 +31,8 @@ import {
   rootCensusChecks, secretsOwnerChecks, socketInode, socketPaths, unparsedAbout,
 } from '../src/shared/keyring-rig-world.ts';
 import { computeVerdict, statsOf } from '../src/shared/cookie-fuse-verdict.ts';
+import { PROFILE_AT_REST_WARNING } from '../src/shared/browser-profile.ts';
+import { profileAtRestWarning } from '../src/shared/cookie-fuse-policy.ts';
 import { createRequire } from 'node:module';
 const { readFuseWireFile } = createRequire(import.meta.url)('./lib/fuse-wire.cjs');
 
@@ -75,6 +77,8 @@ const RUN_OFFSET = Number(flag('--run-offset', '0')); // run ids start after thi
 const ARMS = new Set(flag('--arms', 'w,a,d,c,c2').split(',').filter(Boolean));
 const JSONL = flag('--jsonl', path.join(RIG_DIR, 'cookie-fuse.jsonl'));
 const META_FILE = flag('--meta', null);
+const SHOTS_DIR = flag('--shots', path.join(RIG_DIR, 'shots'));
+const WORKTREE_DIST = flag('--worktree-dist', null); // arm `warn`: the renderer bundle the app serves must be byte-equal to this dist/ (the build under test)
 const BOOT_DEADLINE_MS = Number(flag('--boot-deadline-ms', '150000'));
 if (!OFF_DIR || !ON_DIR) refuse('need <off-dir> <on-dir>');
 if (!LIVE_HOME) refuse('--live-home missing');
@@ -678,10 +682,73 @@ async function stageW1(w) {
   } catch (e) { await endBoot(b).catch(() => {}); throw e; }
 }
 
+// ── arm `warn` (#407 phase 2): the Settings > Browser at-rest warning must follow the REAL state — the fuse of the binary that runs × the keyring backend ──
+const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
+const WARN_CASES = [
+  { id: 'off-unlocked', build: 'off', keyring: 'unlocked' },
+  { id: 'off-basic', build: 'off', keyring: 'basic' },
+  { id: 'on-unlocked', build: 'on', keyring: 'unlocked' },
+  { id: 'on-basic', build: 'on', keyring: 'basic' },
+  { id: 'on-locked', build: 'on', keyring: 'locked' },
+];
+const warnShots = [];
+async function stageWarn(w) {
+  console.log(`\n── run ${w.run} · warn (Settings > Browser at-rest warning vs the real state; packaged app, scratch world) ──`);
+  const { extractFile } = createRequire(import.meta.url)(createRequire(import.meta.url).resolve('@electron/asar', { paths: [path.dirname(createRequire(import.meta.url).resolve('app-builder-lib/package.json', { paths: [path.dirname(createRequire(import.meta.url).resolve('electron-builder/package.json', { paths: [repoRoot] }))] }))] }));
+  const store = JSON.parse(fs.readFileSync(path.join(w.oh, 'userData/orchestra/store.json'), 'utf8'));
+  control(`warn/${w.run}/account-pinned-to-a-scratch-config-dir`, store.workspaces[0].accountId === store.accounts[0].id && checkScratch(store.accounts[0].configDir).ok, `workspace.accountId=${store.workspaces[0].accountId} account.id=${store.accounts[0].id} configDir=${store.accounts[0].configDir} (scratch under the rig, never a live ~/.claude*)`, w.run);
+  fs.mkdirSync(SHOTS_DIR, { recursive: true });
+  for (const c of WARN_CASES) {
+    const b = await startPrivateWorld(w, c.keyring, 'sway'); b.desktopKey = 'sway'; activeBoot = b;
+    try {
+      await bootApp(b, c.build);
+      await connectUi(b);
+      const dir = c.build === 'on' ? ON_DIR : OFF_DIR;
+      // ARTIFACT IDENTITY: the running thing says what it is — version, the exe, and the renderer bundle it SERVED, byte-equal to the one inside the copy's own app.asar (and to the worktree dist under test)
+      const ver = await b.cdp.eval('window.orchestra.getAppVersion()'), built = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+      const target = (await (await fetch(`http://127.0.0.1:${b.port}/json`)).json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html'));
+      const srcs = await b.cdp.eval(`[...document.querySelectorAll('script[src]')].map((s) => s.src)`), bundle = srcs.find((x) => /assets\/index-.*\.js/.test(x));
+      const frameId = (await b.cdp.send('Page.getResourceTree')).frameTree.frame.id, rc = await b.cdp.send('Page.getResourceContent', { frameId, url: bundle });
+      const served = Buffer.from(rc.content, rc.base64Encoded ? 'base64' : 'utf8'), inAsar = extractFile(path.join(dir, 'resources/app.asar'), `dist/assets/${bundle.split('/assets/')[1]}`);
+      const exe = fs.readlinkSync(`/proc/${b.appProc.pid}/exe`);
+      const distFile = WORKTREE_DIST ? path.join(WORKTREE_DIST, 'assets', bundle.split('/assets/')[1]) : null;
+      control(`warn/${w.run}/${c.id}/identity`, ver === built && exe === path.join(dir, 'orchestra') && target.url.includes(dir) && md5(served) === md5(inAsar) && (!distFile || (fs.existsSync(distFile) && md5(fs.readFileSync(distFile)) === md5(served))),
+        `running version ${ver} vs built ${built}; /proc exe ${exe}; target url ${target.url}; served bundle md5 ${md5(served)} == the copy's app.asar (${md5(inAsar)})${distFile ? ` == worktree dist (${fs.existsSync(distFile) ? md5(fs.readFileSync(distFile)) : 'MISSING'})` : ''}`, w.run);
+      // the surface: Settings > Browser with one profile on record (so the per-row tag has a row to sit on)
+      const pre = await b.cdp.eval(`({ dialog: !!document.querySelector('[data-bp-settings]'), warn: document.querySelector('[data-profile-warning="create"]')?.textContent ?? null })`);
+      await b.cdp.eval(`window.orchestra.browserProfileCreate('Warn probe').then((r) => r.ok)`);
+      await clickSel(b, '[data-bp-open]');
+      await waitFor(() => b.cdp.eval(`!!document.querySelector('[data-bp-settings]')`), 10000, 'Settings > Browser');
+      await waitFor(() => b.cdp.eval(`!!document.querySelector('.bp-row')`), 10000, 'the profile row');
+      const first = await b.cdp.eval(`({ warn: document.querySelector('[data-profile-warning="create"]')?.textContent ?? null, tag: !!document.querySelector('[data-profile-unencrypted]') })`); // right after opening: the state may still be loading
+      const state = { fuse: c.build === 'on' ? 'enabled' : 'disabled', backendEncrypted: c.keyring === 'unlocked' };
+      const want = profileAtRestWarning(state);
+      const real = await b.cdp.eval(`Promise.all([window.orchestra.browserProfileAtRest ? window.orchestra.browserProfileAtRest() : { fuse: 'no-such-api' }, window.orchestra.getSecretsState()]).then(([r, s]) => ({ fuse: r.fuse, encrypted: s.encrypted, backend: s.backend }))`); // a build without the channel (the #400 baseline = the must-FAIL arm) reports 'no-such-api'
+      await sleep(1200); // let the dialog's own effect settle
+      const post = await b.cdp.eval(`(() => { const w = document.querySelector('[data-profile-warning="create"]'); const m = document.querySelector('[data-bp-settings]'); const r = (e) => { if (!e) return null; const x = e.getBoundingClientRect(); return { left: x.left, top: x.top, right: x.right, bottom: x.bottom, inside: x.left >= 0 && x.top >= 0 && x.right <= innerWidth && x.bottom <= innerHeight }; }; return { warn: w?.textContent ?? null, tag: !!document.querySelector('[data-profile-unencrypted]'), tagTitle: document.querySelector('[data-profile-unencrypted]')?.title ?? null, warnRect: r(w), dialogRect: r(m) }; })()`);
+      const shot = Buffer.from((await b.cdp.send('Page.captureScreenshot', { format: 'png' }, 25000)).data, 'base64');
+      const shotFile = path.join(SHOTS_DIR, `407-warning-${c.id}.png`); fs.writeFileSync(shotFile, shot); warnShots.push({ id: c.id, file: shotFile, md5: md5(shot), bytes: shot.length });
+      const shown = post.warn === null ? null : post.warn.replace(/^⚠\s*/, ''); // textContent also carries the icon span
+      const exactlyWant = want === null ? shown === null && !post.tag : shown === want && post.tag && post.tagTitle === want;
+      const literal = c.build === 'off' ? /UNENCRYPTED on disk/.test(shown ?? '') : c.keyring === 'unlocked' ? shown === null : /scrambled on disk/.test(shown ?? '');
+      rec({ kind: 'warn', run: w.run, case: c.id, build: c.build, keyring: c.keyring, real, pre, first, post, want, shot: shotFile, shotMd5: md5(shot) });
+      control(`warn/${w.run}/${c.id}/real-state-reaches-the-dialog`, real.fuse === state.fuse && real.encrypted === state.backendEncrypted && exactlyWant && literal && (post.warnRect?.inside ?? true) && post.dialogRect?.inside === true,
+        `real state fuse=${real.fuse} encrypted=${real.encrypted} (${real.backend}) → pre-open warning ${JSON.stringify(pre.warn)} / just-opened ${JSON.stringify(first.warn?.slice(0, 40) ?? null)} → settled ${JSON.stringify(post.warn?.slice(0, 70) ?? null)}; row tag ${first.tag} → ${post.tag}; warning rect inside viewport ${post.warnRect?.inside ?? 'n/a (none shown)'}; dialog inside ${post.dialogRect?.inside}; screenshot ${shotFile}`, w.run);
+      console.log(`  [warn ${c.id}] ${shotFile} (${shot.length} bytes, md5 ${md5(shot)})`);
+    } finally { await endBoot(b).catch(() => {}); }
+  }
+  // three different UIs (fuse OFF → always-on warning · ON + keyring → none · ON + basic_text → "scrambled"): their captures must differ; ON+locked IS the same UI as ON+basic (both basic_text) and must be byte-equal to it
+  const m = Object.fromEntries(warnShots.map((x) => [x.id, x.md5]));
+  const classes = [m['off-unlocked'], m['on-unlocked'], m['on-basic']];
+  control(`warn/${w.run}/screenshots-distinct-per-ui-and-equal-where-the-ui-is-the-same`, new Set(classes).size === 3 && m['on-locked'] === m['on-basic'] && warnShots.every((x) => x.bytes > 5000), `off/unlocked ${m['off-unlocked']} · on/unlocked ${m['on-unlocked']} · on/basic ${m['on-basic']} (3 distinct: ${new Set(classes).size === 3}) · on/locked ${m['on-locked']} (== on/basic: ${m['on-locked'] === m['on-basic']})`, w.run);
+}
+
 // ── the arms of one run ──
 async function runOnce(run) {
   const w = seedWorld(run);
   const t0 = Date.now();
+  if (ARMS.has('warn')) await stageWarn(w);
+  if ([...ARMS].every((a) => a === 'warn')) { console.log(`  [run ${run}] done in ${Math.round((Date.now() - t0) / 1000)} s`); return; }
   await stageW1(w);
   const B = (branch, step, build, keyring, extra = {}) => ({ branch, step, build, keyring, ...extra });
   // A1 (fuse ON, unlocked) → snapshot A1; every later arm restores A1 so each starts from the SAME bytes

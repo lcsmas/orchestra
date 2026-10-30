@@ -1,0 +1,16 @@
+# #407 flip build proof (policy COOKIE_ENCRYPTION_FUSE_SHIPPED=true, real electron-builder afterPack hook; 2026-10-30)
+  • packaging       platform=linux arch=arm64 electron=33.4.11 appOutDir=release-flip/linux-arm64-unpacked
+  • afterPack: verified 4 required bundles in the package
+  • executing @electron/fuses  electronPath=release-flip/linux-arm64-unpacked/orchestra
+  • afterPack: EnableCookieEncryption enabled in the packaged binary — matches the shipped policy (COOKIE_ENCRYPTION_FUSE_SHIPPED=true)
+stock build (policy false): afterPack: EnableCookieEncryption disabled in the packaged binary — matches the shipped policy (COOKIE_ENCRYPTION_FUSE_SHIPPED=false)
+cmp -l stock flipped | wc -l → 1 (the EnableCookieEncryption state byte '0'→'1'); app.asar identical: yes
+  source binary: EnableCookieEncryption=disabled; shipped policy COOKIE_ENCRYPTION_FUSE_SHIPPED=true
+    PASS  ctl: shipped=false, stock binary passes — passed
+    PASS  mf1: shipped=false, binary flipped ON in a scratch build → the step FAILS — threw: afterPack: EnableCookieEncryption is enabled in the packaged binary but the shipped policy (scripts/lib/cookie-fuse-policy.cjs COOKIE_ENCRYPTION_FUSE_
+    PASS  fl: shipped=true, stock binary is flipped by the hook and passes — passed
+    PASS  mf2: shipped=true but the flip silently does nothing → the step FAILS — threw: afterPack: EnableCookieEncryption is disabled in the packaged binary but the shipped policy (scripts/lib/cookie-fuse-policy.cjs COOKIE_ENCRYPTION_FUSE
+    PASS  mf3: a file with no fuse wire → the step FAILS closed — threw: afterPack: cannot read the fuse wire of the packaged binary (sentinel not found — not an Electron binary with a fuse wire) — the build cannot prove wh
+    PASS  pair: the identical shipped=false call passes on the stock binary and fails on the flipped one
+  
+  ALL 6 ARMS GREEN

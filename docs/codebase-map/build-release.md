@@ -135,6 +135,11 @@ The package ships a pinned Node (linux arm64 + x64) as `resources/pinned-node/{n
 - **Where a flip + its check must live:** electron-builder 26.15.3 runs the app's `afterPack` hook BEFORE its own `electronFuses` flip (`app-builder-lib/out/platformPackager.js`:
   `emitAfterPack` … `doAddElectronFuses` — "the fuses MUST be flipped right before signing"), so an `afterPack` wire check can never see an `electronFuses` flip. A flip and the
   check that proves it both belong in `afterPack`, through `context.packager.addElectronFuses(context, { version: '1', 1: true })` (index 1 = `EnableCookieEncryption`) and a re-read.
+- **Release step (#407 phase 2):** `afterPack` (`scripts/after-pack-check.cjs`, linux) calls `scripts/lib/cookie-fuse-pack.cjs` `ensureCookieFuse(context, COOKIE_ENCRYPTION_FUSE_SHIPPED, <appOutDir>/orchestra)`:
+  it flips the fuse through `context.packager.addElectronFuses` iff the policy `scripts/lib/cookie-fuse-policy.cjs` says so, then reads the binary's wire back (`fuse-wire.cjs` `expectCookieFuse`) and
+  THROWS — the release fails — when the wire disagrees (or cannot be read). The policy is `true` on the HELD flip commit (the release then ships the fuse ON; proven through the real hook: `executing @electron/fuses` → wire enabled, byte-diff 1 vs the stock build) and `false` before it (the check then guards "fuse OFF ⇒ the at-rest warning is unconditional"). Must-FAIL arms on scratch copies of a
+  real packaged binary: `pnpm run test:cookie-fuse-check` (`scripts/verify-cookie-fuse-check.mjs`: stock passes, a scratch build flipped ON fails, a flip that lands passes, a flip that silently does nothing fails, an
+  unreadable wire fails closed). The flip is that one-line change of the policy constant, held for the maintainer's OK (ADR 0010).
 - **Rig:** `scripts/e2e-cookie-fuse.sh <unpacked-dir>` (never touches the source tree; copies the unpacked app twice under `E2E_RIG_BASE`, default `/var/tmp/c407-<uid>`), driver
   `scripts/e2e-cookie-fuse.mjs`, flip helper `scripts/lib/flip-cookie-fuse.cjs` (resolves `@electron/fuses` THROUGH electron-builder: it is not a direct dependency). Needs the packaged
   build (`pnpm run build:bus-abi && rm -rf dist-electron && flock /var/tmp/orch-1000-b17728/pkg-388.lock pnpm run build`), MemAvailable ≥ 8 GB, `gnome-keyring-daemon`, `dbus-run-session`,

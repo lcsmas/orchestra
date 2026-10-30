@@ -10,6 +10,7 @@ import type { PauseMode } from './pause-lifecycle.ts';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
 import type { MemoryBannerState } from './memory-banner.ts';
 import type { AppUpdateState } from './app-update.ts';
+import type { CookieFuseState } from './cookie-fuse-policy.ts';
 import type { WatchersStatus } from './watcher-status.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -597,6 +598,8 @@ export interface OrchestraAPI {
   // A refused operation RESOLVES `{ok:false, reason, message}` (never rejects).
   /** The profils navigateur on record. */
   browserProfiles: () => Promise<BrowserProfile[]>;
+  /** #407: the REAL state the at-rest warning is derived from — the EnableCookieEncryption fuse of the binary this app runs ('unknown' counts as OFF). */
+  browserProfileAtRest: () => Promise<{ fuse: CookieFuseState }>;
   browserProfileCreate: (name: string) => Promise<BrowserProfileResult>;
   browserProfileRename: (id: BrowserProfileId, name: string) => Promise<BrowserProfileResult>;
   /** Delete: detaches the workspaces carrying it, reloads their tabs ephemeral, clears the partition's storage. */

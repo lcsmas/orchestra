@@ -163,6 +163,16 @@ exports.default = async function afterPack(context) {
 
   console.log(`  • afterPack: verified ${REQUIRED.length} required bundles in the package`);
 
+  // ── Cookie-encryption fuse (#407): the binary's wire must say what the shipped policy (and PROFILE_AT_REST_WARNING) assume ──
+  // A flip, if the policy asks for one, happens HERE (electron-builder flips `electronFuses` only AFTER this hook); then the wire is read back and a disagreement fails the release.
+  if (context.electronPlatformName === 'linux') {
+    const { COOKIE_ENCRYPTION_FUSE_SHIPPED } = require('./lib/cookie-fuse-policy.cjs');
+    const r = await require('./lib/cookie-fuse-pack.cjs').ensureCookieFuse(context, COOKIE_ENCRYPTION_FUSE_SHIPPED, path.join(context.appOutDir, 'orchestra'));
+    console.log(`  • afterPack: ${r.message}`);
+  } else {
+    console.log(`  • afterPack: cookie-encryption fuse not checked on ${context.electronPlatformName} (the rig and the warning are Linux-only)`);
+  }
+
   // ── Bundled agent-browser (#395, ADR 0009): present, executable, byte-equal to the pin ──
   // `orchestra browser` fails at the first call (not at build or boot) when this is missing, so it is checked here.
   // (Pins are read from the JSON; the platform/arch key rule mirrors src/shared/agent-browser-binary.ts assetKey.)

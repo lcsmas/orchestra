@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { BrowserProfile, BrowserProfileResult } from '../../shared/types';
-import { BROWSER_PROFILE_NAME_MAX, PROFILE_AT_REST_WARNING } from '../../shared/browser-profile';
+import { BROWSER_PROFILE_NAME_MAX } from '../../shared/browser-profile';
+import { profileAtRestWarning, type AtRestState } from '../../shared/cookie-fuse-policy';
 import { useStore } from '../store';
 import { dialog } from './Dialog';
 
@@ -19,8 +20,10 @@ export function BrowserSettings({ onClose }: Props) {
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // ALWAYS shown (review F1): cookies are not encrypted at rest on this build whatever the keyring says — no state to wait for (story 25: choose knowingly).
-  const warning = PROFILE_AT_REST_WARNING;
+  // Derived from the REAL state (#407): the fuse of the binary this app runs AND whether the keyring backend can encrypt. While that state loads — or if it cannot be
+  // read — it is the old always-on warning (fail closed: story 25, choose knowingly); on a build that ships the fuse OFF (today) it stays that for good.
+  const [atRest, setAtRest] = useState<AtRestState | null>(null);
+  const warning = profileAtRestWarning(atRest);
   const workspaces = useStore((s) => s.workspaces);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -33,6 +36,18 @@ export function BrowserSettings({ onClose }: Props) {
       })
       .catch((e) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setLoaded(true));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([window.orchestra.browserProfileAtRest(), window.orchestra.getSecretsState()])
+      .then(([r, secrets]) => {
+        if (!cancelled) setAtRest({ fuse: r.fuse, backendEncrypted: secrets?.encrypted ?? null });
+      })
+      .catch(() => undefined); // stays null: the always-on warning
     return () => {
       cancelled = true;
     };
@@ -156,10 +171,12 @@ export function BrowserSettings({ onClose }: Props) {
                     )}
                     <span className="bp-meta">
                       {n === 0 ? 'unused' : `${n} workspace${n === 1 ? '' : 's'}`}
-                      <span className="bp-unencrypted" title={warning} data-profile-unencrypted>
-                        {' '}
-                        ⚠ not encrypted on disk
-                      </span>
+                      {warning !== null && (
+                        <span className="bp-unencrypted" title={warning} data-profile-unencrypted>
+                          {' '}
+                          ⚠ not encrypted on disk
+                        </span>
+                      )}
                     </span>
                     {isEditing ? (
                       <>
@@ -208,12 +225,14 @@ export function BrowserSettings({ onClose }: Props) {
           )}
 
           <form className="bp-create" onSubmit={create}>
-            <div className="bp-warning" role="status" data-profile-warning="create">
-              <span className="bp-warning-icon" aria-hidden="true">
-                ⚠
-              </span>
-              <span>{warning}</span>
-            </div>
+            {warning !== null && (
+              <div className="bp-warning" role="status" data-profile-warning="create">
+                <span className="bp-warning-icon" aria-hidden="true">
+                  ⚠
+                </span>
+                <span>{warning}</span>
+              </div>
+            )}
             <div className="bp-create-row">
               <input
                 ref={nameRef}

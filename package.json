@@ -93,6 +93,7 @@
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",
     "test:pinned-node": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/.r2-register.mjs scripts/e2e-pinned-node.mjs",
     "test:pinned-node-mutants": "node scripts/pinned-node-mutants.mjs",
+    "test:cookie-fuse-check": "node scripts/verify-cookie-fuse-check.mjs release/linux-arm64-unpacked/orchestra",
     "test:pinned-node-pack": "node scripts/e2e-pinned-node-pack.mjs",
     "test:pinned-node-app": "bash scripts/e2e-pinned-node-app.sh",
     "test:docker-relay": "bash scripts/e2e-docker-relay.sh",
