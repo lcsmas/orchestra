@@ -1,200 +1,200 @@
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":41,"minus1":9,"other":0,"errCodes":{"EPIPE":9}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":5}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":43,"minus1":7,"other":0,"errCodes":{"EPIPE":7}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":25,"minus1":25,"other":0,"errCodes":{"EPIPE":25}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"EPIPE":2}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1503,"maxSent":3670016}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1506,"maxSent":4325376}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1515,"maxSent":5898240}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1558,"maxSent":6422528}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":38,"minus1":12,"other":0,"errCodes":{"EPIPE":12}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":36,"minus1":14,"other":0,"errCodes":{"EPIPE":14}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":17,"minus1":33,"other":0,"errCodes":{"EPIPE":33}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":4,"ECONNRESET":1}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"ECONNRESET":2}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":40,"minus1":10,"other":0,"errCodes":{"EPIPE":10}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":27,"minus1":23,"other":0,"errCodes":{"EPIPE":23}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1532,"maxSent":5898240}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1508,"maxSent":4063232}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1504,"maxSent":3801088}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1503,"maxSent":4063232}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":5}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":38,"minus1":12,"other":0,"errCodes":{"EPIPE":12}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":26,"minus1":24,"other":0,"errCodes":{"EPIPE":24}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":27,"minus1":23,"other":0,"errCodes":{"EPIPE":23}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"EPIPE":1}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":17,"minus1":33,"other":0,"errCodes":{"EPIPE":33}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1508,"maxSent":4128768}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1614,"maxSent":5832704}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1505,"maxSent":3801088}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1517,"maxSent":5767168}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":43,"minus1":7,"other":0,"errCodes":{"EPIPE":6,"ECONNRESET":1}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":8}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":25,"minus1":25,"other":0,"errCodes":{"EPIPE":25}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":8}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"ECONNRESET":1,"EPIPE":1}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":24,"minus1":26,"other":0,"errCodes":{"EPIPE":26}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1511,"maxSent":3997696}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1535,"maxSent":4063232}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1505,"maxSent":3801088}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1512,"maxSent":3997696}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":8}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":47,"minus1":3,"other":0,"errCodes":{"EPIPE":3}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":22,"minus1":28,"other":0,"errCodes":{"EPIPE":28}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":10,"ECONNRESET":1}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":41,"minus1":9,"other":0,"errCodes":{"EPIPE":9}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"EPIPE":1}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":25,"minus1":25,"other":0,"errCodes":{"EPIPE":25}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1504,"maxSent":3997696}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1508,"maxSent":4128768}
-{"arm":"fixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1507,"maxSent":4128768}
-{"arm":"fixed","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"fixed","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"unbounded":0,"maxMs":1506,"maxSent":4128768}
-{"arm":"unfixed","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"raw-launch","topology":"same","runs":50,"read413":46,"minus1":4,"other":0,"errCodes":{"EPIPE":4}}
-{"arm":"unfixed","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
-{"arm":"unfixed","client":"raw","topology":"split","runs":50,"read413":37,"minus1":13,"other":0,"errCodes":{"EPIPE":13}}
-{"arm":"unfixed","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"http","topology":"split","runs":50,"read413":32,"minus1":18,"other":0,"errCodes":{"EPIPE":18}}
-{"arm":"unfixed","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
-{"arm":"unfixed","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":41,"minus1":9,"other":0,"errCodes":{"EPIPE":9}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":47,"minus1":3,"other":0,"errCodes":{"ECONNRESET":3}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":36,"minus1":14,"other":0,"errCodes":{"EPIPE":14}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":46,"minus1":4,"other":0,"errCodes":{"EPIPE":3,"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":17,"minus1":33,"other":0,"errCodes":{"EPIPE":33}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"EPIPE":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1510,"maxSent":4063232}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1503,"maxSent":5832704}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1519,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1514,"maxSent":4063232}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":47,"minus1":3,"other":0,"errCodes":{"ECONNRESET":3}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"EPIPE":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":3,"ECONNRESET":5}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":10,"minus1":40,"other":0,"errCodes":{"EPIPE":40}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":8}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":44,"minus1":6,"other":0,"errCodes":{"EPIPE":6}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":46,"minus1":4,"other":0,"errCodes":{"EPIPE":3,"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":34,"minus1":16,"other":0,"errCodes":{"EPIPE":16}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1513,"maxSent":4063232}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1504,"maxSent":5570560}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1515,"maxSent":6094848}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1505,"maxSent":4194304}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":5}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":43,"minus1":7,"other":0,"errCodes":{"ECONNRESET":7}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":33,"minus1":17,"other":0,"errCodes":{"EPIPE":17}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":44,"minus1":6,"other":0,"errCodes":{"EPIPE":5,"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":44,"minus1":6,"other":0,"errCodes":{"EPIPE":6}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":46,"minus1":4,"other":0,"errCodes":{"ECONNRESET":4}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"EPIPE":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":41,"minus1":9,"other":0,"errCodes":{"EPIPE":3,"ECONNRESET":6}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":34,"minus1":16,"other":0,"errCodes":{"EPIPE":16}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1504,"maxSent":3866624}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1505,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1519,"maxSent":4128768}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1506,"maxSent":4063232}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":44,"minus1":6,"other":0,"errCodes":{"EPIPE":6}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":39,"minus1":11,"other":0,"errCodes":{"EPIPE":11}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"EPIPE":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":23,"minus1":27,"other":0,"errCodes":{"EPIPE":27}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":5}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"ECONNRESET":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":36,"minus1":14,"other":0,"errCodes":{"EPIPE":14}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"ECONNRESET":1,"EPIPE":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":16,"minus1":34,"other":0,"errCodes":{"EPIPE":34}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1522,"maxSent":4784128}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1505,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1517,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1511,"maxSent":3997696}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":47,"minus1":3,"other":0,"errCodes":{"EPIPE":3}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":36,"minus1":14,"other":0,"errCodes":{"EPIPE":14}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":45,"minus1":5,"other":0,"errCodes":{"EPIPE":3,"ECONNRESET":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":16,"minus1":34,"other":0,"errCodes":{"EPIPE":34}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":44,"minus1":6,"other":0,"errCodes":{"EPIPE":6}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":48,"minus1":2,"other":0,"errCodes":{"ECONNRESET":2}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":41,"minus1":9,"other":0,"errCodes":{"EPIPE":9}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":43,"minus1":7,"other":0,"errCodes":{"EPIPE":6,"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":11,"minus1":39,"other":0,"errCodes":{"EPIPE":39}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1507,"maxSent":5832704}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1519,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"same","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1505,"maxSent":3997696}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"raw-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"fixed","rev":"d1bd47df4abc196c5c705aaaa754aa64fce403d5","client":"hostile","topology":"split","runs":3,"read413":3,"held":0,"early":0,"unbounded":0,"maxMs":1506,"maxSent":4194304}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"same","runs":50,"read413":43,"minus1":7,"other":0,"errCodes":{"EPIPE":7}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"same","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"same","runs":50,"read413":49,"minus1":1,"other":0,"errCodes":{"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"same","skipped":"no refusal-drain bounds in this tree"}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw","topology":"split","runs":50,"read413":40,"minus1":10,"other":0,"errCodes":{"EPIPE":10}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"raw-launch","topology":"split","runs":50,"read413":42,"minus1":8,"other":0,"errCodes":{"EPIPE":7,"ECONNRESET":1}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http","topology":"split","runs":50,"read413":23,"minus1":27,"other":0,"errCodes":{"EPIPE":27}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"http-launch","topology":"split","runs":50,"read413":50,"minus1":0,"other":0,"errCodes":{}}
+{"arm":"unfixed","rev":"98fe09ff6a8f97f1191e0c6bfd853ff1407b5281","client":"hostile","topology":"split","skipped":"no refusal-drain bounds in this tree"}

@@ -1,0 +1,22 @@
+RD1-old-413-ends-the-response: RED (# fail 3) expected=RED OK
+RD2-hold-destroys-early: RED (# fail 3) expected=RED OK
+RD3-drain-bound-removed: RED (# fail 2) expected=RED OK
+RD4-deadline-never-fires: RED (# fail 2) expected=RED OK
+RD5-cut-does-not-destroy: RED (# fail 2) expected=RED OK
+RD6-finished-sender-held-to-deadline: RED (# fail 1) expected=RED OK
+RD7-413-not-flushed: RED (# fail 3) expected=RED OK
+RD8-no-connection-close: RED (# fail 2) expected=RED OK
+RD9-timer-not-cleared-on-close: GREEN (# fail 0) expected=EQUIV OK
+RD10-default-deadline-never-fires: RED (# fail 1) expected=RED OK
+RD11-default-drain-bound-widened: RED (# fail 1) expected=RED OK
+RDU1-finished-not-done: RED (# fail 1) expected=RED OK
+RDU2-expired-beats-finished: RED (# fail 1) expected=RED OK
+RDU3-bound-off-by-one: RED (# fail 1) expected=RED OK
+RDU4-deadline-ignored: RED (# fail 1) expected=RED OK
+RDU5-no-hold: RED (# fail 1) expected=RED OK
+RDU6-drain-bound-widened: RED (# fail 1) expected=RED OK
+RDU7-deadline-minutes: RED (# fail 1) expected=RED OK
+CONTROL unmutated src/acces-mobile/server-refusal-drain.test.ts: GREEN (# skipped 0)
+CONTROL unmutated src/acces-mobile/server.test.ts: GREEN (# skipped 0)
+CONTROL unmutated src/shared/acces-mobile-refusal-drain.test.ts: GREEN (# skipped 0)
+CLEAN

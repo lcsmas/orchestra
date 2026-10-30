@@ -1,0 +1,3 @@
+real flaky test (server-launch.test.ts « launch: POST only… »), 60 runs each, alternating, under 8 nice-10 busy loops:
+unfixed (origin/ops-suivis-navigateur-388 @98fe09ff): 11/60 FAIL — AssertionError "the attachment cap": expected 413, actual -1
+fixed (impl-rejet-413-acces-mobile-408 @ecad5db4; server.ts byte-identical at d1bd47df): 0/60 FAIL
