@@ -1,6 +1,6 @@
 // Accès mobile (#408): what the server does with a sender it just refused with a 413 while the sender is still pushing the body.
 // Closing at once makes the kernel RST the sender; its write error then discards the unread 413 (client reads -1). So the 413 goes out whole,
-// the rest is read and thrown away under these bounds, and the connection is held (not read) until the sender hangs up or the deadline cuts it.
+// the rest is read and thrown away under these bounds, then the connection is held UNREAD until the deadline (a paused socket cannot see the sender hang up).
 import { MOBILE_SEND_MAX_BODY } from './acces-mobile-conversation.ts';
 
 /** Bytes read-and-discarded after the 413; past this the socket is paused (the sender stalls on TCP backpressure, nothing more is buffered). */
@@ -10,7 +10,7 @@ export const REFUSED_LINGER_MAX_MS = 10_000;
 
 export type RefusedDrainStep =
   | 'drain' // keep reading and discarding
-  | 'hold' // stop reading (pause); keep the connection so the sender can still read the 413
+  | 'hold' // stop reading (pause); keep the connection so the sender can still read the 413 — only `done`/`cut` ever close it
   | 'done' // the sender finished its body: end the response, a clean close
   | 'cut'; // deadline: destroy the connection
 

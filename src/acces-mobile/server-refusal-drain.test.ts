@@ -1,12 +1,13 @@
 // #408 — the 413 must be READABLE by a sender that is still pushing: the server answers, then reads-and-discards (bounded), never closes under the sender.
 // Raw sockets through the REAL server (node http's client hides the race behind its own buffering). Ledger: scripts/acces-mobile-413-rig.sh (≥ 500 runs under load).
 
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, type AccesMobileServerOptions } from './server.ts';
 import { MOBILE_SEND_MAX_BODY } from '../shared/acces-mobile-conversation.ts';
+import { REFUSED_LINGER_MAX_MS } from '../shared/acces-mobile-refusal-drain.ts';
 
 const LOGIN = 'lucas.mas@mobile.club';
 const TOKEN = 'tok_' + 'a'.repeat(40);
@@ -131,6 +132,32 @@ test('#408 control: a body at the cap is NOT a 413 and the connection is not hel
     assert.deepEqual(r.calls, ['/mobile/answer']);
   } finally {
     s.destroy();
+    await r.close();
+  }
+});
+
+test('#408: the DEFAULT deadline (REFUSED_LINGER_MAX_MS, no option injected) is what cuts a held sender — mock timers, no 10 s wait', { timeout: 15_000 }, async () => {
+  mock.timers.enable({ apis: ['setTimeout'] }); // the server's deadline timer is the only setTimeout in play (net/http use internal timers; this test polls with setImmediate)
+  const tickUntil = async (fn: () => boolean, what: string): Promise<void> => {
+    const t0 = Date.now();
+    while (!fn()) {
+      if (Date.now() - t0 > 4000) throw new Error(`timed out: ${what}`);
+      await new Promise((res) => setImmediate(res));
+    }
+  };
+  let c: Sender | undefined;
+  const r = await rig(); // defaults for both bounds
+  try {
+    c = sender(r.port, 500 * 1_048_576);
+    await tickUntil(() => c!.status() === 413, 'the 413 is readable');
+    mock.timers.tick(REFUSED_LINGER_MAX_MS - 1);
+    for (let i = 0; i < 200; i++) await new Promise((res) => setImmediate(res)); // let any (wrong) early cut land
+    assert.equal(c.closedAt(), 0, 'one ms before the default deadline the sender is still held');
+    mock.timers.tick(1);
+    await tickUntil(() => c!.closedAt() > 0, 'the default deadline cuts the connection');
+  } finally {
+    mock.timers.reset();
+    c?.stop();
     await r.close();
   }
 });

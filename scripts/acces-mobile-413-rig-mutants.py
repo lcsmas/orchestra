@@ -41,7 +41,7 @@ for mid, old, new in MUTANTS:
         out = rig(scratch)
         lines = [l for l in out.stdout.splitlines() if l.startswith('fixed ')]
         red = [f"{l.split()[1]}/{l.split()[2]} -1={l.split()[5]}" for l in lines if len(l.split()) > 5 and l.split()[2] != 'hostile' and l.split()[5] != '0']
-        held = [f"{l.split()[1]}/hostile held={l.split()[7]} unb={l.split()[8]}" for l in lines if l.split()[2] == 'hostile' and (l.split()[7] != '0' or l.split()[8] != '0' or l.split()[4] != l.split()[3])]
+        held = [f"{l.split()[1]}/hostile held={l.split()[7]} early={l.split()[8]} unb={l.split()[9]}" for l in lines if l.split()[2] == 'hostile' and (l.split()[7] != '0' or l.split()[8] != '0' or l.split()[9] != '0' or l.split()[4] != l.split()[3])]
         verdict = 'DIRTY' if 'RIG VERDICT: DIRTY' in out.stdout else ('CLEAN' if 'RIG VERDICT: CLEAN' in out.stdout else 'NO VERDICT')
         ok = verdict == 'DIRTY'
         print(f'{mid}: rig {verdict} on {(red + held)[:4] or out.stdout[-300:]!r} {"OK" if ok else "SURVIVED"}')

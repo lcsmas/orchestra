@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Accès mobile 413 rig (#408): the REAL createAccesMobileServer, a client that KEEPS PUSHING an over-cap body, N runs; each run must READ the 413.
 // Usage: node --experimental-strip-types scripts/acces-mobile-413-rig.mjs --src <root holding src/acces-mobile/server.ts> [--runs 500] [--client raw|http|hostile|both] [--topology same|split] [--arm <label>]
-// One JSON line per flavor {arm, client, topology, runs, read413, minus1, other, errCodes}; exit 1 if any run did not read the 413 / a hostile run held the socket past its bound.
-// `hostile` = a sender that never stops pushing: the server must close it within the linger bound after ≤ drain-bytes + kernel buffers (skipped on a tree without the bounds).
+// One JSON line per flavor {arm, rev, client, topology, runs, read413, minus1, other, errCodes}; exit 1 if any run did not read the 413 / a hostile run was cut early or held past its bound.
+// `hostile` = a sender that never stops pushing: the server must close it at the linger deadline (not before, not long after) after ≤ drain-bytes + kernel buffers (skipped on a tree without the bounds).
 import net from 'node:net';
 import http from 'node:http';
 import { fork } from 'node:child_process';
@@ -16,6 +16,7 @@ const CLIENT = arg('client', 'both');
 const TOPOLOGY = arg('topology', 'same');
 const ARM = arg('arm', 'fixed');
 const HOSTILE_RUNS = Number(arg('hostile-runs', '3'));
+const REV = arg('rev', 'unknown'); // the code under test, echoed into every result line
 const HOSTILE_LINGER_MS = 1500;
 const KERNEL_SLACK = 24 * 1_048_576; // client send buffer + loopback + server receive buffer, generously
 const LOGIN = 'lucas.mas@mobile.club';
@@ -71,10 +72,10 @@ function rawRun(port, p, bodyLen, hold = false) {
   });
 }
 
-/** The client of server-launch.test.ts `call()` verbatim (http.request, whole body in end()): -1 on EPIPE/ECONNRESET. */
-function httpRun(port, p, body) {
+/** The client of server-launch.test.ts `call()` (http.request, whole body in end(), -1 on EPIPE/ECONNRESET). `closeConn` = agent:false (a `Connection: close` request: the harder case); otherwise the default agent, as in the test. */
+function httpRun(port, p, body, closeConn) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: p, method: 'POST', headers: { 'Tailscale-User-Login': LOGIN, Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, agent: false }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path: p, method: 'POST', headers: { 'Tailscale-User-Login': LOGIN, Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, ...(closeConn ? { agent: false } : {}) }, (res) => {
       res.on('error', () => resolve({ status: res.statusCode ?? -1, err: '' }));
       res.on('data', () => {});
       res.on('end', () => resolve({ status: res.statusCode ?? 0, err: '' }));
@@ -94,10 +95,10 @@ async function main() {
   const launchBody = Buffer.alloc(Math.ceil(MOBILE_ATTACH_MAX_BODY * 1.4), 0x41);
   const flavors = [];
   if (CLIENT === 'raw' || CLIENT === 'both') flavors.push(['raw', RUNS, () => rawRun(srv.port, ANSWER, smallLen)], ['raw-launch', RUNS, () => rawRun(srv.port, '/api/launch', launchBody.length)]);
-  if (CLIENT === 'http' || CLIENT === 'both') flavors.push(['http', RUNS, () => httpRun(srv.port, ANSWER, smallBody)], ['http-launch', RUNS, () => httpRun(srv.port, '/api/launch', launchBody)]);
+  if (CLIENT === 'http' || CLIENT === 'both') flavors.push(['http', RUNS, () => httpRun(srv.port, ANSWER, smallBody, true)], ['http-launch', RUNS, () => httpRun(srv.port, '/api/launch', launchBody, false)]);
   let dirty = false;
   for (const [name, runs, run] of flavors) {
-    const tally = { arm: ARM, client: name, topology: TOPOLOGY, runs, read413: 0, minus1: 0, other: 0, errCodes: {} };
+    const tally = { arm: ARM, rev: REV, client: name, topology: TOPOLOGY, runs, read413: 0, minus1: 0, other: 0, errCodes: {} };
     for (let i = 0; i < runs; i++) {
       const r = await run();
       if (r.status === 413) tally.read413++;
@@ -107,19 +108,20 @@ async function main() {
     console.log(JSON.stringify(tally));
   }
   if (CLIENT === 'hostile' || CLIENT === 'both') {
-    if (!drainMod) console.log(JSON.stringify({ arm: ARM, client: 'hostile', topology: TOPOLOGY, skipped: 'no refusal-drain bounds in this tree' }));
+    if (!drainMod) console.log(JSON.stringify({ arm: ARM, rev: REV, client: 'hostile', topology: TOPOLOGY, skipped: 'no refusal-drain bounds in this tree' }));
     else {
       // a sender that never stops: 50× the attachment cap offered; the server must hang up within the linger bound having taken ≤ drain bytes + kernel buffers past the 413.
-      const tally = { arm: ARM, client: 'hostile', topology: TOPOLOGY, runs: HOSTILE_RUNS, read413: 0, held: 0, unbounded: 0, maxMs: 0, maxSent: 0 };
+      const tally = { arm: ARM, rev: REV, client: 'hostile', topology: TOPOLOGY, runs: HOSTILE_RUNS, read413: 0, held: 0, early: 0, unbounded: 0, maxMs: 0, maxSent: 0 };
       for (let i = 0; i < HOSTILE_RUNS; i++) {
         const r = await rawRun(srv.port, ANSWER, 50 * MOBILE_ATTACH_MAX_BODY, true);
         if (r.status === 413) tally.read413++;
         if (r.ms > HOSTILE_LINGER_MS + 1500) tally.held++;
+        if (r.ms < HOSTILE_LINGER_MS * 0.9) tally.early++; // cut before the deadline = the early destroy
         if (r.sent > MOBILE_SEND_MAX_BODY + drainMod.REFUSED_DRAIN_MAX_BYTES + KERNEL_SLACK) tally.unbounded++;
         tally.maxMs = Math.max(tally.maxMs, r.ms);
         tally.maxSent = Math.max(tally.maxSent, r.sent);
       }
-      if (tally.read413 !== HOSTILE_RUNS || tally.held || tally.unbounded) dirty = true;
+      if (tally.read413 !== HOSTILE_RUNS || tally.held || tally.early || tally.unbounded) dirty = true;
       console.log(JSON.stringify(tally));
     }
   }

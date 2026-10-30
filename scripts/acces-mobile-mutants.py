@@ -210,6 +210,8 @@ MUTANTS = [
     ('RD7-413-not-flushed', 'src/acces-mobile/server.ts', "      res.flushHeaders();\n    };", "    };", 'RED', RDS),
     ('RD8-no-connection-close', 'src/acces-mobile/server.ts', "'Content-Length': '0', Connection: 'close' });", "'Content-Length': '0' });", 'RED', RDS),
     ('RD9-timer-not-cleared-on-close', 'src/acces-mobile/server.ts', "          res.on('close', () => clearTimeout(lingerTimer));\n", "", 'EQUIV', RDS),
+    ('RD10-default-deadline-never-fires', 'src/acces-mobile/server.ts', "opts.refusedLingerMaxMs ?? REFUSED_LINGER_MAX_MS", "opts.refusedLingerMaxMs ?? 2 ** 31 - 1", 'RED', RDS),
+    ('RD11-default-drain-bound-widened', 'src/acces-mobile/server.ts', "opts.refusedDrainMaxBytes ?? REFUSED_DRAIN_MAX_BYTES", "opts.refusedDrainMaxBytes ?? 800 * MOBILE_SEND_MAX_BODY", 'RED', RDS),
     ('RDU1-finished-not-done', RDMOD, "  if (s.requestEnded) return 'done';\n", "", 'RED', RDU),
     ('RDU2-expired-beats-finished', RDMOD, "  if (s.requestEnded) return 'done';\n  if (s.lingerExpired) return 'cut';", "  if (s.lingerExpired) return 'cut';\n  if (s.requestEnded) return 'done';", 'RED', RDU),
     ('RDU3-bound-off-by-one', RDMOD, "s.discardedBytes >= (s.maxBytes ?? REFUSED_DRAIN_MAX_BYTES)", "s.discardedBytes > (s.maxBytes ?? REFUSED_DRAIN_MAX_BYTES)", 'RED', RDU),
