@@ -5,7 +5,7 @@
 # Usage: scripts/e2e-browser-agent-tabs.sh <app-dir> [--arm act,cpu,never,orphan] [--list] [--mutant <name>] [--out <dir>]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js and cli.js) that also holds
 #              build/agent-browser/agent-browser (pnpm run fetch:agent-browser). `pnpm run build:bundles` + `pnpm run build:bus-abi` first.
-#              MemAvailable >= 6 GB, ONE Electron rig at a time.
+#              MemAvailable >= 8 GB to start (the rig aborts < 6.5 GB), ONE Electron rig at a time.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -21,7 +21,7 @@ for f in package.json dist/index.html dist-electron/main.js dist-electron/cli.js
   [[ -f "${APP_DIR}/${f}" ]] || { echo "ABORT: ${APP_DIR}/${f} missing — pnpm run build:bundles && pnpm run fetch:agent-browser (and pnpm run build:bus-abi so the app's bus opens)" >&2; exit 2; }
 done
 MEM_KB="$(awk '/MemAvailable/ {print $2}' /proc/meminfo)"
-[[ "${MEM_KB}" -ge 6000000 ]] || { echo "ABORT: MemAvailable ${MEM_KB} kB < 6 GB — the fleet's memory guard is live; retry later" >&2; exit 2; }
+[[ "${MEM_KB}" -ge 8000000 ]] || { echo "ABORT: MemAvailable ${MEM_KB} kB < 8 GB — the fleet's memory guard is live; retry later" >&2; exit 2; }
 
 # SHORT btrfs base (a keeper socket path past 100 chars falls back to a shared hashed socket); never tmpfs /tmp.
 export E2E_RIG_BASE="${E2E_RIG_BASE:-/var/tmp/b406-$(id -u)}"

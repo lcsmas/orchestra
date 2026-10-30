@@ -214,6 +214,7 @@ function removeView(tab: Tab): void {
   tab.surface = 'detached';
   tab.composited = false;
   driveLeases.forget(leaseId(tab));
+  pinnedLeases.delete(leaseId(tab));
 }
 
 /** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
@@ -1509,8 +1510,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 // frame (never attached, or navigated while hidden) is SURFACED under the visible tab (a pulse the human cannot see), or refused when nothing covers it.
 // ---------------------------------------------------------------------------
 
-/** Measured inside the built app (#406): a hidden composited tab can be DEAD (no frame from its subscription, no input lands) — and one `capturePage()` wakes it. Bounded: a wake that hangs must not hang the action. */
+/** Measured inside the built app (#406): a hidden composited tab can be DEAD (Chromium keeps the compositor frame of only the ~3 most recently hidden views: no frame from its
+ *  subscription, no input lands) — one `capturePage()` wakes it. And a `capturePage()` taken while `backgroundThrottling` is OFF leaves the page PINNED unthrottled
+ *  (Electron's flag disables WasHidden(): the capture's temporary show is never undone): the lease end flips throttling back ON and takes one more, discarded, capture — now
+ *  its release hides the page for real (a capture without the flip, or after flipping back, leaves it throttled). Bounded: a wake that hangs must not hang the action. */
 const WAKE_MS = 900;
+/** Leases whose page took a capture while unthrottled: they need the unpin capture when they end. */
+const pinnedLeases = new Set<string>();
 async function wakeView(wc: Electron.WebContents): Promise<void> {
   await Promise.race([wc.capturePage().then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, WAKE_MS))]);
 }
@@ -1543,7 +1549,8 @@ function sweepLeases(): void {
       } catch {
         /* contents gone */
       }
-    }
+      if (pinnedLeases.delete(id) && tab?.surface === 'hidden') void wakeView(wc); // the unpin capture (see WAKE_MS)
+    } else pinnedLeases.delete(id);
   }
   scheduleSweep();
 }
@@ -1624,7 +1631,10 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const flipped = driveLeases.acquire(id, Date.now()).flip;
   if (flipped) wc.setBackgroundThrottling(false);
   scheduleSweep();
-  if (flipped && kind !== 'other' && tab.surface === 'hidden') await wakeView(wc); // click / type / screenshot need a live view; evaluate does not
+  if (flipped && kind !== 'other' && tab.surface === 'hidden') {
+    pinnedLeases.add(id);
+    await wakeView(wc); // click / type / screenshot need a live view; evaluate does not
+  }
   let ended = false;
   return {
     end: () => {
@@ -1654,6 +1664,7 @@ export async function captureTabFrame(
     const wc = liveContents(tab);
     if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
     let img: Electron.NativeImage | null = null;
+    pinnedLeases.add(`${wsId}/${tab.id}`); // a capture under the flip pins the page: the lease end unpins it
     try {
       // `capturePage()` of a hidden view under the lease is fresh and wakes a dead one (measured in the built app); the frame subscription is the fallback.
       const c = await Promise.race([wc.capturePage(), new Promise<null>((r) => setTimeout(() => r(null), HIDDEN_FRAME_DEADLINE_MS))]);

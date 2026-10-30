@@ -915,8 +915,8 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   from a per-proxy nonce (never the registry's `t1`); the ACTIVE tab is listed first. Page-level commands are forwarded
   to the tab's `webContents.debugger` with no session id; auto-attached child sessions (iframes) keep theirs.
   `Target.createTarget` / `closeTarget` / `activateTarget` / `Page.bringToFront` go through the panel's POLICY-CHECKED agent entry
-  points (`agentOpenTab` / `agentCloseTab` / `agentActivateTab`, **Agent tabs (#397)** below); any acting command on a
-  non-active tab brings it to the front first. The same
+  points (`agentOpenTab` / `agentCloseTab` / `agentActivateTab`, **Agent tabs (#397)** below); an acting command on a
+  non-active tab is DRIVEN IN PLACE under a throttling lease (#406, § Hidden drive) — only an explicit `Page.bringToFront` / `Target.activateTarget` / `tab <ref>` activates. The same
   browser-level rules apply to a TAB session: `Page.close` / `Target.closeTarget|createTarget|…` / `Browser.*` sent on one never
   reach the page debugger (they would close the human's tab or the panel); only the page's own `Target.setAutoAttach` is forwarded.
   `Browser.getWindowForTarget|setWindowBounds|setContentsSize` are answered (fixed frame / ignored): erroring on `set viewport`
@@ -996,7 +996,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   `cdpSeat.hold` (registered by `initBrowserCliHost`, `panelCdpSeat` in `browser-cdp-host.ts`), which take an in-process
   **lease** on the workspace proxy (`CdpProxyCore.lease`, refcounted with the WebSocket clients; a lease that outlived a detach
   never decrements a newer attach) and send straight on the tab's channel (no bring-to-front, no screenshot chain: the legacy
-  guards `requireComposited` / `withTimeout` still front them). `sendOnLease` gives the lease back when the command settles OR
+  `withTimeout` guards still front them). `sendOnLease` gives the lease back when the command settles OR
   after 120 s (`LEASE_SEND_MAX_MS`), so a command a non-painting view never answers cannot pin the tab's debugger forever. So one agent-browser session, a design pick and a legacy call
   share ONE attach in any order, and the last holder out starts the grace. A workspace's first lease starts its proxy (no daemon:
   `Endpoint.daemon` is set only by `/browser`). `release` of a tab that never navigated: `acquire` kicks `about:blank` first.
@@ -1073,9 +1073,8 @@ discovery and "create target" onto the panel tabs (Electron has no `Target.creat
   `agentCloseTab` = `tryCloseTab(…, AGENT_OPENER)` (refusal `not-owner` / `unknown-tab`); `agentActivateTab` = `decideAgentFront` then `setActive(…, byAgent=true)`.
   `browser-cdp-host.ts`'s port calls ONLY these (never the bare `createTab`/`closeTab`/`activateTab`; the interim cap is gone) and throws the
   policy message, which reaches agent-browser as a CDP error (`✗ CDP error (Target.createTarget): Tab limit reached: …`, rc 1).
-- **Bring to front, visibly (story 43):** `CdpProxyCore.tabCommand` calls `port.activateTab` for ANY acting command on a tab that is not active
-  (before the frame-bound `framesError` check, so a click on a background tab succeeds instead of being refused); explicit `tab <ref>` =
-  tab-level `Page.bringToFront`. An agent swap sets `Panel.agentSwitch {from,to,at}` → `BrowserPanelState.agentSwitch` (any tab swap that is not an
+- **Bring to front, visibly (story 43) — only when ASKED since #406:** `CdpProxyCore.tabCommand` no longer activates a background tab for an acting command (it takes a lease, § Hidden drive; a port without `beginAction` keeps the old `bringToFrontIfBackground`); explicit `tab <ref>` =
+  tab-level `Page.bringToFront` still activates. An agent swap sets `Panel.agentSwitch {from,to,at}` → `BrowserPanelState.agentSwitch` (any tab swap that is not an
   agent's clears it). Renderer: the agent's tabs wear an `agent` mark, and `.browser-agent-switch` ("The agent brought « X » to the
   front." + « Back to « Y » », a HUMAN tab activation) shows for 9 s while `to` is still the active tab. Never silent.
 - **Close ownership is enforced twice.** agent-browser prints `✓ Tab [tN] closed` (rc 0) for a `Target.closeTarget` the proxy REFUSED and

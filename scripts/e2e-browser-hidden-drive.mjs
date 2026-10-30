@@ -30,10 +30,28 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
 const ARMS = ['diag', 'act', 'cpu', 'never', 'orphan'];
+// Each edit is a regex over the MINIFIED main chunk (names captured, not hard-coded) and must match EXACTLY once. `arms` = the arms that must go RED.
+const ID = '[\\w$]+';
+const ACTIVATE_TAB = /function ([\w$]+)\(e,t\)\{const n=[\w$]+\(e\),r=n==null\?void 0:n\.tabs\.find\(s=>s\.id===t\);if\(!n\|\|!r\)throw new Error\(`browser tab \$\{t\} not found in workspace \$\{e\}`\);return [\w$]+\(n,r\),n\.state\}/;
 const MUTANTS = {
-  // filled from the built bundle by scripts/e2e-browser-hidden-drive.mjs --mutants-todo (each edit must match EXACTLY once)
+  'no-flip': { file: 'main', arms: ['act'], why: 'a lease never turns backgroundThrottling off (the flip-less build): the ledger\'s must-FAIL for "the flip is what keeps the agent\'s action live"',
+    edits: [[new RegExp(`${ID}&&(${ID})\\.setBackgroundThrottling\\(!1\\),(${ID}\\(\\)),`), '$2,']] },
+  'no-flip-back': { file: 'main', arms: ['act', 'orphan'], why: 'the lease end / sweep never turns backgroundThrottling back ON (P3 + P7 must-FAIL)',
+    edits: [[new RegExp(`(forcing the flip-back\`\\);const ${ID}=${ID}\\(${ID}\\);if\\(${ID}\\)\\{)try\\{${ID}\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '$1']] },
+  'no-unpin': { file: 'main', arms: ['act'], why: 'the lease end flips back but takes no unpin capture: the page a capture pinned unthrottled stays unthrottled (P3)',
+    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(${ID}\\)\\}else`), '$1}else']] },
+  'no-lease-end-no-watchdog': { file: 'main', arms: ['orphan'], why: 'a lease is never released by its end() and the watchdog never force-releases an orphan: a killed action leaves the view unthrottled (P7 must-FAIL)',
+    edits: [[new RegExp(`end:\\(\\)=>\\{${ID}\\|\\|\\(${ID}=!0,${ID}\\.release\\(${ID},Date\\.now\\(\\)\\),${ID}\\(\\)\\)\\}`), 'end:()=>{}'],
+      [new RegExp(`(${ID})\\.holders>0&&(${ID})-\\1\\.touchedAt>=${ID}\\?`), '!1?']] },
+  'switch-to-front': { file: 'main', arms: ['act'], why: 'the pre-#406 fallback: an action on a hidden tab makes it the active tab first — the human\'s view changes (P4 must-FAIL)',
+    edits: [[new RegExp(`async function ${ID}\\((${ID}),${ID},${ID}\\)\\{var ${ID};const (${ID})=${ID}\\(\\1,${ID}\\),${ID}=${ID}\\(\\2\\);[^]{0,900}?if\\(${ID}\\.act==="direct"\\)return ${ID};`),
+      (m, ws, tab, ...rest) => { const whole = rest[rest.length - 1]; const act = ACTIVATE_TAB.exec(whole)?.[1]; if (!act) throw new Error('activateTab not found in the chunk'); return `${m}try{${act}(${ws},${tab}.id)}catch{}`; }]] },
+  'no-surface': { file: 'main', arms: ['never'], why: 'a never-composited tab is not surfaced under the cover: it has no frame and takes no input (P6 must-FAIL)',
+    edits: [[new RegExp(`${ID}\\.act==="surface-then-lease"&&await ${ID}\\(${ID},${ID}\\);`), '']] },
+  'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
+    edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
-const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '24')), RUNS_NEVER = Number(flag('--runs-never', '20'));
+const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
   console.log(`mutants: ${Object.keys(MUTANTS).join(' ')}`);
@@ -44,6 +62,26 @@ const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) 
 const LIVE_HOME = flag('--live-home', null);
 const ARM_LIST = (flag('--arm', null) ?? ARMS.filter((a) => a !== 'diag').join(',')).split(',').sort((a, b) => ARMS.indexOf(a) - ARMS.indexOf(b)); // canonical order whatever --arm lists: `restart` needs the daemon's FIRST ids
 const MUTANT = flag('--mutant', null);
+
+// Memory floor (the fleet guard): a 1 Hz MemAvailable read; < 6.5 GB kills the app (teardown still runs) and turns the verdict red. Scope shmem before/after: a leaked rig process once killed #407's scope.
+let CURCTX = null, memMinKb = Infinity, memAborted = false;
+const memAvailKb = () => Number(/MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'utf8'))?.[1] ?? NaN);
+const memTimer = setInterval(() => {
+  try {
+    const kb = memAvailKb(); memMinKb = Math.min(memMinKb, kb);
+    if (kb < 6500000 && !memAborted) { memAborted = true; console.log(`ABORT: MemAvailable ${kb} kB < 6.5 GB — the fleet memory guard floor; killing the app`); const pid = CURCTX?.app?.pid; if (pid) { try { process.kill(-pid, 'SIGTERM'); } catch {} } }
+  } catch { /* meminfo unreadable: the clause below reports min=Infinity */ }
+}, 1000);
+memTimer.unref();
+function scopeShmem() {
+  try {
+    const rel = fs.readFileSync('/proc/self/cgroup', 'utf8').trim().split('\n').map((l) => l.split(':').slice(2).join(':'))[0];
+    const rd = (r) => { try { return Number(/^shmem (\d+)/m.exec(fs.readFileSync(`/sys/fs/cgroup${r}/memory.stat`, 'utf8'))?.[1]); } catch { return null; } };
+    return { leaf: rd(rel), parent: rd(rel.replace(/\/[^/]+$/, '')) };
+  } catch { return { leaf: null, parent: null }; }
+}
+const SHMEM0 = scopeShmem();
+console.log(`[rig] scope shmem before: leaf ${SHMEM0.leaf} B, parent ${SHMEM0.parent} B; MemAvailable ${memAvailKb()} kB`);
 
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
@@ -273,6 +311,7 @@ async function main() {
   sh('swaymsg', ['output', 'HEADLESS-1', 'resolution', '1500x950']);
   sh('swaymsg', ['default_border', 'none']);
   const ctx = { world, armDir, W1, W2, FIX, app: null, ui: null, port: 0, targets: null, env: null, URL: { a: `${FIX}/tabs-a.html`, b: `${FIX}/tabs-b.html`, c: `${FIX}/tabs-c.html`, hitA: `${FIX}/agent-tabs-hit-a.html`, hitB: `${FIX}/agent-tabs-hit-b.html`, spawn: `${FIX}/agent-tabs-spawn.html`, frame: `${FIX}/agent-tabs-frame.html` } };
+  CURCTX = ctx;
   try {
     Object.assign(ctx, await bootApp(world, armDir, 'boot1'));
     await runArms(ctx);
@@ -557,6 +596,7 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   await raw.callOn(sid, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 320, y: 218, button: 'left', clickCount: 1 });
   await raw.callOn(sid, 'Input.insertText', { text: 'hello' });
   let landed = null; for (let i = 0; i < 60 && landed === null; i++) { const [m, v] = await o.eval('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') landed = Date.now() - tIn; else await sleep(20); }
+  const miss = landed === null || landed > 700 ? await o.eval('[__hd.mouse() - ' + m0 + ', __hd.value(), document.activeElement && document.activeElement.id, document.visibilityState, __hd.ticks()]').catch((e) => String(e)) : null; // evidence for a P2 miss: did the click land, was the text typed, who had focus
   S('leak-stop');
   const lk = await leak.stop(t0); const after = await humanState(ctx);
   raw.close(); const tEnd = Date.now();
@@ -564,7 +604,7 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   // P3: the view is throttled again 2 s after the last action: tick rate over the next second
   await sleep(Math.max(0, tEnd + 2000 - Date.now())); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const b = await o.eval('__hd.ticks()'); const rate = +(((b - a) / ((Date.now() - ta) / 1000))).toFixed(1);
   o.close();
-  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate };
+  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss };
 }
 
 function judgeRuns(arm, label, runs) {
@@ -576,7 +616,7 @@ function judgeRuns(arm, label, runs) {
     const first = rs.map((r) => r.shots[0].ms), allMs = rs.flatMap((r) => r.shots.map((s) => s.ms));
     clause(arm, `${label}/${kind}/P1-first-screenshot-fresh-all-forms`, rs.length >= 20 && stale.length === 0, `${rs.length} runs × 3 forms (${forms.join(', ')}): ${stale.length} stale/failed ${stale.slice(0, 3).map((s) => `${s.name}:${s.error ?? JSON.stringify(s.color)}`).join(' ')}; every form fresh in every run`);
     clause(arm, `${label}/${kind}/P1-within-2s`, Math.max(...allMs) <= 2000, `slowest screenshot ${Math.max(...allMs)} ms after the action began (first form: median ${median(first)} / p95 ${pct(first, 0.95)} ms)`);
-    clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} ms)`);
+    clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} ms)${rs.filter((r) => r.landed === null || r.landed > 700).map((r) => ` · MISS run#${r.runNo} id${r.id} landed=${r.landed} shots=${r.shots.map((x) => `${x.name}:${x.ms}ms`).join(',')} state(clicks,value,focus,vis,ticks)=${JSON.stringify(r.miss)}`).join('')}`);
     clause(arm, `${label}/${kind}/P3-throttled-again-within-2s`, rs.every((r) => r.timersPerS <= 2), `timers/s in the second after +2 s: max ${Math.max(...rs.map((r) => r.timersPerS))} over ${rs.length} runs (limit 2)`);
     clause(arm, `${label}/${kind}/P4-the-humans-view-never-changes`, rs.every((r) => r.human) && Math.max(...rs.map((r) => r.leak.max)) <= 0.002, `${rs.filter((r) => r.human).length}/${rs.length} runs: same active tab, no notice, same focus; compositor leak (excess over the pane's own baseline ${(Math.max(...rs.map((r) => r.leak.base)) * 100).toFixed(2)} %) max ${(Math.max(...rs.map((r) => r.leak.max)) * 100).toFixed(2)} % of the pane over ${rs.reduce((s, r) => s + r.leak.samples, 0)} samples${rs.find((r) => !r.human) ? ' — ' + rs.find((r) => !r.human).humanDetail : ''}`);
   }
@@ -603,9 +643,18 @@ const ARM_FNS = {
     const px = `const centre = (img) => { const b = img.toBitmap(); const sz = img.getSize(); const o = ((sz.height >> 1) * sz.width + (sz.width >> 1)) * 4; return [b[o + 2], b[o + 1], b[o]]; };`;
     const inp = `const input = async (wc) => { const m0 = await wc.executeJavaScript('__hd.mouse()'); const t0 = Date.now(); wc.sendInputEvent({ type: 'mouseDown', x: 320, y: 218, button: 'left', clickCount: 1 }); wc.sendInputEvent({ type: 'mouseUp', x: 320, y: 218, button: 'left', clickCount: 1 }); await wc.insertText('hello'); for (let i = 0; i < 40; i++) { const [m, v] = await wc.executeJavaScript('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') return { landedMs: Date.now() - t0 }; await new Promise((r) => setTimeout(r, 20)); } return 'NOT LANDED'; };`;
     const T = (n) => ctx.ids[ctx.W1.id][n];
-    const aliveMap = async (label) => { const res = []; for (let n = 0; n < 7; n++) res.push(await ex(`${pre} ${inp} const wc = find(${T(n)}); wc.setBackgroundThrottling(false); const f = await frame(wc, 300); const i = f === 'NO FRAME' ? 'skipped' : await input(wc); wc.setBackgroundThrottling(true); return (f === 'NO FRAME' ? 'DEAD' : 'ok') + ' pid' + wc.getOSProcessId();`)); out[label] = res.join(' | '); };
-    out.pids = await ex(`${pre} return all.filter((w) => !w.isDestroyed()).map((w) => w.getOSProcessId() + ':' + (new URL(w.getURL() || 'about:blank', 'http://x').search.slice(0, 12) || w.getURL().slice(-12))).join(' ');`);
-    await aliveMap('alive@+5s'); await sleep(35000); await aliveMap('alive@+45s'); await sleep(40000); await aliveMap('alive@+90s');
+    // ORDERINGS of flip / capturePage that avoid pinning the page unthrottled (Electron's setBackgroundThrottling(false) disables WasHidden(): a capture's temporary show is never undone while it is set).
+    // Each runs on a DEAD tab whose colour changed while hidden: fresh? (rgb == want) · alive after? (input) · throttle timeline after (10 × 0.5 s).
+    const tl = `const tl = []; let prev = await ticks(), tp = Date.now(); for (let i = 0; i < 10; i++) { await new Promise((r) => setTimeout(r, 500)); const c = await ticks(), t = Date.now(); tl.push(Math.round((c - prev) / ((t - tp) / 1000))); prev = c; tp = t; }`;
+    const order = (n, color, body) => ex(`${pre} ${px} ${inp} const wc = find(${ctx.ids[ctx.W1.id][n]}); const v = viewOf(wc); const ticks = () => wc.executeJavaScript('__hd.ticks()'); const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      await wc.executeJavaScript("__hd.set('#${color}')"); await sleep(1500);
+      let rgb, t0 = Date.now(); const cap = async () => { const img = await Promise.race([wc.capturePage(), new Promise((r) => setTimeout(() => r(null), 2000))]); rgb = img && !img.isEmpty() ? centre(img) : 'EMPTY/TIMEOUT'; };
+      ${body}
+      const capMs = Date.now() - t0; const inputR = await input(wc); wc.setBackgroundThrottling(true); ${tl} return { want: '${color}', rgb, capMs, input: inputR, timeline: tl.join(',') };`);
+    out.V1_capture_without_any_flip = await order(0, '2ca02c', `await cap();`);
+    out.V2_flip_settle_flipback_capture = await order(1, '9467bd', `wc.setBackgroundThrottling(false); await sleep(150); wc.setBackgroundThrottling(true); await cap();`);
+    out.V3_flip_capture_flipback_realpulse = await order(2, 'ff7f0e', `wc.setBackgroundThrottling(false); await cap(); wc.setBackgroundThrottling(true); v.setVisible(true); await sleep(200); v.setVisible(false);`);
+    out.V4_capture_twice_no_flip = await order(3, 'e377c2', `await cap(); await sleep(100); await cap();`);
     for (const [k, v] of Object.entries(out)) console.log(`  [diag] ${k}: ${JSON.stringify(v)}`);
     main.close();
     clause(A, 'diag-ran', true, 'see [diag] lines');
@@ -646,6 +695,8 @@ const ARM_FNS = {
     const crashes = (log.match(/render-process-gone|child-process-gone|GPU process exited unexpectedly|Lost UI shared context/g) ?? []).length;
     clause(A, 'P5-no-renderer-or-gpu-crash', crashes === 0, `${crashes} crash / context-lost lines in the app log over ${runs8.length + runs40.length} runs`);
     for (const l of log.split('\n').filter((x) => /browser-panel: drive/.test(x)).slice(0, 14)) console.log(`  [app-log] ${l.slice(l.indexOf('browser-panel')).slice(0, 170)}`);
+    try { fs.copyFileSync(path.join(ctx.armDir, 'app-boot1.log'), path.join(OUT, 'act-app-boot1.log')); } catch { /* the log is evidence for a miss, not a clause */ }
+    { const slow = [...runs8, ...runs40].filter((r) => r.landed === null || r.landed > 700); if (slow.length) console.log(`  [evidence] ${slow.length} P2 miss(es): app log kept at ${path.join(OUT, 'act-app-boot1.log')}; wall-clock ${slow.map((r) => new Date(r.t).toISOString()).join(' ')}`); }
     ctx.actRuns = { runs8, runs40 };
   },
 
@@ -764,6 +815,10 @@ applyMutant();
 await main();
 const after = liveCanary();
 const same = JSON.stringify(before) === JSON.stringify(after);
+{ const sh1 = scopeShmem(), grew = (a, b) => (a === null || b === null ? 0 : b - a);
+  console.log(`[rig] scope shmem after: leaf ${sh1.leaf} B, parent ${sh1.parent} B (before ${SHMEM0.leaf} / ${SHMEM0.parent}); MemAvailable min ${memMinKb} kB`);
+  clause('ctl', 'memavail-floor-held', !memAborted && memMinKb >= 6500000, `MemAvailable min over the run ${memMinKb} kB (abort floor 6500000)`);
+  clause('ctl', 'scope-shmem-not-leaked', Math.max(grew(SHMEM0.leaf, sh1.leaf), grew(SHMEM0.parent, sh1.parent)) <= 64 << 20, `scope shmem leaf ${SHMEM0.leaf} → ${sh1.leaf} B, parent ${SHMEM0.parent} → ${sh1.parent} B (limit +64 MiB: a leaked rig process kills the member's scope)`); }
 clause('ctl', 'live-dirs-untouched', same, `${Object.keys(before).length} live probes (symlink-set + mcpServers hashes of each ~/.claude*, agent-browser dot-dir existence) ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
 
 // ── verdict ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -601,6 +601,42 @@ test('a hidden tab that starts a main-frame navigation is detached so the new do
   assert.equal(children.has(viewOf(t2)), true, 'a sub-frame navigation never detaches');
 });
 
+const nap = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Records the order of throttling flips and captures on a stub view (the pin: a capture taken while throttling is OFF leaves the page unthrottled, #406 P3). */
+function trace(wc: any): string[] {
+  const events: string[] = [];
+  wc.setBackgroundThrottling = (v: boolean) => events.push(`throttle:${v}`);
+  const real = wc.capturePage.bind(wc);
+  wc.capturePage = () => { events.push('capture'); return real(); };
+  return events;
+}
+
+test('a lease on a hidden tab flips throttling OFF around the action, and its end flips it back ON and THEN takes one discarded capture that unpins the page (#406 P3)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2'); // surfaced once: attached + hidden + composited
+  await nap(900); // that first lease's linger is over
+  const events = trace(wcOf(t2));
+  const lease = await bp.beginAgentAction(ws, 't2', 'input');
+  assert.deepEqual(events, ['throttle:false', 'capture'], 'throttling off, then the wake capture of a possibly evicted hidden frame');
+  lease.end();
+  await nap(900);
+  assert.deepEqual(events, ['throttle:false', 'capture', 'throttle:true', 'capture'], 'flip back FIRST, then the unpin capture — the other order would pin the page unthrottled again');
+});
+
+test('a lease for evaluate (no frame needed) flips throttling and takes NO capture, so nothing to unpin (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(900);
+  const events = trace(wcOf(t2));
+  (await bp.beginAgentAction(ws, 't2', 'other')).end();
+  await nap(900);
+  assert.deepEqual(events, ['throttle:false', 'throttle:true']);
+});
+
 test('with NOTHING on screen to hide a first-paint pulse under, a never-composited tab refuses a screenshot FAST with a clear error (P6)', async () => {
   const ws = newWs(); // no focused workspace, no visible tab
   const t1 = bp.ensurePanel(ws).tabs[0]!;
