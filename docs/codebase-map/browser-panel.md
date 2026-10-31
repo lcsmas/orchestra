@@ -183,8 +183,8 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   sway) — `app` arm drives the unchanged renderer flow on the built app (pane
   open, URL bar, back, hide/show; one tab `t1`, pixels via grim), `probe` arm
   (`e2e-browser-tabs-probe.cjs`) runs the bundled registry over real
-  `WebContentsView`s with N>1 tabs; `--mutant destroy-active-only|no-detach-prev`
-  must redden its named clause. Real-Electron trap: `webContents.close()` is
+  `WebContentsView`s with N>1 tabs, counting VISIBLE children (since #406 a hidden tab stays attached unless still loading / pre-first-paint; `setVisible` is recorded, Electron 33 has no `getVisible`);
+  `--mutant destroy-active-only|no-detach-prev|skip-hide` must redden its named clause (`--check-anchors` = static drift guard). Real-Electron trap: `webContents.close()` is
   ASYNC — `view.webContents` is still live right after it.
 - `'human'` literals in `src/main/*.ts` are counted by
   `pause-gates-wiring.test.ts` (pause-bypass origins); `openedBy: 'human'` is

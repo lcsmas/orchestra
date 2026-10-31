@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # #391 — tabs-registry E2E on a BUILT app in the contained rig's own headless sway.
-# Usage: scripts/e2e-browser-tabs-registry.sh <app-dir> [--arm app,probe] [--mutant destroy-active-only|no-detach-prev] [--out dir]
+# Usage: scripts/e2e-browser-tabs-registry.sh <app-dir> [--arm app,probe] [--mutant destroy-active-only|no-detach-prev|skip-hide] [--out dir]
 #   <app-dir> a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

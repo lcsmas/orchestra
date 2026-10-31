@@ -2,10 +2,10 @@
 //   app    arm: the renderer flow is UNCHANGED (open pane, navigate, back, hide/show) with exactly one
 //          tab (t1/human) mirrored into BrowserPanelState; pixels read back from the composited output (grim).
 //   probe  arm: the REAL bundled browser-panel.ts over REAL WebContentsViews (scripts/e2e-browser-tabs-probe.cjs):
-//          N>1 tabs, activate/close/reap/destroy, composited colour + child-view count after each step.
+//          N>1 tabs, activate/close/reap/destroy, composited colour + VISIBLE child-view count after each step (#406: a hidden tab stays attached).
 //   --mutant <name>  rebuilds the probe bundle with one clause broken; the probe arm must go RED on
 //          the named clause while its controls stay GREEN (exit 0 only then).
-// Usage (via scripts/e2e-browser-tabs-registry.sh): <app-dir> --live-cfg <live claude dir> [--arm app,probe] [--mutant destroy-active-only|no-detach-prev] [--out dir]
+// Usage (via scripts/e2e-browser-tabs-registry.sh): <app-dir> --live-cfg <live claude dir> [--arm app,probe] [--mutant destroy-active-only|no-detach-prev|skip-hide] [--out dir]
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -26,8 +26,11 @@ const ARMS = flag('--arm', 'app,probe').split(',');
 const MUTANT = flag('--mutant', null);
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 const MUTANTS = {
-  'destroy-active-only': { find: 'for (const tab of panel.tabs) destroyTab(tab);\n  notifyPanelListeners(wsId, [], true);', replace: 'destroyTab(activeTabOf(panel)!);\n  notifyPanelListeners(wsId, [], true);', red: 'destroyPanel closes EVERY tab' },
-  'no-detach-prev': { find: 'if (prev) detachTab(panel, prev);', replace: '', red: 'activateTab swaps the composited view' },
+  // Anchors re-pointed after the #406 lift (both old find-strings occurred 0x: `--check-anchors` was RED). Each find-string must occur exactly once in src/main/browser-panel.ts.
+  'destroy-active-only': { find: '  for (const tab of panel.tabs) {\n    removeView(tab);\n    destroyTab(tab);\n  }\n  notifyPanelListeners(wsId, [], true);', replace: '  { const a = activeTabOf(panel)!; removeView(a); destroyTab(a); }\n  notifyPanelListeners(wsId, [], true);', red: 'destroyPanel closes EVERY tab' },
+  // Two tabs composited at once: the pixels stay right (the newer view is added on top), so only the VISIBLE-children clauses can see it.
+  'no-detach-prev': { find: 'if (prev) hideView(prev);', replace: '', red: 'activateTab swaps the composited view' },
+  'skip-hide': { find: "    tab.view.setVisible(false);\n  } catch {\n    /* view gone */\n  }\n  tab.surface = 'hidden';", replace: "  } catch {\n    /* view gone */\n  }\n  tab.surface = 'hidden';", red: 'activateTab swaps the composited view' },
 };
 // Static drift guard (no rig, no app): every mutant's find-string must occur EXACTLY once in src/main/browser-panel.ts, or `--mutant <name>` dies at
 // the bundler (this is what #395 did to `destroy-active-only` unnoticed). Run: node scripts/e2e-browser-tabs-registry.mjs --check-anchors
