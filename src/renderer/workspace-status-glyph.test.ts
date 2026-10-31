@@ -31,7 +31,7 @@ import type { WorkspaceStatus } from '../shared/types.ts';
 export function glyphKindFor(
   status: WorkspaceStatus,
   hibernated: boolean,
-): 'ring-check' | 'ring-question' | 'ring-x' | 'spinner' | 'dot' {
+): 'dot-sm' | 'ring-question' | 'spinner' | 'dot' {
   // A hibernated agent's process is STOPPED, so it must never animate as if it
   // were working — even though its last recorded status is often 'running'.
   if (hibernated) return 'dot';
@@ -41,9 +41,9 @@ export function glyphKindFor(
     case 'waiting':
       return 'ring-question';
     case 'error':
-      return 'ring-x';
+      return 'dot-sm'; // Orca's 6px red dot (G2, 2026-10-31) — smaller than the 8px idle dot
     case 'idle':
-      return 'ring-check';
+      return 'dot'; // green 8px dot (Orca done/active)
     default:
       return 'dot';
   }
@@ -51,9 +51,9 @@ export function glyphKindFor(
 
 test('each status maps to its own glyph', () => {
   assert.equal(glyphKindFor('running', false), 'spinner');
-  assert.equal(glyphKindFor('idle', false), 'ring-check');
+  assert.equal(glyphKindFor('idle', false), 'dot');
   assert.equal(glyphKindFor('waiting', false), 'ring-question');
-  assert.equal(glyphKindFor('error', false), 'ring-x');
+  assert.equal(glyphKindFor('error', false), 'dot-sm');
   assert.equal(glyphKindFor('stopped', false), 'dot');
 });
 

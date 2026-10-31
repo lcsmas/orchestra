@@ -18,9 +18,10 @@ const activity = read('main/activity.ts');
 const cli = read('cli/index.ts');
 
 test('Sidebar: both row title paths go through withExLabel(…, w.formerBranch)', () => {
-  const calls = sidebar.match(/title=\{withExLabel\(/g) ?? [];
+  // The name title may be wrapped by withStatusNote (the status note moved into the tooltip, 2026-10-31).
+  const calls = sidebar.match(/title=\{(?:withStatusNote\(\s*)?withExLabel\(/g) ?? [];
   assert.equal(calls.length, 2, 'exactly the two row render paths call the helper');
-  const args = sidebar.match(/w\.formerBranch,\n\s*\)\}/g) ?? [];
+  const args = sidebar.match(/w\.formerBranch,\n\s*\)[,}]/g) ?? [];
   assert.equal(args.length, 2, 'each call passes w.formerBranch');
   assert.match(sidebar, /import \{ withExLabel \} from '\.\.\/\.\.\/shared\/former-branch';/);
   assert.doesNotMatch(sidebar, INLINE_EX, 'no inline copy of the "ex-" prefix: the shared module owns it');

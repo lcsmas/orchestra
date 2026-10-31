@@ -20,6 +20,7 @@ import { BusPauseSection } from './components/pause/BusPauseSection';
 import { HelpView, HelpIcon } from './components/Help';
 import { DialogHost, dialog } from './components/Dialog';
 import { playFinishedChime } from './chime';
+import { hasLiveParent } from '../shared/notify-scope';
 import { dlog } from './debug';
 import type { RepoEntry } from '../shared/types';
 import { isScratchLike } from '../shared/types';
@@ -360,7 +361,12 @@ export function App() {
       // 4×/hour. The bell/badge carry the signal instead (main skips the OS
       // toast for the same reason — see fireFinished); a loop parked on a
       // QUESTION still chimes via onAgentNeedsInput below.
-      if (useStore.getState().workspaces.find((w) => w.id === finishedId)?.loopingSince) return;
+      const list = useStore.getState().workspaces;
+      const ws = list.find((w) => w.id === finishedId);
+      if (ws?.loopingSince) return;
+      // Root-only turn-end chime (notify-scope.ts): a spawned worker/ops ends turns all wave long. Its
+      // QUESTION still chimes via onAgentNeedsInput below.
+      if (ws && hasLiveParent(ws, (id) => list.find((w) => w.id === id))) return;
       playFinishedChime();
     });
   }, []);

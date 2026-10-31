@@ -1,4 +1,5 @@
 import type { Workspace } from './types';
+import { hasLiveParent } from './notify-scope.ts';
 
 // Pure grouping for the header inbox ("Needs You" triage, Orca-inspired).
 // Deliberately a LIVE VIEW over existing workspace state rather than an event
@@ -33,8 +34,10 @@ export function computeAttention(workspaces: Workspace[]): AttentionGroups {
   // stronger claim — answering it is what unblocks the agent.
   const urgency = (w: Workspace): number =>
     w.status === 'error' ? 2 : w.status === 'waiting' ? 1 : 0;
+  // A spawned child's unseen-done is not a notification (root-only, notify-scope.ts); its question/error is.
+  const byId = new Map(workspaces.map((w) => [w.id, w]));
   const needsYou = live
-    .filter((w) => w.status === 'waiting' || w.status === 'error' || w.autoUnread)
+    .filter((w) => w.status === 'waiting' || w.status === 'error' || (w.autoUnread && !hasLiveParent(w, (id) => byId.get(id))))
     .sort((a, b) => urgency(b) - urgency(a));
   const inNeeds = new Set(needsYou.map((w) => w.id));
   const bookmarked = live.filter((w) => w.markedUnread && !inNeeds.has(w.id));

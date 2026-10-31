@@ -41,6 +41,7 @@ export function WorkspaceStatusGlyph({
   stopReason,
   title,
   size,
+  neverRan,
 }: {
   status: WorkspaceStatus;
   hibernated: boolean;
@@ -67,6 +68,8 @@ export function WorkspaceStatusGlyph({
   title: string;
   /** Optional context class, e.g. `'sm'` for denser lists. */
   size?: 'sm';
+  /** A spawned child that never ran a turn: Orca's idle grey instead of the done green (sidebar child rows). */
+  neverRan?: boolean;
 }) {
   const cls = (kind: string) =>
     `ws-glyph ws-glyph-${kind}${size ? ` ws-glyph-${size}` : ''}` +
@@ -99,6 +102,13 @@ export function WorkspaceStatusGlyph({
   // A hibernated agent's process is STOPPED, so it must never animate as if it
   // were working — even though its last recorded status is usually 'running'.
   // No loop badge either — see loopBadge above.
+  // Error = Orca's small RED DOT (6px, StatusIndicator `failed`), smaller than the 8px idle dot so shape+size
+  // still separate it from "finished" (user picked Orca parity, glyph set G2, 2026-10-31; was a circle-x).
+  const errorDot = (
+    <span className={cls('error')} title={title} role="img" aria-label={title}>
+      {loopBadge}
+    </span>
+  );
   if (hibernated) {
     return <span className={cls('idle')} title={title} role="img" aria-label={title} />;
   }
@@ -142,13 +152,10 @@ export function WorkspaceStatusGlyph({
         'usagelimit',
       );
     }
-    return svg(
-      <>
-        <circle cx="12" cy="12" r="10" />
-        <path d="m15 9-6 6M9 9l6 6" />
-      </>,
-      'error',
-    );
+    return errorDot;
+  }
+  if (neverRan && status === 'idle' && !autoUnread) {
+    return <span className={`${cls('idle')} never-ran`} title={title} role="img" aria-label={title}>{loopBadge}</span>;
   }
   if (autoUnread && (status === 'idle' || status === 'stopped')) {
     // A FILLED bell — the exact path from Orca's `FilledBellIcon`
@@ -194,14 +201,7 @@ export function WorkspaceStatusGlyph({
         'waiting',
       );
     case 'error':
-      // Lucide `circle-x`.
-      return svg(
-        <>
-          <circle cx="12" cy="12" r="10" />
-          <path d="m15 9-6 6M9 9l6 6" />
-        </>,
-        'error',
-      );
+      return errorDot;
     case 'idle':
       // A plain GREEN DOT — matching Orca, whose `done`/`active` states render
       // `size-2 rounded-full bg-emerald-500`. Deliberately not a check mark:

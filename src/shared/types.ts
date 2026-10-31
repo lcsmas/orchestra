@@ -263,7 +263,7 @@ export interface Workspace {
   agent: 'claude';
   lastTask?: string;
   /** Agent-updated one-line status note — "what this workspace is doing right
-   * now", rendered under the branch name on the sidebar row and shown to peer
+   * now", shown in the sidebar row's name tooltip (the row is title-only since 2026-10-31) and to peer
    * agents in `orchestra peers`. Set by the agent itself over the socket
    * (`orchestra status "<msg>"` → the `/status` route), sanitized to a single
    * ≤160-char line (src/shared/status-text.ts). Cleared with

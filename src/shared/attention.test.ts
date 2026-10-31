@@ -128,3 +128,12 @@ test('an archived autoUnread workspace is ignored entirely', () => {
   assert.equal(g.needsYou.length, 0);
   assert.equal(g.count, 0);
 });
+
+test('a spawned child\'s unseen-done is not in needsYou; its question still is (root-only turn-end, 2026-10-31)', () => {
+  const lead = ws({ id: 'lead' });
+  const done = ws({ id: 'done-kid', parentId: 'lead', autoUnread: true });
+  const asks = ws({ id: 'asking-kid', parentId: 'lead', status: 'waiting' });
+  const orphan = ws({ id: 'orphan', parentId: 'gone', autoUnread: true });
+  const { needsYou } = computeAttention([lead, done, asks, orphan]);
+  assert.deepEqual(needsYou.map((w) => w.id).sort(), ['asking-kid', 'orphan']);
+});
