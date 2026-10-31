@@ -231,6 +231,7 @@ function removeView(tab: Tab): void {
   }
   driveLeases.forget(id);
   pinnedLeases.delete(id);
+  pendingUnpins.delete(id);
   leaseTabs.delete(id);
 }
 
@@ -1542,6 +1543,26 @@ const REKICK_AFTER_MS = 300;
 const NUDGE_AFTER_MS = 700;
 /** Leases whose page took a capture while unthrottled: they need the unpin capture when they end. */
 const pinnedLeases = new Set<string>();
+/** Leases that ENDED while the window paints nothing: their unpin capture (the thing that releases a pin) is still owed. Dropping it would leave the page unthrottled for good, even after the window is displayed again. */
+const pendingUnpins = new Map<string, Tab>();
+let unpinRetry: ReturnType<typeof setTimeout> | null = null;
+function retryPendingUnpins(): void {
+  if (unpinRetry || !pendingUnpins.size) return;
+  unpinRetry = setTimeout(() => {
+    unpinRetry = null;
+    void windowPaints().then(async (paints) => {
+      if (paints) {
+        for (const [id, tab] of [...pendingUnpins]) {
+          pendingUnpins.delete(id);
+          const wc = liveContents(tab);
+          if (wc && tab.surface === 'hidden' && !driveLeases.isHeld(id)) await wakeView(wc); // the owed unpin: its release now hides the page for real
+        }
+      }
+      retryPendingUnpins();
+    });
+  }, 1000);
+  unpinRetry.unref?.();
+}
 /** Resolves at the SECOND frame the view delivers from now (the first is the subscription's refresh of the old surface), or after `ms`. Always ends its subscription. */
 function afterNextPaint(wc: Electron.WebContents, ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -1580,13 +1601,14 @@ async function wakeView(wc: Electron.WebContents): Promise<void> {
 let paintVerdict = { at: 0, ok: true };
 let paintProbe: Promise<boolean> | null = null;
 async function windowPaints(): Promise<boolean> {
-  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
-  // sway KNOWS whether the window is on a displayed workspace (exact); the capture probe below is the fallback for other compositors and can be fooled (measured: it answered once on an undisplayed desktop)
+  // sway KNOWS whether the window is on a displayed workspace (exact, a few ms) — and its answer is NEVER cached: a cached "displayed" let the first action after the human switched desktop run
+  // against a window that no longer paints (measured: it hung 6 s and left the page unthrottled). The capture probe below is the fallback for other compositors and can be fooled.
   const sway = await swayWindowVisible(process.pid);
   if (sway !== null) {
     paintVerdict = { at: Date.now(), ok: sway };
     return sway;
   }
+  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
   const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents;
   let ok = true;
   if (ui && !ui.isDestroyed?.() && typeof ui.capturePage === 'function') {
@@ -1632,7 +1654,11 @@ function sweepLeases(): void {
       // the unpin capture (see WAKE_MS); a lease taken while it runs makes it a capture UNDER the flip again — that lease owes the unpin
       if (pinnedLeases.delete(id) && tab?.surface === 'hidden') {
         void windowPaints().then(async (paints) => {
-          if (!paints) return;
+          if (!paints) {
+            pendingUnpins.set(id, tab as Tab); // nothing paints: no capture now (it would hang) — owed until the window paints again
+            retryPendingUnpins();
+            return;
+          }
           await wakeView(wc);
           if (driveLeases.isHeld(id)) pinnedLeases.add(id);
         });
@@ -1799,6 +1825,7 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const flipped = driveLeases.acquire(id, Date.now()).flip;
   if (flipped) wc.setBackgroundThrottling(false);
   scheduleSweep();
+  if (pendingUnpins.delete(id)) pinnedLeases.add(id); // an owed unpin becomes this lease's: its end takes the capture
   if (kind === 'input') surfacedAt.delete(tab); // the page may change from here on: a later capture needs its own prime
   if (flipped && kind === 'input' && tab.surface === 'hidden') {
     pinnedLeases.add(id);

@@ -740,6 +740,24 @@ test('a navigation under a LEASE ends the lease: removing the view flips throttl
   assert.deepEqual(events, ['throttle:false', 'throttle:true'], 'and the later sweep finds nothing to flip again');
 });
 
+test('removeView FORGETS the lease: an action ≤ 600 ms after a navigation re-flips throttling OFF — a stale lease entry would run it throttled (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const events = trace(wcOf(t2));
+  const l1 = await bp.beginAgentAction(ws, 't2', 'other'); // the navigation's own lease
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false }); // removeView: throttling back ON, the lease forgotten
+  l1.end();
+  await nap(100); // far inside the 600 ms linger the old entry would still have
+  const l2 = await bp.beginAgentAction(ws, 't2', 'other'); // the next action
+  assert.deepEqual(events, ['throttle:false', 'throttle:true', 'throttle:false'], 'the second action flipped throttling OFF again (it would run unthrottled)');
+  l2.end();
+  await nap(900);
+});
+
 test('a screenshot right after a navigation (the document is still loading) waits for the load before hiding the surfaced tab again, and answers (#406)', async () => {
   const ws = newWs();
   openShown(ws);
@@ -849,14 +867,14 @@ test('a first show that yields NO frame is re-shown (the child is removed and ad
   await nap(900);
 });
 
-test('F1 sway KNOWS: a window on an undisplayed workspace is refused even when the capture probe would answer, and displayed again it works (#406)', async () => {
+test('F1 sway KNOWS: its answer is never cached — the first action after the human switches desktop is refused at once, and the first one after they return works (#406)', async () => {
   const ws = newWs();
   openShown(ws);
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   await bp.capture(ws, 75, 't2');
   await nap(1700);
   const { ipcFrame, GET_TREE } = await import('../shared/sway-tree.ts');
-  let visible = false;
+  let visible = true;
   const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
   const sock = nodePath.join(dir, 'sway.sock');
   const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, visible, nodes: [] }] })))));
@@ -865,13 +883,45 @@ test('F1 sway KNOWS: a window on an undisplayed workspace is refused even when t
   process.env.SWAYSOCK = sock;
   try {
     assert.equal(uiProbe.paints, true, 'premise: the UI capture probe would ANSWER');
+    (await bp.beginAgentAction(ws, 't2', 'input')).end(); // displayed: works, and sway\'s "displayed" is now the most recent verdict
+    visible = false; // the human switches desktop — no wait: well inside the old 750 ms verdict cache
     const t0 = Date.now();
     await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not displayed/);
     assert.ok(Date.now() - t0 < 200, `refused from sway\'s answer, not from a 300 ms probe timeout (${Date.now() - t0} ms)`);
-    visible = true; // the human is back on the desktop
-    await nap(800); // past the verdict cache
-    const lease = await bp.beginAgentAction(ws, 't2', 'input');
-    lease.end();
+    visible = true; // the human is back — again no wait
+    (await bp.beginAgentAction(ws, 't2', 'input')).end();
+  } finally {
+    if (prev === undefined) delete process.env.SWAYSOCK; else process.env.SWAYSOCK = prev;
+    srv.close();
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+  }
+  await nap(900);
+});
+
+test('an unpin owed while the window paints NOTHING is deferred, not dropped: it runs once the window is displayed again (a dropped one leaves the page unthrottled for good) (#406 P3)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const { ipcFrame, GET_TREE } = await import('../shared/sway-tree.ts');
+  let visible = true;
+  const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
+  const sock = nodePath.join(dir, 'sway.sock');
+  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, visible, nodes: [] }] })))));
+  await new Promise<void>((r) => srv.listen(sock, r));
+  const prev = process.env.SWAYSOCK;
+  process.env.SWAYSOCK = sock;
+  try {
+    const events = trace(wcOf(t2));
+    await bp.capture(ws, 75, 't2'); // a capture under the flip: the page is now pinned and owes an unpin capture
+    visible = false; // the human switches desktop inside the lease's linger
+    await nap(900); // the sweep ran: throttling back ON, but a capture on a window that paints nothing would hang
+    assert.equal(events[events.length - 1], 'throttle:true', `no capture was started while nothing paints: ${events.join(',')}`);
+    const before = events.length;
+    visible = true; // displayed again
+    await nap(1500); // the retry (every second) sees it paints and takes the owed unpin
+    assert.equal(events.slice(before).join(','), 'capture', `the owed unpin capture ran after the window was displayed again: ${events.join(',')}`);
   } finally {
     if (prev === undefined) delete process.env.SWAYSOCK; else process.env.SWAYSOCK = prev;
     srv.close();

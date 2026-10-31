@@ -56,12 +56,14 @@ const MUTANTS = {
     edits: [[new RegExp(`if\\(${ID}!=="other"&&!await ${ID}\\(\\)\\)throw new Error\\(${ID}\\);`), '']] },
   'no-cover-abort': { file: 'main', arms: ['cover'], why: 'a pulse is not aborted when its cover leaves the screen: the pulsing page shows in the vacated pane (F2 must-FAIL)',
     edits: [[new RegExp(`if\\(!\\((${ID})\\.cover!==e\\|\\|\\1\\.aborted\\)\\)\\{`), 'if(!1){']] },
+  'no-forget-on-removal': { file: 'main', arms: ['navigate'], why: 'removing a hidden view flips throttling back but KEEPS its lease entry: an action ≤ 600 ms after a navigation sees an "already unthrottled" lease, does not re-flip, and runs throttled (S2-F3 must-FAIL)',
+    edits: [[new RegExp(`(catch\\{\\})${ID}\\.forget\\((${ID})\\),(${ID})\\.delete\\(\\2\\),(${ID})\\.delete\\(\\2\\)\\}`), '$1$3.delete($2),$4.delete($2)}']] },
   'no-surface': { file: 'main', arms: ['never'], why: 'a never-composited tab is not surfaced under the cover: it has no frame and takes no input (P6 must-FAIL)',
     edits: [[new RegExp(`${ID}\\.act==="surface-then-lease"&&await ${ID}\\(${ID},${ID}\\);`), '']] },
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
     edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
-const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_NAV = Number(flag('--runs-nav', '24')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
+const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_OFF = Number(flag('--runs-off', '20')), RUNS_NAV = Number(flag('--runs-nav', '36')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
 const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -625,6 +627,10 @@ async function oneRun(ctx, kind, W, id, runNo, ep, fast = false) {
   await raw.callOn(sid, 'Input.insertText', { text: 'hello' });
   let landed = null; for (let i = 0; i < 60 && landed === null; i++) { const [m, v] = await o.eval('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') landed = Date.now() - tIn; else await sleep(20); }
   const miss = landed === null || landed > 700 ? await o.eval('[__hd.mouse() - ' + m0 + ', __hd.value(), document.activeElement && document.activeElement.id, document.visibilityState, __hd.ticks()]').catch((e) => String(e)) : null; // evidence for a P2 miss: did the click land, was the text typed, who had focus
+  // P2c: the flip is REAL — a page's 50 ms timer ticks ≥ 8 times in the second a proxy command is running on it (a throttled page ticks ≈ 1/s): deterministic, unlike P2b
+  S('live-timers');
+  const live = await raw.callOn(sid, 'Runtime.evaluate', { expression: '(async () => { const a = __hd.ticks(); await new Promise((r) => setTimeout(r, 1000)); return __hd.ticks() - a; })()', awaitPromise: true, returnByValue: true }, 8000);
+  const liveTicks = live.result?.result?.value ?? null;
   // P2b: a page effect that needs a TIMER (150 ms) must be on screen 450 ms later — the lease keeps the page unthrottled for the action; a throttled page fires it up to 1 s late
   S('timer-effect');
   const want2 = PALETTE[(runNo + 5) % PALETTE.length], want2Hex = want2.map((v) => v.toString(16).padStart(2, '0')).join('');
@@ -639,7 +645,7 @@ async function oneRun(ctx, kind, W, id, runNo, ep, fast = false) {
   // P3: the view is throttled again 2 s after the last action: tick rate over the next second
   await sleep(Math.max(0, tEnd + 2000 - Date.now())); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const b = await o.eval('__hd.ticks()'); const rate = +(((b - a) / ((Date.now() - ta) / 1000))).toFixed(1);
   o.close();
-  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss, timerEffect };
+  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss, timerEffect, liveTicks };
 }
 
 function judgeRuns(arm, label, runs) {
@@ -653,6 +659,7 @@ function judgeRuns(arm, label, runs) {
     clause(arm, `${label}/${kind}/P1-within-2s`, Math.max(...allMs) <= 2000, `slowest screenshot ${Math.max(...allMs)} ms after the action began (first form: median ${median(first)} / p95 ${pct(first, 0.95)} ms)`);
     clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} ms)${rs.filter((r) => r.landed === null || r.landed > 700).map((r) => ` · MISS run#${r.runNo} id${r.id} landed=${r.landed} shots=${r.shots.map((x) => `${x.name}:${x.ms}ms`).join(',')} state(clicks,value,focus,vis,ticks)=${JSON.stringify(r.miss)}`).join('')}`);
     clause(arm, `${label}/${kind}/P2b-timer-driven-page-effect-visible-during-the-action`, rs.length >= 20 && rs.every((r) => r.timerEffect?.fresh), `${rs.filter((r) => r.timerEffect?.fresh).length}/${rs.length} runs: a 150 ms page timer's colour change is in a screenshot 450 ms later (a throttled page fires it up to 1 s late)${rs.filter((r) => !r.timerEffect?.fresh).slice(0, 3).map((r) => ` · run#${r.runNo} got ${JSON.stringify(r.timerEffect?.color)} want ${r.timerEffect?.want}`).join('')}`);
+    clause(arm, `${label}/${kind}/P2c-page-timers-run-while-the-action-runs`, rs.length >= 20 && rs.every((r) => r.liveTicks !== null && r.liveTicks >= 8), `ticks of the page's 50 ms timer in the second a proxy command ran on it: min ${Math.min(...rs.map((r) => r.liveTicks ?? -1))}, median ${median(rs.map((r) => r.liveTicks))} (≥ 8 = unthrottled during the action; a throttled page ticks ≈ 1)`);
     clause(arm, `${label}/${kind}/P3-throttled-again-within-2s`, rs.every((r) => r.timersPerS <= 2), `timers/s in the second after +2 s: max ${Math.max(...rs.map((r) => r.timersPerS))} over ${rs.length} runs (limit 2)`);
     clause(arm, `${label}/${kind}/P4-the-humans-view-never-changes`, rs.every((r) => r.human) && Math.max(...rs.map((r) => r.leak.max)) <= 0.002, `${rs.filter((r) => r.human).length}/${rs.length} runs: same active tab, no notice, same focus; compositor leak (excess over the pane's own baseline ${(Math.max(...rs.map((r) => r.leak.base)) * 100).toFixed(2)} %) max ${(Math.max(...rs.map((r) => r.leak.max)) * 100).toFixed(2)} % of the pane over ${rs.reduce((s, r) => s + r.leak.samples, 0)} samples${rs.find((r) => !r.human) ? ' — ' + rs.find((r) => !r.human).humanDetail : ''}`);
   }
@@ -834,62 +841,78 @@ const ARM_FNS = {
     await openPane(ctx);
   },
 
-  /** The Orchestra window on a sway workspace that is NOT displayed (the human is on another desktop): does the main renderer's rAF stall (the cheap "nothing paints" signal), and what does an agent action do? Needs the act arm's population. */
+  /** The Orchestra window on a sway workspace that is NOT displayed (the human is on another desktop — the usual state while agents work): ≥ RUNS_OFF runs of a displayed control, then the same actions with the desktop away.
+   *  Refused fast with the reason (click / type / wheel / screenshot), evaluate still works, and the driven view is back to ≤ 2 timers/s at linger + 5 s (measured THERE), plus one run held for 36 s. Needs the act arm's population. */
   async offscreen(ctx) {
     const A = 'offscreen';
     if (!ctx.ids) throw new Error('the offscreen arm needs the act arm\'s population');
-    const rafProbe = () => ctx.ui.eval(`new Promise((res) => { const t0 = performance.now(); const to = setTimeout(() => res({ ok: false, ms: Math.round(performance.now() - t0) }), 600); requestAnimationFrame(() => { clearTimeout(to); res({ ok: true, ms: Math.round(performance.now() - t0) }); }); })`);
     const focusedWs = () => (JSON.parse(sh('swaymsg', ['-t', 'get_workspaces'])).find((w) => w.focused) ?? {}).name;
     const home = focusedWs();
-    const series = async (n) => { const out = []; for (let i = 0; i < n; i++) { out.push(await rafProbe()); await sleep(120); } return out; };
-    const show = (a) => a.map((x) => (x.ok ? `ok ${x.ms}ms` : 'STALL')).join(', ');
-    const d1 = await series(6);
-    clause(A, 'ctl/displayed-window-paints-rAF-answers', d1.every((x) => x.ok && x.ms < 150), `${show(d1)} (workspace ${JSON.stringify(home)})`);
-    sh('swaymsg', ['workspace', 'number', '2']); const tSwitch = Date.now();
-    const early = await series(8); // the stall takes ≈ 1-1.5 s to show: print when it does
-    const firstStall = early.findIndex((x) => !x.ok);
-    await sleep(Math.max(0, tSwitch + 2500 - Date.now()));
-    const off = await series(6);
-    console.log(`  [info] ${A}: rAF in the app's own renderer, workspace ${JSON.stringify(focusedWs())} displayed and the app's not — the first ${early.length} probes after the switch (≈ ${Math.round(early.reduce((t, x) => t + x.ms + 120, 0))} ms) ${firstStall >= 0 ? `stall from #${firstStall + 1}` : 'all still answered'}; 2.5 s on: ${show(off)} (NOT the gate: it kept answering on an undisplayed desktop after some arms — the gate is a 1x1 capturePage of the app window)`);
-    sh('swaymsg', ['workspace', home]); await sleep(700);
-    const d2 = await series(6);
-    clause(A, 'ctl/displayed-again-rAF-answers', d2.every((x) => x.ok && x.ms < 150), show(d2));
-    // ── what an agent action does while the window is on an undisplayed desktop (P3/P7 + the refusal the ruling keeps) ──
-    const W = ctx.W1, id = ctx.ids[W.id][3];
-    const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
-    const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
-    const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
-    const timed = async (method, params) => { const t0 = Date.now(); const r = await Promise.race([raw.callOn(sid, method, params), sleep(6000).then(() => ({ error: { message: 'NO ANSWER in 6 s' } }))]); return { ms: Date.now() - t0, err: r.error?.message ?? null }; };
+    const away = () => sh('swaymsg', ['workspace', 'number', '2']);
+    const back = async () => { sh('swaymsg', ['workspace', home]); await sleep(800); };
     const wheel = { type: 'mouseWheel', x: 320, y: 218, deltaX: 0, deltaY: 100 };
-    const okC = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })];
-    clause(A, 'ctl/displayed-window-wheel-and-screenshot-work', okC.every((r) => !r.err && r.ms < 3000), `wheel ${okC[0].ms} ms ${okC[0].err ?? 'ok'} · screenshot ${okC[1].ms} ms ${okC[1].err ?? 'ok'}`);
-    await sleep(1500); // the displayed series' lease lingers out
-    sh('swaymsg', ['workspace', 'number', '2']); await sleep(2500); // past the ≈ 1 s the stall needs to show
-    { // DIAGNOSTIC (kept as [info] lines): what sway and the app say about the window while the desktop is away, and which captures still answer
+    const openRaw = async (W, id) => {
+      const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
+      const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
+      const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+      const timed = async (method, params) => { const t0 = Date.now(); const r = await Promise.race([raw.callOn(sid, method, params), sleep(6000).then(() => ({ error: { message: 'NO ANSWER in 6 s' } }))]); return { ms: Date.now() - t0, err: r.error?.message ?? null }; };
+      return { raw, timed };
+    };
+    const rateOf = async (id) => { const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const r = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close(); return r; };
+    { // DIAGNOSTIC (an [info] line): what sway says about the window while the desktop is away
+      away(); await sleep(300);
       const tree = JSON.parse(sh('swaymsg', ['-t', 'get_tree']));
-      const walk = (n, ws) => { const w = n.type === 'workspace' ? n.name : ws; if (n.pid === ctx.app.pid && !(n.nodes || []).length) return { ws: w, visible: n.visible, focused: n.focused, floating: n.type === 'floating_con', sticky: n.sticky, app_id: n.app_id }; for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) { const r = walk(c, w); if (r) return r; } return null; };
-      const win = walk(tree, null); const wss = JSON.parse(sh('swaymsg', ['-t', 'get_workspaces'])).map((w) => `${w.name}${w.visible ? '*visible' : ''}${w.focused ? '*focused' : ''}`);
-      const uiState = await ctx.ui.eval('({ vis: document.visibilityState, focus: document.hasFocus() })');
-      const uiCap = await Promise.race([ctx.ui.send('Page.captureScreenshot', { format: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }).then(() => 'answers', (e) => `error ${String(e).slice(0, 40)}`), sleep(3000).then(() => 'HANGS (3 s)')]);
-      const t = await (async () => { const raw = await rawProxyClient(ctx.ep[W.id].wsUrl); const ti = await raw.call('Target.getTargets'); const act = ti.result.targetInfos.find((x) => idOf(x.url) !== id && /hidden-drive/.test(x.url)); raw.close(); return act; })();
-      console.log(`  [info] ${A}: window while away — sway ${JSON.stringify(win)}; workspaces ${wss.join(' ')}; app page ${JSON.stringify(uiState)}; app UI Page.captureScreenshot ${uiCap}`);
+      const walk = (n, ws) => { const w = n.type === 'workspace' ? n.name : ws; if (n.pid === ctx.app.pid && !(n.nodes || []).length) return { ws: w, visible: n.visible }; for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) { const r = walk(c, w); if (r) return r; } return null; };
+      console.log(`  [info] ${A}: desktop ${JSON.stringify(focusedWs())} displayed — sway says the app window is ${JSON.stringify(walk(tree, null))} (the gate asks sway for exactly this)`);
+      await back();
     }
-    const offR = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Page.captureScreenshot', { format: 'png' })];
-    clause(A, 'undisplayed-window-wheel-click-screenshot-refused-fast-with-the-reason', offR.every((r) => r.err && /not displayed/.test(r.err) && r.ms <= 800), `wheel ${offR[0].ms} ms · click ${offR[1].ms} ms · screenshot ${offR[2].ms} ms: ${offR.map((r) => JSON.stringify((r.err ?? 'no error').slice(0, 60))).join(' · ')}`);
-    const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });
-    clause(A, 'undisplayed-window-evaluate-still-works', !ev.err, `Runtime.evaluate → ${ev.err ?? 'ok'} in ${ev.ms} ms`);
-    raw.close();
-    const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
-    await sleep(8000); // P3/P7: the page must be throttled again although the client acted on an undisplayed window
-    const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const rate = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close();
-    clause(A, 'undisplayed-window-no-view-left-unthrottled-8s-after-the-client-left', rate <= 2, `timers/s of the driven hidden page 8 s after the client closed: ${rate} (limit 2)`);
-    sh('swaymsg', ['workspace', home]); await sleep(1200);
-    const back = await rawProxyClient(ctx.ep[W.id].wsUrl);
-    const tid3 = (await back.call('Target.getTargets')).result.targetInfos.find((x) => idOf(x.url) === id).targetId;
-    const sid3 = (await back.call('Target.attachToTarget', { targetId: tid3, flatten: true })).result.sessionId;
-    const again = await back.callOn(sid3, 'Page.captureScreenshot', { format: 'png' });
-    clause(A, 'ctl/displayed-again-screenshot-works', !!again.result?.data, `screenshot after returning to workspace ${JSON.stringify(home)}: ${again.result?.data ? 'an image' : again.error?.message}`);
-    back.close();
+    const rows = [];
+    for (let i = 0; i < RUNS_OFF; i++) {
+      const kind = i % 2 ? 'workspace' : 'tab';
+      const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
+      const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
+      const id = pool[Math.floor(i / 2) % pool.length];
+      const { raw, timed } = await openRaw(W, id);
+      const ctl = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })]; // the window IS displayed: both work
+      await sleep(1500); // the control's lease has lingered out and its unpin capture has finished: the desktop switch below hits no capture in flight (that race is measured separately, below)
+      away(); await sleep(300);
+      const off = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Input.insertText', { text: 'a' }), await timed('Page.captureScreenshot', { format: 'png' })];
+      const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });
+      raw.close(); const tClose = Date.now();
+      await sleep(Math.max(0, tClose + 5600 - Date.now())); // linger 0.6 s + 5 s, measured with the desktop STILL away
+      const rate = await rateOf(id);
+      await back();
+      rows.push({ kind, id, ctl, off, ev, rate });
+    }
+    const n = rows.length, show = (f) => rows.map(f).join(', ');
+    clause(A, 'ctl/displayed-window-wheel-and-screenshot-work', n >= 20 && rows.every((r) => r.ctl.every((x) => !x.err && x.ms < 3000)), `${n} runs (tab/workspace alternating): wheel median ${median(rows.map((r) => r.ctl[0].ms))} ms · screenshot median ${median(rows.map((r) => r.ctl[1].ms))} ms; failures ${rows.filter((r) => r.ctl.some((x) => x.err)).length}`);
+    clause(A, 'undisplayed-window-wheel-click-type-screenshot-refused-fast-with-the-reason', n >= 20 && rows.every((r) => r.off.every((x) => x.err && /not displayed/.test(x.err) && x.ms <= 800)), `${n} runs × 4 actions: slowest ${Math.max(...rows.flatMap((r) => r.off.map((x) => x.ms)))} ms, median ${median(rows.flatMap((r) => r.off.map((x) => x.ms)))} ms; not refused-with-reason: ${rows.flatMap((r) => r.off).filter((x) => !(x.err && /not displayed/.test(x.err))).length}${(() => { const w = rows.find((r) => r.off.some((x) => !(x.err && /not displayed/.test(x.err)))); return w ? ` · e.g. run on ${w.kind}: ${['mouseWheel', 'mousePressed', 'insertText', 'captureScreenshot'].map((m, k) => `${m} ${w.off[k].ms} ms ${JSON.stringify((w.off[k].err ?? 'no error').slice(0, 40))}`).join(' | ')}` : ''; })()}`);
+    clause(A, 'undisplayed-window-evaluate-still-works', n >= 20 && rows.every((r) => !r.ev.err), `${rows.filter((r) => !r.ev.err).length}/${n} Runtime.evaluate answered (median ${median(rows.map((r) => r.ev.ms))} ms)`);
+    clause(A, 'undisplayed-window-no-driven-view-left-unthrottled-at-linger-plus-5s', n >= 20 && rows.every((r) => r.rate <= 2), `timers/s of the driven hidden page 5.6 s after the client closed, desktop still away: ${show((r) => r.rate)} (limit 2)`);
+    { // the long hold seat 2 measured (~36 s): one run, the desktop away the whole time
+      const W = ctx.W1, id = ctx.ids[W.id][5]; const { raw, timed } = await openRaw(W, id);
+      away(); await sleep(300);
+      const r1 = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })];
+      raw.close(); await sleep(36000);
+      const rate = await rateOf(id); await back();
+      clause(A, 'undisplayed-window-driven-view-still-throttled-36s-after', r1.every((x) => x.err && /not displayed/.test(x.err)) && rate <= 2, `actions refused (${r1.map((x) => x.ms + ' ms').join(', ')}); timers/s 36 s later with the desktop away: ${rate} (limit 2)`);
+    }
+    { // RESIDUAL, measured and reported (not a pass criterion): the human switches desktop while the lease's own capture is IN FLIGHT. A capture that has started cannot be cancelled and holds its page shown until the window is displayed again.
+      const offsets = [0, 150, 300, 450, 600, 700, 800, 900, 1100, 1300], race = [];
+      for (const [k, off] of offsets.entries()) {
+        const W = ctx.W1, id = ctx.ids[W.id][k % 7]; const { raw, timed } = await openRaw(W, id);
+        await timed('Input.dispatchMouseEvent', wheel); const shot = timed('Page.captureScreenshot', { format: 'png' }); await shot; raw.close();
+        await sleep(off); away(); await sleep(5600);
+        const stuck = await rateOf(id); await back(); await sleep(3500);
+        const healed = await rateOf(id);
+        race.push({ off, stuck, healed });
+      }
+      console.log(`  [info] ${A}: RESIDUAL — a desktop switch ${offsets.join('/')} ms after a displayed action: still unthrottled at +5.6 s in ${race.filter((r) => r.stuck > 2).length}/${race.length} (${race.map((r) => `${r.off}:${r.stuck}`).join(' ')} timers/s)`);
+      clause(A, 'residual-a-view-pinned-by-a-capture-in-flight-heals-when-the-window-is-displayed-again', race.every((r) => r.healed <= 2), `3.5 s after the desktop was displayed again: ${race.map((r) => `${r.off}:${r.healed}`).join(' ')} timers/s (limit 2)`);
+    }
+    const W = ctx.W1, id = ctx.ids[W.id][3]; const { raw, timed } = await openRaw(W, id);
+    const again = await timed('Page.captureScreenshot', { format: 'png' }); raw.close();
+    clause(A, 'ctl/displayed-again-screenshot-works', !again.err, `screenshot after returning to workspace ${JSON.stringify(home)}: ${again.err ?? 'an image'} in ${again.ms} ms`);
   },
 
   /** F2: the cover (the human's visible tab) leaves the screen while a never-composited tab is being painted under it: the pulse must not show in the vacated pane. */
@@ -940,7 +963,7 @@ const ARM_FNS = {
       const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
       const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
       const id = pool[Math.floor(i / 2) % pool.length];
-      const mode = ['shot', 'bare', 'slow', 'bare'][Math.floor(i / 2) % 4]; // bare = navigate ONLY (a screenshot afterwards takes a second lease whose flip-back would hide a forgotten first one); slow = the new page's load is held 1.2 s
+      const mode = ['shot', 'bare', 'slow', 'bare', 'again', 'bare'][Math.floor(i / 2) % 6]; // bare = navigate ONLY (a screenshot afterwards takes a second lease whose flip-back would hide a forgotten first one); slow = the new page's load is held 1.2 s
       const bare = mode === 'bare';
       const want = PALETTE[(i + 3) % PALETTE.length], hex = want.map((v) => v.toString(16).padStart(2, '0')).join('');
       const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
@@ -949,7 +972,13 @@ const ARM_FNS = {
       const t0 = Date.now();
       const nav = await raw.callOn(sid, 'Page.navigate', { url: hdUrl(ctx, id, hex) + (mode === 'slow' ? '&slow=1200' : '') });
       if (NAV_GAP) await sleep(NAV_GAP); // diagnostic: let the new document finish loading before the screenshot
-      const shot = bare ? { result: null, error: null } : await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); const ms = Date.now() - t0;
+      let againTicks = null;
+      if (mode === 'again') { // an action ≤ 600 ms after the navigation (the first lease is still lingering): removeView must have FORGOTTEN it so this one re-flips and runs unthrottled
+        await sleep(300);
+        const ev = await raw.callOn(sid, 'Runtime.evaluate', { expression: `(async () => { while (!window.__hd || !location.search.includes('c=${hex}')) await new Promise((r) => setTimeout(r, 20)); const a = __hd.ticks(); await new Promise((r) => setTimeout(r, 1000)); return __hd.ticks() - a; })()`, awaitPromise: true, returnByValue: true }, 8000);
+        againTicks = ev.result?.result?.value ?? null;
+      }
+      const shot = bare || mode === 'again' ? { result: null, error: null } : await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); const ms = Date.now() - t0;
       let fresh = false, color = null;
       if (shot.result?.data) { try { const I = decodePng(Buffer.from(shot.result.data, 'base64')); color = blockColor(I, I.w >> 1, I.h >> 1, 8); fresh = near(color, want, 14); } catch { /* not a png */ } }
       let big = null;
@@ -958,10 +987,12 @@ const ARM_FNS = {
       await sleep(Math.max(0, tEnd + 3200 - Date.now())); // linger + the sweep + the unpin capture, then measure
       const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
       const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const rate = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close();
-      runs.push({ kind, id, bare, mode, fresh, color, want: hex, ms, rate, navErr: nav.error?.message ?? null, shotErr: shot.error?.message ?? null, big });
+      runs.push({ kind, id, bare, mode, againTicks, fresh, color, want: hex, ms, rate, navErr: nav.error?.message ?? null, shotErr: shot.error?.message ?? null, big });
     }
     const shots = runs.filter((r) => r.mode === 'shot'), slows = runs.filter((r) => r.mode === 'slow'), bares = runs.filter((r) => r.bare);
     const detail = (rs) => `${rs.filter((r) => r.fresh).length}/${rs.length} fresh (slowest ${Math.max(...rs.map((r) => r.ms))} ms, median ${median(rs.map((r) => r.ms))} ms)${rs.filter((r) => !r.fresh).slice(0, 3).map((r) => ` · ${r.kind} id${r.id} got ${JSON.stringify(r.color)} want ${r.want} ${r.shotErr ?? r.navErr ?? ''}`).join('')}`;
+    const agains = runs.filter((r) => r.mode === 'again');
+    clause(A, 'P3n-an-action-right-after-a-navigation-runs-unthrottled-the-lease-was-forgotten-and-re-flips', agains.length >= 5 && agains.every((r) => r.againTicks !== null && r.againTicks >= 8), `${agains.length} runs: ticks of the NEW document's 50 ms timer in the second an action ran ≈ 300 ms after the navigation: ${agains.map((r) => r.againTicks).join(', ')} (≥ 8 = unthrottled; a stale lease that is not re-flipped ticks ≈ 1)`);
     clause(A, 'P1n-screenshot-right-after-a-navigation-is-fresh', shots.length >= 5 && shots.every((r) => r.fresh && r.ms <= 4000), `Page.navigate then Page.captureScreenshot on a hidden tab shows the NEW page: ${detail(shots)}`);
     clause(A, 'P1n-screenshot-of-a-page-still-loading-is-fresh', slows.length >= 5 && slows.every((r) => r.fresh && r.ms <= 4000), `the new page's load is held 1.2 s (an image that loads late): ${detail(slows)}`);
     clause(A, 'P7n-throttled-again-after-a-BARE-navigation-under-a-lease', bares.length >= 10 && bares.every((r) => r.rate <= 2), `${bares.length} runs of \`Page.navigate\` and nothing else (no second lease to hide a forgotten first one): timers/s of the new document 3.2 s later: ${bares.map((r) => r.rate).join(', ')} (limit 2)`);
