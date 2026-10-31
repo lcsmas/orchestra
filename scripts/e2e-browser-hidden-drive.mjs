@@ -39,7 +39,7 @@ const MUTANTS = {
   'no-flip-back': { file: 'main', arms: ['act', 'orphan'], why: 'the lease end / sweep never turns backgroundThrottling back ON (P3 + P7 must-FAIL)',
     edits: [[new RegExp(`(forcing the flip-back\`\\);const ${ID}=${ID}\\(${ID}\\);if\\(${ID}\\)\\{)try\\{${ID}\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '$1']] },
   'no-unpin': { file: 'main', arms: ['act'], why: 'the lease end flips back but takes no unpin capture: the page a capture pinned unthrottled stays unthrottled (P3)',
-    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(\\)\\.then\\(async ${ID}=>\\{${ID}&&\\(await ${ID}\\(${ID}\\),${ID}\\.isHeld\\(${ID}\\)&&${ID}\\.add\\(${ID}\\)\\)\\}\\)\\}else`), '$1}else']] },
+    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(\\)\\.then\\(async ${ID}=>\\{if\\(!${ID}\\)\\{${ID}\\.set\\(${ID},${ID}\\),${ID}\\(\\);return\\}await ${ID}\\(${ID}\\),${ID}\\.isHeld\\(${ID}\\)&&${ID}\\.add\\(${ID}\\)\\}\\)\\}else`), '$1}else']] },
   'no-lease-end-no-watchdog': { file: 'main', arms: ['orphan'], why: 'a lease is never released by its end() and the watchdog never force-releases an orphan: a killed action leaves the view unthrottled (P7 must-FAIL)',
     edits: [[new RegExp(`end:\\(\\)=>\\{${ID}\\|\\|\\(${ID}=!0,${ID}\\.release\\(${ID},Date\\.now\\(\\)\\),${ID}\\(\\)\\)\\}`), 'end:()=>{}'],
       [new RegExp(`(${ID})\\.holders>0&&(${ID})-\\1\\.touchedAt>=${ID}\\?`), '!1?']] },
@@ -57,7 +57,7 @@ const MUTANTS = {
   'no-cover-abort': { file: 'main', arms: ['cover'], why: 'a pulse is not aborted when its cover leaves the screen: the pulsing page shows in the vacated pane (F2 must-FAIL)',
     edits: [[new RegExp(`if\\(!\\((${ID})\\.cover!==e\\|\\|\\1\\.aborted\\)\\)\\{`), 'if(!1){']] },
   'no-forget-on-removal': { file: 'main', arms: ['navigate'], why: 'removing a hidden view flips throttling back but KEEPS its lease entry: an action ≤ 600 ms after a navigation sees an "already unthrottled" lease, does not re-flip, and runs throttled (S2-F3 must-FAIL)',
-    edits: [[new RegExp(`(catch\\{\\})${ID}\\.forget\\((${ID})\\),(${ID})\\.delete\\(\\2\\),(${ID})\\.delete\\(\\2\\)\\}`), '$1$3.delete($2),$4.delete($2)}']] },
+    edits: [[new RegExp(`(catch\\{\\})${ID}\\.forget\\((${ID})\\),(${ID})\\.delete\\(\\2\\),(${ID})\\.delete\\(\\2\\),(${ID})\\.delete\\(\\2\\)\\}`), '$1$3.delete($2),$4.delete($2),$5.delete($2)}']] },
   'no-surface': { file: 'main', arms: ['never'], why: 'a never-composited tab is not surfaced under the cover: it has no frame and takes no input (P6 must-FAIL)',
     edits: [[new RegExp(`${ID}\\.act==="surface-then-lease"&&await ${ID}\\(${ID},${ID}\\);`), '']] },
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
@@ -621,11 +621,11 @@ async function oneRun(ctx, kind, W, id, runNo, ep, fast = false) {
   if (fast) { raw.close(); o.close(); return { kind, id, runNo, t: Date.now(), shots }; }
   // click + type (CDP Input.* through the proxy)
   S('click-type');
-  const m0 = await o.eval('__hd.mouse()'); const tIn = Date.now();
-  await raw.callOn(sid, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 });
-  await raw.callOn(sid, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 320, y: 218, button: 'left', clickCount: 1 });
-  await raw.callOn(sid, 'Input.insertText', { text: 'hello' });
-  let landed = null; for (let i = 0; i < 60 && landed === null; i++) { const [m, v] = await o.eval('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') landed = Date.now() - tIn; else await sleep(20); }
+  const m0 = await o.eval('__hd.mouse()'); const tIn = Date.now(); const ph = [], polls = []; // ph = ms since the action began at the end of press / release / insertText; polls = how long each eval round trip took (where a slow P2 run spent its time)
+  await raw.callOn(sid, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }); ph.push(Date.now() - tIn);
+  await raw.callOn(sid, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 320, y: 218, button: 'left', clickCount: 1 }); ph.push(Date.now() - tIn);
+  await raw.callOn(sid, 'Input.insertText', { text: 'hello' }); ph.push(Date.now() - tIn);
+  let landed = null; for (let i = 0; i < 60 && landed === null; i++) { const p0 = Date.now(); const [m, v] = await o.eval('[__hd.mouse(), __hd.value()]'); polls.push(Date.now() - p0); if (m > m0 && v === 'hello') landed = Date.now() - tIn; else await sleep(20); }
   const miss = landed === null || landed > 700 ? await o.eval('[__hd.mouse() - ' + m0 + ', __hd.value(), document.activeElement && document.activeElement.id, document.visibilityState, __hd.ticks()]').catch((e) => String(e)) : null; // evidence for a P2 miss: did the click land, was the text typed, who had focus
   // P2c: the flip is REAL — a page's 50 ms timer ticks ≥ 8 times in the second a proxy command is running on it (a throttled page ticks ≈ 1/s): deterministic, unlike P2b
   S('live-timers');
@@ -645,7 +645,7 @@ async function oneRun(ctx, kind, W, id, runNo, ep, fast = false) {
   // P3: the view is throttled again 2 s after the last action: tick rate over the next second
   await sleep(Math.max(0, tEnd + 2000 - Date.now())); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const b = await o.eval('__hd.ticks()'); const rate = +(((b - a) / ((Date.now() - ta) / 1000))).toFixed(1);
   o.close();
-  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss, timerEffect, liveTicks };
+  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss, timerEffect, liveTicks, phases: { ph, polls } };
 }
 
 function judgeRuns(arm, label, runs) {
@@ -657,7 +657,7 @@ function judgeRuns(arm, label, runs) {
     const first = rs.map((r) => r.shots[0].ms), allMs = rs.flatMap((r) => r.shots.map((s) => s.ms));
     clause(arm, `${label}/${kind}/P1-first-screenshot-fresh-all-forms`, rs.length >= 20 && stale.length === 0, `${rs.length} runs × 3 forms (${forms.join(', ')}): ${stale.length} stale/failed ${stale.slice(0, 6).map((s) => `${s.name}:${s.error ?? JSON.stringify(s.color)}@run#${s.run}/id${s.id}/shot${s.idx}/${s.ms}ms/${s.at}`).join(' ')}; every form fresh in every run`);
     clause(arm, `${label}/${kind}/P1-within-2s`, Math.max(...allMs) <= 2000, `slowest screenshot ${Math.max(...allMs)} ms after the action began (first form: median ${median(first)} / p95 ${pct(first, 0.95)} ms)`);
-    clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} ms)${rs.filter((r) => r.landed === null || r.landed > 700).map((r) => ` · MISS run#${r.runNo} id${r.id} landed=${r.landed} shots=${r.shots.map((x) => `${x.name}:${x.ms}ms`).join(',')} state(clicks,value,focus,vis,ticks)=${JSON.stringify(r.miss)}`).join('')}`);
+    clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} p95 ${pct(rs.map((r) => r.landed), 0.95)} max ${Math.max(...rs.map((r) => r.landed ?? Infinity))} ms)${rs.filter((r) => r.landed === null || r.landed > 700).map((r) => ` · MISS run#${r.runNo} id${r.id} landed=${r.landed} shots=${r.shots.map((x) => `${x.name}:${x.ms}ms`).join(',')} state(clicks,value,focus,vis,ticks)=${JSON.stringify(r.miss)} phases(press,release,insert end ms; eval round trips ms)=${JSON.stringify(r.phases)}`).join('')}`);
     clause(arm, `${label}/${kind}/P2b-timer-driven-page-effect-visible-during-the-action`, rs.length >= 20 && rs.every((r) => r.timerEffect?.fresh), `${rs.filter((r) => r.timerEffect?.fresh).length}/${rs.length} runs: a 150 ms page timer's colour change is in a screenshot 450 ms later (a throttled page fires it up to 1 s late)${rs.filter((r) => !r.timerEffect?.fresh).slice(0, 3).map((r) => ` · run#${r.runNo} got ${JSON.stringify(r.timerEffect?.color)} want ${r.timerEffect?.want}`).join('')}`);
     clause(arm, `${label}/${kind}/P2c-page-timers-run-while-the-action-runs`, rs.length >= 20 && rs.every((r) => r.liveTicks !== null && r.liveTicks >= 8), `ticks of the page's 50 ms timer in the second a proxy command ran on it: min ${Math.min(...rs.map((r) => r.liveTicks ?? -1))}, median ${median(rs.map((r) => r.liveTicks))} (≥ 8 = unthrottled during the action; a throttled page ticks ≈ 1)`);
     clause(arm, `${label}/${kind}/P3-throttled-again-within-2s`, rs.every((r) => r.timersPerS <= 2), `timers/s in the second after +2 s: max ${Math.max(...rs.map((r) => r.timersPerS))} over ${rs.length} runs (limit 2)`);
