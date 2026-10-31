@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan'];
+const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan', 'navigate'];
 // Each edit is a regex over the MINIFIED main chunk (names captured, not hard-coded) and must match EXACTLY once. `arms` = the arms that must go RED.
 const ID = '[\\w$]+';
 const ACTIVATE_TAB = /function ([\w$]+)\(e,t\)\{const n=[\w$]+\(e\),r=n==null\?void 0:n\.tabs\.find\(s=>s\.id===t\);if\(!n\|\|!r\)throw new Error\(`browser tab \$\{t\} not found in workspace \$\{e\}`\);return [\w$]+\(n,r\),n\.state\}/;
@@ -39,19 +39,23 @@ const MUTANTS = {
   'no-flip-back': { file: 'main', arms: ['act', 'orphan'], why: 'the lease end / sweep never turns backgroundThrottling back ON (P3 + P7 must-FAIL)',
     edits: [[new RegExp(`(forcing the flip-back\`\\);const ${ID}=${ID}\\(${ID}\\);if\\(${ID}\\)\\{)try\\{${ID}\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '$1']] },
   'no-unpin': { file: 'main', arms: ['act'], why: 'the lease end flips back but takes no unpin capture: the page a capture pinned unthrottled stays unthrottled (P3)',
-    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(${ID}\\)\\}else`), '$1}else']] },
+    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(${ID}\\)\\.then\\(\\(\\)=>\\{${ID}\\.isHeld\\(${ID}\\)&&${ID}\\.add\\(${ID}\\)\\}\\)\\}else`), '$1}else']] },
   'no-lease-end-no-watchdog': { file: 'main', arms: ['orphan'], why: 'a lease is never released by its end() and the watchdog never force-releases an orphan: a killed action leaves the view unthrottled (P7 must-FAIL)',
     edits: [[new RegExp(`end:\\(\\)=>\\{${ID}\\|\\|\\(${ID}=!0,${ID}\\.release\\(${ID},Date\\.now\\(\\)\\),${ID}\\(\\)\\)\\}`), 'end:()=>{}'],
       [new RegExp(`(${ID})\\.holders>0&&(${ID})-\\1\\.touchedAt>=${ID}\\?`), '!1?']] },
   'switch-to-front': { file: 'main', arms: ['act'], why: 'the pre-#406 fallback: an action on a hidden tab makes it the active tab first — the human\'s view changes (P4 must-FAIL)',
     edits: [[new RegExp(`async function ${ID}\\((${ID}),${ID},${ID}\\)\\{var ${ID};const (${ID})=${ID}\\(\\1,${ID}\\),${ID}=${ID}\\(\\2\\);[^]{0,900}?if\\(${ID}\\.act==="direct"\\)return ${ID};`),
       (m, ws, tab, ...rest) => { const whole = rest[rest.length - 1]; const act = ACTIVATE_TAB.exec(whole)?.[1]; if (!act) throw new Error('activateTab not found in the chunk'); return `${m}try{${act}(${ws},${tab}.id)}catch{}`; }]] },
+  'no-nav-lease-end': { file: 'main', arms: ['navigate'], why: 'removing a hidden view (a navigation under a lease) forgets the lease without flipping throttling back ON: the new document stays unthrottled (P7n must-FAIL)',
+    edits: [[new RegExp(`if\\((${ID})\\.isHeld\\((${ID})\\)\\)try\\{\\((${ID})=${ID}\\(${ID}\\)\\)==null\\|\\|\\3\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '']] },
+  'no-load-settle': { file: 'main', arms: ['navigate'], why: 'a surfaced tab is hidden again while its document is still loading: hideView removes it and the screenshot finds no frame (P1n must-FAIL)',
+    edits: [[new RegExp(`;(Date\\.now\\(\\)<${ID}\\+${ID}&&${ID}\\(${ID}\\)&&\\(\\(${ID}=${ID}\\.isLoading\\)!=null&&${ID}\\.call\\(${ID}\\)\\|\\|Date\\.now\\(\\)-${ID}\\.stoppedAt<${ID}\\));\\)await`), ';!1;)await']] },
   'no-surface': { file: 'main', arms: ['never'], why: 'a never-composited tab is not surfaced under the cover: it has no frame and takes no input (P6 must-FAIL)',
     edits: [[new RegExp(`${ID}\\.act==="surface-then-lease"&&await ${ID}\\(${ID},${ID}\\);`), '']] },
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
     edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
-const KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
+const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_NAV = Number(flag('--runs-nav', '12')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
 const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -806,6 +810,40 @@ const ARM_FNS = {
     }
     clause(A, 'P6-no-cover-refused-fast-and-clearly', refused.every((r) => r.ms <= 500 && /has not been on screen since its page loaded/.test(r.msg)), `${refused.filter((r) => r.ms <= 500 && /has not been on screen/.test(r.msg)).length}/5 refused ≤ 500 ms (max ${Math.max(...refused.map((r) => r.ms))} ms): ${JSON.stringify(refused[0]?.msg.slice(0, 80))}`);
     await openPane(ctx);
+  },
+
+  /** A navigation under a lease (an agent clicks through / `Page.navigate`s a tab nobody looks at): the screenshot right after it is fresh, the page is throttled again afterwards (the lease dies with the view's place in the window), and a hidden FULL-PAGE capture is refused honestly. Needs the act arm's population. */
+  async navigate(ctx) {
+    const A = 'navigate';
+    if (!ctx.ids) throw new Error('the navigate arm needs the act arm\'s population');
+    const runs = [];
+    for (let i = 0; i < RUNS_NAV; i++) {
+      const kind = i % 2 ? 'workspace' : 'tab';
+      const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
+      const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
+      const id = pool[Math.floor(i / 2) % pool.length];
+      const want = PALETTE[(i + 3) % PALETTE.length], hex = want.map((v) => v.toString(16).padStart(2, '0')).join('');
+      const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
+      const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
+      const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+      const t0 = Date.now();
+      const nav = await raw.callOn(sid, 'Page.navigate', { url: hdUrl(ctx, id, hex) });
+      if (NAV_GAP) await sleep(NAV_GAP); // diagnostic: let the new document finish loading before the screenshot
+      const shot = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); const ms = Date.now() - t0;
+      let fresh = false, color = null;
+      if (shot.result?.data) { try { const I = decodePng(Buffer.from(shot.result.data, 'base64')); color = blockColor(I, I.w >> 1, I.h >> 1, 8); fresh = near(color, want, 14); } catch { /* not a png */ } }
+      let big = null;
+      if (i === 0) big = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 800, height: 9000, scale: 1 } });
+      const tEnd = Date.now(); raw.close();
+      await sleep(Math.max(0, tEnd + 3200 - Date.now())); // linger + the sweep + the unpin capture, then measure
+      const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
+      const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const rate = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close();
+      runs.push({ kind, id, fresh, color, want: hex, ms, rate, navErr: nav.error?.message ?? null, shotErr: shot.error?.message ?? null, big });
+    }
+    clause(A, 'P1n-screenshot-right-after-a-navigation-is-fresh', runs.length >= 10 && runs.every((r) => r.fresh && r.ms <= 4000), `${runs.filter((r) => r.fresh).length}/${runs.length} runs: Page.navigate then Page.captureScreenshot on a hidden tab shows the NEW page (slowest ${Math.max(...runs.map((r) => r.ms))} ms, median ${median(runs.map((r) => r.ms))} ms)${runs.filter((r) => !r.fresh).slice(0, 3).map((r) => ` · ${r.kind} id${r.id} got ${JSON.stringify(r.color)} want ${r.want} ${r.shotErr ?? r.navErr ?? ''}`).join('')}`);
+    clause(A, 'P7n-throttled-again-after-a-navigation-under-a-lease', runs.every((r) => r.rate <= 2), `timers/s of the new document 3.2 s after the last action: ${runs.map((r) => r.rate).join(', ')} (limit 2)`);
+    const big = runs[0]?.big;
+    clause(A, 'full-page-capture-of-a-hidden-tab-refused-honestly', !!big?.error && /not supported/.test(big.error.message) && /tab <ref>/.test(big.error.message), `captureBeyondViewport + a 9000 px clip → ${big?.error ? JSON.stringify(big.error.message.slice(0, 140)) : 'an image (silently cropped to the viewport)'}`);
   },
 
   /** P7: an action killed mid-flight leaves no view unthrottled longer than linger + 5 s */

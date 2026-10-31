@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  clipBeyondViewport,
   LINGER_MS, LeaseBook, NEEDS_FIRST_PAINT_MESSAGE, NO_FRAME_MESSAGE, WATCHDOG_MS, cropRect, decideTabAction,
 } from './browser-hidden-drive.ts';
 import type { TabFacts } from './browser-hidden-drive.ts';
@@ -102,4 +103,14 @@ test('cropRect: a CDP clip is clamped into the frame and scaled by the device pi
   assert.deepEqual(cropRect({ x: 10, y: 20, width: 100, height: 50 }, 1600, 1200, 2), { x: 20, y: 40, width: 200, height: 100 });
   assert.deepEqual(cropRect({ x: 700, y: 500, width: 500, height: 500 }, 800, 600), { x: 700, y: 500, width: 100, height: 100 }, 'clamped to the frame');
   assert.deepEqual(cropRect({ x: -50, y: -50, width: 100, height: 100 }, 800, 600), { x: 0, y: 0, width: 100, height: 100 });
+});
+
+test('clipBeyondViewport: only a captureBeyondViewport request whose clip exceeds the viewport is unsupported on a hidden view', () => {
+  const clip = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+  assert.equal(clipBeyondViewport({ captureBeyondViewport: true, clip: clip(0, 0, 800, 600) }, 800, 600), false, 'exactly the viewport');
+  assert.equal(clipBeyondViewport({ captureBeyondViewport: true, clip: clip(0, 0, 800, 3000) }, 800, 600), true, 'a full-page height');
+  assert.equal(clipBeyondViewport({ captureBeyondViewport: true, clip: clip(700, 0, 200, 100) }, 800, 600), true, 'overflowing to the right');
+  assert.equal(clipBeyondViewport({ clip: clip(0, 0, 800, 3000) }, 800, 600), false, 'without captureBeyondViewport the clip is clamped to the viewport by CDP itself');
+  assert.equal(clipBeyondViewport({ captureBeyondViewport: true }, 800, 600), false, 'no clip: the viewport');
+  assert.equal(clipBeyondViewport({ captureBeyondViewport: true, clip: clip(0, 0, 800.5, 600.5) }, 800, 600), false, 'sub-pixel rounding is not "beyond"');
 });

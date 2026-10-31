@@ -119,6 +119,8 @@ class CdpError extends Error {
 
 /** How often a running command renews its throttling lease (a client that vanished stops being served at the next beat). */
 export const LEASE_HEARTBEAT_MS = 1000;
+/** A command renews its lease at most this long: a hung one (a never-resolving `awaitPromise`) on a client that never disconnects (the host-owned daemon) must not hold a view unthrottled forever. */
+export const LEASE_MAX_MS = 120_000;
 const sessionGone = (): CdpError => new CdpError('Session with given id not found.', ERR_SERVER);
 
 interface TabState {
@@ -184,7 +186,9 @@ export class CdpProxyCore {
 
   private readonly trace: CdpTrace | undefined;
 
-  constructor(port: CdpPanelPort, opts: { nonce?: string; trace?: CdpTrace } = {}) {
+  private readonly leaseMaxMs: number;
+  constructor(port: CdpPanelPort, opts: { nonce?: string; trace?: CdpTrace; leaseMaxMs?: number } = {}) {
+    this.leaseMaxMs = opts.leaseMaxMs ?? LEASE_MAX_MS;
     this.port = port;
     this.trace = opts.trace;
     this.nonce = opts.nonce ?? randomBytes(8).toString('hex');
@@ -627,14 +631,19 @@ export class CdpProxyCore {
         } catch (e) {
           throw new CdpError(e instanceof Error ? e.message : String(e), ERR_SERVER);
         }
+        if (c?.closed) { // the client gave up while the lease was being taken (a surface pulse can take seconds): do not dispatch for nobody
+          lease.end();
+          throw new CdpError('Target closed.', ERR_SERVER);
+        }
       } else this.bringToFrontIfBackground(tabId);
     }
     // P7: while the command runs its lease is renewed; when the client that sent it disconnects the lease ends at the next beat (the watchdog behind it forces the flip-back).
     let beat: ReturnType<typeof setInterval> | null = null;
     if (lease) {
       const l = lease;
+      const t0 = Date.now();
       beat = setInterval(() => {
-        if (c?.closed) {
+        if (c?.closed || Date.now() - t0 >= this.leaseMaxMs) {
           if (beat) clearInterval(beat);
           l.end();
         } else l.touch?.();

@@ -146,6 +146,16 @@ function openShown(ws: string) {
   bp.setBounds(ws, RECT);
 }
 
+const nap = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Records the order of throttling flips and captures on a stub view (the pin: a capture taken while throttling is OFF leaves the page unthrottled, #406 P3). */
+function trace(wc: any): string[] {
+  const events: string[] = [];
+  wc.setBackgroundThrottling = (v: boolean) => events.push(`throttle:${v}`);
+  const real = wc.capturePage.bind(wc);
+  wc.capturePage = () => { events.push('capture'); return real(); };
+  return events;
+}
+
 test('ensurePanel creates exactly ONE human tab, active (no user-visible change)', () => {
   const ws = newWs();
   openShown(ws);
@@ -574,16 +584,26 @@ test('clickRef in a BACKGROUND workspace is driven in place (#406): the click la
   assert.equal(bp.isFocusedWorkspace(fg), true, 'the focused workspace is untouched');
 });
 
-test('a tab hidden while its page is STILL LOADING is taken out of the window (a document born hidden gets no frame), and the next agent action surfaces it (#406)', async () => {
+test('a tab hidden while its page is STILL LOADING is taken out of the window — even when it was shown long ago — and a settled one stays attached-hidden (#406)', async () => {
   const ws = newWs();
   openShown(ws);
   const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true }); // t2 on screen …
-  wcOf(t2).loadingNow = true; // … its document still loading …
+  (t2 as any).shownAt = 0; (t2 as any).stoppedAt = 0; // … long ago, so only `isLoading()` can decide below
+  wcOf(t2).loadingNow = true; // … its document loading again …
   bp.activateTab(ws, 't1'); // … and the human switches back before it paints
   assert.equal(children.has(viewOf(t2)), false, 'a loading document is NOT left attached-hidden');
   wcOf(t2).loadingNow = false;
   assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'the next agent action surfaces it under the visible tab and answers');
   assert.equal(children.has(viewOf(t2)) && viewOf(t2).visible === false, true, 'and leaves it attached + hidden');
+  // a tab that settled long ago is simply hidden, not removed (only the loading clause could have removed the first one)
+  const t3 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  (t3 as any).shownAt = 0; (t3 as any).stoppedAt = 0;
+  bp.activateTab(ws, 't1');
+  assert.equal(children.has(viewOf(t3)) && viewOf(t3).visible === false, true, 'a settled tab stays attached + hidden');
+  // and one shown a moment ago (no first paint yet) is removed even though it is not loading
+  const t4 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  bp.activateTab(ws, 't1');
+  assert.equal(children.has(viewOf(t4)), false, 'a tab hidden within FIRST_PAINT_MS of being shown is removed');
 });
 
 test('a hidden tab that starts a main-frame navigation is detached so the new document loads detached (born hidden = dead), and is surfaced on the next action (#406)', async () => {
@@ -591,25 +611,17 @@ test('a hidden tab that starts a main-frame navigation is detached so the new do
   openShown(ws);
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   await bp.capture(ws, 75, 't2'); // surfaced once: attached + hidden
+  await nap(900);
   assert.equal(children.has(viewOf(t2)), true);
   const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
-  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
-  assert.equal(children.has(viewOf(t2)), false, 'the navigation took the hidden view out of the window');
   for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: true });
-  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'surfaced again on the next action');
+  assert.equal(children.has(viewOf(t2)), true, 'a same-document navigation (pushState / hash) never detaches');
   for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: false, isSameDocument: false });
   assert.equal(children.has(viewOf(t2)), true, 'a sub-frame navigation never detaches');
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
+  assert.equal(children.has(viewOf(t2)), false, 'a main-frame navigation took the hidden view out of the window');
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'surfaced again on the next action');
 });
-
-const nap = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-/** Records the order of throttling flips and captures on a stub view (the pin: a capture taken while throttling is OFF leaves the page unthrottled, #406 P3). */
-function trace(wc: any): string[] {
-  const events: string[] = [];
-  wc.setBackgroundThrottling = (v: boolean) => events.push(`throttle:${v}`);
-  const real = wc.capturePage.bind(wc);
-  wc.capturePage = () => { events.push('capture'); return real(); };
-  return events;
-}
 
 test('a lease on a hidden tab flips throttling OFF around the action, and its end flips it back ON and THEN takes one discarded capture that unpins the page (#406 P3)', async () => {
   const ws = newWs();
@@ -680,12 +692,9 @@ test('a tab surfaced by THIS action needs no prime: its frame was just painted u
   wc.beginCalls = 0;
   wc.beginFrameSubscription = (_d: boolean, f: (x: unknown) => void) => { wc.beginCalls += 1; setTimeout(() => f(frame), 1); setTimeout(() => f(frame), 3); };
   assert.ok((await bp.capture(ws, 75, 't2')).length > 0);
-  assert.equal(wc.beginCalls, 1, 'one subscription: the surface pulse\'s — no prime + next-paint wait on top');
-  await nap(900);
-  assert.ok((await bp.capture(ws, 75, 't2')).length > 0); // inside the lease linger, but past nothing: still the surfaced tab
-  await nap(1700);
-  await bp.capture(ws, 75, 't2');
-  assert.ok(wc.beginCalls >= 2, 'a later screenshot (past the window) primes and waits again');
+  assert.equal(wc.beginCalls, 0, 'no frame subscription at all: the pulse polls capturePage, and there is no prime + next-paint wait on top');
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0); // a SECOND screenshot right away: the mark was single-use
+  assert.equal(wc.beginCalls, 1, 'the second screenshot primes and waits for its own paint, though it is inside the 1.5 s window');
   await nap(900);
 });
 
@@ -699,6 +708,95 @@ test('a lease for evaluate (no frame needed) flips throttling and takes NO captu
   (await bp.beginAgentAction(ws, 't2', 'other')).end();
   await nap(900);
   assert.deepEqual(events, ['throttle:false', 'throttle:true']);
+});
+
+test('a navigation under a LEASE ends the lease: removing the view flips throttling back ON (P7 — a forgotten lease would leave the page unthrottled for good)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const events = trace(wcOf(t2));
+  const lease = await bp.beginAgentAction(ws, 't2', 'other'); // e.g. the agent's Page.navigate / a click on a link
+  assert.deepEqual(events, ['throttle:false']);
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
+  assert.deepEqual(events, ['throttle:false', 'throttle:true'], 'the lease died with the view: throttling is back ON at once');
+  lease.end();
+  await nap(900);
+  assert.deepEqual(events, ['throttle:false', 'throttle:true'], 'and the later sweep finds nothing to flip again');
+});
+
+test('a screenshot right after a navigation (the document is still loading) waits for the load before hiding the surfaced tab again, and answers (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  wcOf(t2).loadingNow = true;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false }); // detached, loading
+  setTimeout(() => { wcOf(t2).loadingNow = false; (t2 as any).stoppedAt = Date.now(); }, 700); // the load ends mid-pulse
+  const shot = await bp.capture(ws, 75, 't2');
+  assert.ok(shot.length > 0, 'answered');
+  assert.equal(children.has(viewOf(t2)) && viewOf(t2).visible === false, true, 'and the tab is attached + hidden again, not removed while loading');
+  await nap(900);
+});
+
+test('an action that arrives during another action\'s surface pulse waits for it (the tab reads visible meanwhile) instead of deciding `direct` (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false }); // never composited → the next action pulses
+  const first = bp.capture(ws, 75, 't2');
+  await nap(120);
+  const t0 = Date.now();
+  const lease = await bp.beginAgentAction(ws, 't2', 'input');
+  const waited = Date.now() - t0;
+  assert.ok(waited >= 250, `the second action waited for the pulse to finish (${waited} ms)`);
+  assert.equal(viewOf(t2).visible, false, 'the pulse is over when it proceeds');
+  lease.end();
+  await first;
+  await nap(900);
+});
+
+test('two screenshots of one hidden tab never overlap (Electron has ONE frame subscriber per contents) (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const wc = wcOf(t2);
+  let live = 0, peak = 0;
+  const frame = { getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') };
+  wc.beginFrameSubscription = (_d: boolean, f: (x: unknown) => void) => { live++; peak = Math.max(peak, live); setTimeout(() => f(frame), 5); setTimeout(() => f(frame), 15); };
+  wc.endFrameSubscription = () => { live--; };
+  await Promise.all([bp.capture(ws, 75, 't2'), bp.capture(ws, 75, 't2')]);
+  assert.equal(peak, 1, `never two live frame subscriptions on one contents (peak ${peak})`);
+  await nap(900);
+});
+
+test('the unpin capture is owed again by a lease taken WHILE it runs (a capture under the flip pins the page) (#406 P3)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const wc = wcOf(t2);
+  const events: string[] = [];
+  wc.setBackgroundThrottling = (v: boolean) => events.push(`throttle:${v}`);
+  const real = wc.capturePage.bind(wc);
+  let slowNext = false;
+  wc.capturePage = () => { events.push('capture'); if (!slowNext) return real(); slowNext = false; return new Promise((r) => setTimeout(() => r(real()), 400)); };
+  const l1 = await bp.beginAgentAction(ws, 't2', 'input'); // flip + wake capture
+  l1.end();
+  slowNext = true; // the unpin capture the sweep takes in ~600 ms will be slow
+  await nap(800); // sweep fired: throttle:true + the slow unpin capture is running
+  const l2 = await bp.beginAgentAction(ws, 't2', 'other'); // a new lease while that capture runs: flips OFF under it
+  l2.end();
+  await nap(1800);
+  assert.deepEqual(events, ['throttle:false', 'capture', 'throttle:true', 'capture', 'throttle:false', 'throttle:true', 'capture'], 'the second lease owes its own unpin capture after its flip-back');
 });
 
 test('with NOTHING on screen to hide a first-paint pulse under, a never-composited tab refuses a screenshot FAST with a clear error (P6)', async () => {

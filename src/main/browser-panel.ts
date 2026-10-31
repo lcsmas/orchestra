@@ -213,8 +213,17 @@ function removeView(tab: Tab): void {
   }
   tab.surface = 'detached';
   tab.composited = false;
-  driveLeases.forget(leaseId(tab));
-  pinnedLeases.delete(leaseId(tab));
+  const id = leaseId(tab);
+  if (driveLeases.isHeld(id)) {
+    try {
+      liveContents(tab)?.setBackgroundThrottling(true); // the lease dies with the view's place in the window: nobody else would flip it back
+    } catch {
+      /* contents gone */
+    }
+  }
+  driveLeases.forget(id);
+  pinnedLeases.delete(id);
+  leaseTabs.delete(id);
 }
 
 /** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
@@ -1518,6 +1527,8 @@ const WAKE_MS = 900;
 /** A capture of a hidden view can be served from its still-alive OLD compositor frame, which predates a DOM change made since (measured #406: ~1.4 % stale first shots after a
  *  11-13 ms wake; ~5 % stale for a timer-driven change inside a lease). EVERY hidden capture therefore primes (shows the page) and then waits for the renderer's next frame, bounded. */
 const FRESH_FRAME_MS = 200;
+/** A surface pulse waits this long for the page's own first frame before nudging it with a one-pixel resize. */
+const NUDGE_AFTER_MS = 300;
 /** Leases whose page took a capture while unthrottled: they need the unpin capture when they end. */
 const pinnedLeases = new Set<string>();
 /** Resolves at the SECOND frame the view delivers from now (the first is the subscription's refresh of the old surface), or after `ms`. Always ends its subscription. */
@@ -1578,7 +1589,8 @@ function sweepLeases(): void {
       } catch {
         /* contents gone */
       }
-      if (pinnedLeases.delete(id) && tab?.surface === 'hidden') void wakeView(wc); // the unpin capture (see WAKE_MS)
+      // the unpin capture (see WAKE_MS); a lease taken while it runs makes it a capture UNDER the flip again — that lease owes the unpin
+      if (pinnedLeases.delete(id) && tab?.surface === 'hidden') void wakeView(wc).then(() => { if (driveLeases.isHeld(id)) pinnedLeases.add(id); });
     } else pinnedLeases.delete(id);
   }
   scheduleSweep();
@@ -1600,7 +1612,16 @@ function coverTab(): Tab | null {
 /** Show `tab` once BELOW the cover (same rect, so the cover hides all of it) until its document has produced a frame, then hide it again. */
 /** When a tab was last surfaced under the cover: its frame was just painted, so the same action's capture needs no prime (P6 stays under 2 s). */
 const surfacedAt = new WeakMap<Tab, number>();
-async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
+/** A pulse in flight per tab: an action that arrives meanwhile waits for it (the tab reads `visible` during the pulse, which would decide `direct` — no lease, no prime). */
+const pulses = new WeakMap<Tab, Promise<void>>();
+function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
+  const run = surfaceTabNow(tab, cover);
+  const tracked = run.then(() => undefined, () => undefined);
+  pulses.set(tab, tracked);
+  void tracked.then(() => { if (pulses.get(tab) === tracked) pulses.delete(tab); });
+  return run;
+}
+async function surfaceTabNow(tab: Tab, cover: Tab): Promise<void> {
   const win = getWindow?.();
   const wc = liveContents(tab);
   if (!win || !wc) throw new Error('the browser tab has no live view');
@@ -1610,8 +1631,29 @@ async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
   tab.surface = 'visible'; // composited for the length of the pulse only
   const t0 = Date.now();
   try {
-    await frameOf(wc, SURFACE_PULSE_MAX_MS).catch(() => undefined);
+    // painted = the view yields a non-empty capture (a frame subscription is not a reliable signal: measured, it stays silent on a re-shown static page that then captures fine)
+    let painted = false;
+    let nudged = false;
+    while (!painted && Date.now() - t0 < SURFACE_PULSE_MAX_MS) {
+      const img = await Promise.race([wc.capturePage().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 250))]);
+      if (img && !img.isEmpty()) {
+        painted = true;
+        break;
+      }
+      if (!nudged && Date.now() - t0 >= NUDGE_AFTER_MS) {
+        // a re-shown view whose page is static may never resubmit a frame (measured: a navigated, previously used tab): a one-pixel resize under the cover makes the renderer submit one
+        nudged = true;
+        const b = cover.view.getBounds();
+        tab.view.setBounds({ ...b, width: Math.max(1, b.width - 1) });
+        await new Promise((r) => setTimeout(r, 30));
+        tab.view.setBounds(b);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    log.info(`browser-panel: drive ${tabKeyOf(tab) || tab.id} pulse: ${painted ? 'painted' : 'NOT painted'} after ${Date.now() - t0} ms${nudged ? ' (nudged)' : ''}`);
     await new Promise((r) => setTimeout(r, Math.max(0, 450 - (Date.now() - t0)))); // measured: attach + 800 ms under the cover; the frame callback alone is early
+    // a document still loading (an action right after a click-through navigation) would be taken OUT again by hideView: wait for it, bounded
+    while (Date.now() < t0 + SURFACE_PULSE_MAX_MS && liveContents(tab) && (wc.isLoading?.() || Date.now() - tab.stoppedAt < FIRST_PAINT_MS)) await new Promise((r) => setTimeout(r, 40));
   } finally {
     if (tab.surface === 'visible' && tab !== coverTab()) hideView(tab);
     tab.composited = true;
@@ -1620,7 +1662,7 @@ async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
 }
 
 /** The first frame the view's compositor delivers after this call (a refresh of its current surface), as a NativeImage; rejects after `deadlineMs`. */
-function frameOf(wc: Electron.WebContents, deadlineMs: number): Promise<Electron.NativeImage> {
+function frameOf(wc: Electron.WebContents, deadlineMs: number, onlyDirty = true): Promise<Electron.NativeImage> {
   return new Promise((resolve, reject) => {
     let done = false;
     const finish = (fn: () => void): void => {
@@ -1636,7 +1678,7 @@ function frameOf(wc: Electron.WebContents, deadlineMs: number): Promise<Electron
     };
     const timer = setTimeout(() => finish(() => reject(new Error('no frame'))), deadlineMs);
     try {
-      wc.beginFrameSubscription(true, (image) => finish(() => resolve(image)));
+      wc.beginFrameSubscription(onlyDirty, (image) => finish(() => resolve(image)));
     } catch (e) {
       finish(() => reject(e));
     }
@@ -1651,6 +1693,8 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const tab = resolveTab(wsId, tabId);
   const wc = liveContents(tab);
   if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
+  const inPulse = pulses.get(tab);
+  if (inPulse) await inPulse; // another action's surface pulse on this tab: wait for it, then decide on the settled state
   const cover = coverTab();
   const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind });
   if (kind !== 'other' && d.act !== 'direct') log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} ${kind} → ${d.act} (surface ${tab.surface}, composited ${tab.composited}, cover ${!!cover}, loading ${!!wc.isLoading?.()})`);
@@ -1663,6 +1707,7 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const flipped = driveLeases.acquire(id, Date.now()).flip;
   if (flipped) wc.setBackgroundThrottling(false);
   scheduleSweep();
+  if (kind === 'input') surfacedAt.delete(tab); // the page may change from here on: a later capture needs its own prime
   if (flipped && kind === 'input' && tab.surface === 'hidden') {
     pinnedLeases.add(id);
     const w0 = Date.now();
@@ -1687,11 +1732,19 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
 }
 
 /** A hidden tab's screenshot from its frame subscription (35–50 ms measured; fresh, never the pre-hide frame): PNG/JPEG base64, `clip` honoured. */
-export async function captureTabFrame(
-  wsId: string,
-  tabId: BrowserTabId | undefined,
-  opts: { format?: 'png' | 'jpeg'; quality?: number; clip?: { x: number; y: number; width: number; height: number } } = {},
-): Promise<string> {
+type CaptureOpts = { format?: 'png' | 'jpeg'; quality?: number; clip?: { x: number; y: number; width: number; height: number } };
+/** One capture at a time per tab: Electron keeps ONE frame subscriber per contents, so two overlapping captures would end each other's prime / fallback. */
+const captureQueue = new WeakMap<Tab, Promise<void>>();
+export function captureTabFrame(wsId: string, tabId: BrowserTabId | undefined, opts: CaptureOpts = {}): Promise<string> {
+  const tab = resolveTab(wsId, tabId);
+  if (!tab) return captureTabFrameNow(wsId, tabId, opts);
+  const run = (captureQueue.get(tab) ?? Promise.resolve()).then(() => captureTabFrameNow(wsId, tabId, opts));
+  const tail = run.then(() => undefined, () => undefined);
+  captureQueue.set(tab, tail);
+  void tail.then(() => { if (captureQueue.get(tab) === tail) captureQueue.delete(tab); });
+  return run;
+}
+async function captureTabFrameNow(wsId: string, tabId: BrowserTabId | undefined, opts: CaptureOpts): Promise<string> {
   const lease = await beginAgentAction(wsId, tabId, 'capture');
   try {
     const tab = resolveTab(wsId, tabId);
@@ -1699,7 +1752,9 @@ export async function captureTabFrame(
     if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
     let img: Electron.NativeImage | null = null;
     pinnedLeases.add(`${wsId}/${tab.id}`); // a capture under the flip pins the page: the lease end unpins it
-    if (tab.surface === 'hidden' && Date.now() - (surfacedAt.get(tab) ?? 0) > 1500) {
+    const justSurfaced = Date.now() - (surfacedAt.get(tab) ?? 0) <= 1500;
+    surfacedAt.delete(tab); // single use: only the capture of the action that surfaced the tab skips the prime
+    if (tab.surface === 'hidden' && !justSurfaced) {
       const p0 = Date.now();
       await wakeView(wc); // prime: shows the page so the renderer produces its frame (and wakes a dead view) …
       await afterNextPaint(wc, FRESH_FRAME_MS); // … settle: the capture below must not read the old surface

@@ -34,6 +34,7 @@ import { decideAgentCdp } from '../shared/browser-profile.ts';
 import { diffTabs } from '../shared/cdp-tab-diff.ts';
 import { describeAgentTabs, type AgentTabView } from '../shared/browser-agent-tabs.ts';
 import { AGENT_OPENER } from '../shared/browser-tab-policy.ts';
+import { BEYOND_VIEWPORT_MESSAGE, clipBeyondViewport } from '../shared/browser-hidden-drive.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
@@ -128,6 +129,8 @@ export function makePanelPort(wsId: string): CdpPanelPort {
       const tab = bp.getTab(wsId, tabId);
       if (!tab || tab.surface === 'visible') return null; // on screen: the normal Page.captureScreenshot chain
       const clip = params.clip as { x: number; y: number; width: number; height: number } | undefined;
+      const vb = tab.view.getBounds();
+      if (clipBeyondViewport(params as { captureBeyondViewport?: unknown; clip?: typeof clip }, vb.width, vb.height)) throw new Error(BEYOND_VIEWPORT_MESSAGE);
       return bp.captureTabFrame(wsId, tabId, { format: params.format === 'jpeg' ? 'jpeg' : 'png', ...(typeof params.quality === 'number' ? { quality: params.quality } : {}), ...(clip ? { clip } : {}) });
     },
     // #400: while this workspace's panel runs on a profil navigateur (shared with other workspaces and sites), an agent may not clear its jar or
@@ -250,11 +253,9 @@ async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpT
 /** What `browser-panel.ts` calls instead of attaching anything itself. */
 export const panelCdpSeat: bp.CdpSeat = {
   async send(wsId, tabId, method, params) {
-    if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`seat-send[${wsId.slice(0, 8)}] ${tabId} ${method}`);
     return sendOnLease(await attachLease(wsId, tabId), method, params, LEASE_SEND_MAX_MS);
   },
   async hold(wsId, tabId) {
-    if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`seat-hold[${wsId.slice(0, 8)}] ${tabId}`);
     return (await attachLease(wsId, tabId)).release;
   },
 };

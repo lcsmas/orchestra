@@ -39,6 +39,9 @@ export type ActionDecision =
 export const NO_FRAME_MESSAGE =
   'no frame arrived from this tab: either its page loaded while it was hidden and has not been on screen since, or the Orchestra window is on a desktop workspace that is not displayed (nothing paints there). ' +
   'snapshot, eval, get, open, click and type still work; open the Browser pane (or switch to the desktop workspace holding Orchestra) and retry.';
+export const BEYOND_VIEWPORT_MESSAGE =
+  'a full-page (beyond-the-viewport) screenshot of a tab nobody is looking at is not supported: it would be cropped to the viewport. ' +
+  'bring the tab to the front with `orchestra browser tab <ref>` and retry, or take the screenshot without --full.';
 export const NEEDS_FIRST_PAINT_MESSAGE =
   'this tab has not been on screen since its page loaded, so it has no frame to capture and takes no input yet, and nothing is on screen to cover showing it briefly. ' +
   "snapshot, eval, get and open still work; ask the user to open this workspace's Browser pane once.";
@@ -139,4 +142,11 @@ export function cropRect(clip: { x: number; y: number; width: number; height: nu
   const width = Math.max(1, Math.min(w - x, Math.round(clip.width * dpr)));
   const height = Math.max(1, Math.min(h - y, Math.round(clip.height * dpr)));
   return { x, y, width, height };
+}
+
+/** A CDP screenshot that asks for content beyond the viewport (`captureBeyondViewport` with a `clip` larger than it): a hidden view's `capturePage()` can only return the viewport. */
+export function clipBeyondViewport(params: { captureBeyondViewport?: unknown; clip?: { x: number; y: number; width: number; height: number } }, viewportW: number, viewportH: number): boolean {
+  const c = params.clip;
+  if (params.captureBeyondViewport !== true || !c) return false;
+  return c.x + c.width > viewportW + 1 || c.y + c.height > viewportH + 1;
 }

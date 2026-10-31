@@ -133,21 +133,57 @@ test('an explicit Page.bringToFront still brings the tab to the front (the switc
   assert.deepEqual(f.activated, ['t2']);
 });
 
-test('P7: a command that is still running RENEWS its lease every beat; a client that disconnects mid-command has its lease ENDED at the next beat', async () => {
+test('P7: a command that is still running RENEWS its lease every beat; a client that disconnects mid-command has its lease ENDED long before the command would have finished', async () => {
   const touches: number[] = [];
   let ended = 0;
   const f = fake({ beginAction: async () => ({ end: () => { ended++; }, touch: () => { touches.push(Date.now()); } } as { end(): void }) });
-  const slow: CdpPanelPort = { ...f.port, acquire: async () => ({ send: async () => { await new Promise((r) => setTimeout(r, 2300)); return {}; }, subscribe: () => () => undefined, onDetach: () => () => undefined }) };
+  const slow: CdpPanelPort = { ...f.port, acquire: async () => ({ send: async () => { await new Promise((r) => setTimeout(r, 4000)); return {}; }, subscribe: () => () => undefined, onDetach: () => () => undefined }) };
   const core = new CdpProxyCore(slow);
   const waiters = new Map<number, (m: any) => void>();
   const c = core.connect({ send: (m) => waiters.get(m.id as number)?.(m) });
   const call = (id: number, method: string, params: object, sessionId?: string) => { const p = new Promise<any>((res) => waiters.set(id, res)); void c.message(JSON.stringify({ id, method, params, sessionId })); return p; };
   const sid = (await call(1, 'Target.attachToTarget', { targetId: core.targetIdFor('t2'), flatten: true })).result.sessionId;
-  void call(2, 'Runtime.evaluate', {}, sid); // takes 2.3 s
+  void call(2, 'Runtime.evaluate', {}, sid); // takes 4 s: the check below (at ~2.5 s) is before it can finish, so ONLY the disconnect branch can have ended the lease
   await new Promise((r) => setTimeout(r, 1300));
   assert.ok(touches.length >= 1, `renewed at least once while running (${touches.length})`);
   assert.equal(ended, 0, 'still running: the lease is held');
   c.close(); // the client dies mid-command
   await new Promise((r) => setTimeout(r, 1200));
-  assert.ok(ended >= 1, 'the lease was ended at the next beat after the disconnect, long before the command finished');
+  assert.ok(ended >= 1, 'the lease was ended after the disconnect, long before the command finished (by the disconnect itself or the next beat — either mechanism satisfies P7)');
+});
+
+test('a command that HANGS on a client that never disconnects stops renewing its lease at the cap, so the watchdog can force the flip-back', async () => {
+  const touches: number[] = [];
+  let ended = 0;
+  const f = fake({ beginAction: async () => ({ end: () => { ended++; }, touch: () => { touches.push(Date.now()); } } as { end(): void }) });
+  const hung: CdpPanelPort = { ...f.port, acquire: async () => ({ send: async () => { await new Promise((r) => setTimeout(r, 6000)); return {}; }, subscribe: () => () => undefined, onDetach: () => () => undefined }) };
+  const core = new CdpProxyCore(hung, { leaseMaxMs: 1500 });
+  const waiters = new Map<number, (m: any) => void>();
+  const c = core.connect({ send: (m) => waiters.get(m.id as number)?.(m) });
+  const call = (id: number, method: string, params: object, sessionId?: string) => { const p = new Promise<any>((res) => waiters.set(id, res)); void c.message(JSON.stringify({ id, method, params, sessionId })); return p; };
+  const sid = (await call(1, 'Target.attachToTarget', { targetId: core.targetIdFor('t2'), flatten: true })).result.sessionId;
+  void call(2, 'Runtime.evaluate', {}, sid); // hangs for 6 s; the client stays connected
+  await new Promise((r) => setTimeout(r, 3600));
+  assert.ok(touches.length >= 1, 'renewed while under the cap');
+  assert.equal(ended, 1, 'ended at the first beat past the cap although the client is still connected and the command still hangs');
+  const n = touches.length;
+  await new Promise((r) => setTimeout(r, 1300));
+  assert.equal(touches.length, n, 'and it never renews again');
+  c.close();
+});
+
+test('a client that disconnects while the lease is still being TAKEN (a surface pulse can take seconds) gets nothing dispatched and its lease is ended', async () => {
+  let ended = 0;
+  const f = fake({ beginAction: async () => { await new Promise((r) => setTimeout(r, 400)); return { end: () => { ended++; } }; } });
+  const core = new CdpProxyCore(f.port);
+  const waiters = new Map<number, (m: any) => void>();
+  const c = core.connect({ send: (m) => waiters.get(m.id as number)?.(m) });
+  const call = (id: number, method: string, params: object, sessionId?: string) => { const p = new Promise<any>((res) => waiters.set(id, res)); void c.message(JSON.stringify({ id, method, params, sessionId })); return p; };
+  const sid = (await call(1, 'Target.attachToTarget', { targetId: core.targetIdFor('t2'), flatten: true })).result.sessionId;
+  void call(2, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1 }, sid);
+  await new Promise((r) => setTimeout(r, 100));
+  c.close(); // gone before beginAction resolved
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(f.sent.filter((x) => x.method === 'Input.dispatchMouseEvent').length, 0, 'the click was NOT dispatched for a client that left');
+  assert.equal(ended, 1, 'and the lease it took was ended');
 });
