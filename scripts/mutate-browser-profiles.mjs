@@ -52,7 +52,7 @@ const MUTANTS = [
   [PANEL, 'reprofilePanel does not reload the tabs\' URLs', '        if (sn.url) {\n          restoreUrls.set(tab, sn.url);', '        if (false as boolean) {\n          restoreUrls.set(tab, sn.url);'],
   [PANEL, 'reprofilePanel loses the active tab', 'panel.activeId = oldActive;', 'panel.activeId = panel.tabs[0].id;'],
   [PANEL, 'reprofilePanel never re-composites the active view', '      if (wasAttached) attachActive(panel);\n    } catch (e) {\n      log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);', '      void wasAttached;\n    } catch (e) {\n      log.warn(\'browser-panel: reprofilePanel could not re-composite the panel\', e);'],
-  [PANEL, 'reprofilePanel does not detach the old attached view first', '  if (attachedTab) detachTab(panel, attachedTab);\n  panel.rebuilding = true;', '  panel.rebuilding = true;'],
+  [PANEL, 'reprofilePanel does not detach the old views first (hidden ones included; #406 re-point)', '  for (const t of oldTabs) detachTab(panel, t); // every old view leaves the window (hidden ones included)\n  panel.rebuilding = true;', '  panel.rebuilding = true;'],
   [PANEL, 'reprofilePanel rebuilds even for the same identity', '  if (partition === panel.partition) return panel.state;\n', ''],
   [PANEL, 'reprofilePanel builds a panel that is not open', '  if (!panel) return getState(wsId);\n  const partition', '  if (!panel) { ensurePanel(wsId); return getState(wsId); }\n  const partition'],
   [PANEL, 'reprofilePanel keeps the old profileId in the state', '    panel.partition = partition;\n    panel.profileId = profileId;', '    panel.partition = partition;'],

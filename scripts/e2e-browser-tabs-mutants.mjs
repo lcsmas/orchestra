@@ -2,7 +2,7 @@
 // REBUILT (a stale bundle reproduces perfectly), the rig runs only the arm that owns the clause, and the clause(s) named below must be RED
 // while every ctl/* control stays GREEN (a red for the wrong reason is a failure). The source is restored byte-exact (cmp) right after the
 // build; a final CLEAN rebuild leaves dist/ matching the tree. The mutant string is checked LIVE (exactly one occurrence).
-// Run: node scripts/e2e-browser-tabs-mutants.mjs [id ...]      (exit 0 = every mutant killed for its named reason, tree restored)
+// Run: node scripts/e2e-browser-tabs-mutants.mjs [--check] [id ...]      (exit 0 = every mutant killed for its named reason, tree restored)
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,15 +19,21 @@ const MUTANTS = [
   { id: 'B1-cap-ignored', file: P, arms: 'tabs,cap', from: '  if (!d.ok) return refused(wsId, d.reason, d.message);\n  const tab = createTab(wsId, opts);', to: '  const tab = createTab(wsId, opts);', red: ['ninth-tab-refused-with-a-clear-notice', 'ninth-tab-creates-no-tab-and-no-view'] },
   { id: 'B2-snapshot-never-saved', file: P, arms: 'tabs,restore', from: '  savePanelTabs(panel);\n  platform.broadcast', to: '  platform.broadcast', red: ['tabs-file-holds-three-tabs-and-the-active-index', 'graceful-restart-restores-three-tabs-same-urls', 'sigkill-restart-restores-three-tabs-with-the-active-one'] },
   { id: 'B3-active-index-ignored', file: P, arms: 'tabs,restore', from: 'built[Math.min(saved.activeIndex, built.length - 1)]', to: 'built[0]', red: ['graceful-restart-restores-the-same-active-tab', 'restored-active-tab-is-the-one-painted'] },
-  { id: 'B4-switch-does-not-swap-the-view', file: P, arms: 'tabs', from: '  panel.activeId = tab.id;\n  if (panel.attachedId !== null) attachActive(panel);\n  publish(panel);', to: '  panel.activeId = tab.id;\n  publish(panel);', red: ['switch-paints-the-active-view/B'] },
-  { id: 'B5-inactive-view-stays-composited', file: P, arms: 'tabs,paint', from: '  if (prev) detachTab(panel, prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;', red: ['pane-hidden-leaves-no-view-over-the-app'] },
-  { id: 'B7-workspace-switch-leaves-view-attached', file: P, arms: 'tabs,ws', from: "  const attached = panel.tabs.find((t) => t.id === panel.attachedId);\n  if (attached) detachTab(panel, attached);\n  panel.attachedId = null;\n}", to: '  panel.attachedId = null;\n}', red: ['switching-workspace-leaves-no-view-over-the-app'] },
+  { id: 'B4-switch-does-not-swap-the-view', file: P, arms: 'tabs', from: '  } else delete panel.agentSwitch;\n  if (panel.attachedId !== null) attachActive(panel);\n  publish(panel);', to: '  } else delete panel.agentSwitch;\n  publish(panel);', red: ['switch-paints-the-active-view/B'] },
+  { id: 'B5-inactive-view-stays-composited', file: P, arms: 'tabs,paint', from: '  if (prev) hideView(prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;', red: ['pane-hidden-leaves-no-view-over-the-app'] },
+  { id: 'B7-workspace-switch-leaves-view-attached', file: P, arms: 'tabs,ws', from: "  const attached = panel.tabs.find((t) => t.id === panel.attachedId);\n  if (attached) hideView(attached); // #406: hidden, not removed — an agent can still drive it\n  panel.attachedId = null;\n}", to: '  panel.attachedId = null;\n}', red: ['switching-workspace-leaves-no-view-over-the-app'] },
   { id: 'B8-errored-tab-not-remembered', file: P, arms: 'down', from: "        url: restorableUrl(t.nav.url) || restoreUrls.get(t) || '',", to: "        url: t.nav.error ? '' : restorableUrl(t.nav.url) || restoreUrls.get(t) || '',", red: ['failed-restore-keeps-the-remembered-url'] },
   { id: 'B10-background-event-reopens-the-pane', file: 'src/renderer/App.tsx', arms: 'tabs,reopen', from: '      if (!d.open) return;', to: '      if (!state.url) return;', red: ['background-tab-event-does-not-reopen-a-closed-pane'] },
   { id: 'B11-same-url-agent-navigation-does-not-reopen', file: 'src/shared/browser-tab-policy.ts', arms: 'tabs,reopen', from: 'return { open: navigated || startedLoading, next };', to: 'return { open: navigated, next };', red: ['same-url-agent-navigation-reopens-the-pane'] },
   { id: 'B6-last-tab-evicts-the-panel', file: P, arms: 'last', from: "if (d.replaceWithBlank) createTab(wsId, { openedBy: 'human', activate: true });", to: '', red: ['closing-the-last-tab-leaves-one-fresh-blank-tab'] },
 ];
 
+if (process.argv.includes('--check')) { // static anchor proof (no build, no rig, nothing written): every `from` must occur EXACTLY ONCE (the #406 lift moved some)
+  let dead = 0;
+  for (const m of MUTANTS) { const n = fs.readFileSync(path.join(ROOT, m.file), 'utf8').split(m.from).length - 1; if (n !== 1) dead++; console.log(`${n === 1 ? 'live' : 'DEAD'}  ${m.id} (${n}x in ${m.file})`); }
+  console.log(`${MUTANTS.length - dead}/${MUTANTS.length} live`);
+  process.exit(dead ? 1 : 0);
+}
 const only = process.argv.slice(2);
 const sh = (cmd, args, opt = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20, ...opt });
 const backups = new Map(); // file -> backup path (byte-exact copies taken before the first mutation)

@@ -1,6 +1,6 @@
 // Must-FAIL proof for the #397 unit layer (ledger #405). Mutates the SOURCE files in place, one clause at a time; each mutant MUST redden the
 // test files listed with it, and every file is restored from a byte-exact backup and `cmp`-checked after every mutant (and on any exit path).
-// Built-app mutants (bundle patches) live in scripts/e2e-browser-agent-tabs.mjs. Run: node scripts/mutate-browser-agent-tabs.mjs [--only <substr>]  (RC 0 = all killed)
+// Built-app mutants (bundle patches) live in scripts/e2e-browser-agent-tabs.mjs. Run: node scripts/mutate-browser-agent-tabs.mjs [--only <substr>[|<substr>…]]  (RC 0 = all killed)
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,8 +45,9 @@ const MUTANTS = [
   [F.pure, 'the subcommand is only recognised as the FIRST word (`tab --timeout 3000 close t1` becomes a switch)', "const opAt = words.findIndex((w) => w === 'list' || w === 'new' || w === 'close');", "const opAt = ['list', 'new', 'close'].includes(words[0] ?? '') ? 0 : -1;", [T.pure]],
   [F.pure, 'the owner suffix is swapped', "(o === AGENT_OPENER ? ' (yours)' : \" (the user's)\")", "(o === AGENT_OPENER ? \" (the user's)\" : ' (yours)')", [T.pure]],
   [F.pure, 'the refusal exits 0', "if (json) return { code: 1, stdout: JSON.stringify", "if (json) return { code: 0, stdout: JSON.stringify", [T.pure]],
-  [F.core, 'an acting command never brings its tab to the front', "    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);\n", '', [T.core, T.wiring]],
-  [F.core, 'EVERY command brings its tab to the front (enables included)', "    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);", "    this.bringToFrontIfBackground(tabId);", [T.core]],
+  // #406 re-point (the lift split the acting path in two): a port WITHOUT beginAction still brings to front; one WITH it takes a lease instead.
+  [F.core, 'an acting command never brings its tab to the front (port without beginAction)', "      } else this.bringToFrontIfBackground(tabId);\n", "      }\n", [T.core, T.wiring]],
+  [F.core, 'EVERY command brings its tab to the front (enables included; port without beginAction)', "    if (isActingCdpMethod(method)) {\n      if (this.port.beginAction) {", "    if (true) {\n      if (this.port.beginAction) {", [T.core]],
   [F.panel, 'an agent opens its tab ACTIVE in a background workspace', "openedBy: AGENT_OPENER, activate: focusedWsId === wsId });", "openedBy: AGENT_OPENER, activate: true });", [T.panel, T.wiring]],
   [F.panel, 'the agent closes as the human (any tab)', "const r = tryCloseTab(wsId, tabId, AGENT_OPENER);", "const r = tryCloseTab(wsId, tabId, 'human');", [T.panel, T.wiring]],
   [F.panel, 'agentActivateTab ignores the focus rule', "decideAgentFront({ wsFocused: focusedWsId === wsId,", "decideAgentFront({ wsFocused: true,", [T.panel, T.wiring]],
@@ -95,8 +96,8 @@ const MUTANTS = [
   [F.core, 'F1: the browser-level rules are skipped for a CHILD session (the predicate is applied to root sessions only)', "    if (isBrowserLevelMethod(method)) {", "    if (isBrowserLevelMethod(method) && !childSessionId) {", [T.core]],
   [F.core, 'F1: Page.close is not a browser-level verb (root and child both reach the debugger)', "  return method === 'Page.close' || method.startsWith('Browser.')", "  return method.startsWith('Browser.')", [T.core]],
   [F.core, 'F1: Browser.* is not a browser-level verb', " || method.startsWith('Browser.') || TAB_SESSION_BROWSER_LEVEL.has(method);", " || TAB_SESSION_BROWSER_LEVEL.has(method);", [T.core]],
-  [F.core, 'F3: a CHILD session skips the frames fail-fast', "    if (FRAME_BOUND_METHODS.has(method)) {\n      const why = this.port.framesError(tabId);", "    if (!childSessionId && FRAME_BOUND_METHODS.has(method)) {\n      const why = this.port.framesError(tabId);", [T.core, T.wiring]],
-  [F.core, 'F3: a CHILD session\'s acting command does not bring its tab to the front', "    if (isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);\n    if (FRAME_BOUND", "    if (!childSessionId && isActingCdpMethod(method)) this.bringToFrontIfBackground(tabId);\n    if (FRAME_BOUND", [T.core, T.wiring]],
+  [F.core, 'F3: a CHILD session skips the frames fail-fast', "    if (FRAME_BOUND_METHODS.has(method) && !this.port.beginAction) {\n      const why = this.port.framesError(tabId);", "    if (!childSessionId && FRAME_BOUND_METHODS.has(method) && !this.port.beginAction) {\n      const why = this.port.framesError(tabId);", [T.core, T.wiring]],
+  [F.core, 'F3: a CHILD session\'s acting command does not count as an action (no front / no lease)', "    if (isActingCdpMethod(method)) {\n      if (this.port.beginAction) {", "    if (!childSessionId && isActingCdpMethod(method)) {\n      if (this.port.beginAction) {", [T.core, T.wiring]],
   [F.pure, 'F4b: a switch is not annotated with whose tab it landed on', "  lines[i] += ownerSuffix(owner);", "  lines[i] += '';", [T.pure]],
   [F.pure, 'F4b: --json switch loses openedBy', "      doc.data.openedBy = owner;\n", "", [T.pure]],
   [F.pure, 'F4b: only the first candidate token is tried for the switch target', "  for (const r of refs) {\n    const t = resolveAbTab(abTabs, r);\n    if (t) return t;", "  for (const r of refs.slice(0, 1)) {\n    const t = resolveAbTab(abTabs, r);\n    if (t) return t;", [T.pure]],
@@ -135,7 +136,7 @@ console.log(`baseline PASS (${baseCount} tests over ${allTests.length} files)`);
 let killed = 0, ran = 0;
 const survivors = [];
 for (const [file, name, find, replace, tests] of MUTANTS) {
-  if (only && !name.includes(only)) continue;
+  if (only && !only.split('|').some((t) => name.includes(t))) continue; // --only a|b: name substrings
   const orig = readFileSync(backups.get(file), 'utf8');
   const n = orig.split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x in ${file} (need exactly 1)`); restoreAll(); process.exit(2); }
@@ -151,6 +152,7 @@ for (const [file, name, find, replace, tests] of MUTANTS) {
 }
 let exact = true;
 for (const [f, bak] of backups) if (!readFileSync(path.join(root, f)).equals(readFileSync(bak))) exact = false;
-console.log(`\n${killed}/${ran} killed; restore byte-exact (cmp) over ${backups.size} files: ${exact}`);
+console.log(`\n${killed}/${ran} killed (of ${MUTANTS.length} defined); restore byte-exact (cmp) over ${backups.size} files: ${exact}`);
 if (survivors.length) console.log('SURVIVORS:\n  ' + survivors.join('\n  '));
+if (ran === 0) { console.log('ABORT: --only matched no mutant (0 run is not a pass)'); process.exit(2); }
 process.exit(survivors.length || !exact ? 1 : 0);

@@ -19,16 +19,16 @@ const orig = readFileSync(target, 'utf8');
 
 const MUTANTS = [
   ['destroyPanel tears down only the ACTIVE tab (leaks the rest)',
-    'for (const tab of panel.tabs) destroyTab(tab);\n  notifyPanelListeners(wsId, [], true);',
-    'destroyTab(activeTabOf(panel)!);\n  notifyPanelListeners(wsId, [], true);'],
+    '  for (const tab of panel.tabs) {\n    removeView(tab);\n    destroyTab(tab);\n  }\n  notifyPanelListeners(wsId, [], true);',
+    '  { const a = activeTabOf(panel)!; removeView(a); destroyTab(a); }\n  notifyPanelListeners(wsId, [], true);'],
   ['destroyTab skips the proxy seat\'s force-detach (#398: the debugger seat outlives its tab)',
     'tabTeardownHook?.(wc);', ''],
   ['closeTab never destroys the closed tab contents',
     'panel.tabs.splice(idx, 1);\n  destroyTab(tab);', 'panel.tabs.splice(idx, 1);'],
   ['closing the LAST tab leaks its contents',
     '    destroyTab(tab);\n    panels.delete(wsId);', '    panels.delete(wsId);'],
-  ['attachActive does not detach the previously attached tab (two views composit)',
-    'if (prev) detachTab(panel, prev);', ''],
+  ['attachActive does not hide the previously attached tab (two views composit; #406: hidden, no longer removed)',
+    'if (prev) hideView(prev);', ''],
   ['reapIfDead only notices a dead ACTIVE tab',
     'const dead = panel.tabs.filter((t) => !liveContents(t));',
     'const dead = panel.tabs.filter((t) => !liveContents(t) && t.id === panel.activeId);'],
@@ -37,8 +37,7 @@ const MUTANTS = [
     'panel.attachedId = null;\n    panels.delete(wsId);\n    tabSeq.delete(wsId);\n    return undefined;'],
   ['an explicit tabId is ignored (always the active tab)',
     'if (tabId === undefined) return getActiveTab(wsId);', 'return getActiveTab(wsId);'],
-  ['requireComposited lets a background tab through',
-    'if (panel.attachedId !== tab.id) {', 'if (false) {'],
+  // DROPPED by the #406 lift: 'requireComposited lets a background tab through' — requireComposited is gone (the composited-only refusal became decideTabAction, pinned in src/shared/browser-hidden-drive.test.ts).
   ['setBounds sizes only the active tab',
     'for (const tab of panel.tabs) tab.view.setBounds(rect);',
     'activeTabOf(panel)!.view.setBounds(rect);'],
@@ -90,9 +89,9 @@ const MUTANTS = [
   ['reaping the dead last tab promotes the first tab',
     'panel.activeId = panel.tabs[Math.min(activeIdx, panel.tabs.length - 1)].id;',
     'panel.activeId = panel.tabs[activeIdx < panel.tabs.length ? activeIdx : 0].id;'],
-  ['requireComposited builds a panel for an explicit tabId (getPanel -> ensurePanel)',
-    'function requireComposited(wsId: string, what: string, tabId?: BrowserTabId): Tab {\n  const panel = getPanel(wsId);',
-    'function requireComposited(wsId: string, what: string, tabId?: BrowserTabId): Tab {\n  const panel = ensurePanel(wsId);'],
+  ['beginAgentAction builds a panel for an explicit tabId (resolveTab -> ensurePanel; was requireComposited before #406)',
+    "export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undefined, kind: ActionKind): Promise<DriveLease> {\n  const tab = resolveTab(wsId, tabId);",
+    "export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undefined, kind: ActionKind): Promise<DriveLease> {\n  ensurePanel(wsId);\n  const tab = resolveTab(wsId, tabId);"],
   ['readPage builds the panel before resolving an explicit tabId',
     'export async function readPage(wsId: string, tabId?: BrowserTabId): Promise<string> {',
     'export async function readPage(wsId: string, tabId?: BrowserTabId): Promise<string> {\n  ensurePanel(wsId);'],
@@ -100,8 +99,8 @@ const MUTANTS = [
     'export function goBack(wsId: string, tabId?: BrowserTabId): void {',
     'export function goBack(wsId: string, tabId?: BrowserTabId): void {\n  ensurePanel(wsId);'],
   ['capture builds the panel before resolving an explicit tabId',
-    "  tabId?: BrowserTabId,\n): Promise<string> {\n  const tab = requireComposited(wsId, 'screenshot', tabId);",
-    "  tabId?: BrowserTabId,\n): Promise<string> {\n  ensurePanel(wsId);\n  const tab = requireComposited(wsId, 'screenshot', tabId);"],
+    "  const q = Math.max(0, Math.min(100, quality));\n  const tab = resolveTab(wsId, tabId);",
+    "  const q = Math.max(0, Math.min(100, quality));\n  ensurePanel(wsId);\n  const tab = resolveTab(wsId, tabId);"],
   ['clickRef builds the panel before resolving an explicit tabId',
     'export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId): Promise<void> {',
     'export async function clickRef(wsId: string, ref: number, tabId?: BrowserTabId): Promise<void> {\n  ensurePanel(wsId);'],
@@ -111,8 +110,8 @@ const MUTANTS = [
   ['reload builds the panel before resolving an explicit tabId',
     'export function reload(wsId: string, tabId?: BrowserTabId): void {',
     'export function reload(wsId: string, tabId?: BrowserTabId): void {\n  ensurePanel(wsId);'],
-  ['hidePanel leaves the view attached',
-    'if (attached) detachTab(panel, attached);', ''],
+  ['hidePanel leaves the view on screen (#406: it is hidden, no longer removed)',
+    'if (attached) hideView(attached);', ''],
   // #398: design mode's lease on the proxy's debugger attach
   ['design mode keeps no lease while armed (every poll attaches anew)',
     'if (!tab.designHold) tab.designHold = await cdpSeat.hold(wsId, tab.id);', ''],
@@ -149,6 +148,12 @@ const MUTANTS = [
     'const gen = ++tab.designGen;', 'const gen = tab.designGen;'],
 ];
 
+if (process.argv.includes('--check')) { // every mutant string LIVE (exactly one occurrence), nothing run (the #406 lift rotted 6 unnoticed)
+  let bad = 0;
+  for (const [name, find, replace] of MUTANTS) { const n = orig.split(find).length - 1; if (n !== 1 || find === replace) { bad++; console.log(`DEAD ${name} (${n}x)`); } }
+  console.log(`${MUTANTS.length - bad}/${MUTANTS.length} live`);
+  process.exit(bad ? 1 : 0);
+}
 let killed = 0;
 const survivors = [];
 const run = () =>
@@ -163,12 +168,15 @@ process.on('exit', () => { try { copyFileSync(backup, target); } catch {} });
 // a kill (Ctrl-C, a rejected tool call, a timeout) must not leave the last mutant in the tree: route signals through the exit handler above
 for (const [sig, rc] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(sig, () => process.exit(rc));
 
+const only = process.argv.includes('--only') ? new RegExp(process.argv[process.argv.indexOf('--only') + 1]) : null; // run just the matching mutants
+const todo = MUTANTS.filter((m) => !only || only.test(m[0]));
+if (!todo.length) { console.log('ABORT: --only matched no mutant (0 run is not a pass)'); process.exit(2); }
 // Positive control: the UNMUTATED tree passes (a rig that cannot say PASS proves nothing).
 const base = run();
 if (base.status !== 0) { console.log('BASELINE FAILS — abort\n' + base.stdout.slice(-2000)); process.exit(2); }
 console.log('baseline PASS');
 
-for (const [name, find, replace] of MUTANTS) {
+for (const [name, find, replace] of todo) {
   const n = orig.split(find).length - 1;
   if (n !== 1) { console.log(`ABORT: mutant "${name}" find-string occurs ${n}x (need exactly 1)`); restore(); process.exit(2); }
   writeFileSync(target, orig.replace(find, replace));
@@ -181,5 +189,5 @@ for (const [name, find, replace] of MUTANTS) {
   console.log(`${dead ? 'KILLED  ' : 'SURVIVED'} ${name}${dead ? `  (${failing} arm(s) red)` : ''}`);
 }
 const finalSame = readFileSync(target).equals(readFileSync(backup));
-console.log(`\n${killed}/${MUTANTS.length} killed; restore byte-exact: ${finalSame}`);
+console.log(`\n${killed}/${todo.length} killed (of ${MUTANTS.length} defined); restore byte-exact: ${finalSame}`);
 process.exit(survivors.length || !finalSame ? 1 : 0);

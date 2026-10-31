@@ -54,7 +54,8 @@ const fileOf = (app, kind) => (kind === 'cli' ? path.join(app, 'dist-electron/cl
 const hitsOf = (src, from) => (typeof from === 'string' ? src.split(from).length - 1 : (src.match(new RegExp(from.source, 'g')) ?? []).length);
 if (argv[0] === '--check-anchors') { // no app, no compositor: every mutant edit still matches exactly once
   const app = fs.realpathSync(argv[1] ?? '.'); let bad = 0;
-  for (const [n, m] of Object.entries(MUTANTS)) { if (m.needs && !mergedIn(app, m.needs)) { console.log(`SKIP ${n.padEnd(26)} needs #${m.needs} (not merged in ${app})`); continue; } const c = m.edits.map(([f, , k]) => hitsOf(fs.readFileSync(fileOf(app, k), 'utf8'), f)); if (!c.every((x) => x === 1)) bad++; console.log(`${c.every((x) => x === 1) ? 'OK ' : 'BAD'} ${n.padEnd(26)} matches=${c.join(',')}`); }
+  const forced = new Set((flag('--merged', '') || '').split(',').filter(Boolean).map(Number)); // --merged 396,397,…: the merge detector (`git log --grep '^Merge #n'`) cannot see a fast-forwarded merge, which used to SKIP these anchors
+  for (const [n, m] of Object.entries(MUTANTS)) { if (m.needs && !forced.has(m.needs) && !mergedIn(app, m.needs)) { console.log(`SKIP ${n.padEnd(26)} needs #${m.needs} (not merged in ${app})`); continue; } const c = m.edits.map(([f, , k]) => hitsOf(fs.readFileSync(fileOf(app, k), 'utf8'), f)); if (!c.every((x) => x === 1)) bad++; console.log(`${c.every((x) => x === 1) ? 'OK ' : 'BAD'} ${n.padEnd(26)} matches=${c.join(',')}`); }
   process.exit(bad ? 1 : 0);
 }
 

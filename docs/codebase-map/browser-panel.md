@@ -177,7 +177,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
 - **Tests**: `src/main/browser-panel-tabs.test.ts` (78 tests: 29 registry arms + an explicit-tabId loop over all 16 entry points x 3 stale situations + an enumeration guard; N>1 tabs, real
   module over a stubbed `electron` loader hook; `__bpAsyncClose` models
   Electron's async `close()`) + `scripts/mutate-browser-panel-tabs.mjs`
-  (37 in-place mutants, byte-exact restore). The registry itself cannot be
+  (52 in-place mutants, byte-exact restore; `--check` = anchors live, `--only a|b`). The registry itself cannot be
   imported by `node --test` without that hook (it imports `electron`).
   Real Electron: `scripts/e2e-browser-tabs-registry.sh <app-dir>` (own headless
   sway) — `app` arm drives the unchanged renderer flow on the built app (pane
@@ -1098,7 +1098,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   attach; grace, agent-only reset), `cdp-proxy-core.test.ts` (`lease`, `sendOnLease`, `agentTouched` arms),
   `browser-single-attacher.test.ts`, the registry arms in `browser-panel-tabs.test.ts` (design lease: no churn across polls,
   pick/cancel/disarm release, arm/disarm order, tab switch, no debugger without the seat), wiring pins in
-  `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (53 registry mutants) and
+  `browser-cli-wiring.test.ts`, with their must-FAIL scripts `scripts/mutate-browser-panel-tabs.mjs` (52 registry mutants) and
   `scripts/mutate-cdp-seat.mjs` (20 seat/lease mutants); and the built-app rig `scripts/e2e-browser-design-proxy.sh <app-dir>`
   (5 arms, 50 clauses: the static gate on source + bundle, the REAL toolbar → hover → click → composer pick on
   `pages/design.html`, toolbar-off / Escape / archive-while-armed / switch-workspace-while-armed / re-arm-inside-the-grace lifecycle, a pick while an
