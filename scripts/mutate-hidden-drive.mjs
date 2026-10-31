@@ -38,6 +38,8 @@ const MUTANTS = [
     from: '    if (!paintProbe) {\n      const probe', to: '    if (true as boolean) {\n      const probe' },
   { id: 'sway-answer-ignored', file: BP, test: TABS, pattern: 'sway KNOWS',
     from: '  if (sway !== null) {\n    paintVerdict', to: '  if (false as boolean) {\n    paintVerdict' },
+  { id: 'pulse-never-re-shown', file: BP, test: TABS, pattern: 'first show that yields NO frame',
+    from: '      if (!kicked && !pulse.aborted && Date.now() - t0 >= REKICK_AFTER_MS) {', to: '      if (false as boolean) {' },
   { id: 'hung-wake-not-a-stall', file: BP, test: TABS, pattern: 'F1 \\(b\\)',
     from: '  if (!done) paintVerdict = { at: Date.now(), ok: false };', to: '' },
   { id: 'navigation-detaches-the-VISIBLE-tab', file: BP, test: TABS, pattern: 'F5 \\(b\\)',

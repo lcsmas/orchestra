@@ -1536,8 +1536,10 @@ const WAKE_MS = 900;
 /** A capture of a hidden view can be served from its still-alive OLD compositor frame, which predates a DOM change made since (measured #406: ~1.4 % stale first shots after a
  *  11-13 ms wake; ~5 % stale for a timer-driven change inside a lease). EVERY hidden capture therefore primes (shows the page) and then waits for the renderer's next frame, bounded. */
 const FRESH_FRAME_MS = 200;
-/** A surface pulse waits this long for the page's own first frame before nudging it with a one-pixel resize. */
-const NUDGE_AFTER_MS = 300;
+/** A surface pulse that has not painted after this long RE-SHOWS the view (remove + add the child again): measured, a first show of a detached view sometimes yields no frame for 1.5 s while the very next show paints in 60 ms. */
+const REKICK_AFTER_MS = 300;
+/** …and after this long, still nothing: a one-pixel resize makes the renderer submit a frame (measured on a navigated, previously used tab). */
+const NUDGE_AFTER_MS = 700;
 /** Leases whose page took a capture while unthrottled: they need the unpin capture when they end. */
 const pinnedLeases = new Set<string>();
 /** Resolves at the SECOND frame the view delivers from now (the first is the subscription's refresh of the old surface), or after `ms`. Always ends its subscription. */
@@ -1697,13 +1699,23 @@ async function surfaceTabNow(tab: Tab, cover: Tab): Promise<void> {
   try {
     // painted = the view yields a non-empty capture (a frame subscription is not a reliable signal: measured, it stays silent on a re-shown static page that then captures fine)
     let nudged = false;
+    let kicked = false;
     while (!painted && !pulse.aborted && Date.now() - t0 < SURFACE_PULSE_MAX_MS) {
       const img = await Promise.race([wc.capturePage().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 250))]);
       if (img && !img.isEmpty()) {
         painted = true;
         break;
       }
-      if (!nudged && !pulse.aborted && Date.now() - t0 >= NUDGE_AFTER_MS) {
+      if (!kicked && !pulse.aborted && Date.now() - t0 >= REKICK_AFTER_MS) {
+        kicked = true;
+        try {
+          win.contentView.removeChildView(tab.view);
+        } catch {
+          /* already out */
+        }
+        win.contentView.addChildView(tab.view, 0); // under the cover again
+        tab.view.setVisible(true);
+      } else if (!nudged && !pulse.aborted && Date.now() - t0 >= NUDGE_AFTER_MS) {
         // a re-shown view whose page is static may never resubmit a frame (measured: a navigated, previously used tab): a one-pixel resize under the cover makes the renderer submit one
         nudged = true;
         const b = cover.view.getBounds();
@@ -1713,7 +1725,7 @@ async function surfaceTabNow(tab: Tab, cover: Tab): Promise<void> {
       }
       await sleep(50);
     }
-    log.info(`browser-panel: drive ${tabKeyOf(tab) || tab.id} pulse: ${painted ? 'painted' : 'NOT painted'} after ${Date.now() - t0} ms${nudged ? ' (nudged)' : ''}${pulse.aborted ? ' (ABORTED: the cover left)' : ''}`);
+    log.info(`browser-panel: drive ${tabKeyOf(tab) || tab.id} pulse: ${painted ? 'painted' : 'NOT painted'} after ${Date.now() - t0} ms${kicked ? ' (re-shown)' : ''}${nudged ? ' (nudged)' : ''}${pulse.aborted ? ' (ABORTED: the cover left)' : ''}`);
     while (!pulse.aborted && Date.now() - t0 < 450) await sleep(25); // measured: attach + 800 ms under the cover; the first frame alone is early
     // a document still loading (an action right after a click-through navigation) must not be hidden again (hideView would take it OUT): wait for it, bounded, then refuse with the true cause
     while (!pulse.aborted && Date.now() - t0 < LOAD_SETTLE_MAX_MS && liveContents(tab) && (wc.isLoading?.() || Date.now() - tab.stoppedAt < FIRST_PAINT_MS)) await sleep(40);

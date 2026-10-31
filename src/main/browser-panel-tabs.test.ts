@@ -112,10 +112,11 @@ bp.setCdpSeat(testSeat);
 bp.setTabTeardownHook((wc) => seat.seatForceDetach(wc as any));
 
 const children = new Set<unknown>(); // every view that is a CHILD of the window (visible or hidden — #406)
+const adds = new Map<unknown, number>(); // how many times each view was (re-)added to the window
 const attached = { // the views COMPOSITED on screen: children that are not setVisible(false)
   get size() { return [...children].filter((v) => (v as { visible?: boolean }).visible !== false).length; },
   has: (v: unknown) => children.has(v) && (v as { visible?: boolean }).visible !== false,
-  add: (v: unknown) => children.add(v),
+  add: (v: unknown) => { adds.set(v, (adds.get(v) ?? 0) + 1); return children.add(v); },
   delete: (v: unknown) => children.delete(v),
 };
 const uiWaiting: Array<() => void> = [];
@@ -832,6 +833,20 @@ test('F1 (a) an action on a window that paints NOTHING is refused fast — befor
     uiProbe.paints = true;
     await nap(800); // the verdict is cached for PAINT_VERDICT_TTL_MS: do not leak a "stalled" verdict into the next test
   }
+});
+
+test('a first show that yields NO frame is re-shown (the child is removed and added again) and then paints — the measured 1.5 s flake of a never-composited tab (#406 P6)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' }); // never composited → the screenshot pulses it
+  const v = viewOf(t2);
+  const frame = { getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') };
+  wcOf(t2).capturePage = () => Promise.resolve({ ...frame, isEmpty: () => (adds.get(v) ?? 0) < 2 }); // empty until the view has been added a SECOND time
+  const t0 = Date.now();
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0, 'answered');
+  assert.ok((adds.get(v) ?? 0) >= 2, 'the view was re-added');
+  assert.ok(Date.now() - t0 < 1400, `and fast (${Date.now() - t0} ms), not after the 1.5 s pulse bound`);
+  await nap(900);
 });
 
 test('F1 sway KNOWS: a window on an undisplayed workspace is refused even when the capture probe would answer, and displayed again it works (#406)', async () => {
