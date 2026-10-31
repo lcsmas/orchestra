@@ -149,9 +149,15 @@ export function BrowserPanel({ workspaceId, isActive }: Props) {
   useEffect(() => {
     if (!designArmed) return;
     let stopped = false;
+    let inFlight = false; // one poll at a time: a pick's poll also takes the element screenshot (~100-150 ms), and a tick landing after main released the attach would re-take it (#406)
     const timer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
       void window.orchestra
         .browserDesignPoll(workspaceId)
+        .finally(() => {
+          inFlight = false;
+        })
         .then((res) => {
           if (stopped || !res) return;
           // Escape in the page = cancel; disarm without capturing.

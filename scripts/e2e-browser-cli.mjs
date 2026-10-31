@@ -37,7 +37,7 @@ const MUTANTS = {
   'env-scrub': { file: 'cli', edits: [['for (const [k, v] of Object.entries(fromHost)) out[k] = v;', 'for (const [k, v] of Object.entries(fromHost)) out[k] = v; for (const [k, v] of Object.entries(parent)) if (k.startsWith("AGENT_BROWSER_") && typeof v === "string") out[k] = v;']], arms: ['cross-workspace'], why: 'the caller\'s AGENT_BROWSER_* env reaches the client (it can re-point at a sibling\'s daemon)' },
   'stale-map': { file: 'cli', edits: [['const STALE_PATTERNS = [/Could not locate element with role=/i, /Unknown ref:/i, /stale ref/i, /no longer (?:attached|exists)/i];', 'const STALE_PATTERNS = [];']], arms: ['stale-ref'], why: 'a stale ref is reported as the raw agent-browser error, not browser_stale_ref' },
   'allowlist-open': { file: 'cli', edits: [['if (!BROWSER_COMMANDS.has(command)) {', 'if (false) {'], ['if (command in REFUSED_COMMANDS) {', 'if (false) {'], ['if (REFUSED_FLAGS.has(name)) {', 'if (false) {']], arms: ['allowlist'], why: 'every agent-browser command and flag passes through' },
-  'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['background'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes (the probe → deadline → capturePage chain runs for real)' },
+  'hidden-refused': { file: 'chunk', edits: [[/(function [\w$]+\(e\)\{return e\.tab\?e\.tab\.surface==="visible"\?\{act:"direct"\}:)/, '$1e.kind!=="other"?{act:"refuse",reason:"needs-first-paint",message:"refused (mutant)"}:']], arms: ['background'], why: '#406 lift undone: a background workspace\'s screenshot / click are refused again (the pre-lift behaviour)' },
   'no-about-blank': { file: 'chunk', edits: [[/!(\w+)\.getURL\(\)&&!\1\.isLoading\(\)&&await Promise\.race\(\[\1\.loadURL\("about:blank"\)\.catch\(\(\)=>\{\}\),new Promise\((\w+)=>setTimeout\(\2,5e3\)\)\]\)[;,]/, '']], arms: ['smoke'], why: 'a never-navigated tab is attached as is (Runtime.evaluate hangs, agent-browser gives up: "tab is not responding")' },
   'daemon-neuter': { file: 'chunk', edits: [[/\(async\(\)=>\{if\(await (\w+)\.canConnect\((\w+)\)\)return;/, '(async()=>{return;']], arms: ['daemon-host-owned'], why: 'the host never starts the daemon; the first agent client does, with the agent\'s env, inside the member\'s scope' },
   'daemon-env-leak': { file: 'chunk', edits: [[/execFile\((\w+),(\w+),\{env:(\w+),timeout/, 'execFile($1,$2,{env:{...process.env,...$3},timeout']], arms: ['daemon-host-owned'], why: 'the host spawns the daemon with the app\'s whole environment' },
@@ -611,12 +611,18 @@ const ARM_FNS2 = {
     const snap = await cli(ctx, W2, ['snapshot', '-i']);
     const link = refOf(snap.stdout, 'link', 'CLI page');
     clause(A, 'ctl/background-workspace-can-read', snap.code === 0 && !!link, `W2 (not on screen) snapshot: ${show(snap)}`);
+    // #406: a background workspace is DRIVEN IN PLACE (screenshot / click work; nothing is brought to the front) — before it, both failed fast with "Browser pane is not on screen"
     const shot = await cli(ctx, W2, ['screenshot', path.join(ctx.world.fakeHome, 'bg.png')], { timeoutMs: 45000 });
-    clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /Browser pane is not on screen/.test(shot.stderr), show(shot));
+    let png = null; try { png = decodePng(fs.readFileSync(path.join(ctx.world.fakeHome, 'bg.png'))); } catch { /* not written / not a png */ }
+    clause(A, 'screenshot-works-in-a-background-workspace', shot.code === 0 && shot.ms < 9000 && !!png && png.w > 100 && png.h > 100, `${show(shot)} → ${png ? `a ${png.w}×${png.h} PNG` : 'no readable PNG'}`);
     const click = await cli(ctx, W2, ['click', link], { timeoutMs: 45000 });
-    clause(A, 'click-fails-fast-nothing-dispatched', click.code !== 0 && click.ms < 9000 && /not on screen|outside the viewport/.test(click.stderr), show(click));
+    await waitFor(async () => (await ctx.o2.eval(`location.pathname`)) !== '/index.html', 8000, "W2's page to follow the clicked link").catch(() => {});
     const still = await ctx.o2.eval(`location.pathname`);
-    clause(A, 'ctl/nothing-was-clicked', still === '/index.html', `W2's page is still ${still} (the refused click was not dispatched or queued)`);
+    clause(A, 'click-lands-in-a-background-workspace', click.code === 0 && click.ms < 9000 && still === '/cli.html', `${show(click)}; W2's page is now ${still} (the click landed on the background tab)`);
+    const w1Active = await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`);
+    clause(A, 'ctl/the-focused-workspace-is-untouched', w1Active, `${W1.branch} is still the active workspace (nothing was brought to the front)`);
+    await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W2.id)}, ${sel(ctx.FIX + '/index.html')}).then(() => true)`); // put W2's page back for the arms after this one
+    await waitFor(async () => (await ctx.o2.eval(`location.pathname`)) === '/index.html', 8000, "W2's page to be back on /index.html").catch(() => {});
   },
 
   async 'daemon-host-owned'(ctx) {

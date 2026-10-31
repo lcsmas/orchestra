@@ -348,7 +348,7 @@ const ARM_FNS = {
       await softWait(async () => (await reg(ctx, W1)).find((t) => t.active)?.openedBy === 'human', 8000, 'Back to give the human their tab');
       const gone = await softWait(async () => (await noticeOf()) === null, 5000, 'the notice to clear');
       clause(A, 'back-gives-the-human-their-tab-and-clears-the-notice', (await reg(ctx, W1)).find((t) => t.active)?.openedBy === 'human' && !!gone, `active tab ${JSON.stringify((await reg(ctx, W1)).find((t) => t.active)?.id)} (human); notice cleared ${!!gone}`);
-    } else nym(A, 397, 'an agent tab is marked in the strip, the human is told with a way back, an acting command brings its tab to the front', 'the agent tab shows in the strip (clause above) but no mark, notice or Back control exists', 'one agent-marked tab, a notice naming the agent page and a Back button naming the human page');
+    } else nym(A, 397, 'an agent tab is marked in the strip, the human is told with a way back; an acting command is driven in place', 'the agent tab shows in the strip (clause above) but no mark, notice or Back control exists', 'one agent-marked tab, a notice naming the agent page and a Back button naming the human page');
     const o = await oracle(ctx, `${FIX}/cli.html`);
     const snap = await cli(ctx, W1, ['snapshot', '-i']); const go = refOf(snap.stdout, 'button', 'Go');
     const pre = await o.eval(`document.getElementById('out').textContent`);
@@ -362,8 +362,8 @@ const ARM_FNS = {
     if (img) saveShot('flow-cli-screenshot.png', fs.readFileSync(dest));
     if (isMerged(397)) {
       const act = (await reg(ctx, W1)).find((t) => t.active);
-      const note2 = await softWait(noticeOf, 5000, 'the notice after an acting command');
-      clause(A, 'an-acting-command-brings-its-tab-to-the-front-and-says-so', act?.openedBy === 'agent' && /CLI fixture/.test(note2 ?? ''), `after the agent's click/screenshot the active tab is ${JSON.stringify(act && [act.id, act.openedBy])}; notice ${JSON.stringify(note2)}`);
+      const note2 = await noticeOf();
+      clause(A, 'an-acting-command-is-driven-in-place-the-human-keeps-the-screen', act?.openedBy === 'human' && note2 === null, `after the agent's click/screenshot the active tab is ${JSON.stringify(act && [act.id, act.openedBy])} (the human's); notice ${JSON.stringify(note2)} — #406: a tab nobody looks at is driven in place, an acting command no longer brings it to the front`);
       const lst = await cli(ctx, W1, ['tab', 'list']), lines = lst.stdout.split('\n').map((l) => l.trim());
       clause(A, 'tab-list-says-who-opened-which', lst.code === 0 && lines.some((l) => /cli\.html/.test(l) && /\(yours\)$/.test(l)) && lines.some((l) => /flow\.html/.test(l) && /\(the user's\)$/.test(l)), show(lst));
       const humanId = labelOf(lst, /\/flow\.html/);
@@ -442,6 +442,10 @@ const ARM_FNS = {
   async design(ctx) {
     const { W1, FIX, ui } = ctx; const A = 'design';
     await cli(ctx, W1, ['open', `${FIX}/design-react18.html`]);
+    // #406: an acting command no longer brings the agent's tab to the front, and design mode arms on the ACTIVE tab — show the page as a person would (an explicit `tab <ref>` = Page.bringToFront)
+    const lstD = await cli(ctx, W1, ['tab', 'list']), dl = labelOf(lstD, /\/design-react18\.html/);
+    if (dl) await cli(ctx, W1, ['tab', dl]);
+    await softWait(async () => /design-react18/.test((await reg(ctx, W1)).find((t) => t.active)?.url ?? ''), 8000, 'the design page to be the active tab');
     const p = await oracle(ctx, `${FIX}/design-react18.html`);
     const btn = await rectOf(ctx, '[aria-label="Design mode"]');
     clause(A, 'ctl/design-button-exists', !!btn, `toolbar [aria-label="Design mode"] ${JSON.stringify(btn)}`);
@@ -474,6 +478,8 @@ const ARM_FNS = {
     clause(A, 'agent-in-another-workspace-sees-anon', other.code === 0 && otherTxt.stdout.trim() === 'anon' && body2 === 'anon' && !jar2.includes('sid='), `W2 agent: ${show(otherTxt)} · oracle body ${JSON.stringify(body2)} · W2 document.cookie ${JSON.stringify(jar2)}`);
     ctx.sid = sid;
     await selectWs(ctx, W1);
+    await typeUrl(ctx, `${FIX}/flow.html?after-signin-cookies`); // no tab may stay on /signin: the restart arm reloads every saved tab, and a reloaded /signin mints a NEW sid (it used to be moved off by the popup arm's trailing `open`, which now lands on the agent's own tab, #406)
+    await sleep(500);
   },
 
   async memory(ctx) {
@@ -515,7 +521,7 @@ const ARM_FNS = {
     await selectWs(ctx, W1); await openPane(ctx);
     // a NEW workspace: the app installs its skills into the new worktree; the skill is read from that file
     const made = await ctx.ui.eval(`window.orchestra.createWorkspace({ repoPath: ${sel(world.repoDir)} }).then((w) => ({ id: w.id, worktreePath: w.worktreePath }))`);
-    const skillFile = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-browser', 'SKILL.md'), sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-link', 'SKILL.md');
+    const skillFile = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-browser', 'SKILL.md'), sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-comms', 'SKILL.md');
     await softWait(() => fs.existsSync(sibling), 30000, 'the app to install its skills into the NEW worktree');
     clause(A, 'ctl/the-app-installed-its-skills-in-the-new-worktree', fs.existsSync(sibling), `${sibling} ${fs.existsSync(sibling) ? 'exists' : 'MISSING'}`);
     const installed = fs.existsSync(skillFile) ? fs.readFileSync(skillFile, 'utf8') : null;

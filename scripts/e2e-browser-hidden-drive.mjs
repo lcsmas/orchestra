@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['diag', 'act', 'cpu', 'never', 'orphan'];
+const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan'];
 // Each edit is a regex over the MINIFIED main chunk (names captured, not hard-coded) and must match EXACTLY once. `arms` = the arms that must go RED.
 const ID = '[\\w$]+';
 const ACTIVATE_TAB = /function ([\w$]+)\(e,t\)\{const n=[\w$]+\(e\),r=n==null\?void 0:n\.tabs\.find\(s=>s\.id===t\);if\(!n\|\|!r\)throw new Error\(`browser tab \$\{t\} not found in workspace \$\{e\}`\);return [\w$]+\(n,r\),n\.state\}/;
@@ -51,6 +51,7 @@ const MUTANTS = {
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
     edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
+const KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
 const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -60,7 +61,7 @@ if (argv.includes('--list')) {
 
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARM_LIST = (flag('--arm', null) ?? ARMS.filter((a) => a !== 'diag').join(',')).split(',').sort((a, b) => ARMS.indexOf(a) - ARMS.indexOf(b)); // canonical order whatever --arm lists: `restart` needs the daemon's FIRST ids
+const ARM_LIST = (flag('--arm', null) ?? ARMS.filter((a) => a !== 'diag' && a !== 'stale').join(',')).split(',').sort((a, b) => ARMS.indexOf(a) - ARMS.indexOf(b)); // canonical order whatever --arm lists: `restart` needs the daemon's FIRST ids
 const MUTANT = flag('--mutant', null);
 
 // Memory floor (the fleet guard): a 1 Hz MemAvailable read; < 6.5 GB kills the app (teardown still runs) and turns the verdict red. Scope shmem before/after: a leaked rig process once killed #407's scope.
@@ -563,7 +564,7 @@ async function populate(ctx, which, idBase) {
 const guarded = (ctx, p) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`run stuck > 120 s at ${ctx.step}`)), 120000))]);
 
 /** ONE agent action on a hidden tab, through the proxy: 3 screenshot forms, a click, typed text; every P1–P4 reading. */
-async function oneRun(ctx, kind, W, id, runNo, ep) {
+async function oneRun(ctx, kind, W, id, runNo, ep, fast = false) {
   const S = (name) => { ctx.step = `${kind}#${runNo}/id${id}:${name}`; if (argv.includes('--trace')) console.log(`    [step] ${ctx.step}`); };
   S('connect-oracle');
   const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
@@ -572,9 +573,9 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   await o.eval(`document.getElementById('in').value = ''; __hd.set('#${wantHex}')`); // the page changes while the tab is hidden + throttled: a stale frame cannot read `want`
   await sleep(1500);
   S('human-state');
-  const before = await humanState(ctx); const rect = await rectOf(ctx, '.browser-panel:not(.browser-panel-hidden) .browser-holder');
+  const before = fast ? null : await humanState(ctx); const rect = fast ? null : await rectOf(ctx, '.browser-panel:not(.browser-panel-hidden) .browser-holder');
   S('leak-sampler');
-  const leak = startLeakSampler(ctx, rect);
+  const leak = fast ? null : startLeakSampler(ctx, rect);
   S('proxy-attach');
   const raw = await rawProxyClient(ep.wsUrl);
   const tid = await waitFor(async () => { const t = await raw.call('Target.getTargets'); return t.result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null; }, 8000, `proxy target for id ${id}`);
@@ -582,13 +583,14 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   const forms = [['default', { format: 'png' }], ['fromSurface:false', { format: 'png', fromSurface: false }], ['captureBeyondViewport', { format: 'png', captureBeyondViewport: true }]];
   const rot = runNo % 3; const order = [...forms.slice(rot), ...forms.slice(0, rot)];
   const t0 = Date.now(); const shots = [];
-  for (const [name, params] of order) {
+  for (const [name, params] of fast ? order.slice(0, 1) : order) {
     S(`shot-${name}`);
     const r = await raw.callOn(sid, 'Page.captureScreenshot', params); const ms = Date.now() - t0;
     let color = null, fresh = false;
     if (r.result?.data) { try { const I = decodePng(Buffer.from(r.result.data, 'base64')); color = blockColor(I, I.w >> 1, I.h >> 1, 8); fresh = near(color, want, 14); } catch { /* not a png */ } }
-    shots.push({ name, fresh, ms, color, error: r.error?.message });
+    shots.push({ name, fresh, ms, color, error: r.error?.message, at: new Date(t0).toISOString(), want: wantHex });
   }
+  if (fast) { raw.close(); o.close(); return { kind, id, runNo, t: Date.now(), shots }; }
   // click + type (CDP Input.* through the proxy)
   S('click-type');
   const m0 = await o.eval('__hd.mouse()'); const tIn = Date.now();
@@ -597,6 +599,13 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   await raw.callOn(sid, 'Input.insertText', { text: 'hello' });
   let landed = null; for (let i = 0; i < 60 && landed === null; i++) { const [m, v] = await o.eval('[__hd.mouse(), __hd.value()]'); if (m > m0 && v === 'hello') landed = Date.now() - tIn; else await sleep(20); }
   const miss = landed === null || landed > 700 ? await o.eval('[__hd.mouse() - ' + m0 + ', __hd.value(), document.activeElement && document.activeElement.id, document.visibilityState, __hd.ticks()]').catch((e) => String(e)) : null; // evidence for a P2 miss: did the click land, was the text typed, who had focus
+  // P2b: a page effect that needs a TIMER (150 ms) must be on screen 450 ms later — the lease keeps the page unthrottled for the action; a throttled page fires it up to 1 s late
+  S('timer-effect');
+  const want2 = PALETTE[(runNo + 5) % PALETTE.length], want2Hex = want2.map((v) => v.toString(16).padStart(2, '0')).join('');
+  await o.eval(`__hd.later('#${want2Hex}', 150)`); await sleep(450);
+  const r2 = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); let c2 = null, fresh2 = false;
+  if (r2.result?.data) { try { const I2 = decodePng(Buffer.from(r2.result.data, 'base64')); c2 = blockColor(I2, I2.w >> 1, I2.h >> 1, 8); fresh2 = near(c2, want2, 14); } catch { /* not a png */ } }
+  const timerEffect = { fresh: fresh2, color: c2, want: want2Hex };
   S('leak-stop');
   const lk = await leak.stop(t0); const after = await humanState(ctx);
   raw.close(); const tEnd = Date.now();
@@ -604,7 +613,7 @@ async function oneRun(ctx, kind, W, id, runNo, ep) {
   // P3: the view is throttled again 2 s after the last action: tick rate over the next second
   await sleep(Math.max(0, tEnd + 2000 - Date.now())); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const b = await o.eval('__hd.ticks()'); const rate = +(((b - a) / ((Date.now() - ta) / 1000))).toFixed(1);
   o.close();
-  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss };
+  return { kind, id, runNo, t: Date.now(), shots, landed, leak: lk, human: before.active === after.active && before.tabs === after.tabs && !after.notice && before.focus === after.focus, humanDetail: `${JSON.stringify(before)} -> ${JSON.stringify(after)}`, timersPerS: rate, miss, timerEffect };
 }
 
 function judgeRuns(arm, label, runs) {
@@ -612,11 +621,12 @@ function judgeRuns(arm, label, runs) {
   for (const kind of ['tab', 'workspace']) {
     const rs = by(kind); if (!rs.length) continue;
     const forms = ['default', 'fromSurface:false', 'captureBeyondViewport'];
-    const stale = rs.flatMap((r) => r.shots).filter((s) => !s.fresh);
+    const stale = rs.flatMap((r) => r.shots.map((s, idx) => ({ ...s, run: r.runNo, id: r.id, idx }))).filter((s) => !s.fresh);
     const first = rs.map((r) => r.shots[0].ms), allMs = rs.flatMap((r) => r.shots.map((s) => s.ms));
-    clause(arm, `${label}/${kind}/P1-first-screenshot-fresh-all-forms`, rs.length >= 20 && stale.length === 0, `${rs.length} runs × 3 forms (${forms.join(', ')}): ${stale.length} stale/failed ${stale.slice(0, 3).map((s) => `${s.name}:${s.error ?? JSON.stringify(s.color)}`).join(' ')}; every form fresh in every run`);
+    clause(arm, `${label}/${kind}/P1-first-screenshot-fresh-all-forms`, rs.length >= 20 && stale.length === 0, `${rs.length} runs × 3 forms (${forms.join(', ')}): ${stale.length} stale/failed ${stale.slice(0, 6).map((s) => `${s.name}:${s.error ?? JSON.stringify(s.color)}@run#${s.run}/id${s.id}/shot${s.idx}/${s.ms}ms/${s.at}`).join(' ')}; every form fresh in every run`);
     clause(arm, `${label}/${kind}/P1-within-2s`, Math.max(...allMs) <= 2000, `slowest screenshot ${Math.max(...allMs)} ms after the action began (first form: median ${median(first)} / p95 ${pct(first, 0.95)} ms)`);
     clause(arm, `${label}/${kind}/P2-click-and-type-land-700ms`, rs.length >= 20 && rs.every((r) => r.landed !== null && r.landed <= 700), `${rs.filter((r) => r.landed !== null && r.landed <= 700).length}/${rs.length} landed ≤ 700 ms (median ${median(rs.map((r) => r.landed))} ms)${rs.filter((r) => r.landed === null || r.landed > 700).map((r) => ` · MISS run#${r.runNo} id${r.id} landed=${r.landed} shots=${r.shots.map((x) => `${x.name}:${x.ms}ms`).join(',')} state(clicks,value,focus,vis,ticks)=${JSON.stringify(r.miss)}`).join('')}`);
+    clause(arm, `${label}/${kind}/P2b-timer-driven-page-effect-visible-during-the-action`, rs.length >= 20 && rs.every((r) => r.timerEffect?.fresh), `${rs.filter((r) => r.timerEffect?.fresh).length}/${rs.length} runs: a 150 ms page timer's colour change is in a screenshot 450 ms later (a throttled page fires it up to 1 s late)${rs.filter((r) => !r.timerEffect?.fresh).slice(0, 3).map((r) => ` · run#${r.runNo} got ${JSON.stringify(r.timerEffect?.color)} want ${r.timerEffect?.want}`).join('')}`);
     clause(arm, `${label}/${kind}/P3-throttled-again-within-2s`, rs.every((r) => r.timersPerS <= 2), `timers/s in the second after +2 s: max ${Math.max(...rs.map((r) => r.timersPerS))} over ${rs.length} runs (limit 2)`);
     clause(arm, `${label}/${kind}/P4-the-humans-view-never-changes`, rs.every((r) => r.human) && Math.max(...rs.map((r) => r.leak.max)) <= 0.002, `${rs.filter((r) => r.human).length}/${rs.length} runs: same active tab, no notice, same focus; compositor leak (excess over the pane's own baseline ${(Math.max(...rs.map((r) => r.leak.base)) * 100).toFixed(2)} %) max ${(Math.max(...rs.map((r) => r.leak.max)) * 100).toFixed(2)} % of the pane over ${rs.reduce((s, r) => s + r.leak.samples, 0)} samples${rs.find((r) => !r.human) ? ' — ' + rs.find((r) => !r.human).humanDetail : ''}`);
   }
@@ -700,6 +710,38 @@ const ARM_FNS = {
     ctx.actRuns = { runs8, runs40 };
   },
 
+  /** P1 hunt (NOT a pass criterion): ONLY the first screenshot after a colour change on a throttled hidden tab, optionally under CPU load (--load K busy workers at nice 5) — a stale-frame reproducer and an A/B for a fix */
+  async stale(ctx) {
+    const A = 'stale';
+    const ep = {}; for (const W of ctx.world.workspaces) ep[W.id] = await hostCall(ctx, '/browser', { id: W.id, key: W.key });
+    ctx.ep = ep;
+    ctx.ids = await populate(ctx, [ctx.W1], 100); const w2 = await populate(ctx, [ctx.world.workspaces[1]], 200); Object.assign(ctx.ids, w2);
+    ctx.ids[ctx.world.workspaces[1].id] = ctx.ids[ctx.world.workspaces[1].id].slice(0, 1);
+    const kids = []; for (let i = 0; i < LOAD_K; i++) kids.push(spawn('/usr/bin/nice', ['-n', '5', process.execPath, '-e', 'for(;;){}'], { stdio: 'ignore' }));
+    const stopLoad = () => { for (const k of kids) { try { k.kill('SIGKILL'); } catch { /* gone */ } } };
+    process.on('exit', stopLoad);
+    const load0 = fs.readFileSync('/proc/loadavg', 'utf8').split(' ').slice(0, 3).join(' ');
+    const runs = [];
+    try {
+      for (let i = 0; i < RUNS_STALE; i++) {
+        const kind = KINDS_ONLY ?? (i % 2 ? 'workspace' : 'tab');
+        const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
+        const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
+        runs.push(await guarded(ctx, oneRun(ctx, kind, W, pool[Math.floor(i / (KINDS_ONLY ? 1 : 2)) % pool.length], i, ep[W.id], true)));
+        await sleep(STALE_GAP);
+      }
+    } finally { stopLoad(); }
+    const load1 = fs.readFileSync('/proc/loadavg', 'utf8').split(' ').slice(0, 3).join(' ');
+    await sleep(300);
+    const alive = kids.filter((k) => { try { process.kill(k.pid, 0); return true; } catch { return false; } }).length;
+    clause('ctl', 'load-workers-gone', alive === 0, `${kids.length} busy workers started, ${alive} still alive after the stop`);
+    const shots = runs.flatMap((r) => r.shots.map((s) => ({ ...s, run: r.runNo, kind: r.kind, id: r.id })));
+    const bad = shots.filter((s) => !s.fresh);
+    const by = (k) => shots.filter((s) => s.kind === k);
+    clause(A, 'first-shot-fresh', bad.length === 0, `${shots.length} first shots under load K=${LOAD_K} (loadavg ${load0} → ${load1}): ${bad.length} stale/failed (tab ${by('tab').filter((s) => !s.fresh).length}/${by('tab').length}, workspace ${by('workspace').filter((s) => !s.fresh).length}/${by('workspace').length}) ${bad.slice(0, 8).map((s) => `${s.name}:${s.error ?? JSON.stringify(s.color)}@run#${s.run}/${s.kind}/id${s.id}/${s.ms}ms/${s.at}`).join(' ')}; shot ms median ${median(shots.map((s) => s.ms))} p95 ${pct(shots.map((s) => s.ms), 0.95)} max ${Math.max(...shots.map((s) => s.ms))}`);
+    try { fs.copyFileSync(path.join(ctx.armDir, 'app-boot1.log'), path.join(OUT, 'stale-app-boot1.log')); fs.copyFileSync(path.join(ctx.world.ohome, 'logs', 'orchestra.log'), path.join(OUT, 'stale-orchestra.log')); } catch { /* evidence only */ }
+  },
+
   /** P3 (CPU): a 40-view population after a burst of agent actions costs no more than a never-acted control (≤ 10 % of a core) */
   async cpu(ctx) {
     const A = 'cpu';
@@ -731,6 +773,7 @@ const ARM_FNS = {
   /** P6: a tab that never loaded while attached (created through the proxy in a workspace nobody opened) answers when something covers its first frame, and is refused FAST and clearly when nothing does */
   async never(ctx) {
     const A = 'never', W6 = ctx.world.workspaces[5];
+    await selectWs(ctx, ctx.W1); await openPane(ctx); // standalone (`--arm never`) the pane starts closed: the refusal half toggles it
     const ep = ctx.ep ?? (ctx.ep = {}); ep[W6.id] = ep[W6.id] ?? await hostCall(ctx, '/browser', { id: W6.id, key: W6.key });
     const results = [];
     for (let i = 0; i < RUNS_NEVER; i++) {
@@ -830,9 +873,11 @@ fs.writeFileSync(path.join(OUT, 'result.json'), JSON.stringify({ app: APP_DIR, m
 let verdict, rc;
 if (MUTANT) {
   const want = MUTANTS[MUTANT].arms;
-  const redArms = new Set(armRed.map((c) => c.arm));
+  const aborted = armRed.filter((c) => c.clause === 'arm-completed' && want.includes(c.arm)); // an ABORTED arm is not a kill: its clauses after the abort never ran
+  const redArms = new Set(armRed.filter((c) => c.clause !== 'arm-completed').map((c) => c.arm));
   const missed = want.filter((a) => !redArms.has(a));
-  ({ verdict, rc } = ctlRed.length === 0 && missed.length === 0
+  ({ verdict, rc } = aborted.length ? { verdict: `MUTANT ${MUTANT} INVALID: arm(s) ${aborted.map((c) => c.arm).join(', ')} ABORTED (${aborted.map((c) => c.detail).join('; ').slice(0, 200)}) — fix the arm, a kill by abort proves nothing`, rc: 1 }
+    : ctlRed.length === 0 && missed.length === 0
     ? { verdict: `MUTANT ${MUTANT} KILLED: arm(s) ${want.join(', ')} red (${armRed.filter((c) => want.includes(c.arm)).map((c) => c.clause).join(', ')}), every control green; other red arms: ${[...redArms].filter((a) => !want.includes(a)).join(', ') || 'none'}`, rc: 0 }
     : { verdict: `MUTANT ${MUTANT} SURVIVED/INVALID: arms not red: ${missed.join(', ') || 'none'}; controls red: ${ctlRed.map((c) => c.clause).join('; ') || 'none'}`, rc: 1 });
 } else {

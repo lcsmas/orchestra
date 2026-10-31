@@ -40,7 +40,7 @@ class WebContents {
   once() {} setWindowOpenHandler() {}
   setBackgroundThrottling(v) { (this.throttle ??= []).push(v); }
   isLoading() { return !!this.loadingNow; }
-  beginFrameSubscription(_dirty, cb) { this.subs = (this.subs ?? 0) + 1; setTimeout(() => cb({ getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') }), 1); }
+  beginFrameSubscription(_dirty, cb) { this.subs = (this.subs ?? 0) + 1; const f = { getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') }; setTimeout(() => cb(f), 1); setTimeout(() => cb(f), 3); }
   endFrameSubscription() { this.subs = (this.subs ?? 1) - 1; }
   loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }
   reload() { this.reloaded = true; }
@@ -623,6 +623,70 @@ test('a lease on a hidden tab flips throttling OFF around the action, and its en
   lease.end();
   await nap(900);
   assert.deepEqual(events, ['throttle:false', 'capture', 'throttle:true', 'capture'], 'flip back FIRST, then the unpin capture — the other order would pin the page unthrottled again');
+});
+
+test('EVERY hidden screenshot primes (shows the page) and then waits for the renderer\'s next paint — the SECOND subscription frame, the first being the refresh of the old surface — and always ends its subscription (#406 P1)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2'); // surfaces the tab
+  await nap(1700); // past the 1500 ms "just surfaced" window (a surfaced tab needs no prime)
+  const wc = wcOf(t2);
+  const frame = { getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') };
+  let cb: ((f: unknown) => void) | null = null;
+  wc.beginFrameSubscription = (_d: boolean, f: (x: unknown) => void) => { wc.subs = (wc.subs ?? 0) + 1; cb = f; };
+  let done = false;
+  const shot = bp.capture(ws, 75, 't2').then((r) => { done = true; return r; });
+  await nap(80);
+  assert.equal(done, false, 'still waiting: no frame has arrived');
+  cb!(frame);
+  await nap(40);
+  assert.equal(done, false, 'the FIRST frame is the refresh of the old surface: not enough');
+  cb!(frame);
+  assert.ok((await shot).length > 0);
+  assert.equal(wc.subs, 0, 'its subscription is ended');
+  // and a SECOND screenshot inside the linger primes and waits again (a change made since the first one is as stale-prone)
+  let again = false;
+  const shot2 = bp.capture(ws, 75, 't2').then((r) => { again = true; return r; });
+  await nap(80);
+  assert.equal(again, false, 'the second screenshot waits for its own paint');
+  cb!(frame); cb!(frame);
+  assert.ok((await shot2).length > 0);
+  await nap(900);
+});
+
+test('the next-paint wait is bounded: a page that paints nothing new releases the screenshot after FRESH_FRAME_MS and the subscription is ended (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2'); // surfaces the tab
+  await nap(1700); // past the 1500 ms "just surfaced" window (a surfaced tab needs no prime)
+  const wc = wcOf(t2);
+  wc.beginFrameSubscription = () => { wc.subs = (wc.subs ?? 0) + 1; };
+  const t0 = Date.now();
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0);
+  const waited = Date.now() - t0;
+  assert.ok(waited >= 150 && waited < 700, `bounded wait, got ${waited} ms`);
+  assert.equal(wc.subs, 0);
+  await nap(900);
+});
+
+test('a tab surfaced by THIS action needs no prime: its frame was just painted under the cover, so the screenshot does not wait for another paint (P6 stays under 2 s)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  const wc = wcOf(t2);
+  const frame = { getSize: () => ({ width: 800, height: 600 }), crop() { return this; }, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpeg') };
+  wc.beginCalls = 0;
+  wc.beginFrameSubscription = (_d: boolean, f: (x: unknown) => void) => { wc.beginCalls += 1; setTimeout(() => f(frame), 1); setTimeout(() => f(frame), 3); };
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0);
+  assert.equal(wc.beginCalls, 1, 'one subscription: the surface pulse\'s — no prime + next-paint wait on top');
+  await nap(900);
+  assert.ok((await bp.capture(ws, 75, 't2')).length > 0); // inside the lease linger, but past nothing: still the surfaced tab
+  await nap(1700);
+  await bp.capture(ws, 75, 't2');
+  assert.ok(wc.beginCalls >= 2, 'a later screenshot (past the window) primes and waits again');
+  await nap(900);
 });
 
 test('a lease for evaluate (no frame needed) flips throttling and takes NO capture, so nothing to unpin (#406)', async () => {

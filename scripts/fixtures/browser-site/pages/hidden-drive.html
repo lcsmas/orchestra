@@ -12,5 +12,5 @@ set('#' + (q.get('c') || 'd62728'));
 let ticks = 0, mouse = 0;
 setInterval(() => { ticks++; }, 50);
 addEventListener('mousedown', () => { mouse++; }, true);
-window.__hd = { set, ticks: () => ticks, mouse: () => mouse, value: () => document.getElementById('in').value };
+window.__hd = { set, later: (c, ms) => setTimeout(() => set(c), ms), ticks: () => ticks, mouse: () => mouse, value: () => document.getElementById('in').value };
 </script></body></html>

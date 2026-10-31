@@ -250,9 +250,11 @@ async function attachLease(wsId: string, tabId: string): Promise<{ channel: CdpT
 /** What `browser-panel.ts` calls instead of attaching anything itself. */
 export const panelCdpSeat: bp.CdpSeat = {
   async send(wsId, tabId, method, params) {
+    if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`seat-send[${wsId.slice(0, 8)}] ${tabId} ${method}`);
     return sendOnLease(await attachLease(wsId, tabId), method, params, LEASE_SEND_MAX_MS);
   },
   async hold(wsId, tabId) {
+    if (process.env.ORCHESTRA_CDP_TRACE) blog.info(`seat-hold[${wsId.slice(0, 8)}] ${tabId}`);
     return (await attachLease(wsId, tabId)).release;
   },
 };

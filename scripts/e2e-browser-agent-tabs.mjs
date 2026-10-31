@@ -46,10 +46,9 @@ const MUTANTS = {
   'close-any-tab': { file: 'chunk', edits: [[/,(\w+)=(\w+)\((\w+),(\w+),(\w+)\)(?=,\w+=\1\.ok&&\w+&&\w+===\3\?)/, ',$1=$2($3,$4,"human")']], arms: ['ownership'], why: 'the proxy closes a tab the user opened (agent closes as the human)' },
   'preflight-off': { file: 'cli', edits: [['if (!verdict.run) {', 'if (false) {']], arms: ['ownership', 'restart'], why: 'the CLI hands a forbidden `tab close` to agent-browser, which prints "closed" and forgets the tab' },
   'list-unannotated': { file: 'cli', edits: [['if (tab.op === "list" && run.code === 0 && abTabs && hostTabs.length > 0) {', 'if (false) {']], arms: ['open'], why: '`tab list` no longer says who opened each tab' },
-  'no-front-on-acting': { file: 'chunk', edits: [[/(\w+)\((\w+)\)&&this\.bringToFrontIfBackground\((\w+)\),(?=\w+\.has\(\2\))/, '']], arms: ['front', 'refs'], why: 'only frame-bound commands bring a tab to the front: a get/eval/snapshot on a tab the user is not looking at runs invisibly' },
-  'no-front-at-all': { file: 'chunk', edits: [[/(\w+)\((\w+)\)&&this\.bringToFrontIfBackground\((\w+)\),(?=\w+\.has\(\2\))/, ''], [/(async screenshot\(\w+,\w+,\w+\)\{)this\.bringToFrontIfBackground\(\w+\);/, '$1']], arms: ['front', 'refs'], why: 'not even a screenshot brings its tab to the front: the capture of a tab the user left is refused as "not on screen"' },
+  'front-on-acting': { file: 'chunk', edits: [[/else this\.bringToFrontIfBackground\(([\w$]+)\);let ([\w$]+)=null;/, ';this.bringToFrontIfBackground($1);let $2=null;']], arms: ['front', 'refs'], why: '#406 regression: an acting command on a background tab brings it to the front again (the pre-lift behaviour) instead of driving it in place' },
   'switch-unannotated': { file: 'cli', edits: [['(tab.op === "list" || tab.op === "close" || tab.op === "switch")', '(tab.op === "list" || tab.op === "close")']], arms: ['restart'], why: 'a `tab <ref>` switch no longer says whose tab it landed on: a stale tN silently drives the user\'s tab' },
-  'child-close-allowed': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a)']], arms: ['children'], why: '#395\'s shared browser-level predicate is skipped for a CHILD (worker / frame) session: its Page.close / Browser.* / Target.* reach the page debugger' },
+  'child-close-allowed': { file: 'chunk', edits: [[/return ([\w$]+)\(n\)\?n==="Page\.close"\?this\.browserCommand\(t,"Target\.closeTarget",\{targetId:this\.targetIdFor\(i\)\}\):this\.browserCommand\(t,n,r\):this\.tabCommand\(i,n,r,a(,[\w$]+)?\)/, 'return $1(n)&&!a?n==="Page.close"?this.browserCommand(t,"Target.closeTarget",{targetId:this.targetIdFor(i)}):this.browserCommand(t,n,r):this.tabCommand(i,n,r,a$2)']], arms: ['children'], why: '#395\'s shared browser-level predicate is skipped for a CHILD (worker / frame) session: its Page.close / Browser.* / Target.* reach the page debugger' },
   'attach-is-acting': { file: 'chunk', edits: [[/function ([\w$]+)\((\w+)\)\{return\/\\\.\(enable\|disable\)\$\/\.test\(\2\)\?!1:![\w$]+\.has\(\2\)\}/, 'function $1($2){return!0}']], arms: ['attach'], why: 'attach-time commands on a child session count as agent ACTIONS: a page that spawns an iframe / worker flips the human\'s tab with no agent command' },
   'agent-badge-wide': { file: 'css', edits: [[/\.browser-tab-agent-mark\{[^}]*\}/, '.browser-tab-agent-mark{flex:0 0 auto;padding:0 4px;font-size:9.5px;line-height:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);border-radius:3px}']], arms: ['strip'], why: 'the agent mark is a ~38 px text badge again: at 6-8 tabs every agent tab\'s × overflows its tab (and a click on the + closes a tab)' },
   'notice-over-strip': { file: 'css', edits: [['.browser-agent-switch{display:flex;', '.browser-agent-switch{position:fixed;left:0;top:50px;width:100%;height:34px;z-index:5;box-sizing:border-box;display:flex;']], arms: ['open'], why: 'the swap notice is an overlay over the tab strip: it covers tabs / × / + (a click aimed at « Back » can close a human tab)' },
@@ -555,10 +554,17 @@ const ARM_FNS = {
     await sleep(1500);
     const r1 = await reg(ctx, W1); const h1 = await holderColor(ctx, 'front-1-after-list', COLORS.b, 1500);
     clause(A, 'tab-list-and-idle-do-not-swap-the-humans-tab', ls.code === 0 && r1.tabs.find((t) => t.active)?.openedBy === 'human' && colorOk(h1, COLORS.b), `${show(ls)} → registry ${brief(r1)}; ${colorTxt(h1, COLORS.b)}`);
+    // #406: an acting command on a tab nobody looks at is DRIVEN IN PLACE (a throttling lease) — it no longer brings the tab to the front
     const gu = await cli(ctx, W1, ['get', 'url']);
+    await sleep(1200);
+    const r2a = await reg(ctx, W1); const h2a = await holderColor(ctx, 'front-2a-driven-in-place', COLORS.b);
+    clause(A, 'an-acting-command-is-driven-in-place-the-humans-tab-stays-on-screen', gu.code === 0 && gu.stdout.trim() === U.a && r2a.tabs.find((t) => t.active)?.openedBy === 'human' && colorOk(h2a, COLORS.b) && (await noticeText(ctx)) === null && r2a.agentSwitch === null, `get url: ${show(gu)} → registry ${brief(r2a)}; ${colorTxt(h2a, COLORS.b)}; notice ${JSON.stringify(await noticeText(ctx))} (a Runtime.evaluate ran on A, the tab the human was NOT looking at, and nothing moved)`);
+    // an EXPLICIT switch (agent-browser `tab <ref>` = Page.bringToFront) still brings the tab to the front, visibly
+    const labA = await abLabel(ctx, W1, /Tabs fixture A/);
+    const sw = await cli(ctx, W1, ['tab', labA ?? 't0']);
     await softWait(async () => (await reg(ctx, W1)).tabs.find((t) => t.active)?.openedBy === 'agent', 10000, 'the agent tab to come to the front');
     const r2 = await reg(ctx, W1); const h2 = await holderColor(ctx, 'front-2-brought-to-front', COLORS.a);
-    clause(A, 'an-acting-command-brings-its-tab-to-the-front', gu.code === 0 && gu.stdout.trim() === U.a && r2.tabs.find((t) => t.active)?.openedBy === 'agent' && colorOk(h2, COLORS.a), `get url: ${show(gu)} → registry ${brief(r2)}; ${colorTxt(h2, COLORS.a)} (a Runtime.evaluate — not frame-bound — ran on A, the tab the human was NOT looking at)`);
+    clause(A, 'an-explicit-tab-switch-brings-its-tab-to-the-front', sw.code === 0 && r2.tabs.find((t) => t.active)?.openedBy === 'agent' && colorOk(h2, COLORS.a), `tab ${labA}: ${show(sw)} → registry ${brief(r2)}; ${colorTxt(h2, COLORS.a)}`);
     const note = await noticeText(ctx); const back = await backText(ctx);
     clause(A, 'it-is-announced-never-silent', !!note && /Tabs fixture A/.test(note) && !!back && /Tabs fixture B/.test(back) && r2.agentSwitch?.to === titled(r2, /Tabs fixture A/)?.id, `notice ${JSON.stringify(note)} · back ${JSON.stringify(back)}`);
     grim('front-2-notice.png');
@@ -570,13 +576,14 @@ const ARM_FNS = {
     await sleep(3000);
     const r4 = await reg(ctx, W1);
     clause(A, 'an-idle-daemon-does-not-take-the-screen-back', r4.tabs.find((t) => t.active)?.openedBy === 'human', `3 s later: registry ${brief(r4)}`);
-    // a SCREENSHOT of the tab the user left: it comes to the front, a frame is painted, and the image is THAT tab's (not the user's, not blank)
+    // a SCREENSHOT of the tab the user left (#406): taken IN PLACE — the image is THAT tab's (not the user's, not blank) and the human's tab stays on screen
     const shotPath = path.join(ctx.world.fakeHome, 'front-shot.png');
     const shot = await cli(ctx, W1, ['screenshot', shotPath], { timeoutMs: 45000 });
     let img = null; try { img = decodePng(fs.readFileSync(shotPath)); } catch {}
     const c = img ? blockColor(img, Math.floor(img.w / 2), Math.floor(img.h / 2), 8) : null;
     const r5 = await reg(ctx, W1);
-    clause(A, 'a-screenshot-of-the-tab-the-user-left-brings-it-to-the-front-and-shows-it', shot.code === 0 && !!c && near(c, COLORS.a, 14) && r5.tabs.find((t) => t.active)?.openedBy === 'agent', `screenshot: ${show(shot)} → image centre ${c ? hex(c) : 'unreadable'} (want ${hex(COLORS.a)}); registry ${brief(r5)}`);
+    const h5 = await holderColor(ctx, 'front-5-after-shot', COLORS.b);
+    clause(A, 'a-screenshot-of-the-tab-the-user-left-is-taken-in-place-and-shows-that-tab', shot.code === 0 && !!c && near(c, COLORS.a, 14) && r5.tabs.find((t) => t.active)?.openedBy === 'human' && colorOk(h5, COLORS.b) && (await noticeText(ctx)) === null, `screenshot: ${show(shot)} → image centre ${c ? hex(c) : 'unreadable'} (want ${hex(COLORS.a)}); registry ${brief(r5)}; ${colorTxt(h5, COLORS.b)}`);
   },
 
   async cap(ctx) {
@@ -900,7 +907,7 @@ const ARM_FNS = {
     await softWait(async () => (await hits()).agent === '1', 10000, 'the agent tab to receive the click');
     const h1 = await hits(); const r1 = await reg(ctx, W1);
     clause(A, 'a-ref-clicks-the-tab-it-came-from-never-the-tab-the-user-is-on', click.code === 0 && h1.agent === '1' && h1.user === '0', `click @${hitA}: ${show(click)} → clicks received: agent tab ${h1.agent}, user tab ${h1.user}`);
-    clause(A, 'and-that-tab-came-to-the-front-visibly', r1.tabs.find((t) => t.active)?.openedBy === 'agent' && /Hit fixture A/.test((await noticeText(ctx)) ?? ''), `registry ${brief(r1)}; notice ${JSON.stringify(await noticeText(ctx))} (the click needs its tab on screen)`);
+    clause(A, 'and-the-click-was-driven-in-place-the-users-tab-stays-on-screen', r1.tabs.find((t) => t.active)?.openedBy === 'human' && (await noticeText(ctx)) === null && r1.agentSwitch === null, `registry ${brief(r1)}; notice ${JSON.stringify(await noticeText(ctx))} (#406: a click no longer needs its tab on screen)`);
     // an explicit switch drops the refs: the OTHER tab's refs are not this tab's — a stale ref, loudly, and nothing clicked
     const snapA = await cli(ctx, W1, ['snapshot', '-i']); const hitA2 = (/button "Hit A"[^\n]*\[ref=(e\d+)\]/.exec(snapA.stdout) ?? [])[1];
     const userTab = (await abTabs(ctx, W1)).find((t) => /Hit fixture B/.test(t.title));

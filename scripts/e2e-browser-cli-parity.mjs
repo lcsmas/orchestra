@@ -42,7 +42,7 @@ const MUTANTS = {
   'insert-text-dropped': { ...dropCdp('Input.insertText'), arms: ['type', 'form-input'], why: 'text insertion (type / fill) is acknowledged but never reaches the page' },
   'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
-  'frames-guard': { file: 'chunk', edits: [[/framesError:(\w+)=>\{/, 'framesError:$1=>{return null;']], arms: ['hidden-panel'], why: 'no up-front refusal: a background workspace\'s screenshot waits for a frame that never comes' },
+  'hidden-refused': { file: 'chunk', edits: [[/(function [\w$]+\(e\)\{return e\.tab\?e\.tab\.surface==="visible"\?\{act:"direct"\}:)/, '$1e.kind!=="other"?{act:"refuse",reason:"needs-first-paint",message:"refused (mutant)"}:']], arms: ['hidden-panel'], why: '#406 lift undone: screenshot / click / type on a tab nobody looks at are refused again (the pre-lift behaviour)' },
   'skill-not-installed': { file: 'chunk', edits: [[/([\w$]+)\("orchestra-status",([\w$]+)\),\1\(([\w$]+),([\w$]+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'load-events-dropped': { file: 'chunk', edits: [[/emit\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{if\(!\1\.closed\)try\{/, 'emit($1,$2,$3,$4){if($2==="Page.loadEventFired"||$2==="Page.frameStoppedLoading")return;if(!$1.closed)try{']], arms: ['load-wait'], why: 'the proxy never tells the client the page loaded: `open` no longer returns at the load (it times out or returns early)' },
   'tab-close-preflight-off': { file: 'cli', edits: [['if (!verdict.run) {', 'if (false) {']], arms: ['skill-tabs'], why: 'the CLI hands a forbidden `tab close` of the human\'s tab to agent-browser, which prints "closed" and forgets the tab: no browser_tab_not_owner' },
@@ -653,8 +653,8 @@ Object.assign(ARM_FNS, ARM_FNS2);
 
 const ARM_FNS3 = {
   async 'hidden-panel'(ctx) {
-    // The removed server's documented rule: a hidden panel produces no frames — screenshot/click/type/scroll fail with a clear error and do
-    // not queue; navigate/read_page/evaluate/form_input keep working.
+    // #406: a panel nobody looks at is DRIVEN IN PLACE (a throttling lease, no bring-to-front) — screenshot / click / type / press / hover / mouse WORK and have their effect;
+    // the human's workspace is untouched. (Before #406 they failed fast with "not on screen"; navigate/read_page/evaluate/form_input always worked.)
     const { W1, W2, FIX } = ctx; const A = 'hidden-panel';
     await selectWs(ctx, W1); await openPane(ctx);
     await cli(ctx, W1, ['open', `${FIX}/index.html`]);
@@ -672,24 +672,25 @@ const ARM_FNS3 = {
       const snap2 = await cli(ctx, W2, ['snapshot', '-i']); const name2 = refOf(snap2.stdout, 'textbox', 'Name'), go2 = refOf(snap2.stdout, 'button', 'Go');
       const fill = await cli(ctx, W2, ['fill', name2 ?? '@e0', 'typed while hidden'], { timeoutMs: 45000 });
       const val = await o2.eval(`document.getElementById('name').value`);
-      knownGap(A, 'fill-keeps-working-while-hidden', fill.code === 0 && val === 'typed while hidden', `${show(fill)} → oracle value ${JSON.stringify(val)} (the removed form_input set the value through the DOM and worked on a hidden pane; fill uses Input.insertText, which the proxy refuses without frames)`, 'ACCEPTED-GAP, OPS disposition; hidden-pane limits tracked in #406');
-      clause(A, 'fill-on-a-hidden-pane-fails-fast-and-writes-nothing', fill.code !== 0 && fill.ms < 9000 && /not on screen/.test(fill.stderr) && val === '', `fill refused in ${fill.ms} ms with the reason; oracle value ${JSON.stringify(val)} (nothing was queued)`);
+      clause(A, 'fill-works-while-hidden', fill.code === 0 && fill.ms < 9000 && val === 'typed while hidden', `${show(fill)} → oracle value ${JSON.stringify(val)} (fill = Input.insertText on a background workspace's tab, driven in place — the gap #406 was opened for)`);
       const evs = await cli(ctx, W2, ['eval', "const el = document.getElementById('name'); el.value = 'set by eval'; el.dispatchEvent(new Event('input', { bubbles: true })); el.value"]);
       const val2 = await o2.eval(`document.getElementById('name').value`);
       clause(A, 'eval-sets-a-field-while-hidden', evs.code === 0 && val2 === 'set by eval', `${show(evs)} → oracle value ${JSON.stringify(val2)} (the documented workaround)`);
       const shot = await cli(ctx, W2, ['screenshot', path.join(ctx.world.fakeHome, 'bg.png')], { timeoutMs: 45000 });
-      clause(A, 'screenshot-fails-fast-with-the-reason', shot.code !== 0 && shot.ms < 9000 && /not on screen/.test(shot.stderr), show(shot));
+      let png = null; try { png = decodePng(fs.readFileSync(path.join(ctx.world.fakeHome, 'bg.png'))); } catch { /* not written / not a png */ }
+      clause(A, 'screenshot-works-while-hidden', shot.code === 0 && shot.ms < 9000 && !!png && png.w > 100 && png.h > 100, `${show(shot)} → ${png ? `a ${png.w}×${png.h} PNG` : 'no readable PNG'}`);
       const click = await cli(ctx, W2, ['click', go2 ?? '@e0'], { timeoutMs: 45000 });
       const out = await o2.eval(`document.getElementById('out').textContent`);
-      clause(A, 'click-fails-fast-nothing-dispatched', click.code !== 0 && click.ms < 9000 && /not on screen|outside the viewport/.test(click.stderr) && out === 'idle', `${show(click)}; oracle #out ${JSON.stringify(out)} (the refused click was not dispatched or queued)`);
+      clause(A, 'click-works-while-hidden', click.code === 0 && click.ms < 9000 && out === 'clicked', `${show(click)}; oracle #out ${JSON.stringify(out)} (the click landed on the background tab)`);
       const kt = await cli(ctx, W2, ['keyboard', 'type', 'zzz'], { timeoutMs: 45000 });
-      clause(A, 'keyboard-type-fails-fast', kt.code !== 0 && kt.ms < 9000 && /not on screen/.test(kt.stderr), show(kt));
+      const valk = await o2.eval(`document.getElementById('name').value`);
+      clause(A, 'keyboard-type-works-while-hidden', kt.code === 0 && kt.ms < 9000, `${show(kt)}; oracle #name ${JSON.stringify(valk)}`);
       const y0 = await o2.eval(`Math.round(window.scrollY)`);
       const pr = await cli(ctx, W2, ['press', 'Tab'], { timeoutMs: 45000 });
-      clause(A, 'press-fails-fast', pr.code !== 0 && pr.ms < 9000 && /not on screen/.test(pr.stderr), show(pr));
+      clause(A, 'press-works-while-hidden', pr.code === 0 && pr.ms < 9000, show(pr));
       const hv = await cli(ctx, W2, ['hover', go2 ?? '@e0'], { timeoutMs: 45000 });
       const dc = await cli(ctx, W2, ['dblclick', go2 ?? '@e0'], { timeoutMs: 45000 });
-      clause(A, 'hover-and-dblclick-fail-fast', hv.code !== 0 && dc.code !== 0 && hv.ms < 9000 && dc.ms < 9000 && /not on screen|outside the viewport/.test(hv.stderr) && /not on screen|outside the viewport/.test(dc.stderr), `hover ${show(hv)} · dblclick ${show(dc)}`);
+      clause(A, 'hover-and-dblclick-work-while-hidden', hv.code === 0 && dc.code === 0 && hv.ms < 9000 && dc.ms < 9000, `hover ${show(hv)} · dblclick ${show(dc)}`);
       // the skill's hidden-pane workaround, extracted from the SKILL TEXT and pointed at a React-style controlled input (its value tracker ignores a plain assignment)
       const line = BROWSER_SKILL.split('\n').find((l) => l.startsWith('orchestra browser eval "(() => { const el = document.querySelector(\'#q\')'));
       const js = line ? shellWords(line.replace(/^orchestra browser /, ''))[1] : null;
@@ -702,9 +703,12 @@ const ARM_FNS3 = {
       clause(A, 'ctl/a-plain-assignment-leaves-the-controlled-state-stale', st2.value === 'plain' && st2.state === '', `plain value= + input event → oracle ${JSON.stringify(st2)} (the fixture discriminates the two forms, as React does)`);
       const tyh = await cli(ctx, W2, ['type', name2 ?? '@e0', 'zzz'], { timeoutMs: 45000 });
       const valh = await o2.eval(`document.getElementById('name').value`);
-      clause(A, 'type-by-ref-fails-fast-and-writes-nothing', tyh.code !== 0 && tyh.ms < 9000 && /not on screen/.test(tyh.stderr) && !/zzz/.test(valh), `type ${name2} zzz → ${show(tyh)}; oracle value ${JSON.stringify(valh)}`);
+      clause(A, 'type-by-ref-works-while-hidden', tyh.code === 0 && tyh.ms < 9000 && /zzz/.test(valh), `type ${name2} zzz → ${show(tyh)}; oracle value ${JSON.stringify(valh)}`);
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
-      clause(A, 'mouse-fails-fast', mv.code !== 0 && mv.ms < 9000 && /not on screen/.test(mv.stderr), show(mv));
+      clause(A, 'mouse-works-while-hidden', mv.code === 0 && mv.ms < 9000, show(mv));
+      const stillW1 = await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`);
+      const noteHp = await ctx.ui.eval(`document.querySelector('.browser-agent-switch .browser-agent-switch-text')?.textContent ?? null`);
+      clause(A, 'driven-in-place-the-humans-workspace-is-untouched', stillW1 && noteHp === null, `${W1.branch} still the active workspace: ${stillW1}; swap notice ${JSON.stringify(noteHp)} (nothing was brought to the front)`);
       const keep = [['wait', ['wait', '#name']], ['wait-ms', ['wait', '100']], ['get', ['get', 'title']], ['cookies', ['cookies', 'get']], ['storage', ['storage', 'local', 'set', 'k399', 'v399']], ['console', ['console']], ['network', ['network', 'requests']], ['scrollintoview', ['scrollintoview', '#far']]];
       const outs = []; for (const [n, a] of keep) outs.push([n, await cli(ctx, W2, a, { timeoutMs: 45000 })]);
       clause(A, 'wait-get-cookies-storage-console-network-keep-working', outs.every(([, r]) => r.code === 0), outs.map(([n, r]) => `${n}: rc=${r.code}${r.code ? ' ' + JSON.stringify(r.stderr.slice(0, 80)) : ''}`).join(' · '));
@@ -729,7 +733,7 @@ const ARM_FNS4 = {
     await selectWs(ctx, W1); await openPane(ctx);
     const made = await ui.eval(`window.orchestra.createWorkspace({ repoPath: ${sel(world.repoDir)} }).then((w) => ({ id: w.id, worktreePath: w.worktreePath }))`);
     const skillFile = path.join(made.worktreePath, '.claude', 'skills', BROWSER_SKILL_NAME, 'SKILL.md');
-    const sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-link', 'SKILL.md');
+    const sibling = path.join(made.worktreePath, '.claude', 'skills', 'orchestra-comms', 'SKILL.md');
     await waitFor(() => fs.existsSync(sibling), 30000, 'the app to install the capability skills into the NEW worktree').catch(() => {});
     clause(A, 'ctl/the-app-installed-its-skills-in-the-new-worktree', fs.existsSync(sibling), `${sibling} ${fs.existsSync(sibling) ? 'exists' : 'MISSING'} (the installer ran for the workspace the app just created)`);
     const installed = fs.existsSync(skillFile) ? fs.readFileSync(skillFile, 'utf8') : null;
@@ -926,7 +930,7 @@ Object.assign(ARM_FNS, ARM_FNS8);
 
 const ARM_FNS10 = {
   async 'hidden-wait'(ctx) {
-    // Split out of hidden-panel on purpose: the frames-guard mutant makes hidden-panel's refusals HANG, which parks the daemon of THAT workspace; these clauses (and their visible
+    // Split out of hidden-panel on purpose: a refusal that hangs would park the daemon of that workspace (the retired frames-guard mutant did), which parks the daemon of THAT workspace; these clauses (and their visible
     // controls) run on their own never-shown workspace W4, so a collateral queue-block cannot turn one of their controls red.
     const { W1, W4, FIX } = ctx; const A = 'hidden-wait';
     await selectWs(ctx, W1); await openPane(ctx);

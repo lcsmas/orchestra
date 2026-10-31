@@ -1515,8 +1515,37 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
  *  (Electron's flag disables WasHidden(): the capture's temporary show is never undone): the lease end flips throttling back ON and takes one more, discarded, capture — now
  *  its release hides the page for real (a capture without the flip, or after flipping back, leaves it throttled). Bounded: a wake that hangs must not hang the action. */
 const WAKE_MS = 900;
+/** A capture of a hidden view can be served from its still-alive OLD compositor frame, which predates a DOM change made since (measured #406: ~1.4 % stale first shots after a
+ *  11-13 ms wake; ~5 % stale for a timer-driven change inside a lease). EVERY hidden capture therefore primes (shows the page) and then waits for the renderer's next frame, bounded. */
+const FRESH_FRAME_MS = 200;
 /** Leases whose page took a capture while unthrottled: they need the unpin capture when they end. */
 const pinnedLeases = new Set<string>();
+/** Resolves at the SECOND frame the view delivers from now (the first is the subscription's refresh of the old surface), or after `ms`. Always ends its subscription. */
+function afterNextPaint(wc: Electron.WebContents, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let n = 0;
+    let done = false;
+    const fin = (): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        wc.endFrameSubscription();
+      } catch {
+        /* contents gone */
+      }
+      resolve();
+    };
+    const timer = setTimeout(fin, ms);
+    try {
+      wc.beginFrameSubscription(false, () => {
+        if (++n >= 2) fin();
+      });
+    } catch {
+      fin(); // already subscribed elsewhere / contents gone: no barrier, the capture goes ahead
+    }
+  });
+}
 async function wakeView(wc: Electron.WebContents): Promise<void> {
   await Promise.race([wc.capturePage().then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, WAKE_MS))]);
 }
@@ -1569,6 +1598,8 @@ function coverTab(): Tab | null {
 }
 
 /** Show `tab` once BELOW the cover (same rect, so the cover hides all of it) until its document has produced a frame, then hide it again. */
+/** When a tab was last surfaced under the cover: its frame was just painted, so the same action's capture needs no prime (P6 stays under 2 s). */
+const surfacedAt = new WeakMap<Tab, number>();
 async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
   const win = getWindow?.();
   const wc = liveContents(tab);
@@ -1584,6 +1615,7 @@ async function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
   } finally {
     if (tab.surface === 'visible' && tab !== coverTab()) hideView(tab);
     tab.composited = true;
+    surfacedAt.set(tab, Date.now());
   }
 }
 
@@ -1631,9 +1663,11 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const flipped = driveLeases.acquire(id, Date.now()).flip;
   if (flipped) wc.setBackgroundThrottling(false);
   scheduleSweep();
-  if (flipped && kind !== 'other' && tab.surface === 'hidden') {
+  if (flipped && kind === 'input' && tab.surface === 'hidden') {
     pinnedLeases.add(id);
-    await wakeView(wc); // click / type / screenshot need a live view; evaluate does not
+    const w0 = Date.now();
+    await wakeView(wc); // a click / type needs a live view (evaluate does not; a capture primes its own, see captureTabFrame)
+    log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} wake capture ${Date.now() - w0} ms`);
   }
   let ended = false;
   return {
@@ -1665,10 +1699,18 @@ export async function captureTabFrame(
     if (!tab || !wc) throw new Error(`no browser panel open for workspace ${wsId}`);
     let img: Electron.NativeImage | null = null;
     pinnedLeases.add(`${wsId}/${tab.id}`); // a capture under the flip pins the page: the lease end unpins it
+    if (tab.surface === 'hidden' && Date.now() - (surfacedAt.get(tab) ?? 0) > 1500) {
+      const p0 = Date.now();
+      await wakeView(wc); // prime: shows the page so the renderer produces its frame (and wakes a dead view) …
+      await afterNextPaint(wc, FRESH_FRAME_MS); // … settle: the capture below must not read the old surface
+      log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} prime+settle ${Date.now() - p0} ms`);
+    }
     try {
       // `capturePage()` of a hidden view under the lease is fresh and wakes a dead one (measured in the built app); the frame subscription is the fallback.
+      const c0 = Date.now();
       const c = await Promise.race([wc.capturePage(), new Promise<null>((r) => setTimeout(() => r(null), HIDDEN_FRAME_DEADLINE_MS))]);
       if (c && !c.isEmpty()) img = c;
+      log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} frame capture ${Date.now() - c0} ms (${img ? 'got a frame' : 'none'})`);
     } catch {
       /* fall through to the frame subscription */
     }
