@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  hiddenCaptureRefusal, DEVICE_METRICS_MESSAGE, BEYOND_VIEWPORT_MESSAGE,
   clipBeyondViewport,
   LINGER_MS, LeaseBook, NEEDS_FIRST_PAINT_MESSAGE, NO_FRAME_MESSAGE, WATCHDOG_MS, cropRect, decideTabAction,
 } from './browser-hidden-drive.ts';
@@ -113,4 +114,14 @@ test('clipBeyondViewport: only a captureBeyondViewport request whose clip exceed
   assert.equal(clipBeyondViewport({ clip: clip(0, 0, 800, 3000) }, 800, 600), false, 'without captureBeyondViewport the clip is clamped to the viewport by CDP itself');
   assert.equal(clipBeyondViewport({ captureBeyondViewport: true }, 800, 600), false, 'no clip: the viewport');
   assert.equal(clipBeyondViewport({ captureBeyondViewport: true, clip: clip(0, 0, 800.5, 600.5) }, 800, 600), false, 'sub-pixel rounding is not "beyond"');
+});
+
+test('hiddenCaptureRefusal: a hidden view cannot honour a full-page clip, a scaled clip or an active Emulation.setDeviceMetricsOverride — and refuses nothing else', () => {
+  const vp = (clip?: { x: number; y: number; width: number; height: number; scale?: number }, extra: object = {}) => ({ clip, ...extra });
+  assert.equal(hiddenCaptureRefusal(vp(), {}, 800, 600), null, 'a plain viewport screenshot');
+  assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 400, height: 300, scale: 1 }), {}, 800, 600), null, 'a clip inside the viewport at scale 1');
+  assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 800, height: 3000, scale: 1 }, { captureBeyondViewport: true }), {}, 800, 600), BEYOND_VIEWPORT_MESSAGE);
+  assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 400, height: 300, scale: 2 }), {}, 800, 600), DEVICE_METRICS_MESSAGE, 'clip.scale ≠ 1');
+  assert.equal(hiddenCaptureRefusal(vp(), { deviceMetricsOverride: true }, 800, 600), DEVICE_METRICS_MESSAGE, 'an emulated viewport / dsf (visible 720×1280 vs hidden 360×640)');
+  assert.equal(hiddenCaptureRefusal(vp(), { deviceMetricsOverride: false }, 800, 600), null);
 });

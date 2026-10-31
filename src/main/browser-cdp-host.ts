@@ -34,7 +34,7 @@ import { decideAgentCdp } from '../shared/browser-profile.ts';
 import { diffTabs } from '../shared/cdp-tab-diff.ts';
 import { describeAgentTabs, type AgentTabView } from '../shared/browser-agent-tabs.ts';
 import { AGENT_OPENER } from '../shared/browser-tab-policy.ts';
-import { BEYOND_VIEWPORT_MESSAGE, clipBeyondViewport } from '../shared/browser-hidden-drive.ts';
+import { hiddenCaptureRefusal } from '../shared/browser-hidden-drive.ts';
 import type { BrowserTabInfo } from '../shared/types.ts';
 
 const blog = scoped('browser-cli');
@@ -125,12 +125,13 @@ export function makePanelPort(wsId: string): CdpPanelPort {
     // #406: nothing is refused here any more — a tab nobody looks at is driven in place (`beginAction`), and the cases that cannot be driven refuse THERE with a clear error.
     framesError: () => (bp.getPanel(wsId) ? null : 'the browser panel is gone'),
     beginAction: (tabId, kind) => bp.beginAgentAction(wsId, tabId, kind),
-    captureView: async (tabId, params) => {
+    captureView: async (tabId, params, info) => {
       const tab = bp.getTab(wsId, tabId);
       if (!tab || tab.surface === 'visible') return null; // on screen: the normal Page.captureScreenshot chain
-      const clip = params.clip as { x: number; y: number; width: number; height: number } | undefined;
+      const clip = params.clip as { x: number; y: number; width: number; height: number; scale?: number } | undefined;
       const vb = tab.view.getBounds();
-      if (clipBeyondViewport(params as { captureBeyondViewport?: unknown; clip?: typeof clip }, vb.width, vb.height)) throw new Error(BEYOND_VIEWPORT_MESSAGE);
+      const refusal = hiddenCaptureRefusal(params as { captureBeyondViewport?: unknown; clip?: typeof clip }, info ?? {}, vb.width, vb.height); // full-page / emulated-metrics / scaled: capturePage() cannot honour them
+      if (refusal) throw new Error(refusal);
       return bp.captureTabFrame(wsId, tabId, { format: params.format === 'jpeg' ? 'jpeg' : 'png', ...(typeof params.quality === 'number' ? { quality: params.quality } : {}), ...(clip ? { clip } : {}) });
     },
     // #400: while this workspace's panel runs on a profil navigateur (shared with other workspaces and sites), an agent may not clear its jar or

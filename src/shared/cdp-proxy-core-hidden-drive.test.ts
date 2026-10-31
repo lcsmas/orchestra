@@ -187,3 +187,17 @@ test('a client that disconnects while the lease is still being TAKEN (a surface 
   assert.equal(f.sent.filter((x) => x.method === 'Input.dispatchMouseEvent').length, 0, 'the click was NOT dispatched for a client that left');
   assert.equal(ended, 1, 'and the lease it took was ended');
 });
+
+test('captureView is told when the agent has an Emulation.setDeviceMetricsOverride in force on the tab, and when it is cleared (a hidden screenshot cannot honour it)', async () => {
+  const seen: Array<boolean | undefined> = [];
+  const f = fake({ beginAction: async () => ({ end: () => undefined }), captureView: async (_t, _p, info) => { seen.push(info?.deviceMetricsOverride); return 'IMG'; } });
+  const core = new CdpProxyCore(f.port);
+  const c = client(core);
+  const sid = await attachTo(core, c, 't2');
+  await c.call('Page.captureScreenshot', { format: 'png' }, sid);
+  await c.call('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 2, mobile: true }, sid);
+  await c.call('Page.captureScreenshot', { format: 'png' }, sid);
+  await c.call('Emulation.clearDeviceMetricsOverride', {}, sid);
+  await c.call('Page.captureScreenshot', { format: 'png' }, sid);
+  assert.deepEqual(seen, [false, true, false]);
+});

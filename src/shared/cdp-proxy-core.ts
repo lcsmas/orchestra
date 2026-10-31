@@ -54,7 +54,7 @@ export interface CdpPanelPort {
    */
   beginAction?(tabId: string, kind: 'capture' | 'input' | 'other'): Promise<{ end(): void; touch?(): void }>;
   /** #406: a screenshot of a tab that is not on screen (from its frame subscription), as base64; `null` = take the normal chain. */
-  captureView?(tabId: string, params: Record<string, unknown>): Promise<string | null>;
+  captureView?(tabId: string, params: Record<string, unknown>, info?: { deviceMetricsOverride: boolean }): Promise<string | null>;
   /**
    * Policy seam for page-level commands (#400: refuse partition-wide cookie clears while the workspace holds a shared profile).
    * Called for EVERY command a client sends to a tab — root and auto-attached child sessions — before it reaches the debugger;
@@ -128,6 +128,8 @@ interface TabState {
   refs: number;
   /** A client session (not an in-process lease) attached since the debugger was acquired: sticky until it is released. */
   agent: boolean;
+  /** An `Emulation.setDeviceMetricsOverride` is in force on this tab (set by a client through the proxy, until cleared or the debugger is released). */
+  metricsOverride?: boolean;
   unsub: Array<() => void>;
   children: Set<string>;
   /** Commands in flight on auto-attached child sessions: settled when the child's detach is announced (a dead child never answers them). */
@@ -651,7 +653,10 @@ export class CdpProxyCore {
       (beat as { unref?: () => void }).unref?.();
     }
     try {
-      return await this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
+      const out = await this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
+      if (method === 'Emulation.setDeviceMetricsOverride') st.metricsOverride = true; // a hidden screenshot cannot honour it (capturePage ignores emulation): see captureView
+      else if (method === 'Emulation.clearDeviceMetricsOverride') st.metricsOverride = false;
+      return out;
     } finally {
       if (beat) clearInterval(beat);
       lease?.end();
@@ -688,7 +693,7 @@ export class CdpProxyCore {
 
   private async screenshot(tabId: string, st: TabState, params: Record<string, unknown>): Promise<unknown> {
     if (this.port.captureView) {
-      const viaView = await this.port.captureView(tabId, params).catch((e: unknown) => { throw new CdpError(e instanceof Error ? e.message : String(e), ERR_SERVER); });
+      const viaView = await this.port.captureView(tabId, params, { deviceMetricsOverride: !!st.metricsOverride }).catch((e: unknown) => { throw new CdpError(e instanceof Error ? e.message : String(e), ERR_SERVER); });
       if (viaView !== null) return { data: viaView };
     }
     if (!this.port.beginAction) this.bringToFrontIfBackground(tabId);

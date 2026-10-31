@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan', 'navigate'];
+const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan', 'navigate', 'offscreen', 'cover'];
 // Each edit is a regex over the MINIFIED main chunk (names captured, not hard-coded) and must match EXACTLY once. `arms` = the arms that must go RED.
 const ID = '[\\w$]+';
 const ACTIVATE_TAB = /function ([\w$]+)\(e,t\)\{const n=[\w$]+\(e\),r=n==null\?void 0:n\.tabs\.find\(s=>s\.id===t\);if\(!n\|\|!r\)throw new Error\(`browser tab \$\{t\} not found in workspace \$\{e\}`\);return [\w$]+\(n,r\),n\.state\}/;
@@ -39,7 +39,7 @@ const MUTANTS = {
   'no-flip-back': { file: 'main', arms: ['act', 'orphan'], why: 'the lease end / sweep never turns backgroundThrottling back ON (P3 + P7 must-FAIL)',
     edits: [[new RegExp(`(forcing the flip-back\`\\);const ${ID}=${ID}\\(${ID}\\);if\\(${ID}\\)\\{)try\\{${ID}\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '$1']] },
   'no-unpin': { file: 'main', arms: ['act'], why: 'the lease end flips back but takes no unpin capture: the page a capture pinned unthrottled stays unthrottled (P3)',
-    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(${ID}\\)\\.then\\(\\(\\)=>\\{${ID}\\.isHeld\\(${ID}\\)&&${ID}\\.add\\(${ID}\\)\\}\\)\\}else`), '$1}else']] },
+    edits: [[new RegExp(`(${ID}\\.delete\\(${ID}\\))&&\\(${ID}==null\\?void 0:${ID}\\.surface\\)==="hidden"&&${ID}\\(\\)\\.then\\(async ${ID}=>\\{${ID}&&\\(await ${ID}\\(${ID}\\),${ID}\\.isHeld\\(${ID}\\)&&${ID}\\.add\\(${ID}\\)\\)\\}\\)\\}else`), '$1}else']] },
   'no-lease-end-no-watchdog': { file: 'main', arms: ['orphan'], why: 'a lease is never released by its end() and the watchdog never force-releases an orphan: a killed action leaves the view unthrottled (P7 must-FAIL)',
     edits: [[new RegExp(`end:\\(\\)=>\\{${ID}\\|\\|\\(${ID}=!0,${ID}\\.release\\(${ID},Date\\.now\\(\\)\\),${ID}\\(\\)\\)\\}`), 'end:()=>{}'],
       [new RegExp(`(${ID})\\.holders>0&&(${ID})-\\1\\.touchedAt>=${ID}\\?`), '!1?']] },
@@ -48,8 +48,14 @@ const MUTANTS = {
       (m, ws, tab, ...rest) => { const whole = rest[rest.length - 1]; const act = ACTIVATE_TAB.exec(whole)?.[1]; if (!act) throw new Error('activateTab not found in the chunk'); return `${m}try{${act}(${ws},${tab}.id)}catch{}`; }]] },
   'no-nav-lease-end': { file: 'main', arms: ['navigate'], why: 'removing a hidden view (a navigation under a lease) forgets the lease without flipping throttling back ON: the new document stays unthrottled (P7n must-FAIL)',
     edits: [[new RegExp(`if\\((${ID})\\.isHeld\\((${ID})\\)\\)try\\{\\((${ID})=${ID}\\(${ID}\\)\\)==null\\|\\|\\3\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '']] },
-  'no-load-settle': { file: 'main', arms: ['navigate'], why: 'a surfaced tab is hidden again while its document is still loading: hideView removes it and the screenshot finds no frame (P1n must-FAIL)',
-    edits: [[new RegExp(`;(Date\\.now\\(\\)<${ID}\\+${ID}&&${ID}\\(${ID}\\)&&\\(\\(${ID}=${ID}\\.isLoading\\)!=null&&${ID}\\.call\\(${ID}\\)\\|\\|Date\\.now\\(\\)-${ID}\\.stoppedAt<${ID}\\));\\)await`), ';!1;)await']] },
+  'no-load-settle': { file: 'main', arms: ['navigate'], why: 'a surfaced tab does not wait for its still-loading document: it is hidden / removed while loading and the screenshot finds no frame (F3 must-FAIL)',
+    edits: [[new RegExp(`for\\(;!${ID}\\.aborted&&Date\\.now\\(\\)-${ID}<${ID}&&${ID}\\(e\\)&&\\(\\(${ID}=${ID}\\.isLoading\\)!=null&&${ID}\\.call\\(${ID}\\)\\|\\|Date\\.now\\(\\)-e\\.stoppedAt<${ID}\\);\\)await`), 'for(;!1;)await']] },
+  'no-still-loading-refusal': { file: 'main', arms: ['navigate'], why: 'a page that never finishes loading is not refused with the true cause: the capture falls through to a misleading "no frame" (F3 must-FAIL)',
+    edits: [[new RegExp(`(new Error\\(${ID}\\);)if\\(${ID}\\)throw ${ID}\\(e\\),new Error\\(${ID}\\);(e\\.surface==="visible")`), '$1$2']] },
+  'no-offscreen-gate': { file: 'main', arms: ['offscreen'], why: 'the window-paints gate is gone: a click / wheel / screenshot on an undisplayed desktop runs, hangs, and leaves the page unthrottled (F1 must-FAIL = the old behaviour)',
+    edits: [[new RegExp(`if\\(${ID}!=="other"&&!await ${ID}\\(\\)\\)throw new Error\\(${ID}\\);`), '']] },
+  'no-cover-abort': { file: 'main', arms: ['cover'], why: 'a pulse is not aborted when its cover leaves the screen: the pulsing page shows in the vacated pane (F2 must-FAIL)',
+    edits: [[new RegExp(`if\\(!\\((${ID})\\.cover!==e\\|\\|\\1\\.aborted\\)\\)\\{`), 'if(!1){']] },
   'no-surface': { file: 'main', arms: ['never'], why: 'a never-composited tab is not surfaced under the cover: it has no frame and takes no input (P6 must-FAIL)',
     edits: [[new RegExp(`${ID}\\.act==="surface-then-lease"&&await ${ID}\\(${ID},${ID}\\);`), '']] },
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
@@ -453,8 +459,8 @@ async function rawProxyClient(url) {
   const listeners = [];
   ws.on('message', (d) => { const m = JSON.parse(String(d)); const p = m.id && pending.get(m.id); if (p) { pending.delete(m.id); p(m); } else if (m.method) for (const l of listeners) l(m); });
   // a command whose target died (a mutant that lets Page.crash through) never answers: every call is bounded, a timeout is a plain `error` the clause reads as a failure
-  const send = (method, params, sessionId) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); res({ error: { message: `timed out after 6000ms (${method})` } }); }, 6000); pending.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
-  return { call: (method, params = {}) => send(method, params), callOn: (sessionId, method, params = {}) => send(method, params, sessionId), onEvent: (l) => listeners.push(l), close: () => ws.close() };
+  const send = (method, params, sessionId, ms = 6000) => new Promise((res) => { const n = ++id; const t = setTimeout(() => { pending.delete(n); res({ error: { message: `timed out after ${ms}ms (${method})` } }); }, ms); pending.set(n, (m) => { clearTimeout(t); res(m); }); ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); });
+  return { call: (method, params = {}) => send(method, params), callOn: (sessionId, method, params = {}, ms = 6000) => send(method, params, sessionId, ms), onEvent: (l) => listeners.push(l), close: () => ws.close() };
 }
 
 
@@ -539,6 +545,22 @@ function startLeakSampler(ctx, rect) {
     }
   })();
   return { stop: async (tAction) => { stop = true; await loop; const base = Math.max(0, ...out.filter((x) => x[0] < tAction).map((x) => x[1])), during = Math.max(0, ...out.filter((x) => x[0] >= tAction).map((x) => x[1])); return { samples: out.length, base, during, max: Math.max(0, during - base) }; } }; // leak = what the action ADDS to the pane's baseline (a constant 0.2 % of scrollbar / edge pixels is not a leak)
+}
+/** grim samples of `rect` (CSS px, scale 2): the fraction of pixels near `want`; `stop(tMark)` → the max fraction BEFORE and AT/AFTER tMark. */
+function startColorSampler(ctx, rect, want) {
+  const out = []; let stop = false;
+  const loop = (async () => {
+    while (!stop) {
+      try {
+        const f = path.join(ctx.armDir, 'color.png'); sh('grim', ['-s', '0.5', '-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: XDG, WAYLAND_DISPLAY: RIG_WAYLAND } });
+        const I = decodePng(fs.readFileSync(f)); const x0 = Math.round(rect.left / 2) + 4, x1 = Math.round((rect.left + rect.width) / 2) - 4, y0 = Math.round(rect.top / 2) + 4, y1 = Math.round((rect.top + rect.height) / 2) - 4;
+        let n = 0, hit = 0; for (let y = y0; y < y1; y += 3) for (let x = x0; x < x1; x += 3) { const o = (y * I.w + x) * I.ch; n++; if (near([I.data[o], I.data[o + 1], I.data[o + 2]], want, 14)) hit++; }
+        out.push([Date.now(), n ? hit / n : 0]);
+      } catch { /* a missed sample is a missed sample */ }
+      await sleep(30);
+    }
+  })();
+  return { stop: async (tMark) => { stop = true; await loop; return { before: Math.max(0, ...out.filter((x) => x[0] < tMark).map((x) => x[1])), after: Math.max(0, ...out.filter((x) => x[0] >= tMark).map((x) => x[1])), samples: out.length }; } };
 }
 const targetOf = async (ctx, id, ms = 15000) => waitFor(async () => (await ctx.targets()).find((x) => x.type === 'page' && idOf(x.url) === id) || null, ms, `the page target of hidden-drive id ${id}`);
 
@@ -812,6 +834,93 @@ const ARM_FNS = {
     await openPane(ctx);
   },
 
+  /** The Orchestra window on a sway workspace that is NOT displayed (the human is on another desktop): does the main renderer's rAF stall (the cheap "nothing paints" signal), and what does an agent action do? Needs the act arm's population. */
+  async offscreen(ctx) {
+    const A = 'offscreen';
+    if (!ctx.ids) throw new Error('the offscreen arm needs the act arm\'s population');
+    const rafProbe = () => ctx.ui.eval(`new Promise((res) => { const t0 = performance.now(); const to = setTimeout(() => res({ ok: false, ms: Math.round(performance.now() - t0) }), 600); requestAnimationFrame(() => { clearTimeout(to); res({ ok: true, ms: Math.round(performance.now() - t0) }); }); })`);
+    const focusedWs = () => (JSON.parse(sh('swaymsg', ['-t', 'get_workspaces'])).find((w) => w.focused) ?? {}).name;
+    const home = focusedWs();
+    const series = async (n) => { const out = []; for (let i = 0; i < n; i++) { out.push(await rafProbe()); await sleep(120); } return out; };
+    const show = (a) => a.map((x) => (x.ok ? `ok ${x.ms}ms` : 'STALL')).join(', ');
+    const d1 = await series(6);
+    clause(A, 'ctl/displayed-window-paints-rAF-answers', d1.every((x) => x.ok && x.ms < 150), `${show(d1)} (workspace ${JSON.stringify(home)})`);
+    sh('swaymsg', ['workspace', 'number', '2']); const tSwitch = Date.now();
+    const early = await series(8); // the stall takes ≈ 1-1.5 s to show: print when it does
+    const firstStall = early.findIndex((x) => !x.ok);
+    await sleep(Math.max(0, tSwitch + 2500 - Date.now()));
+    const off = await series(6);
+    clause(A, 'undisplayed-window-rAF-stalls', off.every((x) => !x.ok), `workspace ${JSON.stringify(focusedWs())} displayed, the app's is not — the first ${early.length} probes after the switch (≈ ${Math.round(early.reduce((t, x) => t + x.ms + 120, 0))} ms) ${firstStall >= 0 ? `stall from #${firstStall + 1}` : 'all still answered (the stall needs ≈ 1-2 s to show)'}; 2.5 s on: ${show(off)}`);
+    sh('swaymsg', ['workspace', home]); await sleep(700);
+    const d2 = await series(6);
+    clause(A, 'ctl/displayed-again-rAF-answers', d2.every((x) => x.ok && x.ms < 150), show(d2));
+    // ── what an agent action does while the window is on an undisplayed desktop (P3/P7 + the refusal the ruling keeps) ──
+    const W = ctx.W1, id = ctx.ids[W.id][3];
+    const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
+    const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
+    const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+    const timed = async (method, params) => { const t0 = Date.now(); const r = await Promise.race([raw.callOn(sid, method, params), sleep(6000).then(() => ({ error: { message: 'NO ANSWER in 6 s' } }))]); return { ms: Date.now() - t0, err: r.error?.message ?? null }; };
+    const wheel = { type: 'mouseWheel', x: 320, y: 218, deltaX: 0, deltaY: 100 };
+    const okC = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })];
+    clause(A, 'ctl/displayed-window-wheel-and-screenshot-work', okC.every((r) => !r.err && r.ms < 3000), `wheel ${okC[0].ms} ms ${okC[0].err ?? 'ok'} · screenshot ${okC[1].ms} ms ${okC[1].err ?? 'ok'}`);
+    await sleep(1500); // the displayed series' lease lingers out
+    sh('swaymsg', ['workspace', 'number', '2']); await sleep(2500); // past the ≈ 1 s the stall needs to show
+    const offR = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Page.captureScreenshot', { format: 'png' })];
+    clause(A, 'undisplayed-window-wheel-click-screenshot-refused-fast-with-the-reason', offR.every((r) => r.err && /not displayed/.test(r.err) && r.ms <= 800), `wheel ${offR[0].ms} ms · click ${offR[1].ms} ms · screenshot ${offR[2].ms} ms: ${offR.map((r) => JSON.stringify((r.err ?? 'no error').slice(0, 60))).join(' · ')}`);
+    const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });
+    clause(A, 'undisplayed-window-evaluate-still-works', !ev.err, `Runtime.evaluate → ${ev.err ?? 'ok'} in ${ev.ms} ms`);
+    raw.close();
+    const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
+    await sleep(8000); // P3/P7: the page must be throttled again although the client acted on an undisplayed window
+    const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const rate = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close();
+    clause(A, 'undisplayed-window-no-view-left-unthrottled-8s-after-the-client-left', rate <= 2, `timers/s of the driven hidden page 8 s after the client closed: ${rate} (limit 2)`);
+    sh('swaymsg', ['workspace', home]); await sleep(1200);
+    const back = await rawProxyClient(ctx.ep[W.id].wsUrl);
+    const tid3 = (await back.call('Target.getTargets')).result.targetInfos.find((x) => idOf(x.url) === id).targetId;
+    const sid3 = (await back.call('Target.attachToTarget', { targetId: tid3, flatten: true })).result.sessionId;
+    const again = await back.callOn(sid3, 'Page.captureScreenshot', { format: 'png' });
+    clause(A, 'ctl/displayed-again-screenshot-works', !!again.result?.data, `screenshot after returning to workspace ${JSON.stringify(home)}: ${again.result?.data ? 'an image' : again.error?.message}`);
+    back.close();
+  },
+
+  /** F2: the cover (the human's visible tab) leaves the screen while a never-composited tab is being painted under it: the pulse must not show in the vacated pane. */
+  async cover(ctx) {
+    const A = 'cover', W6 = ctx.world.workspaces[5];
+    const ep = ctx.ep ?? (ctx.ep = {}); ep[W6.id] = ep[W6.id] ?? await hostCall(ctx, '/browser', { id: W6.id, key: W6.key });
+    // control: the colour oracle really sees a page when one IS in the pane (W6's own visible tab)
+    const ctlHex = PALETTE[2].map((v) => v.toString(16).padStart(2, '0')).join('');
+    await selectWs(ctx, W6); await openPane(ctx);
+    await ctx.ui.eval(`window.orchestra.browserNavigate(${sel(W6.id)}, ${sel(hdUrl(ctx, 890, ctlHex))}).then(() => true)`);
+    await targetOf(ctx, 890); await sleep(1200);
+    const rect = await rectOf(ctx, '.browser-panel:not(.browser-panel-hidden) .browser-holder');
+    const sc = startColorSampler(ctx, rect, PALETTE[2]); await sleep(400); const cs = await sc.stop(Date.now() + 10_000);
+    clause(A, 'ctl/the-colour-oracle-sees-a-page-in-the-pane', cs.before >= 0.5, `a page of colour ${ctlHex} on screen: ${(cs.before * 100).toFixed(0)} % of the pane rect (${cs.samples} grim samples)`);
+    const runs = [];
+    for (let i = 0; i < 6; i++) {
+      const d = [60, 100, 140][i % 3];
+      await selectWs(ctx, ctx.W1); await openPane(ctx); await ctx.ui.eval(`window.orchestra.browserShow(${sel(ctx.W1.id)}).then(() => true)`); await sleep(700);
+      const r0 = await rectOf(ctx, '.browser-panel:not(.browser-panel-hidden) .browser-holder');
+      const want = PALETTE[(i + 7) % PALETTE.length], hex = want.map((v) => v.toString(16).padStart(2, '0')).join(''), id = 800 + i;
+      const raw = await rawProxyClient(ep[W6.id].wsUrl);
+      const created = await raw.call('Target.createTarget', { url: hdUrl(ctx, id, hex) });
+      await targetOf(ctx, id); await sleep(1200); // loaded DETACHED: never composited
+      const sid = (await raw.call('Target.attachToTarget', { targetId: created.result.targetId, flatten: true })).result.sessionId;
+      const sampler = startColorSampler(ctx, r0, want);
+      const shot = raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' });
+      await sleep(d);
+      await ctx.ui.eval(`window.orchestra.browserHide(${sel(ctx.W1.id)}).then(() => true)`); // the human closes the pane: the cover leaves
+      const tHide = Date.now();
+      const res = await Promise.race([shot, sleep(8000).then(() => ({ error: { message: 'NO ANSWER' } }))]);
+      await sleep(700);
+      const sm = await sampler.stop(tHide);
+      await raw.call('Target.closeTarget', { targetId: created.result.targetId }); raw.close();
+      runs.push({ d, before: sm.before, flash: sm.after, err: res.error?.message ?? null });
+    }
+    clause(A, 'P4-no-flash-when-the-cover-vanishes-mid-pulse', runs.every((r) => r.flash <= 0.02), `the pulse page's colour in the vacated pane after the pane closed 60/100/140 ms into the pulse: ${runs.map((r) => `${r.d}ms→${(r.flash * 100).toFixed(1)} %`).join(', ')} (limit 2 %; under the cover before: ${runs.map((r) => (r.before * 100).toFixed(1)).join(', ')} %)`);
+    clause(A, 'the-cancelled-action-says-why', runs.every((r) => r.err && /Browser pane was closed/.test(r.err)), `errors: ${runs.map((r) => JSON.stringify((r.err ?? 'none').slice(0, 50))).join(' · ')}`);
+    await ctx.ui.eval(`window.orchestra.browserShow(${sel(ctx.W1.id)}).then(() => true)`); await selectWs(ctx, ctx.W1); await openPane(ctx);
+  },
+
   /** A navigation under a lease (an agent clicks through / `Page.navigate`s a tab nobody looks at): the screenshot right after it is fresh, the page is throttled again afterwards (the lease dies with the view's place in the window), and a hidden FULL-PAGE capture is refused honestly. Needs the act arm's population. */
   async navigate(ctx) {
     const A = 'navigate';
@@ -848,6 +957,25 @@ const ARM_FNS = {
     clause(A, 'P1n-screenshot-of-a-page-still-loading-is-fresh', slows.length >= 5 && slows.every((r) => r.fresh && r.ms <= 4000), `the new page's load is held 1.2 s (an image that loads late): ${detail(slows)}`);
     clause(A, 'P7n-throttled-again-after-a-BARE-navigation-under-a-lease', bares.length >= 10 && bares.every((r) => r.rate <= 2), `${bares.length} runs of \`Page.navigate\` and nothing else (no second lease to hide a forgotten first one): timers/s of the new document 3.2 s later: ${bares.map((r) => r.rate).join(', ')} (limit 2)`);
     clause(A, 'P7n-throttled-again-after-navigate-and-screenshot', shots.length + slows.length >= 10 && [...shots, ...slows].every((r) => r.rate <= 2), `timers/s 3.2 s after the screenshot: ${[...shots, ...slows].map((r) => r.rate).join(', ')} (limit 2)`);
+    // F3: a load LONGER than the old 1.5 s bound answers; a load that NEVER finishes is refused with the true cause
+    const longRuns = [], hangRuns = [];
+    for (let i = 0; i < 6; i++) {
+      const hang = i >= 3; const W = ctx.W1, id = ctx.ids[W.id][i % 7];
+      const want = PALETTE[(i + 1) % PALETTE.length], hex = want.map((v) => v.toString(16).padStart(2, '0')).join('');
+      const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
+      const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
+      const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+      const t0 = Date.now();
+      await raw.callOn(sid, 'Page.navigate', { url: `${hdUrl(ctx, id, hex)}&slow=${hang ? 'hang' : 4000}` });
+      const shot = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }, 15000); const ms = Date.now() - t0;
+      let fresh = false;
+      if (shot.result?.data) { try { const I = decodePng(Buffer.from(shot.result.data, 'base64')); fresh = near(blockColor(I, I.w >> 1, I.h >> 1, 8), want, 14); } catch { /* not a png */ } }
+      raw.close();
+      (hang ? hangRuns : longRuns).push({ id, ms, fresh, err: shot.error?.message ?? null });
+      if (hang) { const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl); await o.send('Page.navigate', { url: hdUrl(ctx, id, hex) }); o.close(); await sleep(1500); }
+    }
+    clause(A, 'P1n-a-4s-load-is-waited-for-and-the-screenshot-answers', longRuns.length >= 3 && longRuns.every((r) => r.fresh && r.ms <= 9000), `${longRuns.filter((r) => r.fresh).length}/${longRuns.length} fresh after a 4 s page load (slowest ${Math.max(...longRuns.map((r) => r.ms))} ms)${longRuns.filter((r) => !r.fresh).slice(0, 2).map((r) => ` · id${r.id}: ${(r.err ?? 'stale').slice(0, 90)}`).join('')}`);
+    clause(A, 'a-never-finishing-load-is-refused-with-the-true-cause', hangRuns.length >= 3 && hangRuns.every((r) => r.err && /still loading/.test(r.err) && r.ms <= 9000), `${hangRuns.length} runs: ${hangRuns.map((r) => `${r.ms} ms ${JSON.stringify((r.err ?? 'an image').slice(0, 56))}`).join(' · ')}`);
     const big = runs.find((r) => r.big)?.big;
     clause(A, 'full-page-capture-of-a-hidden-tab-refused-honestly', !!big?.error && /not supported/.test(big.error.message) && /tab <ref>/.test(big.error.message), `captureBeyondViewport + a 9000 px clip → ${big?.error ? JSON.stringify(big.error.message.slice(0, 140)) : 'an image (silently cropped to the viewport)'}`);
   },

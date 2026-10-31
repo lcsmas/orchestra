@@ -203,6 +203,18 @@ test('reprofilePanel ephemeral → profile: EVERY tab is rebuilt on the new part
   assert.equal((bp.getActiveTab(ws)!.view as { bounds: unknown }).bounds !== null, true, 'the new active view got the panel rect');
 });
 
+test('F5 (c) reprofilePanel takes EVERY old view out of the window — hidden husks included (#406)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent', activate: true });
+  (t2 as any).shownAt = 0; (t2 as any).stoppedAt = 0; // settled long ago: hiding it keeps it attached
+  bp.activateTab(ws, 't1');
+  const hiddenOld = (t2 as any).view;
+  assert.equal(children.has(hiddenOld), true, 'premise: the old t2 view is a hidden child of the window');
+  bp.reprofilePanel(ws, P1);
+  assert.equal(children.has(hiddenOld), false, 'the hidden old view left the window with the rebuild');
+});
+
 test('reprofilePanel profile → profile (switch) and profile → ephemeral (detach) rebuild too', () => {
   const ws = newWs(P1);
   openShown(ws);

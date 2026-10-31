@@ -114,11 +114,13 @@ const attached = { // the views COMPOSITED on screen: children that are not setV
   add: (v: unknown) => children.add(v),
   delete: (v: unknown) => children.delete(v),
 };
+const uiProbe = { paints: true }; // the main renderer's requestAnimationFrame answers (a window on a DISPLAYED desktop) — false = it stalls (an undisplayed sway workspace)
 bp.initBrowserPanels(() => ({
   contentView: {
     addChildView: (v: unknown) => attached.add(v),
     removeChildView: (v: unknown) => attached.delete(v),
   },
+  webContents: { isDestroyed: () => false, executeJavaScript: () => (uiProbe.paints ? Promise.resolve(true) : new Promise(() => undefined)) },
 }) as never);
 
 let seq = 0;
@@ -797,6 +799,128 @@ test('the unpin capture is owed again by a lease taken WHILE it runs (a capture 
   l2.end();
   await nap(1800);
   assert.deepEqual(events, ['throttle:false', 'capture', 'throttle:true', 'capture', 'throttle:false', 'throttle:true', 'capture'], 'the second lease owes its own unpin capture after its flip-back');
+});
+
+test('F1 (a) an action on a window that paints NOTHING is refused fast — before any capture, pulse or flip — and evaluate still works (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const events = trace(wcOf(t2));
+  uiProbe.paints = false;
+  try {
+    const t0 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /desktop workspace that is not displayed/);
+    assert.ok(Date.now() - t0 < 600, `refused fast (${Date.now() - t0} ms)`);
+    await assert.rejects(() => bp.capture(ws, 75, 't2'), /not displayed/);
+    assert.deepEqual(events, [], 'nothing was flipped and no capture was started (a capture on a window that paints nothing hangs and pins the page)');
+    (await bp.beginAgentAction(ws, 't2', 'other')).end(); // evaluate / navigate need no frame: allowed
+    await nap(900);
+    assert.deepEqual(events, ['throttle:false', 'throttle:true']);
+  } finally {
+    uiProbe.paints = true;
+    await nap(800); // the verdict is cached for PAINT_VERDICT_TTL_MS: do not leak a "stalled" verdict into the next test
+  }
+});
+
+test('F1 (b) a wake capture that never finishes proves the window paints nothing: the next action is refused at once, without asking or capturing (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const wc = wcOf(t2);
+  let captures = 0;
+  wc.capturePage = () => { captures++; return new Promise(() => undefined); }; // the window stopped painting after the probe said yes
+  const lease = await bp.beginAgentAction(ws, 't2', 'input'); // the wake is bounded (WAKE_MS), the action goes on
+  lease.end();
+  assert.equal(captures, 1);
+  const t0 = Date.now();
+  await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not displayed/);
+  assert.ok(Date.now() - t0 < 100, 'refused from the stall verdict, without another probe');
+  assert.equal(captures, 1, 'and without another capture');
+  await nap(900);
+});
+
+for (const settled of [true, false]) {
+  test(`F2 the cover leaves the screen MID-PULSE (the Browser pane is closed; the cover was shown ${settled ? 'long ago → hideView' : 'a moment ago → removeView'}): the pulsing view is hidden in the same tick, the action fails with the true cause, nothing stays composited (#406 P4)`, async () => {
+    const ws = newWs();
+    openShown(ws);
+    if (settled) { (bp.getActiveTab(ws) as any).shownAt = 0; (bp.getActiveTab(ws) as any).stoppedAt = 0; }
+    const t2 = bp.createTab(ws, { openedBy: 'agent' }); // never composited → the screenshot pulses it under the visible tab
+    const shot = bp.capture(ws, 75, 't2').then(() => 'resolved', (e: Error) => e.message);
+    await nap(150);
+    assert.equal(viewOf(t2).visible, true, 'mid-pulse the view is composited (under the cover)');
+    bp.hidePanel(ws); // the human closes the pane
+    assert.equal(viewOf(t2).visible, false, 'hidden in the SAME tick the cover is hidden — it never shows in the vacated pane');
+    const msg = await shot;
+    assert.match(msg, /Browser pane was closed .* first frame/);
+    assert.equal(children.has(viewOf(t2)), false, 'and it was taken out of the window');
+  });
+}
+
+test('F2 the cover TAB is closed mid-pulse (removeView path): the pulsing view is hidden in the same tick (#406 P4)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' }); // t2: becomes the closed cover's neighbour
+  const t3 = bp.createTab(ws, { openedBy: 'agent' }); // t3: never composited → pulses under t1
+  const shot = bp.capture(ws, 75, 't3').then(() => 'resolved', (e: Error) => e.message);
+  await nap(150);
+  assert.equal(viewOf(t3).visible, true, 'mid-pulse the view is composited (under the cover)');
+  bp.closeTab(ws, 't1'); // the human closes the tab that was hiding it
+  assert.equal(viewOf(t3).visible, false, 'hidden in the SAME tick the cover tab is removed');
+  assert.match(await shot, /Browser pane was closed .* first frame/);
+  assert.equal(children.has(viewOf(t3)), false);
+});
+
+test('F5 (a) a human who activates the pulsing tab mid-pulse keeps it: it is not hidden, removed or refused (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  const shot = bp.capture(ws, 75, 't2');
+  await nap(150);
+  bp.activateTab(ws, 't2'); // the old cover (t1) leaves, t2 is the pane's visible tab now
+  assert.ok((await shot).length > 0, 'the action proceeds on the now-visible tab');
+  assert.equal(bp.getActiveTab(ws)?.id, 't2');
+  assert.equal(viewOf(t2).visible, true, 'still on screen');
+  assert.equal(children.has(viewOf(t2)), true);
+});
+
+test('F3 a screenshot of a tab whose load takes longer than the old 1.5 s bound waits for it and answers (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const handlers = (wcOf(t2).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  wcOf(t2).loadingNow = true;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
+  setTimeout(() => { wcOf(t2).loadingNow = false; (t2 as any).stoppedAt = Date.now(); }, 2500);
+  const shot = await bp.capture(ws, 75, 't2');
+  assert.ok(shot.length > 0, 'answered once the load settled');
+  assert.equal(children.has(viewOf(t2)) && viewOf(t2).visible === false, true, 'attached + hidden afterwards');
+  await nap(900);
+});
+
+test('F3 a page that NEVER finishes loading is refused with the TRUE cause, and its still-loading view is not left in the window (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  wcOf(t2).loadingNow = true; // never settles
+  const t0 = Date.now();
+  await assert.rejects(() => bp.capture(ws, 75, 't2'), /still loading/);
+  assert.ok(Date.now() - t0 < 7500, `bounded (${Date.now() - t0} ms)`);
+  assert.equal(children.has(viewOf(t2)), false, 'a loading view is never left attached (hidden or not)');
+});
+
+test('F5 (b) a main-frame navigation of the VISIBLE tab never takes its view out of the window (#406)', () => {
+  const ws = newWs();
+  openShown(ws);
+  const t1 = bp.getActiveTab(ws)!;
+  const handlers = (wcOf(t1).handlers ?? {}) as Record<string, Array<(...a: unknown[]) => void>>;
+  for (const h of handlers['did-start-navigation'] ?? []) h({ isMainFrame: true, isSameDocument: false });
+  assert.equal(children.has(viewOf(t1)) && viewOf(t1).visible === true, true, 'the human\'s tab stays on screen through a navigation');
 });
 
 test('with NOTHING on screen to hide a first-paint pulse under, a never-composited tab refuses a screenshot FAST with a clear error (P6)', async () => {

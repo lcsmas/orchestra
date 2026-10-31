@@ -53,6 +53,7 @@ const server = http.createServer((req, res) => {
     })
   }
   if (req.method === 'GET' && url.pathname === '/slow') { // a 1x1 gif after ?ms=N (<= 5 s): keeps a page's `load` pending (#406 rig: a document still loading when an agent screenshots it)
+    if (url.searchParams.get('ms') === 'hang') return // never answers: the page's load never completes (#406 rig: a document that never finishes loading)
     const ms = Math.max(0, Math.min(5000, Number(url.searchParams.get('ms') ?? 0) || 0))
     return void setTimeout(() => send(200, 'image/gif', Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')), ms)
   }

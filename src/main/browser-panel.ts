@@ -30,7 +30,13 @@ import {
   LeaseBook,
   HIDDEN_FRAME_DEADLINE_MS,
   SURFACE_PULSE_MAX_MS,
+  LOAD_SETTLE_MAX_MS,
+  PAINT_PROBE_MS,
+  PAINT_VERDICT_TTL_MS,
   NO_FRAME_MESSAGE,
+  OFFSCREEN_MESSAGE,
+  STILL_LOADING_MESSAGE,
+  COVER_GONE_MESSAGE,
   cropRect,
   decideTabAction,
   type ActionKind,
@@ -204,6 +210,7 @@ const FIRST_PAINT_MS = 400;
 
 /** Take `tab`'s view OUT of the window (any state). Used when the tab dies, closes, is rebuilt, or navigates while hidden. */
 function removeView(tab: Tab): void {
+  abortPulsesUnder(tab);
   if (tab.surface !== 'detached') {
     try {
       getWindow?.()?.contentView.removeChildView(tab.view);
@@ -228,6 +235,7 @@ function removeView(tab: Tab): void {
 
 /** Stop compositing `tab` WITHOUT removing it (#406): attached + `setVisible(false)`, so an agent can still drive it (see {@link beginAgentAction}). */
 function hideView(tab: Tab): void {
+  abortPulsesUnder(tab); // BEFORE the cover leaves the screen: a pulse hiding under it must not show in the vacated pane
   if (tab.surface === 'detached') return;
   // A document that is still loading — or has not had FIRST_PAINT_MS since it was shown / finished loading — when its view is hidden is born hidden: no first frame, no input
   // (measured, #406). Take the view out instead: it settles detached and is surfaced under the cover by the next agent action, like a tab opened in a background workspace.
@@ -1558,7 +1566,29 @@ function afterNextPaint(wc: Electron.WebContents, ms: number): Promise<void> {
   });
 }
 async function wakeView(wc: Electron.WebContents): Promise<void> {
-  await Promise.race([wc.capturePage().then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, WAKE_MS))]);
+  const done = await Promise.race([wc.capturePage().then(() => true, () => true), new Promise<boolean>((r) => setTimeout(() => r(false), WAKE_MS))]);
+  if (!done) paintVerdict = { at: Date.now(), ok: false }; // a capture that does not finish: the window paints nothing (an undisplayed desktop) — refuse the next actions without asking
+}
+
+/** Does the Orchestra window paint? The main renderer answers a requestAnimationFrame within ~10 ms when displayed; on an undisplayed sway workspace it stalls (measured: ≈ 1 s after the
+ *  switch). A capture / click / type on a view whose window paints nothing never answers and leaves the page shown (unthrottled) until the window is displayed again — so those are refused fast. */
+let paintVerdict = { at: 0, ok: true };
+async function windowPaints(): Promise<boolean> {
+  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
+  const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents;
+  let ok = true;
+  if (ui && !ui.isDestroyed?.()) {
+    try {
+      ok = await Promise.race([
+        Promise.resolve(ui.executeJavaScript('new Promise((r) => requestAnimationFrame(() => r(true)))')).then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS)),
+      ]);
+    } catch {
+      ok = true; // no evidence of a stall (page reloading, test stub): never refuse on a failed probe
+    }
+  }
+  paintVerdict = { at: Date.now(), ok };
+  return ok;
 }
 
 export interface DriveLease {
@@ -1590,7 +1620,13 @@ function sweepLeases(): void {
         /* contents gone */
       }
       // the unpin capture (see WAKE_MS); a lease taken while it runs makes it a capture UNDER the flip again — that lease owes the unpin
-      if (pinnedLeases.delete(id) && tab?.surface === 'hidden') void wakeView(wc).then(() => { if (driveLeases.isHeld(id)) pinnedLeases.add(id); });
+      if (pinnedLeases.delete(id) && tab?.surface === 'hidden') {
+        void windowPaints().then(async (paints) => {
+          if (!paints) return;
+          await wakeView(wc);
+          if (driveLeases.isHeld(id)) pinnedLeases.add(id);
+        });
+      }
     } else pinnedLeases.delete(id);
   }
   scheduleSweep();
@@ -1621,44 +1657,79 @@ function surfaceTab(tab: Tab, cover: Tab): Promise<void> {
   void tracked.then(() => { if (pulses.get(tab) === tracked) pulses.delete(tab); });
   return run;
 }
+/** A pulse in progress: its tab is composited UNDER `cover`. If the cover leaves the screen first (pane closed, workspace / tab switched) the pulse must end at once. */
+interface Pulse { tab: Tab; cover: Tab; aborted: boolean }
+const livePulses = new Set<Pulse>();
+/** `cover` is about to leave the screen: every pulse hiding under it ends NOW (the pulsing view is hidden synchronously, before the pane is vacated). Called from hideView / removeView. */
+function abortPulsesUnder(cover: Tab): void {
+  for (const p of livePulses) {
+    if (p.cover !== cover || p.aborted) continue;
+    p.aborted = true;
+    try {
+      p.tab.view.setVisible(false);
+    } catch {
+      /* view gone */
+    }
+  }
+}
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 async function surfaceTabNow(tab: Tab, cover: Tab): Promise<void> {
   const win = getWindow?.();
   const wc = liveContents(tab);
   if (!win || !wc) throw new Error('the browser tab has no live view');
+  const pulse: Pulse = { tab, cover, aborted: false };
+  livePulses.add(pulse);
   tab.view.setBounds(cover.view.getBounds());
   win.contentView.addChildView(tab.view, 0);
   tab.view.setVisible(true);
   tab.surface = 'visible'; // composited for the length of the pulse only
   const t0 = Date.now();
+  let painted = false;
+  let stillLoading = false;
   try {
     // painted = the view yields a non-empty capture (a frame subscription is not a reliable signal: measured, it stays silent on a re-shown static page that then captures fine)
-    let painted = false;
     let nudged = false;
-    while (!painted && Date.now() - t0 < SURFACE_PULSE_MAX_MS) {
+    while (!painted && !pulse.aborted && Date.now() - t0 < SURFACE_PULSE_MAX_MS) {
       const img = await Promise.race([wc.capturePage().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 250))]);
       if (img && !img.isEmpty()) {
         painted = true;
         break;
       }
-      if (!nudged && Date.now() - t0 >= NUDGE_AFTER_MS) {
+      if (!nudged && !pulse.aborted && Date.now() - t0 >= NUDGE_AFTER_MS) {
         // a re-shown view whose page is static may never resubmit a frame (measured: a navigated, previously used tab): a one-pixel resize under the cover makes the renderer submit one
         nudged = true;
         const b = cover.view.getBounds();
         tab.view.setBounds({ ...b, width: Math.max(1, b.width - 1) });
-        await new Promise((r) => setTimeout(r, 30));
+        await sleep(30);
         tab.view.setBounds(b);
       }
-      await new Promise((r) => setTimeout(r, 50));
+      await sleep(50);
     }
-    log.info(`browser-panel: drive ${tabKeyOf(tab) || tab.id} pulse: ${painted ? 'painted' : 'NOT painted'} after ${Date.now() - t0} ms${nudged ? ' (nudged)' : ''}`);
-    await new Promise((r) => setTimeout(r, Math.max(0, 450 - (Date.now() - t0)))); // measured: attach + 800 ms under the cover; the frame callback alone is early
-    // a document still loading (an action right after a click-through navigation) would be taken OUT again by hideView: wait for it, bounded
-    while (Date.now() < t0 + SURFACE_PULSE_MAX_MS && liveContents(tab) && (wc.isLoading?.() || Date.now() - tab.stoppedAt < FIRST_PAINT_MS)) await new Promise((r) => setTimeout(r, 40));
+    log.info(`browser-panel: drive ${tabKeyOf(tab) || tab.id} pulse: ${painted ? 'painted' : 'NOT painted'} after ${Date.now() - t0} ms${nudged ? ' (nudged)' : ''}${pulse.aborted ? ' (ABORTED: the cover left)' : ''}`);
+    while (!pulse.aborted && Date.now() - t0 < 450) await sleep(25); // measured: attach + 800 ms under the cover; the first frame alone is early
+    // a document still loading (an action right after a click-through navigation) must not be hidden again (hideView would take it OUT): wait for it, bounded, then refuse with the true cause
+    while (!pulse.aborted && Date.now() - t0 < LOAD_SETTLE_MAX_MS && liveContents(tab) && (wc.isLoading?.() || Date.now() - tab.stoppedAt < FIRST_PAINT_MS)) await sleep(40);
+    stillLoading = !pulse.aborted && !!liveContents(tab) && !!wc.isLoading?.();
   } finally {
-    if (tab.surface === 'visible' && tab !== coverTab()) hideView(tab);
+    livePulses.delete(pulse);
+  }
+  if (tab === coverTab()) {
+    // the human activated this very tab meanwhile (its old cover left, which aborted the pulse): it is the pane's visible tab now — never hide, remove or refuse it
     tab.composited = true;
     surfacedAt.set(tab, Date.now());
+    return;
   }
+  if (pulse.aborted) {
+    removeView(tab); // never composited for good: the next action pulses again
+    throw new Error(COVER_GONE_MESSAGE);
+  }
+  if (stillLoading) {
+    removeView(tab); // it keeps loading detached; hiding a loading view is what hideView refuses
+    throw new Error(STILL_LOADING_MESSAGE);
+  }
+  if (tab.surface === 'visible') hideView(tab);
+  tab.composited = painted;
+  surfacedAt.set(tab, Date.now());
 }
 
 /** The first frame the view's compositor delivers after this call (a refresh of its current surface), as a NativeImage; rejects after `deadlineMs`. */
@@ -1700,6 +1771,7 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   if (kind !== 'other' && d.act !== 'direct') log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} ${kind} → ${d.act} (surface ${tab.surface}, composited ${tab.composited}, cover ${!!cover}, loading ${!!wc.isLoading?.()})`);
   if (d.act === 'refuse') throw new Error(d.message);
   if (d.act === 'direct') return NOOP_LEASE;
+  if (kind !== 'other' && !(await windowPaints())) throw new Error(OFFSCREEN_MESSAGE); // BEFORE any capture / pulse: nothing paints, so they would hang and pin the page unthrottled
   if (d.act === 'surface-then-lease') await surfaceTab(tab, cover as Tab);
   const id = `${wsId}/${tab.id}`;
   tabKeys.set(tab, id);
