@@ -191,6 +191,22 @@ function seedWorld(armDir) {
   return { fakeHome, ohome, cfg, account, workspaces, stubDir };
 }
 
+/** Census of what THIS rig run left behind: every process whose cmdline, environ or cwd names the rig dir (agent-browser daemons carry no ORCHESTRA_HOME, so the survivors check below cannot see them), minus the rig's own driver chain and its compositor. */
+function listRigProcs(rigDir) {
+  const ancestors = new Set([process.pid]);
+  for (let p = process.ppid; p > 1 && !ancestors.has(p);) { ancestors.add(p); try { p = +fs.readFileSync(`/proc/${p}/stat`, 'utf8').replace(/^.*\) \S+ /, '').split(' ')[0]; } catch { break; } }
+  const out = [];
+  for (const n of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    const pid = +n; if (ancestors.has(pid)) continue;
+    try {
+      const comm = fs.readFileSync(`/proc/${n}/comm`, 'utf8').trim();
+      if (/^sway(bg)?$/.test(comm)) continue; // the rig's own compositor goes down with the contained rig, after this census
+      const cl = fs.readFileSync(`/proc/${n}/cmdline`, 'utf8'), env = (() => { try { return fs.readFileSync(`/proc/${n}/environ`, 'utf8'); } catch { return ''; } })();
+      if (cl.includes(rigDir) || env.includes(rigDir)) out.push({ pid, comm });
+    } catch { /* gone */ }
+  }
+  return out;
+}
 function listProcsByHome(home) {
   const out = [];
   for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
@@ -319,6 +335,18 @@ async function main() {
     await sleep(500);
     const left = listProcsByHome(world.ohome);
     clause('ctl', 'teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
+    { // OPS housekeeping: the census after the run is ZERO. A planted straggler proves the census can see; the daemons this rig leaves (no ORCHESTRA_HOME) are stopped by identity and COUNTED in the detail
+      const decoy = spawn('sleep', ['30'], { env: { PATH: process.env.PATH, RIG_DECOY: RIG_DIR }, stdio: 'ignore', detached: true }); decoy.unref();
+      await sleep(150);
+      const seen = listRigProcs(RIG_DIR).some((c) => c.pid === decoy.pid);
+      try { process.kill(decoy.pid, 'SIGKILL'); } catch {}
+      clause('ctl', 'teardown-census-sees-a-planted-straggler', seen, `a \`sleep 30\` carrying the rig dir in its environment was ${seen ? 'found by the census' : 'NOT found — the census below would be blind'}`);
+      const stragglers = listRigProcs(RIG_DIR);
+      for (const c of stragglers) { try { process.kill(c.pid, 'SIGKILL'); } catch {} }
+      await sleep(400);
+      const after = listRigProcs(RIG_DIR);
+      clause('ctl', 'teardown-census-after-run-is-zero', after.length === 0, `${stragglers.length} straggler(s) stopped by identity at teardown (${stragglers.map((c) => `${c.comm}:${c.pid}`).join(',') || 'none'}); left after: ${after.length ? after.map((c) => `${c.comm}:${c.pid}`).join(',') : 'none'}`);
+    }
   }
 }
 

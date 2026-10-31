@@ -44,7 +44,7 @@ const MUTANTS = {
     edits: [[new RegExp(`end:\\(\\)=>\\{${ID}\\|\\|\\(${ID}=!0,${ID}\\.release\\(${ID},Date\\.now\\(\\)\\),${ID}\\(\\)\\)\\}`), 'end:()=>{}'],
       [new RegExp(`(${ID})\\.holders>0&&(${ID})-\\1\\.touchedAt>=${ID}\\?`), '!1?']] },
   'switch-to-front': { file: 'main', arms: ['act'], why: 'the pre-#406 fallback: an action on a hidden tab makes it the active tab first — the human\'s view changes (P4 must-FAIL)',
-    edits: [[new RegExp(`async function ${ID}\\((${ID}),${ID},${ID}\\)\\{var ${ID};const (${ID})=${ID}\\(\\1,${ID}\\),${ID}=${ID}\\(\\2\\);[^]{0,900}?if\\(${ID}\\.act==="direct"\\)return ${ID};`),
+    edits: [[new RegExp(`async function ${ID}\\((${ID}),${ID},${ID}\\)\\{var ${ID};const (${ID})=${ID}\\(\\1,${ID}\\),${ID}=${ID}\\(\\2\\);[^]{0,900}?if\\(${ID}\\.act==="direct"\\)\\{[^{}]*\\}`),
       (m, ws, tab, ...rest) => { const whole = rest[rest.length - 1]; const act = ACTIVATE_TAB.exec(whole)?.[1]; if (!act) throw new Error('activateTab not found in the chunk'); return `${m}try{${act}(${ws},${tab}.id)}catch{}`; }]] },
   'no-nav-lease-end': { file: 'main', arms: ['navigate'], why: 'removing a hidden view (a navigation under a lease) forgets the lease without flipping throttling back ON: the new document stays unthrottled (P7n must-FAIL)',
     edits: [[new RegExp(`if\\((${ID})\\.isHeld\\((${ID})\\)\\)try\\{\\((${ID})=${ID}\\(${ID}\\)\\)==null\\|\\|\\3\\.setBackgroundThrottling\\(!0\\)\\}catch\\{\\}`), '']] },
