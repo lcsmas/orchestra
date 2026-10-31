@@ -1022,6 +1022,30 @@ test('D1 windowDarkReason (the proxy\'s question after an unacknowledged Input.*
   assert.equal(await bp.windowDarkReason(), null, 'and null again once the display is back');
 });
 
+test('S2-F2 once the window is measured dark, the human\'s own VISIBLE tab is refused at once too (it would otherwise wait the ack bound every time) — and works again when the display is back (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  (await bp.beginAgentAction(ws, 't1', 'input')).end(); // the visible tab, window painting: a no-op lease
+  const wc = wcOf(t2);
+  const orig = wc.capturePage;
+  wc.capturePage = () => new Promise(() => undefined);
+  uiProbe.paints = false;
+  try {
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/); // the hidden tab's action measures the darkness
+    const t0 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't1', 'input'), /not painting right now/);
+    await assert.rejects(() => bp.beginAgentAction(ws, 't1', 'capture'), /not painting right now/);
+    assert.ok(Date.now() - t0 < 100, `at once (${Date.now() - t0} ms)`);
+    (await bp.beginAgentAction(ws, 't1', 'other')).end(); // evaluate on the visible tab needs no frame
+  } finally { uiProbe.paints = true; wc.capturePage = orig; }
+  await nap(300);
+  (await bp.beginAgentAction(ws, 't1', 'input')).end();
+  await nap(900);
+});
+
 test('D1 sway saying "displayed" never overrides a measured no-frame: DPMS off / a lock leaves get_tree at visible:true — the refusal holds while the probe is pending and ends when it answers (#406)', async () => {
   const ws = newWs();
   openShown(ws);

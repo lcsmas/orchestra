@@ -1849,7 +1849,10 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   const d = decideTabAction({ tab: { surface: tab.surface, composited: tab.composited, hasCover: !!cover && cover !== tab }, kind });
   if (kind !== 'other' && d.act !== 'direct') log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} ${kind} → ${d.act} (surface ${tab.surface}, composited ${tab.composited}, cover ${!!cover}, loading ${!!wc.isLoading?.()})`);
   if (d.act === 'refuse') throw new Error(d.message);
-  if (d.act === 'direct') return NOOP_LEASE;
+  if (d.act === 'direct') {
+    if (kind !== 'other' && Date.now() - noFrameAt < NO_FRAME_TTL_MS) throw new Error(OFFSCREEN_MESSAGE); // the human's own tab too: a measured no-frame is remembered, the 2nd action does not wait the ack bound again
+    return NOOP_LEASE;
+  }
   if (kind !== 'other' && !(await windowPaints())) throw new Error(OFFSCREEN_MESSAGE); // BEFORE any capture / pulse: nothing paints, so they would hang and pin the page unthrottled
   if (d.act === 'surface-then-lease') await surfaceTab(tab, cover as Tab);
   const id = `${wsId}/${tab.id}`;

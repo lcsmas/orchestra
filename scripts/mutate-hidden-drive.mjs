@@ -104,6 +104,10 @@ const MUTANTS = [
     from: '      if (why) throw new CdpError(why, ERR_SERVER);\n    }\n    return run;', to: '    }\n    return run;' },
   { id: 'window-dark-reason-never-dark', file: BP, test: TABS, pattern: 'windowDarkReason',
     from: '  return (await windowPaintsNow()) ? null : OFFSCREEN_MESSAGE;', to: '  return null;' },
+  { id: 'visible-screenshot-not-bounded', file: CORE, test: CORE_T, pattern: 'IN FRONT',
+    from: 'const r = this.port.windowDark ? await this.refuseIfDark(run) : await run; // the human', to: 'const r = await run; // the human' },
+  { id: 'visible-action-ignores-the-remembered-dark', file: BP, test: TABS, pattern: 'S2-F2 once the window is measured dark',
+    from: "    if (kind !== 'other' && Date.now() - noFrameAt < NO_FRAME_TTL_MS) throw new Error(OFFSCREEN_MESSAGE); // the human's own tab too: a measured no-frame is remembered, the 2nd action does not wait the ack bound again\n", to: '' },
 ];
 
 const only = process.argv.slice(2);

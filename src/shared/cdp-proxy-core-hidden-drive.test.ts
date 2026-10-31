@@ -233,3 +233,16 @@ test('D1 a slow acknowledgement on a PAINTING window is waited for (the window s
   await c.call('Runtime.evaluate', {}, sid);
   assert.equal(asked, 1, 'a prompt Input.* and a non-input command never ask');
 });
+
+test('S2-F2 the screenshot of the tab the human has IN FRONT is bounded the same way: a window that paints nothing refuses it after INPUT_ACK_MS instead of hanging to the 5 s "no frame" (#406)', async () => {
+  let asked = 0;
+  const f = fake({ beginAction: async () => ({ end: () => undefined }), delays: { 'Page.captureScreenshot': Infinity }, windowDark: async () => { asked++; return 'the Orchestra window is not painting right now (DARK)'; } });
+  const core = new CdpProxyCore(f.port);
+  const c = client(core);
+  const sid = await attachTo(core, c, 't1'); // t1 is the active (visible) tab
+  const t0 = Date.now();
+  const r = await c.call('Page.captureScreenshot', { format: 'png' }, sid);
+  assert.match(r.error?.message ?? '', /not painting right now \(DARK\)/);
+  assert.ok(Date.now() - t0 >= 900 && Date.now() - t0 < 1700, `after the ack bound (${Date.now() - t0} ms)`);
+  assert.equal(asked, 1);
+});

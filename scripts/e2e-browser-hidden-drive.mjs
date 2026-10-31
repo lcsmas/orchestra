@@ -226,6 +226,22 @@ function listProcsByHome(home) {
   }
   return out.filter((p) => p !== process.pid);
 }
+/** Census of what THIS rig run left behind: every process whose cmdline, environ or cwd names the rig dir (fixture server, agent-browser daemons, Electron helpers, a stray `sleep`), minus the rig's own driver chain and its compositor. */
+function listRigProcs(rigDir) {
+  const ancestors = new Set([process.pid]);
+  for (let p = process.ppid; p > 1 && !ancestors.has(p);) { ancestors.add(p); try { p = +fs.readFileSync(`/proc/${p}/stat`, 'utf8').replace(/^.*\) \S+ /, '').split(' ')[0]; } catch { break; } }
+  const out = [];
+  for (const n of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    const pid = +n; if (ancestors.has(pid)) continue;
+    try {
+      const comm = fs.readFileSync(`/proc/${n}/comm`, 'utf8').trim();
+      if (/^sway(bg)?$/.test(comm)) continue; // the rig's own compositor goes down with the contained rig, after this census
+      const cl = fs.readFileSync(`/proc/${n}/cmdline`, 'utf8'), env = (() => { try { return fs.readFileSync(`/proc/${n}/environ`, 'utf8'); } catch { return ''; } })();
+      if (cl.includes(rigDir) || env.includes(rigDir)) out.push({ pid, comm });
+    } catch { /* gone */ }
+  }
+  return out;
+}
 const daemonPids = (ctx) => { const l = abLayout(ctx.world.ohome, XDG); const dir = path.join(l.socketDir, 'namespaces', 'orchestra', 'run'); const out = {}; try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.pid')) out[f.slice(0, -4)] = Number(fs.readFileSync(path.join(dir, f), 'utf8').trim()); } catch {} return out; };
 const environOf = (pid) => { try { return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
 
@@ -349,6 +365,18 @@ async function main() {
     await sleep(500);
     const left = listProcsByHome(world.ohome);
     clause('ctl', 'teardown-no-survivors', left.length === 0, `processes still carrying ${world.ohome}: ${left.length ? left.join(',') : 'none'}`);
+    if (RIG_DIR) { // positive control of the instrument: a planted straggler carrying the rig dir MUST be seen (then killed), or a zero below proves nothing
+      const decoy = spawn('sleep', ['30'], { env: { PATH: process.env.PATH, RIG_DECOY: RIG_DIR }, stdio: 'ignore', detached: true }); decoy.unref();
+      await sleep(150);
+      const seen = listRigProcs(RIG_DIR).some((c) => c.pid === decoy.pid);
+      try { process.kill(decoy.pid, 'SIGKILL'); } catch {}
+      clause('ctl', 'teardown-census-sees-a-planted-straggler', seen, `a \`sleep 30\` carrying the rig dir in its environment was ${seen ? 'found by the census' : 'NOT found — the census below would be blind'}`);
+    }
+    if (RIG_DIR) { // OPS housekeeping: the census after the run is ZERO (anything left is killed by identity first, so the next run starts clean, and the clause still fails)
+      const census = listRigProcs(RIG_DIR);
+      for (const c of census) { try { process.kill(c.pid, 'SIGKILL'); } catch {} }
+      clause('ctl', 'teardown-census-after-run-is-zero', census.length === 0, `processes naming ${path.basename(RIG_DIR)} after the app, the fixture and the daemons were stopped: ${census.length ? census.map((c) => `${c.comm}:${c.pid}`).join(',') : 'none'}`);
+    }
   }
 }
 
@@ -914,6 +942,22 @@ const ARM_FNS = {
       console.log(`  [info] ${A}: RESIDUAL — a desktop switch ${offsets.join('/')} ms after a displayed action: still unthrottled at +5.6 s in ${race.filter((r) => r.stuck > 2).length}/${race.length} (${race.map((r) => `${r.off}:${r.stuck}`).join(' ')} timers/s)`);
       clause(A, 'residual-a-view-pinned-by-an-action-just-before-the-switch-heals-when-the-window-is-displayed-again', race.every((r) => r.healed <= 2), `3.5 s after the desktop was displayed again: ${race.map((r) => `${r.off}:${r.healed}`).join(' ')} timers/s (limit 2)`);
     }
+    { // RESIDUAL, seat 2's sweep (S2-F1'): the desktop switch lands 0/100/…/450 ms INTO a screenshot — report the CONDITIONAL rate and assert the heal
+      const offs = [0, 100, 200, 300, 400, 450], runs = [];
+      for (let k = 0; k < 20; k++) {
+        const off = offs[k % offs.length], W = ctx.W1, id = ctx.ids[W.id][k % 7]; const { raw, timed } = await openRaw(W, id);
+        await sleep(1500);
+        const shot = timed('Page.captureScreenshot', { format: 'png' });
+        await sleep(off); away();
+        const res = await shot; raw.close();
+        await sleep(5600);
+        const stuck = await rateOf(id); await back(); await sleep(2500);
+        const healed = await rateOf(id);
+        runs.push({ off, stuck, healed, res });
+      }
+      console.log(`  [info] ${A}: RESIDUAL INTO a screenshot — desktop switch at ${offs.join('/')} ms into it (20 runs): page still unthrottled at +5.6 s with the desktop away in ${runs.filter((r) => r.stuck > 2).length}/20 (by offset: ${offs.map((o) => `${o}:${runs.filter((r) => r.off === o && r.stuck > 2).length}/${runs.filter((r) => r.off === o).length}`).join(' ')}); the screenshot itself: ${runs.filter((r) => r.res.err).length} refused/failed`);
+      clause(A, 'residual-a-switch-into-a-screenshot-heals-2.5s-after-the-window-is-displayed-again', runs.length === 20 && runs.every((r) => r.healed <= 2), `2.5 s after the desktop was displayed again: ${runs.map((r) => `${r.off}:${r.healed}`).join(' ')} timers/s (limit 2); unthrottled while away: ${runs.filter((r) => r.stuck > 2).length}/20`);
+    }
     const W = ctx.W1, id = ctx.ids[W.id][3]; const { raw, timed } = await openRaw(W, id);
     const again = await timed('Page.captureScreenshot', { format: 'png' }); raw.close();
     clause(A, 'ctl/displayed-again-screenshot-works', !again.err, `screenshot after returning to workspace ${JSON.stringify(home)}: ${again.err ?? 'an image'} in ${again.ms} ms`);
@@ -1000,8 +1044,24 @@ const ARM_FNS = {
           await sleep(5600);
           race.push({ ctl, dark, hit, rate: await rateOf(id) });
         }
-        clause(A, `${mode}-dark-right-after-an-action-the-unacknowledged-dispatch-is-refused-by-the-ack-bound`, race.length >= 4 && race.every((r) => !r.ctl.err && r.dark && r.hit.err && reason.test(r.hit.err) && r.hit.ms <= 2500), `${race.length} runs: a wheel ≈ 0.45 s after an action with DPMS off in between: ${race.map((r) => `${r.hit.ms} ms ${r.hit.err ? JSON.stringify(r.hit.err.slice(0, 30)) : 'ANSWERED'}`).join(' · ')} (limit 2500; an unbounded dispatch hangs to the 6000 ms client bound)`);
+        clause(A, `${mode}-dark-right-after-an-action-the-wheel-never-hangs`, race.length >= 4 && race.every((r) => !r.ctl.err && r.dark && r.hit.ms <= 2500 && (!r.hit.err || reason.test(r.hit.err))), `${race.length} runs: a wheel ≈ 0.45 s after an action with DPMS off in between: ${race.map((r) => `${r.hit.ms} ms ${r.hit.err ? JSON.stringify(r.hit.err.slice(0, 30)) : 'answered'}`).join(' · ')} (limit 2500; the lease is still held, so the page answers — measured)`);
         clause(A, `${mode}-dark-right-after-an-action-heals-when-the-display-is-back`, race.length >= 4 && race.every((r) => r.rate <= 2), `timers/s 5.6 s after the display came back: ${race.map((r) => r.rate).join(', ')} (limit 2)`);
+      }
+      { // S2-F2': the tab the human has IN FRONT is bounded too (it used to hang to the 5 s "no frame" and fail late)
+        const vrows = [];
+        for (let i = 0; i < Math.max(4, RUNS_DARK >> 1) && undoable; i++) {
+          const raw = await rawProxyClient(ctx.ep[ctx.W1.id].wsUrl);
+          const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => x.url === ctx.URL.a)?.targetId ?? null, 8000, 'proxy target for the human\'s tab');
+          const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+          const timed = async (method, params) => { const t0 = Date.now(); const r = await Promise.race([raw.callOn(sid, method, params), sleep(8000).then(() => ({ error: { message: 'NO ANSWER in 8 s' } }))]); return { ms: Date.now() - t0, err: r.error?.message ?? null }; };
+          const ctl = await timed('Page.captureScreenshot', { format: 'png' });
+          await sleep(800);
+          const dark = await M.dark();
+          const first = await timed('Page.captureScreenshot', { format: 'png' }), second = await timed('Page.captureScreenshot', { format: 'png' });
+          raw.close(); undoable = await M.light();
+          vrows.push({ ctl, dark, first, second });
+        }
+        clause(A, `${mode}-the-humans-own-tab-screenshot-is-refused-with-the-reason-not-hung`, vrows.length >= 4 && vrows.every((r) => !r.ctl.err && r.dark && r.first.err && reason.test(r.first.err) && r.first.ms <= 2500 && r.second.err && reason.test(r.second.err) && r.second.ms <= 500), `${vrows.length} runs: the active tab's screenshot with the display dark: first ${vrows.map((r) => r.first.ms).join(', ')} ms (limit 2500), then ${vrows.map((r) => r.second.ms).join(', ')} ms (limit 500), reason in every refusal: ${vrows.every((r) => r.first.err && reason.test(r.first.err) && r.second.err && reason.test(r.second.err))}`);
       }
       clause(A, `${mode}-evaluate-still-works`, n >= RUNS_DARK && rows.every((r) => !r.ev.err), `${rows.filter((r) => !r.ev.err).length}/${n} Runtime.evaluate answered (median ${median(rows.map((r) => r.ev.ms))} ms)`);
       clause(A, `${mode}-driven-view-throttled-again-within-linger-plus-5s-of-the-display-coming-back`, n >= RUNS_DARK && rows.every((r) => r.rate <= 2), `timers/s of the driven page 5.6 s after the display was restored: ${rows.map((r) => r.rate).join(', ')} (limit 2)`);

@@ -719,13 +719,14 @@ export class CdpProxyCore {
     const format: 'png' | 'jpeg' = params.format === 'jpeg' ? 'jpeg' : 'png';
     const quality = typeof params.quality === 'number' ? params.quality : undefined;
     const canFallback = params.clip === undefined && params.captureBeyondViewport !== true;
-    const r = await captureWithFallback({
+    const run = captureWithFallback({
       primary: async () => ((await st.channel.send('Page.captureScreenshot', params)) as { data: string }).data,
       probe: () =>
         st.channel.send('Page.captureScreenshot', { format: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }),
       invalidate: () => this.port.invalidate(tabId),
       fallback: canFallback ? () => this.port.captureFallback(tabId, format, quality) : null,
     });
+    const r = this.port.windowDark ? await this.refuseIfDark(run) : await run; // the human's own tab too: a window that paints nothing never answers (seat 2: 6 s, then "produced no frame")
     return { data: r.data };
   }
 
