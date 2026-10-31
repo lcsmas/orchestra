@@ -271,7 +271,7 @@ async function main() {
     for (const r of s0.rows) note(`boot ${r.text.padEnd(18)} folded=${r.folded} tree=${r.tree} active=${r.active} glyph="${r.glyph}" hidden=${JSON.stringify(r.hidden)}`);
     note(fmtFrame(s0));
     clause('skin/near-canvas-sidebar', s0.sidebarBg === 'rgb(23, 27, 33)', `sidebar background=${s0.sidebarBg} (Agent view canvas is #1a1f26)`);
-    clause('skin/12px-rows', s0.rowFont === '12px', `row title font=${s0.rowFont}`);
+    clause('skin/default-density', s0.rowFont === '11.5px', `row title font=${s0.rowFont} (DEFAULT_DENSITY 11.5px)`);
     for (const r of s0.repos) note(`repo ${r.name}: want=${r.want} rail=${r.railW} ${r.rail} header=${r.header}`);
     clause('repos/rail-and-name-in-repo-colour', s0.repos.length === 2 && s0.repos.every((r) => r.railW === '2px' && r.rail === r.want && r.header === r.want),
       s0.repos.map((r) => `${r.name}:${r.railW}/${r.rail === r.want}/${r.header === r.want}`).join(' '));
@@ -356,6 +356,43 @@ async function main() {
       SHOTS.push(['chevron-unfold-composed', grim(app, 'chevron-unfold-composed')]);
     }
     clause('rows/in-viewport', s2.rows.filter((r) => !r.folded).every((r) => r.top >= 0) && s2.frame.right <= s2.innerWidth, '');
+
+    // D — the "Aa" window: trusted click, trusted ArrowLeft on the text-size slider, effect on rows, persistence.
+    const dens = (k) => app.cdp.eval(`(() => { const rows = [...document.querySelectorAll('.ws-item:not(.ws-folded)')].filter((x) => x.querySelector('.ws-name'));
+      const tall = rows.find((x) => x.querySelector('.ws-chevron')) ?? rows[0]; const leaf = rows.find((x) => !x.querySelector('.ws-chevron') && !x.querySelector('.ws-hidden-count')) ?? rows[0];
+      const n = leaf.querySelector('.ws-name'); const r = leaf.getBoundingClientRect(); const rt = tall.getBoundingClientRect();
+      const sl = document.querySelector('input[data-density="font"]'); return { font: getComputedStyle(n).fontSize, rowH: Math.round(r.height), tallH: Math.round(rt.height), slider: sl ? sl.value : null,
+      dialog: (() => { const d = document.querySelector('.density-settings'); if (!d) return null; const b = d.getBoundingClientRect(); const sb = document.querySelector('aside.sidebar').getBoundingClientRect();
+        return { inViewport: b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight, besideSidebar: b.left >= sb.right, backdropFilter: getComputedStyle(d.parentElement).backdropFilter }; })() }; })()`);
+    const btn = await app.cdp.eval(`(() => { const b = document.querySelector('[data-density-open]').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+    const d0 = await dens();
+    await click(app, btn.x, btn.y); await sleep(300);
+    const d1 = await dens();
+    clause('density/aa-opens-dialog-in-viewport', !!d1.dialog?.inViewport && d1.slider === '11.5', `dialog=${JSON.stringify(d1.dialog)} slider=${d1.slider}`);
+    clause('density/sidebar-stays-visible-while-tuning', !!d1.dialog?.besideSidebar && d1.dialog?.backdropFilter === 'none', `beside sidebar=${d1.dialog?.besideSidebar} backdrop-filter=${d1.dialog?.backdropFilter}`);
+    const sb = await app.cdp.eval(`(() => { const b = document.querySelector('input[data-density="font"]').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+    await click(app, sb.x, sb.y); await sleep(150); // focuses the slider (a click on its middle also moves it to ~12px)
+    for (let i = 0; i < 6; i++) { await app.cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 }); await sleep(60); }
+    await sleep(300);
+    const d2 = await dens();
+    SHOTS.push(['density-dialog', await shot(app, 'density-dialog')]);
+    clause('density/default-row-is-the-knob', d0.rowH === 28 && d0.tallH === 28, `leaf row ${d0.rowH}px, row with chevron ${d0.tallH}px (knob 28px)`);
+    clause('density/slider-shrinks-text-never-grows-rows', parseFloat(d2.font) < parseFloat(d0.font) && d2.rowH <= d0.rowH && d2.tallH <= d0.tallH,
+      `font ${d0.font} -> ${d2.font}, leaf ${d0.rowH} -> ${d2.rowH}, chevron row ${d0.tallH} -> ${d2.tallH}, slider ${d2.slider}`);
+    // the row-height slider: Home = its minimum (20px) — leaf rows follow, a chevron row is capped by its content
+    const rh = await app.cdp.eval(`(() => { const b = document.querySelector('input[data-density="rowH"]').getBoundingClientRect(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; })()`);
+    await click(app, rh.x, rh.y); await sleep(150);
+    await app.cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 }); await app.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 });
+    await sleep(400);
+    const d2b = await dens();
+    const rhVal = await app.cdp.eval(`document.querySelector('input[data-density="rowH"]').value`);
+    clause('density/row-height-slider-tightens-rows', rhVal === '20' && d2b.rowH < d2.rowH && d2b.rowH === 20, `row height slider ${rhVal}px: leaf ${d2.rowH} -> ${d2b.rowH}, chevron row ${d2.tallH} -> ${d2b.tallH}`);
+    SHOTS.push(['density-row-height-min', await shot(app, 'density-row-height-min')]);
+    await app.cdp.send('Page.reload'); await sleep(3500);
+    await waitFor('rows after reload', async () => (await app.cdp.eval(`document.querySelectorAll('.ws-item .ws-name').length`)) > 3, 20000, 250);
+    const d3 = await dens();
+    clause('density/persists-across-reload', d3.font === d2.font && d3.rowH === d2b.rowH && !d3.dialog, `after reload font ${d3.font} (set ${d2.font}), leaf ${d3.rowH}px (set ${d2b.rowH}), dialog closed=${!d3.dialog}`);
+    SHOTS.push(['density-after-reload', await shot(app, 'density-after-reload')]);
   } finally {
     await closeApp(app).catch((e) => console.log(`teardown: ${e.message}`));
   }

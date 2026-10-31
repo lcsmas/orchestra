@@ -15,6 +15,13 @@
   -webkit-backdrop-filter: none;
   border-right: 1px solid #232830;
   interpolate-size: allow-keywords; /* lets folded rows animate height to/from auto (Chromium ≥129) */
+  /* Density knobs, set inline on the aside from the "Aa" window (sidebar-density.ts); these are the fallbacks =
+     DEFAULT_DENSITY. Row title size, row height, gap between rows, section header size. */
+  --sb-font: 11.5px;
+  --sb-line: calc(var(--sb-font) * 1.5);
+  --sb-row-h: 28px;
+  --sb-row-gap: 2px;
+  --sb-head-font: 11.5px;
 }
 .sidebar .sidebar-header { border-bottom: none; padding: 10px 10px 6px 16px; }
 .sidebar .sidebar-header h1 {
@@ -37,7 +44,7 @@
   background: var(--o-sidebar);
   height: 28px;
   padding: 0 8px 0 8px;
-  font-size: 12px;
+  font-size: var(--sb-head-font);
   line-height: 16px;
   font-weight: 600;
   text-transform: none;
@@ -66,11 +73,13 @@
 }
 .sidebar .ws-list:hover { scrollbar-color: color-mix(in srgb, var(--o-muted) 28%, transparent) transparent; }
 .sidebar .ws-item {
-  margin: 0 6px 4px 4px;
-  min-height: 32px;
+  margin: 0 6px var(--sb-row-gap) 4px;
+  min-height: var(--sb-row-h);
   height: auto;
-  padding-top: 6px;
-  padding-bottom: 6px;
+  /* Height = the knob; the row's flex `align-items: center` centres the title. A padding derived from the text size
+     made a row with a 22px chevron GROW when the text shrank (33 → 35px, measured). */
+  padding-top: 0;
+  padding-bottom: 0;
   border: 1px solid transparent;
   border-radius: 8px;
   transition:
@@ -86,8 +95,8 @@
 .sidebar .ws-item.active { background: transparent; border-color: transparent; box-shadow: none; }
 .sidebar .ws-item .ws-name,
 .sidebar .ws-item.ws-child .ws-name {
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--sb-font);
+  line-height: var(--sb-line);
   color: var(--o-fg);
 }
 .sidebar .ws-item.unread .ws-name { font-weight: 600; }
@@ -191,3 +200,11 @@
 .ws-hidden-dot.waiting { background: var(--glyph-question); opacity: 1; }
 .ws-hidden-dot.error { background: oklch(63.7% 0.237 25.331); opacity: 1; }
 .ws-hidden-dot.idle { background: var(--glyph-done); opacity: 1; }
+
+/* ---- "Aa" window (SidebarAppearanceSettings) ---- */
+.sidebar .header-text-icon { font: 600 12px/1 Geist, sans-serif; letter-spacing: 0; }
+.modal-backdrop.density-backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.density-settings { position: fixed; top: 64px; width: 420px; }
+.density-row { display: grid; grid-template-columns: 130px 1fr 52px; align-items: center; gap: 12px; margin: 12px 0; font-size: 13px; }
+.density-row input[type='range'] { width: 100%; accent-color: var(--accent); }
+.density-value { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-dim); }

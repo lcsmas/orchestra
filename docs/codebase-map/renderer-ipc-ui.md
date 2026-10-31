@@ -216,8 +216,14 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   (`--av-surface #1a1f26`), same hue (Orca's neutral `#2a2a2a` clashed with it; round 2 on branch
   `prototype/sidebar-orca-2`) — 12px semibold sticky section headers **in the repo's colour** plus a 2px rail of that
   colour down each repo section (`--repo-color` set on `.repo-section`, `repoColor` by registered-repo position),
-  **title-only 32px rows, 12px titles** (the status note moved into the name tooltip via `withStatusNote`;
+  **title-only rows** (the status note moved into the name tooltip via `withStatusNote`;
   context-size + account badges hidden on rows), 18px tree step with a rail + tick.
+- **Adjustable density** (round 3, branch `prototype/sidebar-orca-3`): the header's **« Aa »** button opens
+  `components/SidebarAppearanceSettings.tsx` — sliders for text size (10–14px), row height (20–36px), gap (0–8px), live,
+  Reset to `DEFAULT_DENSITY` (11.5 / 28 / 2). State + persistence in `src/renderer/sidebar-density.ts`
+  (localStorage `orchestra.sidebarDensity`, clamped/snapped by `normalizeDensity`, `useSidebarDensity`); applied as
+  inline `--sb-font` / `--sb-row-h` / `--sb-row-gap` / `--sb-head-font` on the aside (`densityVars`, the row never
+  shorter than its text line), read by `sidebar-orca.css`.
   Pure logic in `src/renderer/sidebar-tree.ts` (+ test): `isFolded`, `rollupStatus`/`rollupTitle`, `hiddenDotKind`,
   `repoColor`.
 - **Selection drives folding** (`Sidebar.tsx:813`, `sidebar-tree.ts:27`): the path root → selected row and the

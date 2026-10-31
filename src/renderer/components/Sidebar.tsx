@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SelectionFrame } from './SelectionFrame';
+import { SidebarAppearanceSettings } from './SidebarAppearanceSettings';
+import { densityVars, useSidebarDensity } from '../sidebar-density';
 import { buildParentOf, hiddenDotKind, isFolded as isRowFolded, repoColor, rollupStatus, rollupTitle } from '../sidebar-tree';
 import { useStore } from '../store';
 import type {
@@ -812,6 +814,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   useEffect(() => setFoldToggles(new Set()), [activeId]);
   const isFolded = (id: string) => isRowFolded(id, activeId, parentOf, foldToggles);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const density = useSidebarDensity();
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
@@ -1673,7 +1677,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     });
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" style={densityVars(density) as React.CSSProperties}>
       <div className="sidebar-header">
         <h1>Orchestra</h1>
         <div className="sidebar-header-actions">
@@ -1685,6 +1689,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             aria-label="Help — feature guide"
           >
             <HelpIcon />
+          </button>
+          <button
+            className="header-icon-btn header-text-icon"
+            onClick={() => setAppearanceOpen(true)}
+            title="Sidebar appearance — text size, row height, gap"
+            aria-label="Sidebar appearance"
+            data-density-open
+          >
+            Aa
           </button>
           <button
             className="header-icon-btn"
@@ -2459,6 +2472,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         })}
 
         {soundSettingsOpen && <SoundSettings onClose={() => setSoundSettingsOpen(false)} />}
+        {appearanceOpen && <SidebarAppearanceSettings onClose={() => setAppearanceOpen(false)} />}
         {busSwitchSettingsOpen && (
           <BusSwitchSettings onClose={() => setBusSwitchSettingsOpen(false)} />
         )}
