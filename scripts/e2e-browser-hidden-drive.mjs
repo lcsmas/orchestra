@@ -29,7 +29,7 @@ const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] 
 
 // ── arms and mutants (single source of truth for --list, the .sh wrapper and the verdict) ───────────────────────────────────────
 // `restart` runs FIRST: the agent-browser daemon still numbers its tabs t1..t3 (ids are never reused within a session), so the stale-id collision is engineered; it kills and re-boots the app, every later arm runs on boot 2.
-const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan', 'navigate', 'offscreen', 'cover'];
+const ARMS = ['diag', 'stale', 'act', 'cpu', 'never', 'orphan', 'navigate', 'offscreen', 'dark', 'cover'];
 // Each edit is a regex over the MINIFIED main chunk (names captured, not hard-coded) and must match EXACTLY once. `arms` = the arms that must go RED.
 const ID = '[\\w$]+';
 const ACTIVATE_TAB = /function ([\w$]+)\(e,t\)\{const n=[\w$]+\(e\),r=n==null\?void 0:n\.tabs\.find\(s=>s\.id===t\);if\(!n\|\|!r\)throw new Error\(`browser tab \$\{t\} not found in workspace \$\{e\}`\);return [\w$]+\(n,r\),n\.state\}/;
@@ -52,6 +52,10 @@ const MUTANTS = {
     edits: [[new RegExp(`for\\(;!${ID}\\.aborted&&Date\\.now\\(\\)-${ID}<${ID}&&${ID}\\(e\\)&&\\(\\(${ID}=${ID}\\.isLoading\\)!=null&&${ID}\\.call\\(${ID}\\)\\|\\|Date\\.now\\(\\)-e\\.stoppedAt<${ID}\\);\\)await`), 'for(;!1;)await']] },
   'no-still-loading-refusal': { file: 'main', arms: ['navigate'], why: 'a page that never finishes loading is not refused with the true cause: the capture falls through to a misleading "no frame" (F3 must-FAIL)',
     edits: [[new RegExp(`(new Error\\(${ID}\\);)if\\(${ID}\\)throw ${ID}\\(e\\),new Error\\(${ID}\\);(e\\.surface==="visible")`), '$1$2']] },
+  'dark-sway-visible-overrides': { file: 'main', arms: ['dark'], why: 'the D1 bug: sway saying `visible:true` ends the window-paints question — DPMS off / a session lock are not seen, every later action runs against a window that paints nothing (hangs, no fast refusal)',
+    edits: [[new RegExp(`\\)===!1\\|\\|Date\\.now\\(\\)-${ID}<${ID}\\)return!1;if\\(Date\\.now\\(\\)-${ID}\\.at<${ID}\\)return ${ID}\\.ok;`), ')===!1)return!1;return!0;']] },
+  'dark-no-input-ack-bound': { file: 'main', arms: ['dark'], why: 'an Input.* dispatch that is never acknowledged is not bounded: after the display went dark within the linger the wheel hangs to the 6 s client bound instead of being refused with the reason',
+    edits: [[new RegExp(`(${ID})=${ID}\\.startsWith\\("Input\\."\\)&&this\\.port\\.windowDark\\?await this\\.refuseIfDark\\((${ID})\\):await \\2`), '$1=await $2']] },
   'no-offscreen-gate': { file: 'main', arms: ['offscreen'], why: 'the window-paints gate is gone: a click / wheel / screenshot on an undisplayed desktop runs, hangs, and leaves the page unthrottled (F1 must-FAIL = the old behaviour)',
     edits: [[new RegExp(`if\\(${ID}!=="other"&&!await ${ID}\\(\\)\\)throw new Error\\(${ID}\\);`), '']] },
   'no-cover-abort': { file: 'main', arms: ['cover'], why: 'a pulse is not aborted when its cover leaves the screen: the pulsing page shows in the vacated pane (F2 must-FAIL)',
@@ -63,7 +67,7 @@ const MUTANTS = {
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
     edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
-const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_OFF = Number(flag('--runs-off', '20')), RUNS_NAV = Number(flag('--runs-nav', '36')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
+const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_OFF = Number(flag('--runs-off', '20')), RUNS_DARK = Number(flag('--runs-dark', '20')), DARK_MODES = (flag('--dark-modes', 'dpms,lock')).split(','), RUNS_NAV = Number(flag('--runs-nav', '36')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
 const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -874,7 +878,7 @@ const ARM_FNS = {
       const id = pool[Math.floor(i / 2) % pool.length];
       const { raw, timed } = await openRaw(W, id);
       const ctl = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })]; // the window IS displayed: both work
-      await sleep(1500); // the control's lease has lingered out and its unpin capture has finished: the desktop switch below hits no capture in flight (that race is measured separately, below)
+      await sleep(1500); // the control's lease has lingered out and its unpin capture has finished: the desktop switch below follows no action by less than ~0.9 s (that race is measured separately, below)
       away(); await sleep(300);
       const off = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Input.insertText', { text: 'a' }), await timed('Page.captureScreenshot', { format: 'png' })];
       const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });
@@ -897,7 +901,7 @@ const ARM_FNS = {
       const rate = await rateOf(id); await back();
       clause(A, 'undisplayed-window-driven-view-still-throttled-36s-after', r1.every((x) => x.err && /not displayed/.test(x.err)) && rate <= 2, `actions refused (${r1.map((x) => x.ms + ' ms').join(', ')}); timers/s 36 s later with the desktop away: ${rate} (limit 2)`);
     }
-    { // RESIDUAL, measured and reported (not a pass criterion): the human switches desktop while the lease's own capture is IN FLIGHT. A capture that has started cannot be cancelled and holds its page shown until the window is displayed again.
+    { // RESIDUAL, measured and reported (not a pass criterion): the human switches desktop within ~0.9 s of an action (its linger + the unpin capture it owes). The pin cannot be released while nothing paints, so the page stays shown (unthrottled) until the window is displayed again.
       const offsets = [0, 150, 300, 450, 600, 700, 800, 900, 1100, 1300], race = [];
       for (const [k, off] of offsets.entries()) {
         const W = ctx.W1, id = ctx.ids[W.id][k % 7]; const { raw, timed } = await openRaw(W, id);
@@ -908,11 +912,101 @@ const ARM_FNS = {
         race.push({ off, stuck, healed });
       }
       console.log(`  [info] ${A}: RESIDUAL — a desktop switch ${offsets.join('/')} ms after a displayed action: still unthrottled at +5.6 s in ${race.filter((r) => r.stuck > 2).length}/${race.length} (${race.map((r) => `${r.off}:${r.stuck}`).join(' ')} timers/s)`);
-      clause(A, 'residual-a-view-pinned-by-a-capture-in-flight-heals-when-the-window-is-displayed-again', race.every((r) => r.healed <= 2), `3.5 s after the desktop was displayed again: ${race.map((r) => `${r.off}:${r.healed}`).join(' ')} timers/s (limit 2)`);
+      clause(A, 'residual-a-view-pinned-by-an-action-just-before-the-switch-heals-when-the-window-is-displayed-again', race.every((r) => r.healed <= 2), `3.5 s after the desktop was displayed again: ${race.map((r) => `${r.off}:${r.healed}`).join(' ')} timers/s (limit 2)`);
     }
     const W = ctx.W1, id = ctx.ids[W.id][3]; const { raw, timed } = await openRaw(W, id);
     const again = await timed('Page.captureScreenshot', { format: 'png' }); raw.close();
     clause(A, 'ctl/displayed-again-screenshot-works', !again.err, `screenshot after returning to workspace ${JSON.stringify(home)}: ${again.err ?? 'an image'} in ${again.ms} ms`);
+  },
+
+  /** D1 (OPS delta review): the window is on a DISPLAYED desktop workspace per sway, yet paints nothing — the output's DPMS is off, or a session lock (swaylock) covers it: the typical away state of a background agent. A hidden tab's capture then never completes.
+   *  Per mode, ≥ RUNS_DARK runs after a displayed control: the FIRST action may take the wake bound, every later one is refused in ≤ 500 ms with the reason, evaluate works, and once the display is back the driven view is at ≤ 2 timers/s
+   *  within linger + 5 s and a screenshot works again. Needs the act arm's population. */
+  async dark(ctx) {
+    const A = 'dark';
+    if (!ctx.ids) throw new Error('the dark arm needs the act arm\'s population');
+    const env = { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: XDG, WAYLAND_DISPLAY: RIG_WAYLAND, SWAYSOCK: process.env.SWAYSOCK };
+    const wheel = { type: 'mouseWheel', x: 320, y: 218, deltaX: 0, deltaY: 100 };
+    const openRaw = async (W, id) => {
+      const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
+      const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
+      const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
+      const timed = async (method, params) => { const t0 = Date.now(); const r = await Promise.race([raw.callOn(sid, method, params), sleep(6000).then(() => ({ error: { message: 'NO ANSWER in 6 s' } }))]); return { ms: Date.now() - t0, err: r.error?.message ?? null }; };
+      return { raw, timed };
+    };
+    const rateOf = async (id) => { const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl); const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const r = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close(); return r; };
+    const appLeaf = () => { const tree = JSON.parse(sh('swaymsg', ['-t', 'get_tree'])); const walk = (n) => { if (n.pid === ctx.app.pid && !(n.nodes || []).length) return n; for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) { const r = walk(c); if (r) return r; } return null; }; return walk(tree); };
+    const pane = () => { const I = grim('dark-probe.png'); return [[0.5, 0.5], [0.25, 0.4], [0.75, 0.6]].map(([fx, fy]) => blockColor(I, Math.round(I.w * fx), Math.round(I.h * fy), 6)); };
+    const isBlack = (cs) => cs.every((c) => c[0] <= 3 && c[1] <= 3 && c[2] <= 3);
+    const outputPower = () => { const o = JSON.parse(sh('swaymsg', ['-t', 'get_outputs'])).find((x) => x.name === 'HEADLESS-1'); return o ? (o.power ?? o.dpms ?? null) : null; };
+    let lock = null;
+    const MODES = {
+      dpms: {
+        dark: async () => { sh('swaymsg', ['output', 'HEADLESS-1', 'dpms', 'off']); await sleep(400); return outputPower() === false; },
+        light: async () => { sh('swaymsg', ['output', 'HEADLESS-1', 'dpms', 'on']); await sleep(300); return outputPower() !== false; },
+        why: 'DPMS off on the output',
+      },
+      lock: {
+        dark: async () => { lock = spawn('swaylock', ['-c', '000000'], { env, stdio: 'ignore' }); for (let i = 0; i < 30; i++) { await sleep(100); if (lock.exitCode !== null) return false; try { if (isBlack(pane())) return true; } catch { /* grim not ready */ } } return false; },
+        light: async () => { try { process.kill(lock.pid, 'SIGUSR1'); } catch { /* gone */ } for (let i = 0; i < 40; i++) { await sleep(100); try { if (!isBlack(pane())) return true; } catch { /* grim */ } } return false; },
+        why: 'a swaylock session lock covering the output',
+      },
+    };
+    const rowsOf = {};
+    for (const mode of DARK_MODES) {
+      const M = MODES[mode]; if (!M) throw new Error(`unknown dark mode ${mode}`);
+      const rows = []; let undoable = true;
+      for (let i = 0; i < RUNS_DARK && undoable; i++) {
+        const kind = i % 2 ? 'workspace' : 'tab';
+        const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
+        const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
+        const id = pool[Math.floor(i / 2) % pool.length];
+        const { raw, timed } = await openRaw(W, id);
+        const ctl = [await timed('Input.dispatchMouseEvent', wheel), await timed('Page.captureScreenshot', { format: 'png' })]; // displayed and painting: both work
+        await sleep(1500); // the control's lease lingered out and its unpin finished: the darkness below follows no action by less than ~0.9 s
+        const dark = await M.dark(); const visibleBySway = appLeaf()?.visible ?? null;
+        if (i === 0) { const lf = appLeaf(); console.log(`  [info] ${A}/${mode}: ${M.why} — sway says the app window is {"visible":${visibleBySway}, "name":${JSON.stringify(lf?.name)}, "app_id":${JSON.stringify(lf?.app_id)}} (the old gate trusted exactly that)`); }
+        const first = await timed(i % 2 ? 'Page.captureScreenshot' : 'Input.dispatchMouseEvent', i % 2 ? { format: 'png' } : wheel); // the FIRST miss
+        const later = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Input.insertText', { text: 'a' }), await timed('Page.captureScreenshot', { format: 'png' })];
+        const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });
+        raw.close();
+        const lit = await M.light(); undoable = lit; const tLit = Date.now();
+        await sleep(Math.max(0, tLit + 5600 - Date.now())); // linger 0.6 s + 5 s with the display BACK
+        const rate = await rateOf(id);
+        const { raw: raw2, timed: timed2 } = await openRaw(W, id); const again = await timed2('Page.captureScreenshot', { format: 'png' }); raw2.close();
+        rows.push({ kind, id, ctl, dark, visibleBySway, first, later, ev, lit, rate, again });
+      }
+      rowsOf[mode] = rows;
+      const n = rows.length, reason = /not painting|screen is off|locked/;
+      clause(A, `ctl/${mode}-the-window-really-paints-nothing-while-sway-says-visible`, n >= RUNS_DARK && rows.every((r) => r.dark && r.visibleBySway === true), `${n} runs: ${M.why} took effect in ${rows.filter((r) => r.dark).length}/${n} (output power / grim black), sway's get_tree visible:true in ${rows.filter((r) => r.visibleBySway === true).length}/${n} — the state the old gate could not see`);
+      clause(A, `ctl/${mode}-displayed-wheel-and-screenshot-work`, n >= RUNS_DARK && rows.every((r) => r.ctl.every((x) => !x.err && x.ms < 3000)), `${n} runs: wheel median ${median(rows.map((r) => r.ctl[0].ms))} ms · screenshot median ${median(rows.map((r) => r.ctl[1].ms))} ms; failures ${rows.filter((r) => r.ctl.some((x) => x.err)).length}`);
+      clause(A, `ctl/${mode}-display-comes-back`, n >= RUNS_DARK && rows.every((r) => r.lit), `${rows.filter((r) => r.lit).length}/${n} runs: the display was restored`);
+      // the sequence per run is [first, wheel, click, type, screenshot]; the FIRST MISS is the first one that errors (an action that still answers while dark — a probe or a wake served from an alive frame — is a "fooled" pass, counted, not failed)
+      const seq = (r) => [r.first, ...r.later], missIdx = (r) => seq(r).findIndex((x) => x.err);
+      const fooled = rows.map((r) => Math.max(0, missIdx(r))), all = rows.flatMap(seq);
+      clause(A, `${mode}-first-miss-refused-with-the-reason-not-hung`, n >= RUNS_DARK && rows.every((r) => missIdx(r) >= 0 && reason.test(seq(r)[missIdx(r)].err) && seq(r)[missIdx(r)].ms <= 2500), `${n} runs: the first action that errored did so in ${rows.map((r) => seq(r)[missIdx(r)]?.ms ?? 'NEVER').join(', ')} ms with the reason (limit 2500; ${fooled.filter((k) => k > 0).length}/${n} runs still answered ≥ 1 action before it, ${fooled.reduce((a, b) => a + b, 0)} answered actions in all; slowest answered-while-dark ${Math.max(0, ...rows.flatMap((r) => seq(r).slice(0, Math.max(0, missIdx(r))).map((x) => x.ms)))} ms)`);
+      clause(A, `${mode}-after-the-first-miss-every-action-is-refused-in-500ms-with-the-reason`, n >= RUNS_DARK && rows.every((r) => seq(r).slice(missIdx(r) + 1).every((x) => x.err && reason.test(x.err) && x.ms <= 500)), `${n} runs: the ${rows.reduce((a, r) => a + Math.max(0, seq(r).length - missIdx(r) - 1), 0)} actions after each run's first miss: slowest ${Math.max(0, ...rows.flatMap((r) => seq(r).slice(missIdx(r) + 1).map((x) => x.ms)))} ms, median ${median(rows.flatMap((r) => seq(r).slice(missIdx(r) + 1).map((x) => x.ms)))}; not refused-with-reason in time: ${rows.flatMap((r) => seq(r).slice(missIdx(r) + 1)).filter((x) => !(x.err && reason.test(x.err) && x.ms <= 500)).length}`);
+      clause(A, `${mode}-no-action-hangs-to-the-6s-bound`, n >= RUNS_DARK && all.every((x) => x.ms < 3000), `${all.length} actions over ${n} runs: slowest ${Math.max(...all.map((x) => x.ms))} ms (a hung dispatch is cut at 6000 ms by the client)`);
+      if (mode === 'dpms') { // the race a gate cannot see: the display goes dark within the lease's linger of an action, so the next wheel is dispatched under a cached "paints" verdict and a lease already held — only the ack bound can refuse it
+        const race = [];
+        for (let i = 0; i < Math.max(4, RUNS_DARK >> 1); i++) {
+          const W = ctx.W1, id = ctx.ids[W.id][i % 7]; const { raw, timed } = await openRaw(W, id);
+          await sleep(1500);
+          const ctl = await timed('Input.dispatchMouseEvent', wheel); // displayed: works, takes the lease and a fresh verdict
+          const dark = await M.dark(); // ≈ 400 ms later, inside the 600 ms linger
+          const hit = await timed('Input.dispatchMouseEvent', wheel);
+          raw.close();
+          const lit = await M.light(); if (!lit) break;
+          await sleep(5600);
+          race.push({ ctl, dark, hit, rate: await rateOf(id) });
+        }
+        clause(A, `${mode}-dark-right-after-an-action-the-unacknowledged-dispatch-is-refused-by-the-ack-bound`, race.length >= 4 && race.every((r) => !r.ctl.err && r.dark && r.hit.err && reason.test(r.hit.err) && r.hit.ms <= 2500), `${race.length} runs: a wheel ≈ 0.45 s after an action with DPMS off in between: ${race.map((r) => `${r.hit.ms} ms ${r.hit.err ? JSON.stringify(r.hit.err.slice(0, 30)) : 'ANSWERED'}`).join(' · ')} (limit 2500; an unbounded dispatch hangs to the 6000 ms client bound)`);
+        clause(A, `${mode}-dark-right-after-an-action-heals-when-the-display-is-back`, race.length >= 4 && race.every((r) => r.rate <= 2), `timers/s 5.6 s after the display came back: ${race.map((r) => r.rate).join(', ')} (limit 2)`);
+      }
+      clause(A, `${mode}-evaluate-still-works`, n >= RUNS_DARK && rows.every((r) => !r.ev.err), `${rows.filter((r) => !r.ev.err).length}/${n} Runtime.evaluate answered (median ${median(rows.map((r) => r.ev.ms))} ms)`);
+      clause(A, `${mode}-driven-view-throttled-again-within-linger-plus-5s-of-the-display-coming-back`, n >= RUNS_DARK && rows.every((r) => r.rate <= 2), `timers/s of the driven page 5.6 s after the display was restored: ${rows.map((r) => r.rate).join(', ')} (limit 2)`);
+      clause(A, `${mode}-screenshot-works-again-after-the-display-is-back`, n >= RUNS_DARK && rows.every((r) => !r.again.err), `${rows.filter((r) => !r.again.err).length}/${n} screenshots answered (median ${median(rows.map((r) => r.again.ms))} ms)`);
+    }
   },
 
   /** F2: the cover (the human's visible tab) leaves the screen while a never-composited tab is being painted under it: the pulse must not show in the vacated pane. */

@@ -122,6 +122,7 @@ test('hiddenCaptureRefusal: a hidden view cannot honour a full-page clip, a scal
   assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 400, height: 300, scale: 1 }), {}, 800, 600), null, 'a clip inside the viewport at scale 1');
   assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 800, height: 3000, scale: 1 }, { captureBeyondViewport: true }), {}, 800, 600), BEYOND_VIEWPORT_MESSAGE);
   assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 400, height: 300, scale: 2 }), {}, 800, 600), DEVICE_METRICS_MESSAGE, 'clip.scale ≠ 1');
+  assert.equal(hiddenCaptureRefusal(vp({ x: 0, y: 0, width: 400, height: 300, scale: 0.5 }), {}, 800, 600), DEVICE_METRICS_MESSAGE, 'clip.scale < 1 is not honoured either (it would come back at the wrong size)');
   assert.equal(hiddenCaptureRefusal(vp(), { deviceMetricsOverride: true }, 800, 600), DEVICE_METRICS_MESSAGE, 'an emulated viewport / dsf (visible 720×1280 vs hidden 360×640)');
   assert.equal(hiddenCaptureRefusal(vp(), { deviceMetricsOverride: false }, 800, 600), null);
 });

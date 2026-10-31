@@ -125,6 +125,7 @@ export function makePanelPort(wsId: string): CdpPanelPort {
     // #406: nothing is refused here any more — a tab nobody looks at is driven in place (`beginAction`), and the cases that cannot be driven refuse THERE with a clear error.
     framesError: () => (bp.getPanel(wsId) ? null : 'the browser panel is gone'),
     beginAction: (tabId, kind) => bp.beginAgentAction(wsId, tabId, kind),
+    windowDark: () => bp.windowDarkReason(),
     captureView: async (tabId, params, info) => {
       const tab = bp.getTab(wsId, tabId);
       if (!tab || tab.surface === 'visible') return null; // on screen: the normal Page.captureScreenshot chain

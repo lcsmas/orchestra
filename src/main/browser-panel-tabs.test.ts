@@ -131,6 +131,7 @@ bp.initBrowserPanels(() => ({
     addChildView: (v: unknown) => attached.add(v),
     removeChildView: (v: unknown) => attached.delete(v),
   },
+  getTitle: () => 'Orchestra',
   webContents: { isDestroyed: () => false, capturePage: () => { uiProbe.calls++; return uiProbe.paints ? Promise.resolve({}) : new Promise((r) => uiWaiting.push(() => r({}))); } },
 }) as never);
 
@@ -840,7 +841,7 @@ test('F1 (a) an action on a window that paints NOTHING is refused fast — befor
   uiProbe.paints = false;
   try {
     const t0 = Date.now();
-    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /desktop workspace that is not displayed/);
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
     assert.ok(Date.now() - t0 < 600, `refused fast (${Date.now() - t0} ms)`);
     await assert.rejects(() => bp.capture(ws, 75, 't2'), /not displayed/);
     assert.deepEqual(events, [], 'nothing was flipped and no capture was started (a capture on a window that paints nothing hangs and pins the page)');
@@ -877,7 +878,7 @@ test('F1 sway KNOWS: its answer is never cached — the first action after the h
   let visible = true;
   const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
   const sock = nodePath.join(dir, 'sway.sock');
-  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, visible, nodes: [] }] })))));
+  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, name: 'Orchestra', visible, nodes: [] }] })))));
   await new Promise<void>((r) => srv.listen(sock, r));
   const prev = process.env.SWAYSOCK;
   process.env.SWAYSOCK = sock;
@@ -908,7 +909,7 @@ test('an unpin owed while the window paints NOTHING is deferred, not dropped: it
   let visible = true;
   const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
   const sock = nodePath.join(dir, 'sway.sock');
-  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, visible, nodes: [] }] })))));
+  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, name: 'Orchestra', visible, nodes: [] }] })))));
   await new Promise<void>((r) => srv.listen(sock, r));
   const prev = process.env.SWAYSOCK;
   process.env.SWAYSOCK = sock;
@@ -954,22 +955,264 @@ test('F1 a long absence costs ONE pending probe, not one per action (the probe i
   await nap(900);
 });
 
-test('F1 (b) a wake capture that never finishes proves the window paints nothing: the next action is refused at once, without asking or capturing (#406)', async () => {
+test('F1 (b) a wake capture that never finishes refuses THAT action with the true reason and puts the lease back (flip-back, unpin owed) — even while the window\'s own probe still answers (#406)', async () => {
   const ws = newWs();
   openShown(ws);
   const t2 = bp.createTab(ws, { openedBy: 'agent' });
   await bp.capture(ws, 75, 't2');
   await nap(1700);
   const wc = wcOf(t2);
+  const orig = wc.capturePage;
+  const events = trace(wc);
   let captures = 0;
-  wc.capturePage = () => { captures++; return new Promise(() => undefined); }; // the window stopped painting after the probe said yes
-  const lease = await bp.beginAgentAction(ws, 't2', 'input'); // the wake is bounded (WAKE_MS), the action goes on
-  lease.end();
-  assert.equal(captures, 1);
+  wc.capturePage = () => { captures++; return new Promise(() => undefined); }; // a view whose capture never comes back
   const t0 = Date.now();
-  await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not displayed/);
-  assert.ok(Date.now() - t0 < 100, 'refused from the stall verdict, without another probe');
-  assert.equal(captures, 1, 'and without another capture');
+  await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/); // bounded by WAKE_MS, then refused — never dispatched into a hang
+  assert.ok(Date.now() - t0 < 1500, `bounded (${Date.now() - t0} ms)`);
+  assert.equal(captures, 1);
+  await assert.rejects(() => bp.capture(ws, 75, 't2'), /not painting right now/); // a screenshot's prime hits the same hang: refused too, not run on into the 2.9 s no-frame
+  await nap(900);
+  assert.equal(events[0], 'throttle:false');
+  assert.equal(events[events.length - 1], 'throttle:true', `the refused action\'s lease was released and its flip-back ran: ${events.join(',')}`);
+  wc.capturePage = orig;
+  await nap(300);
+});
+
+test('D1 the window\'s own probe never answers (DPMS off / a lock): the first action is refused, the next ones at once without asking or capturing, and the probe answering clears it (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const wc = wcOf(t2);
+  const orig = wc.capturePage;
+  let captures = 0;
+  wc.capturePage = () => { captures++; return new Promise(() => undefined); };
+  uiProbe.paints = false;
+  try {
+    const t0 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    assert.ok(Date.now() - t0 < 600, `the first miss costs the probe bound (${Date.now() - t0} ms)`);
+    const t1 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    await assert.rejects(() => bp.capture(ws, 75, 't2'), /not painting right now/);
+    assert.ok(Date.now() - t1 < 150, `later actions are refused from the remembered no-frame (${Date.now() - t1} ms)`);
+    assert.equal(captures, 0, 'and nothing was captured on a window that paints nothing');
+    (await bp.beginAgentAction(ws, 't2', 'other')).end(); // evaluate needs no frame
+    await nap(1000); // past the burst cache of the probe verdict: the remembered no-frame (not a new 300 ms probe wait) is what refuses now
+    const t2s = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    assert.ok(Date.now() - t2s < 150, `at once (${Date.now() - t2s} ms)`);
+  } finally {
+    uiProbe.paints = true; // the display is back: the pending probe answers and clears the memory
+  }
+  wc.capturePage = orig;
+  await nap(300);
+  (await bp.beginAgentAction(ws, 't2', 'input')).end();
+  await nap(900);
+});
+
+test('D1 windowDarkReason (the proxy\'s question after an unacknowledged Input.*): null while the window\'s own probe answers, the refusal text once it does not (#406)', async () => {
+  assert.equal(await bp.windowDarkReason(), null);
+  uiProbe.paints = false;
+  try {
+    assert.match((await bp.windowDarkReason()) ?? '', /not painting right now/);
+  } finally { uiProbe.paints = true; }
+  await nap(300);
+  assert.equal(await bp.windowDarkReason(), null, 'and null again once the display is back');
+});
+
+test('D1 sway saying "displayed" never overrides a measured no-frame: DPMS off / a lock leaves get_tree at visible:true — the refusal holds while the probe is pending and ends when it answers (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const { ipcFrame, GET_TREE } = await import('../shared/sway-tree.ts');
+  const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
+  const sock = nodePath.join(dir, 'sway.sock');
+  let asked = 0;
+  const srv = net.createServer((c) => c.once('data', () => { asked++; c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, name: 'Orchestra', visible: true, nodes: [] }] }))); }));
+  await new Promise<void>((r) => srv.listen(sock, r));
+  const prev = process.env.SWAYSOCK;
+  process.env.SWAYSOCK = sock;
+  const wc = wcOf(t2);
+  const orig = wc.capturePage;
+  try {
+    wc.capturePage = () => new Promise(() => undefined);
+    uiProbe.paints = false;
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    const a0 = asked;
+    const t0 = Date.now();
+    for (const kind of ['input', 'capture'] as const) await assert.rejects(() => bp.beginAgentAction(ws, 't2', kind), /not painting right now/);
+    assert.ok(asked - a0 >= 2, 'sway WAS asked, and said visible: true each time');
+    assert.ok(Date.now() - t0 < 150, `and still the refusal held (${Date.now() - t0} ms)`);
+    await nap(10_500); // past NO_FRAME_TTL_MS with the probe STILL pending: the TTL alone must not re-open the gate into a hang… (the next action is a fresh trial, bounded by the wake)
+    const t1 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    assert.ok(Date.now() - t1 < 1500, 'a trial after the TTL is bounded too');
+    uiProbe.paints = true; // display back
+    wc.capturePage = orig;
+    await nap(300);
+    (await bp.beginAgentAction(ws, 't2', 'input')).end(); // cleared by the probe answering, not by waiting
+  } finally {
+    uiProbe.paints = true;
+    wc.capturePage = orig;
+    if (prev === undefined) delete process.env.SWAYSOCK; else process.env.SWAYSOCK = prev;
+    srv.close();
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+  }
+  await nap(900);
+});
+
+test('D1 a hidden view that was composited gives NO frame: the window\'s own probe tells a dead tab (NO_FRAME) from a window that paints nothing (refused as such, and remembered) (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const wc = wcOf(t2);
+  const orig = wc.capturePage;
+  const calls = { n: 0 };
+  wc.capturePage = () => { calls.n++; return Promise.resolve({ isEmpty: () => true }); }; // the wake answers, the capture itself comes back EMPTY
+  wc.beginFrameSubscription = () => { wc.subs = (wc.subs ?? 0) + 1; }; // and the frame subscription delivers nothing either
+  try {
+    await assert.rejects(() => bp.capture(ws, 75, 't2'), /no frame arrived from this tab/); // the UI answers its probe: it is THIS tab
+    await nap(900);
+    uiProbe.paints = false;
+    await assert.rejects(() => bp.capture(ws, 75, 't2'), /not painting right now/); // the UI does not: the whole window is dark
+    const t0 = Date.now();
+    await assert.rejects(() => bp.capture(ws, 75, 't2'), /not painting right now/);
+    assert.ok(Date.now() - t0 < 150, `and the next one is refused at once (${Date.now() - t0} ms)`);
+  } finally {
+    uiProbe.paints = true;
+    wc.capturePage = orig;
+  }
+  await nap(1200);
+});
+
+/** A fake sway on a socket: the window's leaves are whatever `leaves()` returns each time it is asked. */
+async function fakeSway(leaves: () => Array<{ name: string; visible: boolean }>) {
+  const { ipcFrame, GET_TREE } = await import('../shared/sway-tree.ts');
+  const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
+  const sock = nodePath.join(dir, 'sway.sock');
+  const st = { asked: 0 };
+  const srv = net.createServer((c) => c.once('data', () => { st.asked++; c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: leaves().map((l) => ({ pid: process.pid, name: l.name, visible: l.visible, nodes: [] })) }))); }));
+  await new Promise<void>((r) => srv.listen(sock, r));
+  const prev = process.env.SWAYSOCK;
+  process.env.SWAYSOCK = sock;
+  return { st, close: () => { if (prev === undefined) delete process.env.SWAYSOCK; else process.env.SWAYSOCK = prev; srv.close(); nodeFs.rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test('D2 the gate names the MAIN window: a 2nd toplevel of our pid (popup, login, DevTools) on another desktop never answers for it (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  let mainShown = true;
+  const sway = await fakeSway(() => [{ name: 'Orchestra', visible: mainShown }, { name: 'Sign in', visible: !mainShown }]); // the popup is listed LAST: the old walk answered with it
+  try {
+    (await bp.beginAgentAction(ws, 't2', 'input')).end(); // main displayed, popup away: works
+    mainShown = false; // the human leaves for another desktop, a popup stays on the one they are on
+    await nap(100);
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not painting right now/);
+    mainShown = true;
+    await nap(100);
+    (await bp.beginAgentAction(ws, 't2', 'input')).end();
+  } finally { sway.close(); }
+  await nap(900);
+});
+
+test('D4 (a) an unpin owed while the window paints nothing is CARRIED into the next lease: that lease\'s end takes the capture (a lost pin leaves the page unthrottled for good) (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  let visible = true;
+  const sway = await fakeSway(() => [{ name: 'Orchestra', visible }]);
+  try {
+    const events = trace(wcOf(t2));
+    await bp.capture(ws, 75, 't2'); // pins the page
+    visible = false;
+    await nap(900); // the sweep ran: flip-back done, the unpin capture owed (deferred)
+    const before = events.length;
+    (await bp.beginAgentAction(ws, 't2', 'other')).end(); // a new lease on the tab while the window is still dark (evaluate needs no frame)
+    await nap(900); // its end defers the capture again: the window still paints nothing
+    visible = true;
+    await nap(1600); // displayed again: the retry takes the owed unpin
+    assert.ok(events.slice(before).includes('capture'), `the owed unpin was taken after the next lease: ${events.slice(before).join(',')}`);
+  } finally { sway.close(); }
+  await nap(300);
+});
+
+test('D4 (b) removing a tab drops the unpin it owed: the retry loop does not keep polling for a view that is gone (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  let visible = true;
+  const sway = await fakeSway(() => [{ name: 'Orchestra', visible }]);
+  try {
+    trace(wcOf(t2));
+    await bp.capture(ws, 75, 't2');
+    visible = false;
+    await nap(900); // unpin owed, deferred, the retry loop polls sway every second
+    assert.ok(sway.st.asked > 0);
+    bp.closeTab(ws, 't2');
+    await nap(1300); // the loop's pending tick may still ask once
+    const a0 = sway.st.asked;
+    await nap(3300);
+    assert.ok(sway.st.asked - a0 <= 1, `no more polling for a removed tab (asked ${sway.st.asked - a0} times in 3.3 s)`);
+  } finally { sway.close(); }
+});
+
+test('D4 (c) the unpin retry never captures a tab whose lease is HELD again: that capture would run under the flip and re-pin the page (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  const t3 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await bp.capture(ws, 75, 't3');
+  await nap(1700);
+  let visible = true;
+  const sway = await fakeSway(() => [{ name: 'Orchestra', visible }]);
+  let lease: { end(): void } | null = null;
+  try {
+    const e2 = trace(wcOf(t2)), e3 = trace(wcOf(t3));
+    await bp.capture(ws, 75, 't2');
+    await bp.capture(ws, 75, 't3');
+    visible = false; // both owe an unpin, both deferred (t2 first)
+    await nap(1000);
+    const real2 = wcOf(t2).capturePage;
+    wcOf(t2).capturePage = () => { e2.push('capture'); return new Promise((r) => setTimeout(() => r({ isEmpty: () => false, getSize: () => ({ width: 8, height: 6 }) }), 700)); }; // the retry stays inside t2's unpin for 0.7 s
+    const n2 = e2.length;
+    visible = true;
+    for (let i = 0; i < 60 && e2.length === n2; i++) await nap(50);
+    assert.ok(e2.length > n2, 'the retry reached t2 (a NEW capture, inside the 0.7 s it is held there)');
+    const n3 = e3.length;
+    lease = await bp.beginAgentAction(ws, 't3', 'other'); // t3 is in use again while the retry is still on t2
+    await nap(1000);
+    assert.deepEqual(e3.slice(n3), ['throttle:false'], `no capture of t3 under its new lease: ${e3.slice(n3).join(',')}`);
+    wcOf(t2).capturePage = real2;
+  } finally { lease?.end(); sway.close(); }
+  await nap(1500);
+});
+
+test('B1 a pulse survives an UNRELATED tab leaving: closing a hidden tab or hiding another workspace\'s pane mid-pulse must not cancel it with COVER_GONE (#406)', async () => {
+  const other = newWs();
+  openShown(other);
+  const ws = newWs();
+  openShown(ws); // the focused workspace: its visible tab is the cover
+  bp.createTab(ws, { openedBy: 'agent' }); // t2: never composited → pulses under ws's visible tab
+  bp.createTab(ws, { openedBy: 'agent' }); // t3: an unrelated hidden tab
+  const shot = bp.capture(ws, 75, 't2').then(() => 'resolved', (e: Error) => e.message);
+  await nap(120);
+  bp.closeTab(ws, 't3'); // removeView of a tab that is not the cover
+  bp.hidePanel(other); // hideView of another workspace's visible tab
+  assert.equal(await shot, 'resolved', 'the pulse ran to the end');
   await nap(900);
 });
 

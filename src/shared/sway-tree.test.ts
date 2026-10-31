@@ -33,3 +33,15 @@ test('i3-ipc framing: a request frame and a (possibly split) reply round-trip', 
   assert.equal((done as { payload: string }).payload, '{"a":1}');
   assert.equal(parseIpcReply(Buffer.from('not-sway-at-all!!')), null, 'not i3-ipc');
 });
+
+test('windowVisibleInTree: with a title only the leaf NAMED so answers — a 2nd same-pid toplevel (popup #396, login window, DevTools) on another workspace never answers for the main window', () => {
+  const w = (name: string, visible: boolean): SwayNode => ({ pid: 10, name, visible, nodes: [], floating_nodes: [] });
+  // main displayed, popup away — and the reverse; both orders (the old walk returned the LAST leaf it met)
+  assert.equal(windowVisibleInTree(tree([w('Orchestra', true)], [w('Sign in', false)]), 10, 'Orchestra'), true);
+  assert.equal(windowVisibleInTree(tree([w('Sign in', false)], [w('Orchestra', true)]), 10, 'Orchestra'), true);
+  assert.equal(windowVisibleInTree(tree([w('Orchestra', false)], [w('Sign in', true)]), 10, 'Orchestra'), false, 'main away, popup shown: NOT displayed');
+  assert.equal(windowVisibleInTree(tree([w('Sign in', true)], [w('Orchestra', false)]), 10, 'Orchestra'), false);
+  assert.equal(windowVisibleInTree(tree([w('Sign in', true)], []), 10, 'Orchestra'), null, 'no leaf with that name: cannot tell');
+  assert.equal(windowVisibleInTree(tree([w('a', true)], [w('b', false)]), 10), null, 'no title, two toplevels that disagree: cannot tell');
+  assert.equal(windowVisibleInTree(tree([w('a', true)], [w('b', true)]), 10), true, 'no title, they agree');
+});

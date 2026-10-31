@@ -11,6 +11,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { SessionPending } from './cdp-session-pending.ts';
 import { captureWithFallback } from './cdp-capture.ts';
+import { INPUT_ACK_MS } from './browser-hidden-drive.ts';
 import { TAB_DESTROYING_METHODS, internalNavigationRefusal, isActingCdpMethod, isBrowserInternalUrl } from './browser-agent-tabs.ts';
 
 export interface CdpTab {
@@ -53,6 +54,8 @@ export interface CdpPanelPort {
    * bring a background tab to the front and refuse frame-bound commands on a hidden pane.
    */
   beginAction?(tabId: string, kind: 'capture' | 'input' | 'other'): Promise<{ end(): void; touch?(): void }>;
+  /** #406: asked when an `Input.*` command has gone unacknowledged for INPUT_ACK_MS — a refusal text when the whole window paints nothing (DPMS off, a session lock: the dispatch will never be acked), else null (keep waiting). */
+  windowDark?(): Promise<string | null>;
   /** #406: a screenshot of a tab that is not on screen (from its frame subscription), as base64; `null` = take the normal chain. */
   captureView?(tabId: string, params: Record<string, unknown>, info?: { deviceMetricsOverride: boolean }): Promise<string | null>;
   /**
@@ -653,7 +656,8 @@ export class CdpProxyCore {
       (beat as { unref?: () => void }).unref?.();
     }
     try {
-      const out = await this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
+      const run = this.tabCommandActing(tabId, st, method, params, childSessionId, sessionGone);
+      const out = method.startsWith('Input.') && this.port.windowDark ? await this.refuseIfDark(run) : await run;
       if (method === 'Emulation.setDeviceMetricsOverride') st.metricsOverride = true; // a hidden screenshot cannot honour it (capturePage ignores emulation): see captureView
       else if (method === 'Emulation.clearDeviceMetricsOverride') st.metricsOverride = false;
       return out;
@@ -661,6 +665,19 @@ export class CdpProxyCore {
       if (beat) clearInterval(beat);
       lease?.end();
     }
+  }
+
+  /** An `Input.*` command that is not acknowledged within INPUT_ACK_MS is a hang or a dark window: the port says which. A dark window refuses (the pending dispatch is abandoned, never awaited again). */
+  private async refuseIfDark<T>(run: Promise<T>): Promise<T> {
+    run.catch(() => undefined); // abandoned on a refusal: its late failure must not surface as unhandled
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = await Promise.race([run.then(() => false, () => false), new Promise<boolean>((r) => { timer = setTimeout(() => r(true), INPUT_ACK_MS); })]);
+    clearTimeout(timer);
+    if (slow) {
+      const why = await this.port.windowDark!().catch(() => null);
+      if (why) throw new CdpError(why, ERR_SERVER);
+    }
+    return run;
   }
 
   private async tabCommandActing(tabId: string, st: TabState, method: string, params: Record<string, unknown> | undefined, childSessionId: string | undefined, sessionGone: () => Error): Promise<unknown> {

@@ -2,8 +2,10 @@
 import net from 'node:net';
 import { GET_TREE, ipcFrame, parseIpcReply, windowVisibleInTree, type SwayNode } from '../shared/sway-tree.ts';
 
-/** `true` = displayed, `false` = on a workspace that is not shown, `null` = cannot tell (no sway, no such window, timeout, protocol error). */
-export function swayWindowVisible(pid: number, sock: string | undefined = process.env.SWAYSOCK, timeoutMs = 250): Promise<boolean | null> {
+/** `true` = displayed, `false` = on a workspace that is not shown, `null` = cannot tell (no sway, no such window, timeout, protocol error). `title` names the MAIN window among our pid's toplevels. */
+export function swayWindowVisible(pid: number, opts: { title?: string; sock?: string; timeoutMs?: number } = {}): Promise<boolean | null> {
+  const sock = 'sock' in opts ? opts.sock : process.env.SWAYSOCK;
+  const timeoutMs = opts.timeoutMs ?? 250;
   if (!sock) return Promise.resolve(null);
   return new Promise((resolve) => {
     let done = false;
@@ -25,7 +27,7 @@ export function swayWindowVisible(pid: number, sock: string | undefined = proces
       if (r === 'incomplete') return;
       if (!r) return finish(null);
       try {
-        finish(windowVisibleInTree(JSON.parse(r.payload) as SwayNode, pid));
+        finish(windowVisibleInTree(JSON.parse(r.payload) as SwayNode, pid, opts.title));
       } catch {
         finish(null);
       }

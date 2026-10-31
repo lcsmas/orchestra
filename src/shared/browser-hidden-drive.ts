@@ -43,8 +43,8 @@ export const BEYOND_VIEWPORT_MESSAGE =
   'a full-page (beyond-the-viewport) screenshot of a tab nobody is looking at is not supported: it would be cropped to the viewport. ' +
   'bring the tab to the front with `orchestra browser tab <ref>` and retry, or take the screenshot without --full.';
 export const OFFSCREEN_MESSAGE =
-  'the Orchestra window is on a desktop workspace that is not displayed (nothing paints there), so click, type, wheel and screenshot of a browser tab cannot run now. ' +
-  'snapshot, eval, get and open still work; switch to the desktop workspace holding Orchestra and retry.';
+  'the Orchestra window is not painting right now (its desktop workspace is not displayed, or the screen is off or locked), so click, type, wheel and screenshot of a browser tab cannot run. ' +
+  'snapshot, eval, get and open still work; show the desktop workspace holding Orchestra (or wake / unlock the screen) and retry.';
 export const STILL_LOADING_MESSAGE =
   "this tab's page is still loading, so it has no frame to capture and takes no input yet. retry in a moment — snapshot, eval, get and open work meanwhile.";
 export const COVER_GONE_MESSAGE =
@@ -55,6 +55,8 @@ export const DEVICE_METRICS_MESSAGE =
   'bring the tab to the front with `orchestra browser tab <ref>` and retry, or clear the emulation.';
 export const PAINT_PROBE_MS = 300; // the app window's own 1x1 capturePage() must answer within this, else the window paints nothing (an undisplayed sway workspace: it never answers)
 export const PAINT_VERDICT_TTL_MS = 750; // a burst of actions probes once
+export const INPUT_ACK_MS = 1000; // an Input.* command on a tab nobody sees that has not been acknowledged by then: ask whether the whole window paints (measured: a normal ack takes ≤ 450 ms, under DPMS off it never comes)
+export const NO_FRAME_TTL_MS = 10_000; // a MEASURED no-frame (a hung wake, a capture that got none, a UI probe that never answered) keeps the window "not painting" this long — sway's `visible:true` never overrides it; the probe's answer clears it earlier
 export const LOAD_SETTLE_MAX_MS = 6000; // how long a surfaced tab waits for a loading document before refusing with the true cause
 export const NEEDS_FIRST_PAINT_MESSAGE =
   'this tab has not been on screen since its page loaded, so it has no frame to capture and takes no input yet, and nothing is on screen to cover showing it briefly. ' +

@@ -34,6 +34,7 @@ import {
   LOAD_SETTLE_MAX_MS,
   PAINT_PROBE_MS,
   PAINT_VERDICT_TTL_MS,
+  NO_FRAME_TTL_MS,
   NO_FRAME_MESSAGE,
   OFFSCREEN_MESSAGE,
   STILL_LOADING_MESSAGE,
@@ -1589,38 +1590,70 @@ function afterNextPaint(wc: Electron.WebContents, ms: number): Promise<void> {
     }
   });
 }
-async function wakeView(wc: Electron.WebContents): Promise<void> {
+async function wakeView(wc: Electron.WebContents): Promise<boolean> {
   const done = await Promise.race([wc.capturePage().then(() => true, () => true), new Promise<boolean>((r) => setTimeout(() => r(false), WAKE_MS))]);
-  if (!done) paintVerdict = { at: Date.now(), ok: false }; // a capture that does not finish: the window paints nothing (an undisplayed desktop) — refuse the next actions without asking
+  if (done) noFrameAt = 0; // a frame came: the window paints. A wake that does not finish is the CALLER's to refuse (windowPaints' probe tells a dead tab from a dark window)
+  return done;
 }
 
-/** Does the Orchestra window paint? A capture only completes when the window is DRAWN: on an undisplayed sway workspace nothing is, so a `capturePage()` never answers and, while it hangs, keeps its
- *  page SHOWN (unthrottled) until the window is displayed again. The probe is therefore that failure in miniature — a 1x1 `capturePage()` of the app's own UI (measured: a requestAnimationFrame round trip is
- *  NOT a reliable signal, it kept answering on an undisplayed desktop after some arms; neither is this probe once in three runs, hence the sway answer first). Click / type / wheel / screenshot ask first and are refused fast. At most ONE probe is
- *  ever in flight (a stalled one stays pending until the window is displayed again), so a long absence costs one pending request, not one per action. */
+/** Does the Orchestra window paint? A capture only completes when the window is DRAWN: on an undisplayed sway workspace, with DPMS off or under a session lock nothing is, so a `capturePage()` never answers and, while it hangs,
+ *  keeps its page SHOWN (unthrottled) until the window paints again. Click / type / wheel / screenshot therefore ask first and are refused fast. Three NOs, none of which a "displayed" can override (review D1: sway says
+ *  `visible:true` under DPMS off and a lock): (1) sway says the window is not on a displayed workspace (exact, a few ms, never cached); (2) a MEASURED no-frame — a wake that hung, a capture that got none — younger than
+ *  NO_FRAME_TTL_MS and not yet cleared by the probe answering; (3) the app's own 1x1 `capturePage()` does not answer within PAINT_PROBE_MS (a verdict is cached for a burst). At most ONE probe is ever in flight (a stalled one
+ *  stays pending until the window paints again — and clears (2) the moment it answers), so a long absence costs one pending request, not one per action. A probe that answers proves nothing by itself (measured: it can answer on an undisplayed desktop). */
 let paintVerdict = { at: 0, ok: true };
 let paintProbe: Promise<boolean> | null = null;
-async function windowPaints(): Promise<boolean> {
-  // sway KNOWS whether the window is on a displayed workspace (exact, a few ms) — and its answer is NEVER cached: a cached "displayed" let the first action after the human switched desktop run
-  // against a window that no longer paints (measured: it hung 6 s and left the page unthrottled). The capture probe below is the fallback for other compositors and can be fooled.
-  const sway = await swayWindowVisible(process.pid);
-  if (sway !== null) {
-    paintVerdict = { at: Date.now(), ok: sway };
-    return sway;
-  }
-  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
+let noFrameAt = 0;
+const probeWatched = new WeakSet<Promise<boolean>>();
+function startPaintProbe(): Promise<boolean> | null {
+  if (paintProbe) return paintProbe;
   const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents;
-  let ok = true;
-  if (ui && !ui.isDestroyed?.() && typeof ui.capturePage === 'function') {
-    if (!paintProbe) {
-      const probe: Promise<boolean> = Promise.resolve(ui.capturePage({ x: 0, y: 0, width: 1, height: 1 })).then(() => true, () => true);
-      paintProbe = probe;
-      void probe.then(() => { if (paintProbe === probe) paintProbe = null; });
-    }
-    ok = await Promise.race([paintProbe, new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS))]);
-  } // no UI to ask (tests, teardown): never refuse on no evidence
-  paintVerdict = { at: Date.now(), ok };
+  if (!ui || ui.isDestroyed?.() || typeof ui.capturePage !== 'function') return null; // no UI to ask (tests, teardown): never refuse on no evidence
+  const probe: Promise<boolean> = Promise.resolve(ui.capturePage({ x: 0, y: 0, width: 1, height: 1 })).then(() => true, () => true);
+  paintProbe = probe;
+  void probe.then(() => { if (paintProbe === probe) paintProbe = null; });
+  return probe;
+}
+/** A measured no-frame: the window is "not painting" for NO_FRAME_TTL_MS, or until the single-flight probe answers (the display is back). */
+function markNoFrame(): void {
+  noFrameAt = Date.now();
+  paintVerdict = { at: noFrameAt, ok: false };
+  const probe = startPaintProbe();
+  if (probe && !probeWatched.has(probe)) {
+    probeWatched.add(probe);
+    void probe.then(() => {
+      noFrameAt = 0;
+      paintVerdict = { at: Date.now(), ok: true };
+      retryPendingUnpins(); // the display is back: the unpins owed meanwhile can be taken
+    });
+  }
+}
+async function windowPaints(): Promise<boolean> {
+  const sway = await swayWindowVisible(process.pid, { title: (getWindow?.() as Electron.BrowserWindow | null)?.getTitle?.() });
+  if (sway === false) return false; // exact and never cached: a cached "displayed" let the first action after the human switched desktop hang
+  if (Date.now() - noFrameAt < NO_FRAME_TTL_MS) return false; // a measured no-frame beats "displayed"
+  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
+  const probe = startPaintProbe();
+  const ok = probe ? await Promise.race([probe, new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS))]) : true;
+  if (ok) paintVerdict = { at: Date.now(), ok: true };
+  else markNoFrame(); // the UI itself does not paint: remember it, and let the probe's answer say when it does again
   return ok;
+}
+
+/** Is the window's own surface answering RIGHT NOW (no cached verdict)? Asked where a view that was composited gave no frame, to tell a dead tab from a window that paints nothing (DPMS off, a lock). */
+async function windowPaintsNow(): Promise<boolean> {
+  if (Date.now() - noFrameAt < NO_FRAME_TTL_MS) return false;
+  const probe = startPaintProbe();
+  if (!probe) return true;
+  const ok = await Promise.race([probe, new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS))]);
+  if (ok) paintVerdict = { at: Date.now(), ok: true };
+  else markNoFrame();
+  return ok;
+}
+
+/** The proxy's answer to an `Input.*` command that was not acknowledged in time (INPUT_ACK_MS): the refusal text when the window paints nothing, else null. */
+export async function windowDarkReason(): Promise<string | null> {
+  return (await windowPaintsNow()) ? null : OFFSCREEN_MESSAGE;
 }
 
 export interface DriveLease {
@@ -1830,8 +1863,13 @@ export async function beginAgentAction(wsId: string, tabId: BrowserTabId | undef
   if (flipped && kind === 'input' && tab.surface === 'hidden') {
     pinnedLeases.add(id);
     const w0 = Date.now();
-    await wakeView(wc); // a click / type needs a live view (evaluate does not; a capture primes its own, see captureTabFrame)
-    log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} wake capture ${Date.now() - w0} ms`);
+    const awake = await wakeView(wc); // a click / type needs a live view (evaluate does not; a capture primes its own, see captureTabFrame)
+    log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} wake capture ${Date.now() - w0} ms${awake ? '' : ' — NO FRAME: the window paints nothing'}`);
+    if (!awake) {
+      driveLeases.release(id, Date.now()); // the unpin the hung capture owes is taken when the window paints again (sweepLeases defers it)
+      scheduleSweep();
+      throw new Error(OFFSCREEN_MESSAGE);
+    }
   }
   let ended = false;
   return {
@@ -1875,7 +1913,7 @@ async function captureTabFrameNow(wsId: string, tabId: BrowserTabId | undefined,
     surfacedAt.delete(tab); // single use: only the capture of the action that surfaced the tab skips the prime
     if (tab.surface === 'hidden' && !justSurfaced) {
       const p0 = Date.now();
-      await wakeView(wc); // prime: shows the page so the renderer produces its frame (and wakes a dead view) …
+      if (!(await wakeView(wc))) throw new Error(OFFSCREEN_MESSAGE); // prime: shows the page so the renderer produces its frame (and wakes a dead view) — it got none: the window paints nothing
       await afterNextPaint(wc, FRESH_FRAME_MS); // … settle: the capture below must not read the old surface
       log.info(`browser-panel: drive ${wsId.slice(0, 8)}/${tab.id} prime+settle ${Date.now() - p0} ms`);
     }
@@ -1888,6 +1926,7 @@ async function captureTabFrameNow(wsId: string, tabId: BrowserTabId | undefined,
     } catch {
       /* fall through to the frame subscription */
     }
+    if (!img && !(await windowPaintsNow())) throw new Error(OFFSCREEN_MESSAGE); // no frame from a view that WAS composited: is it the tab, or does the whole window paint nothing (DPMS off, a lock)?
     try {
       img = img ?? (await frameOf(wc, 600));
     } catch {

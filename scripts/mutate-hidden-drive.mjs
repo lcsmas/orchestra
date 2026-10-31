@@ -16,6 +16,10 @@ const TABS = 'src/main/browser-panel-tabs.test.ts';
 const PROF = 'src/main/browser-panel-profiles.test.ts';
 const CORE_T = 'src/shared/cdp-proxy-core-hidden-drive.test.ts';
 const DRIVE_T = 'src/shared/browser-hidden-drive.test.ts';
+const SWAYT = 'src/shared/sway-tree.ts';
+const SWAYT_T = 'src/shared/sway-tree.test.ts';
+const SWAYI = 'src/main/sway-ipc.ts';
+const SWAYI_T = 'src/main/sway-ipc.test.ts';
 
 const MUTANTS = [
   { id: 'lease-forgotten-on-removeView', file: BP, test: TABS, pattern: 'navigation under a LEASE',
@@ -36,18 +40,10 @@ const MUTANTS = [
     from: '  if (stillLoading) {\n    removeView(tab); // it keeps loading detached; hiding a loading view is what hideView refuses\n    throw new Error(STILL_LOADING_MESSAGE);\n  }\n', to: '' },
   { id: 'paint-gate-removed', file: BP, test: TABS, pattern: 'F1 \\(a\\)',
     from: "  if (kind !== 'other' && !(await windowPaints())) throw new Error(OFFSCREEN_MESSAGE);", to: '' },
-  { id: 'paint-probe-not-single-flight', file: BP, test: TABS, pattern: 'long absence costs ONE',
-    from: '    if (!paintProbe) {\n      const probe', to: '    if (true as boolean) {\n      const probe' },
   { id: 'owed-unpin-dropped-while-away', file: BP, test: TABS, pattern: 'unpin owed while the window paints NOTHING',
     from: "            pendingUnpins.set(id, tab as Tab); // nothing paints: no capture now (it would hang) — owed until the window paints again\n            retryPendingUnpins();\n            return;", to: '            return;' },
-  { id: 'sway-answer-cached', file: BP, test: TABS, pattern: 'sway KNOWS',
-    from: '  const sway = await swayWindowVisible(process.pid);\n  if (sway !== null) {', to: '  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;\n  const sway = await swayWindowVisible(process.pid);\n  if (sway !== null) {' },
-  { id: 'sway-answer-ignored', file: BP, test: TABS, pattern: 'sway KNOWS',
-    from: '  if (sway !== null) {\n    paintVerdict', to: '  if (false as boolean) {\n    paintVerdict' },
   { id: 'pulse-never-re-shown', file: BP, test: TABS, pattern: 'first show that yields NO frame',
     from: '      if (!kicked && !pulse.aborted && Date.now() - t0 >= REKICK_AFTER_MS) {', to: '      if (false as boolean) {' },
-  { id: 'hung-wake-not-a-stall', file: BP, test: TABS, pattern: 'F1 \\(b\\)',
-    from: '  if (!done) paintVerdict = { at: Date.now(), ok: false };', to: '' },
   { id: 'navigation-detaches-the-VISIBLE-tab', file: BP, test: TABS, pattern: 'F5 \\(b\\)',
     from: "&& !(d.isSameDocument ?? isInPlace) && tab.surface === 'hidden') removeView(tab);", to: '&& !(d.isSameDocument ?? isInPlace)) removeView(tab);' },
   { id: 'reprofile-detaches-only-the-attached-view', file: BP, test: PROF, pattern: 'F5 \\(c\\)',
@@ -66,6 +62,48 @@ const MUTANTS = [
     from: "      if (method === 'Emulation.setDeviceMetricsOverride') st.metricsOverride = true;", to: "      if (method === 'Emulation.setDeviceMetricsOverride') st.metricsOverride = false;" },
   { id: 'scaled-clip-not-refused', file: DRIVE, test: DRIVE_T, pattern: 'hiddenCaptureRefusal',
     from: "if ((typeof scale === 'number' && scale !== 1) || info.deviceMetricsOverride) return DEVICE_METRICS_MESSAGE;", to: 'if (info.deviceMetricsOverride) return DEVICE_METRICS_MESSAGE;' },
+  { id: 'paint-probe-not-single-flight', file: BP, test: TABS, pattern: 'long absence costs ONE',
+    from: '  if (paintProbe) return paintProbe;\n', to: '' },
+  { id: 'sway-answer-cached', file: BP, test: TABS, pattern: 'sway KNOWS',
+    from: '  const sway = await swayWindowVisible(process.pid, { title: (getWindow?.() as Electron.BrowserWindow | null)?.getTitle?.() });\n  if (sway === false) return false;', to: '  if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;\n  const sway = await swayWindowVisible(process.pid, { title: (getWindow?.() as Electron.BrowserWindow | null)?.getTitle?.() });\n  if (sway === false) return false;' },
+  { id: 'sway-answer-ignored', file: BP, test: TABS, pattern: 'sway KNOWS',
+    from: '  if (sway === false) return false; // exact and never cached: a cached "displayed" let the first action after the human switched desktop hang\n', to: '' },
+  { id: 'sway-visible-overrides-a-measured-no-frame', file: BP, test: TABS, pattern: 'D1 sway saying',
+    from: '  if (Date.now() - noFrameAt < NO_FRAME_TTL_MS) return false; // a measured no-frame beats "displayed"\n', to: '  if (sway === true) return true; // the D1 bug: DPMS off / a lock leave visible:true\n' },
+  { id: 'measured-no-frame-not-remembered', file: BP, test: TABS, pattern: 'own probe never answers',
+    from: '  if (Date.now() - noFrameAt < NO_FRAME_TTL_MS) return false; // a measured no-frame beats "displayed"\n', to: '' },
+  { id: 'probe-answer-does-not-clear-the-memory', file: BP, test: TABS, pattern: 'own probe never answers',
+    from: '    void probe.then(() => {\n      noFrameAt = 0;\n', to: '    void probe.then(() => {\n' },
+  { id: 'hung-wake-proceeds-into-the-action', file: BP, test: TABS, pattern: 'F1 \\(b\\)',
+    from: "    if (!awake) {\n      driveLeases.release(id, Date.now()); // the unpin the hung capture owes is taken when the window paints again (sweepLeases defers it)\n      scheduleSweep();\n      throw new Error(OFFSCREEN_MESSAGE);\n    }\n", to: '' },
+  { id: 'refused-wake-keeps-its-lease', file: BP, test: TABS, pattern: 'F1 \\(b\\)',
+    from: '      driveLeases.release(id, Date.now()); // the unpin the hung capture owes is taken when the window paints again (sweepLeases defers it)\n      scheduleSweep();\n', to: '' },
+  { id: 'prime-hang-not-refused', file: BP, test: TABS, pattern: 'F1 \\(b\\)',
+    from: '      if (!(await wakeView(wc))) throw new Error(OFFSCREEN_MESSAGE); // prime: shows the page so the renderer produces its frame (and wakes a dead view) — it got none: the window paints nothing\n', to: '      await wakeView(wc);\n' },
+  { id: 'no-frame-not-diagnosed-as-a-dark-window', file: BP, test: TABS, pattern: 'D1 a hidden view that was composited',
+    from: '    if (!img && !(await windowPaintsNow())) throw new Error(OFFSCREEN_MESSAGE); // no frame from a view that WAS composited: is it the tab, or does the whole window paint nothing (DPMS off, a lock)?\n', to: '' },
+  { id: 'gate-ignores-the-main-window-title', file: BP, test: TABS, pattern: 'D2 the gate names the MAIN window',
+    from: '{ title: (getWindow?.() as Electron.BrowserWindow | null)?.getTitle?.() }', to: '{}' },
+  { id: 'tree-answers-for-any-same-pid-leaf', file: SWAYT, test: SWAYT_T, pattern: 'only the leaf NAMED',
+    from: 'const own = title === undefined ? leaves : leaves.filter((l) => l.name === title);', to: 'const own = leaves;' },
+  { id: 'ipc-drops-the-title', file: SWAYI, test: SWAYI_T, pattern: 'title picks the MAIN window',
+    from: 'windowVisibleInTree(JSON.parse(r.payload) as SwayNode, pid, opts.title)', to: 'windowVisibleInTree(JSON.parse(r.payload) as SwayNode, pid)' },
+  { id: 'owed-unpin-not-carried-into-the-next-lease', file: BP, test: TABS, pattern: 'D4 \\(a\\)',
+    from: '  if (pendingUnpins.delete(id)) pinnedLeases.add(id); // an owed unpin becomes this lease\'s: its end takes the capture\n', to: '  pendingUnpins.delete(id);\n' },
+  { id: 'removeView-keeps-the-owed-unpin', file: BP, test: TABS, pattern: 'D4 \\(b\\)',
+    from: '  pinnedLeases.delete(id);\n  pendingUnpins.delete(id);\n  leaseTabs.delete(id);\n}', to: '  pinnedLeases.delete(id);\n  leaseTabs.delete(id);\n}' },
+  { id: 'unpin-retry-ignores-a-held-lease', file: BP, test: TABS, pattern: 'D4 \\(c\\)',
+    from: " && !driveLeases.isHeld(id)) await wakeView(wc);", to: ') await wakeView(wc);' },
+  { id: 'scaled-clip-below-1-allowed', file: DRIVE, test: DRIVE_T, pattern: 'hiddenCaptureRefusal',
+    from: "(typeof scale === 'number' && scale !== 1)", to: "(typeof scale === 'number' && scale > 1)" },
+  { id: 'pulse-aborted-for-every-cover', file: BP, test: TABS, pattern: 'B1 a pulse survives',
+    from: '    if (p.cover !== cover || p.aborted) continue;', to: '    if (p.aborted) continue;' },
+  { id: 'input-ack-not-bounded', file: CORE, test: CORE_T, pattern: 'never acknowledged',
+    from: "const out = method.startsWith('Input.') && this.port.windowDark ? await this.refuseIfDark(run) : await run;", to: 'const out = await run;' },
+  { id: 'dark-answer-ignored-after-the-ack-bound', file: CORE, test: CORE_T, pattern: 'never acknowledged',
+    from: '      if (why) throw new CdpError(why, ERR_SERVER);\n    }\n    return run;', to: '    }\n    return run;' },
+  { id: 'window-dark-reason-never-dark', file: BP, test: TABS, pattern: 'windowDarkReason',
+    from: '  return (await windowPaintsNow()) ? null : OFFSCREEN_MESSAGE;', to: '  return null;' },
 ];
 
 const only = process.argv.slice(2);

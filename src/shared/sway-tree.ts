@@ -1,18 +1,23 @@
 // #406 — is the Orchestra window DISPLAYED? On sway the compositor knows exactly: a window on a workspace that is not shown has `visible: false` in `swaymsg -t get_tree`.
 // Pure: the tree walk and the i3-ipc framing live here so they are tested without a compositor (main/sway-ipc.ts only owns the socket).
 
-export interface SwayNode { pid?: number; visible?: boolean; nodes?: SwayNode[]; floating_nodes?: SwayNode[] }
+export interface SwayNode { pid?: number; name?: string; visible?: boolean; nodes?: SwayNode[]; floating_nodes?: SwayNode[] }
 
-/** `visible` of the leaf window owned by `pid` (a Wayland toplevel reports its client's pid), or null when no such window is in the tree. */
-export function windowVisibleInTree(tree: SwayNode, pid: number): boolean | null {
+/** `visible` of OUR main window in the tree. A Wayland toplevel reports its client's pid, and a popup (#396), the login window or a detached DevTools share it, so with a `title` only leaves NAMED that
+ *  count (visible if any is); no leaf with that name, or several same-pid leaves that disagree without a title, is "cannot tell" (null) — never a guess at the last leaf. null also when no such window is in the tree. */
+export function windowVisibleInTree(tree: SwayNode, pid: number, title?: string): boolean | null {
+  const leaves: SwayNode[] = [];
   const stack: SwayNode[] = [tree];
   while (stack.length) {
     const n = stack.pop()!;
     const kids = [...(n.nodes ?? []), ...(n.floating_nodes ?? [])];
-    if (n.pid === pid && kids.length === 0 && typeof n.visible === 'boolean') return n.visible;
+    if (n.pid === pid && kids.length === 0 && typeof n.visible === 'boolean') leaves.push(n);
     stack.push(...kids);
   }
-  return null;
+  const own = title === undefined ? leaves : leaves.filter((l) => l.name === title);
+  if (own.length === 0) return null;
+  if (title === undefined && own.some((l) => l.visible !== own[0].visible)) return null;
+  return own.some((l) => l.visible === true);
 }
 
 export const IPC_MAGIC = 'i3-ipc';

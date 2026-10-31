@@ -10,7 +10,7 @@ const TABS: CdpTab[] = [
   { id: 't2', url: 'http://b/', title: 'B', active: false, openedBy: 'agent' },
 ];
 
-function fake(opts: { beginAction?: CdpPanelPort['beginAction']; captureView?: CdpPanelPort['captureView']; fail?: Set<string> } = {}) {
+function fake(opts: { beginAction?: CdpPanelPort['beginAction']; captureView?: CdpPanelPort['captureView']; fail?: Set<string>; delays?: Record<string, number>; windowDark?: CdpPanelPort['windowDark'] } = {}) {
   const sent: Array<{ tab: string; method: string; params?: unknown }> = [];
   const activated: string[] = [];
   const events: string[] = [];
@@ -19,6 +19,9 @@ function fake(opts: { beginAction?: CdpPanelPort['beginAction']; captureView?: C
       sent.push({ tab: id, method, params });
       events.push(`send:${method}`);
       if (opts.fail?.has(method)) throw new Error(`${method} exploded`);
+      const d = opts.delays?.[method];
+      if (d === Infinity) return new Promise(() => undefined); // never acknowledged
+      if (d) await new Promise((r) => setTimeout(r, d));
       return method === 'Page.captureScreenshot' ? { data: 'DEBUGGER' } : {};
     },
     subscribe: () => () => undefined,
@@ -36,6 +39,7 @@ function fake(opts: { beginAction?: CdpPanelPort['beginAction']; captureView?: C
     framesError: () => 'OLD-RULE REFUSAL',
     ...(opts.beginAction ? { beginAction: async (id, kind) => { events.push(`begin:${id}:${kind}`); const l = await opts.beginAction!(id, kind); return { end: () => { events.push(`end:${id}`); l.end(); }, ...(l.touch ? { touch: () => l.touch!() } : {}) }; } } : {}),
     ...(opts.captureView ? { captureView: opts.captureView } : {}),
+    ...(opts.windowDark ? { windowDark: opts.windowDark } : {}),
   };
   return { port, sent, activated, events };
 }
@@ -200,4 +204,32 @@ test('captureView is told when the agent has an Emulation.setDeviceMetricsOverri
   await c.call('Emulation.clearDeviceMetricsOverride', {}, sid);
   await c.call('Page.captureScreenshot', { format: 'png' }, sid);
   assert.deepEqual(seen, [false, true, false]);
+});
+
+test('D1 an Input.* command that is never acknowledged (DPMS off / a lock: the renderer gets no frame to ack it) is refused with the window\'s own answer after INPUT_ACK_MS — not left to hang to the 6 s bound (#406)', async () => {
+  let asked = 0;
+  const f = fake({ beginAction: async () => ({ end: () => undefined }), delays: { 'Input.dispatchMouseEvent': Infinity }, windowDark: async () => { asked++; return 'the Orchestra window is not painting right now (DARK)'; } });
+  const core = new CdpProxyCore(f.port);
+  const c = client(core);
+  const sid = await attachTo(core, c, 't2');
+  const t0 = Date.now();
+  const r = await c.call('Input.dispatchMouseEvent', { type: 'mouseWheel' }, sid);
+  assert.match(r.error?.message ?? '', /not painting right now \(DARK\)/);
+  assert.ok(Date.now() - t0 >= 900 && Date.now() - t0 < 1600, `after the ack bound (${Date.now() - t0} ms)`);
+  assert.equal(asked, 1);
+  assert.deepEqual(f.events.filter((e) => e.startsWith('end')), ['end:t2'], 'and the lease ended');
+});
+
+test('D1 a slow acknowledgement on a PAINTING window is waited for (the window says it is not dark), and a prompt one never asks (#406)', async () => {
+  let asked = 0;
+  const f = fake({ beginAction: async () => ({ end: () => undefined }), delays: { 'Input.insertText': 1500 }, windowDark: async () => { asked++; return null; } });
+  const core = new CdpProxyCore(f.port);
+  const c = client(core);
+  const sid = await attachTo(core, c, 't2');
+  const r = await c.call('Input.insertText', { text: 'a' }, sid);
+  assert.equal(r.error, undefined, 'answered after 1.5 s, not refused');
+  assert.equal(asked, 1);
+  await c.call('Input.dispatchKeyEvent', { type: 'keyDown' }, sid);
+  await c.call('Runtime.evaluate', {}, sid);
+  assert.equal(asked, 1, 'a prompt Input.* and a non-input command never ask');
 });
