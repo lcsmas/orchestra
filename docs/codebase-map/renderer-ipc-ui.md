@@ -212,9 +212,12 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **Orca look (2026-10-31, layout "C" + glyph set "G2")** — research `docs/research/orca-sidebar-ui.md`,
   `orca-agent-rows-status.md`, `orca-coordinator-worker-semantics.md`; the picked prototype (all variants, switcher,
   states gallery) is kept on branch `prototype/sidebar-orca`. Styles in `src/renderer/sidebar-orca.css` (loaded after
-  styles.css, overrides its older sidebar rules): flat `#2a2a2a` surface, 13px semibold sticky section headers with a
-  repo colour mark (`repoColor`, by registered-repo position), **title-only 36px rows** (the status note moved into the
-  name tooltip via `withStatusNote`; context-size + account badges hidden on rows), 18px tree step with a rail + tick.
+  styles.css, overrides its older sidebar rules): a `#171b21` surface — one step below the Agent view canvas
+  (`--av-surface #1a1f26`), same hue (Orca's neutral `#2a2a2a` clashed with it; round 2 on branch
+  `prototype/sidebar-orca-2`) — 12px semibold sticky section headers **in the repo's colour** plus a 2px rail of that
+  colour down each repo section (`--repo-color` set on `.repo-section`, `repoColor` by registered-repo position),
+  **title-only 32px rows, 12px titles** (the status note moved into the name tooltip via `withStatusNote`;
+  context-size + account badges hidden on rows), 18px tree step with a rail + tick.
   Pure logic in `src/renderer/sidebar-tree.ts` (+ test): `isFolded`, `rollupStatus`/`rollupTitle`, `hiddenDotKind`,
   `repoColor`.
 - **Selection drives folding** (`Sidebar.tsx:813`, `sidebar-tree.ts:27`): the path root → selected row and the

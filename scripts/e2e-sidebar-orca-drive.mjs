@@ -104,8 +104,8 @@ const shimHash = () => { try { return md5(shimFile); } catch { return 'absent'; 
 // ── world ────────────────────────────────────────────────────────────────────
 // OPS (orchestrator, pinned tree, idle, status note) ─ C1 (autoUnread child, linked PR), C2 (waiting child)
 // P (promoted worktree, repo section) ─ K1, K2 (never ran)      R (root, autoUnread, no kids)      L (root, no kids)
-const ID = { ops: 'ws-sor-ops', c1: 'ws-sor-c1', c2: 'ws-sor-c2', p: 'ws-sor-p', k1: 'ws-sor-k1', k2: 'ws-sor-k2', r: 'ws-sor-r', l: 'ws-sor-l' };
-const BR = { c1: 'worker-done-c1', c2: 'worker-asks-c2', p: 'promoted-lead-p', k1: 'kid-one-k1', k2: 'kid-two-k2', r: 'root-unseen-r', l: 'root-leaf-l' };
+const ID = { ops: 'ws-sor-ops', c1: 'ws-sor-c1', c2: 'ws-sor-c2', p: 'ws-sor-p', k1: 'ws-sor-k1', k2: 'ws-sor-k2', r: 'ws-sor-r', l: 'ws-sor-l', m: 'ws-sor-m' };
+const BR = { c1: 'worker-done-c1', c2: 'worker-asks-c2', p: 'promoted-lead-p', k1: 'kid-one-k1', k2: 'kid-two-k2', r: 'root-unseen-r', l: 'root-leaf-l', m: 'other-repo-m' };
 const PR = (n) => ({ url: `https://github.com/lcsmas/orchestra/pull/${n}`, owner: 'lcsmas', repo: 'orchestra', number: n });
 const NOTE = 'reviewing wave 7 — 2 workers out';
 
@@ -133,9 +133,15 @@ function seedWorld(home) {
   const r = mk('r', { autoUnread: true });
   const l = mk('l', {});
   const repo = { path: repoDir, name: 'sor-repo', defaultBranch: 'main', scripts: {}, accountId: account.id };
+  const repo2Dir = path.join(home, 'repo2'); fs.mkdirSync(repo2Dir, { recursive: true });
+  git(repo2Dir, ['init', '-q', '-b', 'main'], fakeHome); fs.writeFileSync(path.join(repo2Dir, 'README.md'), '# second\n');
+  git(repo2Dir, ['add', '.'], fakeHome); git(repo2Dir, ['commit', '-q', '-m', 'seed'], fakeHome);
+  const repo2 = { path: repo2Dir, name: 'sor-other', defaultBranch: 'main', scripts: {}, accountId: account.id };
+  const mDir = path.join(home, 'wt', 'm'); git(repo2Dir, ['worktree', 'add', '-q', '-b', BR.m, mDir], fakeHome);
+  const m = { ...base, id: ID.m, name: `sor-other · ${BR.m}`, repoPath: repo2Dir, worktreePath: mDir, branch: BR.m, lastTurnStartAt: now - 30000 };
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   const storeFile = path.join(dir, 'store.json');
-  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo], workspaces: [ops, c1, c2, p, k1, k2, r, l], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo, repo2], workspaces: [ops, c1, c2, p, k1, k2, r, l, m], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stubLog = path.join(home, 'stub-argv.log');
   fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\nsleep 3600\n`, { mode: 0o755 });
@@ -192,8 +198,9 @@ async function click(app, x, y) { await mouse(app, 'mouseMoved', x, y); await sl
 const SHOTS = [];
 // ── observables ──────────────────────────────────────────────────────────────
 const stateJs = `(() => {
-  const list = document.querySelector('.ws-list'); const lr = list.getBoundingClientRect();
-  const fr = document.querySelector('.ws-selection-frame'); const fb = fr.getBoundingClientRect();
+  const list = document.querySelector('.ws-list'); const fr = document.querySelector('.ws-selection-frame');
+  if (!list || !fr) return { rows: [], repos: [], frame: { on: false }, sidebarBg: null, rowFont: null, orch: 0, innerWidth }; // not rendered yet
+  const fb = fr.getBoundingClientRect();
   const rows = [...document.querySelectorAll('.ws-list .ws-item')].filter((r) => r.querySelector('.ws-name')).map((row) => {
     const name = row.querySelector('.ws-name'); const g = row.querySelector('.ws-glyph'); const b = row.getBoundingClientRect();
     const gb = g ? getComputedStyle(g, '::before') : null;
@@ -207,7 +214,13 @@ const stateJs = `(() => {
       cx: b.x + 60, cy: b.y + b.height / 2 };
   });
   return { rows, frame: { on: fr.classList.contains('on'), tree: fr.classList.contains('tree'), top: Math.round(fb.top), bottom: Math.round(fb.bottom), left: Math.round(fb.left), right: Math.round(fb.right) },
-    sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor, orch: document.querySelectorAll('.orchestrator-pill, .orch-count').length, innerWidth };
+    sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor,
+    rowFont: (() => { const n = document.querySelector('.ws-item:not(.ws-folded) .ws-name'); return n ? getComputedStyle(n).fontSize : null; })(),
+    repos: [...document.querySelectorAll('.ws-list .repo-section')].filter((sec) => sec.style.getPropertyValue('--repo-color')).map((sec) => {
+      const probe = document.createElement('i'); probe.style.color = sec.style.getPropertyValue('--repo-color'); sec.append(probe); const want = getComputedStyle(probe).color; probe.remove();
+      const cs = getComputedStyle(sec); const h = sec.querySelector('.repo-header');
+      return { name: sec.querySelector('.repo-name')?.textContent.trim(), want, rail: cs.borderLeftColor, railW: cs.borderLeftWidth, header: h ? getComputedStyle(h).color : null };
+    }), orch: document.querySelectorAll('.orchestrator-pill, .orch-count').length, innerWidth };
 })()`;
 const state = (app) => app.cdp.eval(stateJs);
 /** Append one hook event to the workspace's events spool — the exact line orchestra-hook.sh writes. */
@@ -257,7 +270,12 @@ async function main() {
     const s0 = await state(app);
     for (const r of s0.rows) note(`boot ${r.text.padEnd(18)} folded=${r.folded} tree=${r.tree} active=${r.active} glyph="${r.glyph}" hidden=${JSON.stringify(r.hidden)}`);
     note(fmtFrame(s0));
-    clause('skin/flat-sidebar', s0.sidebarBg === 'rgb(42, 42, 42)', `sidebar background=${s0.sidebarBg}`);
+    clause('skin/near-canvas-sidebar', s0.sidebarBg === 'rgb(23, 27, 33)', `sidebar background=${s0.sidebarBg} (Agent view canvas is #1a1f26)`);
+    clause('skin/12px-rows', s0.rowFont === '12px', `row title font=${s0.rowFont}`);
+    for (const r of s0.repos) note(`repo ${r.name}: want=${r.want} rail=${r.railW} ${r.rail} header=${r.header}`);
+    clause('repos/rail-and-name-in-repo-colour', s0.repos.length === 2 && s0.repos.every((r) => r.railW === '2px' && r.rail === r.want && r.header === r.want),
+      s0.repos.map((r) => `${r.name}:${r.railW}/${r.rail === r.want}/${r.header === r.want}`).join(' '));
+    clause('repos/distinct-colours', new Set(s0.repos.map((r) => r.want)).size === s0.repos.length, s0.repos.map((r) => r.want).join(' vs '));
     clause('boot/ops-tree-open', ['ops-wave', BR.c1, BR.c2].every((t) => !row(s0, t).folded), visible(s0).join(','));
     clause('boot/other-tree-folded', row(s0, BR.k1).folded && row(s0, BR.k2).folded && row(s0, BR.k1).inert && row(s0, BR.k1).h === 0, `K1 folded=${row(s0, BR.k1).folded} inert=${row(s0, BR.k1).inert} h=${row(s0, BR.k1).h}`);
     const pHidden = row(s0, BR.p).hidden[0];

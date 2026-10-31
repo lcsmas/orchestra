@@ -1,9 +1,11 @@
-/* Sidebar, Orca-style (layout "C" of the prototype on branch prototype/sidebar-orca, picked 2026-10-31).
+/* Sidebar, Orca-style (layout "C" of the prototype on branch prototype/sidebar-orca, picked 2026-10-31; round 2 "C"
+   on prototype/sidebar-orca-2: near-canvas background, 12px rows, a colour rail per repo).
    Values: docs/research/orca-sidebar-ui.md §4-§6. Loaded after styles.css, whose older sidebar rules it
    overrides; glyph colours/sizes live with the glyph rules in styles.css. */
 
 .sidebar {
-  --o-sidebar: #2a2a2a;   /* Orca --worktree-sidebar (dark), pixel-confirmed */
+  --o-sidebar: #171b21;   /* a step below the Agent view canvas (--av-surface #1a1f26), same hue — Orca's neutral
+                             #2a2a2a clashed with it (user, 2026-10-31) */
   --o-accent: #353535;
   --o-border: rgb(255 255 255 / 0.07);
   --o-fg: #fafafa;
@@ -11,7 +13,7 @@
   background: var(--o-sidebar);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border-right: 1px solid var(--o-border);
+  border-right: 1px solid #232830;
   interpolate-size: allow-keywords; /* lets folded rows animate height to/from auto (Chromium ≥129) */
 }
 .sidebar .sidebar-header { border-bottom: none; padding: 10px 10px 6px 16px; }
@@ -24,42 +26,39 @@
   color: color-mix(in srgb, var(--o-muted) 80%, transparent);
 }
 
-/* ---- Section headers: 13px semibold, sentence case, sticky, coloured repo mark, hover-only actions ---- */
-.sidebar .repo-section { padding: 0; margin-top: 4px; }
+/* ---- Section headers: 12px semibold, sentence case, sticky, in the repo's colour, hover-only actions ---- */
+.sidebar .repo-section { padding: 0; }
 .sidebar .repo-section + .repo-section,
-.sidebar .scratch-section { border: none; }
+.sidebar .scratch-section { border-top: none; border-bottom: none; } /* styles.css dividers; keep the left rail */
 .sidebar .repo-header {
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--o-sidebar);
   height: 28px;
-  padding: 0 8px 0 10px;
-  font-size: 13px;
+  padding: 0 8px 0 8px;
+  font-size: 12px;
   line-height: 16px;
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0.01em;
-  color: var(--o-fg);
+  color: var(--repo-color, var(--o-fg));
 }
 .sidebar .repo-header .repo-name { font-weight: 600; }
 .sidebar .repo-header .caret { color: var(--o-muted); }
-.sidebar .repo-header[style*='--repo-color'] .repo-name::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  margin-right: 7px;
-  vertical-align: 1px;
-  background: var(--repo-color);
+/* Repo identity: a 2px rail in the repo's colour down the whole section (+ the coloured name above).
+   --repo-color is set on .repo-section (Sidebar.tsx, repoColor by registered position); pinned sections have none. */
+.sidebar .repo-section {
+  margin: 14px 0 0 6px;
+  border-left: 2px solid var(--repo-color, transparent);
 }
+.sidebar .repo-section .ws-item:not(.ws-folded) { margin-left: 4px; }
 .sidebar .repo-header-actions { opacity: 0; transition: opacity 120ms; }
 .sidebar .repo-header:hover .repo-header-actions,
 .sidebar .repo-header:focus-within .repo-header-actions { opacity: 1; }
 .sidebar .repo-sync { padding-left: 27px; opacity: 0.7; }
 
-/* ---- Rows: title-only 36px rounded surfaces; context-size + account badges move off the row ---- */
+/* ---- Rows: title-only 32px, 12px rounded surfaces; context-size + account badges move off the row ---- */
 .sidebar .ws-list {
   position: relative; /* SelectionFrame is positioned inside the scroller */
   scrollbar-width: thin;
@@ -68,10 +67,10 @@
 .sidebar .ws-list:hover { scrollbar-color: color-mix(in srgb, var(--o-muted) 28%, transparent) transparent; }
 .sidebar .ws-item {
   margin: 0 6px 4px 4px;
-  min-height: 36px;
+  min-height: 32px;
   height: auto;
-  padding-top: 7px;
-  padding-bottom: 7px;
+  padding-top: 6px;
+  padding-bottom: 6px;
   border: 1px solid transparent;
   border-radius: 8px;
   transition:
@@ -87,8 +86,8 @@
 .sidebar .ws-item.active { background: transparent; border-color: transparent; box-shadow: none; }
 .sidebar .ws-item .ws-name,
 .sidebar .ws-item.ws-child .ws-name {
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--o-fg);
 }
 .sidebar .ws-item.unread .ws-name { font-weight: 600; }

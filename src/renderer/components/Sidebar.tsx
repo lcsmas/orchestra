@@ -1944,6 +1944,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           <div
             key={repoPath}
             className={`repo-section${repoDnd}`}
+            style={{ '--repo-color': repoColor(repoPath, repoPaths) } as React.CSSProperties}
             onDragOver={(e) => {
               if (!dragRepo || dragRepo === repoPath || !isRegisteredRepo) return;
               e.preventDefault();
@@ -1965,7 +1966,6 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             <div
               className={`repo-header${detachOver === repoPath ? ' detach-target' : ''}`}
               title={repoPath}
-              style={{ '--repo-color': repoColor(repoPath, repoPaths) } as React.CSSProperties}
               draggable={isRegisteredRepo}
               onDragStart={(e) => {
                 if ((e.target as HTMLElement).closest('button')) {
