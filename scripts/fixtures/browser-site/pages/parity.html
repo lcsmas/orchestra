@@ -33,6 +33,7 @@ document.getElementById('typed').addEventListener('keydown', function (e) { docu
   Object.defineProperty(inp, 'value', { configurable: true, get: function () { return desc.get.call(this); }, set: function (v) { tracked = '' + v; desc.set.call(this, v); } });
   inp.addEventListener('input', function () { var cur = desc.get.call(inp); if (cur !== tracked) { tracked = cur; document.getElementById('ctlstate').textContent = 'state:' + cur; } });
 })();
+document.addEventListener('mousemove', function (e) { window.__mm = [Math.round(e.clientX), Math.round(e.clientY)]; }); // #406: `mouse move` has an observable effect
 document.getElementById('dbl').addEventListener('dblclick', function () { document.getElementById('dblout').textContent = 'dbl'; });
 document.getElementById('dbl').addEventListener('mouseover', function () { document.getElementById('hovout').textContent = 'hovered'; });
 </script>

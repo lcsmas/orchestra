@@ -53,9 +53,8 @@ export const COVER_GONE_MESSAGE =
 export const DEVICE_METRICS_MESSAGE =
   'a screenshot of a tab nobody is looking at does not honour Emulation.setDeviceMetricsOverride or clip.scale (it would come back at the wrong size): ' +
   'bring the tab to the front with `orchestra browser tab <ref>` and retry, or clear the emulation.';
-export const PAINT_PROBE_MS = 300; // the main renderer must answer a requestAnimationFrame within this, else its window paints nothing (measured: 6-16 ms displayed, a stall on an undisplayed sway workspace ≈ 1 s after the switch)
+export const PAINT_PROBE_MS = 300; // the app window's own 1x1 capturePage() must answer within this, else the window paints nothing (an undisplayed sway workspace: it never answers)
 export const PAINT_VERDICT_TTL_MS = 750; // a burst of actions probes once
-export const STALL_VERDICT_TTL_MS = 5000; // a capture that hung is proof of a stall: refuse for this long without asking
 export const LOAD_SETTLE_MAX_MS = 6000; // how long a surfaced tab waits for a loading document before refusing with the true cause
 export const NEEDS_FIRST_PAINT_MESSAGE =
   'this tab has not been on screen since its page loaded, so it has no frame to capture and takes no input yet, and nothing is on screen to cover showing it briefly. ' +

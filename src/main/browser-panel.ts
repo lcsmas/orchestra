@@ -24,6 +24,7 @@ import {
 } from '../shared/design-mode.ts';
 import { AGENT_OPENER, BROWSER_TAB_CAP, decideExternalProtocol, decidePopup, decideTabClose, decideTabOpen, isOsHandoffUrl } from '../shared/browser-tab-policy.ts';
 import { decideAgentFront } from '../shared/browser-agent-tabs.ts';
+import { swayWindowVisible } from './sway-ipc.ts';
 import { buildChildWindowOptions, popupWindowTitle, POPUP_WEB_PREFERENCES } from '../shared/browser-popup-window.ts';
 import { restorableUrl, snapshotTabs } from '../shared/browser-tab-state.ts';
 import {
@@ -1570,23 +1571,30 @@ async function wakeView(wc: Electron.WebContents): Promise<void> {
   if (!done) paintVerdict = { at: Date.now(), ok: false }; // a capture that does not finish: the window paints nothing (an undisplayed desktop) — refuse the next actions without asking
 }
 
-/** Does the Orchestra window paint? The main renderer answers a requestAnimationFrame within ~10 ms when displayed; on an undisplayed sway workspace it stalls (measured: ≈ 1 s after the
- *  switch). A capture / click / type on a view whose window paints nothing never answers and leaves the page shown (unthrottled) until the window is displayed again — so those are refused fast. */
+/** Does the Orchestra window paint? A capture only completes when the window is DRAWN: on an undisplayed sway workspace nothing is, so a `capturePage()` never answers and, while it hangs, keeps its
+ *  page SHOWN (unthrottled) until the window is displayed again. The probe is therefore that failure in miniature — a 1x1 `capturePage()` of the app's own UI (measured: a requestAnimationFrame round trip is
+ *  NOT a reliable signal, it kept answering on an undisplayed desktop after some arms; neither is this probe once in three runs, hence the sway answer first). Click / type / wheel / screenshot ask first and are refused fast. At most ONE probe is
+ *  ever in flight (a stalled one stays pending until the window is displayed again), so a long absence costs one pending request, not one per action. */
 let paintVerdict = { at: 0, ok: true };
+let paintProbe: Promise<boolean> | null = null;
 async function windowPaints(): Promise<boolean> {
   if (Date.now() - paintVerdict.at < PAINT_VERDICT_TTL_MS) return paintVerdict.ok;
+  // sway KNOWS whether the window is on a displayed workspace (exact); the capture probe below is the fallback for other compositors and can be fooled (measured: it answered once on an undisplayed desktop)
+  const sway = await swayWindowVisible(process.pid);
+  if (sway !== null) {
+    paintVerdict = { at: Date.now(), ok: sway };
+    return sway;
+  }
   const ui = (getWindow?.() as Electron.BrowserWindow | null)?.webContents;
   let ok = true;
-  if (ui && !ui.isDestroyed?.()) {
-    try {
-      ok = await Promise.race([
-        Promise.resolve(ui.executeJavaScript('new Promise((r) => requestAnimationFrame(() => r(true)))')).then(() => true),
-        new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS)),
-      ]);
-    } catch {
-      ok = true; // no evidence of a stall (page reloading, test stub): never refuse on a failed probe
+  if (ui && !ui.isDestroyed?.() && typeof ui.capturePage === 'function') {
+    if (!paintProbe) {
+      const probe: Promise<boolean> = Promise.resolve(ui.capturePage({ x: 0, y: 0, width: 1, height: 1 })).then(() => true, () => true);
+      paintProbe = probe;
+      void probe.then(() => { if (paintProbe === probe) paintProbe = null; });
     }
-  }
+    ok = await Promise.race([paintProbe, new Promise<boolean>((r) => setTimeout(() => r(false), PAINT_PROBE_MS))]);
+  } // no UI to ask (tests, teardown): never refuse on no evidence
   paintVerdict = { at: Date.now(), ok };
   return ok;
 }

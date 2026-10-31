@@ -95,9 +95,11 @@ Put §--json§ first (§orchestra browser --json snapshot -i§) for machine-read
 
 ## Background tabs and workspaces
 
-You can screenshot, click, type and read a tab the human is not looking at — another tab of this workspace, or a tab of a workspace in the background: it is driven in place, the human's view never changes. Two limits, both refused at once and clearly, never hung:
+You can screenshot, click, type and read a tab the human is not looking at — another tab of this workspace, or a tab of a workspace in the background: it is driven in place, the human's view never changes. Four limits, each refused clearly (never hung, never a wrong picture):
 - A page that loaded while NOBODY saw it (a tab opened in a workspace whose Browser pane was never open, or a page that navigated while hidden) has no first frame until it has been on screen. §screenshot§, §click§ and §type§ then fail with "has not been on screen since its page loaded" when nothing visible can cover showing it once; §open§, §snapshot§, §get§, §eval§, §scroll§, §wait --fn§ / §--text§ / §<ms>§, §console§, §network§, §cookies§ and §storage§ keep working. Do not retry in a loop: ask the human to open the pane once, or §tab <ref>§ to put the tab on screen. §wait "<selector>"§ times out (25 s) on such a tab for any element without an intrinsic size — use §wait --fn§, §--text§ or §wait <ms>§, or add §--timeout 3000§.
-- If the Orchestra window itself is on a desktop workspace that is not displayed, nothing paints: §screenshot§ fails at once ("produced no frame"); §click§ and §type§ still work.
+- If the Orchestra window itself is on a desktop workspace that is not displayed, nothing paints: §screenshot§, §click§, §type§ and mouse wheel on a tab fail at once with "the Orchestra window is on a desktop workspace that is not displayed" (§snapshot§, §eval§, §get§, §open§ still work). Retry once the human is back; do not loop.
+- A page that is still loading is waited for (up to 6 s); past that a screenshot or click fails with "this tab's page is still loading". A full-page screenshot (§screenshot --full§), or one under an emulated viewport / device scale (§set viewport§ / §--device§), is refused for a tab nobody is looking at: §tab <ref>§ first, or drop §--full§.
+- The human's design-mode picker works on the ACTIVE tab, and your commands no longer bring your tab to the front: to let the human pick on a tab you opened in the background, §tab <ref>§ it to the front first.
 To set a field meanwhile, §fill§ is out; use §eval§ with the native setter plus the two events (what makes React / Vue controlled inputs take the value):
 
 §§§bash

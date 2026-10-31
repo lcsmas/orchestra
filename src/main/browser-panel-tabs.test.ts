@@ -7,6 +7,10 @@
 //
 // Mutants that must redden this file: scripts/mutate-browser-panel-tabs.mjs.
 
+import net from 'node:net';
+import os from 'node:os';
+import nodePath from 'node:path';
+import nodeFs from 'node:fs';
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -114,13 +118,19 @@ const attached = { // the views COMPOSITED on screen: children that are not setV
   add: (v: unknown) => children.add(v),
   delete: (v: unknown) => children.delete(v),
 };
-const uiProbe = { paints: true }; // the main renderer's requestAnimationFrame answers (a window on a DISPLAYED desktop) — false = it stalls (an undisplayed sway workspace)
+const uiWaiting: Array<() => void> = [];
+const uiProbe = { // the app window's own capturePage() answers (a window on a DISPLAYED desktop) — false = it stays PENDING (an undisplayed sway workspace) until the window is displayed again
+  on: true,
+  calls: 0,
+  get paints() { return this.on; },
+  set paints(v: boolean) { this.on = v; if (v) while (uiWaiting.length) uiWaiting.shift()!(); },
+};
 bp.initBrowserPanels(() => ({
   contentView: {
     addChildView: (v: unknown) => attached.add(v),
     removeChildView: (v: unknown) => attached.delete(v),
   },
-  webContents: { isDestroyed: () => false, executeJavaScript: () => (uiProbe.paints ? Promise.resolve(true) : new Promise(() => undefined)) },
+  webContents: { isDestroyed: () => false, capturePage: () => { uiProbe.calls++; return uiProbe.paints ? Promise.resolve({}) : new Promise((r) => uiWaiting.push(() => r({}))); } },
 }) as never);
 
 let seq = 0;
@@ -822,6 +832,61 @@ test('F1 (a) an action on a window that paints NOTHING is refused fast — befor
     uiProbe.paints = true;
     await nap(800); // the verdict is cached for PAINT_VERDICT_TTL_MS: do not leak a "stalled" verdict into the next test
   }
+});
+
+test('F1 sway KNOWS: a window on an undisplayed workspace is refused even when the capture probe would answer, and displayed again it works (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  const { ipcFrame, GET_TREE } = await import('../shared/sway-tree.ts');
+  let visible = false;
+  const dir = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'bp-sway-'));
+  const sock = nodePath.join(dir, 'sway.sock');
+  const srv = net.createServer((c) => c.once('data', () => c.write(ipcFrame(GET_TREE, JSON.stringify({ nodes: [{ pid: process.pid, visible, nodes: [] }] })))));
+  await new Promise<void>((r) => srv.listen(sock, r));
+  const prev = process.env.SWAYSOCK;
+  process.env.SWAYSOCK = sock;
+  try {
+    assert.equal(uiProbe.paints, true, 'premise: the UI capture probe would ANSWER');
+    const t0 = Date.now();
+    await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not displayed/);
+    assert.ok(Date.now() - t0 < 200, `refused from sway\'s answer, not from a 300 ms probe timeout (${Date.now() - t0} ms)`);
+    visible = true; // the human is back on the desktop
+    await nap(800); // past the verdict cache
+    const lease = await bp.beginAgentAction(ws, 't2', 'input');
+    lease.end();
+  } finally {
+    if (prev === undefined) delete process.env.SWAYSOCK; else process.env.SWAYSOCK = prev;
+    srv.close();
+    nodeFs.rmSync(dir, { recursive: true, force: true });
+  }
+  await nap(900);
+});
+
+test('F1 a long absence costs ONE pending probe, not one per action (the probe is single-flight) and the first action after the window is displayed again works (#406)', async () => {
+  const ws = newWs();
+  openShown(ws);
+  const t2 = bp.createTab(ws, { openedBy: 'agent' });
+  await bp.capture(ws, 75, 't2');
+  await nap(1700);
+  uiProbe.paints = false;
+  try {
+    const c0 = uiProbe.calls;
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(() => bp.beginAgentAction(ws, 't2', 'input'), /not displayed/);
+      await nap(800); // past the verdict cache: each attempt re-asks, and must join the probe already pending
+    }
+    assert.equal(uiProbe.calls - c0, 1, 'one probe for three refused actions');
+  } finally {
+    uiProbe.paints = true; // the window is displayed again: the pending probe completes
+  }
+  await nap(800);
+  const lease = await bp.beginAgentAction(ws, 't2', 'input');
+  lease.end();
+  assert.ok(viewOf(t2), 'and the next action runs');
+  await nap(900);
 });
 
 test('F1 (b) a wake capture that never finishes proves the window paints nothing: the next action is refused at once, without asking or capturing (#406)', async () => {

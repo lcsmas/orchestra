@@ -850,7 +850,7 @@ const ARM_FNS = {
     const firstStall = early.findIndex((x) => !x.ok);
     await sleep(Math.max(0, tSwitch + 2500 - Date.now()));
     const off = await series(6);
-    clause(A, 'undisplayed-window-rAF-stalls', off.every((x) => !x.ok), `workspace ${JSON.stringify(focusedWs())} displayed, the app's is not — the first ${early.length} probes after the switch (≈ ${Math.round(early.reduce((t, x) => t + x.ms + 120, 0))} ms) ${firstStall >= 0 ? `stall from #${firstStall + 1}` : 'all still answered (the stall needs ≈ 1-2 s to show)'}; 2.5 s on: ${show(off)}`);
+    console.log(`  [info] ${A}: rAF in the app's own renderer, workspace ${JSON.stringify(focusedWs())} displayed and the app's not — the first ${early.length} probes after the switch (≈ ${Math.round(early.reduce((t, x) => t + x.ms + 120, 0))} ms) ${firstStall >= 0 ? `stall from #${firstStall + 1}` : 'all still answered'}; 2.5 s on: ${show(off)} (NOT the gate: it kept answering on an undisplayed desktop after some arms — the gate is a 1x1 capturePage of the app window)`);
     sh('swaymsg', ['workspace', home]); await sleep(700);
     const d2 = await series(6);
     clause(A, 'ctl/displayed-again-rAF-answers', d2.every((x) => x.ok && x.ms < 150), show(d2));
@@ -865,6 +865,15 @@ const ARM_FNS = {
     clause(A, 'ctl/displayed-window-wheel-and-screenshot-work', okC.every((r) => !r.err && r.ms < 3000), `wheel ${okC[0].ms} ms ${okC[0].err ?? 'ok'} · screenshot ${okC[1].ms} ms ${okC[1].err ?? 'ok'}`);
     await sleep(1500); // the displayed series' lease lingers out
     sh('swaymsg', ['workspace', 'number', '2']); await sleep(2500); // past the ≈ 1 s the stall needs to show
+    { // DIAGNOSTIC (kept as [info] lines): what sway and the app say about the window while the desktop is away, and which captures still answer
+      const tree = JSON.parse(sh('swaymsg', ['-t', 'get_tree']));
+      const walk = (n, ws) => { const w = n.type === 'workspace' ? n.name : ws; if (n.pid === ctx.app.pid && !(n.nodes || []).length) return { ws: w, visible: n.visible, focused: n.focused, floating: n.type === 'floating_con', sticky: n.sticky, app_id: n.app_id }; for (const c of [...(n.nodes || []), ...(n.floating_nodes || [])]) { const r = walk(c, w); if (r) return r; } return null; };
+      const win = walk(tree, null); const wss = JSON.parse(sh('swaymsg', ['-t', 'get_workspaces'])).map((w) => `${w.name}${w.visible ? '*visible' : ''}${w.focused ? '*focused' : ''}`);
+      const uiState = await ctx.ui.eval('({ vis: document.visibilityState, focus: document.hasFocus() })');
+      const uiCap = await Promise.race([ctx.ui.send('Page.captureScreenshot', { format: 'jpeg', quality: 1, clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 } }).then(() => 'answers', (e) => `error ${String(e).slice(0, 40)}`), sleep(3000).then(() => 'HANGS (3 s)')]);
+      const t = await (async () => { const raw = await rawProxyClient(ctx.ep[W.id].wsUrl); const ti = await raw.call('Target.getTargets'); const act = ti.result.targetInfos.find((x) => idOf(x.url) !== id && /hidden-drive/.test(x.url)); raw.close(); return act; })();
+      console.log(`  [info] ${A}: window while away — sway ${JSON.stringify(win)}; workspaces ${wss.join(' ')}; app page ${JSON.stringify(uiState)}; app UI Page.captureScreenshot ${uiCap}`);
+    }
     const offR = [await timed('Input.dispatchMouseEvent', wheel), await timed('Input.dispatchMouseEvent', { type: 'mousePressed', x: 320, y: 218, button: 'left', clickCount: 1 }), await timed('Page.captureScreenshot', { format: 'png' })];
     clause(A, 'undisplayed-window-wheel-click-screenshot-refused-fast-with-the-reason', offR.every((r) => r.err && /not displayed/.test(r.err) && r.ms <= 800), `wheel ${offR[0].ms} ms · click ${offR[1].ms} ms · screenshot ${offR[2].ms} ms: ${offR.map((r) => JSON.stringify((r.err ?? 'no error').slice(0, 60))).join(' · ')}`);
     const ev = await timed('Runtime.evaluate', { expression: '1 + 1', returnByValue: true });

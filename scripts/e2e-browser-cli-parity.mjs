@@ -42,6 +42,7 @@ const MUTANTS = {
   'insert-text-dropped': { ...dropCdp('Input.insertText'), arms: ['type', 'form-input'], why: 'text insertion (type / fill) is acknowledged but never reaches the page' },
   'eval-dropped': { ...dropCdp('Runtime.evaluate', '$3.awaitPromise===!0&&$3.expression!=="location.href"&&$3.expression!=="document.title"'), arms: ['evaluate'], why: '`eval` is acknowledged with an empty result and runs nothing' },
   'scroll-dropped': { ...dropCdp('Runtime.evaluate', '/^window\\.scrollBy\\(/.test($3.expression)'), arms: ['scroll'], why: 'window.scrollBy is acknowledged but the page never scrolls' },
+  'input-dropped': { file: 'chunk', edits: [[/async tabCommandActing\(([\w$]+),([\w$]+),([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{/, '$&if($3.startsWith("Input."))return{};']], arms: ['hidden-panel'], why: 'the proxy answers every Input.* command with success and dispatches nothing (a silently dropped click / key / hover / mouse move): the effect assertions go red, an exit-code assertion would not' },
   'hidden-refused': { file: 'chunk', edits: [[/(function [\w$]+\(e\)\{return e\.tab\?e\.tab\.surface==="visible"\?\{act:"direct"\}:)/, '$1e.kind!=="other"?{act:"refuse",reason:"needs-first-paint",message:"refused (mutant)"}:']], arms: ['hidden-panel'], why: '#406 lift undone: screenshot / click / type on a tab nobody looks at are refused again (the pre-lift behaviour)' },
   'skill-not-installed': { file: 'chunk', edits: [[/([\w$]+)\("orchestra-status",([\w$]+)\),\1\(([\w$]+),([\w$]+)\)\]\);/, '$1("orchestra-status",$2)]);']], arms: ['skill'], why: 'the installer never writes the browser skill: a new worktree has no orchestra-browser skill' },
   'load-events-dropped': { file: 'chunk', edits: [[/emit\(([\w$]+),([\w$]+),([\w$]+),([\w$]+)\)\{if\(!\1\.closed\)try\{/, 'emit($1,$2,$3,$4){if($2==="Page.loadEventFired"||$2==="Page.frameStoppedLoading")return;if(!$1.closed)try{']], arms: ['load-wait'], why: 'the proxy never tells the client the page loaded: `open` no longer returns at the load (it times out or returns early)' },
@@ -682,15 +683,21 @@ const ARM_FNS3 = {
       const click = await cli(ctx, W2, ['click', go2 ?? '@e0'], { timeoutMs: 45000 });
       const out = await o2.eval(`document.getElementById('out').textContent`);
       clause(A, 'click-works-while-hidden', click.code === 0 && click.ms < 9000 && out === 'clicked', `${show(click)}; oracle #out ${JSON.stringify(out)} (the click landed on the background tab)`);
+      // each of these asserts the EFFECT on the page (an exit code alone would also pass a dispatch that was silently dropped)
+      const snapK = await cli(ctx, W2, ['snapshot', '-i']); const typedRef = refOf(snapK.stdout, 'textbox', 'Typed'), dblRef = refOf(snapK.stdout, 'button', 'Double');
+      const focusT = await cli(ctx, W2, ['click', typedRef ?? '@e0'], { timeoutMs: 45000 }); // focuses #typed
       const kt = await cli(ctx, W2, ['keyboard', 'type', 'zzz'], { timeoutMs: 45000 });
-      const valk = await o2.eval(`document.getElementById('name').value`);
-      clause(A, 'keyboard-type-works-while-hidden', kt.code === 0 && kt.ms < 9000, `${show(kt)}; oracle #name ${JSON.stringify(valk)}`);
+      const valk = await o2.eval(`document.getElementById('typed').value`);
+      clause(A, 'keyboard-type-works-while-hidden', !!typedRef && focusT.code === 0 && kt.code === 0 && kt.ms < 9000 && valk === 'zzz', `${show(kt)}; oracle #typed ${JSON.stringify(valk)} (focused by a click on its ref, then \`keyboard type zzz\`)`);
       const y0 = await o2.eval(`Math.round(window.scrollY)`);
-      const pr = await cli(ctx, W2, ['press', 'Tab'], { timeoutMs: 45000 });
-      clause(A, 'press-works-while-hidden', pr.code === 0 && pr.ms < 9000, show(pr));
-      const hv = await cli(ctx, W2, ['hover', go2 ?? '@e0'], { timeoutMs: 45000 });
-      const dc = await cli(ctx, W2, ['dblclick', go2 ?? '@e0'], { timeoutMs: 45000 });
-      clause(A, 'hover-and-dblclick-work-while-hidden', hv.code === 0 && dc.code === 0 && hv.ms < 9000 && dc.ms < 9000, `hover ${show(hv)} · dblclick ${show(dc)}`);
+      const pr = await cli(ctx, W2, ['press', 'x'], { timeoutMs: 45000 });
+      const keys = await o2.eval(`document.getElementById('keys').textContent`);
+      clause(A, 'press-works-while-hidden', pr.code === 0 && pr.ms < 9000 && /(^|,)x,/.test(keys), `${show(pr)}; oracle #keys ${JSON.stringify(keys)} (a keydown "x" reached the focused field)`);
+      const hv = await cli(ctx, W2, ['hover', dblRef ?? '@e0'], { timeoutMs: 45000 });
+      const hovout = await o2.eval(`document.getElementById('hovout').textContent`);
+      const dc = await cli(ctx, W2, ['dblclick', dblRef ?? '@e0'], { timeoutMs: 45000 });
+      const dblout = await o2.eval(`document.getElementById('dblout').textContent`);
+      clause(A, 'hover-and-dblclick-work-while-hidden', !!dblRef && hv.code === 0 && dc.code === 0 && hv.ms < 9000 && dc.ms < 9000 && hovout === 'hovered' && dblout === 'dbl', `hover ${show(hv)} → #hovout ${JSON.stringify(hovout)} · dblclick ${show(dc)} → #dblout ${JSON.stringify(dblout)}`);
       // the skill's hidden-pane workaround, extracted from the SKILL TEXT and pointed at a React-style controlled input (its value tracker ignores a plain assignment)
       const line = BROWSER_SKILL.split('\n').find((l) => l.startsWith('orchestra browser eval "(() => { const el = document.querySelector(\'#q\')'));
       const js = line ? shellWords(line.replace(/^orchestra browser /, ''))[1] : null;
@@ -704,8 +711,10 @@ const ARM_FNS3 = {
       const tyh = await cli(ctx, W2, ['type', name2 ?? '@e0', 'zzz'], { timeoutMs: 45000 });
       const valh = await o2.eval(`document.getElementById('name').value`);
       clause(A, 'type-by-ref-works-while-hidden', tyh.code === 0 && tyh.ms < 9000 && /zzz/.test(valh), `type ${name2} zzz → ${show(tyh)}; oracle value ${JSON.stringify(valh)}`);
+      await o2.eval('window.__mm = null');
       const mv = await cli(ctx, W2, ['mouse', 'move', '30', '30'], { timeoutMs: 45000 });
-      clause(A, 'mouse-works-while-hidden', mv.code === 0 && mv.ms < 9000, show(mv));
+      const mm = await o2.eval('window.__mm');
+      clause(A, 'mouse-works-while-hidden', mv.code === 0 && mv.ms < 9000 && Array.isArray(mm) && mm[0] === 30 && mm[1] === 30, `${show(mv)}; oracle mousemove at ${JSON.stringify(mm)} (want [30,30])`);
       const stillW1 = await ctx.ui.eval(`!!([...document.querySelectorAll('.ws-item.active .ws-name')].find((e) => e.textContent.trim() === ${sel(W1.branch)}))`);
       const noteHp = await ctx.ui.eval(`document.querySelector('.browser-agent-switch .browser-agent-switch-text')?.textContent ?? null`);
       clause(A, 'driven-in-place-the-humans-workspace-is-untouched', stillW1 && noteHp === null, `${W1.branch} still the active workspace: ${stillW1}; swap notice ${JSON.stringify(noteHp)} (nothing was brought to the front)`);

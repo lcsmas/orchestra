@@ -26,7 +26,7 @@ const MUTANTS = [
   { id: 'M6-destroy-keeps-tabs', file: P, cmd: HARNESS, from: '  persistence?.save(wsId, null);\n}', to: '}' },
   { id: 'M7-restore-url-forgotten', file: P, cmd: HARNESS, from: '        restoreUrls.set(tab, t.url);\n', to: '' },
   { id: 'M8-popup-non-web-loads-in-view', file: P, cmd: HARNESS, from: "    case 'external':\n      void shell.openExternal(d.url);", to: "    case 'external':\n      void opener.loadURL(d.url);" },
-  { id: 'M9-inactive-tab-stays-attached', file: P, cmd: HARNESS, from: '  if (prev) detachTab(panel, prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;' },
+  { id: 'M9-inactive-tab-stays-attached', file: P, cmd: HARNESS, from: '  if (prev) hideView(prev);\n  panel.attachedId = null;', to: '  panel.attachedId = null;' }, // #406: the previous tab is HIDDEN (attached, setVisible(false)) not detached; dropping the hide leaves it composited
   { id: 'M11-restore-url-dropped-on-error-commit', file: P, cmd: HARNESS, from: '    if (restorableUrl(url)) restoreUrls.delete(tab);', to: '    restoreUrls.delete(tab);' },
   { id: 'M12-close-picks-left-neighbour', file: P, cmd: HARNESS, from: 'panel.activeId = panel.tabs[Math.min(idx, panel.tabs.length - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);', to: 'panel.activeId = panel.tabs[Math.max(0, idx - 1)].id;\n    if (wasAttached) attachActive(panel);\n  }\n  return publish(panel);' },
   { id: 'M13-bare-last-close-keeps-saved-tabs', file: P, cmd: HARNESS, from: '    panel.pendingShow = false;\n    persistence?.save(wsId, null);\n    const empty', to: '    panel.pendingShow = false;\n    const empty' },
