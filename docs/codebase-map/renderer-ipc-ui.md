@@ -207,8 +207,28 @@ LRU `computeMountedIds` / `MAX_MOUNTED_PANES`; older panes unmount and cold-boot
 reopen. StructuredView panes mount for every mounted workspace regardless of kind; Run
 and Diff mount only when selected.
 
-## Sidebar.tsx (~2100 lines — the big one)
+## Sidebar.tsx (~2700 lines — the big one)
 Workspace list with orchestrator nesting, drag-reorder, archive, delete.
+- **Orca look (2026-10-31, layout "C" + glyph set "G2")** — research `docs/research/orca-sidebar-ui.md`,
+  `orca-agent-rows-status.md`, `orca-coordinator-worker-semantics.md`; the picked prototype (all variants, switcher,
+  states gallery) is kept on branch `prototype/sidebar-orca`. Styles in `src/renderer/sidebar-orca.css` (loaded after
+  styles.css, overrides its older sidebar rules): flat `#2a2a2a` surface, 13px semibold sticky section headers with a
+  repo colour mark (`repoColor`, by registered-repo position), **title-only 36px rows** (the status note moved into the
+  name tooltip via `withStatusNote`; context-size + account badges hidden on rows), 18px tree step with a rail + tick.
+  Pure logic in `src/renderer/sidebar-tree.ts` (+ test): `isFolded`, `rollupStatus`/`rollupTitle`, `hiddenDotKind`,
+  `repoColor`.
+- **Selection drives folding** (`Sidebar.tsx:813`, `sidebar-tree.ts:27`): the path root → selected row and the
+  selected row's whole subtree unfold, every other spawn subtree folds; a chevron click flips one row until the
+  selection changes (`foldToggles`). Folded rows stay MOUNTED with `.ws-folded` + `inert` so height animates (240ms,
+  `interpolate-size`). `rowTreeClass` (`:1423`) marks every row of the selected row's tree `.ws-in-selected-tree`.
+- **One selection frame** — `components/SelectionFrame.tsx`: an absolutely-positioned rounded surface inside
+  `.ws-list` wrapping the selected tree (or the selected row alone); re-measured on every render, eased in JS on a
+  selection change toward the END-STATE rect (row transitions fast-forwarded for one sync measure — aiming at the
+  live mid-fold rect overshot 37–100px). Rows drop their own active surface.
+- **Coordinator rollup** — a row with descendants shows the most urgent of itself + its subtree, Orca precedence
+  question > error > running (`rollupStatus`); the tooltip says where it comes from ("— 2 spawned agents running").
+  Its own unseen-done bell wins. Children (depth > 0) render `size="sm"`, never the unseen-done bell (root-only, see
+  `notify-scope.ts` in activity-pty-terminal.md), and grey when they never ran a turn (`neverRan`).
 - **Header inbox** (`InboxBell.tsx`, first header action): Orca-style
   "Needs You" triage — badge counts workspaces with status waiting/error plus
   bookmarks (pure grouping in `shared/attention.ts`); the popover lists
@@ -249,15 +269,11 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   scratch session nests indented under it (it has a live parent, so it's not a
   forest root and repo sections never see it). Both section count badges show
   root count, not total rows.
-- **Subtree collapse** (orchestrator + scratch sections): any row with spawned
-  children gets a **right-aligned** chevron (`.ws-chevron`, `ChevronIcon`) that
-  folds its subtree — the depth-first rows are filtered at render time (skip
-  rows deeper than a collapsed node until the walk climbs back). Persists as
-  `orchestra.collapsedOrchestrators` (workspace ids). In the PINNED sections a
-  collapsed row shows a `.ws-hidden-count` pill (hidden descendant count via
-  `collectDescendants`) tinted by the most urgent hidden status
-  (error > waiting > running). REPO rows show the same collapsed-only pill;
-  an EXPANDED row shows no agent count at all (removed 2026-10-26 as clutter).
+- **Subtree collapse** (orchestrator + scratch sections + repo sections): any row with spawned
+  children gets a **right-aligned** chevron (`.ws-chevron`, `ChevronIcon`); folding is driven by the selection
+  (see "Selection drives folding" above — the old persisted `orchestra.collapsedOrchestrators` set is no longer
+  read). A collapsed row shows a `.ws-hidden-count` pill: one state dot per hidden agent (`HiddenAgentsDots`,
+  first 5, `hiddenDotKind`) + the count; an EXPANDED row shows no agent count at all.
   The chevron is rendered ONLY on rows that have children and lives at the row's
   right edge, so no left gutter is reserved on leaf rows; `.ws-row-actions`
   shifts to `right: 26px` on such rows (`.ws-item:has(.ws-chevron)`) so the
@@ -294,7 +310,7 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
 - **No PR / Linear / release / agent-count badges on sidebar rows**, and no
   toolbar `PR #N` button (removed 2026-10-26, user ask: clutter) — with the
   whole PR / release / Linear-link pipeline behind them (no `gh` PR or release
-  calls, no `orchestra link`). Rig: `scripts/e2e-sidebar-declutter-drive.sh`.
+  calls, no `orchestra link`). Rig: `scripts/e2e-sidebar-orca-drive.sh` (absorbed the declutter drive).
 - **Every badge in `.ws-pills` is a flat glyph + number** — no pill chrome. CI
   gets this from `.ws-item .ci-badge`; `.unpushed-pill` is authored flat
   (`UnpushedIcon`, Lucide on the shared 24-viewBox `ICON_PROPS`, amber).
@@ -309,25 +325,24 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   rather than pushing badges to a second line. Rows carrying a
   `.ws-status-note` are the deliberate exception (two stacked lines,
   `.ws-item:has(.ws-status-note)` top-aligns the glyph).
-- **Nesting is indent-only** — no `╰─` connector, no rail. `.ws-item.ws-child`
-  uses `calc(12px + min(var(--ws-depth,1), 3) * 16px)`: the `min()` CLAMPS at
+- **Nesting**: 18px per level + a 1px rail and tick per child (`sidebar-orca.css`, Orca's agent sub-tree).
+  `.ws-item.ws-child` uses `calc(12px + min(var(--ws-depth,1), 3) * 18px)`: the `min()` CLAMPS at
   depth 3 because `flattenSubtree` imposes no depth limit and an unclamped ramp
   runs the branch name off the edge on a deep sub-orchestrator chain.
 - **Status glyphs** — `components/WorkspaceStatusGlyph.tsx`, its own module so
   the five surfaces can share it without importing 100KB of `Sidebar.tsx` (and
   so it renders in a test without dragging in xterm + the IPC bridge). Outlined
-  lucide-style RING icons, not the old filled `.ws-dot`: `circle-check` (idle),
-  `message-circle-question` (waiting), `circle-x` (error), a CSS
-  `border-top-color: transparent` spinner (running, `.ws-glyph-spin`,
-  compositor-only so dozens of rows cost no main-thread work), bare dot
-  (stopped/hibernated). Shape + colour is two channels, so "done" vs "needs you"
-  survives colour-blindness. A hibernated row NEVER spins even when its recorded
+  Orca's StatusIndicator set (G2, 2026-10-31): green 8px dot (idle), orange-500 `message-circle-question`
+  (waiting, `--glyph-question`), a 6px red dot (error — was a circle-x; smaller than the idle dot so size+shape
+  still separate it), an 8px yellow ring spinner turning 1/s in 12 steps (running, `.ws-glyph-spin`,
+  compositor-only), amber filled bell (unseen-done), grey dot (stopped/hibernated); manual unread tints amber.
+  Shape + colour is two channels, so "done" vs "needs you" survives colour-blindness. A hibernated row NEVER spins even when its recorded
   status is `running`. `statusGlyphTitle()` ships alongside so no two surfaces
   describe the same state differently. Branch selection is pinned by
   `src/renderer/workspace-status-glyph.test.ts`; the CSS half needs a real drive.
   Used by: sidebar rows (both paths), `InboxBell`, `JumpPalette`,
   `ResourcesView` (agent rows + login sessions). An optional `size="sm"` prop
-  drops it to 10px for denser lists.
+  drops it to 10px (6px spinner/dots) — the spawned-child size; `neverRan` greys an idle child that never ran.
 - **`.ws-dot` survives for ARCHIVED sidebar rows only**, and that is semantic,
   not leftover: an archived workspace has no live agent, so its `status` is a
   frozen pre-archive value — a green check-ring would assert a successful finish

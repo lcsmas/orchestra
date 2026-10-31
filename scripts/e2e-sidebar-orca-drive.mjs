@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Sidebar declutter drive — a BUILT Orchestra shows NO PR / Linear / release / agent-count badges on sidebar rows, while a COLLAPSED
-// coordinator still shows its hidden-agents count (`.ws-hidden-count`, both render paths), and no PR / release lookup reaches `gh`.
-// The seed carries LEGACY linkedPrs / linkedLinearKey / releasedVersions fields. Run on an older build to see the must-FAIL arm.
-// Run through scripts/e2e-sidebar-declutter-drive.sh <app-dir>. Helpers COPIED from e2e-former-branch-drive.mjs.
+// Orca-style sidebar drive (layout C + glyph set G2, 2026-10-31) on a BUILT Orchestra: selection-driven fold/unfold,
+// ONE sliding selection frame around the selected tree, the coordinator rollup glyph, root-only unseen-done bell,
+// title-only rows (status note in the tooltip), no PR / agent-count badges (absorbs e2e-sidebar-declutter-drive).
+// Run through scripts/e2e-sidebar-orca-drive.sh <app-dir>. Helpers COPIED from e2e-sidebar-declutter-drive.mjs.
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -102,44 +102,47 @@ const shimFile = path.join(REAL_HOME, '.local', 'bin', 'orchestra');
 const shimHash = () => { try { return md5(shimFile); } catch { return 'absent'; } };
 
 // ── world ────────────────────────────────────────────────────────────────────
-// OPS (orchestrator, pinned tree) ─ C1 (linked PR + Linear key), C2 ; P (promoted worktree, repo section, linked PR) ─ K1, K2.
-const ID = { ops: 'ws-sdc-ops', c1: 'ws-sdc-c1', c2: 'ws-sdc-c2', p: 'ws-sdc-p', k1: 'ws-sdc-k1', k2: 'ws-sdc-k2' };
-const BR = { c1: 'impl-linked-c1', c2: 'impl-plain-c2', p: 'promoted-coord-p', k1: 'kid-one-k1', k2: 'kid-two-k2' };
+// OPS (orchestrator, pinned tree, idle, status note) ─ C1 (autoUnread child, linked PR), C2 (waiting child)
+// P (promoted worktree, repo section) ─ K1, K2 (never ran)      R (root, autoUnread, no kids)      L (root, no kids)
+const ID = { ops: 'ws-sor-ops', c1: 'ws-sor-c1', c2: 'ws-sor-c2', p: 'ws-sor-p', k1: 'ws-sor-k1', k2: 'ws-sor-k2', r: 'ws-sor-r', l: 'ws-sor-l' };
+const BR = { c1: 'worker-done-c1', c2: 'worker-asks-c2', p: 'promoted-lead-p', k1: 'kid-one-k1', k2: 'kid-two-k2', r: 'root-unseen-r', l: 'root-leaf-l' };
 const PR = (n) => ({ url: `https://github.com/lcsmas/orchestra/pull/${n}`, owner: 'lcsmas', repo: 'orchestra', number: n });
+const NOTE = 'reviewing wave 7 — 2 workers out';
 
 function seedWorld(home) {
   const fakeHome = path.join(home, 'home'), repoDir = path.join(home, 'repo');
   fs.mkdirSync(fakeHome, { recursive: true }); fs.mkdirSync(repoDir, { recursive: true });
   git(repoDir, ['init', '-q', '-b', 'main'], fakeHome);
-  fs.writeFileSync(path.join(repoDir, 'README.md'), '# sdc seed repo\n');
+  fs.writeFileSync(path.join(repoDir, 'README.md'), '# sor seed repo\n');
   git(repoDir, ['add', '.'], fakeHome); git(repoDir, ['commit', '-q', '-m', 'seed'], fakeHome);
   const configDir = path.join(home, 'claude-config'); fs.mkdirSync(configDir, { recursive: true });
   const g = checkScratchConfig(configDir, liveDirs(), home);
   if (!g.ok) throw new Error(`REFUSED before seeding [${g.clause}]: ${g.detail ?? ''}`);
-  const account = { id: 'rig-sdc', label: 'rig (scratch config dir)', configDir };
+  const account = { id: 'rig-sor', label: 'rig (scratch config dir)', configDir };
   const wt = (key, branch) => { const p = path.join(home, 'wt', key); fs.mkdirSync(path.dirname(p), { recursive: true }); git(repoDir, ['worktree', 'add', '-q', '-b', branch, p], fakeHome); return p; };
-  const base = { baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id };
+  const now = Date.now();
+  const base = { baseBranch: 'main', createdAt: now, status: 'idle', agent: 'claude', accountId: account.id };
   const opsDir = path.join(home, 'scratch', 'ops'); fs.mkdirSync(opsDir, { recursive: true });
-  const ops = { ...base, id: ID.ops, name: 'ops-demo', kind: 'orchestrator', repoPath: '', worktreePath: opsDir, branch: 'ops-demo', baseBranch: '', setupStatus: 'ok', linkedPrs: [PR(2)], linkedLinearKey: 'NMC-298' };
-  const mk = (key, extra) => ({ ...base, id: ID[key], name: `sdc-repo · ${BR[key]}`, repoPath: repoDir, worktreePath: wt(key, BR[key]), branch: BR[key], ...extra });
-  const c1 = mk('c1', { parentId: ID.ops, linkedPrs: [PR(1)], linkedLinearKey: 'NMC-2541', releasedAt: Date.now(), releasedVersion: 'v0.0.1', releasedVersions: ['v0.0.1'] });
-  const c2 = mk('c2', { parentId: ID.ops });
-  const p = mk('p', { canOrchestrate: true, linkedPrs: [PR(3)], linkedLinearKey: 'NMC-1902' });
-  const k1 = mk('k1', { parentId: ID.p });
-  const k2 = mk('k2', { parentId: ID.p, status: 'waiting' });
-  const repo = { path: repoDir, name: 'sdc-repo', defaultBranch: 'main', scripts: {}, accountId: account.id };
+  const ops = { ...base, id: ID.ops, name: 'ops-wave', kind: 'orchestrator', repoPath: '', worktreePath: opsDir, branch: 'ops-wave', baseBranch: '', setupStatus: 'ok', lastTurnStartAt: now - 60000, statusText: NOTE, statusTextAt: now - 120000 };
+  const mk = (key, extra) => ({ ...base, id: ID[key], name: `sor-repo · ${BR[key]}`, repoPath: repoDir, worktreePath: wt(key, BR[key]), branch: BR[key], lastTurnStartAt: now - 30000, ...extra });
+  const c1 = mk('c1', { parentId: ID.ops, autoUnread: true, linkedPrs: [PR(1)], linkedLinearKey: 'NMC-2541' });
+  const c2 = mk('c2', { parentId: ID.ops }); // a seeded non-idle status is reset at boot: states are driven through the spool
+  const p = mk('p', { canOrchestrate: true });
+  const k1 = mk('k1', { parentId: ID.p, lastTurnStartAt: undefined });
+  const k2 = mk('k2', { parentId: ID.p, lastTurnStartAt: undefined });
+  const r = mk('r', { autoUnread: true });
+  const l = mk('l', {});
+  const repo = { path: repoDir, name: 'sor-repo', defaultBranch: 'main', scripts: {}, accountId: account.id };
   const dir = path.join(home, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
   const storeFile = path.join(dir, 'store.json');
-  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo], workspaces: [ops, c1, c2, p, k1, k2], accounts: [account], selfTuneRuns: [] }, null, 2));
+  fs.writeFileSync(storeFile, JSON.stringify({ repos: [repo], workspaces: [ops, c1, c2, p, k1, k2, r, l], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(home, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   const stubLog = path.join(home, 'stub-argv.log');
   fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "$$ $*" >> '${stubLog}'\nsleep 3600\n`, { mode: 0o755 });
-  // gh stub: logs every call and fails (unauthenticated), so any surviving PR / release lookup is observable in gh-calls.log.
   const ghLog = path.join(home, 'gh-calls.log');
   fs.writeFileSync(path.join(stubDir, 'gh'), `#!/bin/sh\necho "$*" >> '${ghLog}'\necho "gh: stub" >&2\nexit 1\n`, { mode: 0o755 });
   return { fakeHome, repoDir, account, stubDir, stubLog, storeFile, ghLog };
 }
-
 async function bootApp(home, world, label) {
   const port = await freePort();
   const electron = [path.join(APP_DIR, 'node_modules/electron/dist/electron')].find((p) => fs.existsSync(p));
@@ -182,31 +185,59 @@ async function closeApp(app) {
   for (const d of fs.readdirSync('/proc')) { if (!/^\d+$/.test(d)) continue; try { if (procEnv(d).ORCHESTRA_HOME === app.home) process.kill(Number(d), 'SIGKILL'); } catch { /* not ours */ } }
 }
 
-// ── observables ──────────────────────────────────────────────────────────────
-/** Per sidebar row: branch text, render path, and the badge classes present on the row. */
-const rowsJs = `(() => [...document.querySelectorAll('.ws-name')].map((e) => { const row = e.closest('.ws-item') ?? e.parentElement; const r = row.getBoundingClientRect();
-  const q = (s) => [...row.querySelectorAll(s)].filter((x) => x.closest('.ws-item') === row);
-  return { text: e.textContent.trim(), path: e.closest('.ws-tree') ? 'tree' : 'repo',
-    pr: q('.pr-badge').map((x) => x.className + ':' + x.textContent.trim()), orch: q('.orchestrator-pill').map((x) => x.textContent.trim()),
-    hidden: q('.ws-hidden-count').map((x) => x.className + ':' + x.textContent.trim()), chevron: (() => { const c = row.parentElement?.querySelector(':scope > .ws-chevron') ?? row.querySelector('.ws-chevron'); if (!c) return null; const b = c.getBoundingClientRect(); return { cx: b.x + b.width / 2, cy: b.y + b.height / 2 }; })(),
-    inViewport: r.left >= 0 && r.right <= innerWidth }; }))()`;
-const rows = (app) => app.cdp.eval(rowsJs);
-const rowOf = async (app, text) => (await rows(app)).find((r) => r.text === text);
-const globalCounts = (app) => app.cdp.eval(`({ pr: document.querySelectorAll('.ws-list .pr-badge, .sidebar .pr-badge').length, orch: document.querySelectorAll('.orchestrator-pill').length, orchCount: document.querySelectorAll('.orch-count').length, released: document.querySelectorAll('.released-pill').length })`);
 async function mouse(app, type, x, y, extra = {}) { await app.cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', ...extra }); }
 async function shot(app, name) { const r = await app.cdp.send('Page.captureScreenshot', { format: 'png' }, 20000); const f = path.join(app.home, `${name}.png`); fs.writeFileSync(f, Buffer.from(r.data, 'base64')); return f; }
 function grim(app, name) { const f = path.join(app.home, `${name}.png`); execFileSync('grim', ['-o', 'HEADLESS-1', f], { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: app.env.XDG_RUNTIME_DIR, WAYLAND_DISPLAY: RIG.wayland }, timeout: 15000 }); return f; }
-const SHOTS = [];
 async function click(app, x, y) { await mouse(app, 'mouseMoved', x, y); await sleep(80); await mouse(app, 'mousePressed', x, y, { clickCount: 1 }); await mouse(app, 'mouseReleased', x, y, { clickCount: 1 }); await sleep(400); }
+const SHOTS = [];
+// ── observables ──────────────────────────────────────────────────────────────
+const stateJs = `(() => {
+  const list = document.querySelector('.ws-list'); const lr = list.getBoundingClientRect();
+  const fr = document.querySelector('.ws-selection-frame'); const fb = fr.getBoundingClientRect();
+  const rows = [...document.querySelectorAll('.ws-list .ws-item')].filter((r) => r.querySelector('.ws-name')).map((row) => {
+    const name = row.querySelector('.ws-name'); const g = row.querySelector('.ws-glyph'); const b = row.getBoundingClientRect();
+    const gb = g ? getComputedStyle(g, '::before') : null;
+    return { text: name.textContent.trim(), title: name.title, cls: row.className, folded: row.classList.contains('ws-folded'), inert: row.inert,
+      tree: row.classList.contains('ws-in-selected-tree'), active: row.classList.contains('active'), h: Math.round(b.height),
+      top: Math.round(b.top), bottom: Math.round(b.bottom), glyph: g ? g.className : null, glyphTitle: g ? g.title : null, glyphSvg: !!g?.querySelector('svg'),
+      glyphDotW: gb && gb.content !== 'none' ? gb.width : null, glyphDotBg: gb && gb.content !== 'none' ? gb.backgroundColor : null,
+      hidden: [...row.querySelectorAll('.ws-hidden-count')].filter((x) => x.closest('.ws-item') === row).map((x) => ({ dots: [...x.querySelectorAll('.ws-hidden-dot')].map((d) => d.className.replace('ws-hidden-dot ', '')), n: x.querySelector('b')?.textContent })),
+      note: !!row.querySelector('.ws-status-note'), pr: row.querySelectorAll('.pr-badge').length,
+      chevron: (() => { const c = row.querySelector('.ws-chevron'); if (!c) return null; const cb = c.getBoundingClientRect(); return { cx: cb.x + cb.width / 2, cy: cb.y + cb.height / 2 }; })(),
+      cx: b.x + 60, cy: b.y + b.height / 2 };
+  });
+  return { rows, frame: { on: fr.classList.contains('on'), tree: fr.classList.contains('tree'), top: Math.round(fb.top), bottom: Math.round(fb.bottom), left: Math.round(fb.left), right: Math.round(fb.right) },
+    sidebarBg: getComputedStyle(document.querySelector('.sidebar')).backgroundColor, orch: document.querySelectorAll('.orchestrator-pill, .orch-count').length, innerWidth };
+})()`;
+const state = (app) => app.cdp.eval(stateJs);
+/** Append one hook event to the workspace's events spool — the exact line orchestra-hook.sh writes. */
+const SEQ = {};
+function spool(home, id, event) {
+  SEQ[id] = (SEQ[id] ?? 1000) + 1;
+  const dir = path.join(home, 'events'); fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(path.join(dir, `${id}.jsonl`), JSON.stringify({ seq: SEQ[id], event, tool: '', toolUseId: '', transcript: '' }) + '\n');
+}
+const storeWs = (home, id) => JSON.parse(fs.readFileSync(path.join(home, 'userData', 'orchestra', 'store.json'), 'utf8')).workspaces.find((w) => w.id === id);
+const row = (s, text) => s.rows.find((r) => r.text === text);
+const visible = (s) => s.rows.filter((r) => !r.folded).map((r) => r.text);
+/** The frame must wrap exactly the given rows (±2px). */
+function frameWraps(s, texts) {
+  const rs = texts.map((t) => row(s, t)).filter(Boolean);
+  if (rs.length !== texts.length) return false;
+  const top = Math.min(...rs.map((r) => r.top)), bottom = Math.max(...rs.map((r) => r.bottom));
+  return s.frame.on && Math.abs(s.frame.top - top) <= 2 && Math.abs(s.frame.bottom - bottom) <= 2;
+}
+const fmtFrame = (s) => `frame on=${s.frame.on} tree=${s.frame.tree} top=${s.frame.top} bottom=${s.frame.bottom}`;
+
 async function main() {
   const missing = ['RIG_WAYLAND', 'SWAYSOCK', 'ORCHESTRA_HOME', 'CLAUDE_CONFIG_DIR'].filter((k) => !process.env[k]);
-  if (missing.length) { console.error(`not launched via scripts/e2e-sidebar-declutter-drive.sh (missing ${missing.join(', ')})`); process.exit(2); }
+  if (missing.length) { console.error(`not launched via scripts/e2e-sidebar-orca-drive.sh (missing ${missing.join(', ')})`); process.exit(2); }
   const built = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version;
   const head = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: APP_DIR, encoding: 'utf8' }).trim();
   console.log(`BUILD  app dir ${APP_DIR}  version ${built}  HEAD ${head}`);
   const liveBefore = Object.fromEntries(liveDirs().map((d) => [d, liveSnapshot(d)]));
   const shimBefore = shimHash();
-  const home = path.join(RIG.base, `sdc-${Date.now().toString(36)}`);
+  const home = path.join(RIG.base, `sor-${Date.now().toString(36)}`);
   fs.mkdirSync(home, { recursive: true });
   const world = seedWorld(home);
   const seeded = JSON.parse(fs.readFileSync(world.storeFile, 'utf8'));
@@ -219,42 +250,94 @@ async function main() {
     clause('identity/url', app.target.url.includes(APP_DIR) && !app.target.url.includes('app.asar'), app.target.url);
     const penv = procEnv(app.pid);
     clause('isolation/display', penv.WAYLAND_DISPLAY === RIG.wayland && penv.WAYLAND_DISPLAY !== 'wayland-1' && !('DISPLAY' in penv), `WAYLAND_DISPLAY=${penv.WAYLAND_DISPLAY}`);
-    await waitFor('rows rendered', async () => { const r = await rows(app); return Object.values(BR).every((b) => r.some((x) => x.text === b)); }, 25000, 250);
-    const bridge = await app.cdp.eval(`({ findPR: typeof window.orchestra.findPR, verifyLinear: typeof window.orchestra.verifyLinear })`);
-    clause('bridge/pr-and-linear-lookups-gone', bridge.findPR === 'undefined' && bridge.verifyLinear === 'undefined', JSON.stringify(bridge));
-    await sleep(14000); // past the retired 12s PR poll: a surviving PR / release lookup would have hit gh by now
-    await mouse(app, 'mouseMoved', 5, 5); await sleep(300);
-    const all = await rows(app);
-    for (const r of all) note(`row ${r.path.padEnd(4)} ${r.text.padEnd(18)} pr=${JSON.stringify(r.pr)} orch=${JSON.stringify(r.orch)} hidden=${JSON.stringify(r.hidden)}`);
-    const g = await globalCounts(app);
-    clause('rows/no-release-badge', g.released === 0, `.released-pill=${g.released}`);
-    const ghCalls = fs.existsSync(world.ghLog) ? fs.readFileSync(world.ghLog, 'utf8').trim().split('\n').filter(Boolean) : [];
-    clause('gh/no-pr-or-release-calls', !ghCalls.some((l) => /pulls|releases/.test(l)), `gh calls=${JSON.stringify(ghCalls.slice(0, 5))} (CI 'actions/runs' calls are expected)`);
-    clause('rows/no-pr-or-linear-badge', all.every((r) => r.pr.length === 0) && g.pr === 0, `.pr-badge in sidebar=${g.pr}`);
-    clause('rows/no-agent-count-glyph', g.orch === 0 && g.orchCount === 0, `.orchestrator-pill=${g.orch} .orch-count=${g.orchCount}`);
-    const pRow = all.find((r) => r.text === BR.p), opsRow = all.find((r) => r.text === 'ops-demo');
-    clause('expanded/no-hidden-count', pRow?.hidden.length === 0 && opsRow?.hidden.length === 0, `P hidden=${JSON.stringify(pRow?.hidden)} OPS hidden=${JSON.stringify(opsRow?.hidden)}`);
-    SHOTS.push(['expanded-renderer', await shot(app, 'expanded-renderer')]);
-    // collapse P (repo path) and OPS (tree path) with trusted clicks on their chevrons
-    for (const [label, text] of [['P', BR.p], ['OPS', 'ops-demo']]) {
-      const r = await rowOf(app, text);
-      if (!r?.chevron) { clause(`collapse/${label}-chevron-present`, false, 'no .ws-chevron'); continue; }
-      await mouse(app, 'mouseMoved', r.chevron.cx, r.chevron.cy); await sleep(150);
-      await click(app, r.chevron.cx, r.chevron.cy);
+    await waitFor('rows rendered', async () => { const s = await state(app); return Object.values(BR).every((b) => row(s, b)) && row(s, 'ops-wave'); }, 25000, 250);
+    await mouse(app, 'mouseMoved', 900, 5); await sleep(900);
+
+    // S0 — boot: the app selects workspaces[0] = OPS.
+    const s0 = await state(app);
+    for (const r of s0.rows) note(`boot ${r.text.padEnd(18)} folded=${r.folded} tree=${r.tree} active=${r.active} glyph="${r.glyph}" hidden=${JSON.stringify(r.hidden)}`);
+    note(fmtFrame(s0));
+    clause('skin/flat-sidebar', s0.sidebarBg === 'rgb(42, 42, 42)', `sidebar background=${s0.sidebarBg}`);
+    clause('boot/ops-tree-open', ['ops-wave', BR.c1, BR.c2].every((t) => !row(s0, t).folded), visible(s0).join(','));
+    clause('boot/other-tree-folded', row(s0, BR.k1).folded && row(s0, BR.k2).folded && row(s0, BR.k1).inert && row(s0, BR.k1).h === 0, `K1 folded=${row(s0, BR.k1).folded} inert=${row(s0, BR.k1).inert} h=${row(s0, BR.k1).h}`);
+    const pHidden = row(s0, BR.p).hidden[0];
+    clause('boot/folded-summary-dots', !!pHidden && pHidden.n === '2' && pHidden.dots.length === 2, `P ${JSON.stringify(pHidden)}`);
+    clause('frame/wraps-ops-tree', s0.frame.tree && frameWraps(s0, ['ops-wave', BR.c1, BR.c2]), fmtFrame(s0));
+    const ops0 = row(s0, 'ops-wave');
+    const c1 = row(s0, BR.c1), rr = row(s0, BR.r);
+    clause('bell/child-has-none', !/autounread/.test(c1.glyph) && /ws-glyph-sm/.test(c1.glyph), `C1 glyph="${c1.glyph}"`);
+    clause('bell/root-keeps-it', /ws-glyph-autounread/.test(rr.glyph), `R glyph="${rr.glyph}"`);
+    clause('child/never-ran-grey', /never-ran/.test(row(s0, BR.k1).glyph), `K1 glyph="${row(s0, BR.k1).glyph}"`);
+    clause('row/title-only-note-in-tooltip', !ops0.note && ops0.title.includes(NOTE), `note line=${ops0.note} title has note=${ops0.title.includes(NOTE)}`);
+    clause('row/no-pr-or-agent-count-badges', s0.rows.every((r) => r.pr === 0) && s0.orch === 0, `pr=${s0.rows.reduce((a, r) => a + r.pr, 0)} orch=${s0.orch}`);
+    SHOTS.push(['boot-ops-selected', await shot(app, 'boot-ops-selected')]);
+
+    // N — real hook events through the spool: rollup on the idle lead, root-only turn-end bell in MAIN.
+    clause('rollup/pre-lead-shows-own-idle', /ws-glyph-idle/.test(ops0.glyph), `OPS glyph="${ops0.glyph}"`);
+    spool(home, ID.c1, 'submit');
+    const n1 = await waitFor('C1 running', async () => { const s = await state(app); return /running/.test(row(s, BR.c1).glyph) ? s : null; }, 10000, 150).catch(() => null);
+    const opsN1 = n1 && row(n1, 'ops-wave');
+    clause('rollup/idle-lead-spins-for-running-child', !!opsN1 && /ws-glyph-running/.test(opsN1.glyph) && /spawned agent running/.test(opsN1.glyphTitle),
+      `OPS glyph "${ops0.glyph}" -> "${opsN1?.glyph}" title="${opsN1?.glyphTitle}"`);
+    SHOTS.push(['rollup-running', await shot(app, 'rollup-running')]);
+    spool(home, ID.c2, 'notify');
+    const n2 = await waitFor('C2 waiting', async () => { const s = await state(app); return /waiting/.test(row(s, BR.c2).glyph) ? s : null; }, 10000, 150).catch(() => null);
+    const opsN2 = n2 && row(n2, 'ops-wave');
+    clause('rollup/question-beats-running', !!opsN2 && /ws-glyph-waiting/.test(opsN2.glyph) && /running/.test(row(n2, BR.c1).glyph),
+      `OPS glyph -> "${opsN2?.glyph}" (C1 still "${n2 && row(n2, BR.c1).glyph}") title="${opsN2?.glyphTitle}"`);
+    SHOTS.push(['rollup-question', await shot(app, 'rollup-question')]);
+    // turn ends: the child C1 and the (unselected) root L
+    const preC1 = storeWs(home, ID.c1).autoUnread, preL = storeWs(home, ID.l).autoUnread;
+    spool(home, ID.c1, 'stop');
+    spool(home, ID.l, 'submit'); await sleep(400); spool(home, ID.l, 'stop');
+    const done = await waitFor('store: L autoUnread', async () => (storeWs(home, ID.l).autoUnread === true && storeWs(home, ID.c1).status === 'idle' ? true : null), 10000, 200).catch(() => null);
+    const postC1 = storeWs(home, ID.c1), postL = storeWs(home, ID.l);
+    clause('notify/root-turn-end-bells', done && postL.autoUnread === true, `store L.autoUnread ${preL} -> ${postL.autoUnread}`);
+    clause('notify/child-turn-end-no-bell', done && postC1.status === 'idle' && !postC1.autoUnread, `store C1.status=${postC1.status} autoUnread ${preC1} -> ${postC1.autoUnread}`);
+    const n3 = await state(app);
+    clause('bell/root-l-shows-it', /ws-glyph-autounread/.test(row(n3, BR.l).glyph), `L glyph="${row(n3, BR.l).glyph}"`);
+
+    // S1 — click P (repo section): its tree unfolds, OPS folds, the frame slides; sample the slide.
+    const pr0 = row(s0, BR.p);
+    await mouse(app, 'mouseMoved', pr0.cx, pr0.cy); await sleep(80);
+    const samplesP = app.cdp.eval(`new Promise((res) => { const f = document.querySelector('.ws-selection-frame'); const out = []; const t0 = performance.now();
+      const tick = () => { out.push(Math.round(f.getBoundingClientRect().top)); if (performance.now() - t0 < 500) requestAnimationFrame(tick); else res(out); }; requestAnimationFrame(tick); })`);
+    await mouse(app, 'mousePressed', pr0.cx, pr0.cy, { clickCount: 1 }); await mouse(app, 'mouseReleased', pr0.cx, pr0.cy, { clickCount: 1 });
+    const tops = await samplesP; await mouse(app, 'mouseMoved', 900, 5); await sleep(500);
+    const s1 = await state(app);
+    note(`P click: visible ${visible(s0).join(',')} -> ${visible(s1).join(',')}`);
+    note(`P click: ${fmtFrame(s0)} -> ${fmtFrame(s1)}`);
+    clause('select-p/its-tree-unfolds', [BR.p, BR.k1, BR.k2].every((t) => !row(s1, t).folded) && row(s1, BR.k1).h > 0, `K1 h ${row(s0, BR.k1).h} -> ${row(s1, BR.k1).h}`);
+    clause('select-p/ops-tree-folds', row(s1, BR.c1).folded && row(s1, BR.c2).folded, `C1 folded ${row(s0, BR.c1).folded} -> ${row(s1, BR.c1).folded}`);
+    clause('frame/moved-to-p-tree', frameWraps(s1, [BR.p, BR.k1, BR.k2]) && s1.frame.top !== s0.frame.top, fmtFrame(s1));
+    const mono = tops.every((v, i) => i === 0 || (tops[tops.length - 1] >= tops[0] ? v >= tops[i - 1] - 1 : v <= tops[i - 1] + 1));
+    const span = [Math.min(...tops), Math.max(...tops)], ends = [tops[0], tops[tops.length - 1]];
+    clause('frame/slide-monotonic-no-overshoot', tops.length > 10 && new Set(tops).size > 3 && mono && span[0] >= Math.min(...ends) - 1 && span[1] <= Math.max(...ends) + 1,
+      `${tops.length} frames, top ${ends[0]} -> ${ends[1]}, distinct=${new Set(tops).size}, range=[${span}]`);
+    SHOTS.push(['p-tree-selected', await shot(app, 'p-tree-selected')]);
+
+    // S2 — click the leaf root L: no tree, everything folds, the frame shrinks to the one row.
+    const l1 = row(s1, BR.l);
+    await click(app, l1.cx, l1.cy); await mouse(app, 'mouseMoved', 900, 5); await sleep(600);
+    const s2 = await state(app);
+    note(`L click: ${fmtFrame(s1)} -> ${fmtFrame(s2)}`);
+    clause('select-leaf/no-tree-frame', !s2.frame.tree && frameWraps(s2, [BR.l]) && !s2.rows.some((r) => r.tree), fmtFrame(s2));
+    clause('select-leaf/all-trees-fold', [BR.c1, BR.c2, BR.k1, BR.k2].every((t) => row(s2, t).folded), visible(s2).join(','));
+    SHOTS.push(['leaf-selected', await shot(app, 'leaf-selected')]);
+
+    // S3 — the chevron still folds/unfolds by hand without moving the selection.
+    const p2 = row(s2, BR.p);
+    if (!p2.chevron) clause('chevron/present', false, 'no .ws-chevron on P');
+    else {
+      await mouse(app, 'mouseMoved', p2.chevron.cx, p2.chevron.cy); await sleep(150);
+      await click(app, p2.chevron.cx, p2.chevron.cy); await mouse(app, 'mouseMoved', 900, 5); await sleep(600);
+      const s3 = await state(app);
+      clause('chevron/manual-unfold-keeps-selection', !row(s3, BR.k1).folded && row(s3, BR.l).active && frameWraps(s3, [BR.l]),
+        `K1 folded ${row(s2, BR.k1).folded} -> ${row(s3, BR.k1).folded}, L active=${row(s3, BR.l).active}`);
+      SHOTS.push(['chevron-unfold', await shot(app, 'chevron-unfold')]);
+      SHOTS.push(['chevron-unfold-composed', grim(app, 'chevron-unfold-composed')]);
     }
-    await mouse(app, 'mouseMoved', 5, 5); await sleep(400);
-    const col = await rows(app);
-    const pC = col.find((r) => r.text === BR.p), oC = col.find((r) => r.text === 'ops-demo');
-    for (const r of col) note(`collapsed row ${r.path.padEnd(4)} ${r.text.padEnd(18)} pr=${JSON.stringify(r.pr)} orch=${JSON.stringify(r.orch)} hidden=${JSON.stringify(r.hidden)}`);
-    note(`P hidden pre -> post: ${JSON.stringify(pRow?.hidden)} -> ${JSON.stringify(pC?.hidden)} ; OPS: ${JSON.stringify(opsRow?.hidden)} -> ${JSON.stringify(oC?.hidden)}`);
-    clause('collapsed/kids-hidden', !col.some((r) => [BR.k1, BR.k2, BR.c1, BR.c2].includes(r.text)), col.map((r) => r.text).join(','));
-    clause('collapsed/repo-path-hidden-count', pC?.path === 'repo' && pC.hidden.length === 1 && /:2$/.test(pC.hidden[0]) && /\bwaiting\b/.test(pC.hidden[0]), `P ${JSON.stringify(pC?.hidden)} (2 kids, one waiting ⇒ waiting tint)`);
-    clause('collapsed/tree-path-hidden-count', oC?.path === 'tree' && oC.hidden.length === 1 && /:2$/.test(oC.hidden[0]), `OPS ${JSON.stringify(oC?.hidden)}`);
-    const g2 = await globalCounts(app);
-    clause('collapsed/still-no-agent-count-glyph', g2.orch === 0 && g2.pr === 0, JSON.stringify(g2));
-    clause('rows/in-viewport', [pC, oC].every((r) => r?.inViewport), '');
-    SHOTS.push(['collapsed-renderer', await shot(app, 'collapsed-renderer')]);
-    SHOTS.push(['collapsed-composed', grim(app, 'collapsed-composed')]);
+    clause('rows/in-viewport', s2.rows.filter((r) => !r.folded).every((r) => r.top >= 0) && s2.frame.right <= s2.innerWidth, '');
   } finally {
     await closeApp(app).catch((e) => console.log(`teardown: ${e.message}`));
   }

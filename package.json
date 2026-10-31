@@ -105,6 +105,7 @@
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",
     "test:tool-lines": "pnpm run build:bundles && bash scripts/e2e-tool-lines.sh \"$PWD\"",
     "test:agent-view-removal": "pnpm run build:bundles && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
+    "test:sidebar-orca": "pnpm run build:bundles && bash scripts/e2e-sidebar-orca-drive.sh \"$PWD\"",
     "test:network-visibility-shot": "node scripts/refuse-real-runtime.mjs test:network-visibility-shot",
     "test:renderer-cpu": "node scripts/refuse-real-runtime.mjs test:renderer-cpu",
     "test:fixtures": "node scripts/fixtures/self-test.mjs",

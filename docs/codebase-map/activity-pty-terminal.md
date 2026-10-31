@@ -56,6 +56,11 @@ Event → status (`applyAgentEvent` `:471`):
 - `stop`/`stopfail` → **`idle` + `autoUnread`** via `fireFinished` (chime +
   "finished" toast if window unfocused; recomputes merge state; persists context
   tokens).
+  **Root-only turn-end notifications (2026-10-31):** a spawned child (live, non-archived parent —
+  `hasLiveParent`, `shared/notify-scope.ts`) gets NO `autoUnread`, NO toast (`fireFinished` `activity.ts:318`,
+  `reconcileExited` `:705`) and NO chime (`App.tsx:350` `onAgentFinished`); it is also left out of the inbox's
+  needs-you (`shared/attention.ts`). A child's QUESTION (`fireNeedsInput`) still notifies everywhere. Pinned by
+  `main/notify-scope-wiring.test.ts`; driven for real (spool events) by `scripts/e2e-sidebar-orca-drive.sh`.
   `fireFinished(id, reason?)` (`AgentStopReason`) words the toast — an errored /
   turn-limited / interrupted turn still lands `idle` + `autoUnread` (the human is still
   needed — see the three attention states below) but must not announce itself

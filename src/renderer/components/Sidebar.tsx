@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { SelectionFrame } from './SelectionFrame';
+import { buildParentOf, hiddenDotKind, isFolded as isRowFolded, repoColor, rollupStatus, rollupTitle } from '../sidebar-tree';
 import { useStore } from '../store';
 import type {
   ChecksForBranch,
@@ -57,6 +59,34 @@ interface Props {
   onNewFromRepo: () => void;
   onNewScratch: () => void;
   onNewOrchestrator: () => void;
+}
+
+/** Orca's repo identity chip (6px colour square + 10px lowercase name), on a spawned child whose repo its
+ *  section header does not already say. */
+function RepoChip({ label, color, title }: { label: string; color: string; title?: string }) {
+  return (
+    <span className="repo-chip" title={title}>
+      <i style={{ background: color }} />
+      {label}
+    </span>
+  );
+}
+
+/** Folded group summary: one state dot per hidden agent (first 5) + the count (Orca's summary pill). */
+function HiddenAgentsDots({ hidden }: { hidden: Workspace[] }) {
+  return (
+    <span className="ws-hidden-dots">
+      {hidden.slice(0, 5).map((h) => (
+        <i key={h.id} className={`ws-hidden-dot ${hiddenDotKind(h)}`} />
+      ))}
+      <b>{hidden.length}</b>
+    </span>
+  );
+}
+
+/** Name tooltip + the agent's status note (the note no longer has its own line on the title-only row). */
+function withStatusNote(title: string, w: Workspace): string {
+  return w.statusText ? `${title}\n${statusNoteTitle(w)}` : title;
 }
 
 /** Compact relative age for the status-note tooltip: "3m", "2h", "5d". */
@@ -774,17 +804,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       return new Set();
     }
   });
-  // Per-orchestrator collapse state (ids of rows whose spawned subtree is
-  // folded away), persisted like collapsedRepos. Keyed by workspace id — stale
-  // ids of deleted workspaces are harmless (they simply never match a row).
-  const [collapsedOrch, setCollapsedOrch] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem('orchestra.collapsedOrchestrators');
-      return new Set(raw ? (JSON.parse(raw) as string[]) : []);
-    } catch {
-      return new Set();
-    }
-  });
+  // Selection drives folding (Orca-style): the path root → selected row and the selected row's whole subtree
+  // are unfolded, every other spawn subtree folds. A chevron click flips one row until the selection changes.
+  // Replaces the persisted per-orchestrator collapse set (`orchestra.collapsedOrchestrators`, no longer read).
+  const parentOf = useMemo(() => buildParentOf(workspaces.filter((w) => !w.archived)), [workspaces]);
+  const [foldToggles, setFoldToggles] = useState<Set<string>>(() => new Set());
+  useEffect(() => setFoldToggles(new Set()), [activeId]);
+  const isFolded = (id: string) => isRowFolded(id, activeId, parentOf, foldToggles);
   const [soundSettingsOpen, setSoundSettingsOpen] = useState(false);
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
@@ -1005,15 +1031,10 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   };
 
   const toggleOrchCollapsed = (wsId: string) => {
-    setCollapsedOrch((prev) => {
+    setFoldToggles((prev) => {
       const next = new Set(prev);
       if (next.has(wsId)) next.delete(wsId);
       else next.add(wsId);
-      try {
-        localStorage.setItem('orchestra.collapsedOrchestrators', JSON.stringify(Array.from(next)));
-      } catch {
-        /* best-effort */
-      }
       return next;
     });
   };
@@ -1394,6 +1415,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
    * root's subtree depth-first, children indented under their spawner, with
    * collapse, status dot, rename, badges, and archive/delete — identical row
    * chrome for both sections, only the hover-title wording differs. */
+  // Rows hidden by a fold stay MOUNTED (collapsed by CSS) so folding animates; `inert` keeps them out of
+  // focus/AT. Every row of the selected row's tree is marked so SelectionFrame wraps root + children as one.
+  const foldedRows = new Set<string>(); // filled by the fold walks below, read by rowTreeClass
+  const selRoot = activeId ? (forest.rootOf.get(activeId)?.id ?? null) : null;
+  const selTreeHasKids = !!selRoot && (forest.childrenOf.get(selRoot)?.length ?? 0) > 0;
+  const rowTreeClass = (id: string) =>
+    (foldedRows.has(id) ? ' ws-folded' : '') +
+    (selTreeHasKids && forest.rootOf.get(id)?.id === selRoot ? ' ws-in-selected-tree' : '');
+  const repoPaths = repos.map((r) => r.path);
   const renderSpawnTreeRows = (
     trees: { root: Workspace; rows: TreeRow[] }[],
     variant: 'orchestrator' | 'scratch',
@@ -1410,10 +1440,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
       const visibleRows: TreeRow[] = [];
       let skipBelow: number | null = null;
       for (const row of rows) {
-        if (skipBelow !== null && row.depth > skipBelow) continue;
+        if (skipBelow !== null && row.depth > skipBelow) {
+          foldedRows.add(row.ws.id);
+          visibleRows.push(row);
+          continue;
+        }
         skipBelow = null;
         visibleRows.push(row);
-        if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
+        if (isFolded(row.ws.id)) skipBelow = row.depth;
       }
       return (
         <div className="ws-tree" key={root.id}>
@@ -1421,20 +1455,13 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         const isDeleting = deletingIds.has(w.id);
         const isChild = depth > 0;
         const collapsible = (forest.childrenOf.get(w.id)?.length ?? 0) > 0;
-        const isCollapsed = collapsible && collapsedOrch.has(w.id);
+        const isCollapsed = collapsible && isFolded(w.id);
         const hidden = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
-        // Most urgent status among the hidden subtree, so a folded
-        // subtree can't silently swallow an agent that errored, is blocked on
-        // input, finished with output nobody has opened (`autoUnread`), or
-        // carries the manual unread tag — the last three all roll up with the
-        // same urgency, since each means "there is something here for you".
-        const hiddenUrgency = hidden.some((h) => h.status === 'error')
-          ? 'error'
-          : hidden.some((h) => h.status === 'waiting' || h.autoUnread || h.markedUnread)
-            ? 'waiting'
-            : hidden.some((h) => h.status === 'running')
-              ? 'running'
-              : '';
+        // Coordinator rollup: an idle/asleep lead shows its subtree's most urgent state (a child's unseen-done is
+        // not a notification, so a child's autoUnread never counts — see notify-scope.ts).
+        const rolled = collapsible
+          ? rollupStatus({ status: w.status, autoUnread: depth === 0 && w.autoUnread }, collectDescendants(w.id, forest.childrenOf))
+          : null;
         // The root is scratch-like (deletable, no git); a child can be a real
         // git worktree (archivable) or a nested scratch/orchestrator. Show the
         // repo it lives in for git kids.
@@ -1442,7 +1469,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         return (
           <div
             key={w.id}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
+            inert={foldedRows.has(w.id)}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
             // Actions float OUTSIDE the sidebar, anchored to this row — see
@@ -1524,13 +1552,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 which pushed children's content right for no reason. */}
             <PauseAwareGlyph wsId={w.id}>
             <WorkspaceStatusGlyph
-              status={w.status as WorkspaceStatus}
-              hibernated={w.hibernatedAt !== undefined}
+              status={(rolled?.status ?? w.status) as WorkspaceStatus}
+              hibernated={!rolled && w.hibernatedAt !== undefined}
               unread={!!w.markedUnread}
-              autoUnread={!!w.autoUnread}
+              autoUnread={!isChild && !!w.autoUnread}
               looping={!!w.loopingSince}
-              stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
-              title={statusGlyphTitle(w, tools[w.id])}
+              stopReason={!rolled && isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
+              title={rolled ? rollupTitle(statusGlyphTitle(w, tools[w.id]), rolled) : statusGlyphTitle(w, tools[w.id])}
+              size={isChild ? 'sm' : undefined}
+              neverRan={isChild && !w.lastTurnStartAt}
             />
             </PauseAwareGlyph>
             <div className="ws-body">
@@ -1551,27 +1581,31 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 ) : (
                   <div
                     className="ws-name ws-name-tight"
-                    title={withExLabel(
-                      depth === 0
-                        ? variant === 'orchestrator'
-                          ? `${w.branch} — orchestrator · double-click to rename`
-                          : `${w.branch} — scratch session (not tracked by git) · double-click to rename`
-                        : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`,
-                      w.formerBranch,
+                    title={withStatusNote(
+                      withExLabel(
+                        depth === 0
+                          ? variant === 'orchestrator'
+                            ? `${w.branch} — orchestrator · double-click to rename`
+                            : `${w.branch} — scratch session (not tracked by git) · double-click to rename`
+                          : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`,
+                        w.formerBranch,
+                      ),
+                      w,
                     )}
                     onDoubleClick={(e) => startRename(e, w)}
                   >
                     {w.branch}
                   </div>
                 )}
+                {childIsGit && <RepoChip label={repoLabel(w.repoPath)} color={repoColor(w.repoPath, repoPaths)} />}
                 {isCollapsed && (
                   <span
-                    className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                    className="ws-hidden-count"
                     title={`${hidden.length} hidden agent${hidden.length === 1 ? '' : 's'}: ${hidden
                       .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
                       .join(', ')}`}
                   >
-                    {hidden.length}
+                    <HiddenAgentsDots hidden={hidden} />
                   </span>
                 )}
                 {/* Badges stay ON the name line. They used to sit in a
@@ -1600,13 +1634,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     WorkspaceRowAccountBadge. Root rows always show theirs. */}
                 <WorkspaceRowAccountBadge workspaceId={w.id} parentId={w.parentId} />
               </div>
-              <PauseRowNote wsId={w.id}>
-                {w.statusText && (
-                  <div className="ws-status-note" title={statusNoteTitle(w)}>
-                    {w.statusText}
-                  </div>
-                )}
-              </PauseRowNote>
+              {/* Title-only row: the status note moved into the name tooltip; a fleet-pause note still gets a line. */}
+              <PauseRowNote wsId={w.id}>{null}</PauseRowNote>
             </div>
             {/* Collapse control, right-aligned. It sits OUTSIDE
                 `.ws-row-actions` (which is absolutely positioned and only
@@ -1804,6 +1833,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           would float over unrelated content. Drop it immediately rather than
           re-measuring mid-scroll. */}
       <div className="ws-list" onScroll={rowActions.hideNow}>
+        <SelectionFrame selectionKey={activeId} />
         {repoOrder.length === 0 &&
           archived.length === 0 &&
           scratchTrees.length === 0 &&
@@ -1935,6 +1965,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             <div
               className={`repo-header${detachOver === repoPath ? ' detach-target' : ''}`}
               title={repoPath}
+              style={{ '--repo-color': repoColor(repoPath, repoPaths) } as React.CSSProperties}
               draggable={isRegisteredRepo}
               onDragStart={(e) => {
                 if ((e.target as HTMLElement).closest('button')) {
@@ -2100,17 +2131,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               const hasChanges = !!s && (s.additions > 0 || s.deletions > 0);
               const kids = forest.childrenOf.get(w.id) ?? [];
               const collapsible = kids.length > 0;
-              const isCollapsed = collapsible && collapsedOrch.has(w.id);
+              const isCollapsed = collapsible && isFolded(w.id);
               // Every agent under this row, however deep — counted only when
               // collapsed, as the hidden-agents pill (same as the pinned tree).
               const hiddenKids = isCollapsed ? collectDescendants(w.id, forest.childrenOf) : [];
-              const hiddenUrgency = hiddenKids.some((h) => h.status === 'error')
-                ? 'error'
-                : hiddenKids.some((h) => h.status === 'waiting' || h.autoUnread || h.markedUnread)
-                  ? 'waiting'
-                  : hiddenKids.some((h) => h.status === 'running')
-                    ? 'running'
-                    : '';
+              // Coordinator rollup (see the pinned-tree path).
+              const rolled = collapsible
+                ? rollupStatus({ status: w.status, autoUnread: depth === 0 && w.autoUnread }, collectDescendants(w.id, forest.childrenOf))
+                : null;
               // Shares `dropTargetClass` with the repo section above, so the two
               // cannot drift apart — the previous version asserted that in a
               // comment while leaving the two `setState` updaters unguarded.
@@ -2129,7 +2157,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               return (
                 <div
                   key={w.id}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${wsDnd}`}
+                  inert={foldedRows.has(w.id)}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
                   // Actions float outside the sidebar, anchored to this row.
@@ -2238,13 +2267,15 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       or the two kinds of orchestrator drift apart visually. */}
                   <PauseAwareGlyph wsId={w.id}>
                   <WorkspaceStatusGlyph
-                    status={w.status as WorkspaceStatus}
-                    hibernated={w.hibernatedAt !== undefined}
+                    status={(rolled?.status ?? w.status) as WorkspaceStatus}
+                    hibernated={!rolled && w.hibernatedAt !== undefined}
                     unread={!!w.markedUnread}
-                    autoUnread={!!w.autoUnread}
+                    autoUnread={!isChild && !!w.autoUnread}
                     looping={!!w.loopingSince}
-                    stopReason={isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
-                    title={statusGlyphTitle(w, tools[w.id])}
+                    stopReason={!rolled && isActionableStopReason(w.lastStopReason) ? w.lastStopReason : undefined}
+                    title={rolled ? rollupTitle(statusGlyphTitle(w, tools[w.id]), rolled) : statusGlyphTitle(w, tools[w.id])}
+                    size={isChild ? 'sm' : undefined}
+                    neverRan={isChild && !w.lastTurnStartAt}
                   />
                   </PauseAwareGlyph>
                   <div className="ws-body">
@@ -2265,11 +2296,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       ) : (
                         <div
                           className="ws-name"
-                          title={withExLabel(
-                            w.branchManuallySet
-                              ? `${w.branch} (locked)`
-                              : `${w.branch} — double-click to rename`,
-                            w.formerBranch,
+                          title={withStatusNote(
+                            withExLabel(
+                              w.branchManuallySet
+                                ? `${w.branch} (locked)`
+                                : `${w.branch} — double-click to rename`,
+                              w.formerBranch,
+                            ),
+                            w,
                           )}
                           onDoubleClick={(e) => startRename(e, w)}
                         >
@@ -2288,21 +2322,20 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <span className="ws-pills">
                       {isCollapsed && hiddenKids.length > 0 && (
                         <span
-                          className={`ws-hidden-count${hiddenUrgency ? ` ${hiddenUrgency}` : ''}`}
+                          className="ws-hidden-count"
                           title={`${hiddenKids.length} hidden agent${hiddenKids.length === 1 ? '' : 's'}: ${hiddenKids
                             .map((h) => (h.markedUnread ? `${h.branch} (unread)` : h.branch))
                             .join(', ')}`}
                         >
-                          {hiddenKids.length}
+                          <HiddenAgentsDots hidden={hiddenKids} />
                         </span>
                       )}
                       {crossRepoChild && (
-                        <span
-                          className="repo-tag-pill"
+                        <RepoChip
+                          label={repoLabel(w.repoPath)}
+                          color={repoColor(w.repoPath, repoPaths)}
                           title={`Spawned into ${repoLabel(w.repoPath)} (different repo than its orchestrator)`}
-                        >
-                          {repoLabel(w.repoPath)}
-                        </span>
+                        />
                       )}
                       {!!w.unpushedAhead && w.unpushedAhead > 0 && (
                         <span
@@ -2339,13 +2372,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       <CiBadge checks={checks[w.id]} onFix={() => onFixChecks(w)} />
                       </span>
                     </div>
-                    <PauseRowNote wsId={w.id}>
-                      {w.statusText && (
-                        <div className="ws-status-note" title={statusNoteTitle(w)}>
-                          {w.statusText}
-                        </div>
-                      )}
-                    </PauseRowNote>
+                    <PauseRowNote wsId={w.id}>{null}</PauseRowNote>
                   </div>
                   {/* Right-edge collapse control — mirrors the pinned-tree
                       rows. A promoted worktree gets its chevron here. */}
@@ -2380,10 +2407,14 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 const visibleItems: TreeRow[] = [];
                 let skipBelow: number | null = null;
                 for (const row of items) {
-                  if (skipBelow !== null && row.depth > skipBelow) continue;
+                  if (skipBelow !== null && row.depth > skipBelow) {
+                    foldedRows.add(row.ws.id);
+                    visibleItems.push(row);
+                    continue;
+                  }
                   skipBelow = null;
                   visibleItems.push(row);
-                  if (collapsedOrch.has(row.ws.id)) skipBelow = row.depth;
+                  if (isFolded(row.ws.id)) skipBelow = row.depth;
                 }
                 // `items` are orchestrator-tree rows ({ ws, depth }); surface
                 // each row's host so groupByHost (which keys off `host`) can

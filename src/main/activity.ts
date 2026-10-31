@@ -12,6 +12,7 @@ import type { AgentStopReason, Workspace, WorkspaceStatus } from '../shared/type
 // Value import (not `import type`): the .ts extension is required for value
 // imports reachable from the test runner — see the hibernation-activity note.
 import { THINKING_TOOL_LABEL, isScratchLike } from '../shared/types.ts';
+import { hasLiveParent } from '../shared/notify-scope.ts';
 import { adoptedBranchPin, pinFields } from '../shared/naming-policy.ts';
 import { formerBranchPatch } from '../shared/former-branch.ts';
 // Dependency-free leaf (see hibernation-activity.ts): importing hibernation.ts
@@ -349,7 +350,10 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     // reviewed. (`seen` is still computed BEFORE the await, at the moment
     // the turn ended.)
     if (!changed) return;
-    void markAutoUnread(id, !seen);
+    // Root-only turn-end notifications (notify-scope.ts): a spawned child gets no bell and no toast; the
+    // renderer skips its chime on the same rule.
+    const child = hasLiveParent(ws, (pid) => store.getWorkspace(pid));
+    void markAutoUnread(id, !seen && !child);
     // Ship the main-process focus state with the event. document.hasFocus()
     // is unreliable in the renderer (returns stale true on Wayland when the
     // window is hidden on another workspace / CDP is attached), so the
@@ -372,7 +376,7 @@ function fireFinished(id: string, stopReason?: AgentStopReason): void {
     // unseen output — and the loop badge on the glyph already says "alive and
     // recurring". A loop that parks on a QUESTION still notifies: that path is
     // fireNeedsInput, untouched.
-    if (focused || ws.loopingSince) return;
+    if (focused || ws.loopingSince || child) return;
     const { title, body } = finishedToast(stopReason, ws.name);
     platform.notify({ wsId: id, kind: 'finished', title, body });
   });
@@ -708,7 +712,7 @@ export function reconcileExited(id: string): void {
   if (ws.loopingSince) void markLooping(id, false);
   if (ws.status !== 'running') return;
   const seen = platform.isFocused() && getActiveWorkspaceId() === id;
-  void markAutoUnread(id, !seen);
+  void markAutoUnread(id, !seen && !hasLiveParent(ws, (pid) => store.getWorkspace(pid)));
   void setStatus(id, 'idle');
 }
 

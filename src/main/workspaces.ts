@@ -4093,13 +4093,13 @@ human"). A workspace nobody named still renames itself.
 
 const STATUS_SKILL = `---
 name: orchestra-status
-description: Keep THIS workspace's one-line status note current — a "what I'm doing right now" line shown under its sidebar row and to peer agents. Update it WITHOUT being asked whenever your work enters a new phase (exploring → implementing → testing → blocked → done), so the human can scan progress across all agents without opening panes.
+description: Keep THIS workspace's one-line status note current — a "what I'm doing right now" line shown in its sidebar row's tooltip and to peer agents. Update it WITHOUT being asked whenever your work enters a new phase (exploring → implementing → testing → blocked → done), so the human can scan progress across all agents without opening panes.
 ---
 
 # Update this workspace's status note
 
-Orchestra shows a one-line, agent-authored status note under this workspace's
-branch name in the sidebar, and to other agents in \`orchestra peers\`. Keep it
+Orchestra shows a one-line, agent-authored status note in the tooltip of this
+workspace's sidebar row, and to other agents in \`orchestra peers\`. Keep it
 current as your work moves through phases — it is the only live progress signal
 the human sees without opening your pane.
 

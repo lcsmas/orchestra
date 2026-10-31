@@ -86,7 +86,7 @@ parent, repo, base.`,
     detail: `usage: orchestra status <text...> | --body-file <path>
        orchestra status --clear
 
-Set THIS workspace's one-line status note — shown under its sidebar row and
+Set THIS workspace's one-line status note — shown in its sidebar row's tooltip and
 in 'peers'. --clear removes it.
 Body: an unknown --option is REFUSED (nothing is written); put text that starts
 with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long body.`,

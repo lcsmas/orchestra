@@ -1,0 +1,194 @@
+/* Sidebar, Orca-style (layout "C" of the prototype on branch prototype/sidebar-orca, picked 2026-10-31).
+   Values: docs/research/orca-sidebar-ui.md §4-§6. Loaded after styles.css, whose older sidebar rules it
+   overrides; glyph colours/sizes live with the glyph rules in styles.css. */
+
+.sidebar {
+  --o-sidebar: #2a2a2a;   /* Orca --worktree-sidebar (dark), pixel-confirmed */
+  --o-accent: #353535;
+  --o-border: rgb(255 255 255 / 0.07);
+  --o-fg: #fafafa;
+  --o-muted: #a1a1a1;
+  background: var(--o-sidebar);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-right: 1px solid var(--o-border);
+  interpolate-size: allow-keywords; /* lets folded rows animate height to/from auto (Chromium ≥129) */
+}
+.sidebar .sidebar-header { border-bottom: none; padding: 10px 10px 6px 16px; }
+.sidebar .sidebar-header h1 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: color-mix(in srgb, var(--o-muted) 80%, transparent);
+}
+
+/* ---- Section headers: 13px semibold, sentence case, sticky, coloured repo mark, hover-only actions ---- */
+.sidebar .repo-section { padding: 0; margin-top: 4px; }
+.sidebar .repo-section + .repo-section,
+.sidebar .scratch-section { border: none; }
+.sidebar .repo-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--o-sidebar);
+  height: 28px;
+  padding: 0 8px 0 10px;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  color: var(--o-fg);
+}
+.sidebar .repo-header .repo-name { font-weight: 600; }
+.sidebar .repo-header .caret { color: var(--o-muted); }
+.sidebar .repo-header[style*='--repo-color'] .repo-name::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 7px;
+  vertical-align: 1px;
+  background: var(--repo-color);
+}
+.sidebar .repo-header-actions { opacity: 0; transition: opacity 120ms; }
+.sidebar .repo-header:hover .repo-header-actions,
+.sidebar .repo-header:focus-within .repo-header-actions { opacity: 1; }
+.sidebar .repo-sync { padding-left: 27px; opacity: 0.7; }
+
+/* ---- Rows: title-only 36px rounded surfaces; context-size + account badges move off the row ---- */
+.sidebar .ws-list {
+  position: relative; /* SelectionFrame is positioned inside the scroller */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sidebar .ws-list:hover { scrollbar-color: color-mix(in srgb, var(--o-muted) 28%, transparent) transparent; }
+.sidebar .ws-item {
+  margin: 0 6px 4px 4px;
+  min-height: 36px;
+  height: auto;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition:
+    height 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    min-height 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    padding 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    margin 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 180ms ease,
+    background-color 150ms ease;
+}
+.sidebar .ws-item:hover { background: color-mix(in srgb, var(--o-accent) 55%, transparent); }
+/* Selection is drawn by .ws-selection-frame; the row itself stays flat. */
+.sidebar .ws-item.active { background: transparent; border-color: transparent; box-shadow: none; }
+.sidebar .ws-item .ws-name,
+.sidebar .ws-item.ws-child .ws-name {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--o-fg);
+}
+.sidebar .ws-item.unread .ws-name { font-weight: 600; }
+.sidebar .ws-item .ws-context,
+.sidebar .ws-item .account-badge.inline { display: none; }
+
+/* Spawn tree: 18px step + a 1px rail with a tick per child (Orca agent sub-tree). */
+.sidebar .ws-item.ws-child { padding-left: calc(12px + min(var(--ws-depth, 1), 3) * 18px); }
+.sidebar .ws-item.ws-child::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  bottom: 0;
+  left: calc(min(var(--ws-depth, 1), 3) * 18px - 1px);
+  border-left: 1px solid color-mix(in srgb, var(--o-fg) 16%, transparent);
+}
+.sidebar .ws-item.ws-child::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: calc(min(var(--ws-depth, 1), 3) * 18px - 1px);
+  width: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--o-fg) 16%, transparent);
+}
+
+/* ---- Fold / unfold: rows stay mounted and animate to zero height ---- */
+.sidebar .ws-item.ws-folded {
+  height: 0;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  border-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ---- The one selection surface: slides between rows/trees (SelectionFrame.tsx) ---- */
+.ws-selection-frame {
+  position: absolute;
+  top: 0; left: 0; width: 0; height: 0;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #fafafa 18%, transparent);
+  background: color-mix(in srgb, #fafafa 10%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #fafafa 3%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease, background-color 200ms ease, border-color 200ms ease; /* position eased in JS */
+}
+.ws-selection-frame.on { opacity: 1; }
+/* A whole tree: quieter fill, the selected row inside it gets the brighter one. */
+.ws-selection-frame.tree {
+  background: color-mix(in srgb, #fafafa 5%, transparent);
+  border-color: color-mix(in srgb, #fafafa 16%, transparent);
+}
+.sidebar .ws-item.ws-in-selected-tree.active { background: color-mix(in srgb, #fafafa 7%, transparent); }
+.sidebar .ws-item.ws-in-selected-tree:hover:not(.active) { background: color-mix(in srgb, #fafafa 4%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar .ws-item { transition: none; }
+}
+
+/* ---- Repo chip (Orca RepoIdentityChip) on a child living in another repo than its section ---- */
+.repo-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  max-width: 96px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, #fff 9%, transparent);
+  background: color-mix(in srgb, #404040 50%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: lowercase;
+  color: #a1a1a1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.repo-chip i { width: 6px; height: 6px; border-radius: 1px; flex: 0 0 auto; }
+
+/* ---- Folded group summary: one state dot per hidden agent + count ---- */
+.sidebar .ws-hidden-count {
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, #fff 10%, transparent);
+  background: color-mix(in srgb, var(--o-accent) 60%, transparent);
+  color: var(--o-muted);
+}
+.ws-hidden-dots { display: inline-flex; align-items: center; gap: 3px; }
+.ws-hidden-dots b { font-weight: 500; font-size: 10px; margin-left: 2px; font-variant-numeric: tabular-nums; }
+.ws-hidden-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--glyph-inactive); opacity: 0.6; }
+.ws-hidden-dot.running { background: var(--glyph-working); opacity: 1; }
+.ws-hidden-dot.waiting { background: var(--glyph-question); opacity: 1; }
+.ws-hidden-dot.error { background: oklch(63.7% 0.237 25.331); opacity: 1; }
+.ws-hidden-dot.idle { background: var(--glyph-done); opacity: 1; }

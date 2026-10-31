@@ -108,11 +108,12 @@
      repainting them to match Orca would restyle half the app, not the status
      glyphs. Scope the parity to exactly the surface the user asked about.
 
-     The amber/yellow split is Orca's own: the working ring is yellow-500
-     while both user-attention glyphs are amber-500, so "the agent is busy"
-     and "the agent needs you" never read as the same signal. */
+     Orca's split (re-checked at sha daf806bb, docs/research/orca-sidebar-ui.md §3): the working ring is
+     yellow-500, the question glyph ORANGE-500, the unread bell amber-500 — busy / needs-your-answer /
+     go-look never share a hue. */
   --glyph-working: oklch(79.5% 0.184 86.047);   /* tw yellow-500  */
-  --glyph-attention: oklch(76.9% 0.188 70.08);  /* tw amber-500   */
+  --glyph-attention: oklch(76.9% 0.188 70.08);  /* tw amber-500 — bells, manual unread */
+  --glyph-question: oklch(70.5% 0.213 47.604);  /* tw orange-500 — Orca's --agent-question (dark) */
   --glyph-done: oklch(69.6% 0.17 162.48);       /* tw emerald-500 */
   --glyph-inactive: oklch(55.6% 0 0);           /* tw neutral-500 */
   /* Session-kind accents — scratch (amber) and orchestrator (green) tint the
@@ -1413,8 +1414,9 @@ input:focus, textarea:focus, select:focus {
 .repo-section.repo-dragging { opacity: 0.5; }
 .repo-section.repo-drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .repo-section.repo-drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
-/* Orchestrator → spawned-children tree. Nesting is carried by INDENT ALONE —
-   no connector glyph, no vertical rail. The old `╰─` was a text character in
+/* Orchestrator → spawned-children tree. Base indent only — sidebar-orca.css (2026-10-31) overrides it with
+   Orca's 18px step plus a 1px rail and tick per child. Historical note: there used to be
+   no connector glyph and no vertical rail. The old `╰─` was a text character in
    the flex flow, so it needed margin/line-height fudging to sit right and it
    consumed width on every child.
 
@@ -1484,9 +1486,6 @@ input:focus, textarea:focus, select:focus {
   background: var(--bg-3);
   border: 1px solid var(--border);
 }
-.ws-hidden-count.running { color: var(--green); border-color: var(--green); }
-.ws-hidden-count.waiting { color: var(--yellow); border-color: var(--yellow); }
-.ws-hidden-count.error { color: var(--red); border-color: var(--red); }
 /* Queue-stall badge (#88) — "N deliveries are waiting here and no turn has
    started in X". Shares `ws-hidden-count`'s pill geometry deliberately: both
    are "a count of things you cannot currently see on this row", and giving
@@ -1534,21 +1533,6 @@ input:focus, textarea:focus, select:focus {
 /* Dropping a nested row on a repo header detaches it back out to a root. */
 .repo-header.detach-target {
   box-shadow: inset 0 0 0 2px var(--accent);
-}
-/* Small pill on a spawned child whose own repo differs from the orchestrator's,
-   so a cross-repo nesting doesn't look misfiled. */
-.repo-tag-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 5px;
-  margin-left: 6px;
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  color: var(--text-dim);
-  background: var(--bg-3);
-  border: 1px solid var(--border);
 }
 /* ── Status DOT ─────────────────────────────────────────────────────────────
    Every LIVE-agent surface (sidebar rows, Inbox, jump palette, Resources
@@ -1603,18 +1587,26 @@ input:focus, textarea:focus, select:focus {
 /* Denser lists can opt down a size without redefining the glyph. */
 .ws-glyph.ws-glyph-sm { width: 10px; height: 10px; }
 .ws-glyph.ws-glyph-sm svg { width: 10px; height: 10px; }
-.ws-glyph.ws-glyph-sm .ws-glyph-spin { width: 8px; height: 8px; border-width: 1.5px; }
+.ws-glyph.ws-glyph-sm .ws-glyph-spin { width: 6px; height: 6px; border-width: 1.5px; }
+/* Spawned child rows (Orca agent rows): 6px dots; one that never ran a turn is grey, not the done green. */
+.ws-glyph.ws-glyph-sm::before { width: 6px; height: 6px; }
+.ws-glyph-idle.never-ran:not(.unread)::before { background: var(--glyph-inactive); opacity: 0.4; }
 /* The Resources table is a GRID whose first column is a fixed 12px, so the
    glyph must not be stretched by the default `align-items: center` track
    sizing — pin it to its own box. */
 .res-agent-row .ws-glyph { width: 12px; height: 12px; justify-self: center; }
 .ws-glyph-idle { color: var(--glyph-done); }
 .ws-glyph-error { color: var(--red); }
-/* The two states that ask something of the USER share `--attention` (Orca uses
-   amber-500 for both its `?` and its bell), while the working spinner keeps
-   `--yellow`. Colour says "you are needed"; SHAPE says which kind — a question
-   mark to answer, a bell to go look. */
-.ws-glyph-waiting { color: var(--glyph-attention); }
+/* Error = Orca's 6px red dot (StatusIndicator `failed`) — smaller than the 8px idle dot. */
+.ws-glyph-error::before {
+  content: "";
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: oklch(63.7% 0.237 25.331); /* tw red-500 */
+}
+/* Question = orange-500, bell = amber-500 (Orca). SHAPE still says which kind — a question mark to answer,
+   a bell to go look. */
+.ws-glyph-waiting { color: var(--glyph-question); }
 .ws-glyph-autounread { color: var(--glyph-attention); }
 /* A session STOPPED for a reason the human must act on (#69): it will consume
    nothing until someone sends to it, which is a stronger claim than the bell's
@@ -1655,14 +1647,15 @@ input:focus, textarea:focus, select:focus {
    rows animate at once. */
 .ws-glyph-spin {
   display: block;
-  width: 10px; height: 10px;
+  width: 8px; height: 8px;
   border-radius: 50%;
   /* Yellow, matching Orca's `border-yellow-500` spinner. Also frees GREEN to
      mean exactly one thing — "finished, nothing owed" — instead of being
      shared by the working ring and the idle dot. */
   border: 2px solid var(--glyph-working);
   border-top-color: transparent;
-  animation: ws-glyph-spin 0.8s linear infinite;
+  /* Orca's cadence: one turn per second in 12 discrete steps (cheap on the compositor with many rows). */
+  animation: ws-glyph-spin 1s steps(12, end) infinite;
 }
 @keyframes ws-glyph-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
@@ -1713,13 +1706,13 @@ input:focus, textarea:focus, select:focus {
 .ws-glyph-running { color: var(--glyph-working); }
 .ws-glyph-stopped { color: var(--glyph-inactive); }
 /* Manual "unread" tag — a come-back-later bookmark the user sets by hand.
-   The row reads like unread mail: the status glyph turns accent-blue
-   (overriding the status colour) plus a brighter name. Cleared when the row is
+   The row reads like unread mail: the status glyph turns amber (Orca's unread hue, overriding the status
+   colour) plus a bold name. Cleared when the row is
    selected. Weight is NOT used for emphasis any more — at 400 vs 700 the list
    looked like every row was shouting; colour alone carries it. */
-.ws-glyph.unread { color: var(--accent); }
-.ws-glyph.unread .ws-glyph-spin { border-color: var(--accent); border-top-color: transparent; }
-.ws-glyph.unread::before { background: var(--accent); opacity: 1; }
+.ws-glyph.unread { color: var(--glyph-attention); }
+.ws-glyph.unread .ws-glyph-spin { border-color: var(--glyph-attention); border-top-color: transparent; }
+.ws-glyph.unread::before { background: var(--glyph-attention); opacity: 1; }
 .ws-item.unread .ws-name {
   color: var(--text);
   font-weight: 500;
@@ -1871,10 +1864,6 @@ input:focus, textarea:focus, select:focus {
 /* Orchestrator-tree children: indented rows, so shrink the strip's pills. */
 .ws-pills.mini {
   gap: 4px;
-}
-.ws-pills.mini .repo-tag-pill {
-  font-size: 8px;
-  padding: 0 4px;
 }
 
 /* ── Flat badges on sidebar rows ────────────────────────────────────────────
