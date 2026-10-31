@@ -55,7 +55,7 @@ const MUTANTS = {
   'no-cover-refusal': { file: 'main', arms: ['never'], why: 'a never-composited tab with nothing to cover it is not refused fast: the capture waits for a frame that never comes (P6 refusal must-FAIL)',
     edits: [[/:\{act:"refuse",reason:"needs-first-paint",message:[\w$]+\}/, ':{act:"lease"}']] },
 };
-const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_NAV = Number(flag('--runs-nav', '12')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
+const NAV_GAP = Number(flag('--nav-gap', '0')), RUNS_NAV = Number(flag('--runs-nav', '24')), KINDS_ONLY = flag('--kinds', null), LOAD_K = Number(flag('--load', '0')), RUNS_STALE = Number(flag('--runs-stale', '120')), STALE_GAP = Number(flag('--gap', '600'));
 const RUNS8 = Number(flag('--runs8', '48')), RUNS40 = Number(flag('--runs40', '40')), RUNS_NEVER = Number(flag('--runs-never', '20'));
 if (argv.includes('--list')) {
   console.log(`arms: ${ARMS.join(' ')}`);
@@ -822,27 +822,33 @@ const ARM_FNS = {
       const W = kind === 'tab' ? ctx.W1 : ctx.world.workspaces[1];
       const pool = kind === 'tab' ? ctx.ids[ctx.W1.id].slice(0, 7) : ctx.ids[W.id];
       const id = pool[Math.floor(i / 2) % pool.length];
+      const mode = ['shot', 'bare', 'slow', 'bare'][Math.floor(i / 2) % 4]; // bare = navigate ONLY (a screenshot afterwards takes a second lease whose flip-back would hide a forgotten first one); slow = the new page's load is held 1.2 s
+      const bare = mode === 'bare';
       const want = PALETTE[(i + 3) % PALETTE.length], hex = want.map((v) => v.toString(16).padStart(2, '0')).join('');
       const raw = await rawProxyClient(ctx.ep[W.id].wsUrl);
       const tid = await waitFor(async () => (await raw.call('Target.getTargets')).result?.targetInfos?.find((x) => idOf(x.url) === id)?.targetId ?? null, 8000, `proxy target for id ${id}`);
       const sid = (await raw.call('Target.attachToTarget', { targetId: tid, flatten: true })).result.sessionId;
       const t0 = Date.now();
-      const nav = await raw.callOn(sid, 'Page.navigate', { url: hdUrl(ctx, id, hex) });
+      const nav = await raw.callOn(sid, 'Page.navigate', { url: hdUrl(ctx, id, hex) + (mode === 'slow' ? '&slow=1200' : '') });
       if (NAV_GAP) await sleep(NAV_GAP); // diagnostic: let the new document finish loading before the screenshot
-      const shot = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); const ms = Date.now() - t0;
+      const shot = bare ? { result: null, error: null } : await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png' }); const ms = Date.now() - t0;
       let fresh = false, color = null;
       if (shot.result?.data) { try { const I = decodePng(Buffer.from(shot.result.data, 'base64')); color = blockColor(I, I.w >> 1, I.h >> 1, 8); fresh = near(color, want, 14); } catch { /* not a png */ } }
       let big = null;
-      if (i === 0) big = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 800, height: 9000, scale: 1 } });
+      if (i === 1) big = await raw.callOn(sid, 'Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 800, height: 9000, scale: 1 } });
       const tEnd = Date.now(); raw.close();
       await sleep(Math.max(0, tEnd + 3200 - Date.now())); // linger + the sweep + the unpin capture, then measure
       const o = await Cdp.connect((await targetOf(ctx, id)).webSocketDebuggerUrl);
       const a = await o.eval('__hd.ticks()'), ta = Date.now(); await sleep(1000); const rate = +(((await o.eval('__hd.ticks()')) - a) / ((Date.now() - ta) / 1000)).toFixed(1); o.close();
-      runs.push({ kind, id, fresh, color, want: hex, ms, rate, navErr: nav.error?.message ?? null, shotErr: shot.error?.message ?? null, big });
+      runs.push({ kind, id, bare, mode, fresh, color, want: hex, ms, rate, navErr: nav.error?.message ?? null, shotErr: shot.error?.message ?? null, big });
     }
-    clause(A, 'P1n-screenshot-right-after-a-navigation-is-fresh', runs.length >= 10 && runs.every((r) => r.fresh && r.ms <= 4000), `${runs.filter((r) => r.fresh).length}/${runs.length} runs: Page.navigate then Page.captureScreenshot on a hidden tab shows the NEW page (slowest ${Math.max(...runs.map((r) => r.ms))} ms, median ${median(runs.map((r) => r.ms))} ms)${runs.filter((r) => !r.fresh).slice(0, 3).map((r) => ` · ${r.kind} id${r.id} got ${JSON.stringify(r.color)} want ${r.want} ${r.shotErr ?? r.navErr ?? ''}`).join('')}`);
-    clause(A, 'P7n-throttled-again-after-a-navigation-under-a-lease', runs.every((r) => r.rate <= 2), `timers/s of the new document 3.2 s after the last action: ${runs.map((r) => r.rate).join(', ')} (limit 2)`);
-    const big = runs[0]?.big;
+    const shots = runs.filter((r) => r.mode === 'shot'), slows = runs.filter((r) => r.mode === 'slow'), bares = runs.filter((r) => r.bare);
+    const detail = (rs) => `${rs.filter((r) => r.fresh).length}/${rs.length} fresh (slowest ${Math.max(...rs.map((r) => r.ms))} ms, median ${median(rs.map((r) => r.ms))} ms)${rs.filter((r) => !r.fresh).slice(0, 3).map((r) => ` · ${r.kind} id${r.id} got ${JSON.stringify(r.color)} want ${r.want} ${r.shotErr ?? r.navErr ?? ''}`).join('')}`;
+    clause(A, 'P1n-screenshot-right-after-a-navigation-is-fresh', shots.length >= 5 && shots.every((r) => r.fresh && r.ms <= 4000), `Page.navigate then Page.captureScreenshot on a hidden tab shows the NEW page: ${detail(shots)}`);
+    clause(A, 'P1n-screenshot-of-a-page-still-loading-is-fresh', slows.length >= 5 && slows.every((r) => r.fresh && r.ms <= 4000), `the new page's load is held 1.2 s (an image that loads late): ${detail(slows)}`);
+    clause(A, 'P7n-throttled-again-after-a-BARE-navigation-under-a-lease', bares.length >= 10 && bares.every((r) => r.rate <= 2), `${bares.length} runs of \`Page.navigate\` and nothing else (no second lease to hide a forgotten first one): timers/s of the new document 3.2 s later: ${bares.map((r) => r.rate).join(', ')} (limit 2)`);
+    clause(A, 'P7n-throttled-again-after-navigate-and-screenshot', shots.length + slows.length >= 10 && [...shots, ...slows].every((r) => r.rate <= 2), `timers/s 3.2 s after the screenshot: ${[...shots, ...slows].map((r) => r.rate).join(', ')} (limit 2)`);
+    const big = runs.find((r) => r.big)?.big;
     clause(A, 'full-page-capture-of-a-hidden-tab-refused-honestly', !!big?.error && /not supported/.test(big.error.message) && /tab <ref>/.test(big.error.message), `captureBeyondViewport + a 9000 px clip → ${big?.error ? JSON.stringify(big.error.message.slice(0, 140)) : 'an image (silently cropped to the viewport)'}`);
   },
 

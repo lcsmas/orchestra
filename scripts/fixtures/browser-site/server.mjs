@@ -52,6 +52,10 @@ const server = http.createServer((req, res) => {
       'set-cookie': `sid=${sid}; Max-Age=86400; Path=/; SameSite=Lax`,
     })
   }
+  if (req.method === 'GET' && url.pathname === '/slow') { // a 1x1 gif after ?ms=N (<= 5 s): keeps a page's `load` pending (#406 rig: a document still loading when an agent screenshots it)
+    const ms = Math.max(0, Math.min(5000, Number(url.searchParams.get('ms') ?? 0) || 0))
+    return void setTimeout(() => send(200, 'image/gif', Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')), ms)
+  }
   if (req.method === 'GET' && url.pathname === '/whoami') {
     return send(200, 'text/plain; charset=utf-8', cookieOf(req, 'sid') ?? 'anon')
   }

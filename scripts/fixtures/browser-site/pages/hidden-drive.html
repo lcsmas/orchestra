@@ -6,6 +6,7 @@
 // #406 phase 2 fixture: a solid page (?c=<hex>) whose colour the rig changes while the tab is hidden (a STALE frame is then distinguishable), with
 // a 50 ms timer (its tick rate is the throttling oracle: ~20/s unthrottled, ~1/s throttled), a click counter and a typed value.
 const q = new URLSearchParams(location.search);
+if (q.get('slow')) document.write('<img src="/slow?ms=' + Number(q.get('slow')) + '" width="1" height="1">'); // parser-inserted: the load event waits for it
 document.title = 'hd-' + (q.get('id') || '0');
 const set = (c) => { document.documentElement.style.background = c; document.body.style.background = c; };
 set('#' + (q.get('c') || 'd62728'));
