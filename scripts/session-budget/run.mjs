@@ -15,6 +15,8 @@
 //   app-egress-new-host  an ensureSession edit fetch()es a new host: MUST FAIL naming that host in startupEgressAttempts
 //                        (the app process's traffic goes through the recording proxy too).
 //   browser-mcp-registered  the removed in-process `browser` MCP server re-registered at the launch site (#399): MUST FAIL naming browserMcp.initServers
+//   mcp-process-extra    (#210) an app edit registers ONE extra stdio MCP server: 5 mcp children vs 4 configured. MUST FAIL naming session.processes.atFirstReply.mcp
+//   keeper-rss-ballast   (#210) the keeper bundle's scratch copy holds 256 MB: MUST FAIL naming session.processes.atFirstReply.memoryMB
 //   census-selftest    the pid-namespace census is exactly the runner's tree.
 //   smoke-flag-path    the optional real-API smoke's flag path, real CLI vs the fake API.
 // Exit: 0 all arms as expected · 1 an arm broke expectation or the run raised · 3 an arm was VOID (nothing measured:
@@ -41,6 +43,9 @@ const ARMS = {
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
   // #399: the removed in-process `browser` MCP server re-registered at the launch site: a REAL session lists it at session/init and in the model request.
   'browser-mcp-registered': { kind: 'session', mutant: 'browser-mcp-registered', expect: 'fail', mustBreak: 'session.beforeFirstReply.browserMcp.initServers', minBurst: 1 },
+  // #210: `minBurst` = the process count / tree MB the broken verdict must have SEEN (5 = the extra server really ran; 700 = past the 660 MB ceiling by a real margin, not by rounding).
+  'mcp-process-extra': { kind: 'session', mutant: 'mcp-process-extra', expect: 'fail', mustBreak: 'session.processes.atFirstReply.mcp', minBurst: 5 },
+  'keeper-rss-ballast': { kind: 'session', mutant: 'keeper-rss-ballast', expect: 'fail', mustBreak: 'session.processes.atFirstReply.memoryMB', minBurst: 700 },
   'census-selftest': { kind: 'selftest', mode: 'census' },
   'smoke-flag-path': { kind: 'selftest', mode: 'smoke' },
 };
@@ -104,7 +109,7 @@ for (const [name, spec] of Object.entries(ARMS)) {
     const named = broke.find((v) => v.id === spec.mustBreak);
     asExpected = !!named && (named.actual ?? 0) >= spec.minBurst;
     why = named ? named.message : `expected ${spec.mustBreak} to break but it held`;
-    if (named && !asExpected) why += ` — burst below ${spec.minBurst}, not the large #176 shape`;
+    if (named && !asExpected) why += ` — saw below ${spec.minBurst}: not the shape this arm exists to prove`;
   }
   if (!asExpected && (spec.expect === 'void' || !judgement.void)) bad++;
   if (JSON_OUT) { console.log(JSON.stringify({ arm: name, expect: spec.expect, asExpected, why, report, judgement })); continue; }
@@ -114,7 +119,13 @@ for (const [name, spec] of Object.entries(ARMS)) {
   const side = report.requestLog?.filter((r) => r.type === 'model' && !(r.tools > 0)) ?? [];
   for (const r of side) say(`   side call @${r.tMs} ms: ${r.model} (tools-less) — "${r.preview ?? ''}"`);
   say(`   time to first reply: ${report.timing.timeToFirstReplyMs} ms after sdkSend (incl. ${report.timing.fakeModelLatencyMs} ms fake model latency; runner setup ${report.timing.setupMs} ms not counted)`);
-  say(`   child processes at first reply: ${p.atFirstReply.total} (cli=${p.atFirstReply.byKind.cli} keeper=${p.atFirstReply.byKind.keeper} mcp=${p.atFirstReply.byKind.mcp} hook=${p.atFirstReply.byKind.hook} other=${p.atFirstReply.byKind.other}) · rss ${Math.round(p.atFirstReply.rssKB / 1024)} MB · after teardown: ${p.survivorsAfterTeardown}`);
+  const mbOf = (c) => Math.round((c.rssKB + (c.swapKB ?? 0)) / 1024);
+  say(`   child processes at first reply: ${p.atFirstReply.total} (cli=${p.atFirstReply.byKind.cli} keeper=${p.atFirstReply.byKind.keeper} mcp=${p.atFirstReply.byKind.mcp} hook=${p.atFirstReply.byKind.hook} other=${p.atFirstReply.byKind.other}) · tree ${mbOf(p.atFirstReply)} MB (rss+swap) · settled: ${p.atEnd.total} procs ${mbOf(p.atEnd)} MB · after teardown: ${p.survivorsAfterTeardown}`);
+  // A broken process/memory budget NAMES the tree (one block per distinct tree).
+  for (const tree of new Set(judgement.verdicts.filter((v) => !v.ok && v.tree).map((v) => v.tree.join('\n')))) {
+    say(`   process tree named by the broken budget(s) ${judgement.verdicts.filter((v) => !v.ok && v.tree && v.tree.join('\n') === tree).map((v) => v.id).join(', ')}:`);
+    for (const l of tree.split('\n')) say(`      ${l}`);
+  }
   say(`   claude ${report.cli.version} · containment ${report.containment}${report.containmentOptOut ? ' (WEAK, explicit opt-out)' : ''} · fixture ${report.fixture.skills} skills / ${report.fixture.memoryFiles} rules / ${report.fixture.mcpServers}×${report.fixture.toolsPerServer} MCP tools · routes: ${report.paths.join(', ')}`);
 }
 // A run that needed the weak-containment opt-out never prints the plain PASS terminator: the release gate wants full containment.

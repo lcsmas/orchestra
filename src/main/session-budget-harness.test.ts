@@ -221,6 +221,30 @@ test('mutant turn-end-context-read: anchors once on the shipped result branch an
   assert.match(mutated, /        releaseTurnGate\(session\);\n        void session\.q\.getContextUsage\(\)\.catch\(\(\) => \{\}\);\n        \/\/ #317/);
 });
 
+test('mutant mcp-process-extra (#210): anchors once on the shipped query() options and inserts exactly one extra stdio server', () => {
+  const src = fs.readFileSync(`${REPO}/src/main/agent-sdk.ts`, 'utf8');
+  const m = mutants.MUTANTS['mcp-process-extra'];
+  assert.equal([...src.matchAll(m.find)].length, 1, 'anchor drifted: the mutant no longer describes the shipped code');
+  assert.doesNotMatch(src, /\n {6}mcpServers:/, 'the shipped options must not already set mcpServers (the mutant would be silently overridden)');
+  const mutated = src.replace(m.find, m.replace);
+  assert.equal(mutated.split('\n').length, src.split('\n').length + 1, 'exactly one line inserted');
+  assert.match(mutated, /options: \{\n {6}mcpServers: \{ fixextra: \{ type: 'stdio', command: process\.execPath, args: \["[^"]+fake-mcp-server\.mjs", '--name', 'fixextra', '--tools', '1'\] \} \},\n/);
+});
+
+test('keeper mutant keeper-rss-ballast (#210): applied to the bundle COPY text, exactly once, PATTERN-GONE otherwise; the source loader leaves it alone', async () => {
+  const head = '#!/usr/bin/env node\n"use strict";\nconst net = require("node:net");\n';
+  const out = mutants.mutateKeeperBundle('keeper-rss-ballast', head);
+  assert.equal(out, '#!/usr/bin/env node\n"use strict";\nglobalThis.__sbBallast = Buffer.alloc(256 * 1024 * 1024, 1);\nconst net = require("node:net");\n');
+  assert.throws(() => mutants.mutateKeeperBundle('keeper-rss-ballast', 'const net = require("node:net");\n'), /PATTERN-GONE.*matched 0×/);
+  const built = `${REPO}/dist-electron/keeper.js`;
+  if (fs.existsSync(built)) assert.equal([...fs.readFileSync(built, 'utf8').matchAll(mutants.KEEPER_MUTANTS['keeper-rss-ballast'].find)].length, 1, 'the BUILT keeper bundle still has the anchor');
+  // not a source mutant: accepted by initialize(), and load() leaves agent-sdk.ts untouched
+  await mutants.initialize({ mutant: 'keeper-rss-ballast' });
+  const r = await mutants.load('file:///x/src/main/agent-sdk.ts', {}, async () => ({ format: 'module-typescript', source: Buffer.from('untouched') }));
+  assert.equal(String(r.source), 'untouched');
+  await mutants.initialize({ mutant: null });
+});
+
 test('mutant loader: PATTERN-GONE when the anchor is absent, unknown mutant rejected, inactive is a no-op', async () => {
   const fake = (text: string) => async () => ({ format: 'module-typescript', source: Buffer.from(text) });
   const url = 'file:///x/src/main/agent-sdk.ts';
@@ -245,6 +269,8 @@ test('census classifies cli / keeper / mcp / hook / other', () => {
   assert.equal(c('claude', '-p'), 'cli');
   assert.equal(c('/usr/bin/node', '/h/.orchestra/bin/keeper.js', 'ws', '/s.sock'), 'keeper');
   assert.equal(c('/usr/bin/node', '/r/scripts/session-budget/fake-mcp-server.mjs', '--name', 'a'), 'mcp');
+  // #210: the CLI's argv carries every MCP server in its inline --mcp-config JSON — it is the CLI, not an MCP server
+  assert.equal(c('/home/u/.local/share/claude/versions/2.1.310', '--mcp-config', '{"mcpServers":{"a":{"command":"node","args":["/r/scripts/session-budget/fake-mcp-server.mjs","--name","a"]}}}'), 'cli');
   assert.equal(c('/bin/bash', '/w/.orchestra/hook.sh'), 'hook');
   assert.equal(c('sleep', '5'), 'other');
 });

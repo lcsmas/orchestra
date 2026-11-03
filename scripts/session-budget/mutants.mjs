@@ -5,6 +5,10 @@
 // Every mutant asserts its anchor matches EXACTLY ONCE, else the run throws PATTERN-GONE: a mutant
 // that silently matched nothing would make its must-FAIL arm pass vacuously.
 
+import { fileURLToPath } from 'node:url';
+
+const FAKE_MCP_SERVER = fileURLToPath(new URL('./fake-mcp-server.mjs', import.meta.url));
+
 /** name -> { file suffix, regex (global), replace } */
 export const MUTANTS = {
   // Review round 2 F1: an app-code edit that hands the CLI a traffic-suppressing env knob (buildSdkEnv copies process.env then adds
@@ -33,6 +37,12 @@ export const MUTANTS = {
     file: '/src/main/agent-sdk.ts',
     find: /(  session\.q = query\(\{\n    prompt: promptStream\(session\),\n    options: \{\n)/g,
     replace: "  const { createSdkMcpServer: __csms, tool: __tool } = (await import('@anthropic-ai/claude-agent-sdk')) as any;\n  const __sbBrowser = __csms({ name: 'browser', version: '1.0.0', tools: [__tool('navigate', 'x', {}, async () => ({ content: [{ type: 'text', text: 'ok' }] }))] });\n$1      mcpServers: { browser: __sbBrowser },\n",
+  },
+  // #210: an app edit registers ONE extra stdio MCP server beside the 4 `.mcp.json` ones — a real session then runs 5 mcp children.
+  'mcp-process-extra': {
+    file: '/src/main/agent-sdk.ts',
+    find: /(  session\.q = query\(\{\n    prompt: promptStream\(session\),\n    options: \{\n)/g,
+    replace: `$1      mcpServers: { fixextra: { type: 'stdio', command: process.execPath, args: [${JSON.stringify(FAKE_MCP_SERVER)}, '--name', 'fixextra', '--tools', '1'] } },\n`,
   },
   // #317 re-added: the pre-fix turn-end getContextUsage() (git show 743f9ab0:src/main/agent-sdk.ts, consume() result branch).
   'turn-end-context-read': {
@@ -85,16 +95,33 @@ export const MUTANTS = {
   }])),
 };
 
+/** Mutants of the KEEPER bundle (`dist-electron/keeper.js`, a separate process outside `src/` loading): the runner applies one to the
+ *  scratch COPY it installs (`mutateKeeperBundle`), never to the built file. #210: the keeper holds 256 MB — the tree-memory budget's must-FAIL. */
+export const KEEPER_MUTANTS = {
+  'keeper-rss-ballast': {
+    find: /^(#!\/usr\/bin\/env node\n"use strict";\n)/g,
+    replace: '$1globalThis.__sbBallast = Buffer.alloc(256 * 1024 * 1024, 1);\n',
+  },
+};
+
+/** The bundle text with keeper mutant `name` applied; throws PATTERN-GONE unless the anchor matches exactly once. */
+export function mutateKeeperBundle(name, src) {
+  const m = KEEPER_MUTANTS[name];
+  const hits = [...src.matchAll(m.find)].length;
+  if (hits !== 1) throw new Error(`keeper mutant ${name}: PATTERN-GONE — anchor matched ${hits}× in the keeper bundle (want exactly 1); the mutant no longer describes the shipped code`);
+  return src.replace(m.find, m.replace);
+}
+
 let active = null;
 
 export async function initialize(data) {
   active = data?.mutant ?? null;
-  if (active && !MUTANTS[active]) throw new Error(`unknown mutant: ${active}`);
+  if (active && !MUTANTS[active] && !KEEPER_MUTANTS[active]) throw new Error(`unknown mutant: ${active}`);
 }
 
 export async function load(url, context, nextLoad) {
   const result = await nextLoad(url, context);
-  if (!active || !url.endsWith(MUTANTS[active].file)) return result;
+  if (!active || !MUTANTS[active] || !url.endsWith(MUTANTS[active].file)) return result;
   const m = MUTANTS[active];
   const src = String(result.source);
   const hits = [...src.matchAll(m.find)].length;

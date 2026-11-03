@@ -1,9 +1,9 @@
 // Session budgets (#208) — the ONE file the budget NUMBERS live in, plus the pure judge.
 //
 // Consumers: the session-budget suite (scripts/session-budget/, `pnpm run test:session-budget`),
-// and — by import, never by copy — C3 #210 (processes/memory), C4 #211 (CLI-version re-run) and C7
-// #214 (field alarms). To add a budget: add its number to SESSION_BUDGETS, one rule to RULES, and make
-// the report carry the measured quantity. Nothing else in the repo may restate these numbers.
+// and — by import, never by copy — C4 #211 (CLI-version re-run) and C7 #214 (field alarms). To add a
+// budget: add its number to SESSION_BUDGETS, one rule to RULES, and make the report carry the measured
+// quantity. Nothing else in the repo may restate these numbers.
 //
 // Pure: no I/O, no Electron. Runs under `node --experimental-strip-types`.
 
@@ -58,15 +58,30 @@ export function summarizeWindow(requests: RawRequest[], egress: RawEgress[], aft
   return c;
 }
 
+/** One live process of a session tree (proc-census.mjs); `cmd` is truncated to 300 chars. */
+export interface ProcEntry {
+  pid: number;
+  ppid?: number;
+  kind: 'cli' | 'keeper' | 'mcp' | 'hook' | 'other';
+  /** Resident set, kB (`VmRSS`). */
+  rssKB?: number;
+  /** Swapped-out anonymous memory, kB (`VmSwap`) — counted in the memory budget, so paging cannot hide a leak. */
+  swapKB?: number;
+  cmd: string;
+}
+
 /** A census of the session's process tree at one instant. */
 export interface ProcessCensus {
   total: number;
   /** Zombies are listed apart and NOT in `total` (a zombie is not a running program). */
   zombies: number;
   rssKB: number;
+  swapKB?: number;
   /** cli = the `claude` binary, keeper = the detached daemon, mcp = a fixture MCP server,
    *  hook = an Orchestra hook shell, other = anything else in the tree. */
   byKind: { cli: number; keeper: number; mcp: number; hook: number; other: number };
+  /** The tree itself — what a broken process/memory verdict names. */
+  procs?: ProcEntry[];
 }
 
 /** What one session-budget run measured. Everything the judge and the printed report read. */
@@ -166,6 +181,17 @@ export const SESSION_BUDGETS = Object.freeze({
      *  `mcp__browser__*` tool at init and the first model request names none. Counted separately for the three places it would show. */
     browserMcp: 0,
   }),
+  /** #210 — one fresh session's tree, at the first reply AND settled: 1 keeper, 1 CLI, 1 process per CONFIGURED MCP server, nothing else; tree MB (RSS+swap) = base + perMcpServer × servers.
+   *  Measured (CLI 2.1.310, 32 runs idle/24/40 busy-loops): 6 procs always, 497-544 MB for 4 servers vs the 660 ceiling = 1.21× the worst — `measure-procs.mjs`. */
+  processes: Object.freeze({
+    keeper: 1,
+    cli: 1,
+    mcpPerConfiguredServer: 1,
+    /** The fixture installs no Orchestra hooks: any hook shell in the tree is a leak (unit-tested on synthetic reports only). */
+    hook: 0,
+    other: 0,
+    memoryMB: Object.freeze({ base: 400, perMcpServer: 65 }),
+  }),
 });
 
 export type SessionBudgets = typeof SESSION_BUDGETS;
@@ -181,6 +207,8 @@ export interface Verdict {
   limit: string;
   /** One line, names the rule and the counts. */
   message: string;
+  /** #210: the session tree, one line per process, on a broken process/memory verdict. */
+  tree?: string[];
 }
 
 export interface Judgement {
@@ -225,6 +253,60 @@ function instrumentVerdict(id: string, actual: number | null, min: number, why: 
   };
 }
 
+const mbOf = (kb: number): number => Math.round(kb / 1024);
+/** Memory a process owns = resident + swapped-out. */
+const footprintKB = (p: { rssKB?: number; swapKB?: number }): number => (p.rssKB ?? 0) + (p.swapKB ?? 0);
+
+/** `/path/node-22 /path/keeper.js ws-sb …` → `node-22 keeper.js ws-sb …`: a tree line must be readable, not a scratch path. */
+function shortCmd(cmd: string): string {
+  const base = (x: string) => x.slice(x.lastIndexOf('/') + 1);
+  const out = cmd.split(' ').map((x, i) => (i < 2 && x.includes('/') ? base(x) : x)).filter((x) => x !== '').join(' ');
+  return out.length > 90 ? `${out.slice(0, 89)}…` : out;
+}
+
+/** The session tree as indented text, children under their parent within the set: `[pid] kind  12 MB  node keeper.js ws-sb …`. Pure. */
+export function formatProcessTree(procs: readonly ProcEntry[] | undefined): string[] {
+  const list = procs ?? [];
+  const pids = new Set(list.map((p) => p.pid));
+  const kids = new Map<number, ProcEntry[]>();
+  const roots: ProcEntry[] = [];
+  for (const p of list) {
+    if (p.ppid !== undefined && pids.has(p.ppid) && p.ppid !== p.pid) (kids.get(p.ppid) ?? kids.set(p.ppid, []).get(p.ppid)!).push(p);
+    else roots.push(p);
+  }
+  const lines: string[] = [];
+  const walk = (p: ProcEntry, depth: number): void => {
+    lines.push(`${'  '.repeat(depth)}[${p.pid}] ${p.kind.padEnd(6)} ${p.rssKB === undefined ? '' : `${String(mbOf(footprintKB(p))).padStart(4)} MB  `}${shortCmd(p.cmd)}`);
+    for (const c of kids.get(p.pid) ?? []) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  return lines;
+}
+
+/** #210 — process-count and tree-memory verdicts, one set per census window; a broken one names the tree. */
+function processVerdicts(report: SessionBudgetReport, b: SessionBudgets['processes'], out: Verdict[]): void {
+  const nMcp = report.fixture?.mcpServers ?? 0;
+  const windows: Array<['atFirstReply' | 'atEnd', ProcessCensus | undefined, string]> = [
+    ['atFirstReply', report.processes?.atFirstReply, 'the first reply'],
+    ['atEnd', report.processes?.atEnd, 'the settled end'],
+  ];
+  for (const [when, c, label] of windows) {
+    // A census that never saw the tree, or read no RSS, reads 0 and would pass every max.
+    out.push(instrumentVerdict(`instrument.processCensus.${when}`, c?.total ?? null, 2 + nMcp, `the census at ${label} did not see the keeper + CLI + ${nMcp} MCP servers — a max-budget on it would pass vacuously`));
+    out.push(instrumentVerdict(`instrument.memoryObserved.${when}`, c?.procs ? c.procs.filter((p) => (p.rssKB ?? 0) > 0).length : null, Math.max(1, c?.total ?? 1), `the census at ${label} read no RSS for some process — the memory budget would pass vacuously`));
+    if (!c?.byKind) continue;
+    const tree = formatProcessTree(c.procs);
+    const kb = c.rssKB + (c.swapKB ?? 0);
+    const ctx = `${c.total} processes, ${mbOf(kb)} MB (RSS+swap) at ${label}`;
+    const withTree = (v: Verdict): Verdict => (v.ok ? v : { ...v, tree });
+    const limits: Array<['keeper' | 'cli' | 'mcp' | 'hook' | 'other', number]> = [
+      ['keeper', b.keeper], ['cli', b.cli], ['mcp', b.mcpPerConfiguredServer * nMcp], ['hook', b.hook], ['other', b.other],
+    ];
+    for (const [kind, limit] of limits) out.push(withTree(budgetVerdict(`session.processes.${when}.${kind}`, 'max', limit, c.byKind[kind], `${kind} processes — ${ctx}`)));
+    out.push(withTree(budgetVerdict(`session.processes.${when}.memoryMB`, 'max', b.memoryMB.base + b.memoryMB.perMcpServer * nMcp, mbOf(kb), `MB (RSS+swap) summed over the tree — ${ctx}`)));
+  }
+}
+
 /** Judge one report against the budgets. Never throws on a malformed report: a missing measurement
  *  is a failed instrument check (VOID), not a pass. */
 export function judgeSessionBudget(report: SessionBudgetReport, budgets: SessionBudgets = SESSION_BUDGETS): Judgement {
@@ -244,6 +326,7 @@ export function judgeSessionBudget(report: SessionBudgetReport, budgets: Session
     verdicts.push(...mapVerdicts('session.beforeFirstReply.startupEgressAttempts', egressBudget, report.startupEgress ?? {},
       `${ctx}; before the main model request started (startup ${report.timing?.startupEgressSpanMs ?? '?'} ms, so +${extra} retry allowance on a listed host) it made egress attempts ${fmtMap(report.startupEgress)}`));
   }
+  processVerdicts(report, budgets.processes, verdicts);
   // Instrument checks: the subject really was a heavy, mounted session with a first reply.
   const f = report.fixture;
   const s = report.subject;
