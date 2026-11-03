@@ -174,7 +174,7 @@ human tab UI (#393), tab memory (#394), the CDP proxy (#395) and agent tabs
   without it a late did-* event from a still-live (async-closing) tab publishes
   a ghost state for a deleted workspace or over the rebuilt panel.
   `listTabs`/`getTab`/`getActiveTab` reap on every read.
-- **Tests**: `src/main/browser-panel-tabs.test.ts` (78 tests: 29 registry arms + an explicit-tabId loop over all 16 entry points x 3 stale situations + an enumeration guard; N>1 tabs, real
+- **Tests**: `src/main/browser-panel-tabs.test.ts` (133 tests on 2026-11-03: the registry arms + an explicit-tabId loop over all 16 entry points x 3 stale situations + an enumeration guard; N>1 tabs, real
   module over a stubbed `electron` loader hook; `__bpAsyncClose` models
   Electron's async `close()`) + `scripts/mutate-browser-panel-tabs.mjs`
   (52 in-place mutants, byte-exact restore; `--check` = anchors live, `--only a|b`). The registry itself cannot be
@@ -711,14 +711,14 @@ Each tab's renderer RSS is billed to its owning workspace on the Resources page,
   `Input.insertText` are NOT affected on a view detached after it was shown —
   the #402 spike measured them landing at once (5/5); only `mouseWheel` hangs
   (a never-attached view has no layout: text never lands, a click only with throttling on).
-  A hidden view CAN be made to answer — see *Hidden-view spike*; the product's refusals are
-  UNCHANGED by that finding (lifting them is tracked in #406). `Runtime.evaluate` / `loadURL` work
+  A hidden view CAN be made to answer — see *Hidden-view spike*; since #406 the product drives
+  a hidden tab IN PLACE (§ Hidden drive), and the paragraph below describes the pre-#406 rule
+  that § Hidden drive now narrows to its remaining refusals. `Runtime.evaluate` / `loadURL` work
   fine detached. So the proxy's `framesError`
   makes `Input.*` and `Page.captureScreenshot` fail FAST with a clear error naming the
   commands that DO still work (`snapshot`/`eval`/`get`/`open`/`scroll`/`wait`), and every
   capture/input CDP call is bounded — a hung promise here is a CLI call that never
-  returns (the legacy `requireComposited()` guard of `capture`/`clickAt`/`typeText`/
-  `scrollBy` is the same rule for the pre-CLI primitives). `fill` is on the refused side
+  returns. `fill` is on the refused side
   (`Input.insertText`); the removed `form_input` set the value through the DOM and worked
   hidden — the skill gives `eval` as the workaround (parity rig clause
   `eval-sets-a-field-while-hidden`).
@@ -830,7 +830,7 @@ Not committed (so not re-derivable from the repo): the per-run `late` lists (whi
 
 **Confound controls.** C1 leak sampler (`ctl-visible`, `x1`, `a2`, `d1-bt0`, `d3`, `m1`, N=3, private rig); C2 instruments off + immediate capture (`--skip screencast,framesub --p2-ms 0`, N=5, private rig); C3 24 s tail (N=2, earlier rig revision); C4 `d4` (N=3, private rig). The key preset (`--arms key --n 5 --assert`) passed twice — at `1d614d01` and on the final tree (ASSERT OK, 13/13 arms, N=5, private-runtime rig) — and the `noflip` mutant exits 1 (CONTROL FAILED + 2 assertion failures) on both.
 
-**What the lift (#406) can build on this** (design input, not implemented): keep every tab of every workspace attached to the window and hide the non-active ones with `setVisible(false)` instead of `removeChildView`; call `setBackgroundThrottling(false)` only around an agent action (`d3`) and restore it after; treat a `stale` or wrong-size frame as failure (compare the page's own marker, not just "non-blank"); keep the `requireComposited`-style refusal for a view that never loaded at real size and the `withTimeout` guard for a window that produces no frames; attribute hidden views per workspace (the #394 tab-memory pattern already attributes the renderer processes).
+**What the lift (#406) can build on this** (design input — implemented as policy A2, see § Hidden drive): keep every tab of every workspace attached to the window and hide the non-active ones with `setVisible(false)` instead of `removeChildView`; call `setBackgroundThrottling(false)` only around an agent action (`d3`) and restore it after; treat a `stale` or wrong-size frame as failure (compare the page's own marker, not just "non-blank"); keep the `requireComposited`-style refusal for a view that never loaded at real size and the `withTimeout` guard for a window that produces no frames; attribute hidden views per workspace (the #394 tab-memory pattern already attributes the renderer processes).
 
 **Cost of N hidden views (#406).** Measured — see § Hidden-view cost below (the pre-ledger design that stood here was superseded by the limits OPS wrote in ledger #409).
 
@@ -1114,7 +1114,7 @@ webContents.debugger.sendCommand(method, params, sessionId)   (one attach per ta
   (`--require-all` turns each into a FAIL), and a merged ticket whose body is missing FAILS. Seam mutants (`--mutant strip-hides-agent-tabs | partition-shared | popup-same-view | agent-closes-any-tab |
   skill-example-without-click | profile-not-persistent | agent-cdp-unscoped | spawn-profile-not-held`) must go red on the NAMED clause; `--check-anchors <app-dir>` proves each edit matches once.
 
-## Agent tabs (#397) — policy entry points, ownership at the CLI, visible bring-to-front, ref pin
+## Agent tabs (#397) — policy entry points, ownership at the CLI, bring-to-front only when asked (#406), ref pin
 
 `orchestra browser tab list|new|<ref>|close` (agent-browser's `tab` command) work across the workspace's tabs; the proxy maps target
 discovery and "create target" onto the panel tabs (Electron has no `Target.createTarget`). Spec #388 stories 36-37, 41, 43-44; ADR 0009.
