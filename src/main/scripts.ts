@@ -4,6 +4,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import type { Workspace } from '../shared/types';
+import { childEnv } from '../shared/child-env';
 
 const SCRIPT_LOG_DIR = path.join(os.homedir(), '.orchestra', 'scripts');
 
@@ -97,7 +98,7 @@ export async function runOneShot(opts: {
       const { command, args } = loginShellArgv(opts.script);
       proc = spawn(command, args, {
         cwd: opts.cwd,
-        env: { ...process.env, ...opts.env },
+        env: { ...childEnv(), ...opts.env },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {

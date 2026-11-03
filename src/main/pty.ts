@@ -13,6 +13,7 @@ import { createLocalPtyTransport } from './transport/local-pty';
 import { createRemoteTransport } from './transport/remote';
 import { getSandboxConnection } from './transport/sandbox-manager';
 import type { WorkspaceHost } from '../shared/types';
+import { childEnv } from '../shared/child-env';
 
 /** Build the transport for a session given where its agent runs. Local is the
  *  default and unchanged (node-pty); a sandbox-hosted workspace rides a
@@ -263,7 +264,7 @@ export async function startPty(opts: {
         ...termCaps,
       }
     : {
-        ...(process.env as Record<string, string>),
+        ...childEnv(),
         ...(opts.extraEnv ?? {}),
         ...termCaps,
       };

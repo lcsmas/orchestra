@@ -66,6 +66,7 @@ import { createCapStateCache } from './cap-state-cache.ts';
 import { appSliceDir, scopePrefix } from './memory-scope.ts';
 import { readKernelOomKills } from '../keeper/kernel-oom-log';
 import { APPIMAGE_PATH } from './app-image';
+import { childEnv } from '../shared/child-env';
 import { log } from './logger';
 
 type KeeperExitListener = (code: number | null, signal: string | null) => void;
@@ -540,7 +541,7 @@ function resolveKeeperRuntime(): { cmd: string; env: NodeJS.ProcessEnv; kind: 'b
   if (!bundled) bundled = refreshBundledRuntime();
   const pick = pickKeeperRuntime(gatherRuntimeInputs({ bundledNode: bundled, appImagePath: APPIMAGE_PATH, findOnPath, execPath: process.execPath }));
   if (pick.warn) log.warn(pick.warn);
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = childEnv();
   if (pick.electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
   else delete env.ELECTRON_RUN_AS_NODE;
   return { cmd: pick.cmd, env, kind: pick.kind };

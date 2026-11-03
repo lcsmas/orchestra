@@ -28,6 +28,10 @@ Bootstrap order matters; several steps run *before* the window:
   choice should apply to a dev build too); `src/main/app-image.ts` captures
   `APPIMAGE` at import time for the two places that still need it (the relaunch
   above, the CLI shim).
+  `CHROME_DESKTOP` is the exception: it is Electron's own desktop identity, so main keeps it
+  and the child env builders drop it via `childEnv()` (SDK `buildSdkEnv`, local PTYs,
+  `scripts.ts`, the keeper) — a Chromium started from an agent with
+  `CHROME_DESKTOP=orchestra.desktop` made Orchestra the system default browser.
 - **Keyring selection** — after the audio switch, before `ready`: `selectLinuxPasswordStore(...)`
   (`src/main/linux-keyring.ts`, #389) appends `--password-store=gnome-libsecret` when an unlocked
   Secret Service answers on an unrecognised desktop; never in CLI mode; the decision is logged in the

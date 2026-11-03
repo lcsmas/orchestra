@@ -54,3 +54,21 @@ export function stripProcessLocalEnv(env: Record<string, string | undefined>): s
   }
   return removed;
 }
+
+/**
+ * Vars the main process KEEPS (`CHROME_DESKTOP` is Electron's own desktop identity, which it may
+ * consult after startup — not stripped from main to avoid that risk) but no child may inherit. A Chromium
+ * started from an agent shell with `CHROME_DESKTOP=orchestra.desktop` takes Orchestra's
+ * identity, and its "make default browser" ran `xdg-settings set default-web-browser
+ * orchestra.desktop` — every link click then looped back into Orchestra.
+ */
+export const CHILD_ONLY_STRIPPED_ENV_VARS = ['CHROME_DESKTOP'] as const;
+
+/** A copy of `base` (string values only) without the child-only vars above — the env every
+ *  user-facing child (agent session, terminal / Run PTY, repo scripts, keeper) starts from. */
+export function childEnv(base: Record<string, string | undefined> = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(base)) if (typeof v === 'string') env[k] = v;
+  for (const key of CHILD_ONLY_STRIPPED_ENV_VARS) delete env[key];
+  return env;
+}

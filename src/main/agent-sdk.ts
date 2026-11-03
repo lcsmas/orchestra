@@ -152,6 +152,7 @@ import type {
   Workspace,
 } from '../shared/types';
 import { makeRestartNotice, classifyConsumeTermination } from '../shared/restart-notice.ts';
+import { childEnv } from '../shared/child-env.ts';
 import {
   enabledPluginInstalls,
   firstSentenceOfDescription,
@@ -821,10 +822,7 @@ function tildePath(p: string): string {
  *  logs in as that account), with CLAUDE_CONFIG_DIR otherwise UNSET so a leftover value from Orchestra's
  *  own environment can't silently retarget the session (self-tune.ts:201-206). */
 async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): Promise<{ env: Record<string, string> }> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === 'string') env[k] = v;
-  }
+  const env = childEnv();
   delete env.CLAUDE_CONFIG_DIR;
   // Orchestra-launched-from-Orchestra (or from any agent shell) inherits the
   // PARENT session's ORCHESTRA_WS_ID / ORCHESTRA_EVENTS_DIR through process.env.
