@@ -68,7 +68,9 @@ if (realApi) throw new Error('realApi smoke is driven by smoke-real.mjs, never b
 const keeperSrc = path.join(REPO, 'dist-electron', 'keeper.js');
 if (!fs.existsSync(keeperSrc)) throw new Error(`dist-electron/keeper.js missing — run \`pnpm run build:keeper\` (harness.ensureBuilt does)`);
 fs.mkdirSync(path.join(orchHome, 'bin'), { recursive: true });
-fs.copyFileSync(keeperSrc, path.join(orchHome, 'bin', 'keeper.js'));
+const { KEEPER_MUTANTS, mutateKeeperBundle } = await import(`${HERE}/mutants.mjs`);
+if (mutant && KEEPER_MUTANTS[mutant]) fs.writeFileSync(path.join(orchHome, 'bin', 'keeper.js'), mutateKeeperBundle(mutant, fs.readFileSync(keeperSrc, 'utf8')), { mode: fs.statSync(keeperSrc).mode });
+else fs.copyFileSync(keeperSrc, path.join(orchHome, 'bin', 'keeper.js'));
 
 const { initPlatform } = await import(`${REPO}/src/main/platform/index.ts`);
 const events = [];
@@ -169,7 +171,6 @@ const win = (from, to) => summarizeWindow(api.requests, api.egress, from, to);
 const mainModel = api.requests.find((r) => r.type === 'model' && (r.tools ?? 0) > 0);
 // STARTUP egress: attempts made before the main request STARTED (headers in, body not yet read) minus a margin — a causal cut, not a race with the reply or with the request-coupled attempts.
 const startupEgress = mainModel ? egressUpTo(api.egress, mainModel.tStartMs - STARTUP_CUT_MARGIN_MS) : undefined;
-const strip = ({ procs, ...c }) => c;
 const report = {
   schema: 1,
   arm,
@@ -182,7 +183,7 @@ const report = {
     startupEgressSpanMs: mainModel && api.egress.length ? Math.round(mainModel.tStartMs - api.egress[0].tMs) : undefined },
   startupEgress,
   requests: { beforeFirstReply: win(-Infinity, cut), afterFirstReply: win(cut, Infinity), total: win(-Infinity, Infinity) },
-  processes: { atFirstReply: strip(censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 } }), atEnd: strip(censusAtEnd), survivorsAfterTeardown: survivors },
+  processes: { atFirstReply: censusAtFirstReply ?? { total: 0, zombies: 0, rssKB: 0, swapKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 }, procs: [] }, atEnd: censusAtEnd, survivorsAfterTeardown: survivors },
   egress: api.egress.map((e) => e.target),
   egressLog: api.egress.map((e) => ({ tMs: Math.round(e.tMs), target: e.target })),
   subject: {

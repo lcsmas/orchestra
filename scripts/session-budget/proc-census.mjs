@@ -1,4 +1,4 @@
-// Process census for the session-budget suite (#208) — reused by C3 #210 (processes/memory).
+// Process census for the session-budget suite (#208); #210 judges its count and memory (session-budget.ts `processes`).
 // Reads /proc directly (no `ps`, so the rtk output filter is not in the loop). Two modes:
 //   pidns  — the runner is inside its OWN pid namespace: the tree is every process except pid 1 (the
 //            namespace init) and the runner's ancestors/self. Nothing can hide from it or outlive it.
@@ -41,7 +41,8 @@ export function snapshotProcs() {
 export function classify(p) {
   const argv0 = p.cmd[0] ?? '';
   const line = p.cmd.join(' ');
-  if (line.includes('fake-mcp-server.mjs')) return 'mcp';
+  // The server itself (`node …/fake-mcp-server.mjs`): NOT any process whose argv merely mentions it — the CLI carries every server in its inline `--mcp-config` JSON.
+  if (p.cmd.slice(0, 3).some((a) => /(^|\/)fake-mcp-server\.mjs$/.test(a))) return 'mcp';
   if (/(^|\/)keeper\.js(\s|$)/.test(line)) return 'keeper';
   if (/(^|\/)claude$/.test(argv0) || /\/claude\/versions\//.test(argv0)) return 'cli';
   if (/\.orchestra\/.*\.sh|\.claude\/.*hook/.test(line) || (/(^|\/)(ba)?sh$/.test(argv0) && /orchestra/.test(line))) return 'hook';
@@ -51,7 +52,7 @@ export function classify(p) {
 /**
  * Census of the session's process tree.
  * @param {{pidns: boolean, selfPid?: number}} opts
- * @returns {{total:number, zombies:number, rssKB:number, byKind:{cli:number,keeper:number,mcp:number,hook:number,other:number}, procs:{pid:number,kind:string,cmd:string}[]}}
+ * @returns {{total:number, zombies:number, rssKB:number, swapKB:number, byKind:{cli:number,keeper:number,mcp:number,hook:number,other:number}, procs:{pid:number,ppid:number,kind:string,rssKB:number,swapKB:number,cmd:string}[]}}
  */
 export function census({ pidns, selfPid = process.pid }) {
   const all = snapshotProcs();
@@ -75,7 +76,8 @@ export function census({ pidns, selfPid = process.pid }) {
     total: live.length,
     zombies: tree.length - live.length,
     rssKB: live.reduce((a, p) => a + p.rssKB, 0),
+    swapKB: live.reduce((a, p) => a + p.swapKB, 0),
     byKind,
-    procs: live.map((p) => ({ pid: p.pid, kind: classify(p), cmd: p.cmd.join(' ').slice(0, 140) })),
+    procs: live.map((p) => ({ pid: p.pid, ppid: p.ppid, kind: classify(p), rssKB: p.rssKB, swapKB: p.swapKB, cmd: p.cmd.join(' ').slice(0, 300) })),
   };
 }

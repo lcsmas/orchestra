@@ -13,6 +13,9 @@ import {
   STARTUP_CUT_MARGIN_MS,
   STARTUP_RETRY_MS,
   STARTUP_SPAN_MAX_MS,
+  formatProcessTree,
+  type ProcEntry,
+  type ProcessCensus,
   type RequestCounts,
   type SessionBudgetReport,
 } from './session-budget.ts';
@@ -26,7 +29,20 @@ const counts = (main: number, count_tokens: number, other = 0, side: Record<stri
 };
 /** What the healthy PRODUCTION-config session measures before its first reply (see SESSION_BUDGETS). */
 const preOk = () => counts(1, 0, 0, { [HAIKU]: 1 }, { [HOST]: 5 });
-const census = (mcp: number, cli = 1, keeper = 1) => ({ total: mcp + cli + keeper, zombies: 0, rssKB: 1, byKind: { cli, keeper, mcp, hook: 0, other: 0 } });
+const MB = 1024;
+const row = (pid: number, kind: ProcEntry['kind'], mb: number, cmd: string, swapMB = 0): ProcEntry => ({ pid, ppid: 2, kind, rssKB: mb * MB, swapKB: swapMB * MB, cmd });
+/** A census of the MEASURED healthy tree (keeper 53 MB, CLI 265, 51 per MCP server = 522 MB for 4); `extra` rows are added on top, `mbOf` overrides a kind's per-process MB. */
+const census = (mcp: number, cli = 1, keeper = 1, extra: ProcEntry[] = [], mbOf: Partial<Record<ProcEntry['kind'], number>> = {}): ProcessCensus => {
+  const procs: ProcEntry[] = [
+    ...Array.from({ length: keeper }, (_, i) => row(10 + i, 'keeper', mbOf.keeper ?? 53, 'node keeper.js ws-sb /s.sock')),
+    ...Array.from({ length: cli }, (_, i) => row(20 + i, 'cli', mbOf.cli ?? 265, 'claude --output-format stream-json')),
+    ...Array.from({ length: mcp }, (_, i) => row(30 + i, 'mcp', mbOf.mcp ?? 51, `node fake-mcp-server.mjs --name fixsrv${i + 1}`)),
+    ...extra,
+  ];
+  const byKind = { cli, keeper, mcp, hook: 0, other: 0 };
+  for (const p of extra) byKind[p.kind]++;
+  return { total: procs.length, zombies: 0, rssKB: procs.reduce((a, p) => a + (p.rssKB ?? 0), 0), swapKB: procs.reduce((a, p) => a + (p.swapKB ?? 0), 0), byKind, procs };
+};
 
 /** A report of a healthy, fully-mounted heavy session (the shape session-runner.mjs emits). */
 function good(over: Partial<SessionBudgetReport> = {}): SessionBudgetReport {
@@ -50,6 +66,12 @@ test('the budget numbers are pinned as LITERALS (a silent loosening must fail he
     { ...SESSION_BUDGETS.beforeFirstReply },
     { modelRequests: 1, sideModelRequests: { [HAIKU]: 1 }, countTokensRequests: 0, otherRequests: 0, startupEgressAttempts: { [HOST]: 3 }, browserMcp: 0 },
   );
+  // #210: measured 2026-11-03 (CLI 2.1.310): 6 processes, 520-544 MB for 4 servers — ceilings 1/1/1-per-server/0/0 and 400 + 65 × servers MB
+  assert.deepEqual(
+    { ...SESSION_BUDGETS.processes, memoryMB: { ...SESSION_BUDGETS.processes.memoryMB } },
+    { keeper: 1, cli: 1, mcpPerConfiguredServer: 1, hook: 0, other: 0, memoryMB: { base: 400, perMcpServer: 65 } },
+  );
+  assert.ok(Object.isFrozen(SESSION_BUDGETS.processes) && Object.isFrozen(SESSION_BUDGETS.processes.memoryMB));
   assert.ok(Object.isFrozen(SESSION_BUDGETS) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply));
   assert.ok(Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.sideModelRequests) && Object.isFrozen(SESSION_BUDGETS.beforeFirstReply.startupEgressAttempts));
   assert.equal(WEAK_CONTAINMENT_ENV, 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT');
@@ -65,10 +87,11 @@ test('a healthy session passes every budget and every instrument check', () => {
   assert.equal(j.ok, true);
   assert.equal(j.void, false);
   assert.ok(j.verdicts.every((v) => v.ok), j.verdicts.filter((v) => !v.ok).map((v) => v.message).join('\n'));
-  // 8 budget lines (main, haiku side call, count_tokens, other, egress host, + #399's browser-MCP init tools / init servers / request names) + containment, productionEnv, egress visible,
-  // startup not stalled, clock, runCompleted, keeper, cli, firstReply, mcpConnected, mcpChildren, tools + 4 markers + browserMcpObserved
-  assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 8);
-  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 17);
+  // 8 budget lines (main, haiku side call, count_tokens, other, egress host, + #399's browser-MCP init tools / init servers / request names)
+  // + #210's keeper / cli / mcp / hook / other / memoryMB at the first reply AND settled (12); instrument: containment, productionEnv, egress visible,
+  // startup not stalled, clock, runCompleted, keeper, cli, firstReply, mcpConnected, mcpChildren, tools + 4 markers + browserMcpObserved + #210's processCensus / memoryObserved x2
+  assert.equal(j.verdicts.filter((v) => v.kind === 'budget').length, 20);
+  assert.equal(j.verdicts.filter((v) => v.kind === 'instrument').length, 21);
 });
 
 test('a boot-time context read (count_tokens burst before the first reply) breaks the budget NAMING it and the counts', () => {
@@ -302,3 +325,115 @@ test('a SLOW-but-healthy startup PASSES: the known host gets a retry allowance s
   assert.match(absurd.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*9000 ms \(> 8000\).*re-run/);
 });
 
+// ── #210: process count + tree memory of one session ─────────────────────────
+
+const WINDOWS = ['atFirstReply', 'atEnd'] as const;
+type Win = (typeof WINDOWS)[number];
+/** A healthy report whose census in window `when` is `c` (the other window stays healthy). */
+const withCensus = (when: Win, c: ProcessCensus, rest: Partial<SessionBudgetReport> = {}) =>
+  good({ processes: { atFirstReply: when === 'atFirstReply' ? c : census(4), atEnd: when === 'atEnd' ? c : census(4), survivorsAfterTeardown: 0 }, ...rest });
+const brokenBudgets = (j: ReturnType<typeof judgeSessionBudget>) => j.verdicts.filter((v) => !v.ok && v.kind === 'budget');
+/** A 4-server census whose tree weighs exactly `mb` (the healthy one is 522). */
+const weighing = (mb: number) => census(4, 1, 1, [], { cli: 265 + (mb - 522) });
+
+test('#210: one process too many of ANY kind breaks exactly that kind\'s budget, in each window, and names the tree', () => {
+  const cases: Array<[string, ProcessCensus]> = [
+    ['keeper', census(4, 1, 2)],
+    ['cli', census(4, 2, 1, [], { cli: 100 })],
+    ['mcp', census(5)],
+    ['hook', census(4, 1, 1, [row(90, 'hook', 3, 'bash /w/.orchestra/hook.sh')])],
+    ['other', census(4, 1, 1, [row(91, 'other', 1, 'sleep 600')])],
+  ];
+  for (const when of WINDOWS) {
+    for (const [kind, c] of cases) {
+      const j = judgeSessionBudget(withCensus(when, c));
+      const broken = brokenBudgets(j);
+      assert.deepEqual(broken.map((v) => v.id), [`session.processes.${when}.${kind}`], `${when} ${kind}`);
+      assert.equal(j.ok, false);
+      assert.equal(j.void, false, `${kind}: a stray process is a FAIL, not a VOID`);
+      assert.equal(broken[0].actual, kind === 'mcp' ? 5 : kind === 'keeper' || kind === 'cli' ? 2 : 1);
+      assert.match(broken[0].message, new RegExp(`BUDGET BROKEN session\\.processes\\.${when}\\.${kind}: allowed at most ${kind === 'mcp' ? 4 : kind === 'keeper' || kind === 'cli' ? 1 : 0}, saw \\d+ — ${kind} processes — \\d+ processes, \\d+ MB \\(RSS\\+swap\\) at the ${when === 'atEnd' ? 'settled end' : 'first reply'}`));
+      assert.ok((broken[0].tree ?? []).length === c.total, `${kind}: the broken verdict names the WHOLE tree (${c.total} rows), got ${broken[0].tree?.length}`);
+    }
+  }
+  assert.deepEqual(brokenBudgets(judgeSessionBudget(good())), [], 'the healthy tree passes (control)');
+});
+
+test('#210: the mcp ceiling is one process per CONFIGURED server (fixture.mcpServers), not a hardcoded 4', () => {
+  const two = (c: ProcessCensus) => judgeSessionBudget(good({ fixture: { skills: 60, memoryFiles: 50, mcpServers: 2, toolsPerServer: 15, claudeMdKB: 48 }, subject: { ...good().subject, mcpServersConnected: 2, firstModelRequestMcpTools: 30 }, processes: { atFirstReply: c, atEnd: c, survivorsAfterTeardown: 0 } }));
+  assert.deepEqual(brokenBudgets(two(census(2))), []);
+  assert.deepEqual(brokenBudgets(two(census(3))).map((v) => v.id), ['session.processes.atFirstReply.mcp', 'session.processes.atEnd.mcp']);
+});
+
+test('#210: tree memory (RSS + swap, MB) — AT the ceiling 400 + 65 × configured servers passes, one MB over breaks, in each window', () => {
+  assert.equal(SESSION_BUDGETS.processes.memoryMB.base + SESSION_BUDGETS.processes.memoryMB.perMcpServer * 4, 660);
+  for (const when of WINDOWS) {
+    assert.deepEqual(brokenBudgets(judgeSessionBudget(withCensus(when, weighing(660)))), [], `${when}: 660 MB is within the budget`);
+    const j = judgeSessionBudget(withCensus(when, weighing(661)));
+    const [v] = brokenBudgets(j);
+    assert.deepEqual(brokenBudgets(j).map((x) => x.id), [`session.processes.${when}.memoryMB`]);
+    assert.equal(v.actual, 661);
+    assert.match(v.message, new RegExp(`BUDGET BROKEN session\\.processes\\.${when}\\.memoryMB: allowed at most 660, saw 661 — MB \\(RSS\\+swap\\) summed over the tree`));
+    assert.equal(j.void, false, 'an inflated tree is a FAIL, not a VOID');
+    assert.ok((v.tree ?? []).some((l) => /\[20\] cli +404 MB/.test(l)), `the tree names the heavy process: ${JSON.stringify(v.tree)}`);
+  }
+});
+
+test('#210: MB is rounded to the nearest (660.4 passes, 660.6 breaks) — the verdict and its message use the same figure', () => {
+  const frac = (mb: number) => { const c = weighing(660); c.procs![1] = { ...c.procs![1], rssKB: c.procs![1].rssKB! + Math.round((mb - 660) * MB) }; c.rssKB += Math.round((mb - 660) * MB); return c; };
+  assert.deepEqual(brokenBudgets(judgeSessionBudget(withCensus('atEnd', frac(660.4)))), []);
+  const j = judgeSessionBudget(withCensus('atEnd', frac(660.6)));
+  assert.deepEqual(brokenBudgets(j).map((v) => v.id), ['session.processes.atEnd.memoryMB']);
+  assert.equal(brokenBudgets(j)[0].actual, 661);
+});
+
+test('#210: swapped-out memory counts (a paged-out leak is still a leak), and the ceiling scales with the configured servers', () => {
+  const c = census(4);
+  c.procs![1] = { ...c.procs![1], swapKB: 140 * MB }; // cli: 265 resident + 140 swapped → 662 MB
+  c.swapKB = 140 * MB;
+  const j = judgeSessionBudget(withCensus('atEnd', c));
+  assert.deepEqual(brokenBudgets(j).map((v) => v.id), ['session.processes.atEnd.memoryMB']);
+  assert.equal(brokenBudgets(j)[0].actual, 662);
+  // 2 configured servers → ceiling 400 + 130 = 530
+  const two = (mb: number) => { const t = census(2, 1, 1, [], { cli: 265 + (mb - 420) }); return judgeSessionBudget(good({ fixture: { skills: 60, memoryFiles: 50, mcpServers: 2, toolsPerServer: 15, claudeMdKB: 48 }, subject: { ...good().subject, mcpServersConnected: 2, firstModelRequestMcpTools: 30 }, processes: { atFirstReply: t, atEnd: t, survivorsAfterTeardown: 0 } })); };
+  assert.deepEqual(brokenBudgets(two(530)), []);
+  assert.deepEqual(brokenBudgets(two(531)).map((v) => v.id), ['session.processes.atFirstReply.memoryMB', 'session.processes.atEnd.memoryMB']);
+});
+
+test('#210: a census that saw nothing, or read no memory, is VOID — a max-budget on a vacuous 0 must not go green', () => {
+  const empty: ProcessCensus = { total: 0, zombies: 0, rssKB: 0, swapKB: 0, byKind: { cli: 0, keeper: 0, mcp: 0, hook: 0, other: 0 }, procs: [] };
+  const noMem = census(4);
+  noMem.procs = noMem.procs!.map((p) => ({ ...p, rssKB: 0 }));
+  noMem.rssKB = 0;
+  const cases: Array<[string, Win, ProcessCensus | undefined, string]> = [
+    ['empty census at the settled end', 'atEnd', empty, 'instrument.processCensus.atEnd'],
+    ['no census at the settled end', 'atEnd', undefined, 'instrument.processCensus.atEnd'],
+    ['no RSS read at the first reply', 'atFirstReply', noMem, 'instrument.memoryObserved.atFirstReply'],
+    ['no RSS read at the settled end', 'atEnd', noMem, 'instrument.memoryObserved.atEnd'],
+  ];
+  for (const [name, when, c, id] of cases) {
+    const j = judgeSessionBudget(withCensus(when, c as ProcessCensus));
+    assert.equal(j.void, true, name);
+    assert.equal(j.ok, false, name);
+    assert.ok(j.verdicts.some((v) => !v.ok && v.id === id && /INSTRUMENT VOID/.test(v.message)), `${name}: ${JSON.stringify(j.verdicts.filter((v) => !v.ok).map((v) => v.id))}`);
+  }
+});
+
+test('#210: a break in ONE window leaves the other window\'s verdicts green (the two windows are judged separately)', () => {
+  const j = judgeSessionBudget(withCensus('atEnd', census(4, 1, 1, [row(91, 'other', 1, 'sleep 600')])));
+  assert.deepEqual(brokenBudgets(j).map((v) => v.id), ['session.processes.atEnd.other']);
+  assert.ok(j.verdicts.filter((v) => v.id.startsWith('session.processes.atFirstReply.')).every((v) => v.ok));
+});
+
+test('#210: formatProcessTree names every process — pid, kind, MB (RSS+swap), short command — children indented under their parent', () => {
+  const lines = formatProcessTree([
+    { pid: 10, ppid: 2, kind: 'keeper', rssKB: 53 * MB, swapKB: 0, cmd: '/home/u/.orchestra/bin/node-22/bin/node /home/u/.orchestra/bin/keeper.js ws-sb /s.sock' },
+    { pid: 20, ppid: 10, kind: 'cli', rssKB: 200 * MB, swapKB: 65 * MB, cmd: '/home/u/.local/share/claude/versions/2.1.310 --output-format stream-json' },
+    { pid: 30, ppid: 20, kind: 'mcp', rssKB: 51 * MB, swapKB: 0, cmd: 'node /r/scripts/session-budget/fake-mcp-server.mjs --name fixsrv1' },
+  ]);
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /^\[10\] keeper +53 MB +node keeper\.js ws-sb \/s\.sock$/);
+  assert.match(lines[1], /^ {2}\[20\] cli +265 MB +2\.1\.310 --output-format stream-json$/);
+  assert.match(lines[2], /^ {4}\[30\] mcp +51 MB +node fake-mcp-server\.mjs --name fixsrv1$/);
+  assert.deepEqual(formatProcessTree(undefined), []);
+});
