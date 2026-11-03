@@ -4,6 +4,7 @@ import path from 'node:path';
 import { orchestraHome } from './platform';
 import { log } from './logger';
 import { APPIMAGE_PATH } from './app-image';
+import { GUI_LAUNCH_SHIM_NAMES, guiLaunchShimBody } from '../shared/gui-launch-shim';
 
 // The shipped `orchestra` CLI lives inside the app bundle (dist-electron/cli.js,
 // reached via `<app> cli …`). A package.json `bin` entry only helps npm
@@ -163,6 +164,18 @@ export function installAgentCliShim(): void {
     }
   } catch (e) {
     log.warn('failed to install agent orchestra CLI shim', e);
+  }
+}
+
+/** Best-effort: the desktop-browser launch shims (shared/gui-launch-shim.ts) next to the agent `orchestra` shim. */
+export function installAgentGuiLaunchShims(): void {
+  if (process.platform !== 'linux') return;
+  try {
+    const dir = agentCliBinDir();
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of GUI_LAUNCH_SHIM_NAMES) fs.writeFileSync(path.join(dir, name), guiLaunchShimBody(name, dir, SHIM_MARKER), { mode: 0o755 });
+  } catch (e) {
+    log.warn('failed to install agent GUI launch shims', e);
   }
 }
 

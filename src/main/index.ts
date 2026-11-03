@@ -217,7 +217,7 @@ import {
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
 import { startAccesMobileHost, stopAccesMobileHost } from './acces-mobile-host';
-import { installCliShim, installAgentCliShim } from './cli-shim';
+import { installCliShim, installAgentCliShim, installAgentGuiLaunchShims } from './cli-shim';
 import {
   installKeeper,
   listLiveKeepers,
@@ -1078,6 +1078,7 @@ if (!ORCHESTRA_CLI_MODE) {
       // entry before the shim file exists and fall through to the raw
       // binary (which launches the GUI on a bare `orchestra <subcmd>`).
       installAgentCliShim();
+      installAgentGuiLaunchShims(); // agent-started desktop browser must not keep the workspace TMPDIR
       // Keeper runtime: copied OUT of the install dir so a detached session
       // host survives the app (asar / AppImage mount) going away. Before the
       // window for the same reason as the CLI shim — an early structured send

@@ -461,6 +461,10 @@ missing/inconsistent · `2` precondition unmet (no compositor) — named, never 
   carries the orchestra marker or is absent. macOS skipped (no agreed location).
 - **Agent-facing** — `~/.orchestra/bin/orchestra`, re-installed every GUI startup
   (the AppImage mount path changes per run) and prepended to every agent session's PATH (`buildSdkEnv`).
+- **Desktop-browser launch** — `installAgentGuiLaunchShims()` (Linux) writes `chromium-browser`/`chromium`/
+  `google-chrome[-stable]`/`xdg-open` beside it (`src/shared/gui-launch-shim.ts`): re-exec the real binary without
+  `TMPDIR`/`CHROME_DESKTOP` unless `--user-data-dir`/`--headless`. A Chromium started with the workspace TMPDIR kept
+  its SingletonSocket there and became unreachable once the workspace was deleted.
 - **Login-browser** — `installLoginBrowserShim()` writes fake `xdg-open`/`open`
   scripts into `~/.orchestra/bin/login-shim/`; the account-login PTY (only)
   gets that dir prepended to PATH so `claude /login`'s automatic browser-open
