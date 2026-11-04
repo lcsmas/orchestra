@@ -8,7 +8,7 @@ import { AGENT_TMPDIR_ENV, AGENT_TMPDIR_MAX_LEN, agentTmpDir, agentTmpRoot, plan
 
 /** `ORCHESTRA_AGENT_TMP_BASE` replaces /var/tmp (rigs); `off` disables the feature. Under `node --test`
  *  it is OFF unless a base is given: each test's scratch ORCHESTRA_HOME would leave its own root (130 per suite run). */
-function rootPath(): string | null {
+export function rootPath(): string | null {
   if (process.platform !== 'linux' || typeof process.getuid !== 'function') return null;
   const base = process.env.ORCHESTRA_AGENT_TMP_BASE;
   if (base === 'off' || (!base && process.env.NODE_TEST_CONTEXT)) return null;

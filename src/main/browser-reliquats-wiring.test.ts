@@ -36,6 +36,7 @@ test('the production bridge: agent-tmp under the home, a workspace the LOADED st
   const code = codeOf('src/main/resource-monitor.ts');
   const b = code.slice(at(code, 'export function productionBrowserBridge()'), at(code, 'export function getBrowserReliquatView()'));
   assert.ok(b.includes("agentTmpRoot: () => path.join(os.homedir(), AGENT_TMP_REL),"));
+  assert.ok(b.includes('const root = agentTmpRootPath();') && b.includes('store.loadedFromDisk ? store.workspaces.find((w) => agentTmpName(w.id) === name)'), 'the disk TMPDIR is a production root too, and an unloaded store maps no name');
   assert.ok(b.includes('workspaceKnown: (id) => store.loadedFromDisk && !!store.getWorkspace(id),'), 'an unloaded store attributes nothing');
   assert.ok(b.includes('clientState: (pid) => realClientState(pid),'));
   assert.ok(b.includes("sender: 'host', kind: 'status', recipient: wsId"));

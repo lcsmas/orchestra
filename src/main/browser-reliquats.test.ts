@@ -688,3 +688,19 @@ test('OPS (B1): the executable comes from /proc/<pid>/exe when readable — `exe
   assert.deepEqual(r2.stopped, []);
   assert.ok(w2.warns.some((x) => /pid 600 withheld — its executable changed/.test(x)));
 });
+
+test('a port orphan with its profile under a member\'s DISK TMPDIR is that member\'s: tracked, kept for the idle window, then stopped and told', async () => {
+  const f = new World();
+  const DISK = '/var/tmp/orch-1000-abc123';
+  const deps = { ...f.deps(), diskTmp: () => ({ root: DISK, wsIdOfName: (n: string) => (n === 'aaaaaaaaaaaa' ? 'ws-1' : null) }) };
+  f.browser(700, { profile: `${DISK}/aaaaaaaaaaaa/rig/profile` });
+  f.browser(701, { profile: `${DISK}/bbbbbbbbbbbb/rig/profile` }); // no workspace has this name: never touched
+  const tracker = new BrowserTracker();
+  const first = await browserPass(deps, tracker, f.table());
+  assert.deepEqual(first.stopped, [], 'not before the window');
+  assert.equal(browserOrphansOf(deps, f.table(), 'ws-1').length, 1, 'the Veille census sees it too');
+  f.clock += W + 1;
+  const r = await browserPass(deps, tracker, f.table());
+  assert.deepEqual(r.stopped.map((s) => [s.pid, s.wsId]), [[700, 'ws-1']]);
+  assert.ok(f.procs.has(701), 'an unattributable profile survives');
+});

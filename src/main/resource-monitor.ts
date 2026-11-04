@@ -20,6 +20,8 @@ import { nearestOrchestratorId } from './wave-run-id';
 import { realKillDeps } from './pause-kill';
 import { BrowserTracker, browserOrphansOf, browserPass, browserStatusText, realClientState, type BrowserPassDeps, type BrowserPassOpts } from './browser-reliquats';
 import { AGENT_TMP_REL } from '../shared/home-root-guard';
+import { agentTmpName } from '../shared/agent-tmpdir';
+import { rootPath as agentTmpRootPath } from './agent-tmpdir';
 import type { BrowserReliquatView } from '../shared/browser-reliquats';
 import type { ReliquatReport } from '../shared/pause-reliquats';
 import { earliestLiveFleetRunStart, runKnownIn, workspaceKnownIn, type ContainerWindowDeps } from './container-window';
@@ -479,6 +481,10 @@ export function productionBrowserBridge(): NonNullable<ResourceMonitorDeps['brow
     deps: {
       now: defaultDeps.now,
       agentTmpRoot: () => path.join(os.homedir(), AGENT_TMP_REL),
+      diskTmp: () => {
+        const root = agentTmpRootPath();
+        return root ? { root, wsIdOfName: (name) => (store.loadedFromDisk ? store.workspaces.find((w) => agentTmpName(w.id) === name)?.id ?? null : null) } : null;
+      },
       workspaceKnown: (id) => store.loadedFromDisk && !!store.getWorkspace(id), // an unloaded store attributes nothing: absence-from-store is no proof (#187)
       readProcStat: defaultDeps.readProcStat,
       readCmdline: defaultDeps.readCmdline,

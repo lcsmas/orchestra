@@ -18,6 +18,7 @@ import {
   nextTrack,
   parseBrowserArgv,
   parseProcNetTcp,
+  diskTmpProfileOwner,
   profileOwner,
   type BrowserArgv,
   type BrowserCounter,
@@ -35,6 +36,8 @@ export interface BrowserPassDeps {
   now(): number;
   /** `~/.orchestra/agent-tmp` in production; a scratch dir in a rig. */
   agentTmpRoot(): string;
+  /** The members' disk TMPDIRs — where `$TMPDIR` has really pointed since dd0830dc, so where a rig's profile lands. Absent/null: not on this host. */
+  diskTmp?(): { root: string; wsIdOfName(name: string): string | null } | null;
   /** The workspace is one the store knows (live or archived): a profile under an unknown id is not attributable. */
   workspaceKnown(wsId: string): boolean;
   /** Fresh single-pid /proc/<pid>/stat; null = gone / unreadable / non-Linux. */
@@ -142,8 +145,9 @@ function scanOrphan(d: BrowserPassDeps, p: ProcSample, byPid: ReadonlyMap<number
   const exe = d.readExe?.(p.pid) ?? null;
   const parsed = parseBrowserArgv(argv, exe);
   if (!parsed) return null;
-  const owner = profileOwner(parsed.userDataDir, root);
-  if (!owner) return null; // the human's browser, a default profile, anything outside agent-tmp/: not ours — not even tracked
+  const disk = d.diskTmp?.() ?? null;
+  const owner = profileOwner(parsed.userDataDir, root) ?? (disk && diskTmpProfileOwner(parsed.userDataDir, disk.root, disk.wsIdOfName));
+  if (!owner) return null; // the human's browser, a default profile, anything outside both roots: not ours — not even tracked
   const parent = byPid.get(p.ppid);
   if (!launcherDead(p.ppid, parent ? { comm: parent.comm, ppid: parent.ppid } : null)) return null; // launcher alive: it owns this browser
   return { argv, exe, parsed, owner };

@@ -17,6 +17,7 @@ import {
   nextTrack,
   parseBrowserArgv,
   parseProcNetTcp,
+  diskTmpProfileOwner,
   profileOwner,
   type BrowserFacts,
   type BrowserTrack,
@@ -189,4 +190,14 @@ test('normalizeArgv / parseBrowserArgv: a title-rewritten MAIN (ONE string, sess
   assert.deepEqual(parseBrowserArgv(['renamed --headless=new --remote-debugging-pipe'], '/usr/lib64/chromium-browser/chromium-browser'), { mode: 'pipe', port: null, userDataDir: null }, '/proc/<pid>/exe decides WHAT runs');
   assert.equal(parseBrowserArgv(['/usr/bin/chromium-browser --headless=new --remote-debugging-pipe'], '/usr/bin/sleep'), null, 'argv[0] saying chromium-browser is no evidence when exe says sleep');
   assert.ok(parseBrowserArgv(['x --headless=new'], '/opt/chrome-linux/chrome (deleted)'), 'a replaced binary (deleted) is still the same program');
+});
+
+test('diskTmpProfileOwner: a profile under a member\'s disk TMPDIR is that member\'s; anything else stays nobody\'s', () => {
+  const DISK = '/var/tmp/orch-1000-abc123';
+  const names = (n: string) => (n === '2cca1774f9d3' ? '2cca1774-f9d3-452b-8666-a0d351c55596' : null);
+  assert.deepEqual(diskTmpProfileOwner(`${DISK}/2cca1774f9d3/rig/profile`, DISK, names), { wsId: '2cca1774-f9d3-452b-8666-a0d351c55596', prefix: `${DISK}/2cca1774f9d3/` }, 'the incident\'s shape');
+  assert.equal(diskTmpProfileOwner(`${DISK}/000000000000/rig/profile`, DISK, names), null, 'no workspace has this name');
+  assert.equal(diskTmpProfileOwner('/var/tmp/orch-1000-def456/2cca1774f9d3/p', DISK, names), null, 'another instance\'s root');
+  assert.equal(diskTmpProfileOwner(`${DISK}/2cca1774f9d3/../../other/p`, DISK, names), null, 'a .. that climbs out');
+  assert.equal(diskTmpProfileOwner(null, DISK, names), null);
 });

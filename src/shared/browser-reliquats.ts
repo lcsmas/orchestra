@@ -105,6 +105,13 @@ export function profileOwner(userDataDir: string | null, agentTmpRoot: string): 
   return { wsId: seg, prefix: `${root}/${seg}/` };
 }
 
+/** Same place rule under a member's disk TMPDIR (`shared/agent-tmpdir.ts`): `<root>/<12 hex>/…`, where the dir name maps back to a workspace id (null = no such workspace). */
+export function diskTmpProfileOwner(userDataDir: string | null, root: string, wsIdOfName: (name: string) => string | null): { wsId: string; prefix: string } | null {
+  const place = profileOwner(userDataDir, root);
+  const wsId = place && wsIdOfName(place.wsId);
+  return wsId ? { wsId, prefix: place.prefix } : null;
+}
+
 /** Is the browser's launcher gone? Parent init, or the user manager (`systemd --user`: the subreaper orphans of a user session reparent to). Any other parent is a live launcher. */
 export function launcherDead(ppid: number, parent: { comm: string; ppid: number } | null): boolean {
   if (ppid <= 1) return true;
