@@ -12,6 +12,7 @@ import type { MemoryBannerState } from './memory-banner.ts';
 import type { AppUpdateState } from './app-update.ts';
 import type { ClaudeCodeUpdateState } from './claude-code-update.ts';
 import type { WatchersStatus } from './watcher-status.ts';
+import type { BlocNavigationRequest } from './bloc-html-navigation.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
 import type { DesignPick } from './design-mode';
@@ -187,6 +188,10 @@ export interface OrchestraAPI {
   onClaudeCodeUpdate: (cb: (state: ClaudeCodeUpdateState) => void) => () => void;
   runClaudeCodeUpdate: () => Promise<ClaudeCodeUpdateState>;
   ackClaudeCodeUpdate: () => Promise<ClaudeCodeUpdateState>;
+  /** Bloc HTML navigation (#416): the confirmation currently waiting (null = none), the push on change (null = retracted), and the human's answer BY ID — `true` opens it like a link in a reply, anything else opens nothing. */
+  blocNavigationPending: () => Promise<BlocNavigationRequest | null>;
+  onBlocNavigation: (cb: (req: BlocNavigationRequest | null) => void) => () => void;
+  answerBlocNavigation: (id: string, confirmed: boolean) => Promise<'opened' | 'dismissed' | 'stale'>;
   /** Directory-watcher health (#330): every ARMED watcher's state, for the initial paint / a reload. NEVER rejects. */
   watchersStatus: () => Promise<WatchersStatus>;
   /** Live push: the whole watcher status, ONLY when the degraded set changes (a watcher degraded, recovered, or was stopped while degraded). Returns an unsubscribe fn. */

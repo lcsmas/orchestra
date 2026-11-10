@@ -51,7 +51,7 @@ export function BlocFrame({ title, source }: Props) {
   // Tokens exist only after layout, inside the mounted `.av-view`; a theme switch re-reads them.
   useLayoutEffect(() => { setTokens(readTokens(hostRef.current)); }, [theme]);
 
-  const doc = useMemo(() => (tokens ? buildBlocDocument({ source, tokens }) : null), [source, tokens]);
+  const doc = useMemo(() => (tokens ? buildBlocDocument({ source, tokens, navigationShim: true }) : null), [source, tokens]);
 
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {

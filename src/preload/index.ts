@@ -6,6 +6,7 @@ import type { MemoryBannerState } from '../shared/memory-banner';
 import type { AppUpdateState } from '../shared/app-update';
 import type { ClaudeCodeUpdateState } from '../shared/claude-code-update';
 import type { WatchersStatus } from '../shared/watcher-status';
+import type { BlocNavigationRequest } from '../shared/bloc-html-navigation';
 
 const api: OrchestraAPI = {
   addRepo: (p) => ipcRenderer.invoke('repos:add', p),
@@ -71,6 +72,14 @@ const api: OrchestraAPI = {
   },
   runClaudeCodeUpdate: () => ipcRenderer.invoke('claudeCodeUpdate:run'),
   ackClaudeCodeUpdate: () => ipcRenderer.invoke('claudeCodeUpdate:ack'),
+  // #416 — a Bloc HTML's navigation attempt: the pending confirmation (pull for a late mount + push), answered by id (the URL never comes back from the renderer)
+  blocNavigationPending: () => ipcRenderer.invoke('blocNav:pending'),
+  onBlocNavigation: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as BlocNavigationRequest | null);
+    ipcRenderer.on('blocNav:request', listener);
+    return () => ipcRenderer.off('blocNav:request', listener);
+  },
+  answerBlocNavigation: (id, confirmed) => ipcRenderer.invoke('blocNav:answer', id, confirmed),
   // #330 — directory-watcher health: the pull for the initial paint + the push (edge-triggered, only when the degraded set changes)
   watchersStatus: () => ipcRenderer.invoke('watchers:status'),
   onWatchersUpdate: (cb) => {

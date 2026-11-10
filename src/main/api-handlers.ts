@@ -243,6 +243,9 @@ type ServableApi = Omit<
   | 'browserProfileRename'
   | 'browserProfileDelete'
   | 'browserProfileAttach'
+  // #416 — a Bloc HTML navigation's confirmation (`blocNav:*`) is registered by registerBlocNavigationIpc() (src/main/bloc-html-guard.ts): sender-checked to the app window's top frame, never a "served" method.
+  | 'blocNavigationPending'
+  | 'answerBlocNavigation'
   // #289 — the memory banner's pull (`memoryGuard:banner`) is registered by registerMemoryBannerIpc() (src/main/memory-banner-host.ts), next to its push; not from this generic table.
   | 'memoryBanner'
 >;

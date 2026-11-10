@@ -100,6 +100,8 @@ channels include `workspace:update`, `agent:finished`, `agent:needsInput`,
 `sandbox:control` (cross-machine ownership broadcasts), and `human-gates:update`
 (#161 — the open human-directed decision gates, rebuilt from the bus DB), and `pause:update` (#257 — the whole fleet-Pause overview, rebuilt from the bus; the `pause:*` write channels are registered by `src/main/pause-ui-host.ts`, NOT through the read-only bus-pane registrar).
 
+`blocNav:*` (#416 — a Bloc HTML's navigation confirmation: push `blocNav:request`, pull `blocNav:pending`, `blocNav:answer(id, confirmed)`; registered by `registerBlocNavigationIpc()` in `src/main/bloc-html-guard.ts`, sender-checked to the top frame, answered by id never by URL; see `structured-agent-view.md` § Bloc HTML).
+
 `secrets:state` (`getSecretsState`, #389) answers `SecretsState` — whether the platform can encrypt now, the
 selected backend, the plaintext / ciphertext entry counts and why the backend was chosen (`selectionReason`); the Settings dialogs that hold a secret render
 `SecretsNotice` from it (the Linear key and Accounts dialogs; #400's profils navigateur reuse `useSecretsState`).
