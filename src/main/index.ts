@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, session } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -274,7 +274,7 @@ import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
-import { onBlocNavigationAttempt } from './bloc-html-guard';
+import { onBlocNavigationAttempt, BLOC_BLACKHOLE_PROXY_RULES, blocProxyBypass } from './bloc-html-guard';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -409,6 +409,9 @@ async function createMainWindow() {
 
   // Window/taskbar icon (Linux WMs read it from the window, not the package).
   // Lives in dist/ (vite copies public/); absent in dev before a first build.
+  // Bloc HTML (#415 B1): WebRTC ICE servers (TURN/TCP, turns:) bypass a frame's CSP and reach any host, from any frame incl. a nested srcdoc one — measured.
+  // A black-hole proxy on the APP WINDOW's session shuts that transport (the browser panel/login use their own partitions); remote <img> in the app window stops loading too.
+  await session.defaultSession.setProxy({ proxyRules: BLOC_BLACKHOLE_PROXY_RULES, proxyBypassRules: blocProxyBypass(VITE_DEV_SERVER_URL) });
   const windowIcon = path.join(__dirname, '../dist/icon.png');
   mainWindow = new BrowserWindow({
     width: 1400,

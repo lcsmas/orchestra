@@ -11,3 +11,12 @@ export interface BlocFrameInfo {
 export function onBlocNavigationAttempt(url: string, frameInfo: BlocFrameInfo): string {
   return `bloc-html: refused a frame navigation (process ${frameInfo.processId}, frame ${frameInfo.routingId}) to ${url.slice(0, 200)}`;
 }
+
+/** Every scheme goes to a closed port (127.0.0.1:9): a TURN/TCP or `turns:` connection from a frame fails instead of reaching its host. */
+export const BLOC_BLACKHOLE_PROXY_RULES = 'http=127.0.0.1:9;https=127.0.0.1:9;ftp=127.0.0.1:9;socks=127.0.0.1:9';
+
+/** `<-loopback>` makes loopback go through the proxy too (a local listener is exactly what a bloc would aim at); only the dev server's own origin is let through. */
+export function blocProxyBypass(devServerUrl: string | undefined): string {
+  if (!devServerUrl) return '<-loopback>';
+  try { return `<-loopback>,${new URL(devServerUrl).host}`; } catch { return '<-loopback>'; }
+}

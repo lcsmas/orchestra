@@ -54,8 +54,8 @@ export function splitReply(text: string, opts?: { maxSourceBytes?: number }): Re
   const blocInfo = (info: string): { title: string } | null => {
     const m = /^(\S+)(?:\s+(.*))?$/.exec(info);
     if (!m || m[1] !== 'html-render') return null;
-    const t = /(?:^|\s)title="([^"]*)"/.exec(m[2] ?? '');
-    const title = t ? t[1].trim() : '';
+    const t = /(?:^|\s)title="((?:[^"\\]|\\.)*)"/.exec(m[2] ?? '');
+    const title = t ? t[1].replace(/\\(["\\])/g, '$1').trim() : ''; // `\"` and `\\` are the only escapes
     return { title: title === '' ? 'Bloc HTML' : title };
   };
   /** UTF-16 length bounds the byte length from below (×1) and above (×3): encode only when that cannot decide. */

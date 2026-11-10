@@ -186,3 +186,12 @@ test('CRLF text: a bloc fence is recognised exactly as with LF (review finding)'
   assert.deepEqual(kinds(segs), ['prose', 'bloc', 'prose']);
   assert.equal(segs[1].kind === 'bloc' && segs[1].title, 'T');
 });
+
+test('title: `\\"` and `\\\\` are the escapes (review M2); an unescaped inner quote ends the title; single quotes are not a title', () => {
+  const t = (info: string) => (rt('```' + info + '\n<i>x</i>\n```')[0] as { title: string }).title;
+  assert.equal(t('html-render title="a \\"b\\" c"'), 'a "b" c');
+  assert.equal(t('html-render title="back\\\\slash"'), 'back\\slash');
+  assert.equal(t('html-render title="a" extra title="b"'), 'a');
+  assert.equal(t("html-render title='A'"), BLOC_HTML_DEFAULT_TITLE);
+  assert.equal(t('html-render title="\\"\\""'), '""');
+});
