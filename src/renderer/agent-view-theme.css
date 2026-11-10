@@ -933,6 +933,13 @@ h6.av-md-h {
    the dialog width. */
 .av-elicitation-url a { color: var(--av-accent, var(--av-tool-active)); word-break: break-all; }
 .av-elicitation-hint { margin: 6px 0 0; color: var(--av-text-dim); font-size: var(--av-fs-caption); }
+/* Bloc HTML navigation confirm (#416): the URL is shown WHOLE — wrapped at any character, selectable, scrolled (never ellipsised) past the cap. */
+.av-bloc-nav-url {
+  margin: 0 0 12px; padding: 10px 12px; max-height: 40vh; overflow: auto;
+  font-family: var(--av-mono); font-size: var(--av-fs-code); color: var(--av-text);
+  overflow-wrap: anywhere; word-break: break-all; user-select: text; text-overflow: clip;
+  background: var(--av-surface-sunken); border: 1px solid var(--av-hairline); border-radius: var(--radius, 8px);
+}
 /* The form scrolls INSIDE the card: .av-permission-dialog is height-capped, so
    a schema with many fields must not push the actions off-screen. */
 .av-elicitation-fields {

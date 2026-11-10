@@ -39,9 +39,15 @@ const HEIGHT_REPORTER =
   `<script>(function(){function s(){parent.postMessage({${BLOC_HEIGHT_TAG}:1,h:Math.ceil(document.documentElement.getBoundingClientRect().height)},'*')}` +
   `new ResizeObserver(s).observe(document.documentElement);s()})()</script>`;
 
-export function buildBlocDocument(input: { source: string; tokens: BlocTokens }): string {
+/** UX only (#416): a `target=_blank|_top|_parent` link click and `window.open(url)` become `location.href=…`, which reaches the main-process guard (the sandbox would drop them silently). The model's realm can bypass it; the guard is the security. */
+export const BLOC_NAVIGATION_SHIM =
+  `<script>(function(){document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href]');` +
+  `if(a&&a.target&&a.target!=='_self'&&(a.getAttribute('href')||'').charAt(0)!=='#'){e.preventDefault();location.href=a.href}},true);` +
+  `try{window.open=function(u){if(u!=null)location.href=String(u);return null}}catch(x){}})()</script>`;
+
+export function buildBlocDocument(input: { source: string; tokens: BlocTokens; navigationShim?: boolean }): string {
   return (
     `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${BLOC_HTML_POLICY}">` +
-    `<style>${themeCss(input.tokens)}</style>${HEIGHT_REPORTER}</head><body>${input.source}</body></html>`
+    `<style>${themeCss(input.tokens)}</style>${HEIGHT_REPORTER}${input.navigationShim ? BLOC_NAVIGATION_SHIM : ''}</head><body>${input.source}</body></html>`
   );
 }

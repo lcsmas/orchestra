@@ -9,6 +9,9 @@
 //   policy-http     a COPY whose policy also allows http:/ws:                 → N2 must go RED (same clause, loosened instead of removed)
 //   policy-nohttps  a COPY whose policy lost https:/wss:                      → N1 must go RED (the https requests no longer succeed)
 //   nav             a COPY whose main-process navigation guard never fires    → I2 must go RED (a frame navigation reaches the listener)
+//   nav-key       a COPY whose guard keys a bloc on `event.frame` (throws from a frame's 2nd attempt) instead of `event.initiator` → C10 must go RED (one looping bloc silences another) (#416)
+//   nav-shim      a COPY whose frame lost the in-frame navigation shim        → C8 must go RED (a target=_blank click is dropped by the sandbox, no confirmation) (#416)
+//   nav-bypass    a COPY whose navigation guard opens the URL instead of asking  → C1 must go RED (the URL reaches the listener with no confirmation) (#416)
 //   sandbox-api     a COPY whose frame lost its `sandbox` attribute (same-origin) → I3 must go RED (the frame reads the app's API object)
 //   sandbox-loop    the same copy, a looping bloc                             → I4 must go RED (the window freezes)
 // A mutant arm passes only if its named clause is RED, every control GREEN, and its OTHER evaluated N/I-clauses GREEN (it removes ONE guard).
@@ -26,7 +29,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARMS = (flag('--arms', 'real,policy,policy-http,policy-nohttps,nav,sandbox-api,sandbox-loop')).split(',');
+const ARMS = (flag('--arms', 'real,policy,policy-http,policy-nohttps,nav,nav-bypass,nav-shim,nav-key,sandbox-api,sandbox-loop')).split(',');
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude* and to prove nothing there moved)');
@@ -176,6 +179,8 @@ function seedWorld(armDir) {
   fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [{ path: repoDir, name: 'bh415-repo', defaultBranch: 'main', accountId: account.id }], workspaces: [ws], accounts: [account], selfTuneRuns: [] }, null, 2));
   const stubDir = path.join(armDir, 'stub-bin'); fs.mkdirSync(stubDir, { recursive: true });
   fs.writeFileSync(path.join(stubDir, 'claude'), '#!/bin/sh\necho BH415-STUB-CLAUDE "$@"\nsleep 3600\n', { mode: 0o755 });
+  // `shell.openExternal` execs `xdg-open` from PATH: this stub makes the URL it is given reach the local listener, so "opened" is a request the listener SEES (#416).
+  fs.writeFileSync(path.join(stubDir, 'xdg-open'), `#!/bin/sh\necho "$1" >> ${JSON.stringify(path.join(stubDir, 'xdg-open.log'))}\nexec curl -s -m 5 -o /dev/null "$1"\n`, { mode: 0o755 });
   return { fakeHome, ohome, cfg, account, ws, stubDir };
 }
 
@@ -224,6 +229,12 @@ setTimeout(function(){try{window.open('${evil}/popup')}catch(e){}},300);
 setTimeout(function(){try{top.location='${evil}/nav-top'}catch(e){}},300);
 setTimeout(function(){document.getElementById('lnk').click()},400);
 setTimeout(function(){parent.postMessage({__probe:'nav',r:{done:1}},'*')},1000)</script>`;
+const NAV_PAD = 'p='.concat('0123456789abcdef'.repeat(40)); // a 640-char query: the confirmation must show it WHOLE
+const linkBloc = (evil) => `<a id="l" href="${evil}/confirm-link?${NAV_PAD}&end=LINK-END" style="display:block;height:40px;line-height:40px;color:var(--bloc-accent)">go to the report</a><a id="b" target="_blank" href="${evil}/confirm-blank" style="display:block;height:30px">blank target</a><div style="height:20px">link probe</div>`;
+// a script-driven navigation, hammered every 40 ms for 1.5 s: ONE confirmation, the first url, the rest coalesced
+const jsNavBloc = (evil) => `<div style="height:40px">script probe</div><script>setTimeout(function(){var n=0,t=setInterval(function(){n++;location.href='${evil}/confirm-js?'+(n===1?'first':'again'+n);if(n>=37)clearInterval(t)},40)},300);parent.postMessage({__probe:'navjs',r:{ready:1}},'*')</script>`;
+const blankBloc = (evil) => `<a id="b" target="_blank" href="${evil}/shim-blank" style="display:block;height:40px;line-height:40px;color:var(--bloc-accent)">blank target</a><div style="height:20px">popup probe</div>`;
+const openBloc = (evil) => `<div style="height:40px">window.open probe</div><script>setTimeout(function(){window.open('${evil}/shim-open')},300)</script>`;
 const LOOP_BLOC = `<div style="height:30px">loop probe</div><script>parent.postMessage({__probe:'loop',r:{started:1}},'*');setTimeout(function(){for(;;){}},600)</script>`;
 
 const results = []; // {arm, clause, ok, detail}
@@ -242,6 +253,9 @@ const MUTANTS = {
   'policy-nohttps': { clause: 'N1', ...swap(POL.script, "script-src 'unsafe-inline' blob:"),
     also: [swap(POL.style, "style-src 'unsafe-inline';"), swap(POL.img, 'img-src data: blob:'), swap(POL.font, 'font-src data:'), swap(POL.conn, 'connect-src data: blob:')] },
   nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"' },
+  'nav-key': { clause: 'C10', dir: 'dist-electron', from: '.initiator', to: '.initiatorX' },
+  'nav-shim': { clause: 'C8', dir: 'dist/assets', from: "closest('a[href]')", to: "closest('a[hrefX]')", also: [{ dir: 'dist/assets', from: 'location.href=String(u)', to: 'location.hrefX=String(u)' }] }, // both shim paths off
+  'nav-bypass': { clause: 'C1', dir: 'dist-electron', from: '.showConfirmation(', to: '.open(' },
   'sandbox-api': { clause: 'I3', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
   'sandbox-loop': { clause: 'I4', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
 };
@@ -259,7 +273,7 @@ function makeMutantCopy(armDir, m) {
     const before = fs.readFileSync(hit[0].f, 'utf8');
     fs.writeFileSync(hit[0].f, before.replace(mm.from, mm.to));
     const after = fs.readFileSync(hit[0].f, 'utf8');
-    proofs.push({ from: mm.from, to: mm.to, file: path.relative(copy, hit[0].f), beforeMd5: md5(before), afterMd5: md5(after), changed: before !== after && after.split(mm.to).length - 1 === 1 });
+    proofs.push({ from: mm.from, to: mm.to, file: path.relative(copy, hit[0].f), beforeMd5: md5(before), afterMd5: md5(after), changed: before !== after && after.split(mm.to).length - 1 === before.split(mm.to).length }); // `to` may already occur once elsewhere (nav-bypass: `.open(`): the count must grow by exactly 1
   }
   return { copy, proofs, changed: proofs.every((x) => x.changed) };
 }
@@ -294,6 +308,124 @@ async function runArm(arm, lan) {
   const inject = async (evs) => { for (const e of [].concat(evs)) await cdp.eval(`window.__injectAgentEvent(${JSON.stringify(WS)}, ${JSON.stringify(e)}); 1`); };
   const probe = (name) => cdp.eval(`window.__probes[${JSON.stringify(name)}] || null`);
   const frames = () => cdp.eval(`[...document.querySelectorAll('iframe.av-bloc-frame')].map((f) => { const b = f.getBoundingClientRect(); return { title: f.title, sandbox: f.getAttribute('sandbox'), h: Math.round(b.height), left: b.left, top: b.top, width: b.width }; })`);
+  const hitsOf = (re) => evil.hits.filter((u) => re.test(u));
+  let isoNavHits = []; // the listener's /nav* + /popup requests of the I2 probes (a navigation nobody confirmed)
+
+  const appLog = () => fs.readFileSync(logFile, 'utf8') + (fs.existsSync(path.join(world.ohome, 'logs', 'orchestra.log')) ? fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8') : '');
+  const dialogs = () => cdp.eval(`[...document.querySelectorAll('.av-bloc-nav-confirm')].map((d) => ({ url: d.querySelector('[data-testid="bloc-nav-url"]')?.textContent ?? null, cancel: d.querySelector('.av-bloc-nav-cancel') === document.activeElement }))`);
+  const key = async (k, code, vk) => { for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk }); };
+  const clickIn = async (title, dx, dy) => { // a real mouse click inside a bloc frame (user activation + the browser's own hit-test into the frame)
+    await cdp.eval(`document.querySelector('iframe.av-bloc-frame[title=${JSON.stringify(title)}]').scrollIntoView({ block: 'center' }); 1`); await sleep(400);
+    const f = (await frames()).find((x) => x.title === title); await cdp.click(f.left + dx, f.top + dy); return f;
+  };
+  const clickButton = async (sel) => { const b = await cdp.eval(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`); await cdp.click(b.x, b.y); };
+  const lines = (re) => appLog().split('\n').filter((l) => re.test(l));
+  // #416 (review MAJOR 1): the silence after a dismissal is per BLOC. Bloc A is dismissed twice (escalating silence), then bloc B — dismissed once, silence expired — must
+  // surface on its SECOND attempt. Keyed on `event.frame` (throws from a frame's 2nd attempt ⇒ shared UNKNOWN bucket) B stays silenced ⇒ N10 RED.
+  async function keyPhase() {
+    for (const [t, path_] of [['CleA', 'key-a'], ['CleB', 'key-b']]) {
+      await inject(evText(`${t}-MARK\n` + fence(`html-render title="${t}"`, `<a href="${E}/${path_}" style="display:block;height:40px;line-height:40px;color:var(--bloc-accent)">go ${t}</a>`)));
+      await waitFor(async () => (await frames()).some((f) => f.title === t && f.h >= 38), 30000, `the ${t} bloc`);
+    }
+    const surf = async (title) => { lan.reset(); await clickIn(title, 40, 20); return waitFor(async () => { const x = await dialogs(); return x.length ? x : null; }, 5000, `a confirmation from ${title}`).catch(() => []); };
+    const esc = async () => { await key('Escape', 'Escape', 27); await sleep(500); };
+    const a1 = await surf('CleA'); await esc();
+    await sleep(5500);
+    const a2 = await surf('CleA'); await esc();
+    const b1 = await surf('CleB'); await esc();
+    await sleep(5500);
+    const b2 = await surf('CleB');
+    const ok = [a1, a2, b1, b2].every((x) => x.length === 1) && b2[0]?.url === `${E}/key-b`;
+    clause(arm, 'C10/a-dismissed-bloc-does-not-silence-another-bloc', ok, `A dismissed twice (silence 5 s then 10 s), B dismissed once and its 5 s elapsed: confirmations on A#1 ${a1.length}, A#2 ${a2.length}, B#1 ${b1.length}, B#2 (second attempt of B) ${b2.length} url ${JSON.stringify(b2[0]?.url)} (0 = B was silenced by A's dismissals: shared identity bucket); guard log "→ muted" ${lines(/→ muted/).length}x`);
+    if (b2.length) await esc();
+  }
+  // #416: a model-written <a target=_blank> click / window.open(url) must reach the guard (the sandbox drops them otherwise) — the in-frame shim; removed ⇒ N8 RED.
+  async function shimPhase() {
+    const real = arm === 'real';
+    lan.reset();
+    await inject(evText('SHIM-MARK\n' + fence('html-render title="Popup"', blankBloc(E))));
+    await waitFor(async () => (await frames()).some((f) => f.title === 'Popup' && f.h >= 58), 30000, 'the popup bloc');
+    await clickIn('Popup', 40, 20);
+    await waitFor(async () => (await dialogs()).length ? true : null, real ? 10000 : 3000, 'a confirmation after the target=_blank click').catch(() => {});
+    await sleep(1500);
+    const d = await dialogs();
+    clause(arm, 'C8/target-blank-link-click-produces-the-confirmation', d.length === 1 && d[0].url === `${E}/shim-blank` && evil.hits.filter((u) => u.startsWith('/shim')).length === 0, `click on <a target=_blank href=${E}/shim-blank> in a bloc: confirmations ${d.length}, url ${JSON.stringify(d[0]?.url)}; listener /shim* requests ${evil.hits.filter((u) => u.startsWith('/shim')).length}`);
+    if (d.length) { await key('Escape', 'Escape', 27); await sleep(600); }
+    if (!real) return;
+    lan.reset();
+    await inject(evText('SHIMOPEN-MARK\n' + fence('html-render title="Fenetre"', openBloc(E))));
+    const d2 = await waitFor(async () => { const x = await dialogs(); return x.length ? x : null; }, 15000, 'a confirmation after window.open').catch(() => []);
+    await sleep(1000);
+    clause(arm, 'C9/window-open-produces-the-confirmation', d2.length === 1 && d2[0].url === `${E}/shim-open` && evil.hits.filter((u) => u.startsWith('/shim')).length === 0, `window.open('${E}/shim-open') from a bloc script: confirmations ${d2.length}, url ${JSON.stringify(d2[0]?.url)}; listener /shim* requests ${evil.hits.filter((u) => u.startsWith('/shim')).length}`);
+    if (d2.length) { await key('Escape', 'Escape', 27); await sleep(600); }
+  }
+  // #416: what a navigation from a bloc does. N1 is the headline (the URL reaches the listener ONLY after the human confirms); the rest are real-build only.
+  async function navPhase() {
+    const real = arm === 'real';
+    if (real) { // the instrument first: a link in a REPLY opens through the same path and the listener SEES it (a quiet listener below must mean "not opened")
+      lan.reset();
+      await inject(evText('REPLY-LINK-MARK [reply link](' + E + '/reply-link)'));
+      await waitFor(() => cdp.eval(`!![...document.querySelectorAll('a.av-md-link')].find((a) => a.href.endsWith('/reply-link'))`), 20000, 'the reply link');
+      const pos = await cdp.eval(`(() => { const a = [...document.querySelectorAll('a.av-md-link')].find((x) => x.href.endsWith('/reply-link')); a.scrollIntoView({ block: 'center' }); const r = a.getBoundingClientRect(); return { x: r.left + 5, y: r.top + r.height / 2 }; })()`);
+      await sleep(300);
+      const p2 = await cdp.eval(`(() => { const a = [...document.querySelectorAll('a.av-md-link')].find((x) => x.href.endsWith('/reply-link')); const r = a.getBoundingClientRect(); return { x: r.left + 5, y: r.top + r.height / 2 }; })()`);
+      await cdp.click(p2.x, p2.y);
+      await waitFor(() => evil.hits.includes('/reply-link'), 15000, 'the listener to see the reply link opened (xdg-open stub)').catch(() => {});
+      clause(arm, 'ctl/reply-link-opens-and-the-listener-sees-it', evil.hits.filter((u) => u === '/reply-link').length === 1 && lines(/open external \(window-open\): .*\/reply-link/).length === 1, `a link in a reply: listener saw ${evil.hits.filter((u) => u === '/reply-link').length}x /reply-link; app log "open external (window-open)" ${lines(/open external \(window-open\): .*\/reply-link/).length}x (the path a confirmed bloc link must take)`);
+    }
+    // ── a link clicked in a bloc ──
+    lan.reset();
+    const pend0 = lines(/→ surfaced/).length;
+    await inject(evText('NAVLINK-MARK\n' + fence('html-render title="Lien"', linkBloc(E))));
+    await waitFor(async () => (await frames()).some((f) => f.title === 'Lien' && f.h >= 88), 30000, 'the link bloc');
+    await clickIn('Lien', 40, 20);
+    const linkUrl = new URL(`${E}/confirm-link?${NAV_PAD}&end=LINK-END`).href;
+    if (real) {
+      const d = await waitFor(async () => { const x = await dialogs(); return x.length ? x : null; }, 15000, 'the confirmation after the link click');
+      await sleep(2000);
+      const d2 = await dialogs();
+      const unopened = evil.hits.filter((u) => u.startsWith('/confirm')).length;
+      clause(arm, 'C1/url-reaches-the-listener-only-after-confirmation', unopened === 0 && isoNavHits.length === 0 && d2.length === 1, `script navigation (I2 bloc) + link click, nobody answered: listener saw ${isoNavHits.length} /nav* and ${unopened} /confirm* request(s) while a confirmation was up (${d2.length} shown)`);
+      clause(arm, 'C2/confirmation-shows-the-complete-url', d.length === 1 && d[0].url === linkUrl && linkUrl.length > 640, `shown ${d[0].url?.length} chars, expected ${linkUrl.length} chars (…${linkUrl.slice(-30)}); equal=${d[0].url === linkUrl}; safe button focused=${d[0].cancel}`);
+      saveShot('real-nav-confirmation-renderer.png', await cdp.shot());
+      // dismiss: nothing opens, the bloc is as it was
+      const before = (await frames()).find((f) => f.title === 'Lien');
+      await key('Escape', 'Escape', 27); await sleep(800);
+      const after = (await frames()).find((f) => f.title === 'Lien');
+      const gone = (await dialogs()).length === 0;
+      await sleep(1500);
+      clause(arm, 'C3/dismiss-opens-nothing-and-leaves-the-bloc', gone && !!after && after.h === before.h && evil.hits.filter((u) => u.startsWith('/confirm')).length === 0, `Escape: confirmation gone=${gone}; bloc still there=${!!after} height ${before?.h}→${after?.h}; listener /confirm* requests ${evil.hits.filter((u) => u.startsWith('/confirm')).length}`);
+      // a re-click right after a dismissal is silent (a bloc cannot make the human answer in a loop)
+      await clickIn('Lien', 40, 20); await sleep(1500);
+      clause(arm, 'C4/repeat-after-dismissal-does-not-reprompt', (await dialogs()).length === 0 && lines(/→ muted/).length >= 1, `re-click 1.5 s after Escape: confirmations ${(await dialogs()).length}; log "→ muted" ${lines(/→ muted/).length}x`);
+    } else {
+      await sleep(3000);
+      const hit = evil.hits.filter((u) => u.startsWith('/confirm-link')).length;
+      clause(arm, 'C1/url-reaches-the-listener-only-after-confirmation', hit === 0 && isoNavHits.length === 0, `script navigation (I2 bloc) + link click, nobody confirmed anything: listener saw ${isoNavHits.length} /nav* ${JSON.stringify(isoNavHits)} and ${hit} /confirm-link request(s) (${hit + isoNavHits.length > 0 ? 'a URL left without a confirmation' : 'nothing arrived'})`);
+      clause(arm, 'ctl/nav-attempt-made', lines(/refused a frame navigation.*confirm-link/).length >= 1, `the guard saw the link navigation ${lines(/refused a frame navigation.*confirm-link/).length}x (a quiet listener without it would mean the click never navigated)`);
+      return;
+    }
+    // ── a script-driven navigation, repeated ──
+    lan.reset();
+    const coal0 = lines(/→ coalesced/).length;
+    await inject(evText('NAVJS-MARK\n' + fence('html-render title="Script"', jsNavBloc(E))));
+    await waitFor(async () => { const x = await dialogs(); return x.length ? x : null; }, 20000, 'the confirmation after the script navigation');
+    let maxShown = 0; const urls = new Set();
+    for (let i = 0; i < 18; i++) { const x = await dialogs(); maxShown = Math.max(maxShown, x.length); x.forEach((d) => urls.add(d.url)); await sleep(100); }
+    const coalesced = lines(/→ coalesced/).length - coal0;
+    const early = evil.hits.filter((u) => u.startsWith('/confirm-js')).length;
+    clause(arm, 'C5/repeated-attempts-coalesce-into-one-confirmation', maxShown === 1 && urls.size === 1 && [...urls][0] === `${E}/confirm-js?first` && coalesced >= 5 && early === 0, `script navigating every 40 ms: max confirmations on screen ${maxShown}, distinct urls shown ${JSON.stringify([...urls])}, guard log "→ coalesced" ${coalesced}x, listener /confirm-js requests ${early}`);
+    // confirm: opens exactly that URL, once, the way a reply link does
+    await clickButton('.av-bloc-nav-open');
+    await waitFor(() => evil.hits.some((u) => u.startsWith('/confirm-js')), 15000, 'the confirmed URL to reach the listener').catch(() => {});
+    await sleep(3500);
+    const got = evil.hits.filter((u) => u.startsWith('/confirm-js'));
+    clause(arm, 'C6/confirm-opens-exactly-that-url-once', got.length === 1 && got[0] === '/confirm-js?first' && lines(/open external \(bloc-confirm\): .*\/confirm-js\?first/).length === 1 && (await dialogs()).length === 0, `after « Open link »: listener saw ${JSON.stringify(got)}; app log "open external (bloc-confirm)" ${lines(/open external \(bloc-confirm\): .*\/confirm-js\?first/).length}x; confirmation closed=${(await dialogs()).length === 0}`);
+    clause(arm, 'C7/guard-listener-never-throws', lines(/uncaughtException/).length === 0 && lines(/Render frame was disposed/).length === 0, `app log: uncaughtException ${lines(/uncaughtException/).length}x, "Render frame was disposed" ${lines(/Render frame was disposed/).length}x (Electron's event.frame getter throws on repeated attempts from one frame: an unguarded read kills the guard after the first attempt)`);
+    await shimPhase();
+    await keyPhase();
+    void pend0;
+  }
   try {
     const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); const t = (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')); return t || null; }, 60000, 'the app page target');
     clause(arm, 'ctl/app-identity-path', target.url.includes(appDir) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${appDir}`);
@@ -461,6 +593,7 @@ async function runArm(arm, lan) {
       await waitFor(async () => (await frames()).some((f) => f.title === 'Navigation'), 30000, 'the navigation bloc frame');
       await sleep(4500); // no probe report: a frame that navigates away takes its script with it
       const navHits = evil.hits.filter((u) => /^\/(nav|popup)/.test(u));
+      isoNavHits = navHits.slice();
       const appLog = fs.readFileSync(logFile, 'utf8') + (fs.existsSync(path.join(world.ohome, 'logs', 'orchestra.log')) ? fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8') : '');
       const opened = appLog.split('\n').filter((l) => l.includes('[open-url]') && l.includes(`127.0.0.1:${evil.port}`));
       const refused = appLog.split('\n').filter((l) => l.includes('bloc-html: refused a frame navigation')).length;
@@ -468,6 +601,16 @@ async function runArm(arm, lan) {
       const fr = (await frames()).find((f) => f.title === 'Navigation');
       I.I2.detail += `; frame still in the page: ${!!fr}`;
       if (arm === 'real') clause(arm, 'ctl/navigation-guard-fired', refused >= 1 && !!fr, `the app logged ${refused} refusal(s) of a sub-frame navigation (a green I2 with 0 refusals would mean the bloc never navigated)`);
+    }
+    if (arm === 'nav-key') { if ((await dialogs()).length) { await key('Escape', 'Escape', 27); await sleep(500); } await keyPhase(); }
+    if (arm === 'nav-shim') { if ((await dialogs()).length) { await key('Escape', 'Escape', 27); await sleep(500); } await shimPhase(); } // the I2 probes' confirmation frees the slot first
+    if (arm === 'real' || arm === 'nav-bypass') {
+      if (arm === 'real') { // the I2 probes made the guard raise ONE confirmation (a nav bloc is a navigation); answer it so the slot is free
+        const d = await dialogs();
+        clause(arm, 'C0/the-I2-navigation-probes-raised-one-confirmation', d.length === 1 && /^http:\/\/127\.0\.0\.1:\d+\/nav/.test(d[0].url ?? ''), `after the I2 navigation bloc: confirmations on screen ${d.length}, url ${JSON.stringify(d[0]?.url)}`);
+        if (d.length) { await key('Escape', 'Escape', 27); await sleep(500); }
+      }
+      await navPhase();
     }
     if (arm === 'real') {
       // plan-review card (modal): its fence stays code — BEFORE the loop, which must leave the window answering
@@ -564,7 +707,7 @@ for (const arm of ARMS) {
     const want = MUTANTS[arm].clause;
     const named = mine.find((c) => c.clause.startsWith(want + '/'));
     // removing the sandbox also re-enables popups and top navigation (that is part of its job), so I2 may follow it
-    const allowed = arm === 'sandbox-api' ? ['I2'] : [];
+    const allowed = arm === 'sandbox-api' || arm === 'nav-bypass' ? ['I2'] : [];
     const others = mine.filter((c) => isI(c) && !c.clause.startsWith(want + '/') && !allowed.some((a) => c.clause.startsWith(a + '/')) && !c.ok).map((c) => c.clause);
     const ok = !!named && !named.ok && ctlRed.length === 0 && others.length === 0;
     lines.push(`${arm}: ${ok ? 'MUST-FAIL CONFIRMED' : 'NOT CONFIRMED'} — ${want} ${named ? (named.ok ? 'stayed GREEN' : 'RED') : 'not evaluated'}; other I-clauses red: ${others.join(',') || 'none'}; controls red: ${ctlRed.join(',') || 'none'}`);

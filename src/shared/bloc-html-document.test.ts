@@ -62,3 +62,38 @@ test('the model HTML is placed verbatim in <body>; the height reporter lives in 
   assert.ok(d.indexOf('ResizeObserver') < d.indexOf('<body>'));
   assert.match(d, /parent\.postMessage\(\{__blocHtml:1,h:/);
 });
+
+test('#416 navigation shim: opt-in, after the policy and the reporter, in <head>; absent by default (the phone page does not ask for it)', async () => {
+  const { BLOC_NAVIGATION_SHIM } = await import('./bloc-html-document.ts');
+  assert.ok(!doc('<p>x</p>').includes('window.open'), 'default document has no shim');
+  const d = buildBlocDocument({ source: '<p>x</p>', tokens: TOKENS, navigationShim: true });
+  assert.ok(d.includes(BLOC_NAVIGATION_SHIM) && d.indexOf('Content-Security-Policy') < d.indexOf('window.open') && d.indexOf('window.open') < d.indexOf('<body>'));
+  assert.match(BLOC_NAVIGATION_SHIM, /a\[href\]/);
+  assert.match(BLOC_NAVIGATION_SHIM, /location\.href=a\.href/);
+  assert.match(BLOC_NAVIGATION_SHIM, /window\.open=function/);
+});
+
+test('#416 navigation shim behaviour (vm): a _blank link click and window.open(url) navigate the frame; _self, #anchor and a bare link do not', async () => {
+  const vm = await import('node:vm');
+  const { BLOC_NAVIGATION_SHIM } = await import('./bloc-html-document.ts');
+  const src = BLOC_NAVIGATION_SHIM.replace(/^<script>/, '').replace(/<\/script>$/, '');
+  const run = (a: { target?: string; href: string } | null) => {
+    let handler: ((e: unknown) => void) | undefined; const nav: string[] = []; let prevented = false;
+    const location = { set href(v: string) { nav.push(v); }, get href() { return ''; } };
+    const window: Record<string, unknown> = {};
+    const document = { addEventListener: (_t: string, h: (e: unknown) => void) => { handler = h; } };
+    vm.runInNewContext(src, { document, location, window, String });
+    const link = a && { target: a.target ?? '', href: a.href, getAttribute: () => a.href };
+    handler!({ target: { closest: () => link }, preventDefault: () => { prevented = true; } });
+    return { nav, prevented, window };
+  };
+  assert.deepEqual(run({ target: '_blank', href: 'https://x.example/a' }).nav, ['https://x.example/a']);
+  assert.ok(run({ target: '_top', href: 'https://x.example/a' }).prevented);
+  assert.deepEqual(run({ target: '_self', href: 'https://x.example/a' }).nav, []);
+  assert.deepEqual(run({ href: 'https://x.example/a' }).nav, [], 'a plain link navigates natively (guard sees it)');
+  assert.deepEqual(run({ target: '_blank', href: '#top' }).nav, []);
+  const r = run(null); const wo = r.window.open as (u?: unknown) => unknown;
+  assert.equal(typeof wo, 'function');
+  assert.equal(wo('https://y.example/w'), null); assert.deepEqual(r.nav, ['https://y.example/w'], 'window.open(url) navigates the frame');
+  assert.equal(wo(), null); assert.equal(r.nav.length, 1, 'window.open() with no url does nothing');
+});

@@ -274,7 +274,7 @@ import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
-import { onBlocNavigationAttempt } from './bloc-html-guard';
+import { onBlocNavigationAttempt, createBlocNavigationGate, installBlocNavigationGate, blocFrameInfo, registerBlocNavigationIpc, BLOC_NAV_PUSH_CHANNEL } from './bloc-html-guard';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -706,7 +706,7 @@ async function createMainWindow() {
   mainWindow.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame || event.url === 'about:srcdoc') return;
     event.preventDefault();
-    log.warn(onBlocNavigationAttempt(event.url, { processId: event.frame?.processId ?? -1, routingId: event.frame?.routingId ?? -1 }));
+    log.warn(onBlocNavigationAttempt(event.url, blocFrameInfo(event)));
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -877,6 +877,14 @@ registerPauseUiIpc();
 registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
 registerAppUpdateIpc(); // « Nouvelle version installée »: pull + relaunch (ONCE, module scope)
 registerClaudeCodeUpdateIpc(); // « Mise à jour disponible » (Claude Code): pull + run + acknowledge (ONCE, module scope)
+// Bloc HTML navigation (#416): the confirmation is pushed to the app window; only a confirmed id reaches openUrlExternally (the path a link in a reply takes).
+const blocNavGate = createBlocNavigationGate({
+  showConfirmation: (req) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BLOC_NAV_PUSH_CHANNEL, req); },
+  clearConfirmation: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BLOC_NAV_PUSH_CHANNEL, null); },
+  open: (req) => void openUrlExternally(req.url, 'bloc-confirm'),
+});
+installBlocNavigationGate(blocNavGate);
+registerBlocNavigationIpc(ipcMain, blocNavGate);
 registerWatchersIpc(); // #330 — the directory-watcher health pull channel (ONCE, module scope)
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
