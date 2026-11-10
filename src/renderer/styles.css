@@ -3950,6 +3950,62 @@ button.danger-primary:active {
 }
 .memory-banner-dismiss { padding: 3px 10px; font-size: 12px; flex: 0 0 auto; }
 
+/* ---------- « Mise à jour disponible » (Claude Code): the sidebar strip + its popover ---------- */
+.claude-code-update-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 16px);
+  margin: 0 8px 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+}
+.claude-code-update-strip:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.claude-code-update-strip.ok { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); background: color-mix(in srgb, var(--green) 8%, transparent); }
+.claude-code-update-strip.error { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.claude-code-update-ico { flex: 0 0 auto; color: var(--accent); font-weight: 700; }
+.claude-code-update-strip.ok .claude-code-update-ico { color: var(--green); }
+.claude-code-update-strip.error .claude-code-update-ico { color: var(--red); }
+.claude-code-update-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.claude-code-update-ver { flex: 0 0 auto; color: var(--text-dim); font-family: var(--font-mono); font-size: 11px; }
+.claude-code-update-pop {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-2);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.claude-code-update-pop h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.claude-code-update-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 10px; }
+.claude-code-update-pop dt { color: var(--text-dim); }
+.claude-code-update-pop dd { margin: 0; font-family: var(--font-mono); }
+.claude-code-update-pop p { margin: 0 0 10px; color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
+.claude-code-update-error {
+  margin: 0 0 10px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.claude-code-update-actions { display: flex; justify-content: flex-end; }
+.claude-code-update-action { padding: 3px 12px; font-size: 12px; font-weight: 600; }
+
 /* ---------- Setup banner ---------- */
 .setup-banner {
   flex: 0 0 auto;

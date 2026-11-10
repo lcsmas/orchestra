@@ -44,6 +44,7 @@
     "test:human-gates-shot": "node scripts/refuse-real-runtime.mjs test:human-gates-shot",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",
     "test:hung-cli": "bash scripts/e2e-hung-cli-teardown.sh",
+    "test:claude-code-update": "bash scripts/e2e-claude-code-update.sh .",
     "test:liveness-failed-call": "bash scripts/e2e-liveness-failed-call.sh",
     "test:session-debug-log": "bash scripts/e2e-session-debug-log.sh",
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",

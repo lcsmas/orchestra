@@ -11,7 +11,7 @@ reference is the sibling doc `agent-view-design.md`.
 
 ## Which `claude` runs
 
-`resolveClaudeBinary` (`src/main/agent-sdk.ts`) walks the session env's PATH and the
+`resolveClaudeBinary` (`src/main/claude-binary.ts`) walks the session env's PATH and the
 result is passed as `pathToClaudeCodeExecutable`. The packaged app ships no SDK binary
 (pruned in `package.json` `build.files`), so a local session with no `claude` on PATH
 throws a clear "not found on PATH" error at start (rendered as the agent pane's ERROR
@@ -1888,7 +1888,7 @@ closed these gaps — the regression guards live in `agent-events.test.ts`:
   agent-sdk.ts — the Agent SDK's `query.supportedModels()`, the same source as
   Claude Code's `/model` picker, cached in-memory per ACCOUNT config dir +
   CLI VERSION; `[]` = unknown). The list follows the `claude` on PATH NOW
-  (`currentClaudeRuntime`, `claude --version` memoized by realpath+mtime): a
+  (`currentClaudeRuntime` → `claudeBinaryVersion` in `claude-binary.ts`, `claude --version` memoized by realpath+mtime): a
   live session is trusted only when its `system/init` `claude_code_version`
   (`Session.cliVersion`) matches, else the current binary is probed with a
   throwaway handshake-only query (`probeRuntimeModels`). `sdkSetModel` restarts

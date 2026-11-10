@@ -268,6 +268,7 @@ import { keeperResident } from './admission-wake';
 import { startMemoryAlert, stopMemoryAlert } from './memory-alert-host';
 import { registerMemoryBannerIpc, startMemoryBanner, stopMemoryBanner } from './memory-banner-host';
 import { registerAppUpdateIpc, startAppUpdate, stopAppUpdate } from './app-update-host';
+import { registerClaudeCodeUpdateIpc, startClaudeCodeUpdate, stopClaudeCodeUpdate } from './claude-code-update-host';
 import { bootFallbackKills } from '../shared/resource-monitor';
 import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
@@ -679,6 +680,8 @@ async function createMainWindow() {
   startMemoryBanner();
   // « Nouvelle version installée »: the installed AppImage replaced on disk ⇒ the app (and the phone) say a relaunch picks it up.
   startAppUpdate();
+  // « Mise à jour disponible »: a newer Claude Code is published than the one installed ⇒ the sidebar strip says so and can run `claude update`.
+  startClaudeCodeUpdate();
   // Stop the agent processes of long-idle workspaces to reclaim their memory;
   // the conversation survives (SDK sdkSessionId) so a
   // hibernated agent restores on the next send/activation.
@@ -865,6 +868,7 @@ registerStaleRunSource(listStaleRunWorkspaces);
 registerPauseUiIpc();
 registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
 registerAppUpdateIpc(); // « Nouvelle version installée »: pull + relaunch (ONCE, module scope)
+registerClaudeCodeUpdateIpc(); // « Mise à jour disponible » (Claude Code): pull + run + acknowledge (ONCE, module scope)
 registerWatchersIpc(); // #330 — the directory-watcher health pull channel (ONCE, module scope)
 // The switch WRITE, deliberately NOT through registerBusPaneIpc(): that registrar
 // refuses write handlers, so the read-only boundary (T118.4) stays enforced and a
@@ -986,6 +990,7 @@ function shutdownSubsystems(): void {
   stopDockerHold();
   stopMemoryBanner();
   stopAppUpdate();
+  stopClaudeCodeUpdate();
   stopMemoryAlert();
   stopMemoryPause();
   stopMemoryGuard();

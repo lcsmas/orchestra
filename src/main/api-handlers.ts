@@ -230,6 +230,11 @@ type ServableApi = Omit<
   // « Nouvelle version installée »: the pull (`appUpdate:state`) and the relaunch (`appUpdate:relaunch`) are registered by registerAppUpdateIpc() (src/main/app-update-host.ts), next to the push.
   | 'appUpdateState'
   | 'relaunchInstalled'
+  // « Mise à jour disponible » (Claude Code): `claudeCodeUpdate:*` are registered by registerClaudeCodeUpdateIpc() (src/main/claude-code-update-host.ts) — a write
+  // (`claude update`) must not be reachable as a "served read".
+  | 'claudeCodeUpdateState'
+  | 'runClaudeCodeUpdate'
+  | 'ackClaudeCodeUpdate'
   // #400 — the profils navigateur channels are registered by registerBrowserProfilesIpc() (src/main/browser-profiles-ipc.ts): every write is sender-checked to
   // the app's own window, so none of them may be reachable as a "served" method.
   | 'browserProfiles'

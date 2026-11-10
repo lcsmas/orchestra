@@ -4,6 +4,7 @@ import type { HumanGateView } from '../shared/human-gates';
 import type { PauseUiOverview } from '../shared/pause-ui';
 import type { MemoryBannerState } from '../shared/memory-banner';
 import type { AppUpdateState } from '../shared/app-update';
+import type { ClaudeCodeUpdateState } from '../shared/claude-code-update';
 import type { WatchersStatus } from '../shared/watcher-status';
 
 const api: OrchestraAPI = {
@@ -62,6 +63,14 @@ const api: OrchestraAPI = {
     return () => ipcRenderer.off('appUpdate:update', listener);
   },
   relaunchInstalled: () => ipcRenderer.invoke('appUpdate:relaunch'),
+  claudeCodeUpdateState: () => ipcRenderer.invoke('claudeCodeUpdate:state'),
+  onClaudeCodeUpdate: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as ClaudeCodeUpdateState);
+    ipcRenderer.on('claudeCodeUpdate:update', listener);
+    return () => ipcRenderer.off('claudeCodeUpdate:update', listener);
+  },
+  runClaudeCodeUpdate: () => ipcRenderer.invoke('claudeCodeUpdate:run'),
+  ackClaudeCodeUpdate: () => ipcRenderer.invoke('claudeCodeUpdate:ack'),
   // #330 — directory-watcher health: the pull for the initial paint + the push (edge-triggered, only when the degraded set changes)
   watchersStatus: () => ipcRenderer.invoke('watchers:status'),
   onWatchersUpdate: (cb) => {

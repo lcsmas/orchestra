@@ -32,7 +32,8 @@ import { resolveLaunchModel } from '../shared/model-defaults.ts';
 import { nudgeActive } from '../shared/naming-policy.ts';
 import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { isRuntimeStale, parseCliVersion, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
+import { isRuntimeStale, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
+import { claudeBinaryVersion, resolveClaudeBinary } from './claude-binary';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
  *  produced here, folded in the renderer), so attributing a wrong pane to the
@@ -641,24 +642,6 @@ function emit(wsId: string, event: AgentEvent): void {
     slog.trace(`emit ${event.type} ws=${wsId} seq=${(event as { seq?: number }).seq ?? '?'}`);
   }
   platform.broadcast('agent:event', wsId, event);
-}
-
-/** Find the `claude` executable on the session env's PATH (the shim dir the
- *  env prepends holds only the `orchestra` CLI, so this lands on the user's
- *  real install). Returns null when absent — dev falls back to the SDK's own
- *  binary; the packaged app ships none and refuses (ensureSessionInner). */
-function resolveClaudeBinary(env: Record<string, string>): string | null {
-  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, 'claude');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      /* keep looking */
-    }
-  }
-  return null;
 }
 
 /** Normalize an SDK message and broadcast every event it produces. The sidebar status dot is driven by
@@ -2369,37 +2352,13 @@ async function sessionModels(wsId: string, session: Session): Promise<AgentModel
   }
 }
 
-/** `claude --version` memo, keyed by the binary's realpath + mtime so a
- *  `claude update` (symlink re-pointed) is picked up without an app restart. */
-const cliVersionMemo = new Map<string, Promise<string | null>>();
-
-/** The `claude` a NEW session for this workspace would spawn, and its version. */
+/** The `claude` a NEW session for this workspace would spawn, and its version (the session env's PATH: the shim dir it prepends
+ *  holds only the `orchestra` CLI, so this lands on the user's real install). */
 async function currentClaudeRuntime(ws: Workspace): Promise<{ bin: string; version: string } | null> {
   const { env } = await buildSdkEnv(ws);
   const bin = resolveClaudeBinary(env);
   if (!bin) return null;
-  const real = fs.realpathSync(bin);
-  const key = `${real}\0${fs.statSync(real).mtimeMs}`;
-  let p = cliVersionMemo.get(key);
-  if (!p) {
-    p = new Promise<string | null>((resolve) => {
-      let out = '';
-      const child = spawn(real, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
-      const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
-      child.stdout?.on('data', (c: Buffer) => (out += c.toString('utf8')));
-      child.on('error', () => {
-        clearTimeout(timer);
-        resolve(null);
-      });
-      child.on('close', () => {
-        clearTimeout(timer);
-        resolve(parseCliVersion(out));
-      });
-    });
-    cliVersionMemo.set(key, p);
-  }
-  const version = await p;
-  if (!version) cliVersionMemo.delete(key); // don't memoize a failed probe
+  const version = await claudeBinaryVersion(bin);
   return version ? { bin, version } : null;
 }
 

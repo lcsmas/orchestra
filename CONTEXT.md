@@ -332,3 +332,20 @@ The `~/.claude` directory as the place every Compte inherits skills, MCP
 servers and settings from. It is not a Compte: no agent runs under it, and any
 sign-in it holds is ignored.
 _Avoid_: default account, default login, global account
+
+### Claude Code
+
+**Claude Code**:
+The Anthropic program every agent session runs on. Orchestra does not ship it:
+it uses the one installed on the machine, the same for every Compte. Settled
+with the user 2026-11-10.
+_Avoid_: CLI on its own (that is the `orchestra` CLI), the claude binary
+
+**Mise à jour disponible** (available update):
+A version of Claude Code is published that is newer than the one installed on
+the machine: a step is left for the human (install it). Never said of
+Orchestra itself — a replaced Orchestra is a *nouvelle version installée*,
+where the only step left is to relaunch.
+_Avoid_: nouvelle version (ambiguous between the two), outdated session (a
+session still running an older Claude Code than the installed one is a
+different thing)

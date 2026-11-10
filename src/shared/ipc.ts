@@ -10,6 +10,7 @@ import type { PauseMode } from './pause-lifecycle.ts';
 import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from './pause-ui.ts';
 import type { MemoryBannerState } from './memory-banner.ts';
 import type { AppUpdateState } from './app-update.ts';
+import type { ClaudeCodeUpdateState } from './claude-code-update.ts';
 import type { WatchersStatus } from './watcher-status.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -181,6 +182,11 @@ export interface OrchestraAPI {
   appUpdateState: () => Promise<AppUpdateState>;
   onAppUpdate: (cb: (state: AppUpdateState) => void) => () => void;
   relaunchInstalled: () => Promise<{ ok: boolean; error?: string }>;
+  /** « Mise à jour disponible » (Claude Code): the pull, the push on change, « Mettre à jour » (`claude update`, resolves when it ended) and « OK ». */
+  claudeCodeUpdateState: () => Promise<ClaudeCodeUpdateState>;
+  onClaudeCodeUpdate: (cb: (state: ClaudeCodeUpdateState) => void) => () => void;
+  runClaudeCodeUpdate: () => Promise<ClaudeCodeUpdateState>;
+  ackClaudeCodeUpdate: () => Promise<ClaudeCodeUpdateState>;
   /** Directory-watcher health (#330): every ARMED watcher's state, for the initial paint / a reload. NEVER rejects. */
   watchersStatus: () => Promise<WatchersStatus>;
   /** Live push: the whole watcher status, ONLY when the degraded set changes (a watcher degraded, recovered, or was stopped while degraded). Returns an unsubscribe fn. */
