@@ -18,6 +18,7 @@ MUTANTS = [
     ('B6-sw-intercepts-navigations', SW, "if (isNav ? url.pathname !== '/' : SHELL.indexOf(url.pathname) < 0) return;", "if (!isNav && SHELL.indexOf(url.pathname) < 0) return;", R),
     ('B7-mint-unbounded', SV, "Buffer.byteLength(source) > BLOC_HTML_MAX_SOURCE_BYTES) return refuse(400, 'bad-bloc');", "false) return refuse(400, 'bad-bloc');", R),
     ('B13-mint-own-cap', SV, "Buffer.byteLength(source) > BLOC_HTML_MAX_SOURCE_BYTES) return refuse(400, 'bad-bloc');", "Buffer.byteLength(source) > 1000) return refuse(400, 'bad-bloc');", R),
+    ('B14-enabled-truthy-not-true', SV, "?.enabled !== true) return refuse(404, 'bloc-off');", "?.enabled === false) return refuse(404, 'bloc-off');", R),
     ('B8-id-shape-relaxed', BR, "export const BLOC_ID_RE = /^[A-Za-z0-9_-]{32}$/;", "export const BLOC_ID_RE = /^[\\s\\S]*$/;", R),
     ('B9-mint-without-token', SV, "if (pathOnly === '/api/bloc' && method === 'POST') {", "if (false) {", R),
     ('B10-route-asks-bearer', SV, "const current = readTokenSafe();\n      if (!current) return refuse(404, 'bloc-no-token');", "const current = readTokenSafe();\n      if (!bearer(req)) return refuse(401, 'no-token');\n      if (!current) return refuse(404, 'bloc-no-token');", R),

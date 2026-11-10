@@ -370,3 +370,24 @@ test('the mint limit IS the shared cap: a bloc splitReply renders is a bloc the 
     await r.close();
   }
 });
+
+test('fail closed on main\'s answer: only `enabled === true` serves a bloc — a missing, null, string, number or malformed answer serves nothing (control: true ⇒ 200)', async () => {
+  let answer: unknown = { ok: true, enabled: true };
+  const server = createAccesMobileServer({ allowedLogin: LOGIN, readToken: () => TOKEN, upstream: async () => answer, log: () => {} });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const m = await mint({ port });
+    assert.equal((await frame({ port }, m.id)).status, 200, 'control: enabled === true');
+    for (const bad of [{ ok: true }, {}, null, undefined, 'true', 1, { ok: true, enabled: 'true' }, { ok: true, enabled: 1 }, { ok: true, enabled: null }, { ok: true, enabled: [true] }, { ok: false, error: 'x' }]) {
+      answer = bad;
+      const res = await frame({ port }, m.id);
+      assert.equal(res.status, 404, `main answered ${JSON.stringify(bad)}`);
+      assert.ok(!res.body.includes('bloc ok'), 'no model HTML served');
+    }
+    answer = { ok: true, enabled: true };
+    assert.equal((await frame({ port }, m.id)).status, 200, 'control again: the id itself is still live');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
