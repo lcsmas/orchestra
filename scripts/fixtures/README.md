@@ -121,3 +121,7 @@ in `context-command.usage.json` flips it RC 0 → 1.
    adapters coerce an unknown `kind` to `'used'`
    (`src/shared/context-usage.ts:267`). The check has to read the **raw** payload
    — that is what `validateRawCategoryKinds()` does and why it is separate.
+
+## `bloc-html-rig.{key,cert}.pem` — test-only
+
+Self-signed 127.0.0.1 key/cert for the Bloc HTML rig's local https listener (`scripts/e2e-bloc-html.mjs`). The app trusts it only through the rig's `--ignore-certificate-errors-spki-list` pin; `scripts/` is not in `build.files`, so it never ships. Do not reuse.

@@ -30,7 +30,7 @@ test('policy v2: inline script/style + https: (script, style, img, font, fetch/X
   assert.deepEqual(directive('base-uri'), ["'none'"]);
   assert.deepEqual(directive('form-action'), ["'none'"]);
   assert.doesNotMatch(BLOC_HTML_POLICY, /(^|[\s;])(http:|ws:|\*)/, 'no plain http:/ws: and no wildcard anywhere');
-  assert.doesNotMatch(BLOC_HTML_POLICY, /frame-src|child-src|'unsafe-eval'|worker-src|object-src/, 'nothing nested / no eval: default-src none covers them');
+  assert.doesNotMatch(BLOC_HTML_POLICY, /frame-src|child-src|'unsafe-eval'|worker-src|object-src/, 'no frames / eval / objects (default-src none); a blob: worker runs under script-src, same policy (worker-src falls back to it)');
 });
 
 test('NO color-scheme anywhere in the document (it paints the frame opaque)', () => {

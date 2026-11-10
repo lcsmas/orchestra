@@ -123,10 +123,12 @@ function solidPng(w, h, [r, g, b]) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 const ASSET_RGB = [200, 40, 120], ASSET_PNG = solidPng(160, 80, ASSET_RGB);
+const FONT_BYTES = fs.readFileSync(path.join(path.dirname(FIX), '..', 'src/renderer/assets/fonts/orchestra-symbols.woff2')); // a real font: a valid face only loads if its fetch succeeded
 const handler = (hits) => (req, res) => {
   hits.push(req.url);
   const cors = { 'access-control-allow-origin': '*' };
   if (/^\/(asset|prose)\.png/.test(req.url)) { res.writeHead(200, { 'content-type': 'image/png', ...cors }); return res.end(ASSET_PNG); }
+  if (/^\/font\.woff2/.test(req.url)) { res.writeHead(200, { 'content-type': 'font/woff2', ...cors }); return res.end(FONT_BYTES); }
   if (/^\/lib\.js/.test(req.url)) { res.writeHead(200, { 'content-type': 'text/javascript', ...cors }); return res.end('window.__libLoaded = 42;'); }
   if (/^\/css/.test(req.url)) { res.writeHead(200, { 'content-type': 'text/css', ...cors }); return res.end('#ncss{background:rgb(1,2,3)}'); }
   res.writeHead(200, { 'content-type': 'text/plain', ...cors }); res.end('listener-ok');
@@ -201,7 +203,7 @@ r.origin=self.origin; r.cookie=t(function(){return 'readable:'+document.cookie})
 setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>`;
 // The same probes against a base URL: over https every one must SUCCEED (N1), over http every one must be REFUSED (N2). Reports after 2.5 s.
 const netBloc = (base, wsBase, tag, visible) => `<div id="ncss" style="height:14px;color:var(--bloc-fg)">network probe ${tag}</div>
-<link rel="stylesheet" href="${base}/css"><link rel="preconnect" href="${base}"><link rel="prefetch" href="${base}/prefetch">
+<style>@font-face{font-family:rigf;src:url(${base}/font.woff2) format("woff2")}</style><link rel="stylesheet" href="${base}/css"><link rel="preconnect" href="${base}"><link rel="prefetch" href="${base}/prefetch">
 <img id="ri" src="${base}/asset.png?static" style="${visible ? 'display:block;width:160px;height:80px' : 'display:none'}">
 <script>(function(){var r={};function t(f){try{return f()}catch(e){return 'ERR '+e.name}}
 var pend=0;function wait(){pend++;return function(){pend--}}
@@ -212,6 +214,7 @@ var d4=wait();var sc=document.createElement('script');sc.onload=function(){r.scr
 var d5=wait();t(function(){var w=new WebSocket('${wsBase}/ws');w.onopen=function(){r.ws='open';w.close();d5()};w.onerror=function(){r.ws='ERR';d5()}});
 t(function(){navigator.sendBeacon('${base}/beacon','x')});
 var d6=wait();var b=new Blob(['blob-ok']);fetch(URL.createObjectURL(b)).then(function(x){return x.text()}).then(function(x){r.blob=x},function(e){r.blob='ERR '+e.name}).then(d6);
+var d8=wait();document.fonts.load('16px rigf','x').then(function(f){r.font=f.length?'loaded':'ERR'},function(){r.font='ERR'}).then(d8);
 var d7=wait();var di=new Image();di.onload=function(){r.data='loaded';d7()};di.onerror=function(){r.data='ERR';d7()};di.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 setTimeout(function(){var n=document.getElementById('ncss');r.css=getComputedStyle(n).backgroundColor;var ri=document.getElementById('ri').getBoundingClientRect();r.rect={l:ri.left,t:ri.top,w:ri.width,h:ri.height};r.staticImg=document.getElementById('ri').naturalWidth;
 parent.postMessage({__probe:'${tag}',r:r},'*')},2500)})()</script>`;
@@ -433,8 +436,8 @@ async function runArm(arm, lan) {
       const rh = await waitFor(() => probe('neth'), 30000, 'the https network probe report');
       const gh = good.hits.slice();
       const seen = (re) => gh.some((u) => re.test(u));
-      const chans = { fetch: /^status 200 listener-ok/.test(rh.fetch ?? ''), xhr: rh.xhr === 'status 200', img: rh.img === 'loaded 160x80', script: rh.script === 'ran 42', css: rh.css === 'rgb(1, 2, 3)', ws: rh.ws === 'open', blob: rh.blob === 'blob-ok', data: rh.data === 'loaded', staticImg: rh.staticImg === 160 };
-      const listener = { fetch: seen(/^\/fetch/), xhr: seen(/^\/xhr/), img: seen(/^\/asset\.png\?dyn/), script: seen(/^\/lib\.js/), css: seen(/^\/css/), ws: seen(/^UPGRADE \/ws/), staticImg: seen(/^\/asset\.png\?static/) };
+      const chans = { fetch: /^status 200 listener-ok/.test(rh.fetch ?? ''), xhr: rh.xhr === 'status 200', img: rh.img === 'loaded 160x80', script: rh.script === 'ran 42', css: rh.css === 'rgb(1, 2, 3)', ws: rh.ws === 'open', blob: rh.blob === 'blob-ok', font: rh.font === 'loaded', data: rh.data === 'loaded', staticImg: rh.staticImg === 160 };
+      const listener = { fetch: seen(/^\/fetch/), xhr: seen(/^\/xhr/), img: seen(/^\/asset\.png\?dyn/), script: seen(/^\/lib\.js/), css: seen(/^\/css/), ws: seen(/^UPGRADE \/ws/), staticImg: seen(/^\/asset\.png\?static/), font: seen(/^\/font\.woff2/) };
       N.N1 = { ok: Object.values(chans).every(Boolean) && Object.values(listener).every(Boolean), detail: `https bloc, frame says ${JSON.stringify(rh)}; ok per channel ${JSON.stringify(chans)}; https listener saw per channel ${JSON.stringify(listener)} (${gh.length} requests)` };
       if (arm === 'real') {
         const frn = await cdp.eval(`(() => { const f = document.querySelector('iframe.av-bloc-frame[title="Réseau https"]'); f.scrollIntoView({ block: 'center' }); const b = f.getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
@@ -450,7 +453,7 @@ async function runArm(arm, lan) {
       const rp = await waitFor(() => probe('netp'), 30000, 'the http network probe report');
       await sleep(1500);
       const eh = evil.hits.slice();
-      const refusedCh = { fetch: /^ERR/.test(rp.fetch ?? ''), xhr: rp.xhr === 'ERR', img: rp.img === 'ERR', script: rp.script === 'ERR', css: rp.css === 'rgba(0, 0, 0, 0)', ws: rp.ws === 'ERR', staticImg: rp.staticImg === 0 };
+      const refusedCh = { fetch: /^ERR/.test(rp.fetch ?? ''), xhr: rp.xhr === 'ERR', img: rp.img === 'ERR', script: rp.script === 'ERR', css: rp.css === 'rgba(0, 0, 0, 0)', ws: rp.ws === 'ERR', font: rp.font === 'ERR', staticImg: rp.staticImg === 0 };
       N.N2 = { ok: eh.length === 0 && Object.values(refusedCh).every(Boolean), detail: `http bloc, frame says ${JSON.stringify(rp)}; refused per channel ${JSON.stringify(refusedCh)}; the http listener (instrument seen YES on a node-side GET at boot) saw ${eh.length} request(s): ${JSON.stringify(eh)}` };
 
       lan.reset();
@@ -495,7 +498,7 @@ async function runArm(arm, lan) {
     }
 
     // ── verdicts of the isolation clauses ──
-    const named = { N1: 'N1/an-https-request-from-a-bloc-succeeds (script, style, img, fetch, XHR, wss:, blob:, data:)', N2: 'N2/an-http-request-from-a-bloc-is-refused (nothing reaches the http listener)', I5: 'I5/message-flood-leaves-the-window-responsive', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
+    const named = { N1: 'N1/an-https-request-from-a-bloc-succeeds (script, style, img, font, fetch, XHR, wss:, blob:, data:)', N2: 'N2/an-http-request-from-a-bloc-is-refused (nothing reaches the http listener)', I5: 'I5/message-flood-leaves-the-window-responsive', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
     for (const [k, v] of [...Object.entries(N), ...Object.entries(I)]) clause(arm, named[k], v.ok, v.detail);
     fs.writeFileSync(path.join(OUT, `${arm}-hits.json`), JSON.stringify({ httpHits: evil.hits, httpsHits: good.hits, N, I }, null, 2));
     if (arm !== 'sandbox-loop') {
