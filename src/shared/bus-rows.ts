@@ -24,6 +24,7 @@
 // the command must be an `orchestra check`. The ACK badge flips PENDING→ACKED
 // when a later `orchestra ack <lot-id>` invocation names the SAME lot id.
 
+import { summarizeReply } from './reply-segments.ts';
 import { isWakeOrder, wakeOrderRuns } from './bus-wake.ts';
 import type { CheckOutput } from '../cli/bus-verbs.ts';
 
@@ -284,7 +285,7 @@ export interface BusDelivery {
 /** First non-empty line of a body, trimmed and capped — the delivery-row preview.
  *  Mirrors `peerPreview` so the two families read consistently. */
 export function deliveryPreview(body: string | undefined, max = 120): string {
-  const first = (body ?? '')
+  const first = summarizeReply(body ?? '') // #420: a bloc previews as its title
     .split('\n')
     .map((l) => l.trim())
     .find((l) => l.length > 0);

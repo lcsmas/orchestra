@@ -38,6 +38,7 @@ import type { BusMutationKind, ReceiptOutcome } from '../main/bus-receipts.ts';
 import type { RunHoldOutcome } from '../main/bus-runs.ts';
 import type { RunPauseInfo, RunPauseOutcome } from '../main/bus-pause.ts';
 import { actorText, SOFT_PAUSE_DEADLINE_MS, type PauseMode, type RepriseEntry, type RepriseOutcome } from '../shared/pause-lifecycle.ts';
+import { summarizeReply } from '../shared/reply-segments.ts';
 import { renderPauseRosterLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import type { ConfirmPauseOutcome } from '../main/pause-douce.ts';
 import type { ConfirmRepriseResult, ReleaseResult } from '../main/pause-reprise.ts';
@@ -677,7 +678,7 @@ export function lotToOutput(
       sender: m.sender,
       recipient: m.recipient,
       thread_id: m.thread_id,
-      body: m.body,
+      body: summarizeReply(m.body), // #420: the reader's context gets a bloc's title, not its markup
       created_at: m.created_at,
     })),
     gates: gates.map((g) => ({

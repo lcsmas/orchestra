@@ -1,5 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
+import { summarizeReply } from '../../shared/reply-segments.ts';
 
 // The platform seam: every place the main-process backend used to touch
 // Electron UI surfaces (webContents.send, Notification, shell.open*, app
@@ -140,7 +141,7 @@ export const platform: OrchestraPlatform = {
   canBroadcast: () => current().canBroadcast(),
   isFocused: () => current().isFocused(),
   hasAttachedUi: () => current().hasAttachedUi(),
-  notify: (n) => current().notify(n),
+  notify: (n) => current().notify({ ...n, title: summarizeReply(n.title), body: summarizeReply(n.body) }), // #420: a bloc toasts as its title
   openExternal: (url) => current().openExternal(url),
   showItemInFolder: (p) => current().showItemInFolder(p),
   openPath: (p) => current().openPath(p),

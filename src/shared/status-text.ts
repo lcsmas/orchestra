@@ -3,6 +3,8 @@
 // without Electron and shared by the socket dispatcher (main) and any future
 // renderer-side preview.
 
+import { summarizeReply } from './reply-segments.ts';
+
 /** Hard cap on a status note's length. The note is one glanceable sidebar row
  * line — "what am I doing right now", not a progress report; anything longer
  * belongs in the transcript. Truncation at this cap is VISIBLE (ellipsis),
@@ -21,7 +23,8 @@ export const STATUS_TEXT_MAX_CHARS = 160;
  *   store the field as absent, never as an empty string.
  */
 export function sanitizeStatusText(raw: string): string {
-  const collapsed = raw
+  // #420: a bloc HTML in a note reads as its title, never its markup.
+  const collapsed = summarizeReply(raw)
     // C0 controls (minus \t\n\r, which the \s+ pass below handles) + DEL.
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     .replace(/\s+/g, ' ')

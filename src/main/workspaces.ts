@@ -130,7 +130,7 @@ import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
-import type { PeerOrigin } from '../shared/peer-messages.ts';
+import { formatPeerMessage, type PeerOrigin } from '../shared/peer-messages.ts';
 import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
 import { appendInboxBlock } from './inbox-write.ts';
 import { reportedDeliveryFor, requiresInboxFallback } from '../shared/delivery-status.ts';
@@ -2916,18 +2916,6 @@ export interface MessageResult {
 }
 
 const MESSAGE_MAX_CHARS = 8000;
-
-function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
-  // #169 P4 — on a bus (delivery-ON) run, replies go through `orchestra send`;
-  // `orchestra message` is the legacy fallback (this footer is only ever attached
-  // to a legacy/emergency delivery in the first place). Name the bus path first
-  // so a recipient on a delivery-ON run does not hit the coordination refusal.
-  return (
-    `[message from agent '${fromBranch}' (${fromId})]\n${text}\n\n` +
-    `Reply with: orchestra send --type status --to ${fromId} "<reply>" ` +
-    `(bus run) — or orchestra message ${fromId} "<reply>" on a legacy delivery-OFF run`
-  );
-}
 
 /** Wake a stopped agent and hand it `prompt` as a live turn. Wakes it as a
  * STRUCTURED (SDK) session — resuming the prior conversation (`ws.sdkSessionId`,

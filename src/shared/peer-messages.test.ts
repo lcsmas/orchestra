@@ -9,7 +9,7 @@ import {
   recognizeFormattedPeerMessage,
 } from './peer-messages.ts';
 
-// The EXACT envelope src/main/workspaces.ts `formatPeerMessage` emits. Kept
+// The EXACT envelope src/shared/peer-messages.ts `formatPeerMessage` emits. Kept
 // byte-identical here on purpose: if the formatter's wording ever changes, this
 // fixture stops matching and the backfill test below fails loudly — which is the
 // only warning the scoped textual recognizer can get.

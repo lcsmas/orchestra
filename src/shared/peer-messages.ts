@@ -41,6 +41,8 @@
 // is anchored (`^`) and requires the full bracketed header, so ordinary prose
 // quoting the phrase mid-message cannot trip it.
 
+import { summarizeReply } from './reply-segments.ts';
+
 /** Structural provenance for a message Orchestra delivered from another agent.
  *  Mirrors the CLI's own `origin` shape (`kind`/`from`/`name`) so the two
  *  channels present identically, even though only this one currently renders. */
@@ -77,7 +79,20 @@ export function peerSender(m: { origin?: string }): string {
   return name || 'agent';
 }
 
-// The header `formatPeerMessage` (src/main/workspaces.ts) writes, and the reply
+/** The text a peer receives (#420: a bloc HTML reaches it as its title). */
+export function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
+  // #169 P4 — on a bus (delivery-ON) run, replies go through `orchestra send`;
+  // `orchestra message` is the legacy fallback (this footer is only ever attached
+  // to a legacy/emergency delivery in the first place). Name the bus path first
+  // so a recipient on a delivery-ON run does not hit the coordination refusal.
+  return (
+    `[message from agent '${fromBranch}' (${fromId})]\n${summarizeReply(text)}\n\n` + // #420: a bloc reaches the peer as its title
+    `Reply with: orchestra send --type status --to ${fromId} "<reply>" ` +
+    `(bus run) — or orchestra message ${fromId} "<reply>" on a legacy delivery-OFF run`
+  );
+}
+
+// The header `formatPeerMessage` (above) writes, and the reply
 // footer it appends. Anchored at the start of the body; the id group is
 // non-greedy and the line must END after the bracket, so only Orchestra's own
 // envelope matches.
@@ -116,7 +131,7 @@ export function recognizeFormattedPeerMessage(
  *  Returns '' for an empty body, which the row renders as a quiet placeholder
  *  rather than an empty click target. */
 export function peerPreview(text: string | undefined, max = 120): string {
-  const first = (text ?? '')
+  const first = summarizeReply(text ?? '') // #420: a bloc previews as its title
     .split('\n')
     .map((l) => l.trim())
     .find((l) => l.length > 0);

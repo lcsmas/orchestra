@@ -2,7 +2,7 @@
  * The shared reader of an agent reply (Bloc HTML, spec #414, ADR 0011): turns a
  * reply's text into prose / bloc segments. Pure — no DOM, no Node — so the
  * desktop renderer, the main process and the phone page's self-contained reader
- * all import it. Ledger #423 FI-1; `summarizeReply` (#420) is added here later.
+ * all import it. Ledger #423 FI-1; `summarizeReply` (#420) sits below, outside `splitReply`.
  *
  * A bloc is a fenced block whose info string STARTS with the whole word
  * `html-render` (`html-render` ≠ `html`, `html-renderer`, `HTML-RENDER`), with an
@@ -117,4 +117,11 @@ export function splitReply(text: string, opts?: { maxSourceBytes?: number }): Re
     segs.push({ kind: 'prose', text: text.slice(proseStart) });
   }
   return segs;
+}
+
+/** A reply as a summary reads it: prose kept, every bloc (closed, open, refused) replaced by its title — never its source (#420). */
+export function summarizeReply(text: string): string {
+  const segs = splitReply(text);
+  if (segs.length === 1 && segs[0].kind === 'prose') return text;
+  return segs.map((s) => (s.kind === 'prose' ? s.text : s.title)).join('');
 }

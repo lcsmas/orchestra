@@ -3,6 +3,7 @@
 
 import { resolveWorkspaceAccountId, type Account } from './accounts.ts';
 import type { RepoEntry, Workspace, WorkspaceStatus } from './types.ts';
+import { summarizeReply } from './reply-segments.ts';
 
 export interface AccesMobileSettings {
   /** Off by default: nothing listens for the phone unless the human turned it on. */
@@ -262,11 +263,14 @@ export function projectMobileWorkspaces(
       unread: ws.autoUnread === true,
       at: Math.max(ws.createdAt ?? 0, ws.lastTurnStartAt ?? 0, ws.lastStopReasonAt ?? 0, ws.statusTextAt ?? 0),
     };
-    if (ws.statusText) row.statusText = ws.statusText;
+    if (ws.statusText) row.statusText = summarizeReply(ws.statusText); // #420: a bloc reads as its title on the phone list
     const parentId = listedAncestor(ws);
     if (parentId) row.parentId = parentId;
     const pv = previewOf?.(ws) ?? (ws.statusText ? { kind: 'status' as const, text: ws.statusText } : undefined);
-    if (pv) row.preview = { kind: pv.kind, text: pv.text.length > 300 ? pv.text.slice(0, 300) + '…' : pv.text };
+    if (pv) {
+      const text = summarizeReply(pv.text);
+      row.preview = { kind: pv.kind, text: text.length > 300 ? text.slice(0, 300) + '…' : text };
+    }
     rows.push(row);
   }
   return rows.sort(
