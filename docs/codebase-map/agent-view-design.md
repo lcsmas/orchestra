@@ -587,6 +587,10 @@ don't reflow). Error `.av-turn-{error-icon,error-label,error-detail,error-spinne
 (`.av-turn-spinner` retained for the error-spinner; the running state uses the
 spark, not the ring.)
 
+## Bloc HTML frame (#415)
+
+Structural classes in `agent-view-structure.css` (no theme layer of their own — the model's HTML is themed from inside the frame): `.av-bloc` (margin `0.8em 0`, `max-width: 860px`) wraps `.av-bloc-frame` (`display:block; width:100%; border:0; transparent`; height set inline from the frame's report). `.av-bloc-pending` is the dashed placeholder (`--av-hairline-strong`, pulsing `--av-assistant` dot, the title). The frame receives `--av-text/-dim/-surface/-hairline-strong/-assistant/-add/-warn/-error` as `--bloc-fg/muted/surface/border/accent/ok/warn/err` and must not declare `color-scheme` (an opaque canvas). Frame title = the fence's `title` (accessible name). Chrome (clip, source, enlarge) is #417.
+
 ## Accessibility contract
 
 - Every interactive element in `.av-view` gets a visible focus ring (`:focus-visible`
