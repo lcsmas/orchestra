@@ -274,6 +274,7 @@ import { sweepStaleSelfTuneRuns } from './self-tune';
 import { apiHandlers, METHOD_IPC_CHANNELS, openUrlExternally } from './api-handlers';
 import { probeDependencies } from './deps';
 import { initLogger, log, isLevelEnabled } from './logger';
+import { onBlocNavigationAttempt } from './bloc-html-guard';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -699,6 +700,13 @@ async function createMainWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void openUrlExternally(url, 'window-open');
     return { action: 'deny' };
+  });
+
+  // Bloc HTML (#415): a sub-frame of the app window is a model-written bloc — it never navigates (the one leak channel its policy does not close).
+  mainWindow.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame || event.url === 'about:srcdoc') return;
+    event.preventDefault();
+    log.warn(onBlocNavigationAttempt(event.url, { processId: event.frame?.processId ?? -1, routingId: event.frame?.routingId ?? -1 }));
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {

@@ -93,7 +93,7 @@ export function shikiLang(tag: string | undefined): string {
   const alias: Record<string, string> = {
     ts: 'typescript', js: 'javascript', py: 'python', rs: 'rust',
     sh: 'bash', zsh: 'bash', shell: 'bash', 'c++': 'cpp', 'c#': 'csharp',
-    yml: 'yaml', md: 'markdown', htm: 'html', rb: 'ruby', docker: 'dockerfile',
+    yml: 'yaml', md: 'markdown', htm: 'html', 'html-render': 'html', rb: 'ruby', docker: 'dockerfile',
   };
   const id = alias[t] ?? t;
   return LANG_IDS.includes(id) ? id : 'text';

@@ -6,6 +6,8 @@ import remarkBreaks from 'remark-breaks';
 import remend from 'remend';
 import { CodeBlock } from './CodeBlock';
 import { partitionStreamingMarkdown } from '../../../shared/markdown-blocks';
+import { splitReply } from '../../../shared/reply-segments';
+import { BlocFrame, BlocPending } from './BlocFrame';
 
 /**
  * A link whose destination hasn't finished streaming is closed by `remend` with
@@ -25,6 +27,8 @@ interface Props {
   /** Whether the surrounding message has finished streaming — forwarded to
    *  CodeBlock so fenced blocks only syntax-highlight once finalized. */
   done: boolean;
+  /** Render `html-render` fences as Bloc HTML frames. ONLY an agent reply passes it (#415); every other caller keeps the fence as code. */
+  blocs?: boolean;
 }
 
 /**
@@ -83,7 +87,8 @@ function MarkdownBlockImpl({ text, done }: Props) {
           children?: React.ReactNode;
         };
         const raw = String(children ?? '');
-        const match = /language-(\w+)/.exec(className ?? '');
+        // The label is read WHOLE: `html-render` must not become `html` (a `\w+` match stops at the hyphen).
+        const match = /language-(\S+)/.exec(className ?? '');
         const isBlock = !!match || raw.includes('\n');
         if (isBlock) {
           return (
@@ -168,7 +173,7 @@ const MarkdownBlock = React.memo(
   (a, b) => a.text === b.text && a.done === b.done,
 );
 
-function MarkdownViewImpl({ text, done }: Props) {
+function MarkdownProseImpl({ text, done }: Props) {
   // Split into already-final "stable" blocks + the still-growing "active" tail.
   // Only the tail changes as tokens arrive, so only it re-renders each frame;
   // the stable blocks are memoized by their (unchanging) text. See
@@ -193,7 +198,35 @@ function MarkdownViewImpl({ text, done }: Props) {
   );
 }
 
+const MarkdownProse = React.memo(
+  MarkdownProseImpl,
+  (a, b) => a.text === b.text && a.done === b.done,
+);
+
+/**
+ * An agent reply with Bloc HTML (`blocs`): the shared reader splits it into prose and blocs (a closed fence → an isolated frame, an open one →
+ * a titled placeholder, an over-cap one → code); each prose run goes through the streaming pipeline above. Without `blocs` it is that pipeline alone.
+ */
+function MarkdownViewImpl({ text, done, blocs }: Props) {
+  const segments = useMemo(() => (blocs ? splitReply(text) : null), [text, blocs]);
+  if (!segments) return <MarkdownProse text={text} done={done} />;
+  const last = segments.length - 1;
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.kind === 'prose') {
+          // Prose before a bloc is final; only a trailing prose run follows the message's own `done`.
+          return seg.text.trim() === '' ? null : <MarkdownProse key={`p${i}`} text={seg.text} done={done || i < last} />;
+        }
+        if (seg.kind === 'bloc') return <BlocFrame key={`b${i}`} title={seg.title} source={seg.source} />;
+        if (seg.kind === 'bloc-pending') return <BlocPending key={`b${i}`} title={seg.title} />;
+        return <MarkdownProse key={`r${i}`} text={seg.raw} done />;
+      })}
+    </>
+  );
+}
+
 export const MarkdownView = React.memo(
   MarkdownViewImpl,
-  (a, b) => a.text === b.text && a.done === b.done,
+  (a, b) => a.text === b.text && a.done === b.done && a.blocs === b.blocs,
 );

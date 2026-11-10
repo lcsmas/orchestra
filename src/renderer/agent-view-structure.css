@@ -216,3 +216,10 @@
   border-color: #a3423b;
   color: #e08b84;
 }
+
+/* Bloc HTML (#415, ADR 0011): an isolated frame in the flow — no chrome, transparent, the height its script reports. */
+.av-bloc { margin: 0.8em 0; max-width: 860px; }
+.av-bloc-frame { display: block; width: 100%; border: 0; background: transparent; }
+.av-bloc-pending { display: flex; align-items: center; gap: 8px; margin: 0.8em 0; padding: 12px 14px; max-width: 860px; border: 1px dashed var(--av-hairline-strong); border-radius: 10px; color: var(--av-text-dim); font-size: 12px; }
+.av-bloc-pending-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--av-assistant); animation: av-bloc-pulse 1s ease-in-out infinite; }
+@keyframes av-bloc-pulse { 50% { opacity: 0.25; } }

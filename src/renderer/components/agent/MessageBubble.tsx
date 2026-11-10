@@ -1,6 +1,7 @@
 import React from 'react';
 import type { RenderMessage } from '../../../shared/types';
 import { MarkdownView } from './MarkdownView';
+import { useBlocHtmlEnabled } from './bloc-html-enabled';
 import { NoticeRow } from './NoticeRow';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { useTypewriter } from './useTypewriter';
@@ -33,6 +34,7 @@ function MessageBubbleImpl({ message }: Props) {
   // Context, not a prop: this bubble sits below several memo boundaries kept
   // deliberately render-free on the streaming hot path (see rewind-context.ts).
   const rewind = useRewind();
+  const blocHtml = useBlocHtmlEnabled();
   const fullText = text ?? '';
 
   // Typewriter reveal for STREAMING ASSISTANT text: the SDK delivers tokens in
@@ -115,7 +117,7 @@ function MessageBubbleImpl({ message }: Props) {
                 still revealing a finished block's tail, the prefix is partial
                 markdown and must keep the streaming treatment (remend on the
                 tail block) or half-open `**bold`/`[link` flashes raw. */}
-            <MarkdownView text={shown} done={!!message.done && shown.length >= fullText.length} />
+            <MarkdownView text={shown} done={!!message.done && shown.length >= fullText.length} blocs={role === 'assistant' && blocHtml} />
           </div>
         ) : null}
         {/* Streaming cursor: shown while the block is still open OR the
