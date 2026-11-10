@@ -66,6 +66,9 @@ import { isAttachableMediaType, isPdfMediaType } from '../../shared/attachments'
 import { PdfChip } from './agent/PdfChip';
 import { shouldRequestHistory } from '../history-backfill';
 import { resolveAnchorIndex } from '../scroll-anchor';
+import { RowPinContext } from './agent/bloc-pin';
+import { pinRowFor, rowPinCount, usePinnedRowIds } from './agent/bloc-row-pins';
+import { widenWindowForPins } from '../../shared/bloc-live-budget';
 // A3: real presentational components (markdown bubbles, tool cards, diffs,
 // thinking spinner). AgentMessage routes tool→ToolCard else→MessageBubble and
 // owns the `av-message`/`av-tool-card` wrappers + thinking indicator, so it
@@ -684,6 +687,9 @@ function MessageList({
   while (end < items.length && offsets[end] < bottom) end++;
   start = Math.max(0, start - OVERSCAN);
   end = Math.min(items.length, end + OVERSCAN);
+  // #419: a row holding a bloc with an open overlay / source view stays rendered even when it scrolled out of the window.
+  const pinnedRows = usePinnedRowIds();
+  if (pinnedRows.size > 0) [start, end] = widenWindowForPins(start, end, items.map((it, i) => (pinnedRows.has(it.id) ? i : -1)).filter((i) => i >= 0), items.length);
 
   // Shared by every row's onHeight of THIS render: N rows in one commit are ONE pass (measure-pass-guard).
   const commitToken = {};
@@ -893,9 +899,12 @@ function MeasuredRow({
     const el = ref.current;
     if (el) onHeight(el.offsetHeight);
   });
+  const pinRow = useMemo(() => pinRowFor(item.id), [item.id]);
   return (
-    <div ref={ref} className="av-row" data-index={dataIndex}>
-      <ItemSlot item={item} />
+    <div ref={ref} className="av-row" data-index={dataIndex} data-row-pins={rowPinCount(item.id)}>
+      <RowPinContext.Provider value={pinRow}>
+        <ItemSlot item={item} />
+      </RowPinContext.Provider>
     </div>
   );
 }

@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { CodeBlock } from './CodeBlock';
 import { useAgentTheme } from './agent-theme';
 import { buildBlocDocument, BLOC_ESCAPE_FIELD, BLOC_HEIGHT_TAG, BLOC_HOVER_FIELD, BLOC_MAX_HEIGHT_PX, BLOC_THEME_KEYS, type BlocTokens } from '../../../shared/bloc-html-document';
+import { blocBoxKey, blocSurfaceKey, createBlocWatchdog, peekBlocHeight, recallBlocHeight, rememberBlocExpanded, rememberBlocHeight, wasBlocExpanded } from '../../../shared/bloc-live-budget';
+import { useBlocPin } from './bloc-pin';
 
 interface Props {
   /** Accessible name of the frame. */
@@ -16,9 +18,6 @@ const TOKEN_SOURCE: Record<(typeof BLOC_THEME_KEYS)[number], string> = {
   fg: '--av-text', muted: '--av-text-dim', surface: '--av-surface', border: '--av-hairline-strong',
   accent: '--av-assistant', ok: '--av-add', warn: '--av-warn', err: '--av-error',
 };
-const INITIAL_HEIGHT_PX = 80;
-/** No height report in this time ⇒ the frame never ran: fall back to the source as code. */
-const NO_REPORT_MS = 6000;
 
 function readTokens(host: HTMLElement | null): BlocTokens | null {
   const view = host?.closest('.av-view');
@@ -31,10 +30,6 @@ function readTokens(host: HTMLElement | null): BlocTokens | null {
   out.fontFamily = body.fontFamily;
   return out;
 }
-
-/** A bloc keeps its last height across an unmount (virtualised list) so remounting does not jump the layout; one entry per surface (inline / enlarged). */
-const lastHeight = new Map<string, number>();
-const heightKey = (mode: string, source: string) => `${mode}:${source.length}:${source.slice(0, 64)}:${source.slice(-64)}`;
 
 /** Above this many characters the source is shown as plain mono, not highlighted (250 KB of markup measured ≈ 1.3 s of long tasks in shiki). */
 export const BLOC_SOURCE_HIGHLIGHT_MAX = 64 * 1024;
@@ -51,6 +46,8 @@ interface LiveProps {
   /** `inline` sits in the flow; `enlarged` is the overlay's frame (its own width, hence its own height). */
   mode: 'inline' | 'enlarged';
   onHeight?: (h: number) => void;
+  /** Height to start at when this surface never reported one (a retry after a failure starts at the code fallback's box, #419). */
+  initialHeight?: number;
   /** The pointer entered / left the frame (the parent document never sees it). */
   onHover?: (over: boolean) => void;
   /** The frame's Escape key press (focus inside the frame never reaches the parent document). */
@@ -64,14 +61,14 @@ interface LiveProps {
  * ONE live frame: the sandboxed iframe (scripts allowed, opaque origin), themed with the app tokens, sized to its content.
  * The parent accepts a message only from THIS frame's window and clamps the height. (#415, ADR 0011)
  */
-function BlocLive({ title, source, mode, onHeight, onHover, onEscape, onFail, tabbable = true }: LiveProps) {
+function BlocLive({ title, source, mode, onHeight, initialHeight, onHover, onEscape, onFail, tabbable = true }: LiveProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const theme = useAgentTheme();
-  const key = heightKey(mode, source);
+  const key = useMemo(() => blocSurfaceKey(mode, source), [mode, source]); // once per bloc: a flooding frame must cost O(1) per report (#419)
   const [tokens, setTokens] = useState<BlocTokens | null>(null);
-  const [height, setHeight] = useState(() => lastHeight.get(key) ?? INITIAL_HEIGHT_PX);
-  const [reported, setReported] = useState(false);
+  const [height, setHeight] = useState(() => peekBlocHeight(key) ?? initialHeight ?? recallBlocHeight(key));
+  const watchdog = useRef<ReturnType<typeof createBlocWatchdog<number>> | null>(null);
 
   // Tokens exist only after layout, inside the mounted `.av-view`; a theme switch re-reads them.
   useLayoutEffect(() => { setTokens(readTokens(hostRef.current)); }, [theme]);
@@ -80,7 +77,7 @@ function BlocLive({ title, source, mode, onHeight, onHover, onEscape, onFail, ta
   const doc = useMemo(() => (tokens ? buildBlocDocument({ source, tokens, navigationShim: true }) : null), [source, tokens]);
   useEffect(() => { onHover?.(false); }, [doc, onHover]); // a reloaded frame never sends its mouseleave
 
-  useEffect(() => {
+  useLayoutEffect(() => { // layout, not passive: a report or `load` must never arrive before the listener / watchdog exist (#419)
     const onMessage = (e: MessageEvent) => {
       if (!frameRef.current || e.source !== frameRef.current.contentWindow) return;
       const d = e.data as Record<string, unknown> | null;
@@ -89,19 +86,23 @@ function BlocLive({ title, source, mode, onHeight, onHover, onEscape, onFail, ta
       if (d[BLOC_HOVER_FIELD] === 0 || d[BLOC_HOVER_FIELD] === 1) { onHover?.(d[BLOC_HOVER_FIELD] === 1); return; }
       if (typeof d.h !== 'number' || !Number.isFinite(d.h)) return;
       const h = Math.max(0, Math.min(BLOC_MAX_HEIGHT_PX, Math.ceil(d.h)));
-      lastHeight.set(key, h);
+      watchdog.current?.reported();
+      if (h === 0) return; // the reporter's first message comes from <head>, before the body exists: 0 is "not laid out yet", never a height (#419)
+      rememberBlocHeight(key, h);
       setHeight(h); // same value ⇒ React bails out: a bloc flooding reports costs one comparison each
-      setReported(true);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [key, onEscape, onHover]);
 
-  useEffect(() => {
-    if (!doc || reported) return;
-    const t = window.setTimeout(onFail, NO_REPORT_MS);
-    return () => window.clearTimeout(t);
-  }, [doc, reported, onFail]);
+  // Failure = no PROGRESS (no `load`, or loaded without a height report), never elapsed time since mount (#419, #415 review M3).
+  useLayoutEffect(() => {
+    if (!doc) return;
+    const w = createBlocWatchdog<number>({ fail: onFail, setTimer: (f, ms) => window.setTimeout(f, ms), clearTimer: (t) => window.clearTimeout(t) });
+    watchdog.current = w;
+    w.start();
+    return () => { w.stop(); watchdog.current = null; };
+  }, [doc, onFail]);
 
   return (
     <div className="av-bloc-live" ref={hostRef}>
@@ -115,6 +116,7 @@ function BlocLive({ title, source, mode, onHeight, onHover, onEscape, onFail, ta
           scrolling="no"
           tabIndex={tabbable ? undefined : -1}
           srcDoc={doc}
+          onLoad={() => watchdog.current?.loaded()}
           style={{ height }}
         />
       ) : null}
@@ -184,10 +186,14 @@ export function BlocFrame({ title, source }: Props) {
   const [failed, setFailed] = useState(false);
   const [showSource, setShowSource] = useState(false);
   const [enlarged, setEnlarged] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const boxKey = useMemo(() => blocBoxKey(source), [source]);
+  const [expanded, setExpanded] = useState(() => wasBlocExpanded(boxKey)); // restored on remount: the box must not change under the reader (#419)
   const [hover, setHover] = useState(false);
-  const [height, setHeight] = useState(() => lastHeight.get(heightKey('inline', source)) ?? INITIAL_HEIGHT_PX);
+  const inlineKey = useMemo(() => blocSurfaceKey('inline', source), [source]);
+  // The frame's last reported height; a bloc that never reported (its frame failed) starts at its last BOX (the code fallback's height) so the retry does not change the layout.
+  const [height, setHeight] = useState(() => peekBlocHeight(inlineKey) ?? recallBlocHeight(boxKey));
   const rootRef = useRef<HTMLDivElement>(null);
+  const codeRef = useRef<HTMLDivElement>(null);
   const enlargeRef = useRef<HTMLButtonElement>(null);
   const wasEnlarged = useRef(false);
   const fail = useCallback(() => setFailed(true), []);
@@ -199,8 +205,33 @@ export function BlocFrame({ title, source }: Props) {
   }, [enlarged]);
   const closeOverlay = useCallback(() => setEnlarged(false), []);
   useEffect(() => { if (enlarged || showSource) setHover(false); }, [enlarged, showSource]); // the frame that reported it is gone
+  // An open overlay / source view must not die with its opener: pin the slot (live-frame budget) and the transcript row (#419, #417 review MINOR 2).
+  useBlocPin(enlarged || showSource);
+  // The code fallback's height is remembered like a frame's: its slot can unload without a layout shift, and a remount RETRIES the frame (a failure under load is not permanent, #415 M3).
+  useLayoutEffect(() => { if (failed && codeRef.current) rememberBlocHeight(boxKey, Math.ceil(codeRef.current.getBoundingClientRect().height)); }, [failed, boxKey]);
+  // BlocSlot's placeholder must equal this box in its DEFAULT state (clipped when tall; expanded is restored above): record what is actually rendered, not the frame's raw height.
+  useLayoutEffect(() => { rememberBlocExpanded(boxKey, expanded); }, [boxKey, expanded]);
+  // …and ONCE MORE at unmount (the layout cleanup runs before the DOM node is removed): the placeholder that replaces this frame is exactly the box it had, whatever the
+  // order in which reports and effects landed (#419: an unload under load could release a stale/default box).
+  const latest = useRef({ failed, showSource, enlarged });
+  latest.current = { failed, showSource, enlarged };
+  useLayoutEffect(() => () => {
+    const { failed: f, showSource: ss, enlarged: en } = latest.current;
+    if (ss || en) return; // those states are pinned: the last default-state box stays
+    const el = f ? codeRef.current : rootRef.current;
+    if (!el) return;
+    const h = Math.ceil(el.getBoundingClientRect().height);
+    if (h > 0) rememberBlocHeight(boxKey, h);
+  }, [boxKey]);
+  useLayoutEffect(() => {
+    const r = rootRef.current;
+    if (failed || showSource || enlarged || !r) return; // those states are pinned (or have their own box): keep the last default-state box
+    if (!r.querySelector('.av-bloc-frame')) return; // the iframe is created one render later (tokens): before it the root is just the « Afficher tout » button (28 px) — a remount of an EXPANDED bloc recorded THAT as its box
+    const h = Math.ceil(r.getBoundingClientRect().height);
+    if (h > 0) rememberBlocHeight(boxKey, h); // 0 = the iframe is not created yet (tokens come after the first layout): not a box
+  }, [boxKey, failed, showSource, enlarged, height, expanded]);
 
-  if (failed) return <SourceCode source={source} />;
+  if (failed) return <div className="av-bloc"><div ref={codeRef}><SourceCode source={source} /></div></div>;
   const tall = height > BLOC_CLIP_PX;
   const clipped = tall && !expanded && !showSource;
   return (
@@ -216,7 +247,7 @@ export function BlocFrame({ title, source }: Props) {
       ) : (
         <>
           <div className={`av-bloc-clip${clipped ? ' is-clipped' : ''}`} style={clipped ? { height: BLOC_CLIP_PX } : undefined}>
-            {enlarged ? <div style={{ height }} aria-hidden /> : <BlocLive title={title} source={source} mode="inline" onHeight={setHeight} onHover={setHover} onFail={fail} tabbable={!clipped} />}
+            {enlarged ? <div style={{ height }} aria-hidden /> : <BlocLive title={title} source={source} mode="inline" initialHeight={height} onHeight={setHeight} onHover={setHover} onFail={fail} tabbable={!clipped} />}
           </div>
           {tall ? (
             <button type="button" className={`av-bloc-more${clipped ? ' is-floating' : ''}`} aria-expanded={!clipped} aria-label={`${clipped ? 'Afficher tout' : 'Réduire'} : ${title}`} onClick={() => setExpanded((v) => !v)}>

@@ -267,6 +267,9 @@ async function runArm(arm) {
     await reveal2(); await sleep(300);
     const mouseAway = () => cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: h - 5 });
     await mouseAway(); await sleep(400);
+    // #419 diagnostics: a page-side 100 ms sampler of the transcript (scrollTop + every bloc slot's data-live / top / height) so a failed click can be attributed (moved transcript? unmounted slot?)
+    await cdp.eval(`window.__diag = []; setInterval(() => { const L = document.querySelector('.av-message-list'); if (!L) return; const lr = L.getBoundingClientRect(); window.__diag.push({ t: Math.round(performance.now()), st: Math.round(L.scrollTop), sh: L.scrollHeight, s: [...document.querySelectorAll('.av-bloc-slot')].map((x) => { const r = x.getBoundingClientRect(); return [x.dataset.live, Math.round(r.top - lr.top), Math.round(r.height)]; }) }); if (window.__diag.length > 400) window.__diag.shift(); const sh = L.scrollHeight; if (window.__lastSh !== undefined && sh !== window.__lastSh) { (window.__chg = window.__chg || []).push({ t: Math.round(performance.now()), from: window.__lastSh, to: sh, tree: [...L.querySelectorAll(':scope > * > *, :scope > *')].map((c) => (c.className || c.tagName) + ':' + Math.round(c.getBoundingClientRect().height)).slice(0, 14) }); } window.__lastSh = sh; }, 100); 1`);
+    const diagTail = async (n = 40) => JSON.stringify(await cdp.eval(`window.__diag.slice(-${n})`));
 
     // ── C: clip + fade + « Afficher tout » ──
     await step('C2/short-bloc-is-not-clipped-and-has-no-control', async () => {
@@ -287,7 +290,7 @@ async function runArm(arm) {
       const s = await blocState(TALL_TITLE), a = await active();
       const buf = await cdp.shot(); saveShot('2-expanded.png', buf);
       const ok = !s.clipped && Math.abs(s.clip.height - TALL_H) <= 2 && s.more?.text === 'Réduire' && s.more.expanded === 'true' && a.which === 'more';
-      return { ok, detail: `after click: clip ${Math.round(s.clip.height)}px (content ${TALL_H}px), clipped=${s.clipped}, control "${s.more?.text}" aria-expanded=${s.more?.expanded}, focus stays on the control (${a.cls})` };
+      return { ok, detail: `after click: clip ${Math.round(s.clip.height)}px (content ${TALL_H}px), clipped=${s.clipped}, control "${s.more?.text}" aria-expanded=${s.more?.expanded}, focus stays on the control (${a.cls})${ok ? '' : ' | click at ' + JSON.stringify(m) + ' | C1 more rect ' + JSON.stringify(tall.more.rect) + ' | sampler (100 ms: scrollTop, scrollHeight, [data-live, top, height] per slot) ' + await diagTail(45)}` };
     });
     await step('C3b/reduire-clips-again', async () => {
       // « Réduire » sits BELOW the 1300px frame: scroll it into view before a trusted click (a click at off-screen coordinates hits nothing)
@@ -488,6 +491,7 @@ async function runArm(arm) {
 
     await closeIfOpen();
     const unchanged = treeHash([path.join(APP_DIR, 'dist'), path.join(APP_DIR, 'dist-electron')]) === origHash;
+    try { console.log(`  [diag] ${arm}: scrollHeight changes seen by the sampler: ${JSON.stringify(await cdp.eval('window.__chg || []'))}`); } catch {}
     clause(arm, 'ctl/built-app-dir-untouched', unchanged, `md5 over ${APP_DIR}/{dist,dist-electron} identical before/after the arm`);
   } catch (e) {
     clause(arm, 'rig/arm-completed', false, `ARM ABORTED: ${e.stack || e}`);

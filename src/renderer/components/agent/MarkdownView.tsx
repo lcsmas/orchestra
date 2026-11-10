@@ -7,7 +7,8 @@ import remend from 'remend';
 import { CodeBlock } from './CodeBlock';
 import { partitionStreamingMarkdown } from '../../../shared/markdown-blocks';
 import { splitReply } from '../../../shared/reply-segments';
-import { BlocFrame, BlocPending } from './BlocFrame';
+import { BlocPending } from './BlocFrame';
+import { BlocSlot } from './BlocSlot';
 
 /**
  * A link whose destination hasn't finished streaming is closed by `remend` with
@@ -218,7 +219,7 @@ function MarkdownViewImpl({ text, done, blocs }: Props) {
           // Prose before a bloc is final; only a trailing prose run follows the message's own `done`.
           return seg.text.trim() === '' ? null : <MarkdownProse key={`p${i}`} text={seg.text} done={done || i < last} />;
         }
-        if (seg.kind === 'bloc') return <BlocFrame key={`b${i}`} title={seg.title} source={seg.source} />;
+        if (seg.kind === 'bloc') return <BlocSlot key={`b${i}`} title={seg.title} source={seg.source} />;
         // An open fence is a placeholder only while the reply is being written; a finished reply (interrupted turn, reload) shows it as code.
         if (seg.kind === 'bloc-pending') return done ? <MarkdownProse key={`r${i}`} text={seg.raw} done /> : <BlocPending key={`b${i}`} title={seg.title} />;
         return <MarkdownProse key={`r${i}`} text={seg.raw} done />;

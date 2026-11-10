@@ -19,7 +19,7 @@
 export const BLOC_HTML_LABEL = 'html-render';
 /** Shown when the title is missing or empty. */
 export const BLOC_HTML_DEFAULT_TITLE = 'Bloc HTML';
-/** Provisional cap on a bloc's source (UTF-8 bytes) — #419 sets the final value from its measure. */
+/** Cap on a bloc's source (UTF-8 bytes), FINAL (#419, docs/evidence/419-*: +11 MB live at 250 KiB; the over-cap code fallback stalls the window ~0.5 s). */
 export const BLOC_HTML_MAX_SOURCE_BYTES = 256 * 1024;
 
 export type ReplySegment =

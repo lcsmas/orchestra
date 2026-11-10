@@ -111,6 +111,8 @@
     "test:hook-cost": "bash scripts/e2e-hook-cost.sh",
     "test:tool-lines": "pnpm run build:bundles && bash scripts/e2e-tool-lines.sh \"$PWD\"",
     "test:bloc-html-chrome": "pnpm run build:bundles && bash scripts/e2e-bloc-html-chrome.sh \"$PWD\"",
+    "test:bloc-budget": "pnpm run build:bundles && bash scripts/e2e-bloc-budget.sh \"$PWD\"",
+    "measure:bloc-frames": "bash scripts/measure-bloc-frames.sh \"$PWD\"",
     "test:bloc-html": "pnpm run build:bundles && bash scripts/e2e-bloc-html.sh \"$PWD\"",
     "test:agent-view-removal": "pnpm run build:bundles && bash scripts/e2e-agent-view-removal.sh \"$PWD\"",
     "test:sidebar-orca": "pnpm run build:bundles && bash scripts/e2e-sidebar-orca-drive.sh \"$PWD\"",

@@ -468,7 +468,7 @@ async function runArm(arm, lan) {
         const mdEl = document.querySelector('.av-md'); const b = f.getBoundingClientRect();
         return { seq, accent: col('var(--av-assistant)'), fg: col('var(--av-text)'), fs: getComputedStyle(mdEl).fontSize, rect: { left: b.left, top: b.top, width: b.width, height: b.height }, title: f.title, sandbox: f.getAttribute('sandbox'), bodyText: md.textContent };
       })()`);
-      clause(arm, 'P1/bloc-sits-between-its-prose', info.seq.length === 3 && info.seq[0] === 'av-md-p' && info.seq[1] === 'av-bloc' && info.seq[2] === 'av-md-p' && info.bodyText.includes('PROSE-BEFORE-1') && info.bodyText.includes('PROSE-AFTER-1'), `children of the reply's .av-md: ${JSON.stringify(info.seq)}`);
+      clause(arm, 'P1/bloc-sits-between-its-prose', info.seq.length === 3 && info.seq[0] === 'av-md-p' && info.seq[1] === 'av-bloc-slot' && info.seq[2] === 'av-md-p' && info.bodyText.includes('PROSE-BEFORE-1') && info.bodyText.includes('PROSE-AFTER-1'), `children of the reply's .av-md: ${JSON.stringify(info.seq)}`);
       clause(arm, 'P2/themed-with-app-tokens', th && th.accent === info.accent && th.fg === info.fg && th.fs === info.fs, `frame: accent ${th?.accent} fg ${th?.fg} font ${th?.fs} · app: accent ${info.accent} fg ${info.fg} font ${info.fs}`);
       clause(arm, 'P3/sized-to-content-and-titled', Math.abs(info.rect.height - 200) <= 2 && info.title === 'Comparatif' && info.sandbox === 'allow-scripts', `iframe height ${info.rect.height}px (content 200px) · title "${info.title}" · sandbox="${info.sandbox}"`);
       const full = await cdp.shot();
@@ -534,7 +534,7 @@ async function runArm(arm, lan) {
       await sleep(8000);
       await cdp.eval(`window.__dropHeights = false; 1`);
       const fail = await cdp.eval(`(() => { const m = [...document.querySelectorAll('.av-message')].find((e) => e.textContent.includes('FAILMARK')); return { langs: [...m.querySelectorAll('.av-code-lang')].map((x) => x.textContent), code: m.textContent.includes('FAILCODE-MARK'), frames: m.querySelectorAll('iframe').length }; })()`);
-      clause(arm, 'P10/failed-render-falls-back-to-code', fail.langs[0] === 'html' && fail.code && fail.frames === 0, `no height report in 6 s → code ${JSON.stringify(fail.langs)} with the source=${fail.code}, iframes ${fail.frames}`);
+      clause(arm, 'P10/failed-render-falls-back-to-code', fail.langs[0] === 'html' && fail.code && fail.frames === 0, `no height report 5 s after load → code ${JSON.stringify(fail.langs)} with the source=${fail.code}, iframes ${fail.frames}`);
     } else {
       // a mutant arm's control: a bloc renders and reports its height (so a RED isolation clause is not "nothing rendered")
       await inject(evText('CTL-MARK\n' + fence('html-render title="Contrôle"', '<div style="height:90px">control</div>')));
@@ -572,8 +572,9 @@ async function runArm(arm, lan) {
       const listener = { fetch: seen(/^\/fetch/), xhr: seen(/^\/xhr/), img: seen(/^\/asset\.png\?dyn/), script: seen(/^\/lib\.js/), css: seen(/^\/css/), ws: seen(/^UPGRADE \/ws/), staticImg: seen(/^\/asset\.png\?static/), font: seen(/^\/font\.woff2/) };
       N.N1 = { ok: Object.values(chans).every(Boolean) && Object.values(listener).every(Boolean), detail: `https bloc, frame says ${JSON.stringify(rh)}; ok per channel ${JSON.stringify(chans)}; https listener saw per channel ${JSON.stringify(listener)} (${gh.length} requests)` };
       if (arm === 'real') {
-        const frn = await cdp.eval(`(() => { const f = document.querySelector('iframe.av-bloc-frame[title="Réseau https"]'); f.scrollIntoView({ block: 'center' }); const b = f.getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
-        await settle(700);
+        await cdp.eval(`document.querySelector('iframe.av-bloc-frame[title="Réseau https"]').scrollIntoView({ block: 'center' }); 1`);
+        await settle(900); // #419: neighbouring slots mount/measure as the view moves — read the frame's box only once the layout has settled
+        const frn = await cdp.eval(`(() => { const b = document.querySelector('iframe.av-bloc-frame[title="Réseau https"]').getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
         const shot = await cdp.shot(); saveShot('real-bloc-remote-asset-renderer.png', shot);
         const Ib = decodePng(shot), pxb = px(Ib, frn.left + rh.rect.l + rh.rect.w / 2, frn.top + rh.rect.t + rh.rect.h / 2);
         clause(arm, 'N1b/bloc-remote-asset-on-screen', near(pxb, ASSET_RGB, 4) && rh.rect.w === 160 && rh.rect.h === 80, `screenshot pixel at the centre of the bloc's https <img> rgb(${pxb}) vs the served rgb(${ASSET_RGB}); box ${JSON.stringify(rh.rect)}`);
@@ -625,6 +626,7 @@ async function runArm(arm, lan) {
     if (arm === 'real') {
       // a bloc flooding height reports must leave the window responsive (measured, no mutant arm: the guard is "one comparison per report")
       await inject(evText('FLOOD-MARK\n' + fence('html-render title="Flood"', '<div style="height:40px">flood</div><script>setTimeout(function(){for(var i=0;i<300000;i++)parent.postMessage({__blocHtml:1,h:i%2000},"*");parent.postMessage({__probe:"flood",r:{sent:1}},"*")},300)</script>')));
+      await cdp.eval(`document.querySelector('.av-message-list').scrollTo({ top: 1e9, behavior: 'instant' }); 1`); // #419: the bloc must be near the viewport to be mounted
       await waitFor(() => probe('flood'), 60000, 'the flood bloc to finish sending');
       const t1 = Date.now();
       const fa = await Promise.race([cdp.eval('1 + 1', 4000).then((v) => ({ v }), (e) => ({ err: String(e).slice(0, 80) })), sleep(5000).then(() => ({ timeout: true }))]);
@@ -633,6 +635,8 @@ async function runArm(arm, lan) {
     if (arm === 'real' || arm === 'sandbox-loop') {
       // the loop runs in its OWN bloc, last: a same-origin frame freezes the whole window (the control must see that)
       await inject(evText('LOOP-MARK\n' + fence('html-render title="Boucle"', LOOP_BLOC)));
+      // #419: a bloc injected below the viewport is mounted only near it (live-frame budget): follow the transcript to its end like a reader would
+      await cdp.eval(`document.querySelector('.av-message-list').scrollTo({ top: 1e9, behavior: 'instant' }); 1`);
       await waitFor(() => probe('loop'), 30000, 'the loop bloc to start'); // a loop that never started would pass I4 vacuously
       await sleep(2000);
       const t0 = Date.now();
