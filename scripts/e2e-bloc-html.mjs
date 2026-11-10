@@ -450,7 +450,7 @@ async function runArm(arm, lan) {
       const rp = await waitFor(() => probe('netp'), 30000, 'the http network probe report');
       await sleep(1500);
       const eh = evil.hits.slice();
-      const refusedCh = { fetch: /^ERR/.test(rp.fetch ?? ''), xhr: rp.xhr === 'ERR', img: rp.img === 'ERR', script: rp.script === 'ERR', css: rp.css !== 'rgb(1, 2, 3)', ws: rp.ws === 'ERR', staticImg: rp.staticImg === 0 };
+      const refusedCh = { fetch: /^ERR/.test(rp.fetch ?? ''), xhr: rp.xhr === 'ERR', img: rp.img === 'ERR', script: rp.script === 'ERR', css: rp.css === 'rgba(0, 0, 0, 0)', ws: rp.ws === 'ERR', staticImg: rp.staticImg === 0 };
       N.N2 = { ok: eh.length === 0 && Object.values(refusedCh).every(Boolean), detail: `http bloc, frame says ${JSON.stringify(rp)}; refused per channel ${JSON.stringify(refusedCh)}; the http listener (instrument seen YES on a node-side GET at boot) saw ${eh.length} request(s): ${JSON.stringify(eh)}` };
 
       lan.reset();
