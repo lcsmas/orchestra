@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE — throwaway, never shipped. Question (grilling Q8, 2026-11-10):
+  WHERE does « Mise à jour disponible » (a newer Claude Code is published than the one installed) show, and where does its button live?
+  Three variants on one page, switchable via ?variant=A|B|C (floating bar, ← / →), each drivable through the four states via ?state=.
+  The shell loads the REAL renderer stylesheets (src/renderer/*.css) so the variants sit against the real sidebar / toolbar / banner styles;
+  the agent pane content is fake (classes prefixed px-). Nothing here calls the app: « Mettre à jour » is a stub timer.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>PROTOTYPE — Mise à jour de Claude Code (Q8)</title>
+<link rel="stylesheet" href="../../../src/renderer/styles.css" />
+<link rel="stylesheet" href="../../../src/renderer/sidebar-orca.css" />
+<style>
+/* ---- fake agent pane (not under evaluation) ---- */
+.px-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); position: relative; }
+.px-feed { flex: 1; overflow: hidden; padding: 22px 28px; display: flex; flex-direction: column; gap: 14px; font-size: 13px; line-height: 1.5; color: var(--text); }
+.px-user { align-self: flex-end; background: var(--bg-3); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; max-width: 60%; }
+.px-line { height: 10px; border-radius: 5px; background: var(--bg-3); }
+.px-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; color: var(--text-dim); font-family: var(--mono, monospace); font-size: 12px; background: var(--bg-2); }
+.px-composer { margin: 0 28px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); padding: 10px 12px; position: relative; }
+.px-composer-input { color: var(--text-dim); font-size: 13px; padding: 4px 2px 12px; }
+.px-controls { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.px-ctl { border: 1px solid var(--border); background: var(--bg-3); color: var(--text); border-radius: 7px; padding: 3px 9px; font-size: 12px; position: relative; cursor: pointer; }
+.px-fake-icon { width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid currentColor; opacity: .75; display: block; }
+
+/* ---- variant B: strip above the sidebar footer + popover ---- */
+.px-strip { display: flex; align-items: center; gap: 8px; width: calc(100% - 16px); margin: 0 8px 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font-size: 12px; text-align: left; cursor: pointer; }
+.px-strip .px-arrow { color: var(--accent); font-weight: 700; }
+.px-strip .px-strip-ver { margin-left: auto; color: var(--text-dim); font-family: var(--mono, monospace); font-size: 11px; }
+.px-strip.px-failed { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); background: color-mix(in srgb, var(--red) 9%, transparent); }
+.px-strip.px-failed .px-arrow { color: var(--red); }
+.px-pop { position: fixed; z-index: 50; width: 300px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.55); padding: 12px 14px; font-size: 12.5px; color: var(--text); }
+.px-pop h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+.px-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0 0 10px; }
+.px-pop dt { color: var(--text-dim); }
+.px-pop dd { margin: 0; font-family: var(--mono, monospace); }
+.px-pop p { margin: 0 0 10px; color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
+.px-pop .px-pop-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.px-err { color: var(--red); font-family: var(--mono, monospace); font-size: 11px; }
+
+/* ---- variant C: model menu footer ---- */
+.px-dot { position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-2); }
+.px-menu { position: absolute; left: 12px; bottom: 44px; width: 340px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.55); overflow: hidden; font-size: 12.5px; z-index: 40; }
+.px-menu-item { display: flex; gap: 8px; padding: 7px 12px; color: var(--text); }
+.px-menu-item.sel { background: var(--bg-3); }
+.px-menu-item small { margin-left: auto; color: var(--text-dim); }
+.px-menu-foot { border-top: 1px solid var(--border); padding: 9px 12px; display: flex; align-items: center; gap: 10px; background: color-mix(in srgb, var(--accent) 7%, var(--bg-2)); }
+.px-menu-foot .px-menu-foot-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.px-menu-foot .px-menu-foot-text span { color: var(--text-dim); font-size: 11.5px; }
+
+/* ---- the prototype switcher: deliberately NOT in the app's style ---- */
+/* the app stops above the bar so the bar never covers the composer under evaluation */
+html body #root, html body #root > .app { height: calc(100vh - 56px); min-height: 0; }
+body { background: #000; }
+.px-switch { white-space: nowrap; position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 1000; display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-radius: 999px; background: #ffe14d; color: #111; font: 600 12px/1.2 system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.6); }
+.px-switch button { all: unset; cursor: pointer; padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.12); color: #111; font: inherit; }
+.px-switch button.on { background: #111; color: #ffe14d; }
+.px-switch .px-sep { width: 1px; height: 16px; background: rgba(0,0,0,.3); }
+.px-switch label { display: inline-flex; align-items: center; gap: 4px; font-weight: 500; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="app" style="grid-template-columns: 300px 1fr">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>Orchestra</h1>
+        <div class="sidebar-header-actions">
+          <button class="header-icon-btn"><span class="px-fake-icon"></span></button>
+          <button class="header-icon-btn"><span class="px-fake-icon"></span></button>
+          <button class="header-icon-btn"><span class="px-fake-icon"></span></button>
+        </div>
+      </div>
+      <div class="ws-list">
+        <div class="repo-section">
+          <div class="repo-header"><span class="caret">▾</span><span class="repo-name">orchestra</span></div>
+          <div class="ws-item active"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">claude-code-update-notice-and-action</div></div></div></div>
+          <div class="ws-item"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">impl hidden drive #406</div></div></div></div>
+          <div class="ws-item"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">verif cookie fuse #407</div></div></div></div>
+          <div class="ws-item"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">ops vague browser #388</div></div></div></div>
+        </div>
+        <div class="repo-section">
+          <div class="repo-header"><span class="caret">▾</span><span class="repo-name">api-v2</span></div>
+          <div class="ws-item"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">impl migration client NMC-360</div></div></div></div>
+          <div class="ws-item"><div class="ws-body"><div class="ws-name-row"><div class="ws-name">review diagnosis pictures NMC-8</div></div></div></div>
+        </div>
+      </div>
+      <div id="slot-sidebar"></div>
+      <div class="sidebar-footer">
+        <button class="sidebar-footer-link"><span class="px-fake-icon"></span></button>
+        <button class="sidebar-footer-link"><span class="px-fake-icon"></span></button>
+        <button class="sidebar-footer-link"><span class="px-fake-icon"></span></button>
+        <button class="sidebar-footer-link"><span class="px-fake-icon"></span></button>
+        <button class="sidebar-footer-link"><span class="px-fake-icon"></span></button>
+        <span class="sidebar-footer-version" title="Orchestra version">v0.5.363</span>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="toolbar">
+        <div class="title">
+          <span class="branch-chip base"><span class="branch-chip-text">master</span></span>
+          <span class="branch-arrow">→</span>
+          <span class="branch-chip"><span class="branch-chip-text">claude-code-update-notice-and-action</span></span>
+        </div>
+        <div class="toolbar-views"><div class="tabs">
+          <button class="tab active">Agent</button><button class="tab">Run</button><button class="tab">Diff</button><button class="tab">Browser</button>
+        </div></div>
+      </div>
+      <div id="slot-banner"></div>
+      <div class="px-pane">
+        <div class="px-feed">
+          <div class="px-user">je veux une feature qui indique que Claude Code peut être mis à jour</div>
+          <div class="px-line" style="width: 62%"></div>
+          <div class="px-line" style="width: 48%"></div>
+          <div class="px-card">Bash · grep -rn "cliVersion" src/</div>
+          <div class="px-line" style="width: 70%"></div>
+          <div class="px-line" style="width: 35%"></div>
+          <div class="px-card">Read · src/shared/cli-runtime.ts</div>
+          <div class="px-line" style="width: 55%"></div>
+        </div>
+        <div class="px-composer">
+          <div id="slot-menu"></div>
+          <div class="px-composer-input">Message à l'agent…</div>
+          <div class="px-controls">
+            <button class="px-ctl" id="model-btn">Opus 5.5 ▾<span id="slot-dot"></span></button>
+            <button class="px-ctl">high ▾</button>
+            <span style="margin-left:auto">contexte 38 %</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div id="slot-pop"></div>
+
+<div class="px-switch" id="switch"></div>
+
+<script>
+// PROTOTYPE — no persistence, no real update. State lives in the URL (?variant=&state=&open=) and in memory.
+const INSTALLED = '2.1.310', AVAILABLE = '2.1.322';
+const VARIANTS = { A: 'Bandeau', B: 'Bande de barre latérale', C: 'Menu de modèle' };
+const STATES = { available: 'disponible', running: 'en cours', done: 'faite', failed: 'échec', dismissed: 'reportée' };
+const q = new URLSearchParams(location.search);
+let variant = VARIANTS[q.get('variant')] ? q.get('variant') : 'A';
+let state = STATES[q.get('state')] ? q.get('state') : 'available';
+let open = q.get('open') === '1';
+let failNext = false;
+let timer = 0;
+
+const $ = (id) => document.getElementById(id);
+const sync = () => {
+  const p = new URLSearchParams({ variant, state });
+  if (open) p.set('open', '1');
+  history.replaceState(null, '', `?${p}`);
+};
+function go(next) { clearTimeout(timer); state = next; render(); }
+function update() {
+  go('running');
+  timer = setTimeout(() => go(failNext ? 'failed' : 'done'), 2500);
+}
+const ERR = 'claude update : téléchargement interrompu (ECONNRESET)';
+
+// ---- A: the same band as « Nouvelle version installée » (real .memory-banner classes) ----
+function variantA() {
+  if (state === 'dismissed') return '';
+  const t = {
+    available: ['info', '↑', `Mise à jour de Claude Code disponible — ${AVAILABLE}`, `Installée : ${INSTALLED}. Les sessions en cours ne sont pas redémarrées.`,
+      `<button class="app-update-relaunch" data-act="update">Mettre à jour</button><button class="memory-banner-dismiss" data-act="later">Plus tard</button>`],
+    running: ['info', '↑', `Mise à jour de Claude Code vers ${AVAILABLE}…`, 'Les agents continuent pendant l’installation.',
+      `<button class="app-update-relaunch" disabled>Mise à jour…</button>`],
+    done: ['info', '✓', `Claude Code ${AVAILABLE} installé`, `Les nouvelles sessions l’utilisent ; celles en cours gardent ${INSTALLED} jusqu’à leur prochain démarrage.`,
+      `<button class="memory-banner-dismiss" data-act="later">OK</button>`],
+    failed: ['crit', '!', 'Mise à jour de Claude Code impossible', ERR,
+      `<button class="app-update-relaunch" data-act="update">Réessayer</button><button class="memory-banner-dismiss" data-act="later">Plus tard</button>`],
+  }[state];
+  return `<div class="memory-banner ${t[0]} app-update-banner" role="status"><span class="memory-banner-ico">${t[1]}</span>
+    <span class="memory-banner-text"><span class="memory-banner-title"><strong>${t[2]}</strong></span><span class="memory-banner-sub">${t[3]}</span></span>${t[4]}</div>`;
+}
+
+// ---- shared popover body (B) ----
+function details() {
+  const rows = `<dl><dt>Installée</dt><dd>${state === 'done' ? AVAILABLE : INSTALLED}</dd><dt>Publiée</dt><dd>${AVAILABLE}</dd></dl>`;
+  if (state === 'running') return `<h3>Mise à jour de Claude Code…</h3>${rows}<p>Les agents continuent pendant l’installation.</p><div class="px-pop-actions"><button class="app-update-relaunch" disabled>Mise à jour…</button></div>`;
+  if (state === 'done') return `<h3>Claude Code ${AVAILABLE} installé</h3>${rows}<p>Les nouvelles sessions l’utilisent ; celles en cours gardent ${INSTALLED} jusqu’à leur prochain démarrage.</p><div class="px-pop-actions"><button class="memory-banner-dismiss" data-act="later">OK</button></div>`;
+  if (state === 'failed') return `<h3>Mise à jour impossible</h3>${rows}<p class="px-err">${ERR}</p><div class="px-pop-actions"><button class="memory-banner-dismiss" data-act="later">Plus tard</button><button class="app-update-relaunch" data-act="update">Réessayer</button></div>`;
+  return `<h3>Mise à jour de Claude Code disponible</h3>${rows}<p>Les sessions en cours ne sont pas redémarrées : elles prennent la nouvelle version à leur prochain démarrage.</p><div class="px-pop-actions"><button class="memory-banner-dismiss" data-act="later">Plus tard</button><button class="app-update-relaunch" data-act="update">Mettre à jour</button></div>`;
+}
+
+// ---- B: a quiet strip above the sidebar footer (same slot as the Pause / watchers strips); the button is one click away, in a popover ----
+function variantB() {
+  if (state === 'dismissed') return '';
+  const label = { available: `Claude Code ${AVAILABLE} disponible`, running: 'Mise à jour de Claude Code…', done: `Claude Code ${AVAILABLE} installé`, failed: 'Mise à jour impossible' }[state];
+  const ico = { available: '↑', running: '↻', done: '✓', failed: '!' }[state];
+  return `<button class="px-strip${state === 'failed' ? ' px-failed' : ''}" data-act="toggle" id="strip"><span class="px-arrow">${ico}</span><span>${label}</span><span class="px-strip-ver">${state === 'done' ? AVAILABLE : INSTALLED}</span></button>`;
+}
+
+// ---- C: contextual — the model menu (where an old Claude Code is FELT: a missing model); a dot on the model button is the only resting sign ----
+function variantCMenu() {
+  if (!open) return '';
+  const foot = {
+    available: `<div class="px-menu-foot-text"><strong>Claude Code ${AVAILABLE} disponible</strong><span>Installée : ${INSTALLED}</span></div><button class="app-update-relaunch" data-act="update">Mettre à jour</button>`,
+    running: `<div class="px-menu-foot-text"><strong>Mise à jour vers ${AVAILABLE}…</strong><span>Les agents continuent.</span></div><button class="app-update-relaunch" disabled>Mise à jour…</button>`,
+    done: `<div class="px-menu-foot-text"><strong>Claude Code ${AVAILABLE} installé</strong><span>Utilisé par les nouvelles sessions.</span></div>`,
+    failed: `<div class="px-menu-foot-text"><strong>Mise à jour impossible</strong><span class="px-err">${ERR}</span></div><button class="app-update-relaunch" data-act="update">Réessayer</button>`,
+    dismissed: `<div class="px-menu-foot-text"><span>Claude Code ${INSTALLED} · ${AVAILABLE} disponible</span></div><button class="memory-banner-dismiss" data-act="update">Mettre à jour</button>`,
+  }[state];
+  return `<div class="px-menu"><div class="px-menu-item sel">Opus 5.5 <small>défaut</small></div><div class="px-menu-item">Sonnet 5</div><div class="px-menu-item">Haiku 5</div><div class="px-menu-foot">${foot}</div></div>`;
+}
+
+function render() {
+  sync();
+  $('slot-banner').innerHTML = variant === 'A' ? variantA() : '';
+  $('slot-sidebar').innerHTML = variant === 'B' ? variantB() : '';
+  $('slot-menu').innerHTML = variant === 'C' ? variantCMenu() : '';
+  $('slot-dot').innerHTML = variant === 'C' && (state === 'available' || state === 'failed') ? '<span class="px-dot"></span>' : '';
+  const strip = $('strip');
+  if (variant === 'B' && open && strip) {
+    const r = strip.getBoundingClientRect();
+    $('slot-pop').innerHTML = `<div class="px-pop" style="left:${r.left}px; bottom:${innerHeight - r.top + 8}px">${details()}</div>`;
+  } else $('slot-pop').innerHTML = '';
+  // the switcher surfaces the full prototype state on every change
+  $('switch').innerHTML = `<button data-sw="prev">←</button><span>${variant} (${VARIANTS[variant]})</span><button data-sw="next">→</button><span class="px-sep"></span>`
+    + Object.entries(STATES).map(([k, v]) => `<button data-st="${k}" class="${k === state ? 'on' : ''}">${v}</button>`).join('')
+    + `<span class="px-sep"></span><label><input type="checkbox" id="fail" ${failNext ? 'checked' : ''}/> le prochain essai échoue</label>`
+    + (variant === 'A' ? '' : `<span class="px-sep"></span><button data-sw="open" class="${open ? 'on' : ''}">${variant === 'B' ? 'popover' : 'menu'} ${open ? 'ouvert' : 'fermé'}</button>`);
+}
+function cycle(d) {
+  const keys = Object.keys(VARIANTS);
+  variant = keys[(keys.indexOf(variant) + d + keys.length) % keys.length];
+  render();
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act],[data-sw],[data-st],#model-btn');
+  if (!t) return;
+  if (t.id === 'model-btn') { if (variant === 'C') { open = !open; render(); } return; }
+  if (t.dataset.act === 'update') return update();
+  if (t.dataset.act === 'later') { open = false; return go('dismissed'); }
+  if (t.dataset.act === 'toggle') { open = !open; return render(); }
+  if (t.dataset.sw === 'prev') return cycle(-1);
+  if (t.dataset.sw === 'next') return cycle(1);
+  if (t.dataset.sw === 'open') { open = !open; return render(); }
+  if (t.dataset.st) return go(t.dataset.st);
+});
+document.addEventListener('change', (e) => { if (e.target.id === 'fail') failNext = e.target.checked; });
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea, [contenteditable]')) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+addEventListener('resize', render);
+render();
+</script>
+</body>
+</html>
