@@ -14,8 +14,12 @@ export type BlocThemeKey = (typeof BLOC_THEME_KEYS)[number];
 
 export type BlocTokens = Partial<Record<BlocThemeKey, string>> & { fontSize?: string; fontFamily?: string; lineHeight?: string };
 
-/** The tag of the one message a frame sends its parent: `{ __blocHtml: 1, h: <px> }`. */
+/** The tag of the messages a frame sends its parent: `{ __blocHtml: 1, h: <px> }` (height), `{ __blocHtml: 1, esc: 1 }` (Escape pressed in the frame) and `{ __blocHtml: 1, hov: 0|1 }` (pointer in/out) — #417. */
 export const BLOC_HEIGHT_TAG = '__blocHtml';
+/** Focus inside a frame never reaches the parent document, so the frame reports its Escape key press (closes the enlarged view; nothing else). */
+export const BLOC_ESCAPE_FIELD = 'esc';
+/** The pointer over a frame never reaches the parent document (no `:hover` on the bloc), so the frame reports it: the quiet actions appear on it. */
+export const BLOC_HOVER_FIELD = 'hov';
 /** The parent clamps a reported height to [0, this]. */
 export const BLOC_MAX_HEIGHT_PX = 20000;
 
@@ -34,10 +38,13 @@ function themeCss(t: BlocTokens): string {
   return `:root{${vars}}html{overflow:hidden}html,body{margin:0;background:transparent;color:var(--bloc-fg);font:${size}/${lh} ${family}}`;
 }
 
-/** The frame's only way to tell the parent its height (the parent accepts it from this frame alone, and clamps). */
+/** The frame's only way to tell the parent its height / an Escape press (the parent accepts it from this frame alone, and clamps). */
 const HEIGHT_REPORTER =
   `<script>(function(){function s(){parent.postMessage({${BLOC_HEIGHT_TAG}:1,h:Math.ceil(document.documentElement.getBoundingClientRect().height)},'*')}` +
-  `new ResizeObserver(s).observe(document.documentElement);s()})()</script>`;
+  `new ResizeObserver(s).observe(document.documentElement);s();` +
+  `addEventListener('keydown',function(e){if(e.key==='Escape')parent.postMessage({${BLOC_HEIGHT_TAG}:1,${BLOC_ESCAPE_FIELD}:1},'*')},true);` +
+  `function p(v){parent.postMessage({${BLOC_HEIGHT_TAG}:1,${BLOC_HOVER_FIELD}:v},'*')}` +
+  `document.documentElement.addEventListener('mouseenter',function(){p(1)});document.documentElement.addEventListener('mouseleave',function(){p(0)})})()</script>`;
 
 /** UX only (#416): a `target=_blank|_top|_parent` link click and `window.open(url)` become `location.href=…`, which reaches the main-process guard (the sandbox would drop them silently). The model's realm can bypass it; the guard is what asks before anything opens (UX guard under D5). */
 export const BLOC_NAVIGATION_SHIM =

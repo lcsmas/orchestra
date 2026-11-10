@@ -223,3 +223,22 @@
 .av-bloc-pending { display: flex; align-items: center; gap: 8px; margin: 0.8em 0; padding: 12px 14px; max-width: 860px; border: 1px dashed var(--av-hairline-strong); border-radius: 10px; color: var(--av-text-dim); font-size: 12px; }
 .av-bloc-pending-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--av-assistant); animation: av-bloc-pulse 1s ease-in-out infinite; }
 @keyframes av-bloc-pulse { 50% { opacity: 0.25; } }
+
+/* Bloc HTML chrome (#417, variant A): hover-revealed actions, clip + fade, enlarge overlay. */
+.av-bloc { position: relative; }
+.av-bloc-live { min-width: 0; }
+.av-bloc-tools { position: absolute; top: -6px; right: 0; z-index: 2; display: flex; gap: 2px; opacity: 0; pointer-events: none; transition: opacity 0.12s; }
+.av-bloc:hover > .av-bloc-tools, .av-bloc.is-hover > .av-bloc-tools, .av-bloc:focus-within > .av-bloc-tools, .av-bloc.is-source > .av-bloc-tools { opacity: 1; pointer-events: auto; } /* hidden tools must not steal a click meant for the bloc */
+.av-bloc-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--av-hairline); background: var(--av-surface-raised); color: var(--av-text-dim); cursor: pointer; }
+.av-bloc-btn:hover { color: var(--av-text); }
+.av-bloc.is-source > .av-bloc-tools { position: static; justify-content: flex-end; margin-bottom: 4px; } /* in flow: the code block's own Copy sits top-right */
+.av-bloc.is-source > .av-code-block { margin: 0; }
+.av-bloc-clip { position: relative; }
+.av-bloc-clip.is-clipped { overflow: clip; -webkit-mask-image: linear-gradient(#000 calc(100% - 90px), transparent); mask-image: linear-gradient(#000 calc(100% - 90px), transparent); }
+.av-bloc-more { font: inherit; font-size: 12px; padding: 3px 14px; border-radius: 99px; border: 1px solid var(--av-hairline-strong); background: var(--av-surface-raised); color: var(--av-text); cursor: pointer; }
+.av-bloc-more.is-floating { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 1; }
+.av-bloc-more:not(.is-floating) { display: block; margin: 4px auto 0; }
+.av-bloc-overlay { position: absolute; inset: 0; z-index: 50; /* above the composer popovers (30/40), below .av-permission-backdrop (60): a pending permission stays reachable */ display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); }
+.av-bloc-overlay-box { width: min(1100px, 94%); height: 90%; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; border: 1px solid var(--av-hairline-strong); background: var(--av-surface); color: var(--av-text); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4); }
+.av-bloc-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--av-hairline); font-size: 13px; background: var(--av-surface-raised); }
+.av-bloc-overlay-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 16px; }
