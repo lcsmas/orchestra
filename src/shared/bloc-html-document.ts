@@ -39,7 +39,7 @@ const HEIGHT_REPORTER =
   `<script>(function(){function s(){parent.postMessage({${BLOC_HEIGHT_TAG}:1,h:Math.ceil(document.documentElement.getBoundingClientRect().height)},'*')}` +
   `new ResizeObserver(s).observe(document.documentElement);s()})()</script>`;
 
-/** UX only (#416): a `target=_blank|_top|_parent` link click and `window.open(url)` become `location.href=…`, which reaches the main-process guard (the sandbox would drop them silently). The model's realm can bypass it; the guard is the security. */
+/** UX only (#416): a `target=_blank|_top|_parent` link click and `window.open(url)` become `location.href=…`, which reaches the main-process guard (the sandbox would drop them silently). The model's realm can bypass it; the guard is what asks before anything opens (UX guard under D5). */
 export const BLOC_NAVIGATION_SHIM =
   `<script>(function(){document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href]');` +
   `if(a&&a.target&&a.target!=='_self'&&(a.getAttribute('href')||'').charAt(0)!=='#'){e.preventDefault();location.href=a.href}},true);` +
