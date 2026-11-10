@@ -11,8 +11,9 @@ import vm from 'node:vm';
 import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { createAccesMobileServer, type Upstream } from './server.ts';
-import { BLOC_ID_TTL_MS, BLOC_MAX_ENTRIES, BLOC_MINT_MAX_SOURCE_BYTES, BLOC_ROUTE_CSP, createBlocStore, tokenDigest } from './bloc-route.ts';
+import { BLOC_ID_TTL_MS, BLOC_MAX_ENTRIES, BLOC_ROUTE_CSP, createBlocStore, tokenDigest } from './bloc-route.ts';
 import { SHELL_PATHS, SW_JS } from './sw.ts';
+import { BLOC_HTML_MAX_SOURCE_BYTES, splitReply } from '../shared/reply-segments.ts';
 import { BLOC_HEIGHT_TAG, BLOC_HTML_POLICY } from '../shared/bloc-html-document.ts';
 import { serveRpc, type RpcWire } from '../shared/acces-mobile-rpc.ts';
 
@@ -259,9 +260,9 @@ test('mint: identity + token required, a source required and bounded, POST JSON 
     assert.equal((await call(r, 'POST', '/api/bloc', AUTH, JSON.stringify({}))).status, 400);
     assert.equal((await call(r, 'POST', '/api/bloc', AUTH, '{nope')).status, 400);
     assert.equal((await call(r, 'POST', '/api/bloc', { ...AUTH, 'Content-Type': 'text/plain' }, '{"source":"x"}')).status, 415);
-    assert.equal((await mint(r, 'x'.repeat(BLOC_MINT_MAX_SOURCE_BYTES))).status, 200, 'control: at the cap');
-    assert.equal((await mint(r, 'x'.repeat(BLOC_MINT_MAX_SOURCE_BYTES + 1))).status, 400, 'one byte over');
-    assert.equal((await mint(r, 'é'.repeat(BLOC_MINT_MAX_SOURCE_BYTES / 2 + 1))).status, 400, 'the cap is in BYTES, not characters');
+    assert.equal((await mint(r, 'x'.repeat(BLOC_HTML_MAX_SOURCE_BYTES))).status, 200, 'control: at the cap');
+    assert.equal((await mint(r, 'x'.repeat(BLOC_HTML_MAX_SOURCE_BYTES + 1))).status, 400, 'one byte over');
+    assert.equal((await mint(r, 'é'.repeat(BLOC_HTML_MAX_SOURCE_BYTES / 2 + 1))).status, 400, 'the cap is in BYTES, not characters');
     assert.deepEqual(r.calls, [], 'minting never reaches main');
   } finally {
     await r.close();
@@ -354,4 +355,18 @@ test('Accès mobile OFF: the process is gone and its ids with it — a successor
   assert.equal((await call({ socketPath: sock }, 'GET', `/bloc/${m2.id}`, ID)).status, 200, 'control');
   fs.writeFileSync(tokenFile, 'tok_' + 'z'.repeat(40) + '\n');
   assert.equal((await call({ socketPath: sock }, 'GET', `/bloc/${m2.id}`, ID)).status, 404, 'token file rotated');
+});
+
+test('the mint limit IS the shared cap: a bloc splitReply renders is a bloc the mint accepts, one byte over is refused by BOTH (a retune of the constant moves them together)', async () => {
+  const fence = (n: number): string => '```html-render title="T"\n' + 'x'.repeat(n) + '\n```';
+  assert.equal(splitReply(fence(BLOC_HTML_MAX_SOURCE_BYTES))[0].kind, 'bloc', 'control: at the cap the reader renders it');
+  assert.equal(splitReply(fence(BLOC_HTML_MAX_SOURCE_BYTES + 1))[0].kind, 'bloc-refused', 'one byte over the reader refuses it');
+  const r = await rig();
+  try {
+    const seg = splitReply(fence(BLOC_HTML_MAX_SOURCE_BYTES))[0];
+    assert.equal((await mint(r, seg.kind === 'bloc' ? seg.source : '')).status, 200, 'the very source the reader hands the page is minted');
+    assert.equal((await mint(r, 'x'.repeat(BLOC_HTML_MAX_SOURCE_BYTES + 1))).status, 400, 'one byte over: refused by the mint too');
+  } finally {
+    await r.close();
+  }
 });

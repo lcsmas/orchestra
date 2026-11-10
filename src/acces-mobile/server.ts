@@ -15,7 +15,8 @@ import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 import { LAUNCH_CSS, LAUNCH_JS } from './launch.ts';
 import { PWA_ICONS } from './icons.ts';
 import { SW_JS } from './sw.ts';
-import { BLOC_ID_RE, BLOC_MINT_MAX_SOURCE_BYTES, BLOC_ROUTE_HEADERS, BLOC_ROUTE_PREFIX, BLOC_ID_TTL_MS, blocDocument, createBlocStore, tokenDigest } from './bloc-route.ts';
+import { BLOC_HTML_MAX_SOURCE_BYTES } from '../shared/reply-segments.ts'; // the ONE cap: what splitReply renders is what the mint accepts
+import { BLOC_ID_RE, BLOC_ROUTE_HEADERS, BLOC_ROUTE_PREFIX, BLOC_ID_TTL_MS, blocDocument, createBlocStore, tokenDigest } from './bloc-route.ts';
 
 export type Upstream = (route: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
 /** A long-lived upstream (main's `/mobile/stream`): one parsed JSON value per line; returns the abort. */
@@ -370,10 +371,10 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       // loads /bloc/<id>. Body read after identity + token.
       return readJson((body) => {
         const source = body.source;
-        if (typeof source !== 'string' || !source.trim() || Buffer.byteLength(source) > BLOC_MINT_MAX_SOURCE_BYTES) return refuse(400, 'bad-bloc');
+        if (typeof source !== 'string' || !source.trim() || Buffer.byteLength(source) > BLOC_HTML_MAX_SOURCE_BYTES) return refuse(400, 'bad-bloc');
         const id = blocs.mint(source, tokenDigest(presented));
         json(200, { ok: true, id, path: BLOC_ROUTE_PREFIX + id, ttlMs: BLOC_ID_TTL_MS });
-      }, BLOC_MINT_MAX_SOURCE_BYTES * 2 + 4096);
+      }, BLOC_HTML_MAX_SOURCE_BYTES * 2 + 4096);
     }
     if (pathOnly === '/api/stream') {
       if (!opts.upstreamStream) return refuse(404, 'not-found');

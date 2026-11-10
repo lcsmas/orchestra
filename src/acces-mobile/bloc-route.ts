@@ -12,8 +12,6 @@ export const BLOC_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 export const BLOC_ROUTE_PREFIX = '/bloc/';
 /** 24 random bytes, base64url. */
 export const BLOC_ID_RE = /^[A-Za-z0-9_-]{32}$/;
-// INTERIM: #415's BLOC_HTML_MAX_SOURCE_BYTES replaces it on rebase (FI-1).
-export const BLOC_MINT_MAX_SOURCE_BYTES = 256 * 1024;
 
 /** The route's own policy: the frame's content policy (ONE source, `BLOC_HTML_POLICY` — the document's `<meta>` carries the same) + a sandbox with
  *  scripts and NO allow-same-origin (opaque origin) + frameable only by the shell. The shell's headers are NOT these. */
