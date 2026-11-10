@@ -26,6 +26,8 @@
   },
   "scripts": {
     "dev": "ORCHESTRA_AUDIO=1 ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
+    "proto:bloc-html": "vite --config src/renderer/components/agent/__prototype-bloc-html__/vite.config.ts",
+    "proto:bloc-html:probes": "bash src/renderer/components/agent/__prototype-bloc-html__/probes/run.sh",
     "build:cli": "vite build --config vite.cli.config.ts",
     "build:keeper": "vite build --config vite.keeper.config.ts",
     "build:acces-mobile": "vite build --config vite.acces-mobile.config.ts",

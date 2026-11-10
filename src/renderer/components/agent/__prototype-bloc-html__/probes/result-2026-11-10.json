@@ -1,0 +1,134 @@
+{
+  "p1": {
+    "parentProcessId": 4,
+    "parentSeesApi": "object",
+    "iso": {
+      "processId": 5,
+      "ran": true,
+      "r": {
+        "origin": "null",
+        "cookie": "ERR SecurityError",
+        "localStorage": "ERR SecurityError",
+        "parentDoc": "ERR SecurityError",
+        "parentApi": "ERR SecurityError",
+        "ownApi": "undefined",
+        "ownRequire": "undefined",
+        "fetchEvil": "ERR TypeError",
+        "fetchSecret": "ERR TypeError"
+      },
+      "color": "rgb(1, 2, 3)",
+      "text": "bloc desktop-iso",
+      "url": "about:srcdoc"
+    },
+    "nocsp": {
+      "processId": 5,
+      "ran": true,
+      "r": {
+        "origin": "null",
+        "cookie": "ERR SecurityError",
+        "localStorage": "ERR SecurityError",
+        "parentDoc": "ERR SecurityError",
+        "parentApi": "ERR SecurityError",
+        "ownApi": "undefined",
+        "ownRequire": "undefined",
+        "fetchSecret": "ERR TypeError",
+        "fetchEvil": "status 200"
+      },
+      "color": "rgb(1, 2, 3)",
+      "text": "bloc desktop-nocsp",
+      "url": "about:srcdoc"
+    }
+  },
+  "p2": {
+    "parentRan": true,
+    "staticHeightReadByParent": 150,
+    "static": {
+      "processId": 7,
+      "execFailed": {
+        "ok": false,
+        "err": "Script not run"
+      }
+    },
+    "scripted": {
+      "processId": 8,
+      "ran": false,
+      "r": null,
+      "color": "rgb(1, 2, 3)",
+      "text": "bloc srcdoc-scripted",
+      "url": "about:srcdoc"
+    },
+    "route": {
+      "processId": 8,
+      "ran": true,
+      "r": {
+        "origin": "null",
+        "cookie": "ERR SecurityError",
+        "localStorage": "ERR SecurityError",
+        "parentDoc": "ERR SecurityError",
+        "parentApi": "ERR SecurityError",
+        "ownApi": "undefined",
+        "ownRequire": "undefined",
+        "fetchEvil": "ERR TypeError",
+        "fetchSecret": "ERR TypeError"
+      },
+      "color": "rgb(1, 2, 3)",
+      "text": "bloc route",
+      "url": "http://127.0.0.1:38119/bloc/ok"
+    },
+    "cspConsole": [
+      "Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed and the 'allow-scripts' permission is not set.",
+      "Refused to execute inline script because it violates the following Content Security Policy directive: \"script-src 'self'\". Either the 'unsafe-inline' keyword, a",
+      "Refused to connect to 'http://127.0.0.1:40283/fetch-route' because it violates the following Content Security Policy directive: \"default-src 'none'\". Note that ",
+      "Refused to connect to 'http://127.0.0.1:40283/fetch-route' because it violates the document's Content Security Policy.",
+      "Refused to connect to 'http://127.0.0.1:38119/api/secret?from=route' because it violates the following Content Security Policy directive: \"default-src 'none'\". ",
+      "Refused to connect to 'http://127.0.0.1:38119/api/secret?from=route' because it violates the document's Content Security Policy.",
+      "Refused to load the image 'http://127.0.0.1:40283/img-route' because it violates the following Content Security Policy directive: \"img-src data:\".\n",
+      "Blocked script execution in 'about:srcdoc' because the document's frame is sandboxed and the 'allow-scripts' permission is not set."
+    ],
+    "routeUrlAfterNav": "chrome-error://chromewebdata/"
+  },
+  "p3": {
+    "control_sameOrigin_file": {
+      "answeredBeforeLoop": true,
+      "answeredDuringLoop": false,
+      "parentPid": 10,
+      "framePid": 10,
+      "sameProcess": true
+    },
+    "desktop_sandboxedSrcdoc_file": {
+      "answeredBeforeLoop": true,
+      "answeredDuringLoop": true,
+      "parentPid": 11,
+      "framePid": 12,
+      "sameProcess": false
+    },
+    "mobile_route_http": {
+      "answeredBeforeLoop": true,
+      "answeredDuringLoop": true,
+      "parentPid": 13,
+      "framePid": 14,
+      "sameProcess": false
+    }
+  },
+  "leaks": {
+    "evil": [
+      "/fetch-desktop-nocsp",
+      "/img-desktop-nocsp",
+      "/nav-unguarded"
+    ],
+    "secret": []
+  },
+  "loadFailures": [
+    {
+      "code": -30,
+      "desc": "ERR_BLOCKED_BY_CSP",
+      "url": "http://127.0.0.1:40283/nav-route",
+      "isMain": false
+    }
+  ],
+  "versions": {
+    "electron": "33.4.11",
+    "chrome": "130.0.6723.191",
+    "ozone": "wayland"
+  }
+}

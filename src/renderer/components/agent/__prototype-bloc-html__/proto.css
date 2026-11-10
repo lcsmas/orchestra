@@ -1,0 +1,59 @@
+/* PROTOTYPE — throwaway. Only the chrome AROUND a Bloc HTML; everything else is the real agent-view CSS. */
+html, body, #root { height: 100%; margin: 0; }
+.pb-app { display: flex; height: 100%; background: var(--bg); color: var(--text); }
+.pb-fake-sidebar { width: 190px; flex: none; border-right: 1px solid var(--border); padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.pb-fake-sidebar b { color: #ff8ad8; letter-spacing: .08em; }
+.pb-fake-sidebar i { font-style: normal; padding: 6px 8px; border-radius: 6px; background: var(--bg-2); }
+.pb-pane { position: relative; flex: 1 1 0; min-width: 0; }
+.pb-view { padding-bottom: 64px; }
+.pb-grow { flex: 1; }
+.pb-frame { display: block; width: 100%; border: 0; background: transparent; }
+.pb-btn { font: inherit; font-size: 11px; padding: 2px 9px; border-radius: 6px; border: 1px solid var(--av-hairline-strong); background: transparent; color: var(--av-text-dim); cursor: pointer; }
+.pb-btn:hover { color: var(--av-text); }
+.pb-source { margin: 6px 0; max-height: 320px; overflow: auto; }
+
+/* A — in the flow */
+.pb-a { position: relative; margin: 10px 0; max-width: 860px; }
+.pb-a-clip { position: relative; overflow: hidden; transition: height .15s ease; }
+.pb-a-clip.is-clipped::after { content: ''; position: absolute; inset: auto 0 0 0; height: 90px; background: linear-gradient(transparent, var(--bg-3)); pointer-events: none; }
+.pb-a-more { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 1; font: inherit; font-size: 12px; padding: 4px 14px; border-radius: 99px; border: 1px solid var(--av-hairline-strong); background: var(--av-surface-raised); color: var(--av-text); cursor: pointer; }
+.pb-a-tools { position: absolute; top: -4px; right: 0; z-index: 2; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.pb-a:hover .pb-a-tools { opacity: 1; }
+.pb-ghost { font: inherit; font-size: 11px; padding: 2px 7px; border-radius: 6px; border: 1px solid var(--av-hairline); background: var(--av-surface-raised); color: var(--av-text-dim); cursor: pointer; }
+
+/* B — card */
+.pb-b { margin: 10px 0; border: 1px solid var(--av-hairline-strong); border-radius: 10px; overflow: hidden; background: var(--av-surface); }
+.pb-b-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--av-hairline); font-size: 12px; }
+.pb-b-kind { font-size: 10px; letter-spacing: .06em; padding: 1px 6px; border-radius: 4px; background: var(--av-code-bg); color: var(--av-text-dim); }
+.pb-b-frame { height: 300px; background: #fff; }
+
+/* C — thumbnail row + side panel */
+.pb-c { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 460px; margin: 10px 0; padding: 8px; border-radius: 10px; border: 1px solid var(--av-hairline-strong); background: var(--av-surface); color: var(--av-text); font: inherit; text-align: left; cursor: pointer; }
+.pb-c.is-open { border-color: var(--av-assistant); }
+.pb-c-thumb { position: relative; flex: none; width: 150px; height: 90px; overflow: hidden; border-radius: 6px; background: var(--bg-3); }
+.pb-c-thumb-frame { width: 600px; height: 360px; transform: scale(.25); transform-origin: 0 0; pointer-events: none; }
+.pb-c-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; font-size: 13px; }
+.pb-c-text small { color: var(--av-text-dim); font-size: 11px; }
+.pb-c-chev { color: var(--av-text-dim); font-size: 18px; padding-right: 6px; }
+.pb-panel { position: relative !important; inset: auto !important; flex: 0 0 46%; border-left: 1px solid var(--border); padding-bottom: 64px; }
+.pb-panel-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--av-hairline); font-size: 13px; }
+.pb-panel-frame { flex: 1; min-height: 0; padding: 14px; box-sizing: border-box; }
+
+/* shared */
+.pb-pending { display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 14px; border-radius: 10px; border: 1px dashed var(--av-hairline-strong); color: var(--av-text-dim); font-size: 12px; }
+.pb-pending b { color: var(--av-text); font-weight: 500; }
+.pb-pending-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--av-assistant); animation: pb-pulse 1s ease-in-out infinite; }
+@keyframes pb-pulse { 50% { opacity: .25; } }
+.pb-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .6); display: flex; align-items: center; justify-content: center; }
+.pb-overlay-box { width: 92vw; height: 88vh; display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; border: 1px solid var(--border-strong); }
+.pb-overlay-box.is-themed { background: var(--bg-3); color: var(--text); }
+.pb-overlay-box.is-paper { background: #fff; color: #16181d; }
+.pb-overlay-head { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; background: var(--bg-2); color: var(--text); }
+.pb-overlay-frame { flex: 1; min-height: 0; box-sizing: border-box; }
+.pb-overlay-box.is-themed .pb-overlay-frame { padding: 16px; }
+
+/* the switcher is deliberately NOT in the app's style */
+.pb-switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 99px; background: #ff8ad8; color: #1a0612; font: 600 12px/1 system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); white-space: nowrap; }
+.pb-switcher button { font: inherit; border: 0; border-radius: 99px; padding: 5px 10px; background: #1a0612; color: #ff8ad8; cursor: pointer; }
+.pb-switcher-label { min-width: 170px; text-align: center; }
+.pb-switcher-state { font-weight: 400; opacity: .8; }
