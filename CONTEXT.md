@@ -275,6 +275,13 @@ fleet bus and carries no content; an avis de tâche comes from the CLI and
 reports on one task.
 _Avoid_: notification (blurs it with a réveil), alert
 
+**Bloc HTML** (HTML block):
+A part of a reply that the model writes as HTML and that the conversation
+shows rendered, isolated from the app, at the place where it was written. The
+reply around it stays prose; an HTML code sample shown as source is not a bloc
+HTML. Settled with the user 2026-11-10.
+_Avoid_: artifact (a document apart from the conversation), widget, canvas
+
 ### Browser
 
 **Profil navigateur** (browser profile):
