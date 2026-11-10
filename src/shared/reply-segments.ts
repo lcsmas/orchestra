@@ -40,7 +40,7 @@ export function splitReply(text: string, opts?: { maxSourceBytes?: number }): Re
   type Fence = { char: string; len: number; indent: number; info: string };
   /** An opening fence line: ≤3 spaces of indent, a run of ≥3 ` or ~. */
   const openingFence = (line: string): Fence | null => {
-    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    const m = /^( {0,3})(`{3,}|~{3,})([^\n]*)$/.exec(line);
     if (!m) return null;
     const info = m[3].trim();
     if (m[2][0] === '`' && info.includes('`')) return null;
@@ -52,9 +52,9 @@ export function splitReply(text: string, opts?: { maxSourceBytes?: number }): Re
   };
   /** The title of a bloc fence, or null when `info` is not a bloc fence's info string. */
   const blocInfo = (info: string): { title: string } | null => {
-    const m = /^(\S+)(?:\s+(.*))?$/.exec(info);
+    const m = /^(\S+)(?:\s+([^\n]*))?$/.exec(info);
     if (!m || m[1] !== 'html-render') return null;
-    const t = /(?:^|\s)title="((?:[^"\\]|\\.)*)"/.exec(m[2] ?? '');
+    const t = /(?:^|\s)title="((?:[^"\\]|\\[^\n])*)"/.exec(m[2] ?? '');
     const title = t ? t[1].replace(/\\(["\\])/g, '$1').trim() : ''; // `\"` and `\\` are the only escapes
     return { title: title === '' ? 'Bloc HTML' : title };
   };

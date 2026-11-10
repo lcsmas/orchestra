@@ -37,3 +37,23 @@ test('prose without a bloc is returned unchanged', () => {
   assert.equal(summarizeReply('a\n\nb'), 'a\n\nb');
   assert.equal(summarizeReply(''), '');
 });
+
+// Review #420 MINOR 2: a title holding a line separator other than \n made the fence prose, so the summary emitted the source.
+for (const [name, sep] of [['U+2028', ' '], ['U+2029', ' '], ['lone CR', '\r']] as const) {
+  test(`title with ${name} still summarises as a bloc — never the source`, () => {
+    const s = summarizeReply('```html-render title="a' + sep + 'b"\n<div>SRC</div>\n```');
+    assert.ok(!s.includes('SRC') && !s.includes('```'), JSON.stringify(s));
+    assert.ok(s.startsWith('a') && s.endsWith('b'), JSON.stringify(s));
+  });
+  test(`escaped quote then ${name} in a title`, () => {
+    const s = summarizeReply('```html-render title="a\\"' + sep + 'b"\n<div>SRC</div>\n```');
+    assert.ok(!s.includes('SRC') && !s.includes('```'), JSON.stringify(s));
+  });
+}
+test('a backslash right before a line separator in a title is not an escape that breaks the bloc', () => {
+  for (const sep of [' ', ' ', '\r']) {
+    const s = summarizeReply('```html-render title="a\\' + sep + 'b"\n<div>SRC</div>\n```');
+    assert.ok(!s.includes('SRC') && !s.includes('```'), JSON.stringify(s));
+    assert.ok(s.startsWith('a') && s.endsWith('b'), 'the title survives: ' + JSON.stringify(s));
+  }
+});
