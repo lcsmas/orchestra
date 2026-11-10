@@ -81,7 +81,7 @@ export function splitReply(text: string, opts?: { maxSourceBytes?: number }): Re
   while (pos <= text.length) {
     let lineEnd = text.indexOf('\n', pos);
     if (lineEnd === -1) lineEnd = text.length;
-    const line = text.slice(pos, lineEnd);
+    const line = text.slice(pos, lineEnd).replace(/\r$/, ''); // CRLF text: `.` in the fence regexes does not match \r
     const lineStart = pos;
     pos = lineEnd + 1;
 

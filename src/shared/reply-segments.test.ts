@@ -179,3 +179,10 @@ test('the literals inlined in splitReply equal the exported constants', () => {
   assert.ok(body.includes('256 * 1024') && BLOC_HTML_MAX_SOURCE_BYTES === 256 * 1024);
   assert.doesNotMatch(body, /BLOC_HTML_|openingFence\(.*\) *=>|\bReplySegment\b.*module/);
 });
+
+test('CRLF text: a bloc fence is recognised exactly as with LF (review finding)', () => {
+  const t = 'a\r\n```html-render title="T"\r\n<b>x</b>\r\n```\r\nb';
+  const segs = rt(t);
+  assert.deepEqual(kinds(segs), ['prose', 'bloc', 'prose']);
+  assert.equal(segs[1].kind === 'bloc' && segs[1].title, 'T');
+});

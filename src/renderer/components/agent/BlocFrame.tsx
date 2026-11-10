@@ -60,7 +60,7 @@ export function BlocFrame({ title, source }: Props) {
       if (!d || d[BLOC_HEIGHT_TAG] !== 1 || typeof d.h !== 'number' || !Number.isFinite(d.h)) return;
       const h = Math.max(0, Math.min(BLOC_MAX_HEIGHT_PX, Math.ceil(d.h)));
       lastHeight.set(heightKey(source), h);
-      setHeight(h);
+      setHeight(h); // same value ⇒ React bails out: a bloc flooding reports costs one comparison each
       setReported(true);
     };
     window.addEventListener('message', onMessage);

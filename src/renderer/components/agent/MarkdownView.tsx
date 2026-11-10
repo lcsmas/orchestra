@@ -219,7 +219,8 @@ function MarkdownViewImpl({ text, done, blocs }: Props) {
           return seg.text.trim() === '' ? null : <MarkdownProse key={`p${i}`} text={seg.text} done={done || i < last} />;
         }
         if (seg.kind === 'bloc') return <BlocFrame key={`b${i}`} title={seg.title} source={seg.source} />;
-        if (seg.kind === 'bloc-pending') return <BlocPending key={`b${i}`} title={seg.title} />;
+        // An open fence is a placeholder only while the reply is being written; a finished reply (interrupted turn, reload) shows it as code.
+        if (seg.kind === 'bloc-pending') return done ? <MarkdownProse key={`r${i}`} text={seg.raw} done /> : <BlocPending key={`b${i}`} title={seg.title} />;
         return <MarkdownProse key={`r${i}`} text={seg.raw} done />;
       })}
     </>

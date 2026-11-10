@@ -22,3 +22,7 @@ test('index.ts refuses a SUB-frame navigation on the app window and reports it t
   assert.ok(/if \(event\.isMainFrame \|\| event\.url === 'about:srcdoc'\) return;/.test(body), 'main frame + srcdoc load pass');
   assert.ok(body.indexOf('event.preventDefault()') > 0 && body.indexOf('event.preventDefault()') < body.indexOf('onBlocNavigationAttempt('), 'refuse first, then report');
 });
+
+test('index.ts forbids non-proxied UDP on the app window (a frame\'s CSP does not cover WebRTC/STUN — rig arm I6)', () => {
+  assert.ok(/mainWindow\.webContents\.setWebRTCIPHandlingPolicy\('disable_non_proxied_udp'\);/.test(code('src/main/index.ts')));
+});

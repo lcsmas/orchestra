@@ -16,6 +16,11 @@ test('MarkdownView reads a fence label WHOLE (html-render is not html) and route
   assert.ok(/return <MarkdownProse key=\{`r\$\{i\}`\} text=\{seg\.raw\} done \/>/.test(s), 'a refused (too-large) bloc renders its raw fence as code');
 });
 
+test('a placeholder lasts only while the reply is being written: a done reply with an open fence shows its raw fence as code', () => {
+  const s = code(`${DIR}/agent/MarkdownView.tsx`);
+  assert.ok(/seg\.kind === 'bloc-pending'\) return done \? <MarkdownProse key=\{`r\$\{i\}`\} text=\{seg\.raw\} done \/> : <BlocPending/.test(s));
+});
+
 test('ONLY the assistant text path passes blocs; every other MarkdownView caller stays code', () => {
   const callers = ['agent/MessageBubble.tsx', 'agent/PeerMessageGroup.tsx', 'agent/TaskNoticeGroup.tsx', 'agent/PermissionDialog.tsx'];
   for (const c of callers) {

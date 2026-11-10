@@ -2,13 +2,13 @@
 # #415 — Bloc HTML isolation rig: boots a BUILT Orchestra under its OWN headless sway (scripts/e2e-contained-rig.sh: marker-verified,
 # `env -i` allowlist, private XDG), replays a conversation with blocs, and measures what a bloc can reach. Driver: scripts/e2e-bloc-html.mjs.
 #
-# Usage: scripts/e2e-bloc-html.sh <app-dir> [--arms real,policy,nav,sandbox-api,sandbox-loop] [--out <dir>]
+# Usage: scripts/e2e-bloc-html.sh <app-dir> [--arms real,policy,nav,webrtc,sandbox-api,sandbox-loop] [--out <dir>]
 #   <app-dir>  a BUILT checkout (package.json + dist/ + dist-electron/ incl. keeper.js). The `real` arm boots it as is (every clause GREEN);
 #              each mutant arm boots a COPY of it with ONE guard removed and must turn exactly its own clause RED.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${1:-}"
-[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--arms real,policy,nav,sandbox-api,sandbox-loop] [--out <dir>]" >&2; exit 2; }
+[[ -n "${APP_DIR}" && "${APP_DIR}" != --* ]] || { echo "usage: $0 <app-dir> [--arms real,policy,nav,webrtc,sandbox-api,sandbox-loop] [--out <dir>]" >&2; exit 2; }
 shift
 APP_DIR="$(cd "${APP_DIR}" 2>/dev/null && pwd)" || { echo "ABORT: app dir does not exist" >&2; exit 2; }
 for f in package.json dist/index.html dist-electron/main.js dist-electron/keeper.js; do

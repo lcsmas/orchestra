@@ -702,6 +702,8 @@ async function createMainWindow() {
     return { action: 'deny' };
   });
 
+  // Bloc HTML (#415): a frame's CSP does not cover WebRTC — a STUN/ICE request reaches any UDP host (measured by the rig, arm I6). No UDP outside a proxy.
+  mainWindow.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   // Bloc HTML (#415): a sub-frame of the app window is a model-written bloc — it never navigates (the one leak channel its policy does not close).
   mainWindow.webContents.on('will-frame-navigate', (event) => {
     if (event.isMainFrame || event.url === 'about:srcdoc') return;
