@@ -374,7 +374,10 @@ async function runArm(arm, evil) {
       await inject(evText('IMG-MARK ![prose](' + E + '/prose.png)'));
       await sleep(2500);
       const imgHits = evil.hits.filter((u) => u === '/prose.png').length;
-      clause(arm, 'S1/side-effect-prose-remote-image-load', true, `MEASURED side effect of the proxy: a remote markdown image in the app window reached the listener ${imgHits}x (0 = it no longer loads; the webrtc-tcp arm, proxy removed, shows the instrument sees it)`);
+      const img = await cdp.eval(`(() => { const m = [...document.querySelectorAll('.av-message')].find((e) => e.textContent.includes('IMG-MARK') || e.querySelector('img[src*="prose.png"]')); const i = m && m.querySelector('img'); if (!i) return null; i.scrollIntoView({ block: 'center' }); const r = i.getBoundingClientRect(), mr = m.getBoundingClientRect(); return { complete: i.complete, nat: i.naturalWidth, w: Math.round(r.width), h: Math.round(r.height), rowW: Math.round(mr.width), rowH: Math.round(mr.height), overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth }; })()`);
+      if (arm === 'real') saveShot('real-remote-image-blocked-renderer.png', await cdp.shot());
+      const quiet = !!img && img.complete && img.nat === 0 && img.h <= 60 && img.w <= img.rowW && img.rowH <= 120 && !img.overflowX;
+      clause(arm, arm === 'real' ? 'S1/remote-image-does-not-load-and-fails-quietly' : 'S1/side-effect-prose-remote-image-load', arm === 'real' ? imgHits === 0 && quiet : true, `a remote markdown image in the app window reached the listener ${imgHits}x (0 = it no longer loads; the webrtc-tcp arm, proxy removed, shows the instrument sees it); box ${JSON.stringify(img)} — failed (complete, 0 px natural) and quiet (≤60 px tall, inside its row, row ≤120 px, no horizontal overflow)`);
       evil.reset();
       await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port, evil.udpPort, evil.tcpPorts))));
       const r = await waitFor(() => probe('iso'), 30000, 'the isolation probe report');
