@@ -31,57 +31,46 @@ export type ReplySegment =
   /** A closed fence over the size cap: render it as a code block. */
   | { kind: 'bloc-refused'; title: string; source: string; raw: string; reason: 'too-large' };
 
-interface Fence {
-  char: '`' | '~';
-  len: number;
-  indent: number;
-  /** The info string, trimmed. */
-  info: string;
-}
-
-/** An opening fence line (CommonMark §4.5): ≤3 spaces of indent, a run of ≥3 ` or ~; a backtick fence's info string holds no backtick. */
-function openingFence(line: string): Fence | null {
-  const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
-  if (!m) return null;
-  const char = m[2][0] as '`' | '~';
-  const info = m[3].trim();
-  if (char === '`' && info.includes('`')) return null;
-  return { char, len: m[2].length, indent: m[1].length, info };
-}
-
-function closesFence(line: string, f: Fence): boolean {
-  const m = /^ {0,3}(`{3,}|~{3,})[ \t\r]*$/.exec(line);
-  return !!m && m[1][0] === f.char && m[1].length >= f.len;
-}
-
-/** The title of a bloc fence, or null when `info` is not a bloc fence's info string. */
-function blocInfo(info: string): { title: string } | null {
-  const m = /^(\S+)(?:\s+(.*))?$/.exec(info);
-  if (!m || m[1] !== BLOC_HTML_LABEL) return null;
-  const t = /(?:^|\s)title="([^"]*)"/.exec(m[2] ?? '');
-  const title = t ? t[1].trim() : '';
-  return { title: title === '' ? BLOC_HTML_DEFAULT_TITLE : title };
-}
-
-/** UTF-16 length bounds the byte length from below (×1) and above (×3): encode only when that cannot decide. */
-function overCap(source: string, max: number): boolean {
-  if (source.length > max) return true;
-  if (source.length * 3 <= max) return false;
-  return new TextEncoder().encode(source).length > max;
-}
-
-/** Remove up to `n` leading spaces from every line (an indented fence's content, CommonMark §4.5). */
-function dedent(source: string, n: number): string {
-  if (n === 0) return source;
-  const re = new RegExp(`^ {0,${n}}`, 'gm');
-  return source.replace(re, '');
-}
-
+/**
+ * ONE self-contained function (ledger #423 FI-1 v2): the phone page injects `splitReply.toString()`, so the body may reference NO module-level
+ * binding — helpers are nested, the label / default title / default cap are literals (a test pins them equal to the exported constants and runs the
+ * injected copy in a vm). Backtick fence with a backtick in its info string is not a fence (CommonMark §4.5).
+ */
 export function splitReply(text: string, opts?: { maxSourceBytes?: number }): ReplySegment[] {
+  type Fence = { char: string; len: number; indent: number; info: string };
+  /** An opening fence line: ≤3 spaces of indent, a run of ≥3 ` or ~. */
+  const openingFence = (line: string): Fence | null => {
+    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!m) return null;
+    const info = m[3].trim();
+    if (m[2][0] === '`' && info.includes('`')) return null;
+    return { char: m[2][0], len: m[2].length, indent: m[1].length, info };
+  };
+  const closesFence = (line: string, f: Fence): boolean => {
+    const m = /^ {0,3}(`{3,}|~{3,})[ \t\r]*$/.exec(line);
+    return !!m && m[1][0] === f.char && m[1].length >= f.len;
+  };
+  /** The title of a bloc fence, or null when `info` is not a bloc fence's info string. */
+  const blocInfo = (info: string): { title: string } | null => {
+    const m = /^(\S+)(?:\s+(.*))?$/.exec(info);
+    if (!m || m[1] !== 'html-render') return null;
+    const t = /(?:^|\s)title="([^"]*)"/.exec(m[2] ?? '');
+    const title = t ? t[1].trim() : '';
+    return { title: title === '' ? 'Bloc HTML' : title };
+  };
+  /** UTF-16 length bounds the byte length from below (×1) and above (×3): encode only when that cannot decide. */
+  const overCap = (source: string, cap: number): boolean => {
+    if (source.length > cap) return true;
+    if (source.length * 3 <= cap) return false;
+    return new TextEncoder().encode(source).length > cap;
+  };
+  /** Remove up to `n` leading spaces from every line (an indented fence's content, CommonMark §4.5). */
+  const dedent = (source: string, n: number): string => (n === 0 ? source : source.replace(new RegExp('^ {0,' + n + '}', 'gm'), ''));
+
   if (text === '') return [];
   // Fast path (every streaming frame): no bloc label anywhere ⇒ one prose segment.
-  if (!text.includes(BLOC_HTML_LABEL)) return [{ kind: 'prose', text }];
-  const max = opts?.maxSourceBytes ?? BLOC_HTML_MAX_SOURCE_BYTES;
+  if (!text.includes('html-render')) return [{ kind: 'prose', text }];
+  const max = opts?.maxSourceBytes ?? 256 * 1024;
 
   const segs: ReplySegment[] = [];
   let proseStart = 0;

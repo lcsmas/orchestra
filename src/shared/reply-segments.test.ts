@@ -162,3 +162,20 @@ test('round-trip holds on every prefix of a streaming reply (the typewriter reve
   const t = 'Voici:\n```html-render title="Cartes"\n<div class="a">1</div>\n<script>let x=1</script>\n```\nFin.\n```js\nlet a\n```\n';
   for (let i = 0; i <= t.length; i++) rt(t.slice(0, i));
 });
+
+test('splitReply is SELF-CONTAINED: its source copy, run in a bare vm (the phone page injects splitReply.toString()), agrees with the module', async () => {
+  const vm = await import('node:vm');
+  const injected = vm.runInNewContext('(' + splitReply.toString().replace(/: ReplySegment\[\]|: \{ maxSourceBytes\?: number \}|: string|: boolean|: number|: Fence \| null|: Fence|: \{[^}]*\} \| null/g, '') + ')', { TextEncoder }) as typeof splitReply;
+  const fixtures = [
+    '', 'plain prose', 'a\n```html-render title="T"\n<p>x</p>\n```\nb', '```html-render\n<i>x', '````md\n```html-render\n<p>q</p>\n```\n````',
+    '  ```html-render\n  <p>x</p>\n  ```', '~~~html-render\n<p>é</p>\n```\n~~~', '```html\n<p>x</p>\n```', '```html-render title="Big"\n' + 'x'.repeat(400) + '\n```',
+  ];
+  for (const t of fixtures) for (const o of [undefined, { maxSourceBytes: 100 }]) assert.deepEqual(JSON.parse(JSON.stringify(injected(t, o))), JSON.parse(JSON.stringify(splitReply(t, o))), JSON.stringify(t).slice(0, 60));
+});
+
+test('the literals inlined in splitReply equal the exported constants', () => {
+  const body = splitReply.toString();
+  assert.ok(body.includes(`'${BLOC_HTML_LABEL}'`) && body.includes(`'${BLOC_HTML_DEFAULT_TITLE}'`));
+  assert.ok(body.includes('256 * 1024') && BLOC_HTML_MAX_SOURCE_BYTES === 256 * 1024);
+  assert.doesNotMatch(body, /BLOC_HTML_|openingFence\(.*\) *=>|\bReplySegment\b.*module/);
+});
