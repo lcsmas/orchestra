@@ -80,6 +80,24 @@ export const MUTANTS = {
     find: /const rewound = rewoundUuids\(entries\);/g,
     replace: 'const rewound = new Set<string>();',
   },
+  // Bloc HTML rig (#418): the CLI env flag is set whatever the switch says → OFF sessions get the instruction.
+  'bloc-html-env-always': {
+    file: '/src/main/agent-sdk.ts',
+    find: /if \(isBlocHtmlEnabled\(\)\) env\[BLOC_HTML_ENV\] = '1';/g,
+    replace: "if (true) env[BLOC_HTML_ENV] = '1';",
+  },
+  // Bloc HTML rig (#418): the flag is never set → ON sessions get nothing.
+  'bloc-html-env-never': {
+    file: '/src/main/agent-sdk.ts',
+    find: /if \(isBlocHtmlEnabled\(\)\) env\[BLOC_HTML_ENV\] = '1';/g,
+    replace: "if (false) env[BLOC_HTML_ENV] = '1';",
+  },
+  // Bloc HTML rig (#418): the SessionStart hook is never registered → the script exists but nothing runs it.
+  'bloc-html-hook-unwired': {
+    file: '/src/main/workspaces.ts',
+    find: /    upsertHookCommand\(sessionStartList, HOOK_BLOC_HTML_CMD\);\n/g,
+    replace: '',
+  },
   // #317 matrix: every network-capable control request, fired at the same turn-end spot — which ones hold the next prompt?
   ...Object.fromEntries([
     ['turn-end-supported-models', 'supportedModels()'],

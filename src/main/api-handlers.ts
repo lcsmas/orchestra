@@ -158,6 +158,7 @@ import type { OrchestraAPI } from '../shared/ipc';
 import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
+import { isBlocHtmlEnabled, setBlocHtmlEnabled } from './bloc-html-setting.ts';
 import { accesMobileView, regenerateAccesMobileToken, setAccesMobileSettings } from './acces-mobile-host.ts';
 import { markWorkspaceSeen } from './mark-seen.ts';
 import { wakeHeldForMemory } from './admission-wake';
@@ -393,6 +394,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   setModelDefaults: 'settings:setModelDefaults',
   effortDefaults: 'settings:effortDefaults',
   setEffortDefaults: 'settings:setEffortDefaults',
+  blocHtmlEnabled: 'settings:blocHtmlEnabled',
+  setBlocHtmlEnabled: 'settings:setBlocHtmlEnabled',
   memoryGuard: 'settings:memoryGuard',
   setMemoryGuard: 'settings:setMemoryGuard',
   accesMobile: 'settings:accesMobile',
@@ -1208,6 +1211,10 @@ export const apiHandlers: ApiHandlerTable = {
     await store.setEffortDefaults(normalizeEffortDefaults({ ...store.getEffortDefaults(), ...next }));
     return store.getEffortDefaults();
   },
+
+  // Bloc HTML switch (#418): persisted at once; the instruction reaches sessions STARTED afterwards, the renderer follows the echo (no restart).
+  blocHtmlEnabled: async () => isBlocHtmlEnabled(),
+  setBlocHtmlEnabled: async (next) => setBlocHtmlEnabled(next),
 
   memoryGuard: async () => memoryGuardView(store.getMemoryGuardSettings()),
 

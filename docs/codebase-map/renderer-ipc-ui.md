@@ -434,6 +434,12 @@ Workspace list with orchestrator nesting, drag-reorder, archive, delete.
   generic so new integration checks need no renderer change.
 
 ## Other components
+- **BlocHtmlSettings.tsx** (#418) — the Bloc HTML switch (ADR 0011): one `role="switch"` row in a modal behind the `</>` icon of the sidebar header
+  (`[data-bloc-html-open]`; the switch is `[data-bloc-html-switch]`, `data-live-state=ON|OFF`). Persisted by `setBlocHtmlEnabled` → `settings:setBlocHtmlEnabled`
+  → `src/main/bloc-html-setting.ts` → `store.blocHtmlEnabled` (absent ⇒ ON, only a literal `false` is OFF: `shared/bloc-html-setting.ts`). The renderer keeps the
+  host's echo in `store.blocHtmlEnabled` (false until the boot read `blocHtmlEnabled` answers, and when it fails — no model HTML renders on a guess), so every bloc on
+  screen flips to a code block at once, no restart. Main/server seam FI-2: `isBlocHtmlEnabled()` (`src/main/bloc-html-setting.ts`; a throwing read answers OFF).
+  The instruction half is in `hooks-cli-socket.md` (`bloc-html-instruction.sh`). Built-app drive: `pnpm run test:bloc-html-setting` (`scripts/e2e-bloc-html-setting.{sh,mjs}`): dialog default/persist/restart, a replayed reply flipped ON→OFF→ON in one page (frame ↔ code block, same pid), and the must-FAIL copy whose hook ignores the setting.
 - **BrowserSettings.tsx** (#400) — Settings > Browser: the profils navigateur (create / rename / delete + the ALWAYS-on "stored unencrypted on disk" warning —
   a constant (`PROFILE_AT_REST_WARNING`), no keyring state involved), a modal behind the globe icon of the sidebar header (`[data-bp-open]`). Open state = `store.browserSettingsOpen` /
   `setBrowserSettingsOpen` (not Sidebar-local: the browser panel's "Manage profiles…" opens it too). Mounted by `Sidebar.tsx`. See

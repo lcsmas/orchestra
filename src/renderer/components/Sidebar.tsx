@@ -33,6 +33,7 @@ import { BusSwitchSettings } from './BusSwitchSettings';
 import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { ModelDefaultsSettings } from './ModelDefaultsSettings';
+import { BlocHtmlSettings } from './BlocHtmlSettings';
 import { MemoryGuardSettings } from './MemoryGuardSettings';
 import { BrowserSettings } from './BrowserSettings';
 import { AccesMobileSettings } from './AccesMobileSettings';
@@ -173,6 +174,16 @@ function GlobeIcon() {
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       <circle cx="12" cy="12" r="9.5" />
       <path d="M2.5 12h19M12 2.5c2.6 2.7 3.9 5.9 3.9 9.5s-1.3 6.8-3.9 9.5c-2.6-2.7-3.9-5.9-3.9-9.5S9.4 5.2 12 2.5z" />
+    </svg>
+  );
+}
+
+// Code-in-a-frame — Settings > Bloc HTML (#418).
+function BlocHtmlIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M10 9.5 7.5 12l2.5 2.5M14 9.5l2.5 2.5-2.5 2.5" />
     </svg>
   );
 }
@@ -820,6 +831,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [busSwitchSettingsOpen, setBusSwitchSettingsOpen] = useState(false);
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
+  const [blocHtmlOpen, setBlocHtmlOpen] = useState(false);
   const [accesMobileOpen, setAccesMobileOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
@@ -1725,6 +1737,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           >
             <MemoryIcon />
           </button>
+          {/* Bloc HTML (#418, ADR 0011): one switch — tells every session the surface exists AND allows the rendering. */}
+          <button
+            className="header-icon-btn"
+            onClick={() => setBlocHtmlOpen(true)}
+            title="Bloc HTML — let agents render HTML inside their replies"
+            aria-label="Bloc HTML settings"
+            data-bloc-html-open
+          >
+            <BlocHtmlIcon />
+          </button>
           {/* Settings > Browser (#400, ADR 0010): the profils navigateur — named persistent sign-ins a workspace's panel can carry. */}
           <button
             className="header-icon-btn"
@@ -2484,6 +2506,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           />
         )}
         {memoryGuardOpen && <MemoryGuardSettings onClose={() => setMemoryGuardOpen(false)} />}
+        {blocHtmlOpen && <BlocHtmlSettings onClose={() => setBlocHtmlOpen(false)} />}
         {browserSettingsOpen && <BrowserSettings onClose={() => setBrowserSettingsOpen(false)} />}
         {accesMobileOpen && <AccesMobileSettings onClose={() => setAccesMobileOpen(false)} />}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}

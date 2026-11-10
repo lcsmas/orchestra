@@ -145,6 +145,8 @@ interface State {
   /** The keys (episode + kind [+ Pause cycle]) of every banner « Masquer » hid since the last recovery; any other key shows again (escalation, new Pause cycle, next episode). */
   memoryBannerDismissed: readonly string[];
   dismissMemoryBanner: () => void;
+  /** The Bloc HTML switch (#418, FI-2): false until the boot read answers (and when it fails) — no model HTML renders on a guess. The renderer hook reads this; the Settings switch writes it from the host's echo. */
+  blocHtmlEnabled: boolean;
   /** Per-repo base-branch sync state (behind/ahead of origin/<base>),
    *  keyed by repoPath. Updated by `repo:syncState` events. */
   repoSync: Record<string, RepoSyncState>;
@@ -287,6 +289,7 @@ export const useStore = create<State>((set, get) => ({
   memoryBanner: null,
   watchers: null,
   memoryBannerDismissed: [],
+  blocHtmlEnabled: false,
   dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: dismissedWith(st.memoryBannerDismissed, st.memoryBanner) })),
   repoSync: {},
   accountUsage: {},
@@ -413,7 +416,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner, watchers] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner, watchers, blocHtmlEnabled] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -435,6 +438,8 @@ export const useStore = create<State>((set, get) => ({
         orEmpty('memoryBanner', window.orchestra.memoryBanner(), null as MemoryBannerState | null),
         // Directory-watcher health for the initial paint (#330): the page loads AFTER the main process armed its watchers, so a boot-time degradation is only ever seen through this pull; later changes ride `watchers:update`.
         orEmpty('watchersStatus', window.orchestra.watchersStatus(), null as WatchersStatus | null),
+        // Bloc HTML switch (#418): a failed read renders as OFF (code blocks), never as ON.
+        orEmpty('blocHtmlEnabled', window.orchestra.blocHtmlEnabled(), false),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -463,6 +468,7 @@ export const useStore = create<State>((set, get) => ({
       pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview,
       memoryBanner: memoryBanner ? newerBanner(get().memoryBanner, memoryBanner) : get().memoryBanner,
       watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,
+      blocHtmlEnabled,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
     });

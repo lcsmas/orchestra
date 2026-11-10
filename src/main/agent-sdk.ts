@@ -85,6 +85,8 @@ import { makeKeeperSpawn, killKeeper, killKeeperIf, probeKeeper, readTrackedKeep
 import { mintSessionKey } from './session-identity.ts';
 import { registerSessionKey } from './session-identity-host.ts';
 import { SESSION_KEY_ENV } from '../shared/session-identity.ts';
+import { BLOC_HTML_ENV } from '../shared/bloc-html-setting.ts';
+import { isBlocHtmlEnabled } from './bloc-html-setting.ts';
 import { clearScopedMember, memberHasScope } from './scope-stop-host';
 import { markPauseHumanTurn, markPauseHumanTurnEnd } from './pause-trap';
 import { noteToolDetail } from './hibernation-activity';
@@ -822,6 +824,9 @@ async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): P
   // #379: the session key is minted per SESSION START (ensureSessionInner) and handed in; an inherited one (Orchestra launched from an agent
   // shell) would be ANOTHER workspace's secret — never let it through. Every other caller (probe, /status, `!cmd`) gets no key.
   delete env[SESSION_KEY_ENV];
+  // #418: an inherited flag would speak for ANOTHER session; the switch, read now, decides for THIS CLI and stays frozen with it.
+  delete env[BLOC_HTML_ENV];
+  if (isBlocHtmlEnabled()) env[BLOC_HTML_ENV] = '1';
   // Same hygiene for the hook socket: a stale inherited path must not leak
   // into a child whose own assignment below is the source of truth. (The
   // value set below is durable across app restarts — hooks-server binds a

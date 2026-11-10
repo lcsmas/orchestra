@@ -49,6 +49,7 @@ import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
+import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
 import {
@@ -3569,6 +3570,11 @@ const HOOK_SELF_MODIFY_CMD =
 const HOOK_BUS_SWITCHES_CMD =
   'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bus-switches-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
 
+// Bloc HTML instruction (#418), SessionStart only: printed when the session's CLI carries ORCHESTRA_BLOC_HTML (set at ITS start from the switch).
+// The Agent tool's sub-agents fire no SessionStart, so they never get it.
+const HOOK_BLOC_HTML_CMD =
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/bloc-html-instruction.sh"; [ -f "$f" ] && bash "$f" || true';
+
 // #233: the SessionStart readiness-sentinel hook (touched $ORCHESTRA_READY_FILE for the PTY task injector) is retired — evicted from installed settings.
 const isRetiredReadyCmd = (cmd: string): boolean => cmd.includes('ORCHESTRA_READY_FILE');
 
@@ -4267,6 +4273,9 @@ cat "\$f"
 exit 0
 `;
 
+// The hook script (src/shared/bloc-html-instruction.ts): a hash-gated constant; WHETHER it prints is the env var, frozen per CLI.
+const BLOC_HTML_INSTRUCTION_SCRIPT = blocHtmlInstructionScript();
+
 // Hard-enforcement companion to the reminder above, wired as a PreToolUse
 // hook on the file-mutation tools (ORCHESTRATOR_GUARD_MATCHER). An
 // orchestrator legitimately writes inside its own scratch worktree (plans,
@@ -4537,6 +4546,7 @@ const HOOKS_VERSION = createHash('sha256')
       TMP_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
       BUS_SWITCHES_INSTRUCTION_SCRIPT,
+      BLOC_HTML_INSTRUCTION_SCRIPT,
       FIELDGUIDE_INSTRUCTION_SCRIPT,
       SPAWN_SKILL,
       COMMS_SKILL,
@@ -4561,6 +4571,7 @@ const HOOKS_VERSION = createHash('sha256')
       HOOK_ORCHESTRATOR_GUARD_CMD,
       HOOK_SELF_MODIFY_CMD,
       HOOK_BUS_SWITCHES_CMD,
+      HOOK_BLOC_HTML_CMD,
       HOOK_FIELDGUIDE_CMD,
       ORCHESTRATOR_GUARD_MATCHER,
       HOOK_HOME_ROOT_GUARD_CMD,
@@ -4846,6 +4857,7 @@ export async function installOrchestraHooks(
       w('tmp-guard.sh', TMP_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
       w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
+      w('bloc-html-instruction.sh', BLOC_HTML_INSTRUCTION_SCRIPT),
       w('fieldguide-instruction.sh', FIELDGUIDE_INSTRUCTION_SCRIPT),
     ]);
 
@@ -5021,6 +5033,7 @@ export async function installOrchestraHooks(
     // Fleet-bus switch states (#118) — SessionStart only; the set is frozen for
     // the run, so a per-turn injection would re-bill an unchanging block forever.
     upsertHookCommand(sessionStartList, HOOK_BUS_SWITCHES_CMD);
+    upsertHookCommand(sessionStartList, HOOK_BLOC_HTML_CMD);
     // Parent's swarm field guide, re-injected at every context reset (the
     // script self-silences without a parent or a guide file).
     upsertHookCommand(sessionStartList, HOOK_FIELDGUIDE_CMD);

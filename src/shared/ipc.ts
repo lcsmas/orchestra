@@ -693,6 +693,10 @@ export interface OrchestraAPI {
   effortDefaults: () => Promise<EffortDefaults>;
   /** Patch the effort defaults; resolves with the normalized, persisted value. */
   setEffortDefaults: (next: Partial<EffortDefaults>) => Promise<EffortDefaults>;
+  /** The Bloc HTML switch (#418, ADR 0011): ON unless the human turned it off. */
+  blocHtmlEnabled: () => Promise<boolean>;
+  /** Persist the switch; resolves with the stored value. Sessions started afterwards follow it; a running turn is untouched. */
+  setBlocHtmlEnabled: (next: boolean) => Promise<boolean>;
   /** The memory guard (#285): thresholds + toggle, the guard state, and a FRESH MemAvailable reading beside them. */
   memoryGuard: () => Promise<MemoryGuardView>;
   /** Patch the thresholds / toggle. Validated (critical < Admission): an invalid patch writes nothing and resolves `{ok:false,error}`.

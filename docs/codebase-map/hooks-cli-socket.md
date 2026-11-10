@@ -156,6 +156,20 @@ Scripts and the Claude Code events they fire on:
   an unrelated repo named "orchestra" stays silent). Exception to the
   `$ORCHESTRA_WS_ID` guard note above — its gate is repo identity, not env.
 
+- **`bloc-html-instruction.sh`** (#418, ADR 0011) — SessionStart ONLY. Tells the session the **Bloc HTML**
+  surface exists (the ` ```html-render title="…" ` fence, the `--bloc-*` theme variables, the limits —
+  https-only network (a bloc using it needs the network to render; no `http:`), the source size cap derived from
+  `BLOC_HTML_MAX_SOURCE_BYTES`, no state kept — and when to use it rather than prose). The script and its text
+  are one pure module (`src/shared/bloc-html-instruction.ts`: `BLOC_HTML_INSTRUCTION`, `blocHtmlInstructionScript()`,
+  size-capped by its unit test). It prints only when the session's CLI carries `ORCHESTRA_BLOC_HTML=1`, which
+  `buildSdkEnv` (`agent-sdk.ts`) sets from `isBlocHtmlEnabled()` at EVERY session start (new, resume, restart,
+  wake) and deletes otherwise — so the switch is read at the moment a CLI starts and then frozen with it: a flip
+  never reaches a running session, and a resumed one follows the switch as it is at resume — but a conversation that
+  already carries the instruction keeps it in its transcript (turning OFF stops telling NEW or cleared sessions; it
+  does not retract what an ON-started conversation was told). The Agent tool's
+  sub-agents fire no SessionStart, so they never get it. Wired like every SessionStart hook (`HOOK_BLOC_HTML_CMD`,
+  in `HOOKS_VERSION`). Rig: `pnpm run test:bloc-html-instruction` (`session-budget.md`).
+
 Also installs 7 **capability skills** as `<worktree>/.claude/skills/<name>/SKILL.md`
 (orchestra-spawn / -comms / -workspace-admin / -rename / -link / -status in
 `workspaces.ts`, and **orchestra-browser** from `src/shared/browser-skill.ts` — #399;

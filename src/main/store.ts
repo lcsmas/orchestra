@@ -65,6 +65,8 @@ interface StoreShape {
   /** Profils navigateur (#400, ADR 0010): the named persistent browser identities the human created. Raw —
    *  shared/browser-profile.ts normalizes. Absent → none. A workspace refers to one by `browserProfileId`. */
   browserProfiles?: BrowserProfile[];
+  /** Bloc HTML switch (#418, ADR 0011): the instruction at session start + rendering. Absent → ON (shared/bloc-html-setting.ts). */
+  blocHtmlEnabled?: boolean;
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -439,6 +441,16 @@ class Store {
 
   async setMemoryGuardSettings(next: MemoryGuardSettings): Promise<void> {
     this.data.memoryGuard = next;
+    await this.save();
+  }
+
+  /** The Bloc HTML switch, raw (absent ⇒ undefined); callers normalize through shared/bloc-html-setting.ts. */
+  getBlocHtmlEnabled(): boolean | undefined {
+    return this.data.blocHtmlEnabled;
+  }
+
+  async setBlocHtmlEnabled(next: boolean): Promise<void> {
+    this.data.blocHtmlEnabled = next;
     await this.save();
   }
 

@@ -157,6 +157,11 @@ export function runRewindArm(o) {
   return runContained(o, 'rewind-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, exitDelayMs: o.exitDelayMs ?? 0, cold: o.cold === true }, '{"rewind"');
 }
 
+/** The Bloc HTML rig (`bloc-html.mjs`, #418): the instruction in the context the real CLI sends the fake API, per switch / session scenario. */
+export function runBlocHtmlArm(o) {
+  return runContained(o, 'bloc-html-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null }, '{"bloc"');
+}
+
 /**
  * Host-dependent self-tests of the instruments themselves, run under the SAME containment as the arms (so they
  * cannot live in `pnpm run test`, which must not depend on bwrap or a real `claude`). Modes: `census` (the
