@@ -198,3 +198,15 @@ test('a looping bloc A dismissed repeatedly does not silence bloc B (distinct in
   gate.answer('id3', false); advance(BLOC_NAV_MUTE_DISMISS_MS + 1);
   assert.equal(gate.attempt('https://b/', B), 'surfaced', "B's SECOND attempt is not silenced by A's escalation");
 });
+
+test('a STALE id cannot confirm while a NEWER request is current: answer(oldId, true) is refused, opens nothing, and leaves the newer request pending', () => {
+  const { gate, log } = rig();
+  assert.equal(gate.attempt('https://old.example/', F1), 'surfaced'); // id1
+  assert.equal(gate.answer('id1', false), 'dismissed');
+  assert.equal(gate.attempt('https://new.example/', F2), 'surfaced'); // id2 — a different bloc, now current
+  assert.equal(gate.answer('id1', true), 'stale', 'the dismissed request\'s id must not confirm the newer one');
+  assert.deepEqual(log.opened, [], 'nothing opened');
+  assert.equal(gate.pending()?.id, 'id2', 'the newer request is still waiting');
+  assert.equal(gate.answer('id2', true), 'opened');
+  assert.deepEqual(log.opened, [{ id: 'id2', url: 'https://new.example/' }]);
+});
