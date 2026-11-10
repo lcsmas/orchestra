@@ -31,6 +31,8 @@
 //                of the installed app with no newer install; the open phone page says « relancé » once a NEW app answers
 //   control/*    interrupt + rewind from the phone: a trusted « ■ Arrêter » ends a REAL turn the slow fake model holds; a trusted « ↺ Revenir
 //                ici » undoes it (prompt back in the field, gone from both surfaces) and the next model request no longer carries it
+//   bloc/*       (#421) a REAL turn whose reply carries a scripted bloc HTML: rendered in a sandboxed frame between the prose, sized to its content,
+//                every attempt from inside it to reach the API, the token or an external listener fails (must-FAIL arms: scripts/acces-mobile-bloc-rig.sh)
 //   archive/*    a trusted « Archiver » + confirm on the phone archives a coordinator AND its subtree like the sidebar (worktrees kept),
 //                the phone is back on its list without them, the desktop leaves the archived pane; an archived / unknown id is refused
 //                swipe: TRUSTED touches — a vertical drag scrolls, a left swipe reveals « Archiver » (no sideways scroll), its tap archives
@@ -47,6 +49,7 @@ import path from 'node:path';
 import jsQR from 'jsqr';
 import { PNG } from 'pngjs';
 import QRCode from 'qrcode';
+import { GIF as BLOC_GIF, PROBES_BLOCKED as BLOC_PROBES, blocReply } from './acces-mobile-bloc-probe.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -221,10 +224,12 @@ const FAKE_REPLY = 'Réponse du faux modèle pour le téléphone';
 // tool call; everything else gets the canned text.
 const ASK_INPUT = { questions: [{ question: 'Quelle option pour le rig ?', header: 'Choix', multiSelect: false, options: [{ label: 'Réponse-rig-A', description: 'la première' }, { label: 'Réponse-rig-B', description: 'la seconde' }] }] };
 let wantAsk = 0;
+let wantBloc = null; // bloc/* (#421): the next main model request answers with this text (a scripted bloc HTML)
 // #375: a sentinel in every phone-launched prompt — `marks` on a model request says the prompt REACHED the session.
 const LAUNCH_SENTINEL = 'LANCEMENT-TEL-SENTINELLE-7f3a';
 const fakeOpts = { keepAttachmentData: true, markers: { launch: LAUNCH_SENTINEL }, reply: (rec) => {
   if (rec.tools > 0 && wantAsk > 0) { wantAsk--; return { toolUse: { name: 'AskUserQuestion', input: ASK_INPUT } }; }
+  if (rec.tools > 0 && wantBloc) { const t = wantBloc; wantBloc = null; return { text: t }; }
   return { text: FAKE_REPLY_MD };
 } };
 const fakeApi = await startFakeApi(fakeOpts); // fakeOpts.replyDelayMs is read per request: the slow-first-turn arm sets it
@@ -1457,6 +1462,47 @@ try {
   clause('relaunch/from-phone', waiting.state === 'wait' && rec3 === 'old-gone 0' && appPid !== pidA && booted3 && done.state === 'done' && done.msg === `Orchestra relancé (v${info2?.version}).` && !!info2 && info2.startedAt !== info1?.startedAt && sameDoc,
     `trusted ↻ then « Relancer » ⇒ « ${waiting.state} »; old app ${pidA} exited, the installed app started after it (« ${rec3} »), new app ${appPid} booted=${booted3}; the open phone page (not reloaded: ${sameDoc}) says « ${done.msg} »; startedAt ${info1?.startedAt} → ${info2?.startedAt}`);
   try { process.kill(appPid, 0); } catch { throw new Error('the phone-relaunched app is not running'); }
+
+
+  // bloc/* (#421): a REAL turn (real CLI, fake API) whose reply carries a scripted bloc HTML. The phone frames it from /bloc/<id>; from inside it
+  // every attempt to reach the API, the token or an external listener fails. The must-FAIL arms (policy / sandbox / shell frame-src removed) are
+  // scripts/acces-mobile-bloc-rig.sh — the same probes through the same drive. Placed here: the arms above depend on am-idle's history.
+  {
+    const bhits = [];
+    const bext = http.createServer((q, r) => { bhits.push(q.url); r.writeHead(200, { 'Access-Control-Allow-Origin': '*', 'Content-Type': q.url.includes('.gif') ? 'image/gif' : 'text/html' }); r.end(q.url.includes('.gif') ? BLOC_GIF : 'ok'); });
+    bext.on('upgrade', (q, sk) => { bhits.push(q.url); sk.destroy(); });
+    await new Promise((res) => bext.listen(0, '127.0.0.1', res));
+    const extUrl = `http://127.0.0.1:${bext.address().port}`;
+    const linesBefore = seenLines.length;
+    wantBloc = blocReply(extUrl);
+    await phone.eval(`location.hash = 'w=ws-am-idle'; true`);
+    await waitFor(() => phone.eval(`!!document.querySelector('#conv .conv-input')`), 30000, 'the am-idle conversation (bloc arm)');
+    await cdp.eval(`window.orchestra.agentSdkSend('ws-am-idle', 'Montre-moi une courbe (rig bloc)').then(() => true)`);
+    await waitFor(() => phone.eval(`!!document.querySelector('#conv iframe.bloc-frame')`), 120000, 'the bloc frame on the phone');
+    const ft = await waitFor(async () => (await (await fetch(`http://127.0.0.1:${chromePort}/json`)).json()).find((x) => x.type === 'iframe' && x.url.includes('/bloc/')) || null, 20000, 'the bloc frame target');
+    const fr = await Cdp.connect(ft.webSocketDebuggerUrl);
+    let probes = null, inFrame = null;
+    try {
+      probes = await waitFor(async () => { const p = await fr.eval(`window.__probe ? JSON.stringify(window.__probe) : null`).catch(() => null); const o = p && JSON.parse(p); return o && BLOC_PROBES.every((k) => k in o) ? o : null; }, 20000, 'the probes settled').catch(() => null);
+      inFrame = await fr.eval(`({ text: document.getElementById('v').textContent, bg: getComputedStyle(document.getElementById('card')).backgroundColor })`);
+    } finally { fr.close(); }
+    await waitFor(() => phone.eval(`document.querySelector('#conv iframe.bloc-frame').parentNode.dataset.state === 'ready'`), 20000, 'the bloc reported its height').catch(() => null);
+    const B2 = await phone.eval(`(() => { const f = document.querySelector('#conv iframe.bloc-frame'), r = f.getBoundingClientRect(); return { src: f.getAttribute('src'), sandbox: f.getAttribute('sandbox'), state: f.parentNode.dataset.state, w: r.width, h: r.height, vw: innerWidth, inRow: !!f.closest('[data-kind="assistant"]') }; })()`);
+    await phone.eval(`document.querySelector('#conv iframe.bloc-frame').scrollIntoView({ block: 'center' }); true`); await sleep(400);
+    saveShot('phone-bloc-real-turn.png', await phone.shot());
+    await sleep(6500); // the bloc's delayed navigations (5 s) have fired
+    const mine = seenLines.slice(linesBefore);
+    const phoneTok = await phone.eval(`localStorage.getItem('orchestra.accesMobile.token')`);
+    const blocLines = mine.filter((l) => String(l.url).startsWith('/bloc/'));
+    const probeLines = mine.filter((l) => String(l.url).includes('probe=bloc'));
+    const shellNow = await phone.eval(`location.href`);
+    const allBlocked = probes && BLOC_PROBES.filter((k) => k !== 'beacon-ext').every((k) => /^(blocked:|no-token|empty|null$)/.test(probes[k] ?? 'missing'));
+    clause('bloc/rendered-from-real-turn', B2.state === 'ready' && B2.inRow && B2.sandbox === 'allow-scripts' && /^\/bloc\/[A-Za-z0-9_-]{32}$/.test(B2.src ?? '') && inFrame?.text === 'bloc-ran' && inFrame?.bg === 'rgb(26, 31, 38)' && B2.w >= 300 && B2.w <= B2.vw && B2.h > 40 && B2.h < 600, `real CLI reply with a bloc ⇒ ${B2.src} sandbox="${B2.sandbox}" state ${B2.state} ${B2.w}×${B2.h} on ${B2.vw} px; its script ran « ${inFrame?.text} », themed ${inFrame?.bg}`);
+    clause('bloc/unreachable-api-token-external', allBlocked && bhits.length === 0 && probeLines.length === 0 && !!phoneTok && !mine.some((l) => JSON.stringify(l).includes(phoneTok)) && shellNow.startsWith('http://127.0.0.1:' + ownerProxy.port + '/'), `probes ${JSON.stringify(probes)}; external listener hits ${JSON.stringify(bhits)}; API requests from the frame ${probeLines.length}; token in a request line: false; shell still at ${shellNow} (nav / top-nav / popup attempted)`);
+    clause('bloc/route-served-on-identity', blocLines.length >= 1 && blocLines.every((l) => l.status === 200), `route requests ${JSON.stringify(blocLines.map((l) => ({ url: String(l.url).slice(0, 14) + '…', status: l.status })))} — all 200 through the identity-setting stand-in (the Authorization-less + refusal clauses: scripts/acces-mobile-bloc-rig.sh)`);
+    bext.close();
+    await phone.eval(`location.hash = ''; true`);
+  }
 
   // app crash ⇒ the server exits (no orphan listening)
   cdp?.close(); cdp = null;

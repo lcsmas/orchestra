@@ -6,6 +6,8 @@
 // contract — the V1 classes ride beside them.
 
 import { parseMarkdown } from '../shared/mini-markdown.ts';
+import { splitReply } from '../shared/reply-segments.ts';
+import { BLOC_HEIGHT_TAG, BLOC_MAX_HEIGHT_PX } from '../shared/bloc-html-document.ts';
 import { TOOL_GLYPH } from '../shared/tool-line.ts';
 import { COMPOSER_KIT_JS } from './composer-kit.ts';
 
@@ -13,6 +15,8 @@ export const CONVERSATION_JS = `(function () {
   'use strict';
   // The Markdown parser (shared/mini-markdown.ts, unit-tested) — self-contained, so its source can be injected as is.
   var mdParse = (${parseMarkdown.toString()});
+  // The shared reader of a reply (shared/reply-segments.ts, FI-1, unit-tested) — ONE self-contained function, injected the same way (#421).
+  var splitReply = (${splitReply.toString()});
   var KEY = 'orchestra.accesMobile.token';
   function token() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function auth() { return { Authorization: 'Bearer ' + token() }; }
@@ -96,8 +100,8 @@ export const CONVERSATION_JS = `(function () {
     b.items.forEach(function (it) { var li = spansInto(el('li'), it.spans); (it.sub || []).forEach(function (x) { li.appendChild(mdList(x)); }); n.appendChild(li); });
     return n;
   }
-  function md(text) {
-    var frag = document.createDocumentFragment();
+  function mdBlocks(text) {
+    var out = [];
     var blocks;
     try { blocks = mdParse(text); } catch (e) { blocks = [{ t: 'p', spans: [{ t: 'text', text: text }] }]; }
     blocks.forEach(function (b) {
@@ -109,11 +113,136 @@ export const CONVERSATION_JS = `(function () {
       else if (b.t === 'quote') n = spansInto(el('blockquote'), b.spans);
       else if (b.t === 'table') { var wrap = el('div', 'mdt'); var t = el('table'); b.rows.forEach(function (r, ri) { var tr = el('tr'); r.forEach(function (c) { tr.appendChild(spansInto(el(ri === 0 ? 'th' : 'td'), c)); }); t.appendChild(tr); }); wrap.appendChild(t); n = wrap; }
       else if (b.t === 'hr') n = el('hr');
-      if (n) frag.appendChild(n);
+      if (n) out.push(n);
     });
+    return out;
+  }
+  function md(text) {
+    var frag = document.createDocumentFragment();
+    mdBlocks(text).forEach(function (n) { frag.appendChild(n); });
     return frag;
   }
   function acct(name) { return el('span', 'acct a-' + String(name).replace(/[^a-z0-9-]/gi, '').toLowerCase(), name); }
+
+  // ---- #421: bloc HTML in an assistant reply (ADR 0011) ----
+  // A closed bloc is framed from /bloc/<id> (the route's own policy + sandbox="allow-scripts": opaque origin, no token, no API). The id is
+  // minted lazily, when the bloc nears the screen. A frame must survive the page's re-render (moving an iframe reloads it): its host
+  // node, and the row holding it, are KEPT and the list is reconciled around them.
+  var BLOC_MIN_H = 24, BLOC_MAX_H = ${BLOC_MAX_HEIGHT_PX}, BLOC_TAG = ${JSON.stringify(BLOC_HEIGHT_TAG)}, BLOC_REPORT_MS = 8000;
+  var blocs = Object.create(null);   // key -> { host, frame, title, source, raw, state, timer }
+  var blocRows = Object.create(null); // line id -> the persistent row element of a reply that holds a live frame
+  var blocUsed = null, blocRowUsed = null, blocIO = null;
+  function blocHash(t) { var h = 5381, i; for (i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + t.length; }
+  function blocCode(rec) { // failure (or a refusal) ⇒ the source as a code block: nothing is ever lost
+    if (rec.timer) { clearTimeout(rec.timer); rec.timer = 0; }
+    rec.state = 'code'; rec.frame = null;
+    rec.host.textContent = ''; rec.host.className = 'bloc bloc-code'; rec.host.dataset.state = 'code';
+    mdBlocks(rec.raw).forEach(function (n) { rec.host.appendChild(n); });
+  }
+  function blocHeight(rec, h) {
+    var se = document.scrollingElement || document.documentElement;
+    var nb = se.scrollHeight - se.scrollTop - se.clientHeight < 120;
+    var f = rec.frame; if (!f) return;
+    if (rec.state !== 'ready') {
+      if (rec.timer) { clearTimeout(rec.timer); rec.timer = 0; }
+      rec.state = 'ready'; rec.host.className = 'bloc bloc-ready'; rec.host.dataset.state = 'ready';
+      var w = rec.host.querySelector('.bloc-t'); if (w) rec.host.removeChild(w);
+    }
+    f.style.height = Math.max(BLOC_MIN_H, Math.min(BLOC_MAX_H, Math.ceil(h))) + 'px';
+    if (nb) se.scrollTop = se.scrollHeight;
+  }
+  // The height only comes from a script INSIDE the frame; accepted solely from a frame this page created, and clamped.
+  var blocListening = false; // the listener exists only once a page has a bloc
+  function blocListen() {
+    if (blocListening) return;
+    blocListening = true;
+    window.addEventListener('message', function (ev) {
+      var d = ev && ev.data;
+      if (!d || typeof d !== 'object' || d[BLOC_TAG] !== 1 || typeof d.h !== 'number' || !isFinite(d.h)) return;
+      for (var k in blocs) { var r = blocs[k]; if (r.frame && ev.source === r.frame.contentWindow) { blocHeight(r, d.h); return; } }
+    });
+  }
+  function blocLoad(key, rec) {
+    if (rec.state !== 'wait') return;
+    rec.state = 'minting';
+    fetch('/api/bloc', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, auth()), body: JSON.stringify({ source: rec.source }) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { return j; }, function () { return null; })
+      .then(function (j) {
+        if (blocs[key] !== rec) return; // pruned while the id was being minted
+        if (!j || j.ok !== true || typeof j.path !== 'string' || !/^\\/bloc\\/[A-Za-z0-9_-]{32}$/.test(j.path)) return blocCode(rec); // only OUR route is ever framed
+        var f = document.createElement('iframe');
+        f.className = 'bloc-frame'; // laid out (0 high, invisible) until its first height report: a display:none frame has no layout to measure
+        f.setAttribute('sandbox', 'allow-scripts'); f.setAttribute('title', rec.title); f.setAttribute('referrerpolicy', 'no-referrer');
+        rec.frame = f; rec.state = 'frame'; rec.host.dataset.state = 'frame';
+        rec.host.appendChild(f);
+        f.src = j.path;
+        var armed = function () { // a backgrounded page suspends the frame's load: the deadline only runs while the page is visible
+          rec.timer = 0;
+          if (blocs[key] !== rec || rec.state !== 'frame') return;
+          if (document.hidden) { rec.timer = setTimeout(armed, BLOC_REPORT_MS); return; }
+          blocCode(rec);
+        };
+        rec.timer = setTimeout(armed, BLOC_REPORT_MS);
+      });
+  }
+  function blocWatch(key, rec) {
+    if (typeof IntersectionObserver !== 'function') return blocLoad(key, rec);
+    if (!blocIO) blocIO = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting && e.target.blocRec) { blocIO.unobserve(e.target); blocLoad(e.target.blocRec.key, e.target.blocRec.rec); } });
+    }, { rootMargin: '800px 0px' });
+    rec.host.blocRec = { key: key, rec: rec };
+    blocIO.observe(rec.host);
+  }
+  function blocHost(key, seg) {
+    var rec = blocs[key];
+    if (!rec) {
+      blocListen();
+      var host = el('div', 'bloc bloc-wait'); host.dataset.state = 'wait'; host.setAttribute('role', 'group'); host.setAttribute('aria-label', seg.title);
+      host.appendChild(el('span', 'bloc-t', seg.title));
+      rec = blocs[key] = { host: host, frame: null, title: seg.title, source: seg.source, raw: seg.raw, state: 'wait', timer: 0 };
+      blocWatch(key, rec);
+    }
+    blocUsed[key] = true;
+    return rec.host;
+  }
+  function blocForget(key) {
+    var r = blocs[key]; if (!r) return;
+    if (r.timer) clearTimeout(r.timer);
+    if (blocIO && r.host.blocRec) blocIO.unobserve(r.host);
+    delete blocs[key];
+  }
+  function blocPrune() { for (var k in blocs) if (!blocUsed[k]) blocForget(k); for (var i in blocRows) if (!blocRowUsed[i]) delete blocRows[i]; }
+  function blocReset() { for (var k in blocs) blocForget(k); blocRows = Object.create(null); }
+  // Put seq under parent WITHOUT touching a node that is already there in order (an iframe that is removed and re-inserted reloads).
+  function reconcile(parent, seq) {
+    var keep = new Set(seq), cur = parent.firstChild, nx;
+    seq.forEach(function (t) {
+      while (cur && cur !== t && !keep.has(cur)) { nx = cur.nextSibling; parent.removeChild(cur); cur = nx; }
+      if (cur === t) cur = cur.nextSibling; else parent.insertBefore(t, cur);
+    });
+    while (cur) { nx = cur.nextSibling; parent.removeChild(cur); cur = nx; }
+  }
+  // The row of one assistant reply. A reply without a bloc is exactly what it was (the caller's path); with blocs: prose through the markdown
+  // reader, a closed bloc ⇒ its frame host, a bloc still being written ⇒ a placeholder carrying its title, anything else ⇒ a code block.
+  function assistantBlocRow(l, on) {
+    var segs; try { segs = splitReply(l.text); } catch (e) { return null; }
+    if (!segs.some(function (sg) { return sg.kind !== 'prose'; })) return null;
+    var n = 0, kids = [], live = false;
+    segs.forEach(function (sg) {
+      if (sg.kind === 'prose') { mdBlocks(sg.text).forEach(function (x) { kids.push(x); }); return; }
+      if (sg.kind === 'bloc' && on) { kids.push(blocHost(l.id + ':' + (n++) + ':' + blocHash(sg.source), sg)); live = true; return; }
+      if (sg.kind === 'bloc-pending' && on && l.streaming) {
+        var ph = el('div', 'bloc bloc-pending', sg.title); ph.dataset.state = 'pending'; ph.setAttribute('role', 'status'); kids.push(ph); return;
+      }
+      var cb = el('div', 'bloc bloc-code'); cb.dataset.state = 'code'; mdBlocks(sg.raw).forEach(function (x) { cb.appendChild(x); }); kids.push(cb);
+    });
+    var row = live && blocRows[l.id] ? blocRows[l.id] : el('div', '');
+    row.className = 'msg assistant a md' + (l.streaming ? ' streaming' : '');
+    if (live) { blocRows[l.id] = row; blocRowUsed[l.id] = true; reconcile(row, kids); }
+    else kids.forEach(function (x) { row.appendChild(x); });
+    return row;
+  }
 
   function render(c) {
     lastConv = c;
@@ -122,13 +251,14 @@ export const CONVERSATION_JS = `(function () {
     // 2026-10-12) — and follow new messages only while the reader is already near the bottom.
     var se = document.scrollingElement || document.documentElement;
     var nearBottom = se.scrollHeight - se.scrollTop - se.clientHeight < 120;
-    list.textContent = '';
-    if (c.truncated) list.appendChild(el('div', 'conv-more', c.truncated + ' messages plus anciens sur le bureau'));
+    var out = []; blocUsed = Object.create(null); blocRowUsed = Object.create(null);
+    var blocOn = c.blocHtml !== false; // the setting, per fetch (main): off ⇒ every bloc is a code block
+    if (c.truncated) out.push(el('div', 'conv-more', c.truncated + ' messages plus anciens sur le bureau'));
     var tools = null; // consecutive tool lines share one compact block (V1)
     c.lines.forEach(function (l) {
       var row;
       if (l.kind === 'tool' || l.kind === 'command') {
-        if (!tools) { tools = el('div', 'tools'); list.appendChild(tools); }
+        if (!tools) { tools = el('div', 'tools'); out.push(tools); }
         row = el('div', 'tool tl ' + l.state);
         row.appendChild(el('span', 'tg', STATE[l.state]));
         row.appendChild(document.createTextNode(' ' + l.label));
@@ -138,20 +268,26 @@ export const CONVERSATION_JS = `(function () {
       }
       tools = null;
       if (l.kind === 'user') { row = el('div', 'msg user u', l.text); if (l.attachments && l.attachments.length) row.appendChild(el('div', 'msg-atts', attLabel(l.attachments))); }
-      else if (l.kind === 'assistant') { row = el('div', 'msg assistant a md' + (l.streaming ? ' streaming' : '')); row.appendChild(md(l.text)); }
+      else if (l.kind === 'assistant') {
+        row = l.text.indexOf('html-render') >= 0 ? assistantBlocRow(l, blocOn) : null;
+        if (!row) { row = el('div', 'msg assistant a md' + (l.streaming ? ' streaming' : '')); row.appendChild(md(l.text)); }
+      }
       else row = el('div', 'notice' + (l.error ? ' error' : ''), l.text);
       row.dataset.kind = l.kind; row.dataset.id = l.id;
-      list.appendChild(row);
+      out.push(row);
       // Rewind (the desktop bubble's ↺): offered on a turn that has a target, never mid-turn (main refuses it too).
       if (l.kind === 'user' && l.rewindId && !c.running) {
-        if (rw.id === l.rewindId) list.appendChild(rewindPanel(l.rewindId));
+        if (rw.id === l.rewindId) out.push(rewindPanel(l.rewindId));
         else {
           var rb = el('button', 'msg-rw', '↺ Revenir ici'); rb.type = 'button'; rb.dataset.rewind = l.rewindId;
           rb.addEventListener('click', function () { openRewind(l.rewindId); });
-          list.appendChild(rb);
+          out.push(rb);
         }
       }
     });
+    blocPrune();
+    if (Object.keys(blocRowUsed).length) reconcile(list, out);
+    else { list.textContent = ''; out.forEach(function (n) { list.appendChild(n); }); }
     var asks = root.querySelector('.conv-asks'); asks.textContent = '';
     c.asks.forEach(function (a) {
       var box = el('div', a.kind === 'askUser' ? 'ask' : 'ask elic'); box.dataset.kind = a.kind;
@@ -451,6 +587,7 @@ export const CONVERSATION_JS = `(function () {
   }
 
   function open(id, row, othersWaiting, below) {
+    blocReset(); // a conversation opened over another (no close() between) must not keep the first one's frames
     current = id; meta = row || { name: id }; version = -1; rw = { id: null }; stopping = false; ar = { open: false }; arBelow = below > 0 ? below : 0;
     root = document.getElementById('conv');
     root.textContent = '';
@@ -490,7 +627,7 @@ export const CONVERSATION_JS = `(function () {
     fetch('/api/seen?id=' + encodeURIComponent(id), { method: 'POST', headers: auth() }).catch(function () {});
     fetchConv();
   }
-  function close() { current = null; lastConv = null; version = -1; rw = { id: null }; stopping = false; ar = { open: false }; arBelow = 0; composerTa = null; rwNote = null; if (root) { root.hidden = true; root.textContent = ''; } }
+  function close() { blocReset(); current = null; lastConv = null; version = -1; rw = { id: null }; stopping = false; ar = { open: false }; arBelow = 0; composerTa = null; rwNote = null; if (root) { root.hidden = true; root.textContent = ''; } }
 
   window.OrchestraConversation = { open: open, close: close, onStream: onStream, connect: connect };
 })();
@@ -684,6 +821,12 @@ body.v1{background:var(--surface);color:var(--text);font:15px/1.4 -apple-system,
 .v1 .att{width:32px;height:32px;margin-left:-11px;border-radius:50%;display:grid;place-items:center;flex:none;color:var(--dim);font-size:24px;line-height:1}
 .v1 .att:disabled{opacity:.5}
 .v1 .msg-atts{font-size:13px;color:var(--dim);margin-top:4px}
+/* #421 — bloc HTML: a placeholder while it is written / loading, the frame (transparent, the page's own colours via the document's variables) once it reported a height */
+.v1 .bloc{position:relative;margin:10px 0}
+.v1 .bloc-wait,.v1 .bloc-pending{display:flex;align-items:center;min-height:56px;padding:12px 14px;border:1px solid var(--hair);border-radius:12px;background:var(--sunken);color:var(--dim);font-size:14px}
+.v1 .bloc-pending::before{content:"";flex:none;width:8px;height:8px;margin-right:10px;border-radius:50%;background:var(--work)}
+.v1 .bloc-frame{display:block;width:100%;border:0;background:transparent}
+.v1 .bloc-wait .bloc-frame{position:absolute;left:0;top:0;height:0;visibility:hidden}
 .v1 .pair{padding:4px 20px 24px;display:flex;flex-direction:column;gap:12px}
 .v1 .pair p{color:var(--dim);font-size:14px;line-height:1.45;text-align:center}
 .v1 .pair-scan{width:100%;height:48px;margin-top:0;border-radius:14px;font-size:16px;font-weight:600}

@@ -15,6 +15,7 @@ import { CONVERSATION_CSS, CONVERSATION_JS } from './conversation.ts';
 import { LAUNCH_CSS, LAUNCH_JS } from './launch.ts';
 import { PWA_ICONS } from './icons.ts';
 import { SW_JS } from './sw.ts';
+import { BLOC_ID_RE, BLOC_MINT_MAX_SOURCE_BYTES, BLOC_ROUTE_HEADERS, BLOC_ROUTE_PREFIX, BLOC_ID_TTL_MS, blocDocument, createBlocStore, tokenDigest } from './bloc-route.ts';
 
 export type Upstream = (route: string, body: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
 /** A long-lived upstream (main's `/mobile/stream`): one parsed JSON value per line; returns the abort. */
@@ -94,7 +95,7 @@ export const MAX_STREAMS = 8;
 /** At most this many sends / answers / launches waiting on main at once (each may wait 45 s on a cold session start) — #338 review m1, #375. */
 export const MAX_WRITES_IN_FLIGHT = 4;
 /** The only paths a POST may reach. Every other method / path pair is a 405. */
-const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind', '/api/archive', '/api/relaunch']);
+const POST_PATHS = new Set(['/api/seen', '/api/send', '/api/answer', '/api/launch', '/api/interrupt', '/api/rewind-preview', '/api/rewind', '/api/archive', '/api/relaunch', '/api/bloc']);
 /** Main routes bounded by MAX_WRITES_IN_FLIGHT (they act on an agent session — a rewind preview may wake one). */
 const WRITE_ROUTES = new Set(['/mobile/send', '/mobile/answer', '/mobile/launch', '/mobile/interrupt', '/mobile/rewind-preview', '/mobile/rewind', '/mobile/archive', '/mobile/relaunch']);
 
@@ -128,6 +129,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
   const launches = createLaunchLimiter(opts.now ?? (() => performance.now()));
   // #408: a socket whose body was refused with a 413 is closing — a request pipelined behind it must not run (its answer would be orphaned, a stream leaked).
   const refusedSockets = new WeakSet<object>();
+  // #421: the ids of the bloc HTML route, in memory only — they die with this process (Accès mobile off) and with the token that minted them.
+  const blocs = createBlocStore(opts.now ?? (() => performance.now()));
   return http.createServer((req, res) => {
     req.on('error', () => {});
     res.on('error', () => {});
@@ -135,7 +138,8 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
     const method = req.method ?? 'GET';
     const pathOnly = (req.url ?? '/').split('?')[0].split('#')[0];
     const refuse = (code: 400 | 401 | 403 | 404 | 405 | 413 | 415 | 429, reason: string): void => {
-      log(reason, `refused ${code} ${reason} ${method} ${pathOnly.slice(0, 80)}`);
+      // a bloc id is a credential while it lives: never in the log
+      log(reason, `refused ${code} ${reason} ${method} ${(pathOnly.startsWith(BLOC_ROUTE_PREFIX) ? BLOC_ROUTE_PREFIX + '…' : pathOnly).slice(0, 80)}`);
       res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
     };
     /** 413 (#408): the whole answer (no body) is flushed but the response is NOT ended — ending it makes node destroy the socket under a sender
@@ -165,6 +169,31 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       return;
     }
 
+    // 2b) #421: a bloc HTML frame. Identity (above) + an unguessable id; NO bearer (a frame navigation cannot carry one, and none is read);
+    //     its OWN headers — never SECURITY_HEADERS (X-Frame-Options DENY would forbid the shell to frame it).
+    if (pathOnly.startsWith(BLOC_ROUTE_PREFIX)) {
+      if (method !== 'GET') return refuse(405, 'method');
+      const blocId = pathOnly.slice(BLOC_ROUTE_PREFIX.length);
+      if (!BLOC_ID_RE.test(blocId)) return refuse(404, 'bloc-unknown');
+      const current = readTokenSafe();
+      if (!current) return refuse(404, 'bloc-no-token');
+      const hit = blocs.read(blocId, tokenDigest(current));
+      if (!hit.ok) return refuse(404, `bloc-${hit.reason}`);
+      // The setting is main's: off ⇒ no model HTML is served even for a live id. Fail closed (an unreachable main serves nothing).
+      opts.upstream('/mobile/bloc-enabled', {}, 5000).then(
+        (out) => {
+          if ((out as { enabled?: unknown } | null)?.enabled !== true) return refuse(404, 'bloc-off');
+          const html = blocDocument(hit.source);
+          res.writeHead(200, { ...BLOC_ROUTE_HEADERS, 'Content-Length': String(Buffer.byteLength(html)) });
+          res.end(html);
+        },
+        (e: unknown) => {
+          log('upstream', `upstream /mobile/bloc-enabled failed: ${e instanceof Error ? e.message : String(e)}`);
+          res.writeHead(502, { ...SECURITY_HEADERS, 'Content-Length': '0' }).end();
+        },
+      );
+      return;
+    }
     if (!pathOnly.startsWith('/api/')) return refuse(404, 'not-found');
 
     // 3) Data: identity AND the current token. The token is never read from the query string.
@@ -335,6 +364,16 @@ export function createAccesMobileServer(opts: AccesMobileServerOptions): http.Se
       if (!id) return refuse(400, 'bad-id');
       if (!validRewindId(rewindId)) return refuse(400, 'bad-rewind-id');
       return pathOnly === '/api/rewind' ? relay('/mobile/rewind', { id, rewindId }, 60_000) : relay('/mobile/rewind-preview', { id, rewindId }, 30_000);
+    }
+    if (pathOnly === '/api/bloc' && method === 'POST') {
+      // #421: an id for ONE bloc's source (the phone's page already holds the reply). Held here, minted to the token that asked; the frame
+      // loads /bloc/<id>. Body read after identity + token.
+      return readJson((body) => {
+        const source = body.source;
+        if (typeof source !== 'string' || !source.trim() || Buffer.byteLength(source) > BLOC_MINT_MAX_SOURCE_BYTES) return refuse(400, 'bad-bloc');
+        const id = blocs.mint(source, tokenDigest(presented));
+        json(200, { ok: true, id, path: BLOC_ROUTE_PREFIX + id, ttlMs: BLOC_ID_TTL_MS });
+      }, BLOC_MINT_MAX_SOURCE_BYTES * 2 + 4096);
     }
     if (pathOnly === '/api/stream') {
       if (!opts.upstreamStream) return refuse(404, 'not-found');

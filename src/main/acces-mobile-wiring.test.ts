@@ -255,3 +255,10 @@ test('launch `/` menu: /mobile/skills with a repoPath answers only for a REGISTE
   assert.match(sdk, /export async function sdkListRepoSkills\(repoPath: string\)[\s\S]*?const repo = store\.repos\.find\(\(r\) => r\.path === repoPath\);\n\s*if \(!repo\) return \[\];/);
   assert.match(sdk, /workspaceAccountConfigDir\(\{ accountId: repo\.accountId \} as Workspace, repo\)/, 'the Compte a new workspace of this repo pins');
 });
+
+test('#421: the bloc HTML switch is main\'s — the conversation carries it per fetch and the route asks it per load, both from isBlocHtmlEnabled (FI-2), never from the phone', () => {
+  assert.match(routes, /import \{ isBlocHtmlEnabled \} from '\.\/bloc-html-setting';/);
+  assert.match(routes, /getMobileConversation\(ws\.id\)\.then\(\(c\) => \(\{ \.\.\.c, blocHtml: isBlocHtmlEnabled\(\) \}\)\)/);
+  assert.match(routes, /case '\/mobile\/bloc-enabled':[\s\S]*?return \{ ok: true, enabled: isBlocHtmlEnabled\(\) \};/);
+  assert.doesNotMatch(hooks, /bloc-enabled|\/bloc\//, 'nothing of the bloc route on the hooks socket');
+});

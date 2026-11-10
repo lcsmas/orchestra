@@ -16,6 +16,7 @@ import { projectMobileWorkspaces, type MobileWorkspaceRow } from '../shared/acce
 import { projectMobileRepos } from '../shared/acces-mobile-launch';
 import { MOBILE_SEND_MAX_CHARS, parseMobileAttachments, validWorkspaceId } from '../shared/acces-mobile-conversation';
 import { createMobileControls } from './acces-mobile-control';
+import { isBlocHtmlEnabled } from './bloc-html-setting';
 import type { RpcHandlers } from '../shared/acces-mobile-rpc';
 
 function liveWorkspace(id: unknown) {
@@ -81,10 +82,13 @@ export const mobileRpcHandlers: RpcHandlers = {
         // #375: a new workspace from the phone. The shape and the registered repo are decided in the launcher.
         return launcher.launch(msg);
       case '/mobile/conversation': {
-        // One workspace's conversation, folded + projected for the phone (account-aware history).
+        // One workspace's conversation, folded + projected for the phone (account-aware history); `blocHtml` (#421) = the setting, per fetch.
         const ws = liveWorkspace(msg.id);
-        return ws ? getMobileConversation(ws.id) : { ok: false, error: 'unknown workspace' };
+        return ws ? getMobileConversation(ws.id).then((c) => ({ ...c, blocHtml: isBlocHtmlEnabled() })) : { ok: false, error: 'unknown workspace' };
       }
+      case '/mobile/bloc-enabled':
+        // #421: asked by the server at each load of a bloc HTML frame — the setting off ⇒ no model HTML is served, even for a live id.
+        return { ok: true, enabled: isBlocHtmlEnabled() };
       case '/mobile/skills': {
         // The composer's `/` menu: the desktop's list (on-disk skills + the CLI's built-ins), minus the desktop-only intercepts.
         // `repoPath` = the launch form's menu: a REGISTERED repo's skills (no session yet ⇒ no CLI built-ins, like a fresh desktop composer).
