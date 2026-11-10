@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { onBlocNavigationAttempt, BLOC_BLACKHOLE_PROXY_RULES, blocProxyBypass } from './bloc-html-guard.ts';
+import { onBlocNavigationAttempt } from './bloc-html-guard.ts';
 
 const code = (rel: string) => fs.readFileSync(path.join(process.cwd(), rel), 'utf8').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 
@@ -23,16 +23,10 @@ test('index.ts refuses a SUB-frame navigation on the app window and reports it t
   assert.ok(body.indexOf('event.preventDefault()') > 0 && body.indexOf('event.preventDefault()') < body.indexOf('onBlocNavigationAttempt('), 'refuse first, then report');
 });
 
-test('index.ts forbids non-proxied UDP on the app window (a frame\'s CSP does not cover WebRTC/STUN — rig arm I6)', () => {
-  assert.ok(/mainWindow\.webContents\.setWebRTCIPHandlingPolicy\('disable_non_proxied_udp'\);/.test(code('src/main/index.ts')));
-});
-
-test('the app window\'s session sends every scheme to a closed port BEFORE the window exists; loopback is proxied too, only the dev origin is let through', () => {
-  const s = code('src/main/index.ts');
-  const i = s.indexOf('session.defaultSession.setProxy({ proxyRules: BLOC_BLACKHOLE_PROXY_RULES, proxyBypassRules: blocProxyBypass(VITE_DEV_SERVER_URL) })');
-  assert.ok(i > 0 && i < s.indexOf('mainWindow = new BrowserWindow('), 'setProxy precedes the window');
-  for (const sch of ['http', 'https', 'ftp', 'socks']) assert.ok(BLOC_BLACKHOLE_PROXY_RULES.includes(`${sch}=127.0.0.1:9`), sch);
-  assert.equal(blocProxyBypass(undefined), '<-loopback>');
-  assert.equal(blocProxyBypass('http://localhost:5173/'), '<-loopback>,localhost:5173');
-  assert.equal(blocProxyBypass('not a url'), '<-loopback>');
+test('D5: the app window has its network back — no proxy, no WebRTC policy anywhere in main (a remote image in a reply loads, the spellcheck dictionary downloads)', () => {
+  for (const f of fs.readdirSync(path.join(process.cwd(), 'src/main'), { recursive: true }).map(String).filter((n) => n.endsWith('.ts') && !n.endsWith('.test.ts'))) {
+    const s = code(`src/main/${f}`);
+    assert.ok(!/BLOC_BLACKHOLE|blocProxyBypass/.test(s), `${f}: no black-hole proxy`);
+    assert.ok(!/defaultSession\.setProxy|setWebRTCIPHandlingPolicy/.test(s), `${f}: no proxy / WebRTC policy on the app window's session`);
+  }
 });

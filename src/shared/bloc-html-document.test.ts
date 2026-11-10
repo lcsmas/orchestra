@@ -18,14 +18,19 @@ test('order: policy, then theme variables, then the model HTML', () => {
   assert.ok(policy >= 0 && policy < theme && theme < model);
 });
 
-test('the policy allows nothing but inline script/style and data: images; no network, frames, forms, base', () => {
-  assert.match(BLOC_HTML_POLICY, /default-src 'none'/);
-  assert.match(BLOC_HTML_POLICY, /script-src 'unsafe-inline'/);
-  assert.match(BLOC_HTML_POLICY, /style-src 'unsafe-inline'/);
-  assert.match(BLOC_HTML_POLICY, /img-src data:/);
-  assert.match(BLOC_HTML_POLICY, /form-action 'none'/);
-  assert.match(BLOC_HTML_POLICY, /base-uri 'none'/);
-  assert.doesNotMatch(BLOC_HTML_POLICY, /connect-src|https?:|\*/);
+const directive = (name: string) => (BLOC_HTML_POLICY.split(';').map((d) => d.trim()).find((d) => d.startsWith(name + ' ')) ?? '').split(/\s+/).slice(1);
+
+test('policy v2: inline script/style + https: (script, style, img, font, fetch/XHR, wss:) + data:/blob:; plain http: and frames, forms, base refused', () => {
+  assert.deepEqual(directive('default-src'), ["'none'"]);
+  assert.deepEqual(directive('script-src'), ["'unsafe-inline'", 'https:', 'blob:']);
+  assert.deepEqual(directive('style-src'), ["'unsafe-inline'", 'https:']);
+  assert.deepEqual(directive('img-src'), ['https:', 'data:', 'blob:']);
+  assert.deepEqual(directive('font-src'), ['https:', 'data:']);
+  assert.deepEqual(directive('connect-src'), ['https:', 'wss:', 'data:', 'blob:']);
+  assert.deepEqual(directive('base-uri'), ["'none'"]);
+  assert.deepEqual(directive('form-action'), ["'none'"]);
+  assert.doesNotMatch(BLOC_HTML_POLICY, /(^|[\s;])(http:|ws:|\*)/, 'no plain http:/ws: and no wildcard anywhere');
+  assert.doesNotMatch(BLOC_HTML_POLICY, /frame-src|child-src|'unsafe-eval'|worker-src|object-src/, 'nothing nested / no eval: default-src none covers them');
 });
 
 test('NO color-scheme anywhere in the document (it paints the frame opaque)', () => {

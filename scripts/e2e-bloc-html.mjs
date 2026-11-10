@@ -1,22 +1,23 @@
-// #415 — Bloc HTML isolation rig (ADR 0011). Boots a BUILT Orchestra (argv[2] = app dir) in the contained rig's own headless sway with a SCRATCH
+// #415/D5 — Bloc HTML rig (ADR 0011). Boots a BUILT Orchestra (argv[2] = app dir) in the contained rig's own headless sway with a SCRATCH
 // ORCHESTRA_HOME / HOME / CLAUDE_CONFIG_DIR and a stub `claude`, replays a conversation through the app's own event path (`__injectAgentEvent`), and
-// measures what a Bloc HTML can reach — a local listener plays "the network", the page's `message` seam plays "what the bloc says".
+// measures what a Bloc HTML can reach — a local https listener (rig-only trust: the app is launched with an SPKI pin for ITS test cert, nothing else) and a
+// local http listener play "the network", the page's `message` seam plays "what the bloc says".
 //
 // Arms (each = one app boot):
-//   real          the build as is — every clause GREEN (P* = what a human sees, I* = what a bloc can reach)
-//   policy        a COPY whose frame document lost its policy <meta>         → I1 must go RED (frame reaches the local listener)
-//   nav           a COPY whose main-process navigation guard never fires      → I2 must go RED (a frame navigation reaches the listener)
-//   webrtc        a COPY whose app window allows non-proxied UDP              → I6 must go RED (a STUN request from the frame reaches a UDP listener)
-//   webrtc-tcp    a COPY without the black-hole proxy on the app window       → I6b must go RED (TURN/TCP, turns:, nested srcdoc frame reach raw TCP listeners)
-//   sandbox-api   a COPY whose frame lost its `sandbox` attribute (same-origin) → I3 must go RED (the frame reads the app's API object)
-//   sandbox-loop  the same copy, a looping bloc                               → I4 must go RED (the window freezes)
-// A mutant arm passes only if its named clause is RED, every control GREEN, and its OTHER evaluated I-clauses GREEN (it removes ONE guard).
-// The mutation is applied to a disposable COPY (one string, counted == 1); the built app dir is md5-compared before/after.
+//   real            the build as is — every clause GREEN (P* = what a human sees, N* = what a bloc may/may not fetch, I* = what it cannot reach)
+//   policy          a COPY whose frame document lost its policy <meta>        → N2 must go RED (an http: request from the frame reaches the http listener)
+//   policy-http     a COPY whose policy also allows http:/ws:                 → N2 must go RED (same clause, loosened instead of removed)
+//   policy-nohttps  a COPY whose policy lost https:/wss:                      → N1 must go RED (the https requests no longer succeed)
+//   nav             a COPY whose main-process navigation guard never fires    → I2 must go RED (a frame navigation reaches the listener)
+//   sandbox-api     a COPY whose frame lost its `sandbox` attribute (same-origin) → I3 must go RED (the frame reads the app's API object)
+//   sandbox-loop    the same copy, a looping bloc                             → I4 must go RED (the window freezes)
+// A mutant arm passes only if its named clause is RED, every control GREEN, and its OTHER evaluated N/I-clauses GREEN (it removes ONE guard).
+// The mutation is applied to a disposable COPY (counted == 1 per string); the built app dir is md5-compared before/after.
 import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import dgram from 'node:dgram';
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -25,7 +26,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
 const APP_DIR = argv[0] && !argv[0].startsWith('--') ? fs.realpathSync(argv[0]) : null;
 const LIVE_HOME = flag('--live-home', null);
-const ARMS = (flag('--arms', 'real,policy,nav,webrtc,webrtc-tcp,sandbox-api,sandbox-loop')).split(',');
+const ARMS = (flag('--arms', 'real,policy,policy-http,policy-nohttps,nav,sandbox-api,sandbox-loop')).split(',');
 const refuse = (m) => { console.log(`REFUSED: ${m}`); process.exit(3); };
 if (!APP_DIR) refuse('no <app-dir>');
 if (!LIVE_HOME) refuse('--live-home missing (needed to protect the live ~/.claude* and to prove nothing there moved)');
@@ -109,17 +110,50 @@ class Cdp {
   close() { try { this.ws.close(); } catch {} }
 }
 
-// ── the "network": a local listener that records every request, upgrade and raw connection ─────────
-async function startEvil() {
-  const hits = []; let conns = 0;
-  const srv = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' }); res.end('evil'); });
-  srv.on('connection', () => { conns++; });
-  srv.on('upgrade', (req, sock) => { hits.push(`UPGRADE ${req.url}`); sock.destroy(); });
-  const tcp = {}; const tcpPorts = {}; // raw TCP listeners: a TURN/TCP or turns: connection from a frame lands here, per probe
-  for (const tag of ['turn', 'turns', 'nested']) { tcp[tag] = 0; const t = net.createServer((sock) => { tcp[tag]++; sock.on('error', () => {}); sock.destroy(); }); await new Promise((r) => t.listen(0, '127.0.0.1', r)); tcpPorts[tag] = t.address().port; srv.on('close', () => t.close()); }
-  let udp = 0; const us = dgram.createSocket('udp4'); us.on('message', () => { udp++; }); // WebRTC/STUN is not governed by the frame's policy: a UDP listener sees it
-  await new Promise((r) => us.bind(0, '127.0.0.1', r));
-  return new Promise((res) => srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port, udpPort: us.address().port, udp: () => udp, tcp, tcpPorts, hits, conns: () => conns, reset: () => { hits.length = 0; conns = 0; udp = 0; for (const k of Object.keys(tcp)) tcp[k] = 0; }, close: () => { srv.close(); us.close(); } })));
+// ── the "network": a local http listener (must see NOTHING from a frame) and a local https listener (must see everything a bloc may fetch) ──
+const FIX = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
+const TLS = { key: fs.readFileSync(path.join(FIX, 'bloc-html-rig.key.pem')), cert: fs.readFileSync(path.join(FIX, 'bloc-html-rig.cert.pem')) };
+const SPKI_PIN = crypto.createHash('sha256').update(new crypto.X509Certificate(TLS.cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+function solidPng(w, h, [r, g, b]) {
+  const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (buf) => { let c = 0xffffffff; for (const x of buf) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (t, d) => { const o = Buffer.alloc(12 + d.length); o.writeUInt32BE(d.length, 0); o.write(t, 4, 'latin1'); d.copy(o, 8); o.writeUInt32BE(crc(o.subarray(4, 8 + d.length)), 8 + d.length); return o; };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2;
+  const raw = Buffer.alloc((w * 3 + 1) * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const o = y * (w * 3 + 1) + 1 + x * 3; raw[o] = r; raw[o + 1] = g; raw[o + 2] = b; }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const ASSET_RGB = [200, 40, 120], ASSET_PNG = solidPng(160, 80, ASSET_RGB);
+const handler = (hits) => (req, res) => {
+  hits.push(req.url);
+  const cors = { 'access-control-allow-origin': '*' };
+  if (/^\/(asset|prose)\.png/.test(req.url)) { res.writeHead(200, { 'content-type': 'image/png', ...cors }); return res.end(ASSET_PNG); }
+  if (/^\/lib\.js/.test(req.url)) { res.writeHead(200, { 'content-type': 'text/javascript', ...cors }); return res.end('window.__libLoaded = 42;'); }
+  if (/^\/css/.test(req.url)) { res.writeHead(200, { 'content-type': 'text/css', ...cors }); return res.end('#ncss{background:rgb(1,2,3)}'); }
+  res.writeHead(200, { 'content-type': 'text/plain', ...cors }); res.end('listener-ok');
+};
+function wsAccept(srv, hits) {
+  srv.on('upgrade', (req, sock) => { hits.push(`UPGRADE ${req.url}`); const key = req.headers['sec-websocket-key'];
+    if (!key) return sock.destroy();
+    sock.on('error', () => {});
+    sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')}\r\n\r\n`); });
+}
+async function startNetwork() {
+  const mk = async (tls) => {
+    const hits = []; const srv = (tls ? https.createServer(TLS, handler(hits)) : http.createServer(handler(hits)));
+    wsAccept(srv, hits);
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    return { srv, port: srv.address().port, hits, tls };
+  };
+  const evil = await mk(false), good = await mk(true);
+  // the instrument can say YES: one node-side request per listener, then reset
+  await new Promise((res) => http.get(`http://127.0.0.1:${evil.port}/selftest`, (r) => { r.resume(); r.on('end', res); }));
+  await new Promise((res) => https.get(`https://127.0.0.1:${good.port}/selftest`, { ca: TLS.cert }, (r) => { r.resume(); r.on('end', res); }));
+  const selfTest = { http: evil.hits.length, https: good.hits.length };
+  if (selfTest.http !== 1 || selfTest.https !== 1) refuse(`listener self-test failed: ${JSON.stringify(selfTest)}`);
+  console.log(`[rig] listener self-test: http saw ${selfTest.http}, https saw ${selfTest.https} (instrument alive); SPKI pin ${SPKI_PIN.slice(0, 12)}…`);
+  const reset = () => { evil.hits.length = 0; good.hits.length = 0; };
+  reset();
+  return { evil, good, reset, close: () => { evil.srv.close(); good.srv.close(); } };
 }
 
 // ── seeding: a real git repo + registered worktree, the PINNED scratch account, a stub `claude` ────
@@ -157,25 +191,30 @@ const fence = (info, body) => '```' + info + '\n' + body + '\n```';
 // ── the blocs ─────────────────────────────────────────────────────────────────────────────────────
 const THEME_BLOC = `<div id="card" style="width:50%;height:200px;background:var(--bloc-accent);color:var(--bloc-surface)">card</div>
 <script>parent.postMessage({__probe:'theme',r:{accent:getComputedStyle(document.getElementById('card')).backgroundColor,fg:getComputedStyle(document.body).color,fs:getComputedStyle(document.body).fontSize,bg:getComputedStyle(document.body).backgroundColor,fgVar:getComputedStyle(document.documentElement).getPropertyValue('--bloc-fg').trim()}},'*')</script>`;
-const turnJs = (port, scheme) => `var pc=new RTCPeerConnection({iceServers:[{urls:'${scheme}:127.0.0.1:${port}?transport=tcp',username:'S3CR3T',credential:'c'}],iceTransportPolicy:'relay'});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)});`;
-const attrEsc = (x) => x.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-const isoBloc = (evil, port, udpPort, tp) => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
-<link rel="preconnect" href="${evil}"><link rel="prefetch" href="${evil}/prefetch"><link rel="stylesheet" href="${evil}/css">
-<style>#m{background:url(${evil}/cssimg)}</style><img src="${evil}/img">
+// What a bloc can read of the app (I3) — nothing here touches the network.
+const isoBloc = () => `<div id="m" style="height:60px;color:var(--bloc-accent)">isolation probe</div>
 <script>(function(){var r={};function t(f){try{return f()}catch(e){return 'ERR '+e.name}}
 r.parentApi=t(function(){return typeof parent.orchestra});
 r.parentDoc=t(function(){return 'readable:'+parent.document.title});
 r.ownApi=typeof window.orchestra+'/'+typeof window.require;
 r.origin=self.origin; r.cookie=t(function(){return 'readable:'+document.cookie});
-fetch('${evil}/fetch').then(function(x){r.fetch='status '+x.status},function(e){r.fetch='ERR '+e.name});
-new Image().src='${evil}/img2';
-t(function(){var x=new XMLHttpRequest();x.open('GET','${evil}/xhr');x.send()});
-t(function(){new WebSocket('ws://127.0.0.1:${port}/ws')});
-t(function(){navigator.sendBeacon('${evil}/beacon','x')});
-t(function(){var pc=new RTCPeerConnection({iceServers:[{urls:'stun:127.0.0.1:${udpPort}'}]});pc.createDataChannel('x');pc.createOffer().then(function(o){return pc.setLocalDescription(o)})});
-t(function(){${turnJs(tp.turn, 'turn')}});t(function(){${turnJs(tp.turns, 'turns')}});
-setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>
-<iframe srcdoc="${attrEsc('<script>' + turnJs(tp.nested, 'turn') + '</script>')}" style="display:none"></iframe>`;
+setTimeout(function(){parent.postMessage({__probe:'iso',r:r},'*')},900)})()</script>`;
+// The same probes against a base URL: over https every one must SUCCEED (N1), over http every one must be REFUSED (N2). Reports after 2.5 s.
+const netBloc = (base, wsBase, tag, visible) => `<div id="ncss" style="height:14px;color:var(--bloc-fg)">network probe ${tag}</div>
+<link rel="stylesheet" href="${base}/css"><link rel="preconnect" href="${base}"><link rel="prefetch" href="${base}/prefetch">
+<img id="ri" src="${base}/asset.png?static" style="${visible ? 'display:block;width:160px;height:80px' : 'display:none'}">
+<script>(function(){var r={};function t(f){try{return f()}catch(e){return 'ERR '+e.name}}
+var pend=0;function wait(){pend++;return function(){pend--}}
+var d1=wait();fetch('${base}/fetch').then(function(x){return x.text().then(function(b){r.fetch='status '+x.status+' '+b})},function(e){r.fetch='ERR '+e.name}).then(d1);
+var d2=wait();t(function(){var x=new XMLHttpRequest();x.open('GET','${base}/xhr');x.onload=function(){r.xhr='status '+x.status;d2()};x.onerror=function(){r.xhr='ERR';d2()};x.send()});
+var d3=wait();var i=new Image();i.onload=function(){r.img='loaded '+i.naturalWidth+'x'+i.naturalHeight;d3()};i.onerror=function(){r.img='ERR';d3()};i.src='${base}/asset.png?dyn';
+var d4=wait();var sc=document.createElement('script');sc.onload=function(){r.script='ran '+window.__libLoaded;d4()};sc.onerror=function(){r.script='ERR';d4()};sc.src='${base}/lib.js';document.head.appendChild(sc);
+var d5=wait();t(function(){var w=new WebSocket('${wsBase}/ws');w.onopen=function(){r.ws='open';w.close();d5()};w.onerror=function(){r.ws='ERR';d5()}});
+t(function(){navigator.sendBeacon('${base}/beacon','x')});
+var d6=wait();var b=new Blob(['blob-ok']);fetch(URL.createObjectURL(b)).then(function(x){return x.text()}).then(function(x){r.blob=x},function(e){r.blob='ERR '+e.name}).then(d6);
+var d7=wait();var di=new Image();di.onload=function(){r.data='loaded';d7()};di.onerror=function(){r.data='ERR';d7()};di.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+setTimeout(function(){var n=document.getElementById('ncss');r.css=getComputedStyle(n).backgroundColor;var ri=document.getElementById('ri').getBoundingClientRect();r.rect={l:ri.left,t:ri.top,w:ri.width,h:ri.height};r.staticImg=document.getElementById('ri').naturalWidth;
+parent.postMessage({__probe:'${tag}',r:r},'*')},2500)})()</script>`;
 const navBloc = (evil) => `<meta http-equiv="refresh" content="1;url=${evil}/nav-meta"><a id="lnk" href="${evil}/nav-link" target="_top">x</a><div style="height:30px">navigation probe</div>
 <script>setTimeout(function(){try{location.href='${evil}/nav-js'}catch(e){}},300);
 setTimeout(function(){try{window.open('${evil}/popup')}catch(e){}},300);
@@ -190,14 +229,16 @@ function clause(arm, name, ok, detail) { results.push({ arm, clause: name, ok: !
 function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, name); fs.writeFileSync(f, buf); shots.push({ file: f, md5: md5(buf) }); return f; }
 
 // ── the mutants: ONE string in a disposable COPY of the built app ─────────────────────────────────
-// The black-hole proxy (B1) is a BACKSTOP for loopback-TCP channels: with it on, a removed CSP / navigation guard can no longer reach the listener, so those two
-// arms remove it as well (`PROXY_OFF`) to isolate their own guard — and I6b (TURN/TCP) is then allowed to go red with it.
-const PROXY_OFF = { dir: 'dist-electron', from: 'setProxy({proxyRules:', to: 'setProxy({proxyRulesX:' };
+// Policy string pieces as they sit in the bundle (esbuild keeps the constant verbatim); each must occur exactly once (makeMutantCopy refuses otherwise).
+const POL = { script: "script-src 'unsafe-inline' https: blob:", style: "style-src 'unsafe-inline' https:;", img: 'img-src https: data: blob:', font: 'font-src https: data:', conn: 'connect-src https: wss: data: blob:' };
+const swap = (from, to) => ({ dir: 'dist/assets', from, to });
 const MUTANTS = {
-  policy: { clause: 'I1', dir: 'dist/assets', from: '<meta http-equiv="Content-Security-Policy" content="', to: '<meta http-equiv="X-Bloc-Mutant-No-Policy" content="', also: [PROXY_OFF] },
-  'webrtc-tcp': { clause: 'I6b', dir: 'dist-electron', from: 'setProxy({proxyRules:', to: 'setProxy({proxyRulesX:' },
-  webrtc: { clause: 'I6', dir: 'dist-electron', from: 'setWebRTCIPHandlingPolicy("disable_non_proxied_udp")', to: 'setWebRTCIPHandlingPolicy("default")' },
-  nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"', also: [PROXY_OFF] },
+  policy: { clause: 'N2', dir: 'dist/assets', from: '<meta http-equiv="Content-Security-Policy" content="', to: '<meta http-equiv="X-Bloc-Mutant-No-Policy" content="' },
+  'policy-http': { clause: 'N2', ...swap(POL.script, "script-src 'unsafe-inline' http: https: blob:"),
+    also: [swap(POL.style, "style-src 'unsafe-inline' http: https:;"), swap(POL.img, 'img-src http: https: data: blob:'), swap(POL.font, 'font-src http: https: data:'), swap(POL.conn, 'connect-src http: ws: https: wss: data: blob:')] },
+  'policy-nohttps': { clause: 'N1', ...swap(POL.script, "script-src 'unsafe-inline' blob:"),
+    also: [swap(POL.style, "style-src 'unsafe-inline';"), swap(POL.img, 'img-src data: blob:'), swap(POL.font, 'font-src data:'), swap(POL.conn, 'connect-src data: blob:')] },
+  nav: { clause: 'I2', dir: 'dist-electron', from: '"will-frame-navigate"', to: '"will-frame-navigatX"' },
   'sandbox-api': { clause: 'I3', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
   'sandbox-loop': { clause: 'I4', dir: 'dist/assets', from: 'sandbox:"allow-scripts"', to: '"data-x":"allow-scripts"' },
 };
@@ -221,13 +262,14 @@ function makeMutantCopy(armDir, m) {
 }
 
 // ── one arm ───────────────────────────────────────────────────────────────────────────────────────
-async function runArm(arm, evil) {
+async function runArm(arm, lan) {
+  const { evil, good } = lan;
   const w = 1400, h = 2200;
   console.log(`\n== arm ${arm}: output ${w}x${h} ==`);
   const armDir = path.join(RIG_DIR, `arm-${arm}`);
   fs.mkdirSync(armDir, { recursive: true });
-  const E = `http://127.0.0.1:${evil.port}`;
-  evil.reset();
+  const E = `http://127.0.0.1:${evil.port}`, G = `https://127.0.0.1:${good.port}`;
+  lan.reset();
   let appDir = APP_DIR, mutProof = null;
   const mut = MUTANTS[arm];
   const origHash = treeHash([path.join(APP_DIR, 'dist'), path.join(APP_DIR, 'dist-electron')]);
@@ -243,13 +285,12 @@ async function runArm(arm, evil) {
   if ('DISPLAY' in env || env.WAYLAND_DISPLAY !== RIG_WAYLAND) refuse('child env would reach the human display');
   const logFile = path.join(armDir, 'app.log');
   const fd = fs.openSync(logFile, 'w');
-  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [appDir, '--ozone-platform=wayland'], { cwd: appDir, env, stdio: ['ignore', fd, fd], detached: true });
+  const app = spawn(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [appDir, '--ozone-platform=wayland', `--ignore-certificate-errors-spki-list=${SPKI_PIN}`], { cwd: appDir, env, stdio: ['ignore', fd, fd], detached: true });
   console.log(`  app pid ${app.pid} port ${port} log ${logFile}`);
   let cdp;
   const inject = async (evs) => { for (const e of [].concat(evs)) await cdp.eval(`window.__injectAgentEvent(${JSON.stringify(WS)}, ${JSON.stringify(e)}); 1`); };
   const probe = (name) => cdp.eval(`window.__probes[${JSON.stringify(name)}] || null`);
   const frames = () => cdp.eval(`[...document.querySelectorAll('iframe.av-bloc-frame')].map((f) => { const b = f.getBoundingClientRect(); return { title: f.title, sandbox: f.getAttribute('sandbox'), h: Math.round(b.height), left: b.left, top: b.top, width: b.width }; })`);
-  const hitsOf = (re) => evil.hits.filter((u) => re.test(u));
   try {
     const target = await waitFor(async () => { const r = await fetch(`http://127.0.0.1:${port}/json`); const t = (await r.json()).find((x) => x.type === 'page' && x.url.includes('dist/index.html')); return t || null; }, 60000, 'the app page target');
     clause(arm, 'ctl/app-identity-path', target.url.includes(appDir) && !target.url.includes('app.asar'), `target url ${target.url} ⊇ ${appDir}`);
@@ -367,27 +408,52 @@ async function runArm(arm, evil) {
       clause(arm, 'ctl/bloc-renders-and-reports-height', !!fr && Math.abs(fr.h - 90) <= 2, `control bloc: iframe height ${fr?.h}px (content 90px), sandbox=${JSON.stringify(fr?.sandbox)}`);
     }
 
-    // ── PHASE ISO: what a bloc can reach ──
-    const I = {};
+    // ── PHASE NET (D5): what a bloc may fetch (https: — N1) and may not (http: — N2); what the app window itself fetches (S1) ──
+    const I = {}, N = {};
     if (arm !== 'sandbox-loop') {
-      evil.reset();
-      await inject(evText('IMG-MARK ![prose](' + E + '/prose.png)'));
-      await sleep(2500);
-      const imgHits = evil.hits.filter((u) => u === '/prose.png').length;
-      const img = await cdp.eval(`(() => { const m = [...document.querySelectorAll('.av-message')].find((e) => e.textContent.includes('IMG-MARK') || e.querySelector('img[src*="prose.png"]')); const i = m && m.querySelector('img'); if (!i) return null; i.scrollIntoView({ block: 'center' }); const r = i.getBoundingClientRect(), mr = m.getBoundingClientRect(); return { complete: i.complete, nat: i.naturalWidth, w: Math.round(r.width), h: Math.round(r.height), rowW: Math.round(mr.width), rowH: Math.round(mr.height), overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth }; })()`);
-      if (arm === 'real') saveShot('real-remote-image-blocked-renderer.png', await cdp.shot());
-      const quiet = !!img && img.complete && img.nat === 0 && img.h <= 60 && img.w <= img.rowW && img.rowH <= 120 && !img.overflowX;
-      clause(arm, arm === 'real' ? 'S1/remote-image-does-not-load-and-fails-quietly' : 'S1/side-effect-prose-remote-image-load', arm === 'real' ? imgHits === 0 && quiet : true, `a remote markdown image in the app window reached the listener ${imgHits}x (0 = it no longer loads; the webrtc-tcp arm, proxy removed, shows the instrument sees it); box ${JSON.stringify(img)} — failed (complete, 0 px natural) and quiet (≤60 px tall, inside its row, row ≤120 px, no horizontal overflow)`);
-      evil.reset();
-      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc(E, evil.port, evil.udpPort, evil.tcpPorts))));
+      if (arm === 'real') {
+        lan.reset();
+        await inject(evText('IMG-MARK ![prose](' + G + '/prose.png)'));
+        await waitFor(() => cdp.eval(`(() => { const i = [...document.querySelectorAll('.av-message img')].find((x) => x.src.includes('prose.png')); return !!i && i.complete; })()`), 20000, 'the prose image to settle');
+        const img = await cdp.eval(`(() => { const i = [...document.querySelectorAll('.av-message img')].find((x) => x.src.includes('prose.png')); i.scrollIntoView({ block: 'center' }); const r = i.getBoundingClientRect(); return { complete: i.complete, nat: i.naturalWidth, w: Math.round(r.width), h: Math.round(r.height), left: r.left, top: r.top }; })()`);
+        await settle(500);
+        const shot = await cdp.shot(); saveShot('real-remote-image-in-reply-renderer.png', shot);
+        const Ip = decodePng(shot), pxl = px(Ip, img.left + img.w / 2, img.top + img.h / 2);
+        clause(arm, 'S1/remote-image-in-a-reply-loads', good.hits.filter((u) => u.startsWith('/prose.png')).length >= 1 && img.nat === 160 && near(pxl, ASSET_RGB, 4),
+          `a remote https markdown image in the app window: https listener saw ${good.hits.filter((u) => u.startsWith('/prose.png')).length} request(s); decoded ${img.nat}px wide; screenshot pixel at its centre rgb(${pxl}) vs the served rgb(${ASSET_RGB}) — a proxied/offline app window fails all three`);
+      }
+      lan.reset();
+      await inject(evText('ISO-MARK\n' + fence('html-render title="Isolation"', isoBloc())));
       const r = await waitFor(() => probe('iso'), 30000, 'the isolation probe report');
-      await sleep(4000);
-      const net = evil.hits.filter((u) => !/^\/nav/.test(u) && !/^\/popup/.test(u));
-      I.I1 = { ok: net.length === 0, detail: `listener ${E} saw ${net.length} request(s) from the frame's fetch/xhr/img/css/prefetch/beacon/websocket: ${JSON.stringify(net)}; frame says fetch=${r.fetch}` };
-      I.I6 = { ok: evil.udp() === 0, detail: `UDP datagrams at the listener after an RTCPeerConnection with a stun: server on it: ${evil.udp()}` };
-      I.I6b = { ok: evil.tcp.turn === 0 && evil.tcp.turns === 0 && evil.tcp.nested === 0, detail: `TCP connections at the listeners after RTCPeerConnection iceServers turn:…?transport=tcp ${evil.tcp.turn}, turns: ${evil.tcp.turns}, and the same from a NESTED <iframe srcdoc> inside the bloc ${evil.tcp.nested} (the policy cannot stop these: Chromium does not apply connect-src to iceServers)` };
       I.I3 = { ok: /^ERR/.test(r.parentApi) && /^ERR/.test(r.parentDoc) && r.ownApi === 'undefined/undefined' && r.origin === 'null' && /^ERR/.test(r.cookie), detail: `from inside the frame: typeof parent.orchestra = ${r.parentApi}; parent.document = ${r.parentDoc}; own orchestra/require = ${r.ownApi}; origin = ${r.origin}; cookie = ${r.cookie}` };
-      evil.reset();
+
+      // N1: every https channel works; the frame says so AND the https listener saw it
+      lan.reset();
+      await inject(evText('NETH-MARK\n' + fence('html-render title="Réseau https"', netBloc(G, `wss://127.0.0.1:${good.port}`, 'neth', true))));
+      const rh = await waitFor(() => probe('neth'), 30000, 'the https network probe report');
+      const gh = good.hits.slice();
+      const seen = (re) => gh.some((u) => re.test(u));
+      const chans = { fetch: /^status 200 listener-ok/.test(rh.fetch ?? ''), xhr: rh.xhr === 'status 200', img: rh.img === 'loaded 160x80', script: rh.script === 'ran 42', css: rh.css === 'rgb(1, 2, 3)', ws: rh.ws === 'open', blob: rh.blob === 'blob-ok', data: rh.data === 'loaded', staticImg: rh.staticImg === 160 };
+      const listener = { fetch: seen(/^\/fetch/), xhr: seen(/^\/xhr/), img: seen(/^\/asset\.png\?dyn/), script: seen(/^\/lib\.js/), css: seen(/^\/css/), ws: seen(/^UPGRADE \/ws/), staticImg: seen(/^\/asset\.png\?static/) };
+      N.N1 = { ok: Object.values(chans).every(Boolean) && Object.values(listener).every(Boolean), detail: `https bloc, frame says ${JSON.stringify(rh)}; ok per channel ${JSON.stringify(chans)}; https listener saw per channel ${JSON.stringify(listener)} (${gh.length} requests)` };
+      if (arm === 'real') {
+        const frn = await cdp.eval(`(() => { const f = document.querySelector('iframe.av-bloc-frame[title="Réseau https"]'); f.scrollIntoView({ block: 'center' }); const b = f.getBoundingClientRect(); return { left: b.left, top: b.top }; })()`);
+        await settle(700);
+        const shot = await cdp.shot(); saveShot('real-bloc-remote-asset-renderer.png', shot);
+        const Ib = decodePng(shot), pxb = px(Ib, frn.left + rh.rect.l + rh.rect.w / 2, frn.top + rh.rect.t + rh.rect.h / 2);
+        clause(arm, 'N1b/bloc-remote-asset-on-screen', near(pxb, ASSET_RGB, 4) && rh.rect.w === 160 && rh.rect.h === 80, `screenshot pixel at the centre of the bloc's https <img> rgb(${pxb}) vs the served rgb(${ASSET_RGB}); box ${JSON.stringify(rh.rect)}`);
+      }
+
+      // N2: nothing over plain http — the frame says every channel failed, the http listener saw NOTHING
+      lan.reset();
+      await inject(evText('NETP-MARK\n' + fence('html-render title="Réseau http"', netBloc(E, `ws://127.0.0.1:${evil.port}`, 'netp', false))));
+      const rp = await waitFor(() => probe('netp'), 30000, 'the http network probe report');
+      await sleep(1500);
+      const eh = evil.hits.slice();
+      const refusedCh = { fetch: /^ERR/.test(rp.fetch ?? ''), xhr: rp.xhr === 'ERR', img: rp.img === 'ERR', script: rp.script === 'ERR', css: rp.css !== 'rgb(1, 2, 3)', ws: rp.ws === 'ERR', staticImg: rp.staticImg === 0 };
+      N.N2 = { ok: eh.length === 0 && Object.values(refusedCh).every(Boolean), detail: `http bloc, frame says ${JSON.stringify(rp)}; refused per channel ${JSON.stringify(refusedCh)}; the http listener (instrument seen YES on a node-side GET at boot) saw ${eh.length} request(s): ${JSON.stringify(eh)}` };
+
+      lan.reset();
       await inject(evText('NAV-MARK\n' + fence('html-render title="Navigation"', navBloc(E))));
       await waitFor(async () => (await frames()).some((f) => f.title === 'Navigation'), 30000, 'the navigation bloc frame');
       await sleep(4500); // no probe report: a frame that navigates away takes its script with it
@@ -395,7 +461,7 @@ async function runArm(arm, evil) {
       const appLog = fs.readFileSync(logFile, 'utf8') + (fs.existsSync(path.join(world.ohome, 'logs', 'orchestra.log')) ? fs.readFileSync(path.join(world.ohome, 'logs', 'orchestra.log'), 'utf8') : '');
       const opened = appLog.split('\n').filter((l) => l.includes('[open-url]') && l.includes(`127.0.0.1:${evil.port}`));
       const refused = appLog.split('\n').filter((l) => l.includes('bloc-html: refused a frame navigation')).length;
-      I.I2 = { ok: navHits.length === 0 && opened.length === 0, detail: `listener saw ${navHits.length} navigation request(s) (location.href / meta refresh / link click / window.open / top.location): ${JSON.stringify(navHits)}; app asked the OS to open the listener's URL ${opened.length}x; guard refusals logged ${refused}` };
+      I.I2 = { ok: navHits.length === 0 && opened.length === 0, detail: `http listener saw ${navHits.length} navigation request(s) (location.href / meta refresh / link click / window.open / top.location): ${JSON.stringify(navHits)}; app asked the OS to open the listener's URL ${opened.length}x; guard refusals logged ${refused}` };
       const fr = (await frames()).find((f) => f.title === 'Navigation');
       I.I2.detail += `; frame still in the page: ${!!fr}`;
       if (arm === 'real') clause(arm, 'ctl/navigation-guard-fired', refused >= 1 && !!fr, `the app logged ${refused} refusal(s) of a sub-frame navigation (a green I2 with 0 refusals would mean the bloc never navigated)`);
@@ -429,10 +495,9 @@ async function runArm(arm, evil) {
     }
 
     // ── verdicts of the isolation clauses ──
-    const names = { I6b: 'I6b/webrtc-turn-tcp', I6: 'I6/webrtc-stun', I5: 'I5/message-flood', I1: 'I1/frame-without-policy-reaches-a-local-listener', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
-    const named = { I6b: 'WebRTC TURN/TCP, turns: and a nested frame reach nothing', I6: 'WebRTC sends no UDP', I5: 'a flooding frame leaves the window responsive', I1: 'policy blocks every network path', I2: 'a frame navigation goes nowhere', I3: 'parent + app API unreachable from the frame', I4: 'a looping frame leaves the window responsive' };
-    for (const k of Object.keys(I)) clause(arm, `${k}/${named[k]}`, I[k].ok, `${names[k].split('/')[1]} :: ${I[k].detail}`);
-    fs.writeFileSync(path.join(OUT, `${arm}-hits.json`), JSON.stringify({ hits: evil.hits, conns: evil.conns(), I }, null, 2));
+    const named = { N1: 'N1/an-https-request-from-a-bloc-succeeds (script, style, img, fetch, XHR, wss:, blob:, data:)', N2: 'N2/an-http-request-from-a-bloc-is-refused (nothing reaches the http listener)', I5: 'I5/message-flood-leaves-the-window-responsive', I2: 'I2/navigation-guard-removed-reaches-the-listener', I3: 'I3/same-origin-frame-reads-the-api-object', I4: 'I4/same-origin-looping-frame-freezes-the-window' };
+    for (const [k, v] of [...Object.entries(N), ...Object.entries(I)]) clause(arm, named[k], v.ok, v.detail);
+    fs.writeFileSync(path.join(OUT, `${arm}-hits.json`), JSON.stringify({ httpHits: evil.hits, httpsHits: good.hits, N, I }, null, 2));
     if (arm !== 'sandbox-loop') {
       const f = await cdp.eval(`1 + 1`, 4000).catch(() => null);
       if (arm !== 'sandbox-loop' && f === 2) saveShot(`${arm}-after-probes-renderer.png`, await cdp.shot());
@@ -472,16 +537,16 @@ function liveCanary() {
 // ── main ──────────────────────────────────────────────────────────────────────────────────────────
 fs.mkdirSync(OUT, { recursive: true });
 const before = liveCanary();
-const evil = await startEvil();
-console.log(`[rig] app ${APP_DIR} arms ${ARMS.join(',')} listener 127.0.0.1:${evil.port} out=${OUT}`);
-for (const arm of ARMS) { if (arm !== 'real' && !MUTANTS[arm]) refuse(`unknown arm ${arm}`); await runArm(arm, evil); }
-evil.close();
+const lan = await startNetwork();
+console.log(`[rig] app ${APP_DIR} arms ${ARMS.join(',')} http 127.0.0.1:${lan.evil.port} https 127.0.0.1:${lan.good.port} out=${OUT}`);
+for (const arm of ARMS) { if (arm !== 'real' && !MUTANTS[arm]) refuse(`unknown arm ${arm}`); await runArm(arm, lan); }
+lan.close();
 const after = liveCanary();
 const same = JSON.stringify(before) === JSON.stringify(after);
 clause('rig', 'ctl/live-claude-dirs-untouched', same, `${Object.keys(before).length} live ~/.claude* dirs, symlink-set + mcpServers hashes ${same ? 'identical before/after' : 'CHANGED: ' + JSON.stringify({ before, after })}`);
 
 // ── verdict ───────────────────────────────────────────────────────────────────────────────────────
-const isI = (c) => /^I\d+b?\//.test(c.clause);
+const isI = (c) => /^[IN]\d+\//.test(c.clause);
 const isCtl = (c) => /^(ctl|rig)\//.test(c.clause);
 const lines = [];
 let rc = 0;
@@ -489,15 +554,14 @@ for (const arm of ARMS) {
   const mine = results.filter((c) => c.arm === arm);
   const ctlRed = mine.filter((c) => isCtl(c) && !c.ok).map((c) => c.clause);
   if (arm === 'real') {
-    const red = mine.filter((c) => !c.ok).map((c) => c.clause); // X* (preconnect, webrtc) are measured leaks: they count
-    const x = [];
-    lines.push(`real: ${red.length === 0 ? 'ALL GREEN' : 'RED ' + red.join(', ')} (${mine.length} clauses)${x.length ? `; MEASURED LEAK ${x.join(', ')}` : ''}`);
+    const red = mine.filter((c) => !c.ok).map((c) => c.clause);
+    lines.push(`real: ${red.length === 0 ? 'ALL GREEN' : 'RED ' + red.join(', ')} (${mine.length} clauses)`);
     if (red.length) rc = 1;
   } else {
     const want = MUTANTS[arm].clause;
     const named = mine.find((c) => c.clause.startsWith(want + '/'));
     // removing the sandbox also re-enables popups and top navigation (that is part of its job), so I2 may follow it
-    const allowed = arm === 'sandbox-api' ? ['I2'] : (arm === 'policy' || arm === 'nav') ? ['I6b'] : [];
+    const allowed = arm === 'sandbox-api' ? ['I2'] : [];
     const others = mine.filter((c) => isI(c) && !c.clause.startsWith(want + '/') && !allowed.some((a) => c.clause.startsWith(a + '/')) && !c.ok).map((c) => c.clause);
     const ok = !!named && !named.ok && ctlRed.length === 0 && others.length === 0;
     lines.push(`${arm}: ${ok ? 'MUST-FAIL CONFIRMED' : 'NOT CONFIRMED'} — ${want} ${named ? (named.ok ? 'stayed GREEN' : 'RED') : 'not evaluated'}; other I-clauses red: ${others.join(',') || 'none'}; controls red: ${ctlRed.join(',') || 'none'}`);

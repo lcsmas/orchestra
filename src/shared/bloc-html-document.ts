@@ -4,9 +4,9 @@
  * NO `color-scheme` (measured: Chromium then paints the frame opaque) — see prototype/bloc-html.
  */
 
-/** Nothing but inline script, inline style and `data:` images; no network, no frames, no forms, no `<base>`. */
+/** Policy v2 (ADR 0011, D5): inline script/style + `https:` (script, style, img, font, fetch/XHR, `wss:`) + `data:`/`blob:`; plain `http:`, frames, forms, `<base>` refused. */
 export const BLOC_HTML_POLICY =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'";
+  "default-src 'none'; script-src 'unsafe-inline' https: blob:; style-src 'unsafe-inline' https:; img-src https: data: blob:; font-src https: data:; connect-src https: wss: data: blob:; base-uri 'none'; form-action 'none'";
 
 /** The custom properties a bloc may use (`var(--bloc-fg)`, …) — what the model's instruction (#418) names. */
 export const BLOC_THEME_KEYS = ['fg', 'muted', 'surface', 'border', 'accent', 'ok', 'warn', 'err'] as const;
