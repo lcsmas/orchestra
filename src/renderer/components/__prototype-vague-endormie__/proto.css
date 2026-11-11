@@ -1,0 +1,33 @@
+/* PROTOTYPE — throwaway. Only the "vague endormie" marks; everything else is the app's real CSS. */
+html, body, #root { height: 100%; margin: 0; }
+.pv-app { height: 100%; }
+.pv-main { background: var(--bg-3); }
+.pv-fake-pane { padding: 28px; color: var(--text); font-size: 13px; }
+.pv-muted { color: var(--text-dim); }
+.pv-dim { opacity: .5; }
+.pv-btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); cursor: pointer; flex: 0 0 auto; }
+.pv-btn.pv-primary { border-color: var(--yellow); color: var(--yellow); font-weight: 600; }
+.pv-actions { display: flex; gap: 8px; margin-top: 10px; }
+.pv-details { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 8px 0 0; font-size: 12px; }
+.pv-details dt { color: var(--text-dim); }
+.pv-details dd { margin: 0; }
+
+/* A — on the coordinator's row */
+.pv-a-badge { margin-left: 8px; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255, 200, 87, .14); color: var(--yellow); white-space: nowrap; flex: 0 0 auto; }
+.pv-a-sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 11px; color: var(--yellow); }
+.pv-a-btn { font: inherit; font-size: 10.5px; padding: 0 8px; border-radius: 5px; border: 1px solid var(--yellow); background: transparent; color: var(--yellow); cursor: pointer; }
+
+/* B — strip above the sidebar footer, with its popover */
+.pv-b-wrap { position: relative; }
+.pv-b-strip { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 14px; border: 0; border-top: 1px solid var(--border); background: rgba(255, 200, 87, .10); color: var(--yellow); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.pv-b-label { flex: 1; font-weight: 600; }
+.pv-b-age { color: var(--text-dim); }
+.pv-b-pop { position: absolute; left: 10px; right: 10px; bottom: calc(100% + 6px); padding: 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg-4); color: var(--text); font-size: 12.5px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); z-index: 5; }
+
+/* C — banner across the main pane (reuses .memory-banner.warn) */
+.pv-c { position: relative; align-items: center; gap: 10px; }
+
+.pv-switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 99px; background: #ff8ad8; color: #1a0612; font: 600 12px/1 system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); white-space: nowrap; }
+.pv-switcher button { font: inherit; border: 0; border-radius: 99px; padding: 5px 10px; background: #1a0612; color: #ff8ad8; cursor: pointer; }
+.pv-switcher-label { min-width: 230px; text-align: center; }
+.pv-switcher-state { font-weight: 400; opacity: .8; }

@@ -26,6 +26,7 @@
   },
   "scripts": {
     "dev": "ORCHESTRA_AUDIO=1 ORCHESTRA_HOME=\"${ORCHESTRA_HOME:-$HOME/.orchestra-dev}\" vite",
+    "proto:vague-endormie": "vite --config src/renderer/components/__prototype-vague-endormie__/vite.config.ts",
     "build:cli": "vite build --config vite.cli.config.ts",
     "build:keeper": "vite build --config vite.keeper.config.ts",
     "build:acces-mobile": "vite build --config vite.acces-mobile.config.ts",
