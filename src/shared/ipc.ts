@@ -12,6 +12,7 @@ import type { MemoryBannerState } from './memory-banner.ts';
 import type { AppUpdateState } from './app-update.ts';
 import type { ClaudeCodeUpdateState } from './claude-code-update.ts';
 import type { WatchersStatus } from './watcher-status.ts';
+import type { VagueDelays, VagueMarks } from './vague-human.ts';
 import type { BlocNavigationRequest } from './bloc-html-navigation.ts';
 import type { SelfTuneReport, SelfTuneRun } from './self-tune';
 import type { VoiceEvent, VoiceStartOptions } from './voice';
@@ -702,6 +703,16 @@ export interface OrchestraAPI {
   blocHtmlEnabled: () => Promise<boolean>;
   /** Persist the switch; resolves with the stored value. Sessions started afterwards follow it; a running turn is untouched. */
   setBlocHtmlEnabled: (next: boolean) => Promise<boolean>;
+  /** The Vague endormie delays (#429): minutes before a quiet vague is declared asleep, and before the human is told after the coordinator's Relance. Defaults 10 / 15. */
+  vagueDelays: () => Promise<VagueDelays>;
+  /** Persist both delays (validated: whole minutes, 1 … 1440). Applies at the sweep's next pass — no restart. An invalid value writes nothing and resolves `{ok:false,error}`. */
+  setVagueDelays: (next: VagueDelays) => Promise<{ ok: true; delays: VagueDelays } | { ok: false; error: string }>;
+  /** The marks of the asleep vagues the human was told about (#429) — the boot / reload pull; later changes ride `onVagueMarks`. */
+  vagueMarks: () => Promise<VagueMarks>;
+  /** The whole set, pushed (`vague:update`) whenever it changes: a mark appears, a member resumes, the pending count moves. */
+  onVagueMarks: (cb: (marks: VagueMarks) => void) => () => void;
+  /** Relancer (#429): nudge the coordinator of this asleep vague again. Never to a coordinator without a parent (its conversation is the human's). */
+  relanceVague: (runId: string) => Promise<'sent' | 'held' | 'pending' | 'failed' | 'no-parent' | 'not-wakeable' | 'not-asleep'>;
   /** The memory guard (#285): thresholds + toggle, the guard state, and a FRESH MemAvailable reading beside them. */
   memoryGuard: () => Promise<MemoryGuardView>;
   /** Patch the thresholds / toggle. Validated (critical < Admission): an invalid patch writes nothing and resolves `{ok:false,error}`.

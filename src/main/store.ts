@@ -67,6 +67,8 @@ interface StoreShape {
   browserProfiles?: BrowserProfile[];
   /** Bloc HTML switch (#418, ADR 0011): the instruction at session start + rendering. Absent → ON (shared/bloc-html-setting.ts). */
   blocHtmlEnabled?: boolean;
+  /** Vague endormie delays (#429), in minutes — raw, shared/vague-human.ts normalizes. Absent → 10 / 15. */
+  vagueDelays?: { asleepMin?: unknown; humanMin?: unknown };
 }
 
 const DEFAULT: StoreShape = { repos: [], workspaces: [], accounts: [] };
@@ -451,6 +453,16 @@ class Store {
 
   async setBlocHtmlEnabled(next: boolean): Promise<void> {
     this.data.blocHtmlEnabled = next;
+    await this.save();
+  }
+
+  /** The Vague endormie delays, raw (absent ⇒ undefined); callers normalize through shared/vague-human.ts. */
+  getVagueDelays(): StoreShape['vagueDelays'] {
+    return this.data.vagueDelays;
+  }
+
+  async setVagueDelays(next: { asleepMin: number; humanMin: number }): Promise<void> {
+    this.data.vagueDelays = next;
     await this.save();
   }
 

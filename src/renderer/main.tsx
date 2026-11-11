@@ -4,6 +4,8 @@ import { App } from './App';
 import './styles.css';
 // Fleet Pause UI (#257) — its own sheet (styles.css is appended to by every wave).
 import './pause-ui.css';
+// Vague endormie (#429) — the mark on the coordinator's row, the dimmed members.
+import './vague-endormie.css';
 // Orca-style sidebar (layout C, 2026-10-31) — overrides styles.css's older sidebar rules.
 import './sidebar-orca.css';
 // Structured agent-view styles — three cascade layers, LAST WINS:

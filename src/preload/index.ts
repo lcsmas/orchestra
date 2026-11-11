@@ -6,6 +6,7 @@ import type { MemoryBannerState } from '../shared/memory-banner';
 import type { AppUpdateState } from '../shared/app-update';
 import type { ClaudeCodeUpdateState } from '../shared/claude-code-update';
 import type { WatchersStatus } from '../shared/watcher-status';
+import type { VagueMarks } from '../shared/vague-human';
 import type { BlocNavigationRequest } from '../shared/bloc-html-navigation';
 
 const api: OrchestraAPI = {
@@ -278,6 +279,15 @@ const api: OrchestraAPI = {
   setEffortDefaults: (next) => ipcRenderer.invoke('settings:setEffortDefaults', next),
   blocHtmlEnabled: () => ipcRenderer.invoke('settings:blocHtmlEnabled'),
   setBlocHtmlEnabled: (next) => ipcRenderer.invoke('settings:setBlocHtmlEnabled', next),
+  vagueDelays: () => ipcRenderer.invoke('settings:vagueDelays'),
+  setVagueDelays: (next) => ipcRenderer.invoke('settings:setVagueDelays', next),
+  vagueMarks: () => ipcRenderer.invoke('vague:marks'),
+  onVagueMarks: (cb) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload as VagueMarks);
+    ipcRenderer.on('vague:update', listener);
+    return () => ipcRenderer.off('vague:update', listener);
+  },
+  relanceVague: (runId) => ipcRenderer.invoke('vague:relance', runId),
   memoryGuard: () => ipcRenderer.invoke('settings:memoryGuard'),
   setMemoryGuard: (next) => ipcRenderer.invoke('settings:setMemoryGuard', next),
   accesMobile: () => ipcRenderer.invoke('settings:accesMobile'),

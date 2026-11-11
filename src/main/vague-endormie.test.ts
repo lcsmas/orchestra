@@ -6,6 +6,7 @@ import {
   VAGUE_SWEEP_MS,
   __resetVagueEndormieForTests,
   asleepVagues,
+  relanceVagueNow,
   sweepVagues,
   sweepVaguesNow,
   vagueCounters,
@@ -17,6 +18,7 @@ import {
 import { RELANCE_RETRY_MS, type RelanceDelivery } from './relance.ts';
 import { VAGUE_PROCESS_BOUND_MS, VAGUE_QUIET_MS, formatAsleepVaguesLines, type VagueFacts, type VagueMember, type VagueParticipant } from '../shared/vague-endormie.ts';
 import { isRelance, type RelanceCensus, type RelanceProc } from '../shared/relance.ts';
+import type { VagueMark } from '../shared/vague-human.ts';
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 10, 22, 48);
@@ -636,4 +638,307 @@ test('a hint never outlives activity: a member that works after the restart move
   set(r, { ...f, members: f.members.map((m) => ({ ...m, seenThisRun: true, lastActivityAt: t })) });
   await advance(r, 11 * MIN);
   assert.equal(asleepVagues()[0].since, t);
+});
+
+// ── #429: the human step — one notification, the mark on the coordinator's row, its end, its survival ─────────────────
+
+type Told = { coordinatorId: string; coordinator: string; since: number; pending: number };
+/** The rig + what the human OBSERVES: the notifications fired and the last set of marks pushed. */
+function humanRig(): Rig & { told: Told[]; pushes: VagueMark[][]; marks: () => VagueMark[] } {
+  const r = rig();
+  const told: Told[] = [];
+  const pushes: VagueMark[][] = [];
+  r.deps.notifyHuman = (n) => void told.push(n);
+  r.deps.onMarks = (m) => void pushes.push(m);
+  return Object.assign(r, { told, pushes, marks: () => pushes[pushes.length - 1] ?? [] });
+}
+
+test('#429 — 15 minutes after the coordinator\'s Relance with no member resumed: ONE notification and the mark, with the right time and pending count; not a minute before', async () => {
+  const r = humanRig();
+  await advance(r, 10 * MIN); // declared + Relanced at the 10-minute sweep
+  assert.equal(r.turns.length, 1);
+  const relancedAt = asleepVagues()[0].nudgedAt!;
+  r.clock.t = relancedAt;
+  await advance(r, 15 * MIN - VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 0, 'inside the 15 minutes: nobody is told');
+  assert.deepEqual(r.marks(), [], 'and no mark is up');
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 1, 'at the delay: exactly one notification');
+  assert.deepEqual(r.told[0], { coordinatorId: 'ops', coordinator: 'ops', since: T0, pending: 1 });
+  assert.deepEqual(r.marks(), [{ runId: 'ops', coordinatorId: 'ops', since: T0, pending: 1, memberIds: ['impl', 'verifier'], canRelance: true }]);
+  assert.equal(vagueCounters().humanTold, 1);
+});
+
+test('#429 — ONE notification per episode however long it lasts (17 hours of sweeps), the mark stays, and nothing more is sent to anyone', async () => {
+  const r = humanRig();
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.marks().length, 1);
+  assert.equal(r.turns.length, 1, 'the coordinator got its ONE Relance and the human step added no turn');
+  assert.deepEqual(r.turns.map((t) => t.wsId), ['ops'], 'no delivery ever targets anyone else');
+});
+
+test('#429 — a member resuming ends the episode: the mark goes (an empty set is pushed), no second notification; the next sleep is a new episode with its own 15 minutes', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.marks().length, 1);
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.deepEqual(r.marks(), [], 'the mark disappears as soon as a member resumes');
+  assert.equal(r.told.length, 1, 'resuming does not notify');
+  // it ends its turn; asleep again; its OWN delays
+  const t1 = r.clock.t;
+  set(r, baseFacts({ members: [member('impl', { lastActivityAt: t1 }), member('verifier', { unfinished: false })], coordinator: person('ops', { lastActivityAt: t1 }) }));
+  await advance(r, 20 * MIN);
+  assert.equal(r.told.length, 1, 'the new episode has not waited its 15 minutes after its Relance yet');
+  await advance(r, 10 * MIN);
+  assert.equal(r.told.length, 2);
+  assert.equal(r.marks()[0].since, t1);
+});
+
+test('#429 — a click on the sleeping workspace (idle clock moves, no turn) does NOT take the mark down', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  assert.equal(r.marks().length, 1);
+  const f = r.vagues.get('ops')!;
+  set(r, { ...f, members: f.members.map((m) => ({ ...m, lastActivityAt: r.clock.t })) });
+  await advance(r, 5 * MIN);
+  assert.equal(r.marks().length, 1);
+  assert.equal(r.told.length, 1, 'and the click re-notified nobody');
+});
+
+test('#429 — the work finishing / a Pause also ends the mark (the episode ended)', async () => {
+  for (const over of [{ paused: true }, { members: [member('impl', { unfinished: false }), member('verifier', { unfinished: false })] }]) {
+    __resetVagueEndormieForTests();
+    const r = humanRig();
+    await advance(r, 30 * MIN);
+    assert.equal(r.marks().length, 1);
+    set(r, baseFacts(over));
+    await advance(r, VAGUE_SWEEP_MS);
+    assert.deepEqual(r.marks(), [], JSON.stringify(Object.keys(over)));
+  }
+});
+
+test('#429 — a coordinator WITHOUT a parent: the human is told AT THE DECLARATION (no 15 minutes to wait for a Relance that is never sent), there is no Relancer, and nothing is ever delivered', async () => {
+  const r = humanRig();
+  set(r, baseFacts({ coordinatorHasParent: false }));
+  await advance(r, 9 * MIN);
+  assert.equal(r.told.length, 0, 'not before the asleep delay');
+  await advance(r, MIN + VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 1, 'told at the declaration');
+  assert.equal(asleepVagues()[0].nudgedAt, null, 'nothing was sent to the coordinator');
+  assert.deepEqual(r.marks().map((m) => m.canRelance), [false], 'no Relancer on the LEAD\'s own row');
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(r.turns.length, 0, 'in 17 hours nothing reached the LEAD\'s conversation');
+  assert.equal(r.told.length, 1);
+});
+
+test('#429 — a Relance that cannot go out (delivery failing) leaves the vague asleep: the human is told 15 minutes after the declaration, the Relancer stays offered', async () => {
+  const r = humanRig();
+  r.outcome.next = 'failed';
+  await advance(r, 10 * MIN);
+  assert.equal(r.told.length, 0);
+  await advance(r, 15 * MIN + VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.marks()[0].canRelance, true, 'owed, retried: the button can still nudge');
+  // an unwakeable coordinator: told too, but no button (it cannot be started)
+  __resetVagueEndormieForTests();
+  const u = humanRig();
+  set(u, baseFacts({ coordinatorWakeable: false }));
+  await advance(u, 30 * MIN);
+  assert.equal(u.told.length, 1);
+  assert.equal(u.marks()[0].canRelance, false);
+});
+
+test('#429 — both delays are read per pass (settings applied without a restart): 1 min + 2 min; and lengthening the human delay later does not take a mark down', async () => {
+  const r = humanRig();
+  let cfg: { quietMs: number; humanMs: number } = { quietMs: 1 * MIN, humanMs: 2 * MIN };
+  r.deps.bounds = () => cfg;
+  await advance(r, 90_000);
+  assert.equal(r.turns.length, 1, 'asleep after 1 minute');
+  assert.equal(r.told.length, 0);
+  await advance(r, 3 * MIN);
+  assert.equal(r.told.length, 1, 'told 2 minutes after the Relance');
+  cfg = { quietMs: 60 * MIN, humanMs: 24 * 60 * MIN };
+  await advance(r, 10 * MIN);
+  assert.equal(r.marks().length, 1, 'still marked: once told, the mark stays until a member resumes');
+  assert.equal(r.told.length, 1);
+  // the other way: a delay LENGTHENED before it was reached holds the notification back
+  __resetVagueEndormieForTests();
+  const q = humanRig();
+  let humanMs = 15 * MIN;
+  q.deps.bounds = () => ({ humanMs });
+  await advance(q, 14 * MIN);
+  humanMs = 60 * MIN;
+  await advance(q, 20 * MIN);
+  assert.equal(q.told.length, 0, 'a delay raised in Settings applies to the episode in flight');
+  humanMs = 1 * MIN;
+  await advance(q, VAGUE_SWEEP_MS);
+  assert.equal(q.told.length, 1, 'and a delay lowered applies at the next pass');
+});
+
+test('#429 — the mark SURVIVES an app restart while the vague is still asleep, and the human is NOT notified a second time', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 30 * MIN);
+  assert.equal(r.told.length, 1);
+  assert.equal(typeof store.disk.ops.episode?.humanAt, 'number', 'persisted with the episode');
+  // relaunch: module state gone, the store kept, every clock re-floored
+  restart(r, 3 * MIN);
+  r.pushes.length = 0;
+  await advance(r, 5 * MIN);
+  assert.equal(r.marks().length, 1, 'the mark is back on the first pass after the relaunch');
+  assert.equal(r.marks()[0].since, T0, 'with its TRUE time');
+  assert.equal(r.told.length, 1, 'no second notification');
+  // and a member resuming after the relaunch ends it
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.deepEqual(r.marks(), []);
+});
+
+test('#429 — due while the app was closed (never told): the first pass after the relaunch notifies ONCE and draws the mark', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 11 * MIN); // declared + Relanced; the human is not due yet
+  assert.equal(r.told.length, 0);
+  restart(r, 60 * MIN); // closed for an hour
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 1, 'told on the first pass');
+  assert.equal(r.marks().length, 1);
+  restart(r, 0);
+  await advance(r, 10 * MIN);
+  assert.equal(r.told.length, 1, 'and not again on the next launch');
+});
+
+test('#429 — the notification is persisted BEFORE it fires (at most once across a crash), and a throwing notification does not lose the mark', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  let persistedWhenFired: unknown = 'unset';
+  r.deps.notifyHuman = () => {
+    persistedWhenFired = store.disk.ops?.episode?.humanAt;
+    throw new Error('no notification daemon');
+  };
+  await advance(r, 30 * MIN);
+  assert.equal(typeof persistedWhenFired, 'number', 'humanAt was on disk when the notification fired');
+  assert.equal(r.marks().length, 1, 'the mark is up although the toast failed');
+  assert.equal(vagueCounters().humanTold, 1);
+});
+
+test('#429 — the marks are pushed only when they CHANGE (a steady asleep vague is not re-pushed every 30 s)', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  const n = r.pushes.length;
+  await advance(r, 3 * 60 * MIN);
+  assert.equal(r.pushes.length, n, 'no push while nothing moved');
+});
+
+test('#429 Relancer — nudges the coordinator AGAIN with the same kind of text; the episode and the mark stay (only a member resuming ends it); never anyone else', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  assert.equal(r.turns.length, 1);
+  const res = await relanceVagueNow(r.deps, 'ops');
+  assert.equal(res, 'sent');
+  assert.equal(r.turns.length, 2, 'a second Relance');
+  assert.equal(r.turns[1].wsId, 'ops');
+  assert.ok(isRelance(r.turns[1].text));
+  assert.match(r.turns[1].text, /asleep since 22:48:00 UTC/);
+  assert.equal(r.marks().length, 1, 'the mark stays');
+  assert.equal(asleepVagues().length, 1);
+  await advance(r, 3 * 60 * MIN);
+  assert.equal(r.turns.length, 2, 'and the automatic sweep does not add another');
+});
+
+test('#429 Relancer — a coordinator WITHOUT a parent is refused: NOTHING is sent to the LEAD\'s conversation (control: the same vague with a parent is sent)', async () => {
+  const r = humanRig();
+  set(r, baseFacts({ coordinatorHasParent: false }));
+  await advance(r, 30 * MIN);
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'no-parent');
+  assert.equal(r.turns.length, 0);
+  const c = humanRig();
+  await advance(c, 30 * MIN);
+  assert.equal(await relanceVagueNow(c.deps, 'ops'), 'sent');
+});
+
+test('#429 Relancer — refused when the vague is not asleep (ended meanwhile / unknown run), when the coordinator cannot be started, and an outcome that is not `sent` is reported as it is', async () => {
+  const r = humanRig();
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'not-asleep', 'before any episode');
+  await advance(r, 30 * MIN);
+  assert.equal(await relanceVagueNow(r.deps, 'nope'), 'not-asleep');
+  r.outcome.next = 'held';
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'held');
+  r.outcome.next = 'failed';
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'failed');
+  r.outcome.next = 'sent';
+  set(r, baseFacts({ coordinatorWakeable: false }));
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'not-wakeable');
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'not-asleep', 'a member resumed: nothing to nudge');
+});
+
+test('#429 Relancer — while the automatic Relance is still OWED, a successful manual one settles it (no duplicate afterwards)', async () => {
+  const r = humanRig();
+  r.outcome.next = 'failed';
+  await advance(r, 20 * MIN);
+  assert.equal(r.turns.length, 0);
+  r.outcome.next = 'sent';
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'sent');
+  assert.equal(r.turns.length, 1);
+  await advance(r, 60 * MIN);
+  assert.equal(r.turns.length, 1, 'the sweep does not send the owed one on top');
+});
+
+test('#429 — several vagues: each has its own mark, its own members, its own notification', async () => {
+  const r = humanRig();
+  set(r, baseFacts({ runId: 'ops2', coordinator: person('ops2'), members: [member('b1'), member('b2'), member('b3', { unfinished: false })] }));
+  await advance(r, 30 * MIN);
+  assert.equal(r.told.length, 2);
+  const ms = r.marks();
+  assert.deepEqual(ms.map((m) => [m.coordinatorId, m.pending, m.memberIds.length]).sort(), [['ops', 1, 2], ['ops2', 2, 3]].sort());
+});
+
+test('#429 — a Relance whose delivery HANGS (a start that never lands) leaves the vague asleep: the human is still told, once, and the mark goes up — the frozen vague is not a silent one', async () => {
+  const r = humanRig();
+  r.deps.deliverWaitMs = 1;
+  r.deps.deliver = () => new Promise<RelanceDelivery>(() => {}); // never settles
+  await advance(r, 10 * MIN + VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 0, 'not before the human delay');
+  await advance(r, 15 * MIN + VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.marks().length, 1);
+  await advance(r, 5 * 60 * MIN);
+  assert.equal(r.told.length, 1, 'once');
+  assert.equal(r.turns.length, 0, 'and nothing was delivered by the human step');
+});
+
+test('#429 — the Relance that lands AFTER the human step fired does not drop the persisted `humanAt` (the nudge mark must not overwrite it)', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  r.outcome.next = 'failed'; // the Relance cannot go out for 20 minutes: the human step fires from the declaration
+  await advance(r, 26 * MIN);
+  assert.equal(r.told.length, 1);
+  r.outcome.next = 'sent';
+  await advance(r, 20 * MIN); // back-off elapses, the Relance finally goes out
+  assert.equal(r.turns.length, 1);
+  assert.equal(typeof store.disk.ops.episode?.humanAt, 'number', 'humanAt still persisted');
+  assert.equal(typeof store.disk.ops.episode?.nudgedAt, 'number');
+  assert.equal(r.told.length, 1);
+});
+
+test('#429 Relancer — a start that hangs answers `pending` after the wait (the button is not stuck), and the late `sent` still settles the owed Relance', async () => {
+  const r = humanRig();
+  r.outcome.next = 'failed';
+  await advance(r, 20 * MIN); // owed, retried
+  let release: (v: RelanceDelivery) => void = () => {};
+  r.deps.deliver = () => new Promise<RelanceDelivery>((res) => { release = res; });
+  r.deps.deliverWaitMs = 1;
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  release('sent');
+  await new Promise((res) => setImmediate(res));
+  assert.equal(asleepVagues()[0].relance, 'sent', 'the late result landed on the episode');
 });

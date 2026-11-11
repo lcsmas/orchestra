@@ -159,6 +159,7 @@ import { isScratchLike } from '../shared/types.ts';
 import { normalizeModelDefaults } from '../shared/model-defaults.ts';
 import { memoryGuardView, setMemoryGuardSettings } from './memory-guard-settings.ts';
 import { isBlocHtmlEnabled, setBlocHtmlEnabled } from './bloc-html-setting.ts';
+import { getVagueDelays, setVagueDelays } from './vague-delays-setting.ts';
 import { accesMobileView, regenerateAccesMobileToken, setAccesMobileSettings } from './acces-mobile-host.ts';
 import { markWorkspaceSeen } from './mark-seen.ts';
 import { wakeHeldForMemory } from './admission-wake';
@@ -246,6 +247,9 @@ type ServableApi = Omit<
   // #416 — a Bloc HTML navigation's confirmation (`blocNav:*`) is registered by registerBlocNavigationIpc() (src/main/bloc-html-guard.ts): sender-checked to the app window's top frame, never a "served" method.
   | 'blocNavigationPending'
   | 'answerBlocNavigation'
+  // #429 — the Vague endormie marks' pull (`vague:marks`), push and Relancer (`vague:relance`) are registered by registerVagueMarksIpc() (src/main/vague-endormie-host.ts): a write (a Relance) must not be reachable as a "served read".
+  | 'vagueMarks'
+  | 'relanceVague'
   // #289 — the memory banner's pull (`memoryGuard:banner`) is registered by registerMemoryBannerIpc() (src/main/memory-banner-host.ts), next to its push; not from this generic table.
   | 'memoryBanner'
 >;
@@ -399,6 +403,8 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   setEffortDefaults: 'settings:setEffortDefaults',
   blocHtmlEnabled: 'settings:blocHtmlEnabled',
   setBlocHtmlEnabled: 'settings:setBlocHtmlEnabled',
+  vagueDelays: 'settings:vagueDelays',
+  setVagueDelays: 'settings:setVagueDelays',
   memoryGuard: 'settings:memoryGuard',
   setMemoryGuard: 'settings:setMemoryGuard',
   accesMobile: 'settings:accesMobile',
@@ -1218,6 +1224,10 @@ export const apiHandlers: ApiHandlerTable = {
   // Bloc HTML switch (#418): persisted at once; the instruction reaches sessions STARTED afterwards, the renderer follows the echo (no restart).
   blocHtmlEnabled: async () => isBlocHtmlEnabled(),
   setBlocHtmlEnabled: async (next) => setBlocHtmlEnabled(next),
+
+  // Vague endormie delays (#429): live settings — the sweep reads them at every pass, a write asks for a pass at once (no restart).
+  vagueDelays: async () => getVagueDelays(),
+  setVagueDelays: async (next) => setVagueDelays(next),
 
   memoryGuard: async () => memoryGuardView(store.getMemoryGuardSettings()),
 

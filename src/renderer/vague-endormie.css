@@ -1,0 +1,21 @@
+/* Vague endormie (#429, prototype variant A): the mark on the coordinator's own row + the dimmed member rows. Own sheet (styles.css is appended to by every wave). */
+.vague-pill { margin-left: 6px; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255, 200, 87, 0.14); color: var(--yellow); white-space: nowrap; flex: 0 0 auto; }
+.ws-status-note.vague-note { display: flex; align-items: center; gap: 8px; color: var(--yellow); }
+.vague-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.vague-btn { font: inherit; font-size: 10.5px; padding: 0 8px; border-radius: 5px; border: 1px solid var(--yellow); background: transparent; color: var(--yellow); cursor: pointer; flex: 0 0 auto; }
+.vague-btn:hover:not(:disabled) { background: rgba(255, 200, 87, 0.14); }
+.vague-btn:disabled { opacity: 0.5; cursor: default; }
+.vague-result { color: var(--text-dim); flex: 0 0 auto; }
+/* the members of a vague the human was told about: dimmed, the coordinator's row stays at full strength */
+.ws-item.vague-dim { opacity: 0.5; }
+
+/* Settings > Vague endormie */
+.vague-settings { width: 460px; }
+.vague-field { margin: 10px 0 4px; }
+.vague-field label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.vague-input-row { display: flex; align-items: center; gap: 8px; }
+.vague-settings .vague-input { width: 80px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font-variant-numeric: tabular-nums; }
+.vague-settings .vague-input:focus { outline: none; border-color: var(--accent); }
+.vague-unit, .vague-default { font-size: 12px; color: var(--text-dim); }
+.vague-desc { margin-top: 4px; font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
+.vague-error { margin-top: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid rgba(255, 107, 107, 0.32); background: rgba(255, 107, 107, 0.07); font-size: 12px; }

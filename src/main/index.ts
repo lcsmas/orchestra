@@ -208,7 +208,7 @@ import { buildLivenessRoster } from './bus-liveness-roster';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import { wakeRosterEntry } from './wake-roster';
 import { startRelanceHost, stopRelance } from './relance-host';
-import { startVagueEndormieHost, stopVagueEndormie } from './vague-endormie-host';
+import { registerVagueMarksIpc, startVagueEndormieHost, stopVagueEndormie } from './vague-endormie-host';
 import { pauseRefusal } from './pause-gate';
 import {
   ensureRoot,
@@ -882,6 +882,7 @@ registerStaleRunSource(listStaleRunWorkspaces);
 // #257 — the fleet Pause UI channels (`pause:*`): ONE read + the three shipped writers, each marked in PAUSE_UI_IPC_CHANNELS. NOT through registerBusPaneIpc() (read-only).
 registerPauseUiIpc();
 registerMemoryBannerIpc(); // #289 — the memory banner's pull channel (ONCE, module scope)
+registerVagueMarksIpc(); // #429 — the Vague endormie marks' pull + Relancer (ONCE, module scope)
 registerAppUpdateIpc(); // « Nouvelle version installée »: pull + relaunch (ONCE, module scope)
 registerClaudeCodeUpdateIpc(); // « Mise à jour disponible » (Claude Code): pull + run + acknowledge (ONCE, module scope)
 // Bloc HTML navigation (#416): the confirmation is pushed to the app window; only a confirmed id reaches openUrlExternally (the path a link in a reply takes).

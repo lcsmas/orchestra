@@ -34,6 +34,7 @@ import { VoiceDictionarySettings } from './VoiceDictionarySettings';
 import { LinearSettings } from './LinearSettings';
 import { ModelDefaultsSettings } from './ModelDefaultsSettings';
 import { BlocHtmlSettings } from './BlocHtmlSettings';
+import { VagueEndormieSettings } from './VagueEndormieSettings';
 import { MemoryGuardSettings } from './MemoryGuardSettings';
 import { BrowserSettings } from './BrowserSettings';
 import { AccesMobileSettings } from './AccesMobileSettings';
@@ -56,6 +57,8 @@ import { WatchersStrip } from './WatchersStrip';
 import { ClaudeCodeUpdateStrip } from './ClaudeCodeUpdateStrip';
 import { PauseMenuHost } from './pause/PauseMenu';
 import { pauseDimClass } from '../../shared/pause-ui-view';
+import { vagueDimClass } from '../../shared/vague-human';
+import { VagueRowBadge, VagueRowNote } from './VagueMark';
 import { SANDBOX_PAUSED_TICKET } from '../../shared/sandbox-pause';
 import { withExLabel } from '../../shared/former-branch';
 
@@ -832,6 +835,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const [modelDefaultsOpen, setModelDefaultsOpen] = useState(false);
   const [memoryGuardOpen, setMemoryGuardOpen] = useState(false);
   const [blocHtmlOpen, setBlocHtmlOpen] = useState(false);
+  const [vagueSettingsOpen, setVagueSettingsOpen] = useState(false);
   const [accesMobileOpen, setAccesMobileOpen] = useState(false);
   const [voiceDictOpen, setVoiceDictOpen] = useState(false);
   const setHelpOpen = useStore((s) => s.setHelpOpen);
@@ -839,6 +843,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const setBrowserSettingsOpen = useStore((s) => s.setBrowserSettingsOpen);
   // #257 — read once: the row class below is a plain derivation (the row PARTS subscribe themselves).
   const pauseOverview = useStore((s) => s.pauseOverview);
+  const vagueMarks = useStore((s) => s.vagueMarks);
   const [linearSettingsOpen, setLinearSettingsOpen] = useState(false);
   const [accountsSettingsOpen, setAccountsSettingsOpen] = useState(false);
   // Header "+ New" menu — the single entry point for creating a session of
@@ -1487,7 +1492,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
           <div
             key={w.id}
             inert={foldedRows.has(w.id)}
-            className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
+            className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)}${isChild ? ' ws-child' : ''}${isDeleting ? ' deleting' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${vagueDimClass(vagueMarks, w.id)}${dragWs?.id === w.id ? ' dragging' : attachTo === w.id ? ' attach-target' : ''}`}
             style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
             onClick={() => setActive(w.id)}
             // Actions float OUTSIDE the sidebar, anchored to this row — see
@@ -1640,6 +1645,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   </span>
                 )}
                 <PauseRowBadge wsId={w.id} />
+                <VagueRowBadge wsId={w.id} />
                 <HibernatedChip w={w} />
                 {/* #88 — "N deliveries waiting, no turn started in X". Renders
                     null unless this workspace is actually stalled, so it costs
@@ -1653,6 +1659,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               </div>
               {/* Title-only row: the status note moved into the name tooltip; a fleet-pause note still gets a line. */}
               <PauseRowNote wsId={w.id}>{null}</PauseRowNote>
+              <VagueRowNote wsId={w.id} />
             </div>
             {/* Collapse control, right-aligned. It sits OUTSIDE
                 `.ws-row-actions` (which is absolutely positioned and only
@@ -1746,6 +1753,16 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             data-bloc-html-open
           >
             <BlocHtmlIcon />
+          </button>
+          {/* Vague endormie (#429): the two delays — asleep after, tell the human after the coordinator's Relance. Live, no restart. */}
+          <button
+            className="header-icon-btn header-text-icon"
+            onClick={() => setVagueSettingsOpen(true)}
+            title="Vague endormie — délais avant « endormie » et avant de vous prévenir"
+            aria-label="Vague endormie settings"
+            data-vague-open
+          >
+            ☾
           </button>
           {/* Settings > Browser (#400, ADR 0010): the profils navigateur — named persistent sign-ins a workspace's panel can carry. */}
           <button
@@ -2194,7 +2211,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 <div
                   key={w.id}
                   inert={foldedRows.has(w.id)}
-                  className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${wsDnd}`}
+                  className={`ws-item ${activeId === w.id ? 'active' : ''}${rowTreeClass(w.id)} ${w.mergedAt && !w.divergedFromBase ? 'merged' : ''}${isChild ? ' ws-child' : ''}${w.markedUnread ? ' unread' : ''}${pauseDimClass(pauseOverview, w.id)}${vagueDimClass(vagueMarks, w.id)}${wsDnd}`}
                   style={isChild ? ({ '--ws-depth': depth } as React.CSSProperties) : undefined}
                   onClick={() => setActive(w.id)}
                   // Actions float outside the sidebar, anchored to this row.
@@ -2347,6 +2364,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                         </div>
                       )}
                       <PauseRowBadge wsId={w.id} />
+                <VagueRowBadge wsId={w.id} />
                       <HibernatedChip w={w} />
                       {/* #88 — same badge on the repo-section render path.
                           Both paths render the same component so the two can
@@ -2409,6 +2427,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       </span>
                     </div>
                     <PauseRowNote wsId={w.id}>{null}</PauseRowNote>
+              <VagueRowNote wsId={w.id} />
                   </div>
                   {/* Right-edge collapse control — mirrors the pinned-tree
                       rows. A promoted worktree gets its chevron here. */}
@@ -2507,6 +2526,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
         )}
         {memoryGuardOpen && <MemoryGuardSettings onClose={() => setMemoryGuardOpen(false)} />}
         {blocHtmlOpen && <BlocHtmlSettings onClose={() => setBlocHtmlOpen(false)} />}
+        {vagueSettingsOpen && <VagueEndormieSettings onClose={() => setVagueSettingsOpen(false)} />}
         {browserSettingsOpen && <BrowserSettings onClose={() => setBrowserSettingsOpen(false)} />}
         {accesMobileOpen && <AccesMobileSettings onClose={() => setAccesMobileOpen(false)} />}
         {voiceDictOpen && <VoiceDictionarySettings onClose={() => setVoiceDictOpen(false)} />}

@@ -93,6 +93,7 @@
     "test:bloc-html-instruction": "node scripts/session-budget/bloc-html.mjs --proof",
     "test:relance": "node scripts/session-budget/relance.mjs --proof",
     "test:vague": "node scripts/session-budget/vague-endormie.mjs --proof",
+    "test:vague-human": "pnpm run build:bundles && pnpm run build:bus-abi && bash scripts/e2e-vague-human.sh \"$PWD\"",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",

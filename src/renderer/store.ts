@@ -29,6 +29,7 @@ import type { PauseUiOverview, PauseUiReleaseResult, PauseUiWriteResult } from '
 import { newerOverview } from '../shared/pause-ui-view';
 import { dismissedWith, newerBanner, type MemoryBannerState } from '../shared/memory-banner';
 import { newerWatchers, type WatchersStatus } from '../shared/watcher-status';
+import { newerVagueMarks, type VagueMarks } from '../shared/vague-human';
 import type { SelfTuneRun } from '../shared/self-tune';
 import type { DesignPick } from '../shared/design-mode';
 import { clearPendingAnswerable, emptySession, foldEvents } from '../shared/agent-events';
@@ -142,6 +143,8 @@ interface State {
   memoryBanner: MemoryBannerState | null;
   /** Directory-watcher health (#330, D-Q8 A): every armed watcher's state, replaced WHOLESALE by the boot pull and by each `watchers:update` push (the later reading wins). The sidebar strip shows while any is degraded. null = not loaded yet. */
   watchers: WatchersStatus | null;
+  /** The asleep vagues the human was told about (#429): replaced WHOLESALE by the boot pull and by each `vague:update` push (the later reading wins). The coordinator's row carries the mark, the members' rows are dimmed. null = not loaded yet. */
+  vagueMarks: VagueMarks | null;
   /** The keys (episode + kind [+ Pause cycle]) of every banner « Masquer » hid since the last recovery; any other key shows again (escalation, new Pause cycle, next episode). */
   memoryBannerDismissed: readonly string[];
   dismissMemoryBanner: () => void;
@@ -288,6 +291,7 @@ export const useStore = create<State>((set, get) => ({
   pauseOverview: null,
   memoryBanner: null,
   watchers: null,
+  vagueMarks: null,
   memoryBannerDismissed: [],
   blocHtmlEnabled: false,
   dismissMemoryBanner: () => set((st) => ({ memoryBannerDismissed: dismissedWith(st.memoryBannerDismissed, st.memoryBanner) })),
@@ -416,7 +420,7 @@ export const useStore = create<State>((set, get) => ({
         slog.warn(`startup load: ${what} failed — rendering as empty`, e);
         return fallback;
       });
-    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner, watchers, blocHtmlEnabled] =
+    const [repos, workspaces, syncStates, accountUsage, workspaceAccounts, accounts, globalUsage, selfTuneRuns, tickets, humanGatesRes, pauseOverview, memoryBanner, watchers, blocHtmlEnabled, vagueMarks] =
       await Promise.all([
         window.orchestra.listRepos(),
         window.orchestra.listWorkspaces(),
@@ -440,6 +444,8 @@ export const useStore = create<State>((set, get) => ({
         orEmpty('watchersStatus', window.orchestra.watchersStatus(), null as WatchersStatus | null),
         // Bloc HTML switch (#418): a failed read renders as OFF (code blocks), never as ON.
         orEmpty('blocHtmlEnabled', window.orchestra.blocHtmlEnabled(), false),
+        // The asleep vagues' marks for the initial paint (#429): the mark must survive an app restart and a renderer reload; later changes ride `vague:update`.
+        orEmpty('vagueMarks', window.orchestra.vagueMarks(), null as VagueMarks | null),
       ]);
     slog.info(
       `loaded ${workspaces.length} workspace(s), ${repos.length} repo(s), ${accounts.length} account(s), ${tickets.length} ticket(s)`,
@@ -468,6 +474,7 @@ export const useStore = create<State>((set, get) => ({
       pauseOverview: pauseOverview ? newerOverview(get().pauseOverview, pauseOverview) : pauseOverview,
       memoryBanner: memoryBanner ? newerBanner(get().memoryBanner, memoryBanner) : get().memoryBanner,
       watchers: watchers ? newerWatchers(get().watchers, watchers) : get().watchers,
+      vagueMarks: vagueMarks ? newerVagueMarks(get().vagueMarks, vagueMarks) : get().vagueMarks,
       blocHtmlEnabled,
       loaded: true,
       activeId: workspaces[0]?.id ?? null,
@@ -983,6 +990,10 @@ window.orchestra.onMemoryBanner((banner) => {
 // The directory watchers' health changed (#330): one went down, came back, or was stopped while down. Main pushes the whole status only when the DEGRADED set changes; keep the later of it and the boot pull.
 window.orchestra.onWatchersUpdate((status) => {
   useStore.setState((st) => ({ watchers: newerWatchers(st.watchers, status) }));
+});
+// The asleep vagues' marks changed (#429): the human step fired, a member resumed, the pending count moved. Main pushes the whole set; keep the later of it and the boot pull.
+window.orchestra.onVagueMarks((marks) => {
+  useStore.setState((st) => ({ vagueMarks: newerVagueMarks(st.vagueMarks, marks) }));
 });
 // A self-tune run advanced (step started/finished, run completed). Upsert by
 // id, keeping newest-first order — a brand-new run is always the newest.

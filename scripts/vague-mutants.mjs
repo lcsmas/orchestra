@@ -6,12 +6,15 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const SUITES = ['src/shared/vague-endormie.test.ts', 'src/main/vague-endormie.test.ts', 'src/main/vague-roster.test.ts', 'src/main/vague-endormie-wiring.test.ts', 'src/main/vague-endormie-store.test.ts'];
+const SUITES = ['src/shared/vague-endormie.test.ts', 'src/shared/vague-human.test.ts', 'src/main/vague-endormie.test.ts', 'src/main/vague-roster.test.ts', 'src/main/vague-endormie-wiring.test.ts', 'src/main/vague-endormie-store.test.ts'];
 const S = 'src/shared/vague-endormie.ts';
 const M = 'src/main/vague-endormie.ts';
 const R = 'src/main/vague-roster.ts';
 const H = 'src/main/vague-endormie-host.ts';
 const F = 'src/main/vague-endormie-store.ts';
+const HV = 'src/shared/vague-human.ts';
+const VM = 'src/renderer/components/VagueMark.tsx';
+const HS = 'src/main/vague-delays-setting.ts';
 const BLOCK = "  if (f.paused) return 'paused';\n  if (f.runHeld) return 'run-held';\n";
 const MUTANTS = [
   // ── the asleep definition (blockerOf): one arm per clause
@@ -141,12 +144,57 @@ const MUTANTS = [
   ['host-wakeable-dropped', H, '  wakeable: (ws) => wakeRosterEntry(ws).wakeable,', '  wakeable: () => true,'],
   ['host-no-fresh-vague', H, '  vague: (runId) => vagueFactsOf(roster, runId),\n', ''],
   ['host-shared-admission-site', H, "'relance-vague'", "'relance'"],
+  // ── #429 the human step (shared/vague-human.ts, main/vague-endormie.ts, host, renderer)
+  ['hs-parentless-waits', HV, "  if (nudge === 'no-parent') return true;\n", ''],
+  ['hs-clock-from-declaration', HV, "const from = nudge === 'done' && ep.nudgedAt !== undefined ? ep.nudgedAt : ep.declaredAt;", 'const from = ep.declaredAt;'],
+  ['hs-owed-never-due', HV, "const from = nudge === 'done' && ep.nudgedAt !== undefined ? ep.nudgedAt : ep.declaredAt;", "const from = nudge === 'done' && ep.nudgedAt !== undefined ? ep.nudgedAt : Infinity;"],
+  ['hs-early', HV, 'return now >= from + humanMs;', 'return now >= from + humanMs - 60_000;'],
+  ['hs-late', HV, 'return now >= from + humanMs;', 'return now > from + humanMs;'],
+  ['hs-not-sticky', HV, '  if (ep.humanAt !== undefined) return true;\n', ''],
+  ['hs-default-asleep-wrong', HV, 'asleepMin: okMin(r.asleepMin) ? r.asleepMin : DEFAULT_VAGUE_DELAYS.asleepMin', 'asleepMin: okMin(r.asleepMin) ? r.asleepMin : 0'],
+  ['hs-default-human-wrong', HV, 'humanMin: okMin(r.humanMin) ? r.humanMin : DEFAULT_VAGUE_DELAYS.humanMin', 'humanMin: okMin(r.humanMin) ? r.humanMin : 5'],
+  ['hs-validate-ignores-human', HV, "  if (!okMin(r.humanMin)) return `Le délai avant de vous prévenir", "  if (false) return `Le délai avant de vous prévenir"],
+  ['hs-validate-accepts-float', HV, "typeof n === 'number' && Number.isInteger(n) && n >= VAGUE_DELAY_MIN", "typeof n === 'number' && n >= VAGUE_DELAY_MIN"],
+  ['hs-validate-no-cap', HV, 'n >= VAGUE_DELAY_MIN && n <= VAGUE_DELAY_MAX;', 'n >= VAGUE_DELAY_MIN;'],
+  ['hs-ms-swapped', HV, '({ quietMs: d.asleepMin * 60_000, humanMs: d.humanMin * 60_000 })', '({ quietMs: d.humanMin * 60_000, humanMs: d.asleepMin * 60_000 })'],
+  ['hs-dim-coordinator', HV, '!!m?.marks.some((x) => x.memberIds.includes(wsId))', '!!m?.marks.some((x) => x.memberIds.includes(wsId) || x.coordinatorId === wsId)'],
+  ['hs-mark-on-member', HV, 'm?.marks.find((x) => x.coordinatorId === wsId)', 'm?.marks.find((x) => x.coordinatorId === wsId || x.memberIds.includes(wsId))'],
+  ['hs-stale-marks-win', HV, '(!prev || next.rev >= prev.rev ? next : prev)', '(next)'],
+  ['hs-utc-time', HV, 'const d = new Date(at);\n  return `${String(d.getHours())', 'const d = new Date(at);\n  return `${String(d.getUTCHours())'],
+  ['hs-plural', HV, "n > 1 ? 's' : ''", "n > 2 ? 's' : ''"],
+  ['hs-sub-line-order', HV, '`depuis ${localHHMM(m.since)} · ${pendingWords(m.pending)}`', '`${pendingWords(m.pending)} · depuis ${localHHMM(m.since)}`'],
+  ['hs-two-notifications', M, "st.episode.humanAt !== undefined || !humanStepDue(", "!humanStepDue("],
+  ['hs-not-persisted-before-toast', M, "  views.set(runId, { ...view, humanAt: now });\n  save(deps);\n", "  views.set(runId, { ...view, humanAt: now });\n"],
+  ['hs-overwritten-by-nudge', M, "        state = states.get(f.runId) ?? state; // it may have recorded", "        // it may have recorded"],
+  ['hs-frozen-vague-silent', M, "          if (sv) humanStep(deps, f.runId,", "          if (false) humanStep(deps, f.runId,"],
+  ['hs-mark-before-human', M, '.filter((v) => v.humanAt !== null)', ''],
+  ['hs-relancer-always', M, "canRelance: v.relance === 'sent' || v.relance === 'owed' }", 'canRelance: true }'],
+  ['hs-relancer-no-parent-allowed', M, "  if (!fresh.coordinatorHasParent) return 'no-parent';\n  if (!fresh.coordinatorWakeable)", "  if (!fresh.coordinatorWakeable)"],
+  ['hs-relancer-unwakeable-allowed', M, "  if (!fresh.coordinatorWakeable) return 'not-wakeable';\n  const unfinished", "  const unfinished"],
+  ['hs-relancer-no-episode-check', M, "  if (!view || !st?.episode) return 'not-asleep';", '  if (!view) return \'not-asleep\';\n  if (false) return \'not-asleep\';'],
+  ['hs-relancer-ends-nothing-owed', M, "    if (cur?.episode && cur.episode.nudgedAt === undefined) {\n      states.set(runId, { ...cur, episode: { ...cur.episode, nudgedAt: deps.now() } });", "    if (false) {\n      states.set(runId, { ...cur!, episode: { ...cur!.episode!, nudgedAt: deps.now() } });"],
+  ['hs-relancer-late-result-dropped', M, '    void delivery.then(landed);\n', ''],
+  ['hs-human-delay-ignored', M, 'const humanMs = humanMsRead ?? VAGUE_HUMAN_MS;', 'const humanMs = VAGUE_HUMAN_MS;'],
+  ['hs-human-at-not-loaded', M, "...(ep.humanAt !== undefined ? { humanAt: ep.humanAt } : {}) } } : {}) });", '} } : {}) });'],
+  ['hs-members-not-dimmed', M, 'memberIds: f.members.map((m) => m.wsId),', 'memberIds: [],'],
+  ['hs-pending-wrong', M, '.map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since, pending: v.unfinished.length,', '.map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since, pending: v.memberIds.length,'],
+  ['hs-marks-always-pushed', M, '  if (key === lastMarksKey) return;\n', ''],
+  ['hs-since-wrong', M, '.map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since,', '.map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.declaredAt,'],
+  ['hs-no-publish', M, '    save(deps);\n    publishMarks(deps);\n    lastSweepError', '    save(deps);\n    lastSweepError'],
+  ['hs-host-delays-not-read', H, '  bounds: () => delaysToMs(getVagueDelays()),\n', ''],
+  ['hs-host-no-notification', H, "    platform.notify({ wsId: n.coordinatorId, kind: 'needsInput', title, body });", '    void title; void body;'],
+  ['hs-host-no-push', H, '  platform.broadcast(VAGUE_MARKS_PUSH_CHANNEL, stamped());', '  void stamped();'],
+  ['hs-host-no-sweep-on-write', H, '  setVagueDelaysChangedHook(() => void sweepVaguesNow(productionVagueDeps));', '  setVagueDelaysChangedHook(() => {});'],
+  ['hs-setting-writes-invalid', HS, '  if (error) return { ok: false, error };\n', ''],
+  ['hs-setting-no-sweep', HS, '    onChanged();\n', ''],
+  ['hs-ui-button-always', VM, '{mark.canRelance && (', '{true && ('],
+  ['hs-ui-click-selects-row', VM, '    e.stopPropagation(); // a click on the button is not a click on the row\n', ''],
 ];
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const files = [...new Set(MUTANTS.map((m) => m[1]))];
 const backup = Object.fromEntries(files.map((f) => [f, fs.readFileSync(path.join(repo, f))]));
-const run = () => spawnSync('node', ['--test', '--experimental-strip-types', ...SUITES], { cwd: repo, encoding: 'utf8' });
+const run = () => spawnSync('node', ['--test', '--experimental-strip-types', ...SUITES], { cwd: repo, encoding: 'utf8', timeout: 600_000 });
 const counts = (r) => ({ pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1), skipped: Number(/# skipped (\d+)/.exec(r.stdout)?.[1] ?? -1) });
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 

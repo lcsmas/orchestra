@@ -1,7 +1,7 @@
 // Vague endormie (#428, spec #426; terms in CONTEXT.md) — PURE half. A vague (a run and its coordinator) is ASLEEP when it still has unfinished dispatched tasks while nothing can wake
 // anyone in it: nobody active, nobody waiting for an answer, no live process of theirs, no Pause — for VAGUE_QUIET_MS. A live process protects it for at most VAGUE_PROCESS_BOUND_MS
 // without any agent activity. The coordinator then gets ONE Relance (shared/relance.ts `buildRelance`, the #427 primitive) per asleep EPISODE; the episode ends when a MEMBER resumes.
-// The effectful half (roster, census, clock, delivery) is src/main/vague-endormie.ts; nothing of the human step (#429: notification, sidebar mark, Settings) is here.
+// The effectful half (roster, census, clock, delivery) is src/main/vague-endormie.ts; the human step (#429: notification, sidebar mark, Settings) is shared/vague-human.ts + that file.
 
 import { buildRelance, clock, list, oneLine, rootsOf, type RelanceCensus } from './relance.ts';
 
@@ -90,6 +90,8 @@ export interface VagueEpisode {
   declaredAt: number;
   /** When the coordinator's Relance went out (`undefined` = owed). */
   nudgedAt?: number;
+  /** When the HUMAN was told (#429: the notification fired, the mark is on the coordinator's row): persisted, so a restart neither re-notifies nor loses the mark. Set by the sweep, never by `stepVague`. */
+  humanAt?: number;
 }
 
 /** What the host remembers of ONE vague between two looks. */
@@ -147,7 +149,7 @@ function nudgeOf(f: VagueFacts, ep: VagueEpisode): 'owed' | 'done' | 'no-parent'
   return f.coordinatorWakeable ? 'owed' : 'not-wakeable';
 }
 
-function processLines(f: VagueFacts, c: VagueCensus): VagueProcessLine[] {
+export function processLines(f: VagueFacts, c: VagueCensus): VagueProcessLine[] {
   const out: VagueProcessLine[] = [];
   for (const p of people(f)) {
     const got = c.get(p.wsId);
@@ -270,6 +272,10 @@ export interface AsleepVagueView {
   /** `sent` · `owed` (not delivered yet, retried with a capped back-off) · `no-parent` (the coordinator is the human's conversation — or an OPS whose parent is archived / deleted — it never gets one) · `not-wakeable`. */
   relance: 'sent' | 'owed' | 'no-parent' | 'not-wakeable';
   unfinished: { wsId: string; label: string }[];
+  /** Every other workspace of the vague (#429: the sidebar dims their rows while the mark is up). */
+  memberIds: string[];
+  /** When the human was told (#429); null = not yet. */
+  humanAt: number | null;
 }
 
 const ago = (ms: number): string => {
