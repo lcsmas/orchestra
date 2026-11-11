@@ -135,7 +135,7 @@ export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {
 const DORMANT: VagueAwakeWhy = 'dormant';
 
 /** An open episode ends when the work is over, the vague is paused / held, or a MEMBER (never the coordinator's own Relance turn) RESUMES: a turn is running or its prompt waits / a turn STARTED since the declaration — never the idle clock, which a click on the workspace moves. */
-function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {
+export function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {
   if (!f.members.some((m) => m.unfinished)) return 'no-task';
   if (f.paused) return 'paused';
   if (f.runHeld) return 'run-held';
@@ -276,6 +276,8 @@ export interface AsleepVagueView {
   memberIds: string[];
   /** When the human was told (#429); null = not yet. */
   humanAt: number | null;
+  /** The Relancer can nudge this coordinator NOW (#429): it has a live parent and can be started (read from this pass's facts — `relance: 'sent'` alone says what happened, not what can). */
+  canNudge: boolean;
 }
 
 const ago = (ms: number): string => {

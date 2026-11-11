@@ -1,7 +1,7 @@
 // Vague endormie (#429, prototype variant A): the mark on the COORDINATOR's own sidebar row — a « endormie » pill on the name line, a sub-line « depuis HH:MM · N tâche(s) en attente » and a Relancer button.
 // The members' rows are dimmed by the `vague-dim` class (shared/vague-human.ts `vagueDimClass`). Each piece reads ONE store slice (`vagueMarks`) and renders nothing for an ordinary row. The mark is
 // drawn by the app, never by a conversation: it sits on the coordinator's row, so a vague folded in the sidebar still shows it.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { VAGUE_PILL, markOfCoordinator, markSubLine } from '../../shared/vague-human';
 
@@ -30,6 +30,14 @@ export function VagueRowBadge({ wsId }: { wsId: string }) {
 export function VagueRowNote({ wsId }: { wsId: string }) {
   const mark = useStore((s) => markOfCoordinator(s.vagueMarks, wsId));
   const [state, setState] = useState<'idle' | 'busy' | string>('idle');
+  const episode = mark ? `${mark.runId}@${mark.since}` : '';
+  // the answer belongs to ONE episode: it goes when the mark does (the component stays mounted) and fades after a few seconds
+  useEffect(() => setState('idle'), [episode]);
+  useEffect(() => {
+    if (state === 'idle' || state === 'busy') return;
+    const t = setTimeout(() => setState('idle'), 8000);
+    return () => clearTimeout(t);
+  }, [state]);
   if (!mark) return null;
   const relancer = async (e: React.MouseEvent) => {
     e.stopPropagation(); // a click on the button is not a click on the row

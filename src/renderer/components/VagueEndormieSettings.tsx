@@ -46,6 +46,8 @@ export function VagueEndormieSettings({ onClose }: Props) {
     setError(null);
     setDraft({ ...typed, [which]: e.target.value });
   };
+  // closing (backdrop or button) flushes a typed edit first: a mousedown on the backdrop must not lose it
+  const close = () => void commit().finally(onClose);
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') void commit();
   };
@@ -54,7 +56,7 @@ export function VagueEndormieSettings({ onClose }: Props) {
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) close();
       }}
     >
       <div className="modal sound-settings vague-settings" role="dialog" aria-label="Vague endormie" data-vague-settings>
@@ -86,7 +88,7 @@ export function VagueEndormieSettings({ onClose }: Props) {
           </div>
         )}
         <div className="modal-actions">
-          <button className="btn" onClick={onClose}>
+          <button className="btn" onClick={close}>
             Fermer
           </button>
         </div>

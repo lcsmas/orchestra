@@ -10,7 +10,7 @@
 import { log } from './logger.ts';
 import { RELANCE_RETRY_MS, type RelanceDelivery } from './relance.ts';
 import type { RelanceCensus } from '../shared/relance.ts';
-import { buildVagueAsleepRelance, DEFAULT_VAGUE_BOUNDS, processLines, stepVague, type AsleepVagueView, type VagueBounds, type VagueCensus, type VagueEpisode, type VagueFacts, type VagueState } from '../shared/vague-endormie.ts';
+import { buildVagueAsleepRelance, DEFAULT_VAGUE_BOUNDS, episodeEnd, processLines, stepVague, type AsleepVagueView, type VagueBounds, type VagueCensus, type VagueEpisode, type VagueFacts, type VagueState } from '../shared/vague-endormie.ts';
 import { humanStepDue, marksKey, VAGUE_HUMAN_MS, type VagueMark } from '../shared/vague-human.ts';
 
 /** How often the sweep looks. The delay is minutes; the census is read only for a vague with nothing else holding it awake. */
@@ -36,8 +36,8 @@ export interface VagueDeps {
   vague?(runId: string): VagueFacts | undefined;
   /** One workspace's Reliquats (kernel scope). A throw reads as UNKNOWN. */
   census(wsId: string): RelanceCensus;
-  /** Start / resume the coordinator's session and deliver `text` as its next turn (`held` = Admission holds the start: nothing is lost, the host retries). */
-  deliver(coordinatorId: string, text: string): Promise<RelanceDelivery>;
+  /** Start / resume the coordinator's session and deliver `text` as its next turn (`held` = Admission holds the start: nothing is lost, `retry` — absent = a sweep pass — is called when memory recovers). */
+  deliver(coordinatorId: string, text: string, retry?: () => Promise<unknown>): Promise<RelanceDelivery>;
   /** The delays, read per pass (#429: the two settings — `quietMs` = asleep after, `humanMs` = tell the human after the Relance; the hour is a constant). Absent = the spec's 10 min / 15 min / 1 h. */
   bounds?(): Partial<VagueBounds> & { humanMs?: number };
   /** The desktop notification (#429), called ONCE per episode when the human step is due (`humanAt` is persisted before the call: at most once across a crash). Absent = no notification. */
@@ -91,7 +91,7 @@ export function asleepVagues(): AsleepVagueView[] {
 export function asleepMarks(): VagueMark[] {
   return asleepVagues()
     .filter((v) => v.humanAt !== null)
-    .map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since, pending: v.unfinished.length, memberIds: v.memberIds, canRelance: v.relance === 'sent' || v.relance === 'owed' }));
+    .map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since, pending: v.unfinished.length, memberIds: v.memberIds, canRelance: v.canNudge }));
 }
 
 /** Tell the host the marks changed (only when they did). */
@@ -115,6 +115,14 @@ function humanStep(deps: VagueDeps, runId: string, nudge: 'owed' | 'done' | 'no-
   const st = states.get(runId);
   const view = views.get(runId);
   if (!st?.episode || !view || st.episode.humanAt !== undefined || !humanStepDue(st.episode, nudge, now, humanMs)) return;
+  // The notification is the one effect that cannot be taken back, and this pass's snapshot can be old (a delivery earlier in the pass waited up to 20 s): re-read the vague right before it.
+  // A member that resumed meanwhile ends the episode on the next pass — the human is not told about a sleep that is already over.
+  try {
+    const fresh = deps.vague?.(runId);
+    if (fresh && episodeEnd(fresh, st.episode)) return;
+  } catch (e) {
+    log.warn(`vague-endormie: fresh read before telling the human failed for ${runId} — judged on the pass's snapshot`, e);
+  }
   states.set(runId, { ...st, episode: { ...st.episode, humanAt: now } });
   views.set(runId, { ...view, humanAt: now });
   save(deps);
@@ -211,6 +219,7 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
           unfinished: verdict.unfinished.map((m) => ({ wsId: m.wsId, label: m.label })),
           memberIds: f.members.map((m) => m.wsId),
           humanAt: state.episode?.humanAt ?? null,
+          canNudge: f.coordinatorHasParent && f.coordinatorWakeable,
         };
         views.set(f.runId, view);
         humanStep(deps, f.runId, verdict.nudge, now, humanMs); // #429
@@ -355,6 +364,8 @@ export async function relanceVagueNow(deps: VagueDeps, runId: string): Promise<R
   }
   if (!fresh) return 'not-asleep';
   if (!fresh.coordinatorHasParent) return 'no-parent';
+  if (fresh.paused || fresh.runHeld) return 'not-asleep'; // a Pause / a hold is not a sleep: the next pass ends the episode, no turn is pushed into a parked fleet
+  if (slow.has(runId)) return 'pending'; // the automatic Relance of this episode is still in flight: a second turn would be a duplicate
   if (!fresh.coordinatorWakeable) return 'not-wakeable';
   const unfinished = fresh.members.filter((m) => m.unfinished);
   if (unfinished.length === 0) return 'not-asleep';
@@ -371,7 +382,9 @@ export async function relanceVagueNow(deps: VagueDeps, runId: string): Promise<R
   };
   const processMs = { ...DEFAULT_VAGUE_BOUNDS, ...(deps.bounds?.() ?? {}) }.processMs;
   const text = buildVagueAsleepRelance(fresh, view.since, unfinished, processLines(fresh, census()), processMs);
-  const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(fresh.coordinator.wsId, text))().catch((e: unknown) => {
+  const declaredAt = st.episode.declaredAt;
+  // `held` (Admission, low memory): the Relancer's OWN retry — a sweep pass would see the Relance already sent and deliver nothing, silently dropping the click
+  const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(fresh.coordinator.wsId, text, () => relanceVagueNow(deps, runId)))().catch((e: unknown) => {
     log.warn(`vague-endormie: relancer — delivery to ${fresh.coordinator.wsId} threw`, e);
     return 'failed' as const;
   });
@@ -380,7 +393,8 @@ export async function relanceVagueNow(deps: VagueDeps, runId: string): Promise<R
     log.info(`vague-endormie: coordinator ${fresh.coordinator.wsId} relanced by the human (Relancer) — vague ${runId}`);
     const cur = states.get(runId);
     // an automatic Relance still owed is now moot: this one went out
-    if (cur?.episode && cur.episode.nudgedAt === undefined) {
+    // the SAME episode only: a late result must not stamp a newer one (its human delay and its own Relance would be wrong)
+    if (cur?.episode && cur.episode.declaredAt === declaredAt && cur.episode.nudgedAt === undefined) {
       states.set(runId, { ...cur, episode: { ...cur.episode, nudgedAt: deps.now() } });
       const v = views.get(runId);
       if (v) views.set(runId, { ...v, nudgedAt: deps.now(), relance: 'sent' });

@@ -20,7 +20,7 @@ test('the app starts the asleep-vague sweep after the Relance and stops it befor
 
 test('the coordinator\'s Relance goes through THE Relance delivery (Admission, then sdkStartAndDeliver) — the same function as a member\'s Relance, with its own Admission site', () => {
   const host = read('vague-endormie-host.ts');
-  assert.match(host, /deliver: \(coordinatorId, text\) => deliverRelance\(coordinatorId, text, 'relance-vague', \(\) => sweepVaguesNow\(productionVagueDeps\)\)/);
+  assert.match(host, /deliver: \(coordinatorId, text, retry\) => deliverRelance\(coordinatorId, text, 'relance-vague', retry \?\? \(\(\) => sweepVaguesNow\(productionVagueDeps\)\)\)/);
   const rel = read('relance-host.ts');
   assert.match(rel, /export async function deliverRelance\(wsId: string, text: string, site: string, retry: \(\) => Promise<unknown>\)/);
   assert.match(rel, /wakeHeldForMemory\(ws, retry, \{ site \}\)\) return 'held'/);
@@ -79,6 +79,8 @@ test('#429 the delays are LIVE settings read at every pass (never cached), a wri
   assert.match(host, /onMarks: \(\) => broadcastVagueMarks\(\)/);
   assert.match(host, /platform\.broadcast\(VAGUE_MARKS_PUSH_CHANNEL, stamped\(\)\)/);
   const set = read('vague-delays-setting.ts');
+  assert.match(set, /if \(error\) return \{ ok: false, error \};/, 'an invalid value returns BEFORE any write');
+  assert.match(set, /\n    onChanged\(\);\n/, 'a write asks the sweep for a pass');
   assert.match(set, /vagueDelaysError\(next\)/, 'the write validates');
   assert.ok(set.indexOf('vagueDelaysError(next)') < set.indexOf('store.setVagueDelays('), 'validated BEFORE the write');
 });

@@ -942,3 +942,119 @@ test('#429 Relancer — a start that hangs answers `pending` after the wait (the
   await new Promise((res) => setImmediate(res));
   assert.equal(asleepVagues()[0].relance, 'sent', 'the late result landed on the episode');
 });
+
+// ── #429 review round: the irreversible effect re-reads the world; the Relancer's own retry, guards and episode identity ──
+
+test('#429 review — the notification re-reads the vague right before it fires: a member that resumed since the pass\'s snapshot means the human is NOT told (and nothing is persisted as told)', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 10 * MIN); // declared + Relanced
+  const snapshot = r.vagues.get('ops')!;
+  // the pass's snapshot still says « asleep », but the fresh read (taken later, right before the toast) says a member is working
+  r.deps.vague = () => baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] });
+  await advance(r, 15 * MIN + VAGUE_SWEEP_MS);
+  assert.equal(r.told.length, 0, 'no notification for a sleep that is already over');
+  assert.equal(store.disk.ops.episode?.humanAt, undefined, 'and humanAt is not recorded');
+  assert.ok(snapshot);
+  // control: the same vague with a fresh read that agrees it is asleep IS told
+  __resetVagueEndormieForTests();
+  const c = humanRig();
+  await advance(c, 30 * MIN);
+  assert.equal(c.told.length, 1);
+});
+
+test('#429 review — a Relance delivered in the SAME pass the human step fires does not wipe `humanAt` (unwakeable until the due pass, then wakeable)', async () => {
+  const r = humanRig();
+  const store = memStore();
+  r.deps.persist = store;
+  set(r, baseFacts({ coordinatorWakeable: false }));
+  await advance(r, 10 * MIN + VAGUE_SWEEP_MS); // declared; the coordinator cannot be started
+  const due = asleepVagues()[0].declaredAt + 15 * MIN;
+  r.clock.t = due - VAGUE_SWEEP_MS;
+  await sweepVagues(r.deps);
+  assert.equal(r.told.length, 0);
+  set(r, baseFacts()); // wakeable again exactly as the human delay lapses
+  r.clock.t = due;
+  await sweepVagues(r.deps);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.turns.length, 1, 'the Relance went out in the same pass');
+  assert.equal(typeof store.disk.ops.episode?.humanAt, 'number', 'humanAt survived the nudge mark');
+  assert.equal(typeof store.disk.ops.episode?.nudgedAt, 'number');
+});
+
+test('#429 review Relancer — `held` registers ITS OWN retry (a sweep pass would see the Relance already sent and drop the click); it goes out when memory recovers', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  assert.equal(r.turns.length, 1);
+  let retry: (() => Promise<unknown>) | undefined;
+  r.deps.deliver = async (wsId, text, rt) => {
+    if (!retry) { retry = rt; return 'held'; }
+    r.turns.push({ wsId, text });
+    return 'sent';
+  };
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'held');
+  assert.equal(typeof retry, 'function', 'a retry was handed to the delivery');
+  await advance(r, 60 * MIN);
+  assert.equal(r.turns.length, 1, 'the automatic sweep does NOT deliver it (Relance already sent)');
+  await retry!();
+  assert.equal(r.turns.length, 2, 'the Relancer\'s retry did');
+});
+
+test('#429 review Relancer — a Pause / a held run is not a sleep: refused, no turn pushed into a parked fleet', async () => {
+  for (const over of [{ paused: true }, { runHeld: true }]) {
+    __resetVagueEndormieForTests();
+    const r = humanRig();
+    await advance(r, 30 * MIN);
+    set(r, baseFacts(over));
+    assert.equal(await relanceVagueNow(r.deps, 'ops'), 'not-asleep', JSON.stringify(over));
+    assert.equal(r.turns.length, 1, 'only the automatic Relance');
+  }
+});
+
+test('#429 review Relancer — while the automatic Relance of the episode is still IN FLIGHT the click answers `pending` and sends nothing (no duplicate turn)', async () => {
+  const r = humanRig();
+  let calls = 0;
+  r.deps.deliver = () => { calls++; return new Promise<RelanceDelivery>(() => {}); };
+  r.deps.deliverWaitMs = 1;
+  await advance(r, 11 * MIN); // the automatic delivery hangs
+  assert.equal(calls, 1);
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  assert.equal(calls, 1, 'the click delivered nothing of its own');
+});
+
+test('#429 review Relancer — a LATE result of an old episode cannot stamp a newer one (its own Relance and human delay stay its own)', async () => {
+  const r = humanRig();
+  r.outcome.next = 'failed';
+  await advance(r, 20 * MIN); // owed
+  let release: (v: RelanceDelivery) => void = () => {};
+  r.deps.deliver = () => new Promise<RelanceDelivery>((res) => { release = res; });
+  r.deps.deliverWaitMs = 1;
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  // the episode ends (a member resumes) and a NEW one is declared, still owed
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  const t1 = r.clock.t;
+  r.deps.deliver = async () => 'failed';
+  set(r, baseFacts({ members: [member('impl', { lastActivityAt: t1 }), member('verifier', { unfinished: false })], coordinator: person('ops', { lastActivityAt: t1 }) }));
+  await advance(r, 12 * MIN);
+  const second = asleepVagues()[0];
+  assert.ok(second && second.since === t1, 'a second episode is open');
+  release('sent'); // the OLD click finally lands
+  await new Promise((res) => setImmediate(res));
+  assert.equal(asleepVagues()[0].nudgedAt, null, 'the new episode is still owed');
+  assert.equal(asleepVagues()[0].relance, 'owed');
+});
+
+test('#429 review — `canRelance` reads this pass\'s facts: a coordinator relanced earlier that has since lost its parent (or cannot be started) offers no button', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  assert.equal(r.marks()[0].canRelance, true);
+  set(r, baseFacts({ coordinatorHasParent: false }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(asleepVagues()[0].relance, 'sent', 'it WAS sent');
+  assert.equal(r.marks()[0].canRelance, false, 'but the button would be refused: not offered');
+  set(r, baseFacts({ coordinatorWakeable: false }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(r.marks()[0].canRelance, false);
+});

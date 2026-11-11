@@ -65,7 +65,7 @@ export const productionVagueDeps: VagueDeps = {
   },
   onMarks: () => broadcastVagueMarks(),
   persist: createVagueFileStore(() => path.join(orchestraHome(), 'vague-endormie.json')),
-  deliver: (coordinatorId, text) => deliverRelance(coordinatorId, text, 'relance-vague', () => sweepVaguesNow(productionVagueDeps)),
+  deliver: (coordinatorId, text, retry) => deliverRelance(coordinatorId, text, 'relance-vague', retry ?? (() => sweepVaguesNow(productionVagueDeps))),
 };
 
 /** The push the renderer subscribes to (the WHOLE set, a snapshot — it cannot drift) and the two channels it calls. */
