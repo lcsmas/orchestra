@@ -31,7 +31,7 @@ const MUTANTS = [
   ['quiet-no-floor', S, 'since = Math.max(quietSince, prev?.protectedAt ?? -Infinity);', 'since = quietSince;'],
   ['quiet-short', S, 'if (now < since + bounds.quietMs)', 'if (now < since + bounds.quietMs - 60_000)'],
   ['quiet-long', S, 'if (now < since + bounds.quietMs)', 'if (now < since + bounds.quietMs + 60_000)'],
-  ['blk-no-protected-mark', S, 'if (block) return { state: { protectedAt: now },', 'if (block) return { state: {},'],
+  ['blk-no-protected-mark', S, 'if (block) return { state: { protectedAt: now, blockedAt: now },', 'if (block) return { state: { blockedAt: now },'],
   // ── processes
   ['proc-ignored', S, '  if (procs.length > 0) {\n', '  if (false) {\n'],
   ['proc-protects-forever', S, 'if (now < lapse) return', 'if (true) return'],
@@ -41,7 +41,7 @@ const MUTANTS = [
   ['proc-coordinator-ignored', S, 'for (const p of people(f)) {\n    const got', 'for (const p of f.members) {\n    const got'],
   ['proc-lapse-ignores-blocked', S, '    const floor = (prev?.blockedAt ?? -Infinity) + bounds.quietMs;\n', '    const floor = -Infinity;\n'],
   ['proc-protection-marks-blocked', S, "return { state: { ...prev, protectedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };", "return { state: { ...prev, protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };"],
-  ['proc-since-is-quiet', S, '    since = lapse;', '    since = quietSince;'],
+  ['proc-since-is-quiet', S, '    since = Math.max(lapse, prev?.blockedAt ?? -Infinity);', '    since = quietSince;'],
   // ── the episode
   ['ep-redeclares', S, "declared: false, nudge: owed ? 'owed' : 'done'", "declared: true, nudge: owed ? 'owed' : 'done'"],
   ['ep-always-owed', S, 'const owed = ep.nudgedAt === undefined;', 'const owed = true;'],
@@ -52,7 +52,7 @@ const MUTANTS = [
   ['ep-no-task-ignored', S, "function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {\n  if (!f.members.some((m) => m.unfinished)) return 'no-task';\n", 'function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {\n'],
   ['ep-paused-ignored', S, `${BLOCK}  if (f.members.some((m) => m.active`, "  if (f.runHeld) return 'run-held';\n  if (f.members.some((m) => m.active"],
   ['ep-held-ignored', S, "  if (f.runHeld) return 'run-held';\n  if (f.members.some((m) => m.active", '  if (f.members.some((m) => m.active'],
-  ['ep-protected-not-marked', S, "return { state: { protectedAt: now }, verdict: { kind: 'awake', why: end } };", "return { state: {}, verdict: { kind: 'awake', why: end } };"],
+  ['ep-protected-not-marked', S, "return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: end } };", "return { state: {}, verdict: { kind: 'awake', why: end } };"],
   // ── the text
   ['txt-no-since', S, 'has been asleep since ${clock(since)} UTC', 'has been asleep'],
   ['txt-no-task', S, '${oneLine(m.label)} — ${task(m.task)} — last activity', '${oneLine(m.label)} — last activity'],
