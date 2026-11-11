@@ -6,6 +6,9 @@ import {
   VAGUE_DELAY_MAX,
   VAGUE_HUMAN_MS,
   delaysToMs,
+  foldHintTitle,
+  foldedMarks,
+  relancerLabel,
   humanStepDue,
   isDimmedMember,
   localHHMM,
@@ -89,7 +92,7 @@ test('vagueDelaysError — the write path refuses what the reader would silently
   assert.notEqual(vagueDelaysError(null), null);
 });
 
-const mark = (over: Partial<VagueMark> = {}): VagueMark => ({ runId: 'ops', coordinatorId: 'ops', since: T0, pending: 1, memberIds: ['i1', 'i2'], canRelance: true, ...over });
+const mark = (over: Partial<VagueMark> = {}): VagueMark => ({ runId: 'ops', coordinatorId: 'ops', coordinator: 'ops-bloc-html', since: T0, pending: 1, memberIds: ['i1', 'i2'], canRelance: true, relancing: false, ...over });
 
 test('the mark is on the coordinator row, the members are dimmed, nobody else is', () => {
   const m: VagueMarks = { rev: 1, marks: [mark()] };
@@ -129,4 +132,20 @@ test('words: « depuis HH:MM · N tâche(s) en attente » in the reader\'s time 
     if (was === undefined) delete process.env.TZ;
     else process.env.TZ = was;
   }
+});
+
+test('folded ANCESTOR: the hint is for the marked coordinators among the HIDDEN rows only; nothing when the tree is open', () => {
+  const m: VagueMarks = { rev: 1, marks: [mark(), mark({ runId: 'b', coordinatorId: 'ops-b', coordinator: 'ops-solo' })] };
+  assert.deepEqual(foldedMarks(m, ['ops', 'i1']).map((x) => x.coordinatorId), ['ops']);
+  assert.deepEqual(foldedMarks(m, ['ops', 'ops-b']).map((x) => x.coordinatorId), ['ops', 'ops-b']);
+  assert.deepEqual(foldedMarks(m, []), [], 'unfolded: no hint');
+  assert.deepEqual(foldedMarks(m, ['i1', 'i2']), [], 'members hidden but no coordinator among them: no hint');
+  assert.deepEqual(foldedMarks(null, ['ops']), []);
+  assert.deepEqual(foldedMarks({ rev: 2, marks: [] }, ['ops']), [], 'resumed: the hint goes with the mark');
+  const t = foldHintTitle(foldedMarks(m, ['ops', 'ops-b']));
+  assert.match(t, /Vague endormie repliée : ops-bloc-html \(depuis \d\d:\d\d\), ops-solo/);
+});
+
+test('the Relancer\'s accessible name names the coordinator it nudges', () => {
+  assert.equal(relancerLabel({ coordinator: 'ops-bloc-html' }), 'Relancer ops-bloc-html');
 });

@@ -15,6 +15,7 @@ const F = 'src/main/vague-endormie-store.ts';
 const HV = 'src/shared/vague-human.ts';
 const VM = 'src/renderer/components/VagueMark.tsx';
 const HS = 'src/main/vague-delays-setting.ts';
+const SB = 'src/renderer/components/Sidebar.tsx';
 const BLOCK = "  if (f.paused) return 'paused';\n  if (f.runHeld) return 'run-held';\n";
 const MUTANTS = [
   // ── the asleep definition (blockerOf): one arm per clause
@@ -192,6 +193,20 @@ const MUTANTS = [
   ['hs-relancer-duplicates-in-flight', M, "  if (slow.has(runId)) return 'pending';", '  if (false) return \'pending\';'],
   ['hs-landed-any-episode', M, 'cur.episode.declaredAt === declaredAt && cur.episode.nudgedAt === undefined', 'cur.episode.nudgedAt === undefined'],
   ['hs-cannudge-always', M, 'canNudge: f.coordinatorHasParent && f.coordinatorWakeable,', 'canNudge: true,'],
+  ['hs-sweep-ignores-inflight-click', M, "|| inflight.has(f.runId)) continue;", ') continue;'],
+  ['hs-relancer-ignores-inflight', M, "  if (inflight.has(runId)) return 'pending';", "  if (false) return 'pending';"],
+  ['hs-relancer-inflight-never-cleared', M, "    .finally(() => {\n      inflight.delete(runId);\n      publishMarks(deps);\n    });", "    .finally(() => {\n      publishMarks(deps);\n    });"],
+  ['hs-sweep-inflight-never-cleared', M, "          .finally(() => {\n            inflight.delete(f.runId);\n            publishMarks(deps);\n          });", "          .finally(() => {\n            publishMarks(deps);\n          });"],
+  ['hs-relancing-not-on-mark', M, 'relancing: inflight.has(v.runId) }', 'relancing: false }'],
+  ['hs-hung-delivery-blocks-end', M, '          if (open && episodeEnd(f, open)) {', '          if (false as boolean && open) {'],
+  ['hs-end-keeps-view', M, "  counters.ended++;\n  views.delete(runId);\n  retryAt.delete(runId);\n  heldLogged.delete(runId);", "  counters.ended++;\n  retryAt.delete(runId);\n  heldLogged.delete(runId);"],
+  ['hs-end-keeps-state', M, "  states.set(runId, { ...(prev.everSeen ? { everSeen: true } : {}), protectedAt: now, blockedAt: now });\n  counters.ended++;", "  counters.ended++;"],
+  ['hs-fold-hint-everywhere', HV, 'm.marks.filter((x) => hiddenIds.includes(x.coordinatorId))', 'm.marks'],
+  ['hs-fold-hint-title-no-name', HV, '`${x.coordinator} (depuis ${localHHMM(x.since)})`', '`(depuis ${localHHMM(x.since)})`'],
+  ['hs-relancer-label-generic', HV, '`Relancer ${m.coordinator}`', "'Relancer'"],
+  ['hs-ui-button-not-disabled', VM, 'disabled={working}', 'disabled={state === \'busy\'}'],
+  ['hs-ui-no-fold-hint-pinned', SB, '{isCollapsed && <VagueFoldHint hidden={hidden} />}', ''],
+  ['hs-ui-no-fold-hint-repo', SB, '{isCollapsed && <VagueFoldHint hidden={hiddenKids} />}', ''],
   ['hs-ui-button-always', VM, '{mark.canRelance && (', '{true && ('],
   ['hs-ui-click-selects-row', VM, '    e.stopPropagation(); // a click on the button is not a click on the row\n', ''],
 ];

@@ -60,6 +60,8 @@ export function humanStepDue(ep: HumanStepInput, nudge: HumanNudge, now: number,
 export interface VagueMark {
   runId: string;
   coordinatorId: string;
+  /** The coordinator's name (the folded-ancestor hint and the button's accessible name say it). */
+  coordinator: string;
   /** When nothing could wake anyone any more (ms epoch) — « depuis HH:MM ». */
   since: number;
   /** Unfinished dispatched tasks — « N tâche(s) en attente ». */
@@ -68,6 +70,8 @@ export interface VagueMark {
   memberIds: string[];
   /** The Relancer button nudges the coordinator again — false when it cannot be (no parent: its conversation is the human's, nothing is ever sent there; or it cannot be started now). */
   canRelance: boolean;
+  /** A Relance of this vague is in flight (the sweep's or a click): the button stays disabled until it settles. */
+  relancing: boolean;
 }
 
 /** What main pushes (`vague:update`) and answers (`vague:marks`): the WHOLE set, a snapshot — it cannot drift. */
@@ -82,6 +86,12 @@ export const newerVagueMarks = (prev: VagueMarks | null | undefined, next: Vague
 export const markOfCoordinator = (m: VagueMarks | null | undefined, wsId: string): VagueMark | undefined => m?.marks.find((x) => x.coordinatorId === wsId);
 /** True when this workspace is a member of an asleep vague the human was told about (its row is dimmed). */
 export const isDimmedMember = (m: VagueMarks | null | undefined, wsId: string): boolean => !!m?.marks.some((x) => x.memberIds.includes(wsId));
+/** Folded ANCESTOR (#429): the marked coordinators among the rows a folded tree hides — the folded row carries a small « ☾ » hint (no button, no dimming there). */
+export const foldedMarks = (m: VagueMarks | null | undefined, hiddenIds: readonly string[]): VagueMark[] => (m ? m.marks.filter((x) => hiddenIds.includes(x.coordinatorId)) : []);
+export const foldHintTitle = (marks: readonly VagueMark[]): string => `Vague endormie repliée : ${marks.map((x) => `${x.coordinator} (depuis ${localHHMM(x.since)})`).join(', ')}`;
+/** The Relancer's accessible name says WHICH coordinator it nudges. */
+export const relancerLabel = (m: Pick<VagueMark, 'coordinator'>): string => `Relancer ${m.coordinator}`;
+
 /** The class added to a dimmed member's row (empty otherwise) — the sidebar's one call, like `pauseDimClass`. */
 export const vagueDimClass = (m: VagueMarks | null | undefined, wsId: string): string => (isDimmedMember(m, wsId) ? ' vague-dim' : '');
 

@@ -122,10 +122,15 @@ test('#429 the renderer: marks loaded at boot (survives a restart / a reload), r
   assert.equal(count('${vagueDimClass(vagueMarks, w.id)}'), 2, 'the pinned tree and the repo tree both dim members');
   assert.equal(count('<VagueRowBadge wsId={w.id} />'), 2);
   assert.equal(count('<VagueRowNote wsId={w.id} />'), 2);
+  assert.ok(sb.includes('{isCollapsed && <VagueFoldHint hidden={hidden} />}') && sb.includes('{isCollapsed && <VagueFoldHint hidden={hiddenKids} />}'), 'a folded ancestor carries the hint in both render paths');
+  assert.ok(sb.includes('aria-label="Réglages de la vague endormie"'), 'the header button is French');
   assert.ok(sb.includes('const vagueMarks = useStore((s) => s.vagueMarks);'));
   assert.ok(sb.includes('{vagueSettingsOpen && <VagueEndormieSettings onClose={() => setVagueSettingsOpen(false)} />}'));
   assert.ok(rootOf('src/renderer/main.tsx').includes("import './vague-endormie.css';"));
   const note = rootOf('src/renderer/components/VagueMark.tsx');
   assert.match(note, /mark\.canRelance && \(/, 'the Relancer is rendered only where a Relance can go');
+  assert.match(note, /disabled=\{working\}/, 'disabled while a delivery is in flight');
+  assert.match(note, /aria-label=\{relancerLabel\(mark\)\}/, 'the name says which coordinator');
+  assert.match(note, /role="status" aria-live="polite"/, 'the answer is a live region that stays mounted');
   assert.match(note, /e\.stopPropagation\(\)/, 'a click on the button is not a click on the row (it must not select the sleeping workspace)');
 });

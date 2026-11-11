@@ -87,12 +87,26 @@ const probe = (cdp) => cdp.eval(`(() => {
       pill: pill ? pill.textContent : null, sub: note ? note.querySelector('.vague-note-text').textContent : null, since: note ? +note.querySelector('.vague-note-text').dataset.vagueSince : null, pending: note ? +note.querySelector('.vague-note-text').dataset.vaguePending : null,
       btn: !!btn, btnRect: btn ? (({ left, top, width, height }) => ({ left, top, width, height }))(btn.getBoundingClientRect()) : null, result: r.querySelector('[data-vague-result]')?.getAttribute('data-vague-result') ?? null,
       noteInside: nb ? nb.left >= b.left - 1 && nb.right <= b.right + 1 && nb.height > 4 : null,
+      hint: !!r.querySelector('[data-vague-hint]'), hintTitle: r.querySelector('[data-vague-hint]')?.getAttribute('title') ?? null, relancerName: btn ? btn.getAttribute('aria-label') : null,
+      resultRegion: (() => { const x = r.querySelector('[data-vague-note] [role=status]'); return x ? { live: x.getAttribute('aria-live'), text: x.textContent } : null; })(),
+      // the name row must not spill: nothing of it right of the chevron's left edge, nothing past the row
+      nameRow: (() => { const nr = r.querySelector('.ws-name-row'), ch = r.querySelector('.ws-chevron'); if (!nr) return null; const rr = r.getBoundingClientRect(), cl = ch ? ch.getBoundingClientRect().left : rr.right; let maxRight = 0; for (const c of nr.children) { const cb = c.getBoundingClientRect(); if (cb.width > 0) maxRight = Math.max(maxRight, cb.right); } return { maxRight, chevronLeft: cl, rowRight: rr.right, overChevron: maxRight > cl + 1, pastRow: maxRight > rr.right + 1 }; })(),
       rect: { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height } };
   }
-  return { vw: innerWidth, vh: innerHeight, rows: out };
+  const wl = document.querySelector('.ws-list');
+  return { vw: innerWidth, vh: innerHeight, listOverflowX: wl ? wl.scrollWidth - wl.clientWidth : null, rows: out };
 })()`);
 const settled = (cdp, pred, what, ms = 30000) => waitFor(async () => { const d = await probe(cdp); return pred(d) ? d : null; }, ms, what, 250);
 const centre = (r) => [r.left + r.width / 2, r.top + r.height / 2];
+const chevronOf = (cdp, name) => cdp.eval(`(() => { const b = [...document.querySelectorAll('button[aria-label]')].find((x) => new RegExp('^(Collapse|Expand) agents (spawned by|nested under) ${name}$').test(x.getAttribute('aria-label') || '')); if (!b) return null; const r = b.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height, label: b.getAttribute('aria-label') }; })()`);
+async function fold(cdp, name, want) { // want = 'folded' | 'open' — a trusted click on the row's chevron, then wait for the layout
+  const c = await chevronOf(cdp, name);
+  if (!c) throw new Error(`no chevron on ${name}`);
+  if (c.label.startsWith(want === 'folded' ? 'Expand' : 'Collapse')) return probe(cdp); // already there
+  await cdp.click(...centre(c));
+  await sleep(600);
+  return settled(cdp, (d) => (want === 'folded' ? !d.rows[NAME.i1]?.visible || d.rows[NAME.i1] === undefined : d.rows[NAME.i1]?.visible), `${name} to be ${want}`, 10000);
+}
 
 /** yellow-ish pixels (the pill / sub-line colour, rgb ≈ 255,200,87) in a screen rect — a paint oracle independent of the DOM */
 function yellowIn(png, rect) {
@@ -139,7 +153,12 @@ async function launch1() {
     const p0 = await probe(cdp);
     const anyMark = Object.values(p0.rows).some((r) => r.pill || r.sub || r.dim);
     clause('L1', 'ctl/no-mark-on-a-fleet-that-is-awake', !anyMark && p0.rows[NAME.opsA].opacity === 1 && p0.rows[NAME.i1].opacity === 1, `before anything: marks/dims on any of ${Object.keys(p0.rows).length} rows: ${anyMark}; members' opacity ${p0.rows[NAME.i1].opacity}`);
-    await cdp.eval('1'); await cdp.shot().then((b) => saveShot(`${LABEL}-L1-0-awake.png`, b));
+    await cdp.shot().then((b) => saveShot(`${LABEL}-L1-0-awake.png`, b));
+    // A/B control for the folded rows: the SAME fold, no mark yet — measured once, so the folded-with-mark clause below has a baseline
+    const awakeFold = await fold(cdp, 'ops-bloc-html', 'folded');
+    const af = awakeFold.rows[NAME.opsA];
+    clause('L1', 'ctl/folded-row-without-a-mark-does-not-spill', awakeFold.listOverflowX <= 0 && af.nameRow && !af.nameRow.overChevron && !af.nameRow.pastRow, `no mark, OPS-A folded: list overflow-x ${awakeFold.listOverflowX}px, name row right edge ${af.nameRow?.maxRight} vs chevron ${af.nameRow?.chevronLeft} / row ${af.nameRow?.rowRight}`);
+    await fold(cdp, 'ops-bloc-html', 'open');
 
     // ── Settings: the two delays, in the real dialog ──
     const d = await cdp.eval(`window.orchestra.vagueDelays()`);
@@ -206,18 +225,18 @@ async function launch1() {
     await sleep(1500);
     const afterClick = await probe(cdp);
     clause('L1', 'resume/a-click-on-the-sleeping-workspace-is-not-a-resume', !!afterClick.rows[NAME.opsA].pill && afterClick.rows[NAME.i1].dim, `after selecting « ${NAME.i1} »: pill ${afterClick.rows[NAME.opsA].pill}, member still dimmed ${afterClick.rows[NAME.i1].dim}`);
-    const chev = await cdp.eval(`(() => { const b = [...document.querySelectorAll('.ws-chevron, button[aria-label]')].find((x) => /^(Collapse|Expand) agents (spawned by|nested under) ops-bloc-html$/.test(x.getAttribute('aria-label') || '')); if (!b) return null; const r = b.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height, label: b.getAttribute('aria-label') }; })()`);
-    if (!chev) throw new Error('no collapse chevron on OPS-A');
-    await cdp.click(...centre(chev));
-    const folded = await settled(cdp, (d) => !d.rows[NAME.i1].visible, 'the vague to fold', 10000);
+    const folded = await fold(cdp, 'ops-bloc-html', 'folded');
     const F = folded.rows[NAME.opsA];
     clause('L1', 'collapsed/the-coordinator-row-stays-readable', F.visible && F.pill === '☾ endormie' && F.sub === A.sub && F.noteInside && F.btn && !folded.rows[NAME.i1].visible, `vague folded: members hidden (${['i1', 'i2', 'h1'].map((k) => folded.rows[NAME[k]].visible).join('/')}), the coordinator's row still shows « ${F.pill} » « ${F.sub} » + Relancer`);
+    clause('L1', 'collapsed/no-scrollbar-and-no-chip-over-the-chevron', folded.listOverflowX <= 0 && F.nameRow && !F.nameRow.overChevron && !F.nameRow.pastRow, `folded WITH the pill (+ the folded-members chip and any stall chip): list overflow-x ${folded.listOverflowX}px (control without a mark: ${awakeFold.listOverflowX}px); name row right edge ${F.nameRow?.maxRight} ≤ chevron ${F.nameRow?.chevronLeft} (over: ${F.nameRow?.overChevron}), ≤ row ${F.nameRow?.rowRight} (past: ${F.nameRow?.pastRow})`);
     await shotOf(cdp, 'L1-4-folded');
 
     // ── Relancer: nudges the coordinator again; nothing reaches the parentless one or the LEAD ──
     const stubBefore = fs.existsSync(world.stubLog) ? fs.readFileSync(world.stubLog, 'utf8') : '';
     const logOff = logSize(world);
-    await cdp.click(...centre(F.btnRect));
+    const a11y0 = await probe(cdp);
+    await cdp.eval(`document.querySelector('[data-vague-note] [role=status]').__rigNode = 'same'; 1`);
+    await cdp.click(...centre((await probe(cdp)).rows[NAME.opsA].btnRect));
     const relanced = await waitFor(() => /relanced by the human \(Relancer\)|delivery to .* threw|could not deliver|Relancer/.test(logSince(world, logOff)) || null, 60000, 'the Relancer to reach the coordinator delivery').catch(() => null);
     const resultText = await waitFor(async () => (await probe(cdp)).rows[NAME.opsA].result, 45000, 'the Relancer\'s result on the row').catch(() => null);
     const stubAfter = fs.existsSync(world.stubLog) ? fs.readFileSync(world.stubLog, 'utf8') : '';
@@ -231,12 +250,21 @@ async function launch1() {
     const stubFinal = fs.existsSync(world.stubLog) ? fs.readFileSync(world.stubLog, 'utf8') : '';
     const startedInFinal = (k) => stubFinal.split('\n').some((l) => l.split(' ')[1] === cwdOf(k));
     clause('L1', 'relancer/nudges-the-parented-coordinator-and-reports', !!resultText && ['sent', 'failed', 'held', 'pending', 'not-wakeable'].includes(resultText), `click on Relancer → the row reports « ${resultText} » (host outcome); app log: ${JSON.stringify((logSince(world, logOff).match(/vague-endormie: [^\n]*/g) ?? []).slice(0, 3))}; the click did not select another workspace (active row: ${selectedStill})`);
+    const region = await cdp.eval(`(() => { const x = document.querySelector('[data-vague-note] [role=status]'); return x ? { same: x.__rigNode === 'same', text: x.textContent, live: x.getAttribute('aria-live') } : null; })()`);
+    const headerLabel = await cdp.eval(`document.querySelector('[data-vague-open]')?.getAttribute('aria-label') ?? null`);
+    clause('L1', 'a11y/relancer-named-live-region-updated-french-header', a11y0.rows[NAME.opsA].relancerName === 'Relancer ops-bloc-html' && a11y0.rows[NAME.opsA].resultRegion?.live === 'polite' && !!region && region.same && /Relancé|Échec|Mémoire|Démarrage/.test(region.text) && headerLabel === 'Réglages de la vague endormie', `button name « ${a11y0.rows[NAME.opsA].relancerName} »; the status region was mounted before the click (aria-live ${a11y0.rows[NAME.opsA].resultRegion?.live}) and the SAME node now reads « ${region?.text} » (updated, not remounted); header button « ${headerLabel} »`);
     clause('L1', 'relancer/nothing-reaches-the-parentless-coordinator-or-the-lead', noParent === 'no-parent' && unknown === 'not-asleep' && !startedInFinal('lead') && !startedInFinal('opsB') && !startedInFinal('iB'), `relanceVague(OPS-B) → ${noParent} (refused before any delivery) · relanceVague('nope') → ${unknown} · stub claude started in: ${[...new Set(stubFinal.split('\n').filter(Boolean).map((l) => path.basename(l.split(' ')[1] ?? '')))].join(', ') || 'nowhere'} — LEAD ${startedInFinal('lead')}, OPS-B ${startedInFinal('opsB')}, its member ${startedInFinal('iB')}`);
     const stillMarked = await probe(cdp);
     clause('L1', 'relancer/the-mark-stays-only-a-resume-ends-it', !!stillMarked.rows[NAME.opsA].pill && !!stillMarked.rows[NAME.opsB].pill, `after the Relancer both marks are still up (OPS-A ${stillMarked.rows[NAME.opsA].pill}, OPS-B ${stillMarked.rows[NAME.opsB].pill})`);
-    // expand again so the next launch starts from the same layout the human had
-    await cdp.click(...centre((await cdp.eval(`(() => { const b = [...document.querySelectorAll('button[aria-label]')].find((x) => /^Expand agents (spawned by|nested under) ops-bloc-html$/.test(x.getAttribute('aria-label') || '')); const r = b.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })()`))));
-    await settled(cdp, (d) => d.rows[NAME.i1].visible, 'the vague to unfold', 10000);
+    // folded ANCESTOR: fold the LEAD's tree — the sleeping coordinator is hidden, the LEAD row (the nearest visible ancestor) carries a small hint
+    await fold(cdp, 'ops-bloc-html', 'open');
+    const lead0 = await probe(cdp);
+    const leadFolded = await (async () => { const c = await chevronOf(cdp, 'lead-vague'); if (!c) throw new Error('no chevron on the LEAD'); await cdp.click(...centre(c)); await sleep(600); return settled(cdp, (d) => !d.rows[NAME.opsA]?.visible, 'the LEAD tree to fold', 10000); })();
+    const LD = leadFolded.rows[NAME.lead];
+    clause('L1', 'folded-ancestor/hint-on-the-visible-ancestor-only', !lead0.rows[NAME.lead].hint && LD.hint && LD.hintTitle === `Vague endormie repliée : ops-bloc-html (depuis ${hhmm(epA.since)})` && !LD.btn && !LD.dim && !leadFolded.rows[NAME.opsB].hint && !leadFolded.rows[NAME.by].hint, `LEAD tree unfolded: hint ${lead0.rows[NAME.lead].hint}; folded: hint ${LD.hint} « ${LD.hintTitle} », Relancer on the LEAD row ${LD.btn}, LEAD dimmed ${LD.dim}; ops-solo (not hidden) ${leadFolded.rows[NAME.opsB].hint}, bystander ${leadFolded.rows[NAME.by].hint}`);
+    await shotOf(cdp, 'L1-5-lead-folded-hint');
+    const reopened = await (async () => { const c = await chevronOf(cdp, 'lead-vague'); await cdp.click(...centre(c)); await sleep(600); return settled(cdp, (d) => d.rows[NAME.opsA]?.visible, 'the LEAD tree to unfold', 10000); })();
+    clause('L1', 'folded-ancestor/no-hint-when-unfolded', !reopened.rows[NAME.lead].hint, `LEAD tree unfolded again: hint ${reopened.rows[NAME.lead].hint}`);
     // a whole sweep later (30 s) the episode is still the same one
     await sleep(35_000);
     const ep2 = readJson(world.vagueFile);
@@ -300,13 +328,22 @@ async function launch3m() {
   const now = Date.now();
   fs.writeFileSync(w3.vagueFile, JSON.stringify({ [ID.opsA]: { everSeen: true, episode: { since: now - 40 * 60_000, declaredAt: now - 30 * 60_000, nudgedAt: now - 29 * 60_000, humanAt: now - 14 * 60_000 } } }));
   let proof;
-  try { proof = mutantCopy(path.join(RIG_DIR, 'arm-vh-3m'), 'dist/assets', "vague-dim", 'vague-dlm'); } catch (e) { clause('L3m', 'mutant-built', false, String(e.message)); return; }
+  try {
+    proof = mutantCopy(path.join(RIG_DIR, 'arm-vh-3m'), 'dist/assets', "vague-dim", 'vague-dlm');
+    // second must-FAIL: the pill stops shrinking (a 240 px floor) — the folded-row overflow oracle must read RED
+    const css = walk(path.join(proof.copy, 'dist/assets')).filter((f) => f.endsWith('.css')).filter((f) => fs.readFileSync(f, 'utf8').includes('.vague-pill{'));
+    if (css.length !== 1) throw new Error(`.vague-pill rule found in ${css.length} css files (want 1)`);
+    fs.writeFileSync(css[0], fs.readFileSync(css[0], 'utf8').replace('.vague-pill{', '.vague-pill{flex-shrink:0!important;min-width:240px!important;'));
+  } catch (e) { clause('L3m', 'mutant-built', false, String(e.message)); return; }
   const L = await launch(w3, 'L3m', { appDir: proof.copy, mutantNote: true }).catch((e) => { clause('L3m', 'completed', false, `ABORTED: ${e.stack || e}`); return null; });
   if (!L) return;
   try {
     const P = await settled(L.cdp, (d) => d.rows[NAME.opsA]?.pill, 'the mark from the persisted episode', 90000);
     clause('L3m', 'must-fail/dimming-clause-reads-RED-when-the-class-is-wrong', !!P.rows[NAME.opsA].pill && ['i1', 'i2', 'h1'].every((k) => !P.rows[NAME[k]].dim && P.rows[NAME[k]].opacity === 1), `mutant copy (${proof.file}, ×${proof.n}: the dimming class renamed): the pill is up (${P.rows[NAME.opsA].pill}) but the members read opacity ${['i1', 'i2', 'h1'].map((k) => P.rows[NAME[k]].opacity).join('/')} — the real build reads 0.5 (L1/mark/members-dimmed…), so that clause would be RED here`);
     await shotOf(L.cdp, 'L3m-1-mutant-no-dimming');
+    const mf = await fold(L.cdp, 'ops-bloc-html', 'folded');
+    const mr = mf.rows[NAME.opsA];
+    clause('L3m', 'must-fail/folded-overflow-oracle-reads-RED-when-the-pill-cannot-shrink', !!mr.nameRow && (mr.nameRow.overChevron || mr.nameRow.pastRow || mf.listOverflowX > 0), `mutant copy (pill min-width 240px), OPS-A folded: name row right edge ${mr.nameRow?.maxRight} vs chevron ${mr.nameRow?.chevronLeft} / row ${mr.nameRow?.rowRight}, list overflow-x ${mf.listOverflowX}px — the real build reads none (L1/collapsed/no-scrollbar…), so that clause would be RED here`);
   } catch (e) { clause('L3m', 'completed', false, `ABORTED: ${e.stack || e}`); } finally { await stop(L); }
 }
 
@@ -320,7 +357,7 @@ clause('ctl', 'live-config-never-touched', JSON.stringify(canary0) === JSON.stri
 const busCheck = liveBusOpenedBy(world.ohome, LIVE_HOME);
 clause('ctl', 'live-bus-never-opened', busCheck.holders.length === 0 && busCheck.opened === path.join(world.ohome, 'bus.sqlite'), `the app opened ${busCheck.opened} (its scratch bus); rig processes holding the live bus: ${busCheck.holders.length ? busCheck.holders.join(',') : 'none'}`);
 const shotMd5 = (n) => rec.shots.find((s) => path.basename(s.file) === `${LABEL}-${n}.png`)?.md5;
-for (const [a, b] of [['L1-0-awake', 'L1-3-asleep'], ['L2-1-asleep-after-restart', 'L2-2-resumed-A-asleep-B'], ['L2-2-resumed-A-asleep-B', 'L2-3-all-resumed'], ['L1-3-asleep', 'L3m-1-mutant-no-dimming']]) {
+for (const [a, b] of [['L1-0-awake', 'L1-3-asleep'], ['L1-4-folded', 'L1-5-lead-folded-hint'], ['L2-1-asleep-after-restart', 'L2-2-resumed-A-asleep-B'], ['L2-2-resumed-A-asleep-B', 'L2-3-all-resumed'], ['L1-3-asleep', 'L3m-1-mutant-no-dimming']]) {
   clause('ctl', `captures-differ ${a} vs ${b}`, !!shotMd5(a) && !!shotMd5(b) && shotMd5(a) !== shotMd5(b), `${shotMd5(a)} vs ${shotMd5(b)}`);
 }
 console.log('\n== shots (md5) ==');

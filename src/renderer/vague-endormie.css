@@ -1,11 +1,14 @@
 /* Vague endormie (#429, prototype variant A): the mark on the coordinator's own row + the dimmed member rows. Own sheet (styles.css is appended to by every wave). */
-.vague-pill { margin-left: 6px; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255, 200, 87, 0.14); color: var(--yellow); white-space: nowrap; flex: 0 0 auto; }
+.vague-pill { margin-left: 6px; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; background: rgba(255, 200, 87, 0.14); color: var(--yellow); white-space: nowrap; flex: 0 1 auto; min-width: 1.6em; overflow: hidden; text-overflow: ellipsis; }
+/* a folded ANCESTOR of a sleeping vague: one small moon, nothing else */
+.vague-hint { flex: 0 0 auto; margin-left: 4px; font-size: 11px; line-height: 1; color: var(--yellow); }
 .ws-status-note.vague-note { display: flex; align-items: center; gap: 8px; color: var(--yellow); }
 .vague-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .vague-btn { font: inherit; font-size: 10.5px; padding: 0 8px; border-radius: 5px; border: 1px solid var(--yellow); background: transparent; color: var(--yellow); cursor: pointer; flex: 0 0 auto; }
 .vague-btn:hover:not(:disabled) { background: rgba(255, 200, 87, 0.14); }
 .vague-btn:disabled { opacity: 0.5; cursor: default; }
-.vague-result { color: var(--text-dim); flex: 0 0 auto; }
+.vague-result { color: var(--text-dim); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.vague-result:empty { display: none; }
 /* the members of a vague the human was told about: dimmed, the coordinator's row stays at full strength */
 .ws-item.vague-dim { opacity: 0.5; }
 

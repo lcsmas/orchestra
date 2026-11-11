@@ -76,6 +76,8 @@ let untrustedLogged = false;
 let lastSaved = '';
 /** Runs whose delivery is still pending past the wait: not touched again until it lands (a second turn for the same episode would be a duplicate). */
 const slow = new Set<string>();
+/** Runs with a Relance delivery in flight, whoever started it (the sweep or the Relancer): ONE per vague, a second turn for the same episode would be a duplicate. */
+const inflight = new Set<string>();
 let lastSweepError = '';
 let sweeping = false;
 let current: Promise<string[]> | null = null;
@@ -91,7 +93,7 @@ export function asleepVagues(): AsleepVagueView[] {
 export function asleepMarks(): VagueMark[] {
   return asleepVagues()
     .filter((v) => v.humanAt !== null)
-    .map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, since: v.since, pending: v.unfinished.length, memberIds: v.memberIds, canRelance: v.canNudge }));
+    .map((v) => ({ runId: v.runId, coordinatorId: v.coordinatorId, coordinator: v.coordinator, since: v.since, pending: v.unfinished.length, memberIds: v.memberIds, canRelance: v.canNudge, relancing: inflight.has(v.runId) }));
 }
 
 /** Tell the host the marks changed (only when they did). */
@@ -105,6 +107,18 @@ function publishMarks(deps: VagueDeps): void {
   } catch (e) {
     log.warn('vague-endormie: publishing the marks failed', e);
   }
+}
+
+/** The episode of `runId` is over (a member resumed, the work finished, a Pause): forget it and its marks. Shared by the normal pass and by a vague frozen on a hung delivery. */
+function endEpisode(runId: string, prev: VagueState | undefined, now: number, why: string): void {
+  if (!prev?.episode) return;
+  states.set(runId, { ...(prev.everSeen ? { everSeen: true } : {}), protectedAt: now, blockedAt: now });
+  counters.ended++;
+  views.delete(runId);
+  retryAt.delete(runId);
+  heldLogged.delete(runId);
+  attempts.delete(runId);
+  log.info(`vague-endormie: ${runId} is awake again (${why}) — the asleep episode since ${new Date(prev.episode.since).toISOString()} is over`);
 }
 
 /**
@@ -175,7 +189,13 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
     for (const f of all) {
       try {
         if (slow.has(f.runId)) {
-          // its delivery has not landed yet: nothing new is judged, but a Relance that hangs leaves the vague asleep — the human step runs on what is already known
+          // its delivery has not landed yet: nothing new is declared, but (1) a member that resumed / a finished wave still ends the episode — the mark must not outlive it while a start hangs —
+          // and (2) a Relance that hangs leaves the vague asleep: the human step runs on what is already known
+          const open = states.get(f.runId)?.episode;
+          if (open && episodeEnd(f, open)) {
+            endEpisode(f.runId, states.get(f.runId), now, episodeEnd(f, open)!);
+            continue;
+          }
           const sv = views.get(f.runId);
           if (sv) humanStep(deps, f.runId, sv.relance === 'no-parent' ? 'no-parent' : sv.relance === 'not-wakeable' ? 'not-wakeable' : states.get(f.runId)?.episode?.nudgedAt !== undefined ? 'done' : 'owed', now, humanMs);
           continue;
@@ -233,7 +253,7 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
           attempts.delete(f.runId);
           retryAt.delete(f.runId);
         }
-        if (verdict.nudge !== 'owed' || (retryAt.get(f.runId) ?? 0) > now) continue;
+        if (verdict.nudge !== 'owed' || (retryAt.get(f.runId) ?? 0) > now || inflight.has(f.runId)) continue;
         // Judge the coordinator on FRESH state right before it is told: a turn it started since the pass's snapshot makes the Relance pointless (it is reading the world).
         const fresh = deps.vague?.(f.runId) ?? f;
         if (fresh.coordinator.active || fresh.coordinator.waiting || fresh.paused || fresh.runHeld || !fresh.coordinatorWakeable || !fresh.coordinatorHasParent) continue;
@@ -242,10 +262,17 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
         const episode = state.episode!;
         states.set(f.runId, { ...state, episode: { ...episode, nudgedAt: now } });
         save(deps); // at most once across a crash: what was marked is not sent again
-        const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(f.coordinator.wsId, text))().catch((e: unknown) => {
-          log.warn(`vague-endormie: delivery to ${f.coordinator.wsId} threw`, e);
-          return 'failed' as const;
-        });
+        inflight.add(f.runId);
+        publishMarks(deps); // the Relancer is disabled while this delivery is in flight
+        const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(f.coordinator.wsId, text))()
+          .catch((e: unknown) => {
+            log.warn(`vague-endormie: delivery to ${f.coordinator.wsId} threw`, e);
+            return 'failed' as const;
+          })
+          .finally(() => {
+            inflight.delete(f.runId);
+            publishMarks(deps);
+          });
         const settle = (result: RelanceDelivery): void => {
           const cur = states.get(f.runId);
           if (result === 'sent') {
@@ -365,7 +392,7 @@ export async function relanceVagueNow(deps: VagueDeps, runId: string): Promise<R
   if (!fresh) return 'not-asleep';
   if (!fresh.coordinatorHasParent) return 'no-parent';
   if (fresh.paused || fresh.runHeld) return 'not-asleep'; // a Pause / a hold is not a sleep: the next pass ends the episode, no turn is pushed into a parked fleet
-  if (slow.has(runId)) return 'pending'; // the automatic Relance of this episode is still in flight: a second turn would be a duplicate
+  if (inflight.has(runId)) return 'pending'; // a Relance of this vague is still in flight (the sweep's or an earlier click): a second turn would be a duplicate
   if (!fresh.coordinatorWakeable) return 'not-wakeable';
   const unfinished = fresh.members.filter((m) => m.unfinished);
   if (unfinished.length === 0) return 'not-asleep';
@@ -384,10 +411,17 @@ export async function relanceVagueNow(deps: VagueDeps, runId: string): Promise<R
   const text = buildVagueAsleepRelance(fresh, view.since, unfinished, processLines(fresh, census()), processMs);
   const declaredAt = st.episode.declaredAt;
   // `held` (Admission, low memory): the Relancer's OWN retry — a sweep pass would see the Relance already sent and deliver nothing, silently dropping the click
-  const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(fresh.coordinator.wsId, text, () => relanceVagueNow(deps, runId)))().catch((e: unknown) => {
-    log.warn(`vague-endormie: relancer — delivery to ${fresh.coordinator.wsId} threw`, e);
-    return 'failed' as const;
-  });
+  inflight.add(runId);
+  publishMarks(deps);
+  const delivery: Promise<RelanceDelivery> = (async () => deps.deliver(fresh.coordinator.wsId, text, () => relanceVagueNow(deps, runId)))()
+    .catch((e: unknown) => {
+      log.warn(`vague-endormie: relancer — delivery to ${fresh.coordinator.wsId} threw`, e);
+      return 'failed' as const;
+    })
+    .finally(() => {
+      inflight.delete(runId);
+      publishMarks(deps);
+    });
   const landed = (result: RelanceDelivery): void => {
     if (result !== 'sent') return;
     log.info(`vague-endormie: coordinator ${fresh.coordinator.wsId} relanced by the human (Relancer) — vague ${runId}`);
@@ -445,6 +479,7 @@ export function __resetVagueEndormieForTests(): void {
   loaded = false;
   lastSaved = '';
   slow.clear();
+  inflight.clear();
   lastSweepError = '';
   sweeping = false;
   current = null;

@@ -58,7 +58,7 @@ import { ClaudeCodeUpdateStrip } from './ClaudeCodeUpdateStrip';
 import { PauseMenuHost } from './pause/PauseMenu';
 import { pauseDimClass } from '../../shared/pause-ui-view';
 import { vagueDimClass } from '../../shared/vague-human';
-import { VagueRowBadge, VagueRowNote } from './VagueMark';
+import { VagueFoldHint, VagueRowBadge, VagueRowNote } from './VagueMark';
 import { SANDBOX_PAUSED_TICKET } from '../../shared/sandbox-pause';
 import { withExLabel } from '../../shared/former-branch';
 
@@ -1646,6 +1646,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 )}
                 <PauseRowBadge wsId={w.id} />
                 <VagueRowBadge wsId={w.id} />
+                {isCollapsed && <VagueFoldHint hidden={hidden} />}
                 <HibernatedChip w={w} />
                 {/* #88 — "N deliveries waiting, no turn started in X". Renders
                     null unless this workspace is actually stalled, so it costs
@@ -1759,7 +1760,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
             className="header-icon-btn header-text-icon"
             onClick={() => setVagueSettingsOpen(true)}
             title="Vague endormie — délais avant « endormie » et avant de vous prévenir"
-            aria-label="Vague endormie settings"
+            aria-label="Réglages de la vague endormie"
             data-vague-open
           >
             ☾
@@ -2365,6 +2366,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       )}
                       <PauseRowBadge wsId={w.id} />
                 <VagueRowBadge wsId={w.id} />
+                      {isCollapsed && <VagueFoldHint hidden={hiddenKids} />}
                       <HibernatedChip w={w} />
                       {/* #88 — same badge on the repo-section render path.
                           Both paths render the same component so the two can

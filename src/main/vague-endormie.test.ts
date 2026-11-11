@@ -665,7 +665,7 @@ test('#429 — 15 minutes after the coordinator\'s Relance with no member resume
   await advance(r, VAGUE_SWEEP_MS);
   assert.equal(r.told.length, 1, 'at the delay: exactly one notification');
   assert.deepEqual(r.told[0], { coordinatorId: 'ops', coordinator: 'ops', since: T0, pending: 1 });
-  assert.deepEqual(r.marks(), [{ runId: 'ops', coordinatorId: 'ops', since: T0, pending: 1, memberIds: ['impl', 'verifier'], canRelance: true }]);
+  assert.deepEqual(r.marks(), [{ runId: 'ops', coordinatorId: 'ops', since: T0, pending: 1, memberIds: ['impl', 'verifier'], canRelance: true, relancing: false, coordinator: 'ops' }]);
   assert.equal(vagueCounters().humanTold, 1);
 });
 
@@ -1057,4 +1057,95 @@ test('#429 review — `canRelance` reads this pass\'s facts: a coordinator relan
   set(r, baseFacts({ coordinatorWakeable: false }));
   await advance(r, VAGUE_SWEEP_MS);
   assert.equal(r.marks()[0].canRelance, false);
+});
+
+// ── #429 round 2: a hung delivery freezes the DECLARATION, never the episode's end; one delivery in flight per vague ──
+
+test('#429 M1 — while a Relance start HANGS, a member that resumes still takes the mark and the episode down within one pass (nothing waits for the start to settle)', async () => {
+  const r = humanRig();
+  r.deps.deliverWaitMs = 1;
+  r.deps.deliver = () => new Promise<RelanceDelivery>(() => {}); // never settles
+  await advance(r, 30 * MIN);
+  assert.equal(r.marks().length, 1, 'mark up while the start hangs');
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.deepEqual(r.marks(), [], 'the mark goes');
+  assert.equal(asleepVagues().length, 0, 'and so does the episode');
+  assert.equal(vagueCounters().ended, 1);
+});
+
+test('#429 M1 — a member whose turn STARTED since the declaration (not active any more) ends it too; so do finished tasks and a Pause — all while the start hangs', async () => {
+  const cases: Array<[string, Partial<VagueFacts>]> = [
+    ['turn started', { members: [member('impl', { lastTurnStartAt: T0 + 20 * MIN }), member('verifier', { unfinished: false })] }],
+    ['work finished', { members: [member('impl', { unfinished: false }), member('verifier', { unfinished: false })] }],
+    ['pause', { paused: true }],
+  ];
+  for (const [name, over] of cases) {
+    __resetVagueEndormieForTests();
+    const r = humanRig();
+    r.deps.deliverWaitMs = 1;
+    r.deps.deliver = () => new Promise<RelanceDelivery>(() => {});
+    await advance(r, 15 * MIN);
+    await advance(r, 15 * MIN); // human step fired
+    assert.equal(r.marks().length, 1, name);
+    set(r, baseFacts(over));
+    await advance(r, VAGUE_SWEEP_MS);
+    assert.deepEqual(r.marks(), [], name);
+  }
+});
+
+test('#429 M1 — control: a hung start with nobody resuming keeps the mark (the end is judged, not assumed)', async () => {
+  const r = humanRig();
+  r.deps.deliverWaitMs = 1;
+  r.deps.deliver = () => new Promise<RelanceDelivery>(() => {});
+  await advance(r, 60 * MIN);
+  assert.equal(r.marks().length, 1);
+});
+
+test('#429 m1 — ONE delivery in flight per vague, whoever started it: a click while the automatic one is in flight (inside the 20 s wait) delivers nothing, and the mark says a Relance is under way', async () => {
+  const r = humanRig();
+  let calls = 0;
+  let release: (v: RelanceDelivery) => void = () => {};
+  r.deps.deliver = () => { calls++; return new Promise<RelanceDelivery>((res) => { release = res; }); };
+  r.deps.deliverWaitMs = 5_000;
+  await advance(r, 10 * MIN - VAGUE_SWEEP_MS); // not declared yet
+  r.clock.t += VAGUE_SWEEP_MS;
+  const pass = sweepVagues(r.deps); // declared; the automatic delivery is now in flight
+  await new Promise((res) => setImmediate(res));
+  assert.equal(calls, 1);
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  assert.equal(calls, 1, 'the click delivered nothing');
+  release('sent');
+  await pass;
+  assert.notEqual(asleepVagues()[0].nudgedAt, null, 'the automatic Relance landed');
+});
+
+test('#429 m1 — a click while a PREVIOUS click is still pending (hung start) answers `pending` and delivers nothing; `relancing` is on the mark meanwhile and off once it settles', async () => {
+  const r = humanRig();
+  await advance(r, 30 * MIN);
+  let calls = 0;
+  let release: (v: RelanceDelivery) => void = () => {};
+  r.deps.deliver = () => { calls++; return new Promise<RelanceDelivery>((res) => { release = res; }); };
+  r.deps.deliverWaitMs = 1;
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  assert.equal(r.marks()[0].relancing, true, 'the button is disabled while it is in flight');
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  assert.equal(calls, 1, 'one delivery, not two');
+  release('sent');
+  await new Promise((res) => setImmediate(res));
+  assert.equal(r.marks()[0].relancing, false);
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending', 'a later click is delivered again (it hangs again here)');
+  assert.equal(calls, 2);
+});
+
+test('#429 m1 — the sweep does not send its automatic Relance while a click\'s delivery is in flight', async () => {
+  const r = humanRig();
+  r.outcome.next = 'failed';
+  await advance(r, 12 * MIN); // owed, retried
+  let calls = 0;
+  r.deps.deliver = () => { calls++; return new Promise<RelanceDelivery>(() => {}); };
+  r.deps.deliverWaitMs = 1;
+  assert.equal(await relanceVagueNow(r.deps, 'ops'), 'pending');
+  await advance(r, 60 * MIN);
+  assert.equal(calls, 1, 'only the click\'s delivery');
 });
