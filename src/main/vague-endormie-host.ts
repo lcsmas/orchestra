@@ -2,11 +2,15 @@
 // (`deliverRelance`: Admission, then `sdkStartAndDeliver` — a coordinator in Veille is lazy-started and its conversation resumed). Not importable under plain node --test (store / platform seam):
 // vague-endormie-wiring.test.ts pins it by source; the real path is the session-budget rig `scripts/session-budget/vague-endormie.mjs`.
 
+import path from 'node:path';
 import { getBus } from './bus.ts';
+import { orchestraHome } from './platform/index.ts';
 import { readReleasedReaders } from './bus-liveness.ts';
 import { readWaitingReaders } from './bus-wake.ts';
 import { heldRunIds } from './bus-runs.ts';
 import { idleClockOf, seenThisRun } from './idle-clock.ts';
+import { sdkHasBackgroundTasks } from './sdk-delivery';
+import { wakeRosterEntry } from './wake-roster';
 import { log } from './logger.ts';
 import { pauseRefusal } from './pause-gate';
 import { store } from './store';
@@ -14,6 +18,7 @@ import { resolveWaveRunId } from './workspaces';
 import { censusReliquatsOf } from './relance-census.ts';
 import { deliverRelance } from './relance-host.ts';
 import { relanceEnabled } from './relance-roster.ts';
+import { createVagueFileStore } from './vague-endormie-store.ts';
 import { startVagueEndormie, stopVagueEndormie, sweepVaguesNow, type VagueDeps } from './vague-endormie.ts';
 import { vagueFacts, vagueFactsOf, type VagueRosterDeps } from './vague-roster.ts';
 
@@ -37,6 +42,8 @@ const roster: VagueRosterDeps = {
   heldRuns: () => heldRunIds(busOrThrow()),
   lastActivityAt: (ws) => idleClockOf(ws),
   seenThisRun: (ws) => seenThisRun(ws.id),
+  backgroundTask: (ws) => sdkHasBackgroundTasks(ws.id),
+  wakeable: (ws) => wakeRosterEntry(ws).wakeable,
 };
 
 export const productionVagueDeps: VagueDeps = {
@@ -44,6 +51,7 @@ export const productionVagueDeps: VagueDeps = {
   vagues: () => vagueFacts(roster),
   vague: (runId) => vagueFactsOf(roster, runId),
   census: (wsId) => censusReliquatsOf(wsId),
+  persist: createVagueFileStore(() => path.join(orchestraHome(), 'vague-endormie.json')),
   deliver: (coordinatorId, text) => deliverRelance(coordinatorId, text, 'relance-vague', () => sweepVaguesNow(productionVagueDeps)),
 };
 

@@ -7,6 +7,7 @@ import {
   VAGUE_QUIET_MS,
   blockerOf,
   buildVagueAsleepRelance,
+  formatAsleepVaguesLines,
   quietSinceOf,
   spoken,
   stepVague,
@@ -22,12 +23,14 @@ const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 10, 22, 48); // the night of 2026-11-10: the last implementer's final words at 22:48 UTC
 const P = (pid: number, ppid: number, cmd = `cmd-${pid}`): RelanceProc => ({ pid, ppid, startTicks: pid * 10, comm: cmd.split(' ')[0], cmd });
 
-const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, ...over });
+const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, backgroundTask: false, ...over });
 const member = (wsId: string, over: Partial<VagueMember> = {}): VagueMember => ({ ...person(wsId), task: `do ${wsId}`, unfinished: true, ...over });
 const facts = (over: Partial<VagueFacts> = {}): VagueFacts => ({
   runId: 'ops',
   coordinator: person('ops'),
   members: [member('impl'), member('verifier', { unfinished: false })],
+  coordinatorHasParent: true,
+  coordinatorWakeable: true,
   paused: false,
   runHeld: false,
   ...over,
@@ -92,7 +95,7 @@ for (const [name, f, why] of AWAKE_ARMS) {
   test(`NOT asleep — ${name} (even after hours)`, () => {
     const r = stepVague(undefined, f, never, T0 + 5 * 60 * MIN);
     assert.deepEqual(r.verdict, { kind: 'awake', why });
-    assert.equal(blockerOf(f), why);
+    assert.equal(blockerOf(f), why === 'dormant' ? null : why, 'dormant is judged against the persisted history, not by the cheap blockers');
   });
 }
 
@@ -131,11 +134,11 @@ test('a process alive for more than one hour without agent activity no longer pr
   assert.equal(r.verdict.kind, 'asleep');
   if (r.verdict.kind !== 'asleep') return;
   assert.equal(r.verdict.since, T0 + VAGUE_PROCESS_BOUND_MS);
-  assert.deepEqual(r.verdict.processes, [{ owner: 'impl', cmd: 'sh chain.sh', pid: 10 }], 'the ROOT of the tree is named, not its children');
+  assert.deepEqual(r.verdict.processes, [{ owner: 'impl', kind: 'process', cmd: 'sh chain.sh', pid: 10 }], 'the ROOT of the tree is named, not its children');
   const text = buildVagueAsleepRelance(f, r.verdict.since, r.verdict.unfinished, r.verdict.processes);
   assert.match(text, /Processes still alive:/);
   assert.match(text, /`sh chain\.sh` \(pid 10, impl\)/);
-  assert.match(text, /no agent activity around them for over 1 hour\. Nothing will wake/);
+  assert.match(text, /no agent activity around it for over 1 hour \(it no longer counts as a reason to wait\)/);
 });
 
 test('the hour runs from the last AGENT activity, not from the process: activity at +50 min moves the lapse to +110 min', () => {
@@ -215,9 +218,21 @@ test('the episode ENDS as soon as a member resumes — it is running now', () =>
   assert.deepEqual(stepVague(sentEpisode(), f, never, T0 + 15 * MIN).verdict, { kind: 'awake', why: 'resumed' });
 });
 
-test('the episode ENDS when a member had activity after the declaration even if it is idle again now (a short turn between two sweeps)', () => {
-  const f = facts({ members: [member('impl', { lastActivityAt: T0 + 12 * MIN }), member('verifier', { unfinished: false })] });
+test('the episode ENDS when a member\'s turn STARTED after the declaration even if it is idle again now (a short turn between two sweeps)', () => {
+  const f = facts({ members: [member('impl', { lastActivityAt: T0 + 12 * MIN, lastTurnStartAt: T0 + 12 * MIN }), member('verifier', { unfinished: false })] });
   assert.deepEqual(stepVague(sentEpisode(), f, never, T0 + 15 * MIN).verdict, { kind: 'awake', why: 'resumed' });
+});
+
+test('a CLICK on a member (its idle clock moves, no turn starts) does NOT end the episode — else the same sleep is nudged twice and the human mark vanishes on a mere look', () => {
+  const f = facts({ members: [member('impl', { lastActivityAt: T0 + 50 * MIN }), member('verifier', { unfinished: false })] });
+  const r = stepVague(sentEpisode(), f, never, T0 + 60 * MIN);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.declared, false);
+  assert.equal(r.verdict.kind, 'asleep');
+});
+
+test('a turn that started BEFORE the declaration is not a resume', () => {
+  const f = facts({ members: [member('impl', { lastTurnStartAt: T0 + 5 * MIN }), member('verifier', { unfinished: false })] });
+  assert.equal(stepVague(sentEpisode(), f, never, T0 + 15 * MIN).verdict.kind, 'asleep');
 });
 
 test('a member that only waits, or whose start is held, has resumed too', () => {
@@ -313,4 +328,83 @@ test('without any Pause the lapsed process is still declared AT the lapse (the h
   assert.equal(protectedPass.verdict.kind, 'awake');
   const r = stepVague(protectedPass.state, facts(), c, T0 + VAGUE_PROCESS_BOUND_MS);
   assert.equal(r.verdict.kind === 'asleep' && r.verdict.since, T0 + VAGUE_PROCESS_BOUND_MS);
+});
+
+// ── a CLI-tracked background task protects like a live process ──────────────────────────────────────────────────
+
+test('NOT asleep — a member with a running background task (run_in_background) protects the vague, under the same one-hour bound as a process', () => {
+  const f = facts({ members: [member('impl', { backgroundTask: true }), member('verifier', { unfinished: false })] });
+  assert.deepEqual(stepVague(undefined, f, census({}), T0 + 30 * MIN).verdict, { kind: 'awake', why: 'process', dueAt: T0 + VAGUE_PROCESS_BOUND_MS });
+  assert.equal(stepVague(undefined, facts(), census({}), T0 + 30 * MIN).verdict.kind, 'asleep', 'control: without the task the same vague is asleep');
+});
+
+test('a background task alive for more than one hour without agent activity no longer protects, and the Relance names it — without claiming nothing is alive', () => {
+  const f = facts({ members: [member('impl', { backgroundTask: true }), member('verifier', { unfinished: false })] });
+  const r = stepVague(undefined, f, census({}), T0 + VAGUE_PROCESS_BOUND_MS);
+  assert.equal(r.verdict.kind, 'asleep');
+  if (r.verdict.kind !== 'asleep') return;
+  assert.deepEqual(r.verdict.processes, [{ owner: 'impl', kind: 'background-task', cmd: null, pid: null }]);
+  const text = buildVagueAsleepRelance(f, r.verdict.since, r.verdict.unfinished, r.verdict.processes);
+  assert.match(text, /a background task of impl, tracked by its session/);
+  assert.doesNotMatch(text, /no live process/);
+});
+
+test('without any process or task the text says so (and only then)', () => {
+  const f = facts();
+  assert.match(buildVagueAsleepRelance(f, T0, [f.members[0]], []), /no live process, no background task, no Pause/);
+});
+
+// ── persisted history: dormant is judged against what was EVER seen ────────────────────────────────────────────
+
+test('dormant clause: a vague nobody ever touched stays dormant for hours and its state records no history', () => {
+  const f = facts({ coordinator: person('ops', { seenThisRun: false }), members: [member('impl', { seenThisRun: false })] });
+  const r = stepVague(undefined, f, census({}), T0 + 17 * 60 * MIN);
+  assert.deepEqual(r.verdict, { kind: 'awake', why: 'dormant' });
+  assert.equal(r.state.everSeen, undefined);
+});
+
+test('everSeen: observed once ⇒ recorded; recorded ⇒ judged even after a restart with nothing seen this run (a vague asleep across the downtime IS declared)', () => {
+  const seenNow = stepVague(undefined, facts(), census({}), T0 + MIN);
+  assert.equal(seenNow.state.everSeen, true);
+  const after = facts({ coordinator: person('ops', { seenThisRun: false }), members: [member('impl', { seenThisRun: false })] });
+  assert.equal(stepVague({ everSeen: true }, after, census({}), T0 + 11 * MIN).verdict.kind, 'asleep');
+  assert.equal(stepVague(undefined, after, census({}), T0 + 11 * MIN).verdict.kind, 'awake');
+});
+
+// ── the coordinator's reachability ──────────────────────────────────────────────────────────────────────────────
+
+test('a coordinator WITHOUT a parent (the human\'s conversation) is DECLARED asleep but never owed a Relance — the verdict says `human`, in the first pass and in every later one', () => {
+  const f = facts({ coordinatorHasParent: false });
+  const r = stepVague(undefined, f, census({}), T0 + VAGUE_QUIET_MS);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.declared, true);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'human');
+  assert.equal(stepVague(r.state, f, never, T0 + 5 * 60 * MIN).verdict.kind === 'asleep' && true, true);
+  const later = stepVague(r.state, f, never, T0 + 5 * 60 * MIN);
+  assert.equal(later.verdict.kind === 'asleep' && later.verdict.nudge, 'human');
+  assert.equal(stepVague(undefined, facts(), census({}), T0 + VAGUE_QUIET_MS).verdict.kind === 'asleep' && true, true, 'control: with a parent the same facts are owed');
+  const ctl = stepVague(undefined, facts(), census({}), T0 + VAGUE_QUIET_MS);
+  assert.equal(ctl.verdict.kind === 'asleep' && ctl.verdict.nudge, 'owed');
+});
+
+test('a coordinator that cannot be started now: asleep, nudge `not-wakeable`, no census read; owed again the moment it can', () => {
+  const f = facts({ coordinatorWakeable: false });
+  const r = stepVague(undefined, f, census({}), T0 + VAGUE_QUIET_MS);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'not-wakeable');
+  const later = stepVague(r.state, facts(), census({}), T0 + 12 * MIN);
+  assert.equal(later.verdict.kind === 'asleep' && later.verdict.nudge, 'owed');
+});
+
+test('formatAsleepVaguesLines: human-facing, not-wakeable and gave-up each say so', () => {
+  const v = { runId: 'r', coordinatorId: 'c', coordinator: 'lead', since: T0, declaredAt: T0, nudgedAt: null, unfinished: [{ wsId: 'm', label: 'impl' }] } as const;
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'human' }], T0 + MIN)[0], /coordinator has no parent \(human-facing\): no Relance sent/);
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'not-wakeable' }], T0 + MIN)[0], /cannot be started now: NOT told/);
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'gave-up' }], T0 + MIN)[0], /gave up/);
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'owed' }], T0 + MIN)[0], /NOT told yet \(Relance owed\)/);
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'sent', nudgedAt: T0 }], T0 + MIN)[0], /coordinator relanced at 22:48:00 UTC/);
+});
+
+test('a coordinator that LOST its parent after it was nudged reads `human` (never `done`): the view must not claim a human-facing conversation was relanced', () => {
+  const sent: VagueState = { episode: { since: T0, declaredAt: T0 + 10 * MIN, nudgedAt: T0 + 10 * MIN } };
+  const r = stepVague(sent, facts({ coordinatorHasParent: false }), never, T0 + 20 * MIN);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'human');
 });

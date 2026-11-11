@@ -23,6 +23,10 @@ export interface VagueRosterDeps {
   lastActivityAt(ws: Workspace): number;
   /** Activity of this workspace was observed since the app started (`getLastActivity` is defined). */
   seenThisRun(ws: Workspace): boolean;
+  /** Its live CLI session owns a running background task (`sdkHasBackgroundTasks`). */
+  backgroundTask(ws: Workspace): boolean;
+  /** `wakeRosterEntry(ws).wakeable`: a turn can be started for it at all. */
+  wakeable(ws: Workspace): boolean;
 }
 
 const labelOf = (ws: Workspace): string => ws.name || ws.branch || ws.id;
@@ -38,6 +42,8 @@ function participantOf(d: VagueRosterDeps, ws: Workspace, waiting: ReadonlySet<s
     heldStart: d.heldStart(ws),
     lastActivityAt: d.lastActivityAt(ws),
     seenThisRun: d.seenThisRun(ws),
+    lastTurnStartAt: ws.lastTurnStartAt,
+    backgroundTask: d.backgroundTask(ws),
   };
 }
 
@@ -71,6 +77,9 @@ function factsOf(d: VagueRosterDeps, rid: string, g: { coordinator: Workspace; m
   return {
     runId: rid,
     coordinator: participantOf(d, g.coordinator, waiting),
+    // a coordinator with no LIVE parent is the human's conversation (same rule as the liveness / Relance rosters: a dangling or archived parent is nobody)
+    coordinatorHasParent: !!g.coordinator.parentId && !!d.getWorkspace(g.coordinator.parentId) && !d.getWorkspace(g.coordinator.parentId)?.archived,
+    coordinatorWakeable: d.wakeable(g.coordinator),
     members,
     paused: [g.coordinator, ...g.members].some((w) => d.paused(w)),
     runHeld: held.has(rid),

@@ -22,6 +22,26 @@ export const MUTANTS = {
     find: /  if \(procs\.length > 0\) \{\n/g,
     replace: '  if (false) {\n',
   },
+  'vague-no-quiet-delay': {
+    file: '/src/shared/vague-endormie.ts',
+    find: /if \(now < since \+ bounds\.quietMs\) return \{ state: prev \?\? \{\}, verdict: \{ kind: 'awake', why: 'quiet', dueAt: since \+ bounds\.quietMs \} \};/g,
+    replace: '',
+  },
+  'vague-no-persist': {
+    file: '/src/main/vague-endormie.ts',
+    find: /  if \(!deps\.persist\) return;\n  const snap = snapshot\(\);/g,
+    replace: '  return;\n  const snap = snapshot();',
+  },
+  'vague-ignore-background-task': {
+    file: '/src/shared/vague-endormie.ts',
+    find: /    if \(p\.backgroundTask\) out\.push\(/g,
+    replace: '    if (false) out.push(',
+  },
+  'vague-parentless-told': {
+    file: '/src/main/vague-roster.ts',
+    find: /    coordinatorHasParent: !!g\.coordinator\.parentId && !!d\.getWorkspace\(g\.coordinator\.parentId\) && !d\.getWorkspace\(g\.coordinator\.parentId\)\?\.archived,/g,
+    replace: '    coordinatorHasParent: true,',
+  },
   'vague-ignore-active': {
     file: '/src/main/vague-roster.ts',
     find: /active: ws\.status === 'running' \|\| \(ws\.sdkPendingPrompts\?\.length \?\? 0\) > 0,/g,

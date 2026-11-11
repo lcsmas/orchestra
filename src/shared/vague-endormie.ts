@@ -30,6 +30,10 @@ export interface VagueParticipant {
   lastActivityAt: number;
   /** The host has SEEN activity of this workspace since the app started (the clock above is a real reading, not the app-start floor). */
   seenThisRun: boolean;
+  /** When a turn of it last STARTED (a real resume — never moved by a person merely opening the workspace); persisted with the workspace, so it survives a restart. */
+  lastTurnStartAt?: number;
+  /** Its CLI session still owns a running background task (`run_in_background`): the CLI wakes the session when it ends — a process the census cannot see. */
+  backgroundTask: boolean;
 }
 
 export interface VagueMember extends VagueParticipant {
@@ -43,6 +47,10 @@ export interface VagueFacts {
   runId: string;
   coordinator: VagueParticipant;
   members: readonly VagueMember[];
+  /** The coordinator has a live parent. One without (a LEAD, a promoted top-level workspace) is the human's conversation: it NEVER gets the Relance — the vague is still declared and shown (spec #426: « the LEAD gets no turn »). */
+  coordinatorHasParent: boolean;
+  /** A turn can be started for the coordinator at all (not archived, has a worktree, not a sandbox pause, its start does not keep failing). */
+  coordinatorWakeable: boolean;
   /** The run (or an ancestor) is Paused. */
   paused: boolean;
   /** The run is on HOLD (`orchestra run hold`: a parked fleet, deliberately silenced). */
@@ -56,7 +64,8 @@ export type VagueAwakeWhy = 'no-task' | 'paused' | 'run-held' | 'member-active' 
 
 export interface VagueProcessLine {
   owner: string;
-  /** `null` = the scope could not be read: a process of this owner may be alive. */
+  /** `process`: a Reliquat tree root; `unknown`: the scope could not be read, a process of this owner may be alive; `background-task`: a task its CLI session tracks. */
+  kind: 'process' | 'unknown' | 'background-task';
   cmd: string | null;
   pid: number | null;
 }
@@ -69,8 +78,8 @@ export type VagueVerdict =
       since: number;
       /** First pass of the episode. */
       declared: boolean;
-      /** The coordinator was not told yet. */
-      nudge: 'owed' | 'done';
+      /** `owed`: to be sent now · `done`: sent · `human`: the coordinator has no parent, it never gets one · `not-wakeable`: it cannot be started now (retried when it can). */
+      nudge: 'owed' | 'done' | 'human' | 'not-wakeable';
       unfinished: readonly VagueMember[];
       /** The live processes that no longer protect the vague (named in the Relance); only read while the nudge is owed. */
       processes: readonly VagueProcessLine[];
@@ -85,6 +94,8 @@ export interface VagueEpisode {
 
 /** What the host remembers of ONE vague between two looks. */
 export interface VagueState {
+  /** Some participant of this vague was EVER observed active (persisted): a wave nobody ever touched on this watch stays dormant across restarts, one that was seen is judged even after a restart. */
+  everSeen?: boolean;
   /** The last pass at which something legitimately held the vague awake: it floors `since`, so a process that just ended (a Relance of its own owner is on its way) gets its full delay. */
   protectedAt?: number;
   /** The last pass at which something OTHER than a live process held it (a Pause, a member working, an answer awaited): a lapsed process does not hurry the declaration past the delay that follows it. */
@@ -111,25 +122,33 @@ export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {
   if (people(f).some((p) => p.heldStart)) return 'held-start';
   // Nobody of this vague did anything since the app started: an old wave left unarchived (its tasks never released) is not a sleep that happened on this watch — declaring it would
   // re-nudge every such coordinator (a real model turn, a Veille start) at every launch. A person opening one of its workspaces, or any event, brings it into play.
-  if (!people(f).some((p) => p.seenThisRun)) return 'dormant';
   return null;
 }
 
-/** An open episode ends when the work is over, the vague is paused / held, or a MEMBER (never the coordinator's own Relance turn) resumes. */
+const DORMANT: VagueAwakeWhy = 'dormant';
+
+/** An open episode ends when the work is over, the vague is paused / held, or a MEMBER (never the coordinator's own Relance turn) RESUMES: a turn is running or its prompt waits / a turn STARTED since the declaration — never the idle clock, which a click on the workspace moves. */
 function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {
   if (!f.members.some((m) => m.unfinished)) return 'no-task';
   if (f.paused) return 'paused';
   if (f.runHeld) return 'run-held';
-  if (f.members.some((m) => m.active || m.waiting || m.heldStart || m.lastActivityAt > ep.declaredAt)) return 'resumed';
+  if (f.members.some((m) => m.active || m.waiting || m.heldStart || (m.lastTurnStartAt ?? -Infinity) > ep.declaredAt)) return 'resumed';
   return null;
+}
+
+function nudgeOf(f: VagueFacts, ep: VagueEpisode): 'owed' | 'done' | 'human' | 'not-wakeable' {
+  if (!f.coordinatorHasParent) return 'human';
+  if (ep.nudgedAt !== undefined) return 'done';
+  return f.coordinatorWakeable ? 'owed' : 'not-wakeable';
 }
 
 function processLines(f: VagueFacts, c: VagueCensus): VagueProcessLine[] {
   const out: VagueProcessLine[] = [];
   for (const p of people(f)) {
     const got = c.get(p.wsId);
-    if (got === 'unknown') out.push({ owner: p.label, cmd: null, pid: null });
-    else if (got) for (const r of rootsOf(got)) out.push({ owner: p.label, cmd: r.cmd || r.comm, pid: r.pid });
+    if (got === 'unknown') out.push({ owner: p.label, kind: 'unknown', cmd: null, pid: null });
+    else if (got) for (const r of rootsOf(got)) out.push({ owner: p.label, kind: 'process', cmd: r.cmd || r.comm, pid: r.pid });
+    if (p.backgroundTask) out.push({ owner: p.label, kind: 'background-task', cmd: null, pid: null });
   }
   return out;
 }
@@ -147,20 +166,35 @@ export function stepVague(
   now: number,
   bounds: VagueBounds = DEFAULT_VAGUE_BOUNDS,
 ): { state: VagueState; verdict: VagueVerdict } {
+  const seen = people(f).some((p) => p.seenThisRun);
+  const everSeen = prev?.everSeen === true || seen;
+  const r = stepInner(prev, f, census, now, bounds, everSeen);
+  return everSeen && !r.state.everSeen ? { state: { ...r.state, everSeen }, verdict: r.verdict } : r;
+}
+
+function stepInner(
+  prev: VagueState | undefined,
+  f: VagueFacts,
+  census: () => VagueCensus,
+  now: number,
+  bounds: VagueBounds,
+  everSeen: boolean,
+): { state: VagueState; verdict: VagueVerdict } {
   const ep = prev?.episode;
   if (ep) {
     const end = episodeEnd(f, ep);
     if (!end) {
-      const owed = ep.nudgedAt === undefined;
+      const nudge = nudgeOf(f, ep);
       return {
         state: { ...prev, episode: ep },
-        verdict: { kind: 'asleep', since: ep.since, declared: false, nudge: owed ? 'owed' : 'done', unfinished: f.members.filter((m) => m.unfinished), processes: owed ? processLines(f, census()) : [] },
+        verdict: { kind: 'asleep', since: ep.since, declared: false, nudge, unfinished: f.members.filter((m) => m.unfinished), processes: nudge === 'owed' ? processLines(f, census()) : [] },
       };
     }
     return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: end } };
   }
   const block = blockerOf(f);
   if (block) return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: block } };
+  if (!everSeen) return { state: {}, verdict: { kind: 'awake', why: DORMANT } };
 
   const quietSince = quietSinceOf(f, now);
   const procs = processLines(f, census());
@@ -179,7 +213,7 @@ export function stepVague(
   const episode: VagueEpisode = { since, declaredAt: now };
   return {
     state: { ...prev, episode },
-    verdict: { kind: 'asleep', since, declared: true, nudge: 'owed', unfinished: f.members.filter((m) => m.unfinished), processes: procs },
+    verdict: { kind: 'asleep', since, declared: true, nudge: nudgeOf(f, episode), unfinished: f.members.filter((m) => m.unfinished), processes: procs },
   };
 }
 
@@ -202,13 +236,13 @@ export function buildVagueAsleepRelance(f: VagueFacts, since: number, unfinished
   const ids = new Set(unfinished.map((m) => m.wsId));
   const rest = f.members.filter((m) => !ids.has(m.wsId));
   const body = [
-    `Orchestra (the host) is resuming you: your vague has been asleep since ${clock(since)} UTC — ${n} unfinished task${n === 1 ? '' : 's'}, no member active, nobody waiting for an answer, ${processes.length > 0 ? `and the processes below have had no agent activity around them for over ${spoken(processMs)}` : 'no live process, no Pause'}. Nothing will wake anyone on its own.`,
+    `Orchestra (the host) is resuming you: your vague has been asleep since ${clock(since)} UTC — ${n} unfinished task${n === 1 ? '' : 's'}, no member active, nobody waiting for an answer, ${processes.length > 0 ? `and what is still alive below has had no agent activity around it for over ${spoken(processMs)} (it no longer counts as a reason to wait)` : 'no live process, no background task, no Pause'}. Nothing will wake anyone on its own.`,
     'Unfinished:',
     ...list(unfinished.map((m) => `${oneLine(m.label)} — ${task(m.task)} — last activity ${clock(m.lastActivityAt)} UTC`)),
     ...(rest.length > 0 ? ['Others (nothing owed):', ...list(rest.map((m) => `${oneLine(m.label)} — last activity ${clock(m.lastActivityAt)} UTC`))] : []),
     `You: last activity ${clock(f.coordinator.lastActivityAt)} UTC.`,
     ...(processes.length > 0
-      ? ['Processes still alive:', ...list(processes.map((p) => (p.cmd === null ? `a process of ${oneLine(p.owner)} could not be read` : `\`${oneLine(p.cmd)}\` (pid ${p.pid}, ${oneLine(p.owner)})`)))]
+      ? ['Processes still alive:', ...list(processes.map((p) => (p.kind === 'background-task' ? `a background task of ${oneLine(p.owner)}, tracked by its session` : p.cmd === null ? `a process of ${oneLine(p.owner)} could not be read` : `\`${oneLine(p.cmd)}\` (pid ${p.pid}, ${oneLine(p.owner)})`)))]
       : []),
     'Restart the work: read each member\'s state, wake or re-task whoever has an unfinished task, or release what is done. You will not be told again while the vague stays asleep.',
   ];
@@ -225,8 +259,10 @@ export interface AsleepVagueView {
   /** When nothing could wake anyone any more (ms). */
   since: number;
   declaredAt: number;
-  /** When the coordinator's Relance went out; null = owed / not delivered yet. */
+  /** When the coordinator's Relance went out; null = not (yet) sent. */
   nudgedAt: number | null;
+  /** Why not / whether: `sent` · `owed` (not delivered yet) · `human` (no parent: the coordinator is the human's conversation, it never gets one) · `not-wakeable` · `gave-up` (bounded retries exhausted). */
+  relance: 'sent' | 'owed' | 'human' | 'not-wakeable' | 'gave-up';
   unfinished: { wsId: string; label: string }[];
 }
 
@@ -239,7 +275,12 @@ const ago = (ms: number): string => {
 export function formatAsleepVaguesLines(views: readonly AsleepVagueView[], now: number, thisRunId?: string): string[] {
   return views.map((v) => {
     const names = v.unfinished.slice(0, 5).map((u) => oneLine(u.label)).join(', ') + (v.unfinished.length > 5 ? `, … +${v.unfinished.length - 5}` : '');
-    const told = v.nudgedAt === null ? 'coordinator NOT told yet (Relance owed)' : `coordinator relanced at ${clock(v.nudgedAt)} UTC`;
+    const told =
+      v.relance === 'human' ? 'coordinator has no parent (human-facing): no Relance sent'
+      : v.relance === 'not-wakeable' ? 'coordinator cannot be started now: NOT told'
+      : v.relance === 'gave-up' ? 'coordinator NOT told (delivery failed repeatedly, gave up)'
+      : v.nudgedAt === null ? 'coordinator NOT told yet (Relance owed)'
+      : `coordinator relanced at ${clock(v.nudgedAt)} UTC`;
     return `vague endormie: ${oneLine(v.coordinator)}${v.runId === thisRunId ? ' (this run)' : ''} — asleep since ${new Date(v.since).toISOString().slice(0, 19)}Z (${ago(now - v.since)} ago), ${v.unfinished.length} unfinished task${v.unfinished.length === 1 ? '' : 's'} (${names}); ${told}`;
   });
 }

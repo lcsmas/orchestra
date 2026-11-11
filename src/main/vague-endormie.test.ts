@@ -9,7 +9,10 @@ import {
   sweepVagues,
   sweepVaguesNow,
   vagueCounters,
+  VAGUE_MAX_ATTEMPTS,
+  type PersistedVagues,
   type VagueDeps,
+  type VagueStore,
 } from './vague-endormie.ts';
 import { RELANCE_RETRY_MS, type RelanceDelivery } from './relance.ts';
 import { VAGUE_PROCESS_BOUND_MS, VAGUE_QUIET_MS, formatAsleepVaguesLines, type VagueFacts, type VagueMember, type VagueParticipant } from '../shared/vague-endormie.ts';
@@ -19,12 +22,14 @@ const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 10, 22, 48);
 const P = (pid: number, ppid = 1, cmd = `proc-${pid}`): RelanceProc => ({ pid, ppid, startTicks: pid * 10, comm: cmd.split(' ')[0], cmd });
 
-const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, ...over });
+const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, backgroundTask: false, ...over });
 const member = (wsId: string, over: Partial<VagueMember> = {}): VagueMember => ({ ...person(wsId), task: `do ${wsId}`, unfinished: true, ...over });
 const baseFacts = (over: Partial<VagueFacts> = {}): VagueFacts => ({
   runId: 'ops',
   coordinator: person('ops'),
   members: [member('impl'), member('verifier', { unfinished: false })],
+  coordinatorHasParent: true,
+  coordinatorWakeable: true,
   paused: false,
   runHeld: false,
   ...over,
@@ -213,6 +218,7 @@ test('bus-status says so when the Relance has not gone out yet (a failing delive
   r.outcome.next = 'failed';
   await advance(r, 11 * MIN);
   assert.equal(asleepVagues()[0].nudgedAt, null);
+  assert.equal(asleepVagues()[0].relance, 'owed');
   assert.match(formatAsleepVaguesLines(asleepVagues(), r.clock.t)[0], /coordinator NOT told yet/);
 });
 
@@ -227,9 +233,9 @@ test('a FAILED delivery is retried after the back-off and goes out once the coor
   r.outcome.next = 'failed';
   await advance(r, 11 * MIN);
   assert.equal(r.turns.length, 0);
-  assert.equal(vagueCounters().failed, 3, 'tried at 10:00, 10:30 and 11:00 — one try per back-off, not one per tick');
+  assert.equal(vagueCounters().failed, 2, 'tried at 10:00 and 10:30 (back-off 30 s, then 60 s) — one try per back-off, not one per tick');
   r.outcome.next = 'sent';
-  await advance(r, RELANCE_RETRY_MS + VAGUE_SWEEP_MS);
+  await advance(r, 2 * RELANCE_RETRY_MS + VAGUE_SWEEP_MS);
   assert.equal(r.turns.length, 1);
   assert.equal(vagueCounters().declared, 1, 'still ONE episode');
   await advance(r, 60 * MIN);
@@ -258,9 +264,9 @@ test('a delivery that throws is a failed delivery (back-off), never a crash of t
     return good(id, t);
   };
   await advance(r, 11 * MIN);
-  assert.equal(vagueCounters().failed, 3);
+  assert.equal(vagueCounters().failed, 2);
   throws = false;
-  await advance(r, RELANCE_RETRY_MS + VAGUE_SWEEP_MS);
+  await advance(r, 2 * RELANCE_RETRY_MS + VAGUE_SWEEP_MS);
   assert.equal(r.turns.length, 1);
 });
 
@@ -388,4 +394,152 @@ test('sweepVaguesNow waits for the pass in flight and then RUNS (the Admission r
   const told = await b;
   assert.equal(r.turns.length, 1, 'the re-entered pass ran and delivered');
   assert.deepEqual(told, ['ops']);
+});
+
+// ── a coordinator without a parent / that cannot be started / that cannot be reached ─────────────────────────────
+
+test('a coordinator WITHOUT a parent (LEAD, promoted top-level workspace) never gets the Relance — 17 hours — but the vague IS declared and shown (bus-status / #429)', async () => {
+  const r = rig();
+  set(r, baseFacts({ coordinatorHasParent: false }));
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(r.turns.length, 0);
+  assert.equal(vagueCounters().declared, 1);
+  assert.equal(vagueCounters().nudged, 0);
+  const [v] = asleepVagues();
+  assert.equal(v.relance, 'human');
+  assert.equal(v.nudgedAt, null);
+  assert.match(formatAsleepVaguesLines([v], r.clock.t)[0], /no parent \(human-facing\): no Relance sent/);
+  // the control: the same vague WITH a parent is told
+  const c = rig();
+  await advance(c, 11 * MIN);
+  assert.equal(c.turns.length, 1);
+});
+
+test('an unwakeable coordinator is not retried at all (no delivery, no warn spam); it is told once it can be started', async () => {
+  const r = rig();
+  let calls = 0;
+  const good = r.deps.deliver;
+  r.deps.deliver = (id, t) => { calls++; return good(id, t); };
+  set(r, baseFacts({ coordinatorWakeable: false }));
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(calls, 0);
+  assert.equal(asleepVagues()[0].relance, 'not-wakeable');
+  set(r, baseFacts());
+  await advance(r, MIN);
+  assert.equal(r.turns.length, 1);
+});
+
+test('a coordinator whose delivery ALWAYS fails is tried a bounded number of times in 17 hours (back-off grows), then given up — still shown in bus-status', async () => {
+  const r = rig();
+  r.outcome.next = 'failed';
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(vagueCounters().failed, VAGUE_MAX_ATTEMPTS);
+  assert.equal(asleepVagues()[0].relance, 'gave-up');
+  assert.match(formatAsleepVaguesLines(asleepVagues(), r.clock.t)[0], /gave up/);
+  assert.equal(r.turns.length, 0);
+});
+
+// ── a restart: what survives, per run ────────────────────────────────────────────────────────────────────────────
+
+/** A store in memory shared between « app runs »; `restart` = what a relaunch does (module state gone, the store kept, idle clocks floored at the new app start). */
+function memStore(initial: PersistedVagues = {}): VagueStore & { disk: PersistedVagues; saves: number } {
+  const st = { disk: initial, saves: 0, load: () => JSON.parse(JSON.stringify(st.disk)) as PersistedVagues, save: (a: PersistedVagues) => { st.disk = JSON.parse(JSON.stringify(a)); st.saves++; } };
+  return st;
+}
+function restart(r: Rig, clockAdvance = 0): void {
+  __resetVagueEndormieForTests();
+  r.clock.t += clockAdvance;
+  const t = r.clock.t;
+  // after a relaunch every idle clock reads the app-start floor and nothing has been seen yet
+  const f = r.vagues.get('ops')!;
+  set(r, { ...f, coordinator: { ...f.coordinator, lastActivityAt: t, seenThisRun: false }, members: f.members.map((m) => ({ ...m, lastActivityAt: t, seenThisRun: false })) });
+}
+
+test('RESTART 1 — an episode already nudged is NOT nudged again after a relaunch, even with a click on a member (idle clock moved, no turn)', async () => {
+  const r = rig();
+  r.deps.persist = memStore();
+  await advance(r, 11 * MIN);
+  assert.equal(r.turns.length, 1);
+  restart(r, 5 * MIN);
+  const f = r.vagues.get('ops')!;
+  set(r, { ...f, members: f.members.map((m) => ({ ...m, lastActivityAt: r.clock.t + 5 * MIN, seenThisRun: true })) }); // a pane selected: noteActivity, no turn
+  await advance(r, 17 * 60 * MIN);
+  assert.equal(r.turns.length, 1, 'still the one Relance of the episode');
+  assert.equal(asleepVagues().length, 1, 'and the episode is still shown');
+});
+
+test('RESTART 2 — a vague that was asleep before / during the downtime IS declared after the relaunch (nothing seen this run, but seen on an earlier watch) and told once', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  r.census.set('impl', []);
+  // it was observed active, then went quiet; the app quit before the 10 minutes elapsed
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, MIN);
+  assert.deepEqual(store.disk.ops, { everSeen: true });
+  set(r, baseFacts());
+  restart(r, 3 * 60 * MIN); // down for hours
+  await advance(r, 9 * MIN);
+  assert.equal(r.turns.length, 0);
+  await advance(r, 2 * MIN);
+  assert.equal(r.turns.length, 1);
+  await advance(r, 5 * 60 * MIN);
+  assert.equal(r.turns.length, 1);
+});
+
+test('RESTART 3 — first sight after an upgrade (no record) of a wave nobody touches: baseline, NO nudge — not on this launch, not on the next ones (no storm for stale waves)', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  restart(r);
+  for (let launch = 0; launch < 3; launch++) {
+    await advance(r, 3 * 60 * MIN);
+    restart(r, 60 * MIN);
+  }
+  assert.equal(r.turns.length, 0);
+  assert.deepEqual(store.disk, {}, 'nothing recorded for a wave nobody ever touched');
+});
+
+test('RESTART 4 — a vague that the person opened once (a click) is brought into play: it is then judged — and its episode persisted once nudged', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  restart(r);
+  const f = r.vagues.get('ops')!;
+  set(r, { ...f, members: f.members.map((m) => ({ ...m, seenThisRun: true, lastActivityAt: r.clock.t })) });
+  await advance(r, 11 * MIN);
+  assert.equal(r.turns.length, 1);
+  assert.equal(store.disk.ops.everSeen, true);
+  assert.equal(typeof store.disk.ops.episode?.nudgedAt, 'number');
+});
+
+test('a corrupt / unreadable store starts from nothing and never crashes the sweep', async () => {
+  const r = rig();
+  r.deps.persist = { load: () => { throw new Error('torn'); }, save: () => { throw new Error('disk full'); } };
+  await advance(r, 11 * MIN);
+  assert.equal(r.turns.length, 1, 'still works in memory');
+  __resetVagueEndormieForTests();
+  const r2 = rig();
+  r2.deps.persist = { load: () => ({ ops: { episode: { since: 'x' } }, junk: 3 } as unknown as PersistedVagues), save: () => {} };
+  await advance(r2, 11 * MIN);
+  assert.equal(r2.turns.length, 1, 'a malformed record is ignored, not trusted');
+});
+
+test('the nudge is persisted BEFORE the delivery (at most once across a crash)', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  let seenOnDisk: number | undefined;
+  const good = r.deps.deliver;
+  r.deps.deliver = async (id, t) => { seenOnDisk = store.disk.ops?.episode?.nudgedAt; return good(id, t); };
+  await advance(r, 11 * MIN);
+  assert.equal(typeof seenOnDisk, 'number');
+});
+
+test('an unreadable store costs nothing: the FIRST pass already judges and tells (the load failure is caught, not propagated into the pass)', async () => {
+  const r = rig();
+  r.deps.persist = { load: () => { throw new Error('torn'); }, save: () => {} };
+  r.clock.t = T0 + 11 * MIN;
+  await sweepVagues(r.deps);
+  assert.equal(r.turns.length, 1);
 });

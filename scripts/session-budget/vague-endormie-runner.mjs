@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
 const { REPO, root, arm, mutant = null, vague = true, timeoutMs = 280_000 } = cfg;
+const VS = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
 const QUIET_MS = 10_000;
 const PROCESS_MS = 45_000;
 const HERE = path.join(REPO, 'scripts', 'session-budget');
@@ -63,6 +64,7 @@ const api = await startFakeApi({
     const last = lastUser(rec.messages);
     if (last.includes('[orchestra] Relance')) return { text: 'REPLY-RELANCE' };
     if (last.includes('tool_result')) return { text: 'REPLY-DONE' };
+    if (/PROMPT-BG MARK-f/.test(last)) return { toolUse: { name: 'Bash', input: { command: 'timeout 220 tail -f /dev/null', description: 'a background task of the session', run_in_background: true } } };
     const sleep = /PROMPT-SLEEP MARK-([a-z0-9]+) SECS-(\d+)/.exec(last);
     if (sleep) return { toolUse: { name: 'Bash', input: { command: `timeout ${sleep[2]} tail -f /dev/null; echo slept`, description: 'a long foreground command' } } };
     const mark = /PROMPT-LAUNCH MARK-([a-z0-9]+)/.exec(last)?.[1];
@@ -219,20 +221,38 @@ let error = null;
 try {
   // a: idle member with a task, nothing alive.   b: same + a live detached script (protects < 45 s, then is named).   c: a member whose turn runs for a while (active).
   // d: its task is finished (worker_done on the REAL bus, not re-tasked).   e: a hand-made workspace under the coordinator, no dispatched task.
-  for (const v of ['a', 'b', 'c', 'd', 'e']) {
-    await makeWs(`ws-ops-${v}`, { name: `ops-${v}`, status: 'idle', canOrchestrate: true });
+  // f: the member ends its turn on a `run_in_background` command — a task its CLI session tracks (no detached process the census could see).
+  // g: a coordinator with NO parent (the human's conversation) — the vague is declared, its coordinator is never told. The others are OPS under a LEAD.
+  await makeWs('ws-lead', { name: 'lead', status: 'idle', canOrchestrate: true });
+  for (const v of VS) {
+    await makeWs(`ws-ops-${v}`, { name: `ops-${v}`, status: 'idle', canOrchestrate: true, ...(v === 'g' ? {} : { parentId: 'ws-lead' }) });
     await makeWs(`ws-impl-${v}`, { name: `impl-${v}`, parentId: `ws-ops-${v}`, ...(v === 'e' ? {} : { lastTask: `TASK-${v}: finish the ${v} fix and push` }) });
   }
   await launch('a', 0);
   await launch('b', 1);
   await launch('d', 0);
   await launch('e', 0);
+  await launch('g', 0);
+  await runTurn('ws-impl-f', 'PROMPT-BG MARK-f go');
+  out.fBackgroundTaskAtStart = await waitFor(() => sdkDelivery.sdkHasBackgroundTasks('ws-impl-f'), 15_000);
   // d reported done and was not re-tasked: a POSITIVE completion marker on the real bus
   bus.send(bus.getBus(), { runId: 'ws-ops-d', sender: 'ws-impl-d', recipient: 'ws-ops-d', kind: 'worker_done', body: 'done' });
   await waitFor(() => (listedEver.get('ws-impl-b') ?? 0) >= 1, 5_000);
   out.scriptAliveAtStart = alive(pidOf('ws-impl-b', 1));
 
-  if (vague) vagueMod.startVagueEndormie({ ...vagueHost.productionVagueDeps, bounds: () => ({ quietMs: QUIET_MS, processMs: PROCESS_MS }) }, 2_000);
+  // the production deps, with the delivery observed: how long each member had been QUIET when its coordinator was told (the delay is pinned on the real path)
+  const deliverAge = {};
+  const vagueDeps = {
+    ...vagueHost.productionVagueDeps,
+    bounds: () => ({ quietMs: QUIET_MS, processMs: PROCESS_MS }),
+    deliver: (id, text) => {
+      const v = id.replace('ws-ops-', '');
+      if (!(v in deliverAge)) deliverAge[v] = lastActAge(`ws-impl-${v}`);
+      return vagueHost.productionVagueDeps.deliver(id, text);
+    },
+  };
+  out.deliverAgeMs = deliverAge;
+  if (vague) vagueMod.startVagueEndormie(vagueDeps, 2_000);
   const t0 = Date.now();
   // c: a member runs a FOREGROUND command for 26 s — a turn in flight the whole time the others fall asleep
   PLAN.c = { scripts: 0 };
@@ -242,24 +262,28 @@ try {
   if (!vague) {
     // CONTROL: the mechanism never runs. Long enough for every vague to have been quiet past the delay AND for b's process bound to lapse; nobody may get a turn.
     await sleep(PROCESS_MS + 25_000);
-    for (const v of ['a', 'b', 'c', 'd', 'e']) out.vagues[v] = { relances: vagueTurns(v).length, coordinatorTurnEnds: coordTurnEnds(v) };
-    out.finalQuietAgeMs = Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((v) => [v, lastActAge(`ws-impl-${v}`)]));
+    for (const v of VS) out.vagues[v] = { relances: vagueTurns(v).length, coordinatorTurnEnds: coordTurnEnds(v) };
+    out.finalQuietAgeMs = Object.fromEntries(VS.map((v) => [v, lastActAge(`ws-impl-${v}`)]));
     out.bScriptAlive = alive(pidOf('ws-impl-b', 1));
     throw new Error('__control_done__');
   }
   // a falls asleep ⇒ its coordinator is told (once). Wait for it, then for b / d / e to have been quiet LONGER than the delay, and sample
   const aTold = await waitFor(() => coordTurnEnds('a') >= 1, 60_000);
-  await waitFor(() => lastActAge('ws-impl-b') > QUIET_MS + 2_000 && lastActAge('ws-impl-d') > QUIET_MS + 2_000 && lastActAge('ws-impl-e') > QUIET_MS + 2_000, 30_000);
+  await waitFor(() => lastActAge('ws-impl-b') > QUIET_MS + 2_000 && lastActAge('ws-impl-d') > QUIET_MS + 2_000 && lastActAge('ws-impl-e') > QUIET_MS + 2_000 && lastActAge('ws-impl-f') > QUIET_MS + 2_000 && lastActAge('ws-impl-g') > QUIET_MS + 2_000, 30_000);
   out.sample = {
     aTold,
     cStatus: store.getWorkspace('ws-impl-c')?.status,
     cRunningForMs: Date.now() - t0,
     quietAgeMs: { b: lastActAge('ws-impl-b'), d: lastActAge('ws-impl-d'), e: lastActAge('ws-impl-e') },
-    turns: Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((v) => [v, vagueTurns(v).length])),
+    turns: Object.fromEntries(VS.map((v) => [v, vagueTurns(v).length])),
     bScriptAlive: alive(pidOf('ws-impl-b', 1)),
+    fBackgroundTask: sdkDelivery.sdkHasBackgroundTasks('ws-impl-f'),
+    quietAgeF: lastActAge('ws-impl-f'),
+    quietAgeG: lastActAge('ws-impl-g'),
   };
   out.aView = vagueMod.asleepVagues().find((x) => x.runId === 'ws-ops-a') ?? null;
   out.aText = relanceText(vagueTurns('a')[0]);
+  out.gView = vagueMod.asleepVagues().find((x) => x.runId === 'ws-ops-g') ?? null;
   out.aCoordinatorSessionLive = sdkDelivery.sdkSessionLive('ws-ops-a');
 
   // c's turn ends ⇒ it was active the whole time; THEN it falls quiet ⇒ its coordinator is told
@@ -270,10 +294,24 @@ try {
   out.bToldAfterBound = await waitFor(() => coordTurnEnds('b') >= 1, PROCESS_MS + 30_000);
   out.bText = relanceText(vagueTurns('b')[0]);
   out.bQuietAgeAtTold = lastActAge('ws-impl-b');
+  // f: the tracked background task protects the same way, then is NAMED (a task the census cannot see)
+  out.fToldAfterBound = await waitFor(() => coordTurnEnds('f') >= 1, PROCESS_MS + 30_000);
+  out.fText = relanceText(vagueTurns('f')[0]);
+  out.fBackgroundTaskAtTold = sdkDelivery.sdkHasBackgroundTasks('ws-impl-f');
+  out.fQuietAgeAtTold = lastActAge('ws-impl-f');
   // a stays ONE Relance for the whole episode: wait two more delays
   await sleep(2 * QUIET_MS + 3_000);
   out.aBeforeResume = vagueTurns('a').length;
   out.aEpisodeStillOpen = vagueMod.asleepVagues().some((x) => x.runId === 'ws-ops-a' && x.declaredAt === out.aView?.declaredAt);
+  // a RESTART of the app (the sweep's module state gone, its file kept): the episode already nudged is not nudged again, whatever the restart does to the clocks
+  const declaredAtBefore = out.aView?.declaredAt;
+  vagueMod.stopVagueEndormie();
+  vagueMod.__resetVagueEndormieForTests();
+  vagueMod.startVagueEndormie(vagueDeps, 2_000);
+  await sleep(2 * QUIET_MS + 3_000);
+  out.aAfterRestart = vagueTurns('a').length;
+  out.aEpisodeKeptAcrossRestart = vagueMod.asleepVagues().some((x) => x.runId === 'ws-ops-a' && x.declaredAt === declaredAtBefore && x.relance === 'sent');
+  out.restartRelancesElsewhere = Object.fromEntries(['b', 'c', 'f'].map((v) => [v, vagueTurns(v).length]));
   // a member of a resumes: the episode ENDS; it falls quiet again ⇒ a NEW episode ⇒ the coordinator is told a second time
   await runTurn('ws-impl-a', 'PROMPT-LAUNCH MARK-a again');
   await sleep(2_500);
@@ -281,9 +319,9 @@ try {
   out.aSecondEpisodeTold = await waitFor(() => vagueTurns('a').length >= 2, QUIET_MS + 30_000);
   await sleep(QUIET_MS + 3_000);
   out.aFinal = vagueTurns('a').length;
-  for (const v of ['a', 'b', 'c', 'd', 'e']) out.vagues[v] = { relances: vagueTurns(v).length, coordinatorTurnEnds: coordTurnEnds(v) };
+  for (const v of VS) out.vagues[v] = { relances: vagueTurns(v).length, coordinatorTurnEnds: coordTurnEnds(v) };
   out.counters = vagueMod.vagueCounters();
-  out.finalQuietAgeMs = Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((v) => [v, lastActAge(`ws-impl-${v}`)]));
+  out.finalQuietAgeMs = Object.fromEntries(VS.map((v) => [v, lastActAge(`ws-impl-${v}`)]));
 } catch (e) {
   if (!String(e?.message ?? e).includes('__control_done__')) error = String(e?.stack ?? e);
 }

@@ -26,6 +26,8 @@ function deps(list: Workspace[], over: Partial<VagueRosterDeps> = {}): VagueRost
     heldRuns: () => new Set<string>(),
     lastActivityAt: (w) => (w.createdAt ?? 0),
     seenThisRun: () => true,
+    backgroundTask: () => false,
+    wakeable: () => true,
     ...over,
   };
 }
@@ -129,4 +131,26 @@ test('through the decision: the roster\'s facts for the night of 2026-11-10 (mem
   assert.equal(kind(mk({}, { paused: () => true })), 'awake');
   assert.equal(kind(mk({}, { heldRuns: () => new Set(['ops']) })), 'awake');
   assert.equal(kind(mk({}, { heldStart: () => true })), 'awake');
+});
+
+// ── the coordinator's shape: who may be told ─────────────────────────────────────────────────────────────────────
+
+test('coordinatorHasParent — the three shapes of the review: LEAD→workers, a promoted top-level workspace→workers and the mixed LEAD→OPS + LEAD→direct workers have NO parent (never told); an OPS under a live LEAD has one', () => {
+  const lead = ws('opsLead'); // a top-level orchestrator: no parent
+  const direct = factsOf(deps([lead, ws('w1', { parentId: 'opsLead', ...task })]), 'opsLead')!;
+  assert.equal(direct.coordinatorHasParent, false, 'LEAD → workers directly');
+  const mixed = deps([lead, ws('ops2', { parentId: 'opsLead' }), ws('w2', { parentId: 'ops2', ...task }), ws('w3', { parentId: 'opsLead', ...task })]);
+  assert.equal(factsOf(mixed, 'opsLead')!.coordinatorHasParent, false, 'mixed: the LEAD\'s own direct workers');
+  assert.equal(factsOf(mixed, 'ops2')!.coordinatorHasParent, true, 'the OPS under a live LEAD');
+  const orphan = deps([ws('ops3', { parentId: 'gone' }), ws('w4', { parentId: 'ops3', ...task })]);
+  assert.equal(factsOf(orphan, 'ops3')!.coordinatorHasParent, false, 'a dangling parent is nobody');
+  const archived = deps([ws('lead2', { archived: true }), ws('ops4', { parentId: 'lead2' }), ws('w5', { parentId: 'ops4', ...task })]);
+  assert.equal(factsOf(archived, 'ops4')!.coordinatorHasParent, false, 'an archived parent is nobody');
+});
+
+test('coordinatorWakeable comes from the wake roster; a member\'s lastTurnStartAt and backgroundTask are carried per participant', () => {
+  const list = [ops, ws('m1', { parentId: 'ops', ...task, lastTurnStartAt: 777 })];
+  const f = factsOf(deps(list, { wakeable: (w) => w.id !== 'ops', backgroundTask: (w) => w.id === 'm1' }))!;
+  assert.equal(f.coordinatorWakeable, false);
+  assert.deepEqual([f.members[0].lastTurnStartAt, f.members[0].backgroundTask, f.coordinator.backgroundTask], [777, true, false]);
 });

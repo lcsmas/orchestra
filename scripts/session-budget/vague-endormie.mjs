@@ -1,9 +1,12 @@
 // Vague-endormie rig (#428): the PRODUCTION asleep-vague sweep over the REAL session path (real `sdkSend` → keeper → real `claude` CLI against the fake API, zero tokens) with a REAL bus file.
-// Five vagues (a coordinator + one member each), delays shortened to quiet 10 s / process bound 45 s; the clauses are judged on what the fleet observes — a Relance turn in the COORDINATOR's conversation:
+// Seven vagues (a coordinator + one member each), delays shortened to quiet 10 s / process bound 45 s; the clauses are judged on what the fleet observes — a Relance turn in the COORDINATOR's conversation:
 //   asleep      a member idle with an unfinished task, nothing alive ⇒ the coordinator gets ONE Relance naming the task, since when and the member's last activity (and `bus-status`'s view says asleep + since)
 //   episode     the same vague stays asleep for two more delays ⇒ still ONE Relance; a member resuming ENDS the episode; it falls quiet again ⇒ a second, NEW episode ⇒ a second Relance
 //   active      a member runs a turn for 26 s (longer than the delay) ⇒ nobody is told while it runs; told once it has been quiet for the delay
 //   process     a live detached script protects the vague (member quiet LONGER than the delay, script alive ⇒ no turn) until 45 s of inactivity, then the coordinator is told and the Relance NAMES the script
+//   background  a member ends its turn on a `run_in_background` command (a task its CLI tracks): no turn while it runs, then at the bound the Relance names it
+//   delay       a coordinator is told only once its members were quiet for the delay (measured at the delivery)      restart  the sweep's state wiped, its file kept ⇒ the episode already nudged is not nudged again
+//   human       a coordinator with NO parent: declared (bus-status view says so) but never told
 //   finished    the member reported done on the real bus ⇒ never told      untasked   a hand-made workspace with no dispatched task ⇒ never told
 // `--proof` adds the CONTROL arm (mechanism never started: nobody gets a turn although every vague was quiet past the delay and the process bound lapsed) and the must-FAIL mutant arms (load-time edits of the
 // shipped source: the arm named for the clause must go RED).
@@ -22,6 +25,14 @@ export function judgeVague(r) {
     sampled: s.aTold === true && s.quietAgeMs?.b > r.quietMs && s.quietAgeMs?.d > r.quietMs && s.quietAgeMs?.e > r.quietMs && s.bScriptAlive === true && r.scriptAliveAtStart === true,
     asleep: r.vagues?.a?.relances >= 1 && /TASK-a: finish the a fix and push/.test(t(r.aText)) && /asleep since \d\d:\d\d:\d\d UTC/.test(t(r.aText)) && /impl-a — .* last activity \d\d:\d\d:\d\d UTC/.test(t(r.aText)) && r.aCoordinatorSessionLive === true && r.aView?.nudgedAt != null && Array.isArray(r.aView?.unfinished) && r.aView.unfinished.length === 1 && typeof r.aView?.since === 'number',
     episode: r.aBeforeResume === 1 && r.aEpisodeStillOpen === true && r.aEpisodeEndedByResume === true && r.aSecondEpisodeTold === true && r.aFinal === 2,
+    // the 10-minute delay (10 s here) on the REAL path: a coordinator is told only once its members have been quiet for the delay — a and c (c's quiet starts AFTER the mechanism runs)
+    delay: r.deliverAgeMs?.a >= r.quietMs - 500 && r.deliverAgeMs?.c >= r.quietMs - 500,
+    // a restart of the app: the episode already nudged is kept (and shown) and not nudged again; the other vagues are not re-nudged either
+    restart: r.aAfterRestart === 1 && r.aEpisodeKeptAcrossRestart === true && r.restartRelancesElsewhere?.b === 1 && r.restartRelancesElsewhere?.c === 1 && r.restartRelancesElsewhere?.f === 1,
+    // a coordinator with NO parent (the human's conversation): the vague is DECLARED (bus-status view) but the coordinator never gets a turn
+    human: s.quietAgeG > r.quietMs && r.gView?.relance === 'human' && r.gView?.nudgedAt === null && r.vagues?.g?.relances === 0 && r.vagues?.g?.coordinatorTurnEnds === 0,
+    // a task the member's CLI session tracks (run_in_background) protects like a live process, then is named
+    background: r.fBackgroundTaskAtStart === true && s.fBackgroundTask === true && s.turns?.f === 0 && r.fToldAfterBound === true && r.vagues?.f?.relances === 1 && /a background task of impl-f, tracked by its session/.test(t(r.fText)) && !/no live process/.test(t(r.fText)) && r.fQuietAgeAtTold >= r.processMs - 1500,
     active: s.cStatus === 'running' && s.turns?.c === 0 && r.cToldAfterQuiet === true && r.vagues?.c?.relances === 1,
     process: s.turns?.b === 0 && r.bToldAfterBound === true && r.vagues?.b?.relances === 1 && /VAGSCRIPT-b-1/.test(t(r.bText)) && /Processes still alive:/.test(t(r.bText)) && r.bQuietAgeAtTold >= r.processMs - 1500,
     finished: r.vagues?.d?.relances === 0 && r.vagues?.d?.coordinatorTurnEnds === 0,
@@ -32,8 +43,8 @@ export function judgeVague(r) {
 export function judgeControl(r) {
   const q = r.finalQuietAgeMs ?? {};
   return {
-    'could-have-fired': ['a', 'b', 'c', 'd', 'e'].every((v) => q[v] > r.quietMs * 2) && q.b > r.processMs && r.bScriptAlive === true,
-    'nobody-gets-a-turn': ['a', 'b', 'c', 'd', 'e'].every((v) => r.vagues?.[v]?.relances === 0 && r.vagues?.[v]?.coordinatorTurnEnds === 0),
+    'could-have-fired': ['a', 'b', 'c', 'd', 'e', 'f', 'g'].every((v) => q[v] > r.quietMs * 2) && q.b > r.processMs && r.bScriptAlive === true,
+    'nobody-gets-a-turn': ['a', 'b', 'c', 'd', 'e', 'f', 'g'].every((v) => r.vagues?.[v]?.relances === 0 && r.vagues?.[v]?.coordinatorTurnEnds === 0),
   };
 }
 // the mutant arms: load-time edits of the shipped source (mutants.mjs); each must turn ONLY the named clauses red
@@ -42,6 +53,10 @@ export const MUTANT_ARMS = [
   ['vague-ignore-process', ['process']],
   ['vague-ignore-active', ['active']],
   ['vague-coordinator-resume-ends', ['episode']],
+  ['vague-no-quiet-delay', ['delay']],
+  ['vague-no-persist', ['restart']],
+  ['vague-ignore-background-task', ['background']],
+  ['vague-parentless-told', ['human']],
 ];
 
 ensureBuilt(repo);
