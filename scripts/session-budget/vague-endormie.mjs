@@ -30,7 +30,7 @@ export function judgeVague(r) {
     // a restart of the app: the episode already nudged is kept (and shown) and not nudged again; the other vagues are not re-nudged either
     restart: r.aAfterRestart === 1 && r.aEpisodeKeptAcrossRestart === true && r.restartRelancesElsewhere?.b === 1 && r.restartRelancesElsewhere?.c === 1 && r.restartRelancesElsewhere?.f === 1,
     // a coordinator with NO parent (the human's conversation): the vague is DECLARED (bus-status view) but the coordinator never gets a turn
-    human: s.quietAgeG > r.quietMs && r.gView?.relance === 'human' && r.gView?.nudgedAt === null && r.vagues?.g?.relances === 0 && r.vagues?.g?.coordinatorTurnEnds === 0,
+    human: s.quietAgeG > r.quietMs && r.gView?.relance === 'no-parent' && r.gView?.nudgedAt === null && r.vagues?.g?.relances === 0 && r.vagues?.g?.coordinatorTurnEnds === 0,
     // a task the member's CLI session tracks (run_in_background) protects like a live process, then is named
     background: r.fBackgroundTaskAtStart === true && s.fBackgroundTask === true && s.turns?.f === 0 && r.fToldAfterBound === true && r.vagues?.f?.relances === 1 && /a background task of impl-f, tracked by its session/.test(t(r.fText)) && !/no live process/.test(t(r.fText)) && r.fQuietAgeAtTold >= r.processMs - 1500,
     active: s.cStatus === 'running' && s.turns?.c === 0 && r.cToldAfterQuiet === true && r.vagues?.c?.relances === 1,
@@ -56,7 +56,7 @@ export const MUTANT_ARMS = [
   ['vague-no-quiet-delay', ['delay']],
   ['vague-no-persist', ['restart']],
   ['vague-ignore-background-task', ['background']],
-  ['vague-parentless-told', ['human']],
+  ['vague-parentless-told', ['no-parent']],
 ];
 
 ensureBuilt(repo);

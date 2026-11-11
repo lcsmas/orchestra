@@ -141,7 +141,7 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
           since: verdict.since,
           declaredAt: state.episode?.declaredAt ?? now,
           nudgedAt: state.episode?.nudgedAt ?? null,
-          relance: verdict.nudge === 'human' ? 'human' : verdict.nudge === 'not-wakeable' ? 'not-wakeable' : gaveUp.has(f.runId) ? 'gave-up' : state.episode?.nudgedAt !== undefined ? 'sent' : 'owed',
+          relance: verdict.nudge === 'no-parent' ? 'no-parent' : verdict.nudge === 'not-wakeable' ? 'not-wakeable' : gaveUp.has(f.runId) ? 'gave-up' : state.episode?.nudgedAt !== undefined ? 'sent' : 'owed',
           unfinished: verdict.unfinished.map((m) => ({ wsId: m.wsId, label: m.label })),
         };
         views.set(f.runId, view);

@@ -79,7 +79,7 @@ export type VagueVerdict =
       /** First pass of the episode. */
       declared: boolean;
       /** `owed`: to be sent now · `done`: sent · `human`: the coordinator has no parent, it never gets one · `not-wakeable`: it cannot be started now (retried when it can). */
-      nudge: 'owed' | 'done' | 'human' | 'not-wakeable';
+      nudge: 'owed' | 'done' | 'no-parent' | 'not-wakeable';
       unfinished: readonly VagueMember[];
       /** The live processes that no longer protect the vague (named in the Relance); only read while the nudge is owed. */
       processes: readonly VagueProcessLine[];
@@ -136,8 +136,8 @@ function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {
   return null;
 }
 
-function nudgeOf(f: VagueFacts, ep: VagueEpisode): 'owed' | 'done' | 'human' | 'not-wakeable' {
-  if (!f.coordinatorHasParent) return 'human';
+function nudgeOf(f: VagueFacts, ep: VagueEpisode): 'owed' | 'done' | 'no-parent' | 'not-wakeable' {
+  if (!f.coordinatorHasParent) return 'no-parent';
   if (ep.nudgedAt !== undefined) return 'done';
   return f.coordinatorWakeable ? 'owed' : 'not-wakeable';
 }
@@ -262,7 +262,7 @@ export interface AsleepVagueView {
   /** When the coordinator's Relance went out; null = not (yet) sent. */
   nudgedAt: number | null;
   /** Why not / whether: `sent` · `owed` (not delivered yet) · `human` (no parent: the coordinator is the human's conversation, it never gets one) · `not-wakeable` · `gave-up` (bounded retries exhausted). */
-  relance: 'sent' | 'owed' | 'human' | 'not-wakeable' | 'gave-up';
+  relance: 'sent' | 'owed' | 'no-parent' | 'not-wakeable' | 'gave-up';
   unfinished: { wsId: string; label: string }[];
 }
 
@@ -276,7 +276,7 @@ export function formatAsleepVaguesLines(views: readonly AsleepVagueView[], now: 
   return views.map((v) => {
     const names = v.unfinished.slice(0, 5).map((u) => oneLine(u.label)).join(', ') + (v.unfinished.length > 5 ? `, … +${v.unfinished.length - 5}` : '');
     const told =
-      v.relance === 'human' ? 'coordinator has no parent (human-facing): no Relance sent'
+      v.relance === 'no-parent' ? 'coordinator has no parent (human-facing): no Relance sent'
       : v.relance === 'not-wakeable' ? 'coordinator cannot be started now: NOT told'
       : v.relance === 'gave-up' ? 'coordinator NOT told (delivery failed repeatedly, gave up)'
       : v.nudgedAt === null ? 'coordinator NOT told yet (Relance owed)'

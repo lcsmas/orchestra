@@ -406,7 +406,7 @@ test('a coordinator WITHOUT a parent (LEAD, promoted top-level workspace) never 
   assert.equal(vagueCounters().declared, 1);
   assert.equal(vagueCounters().nudged, 0);
   const [v] = asleepVagues();
-  assert.equal(v.relance, 'human');
+  assert.equal(v.relance, 'no-parent');
   assert.equal(v.nudgedAt, null);
   assert.match(formatAsleepVaguesLines([v], r.clock.t)[0], /no parent \(human-facing\): no Relance sent/);
   // the control: the same vague WITH a parent is told

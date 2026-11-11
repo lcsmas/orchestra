@@ -373,14 +373,14 @@ test('everSeen: observed once ⇒ recorded; recorded ⇒ judged even after a res
 
 // ── the coordinator's reachability ──────────────────────────────────────────────────────────────────────────────
 
-test('a coordinator WITHOUT a parent (the human\'s conversation) is DECLARED asleep but never owed a Relance — the verdict says `human`, in the first pass and in every later one', () => {
+test('a coordinator WITHOUT a parent (the human\'s conversation) is DECLARED asleep but never owed a Relance — the verdict says `no-parent`, in the first pass and in every later one', () => {
   const f = facts({ coordinatorHasParent: false });
   const r = stepVague(undefined, f, census({}), T0 + VAGUE_QUIET_MS);
   assert.equal(r.verdict.kind === 'asleep' && r.verdict.declared, true);
-  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'human');
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'no-parent');
   assert.equal(stepVague(r.state, f, never, T0 + 5 * 60 * MIN).verdict.kind === 'asleep' && true, true);
   const later = stepVague(r.state, f, never, T0 + 5 * 60 * MIN);
-  assert.equal(later.verdict.kind === 'asleep' && later.verdict.nudge, 'human');
+  assert.equal(later.verdict.kind === 'asleep' && later.verdict.nudge, 'no-parent');
   assert.equal(stepVague(undefined, facts(), census({}), T0 + VAGUE_QUIET_MS).verdict.kind === 'asleep' && true, true, 'control: with a parent the same facts are owed');
   const ctl = stepVague(undefined, facts(), census({}), T0 + VAGUE_QUIET_MS);
   assert.equal(ctl.verdict.kind === 'asleep' && ctl.verdict.nudge, 'owed');
@@ -396,15 +396,15 @@ test('a coordinator that cannot be started now: asleep, nudge `not-wakeable`, no
 
 test('formatAsleepVaguesLines: human-facing, not-wakeable and gave-up each say so', () => {
   const v = { runId: 'r', coordinatorId: 'c', coordinator: 'lead', since: T0, declaredAt: T0, nudgedAt: null, unfinished: [{ wsId: 'm', label: 'impl' }] } as const;
-  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'human' }], T0 + MIN)[0], /coordinator has no parent \(human-facing\): no Relance sent/);
+  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'no-parent' }], T0 + MIN)[0], /coordinator has no parent \(human-facing\): no Relance sent/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'not-wakeable' }], T0 + MIN)[0], /cannot be started now: NOT told/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'gave-up' }], T0 + MIN)[0], /gave up/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'owed' }], T0 + MIN)[0], /NOT told yet \(Relance owed\)/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'sent', nudgedAt: T0 }], T0 + MIN)[0], /coordinator relanced at 22:48:00 UTC/);
 });
 
-test('a coordinator that LOST its parent after it was nudged reads `human` (never `done`): the view must not claim a human-facing conversation was relanced', () => {
+test('a coordinator that LOST its parent after it was nudged reads `no-parent` (never `done`): the view must not claim a human-facing conversation was relanced', () => {
   const sent: VagueState = { episode: { since: T0, declaredAt: T0 + 10 * MIN, nudgedAt: T0 + 10 * MIN } };
   const r = stepVague(sent, facts({ coordinatorHasParent: false }), never, T0 + 20 * MIN);
-  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'human');
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'no-parent');
 });
