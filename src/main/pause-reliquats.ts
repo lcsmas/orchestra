@@ -8,6 +8,7 @@
 
 import type { KillDeps } from './pause-kill.ts';
 import { cmdOf } from '../shared/pause-procs.ts';
+import { noteHostStopped } from './relance-stopped.ts';
 import {
   MAX_RELIQUATS_RECORDED,
   depthsOf,
@@ -241,6 +242,8 @@ export async function killReliquats(wsId: string, scopeDeps: ReliquatScopeDeps, 
     const plan = planNow();
     if (plan.targets.length === 0) break;
     report.rounds = round;
+    // #427: what the HOST is about to stop is not an event for the member (the Veille / Pause tell it their own way): noted BEFORE the first signal, so the Relance sweep never sees the end first
+    noteHostStopped(plan.targets);
     // review F3: WRITE-AHEAD — the planned batch (pid + start-time, `outcome: planned`) is persisted BEFORE the first signal: an app death mid-batch must not lose it (the retry census no longer sees a process that already died)
     for (const t of plan.targets) {
       if (killed.has(key(t))) continue;

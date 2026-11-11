@@ -91,6 +91,7 @@
     "test:rewind": "node scripts/session-budget/rewind.mjs --proof",
     "test:bloc-html-setting": "pnpm run build:bundles && pnpm run build:bus-abi && bash scripts/e2e-bloc-html-setting.sh \"$PWD\"",
     "test:bloc-html-instruction": "node scripts/session-budget/bloc-html.mjs --proof",
+    "test:relance": "node scripts/session-budget/relance.mjs --proof",
     "test:inbox-redrive": "bash scripts/e2e-inbox-redrive.sh",
     "test:keeper-stop-semantics": "bash scripts/e2e-keeper-stop-semantics.sh",
     "test:keeper-facade-restart": "bash scripts/e2e-keeper-facade-restart.sh",

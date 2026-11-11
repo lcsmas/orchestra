@@ -146,7 +146,8 @@ test('who imports Admission: the #286 start gates + the #287 wake path + the REA
   // Tripwires BY DESIGN: #288 (Veille) adds its importer HERE.
   // #289's alert and banner READ the held-start count (`listHeldStarts().length`) for what they tell the LEAD / the human — they never gate or release a start.
   assert.deepEqual(importers(/from '\.\/admission(\.ts)?'/), ['admission-wake.ts', 'bus-wake.ts', 'hooks-server.ts', 'index.ts', 'memory-alert-host.ts', 'memory-banner-host.ts', 'restart-workspace.ts', 'workspaces.ts']);
-  assert.deepEqual(importers(/from '\.\/admission-wake'/), ['api-handlers.ts', 'index.ts', 'prompt-queue.ts', 'workspaces.ts']);
+  // #427: the Relance is a wake site too — a Relance of a SLEEPING fleet member is a start (pinned in relance-wiring.test.ts: the hold precedes `sdkStartAndDeliver`).
+  assert.deepEqual(importers(/from '\.\/admission-wake'/), ['api-handlers.ts', 'index.ts', 'prompt-queue.ts', 'relance-host.ts', 'workspaces.ts']);
 });
 
 // ─── #287: the wake sites (each: the hold sits BEFORE anything is started or cleared, durable state untouched) ───────────────────────

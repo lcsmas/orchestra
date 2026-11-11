@@ -162,6 +162,11 @@ export function runBlocHtmlArm(o) {
   return runContained(o, 'bloc-html-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null }, '{"bloc"');
 }
 
+/** The Relance rig (`relance.mjs`, #427): the production Relance over the real session path — a member's detached script ends, the member gets (or, with the mechanism off, does not get) a turn. */
+export function runRelanceArm(o) {
+  return runContained(o, 'relance-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, relance: o.relance !== false, windowMs: o.windowMs }, '{"relance"');
+}
+
 /**
  * Host-dependent self-tests of the instruments themselves, run under the SAME containment as the arms (so they
  * cannot live in `pnpm run test`, which must not depend on bwrap or a real `claude`). Modes: `census` (the

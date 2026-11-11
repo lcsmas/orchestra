@@ -5,6 +5,7 @@
 // classified, its launcher is still dead and (port mode) no client has connected since; the profile directory is never touched; anything unreadable is "keep".
 
 import fs from 'node:fs';
+import { noteHostStopped } from './relance-stopped.ts';
 import type { ProcSample } from '../shared/resources.ts';
 import {
   BROWSER_IDLE_WINDOW_MS,
@@ -264,6 +265,8 @@ export async function browserPass(d: BrowserPassDeps, tracker: BrowserTracker, t
     order.push(fresh);
     const why = `browser Reliquat (${t.parsed.mode}): ${t.why}; profile ${trunc(t.parsed.userDataDir ?? '')}; identity re-read at signal time (pid ${t.main.pid}, start-time ${t.main.startTicks}); group of ${order.length} process(es)`;
     d.warn(`resources: stopping browser Reliquat of workspace ${t.wsId} — ${t.main.comm}(${t.main.pid}) ${why}`);
+    // #427: the HOST is about to stop these (the monitor's 60 s pass, a Pause dure, a Veille): not an end the member's Relance may announce — noted BEFORE the first signal
+    noteHostStopped(order.filter((m) => m.startTicks !== null).map((m) => ({ pid: m.pid, startTicks: m.startTicks as number })));
     const sent: ProcSample[] = [];
     for (const m of order) if (d.signal(m.pid, 'SIGTERM')) sent.push(m);
     if (sent.length === 0) continue;
