@@ -65,8 +65,9 @@ const api = await startFakeApi({
     if (last.includes('[orchestra] Relance')) return { text: 'REPLY-RELANCE' };
     if (last.includes('tool_result')) return { text: 'REPLY-DONE' };
     if (/PROMPT-BG MARK-f/.test(last)) return { toolUse: { name: 'Bash', input: { command: 'timeout 220 tail -f /dev/null', description: 'a background task of the session', run_in_background: true } } };
-    const sleep = /PROMPT-SLEEP MARK-([a-z0-9]+) SECS-(\d+)/.exec(last);
-    if (sleep) return { toolUse: { name: 'Bash', input: { command: `timeout ${sleep[2]} tail -f /dev/null; echo slept`, description: 'a long foreground command' } } };
+    // a turn that stays `running` on a SLOW model reply — no tool in flight (a long foreground command is itself a task the CLI tracks, which protects the vague on its own)
+    const slow = /PROMPT-SLOW MARK-([a-z0-9]+) SECS-(\d+)/.exec(last);
+    if (slow) return { text: 'REPLY-SLOW', delayMs: Number(slow[2]) * 1000 };
     const mark = /PROMPT-LAUNCH MARK-([a-z0-9]+)/.exec(last)?.[1];
     if (mark && PLAN[mark]) return { toolUse: { name: 'Bash', input: { command: launchCommand(mark), description: 'launch detached scripts' } } };
     return { text: 'REPLY' };
@@ -254,9 +255,11 @@ try {
   out.deliverAgeMs = deliverAge;
   if (vague) vagueMod.startVagueEndormie(vagueDeps, 2_000);
   const t0 = Date.now();
-  // c: a member runs a FOREGROUND command for 26 s — a turn in flight the whole time the others fall asleep
+  // c: a member turn that stays `running` for 26 s on a slow model reply — no tool in flight
   PLAN.c = { scripts: 0 };
-  await sdk.sdkSend('ws-impl-c', 'PROMPT-SLEEP MARK-c SECS-26 go');
+  turnRunning.add('ws-impl-c');
+  applyEvt('ws-impl-c', 'submit', undefined); // the UserPromptSubmit hook of the app (the rig installs none): the turn is running from its first second
+  await sdk.sdkSend('ws-impl-c', 'PROMPT-SLOW MARK-c SECS-26 go');
   await waitFor(() => store.getWorkspace('ws-impl-c')?.status === 'running', 15_000);
 
   if (!vague) {
@@ -269,7 +272,7 @@ try {
   }
   // a falls asleep ⇒ its coordinator is told (once). Wait for it, then for b / d / e to have been quiet LONGER than the delay, and sample
   const aTold = await waitFor(() => coordTurnEnds('a') >= 1, 60_000);
-  await waitFor(() => lastActAge('ws-impl-b') > QUIET_MS + 2_000 && lastActAge('ws-impl-d') > QUIET_MS + 2_000 && lastActAge('ws-impl-e') > QUIET_MS + 2_000 && lastActAge('ws-impl-f') > QUIET_MS + 2_000 && lastActAge('ws-impl-g') > QUIET_MS + 2_000, 30_000);
+  await waitFor(() => lastActAge('ws-impl-b') > QUIET_MS + 2_000 && lastActAge('ws-impl-d') > QUIET_MS + 2_000 && lastActAge('ws-impl-e') > QUIET_MS + 2_000 && lastActAge('ws-impl-f') > QUIET_MS + 2_000 && lastActAge('ws-impl-g') > QUIET_MS + 2_000 && lastActAge('ws-impl-c') > QUIET_MS + 7_000, 40_000); // c: silent for well beyond the delay (a coordinator told at the delay would be told by now) while its turn still runs
   out.sample = {
     aTold,
     cStatus: store.getWorkspace('ws-impl-c')?.status,
@@ -280,6 +283,9 @@ try {
     fBackgroundTask: sdkDelivery.sdkHasBackgroundTasks('ws-impl-f'),
     quietAgeF: lastActAge('ws-impl-f'),
     quietAgeG: lastActAge('ws-impl-g'),
+    quietAgeC: lastActAge('ws-impl-c'),
+    // deliveries ATTEMPTED so far (a coordinator's session start takes seconds before its model request exists — a count of requests alone would miss a Relance already on its way)
+    delivered: Object.keys(deliverAge),
   };
   out.aView = vagueMod.asleepVagues().find((x) => x.runId === 'ws-ops-a') ?? null;
   out.aText = relanceText(vagueTurns('a')[0]);

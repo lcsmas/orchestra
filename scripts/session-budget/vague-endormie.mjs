@@ -30,11 +30,11 @@ export function judgeVague(r) {
     // a restart of the app: the episode already nudged is kept (and shown) and not nudged again; the other vagues are not re-nudged either
     restart: r.aAfterRestart === 1 && r.aEpisodeKeptAcrossRestart === true && r.restartRelancesElsewhere?.b === 1 && r.restartRelancesElsewhere?.c === 1 && r.restartRelancesElsewhere?.f === 1,
     // a coordinator with NO parent (the human's conversation): the vague is DECLARED (bus-status view) but the coordinator never gets a turn
-    human: s.quietAgeG > r.quietMs && r.gView?.relance === 'no-parent' && r.gView?.nudgedAt === null && r.vagues?.g?.relances === 0 && r.vagues?.g?.coordinatorTurnEnds === 0,
+    human: s.quietAgeG > r.quietMs && r.gView?.relance === 'no-parent' && r.gView?.nudgedAt === null && !r.deliverAgeMs?.hasOwnProperty('g') && r.vagues?.g?.relances === 0 && r.vagues?.g?.coordinatorTurnEnds === 0,
     // a task the member's CLI session tracks (run_in_background) protects like a live process, then is named
-    background: r.fBackgroundTaskAtStart === true && s.fBackgroundTask === true && s.turns?.f === 0 && r.fToldAfterBound === true && r.vagues?.f?.relances === 1 && /a background task of impl-f, tracked by its session/.test(t(r.fText)) && !/no live process/.test(t(r.fText)) && r.fQuietAgeAtTold >= r.processMs - 1500,
-    active: s.cStatus === 'running' && s.turns?.c === 0 && r.cToldAfterQuiet === true && r.vagues?.c?.relances === 1,
-    process: s.turns?.b === 0 && r.bToldAfterBound === true && r.vagues?.b?.relances === 1 && /VAGSCRIPT-b-1/.test(t(r.bText)) && /Processes still alive:/.test(t(r.bText)) && r.bQuietAgeAtTold >= r.processMs - 1500,
+    background: r.fBackgroundTaskAtStart === true && s.fBackgroundTask === true && s.turns?.f === 0 && !s.delivered?.includes('f') && r.fToldAfterBound === true && r.vagues?.f?.relances === 1 && /a background task of impl-f, tracked by its session/.test(t(r.fText)) && !/no live process/.test(t(r.fText)) && r.fQuietAgeAtTold >= r.processMs - 1500,
+    active: s.cStatus === 'running' && s.quietAgeC > r.quietMs && s.turns?.c === 0 && !s.delivered?.includes('c') && r.cToldAfterQuiet === true && r.vagues?.c?.relances === 1,
+    process: s.turns?.b === 0 && !s.delivered?.includes('b') && r.bToldAfterBound === true && r.vagues?.b?.relances === 1 && /VAGSCRIPT-b-1/.test(t(r.bText)) && /Processes still alive:/.test(t(r.bText)) && r.bQuietAgeAtTold >= r.processMs - 1500,
     finished: r.vagues?.d?.relances === 0 && r.vagues?.d?.coordinatorTurnEnds === 0,
     untasked: r.vagues?.e?.relances === 0 && r.vagues?.e?.coordinatorTurnEnds === 0,
   };
@@ -56,12 +56,14 @@ export const MUTANT_ARMS = [
   ['vague-no-quiet-delay', ['delay']],
   ['vague-no-persist', ['restart']],
   ['vague-ignore-background-task', ['background']],
-  ['vague-parentless-told', ['no-parent']],
+  ['vague-parentless-told', ['human']],
 ];
 
 ensureBuilt(repo);
 let bad = 0;
+const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 async function arm(label, o, judge, wantFail) {
+  if (only && label !== only) return;
   const res = await runVagueArm({ repo, arm: label, timeoutMs: 280_000, ...o });
   const r = res.vague;
   if (res.void || res.error || !r || r.error) {

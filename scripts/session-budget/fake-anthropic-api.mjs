@@ -129,7 +129,7 @@ function summarizeModelBody(buf, markers = {}, keepAttachmentData = false, keepM
 /**
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
- * @param {(req: object) => ({text?: string, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
+ * @param {(req: object) => ({text?: string, delayMs?: number, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
  * @param {boolean} [opts.keepMessages]  keep each model request's full `messages` array on its record (`messages` then replaces the count)
  * @param {boolean} [opts.keepAttachmentData]  keep the base64 of image/document blocks in each request record (default: sizes only)
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
@@ -171,7 +171,8 @@ export async function startFakeApi(opts = {}) {
       const override = opts.reply?.(rec);
       const text = override?.text ?? CANNED_TEXT;
       const id = `msg_fake_${++modelSeq}`;
-      if (opts.replyDelayMs) await new Promise((r) => setTimeout(r, opts.replyDelayMs));
+      const delayMs = override?.delayMs ?? opts.replyDelayMs; // a per-reply delay (#428: a member turn that stays `running` on a slow model, no tool in flight)
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
       if (rec.stream && override?.toolUse) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
         res.end(streamedToolUseReply({ model: rec.model ?? 'claude-fake', id, inputTokens: override?.inputTokens, toolUse: override.toolUse }));

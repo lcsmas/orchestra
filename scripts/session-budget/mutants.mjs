@@ -14,8 +14,8 @@ export const MUTANTS = {
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',
-    find: /if \(verdict\.nudge === 'done' \|\| \(retryAt\.get\(f\.runId\) \?\? 0\) > now\) continue;/g,
-    replace: 'if ((retryAt.get(f.runId) ?? 0) > now) continue;',
+    find: /if \(verdict\.nudge !== 'owed' \|\| gaveUp\.has\(f\.runId\) \|\|/g,
+    replace: "if (verdict.nudge === 'no-parent' || verdict.nudge === 'not-wakeable' || gaveUp.has(f.runId) ||",
   },
   'vague-ignore-process': {
     file: '/src/shared/vague-endormie.ts',
@@ -49,8 +49,8 @@ export const MUTANTS = {
   },
   'vague-coordinator-resume-ends': {
     file: '/src/shared/vague-endormie.ts',
-    find: /if \(f\.members\.some\(\(m\) => m\.active \|\| m\.waiting \|\| m\.heldStart \|\| m\.lastActivityAt > ep\.declaredAt\)\) return 'resumed';/g,
-    replace: "if ([f.coordinator, ...f.members].some((m) => m.active || m.waiting || m.heldStart || m.lastActivityAt > ep.declaredAt)) return 'resumed';",
+    find: /if \(f\.members\.some\(\(m\) => m\.active \|\| m\.waiting \|\| m\.heldStart \|\| \(m\.lastTurnStartAt \?\? -Infinity\) > ep\.declaredAt\)\) return 'resumed';/g,
+    replace: "if ([f.coordinator, ...f.members].some((m) => m.active || m.waiting || m.heldStart || (m.lastTurnStartAt ?? -Infinity) > ep.declaredAt)) return 'resumed';",
   },
   // Review round 2 F1: an app-code edit that hands the CLI a traffic-suppressing env knob (buildSdkEnv copies process.env then adds
   // the workspace vars). The runner's own env is clean, so only the CLI's /proc environ can see it.
