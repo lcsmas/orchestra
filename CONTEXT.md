@@ -55,6 +55,19 @@ The host-triggered session turn that orders a reader to do a relève; it
 carries no content.
 _Avoid_: push, bell, notification, ping
 
+**Relance** (nudge):
+The host-triggered session turn that tells a member why it must resume: its
+reliquats have ended, or its vague is asleep. Unlike a réveil it carries its
+reason; unlike an avis de tâche it comes from the host, not the CLI.
+Settled with the user 2026-11-11.
+_Avoid_: wake-up, reminder, ping, escalation (that goes to a coordinator about someone else)
+
+**Vague endormie** (asleep wave):
+A vague that still has unfinished tasks while nothing can wake anyone in it:
+no member is active, none waits for an answer, and no process of theirs is
+alive. Never a legitimate wait. Settled with the user 2026-11-11.
+_Avoid_: stalled, stuck, idle (a member waiting on another is idle and fine)
+
 **Ruling**:
 A decision by the human that binds the fleet, recorded on the bus by the LEAD as the resolution of a decision gate. CLI verb: `gate`.
 _Avoid_: answer, feedback, verdict
