@@ -246,6 +246,7 @@ try {
   const vagueDeps = {
     ...vagueHost.productionVagueDeps,
     bounds: () => ({ quietMs: QUIET_MS, processMs: PROCESS_MS }),
+    rosterTrusted: () => true, // the rig's scratch store is fresh on purpose (production: store.loadedFromDisk)
     deliver: (id, text) => {
       const v = id.replace('ws-ops-', '');
       if (!(v in deliverAge)) deliverAge[v] = lastActAge(`ws-impl-${v}`);

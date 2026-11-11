@@ -394,17 +394,48 @@ test('a coordinator that cannot be started now: asleep, nudge `not-wakeable`, no
   assert.equal(later.verdict.kind === 'asleep' && later.verdict.nudge, 'owed');
 });
 
-test('formatAsleepVaguesLines: human-facing, not-wakeable and gave-up each say so', () => {
+test('formatAsleepVaguesLines: human-facing and not-wakeable each say so', () => {
   const v = { runId: 'r', coordinatorId: 'c', coordinator: 'lead', since: T0, declaredAt: T0, nudgedAt: null, unfinished: [{ wsId: 'm', label: 'impl' }] } as const;
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'no-parent' }], T0 + MIN)[0], /coordinator has no parent \(human-facing\): no Relance sent/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'not-wakeable' }], T0 + MIN)[0], /cannot be started now: NOT told/);
-  assert.match(formatAsleepVaguesLines([{ ...v, relance: 'gave-up' }], T0 + MIN)[0], /gave up/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'owed' }], T0 + MIN)[0], /NOT told yet \(Relance owed\)/);
   assert.match(formatAsleepVaguesLines([{ ...v, relance: 'sent', nudgedAt: T0 }], T0 + MIN)[0], /coordinator relanced at 22:48:00 UTC/);
 });
 
-test('a coordinator that LOST its parent after it was nudged reads `no-parent` (never `done`): the view must not claim a human-facing conversation was relanced', () => {
+test('a coordinator that LOST its parent after it was nudged stays reported as SENT (`done`): the Relance was sent, whatever happened to the parent since; an unnudged one reads `no-parent`', () => {
   const sent: VagueState = { episode: { since: T0, declaredAt: T0 + 10 * MIN, nudgedAt: T0 + 10 * MIN } };
   const r = stepVague(sent, facts({ coordinatorHasParent: false }), never, T0 + 20 * MIN);
-  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'no-parent');
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.nudge, 'done');
+  const unsent: VagueState = { episode: { since: T0, declaredAt: T0 + 10 * MIN } };
+  assert.equal(stepVague(unsent, facts({ coordinatorHasParent: false }), never, T0 + 20 * MIN).verdict.kind === 'asleep' && true, true);
+  const u = stepVague(unsent, facts({ coordinatorHasParent: false }), never, T0 + 20 * MIN);
+  assert.equal(u.verdict.kind === 'asleep' && u.verdict.nudge, 'no-parent');
+});
+
+test('quietSinceOf with a hint: a participant never observed this run is read at the persisted hint (not the launch floor); a seen one keeps its real clock', () => {
+  const launch = T0 + 8 * 60 * MIN;
+  const unseen = facts({ coordinator: person('ops', { seenThisRun: false, lastActivityAt: launch }), members: [member('impl', { seenThisRun: false, lastActivityAt: launch })] });
+  assert.equal(quietSinceOf(unseen, launch + MIN), launch, 'no hint: the floor');
+  assert.equal(quietSinceOf(unseen, launch + MIN, T0), T0, 'hint: the true quiet start');
+  const worked = facts({ coordinator: person('ops', { seenThisRun: false, lastActivityAt: launch }), members: [member('impl', { seenThisRun: true, lastActivityAt: launch + 5 * MIN })] });
+  assert.equal(quietSinceOf(worked, launch + 9 * MIN, T0), launch + 5 * MIN);
+});
+
+test('the persisted hint grace: a vague with a hint and `notBefore` in the future is NOT declared before it, and `since` is the hint', () => {
+  const launch = T0 + 8 * 60 * MIN;
+  const f = facts({ coordinator: person('ops', { seenThisRun: false, lastActivityAt: launch }), members: [member('impl', { seenThisRun: false, lastActivityAt: launch })] });
+  const prev: VagueState = { everSeen: true, quietHint: T0, notBefore: launch + 10 * MIN };
+  assert.deepEqual(stepVague(prev, f, census({}), launch + 9 * MIN).verdict, { kind: 'awake', why: 'quiet', dueAt: launch + 10 * MIN });
+  const r = stepVague(prev, f, census({}), launch + 10 * MIN);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.since, T0);
+});
+
+test('the restart grace also holds a LAPSED process (live-process branch): not declared before `notBefore`, then asleep with since = the lapse / the hint', () => {
+  const launch = T0 + 8 * 60 * MIN;
+  const f = facts({ coordinator: person('ops', { seenThisRun: false, lastActivityAt: launch }), members: [member('impl', { seenThisRun: false, lastActivityAt: launch })] });
+  const c = census({ impl: [P(10, 1, 'sh chain.sh')] });
+  const prev: VagueState = { everSeen: true, quietHint: T0, notBefore: launch + 10 * MIN };
+  assert.deepEqual(stepVague(prev, f, c, launch + 9 * MIN).verdict, { kind: 'awake', why: 'quiet', dueAt: launch + 10 * MIN });
+  const r = stepVague(prev, f, c, launch + 10 * MIN);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.since, T0 + VAGUE_PROCESS_BOUND_MS);
 });

@@ -9,7 +9,7 @@ import {
   sweepVagues,
   sweepVaguesNow,
   vagueCounters,
-  VAGUE_MAX_ATTEMPTS,
+  VAGUE_MAX_BACKOFF_MS,
   type PersistedVagues,
   type VagueDeps,
   type VagueStore,
@@ -429,14 +429,42 @@ test('an unwakeable coordinator is not retried at all (no delivery, no warn spam
   assert.equal(r.turns.length, 1);
 });
 
-test('a coordinator whose delivery ALWAYS fails is tried a bounded number of times in 17 hours (back-off grows), then given up — still shown in bus-status', async () => {
+test('NO terminal state: delivery fails for the first 20 minutes after the declaration, then works ⇒ the Relance IS delivered (a short outage must not silence the alarm)', async () => {
   const r = rig();
   r.outcome.next = 'failed';
-  await advance(r, 17 * 60 * MIN);
-  assert.equal(vagueCounters().failed, VAGUE_MAX_ATTEMPTS);
-  assert.equal(asleepVagues()[0].relance, 'gave-up');
-  assert.match(formatAsleepVaguesLines(asleepVagues(), r.clock.t)[0], /gave up/);
+  await advance(r, 10 * MIN + 20 * MIN);
   assert.equal(r.turns.length, 0);
+  assert.ok(vagueCounters().failed >= 5);
+  r.outcome.next = 'sent';
+  await advance(r, VAGUE_MAX_BACKOFF_MS + VAGUE_SWEEP_MS);
+  assert.equal(r.turns.length, 1, 'delivered within one capped back-off of the recovery');
+  await advance(r, 3 * 60 * MIN);
+  assert.equal(r.turns.length, 1);
+});
+
+test('a coordinator whose delivery ALWAYS fails is tried for 17 hours with a capped back-off: bounded per hour (≤ 7), never zero', async () => {
+  const r = rig();
+  r.outcome.next = 'failed';
+  await advance(r, 10 * MIN);
+  await advance(r, 16 * 60 * MIN);
+  const before = vagueCounters().failed;
+  await advance(r, 60 * MIN);
+  const lastHour = vagueCounters().failed - before;
+  assert.ok(lastHour >= 5 && lastHour <= 7, `attempts in the last hour: ${lastHour}`);
+  assert.equal(asleepVagues()[0].relance, 'owed');
+  assert.equal(r.turns.length, 0);
+});
+
+test('wakeability coming back re-arms the delivery AT ONCE, however long the back-off had grown', async () => {
+  const r = rig();
+  r.outcome.next = 'failed';
+  await advance(r, 3 * 60 * MIN); // back-off at its 10-minute cap
+  set(r, baseFacts({ coordinatorWakeable: false }));
+  await advance(r, MIN);
+  r.outcome.next = 'sent';
+  set(r, baseFacts());
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.equal(r.turns.length, 1, 'told within one sweep of becoming wakeable');
 });
 
 // ── a restart: what survives, per run ────────────────────────────────────────────────────────────────────────────
@@ -542,4 +570,70 @@ test('an unreadable store costs nothing: the FIRST pass already judges and tells
   r.clock.t = T0 + 11 * MIN;
   await sweepVagues(r.deps);
   assert.equal(r.turns.length, 1);
+});
+
+// ── an untrusted roster touches nothing ─────────────────────────────────────────────────────────────────────────
+
+test('an UNTRUSTED roster (store.json absent / corrupt ⇒ empty fallback) judges nobody and prunes / saves nothing: the persisted state survives, and the episode is not re-nudged once the real roster is back', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 11 * MIN);
+  assert.equal(r.turns.length, 1);
+  const disk = JSON.stringify(store.disk);
+  restart(r, MIN);
+  const real = r.deps.vagues;
+  let trusted = false;
+  r.deps.rosterTrusted = () => trusted;
+  r.deps.vagues = () => [];
+  await advance(r, 3 * 60 * MIN);
+  assert.equal(JSON.stringify(store.disk), disk, 'the file is untouched');
+  assert.equal(r.turns.length, 1);
+  trusted = true;
+  r.deps.vagues = real;
+  await advance(r, 3 * 60 * MIN);
+  assert.equal(r.turns.length, 1, 'the persisted episode came back: no second Relance');
+});
+
+test('control: a TRUSTED empty roster does prune (a vague that is really gone leaves no record)', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 11 * MIN);
+  assert.ok(store.disk.ops);
+  r.deps.vagues = () => [];
+  await sweepVagues(r.deps);
+  assert.deepEqual(store.disk, {});
+});
+
+// ── the true « since » across a restart ─────────────────────────────────────────────────────────────────────────
+
+test('RESTART 5 — a vague that fell asleep before the downtime keeps its TRUE « since » (persisted hint), is declared after the launch has settled for one delay, and the Relance says when it really fell asleep', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 5 * MIN); // quiet since T0, not yet declared: the hint is recorded
+  assert.equal(store.disk.ops?.quietHint, T0);
+  restart(r, 8 * 60 * MIN); // down for 8 hours
+  const launch = r.clock.t;
+  await advance(r, 9 * MIN);
+  assert.equal(r.turns.length, 0, 'not at launch: the roster settles first');
+  await advance(r, 2 * MIN);
+  assert.equal(r.turns.length, 1);
+  assert.equal(asleepVagues()[0].since, T0, 'since = when it really fell quiet, not the launch');
+  assert.match(r.turns[0].text, /asleep since 22:48:00 UTC/);
+  assert.ok(r.clock.t >= launch + 10 * MIN);
+});
+
+test('a hint never outlives activity: a member that works after the restart moves the quiet start to its real clock', async () => {
+  const r = rig();
+  const store = memStore();
+  r.deps.persist = store;
+  await advance(r, 5 * MIN);
+  restart(r, 8 * 60 * MIN);
+  const f = r.vagues.get('ops')!;
+  const t = r.clock.t;
+  set(r, { ...f, members: f.members.map((m) => ({ ...m, seenThisRun: true, lastActivityAt: t })) });
+  await advance(r, 11 * MIN);
+  assert.equal(asleepVagues()[0].since, t);
 });

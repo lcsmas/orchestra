@@ -14,11 +14,11 @@ import { buildVagueAsleepRelance, DEFAULT_VAGUE_BOUNDS, stepVague, type AsleepVa
 export const VAGUE_SWEEP_MS = 30_000;
 /** One delivery (a session start) may take this long before the sweep moves on; its result is still applied when it lands. */
 export const VAGUE_DELIVER_WAIT_MS = 20_000;
-/** Failed deliveries of ONE episode's Relance before the host stops trying (back-off: RELANCE_RETRY_MS × attempts). The asleep state stays visible in bus-status. */
-export const VAGUE_MAX_ATTEMPTS = 5;
+/** A failed delivery is retried with a doubling back-off (RELANCE_RETRY_MS, ×2, …) capped here — never a terminal state: an outage of minutes must not silence the alarm for good. */
+export const VAGUE_MAX_BACKOFF_MS = 10 * 60_000;
 
-/** What survives a restart, per run: was it ever observed active, and its open episode (with whether / when the coordinator was told). */
-export type PersistedVagues = Record<string, { everSeen?: boolean; episode?: VagueEpisode }>;
+/** What survives a restart, per run: was it ever observed active, when it last fell quiet (the true « since »), and its open episode (with whether / when the coordinator was told). */
+export type PersistedVagues = Record<string, { everSeen?: boolean; quietHint?: number; episode?: VagueEpisode }>;
 export interface VagueStore {
   /** Throws or returns garbage ⇒ the sweep starts from nothing (and says so). */
   load(): PersistedVagues;
@@ -39,6 +39,8 @@ export interface VagueDeps {
   bounds?(): Partial<VagueBounds>;
   /** Persistence across a restart (absent = memory only). */
   persist?: VagueStore;
+  /** The roster can be trusted (the store was loaded from disk). Absent = trusted. When it says no, the pass judges nobody and touches nothing — an empty fallback roster would otherwise prune and erase the persisted state. */
+  rosterTrusted?(): boolean;
   deliverWaitMs?: number;
 }
 
@@ -60,8 +62,8 @@ const views = new Map<string, AsleepVagueView>();
 const retryAt = new Map<string, number>();
 const heldLogged = new Set<string>();
 const attempts = new Map<string, number>();
-const gaveUp = new Set<string>();
 let loaded = false;
+let untrustedLogged = false;
 let lastSaved = '';
 /** Runs whose delivery is still pending past the wait: not touched again until it lands (a second turn for the same episode would be a duplicate). */
 const slow = new Set<string>();
@@ -92,7 +94,13 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
   try {
     const now = deps.now();
     const bounds: VagueBounds = { ...DEFAULT_VAGUE_BOUNDS, ...(deps.bounds?.() ?? {}) };
-    loadPersisted(deps);
+    if (deps.rosterTrusted && !deps.rosterTrusted()) {
+      if (!untrustedLogged) log.warn('vague-endormie: the store was not loaded from disk — judging nobody and touching no persisted state this pass');
+      untrustedLogged = true;
+      return told;
+    }
+    untrustedLogged = false;
+    loadPersisted(deps, now, bounds.quietMs);
     const all = deps.vagues();
     const live = new Set(all.map((f) => f.runId));
     for (const id of [...states.keys()]) {
@@ -102,7 +110,6 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
       retryAt.delete(id);
       heldLogged.delete(id);
       attempts.delete(id);
-      gaveUp.delete(id);
     }
     for (const f of all) {
       try {
@@ -129,7 +136,6 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
             retryAt.delete(f.runId);
             heldLogged.delete(f.runId);
             attempts.delete(f.runId);
-            gaveUp.delete(f.runId);
             log.info(`vague-endormie: ${f.runId} is awake again (${verdict.why}) — the asleep episode since ${new Date(prev.episode.since).toISOString()} is over`);
           }
           continue;
@@ -141,7 +147,7 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
           since: verdict.since,
           declaredAt: state.episode?.declaredAt ?? now,
           nudgedAt: state.episode?.nudgedAt ?? null,
-          relance: verdict.nudge === 'no-parent' ? 'no-parent' : verdict.nudge === 'not-wakeable' ? 'not-wakeable' : gaveUp.has(f.runId) ? 'gave-up' : state.episode?.nudgedAt !== undefined ? 'sent' : 'owed',
+          relance: verdict.nudge === 'no-parent' ? 'no-parent' : verdict.nudge === 'not-wakeable' ? 'not-wakeable' : state.episode?.nudgedAt !== undefined ? 'sent' : 'owed',
           unfinished: verdict.unfinished.map((m) => ({ wsId: m.wsId, label: m.label })),
         };
         views.set(f.runId, view);
@@ -149,7 +155,12 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
           counters.declared++;
           log.info(`vague-endormie: ${f.runId} is ASLEEP since ${new Date(verdict.since).toISOString()} — ${verdict.unfinished.length} unfinished task(s), ${verdict.processes.length} live process(es); coordinator ${f.coordinator.wsId} to be told`);
         }
-        if (verdict.nudge !== 'owed' || gaveUp.has(f.runId) || (retryAt.get(f.runId) ?? 0) > now) continue;
+        if (verdict.nudge === 'not-wakeable') {
+          // wakeability is back ⇒ the next try is at once, whatever the back-off had grown to
+          attempts.delete(f.runId);
+          retryAt.delete(f.runId);
+        }
+        if (verdict.nudge !== 'owed' || (retryAt.get(f.runId) ?? 0) > now) continue;
         // Judge the coordinator on FRESH state right before it is told: a turn it started since the pass's snapshot makes the Relance pointless (it is reading the world).
         const fresh = deps.vague?.(f.runId) ?? f;
         if (fresh.coordinator.active || fresh.coordinator.waiting || fresh.paused || fresh.runHeld || !fresh.coordinatorWakeable || !fresh.coordinatorHasParent) continue;
@@ -186,15 +197,9 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
             counters.failed++;
             const n = (attempts.get(f.runId) ?? 0) + 1;
             attempts.set(f.runId, n);
-            if (n >= VAGUE_MAX_ATTEMPTS) {
-              gaveUp.add(f.runId);
-              const v = views.get(f.runId);
-              if (v) views.set(f.runId, { ...v, relance: 'gave-up' });
-              log.warn(`vague-endormie: could not deliver the Relance to ${f.coordinator.wsId} after ${n} attempts — giving up on this episode (still shown in bus-status)`);
-            } else {
-              retryAt.set(f.runId, deps.now() + RELANCE_RETRY_MS * n);
-              log.warn(`vague-endormie: could not deliver the Relance to ${f.coordinator.wsId}; retrying in ${(RELANCE_RETRY_MS * n) / 1000}s`);
-            }
+            const wait = Math.min(RELANCE_RETRY_MS * 2 ** Math.min(n - 1, 10), VAGUE_MAX_BACKOFF_MS);
+            retryAt.set(f.runId, deps.now() + wait);
+            log.warn(`vague-endormie: could not deliver the Relance to ${f.coordinator.wsId} (attempt ${n}); retrying in ${wait / 1000}s`);
           }
         };
         const waitMs = deps.deliverWaitMs ?? VAGUE_DELIVER_WAIT_MS;
@@ -226,7 +231,7 @@ async function runSweep(deps: VagueDeps): Promise<string[]> {
   return told;
 }
 
-function loadPersisted(deps: VagueDeps): void {
+function loadPersisted(deps: VagueDeps, now: number, quietMs: number): void {
   if (loaded) return;
   loaded = true;
   if (!deps.persist) return;
@@ -236,7 +241,9 @@ function loadPersisted(deps: VagueDeps): void {
       if (!p || typeof p !== 'object') continue;
       const ep = p.episode;
       const okEp = ep && typeof ep.since === 'number' && typeof ep.declaredAt === 'number' && (ep.nudgedAt === undefined || typeof ep.nudgedAt === 'number');
-      states.set(runId, { ...(p.everSeen === true ? { everSeen: true } : {}), ...(okEp ? { episode: { since: ep.since, declaredAt: ep.declaredAt, ...(ep.nudgedAt !== undefined ? { nudgedAt: ep.nudgedAt } : {}) } } : {}) });
+      const hint = typeof p.quietHint === 'number' && Number.isFinite(p.quietHint) ? p.quietHint : undefined;
+      // a persisted vague is not judged before the launch has settled for one delay (the roster, the keepers, the clocks)
+      states.set(runId, { ...(p.everSeen === true ? { everSeen: true } : {}), ...(hint !== undefined ? { quietHint: hint, notBefore: now + quietMs } : {}), ...(okEp ? { episode: { since: ep.since, declaredAt: ep.declaredAt, ...(ep.nudgedAt !== undefined ? { nudgedAt: ep.nudgedAt } : {}) } } : {}) });
     }
     lastSaved = JSON.stringify(snapshot());
   } catch (e) {
@@ -246,7 +253,7 @@ function loadPersisted(deps: VagueDeps): void {
 
 function snapshot(): PersistedVagues {
   const out: PersistedVagues = {};
-  for (const [runId, st] of states) if (st.everSeen || st.episode) out[runId] = { ...(st.everSeen ? { everSeen: true } : {}), ...(st.episode ? { episode: st.episode } : {}) };
+  for (const [runId, st] of states) if (st.everSeen || st.episode) out[runId] = { ...(st.everSeen ? { everSeen: true } : {}), ...(st.quietHint !== undefined && !st.episode ? { quietHint: st.quietHint } : {}), ...(st.episode ? { episode: st.episode } : {}) };
   return out;
 }
 
@@ -290,7 +297,7 @@ export function __resetVagueEndormieForTests(): void {
   retryAt.clear();
   heldLogged.clear();
   attempts.clear();
-  gaveUp.clear();
+  untrustedLogged = false;
   loaded = false;
   lastSaved = '';
   slow.clear();

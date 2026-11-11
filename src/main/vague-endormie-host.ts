@@ -51,6 +51,8 @@ export const productionVagueDeps: VagueDeps = {
   vagues: () => vagueFacts(roster),
   vague: (runId) => vagueFactsOf(roster, runId),
   census: (wsId) => censusReliquatsOf(wsId),
+  // an absent / corrupt store.json falls back to EMPTY defaults: the roster is then NOT the fleet — same gate as every other destructive pass of the app (index.ts `store.loadedFromDisk`)
+  rosterTrusted: () => store.loadedFromDisk,
   persist: createVagueFileStore(() => path.join(orchestraHome(), 'vague-endormie.json')),
   deliver: (coordinatorId, text) => deliverRelance(coordinatorId, text, 'relance-vague', () => sweepVaguesNow(productionVagueDeps)),
 };

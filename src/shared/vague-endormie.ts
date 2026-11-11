@@ -94,6 +94,10 @@ export interface VagueEpisode {
 
 /** What the host remembers of ONE vague between two looks. */
 export interface VagueState {
+  /** The time the vague last fell quiet (persisted): after a restart every idle clock reads the launch, this keeps the TRUE « since » (it never delays or hastens the declaration). */
+  quietHint?: number;
+  /** In memory only: no declaration before this instant (a restart's grace: the roster settles before a persisted vague is judged). */
+  notBefore?: number;
   /** Some participant of this vague was EVER observed active (persisted): a wave nobody ever touched on this watch stays dormant across restarts, one that was seen is judged even after a restart. */
   everSeen?: boolean;
   /** The last pass at which something legitimately held the vague awake: it floors `since`, so a process that just ended (a Relance of its own owner is on its way) gets its full delay. */
@@ -106,9 +110,10 @@ export interface VagueState {
 const people = (f: VagueFacts): VagueParticipant[] => [f.coordinator, ...f.members];
 
 /** When the vague last moved: a participant that is active / waiting / holds a start is moving NOW; else the latest idle clock. */
-export function quietSinceOf(f: VagueFacts, now: number): number {
+export function quietSinceOf(f: VagueFacts, now: number, hint?: number): number {
   let t = -Infinity;
-  for (const p of people(f)) t = Math.max(t, p.active || p.waiting || p.heldStart ? now : p.lastActivityAt);
+  // a participant the host never observed this run has no real reading (its clock is the launch floor): the persisted hint stands in for it
+  for (const p of people(f)) t = Math.max(t, p.active || p.waiting || p.heldStart ? now : p.seenThisRun || hint === undefined ? p.lastActivityAt : hint);
   return t;
 }
 
@@ -137,8 +142,8 @@ function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | null {
 }
 
 function nudgeOf(f: VagueFacts, ep: VagueEpisode): 'owed' | 'done' | 'no-parent' | 'not-wakeable' {
+  if (ep.nudgedAt !== undefined) return 'done'; // a Relance that WAS sent stays reported as sent, whatever happens to the coordinator's parent afterwards
   if (!f.coordinatorHasParent) return 'no-parent';
-  if (ep.nudgedAt !== undefined) return 'done';
   return f.coordinatorWakeable ? 'owed' : 'not-wakeable';
 }
 
@@ -196,23 +201,24 @@ function stepInner(
   if (block) return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: block } };
   if (!everSeen) return { state: {}, verdict: { kind: 'awake', why: DORMANT } };
 
-  const quietSince = quietSinceOf(f, now);
+  const quietSince = quietSinceOf(f, now, prev?.quietHint);
   const procs = processLines(f, census());
   let since: number;
   if (procs.length > 0) {
     const lapse = quietSince + bounds.processMs;
-    if (now < lapse) return { state: { ...prev, protectedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };
+    if (now < lapse) return { state: { ...prev, protectedAt: now, quietHint: quietSince }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };
     // the bound lapsed: asleep AT the lapse — unless something else held the vague meanwhile (a Pause just lifted): that restarts the delay
-    const floor = (prev?.blockedAt ?? -Infinity) + bounds.quietMs;
-    if (now < floor) return { state: prev ?? {}, verdict: { kind: 'awake', why: 'quiet', dueAt: floor } };
+    const floor = Math.max((prev?.blockedAt ?? -Infinity) + bounds.quietMs, prev?.notBefore ?? -Infinity);
+    if (now < floor) return { state: { ...prev, quietHint: quietSince }, verdict: { kind: 'awake', why: 'quiet', dueAt: floor } };
     since = Math.max(lapse, prev?.blockedAt ?? -Infinity);
   } else {
     since = Math.max(quietSince, prev?.protectedAt ?? -Infinity);
-    if (now < since + bounds.quietMs) return { state: prev ?? {}, verdict: { kind: 'awake', why: 'quiet', dueAt: since + bounds.quietMs } };
+    const due = Math.max(since + bounds.quietMs, prev?.notBefore ?? -Infinity);
+    if (now < due) return { state: { ...prev, quietHint: quietSince }, verdict: { kind: 'awake', why: 'quiet', dueAt: due } };
   }
   const episode: VagueEpisode = { since, declaredAt: now };
   return {
-    state: { ...prev, episode },
+    state: { ...prev, episode, quietHint: undefined },
     verdict: { kind: 'asleep', since, declared: true, nudge: nudgeOf(f, episode), unfinished: f.members.filter((m) => m.unfinished), processes: procs },
   };
 }
@@ -261,8 +267,8 @@ export interface AsleepVagueView {
   declaredAt: number;
   /** When the coordinator's Relance went out; null = not (yet) sent. */
   nudgedAt: number | null;
-  /** Why not / whether: `sent` · `owed` (not delivered yet) · `human` (no parent: the coordinator is the human's conversation, it never gets one) · `not-wakeable` · `gave-up` (bounded retries exhausted). */
-  relance: 'sent' | 'owed' | 'no-parent' | 'not-wakeable' | 'gave-up';
+  /** `sent` · `owed` (not delivered yet, retried with a capped back-off) · `no-parent` (the coordinator is the human's conversation — or an OPS whose parent is archived / deleted — it never gets one) · `not-wakeable`. */
+  relance: 'sent' | 'owed' | 'no-parent' | 'not-wakeable';
   unfinished: { wsId: string; label: string }[];
 }
 
@@ -278,7 +284,6 @@ export function formatAsleepVaguesLines(views: readonly AsleepVagueView[], now: 
     const told =
       v.relance === 'no-parent' ? 'coordinator has no parent (human-facing): no Relance sent'
       : v.relance === 'not-wakeable' ? 'coordinator cannot be started now: NOT told'
-      : v.relance === 'gave-up' ? 'coordinator NOT told (delivery failed repeatedly, gave up)'
       : v.nudgedAt === null ? 'coordinator NOT told yet (Relance owed)'
       : `coordinator relanced at ${clock(v.nudgedAt)} UTC`;
     return `vague endormie: ${oneLine(v.coordinator)}${v.runId === thisRunId ? ' (this run)' : ''} — asleep since ${new Date(v.since).toISOString().slice(0, 19)}Z (${ago(now - v.since)} ago), ${v.unfinished.length} unfinished task${v.unfinished.length === 1 ? '' : 's'} (${names}); ${told}`;

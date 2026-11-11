@@ -43,6 +43,7 @@ test('the host wires the roster\'s real sources: run id, bus released / waiting 
     /seenThisRun: \(ws\) => seenThisRun\(ws\.id\)/,
     /backgroundTask: \(ws\) => sdkHasBackgroundTasks\(ws\.id\)/,
     /wakeable: \(ws\) => wakeRosterEntry\(ws\)\.wakeable/,
+    /rosterTrusted: \(\) => store\.loadedFromDisk/,
     /persist: createVagueFileStore\(\(\) => path\.join\(orchestraHome\(\), 'vague-endormie\.json'\)\)/,
     /vagues: \(\) => vagueFacts\(roster\)/,
     /vague: \(runId\) => vagueFactsOf\(roster, runId\)/,
