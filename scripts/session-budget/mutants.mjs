@@ -14,8 +14,8 @@ export const MUTANTS = {
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',
-    find: /if \(verdict\.nudge !== 'owed' \|\| gaveUp\.has\(f\.runId\) \|\|/g,
-    replace: "if (verdict.nudge === 'no-parent' || verdict.nudge === 'not-wakeable' || gaveUp.has(f.runId) ||",
+    find: /if \(verdict\.nudge !== 'owed' \|\| \(retryAt\.get\(f\.runId\) \?\? 0\) > now\) continue;/g,
+    replace: "if (verdict.nudge === 'no-parent' || verdict.nudge === 'not-wakeable' || (retryAt.get(f.runId) ?? 0) > now) continue;",
   },
   'vague-ignore-process': {
     file: '/src/shared/vague-endormie.ts',
@@ -24,7 +24,7 @@ export const MUTANTS = {
   },
   'vague-no-quiet-delay': {
     file: '/src/shared/vague-endormie.ts',
-    find: /if \(now < since \+ bounds\.quietMs\) return \{ state: prev \?\? \{\}, verdict: \{ kind: 'awake', why: 'quiet', dueAt: since \+ bounds\.quietMs \} \};/g,
+    find: /    if \(now < due\) return \{ state: \{ \.\.\.prev, quietHint: quietSince \}, verdict: \{ kind: 'awake', why: 'quiet', dueAt: due \} \};/g,
     replace: '',
   },
   'vague-no-persist': {
