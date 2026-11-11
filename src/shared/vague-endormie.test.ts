@@ -22,7 +22,7 @@ const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 10, 22, 48); // the night of 2026-11-10: the last implementer's final words at 22:48 UTC
 const P = (pid: number, ppid: number, cmd = `cmd-${pid}`): RelanceProc => ({ pid, ppid, startTicks: pid * 10, comm: cmd.split(' ')[0], cmd });
 
-const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, ...over });
+const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, ...over });
 const member = (wsId: string, over: Partial<VagueMember> = {}): VagueMember => ({ ...person(wsId), task: `do ${wsId}`, unfinished: true, ...over });
 const facts = (over: Partial<VagueFacts> = {}): VagueFacts => ({
   runId: 'ops',
@@ -82,6 +82,7 @@ const AWAKE_ARMS: [string, VagueFacts, string][] = [
   ['a member waits for an answer (ask / gate / human input)', facts({ members: [member('impl', { waiting: true })] }), 'waiting'],
   ['the coordinator waits for the human', facts({ coordinator: person('ops', { waiting: true }) }), 'waiting'],
   ['a start is held for memory (a wake is owed)', facts({ members: [member('impl', { heldStart: true })] }), 'held-start'],
+  ['nobody of the vague did anything since the app started (an old wave left unarchived: no nudge storm at every launch)', facts({ coordinator: person('ops', { seenThisRun: false }), members: [member('impl', { seenThisRun: false }), member('verifier', { unfinished: false, seenThisRun: false })] }), 'dormant'],
   ['the run is paused', facts({ paused: true }), 'paused'],
   ['the run is on hold', facts({ runHeld: true }), 'run-held'],
   ['every task is finished', facts({ members: [member('impl', { unfinished: false }), member('verifier', { unfinished: false })] }), 'no-task'],
@@ -287,4 +288,29 @@ test('after an episode ended by a Pause, the delay restarts from the Reprise eve
   const lifted = stepVague(paused.state, facts(), census({}), T0 + 16 * MIN); // the idle clocks are still T0
   assert.deepEqual(lifted.verdict, { kind: 'awake', why: 'quiet', dueAt: T0 + 15 * MIN + VAGUE_QUIET_MS });
   assert.equal(stepVague(lifted.state, facts(), census({}), T0 + 25 * MIN).verdict.kind, 'asleep');
+});
+
+test('ONE participant seen this run brings a vague into play (a person opening one of its workspaces, any event): the same facts then go asleep', () => {
+  const f = facts({ coordinator: person('ops', { seenThisRun: false }), members: [member('impl', { seenThisRun: true }), member('verifier', { unfinished: false, seenThisRun: false })] });
+  assert.equal(stepVague(undefined, f, census({}), T0 + 11 * MIN).verdict.kind, 'asleep');
+});
+
+test('a process whose hour lapsed does NOT hurry the declaration past a Pause that just lifted: the delay restarts (measured by the reviewer: it used to be declared one sweep after the Reprise)', () => {
+  const stale = facts({ coordinator: person('ops', { lastActivityAt: T0 }), members: [member('impl', { lastActivityAt: T0 })] });
+  const c = census({ impl: [P(10, 1, 'sh chain.sh')] });
+  const t = T0 + 3 * 60 * MIN; // every idle clock is 3 h old, the script is still alive
+  const paused = stepVague(undefined, { ...stale, paused: true }, never, t);
+  assert.deepEqual(paused.verdict, { kind: 'awake', why: 'paused' });
+  const lifted = stepVague(paused.state, stale, c, t + 30_000);
+  assert.deepEqual(lifted.verdict, { kind: 'awake', why: 'quiet', dueAt: t + VAGUE_QUIET_MS });
+  const later = stepVague(lifted.state, stale, c, t + VAGUE_QUIET_MS);
+  assert.equal(later.verdict.kind === 'asleep' && later.verdict.since, t, 'since = the last time something else held it');
+});
+
+test('without any Pause the lapsed process is still declared AT the lapse (the hour counts from the last agent activity, not from a delay after it)', () => {
+  const c = census({ impl: [P(10, 1, 'sh chain.sh')] });
+  const protectedPass = stepVague(undefined, facts(), c, T0 + VAGUE_PROCESS_BOUND_MS - MIN);
+  assert.equal(protectedPass.verdict.kind, 'awake');
+  const r = stepVague(protectedPass.state, facts(), c, T0 + VAGUE_PROCESS_BOUND_MS);
+  assert.equal(r.verdict.kind === 'asleep' && r.verdict.since, T0 + VAGUE_PROCESS_BOUND_MS);
 });

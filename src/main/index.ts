@@ -647,7 +647,7 @@ async function createMainWindow() {
   // end of a detached process wakes nobody otherwise (the incident of 2026-11-10). Reads the kernel-scope census; delivery = a Réveil's path + Admission.
   startRelanceHost();
   // Vague endormie (#428): a vague with unfinished tasks where nothing can wake anyone (nobody active / waiting, no live process, no Pause) for 10 min gets its COORDINATOR one Relance; shown in `orchestra bus-status`.
-  startVagueEndormieHost();
+  startVagueEndormieHost({ heldStart: livenessSilencedByAdmission });
   // Plafond mémoire (#322): when the cap kills a member's command (or its memory crosses the warning level) the member gets a notice row and its coordinator ONE bus message; then deliver what the
   // keepers recorded while the app was closed (m1) — AFTER the sink is subscribed, BEFORE any session starts. Tolerates `getBus() === null` (the record stays owed and is retried).
   startMemoryNotices(

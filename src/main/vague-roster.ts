@@ -21,6 +21,8 @@ export interface VagueRosterDeps {
   heldRuns(): ReadonlySet<string>;
   /** The idle clock (`idleClockOf`). */
   lastActivityAt(ws: Workspace): number;
+  /** Activity of this workspace was observed since the app started (`getLastActivity` is defined). */
+  seenThisRun(ws: Workspace): boolean;
 }
 
 const labelOf = (ws: Workspace): string => ws.name || ws.branch || ws.id;
@@ -35,6 +37,7 @@ function participantOf(d: VagueRosterDeps, ws: Workspace, waiting: ReadonlySet<s
     waiting: ws.status === 'waiting' || waiting.has(ws.id),
     heldStart: d.heldStart(ws),
     lastActivityAt: d.lastActivityAt(ws),
+    seenThisRun: d.seenThisRun(ws),
   };
 }
 

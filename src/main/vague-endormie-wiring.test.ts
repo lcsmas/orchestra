@@ -13,8 +13,8 @@ const live = (src: string, needle: string): boolean => src.split('\n').some((l) 
 test('the app starts the asleep-vague sweep after the Relance and stops it before the bus closes', () => {
   const index = read('index.ts');
   assert.ok(live(index, "import { startVagueEndormieHost, stopVagueEndormie } from './vague-endormie-host';"));
-  assert.ok(live(index, '  startVagueEndormieHost();'));
-  assert.ok(index.indexOf('  startRelanceHost();') < index.indexOf('  startVagueEndormieHost();'));
+  assert.ok(live(index, '  startVagueEndormieHost({ heldStart: livenessSilencedByAdmission });'), 'Admission\'s held-start predicate is injected from index.ts (the only importer of Admission here)');
+  assert.ok(index.indexOf('  startRelanceHost();') < index.indexOf('  startVagueEndormieHost({'));
   assert.ok(index.indexOf('  stopVagueEndormie();') < index.indexOf('  closeBus();'), 'stopped before closeBus()');
 });
 
@@ -37,8 +37,10 @@ test('the host wires the roster\'s real sources: run id, bus released / waiting 
     /busWaiting: \(readers\) => readWaitingReaders\(busOrThrow\(\), readers\)/,
     /heldRuns: \(\) => heldRunIds\(busOrThrow\(\)\)/,
     /paused: \(ws\) => pauseRefusal\(ws, 'auto'\) !== null/,
-    /heldStart: \(ws\) => livenessSilencedByAdmission\(ws\.id\)/,
+    /heldStart: \(ws\) => heldStartOf\(ws\.id\)/,
+    /heldStartOf = opts\.heldStart;/,
     /lastActivityAt: \(ws\) => idleClockOf\(ws\)/,
+    /seenThisRun: \(ws\) => seenThisRun\(ws\.id\)/,
     /vagues: \(\) => vagueFacts\(roster\)/,
     /vague: \(runId\) => vagueFactsOf\(roster, runId\)/,
     /census: \(wsId\) => censusReliquatsOf\(wsId\)/,

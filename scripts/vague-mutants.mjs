@@ -22,6 +22,9 @@ const MUTANTS = [
   ['blk-held-start', S, "  if (people(f).some((p) => p.heldStart)) return 'held-start';\n", ''],
   ['blk-active-members-only', S, "if (people(f).some((p) => p.active)) return 'member-active';", "if (f.members.some((p) => p.active)) return 'member-active';"],
   ['blk-waiting-members-only', S, "if (people(f).some((p) => p.waiting)) return 'waiting';", "if (f.members.some((p) => p.waiting)) return 'waiting';"],
+  ['blk-dormant', S, "  if (!people(f).some((p) => p.seenThisRun)) return 'dormant';\n", ''],
+  ['blk-dormant-coordinator-only', S, "if (!people(f).some((p) => p.seenThisRun)) return 'dormant';", "if (!f.coordinator.seenThisRun) return 'dormant';"],
+  ['blk-dormant-all-must-be-seen', S, "if (!people(f).some((p) => p.seenThisRun)) return 'dormant';", "if (!people(f).every((p) => p.seenThisRun)) return 'dormant';"],
   // ── quiet clock + delay
   ['quiet-ignores-active', S, 'p.active || p.waiting || p.heldStart ? now : p.lastActivityAt', 'p.lastActivityAt'],
   ['quiet-members-only', S, 'const quietSince = quietSinceOf(f, now);', 'const quietSince = Math.max(...f.members.map((m) => m.lastActivityAt));'],
@@ -36,6 +39,8 @@ const MUTANTS = [
   ['proc-unknown-as-none', S, "if (got === 'unknown') out.push({ owner: p.label, cmd: null, pid: null });", "if (got === 'unknown') continue;"],
   ['proc-children-named', S, 'for (const r of rootsOf(got))', 'for (const r of got)'],
   ['proc-coordinator-ignored', S, 'for (const p of people(f)) {\n    const got', 'for (const p of f.members) {\n    const got'],
+  ['proc-lapse-ignores-blocked', S, '    const floor = (prev?.blockedAt ?? -Infinity) + bounds.quietMs;\n', '    const floor = -Infinity;\n'],
+  ['proc-protection-marks-blocked', S, "return { state: { ...prev, protectedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };", "return { state: { ...prev, protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };"],
   ['proc-since-is-quiet', S, '    since = lapse;', '    since = quietSince;'],
   // ── the episode
   ['ep-redeclares', S, "declared: false, nudge: owed ? 'owed' : 'done'", "declared: true, nudge: owed ? 'owed' : 'done'"],
@@ -82,6 +87,7 @@ const MUTANTS = [
   ['roster-release-ignored', R, 'unfinished: !!ws.lastTask && !released.has(ws.id),', 'unfinished: !!ws.lastTask,'],
   ['roster-untasked-unfinished', R, 'unfinished: !!ws.lastTask && !released.has(ws.id),', 'unfinished: !released.has(ws.id),'],
   ['roster-held-start-dropped', R, 'heldStart: d.heldStart(ws),', 'heldStart: false,'],
+  ['roster-seen-this-run-dropped', R, 'seenThisRun: d.seenThisRun(ws),', 'seenThisRun: true,'],
   ['roster-no-task-vague', R, 'for (const [rid, g] of out) if (!g.members.some((m) => !!m.lastTask)) out.delete(rid);', ''],
   ['roster-own-run-member', R, 'if (rid === ws.id) continue;', ''],
   // ── the host

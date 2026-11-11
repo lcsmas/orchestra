@@ -19,7 +19,7 @@ const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 10, 22, 48);
 const P = (pid: number, ppid = 1, cmd = `proc-${pid}`): RelanceProc => ({ pid, ppid, startTicks: pid * 10, comm: cmd.split(' ')[0], cmd });
 
-const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, ...over });
+const person = (wsId: string, over: Partial<VagueParticipant> = {}): VagueParticipant => ({ wsId, label: wsId, active: false, waiting: false, heldStart: false, lastActivityAt: T0, seenThisRun: true, ...over });
 const member = (wsId: string, over: Partial<VagueMember> = {}): VagueMember => ({ ...person(wsId), task: `do ${wsId}`, unfinished: true, ...over });
 const baseFacts = (over: Partial<VagueFacts> = {}): VagueFacts => ({
   runId: 'ops',

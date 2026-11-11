@@ -28,6 +28,8 @@ export interface VagueParticipant {
   heldStart: boolean;
   /** The idle clock (last activity, floored at the app start). */
   lastActivityAt: number;
+  /** The host has SEEN activity of this workspace since the app started (the clock above is a real reading, not the app-start floor). */
+  seenThisRun: boolean;
 }
 
 export interface VagueMember extends VagueParticipant {
@@ -50,7 +52,7 @@ export interface VagueFacts {
 /** Per workspace id, its Reliquats (kernel scope) — `'unknown'` = unreadable (UNKNOWN is not NONE). */
 export type VagueCensus = ReadonlyMap<string, RelanceCensus>;
 
-export type VagueAwakeWhy = 'no-task' | 'paused' | 'run-held' | 'member-active' | 'waiting' | 'held-start' | 'process' | 'quiet' | 'resumed';
+export type VagueAwakeWhy = 'no-task' | 'paused' | 'run-held' | 'member-active' | 'waiting' | 'held-start' | 'dormant' | 'process' | 'quiet' | 'resumed';
 
 export interface VagueProcessLine {
   owner: string;
@@ -85,6 +87,8 @@ export interface VagueEpisode {
 export interface VagueState {
   /** The last pass at which something legitimately held the vague awake: it floors `since`, so a process that just ended (a Relance of its own owner is on its way) gets its full delay. */
   protectedAt?: number;
+  /** The last pass at which something OTHER than a live process held it (a Pause, a member working, an answer awaited): a lapsed process does not hurry the declaration past the delay that follows it. */
+  blockedAt?: number;
   episode?: VagueEpisode;
 }
 
@@ -105,6 +109,9 @@ export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {
   if (people(f).some((p) => p.active)) return 'member-active';
   if (people(f).some((p) => p.waiting)) return 'waiting';
   if (people(f).some((p) => p.heldStart)) return 'held-start';
+  // Nobody of this vague did anything since the app started: an old wave left unarchived (its tasks never released) is not a sleep that happened on this watch — declaring it would
+  // re-nudge every such coordinator (a real model turn, a Veille start) at every launch. A person opening one of its workspaces, or any event, brings it into play.
+  if (!people(f).some((p) => p.seenThisRun)) return 'dormant';
   return null;
 }
 
@@ -146,29 +153,32 @@ export function stepVague(
     if (!end) {
       const owed = ep.nudgedAt === undefined;
       return {
-        state: { protectedAt: prev?.protectedAt, episode: ep },
+        state: { ...prev, episode: ep },
         verdict: { kind: 'asleep', since: ep.since, declared: false, nudge: owed ? 'owed' : 'done', unfinished: f.members.filter((m) => m.unfinished), processes: owed ? processLines(f, census()) : [] },
       };
     }
-    return { state: { protectedAt: now }, verdict: { kind: 'awake', why: end } };
+    return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: end } };
   }
   const block = blockerOf(f);
-  if (block) return { state: { protectedAt: now }, verdict: { kind: 'awake', why: block } };
+  if (block) return { state: { protectedAt: now, blockedAt: now }, verdict: { kind: 'awake', why: block } };
 
   const quietSince = quietSinceOf(f, now);
   const procs = processLines(f, census());
   let since: number;
   if (procs.length > 0) {
     const lapse = quietSince + bounds.processMs;
-    if (now < lapse) return { state: { protectedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };
-    since = lapse;
+    if (now < lapse) return { state: { ...prev, protectedAt: now }, verdict: { kind: 'awake', why: 'process', dueAt: lapse } };
+    // the bound lapsed: asleep AT the lapse — unless something else held the vague meanwhile (a Pause just lifted): that restarts the delay
+    const floor = (prev?.blockedAt ?? -Infinity) + bounds.quietMs;
+    if (now < floor) return { state: prev ?? {}, verdict: { kind: 'awake', why: 'quiet', dueAt: floor } };
+    since = Math.max(lapse, prev?.blockedAt ?? -Infinity);
   } else {
     since = Math.max(quietSince, prev?.protectedAt ?? -Infinity);
-    if (now < since + bounds.quietMs) return { state: { protectedAt: prev?.protectedAt }, verdict: { kind: 'awake', why: 'quiet', dueAt: since + bounds.quietMs } };
+    if (now < since + bounds.quietMs) return { state: prev ?? {}, verdict: { kind: 'awake', why: 'quiet', dueAt: since + bounds.quietMs } };
   }
   const episode: VagueEpisode = { since, declaredAt: now };
   return {
-    state: { protectedAt: prev?.protectedAt, episode },
+    state: { ...prev, episode },
     verdict: { kind: 'asleep', since, declared: true, nudge: 'owed', unfinished: f.members.filter((m) => m.unfinished), processes: procs },
   };
 }

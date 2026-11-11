@@ -19,3 +19,8 @@ export function idleClockOf(ws: { id: string; createdAt?: number }): number {
 export function monotonicIdleOf(wsId: string): number {
   return monotonicNow() - (getLastActivityMono(wsId) ?? getAppStartedMono());
 }
+
+/** Has this app run observed ANY activity of the workspace (an event, a person opening it)? `idleClockOf` alone cannot say: without a reading it returns the app-start floor (#428: a vague nobody touched this run is dormant). */
+export function seenThisRun(wsId: string): boolean {
+  return getLastActivity(wsId) !== undefined;
+}

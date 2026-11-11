@@ -25,6 +25,7 @@ function deps(list: Workspace[], over: Partial<VagueRosterDeps> = {}): VagueRost
     heldStart: () => false,
     heldRuns: () => new Set<string>(),
     lastActivityAt: (w) => (w.createdAt ?? 0),
+    seenThisRun: () => true,
     ...over,
   };
 }
@@ -95,6 +96,12 @@ test('paused: ANY participant of the run paused (the coordinator or a member); r
 test('the activity clock is the one the host reads (`lastActivityAt`), per participant', () => {
   const f = factsOf(deps([ws('ops', { createdAt: 5 }), ws('m1', { parentId: 'ops', ...task, createdAt: 9 })]))!;
   assert.deepEqual([f.coordinator.lastActivityAt, f.members[0].lastActivityAt], [5, 9]);
+});
+
+test('seenThisRun: per participant, from the host\'s own observation (not the idle clock)', () => {
+  const list = [ops, ws('m1', { parentId: 'ops', ...task })];
+  const f = factsOf(deps(list, { seenThisRun: (w) => w.id === 'm1' }))!;
+  assert.deepEqual([f.coordinator.seenThisRun, f.members[0].seenThisRun], [false, true]);
 });
 
 test('an unreadable bus THROWS (the sweep judges nobody): a guess would hide a stalled vague or nudge a finished one', () => {
