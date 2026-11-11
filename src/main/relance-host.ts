@@ -28,13 +28,16 @@ const roster: RelanceRosterDeps = {
   warn: (msg, e) => log.warn(msg, e),
 };
 
-async function deliver(wsId: string, text: string): Promise<RelanceDelivery> {
+/** THE delivery of a Relance — both triggers (a member's Reliquats ended, #427; the asleep vague's coordinator, #428). `site` names the Admission hold, `retry` re-enters the sweep that owes it. */
+export async function deliverRelance(wsId: string, text: string, site: string, retry: () => Promise<unknown>): Promise<RelanceDelivery> {
   const ws = store.getWorkspace(wsId);
   if (!ws) return 'failed';
   // Admission: a Relance of a SLEEPING fleet member is a start — held under low memory, released (coordinators first, one at a time) by re-entering the sweep.
-  if (await wakeHeldForMemory(ws, () => sweepRelanceNow(productionRelanceDeps), { site: 'relance' })) return 'held';
+  if (await wakeHeldForMemory(ws, retry, { site })) return 'held';
   return (await sdkStartAndDeliver(wsId, text)) ? 'sent' : 'failed';
 }
+
+const deliver = (wsId: string, text: string): Promise<RelanceDelivery> => deliverRelance(wsId, text, 'relance', () => sweepRelanceNow(productionRelanceDeps));
 
 export const productionRelanceDeps: RelanceDeps = {
   now: () => Date.now(),

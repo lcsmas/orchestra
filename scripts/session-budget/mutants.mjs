@@ -11,6 +11,27 @@ const FAKE_MCP_SERVER = fileURLToPath(new URL('./fake-mcp-server.mjs', import.me
 
 /** name -> { file suffix, regex (global), replace } */
 export const MUTANTS = {
+  // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
+  'vague-no-episode': {
+    file: '/src/main/vague-endormie.ts',
+    find: /if \(verdict\.nudge === 'done' \|\| \(retryAt\.get\(f\.runId\) \?\? 0\) > now\) continue;/g,
+    replace: 'if ((retryAt.get(f.runId) ?? 0) > now) continue;',
+  },
+  'vague-ignore-process': {
+    file: '/src/shared/vague-endormie.ts',
+    find: /  if \(procs\.length > 0\) \{\n/g,
+    replace: '  if (false) {\n',
+  },
+  'vague-ignore-active': {
+    file: '/src/main/vague-roster.ts',
+    find: /active: ws\.status === 'running' \|\| \(ws\.sdkPendingPrompts\?\.length \?\? 0\) > 0,/g,
+    replace: 'active: false,',
+  },
+  'vague-coordinator-resume-ends': {
+    file: '/src/shared/vague-endormie.ts',
+    find: /if \(f\.members\.some\(\(m\) => m\.active \|\| m\.waiting \|\| m\.heldStart \|\| m\.lastActivityAt > ep\.declaredAt\)\) return 'resumed';/g,
+    replace: "if ([f.coordinator, ...f.members].some((m) => m.active || m.waiting || m.heldStart || m.lastActivityAt > ep.declaredAt)) return 'resumed';",
+  },
   // Review round 2 F1: an app-code edit that hands the CLI a traffic-suppressing env knob (buildSdkEnv copies process.env then adds
   // the workspace vars). The runner's own env is clean, so only the CLI's /proc environ can see it.
   'traffic-knob-in-sdk-env': {

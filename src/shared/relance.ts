@@ -128,13 +128,13 @@ const MAX_LISTED = 10;
 const MAX_CMD = 160;
 
 /** One line of untrusted text: control characters (incl. newlines and ESC) become spaces, bounded. */
-function oneLine(s: string): string {
+export function oneLine(s: string): string {
   // eslint-disable-next-line no-control-regex
   const t = s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > MAX_CMD ? `${t.slice(0, MAX_CMD - 1)}…` : t;
 }
 
-function list(items: readonly string[]): string[] {
+export function list(items: readonly string[]): string[] {
   const shown = items.slice(0, MAX_LISTED).map((l) => `- ${l}`);
   return items.length > MAX_LISTED ? [...shown, `- … and ${items.length - MAX_LISTED} more`] : shown;
 }
@@ -148,7 +148,7 @@ export function isRelance(text: string): boolean {
   return text.startsWith(`${RELANCE_PREFIX} — `);
 }
 
-const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 19);
+export const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 19);
 
 /** Trigger 1: the member's Reliquats ended. Says what ended (and when), what still runs, and what to do with it. */
 export function buildReliquatsEndedRelance(ended: readonly RelanceEnd[], running: readonly RelanceProc[]): string {

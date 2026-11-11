@@ -27,6 +27,7 @@ import {
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
+import { asleepVagues } from './vague-endormie.ts';
 import { busStatusPausePayload } from './pause-douce.ts';
 import { getMemoryGuardSnapshot } from './memory-guard.ts';
 import { memoryPausedRunViews } from './pause-memory.ts';
@@ -493,6 +494,8 @@ export async function startHooksServer(): Promise<void> {
               ...(browserTabsView ? { browserTabs: browserTabsView, browserTabLabels: Object.fromEntries(browserTabsView.byWorkspace.map((w) => [w.wsId, heldStartLabel(store.getWorkspace(w.wsId), w.wsId)])) } : {}),
               // #330: the directory watchers' health (every armed watcher; a degraded one has its since / last error / fallback) — the CLI prints the `watchers:` block.
               watchers: watchersStatus(),
+              // #428: the vagues asleep right now (an open episode: since when, what remains, was the coordinator told); empty = none — the CLI prints no line.
+              asleepVagues: asleepVagues(),
               // #321: container create/start HELD at a member's Docker relay for low memory; the CLI prints the `docker holds:` line (absent when none).
               dockerHolds: listDockerHolds().map((h) => ({ wsId: h.wsId, label: heldStartLabel(store.getWorkspace(h.wsId), h.wsId), hold: h.hold })),
               heldStarts: listHeldStarts().map((h) => {

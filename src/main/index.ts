@@ -208,6 +208,7 @@ import { buildLivenessRoster } from './bus-liveness-roster';
 import { sdkStartAndDeliver } from './sdk-delivery';
 import { wakeRosterEntry } from './wake-roster';
 import { startRelanceHost, stopRelance } from './relance-host';
+import { startVagueEndormieHost, stopVagueEndormie } from './vague-endormie-host';
 import { pauseRefusal } from './pause-gate';
 import {
   ensureRoot,
@@ -645,6 +646,8 @@ async function createMainWindow() {
   // Relance (#427): a fleet member idle with an unfinished task is handed ONE turn, naming them, when its Reliquats end (its detached test chain, a script it launched) — the
   // end of a detached process wakes nobody otherwise (the incident of 2026-11-10). Reads the kernel-scope census; delivery = a Réveil's path + Admission.
   startRelanceHost();
+  // Vague endormie (#428): a vague with unfinished tasks where nothing can wake anyone (nobody active / waiting, no live process, no Pause) for 10 min gets its COORDINATOR one Relance; shown in `orchestra bus-status`.
+  startVagueEndormieHost();
   // Plafond mémoire (#322): when the cap kills a member's command (or its memory crosses the warning level) the member gets a notice row and its coordinator ONE bus message; then deliver what the
   // keepers recorded while the app was closed (m1) — AFTER the sink is subscribed, BEFORE any session starts. Tolerates `getBus() === null` (the record stays owed and is retried).
   startMemoryNotices(
@@ -1024,6 +1027,7 @@ function shutdownSubsystems(): void {
   // stop its timer before closeBus() so it can never fire against a closed handle.
   stopBusLiveness();
   stopRelance();
+  stopVagueEndormie();
   stopPauseTrap();
   // Last: a clean close checkpoints the WAL back into the main file and
   // truncates it to 0 (spike #109 arm 3 measured ~600 KB left behind by a

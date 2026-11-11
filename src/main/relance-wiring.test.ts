@@ -20,7 +20,8 @@ test('the app starts the Relance after the liveness sweep and stops it before th
 
 test('delivery is a Réveil\'s path: the Admission gate first (HELD ≠ failed), then sdkStartAndDeliver, which resumes a member in Veille', () => {
   const host = read('relance-host.ts');
-  assert.match(host, /wakeHeldForMemory\(ws, \(\) => sweepRelanceNow\(productionRelanceDeps\), \{ site: 'relance' \}\)\) return 'held'/);
+  assert.match(host, /wakeHeldForMemory\(ws, retry, \{ site \}\)\) return 'held'/);
+  assert.match(host, /deliverRelance\(wsId, text, 'relance', \(\) => sweepRelanceNow\(productionRelanceDeps\)\)/); // the member's own trigger (#427); #428's coordinator uses the same function
   assert.match(host, /sdkStartAndDeliver\(wsId, text\)\) \? 'sent' : 'failed'/);
   assert.ok(host.indexOf('wakeHeldForMemory(') < host.indexOf('sdkStartAndDeliver(wsId'), 'gate before the start');
   assert.doesNotMatch(host, /origin:\s*'human'/, 'a host turn is never a HUMAN turn (it must stay refused while paused)');

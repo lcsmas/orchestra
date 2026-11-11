@@ -35,6 +35,7 @@ import {
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
+import { formatAsleepVaguesLines, type AsleepVagueView } from '../shared/vague-endormie.ts';
 import { composeBusVerbSlice } from './bus-verb-slice.ts';
 import {
   BUS_MECHANISMS,
@@ -2239,6 +2240,10 @@ async function main(argv: string[]): Promise<void> {
       if (Array.isArray(res.dockerHolds)) {
         const dh = formatDockerHoldsLine(res.dockerHolds as DockerHoldView[], Date.now());
         if (dh) process.stdout.write(`${dh}\n`);
+      }
+      // #428: a Vague endormie (unfinished tasks, nothing can wake anyone) says so, since when, and whether its coordinator was Relancé. No line when none — output unchanged.
+      if (Array.isArray(res.asleepVagues)) {
+        for (const l of formatAsleepVaguesLines(res.asleepVagues as AsleepVagueView[], Date.now(), shownRunId)) process.stdout.write(`${l}\n`);
       }
       // #134 — frozen (run row) vs live (store) flags, one row per mechanism.
       // No run row → the frozen column prints "—" (#206), never OFF. WIRE names

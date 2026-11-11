@@ -167,6 +167,11 @@ export function runRelanceArm(o) {
   return runContained(o, 'relance-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, relance: o.relance !== false, windowMs: o.windowMs }, '{"relance"');
 }
 
+/** The Vague-endormie rig (`vague-endormie.mjs`, #428): the production asleep-vague sweep over the real session path + a real bus — a vague falls asleep, its COORDINATOR gets (or, with the mechanism off, does not get) a turn. */
+export function runVagueArm(o) {
+  return runContained(o, 'vague-endormie-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, vague: o.vague !== false }, '{"vague"');
+}
+
 /**
  * Host-dependent self-tests of the instruments themselves, run under the SAME containment as the arms (so they
  * cannot live in `pnpm run test`, which must not depend on bwrap or a real `claude`). Modes: `census` (the
