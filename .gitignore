@@ -63,3 +63,6 @@ build/container-memory-shots/
 
 # Pinned agent-browser binary for the build host (scripts/fetch-agent-browser.mjs); never committed.
 build/agent-browser/
+
+# #430: failing-test names written by scripts/test-failures-reporter.mjs on every `pnpm run test`.
+.test-failures.txt

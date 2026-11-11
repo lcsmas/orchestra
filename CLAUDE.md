@@ -63,6 +63,9 @@ whole map instead of hand-editing.
   a green `1039 pass / 12 skipped` that looks complete and silently omits every
   CLI regression test. **Cite the PASS count, and check `# skipped` is 0**: a
   partial green is the failure mode this hook exists to prevent.
+  After a run the failing tests (`file:line<TAB>name`) are in **`.test-failures.txt`**
+  at the repo root (git-ignored, emptied at every run start; written by
+  `scripts/test-failures-reporter.mjs`) — read it instead of re-running a red suite (#430).
 - Release: the **`ship` skill** drives `scripts/release.sh` (worktree-safe; never
   checks out master). It refuses to tag unless `npx tsc --noEmit` and the full suite
   (0 fail, 0 skipped) pass — the #207 gate. See `docs/codebase-map/build-release.md`.
