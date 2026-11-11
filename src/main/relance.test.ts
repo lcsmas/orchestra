@@ -3,6 +3,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  RELANCE_MIN_GAP_MS,
   RELANCE_RETRY_MS,
   __resetRelanceForTests,
   relanceCounters,
@@ -155,8 +156,6 @@ const EXCLUSIONS: Array<[string, Partial<RelanceMember>]> = [
   ['a member whose task is finished and released', { released: true }],
   ['a member with no dispatched task', { hasTask: false }],
   ['a workspace without a coordinator', { hasCoordinator: false }],
-  ['a member of a paused run', { paused: true }],
-  ['a member that cannot be woken', { wakeable: false }],
 ];
 for (const [label, over] of EXCLUSIONS) {
   test(`must-FAIL arm — no turn for ${label}; the same fixture WITHOUT the exclusion gets one`, async () => {
@@ -382,4 +381,73 @@ test('sweepRelanceNow (the Admission release) waits for a pass in flight and the
   await running;
   await now;
   assert.equal(done, true);
+});
+
+for (const [label, over, lift] of [
+  ['a PAUSED run (the Reprise)', { paused: true }, { paused: false }],
+  ['a member that cannot be woken yet', { wakeable: false }, { wakeable: true }],
+] as Array<[string, Partial<RelanceMember>, Partial<RelanceMember>]>) {
+  test(`must-FAIL arm — an end seen during ${label} is KEPT: no turn meanwhile, ONE turn once it lifts`, async () => {
+    const r = rig();
+    r.members.set('m1', member('m1', over));
+    await endAndWait(r);
+    for (let i = 0; i < 6; i++) {
+      r.clock.t += 60_000;
+      await sweepRelance(r.deps);
+    }
+    assert.equal(r.turns.length, 0, 'excluded: nothing is sent');
+    r.members.set('m1', member('m1', lift));
+    r.clock.t += 5_000;
+    await sweepRelance(r.deps);
+    assert.equal(r.turns.length, 1);
+    assert.match(r.turns[0].text, /run-chain\.sh/);
+  });
+}
+
+test('must-FAIL arm — the member is judged AGAIN on fresh state right before its delivery (a delivery to an earlier member can take seconds)', async () => {
+  const r = rig();
+  r.members.set('a', member('a'));
+  r.members.set('b', member('b'));
+  r.census.set('a', [SCRIPT]);
+  r.census.set('b', [SCRIPT]);
+  await sweepRelance(r.deps);
+  r.clock.t += RELANCE_MIN_AGE_MS;
+  r.census.set('a', []);
+  r.census.set('b', []);
+  await sweepRelance(r.deps);
+  r.clock.t += RELANCE_GROUP_MS;
+  r.deps.member = (id) => r.members.get(id);
+  const base = r.deps.deliver;
+  r.deps.deliver = async (id, text) => {
+    if (id === 'a') r.members.set('b', member('b', { active: true })); // b starts a turn while a is being told
+    return base(id, text);
+  };
+  await sweepRelance(r.deps);
+  assert.deepEqual(r.turns.map((t) => t.wsId), ['a'], 'b became active meanwhile: kept, not told');
+  r.members.set('b', member('b'));
+  r.clock.t += 5_000;
+  await sweepRelance(r.deps);
+  assert.deepEqual(r.turns.map((t) => t.wsId), ['a', 'b']);
+});
+
+test('must-FAIL arm — a per-member floor between two Relances: a root replaced every 30 s makes ONE turn per floor, the ends in between are grouped into the next', async () => {
+  const r = rig();
+  r.members.set('m1', member('m1'));
+  let pid = 100;
+  const ROOT = () => P(pid, 1, `sh respawn-${pid}.sh`);
+  r.census.set('m1', [ROOT()]);
+  await sweepRelance(r.deps);
+  for (let i = 0; i < 16; i++) { // a root replaced every ~30 s (older than the min age each time)
+    r.clock.t += 30_000;
+    pid++;
+    r.census.set('m1', [ROOT()]);
+    await sweepRelance(r.deps);
+    r.clock.t += 6_000;
+    await sweepRelance(r.deps);
+  }
+  const spanMs = 16 * 36_000;
+  assert.ok(r.turns.length >= 2, 'it does still fire');
+  assert.ok(r.turns.length <= Math.ceil(spanMs / RELANCE_MIN_GAP_MS) + 1, `bounded by the floor: ${r.turns.length} turns in ${spanMs / 1000}s`);
+  assert.match(r.turns[1].text, /respawn-/, 'the ends in between are in the next turn');
+  assert.ok(RELANCE_MIN_GAP_MS >= 60_000);
 });

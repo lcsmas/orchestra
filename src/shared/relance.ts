@@ -49,7 +49,7 @@ export interface RelanceEnd {
 export interface RelanceTrack {
   /** The roots seen alive at the last readable census. */
   roots: ReadonlyMap<string, RelanceProc>;
-  /** When each root was FIRST seen (ms): its age is how long the host has known it. */
+  /** When each process of the census was FIRST seen (ms): its age is how long the host has known it, whatever its place in the tree. */
   seen: ReadonlyMap<string, number>;
   /** Ends seen and not yet announced, oldest first. */
   pending: readonly RelanceEnd[];
@@ -69,7 +69,8 @@ export function observeReliquats(
   if (census === 'unknown') return prev ?? { roots: new Map(), seen: new Map(), pending: [] };
   const alive = new Set(census.map(procKey));
   const roots = new Map(rootsOf(census).map((p) => [procKey(p), p] as const));
-  const seen = new Map([...roots.keys()].map((k) => [k, prev?.seen.get(k) ?? now] as const));
+  // age follows the PROCESS, not its root status: a server alive for an hour whose launcher just exited becomes a root, and keeps its hour
+  const seen = new Map(census.map((p) => [procKey(p), prev?.seen.get(procKey(p)) ?? now] as const));
   const ended: RelanceEnd[] = [];
   for (const [k, proc] of prev?.roots ?? []) {
     if (alive.has(k) || stoppedByHost(k)) continue;
@@ -96,15 +97,16 @@ export interface RelanceMember {
   active: boolean;
 }
 
-export type RelanceDropWhy = 'no-coordinator' | 'no-task' | 'released' | 'paused' | 'not-wakeable' | 'nothing-ended';
+export type RelanceDropWhy = 'no-coordinator' | 'no-task' | 'released' | 'nothing-ended';
 
 export type RelanceVerdict =
   | { kind: 'fire'; ended: readonly RelanceEnd[]; running: readonly RelanceProc[] }
-  | { kind: 'wait'; why: 'grouping' | 'active'; keep: readonly RelanceEnd[] }
+  | { kind: 'wait'; why: 'grouping' | 'active' | 'paused' | 'not-wakeable'; keep: readonly RelanceEnd[] }
   | { kind: 'drop'; why: RelanceDropWhy; keep: readonly RelanceEnd[] };
 
 /**
- * Should this member be relanced NOW for the ends the track holds? Every exclusion drops the ends (a Relance is never owed for them); `active` and the grouping window only WAIT.
+ * Should this member be relanced NOW for the ends the track holds? Only what is PERMANENT drops the ends (no coordinator, no task, released: a Relance is never owed for them).
+ * Everything transient WAITS and keeps them: `active`, a Pause (the Reprise resumes the member — its script still ended), a member that cannot be woken yet (no worktree, a start that keeps failing), the grouping window.
  * There is NO acknowledgement by activity: a member that kept working while its script ended and then ended its turn « waiting for the rig » never saw the end (a turn's own
  * last event is always later than an end inside it), so the ends seen during a turn are announced once it is idle — the text lets the member say « already handled ».
  */
@@ -113,8 +115,8 @@ export function decideRelance(m: RelanceMember, track: RelanceTrack, now: number
   if (!m.hasCoordinator) return { kind: 'drop', why: 'no-coordinator', keep: [] };
   if (!m.hasTask) return { kind: 'drop', why: 'no-task', keep: [] };
   if (m.released) return { kind: 'drop', why: 'released', keep: [] };
-  if (m.paused) return { kind: 'drop', why: 'paused', keep: [] };
-  if (!m.wakeable) return { kind: 'drop', why: 'not-wakeable', keep: [] };
+  if (m.paused) return { kind: 'wait', why: 'paused', keep: track.pending };
+  if (!m.wakeable) return { kind: 'wait', why: 'not-wakeable', keep: track.pending };
   if (m.active) return { kind: 'wait', why: 'active', keep: track.pending };
   if (now - track.pending[0].at < RELANCE_GROUP_MS) return { kind: 'wait', why: 'grouping', keep: track.pending };
   return { kind: 'fire', ended: track.pending, running: [...track.roots.values()] };
@@ -158,7 +160,7 @@ export function buildReliquatsEndedRelance(ended: readonly RelanceEnd[], running
       ? 'Still running:'
       : 'No other leftover process of yours is running.',
     ...(running.length > 0 ? list(running.map((p) => `\`${oneLine(p.cmd || p.comm)}\` (pid ${p.pid})`)) : []),
-    'Read what they produced and carry on with your task (push, nominate, report). If you already dealt with this, or the task is complete, say so to your coordinator and stop.',
+    'Read what they produced and carry on with your task (push, nominate, report). If you already dealt with this, there is nothing to do: end your turn without messaging anyone.',
   ];
   return buildRelance(`${n === 1 ? 'a leftover process of yours' : `${n} leftover processes of yours`} ended`, body);
 }

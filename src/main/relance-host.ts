@@ -13,36 +13,20 @@ import { wakeRosterEntry } from './wake-roster';
 import { resolveWaveRunId } from './workspaces';
 import { censusReliquatsOf } from './relance-census.ts';
 import { startRelance, stopRelance, sweepRelanceNow, type RelanceDeps, type RelanceDelivery } from './relance.ts';
-import type { Workspace } from '../shared/types';
-import type { RelanceMember } from '../shared/relance.ts';
+import { relanceEnabled, relanceMember, relanceMembers, type RelanceRosterDeps } from './relance-roster.ts';
 
-/** A member of the fleet as the Relance decision reads it. */
-export function relanceMembers(): RelanceMember[] {
-  const all = store.workspaces;
-  const coordinatorOf = (ws: Workspace): boolean => {
-    const parent = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
-    return !!parent && !parent.archived;
-  };
-  // Released = reported done and not re-tasked (durable bus state, never mail). Only asked for the members the sweep will follow; an unreadable bus reads « nobody released »:
-  // a finished member may get one needless turn, a stalled one is never silenced.
-  let released = new Set<string>();
-  try {
+const roster: RelanceRosterDeps = {
+  workspaces: () => store.workspaces,
+  getWorkspace: (id) => store.getWorkspace(id),
+  released: (readers) => {
     const db = getBus();
-    if (db) released = readReleasedReaders(db, all.filter((w) => coordinatorOf(w) && !!w.lastTask).map((w) => ({ reader: w.id, runId: resolveWaveRunId(w) })));
-  } catch (e) {
-    log.warn('relance: released read failed — treating as none released', e);
-  }
-  return all.map((ws) => ({
-    wsId: ws.id,
-    hasCoordinator: coordinatorOf(ws),
-    hasTask: !!ws.lastTask,
-    released: released.has(ws.id),
-    paused: pauseRefusal(ws, 'auto') !== null,
-    wakeable: wakeRosterEntry(ws).wakeable,
-    // a running turn, a turn parked on an answer / permission, or a prompt already queued: a Relance now would only pile behind it
-    active: ws.status === 'running' || ws.status === 'waiting' || (ws.sdkPendingPrompts?.length ?? 0) > 0,
-  }));
-}
+    return db ? readReleasedReaders(db, readers) : new Set<string>();
+  },
+  runIdOf: (ws) => resolveWaveRunId(ws),
+  paused: (ws) => pauseRefusal(ws, 'auto') !== null,
+  wakeable: (ws) => wakeRosterEntry(ws).wakeable,
+  warn: (msg, e) => log.warn(msg, e),
+};
 
 async function deliver(wsId: string, text: string): Promise<RelanceDelivery> {
   const ws = store.getWorkspace(wsId);
@@ -54,14 +38,15 @@ async function deliver(wsId: string, text: string): Promise<RelanceDelivery> {
 
 export const productionRelanceDeps: RelanceDeps = {
   now: () => Date.now(),
-  members: relanceMembers,
+  members: () => relanceMembers(roster),
+  member: (wsId) => relanceMember(roster, wsId),
   census: (wsId) => censusReliquatsOf(wsId),
   deliver,
 };
 
 /** `ORCHESTRA_RELANCE=0` turns the mechanism off (never started). */
 export function startRelanceHost(): void {
-  if (process.env.ORCHESTRA_RELANCE === '0') {
+  if (!relanceEnabled(process.env)) {
     log.info('relance: disabled by ORCHESTRA_RELANCE=0');
     return;
   }

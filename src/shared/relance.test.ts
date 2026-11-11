@@ -132,14 +132,24 @@ const DROP: Array<[string, Partial<RelanceMember>, string]> = [
   ['a member WITHOUT a coordinator (a workspace the human drives)', { hasCoordinator: false }, 'no-coordinator'],
   ['a member with NO dispatched task', { hasTask: false }, 'no-task'],
   ['a member whose task is finished and RELEASED', { released: true }, 'released'],
-  ['a member of a PAUSED run', { paused: true }, 'paused'],
-  ['a member that cannot be woken (archived / no worktree / a start that keeps failing)', { wakeable: false }, 'not-wakeable'],
 ];
 for (const [label, over, why] of DROP) {
   test(`must-FAIL arm — no Relance for ${label}: dropped as '${why}'`, () => {
     const v = decideRelance(member(over), trackWith([[10, T0]]), NOW);
     assert.deepEqual({ kind: v.kind, ...(v.kind !== 'fire' ? { why: (v as { why: string }).why } : {}) }, { kind: 'drop', why });
     assert.equal(decideRelance(member(), trackWith([[10, T0]]), NOW).kind, 'fire', 'and the same member without the exclusion is fired');
+  });
+}
+
+const WAIT: Array<[string, Partial<RelanceMember>, string]> = [
+  ['a member of a PAUSED run (the Reprise resumes it: its script still ended)', { paused: true }, 'paused'],
+  ['a member that cannot be woken YET (no worktree, a start that keeps failing)', { wakeable: false }, 'not-wakeable'],
+];
+for (const [label, over, why] of WAIT) {
+  test(`must-FAIL arm — ${label}: no Relance now, the end is KEPT ('${why}') and fires once the exclusion lifts`, () => {
+    const tr = trackWith([[10, T0]]);
+    assert.deepEqual(decideRelance(member(over), tr, NOW), { kind: 'wait', why, keep: tr.pending });
+    assert.equal(decideRelance(member(), tr, NOW).kind, 'fire');
   });
 }
 
@@ -202,4 +212,19 @@ test('buildRelance is the reusable primitive: any reason, same recognisable head
   assert.ok(isRelance(text));
   assert.ok(!isRelance('orchestra check --run r1'));
   assert.ok(!isRelance('hello'));
+});
+
+test('must-FAIL arm — a server alive for an hour whose launcher exits becomes a root KEEPING its age: its end 5 s later is announced', () => {
+  let t = observeReliquats(undefined, [P(10, 1, 'sh chain.sh'), P(11, 10, 'node server.js')], T0, none);
+  t = observeReliquats(t, [P(10, 1, 'sh chain.sh'), P(11, 10, 'node server.js')], T0 + 3_600_000, none);
+  t = observeReliquats(t, [P(11, 1, 'node server.js')], T0 + 3_605_000, none); // the launcher is gone, the server is now a root
+  assert.deepEqual(t.pending.map((e) => e.proc.pid), [10]);
+  t = observeReliquats(t, [], T0 + 3_610_000, none);
+  assert.deepEqual(t.pending.map((e) => e.proc.pid), [10, 11], 'the server\'s end, 5 s after it became a root, is not hidden by the min age');
+});
+
+test('the text never tells a member with nothing to do to report to its coordinator', () => {
+  const text = buildReliquatsEndedRelance([{ proc: P(10, 1, 'sh chain.sh'), at: T0 }], []);
+  assert.doesNotMatch(text, /coordinator/i);
+  assert.match(text, /nothing to do/i);
 });

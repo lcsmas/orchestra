@@ -26,18 +26,18 @@ test('delivery is a Réveil\'s path: the Admission gate first (HELD ≠ failed),
   assert.doesNotMatch(host, /origin:\s*'human'/, 'a host turn is never a HUMAN turn (it must stay refused while paused)');
 });
 
-test('the roster feeds every exclusion of the decision from its real source: coordinator, task, released (bus), paused (pauseRefusal), wakeable (wake roster), active', () => {
+test('the host wires the roster\'s real sources: the bus released read, the run id, pauseRefusal, the wake roster; the kill switch and the fresh per-member read', () => {
   const host = read('relance-host.ts');
   for (const re of [
-    /hasCoordinator: coordinatorOf\(ws\)/,
-    /hasTask: !!ws\.lastTask/,
-    /released: released\.has\(ws\.id\)/,
-    /paused: pauseRefusal\(ws, 'auto'\) !== null/,
-    /wakeable: wakeRosterEntry\(ws\)\.wakeable/,
-    /ws\.status === 'running' \|\| ws\.status === 'waiting' \|\| \(ws\.sdkPendingPrompts\?\.length \?\? 0\) > 0/,
-    /readReleasedReaders\(db,/,
+    /readReleasedReaders\(db, readers\)/,
+    /runIdOf: \(ws\) => resolveWaveRunId\(ws\)/,
+    /paused: \(ws\) => pauseRefusal\(ws, 'auto'\) !== null/,
+    /wakeable: \(ws\) => wakeRosterEntry\(ws\)\.wakeable/,
+    /members: \(\) => relanceMembers\(roster\)/,
+    /member: \(wsId\) => relanceMember\(roster, wsId\)/,
+    /if \(!relanceEnabled\(process\.env\)\) \{/,
+    /census: \(wsId\) => censusReliquatsOf\(wsId\)/,
   ]) assert.match(host, re);
-  assert.match(host, /census: \(wsId\) => censusReliquatsOf\(wsId\)/);
 });
 
 test('every host stop of a member\'s Reliquats registers its victims BEFORE the first signal (Veille, Pause and scope stop all go through killReliquats)', () => {

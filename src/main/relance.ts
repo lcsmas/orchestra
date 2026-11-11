@@ -22,6 +22,8 @@ export const RELANCE_SWEEP_MS = 5_000;
 export const RELANCE_RETRY_MS = 30_000;
 /** One member's delivery (a session start) may take this long before the sweep moves on to the next member; its result is still applied when it lands. */
 export const RELANCE_DELIVER_WAIT_MS = 20_000;
+/** Floor between two Relances of the SAME member: ends in between are kept and grouped into the next one (a root replaced every 30 s must not make a turn every 30 s). */
+export const RELANCE_MIN_GAP_MS = 120_000;
 
 export type RelanceDelivery = 'sent' | 'held' | 'failed';
 
@@ -29,6 +31,8 @@ export interface RelanceDeps {
   now(): number;
   /** Every workspace the host knows, as the decision reads it (the host fills the facts; the sweep never reads the store). */
   members(): RelanceMember[];
+  /** ONE member, read fresh — right before its delivery (a delivery to an earlier member can take seconds: the pass's snapshot may be stale). Absent = the snapshot is used. */
+  member?(wsId: string): RelanceMember | undefined;
   /** One member's Reliquats (kernel scope). A throw reads as UNKNOWN. */
   census(wsId: string): RelanceCensus | Promise<RelanceCensus>;
   /** Start / resume the member's session and deliver `text` as its next turn. `held` = Admission is holding the start (low memory): nothing is lost, the host retries. */
@@ -53,6 +57,7 @@ export const relanceCounters = (): RelanceCounters => ({ ...counters });
 
 const tracks = new Map<string, RelanceTrack>();
 const retryAt = new Map<string, number>();
+const lastSentAt = new Map<string, number>();
 const heldLogged = new Set<string>();
 /** Members whose delivery is still pending past the wait: not touched again until it lands (a second turn for the same ends would be a duplicate). */
 const slow = new Set<string>();
@@ -82,6 +87,7 @@ async function runSweep(deps: RelanceDeps): Promise<string[]> {
       if (ids.has(id)) continue;
       tracks.delete(id);
       retryAt.delete(id);
+      lastSentAt.delete(id);
       heldLogged.delete(id);
     }
     for (const m of members) {
@@ -100,7 +106,9 @@ async function runSweep(deps: RelanceDeps): Promise<string[]> {
           census = 'unknown';
         }
         const track = observeReliquats(tracks.get(m.wsId), census, now, (k) => wasStoppedByHost(k, now));
-        const v = decideRelance(m, track, now);
+        let v = decideRelance(m, track, now);
+        // The pass's roster is a snapshot and earlier deliveries take time: judge the member again on FRESH state right before it would be told.
+        if (v.kind === 'fire' && deps.member) v = decideRelance(deps.member(m.wsId) ?? m, track, deps.now());
         if (v.kind === 'wait' || v.kind === 'drop') {
           if (v.kind === 'drop' && track.pending.length > 0) {
             counters.dropped++;
@@ -109,8 +117,8 @@ async function runSweep(deps: RelanceDeps): Promise<string[]> {
           tracks.set(m.wsId, { ...track, pending: v.keep });
           continue;
         }
-        if ((retryAt.get(m.wsId) ?? 0) > now) {
-          tracks.set(m.wsId, track);
+        if ((retryAt.get(m.wsId) ?? 0) > now || now - (lastSentAt.get(m.wsId) ?? -Infinity) < RELANCE_MIN_GAP_MS) {
+          tracks.set(m.wsId, track); // backing off after a failure / too soon after the last Relance: the ends are kept and grouped into the next one
           continue;
         }
         // Mark BEFORE the await (a second pass cannot see these ends again); put them back below if the turn did not go out.
@@ -124,6 +132,7 @@ async function runSweep(deps: RelanceDeps): Promise<string[]> {
             counters.fired++;
             heldLogged.delete(m.wsId);
             fired.push(m.wsId);
+            lastSentAt.set(m.wsId, deps.now());
             log.info(`relance: ${m.wsId} resumed — ${v.ended.length} Reliquat end(s) (${v.ended.map((e) => e.proc.pid).join(',')}), ${v.running.length} still running`);
             return;
           }
@@ -191,6 +200,7 @@ export function __resetRelanceForTests(): void {
   stopRelance();
   tracks.clear();
   retryAt.clear();
+  lastSentAt.clear();
   heldLogged.clear();
   slow.clear();
   sweeping = false;

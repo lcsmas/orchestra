@@ -6,12 +6,14 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const SUITES = ['src/shared/relance.test.ts', 'src/main/relance.test.ts', 'src/main/relance-census.test.ts', 'src/main/relance-wiring.test.ts'];
+const SUITES = ['src/shared/relance.test.ts', 'src/main/relance.test.ts', 'src/main/relance-census.test.ts', 'src/main/relance-wiring.test.ts', 'src/main/relance-roster.test.ts'];
 const S = 'src/shared/relance.ts';
 const M = 'src/main/relance.ts';
 const C = 'src/main/relance-census.ts';
 const K = 'src/main/pause-reliquats.ts';
 const B = 'src/main/browser-reliquats.ts';
+const R = 'src/main/relance-roster.ts';
+const H = 'src/main/relance-host.ts';
 const MUTANTS = [
   ['obs-ignore-unknown', S, "if (census === 'unknown') return prev ?? { roots: new Map(), seen: new Map(), pending: [] };", "if (census === 'unknown') return { roots: new Map(), seen: new Map(), pending: [] };"],
   ['obs-children-count', S, 'const roots = new Map(rootsOf(census)', 'const roots = new Map(census'],
@@ -21,8 +23,12 @@ const MUTANTS = [
   ['dec-no-coordinator', S, "if (!m.hasCoordinator) return { kind: 'drop', why: 'no-coordinator', keep: [] };", ''],
   ['dec-no-task', S, "if (!m.hasTask) return { kind: 'drop', why: 'no-task', keep: [] };", ''],
   ['dec-released', S, "if (m.released) return { kind: 'drop', why: 'released', keep: [] };", ''],
-  ['dec-paused', S, "if (m.paused) return { kind: 'drop', why: 'paused', keep: [] };", ''],
-  ['dec-not-wakeable', S, "if (!m.wakeable) return { kind: 'drop', why: 'not-wakeable', keep: [] };", ''],
+  ['dec-paused', S, "if (m.paused) return { kind: 'wait', why: 'paused', keep: track.pending };", ''],
+  ['dec-paused-drops', S, "if (m.paused) return { kind: 'wait', why: 'paused', keep: track.pending };", "if (m.paused) return { kind: 'drop', why: 'nothing-ended', keep: [] };"],
+  ['dec-not-wakeable', S, "if (!m.wakeable) return { kind: 'wait', why: 'not-wakeable', keep: track.pending };", ''],
+  ['dec-not-wakeable-drops', S, "if (!m.wakeable) return { kind: 'wait', why: 'not-wakeable', keep: track.pending };", "if (!m.wakeable) return { kind: 'drop', why: 'nothing-ended', keep: [] };"],
+  ['obs-age-root-only', S, 'const seen = new Map(census.map(', 'const seen = new Map(rootsOf(census).map('],
+  ['txt-coordinator', S, 'there is nothing to do: end your turn without messaging anyone.', 'say so to your coordinator and stop.'],
   ['dec-active', S, "if (m.active) return { kind: 'wait', why: 'active', keep: track.pending };", ''],
   ['dec-active-drops', S, "if (m.active) return { kind: 'wait', why: 'active', keep: track.pending };", "if (m.active) return { kind: 'drop', why: 'nothing-ended', keep: [] };"],
   ['dec-pending-unbounded', S, '.slice(-MAX_PENDING_ENDS) };', ' };'],
@@ -35,6 +41,14 @@ const MUTANTS = [
   ['sweep-hung-blocks', M, "const first = await Promise.race([delivery, new Promise<'slow'>((r) => { timer = setTimeout(() => r('slow'), waitMs); })]);", "const first = await delivery;"],
   ['sweep-hung-repeats', M, "if (slow.has(m.wsId)) continue; // its delivery has not landed yet", ""],
   ['sweep-now-swallowed', M, "while (sweeping) await (current ?? Promise.resolve([]))", "if (sweeping) return [];\n  while (false) await (current ?? Promise.resolve([]))"],
+  ['sweep-no-fresh-roster', M, "if (v.kind === 'fire' && deps.member) v = decideRelance(deps.member(m.wsId) ?? m, track, deps.now());", ''],
+  ['sweep-no-floor', M, ' || now - (lastSentAt.get(m.wsId) ?? -Infinity) < RELANCE_MIN_GAP_MS', ''],
+  ['roster-released-empty', R, 'return keys.length === 0 ? new Set() : d.released(keys);', 'return new Set();'],
+  ['roster-released-fresh-empty', R, 'releasedOf(d, [ws])', 'new Set<string>()'],
+  ['roster-coordinator-any-parent', R, 'return !!parent && !parent.archived;', 'return !!ws.parentId;'],
+  ['roster-kill-switch-ignored', R, "return env.ORCHESTRA_RELANCE !== '0';", 'return true;'],
+  ['host-no-fresh-member', H, '  member: (wsId) => relanceMember(roster, wsId),\n', ''],
+  ['host-kill-switch-bypassed', H, 'if (!relanceEnabled(process.env)) {', 'if (false) {'],
   ['sweep-no-backoff', M, "retryAt.set(m.wsId, deps.now() + RELANCE_RETRY_MS);", ''],
   ['sweep-host-stop-ignored', M, '(k) => wasStoppedByHost(k, now)', '() => false'],
   ['sweep-keeps-stale-roster', M, 'if (ids.has(id)) continue;\n      tracks.delete(id);', 'continue;\n      tracks.delete(id);'],
