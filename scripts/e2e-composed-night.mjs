@@ -511,7 +511,7 @@ await arm('n5_memory_pause', async () => {
   await sleep(1200);
   check('still_one_escalation_row_the_critical_crossing_writes_none', escalationRows().length, 1);
   const bs = await cliOut(['bus-status']);
-  check('bus_status_says_the_memory_pause_is_in_effect', /memory: .*memory Pause IN EFFECT since \d{4}-/.test(bs), true);
+  check('bus_status_says_the_memory_pause_is_in_effect', /memory: .*memory Pause IN EFFECT (on \d+ run\(s\) \([^)]*\) )?since \d{4}-/.test(bs), true);
 });
 
 await arm('n6_pause_containers', async () => {

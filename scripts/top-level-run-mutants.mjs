@@ -24,7 +24,7 @@ const T = {
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red; `cli` = rebuild the CLI bundle first. */
 const MUTANTS = [
   { id: 'M01', name: 'a top-level workspace owns no run (anchorOwnsRun loses the parentless clause)', edits: [[ANCHOR, 'anchorIsOrchestrator || (anchorId === ws.id && isParentless(ws, lookup))', 'anchorIsOrchestrator']], tests: [T.top, T.anchor] },
-  { id: 'M02', name: 'a plain child ALSO gets a run row (the parentless gate is dropped)', edits: [[ANCHOR, 'anchorIsOrchestrator || (anchorId === ws.id && isParentless(ws, lookup))', 'anchorIsOrchestrator || anchorId === ws.id']], tests: [T.top, T.anchor] },
+  // M02 RETIRED (#442): equivalent since #434 — `anchorId === ws.id` is unreachable for a plain child (runIdOf = the DIRECT parent's run), so dropping the parentless gate changes nothing (seat 1: 4000 random trees, same digest).
   { id: 'M03', name: 'the sweep re-starts / re-reports a workspace that already has its run', edits: [[ANCHOR, 'if (!isParentless(ws, lookup) || probe(ws.id)) continue;', 'if (!isParentless(ws, lookup)) continue;']], tests: [T.top, T.anchor] },
   { id: 'M04', name: 'a dangling parent link is not top-level (an orphan gets no mission)', edits: [['src/shared/run-position.ts', 'return !ws.parentId || !lookup(ws.parentId);', 'return !ws.parentId;']], tests: [T.top, T.anchor] },
   { id: 'M05', name: 'the app-start migration is never called', edits: [[IDX, "if (store.loadedFromDisk) await startRunsForParentlessWorkspaces()", "if (false as boolean) await startRunsForParentlessWorkspaces()"]], tests: [T.wire] },

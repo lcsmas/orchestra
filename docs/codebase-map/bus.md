@@ -2654,7 +2654,7 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   the SAME baked env sends; the sweep touches no store bytes and re-freezes nothing; no env + no `--run` is refused on
   `send`/`run hold`/`bus-status`, `--run default` is an unknown run; `bus-status` against a stub app socket whose reply is
   the real `busStatusRunView` prints the lone workspace's run + frozen switches. Guard-removed mutants:
-  `scripts/top-level-run-mutants.mjs` (`pnpm run test:top-level-run-mutants`, 12 mutants, byte-exact restore).
+  `scripts/top-level-run-mutants.mjs` (`pnpm run test:top-level-run-mutants`, 14 mutants M01, M03–M15 — M02 retired as equivalent since #434 —, byte-exact restore).
 - `src/main/bus-wake-run-switch.test.ts` — G7 the REAL accessor fires a frozen-ON
   run, COUNTS a frozen-OFF run, unwired-accessor arm reproduces the master defect.
 - `src/main/bus-parent-run.test.ts` (**#221**) — the REAL `computeAnchorInfo` +

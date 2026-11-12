@@ -198,7 +198,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/wake-roster.ts",
-    "find": "fleetMember: !!ws.parentId,",
+    "find": "fleetMember: !!coordinatorOf(ws, (id) => store.getWorkspace(id)),",
     "to": "fleetMember: false,"
    }
   ]
@@ -748,8 +748,8 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/pause-memory.ts",
-    "find": "WHERE r.paused_at IS NOT NULL AND r.pause_auto IS NOT NULL AND r.resume_started_at IS NULL`",
-    "to": "WHERE r.paused_at IS NOT NULL AND r.resume_started_at IS NULL`"
+    "find": "WHERE r.paused_at IS NOT NULL AND r.pause_auto IS NOT NULL AND r.resume_started_at IS NULL AND r.closed_at IS NULL`",
+    "to": "WHERE r.paused_at IS NOT NULL AND r.resume_started_at IS NULL AND r.closed_at IS NULL`"
    },
    {
     "file": "src/main/pause-memory.ts",
@@ -853,7 +853,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/wake-roster.ts",
-    "find": "fleetMember: !!ws.parentId,",
+    "find": "fleetMember: !!coordinatorOf(ws, (id) => store.getWorkspace(id)),",
     "to": "fleetMember: true,"
    }
   ]

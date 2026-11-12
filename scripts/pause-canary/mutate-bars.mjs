@@ -17,6 +17,7 @@ const tmp = fs.mkdtempSync(path.join(base, 'mutbars-'));
 fs.mkdirSync(path.join(tmp, 'src', 'main'), { recursive: true });
 fs.mkdirSync(path.join(tmp, 'scripts', 'pause-canary'), { recursive: true });
 for (const f of fs.readdirSync(path.join(REPO, 'scripts', 'pause-canary'))) if (f.endsWith('.mjs')) fs.copyFileSync(path.join(REPO, 'scripts', 'pause-canary', f), path.join(tmp, 'scripts', 'pause-canary', f));
+fs.cpSync(path.join(REPO, 'scripts', 'lib'), path.join(tmp, 'scripts', 'lib'), { recursive: true }); // pause-canary/lib.mjs imports ../lib/rig-runtime.mjs (since 4f0b4922)
 for (const t of TESTS) fs.copyFileSync(path.join(REPO, 'src', 'main', t), path.join(tmp, 'src', 'main', t));
 if (MEMHOG) { fs.cpSync(path.join(REPO, 'src', 'shared'), path.join(tmp, 'src', 'shared'), { recursive: true }); fs.cpSync(path.join(REPO, 'scripts', 'memory-cap'), path.join(tmp, 'scripts', 'memory-cap'), { recursive: true }); fs.cpSync(path.join(REPO, 'src', 'keeper', 'index.ts'), path.join(tmp, 'src', 'keeper', 'index.ts'), { recursive: true, dereference: true }); }   // the app test pins the keeper's cap-state line against the source; the os test spawns the stand-in CLI
 const targetOf = (f) => path.join(tmp, 'scripts', 'pause-canary', f);
