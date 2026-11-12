@@ -287,4 +287,6 @@ test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s an
   const idx = src('src/main/index.ts');
   assert.match(idx, /if \(store\.loadedFromDisk\) await startRunsForParentlessWorkspaces\(\)[^\n]*\n[^\n]*\n\s*if \(store\.loadedFromDisk\) await startRunsForOwnerWorkspaces\(\)/, 'app start: top-level missions, then owners with a parent (parents first), both guarded by a loaded store');
   assert.match(src('src/main/store.ts'), /ws\.canOrchestrate === true \|\| parentsOfSomeone\.has\(ws\.id\)/, 'store load migrates the flag / existing parents into ownsRun');
+  assert.match(src('src/main/store.ts'), /\(!!ws\.parentId && !knownIds\.has\(ws\.parentId\)\)/, 'store load records a dangling-parent workspace as an owner (one answer with isTopLevel)');
+  assert.equal((ws.match(/await recordDanglingOwners\(started\);/g) ?? []).length, 2, 'the app-start sweep AND the launch-time start record a dangling-parent owner');
 });

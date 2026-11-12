@@ -103,7 +103,8 @@ let workspaces;
 try {
   const parsed = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
   if (!Array.isArray(parsed.workspaces)) throw new Error('no "workspaces" array');
-  workspaces = parsed.workspaces.filter((w) => w && typeof w.id === 'string' && typeof w.branch === 'string');
+  // a store written before #434 records ownership in the flag: marshal it into `ownsRun`, the field run-position reads
+  workspaces = parsed.workspaces.filter((w) => w && typeof w.id === 'string' && typeof w.branch === 'string').map((w) => (w.canOrchestrate === true && w.ownsRun !== true ? { ...w, ownsRun: true } : w));
 } catch (e) {
   die(`cannot read the store ${storeFile}: ${e.message}`);
 }

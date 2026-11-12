@@ -18,7 +18,7 @@ const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].
 const RP = 'src/shared/run-position.ts', ANCHOR = 'src/main/bus-run-anchor.ts', WS = 'src/main/workspaces.ts', IDX = 'src/main/index.ts', SDK = 'src/main/agent-sdk.ts', STORE = 'src/main/store.ts', LIVE = 'src/main/bus-liveness-roster.ts';
 const T = {
   plain: 'src/main/bus-plain-parent.test.ts', rp: 'src/shared/run-position.test.ts', pause: 'src/main/pause-reprise.test.ts', parent: 'src/main/bus-parent-run.test.ts',
-  anchor: 'src/main/bus-run-anchor.test.ts', liveness: 'src/main/bus-liveness-roster.test.ts',
+  anchor: 'src/main/bus-run-anchor.test.ts', gate: 'src/main/message-channel-gate.test.ts', liveness: 'src/main/bus-liveness-roster.test.ts',
 };
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red; `cli` = rebuild the CLI bundle first. */
@@ -39,6 +39,9 @@ const MUTANTS = [
   { id: 'M16', name: 'promote of a top-level workspace is a silent no-op again (idempotence keyed on coordinates)', edits: [[WS, 'if (ws.ownsRun === true || isCoordinatorKind(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };', 'if (coordinates(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };']], tests: [T.plain] },
   { id: 'M17', name: 'demote leaves ownsRun set (the demoted OPS keeps its own run)', edits: [[WS, ': { ...ws, canOrchestrate: undefined, ownsRun: undefined };', ': { ...ws, canOrchestrate: undefined };']], tests: [T.plain] },
   { id: 'M18', name: 'attach does not mark the new parent as an owner', edits: [[WS, '  await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child\'s next session start\n', '']], tests: [T.plain] },
+  { id: 'M19', name: 'a plain top-level target is no longer exempt for an unrelated sender (isPlainOwnAnchor back to "not a coordinator")', cli: true, edits: [[RP, 'return !isCoordinatorKind(ws) && isTopLevel(ws, lookup);', 'return !coordinates(ws) && runIdOf(ws, lookup) === ws.id;']], tests: [T.gate] },
+  { id: 'M20', name: 'a top-level workspace no longer owns its mission in coordinates (`!parentId` dropped)', cli: true, edits: [[RP, 'return isCoordinatorKind(ws) || ws.ownsRun === true || !ws.parentId;', 'return isCoordinatorKind(ws) || ws.ownsRun === true;']], tests: [T.rp, T.plain] },
+  { id: 'M21', name: 'a dangling-parent workspace is not recorded as an owner at app start / launch', edits: [[WS, '  await recordDanglingOwners(started);\n  for (const ws of live)', '  for (const ws of live)']], tests: [T.plain] },
   { id: 'M15', name: 'a sentinel writer hard-codes the dual wording again (a second reader of the role)', edits: [[WS, "await markOrchestratorWorktree(newWorktreePath, coordinatorRoleOf({ repoPath }) === 'dual');", 'await markOrchestratorWorktree(newWorktreePath, true);']], tests: [T.plain] },
   { id: 'M14', name: 'the first-spawn owner gets no standing-role sentinel', edits: [[WS, "await markOrchestratorWorktree(updated.worktreePath, coordinatorRoleOf(updated) === 'dual');", '']], tests: [T.plain] },
 ];

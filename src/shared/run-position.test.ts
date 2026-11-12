@@ -66,9 +66,11 @@ test('parentRunOf: the run ws is a member of = its direct parent; implicit only 
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'solo', kind: 'worktree', ownsRun: true }, lk), { id: 'solo', implicit: false }, 'a top-level parent owns a mission');
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree', ownsRun: true }, lk), { id: 'kid', implicit: true }, 'a legacy plain parent with no row');
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree' }, lk, (id) => id === 'kid'), { id: 'kid', implicit: false });
-  assert.equal(isPlainOwnAnchor({ id: 'x', parentId: 'gone', kind: 'worktree' }, lk), true, 'only a dangling-parent plain workspace');
-  assert.equal(isPlainOwnAnchor(loner, lk), false);
-  assert.equal(isPlainOwnAnchor(lead, lk), false);
+  assert.equal(isPlainOwnAnchor({ id: 'x', parentId: 'gone', kind: 'worktree' }, lk), true, 'a dangling-parent plain workspace');
+  assert.equal(isPlainOwnAnchor(loner, lk), true, 'a plain top-level workspace, with or without children');
+  assert.equal(isPlainOwnAnchor({ ...loner, ownsRun: true }, lk), true, 'having spawned does not change it');
+  assert.equal(isPlainOwnAnchor(lead, lk), false, 'the orchestrator kind is never exempt');
+  assert.equal(isPlainOwnAnchor(worker, lk), false, 'a member is not');
 });
 
 test('the hook gate text is the exact shell the standing reminder and the edit guard run', () => {

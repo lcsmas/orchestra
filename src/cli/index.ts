@@ -1899,7 +1899,7 @@ async function main(argv: string[]): Promise<void> {
         ['kind', kind],
         [
           'orchestrator', // run-position: non-run — verb argument list
-          orchestrator ? (kind === 'worktree' ? 'yes (dual role)' : 'yes') : 'no',
+          orchestrator ? (kind === 'worktree' ? 'yes (owns a run; dual role)' : 'yes (owns a run)') : 'no',
         ],
         ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],
         ['repo', (res.repoPath as string | undefined) || '(none)'],

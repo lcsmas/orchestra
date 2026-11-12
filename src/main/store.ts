@@ -156,8 +156,10 @@ class Store {
     // #434: a workspace OWNS a run when it was promoted (the flag) or already has a child — recorded as `ownsRun`, the field
     // `coordinates()` reads, so a pre-#434 store keeps its coordinators without the flag deciding anything.
     const parentsOfSomeone = new Set(this.data.workspaces.map((w) => w.parentId).filter((p): p is string => !!p));
+    const knownIds = new Set(this.data.workspaces.map((w) => w.id));
     for (const ws of this.data.workspaces) {
-      if (!ws.ownsRun && (ws.canOrchestrate === true || parentsOfSomeone.has(ws.id))) { // run-position: non-run — one-time migration of the persisted flag into ownsRun
+      // a DANGLING parent link (the parent left the store) is top-level: it owns its mission (#433), recorded so `coordinates` agrees with `isTopLevel`
+      if (!ws.ownsRun && (ws.canOrchestrate === true || parentsOfSomeone.has(ws.id) || (!!ws.parentId && !knownIds.has(ws.parentId)))) { // run-position: non-run — one-time migration of the persisted flag into ownsRun
         ws.ownsRun = true; // run-position: non-run — the migration write
         mutated = true;
       }

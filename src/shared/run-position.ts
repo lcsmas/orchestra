@@ -66,9 +66,11 @@ export function isTopLevel(ws: Pick<RunNode, 'parentId'>, lookup: RunLookup): bo
   return !ws.parentId || !lookup(ws.parentId);
 }
 
-/** #221 — `ws` is its OWN run anchor without coordinating (only a plain workspace whose parent link dangles, since #434). */
+/** #221 — `ws` is a plain TOP-LEVEL workspace: no parent to coordinate it (none set, or a dangling link) and not the orchestrator KIND. It owns a
+ *  mission (#433) but stays reachable by `orchestra message` for a sender with NO bus route until #441/#436 close the old channel; whether it
+ *  has already spawned (`ownsRun`) does not matter — the same answer as before #434. */
 export function isPlainOwnAnchor(ws: RunNode, lookup: RunLookup): boolean {
-  return !coordinates(ws) && runIdOf(ws, lookup) === ws.id;
+  return !isCoordinatorKind(ws) && isTopLevel(ws, lookup);
 }
 
 /** The nearest coordinating (or run-anchoring) ancestor id strictly above `ws`, or null — `parentRunOf` WITHOUT the implicit

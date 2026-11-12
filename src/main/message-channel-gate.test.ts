@@ -144,6 +144,8 @@ interface TopoNode {
   archived: boolean;
   parentId?: string;
   canOrchestrate?: boolean;
+  ownsRun?: boolean;
+  kind?: string;
 }
 
 interface WrapperResult {
@@ -176,7 +178,7 @@ async function runWrapper(opts: {
   let delivered = false;
 
   const target = opts.targetExists
-    ? { id: 'ws-target', branch: 'target-branch', archived: false, canOrchestrate: !opts.plainParent }
+    ? { id: 'ws-target', branch: 'target-branch', archived: false, ...(opts.plainParent ? {} : { kind: 'orchestrator' }) }
     : undefined;
 
   const scope = {
@@ -377,6 +379,15 @@ test('#434 — a plain parent that OWNS a run is no longer exempt: `message` fro
     topo: { from: undefined, nodes: { 'ws-target': node('ws-target', { parentId: 'gone' }) } },
   });
   assert.equal(dangling.result.ok, true, 'a plain own-anchor target (dangling parent) stays exempt for a sender with no bus route');
+  // M1 (review): two UNRELATED top-level agents have no `send` route before #436 — `message` to a top-level plain target stays open for the sender with no route
+  const unrelated = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
+    topo: { from: 'ws-x', nodes: { 'ws-target': node('ws-target'), 'ws-x': node('ws-x') } },
+  });
+  assert.equal(unrelated.result.ok, true, `an unrelated top-level sender is not refused: ${unrelated.result.error}`);
+  assert.equal(unrelated.delivered, true);
+  // …but a top-level target that has spawned (ownsRun) still refuses ITS OWN member, who has `send`
+  assert.equal((await toLead(true, 'ws-worker')).result.ok, false, 'its member is still pointed at send');
 });
 
 test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is REFUSED by P4, never mistaken for a plain anchor', async (t) => {

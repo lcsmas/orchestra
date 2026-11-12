@@ -468,9 +468,9 @@ test('activeVagueMemberIds: a vague is a LIVE orchestrator with a parent and a l
   ];
   assert.deepEqual([...activeVagueMemberIds(plain)].sort(), [...activeVagueMemberIds(base)].sort());
   // a dangling parent / a cycle must not hang or throw
-  // an OPS whose parent has left the store is top-level now (#433: a dangling link owns a mission): no vague, nothing held
+  // an OPS whose parent has left the store is still a vague (it still owns its vague row): held is the safe side
   const orphanOps = [ws('o1', { parentId: id('gone'), ownsRun: true }), ws('o2', { parentId: id('o1') })];
-  assert.equal(activeVagueMemberIds(orphanOps).size, 0);
+  assert.deepEqual([...activeVagueMemberIds(orphanOps)].sort(), [id('o1'), id('o2')].sort());
   const cyc = [ws('c1', { parentId: id('c2'), ownsRun: true }), ws('c2', { parentId: id('c1'), ownsRun: true })];
   assert.doesNotThrow(() => activeVagueMemberIds(cyc));
 });

@@ -2,13 +2,13 @@
 // Decides, per workspace, what the one-shot migration does; scripts/migrate-parent-names.mjs gathers the inputs
 // (store, git, running vagues) and applies each `rename` step through the installed app's CLI — never by editing store.json.
 import type { Workspace } from './types.ts';
-import { coordinates, isTopLevel } from './run-position.ts';
+import { coordinates } from './run-position.ts';
 import { checkSpawnName, decideRename } from './naming-policy.ts';
 
 /** The Workspace fields the planner reads. */
 export type MigrationWorkspace = Pick<
   Workspace,
-  'id' | 'branch' | 'baseBranch' | 'repoPath' | 'parentId' | 'namedByParent' | 'formerBranch' | 'branchManuallySet' | 'archived' | 'kind' | 'canOrchestrate' | 'host'
+  'id' | 'branch' | 'baseBranch' | 'repoPath' | 'parentId' | 'namedByParent' | 'formerBranch' | 'branchManuallySet' | 'archived' | 'kind' | 'ownsRun' | 'host'
 >;
 
 /** One row of the human-validated table. `old` (optional, recommended) is the branch the human validated the row
@@ -117,7 +117,7 @@ export const ACTION_LABEL: Record<RowAction, string> = {
  * mission (not a vague): its workers are never held — leave them out of the table to keep their names.
  */
 export function activeVagueMemberIds(
-  workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'canOrchestrate' | 'host'>[],
+  workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'ownsRun' | 'host'>[],
   closed: ReadonlySet<string> = new Set(),
 ): Set<string> {
   return new Set(vagueHolders(workspaces, closed).keys());
@@ -126,7 +126,7 @@ export function activeVagueMemberIds(
 /** Same rule as {@link activeVagueMemberIds}, but each held member maps to the running-vague anchors that hold it (a workspace can hang below two: its parent's vague and
  *  its namer's) — `--closed` must release every one of them. */
 export function vagueHolders(
-  workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'canOrchestrate' | 'host'>[],
+  workspaces: readonly Pick<Workspace, 'id' | 'parentId' | 'namedByParent' | 'archived' | 'kind' | 'ownsRun' | 'host'>[],
   closed: ReadonlySet<string> = new Set(),
 ): Map<string, string[]> {
   const byId = new Map(workspaces.map((w) => [w.id, w]));
@@ -148,7 +148,7 @@ export function vagueHolders(
   const hold = (member: string, anchor: string): void => void holders.set(member, [...(holders.get(member) ?? []), anchor]);
   for (const a of workspaces) {
     if (!coordinates(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
-    if (isTopLevel(a, (id) => byId.get(id))) continue; // a top-level coordinator runs a mission, not a vague (a dangling parent link is top-level too, #433)
+    if (!a.parentId) continue; // run-position: non-run — a coordinator with NO recorded parent runs a mission, not a vague; a dangling link (parent left the store) still owns its vague row and stays held (the safe side)
     hold(a.id, a.id);
     for (const w of workspaces) if (ancestors(w.id).has(a.id)) hold(w.id, a.id);
   }

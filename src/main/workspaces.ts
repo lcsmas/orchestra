@@ -4682,9 +4682,18 @@ export async function ensureMemberRun(ws: Workspace): Promise<void> {
 /** #433 — at app start, give every live top-level workspace without a run its mission, and rewrite every live
  *  worktree's notice (a stale "anchors no run" file from an older build is wiped). No session is restarted or woken;
  *  archived and sandbox workspaces are skipped. */
+/** #434 — a top-level workspace whose parent LINK dangles owns its mission too: record it (`ownsRun`) so `coordinates` and `isTopLevel` give one answer. */
+async function recordDanglingOwners(ids: readonly string[]): Promise<void> {
+  for (const id of ids) {
+    const w = store.getWorkspace(id);
+    if (w?.parentId && w.ownsRun !== true) await store.upsertWorkspace({ ...w, ownsRun: true }); // run-position: non-run — the ownership WRITE for a dangling link
+  }
+}
+
 export async function startRunsForParentlessWorkspaces(): Promise<string[]> {
   const live = store.workspaces.filter((w) => !w.archived && w.host?.kind !== 'sandbox');
   const started = startRunsForParentless(busRunAnchorDeps, live, (id) => store.getWorkspace(id));
+  await recordDanglingOwners(started);
   for (const ws of live) if (existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, resolveWaveRunId(ws));
   if (started.length) log.info(`bus-run-anchor: started a mission run for ${started.length} top-level workspace(s) without one`);
   return started;
@@ -4710,6 +4719,7 @@ export async function ensureTopLevelRun(ws: Workspace): Promise<void> {
   if (ws.host?.kind === 'sandbox') return;
   try {
     const started = startRunsForParentless(busRunAnchorDeps, [ws], (id) => store.getWorkspace(id));
+    await recordDanglingOwners(started);
     if (started.length && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, ws.id);
   } catch (e) {
     log.warn(`bus-run-anchor: launch-time run start failed for ${ws.id}`, e);
