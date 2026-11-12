@@ -29,10 +29,10 @@ A workspace is an isolated execution environment for one Claude Code agent.
   `orchestrator-guard.sh` PreToolUse deny hook (see
   [hooks-cli-socket.md](hooks-cli-socket.md)), both gated on `ORCHESTRA_KIND`
   env or the `.orchestra/.orchestrator` sentinel (`markOrchestratorWorktree`,
-  written at creation and by `/promote` so a mid-session promotion picks it up
-  without a session restart; `unmarkOrchestratorWorktree` removes it on `/demote`).
-  The sentinel's **contents** select the reminder wording: `dual` (written when
-  a *worktree* is promoted) yields a dual-role reminder — coordinate children
+  written at creation, at adopt, and at an agent's FIRST SPAWN (`ensureParentOwnsRun`) so a
+  mid-session owner picks it up without a session restart; since #440 nothing removes it —
+  there is no demote). The sentinel's **contents** select the reminder wording: `dual`
+  (`coordinatorRoleOf`: the owner has a `repoPath`) yields a dual-role reminder — coordinate children
   *and* keep doing this branch's own work — while anything else (`1`, and every
   historic sentinel) yields the absolute "you do not implement" text. The
   PreToolUse guard needs no such split: it already allows writes inside the
@@ -43,9 +43,9 @@ A workspace is an isolated execution environment for one Claude Code agent.
   `dispatchVerifyLandedRequest` below) or **INTENTIONALLY UNMERGED** (a
   spike/experiment whose brief forbade merging, recorded as such) — only the
   silent third state is forbidden. They also carry the sanctioned
-  **sub-orchestrator** move — spawn a child, `orchestra promote <child-id>`,
-  at most one such level, checkable via `orchestra whoami` (the only in-band
-  way an agent learns its own `parentId`) — so model-initiated recursion is a
+  **sub-orchestrator** move — spawn a child with a brief that tells it to delegate (its
+  first spawn makes it an OPS — #440: no promote step), at most one such level, checkable
+  via `orchestra whoami` (role by position + the only in-band way an agent learns its own `parentId`) — so model-initiated recursion is a
   documented pattern, not an accident of the attach machinery.
 
 Use the helper **`isScratchLike(ws)`** (`types.ts`) instead of comparing `kind`
@@ -96,23 +96,30 @@ Three invariants that are not interchangeable:
   the move completes. Gate: `scripts/e2e-stop-before-move.mjs` (must-FAIL on master d55d6737).
 
 After adoption `repoPath` supersedes any `repoAssociation` for grouping, `/spawn`
-inherits the repo (real ownership, unlike an association), and `/demote` becomes
-available: it sheds the *kind* to `'worktree'`, the inverse of promote's two
-routes.
+inherits the repo (real ownership, unlike an association). (`/demote`, which used
+to shed the kind back to `'worktree'`, is gone with #440.)
 
-### Orchestrator: a KIND *and* a capability
+### Orchestrator: a KIND *and* a position (#440: the capability flag is gone)
 
 "Orchestrator" is two separable things — a **tree role** (children may nest
 under me) and a **non-git nature** (no repo/branch/diff). The `'orchestrator'`
 kind fuses both, which is right for a repo-less coordinator but wrong for an
-integration branch that coordinates agents *while carrying its own commits*. So
-a git worktree becomes a coordinator via the **`canOrchestrate?: boolean`**
-capability (`types.ts:86`) instead: `kind` stays `'worktree'` and every git path
-keeps working.
+integration branch that coordinates agents *while carrying its own commits*. A git
+worktree coordinates by POSITION instead: `kind` stays `'worktree'`, every git path
+keeps working, and what makes it a coordinator is that it owns a run (`ownsRun`, set at
+its first spawn). **There is no promote / demote and no `canOrchestrate` field**: the
+CLI verbs answer `roleFollowsPositionMessage` (`cli/help.ts`) and touch nothing; the
+`/promote` route, the `promoteWorkspace`/`demoteWorkspace` IPC and `dispatchPromoteRequest`/
+`dispatchDemoteRequest` are removed. An older store's flag is migrated at `store.load()`
+(`ownsRun: true`, the key dropped — the ONE place the word survives; the grep gate fails
+anywhere else, marker or not). **`roleOf(ws, lookup)`** (`run-position.ts`) is the role by
+position: LEAD = no resolvable parent, OPS = a parent and `coordinates`, worker = a parent and
+no run; `orchestra whoami` prints `role`, `run` (`(owns it)` | `(member: owned by its parent)`)
+and `member of` (an OPS's parent run), computed in `dispatchWhoamiRequest`.
 
 Two helpers, two questions — do not conflate them:
 
-| Helper | Question | Promoted worktree |
+| Helper | Question | OPS worktree |
 |---|---|---|
 | `isScratchLike(ws)` `types.ts:246` | is this **non-git**? (diff/merge/PR/delete/rename) | **false** |
 | `coordinates(ws)` `shared/run-position.ts` (ex-`canOrchestrate`, #432; body #434) | does this **own a run**? (kind `orchestrator`, `ownsRun`, or top-level) | **true** |
@@ -122,22 +129,20 @@ coordination** (platform-free: main, CLI and renderer import it). `coordinates(w
 `runIdOf(ws, lookup)` (`:32`, nearest coordinator at or above, else self), `parentRunOf(ws, lookup,
 anchorsRun?)` (`:64`, the `parent_run_id` pointer, #221 implicit direct parent) are the frozen
 interface (ledger #443); `isCoordinatorKind` (`:25`, the KIND route only — the fresh-session brief
-and the demote route), `ancestorCoordinatorId` (`:82`) and the
+(the old demote route is gone, #440)), `ancestorCoordinatorId` (`:82`) and the
 standing-role hook gate `COORDINATOR_HOOK_GATE` (`:89`, the shell the SessionStart reminder + PreToolUse
-edit guard interpolate) are additions. Callers: attach target (`dispatchAttachRequest`), promote/demote
-idempotence, roster `coordinator:` flags (Admission wake, restart, wake roster, `startWorkspaceAgentOnce`),
+edit guard interpolate) are additions. Callers: attach target (`dispatchAttachRequest`), roster `coordinator:` flags (Admission wake, restart, wake roster, `startWorkspaceAgentOnce`),
 usage-limit resume ordering (`isCoordinatorWorkspace`), rename hold (`naming-migration.ts`), Pause roles
 (`pause-reprise.ts`, `pause-ui.ts`), fencing bump (`bus-run-anchor.ts`), `resolveWaveRunId`, the sidebar
 drop target (`canAttachTo`). `main/wave-run-id.ts` keeps its old names as thin delegates. **The gate**
 `scripts/check-run-position-single-reader.mjs` (pinned by `src/shared/run-position.test.ts`, mutant arms
 included) fails if any other `src` file reads `.canOrchestrate` / `canOrchestrate(` / `kind === 'orchestrator'`
 without a `run-position: non-run — <why>` marker (scratch-likeness, UI chips, repo grouping, the flag's own
-writes). The persisted FIELD `Workspace.canOrchestrate` stays (promote/demote write it; #440 removes both).
+writes). The persisted FIELD `Workspace.canOrchestrate` was removed by #440 (the gate now fails any `canOrchestrate` outside `store.ts`'s load migration, even marked).
 
 **#434 — a plain parent owns a run; the module's BODIES changed, its signatures did not.** `coordinates(ws)` =
 `isCoordinatorKind(ws) || ws.ownsRun === true || !ws.parentId` — the capability flag no longer decides (a pre-#434 store
-is migrated: `store.load()` writes `ownsRun` for a `canOrchestrate` record or a workspace that is some child's parent,
-and promote writes `ownsRun` beside the flag). `runIdOf` = the run `ws` OWNS (its own id) else its DIRECT parent's
+is migrated: `store.load()` writes `ownsRun` for a `canOrchestrate` record or a workspace that is some child's parent and drops the key, #440). `runIdOf` = the run `ws` OWNS (its own id) else its DIRECT parent's
 (the "first orchestrator ancestor" walk is gone; a top-level workspace is its own mission, #433). `parentRunOf` = the
 direct parent (`implicit` only when that parent anchors no row yet). NEW exports: `coordinatorOf(ws, lookup)` (WHO coordinates
 `ws` = its resolved direct parent — the ONE answer; read by the liveness roster, the boot-wedge watchdog, the vague roster,
@@ -155,7 +160,7 @@ sweep), mutants `scripts/plain-parent-mutants.mjs` (`pnpm run test:plain-parent-
 single function: a top-level plain workspace is a valid attach/drop target and a Pause control row; a plain owner is a
 vague holder for the rename hold; `orchestra message` to ANY agent is refused toward `orchestra send` (#441: the #221 plain-own-anchor exemption and `isPlainOwnAnchor` are gone — the old channel is closed for every target, only `--emergency` survives; `shared/message-channel-gate.ts`, rig `scripts/e2e-old-channel-closed.mjs`). A dangling-parent workspace is recorded as an owner (`ownsRun`, store load + `recordDanglingOwners`) so `coordinates` and `isTopLevel` agree; the naming hold keeps a dangling-link OPS held (`!a.parentId` = mission). Attach clears an ownership that rested on having no parent (`ownedByLinkOnly`: no flag, no kind, no children) so a re-attached orphan is a member of its new parent's run; re-pointing an EXISTING mission row is #439 (`repointRun`). Promote is idempotent only for a RECORDED owner (`ownsRun`/kind), demote clears `ownsRun`, attach calls `ensureParentOwnsRun` for the new parent; a plain `check` reads only the caller's NEW own run after the flip — mail left in the parent run is still reachable by the wake order (`check --run <parent run>`, measured in `bus-plain-parent.test.ts`).
 
-They diverge exactly on a promoted worktree, and that divergence *is* the
+They diverge exactly on an OPS worktree, and that divergence *is* the
 feature. Flipping such a worktree's `kind` instead would make `isScratchLike`
 true and silently strip its git identity: `teardownWorkspace` (`:566`) returns
 early and never calls `removeWorktree` (the git worktree **leaks**),
@@ -470,12 +475,10 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 |---|---|---|---|
 | `dispatchSpawnRequest` | `:1477` | `/spawn` | Create child workspace + start it as a **structured SDK session** (`startWorkspaceAgentHeadless`). **The task is the spawner's dispatch (#435):** after `createWorkspace` and BEFORE the agent starts, `startAfterDispatch` (`spawn-dispatch.ts`) writes a bus `dispatch` spawner → child (+ capability) in the child's run; a failed write refuses the spawn and deletes the workspace (nothing runs); no `from` / `--detached` / sandbox / blank task = no dispatch; `SpawnResult.dispatch {runId, seq}` when written (bus.md § Spawn is a dispatch). **A start that fails is reported, not masked (#227):** `ok:false` + `error` naming the reason and the kept child (`id`/`branch` also on the reply); the child stays stopped with its task, Restart retries. No PTY fallback. Inherits caller's repo (worktree callers) or requires explicit `repoPath` (scratch/orchestrator callers). Records `parentId` = caller, unless `detached:true` (parentless top-level workspace; repo inheritance from `from` still applies). Optional `model` pins the agent's model on the record (`Workspace.model`, `types.ts`) — the pty passes `claude --model` on every launch, and the SDK structured-session path must mirror it via `options.model`. **Omitted → the user's *spawned-agent default model*** (`defaultKind: 'spawned'` from `/spawn` and sandbox spawn; the UI's spawn-from-ticket click passes `'workspace'`). `createWorkspace` freezes `modelForNewWorkspace(...)` onto every new record (`src/shared/model-defaults.ts`; settings in `store.getModelDefaults()`, edited from the sidebar's Default models modal `ModelDefaultsSettings.tsx`); launch paths resolve via `resolveLaunchModel` (`default` marker = account default, no `--model`). The reasoning effort mirrors it: `createWorkspace` freezes an explicit `/spawn` `effort` (`orchestra spawn --effort`), else `effortForNewWorkspace(store.getEffortDefaults(), defaultKind)`, onto `ws.sdkEffort` (`src/shared/effort-defaults.ts`; same modal; `default` = leave unset), and the PTY launch passes `--effort` when set (the SDK path already reads `ws.sdkEffort`). The model guard is a charset/length check only — a dead model id passes it and fails at the child's own launch — a CLI that exits, or errors its first turn, before producing output now makes spawn not-ok (#227 D7); one that only retries (`api_retry`, process alive) is ok + a "not confirmed" note. **#382:** takes `namedBy` (→ `createWorkspace(…, defaultKind, { namedBy })` → `initialNaming({namedBy})` → `Workspace.namedByParent`, so `nudgeActive` is false and `ORCHESTRA_BRANCH_AUTO=0`) — set ONLY by `dispatchAgentSpawnRequest`; the pinned-Linear `--spawn` (`linear-tickets.ts:215`) and the accès-mobile launch (`acces-mobile-routes.ts:41`) never pass it nor a name, so they stay byte-identical even with `from` set (#380 D4).  **#400:** `Workspace.browserProfileId?` (the profil navigateur attached to the workspace's browser panel; set by the human-only `browser:profileAttach` IPC and, at creation only, by an agent spawn handing on its own profile (#401's parent-must-hold-it rule); see `browser-panel.md` § Profils navigateur). **#401:** takes `profile`+`key` (agent route only) → `decideSpawnProfile` at the RECORD BUILD: `createWorkspace`'s 4th param `profileAtCreation: () => BrowserProfileId | undefined` is a THUNK asked synchronously after the worktree add (deliberately NOT a `CreateWorkspaceInput` field — that type crosses the renderer IPC); an honoured pass writes the id into the new record, a refused one is reported in `SpawnResult.profile` (also on a kept child) and the child starts in navigation éphémère (see hooks-cli-socket.md `/spawn`). `dispatchWhoamiRequest({id, key})` also returns the held `browserProfile`, only to the vouched live session of `id`. |
 | `dispatchAgentSpawnRequest` | `:1589` | `/spawn` | **The AGENT spawn route (#382), hooks-server `/spawn` + the sandbox wire's `spawn` rpc.** `checkSpawnName(name)` (`shared/naming-policy.ts`: required, sanitised, `<rôle>-<objet>[-<ticket>]`, rôle ∈ `ROLES`) FIRST — a missing/unknown name returns `{ok:false, error}` (restating `NAME_CONVENTION`) and creates nothing (an old CLI/skill sends no `name`); then `dispatchSpawnRequest({…, defaultKind:'spawned', branch: <checked name>, namedBy: from})`. The name rides the existing explicit-`branch` input, so a collision is suffixed by `freeBranchName` and the CLI prints the FINAL branch. `namedBy` is recorded for `--detached` children too (no `parentId`). **`exactName: true`** (follow-up): the name is exact — when it and `-2…-99` are all taken the spawn is refused (`ok:false`, no id, nothing created) instead of silently landing on a random branch with `namedByParent` set; concurrent same-name spawns serialise their NAME pick in `createWorkspace` (reserved until the branch exists) and suffix (`impl-x`, `impl-x-2`, …); an existing `impl-x/sub` branch also counts as taking `impl-x`. Human paths (pinned-Linear, accès mobile) pass no `exactName` and keep the random fallback. A `/spawn` with no `from` is a human at a terminal: a human-created workspace — name required, `namedByParent` unset. **The requirement is keyed on this route, never on `defaultKind`** (D4). **Sandbox:** `sandbox-manager.ts` `dispatchRpc('spawn')` calls it too (wire `spawn.name`, vendored copy synced) — dormant while sandbox agents are paused (ADR 0007), kept so the rule has one implementation. |
-| `dispatchPromoteRequest` | `:2010` | `/promote` | Make a workspace a coordinator (idempotent). **Two routes**: a scratch session swaps `kind` → `'orchestrator'`; a **git worktree keeps its kind and gains `canOrchestrate`**, so it parents children while keeping repo/branch/diff/merge/PR. **#171: promote is a re-anchoring op** — the promoted node stops resolving to its parent OPS/LEAD and becomes its OWN run, so it now `snapshotRunAnchors(id)` **before** the mutation and `reconcileRunAfterReparent(…, {noRestart:false})` **after** (both routes), exactly like attach/demote. An idle live session is restarted so its rebuilt env re-reads `ORCHESTRA_RUN_ID` + generation (removing the manual `orchestra restart` the ticket hit 4×); a working structured session's restart is refused (mid-turn guard → `{ok:false}` → mark-stale). (The old raw-PTY deferral, `preferStaleForLivePty`, left with the PTY restart — #232.) Returns `restarted`/`markedStale` like the re-parent handlers. **#221:** promoting a child of a run-less PLAIN workspace also starts that workspace's MISSION run (coordinator = itself) and nests the child's run under it — the parent stays a plain workspace (see `bus.md` §#221). **#433:** every top-level workspace already has its mission from birth (`createWorkspace` / `createScratchLikeWorkspace` → `startBusRunAndWriteNotice`; at app start `startRunsForParentlessWorkspaces()` for the ones created before — see `bus.md` §#433 / the #134 anchor section), so this path finds the parent's row and only nests. |
-| `dispatchDemoteRequest` | `:1384` | `/demote` | Inverse of promote. Clears `canOrchestrate` and **detaches every child** (a `parentId` pointing at a non-orchestrator renders nowhere). Refuses the `'orchestrator'` KIND — it is repo-less by nature and has no worktree to fall back to. |
-| `dispatchAttachRequest` | `:2067` | `/attach` | Re-parent under ANY workspace (#439: `decideAttachTarget` — self / unknown / archived / closed run / cycle refuse), or clear `parentId` to detach. Re-derives the run of the moved agent and its subtree on the bus (row, `parent_run_id`, unread mail follows) — see the #439 bullet under the re-parent reconcile. **Full-ancestry cycle check**: a promoted worktree can itself have a parent, so A→B→A is reachable. |
+| `dispatchAttachRequest` | `:2067` | `/attach` | Re-parent under ANY workspace (#439: `decideAttachTarget` — self / unknown / archived / closed run / cycle refuse), or clear `parentId` to detach. Re-derives the run of the moved agent and its subtree on the bus (row, `parent_run_id`, unread mail follows) — see the #439 bullet under the re-parent reconcile. **Full-ancestry cycle check**: an OPS worktree can itself have a parent, so A→B→A is reachable. |
 | `dispatchSetRepoAssociationRequest` | `:1834` | `/setRepoAssociation` | File an `'orchestrator'`-KIND session under a repo's sidebar section (with its subtree), or clear it. Writes **`repoAssociation`, never `repoPath`** — see below. Refuses a git worktree (it already groups by its own repo) and any path not in `store.repos`. |
 | `dispatchVerifyLandedRequest` | `~:1590` | `/verifyLanded` | **Coordinator close-out check** (read-only): are ALL commits on a child's branch **tip** reachable from the target? Target = explicit `into` ref (repo-less coordinators) or the caller's own branch (`from`, must share the child's repo — the integration-branch case). Backed by `listUnmergedCommits` (git.ts, ref-validates first so a deleted branch fails loudly instead of reading "0 unmerged"; tests in `git-verify-landed.test.ts`). Exists because a child's "done"/"merged" report decays — agents keep committing after they report. NOT LANDED is not always a defect: deliberately-unmerged work (spikes) closes as INTENTIONALLY UNMERGED — the contracts forbid only the *silent* strand. **Exit codes** (`orchestra verify-landed`): `0` LANDED · `2` NOT LANDED · `1` could-not-check, so a close-out gate can distinguish unmerged work from a failed check — never gate on `$?` being nonzero alone. See `hooks-cli-socket.md`. |
-| `dispatchWhoamiRequest` | `~:1660` | `/whoami` | A workspace's own record (id/name/branch/kind, `orchestrator` via `coordinates`, `parentId`, repo/base). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller, and a child promoted BY its parent never observes the promotion — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
+| `dispatchWhoamiRequest` | `~:2440` | `/whoami` | A workspace's own record (id/name/branch/kind, **#440 `role` by position (`roleOf`: LEAD / OPS / worker), `runId` and `memberOfRunId`**, `parentId`, repo/base, vouched held profile). The only in-band way an agent learns its `parentId` — `/peers` excludes the caller — which is what makes "at most one sub-orchestrator level" checkable by its addressee. |
 | `dispatchPeersRequest` | `:1239` | `/peers` | List other live workspaces (`PeerInfo[]`; #232 DROPPED the PTY-derived `running` flag — nothing printed it: the CLI table is id/branch/[ex/]repo/status[/files/+-/note] — the `ex` column (`ex-<previous name>`, `PeerInfo.formerBranch`, #384) exists only when some peer was renamed — and the comms-resurface hook only counts `"id"` keys; `status` is the signal). `stats: true` adds each git peer's committed three-dot diff vs base (`getBranchDiffShortstat`, git.ts) — opt-in because the comms-resurface hook hits `/peers` every prompt and N git spawns on that path is the per-workspace × per-poll trap. |
 | `dispatchMessageRequest` | `:1353` | `/message` | Deliver to peer: **live** (next turn of a live SDK session — nothing is ever typed into a PTY, #232), **started** (structured wake via `wakeAgentWithPrompt`; no PTY fallback — #227), or **inbox** (also what an unstartable wake lands in) (park in `~/.orchestra/inbox/<id>.txt`; the 5s post-wake insurance counts a live SDK session as delivered). |
 | `dispatchRenameRequest` | `:1101` | `/rename` | `(id, branch, from?)` — asks `decideRename` (rename authority human > parent > child, #383) first; a refusal returns `{ok:false,error}` before any git/store write. See Branch management → Rename authority. |
@@ -487,7 +490,7 @@ All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
 A workspace's bus run id is its **nearest orchestrator** (`resolveWaveRunId` →
 `runIdOf` in `shared/run-position.ts`, #134 D1/#432), derived at `createWorkspace` and baked into the
 member's env (`ORCHESTRA_RUN_ID`) + its `.orchestra/bus-switches` notice. So
-`attach`/`detach`/`adopt`/`demote` change the **tree** but a RUNNING session keeps
+`attach`/`detach`/`adopt` change the **tree** but a RUNNING session keeps
 sending into the OLD run and reads the OLD frozen flags until it restarts — the gap
 #142 closes (ledger #135 review-F2 R2, carved by ruling D3; D1a-bis: a message is
 governed by the flags of the **innermost** run of its two parties).
@@ -506,9 +509,8 @@ governed by the flags of the **innermost** run of its two parties).
   `fresh:false`, via a dynamic import that breaks the workspaces↔restart-workspace
   cycle) OR — with `--no-restart` — marks stale (`markWorkspaceStaleRun`: the
   `.orchestra/bus-run-stale` marker + the `busRunStale` store flag). Best-effort per
-  workspace (D1). Wired into `dispatchAttachRequest` (both branches),
-  `dispatchDemoteRequest` (the detached children), `dispatchAdoptRepoRequest` (the
-  moved worktree path), and **`dispatchPromoteRequest` (#171, both routes)**.
+  workspace (D1). Wired into `dispatchAttachRequest` (both branches) and `dispatchAdoptRepoRequest` (the
+  moved worktree path) (#440 removed the promote and demote callers).
 - **#439 — attach / detach under ANY agent: the bus half of the reconcile.** `dispatchAttachRequest` asks the pure `decideAttachTarget`
   (`src/shared/attach-target.ts`: self, unknown / archived target, a target whose run is CLOSED — read off `runs.closed_at` (#437) —, a parent
   cycle; **no coordinator-only refusal any more**: a never-promoted, never-spawned agent is a valid target, `ensureParentOwnsRun(updated)` makes
@@ -525,15 +527,15 @@ governed by the flags of the **innermost** run of its two parties).
   the agent spawns or detaches again. Sidebar: any row is a drop target (`canAttachTo` = not self / current parent / descendant / archived);
   where a row is also a reorder target `dropIntent` (`shared/dnd-attach-zone.ts`) gives the middle to attach and the top/bottom quarter to
   reorder. **Mail TO agents left behind** (review M1): `forwardMailToOthers` — once every mover is re-derived, unread directed mail filed in a run the MOVED SUBTREE owns for a recipient outside it whose home is no longer related to that run is forwarded to the recipient's home (a `worker_done` / digest sitting unread when its sender is dragged away). **R2 refusal** (OPS ruling): `stalledExchangeRefusal` → `moveRefusalFor` (`bus-reparent-run.ts`, pure part `shared/move-exchanges.ts`) refuses attach AND detach — CLI and sidebar alike, nothing written — while the mover or a subtree member has an OPEN gate or an UNANSWERED ask (a reply in ANY run counts: #436 files a stranger's reply in the asker's run) whose counterparty lies outside its related runs in the SIMULATED post-move tree; the error names the item and the counterparty. An active DISPATCH never refuses (every spawned child has one, #435): the old coordinator's dispatch to the mover cannot complete after a move (its `worker_done` is refused outside the related runs; the copied capability keeps the same token_hash active in both runs but nothing can use the old one); the new coordinator dispatches again, a `status` always works (arm). A lot already shown but not acked replays in the new run — the bus's at-least-once lot semantics (accepted, the unread rule = past the cursor). **Pause (OPS ruling R3):** a move must not be an escape hatch — `moveRefusalFor` first asks the gate's own live-tree walk (`pausedCarrierForWorkspace`) for the mover and every subtree member and refuses attach AND detach with `run <id> en pause — lift it with orchestra run resume first` (hard or douce; a member already released by a Reprise may move). A move INTO a paused run stays allowed: it is gated at its next start (it was not trapped: the trap ran at pause time). Tests `bus-reparent-run.test.ts` (built CLI + real bus + real store), mutants `pnpm run test:attach-any-agent-mutants`.
-- **#379 / ADR 0008 — `host-resolved`: a promotion takes effect at the next CLI call.** A LIVE session whose workspace has a registered
+- **#379 / ADR 0008 — `host-resolved`: a move (or a first spawn) takes effect at the next CLI call.** A LIVE session whose workspace has a registered
   session key (`hasSessionKey`, `session-identity-host.ts`; the candidate's `hostAnswers`) has its bus identity answered by the HOST on every
   CLI call (`/identity`, bus.md → Session identity), so the reconcile rewrites the notice and writes the **marker file only**
   (`writeStaleRunMarkerFile` — the app-down fallback's guard, ignored while the host answers): **no restart, no `busRunStale` pane state**,
-  and the id is reported in the result's `hostResolved` (promote/attach/detach/demote/adopt; the CLI prints it). This is what makes
-  `orchestra spawn` → `orchestra promote` → `orchestra send` work in ONE turn. A keyless live session (a keeper born before #379) keeps the
+  and the id is reported in the result's `hostResolved` (attach/detach/adopt; the CLI prints it). This is what makes
+  `orchestra spawn` → `orchestra attach` → `orchestra send` work in ONE turn. A keyless live session (a keeper born before #379) keeps the
   restart / mark-stale path below; a cold session stays `notice-only`. `buildSdkEnv` mints nothing — `ensureSessionInner` mints one key per
   session start and the keeper facade registers it only at a FRESH spawn (session-keeper.md); the three delete paths `forgetSessionKey`.
-  A keeper-DETACHED keyed CLI (app restarted, session not reattached: `readTrackedKeeperPid` alive) counts as live for this decision (no restart — that would be a wake). Rig: `verify-promote-run-refresh.mjs` arms H1–H8.
+  A keeper-DETACHED keyed CLI (app restarted, session not reattached: `readTrackedKeeperPid` alive) counts as live for this decision (no restart — that would be a wake). Rig (retired by #440 with the promote verb): `verify-promote-run-refresh.mjs` arms H1–H8.
 - **#171 — restart refused/failed ⇒ mark-stale (not a silent warn)** (still the path for a KEYLESS live session).** When the
   reconcile's restart returns `{ok:false}` (a working structured session throws the
   mid-turn guard, or any relaunch failure) it now DOWNGRADES to `markWorkspaceStaleRun`
@@ -543,9 +545,7 @@ governed by the flags of the **innermost** run of its two parties).
   old `preferStaleForLivePty` option, which forced a LIVE raw PTY down the mark-stale branch
   because the PTY restart had no mid-turn guard, left with the PTY restart). `markWorkspaceStaleRun`
   is the shared marker+flag writer both the explicit `--no-restart` branch and this
-  fallback call. Rig: `scripts/verify-promote-run-refresh.mjs` (`pnpm test:promote-refresh`)
-  drives the SHIPPED `dispatchPromoteRequest` over a real bus and mutation-proves the
-  unfixed promote (no reconcile) leaves the notice on the parent run.
+  fallback call. (The #171 rig `verify-promote-run-refresh.mjs` drove the removed promote verb; #440 retired it.)
 - **`--no-restart`** — CLI flag on `attach`/`detach`/`adopt-repo` (forwarded through
   `/attach`, `/adoptRepo`). Marks the workspace 'stale run'; the store-less CLI
   `send` REFUSES from it (`refuseIfStaleRun`, keyed on the `.orchestra/bus-run-stale`

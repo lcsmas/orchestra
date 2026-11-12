@@ -103,7 +103,7 @@ pnpm run dev                 # vite + electron, hot reload
 - **Worktrees** — each workspace lives at `~/.orchestra/worktrees/<repo>-<branch>-<uid>/`, created with `git worktree add` off the configured base branch. Archiving removes the worktree and deletes the branch.
 - **Agents** — driven through the Claude Agent SDK in the worktree (the `claude` process runs in a detached keeper, so a running turn survives quitting the app) and shown in the Agent view. `node-pty` + xterm.js only back the Run script, the nvim pane and account login.
 - **Hooks** — Orchestra installs Claude Code hooks into each worktree's `.claude/settings.local.json`. They talk to a Unix-socket HTTP server in the main process: activity status, agent-driven branch rename, and the `/spawn` endpoint that lets any agent create a new workspace + agent. All hooks are env-guarded, so running `claude` outside Orchestra is a silent no-op.
-- **Capability skills** — each worktree also gets a set of `orchestra-*` Claude Code skills (spawn, comms, rename, promote, attach, repos, migrate-account), so agents discover their powers on demand instead of carrying them in every prompt.
+- **Capability skills** — each worktree also gets a set of `orchestra-*` Claude Code skills (spawn, comms, rename, attach, repos, migrate-account), so agents discover their powers on demand instead of carrying them in every prompt.
 - **PRs** — opened by the agent (`commit → push -u origin <branch> → gh pr create --base <baseBranch>`), then linked with `orchestra link --pr`; Orchestra only tracks and opens them.
 
 ## CLI
@@ -119,7 +119,7 @@ orchestra peers                                       # list the other agent wor
 orchestra message <id> <text...>                      # REFUSED (the bus is the only channel: use `orchestra send`); only `--emergency` survives
 orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--detached]   # spawn a new worktree + agent (--name: <rôle>-<objet>[-<ticket>])
 orchestra rename <id> <branch>                         # rename a workspace's branch
-orchestra promote <id>                                 # promote a scratch session into an orchestrator
+orchestra whoami                                       # your role by position (LEAD / OPS / worker) and your run
 orchestra attach <id> <parentId>                       # nest an existing workspace under an orchestrator
 orchestra detach <id>                                  # pop a workspace back out to its own section
 orchestra add-repo <path>                              # register a repo (path is resolved to absolute)

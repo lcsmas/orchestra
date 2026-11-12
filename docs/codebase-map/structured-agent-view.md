@@ -2218,7 +2218,7 @@ and orchestrator sessions additionally get the `ORCHESTRATOR_BRIEF` appended
 Structured tab + component for `isScratchLike` workspaces (App.tsx) — that gate
 was removed; only the **git-only** surfaces (Run, Diff, PR) stay gated off for
 scratch-like. So an orchestrator can coordinate (brief, `orchestra`
-CLI = rename/peers/message/spawn/promote/attach, skills, peer-comms delivery via
+CLI = rename/peers/message/spawn/attach, skills, peer-comms delivery via
 `sdk-delivery.ts`) entirely from the structured view, at parity with the
 terminal path.
 

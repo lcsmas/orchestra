@@ -2407,6 +2407,8 @@ the freeze was vacuous.
 
 ## The anchor is the NEAREST ORCHESTRATOR (D1 — NOT the tree root)
 
+> **#440 note:** "promoted" / "the capability flag" in this section and the paragraph above are HISTORICAL (#134 era). Since #434/#440 an OPS is a workspace with a parent that owns a run (`ownsRun`, set at its first spawn) — there is no promote verb and no flag; `orchestra whoami` prints the role by position.
+
 The topology is LEAD (long-lived orchestrator) → OPS (promoted worktree, one per
 wave) → members. If the anchor were the tree root, every wave would freeze on the
 LEAD's lifetime run — no per-wave flip. So `resolveWaveRunId(ws)` =
@@ -2487,9 +2489,7 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
   top-level after creation (detach, unarchive, parent deleted, sandbox eject) gets its mission at its next start — it uses the
   top-level-only `startRunsForParentless([ws])`, never `maybeStartRunAtAnchor` (which would refreeze a parent mission). The
   top-level rule itself is `isTopLevel` in `src/shared/run-position.ts` (#432's single module).
-- **`/promote`** (`dispatchPromoteRequest`) also calls it via `startRunForPromoted`
-  in BOTH success branches — a promote does not relaunch the pty, so the OPS's own
-  row is created at that wave boundary.
+- ~~`/promote` also called it via `startRunForPromoted`~~ — removed with promote/demote (#440): an OPS's own row is created at its agent's FIRST SPAWN (`ensureParentOwnsRun` → `maybeStartRunAtAnchor`, #434), not at a role switch.
 - **Idempotent, freeze-once (F1):** `startRun` is INSERT-OR-IGNORE on the `runs`
   row existence; a `getRun` short-circuit skips the INSERT when the row exists.
 - **`kind`** = `'mission'` for a top-level orchestrator (parentRunId null),
@@ -2661,11 +2661,9 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   parent → mission+vague; run-anchoring ancestor above a plain intermediate; unchanged
   arms (orchestrator/run-anchoring/member/top-level/dangling); idempotence; D1 (down bus,
   throwing start/read); LEAD↔OPS mail+wake in BOTH directions with the OLD topology
-  (master primitives) as the failing control. `scripts/verify-promote-run-refresh.mjs`
-  §#221 drives the SHIPPED `dispatchPromoteRequest` over the real `workspaces.ts`.
+  (master primitives) as the failing control. (`scripts/verify-promote-run-refresh.mjs` §#221 drove the removed promote verb; retired by #440.)
 - `src/main/wave-run-anchor-wiring.test.ts` — source guards for the un-importable
-  seams; `resolveWaveRunId` uses `runIdOf` not `walkToRootId`; both
-  promote branches call `startRunForPromoted`; roster mutant `'default'` reddens.
+  seams; `resolveWaveRunId` uses `runIdOf` not `walkToRootId`; no promote dispatcher / `startRunForPromoted` left (#440); roster mutant `'default'` reddens.
 - `scripts/verify-bus-status-cli.mjs` — REAL built CLI over a fake socket: G8 wave
   run id not `host-…` (+ must-FAIL) + frozen-vs-live table.
 - **G4a (D1a-bis bidirectional wake routing)** — `src/main/bus-wake-run-switch.test.ts`:
@@ -2879,7 +2877,7 @@ agent's next CLI call, in the same turn, with no restart (before: #171 — promo
 | Registry — hash at rest | `src/main/session-identity.ts` `createSessionKeyRegistry`: `<ORCHESTRA_HOME>/session-keys.json` (0600, tmp+rename, `{wsId: {sha256, issuedAt}}` — never the key; deliberately NOT a Workspace field: records are broadcast and spread-copied, a stale copy would revert the hash). Wiring + the three removal paths (`forgetSessionKey`): `session-identity-host.ts`, `workspaces.ts`. |
 | The service | `resolveSessionIdentity` (pure over injected deps — **no Electron / store / bus import**, pinned by `session-identity-binding.test.ts`: it is on the #137 seam inventory as pure Node). Route `/identity` in `hooks-server.ts` (the host socket, not Electron IPC). Replies: `{ok, runId, generation|null}` · `{ok:false, code:'superseded'}` (an entry exists, wrong key) · `{ok:false, code:'unregistered'}` (no entry: the host cannot vouch). The key never appears in a reply or a log line (the registration logs the workspace id only). **Revoked at the coordinator bump** (`workspaces.ts` `maybeBumpCoordinatorOnReplacement` → `forgetSessionKey`, same tick): the replaced coordinator's key reads `unregistered` from then on, so it keeps its baked generation and the DB fence rejects it — without that, `/identity` handed it the NEW generation until the successor's spawn (unbounded after `restart --fresh`). A generation read that fails (bus down) also answers `unregistered`, never an unfenced `ok` (production wires the pure fail-closed `busGenerationReader`, pinned by the binding test). The registry reads own properties only (`Object.hasOwn`). |
 | CLI side | `src/shared/session-identity.ts` `resolveHostIdentity` / `identityEnv`; `src/cli/index.ts` `settleHostIdentity()` (before the verb `switch`, for `HOST_IDENTITY_VERBS` = send/check/ack/ask/token/gate/run/bus-status; 3 s timeout) and `liveEnv()` — every former `process.env.ORCHESTRA_RUN_ID` / `…_COORDINATOR_GENERATION` read goes through it (pinned: a raw read is a failing test). A host answer overrides BOTH baked values (host `generation:null` = unfenced; never a live run with a frozen generation). **`superseded` refuses every identity verb** — `check`/`ack`/`token` included (a zombie must not eat the live session's mail). |
-| Host side of promote | `workspaces.ts` `reconcileRunAfterReparent`: a LIVE session (or a keeper-DETACHED CLI — `readTrackedKeeperPid` alive, app restarted and not yet reattached) whose workspace has a registered key (`hasSessionKey`) → `decideReparentAction` → `host-resolved` (`shared/reparent-run.ts`): notice rewritten, **marker file only** (`writeStaleRunMarkerFile`), **no restart, no `busRunStale` pane state**; reported as `hostResolved` (promote/attach/detach/demote/adopt results; the CLI prints "new run in effect at the next CLI call"). A keyless live session (pre-#379 keeper) keeps the old restart / mark-stale path; a cold one stays notice-only. |
+| Host side of a move / first spawn (was "of promote" before #440) | `workspaces.ts` `reconcileRunAfterReparent`: a LIVE session (or a keeper-DETACHED CLI — `readTrackedKeeperPid` alive, app restarted and not yet reattached) whose workspace has a registered key (`hasSessionKey`) → `decideReparentAction` → `host-resolved` (`shared/reparent-run.ts`): notice rewritten, **marker file only** (`writeStaleRunMarkerFile`), **no restart, no `busRunStale` pane state**; reported as `hostResolved` (promote/attach/detach/demote/adopt results; the CLI prints "new run in effect at the next CLI call"). A keyless live session (pre-#379 keeper) keeps the old restart / mark-stale path; a cold one stays notice-only. |
 
 **TRANSITIONAL FALLBACK (removed with #136, when a host daemon answers whenever sessions live).** No key (pre-#379 keeper, plain shell, sandbox), host unreachable
 (app quit while detached keepers live; hung host → 3 s), or `unregistered` (also an app older than #379, which answers `{}` on an unknown route) → the CLI uses
@@ -2894,10 +2892,10 @@ promoted member — `refreeze --only memory_cap` (paused vague) is the explicit 
 
 **Gates.** `src/main/session-identity.test.ts` (registry + service: superseding, hash at rest, 0600, atomic, failed write changes nothing, cross-workspace) · `src/shared/session-identity.test.ts`
 (CLI resolution + marker guard) · `src/cli/bus-identity.test.ts` (the BUILT CLI vs a fake host on a real unix socket; `ORCHESTRA_TEST_CLI=<master cli.js>` is the must-FAIL run: 8/14 red on master)
-· `src/main/session-identity-binding.test.ts` (source pins) · `scripts/verify-promote-run-refresh.mjs` arms H1–H8 (real `workspaces.ts` + real registry + real dispatcher; H8 = the real hooks server + the BUILT CLI: a coordinator bump revokes the replaced key) ·
+· `src/main/session-identity-binding.test.ts` (source pins) · `scripts/verify-promote-run-refresh.mjs` arms H1–H8 (RETIRED by #440 — it drove the removed promote verb; a port to `attach` is tracked in the #442 stale-rig sweep; the 9 mutants it also killed keep their unit killers) ·
 `scripts/e2e-keeper-session-key.mjs` (real keeper daemon: register-before-CLI, attach keeps, fresh replaces, failing registration blocks the spawn; `pnpm run test:session-key-keeper`) ·
 `scripts/session-identity-mutants.mjs` (39 in-place mutants, `pnpm run test:session-identity-mutants`) · **the real-session rig `scripts/session-identity/`** (`pnpm run test:session-identity`, ~13 s, bwrap net+pid
-containment, zero tokens: real `sdkSend` → keeper → real `claude` vs the fake API, the real hooks server, the built CLI as the agent's `orchestra`): arms `same_turn` (spawn → promote → send in ONE turn lands in the new run, no restart, key hash = registry,
+containment, zero tokens: real `sdkSend` → keeper → real `claude` vs the fake API, the real hooks server, the built CLI as the agent's `orchestra`): arms `same_turn` (spawn → promote [verb removed by #440: this arm and `app_closed` still call `orchestra promote` and are STALE until the #442 sweep ports them] → send in ONE turn lands in the new run, no restart, key hash = registry,
 key in no file/request/output), `superseded` (old key refused by the host and the CLI after a fresh start), `app_closed` (`stopHooksServer()` → send refused by the marker, check allowed), `attach_keeps_key` (two app processes: the reattach keeps the live key), `restart_window` (a coordinator's real `sdkRestart(fresh)`: generation bumped, no successor yet — the replaced key is `unregistered`, a hand-run send with the old env is fenced by the DB, then the successor lands); `--proof` = 8
 must-FAIL mutants, `--selftest` = every judge clause reddens, `--repo <tree>` = the master run (`same_turn` reds a1/b2/c/e1/e2: "stale run" refusal — the #171 symptom). Not covered: the packaged Electron app, sandbox/remote, a CLI-bundle mutant.
 

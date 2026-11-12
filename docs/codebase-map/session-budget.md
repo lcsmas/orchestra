@@ -93,7 +93,7 @@ Covered: `sdkSend → ensureSession → buildSdkEnv → SDK query() → keeper �
 lookups, and any CLI connect that ignores the proxy env (not enumerated — no `strace` here; in the netns they fail unseen).
 `instrument.productionEnv` reads the env the **CLI was handed** from `/proc/<cli pid>/environ` at the first reply (an app-code edit
 that adds a suppressing knob is caught; the runner's own env is irrelevant).
-NOT covered: `workspaces.ts` (spawn/promote/wake/resume, hook install into `.claude/settings.local.json`, orchestra-* skills,
+NOT covered: `workspaces.ts` (spawn/wake/resume, hook install into `.claude/settings.local.json`, orchestra-* skills,
 account env), UI-triggered calls, the built Electron app. A boot read added at a *caller* of `ensureSession` passes. **Accepted gaps:** a boot read deferred past `turn-end` is only printed (`afterFirstReply`) — the legitimate turn-end refresh is itself
 57; side calls are budgeted by *model*, not purpose (a CLI update replacing the title call with another tool-less haiku call keeps
 the count — the prompt preview is printed; C4 re-runs on a CLI change); a single extra same-host startup call is only

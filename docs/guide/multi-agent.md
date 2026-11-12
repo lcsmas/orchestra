@@ -42,7 +42,7 @@ Every agent has a run and the **bus** is the only channel between agents (`orche
 
 ## Orchestrators
 
-An **orchestrator** is a session whose whole job is coordination. Create one from the sidebar (🌿), or promote an existing scratch session (`orchestra promote`). Orchestrators:
+An **orchestrator** is a session whose whole job is coordination. Create one from the sidebar (🌿); any agent that spawns agents of its own becomes one by position — there is no promote (`orchestra whoami` prints your role). Orchestrators:
 
 - get a standing brief to **delegate, not implement** — re-asserted at every session start so it survives context compaction;
 - are **hard-blocked** (by a PreToolUse hook) from editing files that belong to a child workspace — the block message re-teaches delegation at the exact moment of the violation;
@@ -63,4 +63,4 @@ Use attach to pull a branch you created earlier (or another agent created) under
 
 ## How agents know all this
 
-Orchestra installs a set of `orchestra-*` Claude Code **skills** into every worktree (spawn, comms, rename, promote, attach, repos, migrate-account). Only each skill's one-line description sits in the agent's context; the full instructions load on demand. Reminder hooks re-surface the relevant capability exactly when it matters (e.g. the comms reminder only fires while sibling agents actually exist).
+Orchestra installs a set of `orchestra-*` Claude Code **skills** into every worktree (spawn, comms, rename, attach, repos, migrate-account). Only each skill's one-line description sits in the agent's context; the full instructions load on demand. Reminder hooks re-surface the relevant capability exactly when it matters (e.g. the comms reminder only fires while sibling agents actually exist).

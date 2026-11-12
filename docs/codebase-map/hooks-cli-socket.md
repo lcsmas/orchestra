@@ -29,7 +29,7 @@ limits; 4 KB default, 1 MB for `/spawn` and `/message`). Each routes to a
 | `/message` (broadcast) | `to: string[]` **or** `children: true` (+ `from`, `text`) | `{ ok, results?: [{id, ok, branch?, delivery?, error?}] }` — issue #86. **Three shapes share this one route** and are discriminated by the TYPE of `to`: a `string` takes the original single-target path above and answers the original `{ok,delivery,branch}` shape (so an older CLI against a newer app is byte-for-byte unaffected); an ARRAY, or `children:true`, takes `dispatchBroadcastMessageRequest` and answers `results` instead — a per-target report cannot be squeezed into one `delivery` field without lying about which target it describes. `children:true` resolves the caller's **DIRECT children only**, never the descendant subtree (a subtree broadcast is a foot-gun mid-wave), SERVER-SIDE — `/peers` deliberately omits `parentId`, and client-side enumeration would race the store. A missing `from` with `children:true`, and an empty child set, are both NAMED refusals (`{ok:false,error}` with no `results`), never a silent success: a halt that reached nobody must not exit 0. Each target goes through the SAME `dispatchMessageRequest` as the single form, so `live`/`started`/`inbox` keep their exact meanings — INCLUDING the #169 fleet-coordination refusal: a broadcast is NOT a bypass by virtue of its shape (F3 / LEAD ruling D-W8-1). `dispatchBroadcastMessageRequest` threads the caller's explicit `emergency` flag through per target, so on a delivery-ON fleet a plain `--to <peer>`/`--children` of coordination text is REFUSED just like a positional send, and ONLY `--emergency --to`/`--children` (the #86 group-stop) bypasses and lands. Without an explicit `--emergency`, a halt of coordination text reaches nobody by design — the safe direction, since arbitrary coordination must not dodge the bus via `--to`; dispatch is CONCURRENT (`allSettled`, results re-ordered back into the caller's order): each delivery awaits a 10s bounded turn-start, so sequential dispatch would make those bounds ADD UP and a 7-target halt would not attempt target #7 until T+60s — and a hung agent, the thing you broadcast *about*, is exactly what consumes the full bound. Every target is attempted (no abort-on-first-failure — the point of a broadcast halt is that it reaches everyone), a THROWN target becomes its own failure row rather than sinking the report, and `ok` is the AND of all targets so a partial failure is a failure. A non-string member of the `to` array is REFUSED, never silently dropped. |
 | `/addRepo` | `path` | `{ ok, repo? }` |
 | `/deleteWorkspace` | `id` | `{ ok, id?, branch? }` |
-| `/promote` | `id` | `{ ok, id?, branch?, kind? }` |
+| `/promote` | — | **removed (#440)**: roles follow position; the CLI verbs `promote` / `demote` answer `roleFollowsPositionMessage` without a socket call |
 | `/attach` | `id` (+ `parentId?`) | `{ ok, id?, parentId? }` |
 | `/setRepoAssociation` | `id` (+ `repoPath?`) | `{ ok, id?, branch?, repoAssociation? }` — files an orchestrator under a repo's sidebar section (omit `repoPath` to clear). DISPLAY ONLY: writes `repoAssociation`, never `repoPath`, so the coordinator stays repo-less and `/spawn` still won't inherit from it. |
 | `/verifyLanded` | `id` (+ `from?`, `into?`) | `{ ok, id?, branch?, target?, unmerged?, commits? }` — coordinator close-out: are all commits on the child's branch tip on the target (explicit `into` ref, else the `from` caller's branch)? The route never throws and answers `{ ok }`; the CLI maps that to exit `0` LANDED / `2` NOT LANDED / `1` could-not-check (see the `verify-landed` entry below). |
@@ -97,13 +97,14 @@ Scripts and the Claude Code events they fire on:
 - **`orchestrator-instruction.sh`** — SessionStart ONLY (which fires on
   startup, resume, clear and **post-compaction** — exactly when role text gets
   lost). Standing delegation reminder for **orchestrator** sessions: the
-  one-time `--append-system-prompt` brief and the promote skill's role text
+  one-time `--append-system-prompt` brief and the skills' role text
   live in conversation state that compaction summarizes away, so this
   re-injects the contract at every context reset. Deliberately NOT per-prompt
   (a per-turn injection compounds in the transcript). Self-silences unless
   `ORCHESTRA_KIND=orchestrator` (pty env) OR the `.orchestra/.orchestrator`
-  sentinel exists (written at creation and by `/promote`, so a mid-session
-  promotion is picked up before any pty restart).
+  sentinel exists (written at creation, at adopt and at an agent's first spawn —
+  `ensureParentOwnsRun` — so a session that became an OPS mid-session is picked up
+  before any pty restart; since #440 there is no promote/demote and nothing removes it).
 - **`orchestrator-guard.sh`** — PreToolUse with matcher
   `Edit|MultiEdit|Write|NotebookEdit` (via `upsertMatcherHookCommand`). Hard
   enforcement between context resets, at zero token cost until it fires: for
@@ -192,7 +193,7 @@ Standalone Node HTTP client (no npm deps) that POSTs to the socket. **Bus identi
 before any identity verb (`HOST_IDENTITY_VERBS`: send/check/ack/ask/token/gate/run/bus-status) the CLI POSTs `/identity {id, key}` (`$ORCHESTRA_SESSION_KEY`, 3 s timeout)
 and reads the run + coordinator generation from the host's answer through `liveEnv()` instead of the env baked at session start; a superseded session is refused,
 and without a key / with the host unreachable / unvouched it falls back to the baked env + the `bus-run-stale` marker guard on `send` (transitional, removed with #136).
-`orchestra promote|attach|detach|demote` print "new run in effect at the next CLI call (resolved by the host, no restart)" for such sessions. Details: [bus.md](bus.md) → Session identity resolved by the HOST. Reads
+`orchestra attach|detach` print "new run in effect at the next CLI call (resolved by the host, no restart)" for such sessions. Details: [bus.md](bus.md) → Session identity resolved by the HOST. Reads
 `$ORCHESTRA_SOCK`/pointer for the socket and, for self-identity (sent as `from`),
 `$ORCHESTRA_WS_ID` with a fallback to `$ORCHESTRA_WS_ID_IDENTITY`
 (`resolveSelfWorkspaceId`) — the latter is still set by the SDK session's
@@ -242,7 +243,7 @@ defaults to **self**, handled main-side (surface routing: `shared/restart-mode.t
 reply names no surface — `Restarted <id> (conversation preserved)` / `(fresh (conversation cleared))`
 (#228); default keeps the conversation, `--fresh` starts vierge. `takeBoolFlag(args,'--fresh')`
 so the flag is position-independent; POSTs `/restart {id,fresh}`. `src/cli/index.ts` `case 'restart'`),
-`promote <id>`, `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
+`promote` / `demote` (REMOVED, #440: a refusal text, rc 1, no socket call — `roleFollowsPositionMessage` in `cli/help.ts`), `whoami` (role by position: LEAD / OPS / worker + `run` + `member of`), `attach <id> <parentId>`, `detach <id>`, `verify-landed <id>
 [--into <branch>]` (close-out check: is every commit on the workspace's branch
 tip on the target — the caller's branch by default? **Exit codes: `0` LANDED ·
 `2` NOT LANDED · `1` could-not-check** — unknown/missing id, no git branch, no

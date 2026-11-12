@@ -21,7 +21,7 @@ orchestra spawn --name <name> --task <text>        # spawn a new worktree + agen
 orchestra rename <id> <branch>                     # rename a workspace's branch (drives the real git branch)
                                                    #   a spawned agent can't rename itself (its parent named it): ask the parent;
                                                    #   the parent can, any time; a name the human typed in the sidebar is final
-orchestra promote <id>                             # promote a scratch session into an orchestrator
+orchestra whoami                                   # your role by position (LEAD / OPS / worker) and your run
 orchestra attach <id> <parentId>                   # nest an existing workspace under an orchestrator
 orchestra detach <id>                              # pop a workspace back out to its own section
 orchestra add-repo <path>                          # register a repo (becomes a spawn target)
