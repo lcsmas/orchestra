@@ -553,13 +553,16 @@ export function readWaitingReaders(
   // routed back TO the asker (`r.recipient = q.sender`); a 3rd-party or self
   // threaded message must NOT clear the asker's waiting-exclusion while it is
   // genuinely still blocked (else #120 would treat the blocked asker as stale).
+  // #436: an ask to an UNRELATED agent is filed in ITS run (outside the asker's related set) and answered in the asker's — such a question
+  // counts as sent (arm 2 of the run clause) and any reply of the target closes it. Own-run asks: unchanged.
   const openAskSent = db.prepare(`
     SELECT 1
       FROM messages q
-     WHERE q.run_id = ? AND q.kind = 'question' AND q.sender = ?
+     WHERE (q.run_id = ? OR q.run_id NOT IN (SELECT value FROM json_each(?)))
+       AND q.kind = 'question' AND q.sender = ?
        AND NOT EXISTS (
          SELECT 1 FROM messages r
-          WHERE r.run_id = q.run_id
+          WHERE (r.run_id = q.run_id OR q.run_id NOT IN (SELECT value FROM json_each(?)))
             AND r.thread_id = CAST(q.sequence AS TEXT)
             AND r.sender = q.recipient AND r.recipient = q.sender
        )
@@ -573,7 +576,8 @@ export function readWaitingReaders(
   `);
   const waiting = new Set<string>();
   for (const { reader, runId } of readers) {
-    if (openAskSent.get(runId, reader) || openGateOpened.get(runId, reader)) {
+    const relatedJson = JSON.stringify(getRelatedRunIds(db, runId).ids);
+    if (openAskSent.get(runId, relatedJson, reader, relatedJson) || openGateOpened.get(runId, reader)) {
       waiting.add(reader);
     }
   }

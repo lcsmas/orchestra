@@ -24,6 +24,8 @@ import {
   __freezeSwitchForTests,
 } from './bus-wake.ts';
 import { decideWake, type ReaderPendingState } from '../shared/bus-wake.ts';
+import { startRun } from './bus-runs.ts';
+import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 
 // #119 — asks + decision gates, driven end to end over a real SQLite bus.
 //
@@ -333,17 +335,21 @@ test('F1 must-FAIL arm: a 3rd-party or SELF threaded message does NOT answer the
   assert.equal(wakes.filter((w) => w.reader === R).length, before, 'a properly-answered ask stops re-waking R');
 });
 
-test('T119.4 run-scoped: an ask in another run does not mark the asker waiting HERE', async (t) => {
-  // Same run-scoping the pending predicate has. Without it, #120 would exclude a
-  // genuinely-silent member from staleness because it is waiting in an unrelated
-  // run.
+test('T119.4 run-scoped: an ask in a RELATED run other than the asker\'s own does not mark it waiting; one in an UNRELATED run does (#436 cross-run ask) until the target answers', async (t) => {
+  // Same run-scoping the pending predicate has. A related-but-foreign run never holds the asker's own asks (in-fleet asks are filed in the sender's run).
+  // An UNRELATED run holds exactly the #436 shape — the ask filed in the recipient's run — so the asker is genuinely parked (else #120 escalates it as silent).
   const db = tmpDb(t);
-  send(db, { runId: 'some-other-run', sender: ASKER, kind: 'question', body: 'q?', recipient: R });
-  const waiting = readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]);
-  assert.equal(waiting.has(ASKER), false, 'an ask in another run does not make the asker waiting here');
+  startRun(db, { id: RUN, kind: 'mission', coordinator: RUN }, DEFAULT_BUS_SWITCHES);
+  startRun(db, { id: 'child-run', kind: 'vague', coordinator: 'child-run', parentRunId: RUN }, DEFAULT_BUS_SWITCHES);
+  send(db, { runId: 'child-run', sender: ASKER, kind: 'question', body: 'q?', recipient: R });
+  assert.equal(readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]).has(ASKER), false, 'an ask in a related run is not the asker\'s own');
+  const q = send(db, { runId: 'some-other-run', sender: ASKER, kind: 'question', body: 'q2?', recipient: R });
+  assert.equal(readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]).has(ASKER), true, 'a cross-run ask parks the asker');
   // Positive control, same command: scoped to ITS run, the asker IS waiting.
-  const there = readWaitingReaders(db, [{ reader: ASKER, runId: 'some-other-run' }]);
-  assert.equal(there.has(ASKER), true);
+  assert.equal(readWaitingReaders(db, [{ reader: ASKER, runId: 'some-other-run' }]).has(ASKER), true);
+  // The target's reply, filed in the ASKER's run, closes it.
+  send(db, { runId: RUN, sender: R, kind: 'status', body: 'a', recipient: ASKER, threadId: String(q) });
+  assert.equal(readWaitingReaders(db, [{ reader: ASKER, runId: RUN }]).has(ASKER), false, 'answered');
 });
 
 // ══ D1 — getBus() null tolerance for the CLI verb path is covered by

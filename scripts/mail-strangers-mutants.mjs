@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 
 const VERBS = 'src/cli/bus-verbs.ts', WAKE = 'src/main/bus-wake.ts';
-const T = { strangers: 'src/main/mail-between-strangers.test.ts', verbs: 'src/cli/bus-verbs.test.ts' };
+const T = { asks: 'src/main/bus-asks-gates.test.ts', strangers: 'src/main/mail-between-strangers.test.ts', verbs: 'src/cli/bus-verbs.test.ts' };
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red; `cli` = rebuild the CLI bundle first. */
 const MUTANTS = [
@@ -28,6 +28,7 @@ const MUTANTS = [
   { id: 'M07', name: 'an ask is filed in the sender\'s run (verbAsk ignores the route)', cli: true, edits: [[VERBS, "const wctx = routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);", "routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);\n  const wctx = ctx;"]], tests: [T.strangers, T.verbs] },
   { id: 'M08', name: 'a cross-run answer no longer clears the ask (the recipient is re-woken forever)', edits: [[WAKE, "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id OR r.run_id NOT IN (SELECT value FROM json_each(?)))';", "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id AND (SELECT COUNT(*) FROM json_each(?)) >= 0)';"]], tests: [T.strangers] },
   { id: 'M09', name: 'the cross-run answer arm admits EVERY run (an in-fleet answer filed in the wrong related run would clear too)', edits: [[WAKE, "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id OR r.run_id NOT IN (SELECT value FROM json_each(?)))';", "export const ANSWER_RUN_SQL = '(1 = 1 OR (SELECT COUNT(*) FROM json_each(?)) >= 0)';"]], tests: [T.strangers] },
+  { id: 'M10', name: 'a cross-run asker is not "waiting" (the asker-side answered arm is gone: liveness / Vague endormie misjudge it)', edits: [[WAKE, "WHERE (q.run_id = ? OR q.run_id NOT IN (SELECT value FROM json_each(?)))", "WHERE (q.run_id = ? AND (SELECT COUNT(*) FROM json_each(?)) >= 0)"]], tests: [T.asks] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
