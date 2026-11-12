@@ -116,7 +116,7 @@ const banner = () => ev(`(() => { const b = document.querySelector('.memory-bann
 const waitFor = async (pred, ms, what, step = 250) => { const t0 = Date.now(); for (;;) { let v = null; try { v = await pred(); } catch { /* retry */ } if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(step); } };
 const Q = (sql, ...a) => busr.q(sql, ...a);
 const setGuard = (admissionGb, criticalGb) => ev(`window.orchestra.setMemoryGuard(${JSON.stringify({ admissionGb, criticalGb })})`);
-const busStatus = async () => (await app.cli(spec.ops, ['bus-status'])).out;
+const busStatus = async () => (await app.cli(spec.ops, ['bus-status'], { run: spec.ops })).out;
 const sendTo = (id, text) => ev(`window.orchestra.agentSdkSend(${JSON.stringify(id)}, ${JSON.stringify(text)})`);
 const logText = () => { try { return fs.readFileSync(path.join(rig.H, 'logs', 'orchestra.log'), 'utf8'); } catch { return ''; } };
 const wsByK = (k) => spec.workers.find((w) => w.k === k).id;

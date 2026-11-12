@@ -131,7 +131,7 @@ async function main() {
   const busLines = () => { // the REAL built CLI over the app's own socket (pointer file under the scratch ORCHESTRA_HOME)
     const sock = fs.readFileSync(path.join(world.ohome, 'sock'), 'utf8').trim();
     mustBeScratch('socket pointer home', world.ohome);
-    return sh(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'bus-status'], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_SOCK: sock } }).split('\n');
+    return sh(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'bus-status'], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_SOCK: sock, ORCHESTRA_RUN_ID: 'rig-run' } }).split('\n');
   };
   const snap = () => cdp.eval(`window.orchestra.sampleResources()`);
   const tabsOf = (s, ws) => (s.browserTabs?.byWorkspace ?? []).find((w) => w.wsId === ws) ?? null;

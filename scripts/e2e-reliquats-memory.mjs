@@ -513,7 +513,7 @@ try {
     const CLI = path.join(REPO, 'dist-electron', 'cli.js');
     if (!fs.existsSync(CLI)) { fails.push(`${CLI} not built (pnpm run build:cli)`); await finish(); }
     const cli = (args) => new Promise((resolve) => {
-      const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: home, ORCHESTRA_SOCK: sock }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: home, ORCHESTRA_HOME: home, ORCHESTRA_SOCK: sock, ORCHESTRA_RUN_ID: 'rig-run' }, stdio: ['ignore', 'pipe', 'pipe'] });
       let so = '', se = '';
       p.stdout.on('data', (c) => (so += c)); p.stderr.on('data', (c) => (se += c));
       p.on('close', (code) => resolve({ code, stdout: so, stderr: se }));

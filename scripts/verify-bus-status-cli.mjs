@@ -165,7 +165,7 @@ try {
     busAvailable: false,
     counters: [{ mechanism: 'peer-message', missed: 4, duplicate: 0, lostWake: 0 }],
   };
-  out = await run();
+  out = await run({ ORCHESTRA_RUN_ID: 'run-beta' });
   check('prints UNAVAILABLE', /bus:\s*UNAVAILABLE/.test(out), out);
   check('does NOT claim available', !/bus:\s*available/.test(out), out);
   check('still prints the counters', out.includes('peer-message') && /\b4\b/.test(out), out);
@@ -173,7 +173,7 @@ try {
   // ── A3 — no mechanisms is distinct from an empty table ────────────────────
   console.log('A3 no mechanisms');
   reply = { ok: true, runId: 'run-gamma', busAvailable: true, counters: [] };
-  out = await run();
+  out = await run({ ORCHESTRA_RUN_ID: 'run-gamma' });
   check('says so explicitly', /No mechanisms mirroring/.test(out), out);
 
   // ── A4 — MUST-FAIL control ────────────────────────────────────────────────

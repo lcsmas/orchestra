@@ -474,7 +474,7 @@ if (ARM === 'visible') {
   if (!fs.existsSync(CLI)) { fails.push(`${CLI} not built (pnpm run build:cli)`); verdict(); }
   check('cli_bundle_is_fresh', fs.readFileSync(CLI, 'utf8').includes('held starts:') || !hasAdmission, true);   // a stale dist-electron/cli.js would read RED for the wrong reason
   const cli = (args) => new Promise((resolve) => {
-    const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: 'ws-ops', ORCHESTRA_RUN_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let so = ''; p.stdout.on('data', (c) => (so += c)); p.stderr.on('data', (c) => (so += c)); p.on('close', () => resolve(so));
   });
   const peersOut = await cli(['peers']);

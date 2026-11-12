@@ -194,7 +194,7 @@ const newestInput = () => {
 const cliFresh = fs.existsSync(CLI) && fs.statSync(CLI).mtimeMs >= newestInput();
 const cliOut = () => new Promise((resolve) => {
   if (!fs.existsSync(CLI)) { resolve('NO CLI BUNDLE'); return; }
-  const p = spawn(process.execPath, [CLI, 'bus-status'], { env: { PATH: process.env.PATH, HOME: SCRATCH, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: hooks.getHookSocketPath(), ORCHESTRA_WS_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [CLI, 'bus-status'], { env: { PATH: process.env.PATH, HOME: SCRATCH, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: hooks.getHookSocketPath(), ORCHESTRA_WS_ID: 'ws-ops', ORCHESTRA_RUN_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let so = ''; p.stdout.on('data', (c) => (so += c)); p.stderr.on('data', (c) => (so += c)); p.on('close', () => resolve(so));
 });
 const watchersBlock = async () => {

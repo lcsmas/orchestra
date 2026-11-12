@@ -169,7 +169,7 @@ async function main() {
   const bus = () => { // the REAL built CLI over the app's own socket (pointer file under the scratch ORCHESTRA_HOME)
     const sock = fs.readFileSync(path.join(world.ohome, 'sock'), 'utf8').trim();
     mustBeScratch('socket pointer home', world.ohome);
-    const out = sh(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'bus-status'], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_SOCK: sock } });
+    const out = sh(process.execPath, [path.join(APP_DIR, 'dist-electron', 'cli.js'), 'bus-status'], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ORCHESTRA_SOCK: sock, ORCHESTRA_RUN_ID: 'rig-run' } });
     return out.split('\n').find((l) => l.startsWith('memory:')) ?? `(no memory: line) ${out.slice(0, 200)}`;
   };
   const store = () => JSON.parse(fs.readFileSync(world.storeFile, 'utf8')).memoryGuard ?? null;

@@ -93,9 +93,10 @@ test('seam inventory (#137): the identity service imports no Electron, store, bu
 test('CLI: NO verb reads the baked $ORCHESTRA_RUN_ID / $ORCHESTRA_COORDINATOR_GENERATION — everything goes through liveEnv()', () => {
   const raw = cli.split('\n').filter((l) => /process\.env\.ORCHESTRA_(RUN_ID|COORDINATOR_GENERATION)/.test(l) && !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'));
   assert.deepEqual(raw, [], 'a raw read of the baked run/generation bypasses the host');
-  const idCalls = cli.split('\n').filter((l) => l.includes('resolveBusIdentity(') && !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*') && !l.includes('export function') && !l.includes('  resolveBusIdentity,'));
-  assert.ok(idCalls.length >= 4);
-  for (const l of idCalls) assert.ok(l.includes('liveEnv()'), `resolveBusIdentity must read liveEnv(): ${l.trim()}`);
+  // #433: the identity is resolved by resolveBusIdentity / resolveBusHandle / resolveRunId — every call must read liveEnv().
+  const idCalls = cli.split('\n').filter((l) => /\b(resolveBusIdentity|resolveBusHandle|resolveRunId)\(/.test(l) && !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*') && !l.includes('export function') && !/^\s+(resolveBusIdentity|resolveBusHandle|resolveRunId),$/.test(l));
+  assert.ok(idCalls.length >= 4, `scanned the identity resolutions (${idCalls.length})`);
+  for (const l of idCalls) assert.ok(l.includes('liveEnv()'), `an identity resolution must read liveEnv(): ${l.trim()}`);
   assert.ok(live(cli, 'return identityEnv(process.env, hostIdentity);'));
 });
 
@@ -108,7 +109,7 @@ test('CLI: every verb whose case reads the run identity settles the host identit
   let reading = 0;
   for (const b of blocks) {
     const verb = b.slice(0, b.indexOf("'"));
-    if (/busIdentityOrFail\(|liveEnv\(\)/.test(b)) {
+    if (/busIdentityOrFail\(|runOrFail\(|liveEnv\(\)/.test(b)) {
       reading++;
       assert.ok(verbs.has(verb), `\`${verb}\` reads the run identity but is not in HOST_IDENTITY_VERBS — it would read the baked env`);
     }

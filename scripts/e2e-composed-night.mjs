@@ -345,7 +345,7 @@ const newestCliInput = () => {
 };
 const cliOut = (args) => new Promise((resolve) => {
   if (!fs.existsSync(CLI)) { resolve(`NO CLI BUNDLE at ${CLI} (pnpm run build:cli)`); return; }
-  const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: hooks.getHookSocketPath(), ORCHESTRA_WS_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const p = spawn(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmpHome, ORCHESTRA_HOME: process.env.ORCHESTRA_HOME, ORCHESTRA_SOCK: hooks.getHookSocketPath(), ORCHESTRA_WS_ID: 'ws-ops', ORCHESTRA_RUN_ID: 'ws-ops' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let so = ''; p.stdout.on('data', (c) => (so += c)); p.stderr.on('data', (c) => (so += c)); p.on('close', () => resolve(so));
 });
 const dockerState = () => Object.fromEntries(docker.containers.map((c) => [c.id, c.running ? 'running' : 'stopped']));
