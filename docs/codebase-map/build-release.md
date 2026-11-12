@@ -278,3 +278,8 @@ ship with the repo:
 Build outputs (`dist/`, `dist-electron/`, `release/`, `.vite/`), `node_modules/`,
 `*.log`, and user `.claude/*` (except `skills/`) and `.planning/` are ignored.
 `pnpm-lock.yaml` is the dependency source of truth.
+
+## Packaged-run proof for #431 (prep, #442)
+- `scripts/build-pre-update-fixture.mjs --out <dir under $TMPDIR>` — synthetic pre-update `ORCHESTRA_HOME` (run-less plain tree, LEAD→OPS→workers fleet, a delivery-OFF vague with unread mail, `default`-run short-recipient rows), written by MASTER's own `Store` + `bus.ts` (`git archive <base>` of `src/`, refuses a base carrying ADR 0012); `MANIFEST.json` = the shape the "before" arm must see.
+- `scripts/pre-update-fixture-census.mjs` — readonly census of which workspace has a run (`ownRun` / `inRun`), shared by the builder and the rig.
+- `scripts/e2e-packaged-run-proof.sh --exe <AppImage|binary> --arm before|after|fleet` — packaged app on that fixture inside `e2e-contained-rig.sh`'s second headless sway; `before` on master MUST show run-less workspaces, `after`'s mail clause is filled by the final #442 run. Evidence: `docs/evidence/431/`.

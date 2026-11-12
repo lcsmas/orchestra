@@ -1,0 +1,14 @@
+PASS  after/env-isolated — WAYLAND_DISPLAY=wayland-rig, private XDG /var/tmp/ppr-1000/e2e64c-2168496/xdg
+[ppr] resources: MemAvailable 16.6 GB (floor 8), disk free under rig 271G
+PASS  after/fixture-built — base ed510e09, 11 workspaces, 3 runs
+PASS  after/census-flips — P run-less true → with a run row gone from the list
+PASS  after/survivor-instrument-flips — sleep 2168994: alive-by-identity true → after SIGKILL false
+[ppr] app up (pid 2168995); settling 20s so the boot-time work (migration, run backfill) can finish
+[ppr] peak app-tree RSS 0.74 GB; survivors after teardown: 0
+PASS  after/ui-sees-fixture — sidebar rows fixture-s, fixture-p, fixture-p1, fixture-p2, fixture-l of 5; screenshot /var/tmp/ppr-1000/e2e64c-2168496/ui-after.png
+FAIL  after/every-workspace-has-a-run — run-less after boot (own-run criterion; #433/#434 may narrow it): fixture · P, fixture · P1, fixture · P2, fixture · S, fixture · W1, fixture · W2, fixture · Z1, fixture · Z2 | in-run criterion: fixture · P, fixture · P1, fixture · P2, fixture · S
+SKIP  after/mail-flows — TODO final #442 run: drive parent→child `orchestra send` + `check` on the fixture workspaces (they are hibernated: needs a wake)
+PASS  after/survivors-none — 0 left
+PASS  after/live-dirs-untouched — 7 dir(s) snapshotted identical before/after
+[ppr] 9 clauses, 1 FAIL, 1 SKIP — results /var/tmp/ppr-1000/e2e64c-2168496/results.json
+RC=1
