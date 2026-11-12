@@ -17,13 +17,14 @@ import { buildLivenessRoster, type LivenessRosterStore } from './bus-liveness-ro
 import { readWaitingReaders } from './bus-wake.ts';
 import { noteActivity, noteAppStart, noteToolStart, noteToolEnd, clearInFlightTools, forgetHibernationActivity } from './hibernation-activity.ts';
 import { runIdOf } from '../shared/run-position.ts';
+import { fileURLToPath } from 'node:url';
 import { BASH_TOOL_CEILING_MS } from '../shared/bus-liveness.ts';
 import type { Workspace } from '../shared/types.ts';
 
 const SEED = Number(process.env.LIVENESS_SEED ?? '1');
 const T0 = 1_700_000_000_000;
 const MIN = 60_000;
-const TICK = 20_000; // the production sweep period
+const TICK = 60_000; // the production sweep period (`SWEEP_MS`, bus-liveness.ts)
 const P = 'sm-parent';
 const C = 'sm-child';
 
@@ -174,6 +175,52 @@ test(`#438 S2 (seed ${SEED}): a lost \`stop\` then a new turn — the stranded c
   const rows = escalationsTo(r.db, P);
   assert.equal(rows.length, 1, 'positive control: one staleness row');
   assert.doesNotMatch(rows[0].body, /hung/i);
+});
+
+/** A phantom call across a turn boundary (#199) on a run of two: turn A starts a Bash whose `posttool` AND `stop` are lost (the member stays `running`), the coalesced-wake turn B STARTS 9 min later
+ *  (`submit`) and runs a long fresh Bash. At 11 min the phantom is past its 600 s ceiling unless the `submit` cleared it. `submitClears` = the one clause under test (the SHIPPED arm is pinned in activity.ts below). */
+function phantomAcrossTurns(r: Rig, submitClears: boolean): void {
+  const t0 = clock;
+  r.child.status = 'running';
+  noteActivity(C);
+  clearInFlightTools(C);
+  at(t0 + 1000);
+  noteToolStart(C, 'Bash', 'toolu_phantom_A');
+  noteActivity(C);
+  while (clock < t0 + 9 * MIN) {
+    at(clock + TICK);
+    noteActivity(C); // the member is chatty on other channels: its clock stays fresh, only the in-flight call ages
+    sweepBusLiveness();
+  }
+  assert.deepEqual(escalationsTo(r.db, P), [], 'a Bash 9 min old is under its 600 s ceiling');
+  if (submitClears) clearInFlightTools(C); // `submit` (activity.ts) — the turn boundary clears the prior turn's calls
+  noteActivity(C);
+  noteToolStart(C, 'Bash', 'toolu_fresh_B');
+  while (clock < t0 + 13 * MIN) {
+    at(clock + TICK);
+    noteActivity(C);
+    sweepBusLiveness();
+  }
+}
+
+test(`#438 S5 (seed ${SEED}): the stranded call of a lost-stop turn never becomes a false « hung mid-call » once the next turn starts — and WITHOUT the submit clear it does (must-FAIL arm)`, (t) => {
+  const r = rig(t);
+  at(T0 + 30_000);
+  phantomAcrossTurns(r, true);
+  assert.deepEqual(escalationsTo(r.db, P), [], 'shipped: the submit clear removed the phantom — no hung escalation of a child that is working');
+  forgetHibernationActivity(C);
+  __resetBusLivenessForTests();
+  const r2 = rig(t);
+  at(T0 + 30_000);
+  phantomAcrossTurns(r2, false);
+  const rows = escalationsTo(r2.db, P);
+  assert.equal(rows.length, 1, 'the unfixed arm (no clear) FAILS through the same rig: one hung-mid-call escalation');
+  assert.match(rows[0].body, /hung|stuck|in.?flight|Bash/i);
+});
+
+test('#438 S5 pin: the shipped `submit` arm of activity.ts still clears the in-flight list (the clause the fake clock mirrors)', () => {
+  const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'activity.ts'), 'utf8');
+  assert.match(src, /clearInFlightTools\(id\);\s*\n\s*\/\/ #252 D1b \(rows 29\/30\): a real turn START/, "activity.ts `submit`: clearInFlightTools(id) right before the pause-trap turn-start notice");
 });
 
 test(`#438 S3 (seed ${SEED}): a child that reported worker_done is finished on purpose — never escalated, however long it idles`, (t) => {

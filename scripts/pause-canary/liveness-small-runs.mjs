@@ -11,6 +11,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const RUNS = Number(opt('runs', '10'));
+const TESTS = 6;
 const TEST = 'src/main/liveness-small-run.test.ts';
 const run = (seed) => {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', TEST], { cwd: REPO, encoding: 'utf8', env: { ...process.env, LIVENESS_SEED: String(seed) } });
@@ -21,15 +22,16 @@ const run = (seed) => {
 const MUTANTS = [
   { name: 'stale-window-halved', file: 'src/shared/bus-liveness.ts', from: 'if (silentForMs <= STALE_AFTER_MS) {', to: 'if (silentForMs <= STALE_AFTER_MS / 2) {', why: 'a child idle 5 min is escalated (false escalation inside the window)' },
   { name: 'done-released-blind', file: 'src/main/bus-liveness.ts', from: "wd.kind = 'worker_done'", to: "wd.kind = 'worker_donX'", why: 'a finished child is escalated for ever' },
+  { name: 'submit-no-longer-clears', file: 'src/main/activity.ts', from: '      clearInFlightTools(id);\n      // #252 D1b (rows 29/30): a real turn START', to: '      void 0;\n      // #252 D1b (rows 29/30): a real turn START', why: 'the #199 clause is gone from the shipped event arm (the pin goes red)' },
   { name: 'no-coordinator-of-child', file: 'src/shared/run-position.ts', from: 'return parent && parent.id !== ws.id ? parent : undefined;', to: 'return undefined;', why: 'the child has no coordinator: the positive control (a silent child IS escalated to P) goes red' },
 ];
 let bad = 0;
 const rows = [];
 for (let seed = 1; seed <= RUNS; seed++) {
   const r = run(seed);
-  const ok = r.pass === 4 && r.fail === 0 && r.skipped === 0 && r.rc === 0;
+  const ok = r.pass === TESTS && r.fail === 0 && r.skipped === 0 && r.rc === 0;
   if (!ok) bad++;
-  rows.push(`unmutated seed ${seed}: pass ${r.pass} fail ${r.fail} skipped ${r.skipped} rc ${r.rc} → ${ok ? 'CLEAN (0 escalation in the window, 1 positive control)' : 'RED'}`);
+  rows.push(`unmutated seed ${seed}: pass ${r.pass} fail ${r.fail} skipped ${r.skipped} rc ${r.rc} → ${ok ? 'CLEAN (0 escalation in the window, 1 positive control, #199 must-FAIL arm seen)' : 'RED'}`);
   console.log(rows[rows.length - 1]);
 }
 if (!args.includes('--no-mutants')) {

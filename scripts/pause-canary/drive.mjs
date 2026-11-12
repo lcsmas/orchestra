@@ -584,8 +584,8 @@ async function runExercise(name) {
     }
     async function endOfCycleChecks(cyc, c, pre) {
       if (PLAIN) {
-        // #438 (spec #431 NOT-VERIFIED 1, #199 history): a child that is idle between turns / killed by a Pause raises NO escalation to its parent over the whole cycle (liveness switch ON on the run)
-        const esc = (await Q("SELECT sequence, sender, recipient, substr(body, 1, 120) AS body FROM messages WHERE kind = 'escalation' AND sequence > ?", cyc.seq0 ?? 0)) ?? null;
+        // #438 (spec #431 NOT-VERIFIED 1): REAL-TIME smoke on the packaged app — a cycle lasts minutes, far under the 10-min staleness / 600-s hung-call bounds, so this only proves the roster/wiring raises nothing on a Pause cycle of a run of two (a host memory row is not a liveness row). The bounds themselves are driven by liveness-small-run.test.ts (fake clock).
+        const esc = (await Q("SELECT sequence, sender, recipient, substr(body, 1, 120) AS body FROM messages WHERE kind = 'escalation' AND sequence > ? AND (body LIKE '%no session activity%' OR body LIKE '%hung%')", cyc.seq0 ?? 0)) ?? null;
         check(cyc, 'no_false_liveness_escalation', Array.isArray(esc) && esc.length === 0, Array.isArray(esc) ? `${esc.length} escalation row(s) on the bus this cycle${esc.length ? `: ${esc.map((e) => `#${e.sequence} ${e.sender?.slice(0, 8)}→${e.recipient?.slice(0, 8)} ${e.body}`).join(' | ')}` : ''}` : 'NOT MEASURED (the bus reader failed)');
       }
       const bad = spec.workers.filter((w) => { const tip = gitSafe(rig.repo, 'rev-parse', `refs/heads/pc-${w.k}`); try { git(rig.repo, 'merge-base', '--is-ancestor', pre[w.k].head, tip); return !readWt(w.k, `mark-${w.k}-c${c}.txt`); } catch { return true; } });
