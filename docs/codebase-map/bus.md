@@ -491,7 +491,7 @@ divergence counters), and **four per-mechanism switches** — `delivery`, `wake`
 | `src/shared/bus-view.ts` | The `BusSnapshot` wire shape the pane renders |
 | `src/main/bus-runs.ts` | Run rows + their frozen flags; `busSwitch()` |
 | `src/main/bus-settings.ts` | The LIVE switches (store-backed) — deliberately a different module from the frozen read |
-| `src/shared/run-position.ts` | #432 — the ONE module deciding run membership + coordination: `coordinates` / `runIdOf` / `parentRunOf` (+ `isCoordinatorKind`, `isPlainOwnAnchor`, `COORDINATOR_HOOK_GATE`); guarded by `scripts/check-run-position-single-reader.mjs` |
+| `src/shared/run-position.ts` | #432/#434 — the ONE module deciding run membership + coordination: `coordinates` (owns a run) / `runIdOf` (own run, else the DIRECT parent's) / `parentRunOf` (+ `coordinatorOf`, `memberRunOf`, `coordinatorRoleOf`, `isCoordinatorKind`, `isPlainOwnAnchor`, `COORDINATOR_HOOK_GATE`); guarded by `scripts/check-run-position-single-reader.mjs` |
 | `src/main/wave-run-id.ts` | thin delegates of run-position under their old names (`nearestOrchestratorId`, `nodeOrchestrates`, `parentOrchestratorId`, `parentRunTarget`, `isPlainOwnAnchor`) + `walkToRootId` (retained, not the run anchor) |
 | `src/main/bus-pane.ts` | The read-only IPC and the snapshot assembly |
 | `src/renderer/components/BusPane.tsx` | The pane, incl. the bus-unavailable state |
@@ -590,7 +590,8 @@ change them", and the fleet skill BRANCHES on that claim. Reading
 spawned into one run on either side of a human's flip received CONTRADICTORY
 notices, each asserting the opposite — the "half a fleet reads wake=on, the other
 half wake=off" split the freeze exists to prevent. `runId` is the workspace's
-run ANCHOR = its NEAREST ORCHESTRATOR (LEAD ruling D1, ledger #135 — this
+run ANCHOR = **since #434 the run it OWNS, else its DIRECT parent's** (the "nearest orchestrator" walk below is the pre-#434 rule, kept
+for its history; a plain parent owns a vague from its first spawn — see workspaces.md "#434"). It was (LEAD ruling D1, ledger #135 — this
 OVERTURNED the earlier tree-root model of #118 N2): `resolveWaveRunId(ws)` calls
 `runIdOf(ws, store.getWorkspace)` (`src/shared/run-position.ts`, #432; the old `nearestOrchestratorId` delegates to it), which returns `ws` if it
 `coordinates` else the first coordinating ancestor (an OPS is a promoted

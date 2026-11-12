@@ -33,8 +33,8 @@ test('coordinates: owns a run = the orchestrator kind, ownsRun, or top-level; a 
   assert.equal(coordinates({ id: 'f', kind: 'worktree', parentId: 'p', canOrchestrate: true } as RunNode), false, 'the capability flag no longer decides');
   assert.equal(isCoordinatorKind(lead), true);
   assert.equal(isCoordinatorKind(ops), false, 'the KIND route only');
-  assert.equal(coordinatorRoleOf(lead), 'pure');
-  assert.equal(coordinatorRoleOf(ops), 'dual');
+  assert.equal(coordinatorRoleOf({ repoPath: '' }), 'pure', 'a repo-less coordinator never implements');
+  assert.equal(coordinatorRoleOf({ repoPath: '/r' }), 'dual', 'a coordinator that owns a checkout also works on its branch');
 });
 
 test('runIdOf: its own run when it owns one, else its DIRECT parent\'s (never the first orchestrator ancestor)', () => {

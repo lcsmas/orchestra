@@ -115,7 +115,7 @@ Two helpers, two questions — do not conflate them:
 | Helper | Question | Promoted worktree |
 |---|---|---|
 | `isScratchLike(ws)` `types.ts:246` | is this **non-git**? (diff/merge/PR/delete/rename) | **false** |
-| `coordinates(ws)` `shared/run-position.ts:18` (ex-`canOrchestrate`, #432) | does this **coordinate a run**? (tree/parent) | **true** |
+| `coordinates(ws)` `shared/run-position.ts` (ex-`canOrchestrate`, #432; body #434) | does this **own a run**? (kind `orchestrator`, `ownsRun`, or top-level) | **true** |
 
 **#432 — `src/shared/run-position.ts` is the ONE module that decides run membership and
 coordination** (platform-free: main, CLI and renderer import it). `coordinates(ws)` (`:18`),
@@ -133,6 +133,28 @@ drop target (`canAttachTo`). `main/wave-run-id.ts` keeps its old names as thin d
 included) fails if any other `src` file reads `.canOrchestrate` / `canOrchestrate(` / `kind === 'orchestrator'`
 without a `run-position: non-run — <why>` marker (scratch-likeness, UI chips, repo grouping, the flag's own
 writes). The persisted FIELD `Workspace.canOrchestrate` stays (promote/demote write it; #440 removes both).
+
+**#434 — a plain parent owns a run; the module's BODIES changed, its signatures did not.** `coordinates(ws)` =
+`isCoordinatorKind(ws) || ws.ownsRun === true || !ws.parentId` — the capability flag no longer decides (a pre-#434 store
+is migrated: `store.load()` writes `ownsRun` for a `canOrchestrate` record or a workspace that is some child's parent,
+and promote writes `ownsRun` beside the flag). `runIdOf` = the run `ws` OWNS (its own id) else its DIRECT parent's
+(the "first orchestrator ancestor" walk is gone; a top-level workspace is its own mission, #433). `parentRunOf` = the
+direct parent (`implicit` only when that parent anchors no row yet). NEW exports: `coordinatorOf(ws, lookup)` (WHO coordinates
+`ws` = its resolved direct parent — the ONE answer; read by the liveness roster, the boot-wedge watchdog, the vague roster,
+Admission wake + wake roster `fleetMember`, the Relance roster, the memory notice and the naming hold via `isTopLevel`),
+`memberRunOf` (the run `ws` reports into), `coordinatorRoleOf` ('pure' | 'dual' sentinel wording). **Birth of a vague:**
+`createWorkspace` calls `ensureParentOwnsRun(child)` (`workspaces.ts`; pure decision `ownerToMark`, `bus-run-anchor.ts`) BEFORE
+the child's anchor resolves — the parent gets `ownsRun: true` + the standing-role sentinel, then `maybeStartRunAtAnchor` starts the
+parent's row (`vague`, `parent_run_id` = the run the parent is a member of, switches frozen from the live ones at that moment;
+every missing run above it is started too, top-down — `AnchorInfo.missingParentRuns`). A session start self-heals the same
+(`ensureMemberRun`, `agent-sdk.ts buildSdkEnv`); the app start migrates owners that have a parent and no row
+(`startRunsForOwnerWorkspaces`, parents first, `index.ts` after the #433 top-level pass). The gate also pins `.ownsRun`,
+ANY `'orchestrator'` literal (alias / array shapes), multi-line destructures and `.parentId` reads in the files that pick a
+coordinator (`PARENT_PICK_FILES`). Tests: `bus-plain-parent.test.ts` (built CLI vs real bus + real store.json + real wake
+sweep), mutants `scripts/plain-parent-mutants.mjs` (`pnpm run test:plain-parent-mutants`). Behaviour that follows from the
+single function: a top-level plain workspace is a valid attach/drop target and a Pause control row; a plain owner is a
+vague holder for the rename hold; `orchestra message` to a plain owner from its member is refused toward `orchestra send`
+(the #221 plain-own-anchor exemption now covers only a dangling-parent target; #441 removes the rest).
 
 They diverge exactly on a promoted worktree, and that divergence *is* the
 feature. Flipping such a worktree's `kind` instead would make `isScratchLike`

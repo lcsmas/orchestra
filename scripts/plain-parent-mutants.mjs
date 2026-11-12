@@ -35,7 +35,8 @@ const MUTANTS = [
   { id: 'M10', name: 'the liveness roster picks its coordinator from parentId again (a second reader)', edits: [[LIVE, 'const parent = coordinatorOf(ws, (id) => store.getWorkspace(id));', 'const parent = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;']], tests: [T.rp] },
   { id: 'M11', name: 'the store load stops migrating the flag / existing parents into ownsRun', edits: [[STORE, 'ws.canOrchestrate === true || parentsOfSomeone.has(ws.id)', 'false']], tests: [T.plain] },
   { id: 'M12', name: 'promote no longer records ownership (the flag alone would not make an OPS)', edits: [[WS, 'const updated: Workspace = { ...ws, canOrchestrate: true, ownsRun: true };', 'const updated: Workspace = { ...ws, canOrchestrate: true };']], tests: [T.plain] },
-  { id: 'M13', name: 'the standing-role wording is never "dual" (a worktree owner would be told never to implement)', edits: [[RP, "return isCoordinatorKind(ws) ? 'pure' : 'dual';", "return 'pure';"]], tests: [T.rp] },
+  { id: 'M13', name: 'the standing-role wording is never "dual" (a worktree owner would be told never to implement)', edits: [[RP, "return ws.repoPath ? 'dual' : 'pure';", "return 'pure';"]], tests: [T.rp] },
+  { id: 'M15', name: 'a sentinel writer hard-codes the dual wording again (a second reader of the role)', edits: [[WS, "await markOrchestratorWorktree(newWorktreePath, coordinatorRoleOf({ repoPath }) === 'dual');", 'await markOrchestratorWorktree(newWorktreePath, true);']], tests: [T.plain] },
   { id: 'M14', name: 'the first-spawn owner gets no standing-role sentinel', edits: [[WS, "await markOrchestratorWorktree(updated.worktreePath, coordinatorRoleOf(updated) === 'dual');", '']], tests: [T.plain] },
 ];
 

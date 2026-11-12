@@ -255,11 +255,12 @@ test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s an
   const create = ws.slice(ws.indexOf('const remote = input.host?.kind'), ws.indexOf('return ws;', ws.indexOf('const remote = input.host?.kind')));
   assert.ok(create.indexOf('await ensureParentOwnsRun(ws)') >= 0 && create.indexOf('await ensureParentOwnsRun(ws)') < create.indexOf('await startBusRunAndWriteNotice(ws, remote)'), 'createWorkspace: ownership first, then the anchor row');
   assert.match(ws, /const updated: Workspace = \{ \.\.\.ws, canOrchestrate: true, ownsRun: true \};/, 'promote (worktree) records ownership beside the flag');
+  assert.equal((ws.match(/markOrchestratorWorktree\([^)]*, true\)/g) ?? []).length, 0, 'no sentinel writer hard-codes the dual wording: it comes from coordinatorRoleOf');
   assert.match(ws, /\{ \.\.\.ws, kind: 'orchestrator', ownsRun: true, name \}/, 'promote (scratch) records ownership');
   assert.match(ws, /await markOrchestratorWorktree\(updated\.worktreePath, coordinatorRoleOf\(updated\) === 'dual'\);/, 'the first-spawn owner gets the standing-role sentinel, wording from run-position');
   const sdk = src('src/main/agent-sdk.ts');
   assert.ok(sdk.indexOf('await ensureMemberRun(ws);') > 0 && sdk.indexOf('await ensureMemberRun(ws);') < sdk.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'a session start gives its parent a run BEFORE the env names it');
   const idx = src('src/main/index.ts');
-  assert.ok(idx.indexOf('startRunsForParentlessWorkspaces().catch') > 0 && idx.indexOf('startRunsForOwnerWorkspaces().catch') > idx.indexOf('startRunsForParentlessWorkspaces().catch'), 'app start: top-level missions, then owners with a parent (parents first)');
+  assert.match(idx, /if \(store\.loadedFromDisk\) await startRunsForParentlessWorkspaces\(\)[^\n]*\n[^\n]*\n\s*if \(store\.loadedFromDisk\) await startRunsForOwnerWorkspaces\(\)/, 'app start: top-level missions, then owners with a parent (parents first), both guarded by a loaded store');
   assert.match(src('src/main/store.ts'), /ws\.canOrchestrate === true \|\| parentsOfSomeone\.has\(ws\.id\)/, 'store load migrates the flag / existing parents into ownsRun');
 });

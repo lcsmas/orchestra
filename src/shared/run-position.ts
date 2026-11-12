@@ -78,10 +78,10 @@ export function ancestorCoordinatorId(ws: RunNode, lookup: RunLookup, anchorsRun
   return p.implicit ? null : p.id;
 }
 
-/** #434 — which wording the standing-role reminder takes: a repo-less coordinator ('pure': never implements) or a worktree
- *  that owns a run AND carries its own commits ('dual', the sentinel content). The sentinel writers read it here. */
-export function coordinatorRoleOf(ws: Pick<RunNode, 'kind'>): 'pure' | 'dual' {
-  return isCoordinatorKind(ws) ? 'pure' : 'dual';
+/** #434 — which wording the standing-role reminder takes: a repo-less coordinator ('pure': never implements) or one that owns a
+ *  repo checkout and so carries its own commits ('dual', the sentinel content). Every sentinel writer reads it here. */
+export function coordinatorRoleOf(ws: { repoPath?: string }): 'pure' | 'dual' {
+  return ws.repoPath ? 'dual' : 'pure';
 }
 
 /** The standing-role hook gate (shell): SessionStart reminder + PreToolUse edit guard run only for a

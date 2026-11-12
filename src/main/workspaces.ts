@@ -1874,7 +1874,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
       // guard already permits writes inside the workspace's OWN worktree — it
       // only blocks edits to OTHER workspaces' files — so a promoted worktree
       // stays free to do its own work.
-      await markOrchestratorWorktree(ws.worktreePath, true);
+      await markOrchestratorWorktree(ws.worktreePath, coordinatorRoleOf(ws) === 'dual');
       platform.broadcast('workspace:update', updated);
       // #134 (D1): a promote is a wave boundary — start the OPS's own run row now
       // (the session is not relaunched, so nothing else would do it until a member starts).
@@ -2263,7 +2263,7 @@ export async function dispatchAdoptRepoRequest(input: {
     await installOrchestraHooks(newWorktreePath);
     // `dual` sentinel: it coordinates AND owns a branch, which is exactly what
     // the dual-role SessionStart reminder already describes.
-    await markOrchestratorWorktree(newWorktreePath, true);
+    await markOrchestratorWorktree(newWorktreePath, coordinatorRoleOf({ repoPath }) === 'dual');
 
     // Single store write, worktree already on disk (see the ordering note).
     const updated: Workspace = {
