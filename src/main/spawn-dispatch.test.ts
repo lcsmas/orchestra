@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { getRun, refreezeRun, startRun } from './bus-runs.ts';
 import { computeAnchorInfo, maybeStartRunAtAnchor, ownerToMark, runAnchorProbe, startRunsForParentless, type BusRunAnchorDeps } from './bus-run-anchor.ts';
-import { recordSpawnDispatch, startAfterDispatch, type SpawnDispatchOutcome } from './spawn-dispatch.ts';
+import { ensureOwedDispatch, recordSpawnDispatch, startAfterDispatch, type SpawnDispatchOutcome } from './spawn-dispatch.ts';
 import { sweepBusWake, setWakeRoster, setWakeDeliver, setWakeSwitchReader, setAskGateSwitchReader, __setBusReaderForTests, __resetBusWakeForTests, __armStartedForTests } from './bus-wake.ts';
 import { busSwitch } from './bus-runs.ts';
 import { offlineWaveNodes } from '../cli/index.ts';
@@ -109,7 +109,7 @@ async function spawn(w: World, child: string, o: SpawnOpts = {}) {
   return startAfterDispatch<string>({
     record: () => {
       if (o.recordThrows) throw new Error('store read failed');
-      return recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { spawner: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK });
+      return recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { spawner: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK, preAck: true });
     },
     start: async () => {
       w.events.push(`start:${child}`);
@@ -286,23 +286,91 @@ test('#435 a spawner missing from the store is refused, nothing starts', needsBu
   assert.deepEqual(w.events, [`teardown:${C}`]);
 });
 
-test('#435 the child\'s first `check` shows its own task as ONE unread dispatch (not pre-acked), and the idle child is woken for it once', needsBuild, async (t) => {
-  const w = world(t, plainPair());
-  birth(w);
-  await spawn(w, C, { from: P });
+function armWake(w: World, wakes: string[], readers: string[]): void {
   __resetBusWakeForTests();
-  t.after(() => __resetBusWakeForTests());
   __setBusReaderForTests(() => w.db);
-  const wakes: string[] = [];
-  setWakeRoster(() => [C, P].map((r) => ({ reader: r, wakeable: true, runId: runOf(w, r) })));
+  setWakeRoster(() => readers.map((r) => ({ reader: r, wakeable: true, runId: runOf(w, r) })));
   setWakeDeliver(async (reader) => { wakes.push(reader); return true; });
   setWakeSwitchReader((runId) => busSwitch(w.db, runId, 'wake'));
   setAskGateSwitchReader((runId) => busSwitch(w.db, runId, 'ask_gate'));
   __armStartedForTests();
+}
+
+test('#435 the spawn dispatch is PRE-ACKED (same transaction): a fresh child is woken for nothing and its `check` is empty; a LATER parent dispatch wakes it as usual', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  await spawn(w, C, { from: P });
+  t.after(() => __resetBusWakeForTests());
+  const wakes: string[] = [];
+  armWake(w, wakes, [C, P]);
   await sweepBusWake();
-  assert.deepEqual(wakes, [C], 'the child (idle) is woken to read the dispatch; the spawner is not woken for its own mail');
-  const lot = JSON.parse(cli(w, C, ['check']).stdout) as { count: number; messages: Array<{ kind: string; sender: string; body: string }> };
-  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.sender}:${m.body}`), [`dispatch:${P}:${TASK}`]);
+  assert.deepEqual(wakes, [], 'nobody is woken for the spawn dispatch the child already holds as its opening prompt');
+  assert.equal((w.db.prepare('SELECT acked_seq FROM cursors WHERE run_id = ? AND reader = ?').get(P, C) as { acked_seq: number }).acked_seq, msgs(w).length === 1 ? (w.db.prepare("SELECT MAX(sequence) AS s FROM messages").get() as { s: number }).s : -1, 'the cursor is at the dispatch');
+  assert.equal((JSON.parse(cli(w, C, ['check']).stdout) as { count: number }).count, 0, 'its first check is empty');
+  // a later dispatch from the parent (higher seq) is unread and wakes the idle child
+  assert.equal(cli(w, P, ['send', '--type', 'dispatch', '--to', C, 'second scope']).code, 0);
+  await sweepBusWake();
+  assert.deepEqual(wakes, [C], 'the re-task wakes the child');
+  const lot = JSON.parse(cli(w, C, ['check']).stdout) as { messages: Array<{ kind: string; body: string }> };
+  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.body}`), ['dispatch:second scope']);
+});
+
+test('#435 a spawned child that SPAWNS in turn (owns its own run) still fetches its token and reports to its parent: token + worker_done + status resolve to the coordinator\'s run', needsBuild, async (t) => {
+  const w = world(t, [...plainPair(), { id: C2, kind: 'worktree', parentId: C }]);
+  birth(w);
+  await spawn(w, C, { from: P });
+  await spawn(w, C2, { from: C, task: 'helper job' });
+  assert.equal(runOf(w, C), C, 'control: C now owns a run of its own (so its env run is C, not P)');
+  const tok = token(w, C); // NO --run
+  assert.match(tok, /^dcap_/, `the capability sits in P's run: token must find it: ${tok}`);
+  const st = cli(w, C, ['send', '--type', 'status', '--to', P, 'halfway']);
+  assert.equal(st.code, 0, st.stderr);
+  assert.equal(msgs(w).find((m) => m.body === 'halfway')?.run_id, P, 'a status to the coordinator is filed in the coordinator\'s run');
+  assert.equal(cli(w, C, ['send', '--type', 'worker_done', '--to', P, '--cap', 'dcap_forged', 'done']).code, 1, 'still gated: a forged token is rejected');
+  const done = cli(w, C, ['send', '--type', 'worker_done', '--to', P, '--cap', tok, 'all done']);
+  assert.equal(done.code, 0, done.stderr + done.stdout);
+  const lot = JSON.parse(cli(w, P, ['check']).stdout) as { messages: Array<{ kind: string; sender: string }> };
+  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.sender}`), [`status:${C}`, `worker_done:${C}`], 'P reads both in its own run');
+  // its own helper: C → C2 stays in C's run (not the coordinator's)
+  assert.equal(cli(w, C, ['send', '--type', 'status', '--to', C2, 'to my helper']).code, 0);
+  assert.equal(msgs(w).find((m) => m.body === 'to my helper')?.run_id, C, 'mail to a member of MY run is filed in my run');
+  // the explicit form keeps working
+  assert.equal(cli(w, C, ['send', '--type', 'status', '--run', P, '--to', P, 'explicit run']).code, 0);
+  assert.equal(msgs(w).find((m) => m.body === 'explicit run')?.run_id, P);
+});
+
+test('#435 LEAD → worker → grandchild: the worker that spawned reports to its LEAD with a token it fetches without --run', needsBuild, async (t) => {
+  const w = world(t, [{ id: L, kind: 'orchestrator' }, { id: W, kind: 'worktree', parentId: L }, { id: G, kind: 'worktree', parentId: W }]);
+  birth(w);
+  await spawn(w, W, { from: L }).catch(() => {}); // W is already in the store: composes L's spawn of W
+  await spawn(w, G, { from: W });
+  assert.equal(runOf(w, W), W);
+  const tok = token(w, W);
+  assert.match(tok, /^dcap_/);
+  assert.equal(cli(w, W, ['send', '--type', 'worker_done', '--to', L, '--cap', tok, 'w done']).code, 0);
+  assert.equal(msgs(w).find((m) => m.kind === 'worker_done')?.run_id, L);
+});
+
+test('#435 a start of a child with a parent but NO dispatch row writes it first; one that has it is left alone; a failed write refuses the start', needsBuild, (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  createChild(w, C); // as an older kept child: created, never dispatched
+  const deps = { getBus: () => w.bus.current, lookup: (id: string) => nodes(w).get(id) };
+  const first = ensureOwedDispatch(deps, nodes(w).get(C)!, TASK);
+  assert.equal(first.kind, 'recorded');
+  assert.deepEqual(msgs(w).map((m) => `${m.sender}>${m.recipient}:${m.kind}`), [`${P}>${C}:dispatch`]);
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS c FROM cursors').get().c, 0, 'a restart does NOT pre-ack: the child may hold unread mail');
+  assert.deepEqual(ensureOwedDispatch(deps, nodes(w).get(C)!, TASK), { kind: 'present' }, 'idempotent: a second start writes nothing');
+  assert.equal(msgs(w).length, 1);
+  w.bus.current = null;
+  assert.equal(ensureOwedDispatch(deps, nodes(w).get(P)!, TASK).kind, 'none', 'a parentless workspace has nobody to dispatch it');
+  const w2 = world(t, plainPair());
+  birth(w2);
+  createChild(w2, C);
+  w2.bus.current = null;
+  assert.equal(ensureOwedDispatch({ getBus: () => null, lookup: (id) => nodes(w2).get(id) }, nodes(w2).get(C)!, TASK).kind, 'failed', 'no bus → the start is refused');
+  const w3 = world(t, [{ id: C, kind: 'worktree', parentId: 'ghost-parent' }]);
+  assert.equal(ensureOwedDispatch({ getBus: () => w3.db, lookup: (id) => nodes(w3).get(id) }, nodes(w3).get(C)!, TASK).kind, 'none', 'a child whose parent is gone is not blocked');
 });
 
 // ── wiring pins: the host seam the composed arms above stand in for (workspaces.ts cannot load under node --test) ──
@@ -313,12 +381,19 @@ test('#435 wiring: dispatchSpawnRequest records the dispatch BEFORE the agent st
   const i = ws.indexOf('const after = await startAfterDispatch({');
   assert.ok(i > 0, 'dispatchSpawnRequest goes through startAfterDispatch');
   const block = ws.slice(i, ws.indexOf('if (!after.ran)', i));
-  assert.match(block, /recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ spawner: input\.from, detached: input\.detached, remote: !!input\.from && store\.getWorkspace\(input\.from\)\?\.host\?\.kind === 'sandbox', child: ws, task \}\)/, 'real bus + live store lookup, the spawner, the detach flag, the sandbox test, the child + the task');
+  assert.match(block, /recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ spawner: input\.from, detached: input\.detached, remote: !!input\.from && store\.getWorkspace\(input\.from\)\?\.host\?\.kind === 'sandbox', child: ws, task, preAck: true \}\)/, 'real bus + live store lookup, the spawner, the detach flag, the sandbox test, the child + the task');
   assert.match(block, /if \(outcome\.kind === 'recorded'\) recorded = \{ dispatch: \{ runId: outcome\.runId, seq: outcome\.seq \} \};/, 'the reply carries the dispatch even when the start throws');
   assert.match(block, /start: \(\) => startWorkspaceAgentHeadless\(ws\.id,/, 'the agent starts only through the seam');
   assert.match(block, /teardown: \(\) => deleteWorkspace\(ws\.id\)/, 'a failed write removes the workspace');
   assert.equal((ws.match(/startWorkspaceAgentHeadless\(ws\.id, input\.origin/g) ?? []).length, 1, 'no second, unguarded start in the spawn path');
   assert.match(ws, /if \(!after\.ran\) return \{ ok: false, error: `refusing to spawn: \$\{after\.error\}`/, 'a refused write is a refused spawn');
   const cliSrc = src('src/cli/index.ts');
+  assert.match(block, /child: ws, task, preAck: true \}\)/, 'a brand-new spawned child gets its dispatch pre-acked');
+  const once = ws.slice(ws.indexOf('const owedDispatch = ensureOwedDispatch('), ws.indexOf('// #286 Admission: under low memory'));
+  assert.match(once, /if \(owedDispatch\.kind === 'failed'\) return \{ ok: false, error:/, 'a failed write refuses the start');
+  assert.ok(ws.indexOf('const owedDispatch = ensureOwedDispatch(') > ws.indexOf('if (!ws.lastTask || !owesOpeningTask(ws)) return { ok: true };') && ws.indexOf('const owedDispatch = ensureOwedDispatch(') < ws.indexOf('admissionGate({\n      wsId: id,'), 'checked once the brief is owed, before the Admission hold and any session start');
+  const cliIdx = src('src/cli/index.ts');
+  assert.match(cliIdx, /verbSend\(\{ \.\.\.busCtx\(db, bus, id, fencing, capMod\), memberRunId: memberRunForCaller\(id\.handle\) \}, \{/, 'send carries the caller\'s coordinator run');
+  assert.match(cliIdx, /verbToken\(\{ \.\.\.busCtx\(db, bus, id, \{ generation: null, fencingOn: false \}\), memberRunId: memberRunForCaller\(id\.handle\) \}\);/, 'token carries it too');
   assert.match(cliSrc, /Task recorded as your dispatch #\$\{dispatched\.seq\} to \$\{res\.id\}/, 'the CLI prints the recorded dispatch');
 });

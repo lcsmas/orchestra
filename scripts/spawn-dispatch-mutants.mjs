@@ -15,7 +15,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 
-const SD = 'src/main/spawn-dispatch.ts', WS = 'src/main/workspaces.ts', CLI = 'src/cli/index.ts';
+const SD = 'src/main/spawn-dispatch.ts', WS = 'src/main/workspaces.ts', CLI = 'src/cli/index.ts', BV = 'src/cli/bus-verbs.ts';
 const T = 'src/main/spawn-dispatch.test.ts';
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red. */
@@ -43,6 +43,16 @@ const MUTANTS = [
   { id: 'M22', name: 'the sandbox test of the spawner is always true (every spawn silently gets no dispatch)', edits: [[WS, "remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox'", 'remote: true']], tests: [T] },
   { id: 'M23', name: 'the reply never carries the recorded dispatch (a start that throws loses it)', edits: [[WS, "if (outcome.kind === 'recorded') recorded =", 'if (false as boolean) recorded =']], tests: [T] },
   { id: 'M24', name: 'a kept child with no dispatch is no longer told not to be restarted', edits: [[SD, ' The workspace was kept STOPPED with no dispatch: do NOT restart it', ' The workspace was kept STOPPED']], tests: [T] },
+  { id: 'M25', name: 'a report to the direct coordinator is no longer filed in its run (owner-child status lands in its own run)', cli: true, edits: [[BV, 'if (!m || !a.to || a.to !== m || m === ctx.id.runId) return ctx;', 'if (true as boolean) return ctx;']], tests: [T] },
+  { id: 'M26', name: 'the capability is verified in the sender\'s own run, not the filing run (owner-child worker_done rejected)', cli: true, edits: [[BV, 'ctx.bus.verifyCapability(ctx.db, wctx.id.runId, cap)', 'ctx.bus.verifyCapability(ctx.db, ctx.id.runId, cap)']], tests: [T] },
+  { id: 'M27', name: 'token no longer looks in the coordinator\'s run (an owner-child finds none)', cli: true, edits: [[BV, 'if (token === null && ctx.memberRunId &&', 'if (false as boolean && ctx.memberRunId &&']], tests: [T] },
+  { id: 'M28', name: 'send never learns its coordinator run (index.ts drops memberRunId on send)', cli: true, edits: [[CLI, 'memberRunId: memberRunForCaller(id.handle) }, {', 'memberRunId: undefined }, {']], tests: [T] },
+  { id: 'M29', name: 'token never learns its coordinator run (index.ts drops memberRunId on token)', cli: true, edits: [[CLI, 'memberRunId: memberRunForCaller(id.handle) });', 'memberRunId: undefined });']], tests: [T] },
+  { id: 'M30', name: 'the spawn dispatch is not pre-acked (the fresh child is woken for its own task)', edits: [[SD, 'if (a.preAck) db.prepare(', 'if (false as boolean) db.prepare(']], tests: [T] },
+  { id: 'M31', name: 'a start of a child with no dispatch row writes nothing (ensureOwedDispatch thinks it is present)', edits: [[SD, "if (has) return { kind: 'present' };", "if (true as boolean) return { kind: 'present' };"]], tests: [T] },
+  { id: 'M32', name: 'a failed owed-dispatch write no longer refuses the start', edits: [[WS, "if (owedDispatch.kind === 'failed') return", "if (false as boolean) return"]], tests: [T] },
+  { id: 'M33', name: 'the spawn route no longer pre-acks (wiring)', edits: [[WS, 'child: ws, task, preAck: true })', 'child: ws, task })']], tests: [T] },
+  { id: 'M34', name: 'a child whose parent is gone is blocked from starting (missing-parent exemption removed)', edits: [[SD, '|| !deps.lookup(child.parentId)) return', '|| false as boolean) return']], tests: [T] },
   { id: 'M20', name: 'the CLI stops printing the recorded dispatch', edits: [[CLI, 'Task recorded as your dispatch #${dispatched.seq} to ${res.id}', 'Spawned ${res.id}']], tests: [T] },
 ];
 

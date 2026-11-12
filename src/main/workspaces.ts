@@ -135,7 +135,7 @@ import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
-import { recordSpawnDispatch, startAfterDispatch } from './spawn-dispatch.ts';
+import { ensureOwedDispatch, recordSpawnDispatch, startAfterDispatch } from './spawn-dispatch.ts';
 import { formatPeerMessage, type PeerOrigin } from '../shared/peer-messages.ts';
 import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
 import { appendInboxBlock } from './inbox-write.ts';
@@ -1359,6 +1359,9 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
   if (paused) return { ok: false, error: paused };
   // Nothing owed = nothing to deliver — a repeated Restart delivers the brief once (#227).
   if (!ws.lastTask || !owesOpeningTask(ws)) return { ok: true };
+  // #435: a child with a parent never starts without its dispatch (a spawn killed before the write, a failed teardown, an older kept child): written first, or the start is refused.
+  const owedDispatch = ensureOwedDispatch({ getBus, lookup: (x) => store.getWorkspace(x) }, ws, ws.lastTask);
+  if (owedDispatch.kind === 'failed') return { ok: false, error: `refusing to start: could not record the task as its parent's dispatch (${owedDispatch.error})` };
   // #286 Admission: under low memory an AUTOMATIC start of a fleet member is HELD, not failed — the workspace is KEPT, stopped, its brief still
   // owed; nothing starts, the reply is ok + `held`. The release (`admitted`, so it never re-holds) runs this same start once memory is back.
   // A human retry (toolbar Restart) and a top-level / detached workspace never hold. Ledger #295 FI-2.
@@ -1572,7 +1575,7 @@ export async function dispatchSpawnRequest(
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({
       record: () => {
-        const outcome = recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { spawner: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task });
+        const outcome = recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { spawner: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task, preAck: true });
         if (outcome.kind === 'recorded') recorded = { dispatch: { runId: outcome.runId, seq: outcome.seq } }; // set BEFORE the start so a start that throws still reports it
         return outcome;
       },
@@ -3945,10 +3948,10 @@ orchestra send --type worker_done --to <parent-id> --cap "\$(orchestra token)" "
 \`\`\`
 
 \`orchestra token\` prints your CURRENT capability (each call rotates it — fetch it
-once, right before the report). A report without a valid token is REJECTED and
-not recorded; a later dispatch from your parent supersedes the earlier token — run
-\`orchestra token\` again. \`orchestra check\` may show your own task as an unread
-dispatch: it is the text you already hold.
+once, right before the report) and works without \`--run\`, also when you spawned
+agents of your own. A report without a valid token is REJECTED and not recorded;
+a later dispatch from your parent supersedes the earlier token — run
+\`orchestra token\` again. Your own task is NOT in your inbox (already read).
 
 ## 3. Verify a delegated branch actually landed
 

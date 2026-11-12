@@ -181,6 +181,8 @@ export interface BusVerbCtx {
   id: BusIdentity;
   /** #436 — the run the CALLER is really in (host-resolved / baked env), never the overridable `--run`: dispatch and gate are judged against it. */
   ownRunId?: string;
+  /** #435 — the DIRECT COORDINATOR's run id (= its workspace id) when the caller is a member of it AND owns a run of its own (spawned child that spawned in turn): where its reports to that coordinator are filed and its capability lives. Unset otherwise. */
+  memberRunId?: string;
   out: OutFn;
   fail: FailFn;
   bus: BusModule;
@@ -210,12 +212,12 @@ export interface BusVerbCtx {
    * is ON or OFF, but the completion is only REJECTED when it is ON. OFF = the
    * old channel accepts the completion as v1.
    */
-  capabilityEnabled?: () => boolean;
+  capabilityEnabled?: (runId?: string) => boolean;
   /** #129 — record that a would-be capability rejection was observed (shadow
    *  counter). Called on every stale/absent token regardless of the switch, so
    *  the counter moves in shadow mode. No-op if unwired (unit tests without a
    *  counter). */
-  countCapabilityReject?: () => void;
+  countCapabilityReject?: (runId?: string) => void;
 }
 
 /** The slice of src/main/bus.ts the verbs use (injected so a test can drive the
@@ -541,6 +543,19 @@ function assertRunsOpen(ctx: BusVerbCtx, verb: string, ...runIds: Array<string |
   }
 }
 
+/** #435 — the kinds a member files in its direct coordinator's run even when it owns a run of its own. */
+export const COORDINATOR_REPORT_KINDS: readonly string[] = ['worker_done', 'status'];
+
+/** A report/status from a member to its DIRECT COORDINATOR is filed in the coordinator's run (where the capability of its dispatch lives and where the
+ *  coordinator reads), also when the sender owns a run too. An explicit `--run` (id.runId ≠ the caller's own run) is honoured as named. Not fenced: the sender coordinates nothing there. */
+function filedWithCoordinator(ctx: BusVerbCtx, a: SendArgs): BusVerbCtx {
+  const m = ctx.memberRunId;
+  if (!m || !a.to || a.to !== m || m === ctx.id.runId) return ctx;
+  if (!COORDINATOR_REPORT_KINDS.includes(a.kind!)) return ctx;
+  if (ctx.ownRunId === undefined || ctx.id.runId !== ctx.ownRunId) return ctx;
+  return { ...ctx, id: { ...ctx.id, runId: m }, generation: null, fencingOn: false };
+}
+
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] [--request-id <id>] <body...>');
   // Validated HERE as well as in bus.send(), because the CLI can say what the
@@ -551,7 +566,7 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
   assertRunsOpen(ctx, 'send', ctx.id.runId, a.toRunId, a.to); // #437: a closed run is refused, not parked
   // #436 — route by the recipient's run (cross-run status/ask → ITS run; dispatch/gate/other refused) BEFORE any write.
-  const wctx = a.to ? routeMail(ctx, 'send', a.kind!, a.to, a.toRunId) : ctx;
+  const wctx = filedWithCoordinator(a.to ? routeMail(ctx, 'send', a.kind!, a.to, a.toRunId) : ctx, a);
 
   // #129 — capability verification BEFORE the write, so a rejected (fired)
   // completion never lands at all. Independent of #128's fence: fencing gates on
@@ -568,13 +583,13 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // accepted untokened even under capability=ON; a `--cap` on it is ignored.
   const cap = a.cap?.trim() || null;
   if (CAPABILITY_COMPLETION_KINDS.includes(a.kind!)) {
-    const valid = cap !== null && ctx.bus.verifyCapability(ctx.db, ctx.id.runId, cap);
+    const valid = cap !== null && ctx.bus.verifyCapability(ctx.db, wctx.id.runId, cap);
     if (!valid) {
       // COUNTED always (shadow counter moves in shadow mode) …
-      ctx.countCapabilityReject?.();
+      ctx.countCapabilityReject?.(wctx.id.runId);
       // … FIRED only when the `capability` switch is ON. OFF => fall through and
       // land the completion as v1 (coexistence: old channel authoritative).
-      const fired = ctx.capabilityEnabled?.() === true;
+      const fired = ctx.capabilityEnabled?.(wctx.id.runId) === true;
       if (fired) {
         // Neutral wording (review F2): a rejected token may be a legitimate
         // completion whose dispatch was superseded by a newer dispatch to the
@@ -876,7 +891,11 @@ export function verbAsk(
  * handle (default $ORCHESTRA_WS_ID), the same recipient the dispatch addressed.
  */
 export function verbToken(ctx: BusVerbCtx): void {
-  const token = ctx.bus.rotateCapabilityForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+  let token = ctx.bus.rotateCapabilityForRecipient(ctx.db, ctx.id.runId, ctx.id.handle);
+  // #435: a spawned child that spawned in turn owns a run of its own, but its capability sits in its coordinator's run (no explicit --run).
+  if (token === null && ctx.memberRunId && ctx.ownRunId !== undefined && ctx.id.runId === ctx.ownRunId && ctx.memberRunId !== ctx.id.runId) {
+    token = ctx.bus.rotateCapabilityForRecipient(ctx.db, ctx.memberRunId, ctx.id.handle);
+  }
   if (token === null) {
     ctx.fail(
       `orchestra token: no active dispatch capability for ${ctx.id.handle} in run ${ctx.id.runId} ` +

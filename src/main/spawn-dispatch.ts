@@ -27,6 +27,9 @@ export interface SpawnDispatchInput {
   /** The just-created child. */
   child: RunNode;
   task: string;
+  /** Advance the child's read cursor past the dispatch in the SAME transaction (the child already holds the task as its opening prompt: no wake turn for it).
+   *  Only for a brand-new child — a restart of an older one must not skip the mail it has not read. */
+  preAck?: boolean;
 }
 
 export interface SpawnDispatchDeps {
@@ -58,11 +61,29 @@ export function recordSpawnDispatch(deps: SpawnDispatchDeps, a: SpawnDispatchInp
     const seq = db.transaction((): number => {
       const s = send(db, { runId, sender: spawner.id, kind: 'dispatch', body: a.task, recipient: a.child.id });
       mintCapability(db, runId, s, a.child.id);
+      // The ack bump (`ack()` in bus.ts does exactly this): MAX so a cursor already past it never moves back. A LATER dispatch has a higher seq and wakes as usual.
+      if (a.preAck) db.prepare('INSERT INTO cursors (run_id, reader, acked_seq) VALUES (?,?,?) ON CONFLICT(run_id, reader) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq)').run(runId, a.child.id, s);
       return s;
     })();
     return { kind: 'recorded', runId, seq };
   } catch (e) {
     return { kind: 'failed', error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** A start (restart / wake / retry) of a child that HAS a parent while its opening brief is still owed: if no dispatch to it exists in its run, write it first (same function, no pre-ack —
+ *  the child may hold unread mail), else leave it. `failed` = refuse the start: no agent may run without its dispatch. */
+export function ensureOwedDispatch(deps: SpawnDispatchDeps, child: RunNode, task: string): SpawnDispatchOutcome | { kind: 'present' } {
+  if (!child.parentId || !deps.lookup(child.parentId)) return { kind: 'none', reason: 'detached' }; // parentless (or its parent is gone): nobody to dispatch it
+  try {
+    const db = deps.getBus();
+    if (!db) return { kind: 'failed', error: 'the bus is not open (cannot check the owed dispatch)' };
+    const runId = runIdOf(child, deps.lookup);
+    const has = db.prepare("SELECT 1 FROM messages WHERE run_id = ? AND kind = 'dispatch' AND recipient = ? LIMIT 1").get(runId, child.id);
+    if (has) return { kind: 'present' };
+    return recordSpawnDispatch(deps, { spawner: child.parentId, child, task });
+  } catch (e) {
+    return { kind: 'failed', error: `owed-dispatch check: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 

@@ -47,7 +47,7 @@ import {
   switchStateWord,
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
-import { runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
+import { memberRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunView } from '../shared/memory-guard.ts';
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
@@ -887,6 +887,18 @@ async function canonicalizeRecipientOrFail(
   return { id, runId: candidates.find((c) => c.id === id)?.runId ?? null };
 }
 
+/** #435 — the DIRECT COORDINATOR's run id when this caller owns a run of its own AND is a member of that coordinator's run (a spawned child that spawned in
+ *  turn); undefined otherwise or when `--as` names another handle. Read off the app's store file (the same record the host resolves the run from). */
+function memberRunForCaller(handle: string): string | undefined {
+  const self = selfWorkspaceId();
+  if (!self || self !== handle) return undefined;
+  const nodes = offlineWaveNodes();
+  const me = nodes.get(self);
+  if (!me) return undefined;
+  const member = memberRunOf(me, (x) => nodes.get(x));
+  return member && member !== runIdOf(me, (x) => nodes.get(x)) ? member : undefined;
+}
+
 /** Bind a bus verb to this process's stdout and this file's `fail()`.
  *
  *  `fail` is passed in rather than imported by bus-verbs.ts because the throw is
@@ -922,11 +934,11 @@ function busCtx(
     // completion is REJECTED (fired) or merely COUNTED. Reads the FROZEN run-row
     // flag; OFF for an unknown run, the coexistence-safe default.
     capabilityEnabled: capMod
-      ? () => capMod.busSwitch(db, id.runId, 'capability')
+      ? (runId?: string) => capMod.busSwitch(db, runId ?? id.runId, 'capability')
       : undefined,
     countCapabilityReject: capMod
-      ? () => {
-          capMod.countCapabilityReject(db, id.runId);
+      ? (runId?: string) => {
+          capMod.countCapabilityReject(db, runId ?? id.runId);
         }
       : undefined,
   };
@@ -1679,7 +1691,7 @@ async function main(argv: string[]): Promise<void> {
           fail(unknownRunRefusalMessage(id.runId));
         }
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
-        verbSend(busCtx(db, bus, id, fencing, capMod), {
+        verbSend({ ...busCtx(db, bus, id, fencing, capMod), memberRunId: memberRunForCaller(id.handle) }, {
           kind: t.value,
           to: canonTo?.id ?? null,
           toRunId: canonTo?.runId ?? null,
@@ -1785,7 +1797,7 @@ async function main(argv: string[]): Promise<void> {
       const id = busIdentityOrFail({ run: run.value, as: as.value });
       const { db, bus } = await openBusForVerb();
       try {
-        verbToken(busCtx(db, bus, id, { generation: null, fencingOn: false }));
+        verbToken({ ...busCtx(db, bus, id, { generation: null, fencingOn: false }), memberRunId: memberRunForCaller(id.handle) });
       } finally {
         db.close();
       }
