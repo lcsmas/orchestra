@@ -1,0 +1,58 @@
+diff --git a/delegate-or-do/SKILL.md b/delegate-or-do/SKILL.md
+index c929859..fb870de 100644
+--- a/delegate-or-do/SKILL.md
++++ b/delegate-or-do/SKILL.md
+@@ -110,11 +110,11 @@ implementations of that premise. **A spec bug becomes N implementation bugs.**
+ 
+ ## Which TIER the fan-out lands on (LEAD > OPS > worker fleets)
+ 
+-In a nested Orchestra fleet there is no tier choice left (operator ruling,
+-Lucas 2026-09-21): **either the full LEAD → OPS → workers architecture, or
+-nothing** (inline / one plain spawn). A LEAD-coordinated micro-wave is
+-forbidden. The architecture's rules live in **`verified-fanout` §0a**; read it
+-there when the answer is fan out.
++A multi-ticket vague goes through an OPS — never coordinated by a LEAD
++directly (operator ruling, Lucas 2026-09-21, narrowed by ADR 0012). Otherwise
++inline / one plain spawn. Tree depth and that rule are conduct, the host
++enforces neither. The rules live in **`verified-fanout` §0a**; read it there
++when the answer is fan out.
+ 
+ ## When you have decided
+ 
+@@ -123,8 +123,8 @@ there when the answer is fan out.
+   the close-out sweep against branch tips.
+ - **Do it** → proceed inline.
+ 
+-Either way, tell the user which way you went — including the TIER (promoted
+-OPS vs direct micro-wave vs inline) — and why, in one sentence — they
++Either way, tell the user which way you went — including the TIER (via an
++OPS vs inline) — and why, in one sentence — they
+ usually asked because they want the *judgement* visible, and a stated reason
+ lets them overrule you cheaply. "Not a swarm — all four fixes are in one file
+ and already diagnosed" beats silently not spawning. When the question was "is a
+diff --git a/verified-fanout/SKILL.md b/verified-fanout/SKILL.md
+index 61604e9..3ff90bd 100644
+--- a/verified-fanout/SKILL.md
++++ b/verified-fanout/SKILL.md
+@@ -31,13 +31,14 @@ An OPS is therefore both a worker (of its mission) and a coordinator (of its
+ vague); a mission can run several vagues in sequence, each dying with its OPS.
+ **Which tier coordinates (the rules live HERE; `delegate-or-do` only points
+ at this section).** Run `orchestra whoami` first — it names your tier:
+-- **LEAD** (no parent, talks to the human): ANY wave → spawn +
+-  `orchestra promote <id>` an OPS, which coordinates the vague per this skill.
+-  **There is NO middle form (operator ruling, Lucas 2026-09-21): either the
+-  full LEAD → OPS → workers architecture, or inline/plain-spawn — a
+-  LEAD-coordinated "micro-wave" is forbidden.**
+-- **OPS** (has a parent): fan out directly under yourself; never promote a
+-  third level — at most one promote level exists (LEAD → OPS → workers).
++- **LEAD** (no parent, talks to the human): a multi-ticket vague goes through
++  an OPS — `orchestra spawn` one with the vague as its task; the OPS owns the
++  vague's run and coordinates it per this skill. **A vague is never coordinated
++  by a LEAD directly (operator ruling, Lucas 2026-09-21, narrowed by ADR 0012):
++  through an OPS, or inline/plain-spawn.** There is no promote step: roles
++  follow position, whoever owns a run coordinates it.
++- **OPS** (has a parent): fan out directly under yourself; do not add a third
++  level. Tree depth and the OPS rule are conduct, the host enforces neither.
+ - Either tier, ONE self-contained task → plain `orchestra spawn`, no fan-out
+   machinery.
+ The bus records the nesting on the run row (`parent_run_id`), so a vague's run
