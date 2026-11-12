@@ -19,7 +19,7 @@ export type SpawnDispatchOutcome =
 
 export interface SpawnDispatchInput {
   /** The spawner's workspace id (`/spawn` `from`); absent = a human click. */
-  from?: string;
+  spawner?: string;
   /** `--detached`: the child has no parent. */
   detached?: boolean;
   /** The child's workspace is a sandbox one (the bus is the host's; ADR 0012 out of scope). */
@@ -37,13 +37,13 @@ export interface SpawnDispatchDeps {
 
 /** Record the spawn task as the spawner's dispatch to the child. Never throws: a failure is an outcome the caller turns into a refused spawn. */
 export function recordSpawnDispatch(deps: SpawnDispatchDeps, a: SpawnDispatchInput): SpawnDispatchOutcome {
-  if (!a.from) return { kind: 'none', reason: 'no-spawner' };
-  if (a.detached || a.child.parentId !== a.from) return { kind: 'none', reason: 'detached' };
+  if (!a.spawner) return { kind: 'none', reason: 'no-spawner' };
+  if (a.detached || a.child.parentId !== a.spawner) return { kind: 'none', reason: 'detached' };
   if (a.remote) return { kind: 'none', reason: 'sandbox' };
   if (!a.task.trim()) return { kind: 'none', reason: 'empty-task' };
   try {
-    const spawner = deps.lookup(a.from);
-    if (!spawner) return { kind: 'failed', error: `the spawner ${a.from} is not in the store` };
+    const spawner = deps.lookup(a.spawner);
+    if (!spawner) return { kind: 'failed', error: `the spawner ${a.spawner} is not in the store` };
     // The dispatch lives in the run the child is a member of; it is the spawner's own run too (a first spawn made it the owner — #434).
     const runId = runIdOf(a.child, deps.lookup);
     if (runIdOf(spawner, deps.lookup) !== runId) {

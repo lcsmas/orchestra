@@ -13,6 +13,8 @@ import { openBus, type BusDb } from './bus.ts';
 import { getRun, refreezeRun, startRun } from './bus-runs.ts';
 import { computeAnchorInfo, maybeStartRunAtAnchor, ownerToMark, runAnchorProbe, startRunsForParentless, type BusRunAnchorDeps } from './bus-run-anchor.ts';
 import { recordSpawnDispatch, startAfterDispatch, type SpawnDispatchOutcome } from './spawn-dispatch.ts';
+import { sweepBusWake, setWakeRoster, setWakeDeliver, setWakeSwitchReader, setAskGateSwitchReader, __setBusReaderForTests, __resetBusWakeForTests, __armStartedForTests } from './bus-wake.ts';
+import { busSwitch } from './bus-runs.ts';
 import { offlineWaveNodes } from '../cli/index.ts';
 import { runIdOf } from '../shared/run-position.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
@@ -104,7 +106,7 @@ async function spawn(w: World, child: string, o: SpawnOpts = {}) {
   const n = nodes(w);
   return startAfterDispatch<string>({
     record: () =>
-      recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { from: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK }),
+      recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { spawner: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK }),
     start: async () => {
       w.events.push(`start:${child}`);
       w.dispatchRowsAtStart.push(msgs(w).filter((m) => m.kind === 'dispatch').length);
@@ -270,6 +272,25 @@ test('#435 a spawner missing from the store is refused, nothing starts', needsBu
   assert.deepEqual(w.events, [`teardown:${C}`]);
 });
 
+test('#435 the child\'s first `check` shows its own task as ONE unread dispatch (not pre-acked), and the idle child is woken for it once', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  await spawn(w, C, { from: P });
+  __resetBusWakeForTests();
+  t.after(() => __resetBusWakeForTests());
+  __setBusReaderForTests(() => w.db);
+  const wakes: string[] = [];
+  setWakeRoster(() => [C, P].map((r) => ({ reader: r, wakeable: true, runId: runOf(w, r) })));
+  setWakeDeliver(async (reader) => { wakes.push(reader); return true; });
+  setWakeSwitchReader((runId) => busSwitch(w.db, runId, 'wake'));
+  setAskGateSwitchReader((runId) => busSwitch(w.db, runId, 'ask_gate'));
+  __armStartedForTests();
+  await sweepBusWake();
+  assert.deepEqual(wakes, [C], 'the child (idle) is woken to read the dispatch; the spawner is not woken for its own mail');
+  const lot = JSON.parse(cli(w, C, ['check']).stdout) as { count: number; messages: Array<{ kind: string; sender: string; body: string }> };
+  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.sender}:${m.body}`), [`dispatch:${P}:${TASK}`]);
+});
+
 // ── wiring pins: the host seam the composed arms above stand in for (workspaces.ts cannot load under node --test) ──
 const src = (rel: string): string => fs.readFileSync(path.resolve(here, '..', '..', rel), 'utf8');
 
@@ -278,7 +299,7 @@ test('#435 wiring: dispatchSpawnRequest records the dispatch BEFORE the agent st
   const i = ws.indexOf('const after = await startAfterDispatch({');
   assert.ok(i > 0, 'dispatchSpawnRequest goes through startAfterDispatch');
   const block = ws.slice(i, ws.indexOf('if (!after.ran)', i));
-  assert.match(block, /record: \(\) => recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ from: input\.from, detached: input\.detached,/, 'real bus + live store lookup, the spawner, the detach flag');
+  assert.match(block, /record: \(\) => recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ spawner: input\.from, detached: input\.detached,/, 'real bus + live store lookup, the spawner, the detach flag');
   assert.match(block, /start: \(\) => startWorkspaceAgentHeadless\(ws\.id,/, 'the agent starts only through the seam');
   assert.match(block, /teardown: \(\) => deleteWorkspace\(ws\.id\)/, 'a failed write removes the workspace');
   assert.equal((ws.match(/startWorkspaceAgentHeadless\(ws\.id, input\.origin/g) ?? []).length, 1, 'no second, unguarded start in the spawn path');

@@ -1542,6 +1542,7 @@ export async function dispatchSpawnRequest(
   const profileReport = (): Pick<SpawnResult, 'profile'> =>
     profileDecision.kind === 'none' ? {} : { profile: { applied: profileDecision.kind === 'honoured', message: profileDecision.message } };
   let created: { id: string; branch: string } | undefined;
+  let recorded: Pick<SpawnResult, 'dispatch'> = {}; // #435: the dispatch written for this spawn, reported on every outcome that created the child
   // #227: a failed start KEEPS the child (stopped, task retained) — carry id+branch so the caller can restart it; `startError` is the bare cause.
   const keptFailure = (id: string, branch: string, cause: string): SpawnResult => ({
     ok: false,
@@ -1551,6 +1552,7 @@ export async function dispatchSpawnRequest(
     error:
       `the agent failed to start: ${cause}. Workspace ${branch} (${id}) was kept, stopped, ` +
       `with its task retained — fix the cause, then restart it (\`orchestra restart ${id}\`).`,
+    ...recorded, // #435: the dispatch stays on the bus (a restart re-delivers the task, never a second dispatch)
     ...profileReport(), // #401: a kept child still says what became of its profile
   });
   try {
@@ -1569,15 +1571,15 @@ export async function dispatchSpawnRequest(
     created = { id: ws.id, branch: ws.branch };
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({
-      record: () => recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { from: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task }),
+      record: () => recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { spawner: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task }),
       start: () => startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images),
       teardown: () => deleteWorkspace(ws.id),
     });
     if (!after.ran) return { ok: false, error: `refusing to spawn: ${after.error}`, ...(after.kept ? { id: ws.id, branch: ws.branch } : {}) };
     const started = after.result;
-    const dispatch = after.dispatch.kind === 'recorded' ? { dispatch: { runId: after.dispatch.runId, seq: after.dispatch.seq } } : {};
-    if (!started.ok) return { ...keptFailure(ws.id, ws.branch, started.error), ...dispatch };
-    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...dispatch, ...profileReport() };
+    if (after.dispatch.kind === 'recorded') recorded = { dispatch: { runId: after.dispatch.runId, seq: after.dispatch.seq } };
+    if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
+    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...recorded, ...profileReport() };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'spawn failed';
     // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
@@ -3798,6 +3800,18 @@ On success it prints \`Spawned <workspace-id> on branch <branch>\` (the FINAL na
 once the worktree exists and its agent has started; otherwise it prints an error
 and exits non-zero.
 
+**The task you pass IS your dispatch to the child (#435).** The spawn records it
+on the bus — from you to the new agent, in the run you coordinate — BEFORE the
+agent starts, and prints \`Task recorded as your dispatch #<seq> to <id> (run <run>).\`
+Nothing else to do: the child reports with
+\`orchestra send --type worker_done --to <your-id> --cap "\$(orchestra token)" "<report>"\`
+and it is accepted. Tell the child to end that way in the brief. If the bus write
+fails, the spawn is REFUSED (non-zero, the workspace removed — no agent runs
+without its dispatch). A \`--detached\` child has no parent and no dispatch. Sending
+your own \`orchestra send --type dispatch --to <child-id>\` later RE-TASKS it:
+the new dispatch supersedes the spawn's (the child fetches the live token with
+\`orchestra token\`; a token fetched before is refused).
+
 Optional flags:
 - \`--repo <abs path of another repo already added to orchestra>\` — spawn in a different repo.
 - \`--base <branch>\` — cut the new branch from a specific base.
@@ -3917,6 +3931,21 @@ It still works in two cases, and only these:
   poke, for when the peer's bus reader is wedged and you must wake it directly.
   \`--emergency\` MUST be the leading token (anything after \`<peer-id>\` is the
   message body, verbatim).
+
+## 2b. If a parent SPAWNED you: close with a worker_done
+
+The task you were spawned with is recorded on the bus as your parent's dispatch to
+you (#435), so you hold a capability. Report the end of your work with:
+
+\`\`\`bash
+orchestra send --type worker_done --to <parent-id> --cap "\$(orchestra token)" "<what is done, what is not>"
+\`\`\`
+
+\`orchestra token\` prints your CURRENT capability (each call rotates it — fetch it
+once, right before the report). A report without a valid token is REJECTED and
+not recorded; a later dispatch from your parent supersedes the earlier token — run
+\`orchestra token\` again. \`orchestra check\` may show your own task as an unread
+dispatch: it is the text you already hold.
 
 ## 3. Verify a delegated branch actually landed
 

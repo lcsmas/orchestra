@@ -162,7 +162,7 @@ test('#375/#376: the launch is on the PRIVATE channel only, takes the desktop-cl
   assert.ok(hooksSpawn.includes('dispatchAgentSpawnRequest({'), 'control: found the hooks /spawn call (an agent\'s spawn takes the agent wrapper)');
   assert.match(read('src/main/workspaces.ts'), /dispatchSpawnRequest\(\{ \.\.\.rest, defaultKind: 'spawned', branch: checked\.name, namedBy: input\.from, exactName: true \}\)/, 'the wrapper keeps an agent\'s spawn the spawned kind');
   assert.doesNotMatch(hooksSpawn, /origin/, 'an agent\'s /spawn body can never carry the human origin into the spawn path');
-  assert.match(read('src/main/workspaces.ts'), /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\);/, 'the origin reaches the agent start');
+  assert.match(read('src/main/workspaces.ts'), /start: \(\) => startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\),/, 'the origin reaches the agent start');
   // a failed start KEEPS the child and the phone gets the bare cause + the id — also when the start THROWS after the workspace was persisted
   const spawnSrc = read('src/main/workspaces.ts');
   const dsr = spawnSrc.slice(spawnSrc.indexOf('export async function dispatchSpawnRequest'), spawnSrc.indexOf('// ---------- Add repo'));
@@ -241,7 +241,7 @@ test('launch files (Lucas 2026-10-22): the phone\'s images / PDFs ride the agent
   const sdk = read('src/main/agent-sdk.ts');
   const ws = read('src/main/workspaces.ts');
   const delivery = read('src/main/sdk-delivery.ts');
-  assert.match(ws, /const started = await startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\);/, 'dispatchSpawnRequest hands the files to the start');
+  assert.match(ws, /start: \(\) => startWorkspaceAgentHeadless\(ws\.id, input\.origin, false, input\.images\),/, 'dispatchSpawnRequest hands the files to the start');
   assert.match(ws, /startWorkspaceAgentOnce\(id, origin, admitted, images\)/, 'the deduped start forwards them');
   assert.match(ws, /sdkStartAndDeliverResult\(id, ws\.lastTask, \{ openingBrief: true, [^\n]*\.\.\.\(images\?\.length \? \{ images \} : \{\}\) \}\)/, 'the opening brief carries them');
   assert.match(delivery, /await impl\.start\(wsId, text, opts\);/, 'the seam passes opts through');

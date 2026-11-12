@@ -1969,6 +1969,17 @@ highest-volume kind, and gating it made status unusable the moment `capability`
 flipped ON. A `status` (and every non-`worker_done` kind) passes untokened even
 under capability=ON; a `--cap` on a status is accepted but ignored (attribution).
 
+### Spawn is a dispatch (#435, ADR 0012, spec #431 story 11)
+
+`orchestra spawn --task` records the task as a `dispatch` from the spawner to the new agent, minting its capability, so the child's `worker_done --cap "$(orchestra token)"` is accepted with no step from the parent. Written by the HOST in `dispatchSpawnRequest` (`workspaces.ts`) through `src/main/spawn-dispatch.ts` (platform-free, collaborators injected):
+- **Order = the guarantee:** `createWorkspace` (the first spawn makes the parent own a run, #434, and starts the child's anchor row) → `recordSpawnDispatch` → agent start, all inside `startAfterDispatch`. The dispatch is in the run the child is a member of = the spawner's own run (`runIdOf` of both must agree, else refused), sender = spawner id, recipient = child id, body = the task verbatim; `send` + `mintCapability` are ONE `db.transaction` (no dispatch without a capability, no orphan row on a failed mint).
+- **A failed write** (bus not open, run row missing/closed, mint/throw, spawner not in the store or not the run's owner) starts NO agent and removes the just-created workspace (`deleteWorkspace`); the spawn answers `{ok:false, error:"refusing to spawn: could not record the task as your dispatch (…)…"}`. A teardown that itself fails answers with `id`/`branch` (kept, STOPPED). A failed START after a recorded dispatch keeps the child stopped (#227) and the dispatch stays — `orchestra restart` re-delivers the task, never a second dispatch.
+- **No dispatch:** no `from` (a human click: pinned-Linear, accès mobile), blank task, a sandbox child, and `--detached` (a parentless child is its own mission; a dispatch across unrelated runs is refused anyway, #436). The reply carries `dispatch: {runId, seq}` only when one was written; the CLI prints `Task recorded as your dispatch #<seq> to <id> (run <run>).`.
+- **Later dispatch by the parent = the existing supersede rule:** both rows stay in the log, the first capability becomes `superseded`, exactly one stays `active`; a token fetched before is rejected, `orchestra token` after the re-dispatch returns the live one (rotate-on-retrieve, #167). Not merged, not a double dispatch.
+- The child's FIRST `check` returns its own task (the same text as its opening brief) as an unread dispatch; it is not pre-acked (an ack belongs to the reader, #108), so the wake sweep wakes the idle child ONCE to read it (measured + pinned in the test) — one extra turn per spawned child, left as is (the ticket records, it does not suppress).
+- Not fenced: the host write carries no coordinator generation (like `bus-mirror.ts`); the dispatch rides the spawner's live `/spawn` call.
+- Tests: `src/main/spawn-dispatch.test.ts` (BUILT CLI `token`/`send`/`check` vs real bus + store; failure-injection arms) · mutants `pnpm run test:spawn-dispatch-mutants` (`scripts/spawn-dispatch-mutants.mjs`).
+
 ### Files / symbols (all in `src/main/bus.ts`, `## Dispatch capability tokens` section)
 
 - Migration `MIGRATIONS[6]` (renumbered from 5 at rebase onto #128, which took 5
