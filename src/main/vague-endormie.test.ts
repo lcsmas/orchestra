@@ -1149,3 +1149,46 @@ test('#429 m1 — the sweep does not send its automatic Relance while a click\'s
   await advance(r, 60 * MIN);
   assert.equal(calls, 1, 'only the click\'s delivery');
 });
+
+test('#429 M2 — with a Relance start STILL HUNG, a second sleep is declared and the human is told again (the in-flight guard keeps a duplicate delivery out, not the declaration)', async () => {
+  const r = humanRig();
+  let calls = 0;
+  r.deps.deliverWaitMs = 1;
+  r.deps.deliver = () => { calls++; return new Promise<RelanceDelivery>(() => {}); }; // never settles
+  await advance(r, 30 * MIN);
+  assert.equal(r.told.length, 1);
+  assert.equal(r.marks().length, 1);
+  // a member resumes: the first episode ends
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  assert.deepEqual(r.marks(), []);
+  // quiet again, the start is STILL hung
+  const t1 = r.clock.t;
+  set(r, baseFacts({ members: [member('impl', { lastActivityAt: t1 }), member('verifier', { unfinished: false })], coordinator: person('ops', { lastActivityAt: t1 }) }));
+  await advance(r, 30 * MIN);
+  assert.equal(asleepVagues().length, 1, 'a SECOND sleep is declared');
+  assert.equal(asleepVagues()[0].since, t1);
+  assert.equal(r.told.length, 2, 'and the human is told again');
+  assert.equal(r.marks()[0].since, t1);
+  assert.equal(calls, 1, 'no second delivery while the first start hangs');
+});
+
+test('#429 M2 — the late result of the OLD episode\'s hung start does not touch the new episode (its Relance stays owed, no back-off borrowed)', async () => {
+  const r = humanRig();
+  let release: (v: RelanceDelivery) => void = () => {};
+  r.deps.deliverWaitMs = 1;
+  r.deps.deliver = () => new Promise<RelanceDelivery>((res) => { release = res; });
+  await advance(r, 30 * MIN);
+  set(r, baseFacts({ members: [member('impl', { active: true }), member('verifier', { unfinished: false })] }));
+  await advance(r, VAGUE_SWEEP_MS);
+  const t1 = r.clock.t;
+  set(r, baseFacts({ members: [member('impl', { lastActivityAt: t1 }), member('verifier', { unfinished: false })], coordinator: person('ops', { lastActivityAt: t1 }) }));
+  await advance(r, 12 * MIN);
+  assert.equal(asleepVagues()[0].since, t1);
+  release('sent'); // the OLD start finally lands
+  await new Promise((res) => setImmediate(res));
+  assert.equal(asleepVagues()[0].nudgedAt, null, 'the new episode was not stamped as relanced');
+  r.deps.deliver = async (wsId, text) => { r.turns.push({ wsId, text }); return 'sent'; };
+  await advance(r, 2 * MIN);
+  assert.equal(r.turns.length, 1, 'its own Relance goes out now that nothing is in flight');
+});
