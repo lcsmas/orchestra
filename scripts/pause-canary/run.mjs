@@ -49,6 +49,9 @@ const PROOF_ARMS = [
   { name: 'control:clean-douce', exercise: 'douce', expect: 'PASS', slow: true },
   // skip-kill needs the `bg` member (4+ workers): a plain interrupt already aborts a FOREGROUND command, so only a background task proves the trap's kill (measured: with 3 workers the mutant ran `killed: []` and tools_dead stayed green)
   ...Object.entries(MUTANTS).map(([m, d]) => ({ name: `mutant:${m}`, mutant: m, exercise: d.exercise, redden: d.redden, slow: d.exercise === 'douce', ...(m === 'skip-kill' ? { members: 4 } : {}) })),
+  // #438 — the PLAIN-PAIR drive (a plain parent + 1 child) goes red for the same product breaks: clean control + 4 build-level mutants (`--shape plain`; the douce one runs 2 cycles so the straggler cycle is met)
+  { name: 'plain:control:clean-dure', exercise: 'dure', plain: true, expect: 'PASS' },
+  ...['skip-snapshot', 'skip-kill', 'no-confirm-reprise', 'gate-ignores-pause', 'no-deadline-escalation'].map((m) => ({ name: `plain:mutant:${m}`, mutant: m, exercise: MUTANTS[m].exercise, redden: MUTANTS[m].redden, plain: true, slow: MUTANTS[m].exercise === 'douce', ...(MUTANTS[m].exercise === 'douce' ? { cycles: 2 } : {}) })),
   // harness-level instrument controls: the drive sabotages its own evidence after the pause — the lost-work instrument must read RED for a rewound branch and for a deleted pause ref, the session-identity instrument for a killed CLI
   { name: 'control:sabotage-branch', exercise: 'dure', sabotage: 'branch', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-ref', exercise: 'dure', sabotage: 'ref', redden: ['bar:lost_work_is_zero'] },
@@ -293,7 +296,7 @@ for (const arm of sel) {
     if (arm.unfixed) { const u = ensureUnfixed(typeof arm.unfixed === 'string' ? arm.unfixed : null); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : []), ...(arm.exercise === 'memhog-app' ? memhogExtra(arm) : [])] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.plain ? 1 : arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.plain ? ['--shape', 'plain'] : []), ...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : []), ...(arm.exercise === 'memhog-app' ? memhogExtra(arm) : [])] });
   const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
   // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
   const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;
