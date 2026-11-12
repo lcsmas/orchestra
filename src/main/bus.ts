@@ -911,6 +911,7 @@ export function sendGateResolutionRewake(
  * "Asks" sidebar tray (surface B) and the per-workspace inline row (surface A
  * filters this by `asked_by`).
  */
+// #437: a gate sitting in a CLOSED run (its coordinator archived / deleted) is not listed — nobody is left to be re-woken by the ruling; it returns with the run on unarchive.
 export function openGatesForRecipientAllRuns(
   db: BusDb,
   recipient: string,
@@ -919,6 +920,7 @@ export function openGatesForRecipientAllRuns(
     .prepare(
       `SELECT * FROM decision_gates
         WHERE recipient=? AND resolved_at IS NULL
+          AND run_id NOT IN (SELECT id FROM runs WHERE closed_at IS NOT NULL)
         ORDER BY opened_at, id`,
     )
     .all(recipient) as BusDecisionGate[];

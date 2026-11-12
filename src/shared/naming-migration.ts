@@ -110,8 +110,8 @@ export const ACTION_LABEL: Record<RowAction, string> = {
  * Ids of the workspaces that belong to a vague still running: for each live VAGUE anchor — a live orchestrator
  * that has a parent (bus-run-anchor.ts: `parentRunId === null ? 'mission' : 'vague'`) — the anchor itself and
  * everything below it. "Live" is the app's own rule (`liveFleetRuns`, pause-memory.ts): the anchor is not archived
- * (nor sandbox-hosted) AND at least one live local workspace sits below it. Nothing writes `runs.closed_at`, so the
- * store is the whole truth. The app has no "close" event, and archiving an orchestrator archives its WHOLE subtree
+ * (nor sandbox-hosted) AND at least one live local workspace sits below it. `runs.closed_at` (#437) only mirrors archive/delete, so the
+ * store is the whole truth. Archiving an orchestrator archives its WHOLE subtree
  * (archiveWorkspace), after which the app refuses every rename — so the operator DECLARES a finished-but-live vague
  * through `closed` (anchor ids): its members leave the set while they are still renamable. A top-level orchestrator is a
  * mission (not a vague): its workers are never held — leave them out of the table to keep their names.

@@ -661,7 +661,7 @@ export function reconcileRunClosureAtStart(): { closed: string[]; reopened: stri
 /** #437 — a session START of a live workspace reopens a run of its own that an earlier archive closed (the unarchive reopen is
  *  best-effort), so a live coordinator never sits on a closed run. Best-effort, never throws. */
 export function ensureRunOpen(ws: Workspace): void {
-  if (!ws.archived) reopenRunsOf([ws.id]);
+  if (!(store.getWorkspace(ws.id) ?? ws).archived) reopenRunsOf([ws.id]); // the STORE's word, not a stale object's: a concurrent archive must not be undone
 }
 
 /** Collect `id` plus every workspace transitively parented under it (children,
@@ -890,7 +890,12 @@ export async function deleteWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   closeRunsOf([id]); // #437: first — mail to a coordinator being deleted is refused for the whole (slow) teardown
-  await teardownWorkspace(ws);
+  try {
+    await teardownWorkspace(ws);
+  } catch (e) {
+    reopenRunsOf([id]); // #437: the delete failed — the workspace stays, so does its run
+    throw e;
+  }
   await store.removeWorkspace(id);
   expireBusAsksForDeleted(id);
   forgetSessionKey(id); // #379: a deleted workspace has no session to vouch for
@@ -914,10 +919,15 @@ export async function deleteWorkspaces(
   // Tombstone EVERY id before the first (slow) teardown: a wake on B must not start a keeper while A tears down.
   for (const ws of targets) forbidKeeperLaunch(ws.id);
   closeRunsOf(targets.map((w) => w.id)); // #437: every run these coordinate closes before the first (slow) teardown
-  for (const ws of targets) {
-    await teardownWorkspace(ws);
-    removed.push(ws.id);
-    onProgress?.(++done, targets.length);
+  try {
+    for (const ws of targets) {
+      await teardownWorkspace(ws);
+      removed.push(ws.id);
+      onProgress?.(++done, targets.length);
+    }
+  } catch (e) {
+    reopenRunsOf(targets.filter((w) => !removed.includes(w.id)).map((w) => w.id)); // #437: the ones not torn down keep their runs
+    throw e;
   }
   if (removed.length === 0) return;
   await store.removeWorkspaces(removed);

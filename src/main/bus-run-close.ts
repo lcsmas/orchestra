@@ -27,6 +27,8 @@ export function closeRunsCoordinatedBy(db: BusDb, coordinatorIds: readonly strin
 export function reopenRunsCoordinatedBy(db: BusDb, coordinatorIds: readonly string[]): string[] {
   const out: string[] = [];
   const sel = db.prepare('SELECT id FROM runs WHERE coordinator = ? AND closed_at IS NOT NULL');
+  // a session start calls this for EVERY workspace: read first, take the bus write lock only when something is closed
+  if (!coordinatorIds.some((c) => sel.all(c).length > 0)) return out;
   const upd = db.prepare('UPDATE runs SET closed_at = NULL WHERE id = ? AND closed_at IS NOT NULL');
   db.transaction(() => {
     for (const c of coordinatorIds) {
@@ -43,16 +45,9 @@ export function closedRunIds(db: BusDb): Set<string> {
   return new Set((db.prepare('SELECT id FROM runs WHERE closed_at IS NOT NULL').all() as Array<{ id: string }>).map((r) => r.id));
 }
 
-/** The first of `runIds` that is CLOSED (`{ id, closedAt }`), or null when none is (an unknown id is not closed: the
- *  unknown-run refusal owns that). Order = the caller's order, so the refusal names the run the sender is acting in first. */
-export function firstClosedRun(db: BusDb, runIds: ReadonlyArray<string | null | undefined>): { id: string; closedAt: number } | null {
-  const q = db.prepare('SELECT closed_at AS c FROM runs WHERE id = ?');
-  for (const id of runIds) {
-    if (!id) continue;
-    const r = q.get(id) as { c: number | null } | undefined;
-    if (r && r.c !== null && r.c !== undefined) return { id, closedAt: Number(r.c) };
-  }
-  return null;
+/** Is the run a gate was opened in CLOSED? (the human Asks-tray resolve refuses such a gate: its ruling would be parked in a dead run). */
+export function isGateRunClosed(db: BusDb, gate: { run_id: string }): boolean {
+  return (db.prepare('SELECT closed_at AS c FROM runs WHERE id = ?').get(gate.run_id) as { c: number | null } | undefined)?.c != null;
 }
 
 /** What the store says about a run's coordinator: `live` (exists, not archived), `archived`, or `gone` (no such workspace). */

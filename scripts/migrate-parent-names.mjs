@@ -14,7 +14,7 @@
 //   is rejected as stale (a legacy child that renamed ITSELF is not). `new` must pass naming-policy.checkSpawnName.
 // INPUTS (all READ-ONLY): the app's store.json (the CLI's own path rule — ORCHESTRA_HOME/userData/orchestra/store.json, see appStoreFile), `git ls-remote --heads` of EVERY remote +
 //   `git for-each-ref refs/heads` of each table workspace's repo, and the RUNNING VAGUES derived from the store with the app's own liveness rule (activeVagueMemberIds:
-//   a live OPS with a live member below it — nothing writes runs.closed_at, so the bus adds nothing and is never opened; a top-level orchestrator is a mission: its workers are not held).
+//   a live OPS with a live member below it — runs.closed_at only mirrors archive/delete (#437), so the bus adds nothing and is never opened; a top-level orchestrator is a mission: its workers are not held).
 // PREFLIGHT: the RUNNING app must be at least as new as this checkout (a release installed but the app not restarted renames WITHOUT pinning or recording the former name). Read-only: the startup
 //   banner in <home>/logs/orchestra.log, of a live process. Older refuses (rc 2) always; unknown (the log rotates at 5 MB) or dead refuses unless --assume-app-current. The plan also skips what it cannot know: a
 //   worktree whose live HEAD differs from the store (or is unreadable / not a worktree we can see), and a branch another live workspace has as its baseBranch (renaming it would dangle that workspace's Diff).

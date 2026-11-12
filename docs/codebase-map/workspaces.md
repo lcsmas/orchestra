@@ -631,8 +631,8 @@ parent when none is recorded; a workspace already named and parent-named stays `
 stale `old` (only when parent-named differently since; a child that renamed ITSELF, or whose former name is `old`, is not stale), name taken — also as a ref
 path-prefix: the app would silently suffix it; an ARCHIVED workspace's row only has to be well-formed). A parent that left the store still names its child
 (`decideRename` compares ids only). A running vague = `activeVagueMemberIds` (`src/shared/naming-migration.ts:119`), the app's own `liveFleetRuns` rule
-read off the store (a live OPS with a parent and a live member below — through `parentId` OR the namer, so a `--detached` verifier is held too; nothing writes
-`runs.closed_at`, the bus is never opened; a top-level orchestrator is a mission, its workers are not held). The app has no close event and archiving an OPS
+read off the store (a live OPS with a parent and a live member below — through `parentId` OR the namer, so a `--detached` verifier is held too; `runs.closed_at`
+(#437) only mirrors archive/delete so the bus is never opened; a top-level orchestrator is a mission, its workers are not held). A finished-but-live vague has no close event and archiving an OPS
 archives its WHOLE subtree (`archiveWorkspace`), after which no rename is possible — so the operator declares a finished-but-live vague with `--closed <ops-id>`
 BEFORE archiving (the `skip-vague` PLAN line says so and prints the FULL id of every holding anchor — a member below two vagues needs both closed; `--closed` takes a full id or a unique prefix of 6+ characters, an ambiguous one lists the candidates); a table row of an archived workspace is a WARN and an apply with one is not green unless `--allow-gone`.
 The script reads only (store at the CLI's `appStoreFile` path, `git ls-remote`/`for-each-ref`/`symbolic-ref`; any unreadable input = rc 2, never an empty set), is a

@@ -31,6 +31,7 @@ import { createWatcher } from './watchers';
 import type { ResilientWatcher } from '../shared/resilient-watch';
 import { platform } from './platform';
 import { store } from './store';
+import { isGateRunClosed } from './bus-run-close.ts';
 import {
   getBus,
   busPath,
@@ -178,6 +179,7 @@ export function resolveHumanGate(gateId: number, resolution: string): HumanGateR
   // Read BEFORE resolving so we have the asker + gate run for the re-wake reply
   // (asked_by / run_id are immutable once opened).
   const gateBefore = getGate(db, gateId);
+  if (gateBefore && isGateRunClosed(db, gateBefore)) return { ok: false, reason: 'not-open', gateId }; // #437: a closed run takes no ruling (the re-wake would be parked in it)
   const ok = resolveGate(db, gateId, HUMAN_GATE_RECIPIENT, ruling);
   if (!ok) return { ok: false, reason: 'not-open', gateId };
   if (gateBefore) sendGateResolutionRewake(db, gateBefore, HUMAN_GATE_RECIPIENT, ruling);

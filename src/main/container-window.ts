@@ -13,7 +13,7 @@ export type ContainerWindowDeps = Pick<MemoryPauseDeps, 'getWorkspace' | 'listWo
 
 /**
  * Start of the earliest LIVE fleet run, epoch ms (null = none → nothing can be "unattributed"). "Live" is `liveFleetRuns` — the SAME definition as the LEAD selection of the memory alert and the memory Pause (#289/#290):
- * the run's anchor workspace is live (exists, not archived, not sandbox-hosted) with ≥ 1 live local workspace below it. NO keeper condition: a hibernated coordinator still leads its run. Nothing writes `runs.closed_at`.
+ * the run's anchor workspace is live (exists, not archived, not sandbox-hosted) with ≥ 1 live local workspace below it. NO keeper condition: a hibernated coordinator still leads its run. Since #437 `runs.closed_at` is written (archive/delete) and `liveFleetRuns` skips closed runs; the store rule above stays the whole truth.
  * Residual (accepted, FI-3 v1.3): a long-lived run widens the window by days.
  */
 export function earliestLiveFleetRunStart(deps: ContainerWindowDeps): number | null {

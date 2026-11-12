@@ -30,8 +30,8 @@ test('teardownWorkspace destroys the browser panel as an UNCONDITIONAL top-level
 });
 
 test('control: deleteWorkspace and deleteWorkspaces both tear down through teardownWorkspace; the socket route calls deleteWorkspace', () => {
-  assert.match(code(fn(ws, 'export async function deleteWorkspace(id: string)')), /^ {2}await teardownWorkspace\(ws\);$/m);
-  assert.match(code(fn(ws, 'export async function deleteWorkspaces(')), /^ {4}await teardownWorkspace\(ws\);$/m);
+  assert.match(code(fn(ws, 'export async function deleteWorkspace(id: string)')), /^ {2,4}await teardownWorkspace\(ws\);$/m);
+  assert.match(code(fn(ws, 'export async function deleteWorkspaces(')), /^ {4,6}await teardownWorkspace\(ws\);$/m);
   assert.match(code(fn(ws, 'export async function dispatchDeleteWorkspaceRequest(')), /^ {4}await deleteWorkspace\(id\);$/m);
 });
 

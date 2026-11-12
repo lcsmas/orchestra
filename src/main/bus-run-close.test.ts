@@ -10,9 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { openBus, send, openGate, type BusDb } from './bus.ts';
+import { openBus, send, openGate, getGate, openGatesForRecipientAllRuns, type BusDb } from './bus.ts';
 import { startRun, getRun, runFlags, busStatusRunView } from './bus-runs.ts';
-import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure, closedRunIds, firstClosedRun, type CoordinatorState } from './bus-run-close.ts';
+import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure, closedRunIds, isGateRunClosed, type CoordinatorState } from './bus-run-close.ts';
 import { startRunsForParentless, type BusRunAnchorDeps } from './bus-run-anchor.ts';
 import { readPendingReaders } from './bus-wake.ts';
 import { liveFleetRuns, memoryPausedRuns } from './pause-memory.ts';
@@ -243,7 +243,6 @@ test('#437 app start: a run is closed iff its coordinator is archived or gone; t
   assert.deepEqual(startRunsForParentless(deps, live, (id) => nodes.get(id)), [], 'and the sweep still creates nothing');
   assert.equal(cli(w, T1, T1, ['send', '--type', 'status', 'hi']).code, 0);
   assert.deepEqual([...closedRunIds(w.db)].sort(), [GONE, OPS].sort());
-  assert.deepEqual(firstClosedRun(w.db, [LEAD, OPS, GONE])?.id, OPS, 'the first closed run in the caller\'s order');
 });
 
 // ─── every enumerator of "live" runs skips a closed run ──────────────────────────────────────────────────────────────────────────
@@ -270,6 +269,19 @@ test('#437 the wake sweep does not wake a reader for mail or a gate sitting in a
   assert.equal(closed[0].pending, false, 'nobody is woken for mail in a closed run');
   assert.equal(closed[1].gatePending, false, 'nor for a gate in it');
   assert.equal(closed[1].pending, false);
+});
+
+test('#437 the human Asks tray lists no gate of a closed run (and it returns with the run on unarchive); a closed run takes no ruling', (t) => {
+  const w = world(t);
+  const g = openGate(w.db, OPS, W, 'need a ruling', 'human');
+  const tray = (): number[] => openGatesForRecipientAllRuns(w.db, 'human').map((x) => x.id);
+  assert.deepEqual(tray(), [g], 'control: an open run\'s gate is listed');
+  assert.equal(isGateRunClosed(w.db, getGate(w.db, g)!), false);
+  closeRunsCoordinatedBy(w.db, [OPS]);
+  assert.deepEqual(tray(), [], 'a closed run\'s gate is not listed');
+  assert.equal(isGateRunClosed(w.db, getGate(w.db, g)!), true, 'and resolveHumanGate refuses it (pinned below)');
+  reopenRunsCoordinatedBy(w.db, [OPS]);
+  assert.deepEqual(tray(), [g], 'unarchive brings it back');
 });
 
 test('#437 the liveness sweep skips a member of a closed run (no escalation to a coordinator that is gone)', (t) => {
@@ -334,12 +346,18 @@ function fnBody(src: string, decl: string): string {
 const WS = read('src/main/workspaces.ts');
 
 test('#437 wiring: every archive / delete path closes, unarchive and a session start reopen, app start reconciles', () => {
-  assert.match(fnBody(WS, 'export async function archiveWorkspace('), /closeRunsOf\(\[ws\.id\]\)/, 'archive (UI, mobile, subtree) closes the run each archived workspace coordinates');
-  assert.match(fnBody(WS, 'export async function unarchiveWorkspace('), /reopenRunsOf\(\[ws\.id\]\)/, 'unarchive reopens');
-  assert.match(fnBody(WS, 'export async function deleteWorkspace('), /closeRunsOf\(\[id\]\)/, 'delete (UI + CLI /deleteWorkspace route through it) closes');
-  assert.match(fnBody(WS, 'export async function deleteWorkspaces('), /closeRunsOf\(targets\.map/, 'bulk delete closes every target');
-  assert.match(fnBody(WS, 'export async function pruneOrphanedWorkspaces('), /closeRunsOf\(\[ws\.id\]\)/, 'an out-of-band removal is a delete');
-  assert.match(fnBody(WS, 'export function ensureRunOpen('), /reopenRunsOf\(\[ws\.id\]\)/);
+  // adjacency + order pins (not just presence): the close sits right after the store write in a per-workspace loop, BEFORE the slow teardown of a delete
+  assert.match(fnBody(WS, 'export async function archiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+closeRunsOf\(\[ws\.id\]\);/, 'archive (UI, mobile, subtree) closes the run each archived workspace coordinates, after its store write');
+  assert.match(fnBody(WS, 'export async function unarchiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+reopenRunsOf\(\[ws\.id\]\);/, 'unarchive reopens');
+  const del = fnBody(WS, 'export async function deleteWorkspace(');
+  assert.match(del, /closeRunsOf\(\[id\]\);[^\n]*\n\s+try \{\n\s+await teardownWorkspace\(ws\);\n\s+\} catch \(e\) \{\n\s+reopenRunsOf\(\[id\]\);/, 'delete (UI + CLI /deleteWorkspace route through it) closes BEFORE the teardown and reopens if it fails');
+  const bulk = fnBody(WS, 'export async function deleteWorkspaces(');
+  assert.match(bulk, /closeRunsOf\(targets\.map\(\(w\) => w\.id\)\);[^\n]*\n\s+try \{/, 'bulk delete closes every target before the first teardown');
+  assert.match(bulk, /\} catch \(e\) \{\n\s+reopenRunsOf\(targets\.filter/, 'and reopens those not torn down when one fails');
+  assert.match(fnBody(WS, 'export async function pruneOrphanedWorkspaces('), /closeRunsOf\(\[ws\.id\]\);[^\n]*\n\s+await store\.removeWorkspace\(ws\.id\);/, 'an out-of-band removal is a delete');
+  assert.match(fnBody(WS, 'export function ensureRunOpen('), /if \(!\(store\.getWorkspace\(ws\.id\) \?\? ws\)\.archived\) reopenRunsOf\(\[ws\.id\]\);/, 'a session start reopens only for a workspace the STORE says is not archived');
+  const hg = fnBody(read('src/main/human-gates.ts'), 'export function resolveHumanGate(');
+  assert.ok(hg.indexOf('isGateRunClosed(db, gateBefore)') > 0 && hg.indexOf('isGateRunClosed(db, gateBefore)') < hg.indexOf('resolveGate(db, gateId'), 'the human resolve refuses a closed run\'s gate BEFORE it resolves');
   assert.match(fnBody(WS, 'function closeRunsOf('), /closeRunsCoordinatedBy\(db, ids\)/);
   assert.match(fnBody(WS, 'function reopenRunsOf('), /reopenRunsCoordinatedBy\(db, ids\)/);
   assert.match(fnBody(WS, 'export function reconcileRunClosureAtStart('), /reconcileRunClosure\(db,/);

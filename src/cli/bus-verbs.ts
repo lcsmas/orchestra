@@ -109,7 +109,7 @@ export function closedRunRefusalMessage(verb: string, runId: string, closedAt: n
     `orchestra ${verb}: refused — run ${JSON.stringify(runId)} is CLOSED (since ${new Date(closedAt).toISOString()}): its coordinator was archived or deleted, ` +
     `so nobody reads it any more. Nothing was written.\n` +
     `  A run reopens only when its coordinator is unarchived. If you are a member of that run you have no live coordinator: ` +
-    `tell the human; to reach a live agent, address the run it belongs to.`
+    `say it in your own reply (the human reads your pane); to reach a live agent, address the run it belongs to.`
   );
 }
 
