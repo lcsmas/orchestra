@@ -1,0 +1,27 @@
+{
+ "arm": "done-idle",
+ "switch": "on",
+ "label": "lv2-done_idle_1",
+ "windowS": 780,
+ "verdict": "CLEAN",
+ "dispatchRc": 0,
+ "tActivityAfterStartS": 18,
+ "collector": {
+  "okReads": 160,
+  "failedReads": 0,
+  "finalReadAt": "2026-11-12T14:24:56.948Z",
+  "finalEscalationRows": 0,
+  "finalDispatchRows": 1,
+  "ok": true,
+  "sabotage": null
+ },
+ "why": "0 escalation row(s) over 780s of real clock after the child went idle (expected 0)",
+ "rows": [],
+ "polls": 156,
+ "cliNow": "CLI gone",
+ "livenessLog": [],
+ "childRequests": 9,
+ "minAvailGB": 19.118637084960938,
+ "leftover": 0,
+ "liveUnchanged": true
+}

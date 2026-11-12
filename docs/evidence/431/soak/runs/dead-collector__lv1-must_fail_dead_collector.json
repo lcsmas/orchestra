@@ -1,0 +1,27 @@
+{
+ "arm": "done-idle",
+ "switch": "on",
+ "label": "lv1-must_fail_dead_collector",
+ "windowS": 20,
+ "verdict": "VOID",
+ "dispatchRc": 0,
+ "tActivityAfterStartS": 18,
+ "collector": {
+  "okReads": 6,
+  "failedReads": 2,
+  "finalReadAt": "2026-11-12T14:26:26.853Z",
+  "finalEscalationRows": null,
+  "finalDispatchRows": null,
+  "ok": false,
+  "sabotage": "collector"
+ },
+ "why": "COLLECTOR DEAD at the end of the window (final escalation read FAILED, dispatch-row read FAILED, failed reads 2) \u2014 a zero would be unproven: VOID",
+ "rows": [],
+ "polls": 4,
+ "cliNow": "CLI alive",
+ "livenessLog": [],
+ "childRequests": 9,
+ "minAvailGB": 18.962127685546875,
+ "leftover": 0,
+ "liveUnchanged": true
+}

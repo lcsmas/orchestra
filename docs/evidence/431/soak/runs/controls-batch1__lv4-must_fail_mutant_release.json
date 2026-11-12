@@ -1,0 +1,27 @@
+{
+ "arm": "done-idle",
+ "switch": "on",
+ "label": "lv4-must_fail_mutant_release",
+ "windowS": 780,
+ "verdict": "DIRTY",
+ "dispatchRc": 0,
+ "tActivityAfterStartS": 18,
+ "why": "1 escalation row(s) over 780s of real clock after the child went idle (expected 0)",
+ "rows": [
+  {
+   "seq": 3,
+   "atS": 625,
+   "sender": "child",
+   "to": "P",
+   "run": "P",
+   "body": "member 93d6bf51-0000-4000-8000-000000000011 has a dispatched task and no session activity for 10m \u2014 check on it"
+  }
+ ],
+ "polls": 156,
+ "cliNow": "CLI gone",
+ "livenessLog": [],
+ "childRequests": 9,
+ "minAvailGB": 13.323287963867188,
+ "leftover": 0,
+ "liveUnchanged": true
+}

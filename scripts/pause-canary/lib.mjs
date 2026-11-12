@@ -242,7 +242,8 @@ export function startBusReader(rig, readerTree) {
   let id = 0;
   readline.createInterface({ input: child.stdout }).on('line', (l) => { try { const d = JSON.parse(l); const r = pend.get(d.id); if (r) { pend.delete(d.id); r(d); } } catch { /* not ours */ } });
   /** rows, or null when the query fails (a table the app's schema does not have yet) */
-  const q = (sql, ...args) => new Promise((resolve) => { const i = ++id; pend.set(i, (d) => resolve(d.err ? null : d.rows)); child.stdin.write(`${JSON.stringify({ id: i, sql, args })}\n`); });
+  child.stdin.on('error', () => { /* a dead reader is reported as a null read, never an unhandled stream error (#438-fu) */ });
+  const q = (sql, ...args) => new Promise((resolve) => { if (!child.stdin.writable) return resolve(null); const i = ++id; pend.set(i, (d) => resolve(d.err ? null : d.rows)); child.stdin.write(`${JSON.stringify({ id: i, sql, args })}\n`, (e) => { if (e) { pend.delete(i); resolve(null); } }); });
   return { q, close: () => { try { child.stdin.end(); child.kill(); } catch { /* gone */ } } };
 }
 

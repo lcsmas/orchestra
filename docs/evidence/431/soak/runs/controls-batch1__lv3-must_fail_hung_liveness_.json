@@ -1,0 +1,22 @@
+{
+ "arm": "hung",
+ "switch": "off",
+ "label": "lv3-must_fail_hung_liveness_",
+ "windowS": 780,
+ "verdict": "DIRTY",
+ "dispatchRc": 0,
+ "frozen": {
+  "pid": 1324721,
+  "state": "T"
+ },
+ "tActivityAfterStartS": 3,
+ "why": "0 row(s); first at +nevers (expected a \u00ab hung mid-call \u00bb row to P at \u2265 600 s)",
+ "rows": [],
+ "polls": 156,
+ "cliNow": "frozen CLI still there",
+ "livenessLog": [],
+ "childRequests": 5,
+ "minAvailGB": 13.080322265625,
+ "leftover": 0,
+ "liveUnchanged": true
+}

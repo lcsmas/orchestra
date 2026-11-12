@@ -1,0 +1,59 @@
+{
+ "tree": "/home/lmas/.orchestra/worktrees/orchestra-impl-pause-cap-petit-run-438-bc6590b3",
+ "windowS": 780,
+ "batchSize": 1,
+ "batches": [
+  {
+   "arms": [
+    "must-fail:dead-collector"
+   ],
+   "peakMB": 2850,
+   "oomKillDelta": 0,
+   "voided": null,
+   "startMB": 2385,
+   "peakWorkingSetMB": 1202
+  }
+ ],
+ "runs": [
+  {
+   "name": "must-fail:dead-collector",
+   "want": "VOID",
+   "got": "VOID",
+   "batchVoid": null,
+   "ok": true,
+   "res": {
+    "arm": "done-idle",
+    "switch": "on",
+    "label": "lv1-must_fail_dead_collector",
+    "windowS": 20,
+    "verdict": "VOID",
+    "dispatchRc": 0,
+    "tActivityAfterStartS": 18,
+    "collector": {
+     "okReads": 6,
+     "failedReads": 2,
+     "finalReadAt": "2026-11-12T14:26:26.853Z",
+     "finalEscalationRows": null,
+     "finalDispatchRows": null,
+     "ok": false,
+     "sabotage": "collector"
+    },
+    "why": "COLLECTOR DEAD at the end of the window (final escalation read FAILED, dispatch-row read FAILED, failed reads 2) — a zero would be unproven: VOID",
+    "rows": [],
+    "polls": 4,
+    "cliNow": "CLI alive",
+    "livenessLog": [],
+    "childRequests": 9,
+    "minAvailGB": 18.962127685546875,
+    "leftover": 0,
+    "liveUnchanged": true
+   }
+  }
+ ],
+ "voided": null,
+ "hostEnd": {
+  "availGB": 19.709945678710938,
+  "load1": 2.26
+ },
+ "wallS": 65
+}

@@ -1,0 +1,27 @@
+{
+ "arm": "silent-idle",
+ "switch": "on",
+ "label": "lv2-control_silent_idle",
+ "windowS": 780,
+ "verdict": "CLEAN",
+ "dispatchRc": 0,
+ "tActivityAfterStartS": -8,
+ "why": "1 row(s); first at +652s (expected exactly 1 staleness row to P at \u2265 600 s)",
+ "rows": [
+  {
+   "seq": 2,
+   "atS": 652,
+   "sender": "child",
+   "to": "P",
+   "run": "P",
+   "body": "member 96093531-0000-4000-8000-000000000011 has a dispatched task and no session activity for 10m \u2014 check on it"
+  }
+ ],
+ "polls": 154,
+ "cliNow": "CLI gone",
+ "livenessLog": [],
+ "childRequests": 8,
+ "minAvailGB": 12.105392456054688,
+ "leftover": 0,
+ "liveUnchanged": true
+}

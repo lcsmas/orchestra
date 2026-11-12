@@ -1,0 +1,68 @@
+{
+ "tree": "/home/lmas/.orchestra/worktrees/orchestra-impl-pause-cap-petit-run-438-bc6590b3",
+ "windowS": 780,
+ "batchSize": 2,
+ "batches": [
+  {
+   "arms": [
+    "must-fail:dead-collector",
+    "done-idle-1"
+   ],
+   "peakMB": 3625,
+   "oomKillDelta": 0,
+   "voided": null,
+   "startMB": 1992,
+   "peakWorkingSetMB": 1983
+  }
+ ],
+ "runs": [
+  {
+   "name": "must-fail:dead-collector",
+   "want": "VOID",
+   "got": "NO-RESULT",
+   "batchVoid": null,
+   "ok": false,
+   "res": null
+  },
+  {
+   "name": "done-idle-1",
+   "want": "CLEAN",
+   "got": "CLEAN",
+   "batchVoid": null,
+   "ok": true,
+   "res": {
+    "arm": "done-idle",
+    "switch": "on",
+    "label": "lv2-done_idle_1",
+    "windowS": 780,
+    "verdict": "CLEAN",
+    "dispatchRc": 0,
+    "tActivityAfterStartS": 18,
+    "collector": {
+     "okReads": 160,
+     "failedReads": 0,
+     "finalReadAt": "2026-11-12T14:24:56.948Z",
+     "finalEscalationRows": 0,
+     "finalDispatchRows": 1,
+     "ok": true,
+     "sabotage": null
+    },
+    "why": "0 escalation row(s) over 780s of real clock after the child went idle (expected 0)",
+    "rows": [],
+    "polls": 156,
+    "cliNow": "CLI gone",
+    "livenessLog": [],
+    "childRequests": 9,
+    "minAvailGB": 19.118637084960938,
+    "leftover": 0,
+    "liveUnchanged": true
+   }
+  }
+ ],
+ "voided": null,
+ "hostEnd": {
+  "availGB": 19.546463012695312,
+  "load1": 1.86
+ },
+ "wallS": 833
+}

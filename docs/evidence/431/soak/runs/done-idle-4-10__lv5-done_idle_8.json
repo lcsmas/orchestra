@@ -1,0 +1,18 @@
+{
+ "arm": "done-idle",
+ "switch": "on",
+ "label": "lv5-done_idle_8",
+ "windowS": 780,
+ "verdict": "CLEAN",
+ "dispatchRc": 0,
+ "tActivityAfterStartS": 18,
+ "why": "0 escalation row(s) over 780s of real clock after the child went idle (expected 0)",
+ "rows": [],
+ "polls": 156,
+ "cliNow": "CLI gone",
+ "livenessLog": [],
+ "childRequests": 9,
+ "minAvailGB": 17.230026245117188,
+ "leftover": 0,
+ "liveUnchanged": true
+}

@@ -94,13 +94,13 @@ try {
     polls++;
     await sleep(5000);
   }
-  // END-OF-WINDOW GUARD: one last read of the escalation rows AND of the bus' total message count (the dispatch + the child's own mail make it ≥ 2) — either unreadable, or an empty bus = the collector is dead: VOID, never CLEAN/DIRTY
+  // END-OF-WINDOW GUARD: one last read of the escalation rows AND a POSITIVE control — the harness' own `dispatch` row (sent at the start) must be readable: either read failing, or the dispatch row missing = the collector is dead: VOID, never CLEAN/DIRTY
   if (SABOTAGE === 'collector') { try { busr.close(); } catch { /* */ } }
   const finalEsc = await Q("SELECT sequence, sender, recipient, run_id, created_at, body FROM messages WHERE kind = 'escalation' ORDER BY sequence");
-  const finalCount = await Q('SELECT COUNT(*) AS n FROM messages');
-  const finalN = finalCount?.[0]?.n ?? null;
-  const collectorOk = finalEsc !== null && finalN !== null && finalN >= 2;
-  result.collector = { okReads: reads.ok, failedReads: reads.failed, finalReadAt: new Date().toISOString(), finalEscalationRows: finalEsc?.length ?? null, finalMessageCount: finalN, ok: collectorOk, sabotage: SABOTAGE };
+  const finalCount = await Q("SELECT COUNT(*) AS n FROM messages WHERE kind = 'dispatch'");
+  const finalN = finalCount?.[0]?.n ?? null;   // the dispatch rows (≥ 1: the one this harness sent)
+  const collectorOk = finalEsc !== null && finalN !== null && finalN >= 1;
+  result.collector = { okReads: reads.ok, failedReads: reads.failed, finalReadAt: new Date().toISOString(), finalEscalationRows: finalEsc?.length ?? null, finalDispatchRows: finalN, ok: collectorOk, sabotage: SABOTAGE };
   if (collectorOk) for (const x of finalEsc) if (!seen.has(x.sequence)) { seen.add(x.sequence); rows.push({ ...x, atS: Math.round((Date.now() - tActivity) / 1000) }); }
   const cliNow = ARM === 'hung' ? (frozen && fs.existsSync(`/proc/${frozen.pid}`) ? 'frozen CLI still there' : 'frozen CLI GONE (the app replaced/killed it)') : (childCli() ? 'CLI alive' : 'CLI gone');
   const logs = (() => { try { return fs.readdirSync(`${rig.H}/logs`).flatMap((f) => fs.readFileSync(`${rig.H}/logs/${f}`, 'utf8').split('\n').filter((l) => /bus-liveness:/.test(l))); } catch { return []; } })();
@@ -111,7 +111,7 @@ try {
   if (ARM === 'done-idle') { clean = rows.length === 0; why = `${rows.length} escalation row(s) over ${WINDOW_S}s of real clock after the child went idle (expected 0)`; }
   else if (ARM === 'silent-idle') { clean = rows.length === 1 && /no session activity for \d+m/.test(bodies[0]) && toP && !subjectIsParent && rows[0].atS >= STALE_S - 30; why = `${rows.length} row(s); first at +${rows[0]?.atS ?? 'never'}s (expected exactly 1 staleness row to P at ≥ ${STALE_S} s)`; }
   else { clean = rows.length >= 1 && /hung mid-call/.test(bodies[0]) && toP && !subjectIsParent && rows[0].atS >= STALE_S - 30; why = `${rows.length} row(s); first at +${rows[0]?.atS ?? 'never'}s (expected a « hung mid-call » row to P at ≥ ${STALE_S} s)`; }
-  if (!collectorOk) { clean = false; why = `COLLECTOR DEAD at the end of the window (final escalation read ${finalEsc === null ? 'FAILED' : 'ok'}, message count ${finalN ?? 'FAILED'}, failed reads ${reads.failed}) — a zero would be unproven: VOID`; }
+  if (!collectorOk) { clean = false; why = `COLLECTOR DEAD at the end of the window (final escalation read ${finalEsc === null ? 'FAILED' : 'ok'}, dispatch-row read ${finalN ?? 'FAILED'}, failed reads ${reads.failed}) — a zero would be unproven: VOID`; }
   Object.assign(result, { verdict: !collectorOk ? 'VOID' : clean ? 'CLEAN' : 'DIRTY', why, rows: rows.map((x) => ({ seq: x.sequence, atS: x.atS, sender: x.sender === C.id ? 'child' : x.sender === P ? 'parent' : x.sender, to: x.recipient === P ? 'P' : x.recipient, run: x.run_id === P ? 'P' : x.run_id, body: String(x.body).slice(0, 140) })), polls, cliNow, livenessLog: logs.slice(-6).map((l) => l.slice(-170)), childRequests: api.requests.filter((r) => r.role === C.k).length, minAvailGB: hostNow().availGB });
 } catch (e) {
   result.verdict = 'ERROR';

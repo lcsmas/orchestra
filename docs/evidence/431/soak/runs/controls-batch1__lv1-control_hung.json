@@ -1,0 +1,31 @@
+{
+ "arm": "hung",
+ "switch": "on",
+ "label": "lv1-control_hung",
+ "windowS": 780,
+ "verdict": "CLEAN",
+ "dispatchRc": 0,
+ "frozen": {
+  "pid": 1313123,
+  "state": "T"
+ },
+ "tActivityAfterStartS": 3,
+ "why": "1 row(s); first at +640s (expected a \u00ab hung mid-call \u00bb row to P at \u2265 600 s)",
+ "rows": [
+  {
+   "seq": 2,
+   "atS": 640,
+   "sender": "child",
+   "to": "P",
+   "run": "P",
+   "body": "member 7ebb8c00-0000-4000-8000-000000000011 has a dispatched task and its Bash call has been running 10m with no progress \u2014 it may be hung m"
+  }
+ ],
+ "polls": 156,
+ "cliNow": "frozen CLI still there",
+ "livenessLog": [],
+ "childRequests": 5,
+ "minAvailGB": 12.105728149414062,
+ "leftover": 0,
+ "liveUnchanged": true
+}
