@@ -14,8 +14,8 @@ export const MUTANTS = {
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',
-    find: /if \(verdict\.nudge !== 'owed' \|\| \(retryAt\.get\(f\.runId\) \?\? 0\) > now\) continue;/g,
-    replace: "if (verdict.nudge === 'no-parent' || verdict.nudge === 'not-wakeable' || (retryAt.get(f.runId) ?? 0) > now) continue;",
+    find: /if \(verdict\.nudge !== 'owed' \|\| \(retryAt\.get\(f\.runId\) \?\? 0\) > now \|\| inflight\.has\(f\.runId\)\) continue;/g,
+    replace: "if (verdict.nudge === 'no-parent' || verdict.nudge === 'not-wakeable' || (retryAt.get(f.runId) ?? 0) > now || inflight.has(f.runId)) continue;",
   },
   'vague-ignore-process': {
     file: '/src/shared/vague-endormie.ts',
