@@ -2467,6 +2467,11 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
   directory exists); `index.ts` calls it right after the bus opens (gated on `store.loadedFromDisk`) and BEFORE the hook
   server, i.e. before any session starts. A running session keeps its baked `ORCHESTRA_RUN_ID` (= its own id) and reaches
   the new row with no restart.
+  The sweep also rewrites every live worktree's notice (an old "anchors no run" file is wiped). **Session start:**
+  `buildSdkEnv` awaits `ensureTopLevelRun(ws)` (`workspaces.ts`) before it sets `ORCHESTRA_RUN_ID`, so a workspace that became
+  top-level after creation (detach, unarchive, parent deleted, sandbox eject) gets its mission at its next start — it uses the
+  top-level-only `startRunsForParentless([ws])`, never `maybeStartRunAtAnchor` (which would refreeze a parent mission). The
+  top-level rule itself is `isTopLevel` in `src/shared/run-position.ts` (#432's single module).
 - **`/promote`** (`dispatchPromoteRequest`) also calls it via `startRunForPromoted`
   in BOTH success branches — a promote does not relaunch the pty, so the OPS's own
   row is created at that wave boundary.
