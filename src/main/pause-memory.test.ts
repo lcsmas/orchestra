@@ -76,8 +76,8 @@ function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches; R?: BusSwi
   busRuns.startRun(db, { id: 'R', kind: 'mission', coordinator: 'R' }, sw.R ?? OFF);
   const ws = new Map<string, AutoWorkspace & { host?: { kind: string } }>([
     ['L', { id: 'L', kind: 'orchestrator' }],
-    ['O', { id: 'O', parentId: 'L', canOrchestrate: true }],
-    ['X', { id: 'X', parentId: 'L', canOrchestrate: true }],
+    ['O', { id: 'O', parentId: 'L', ownsRun: true }],
+    ['X', { id: 'X', parentId: 'L', ownsRun: true }],
     ['w1', { id: 'w1', parentId: 'O' }],
     ['w2', { id: 'w2', parentId: 'O' }],
     ['x1', { id: 'x1', parentId: 'X' }],
@@ -488,7 +488,7 @@ test('LIFT held: a Reprise that could not wake an addressee (wake OFF) is HELD â
   trapDone(r, 'L', ['L', 'O', 'w1']); // a worker is in the roster: the run stays RESUMING after the Reprise (the hold must be gone while it does)
   // a wake-OFF run appears below after the pause (unknown at pause time)
   busRuns.startRun(r.db, { id: 'Z', kind: 'vague', coordinator: 'Z', parentRunId: 'L' }, { ...DEFAULT_BUS_SWITCHES, pause: true });
-  r.ws.set('Z', { id: 'Z', parentId: 'L', canOrchestrate: true });
+  r.ws.set('Z', { id: 'Z', parentId: 'L', ownsRun: true });
   const res = lift(r);
   assert.deepEqual(res.lifted, [{ runId: 'L', action: 'wait', why: 'no-wake-addressee' }]);
   const l = runRow(r.db, 'L');
@@ -506,7 +506,7 @@ test('LIFT held: a Reprise that could not wake an addressee (wake OFF) is HELD â
   assert.equal(told(), 1, 'the next read does not tell again');
   // ANOTHER wake-OFF run joins: a different addressee set is told again (and the record follows it)
   busRuns.startRun(r.db, { id: 'Y', kind: 'vague', coordinator: 'Y', parentRunId: 'L' }, { ...DEFAULT_BUS_SWITCHES, pause: true });
-  r.ws.set('Y', { id: 'Y', parentId: 'L', canOrchestrate: true });
+  r.ws.set('Y', { id: 'Y', parentId: 'L', ownsRun: true });
   lift(r);
   assert.equal(told(), 2, 'a changed addressee set escalates again');
   const l2 = runRow(r.db, 'L');

@@ -37,9 +37,9 @@ function fixtureWorkspaces(): Array<Record<string, unknown>> {
   const w = (n: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ id: id(n), branch: `old-${n}`, repoPath: repo, name: `repo · old-${n}`, ...extra });
   return [
     w('1ead', { branch: 'lead-main', kind: 'orchestrator', repoPath: '' }),
-    w('0b5a', { branch: 'wave-g-ops', parentId: LEAD, canOrchestrate: true }),
+    w('0b5a', { branch: 'wave-g-ops', parentId: LEAD, ownsRun: true }),
     w('w1', { parentId: OPS_RUN }), // running vague
-    w('0b5c', { branch: 'wave-c-ops', parentId: LEAD, canOrchestrate: true, archived: true }),
+    w('0b5c', { branch: 'wave-c-ops', parentId: LEAD, ownsRun: true, archived: true }),
     w('w3', { parentId: OPS_DONE, worktreePath: wtW3 }), // a REAL worktree: the read-back also checks git HEAD
     w('w6', { parentId: LEAD, namedByParent: OPS_DONE }), // re-parented by `attach`: parentId and the namer differ
     w('w4', { parentId: LEAD }),

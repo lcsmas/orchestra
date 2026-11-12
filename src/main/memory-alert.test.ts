@@ -53,8 +53,8 @@ function world(sw: { R?: BusSwitches; late?: boolean } = {}): World {
   busRuns.startRun(db, { id: 'R', kind: 'mission', coordinator: 'R' }, sw.R ?? NO_DELIVERY);
   const ws = new Map<string, AutoWorkspace & { host?: { kind: string } }>([
     ['L', { id: 'L', kind: 'orchestrator' }],
-    ['O', { id: 'O', parentId: 'L', canOrchestrate: true }],
-    ['X', { id: 'X', parentId: 'L', canOrchestrate: true }],
+    ['O', { id: 'O', parentId: 'L', ownsRun: true }],
+    ['X', { id: 'X', parentId: 'L', ownsRun: true }],
     ['w1', { id: 'w1', parentId: 'O' }],
     ['x1', { id: 'x1', parentId: 'X' }],
     ['R', { id: 'R', kind: 'orchestrator' }],

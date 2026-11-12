@@ -162,8 +162,9 @@ test('#433 a new top-level workspace has its run + frozen switches BEFORE its fi
   assert.deepEqual(runFlags(w.db, T2), LIVE);
   const first = cli(w, T2, T2, ['send', '--type', 'status', 'first turn']);
   assert.equal(first.code, 0, first.stderr);
-  // A plain child of a plain parent still has no run of its own (#434): nothing started for it.
-  assert.equal(maybeStartRunAtAnchor(w.deps, computeAnchorInfo(nodes.get(KID)!, lookup)), null);
+  // A plain child of a plain parent has no run of its OWN (#434: it gets one at its first spawn) — it is a member of its parent's run.
+  const kid = computeAnchorInfo(nodes.get(KID)!, lookup);
+  assert.equal(kid.anchorId, nodes.get(KID)!.parentId);
   assert.equal(getRun(w.db, KID), null);
 });
 

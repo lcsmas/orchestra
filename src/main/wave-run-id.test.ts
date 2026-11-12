@@ -74,7 +74,7 @@ test('N2 cycle guard — a malformed parentId cycle terminates, never loops', ()
 // ruling D1 forbids, and the arm each of these must redden on that mutant.
 
 const LEAD: WaveNode = { id: 'lead', kind: 'orchestrator' };
-const OPS: WaveNode = { id: 'ops', parentId: 'lead', kind: 'worktree', canOrchestrate: true };
+const OPS: WaveNode = { id: 'ops', parentId: 'lead', kind: 'worktree', ownsRun: true };
 const IMPL: WaveNode = { id: 'impl', parentId: 'ops', kind: 'worktree' };
 const WAVE = lookupOf([LEAD, OPS, IMPL]);
 
@@ -103,9 +103,10 @@ test('#134 D1 — a plain standalone workspace (no orchestrator above) is its ow
   assert.equal(nearestOrchestratorId(solo, lookupOf([solo])), 'solo');
   // A plain chain with NO orchestrator anywhere: each is its own run, never an
   // arbitrary ancestor.
+  // #434: a plain member is in its DIRECT parent's run (the parent owns one by having spawned it).
   const a: WaveNode = { id: 'a', kind: 'worktree' };
   const b: WaveNode = { id: 'b', parentId: 'a', kind: 'worktree' };
-  assert.equal(nearestOrchestratorId(b, lookupOf([a, b])), 'b', 'a plain member with no orchestrator is standalone');
+  assert.equal(nearestOrchestratorId(b, lookupOf([a, b])), 'a', 'a plain member is a member of its direct parent\'s run');
 });
 
 test('#134 D1 — a broken parent link stops the walk and returns self (never throws)', () => {
@@ -130,15 +131,15 @@ test('#134 D1 — a top-level orchestrator (LEAD) has NULL parent_run_id', () =>
   assert.equal(parentOrchestratorId(LEAD, WAVE), null);
 });
 
-test('#134 D1 — parentOrchestratorId walks PAST plain ancestors to the next orchestrator', () => {
-  // A sub-orchestrator SUB under a plain wrapper W under the LEAD: SUB's parent
-  // orchestrator is the LEAD, skipping the plain W (which has no run).
-  const W: WaveNode = { id: 'w', parentId: 'lead', kind: 'worktree' };
-  const SUB: WaveNode = { id: 'sub', parentId: 'w', kind: 'worktree', canOrchestrate: true };
+test('#434 — parentOrchestratorId is the DIRECT parent (no walk past a plain ancestor); a plain parent that owns no row yet is implicit', () => {
+  // SUB under a plain wrapper W under the LEAD: SUB is a member of W's run (its direct parent), not the LEAD's.
+  const W: WaveNode = { id: 'w', parentId: 'lead', kind: 'worktree', ownsRun: true };
+  const SUB: WaveNode = { id: 'sub', parentId: 'w', kind: 'worktree', ownsRun: true };
   const lk = lookupOf([LEAD, W, SUB]);
-  assert.equal(parentOrchestratorId(SUB, lk), 'lead', 'skips the plain wrapper to the LEAD');
-  // And SUB is its own run (nearest orchestrator = itself).
+  assert.equal(parentOrchestratorId(SUB, lk), 'w', 'the direct parent owns a run, so it is the parent run');
   assert.equal(nearestOrchestratorId(SUB, lk), 'sub');
+  const plainW: WaveNode = { id: 'w', parentId: 'lead', kind: 'worktree' };
+  assert.equal(parentOrchestratorId(SUB, lookupOf([LEAD, plainW, SUB])), null, 'a legacy plain parent with no row: nobody to point at (the caller starts its row, implicit)');
 });
 
 test('#134 D1 — parentOrchestratorId starts ABOVE self (an orchestrator does not nest under itself)', () => {

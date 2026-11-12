@@ -323,21 +323,6 @@ test('#169 ARM 2c — target with no run row is NEVER refused', async (t) => {
 // ARM 3 (#221 F1a) — a PLAIN own-anchor target (a run-less parent that gained a mission run
 // with delivery ON) is NOT refused: its non-member children have no bus route to it, so
 // `message` stays open exactly as on master. MUTANT: drop the isPlainOwnAnchor exemption → refused.
-test('#221 ARM 3 — plain own-anchor target with a delivery-ON run is DELIVERED; the orchestrator twin is REFUSED', async (t) => {
-  const db = tmpBus(t);
-  seedRun(db, 'run-on', true);
-  const plain = await runWrapper({
-    db, targetRunId: 'run-on', targetExists: true, emergency: false, gated: true, plainParent: true,
-  });
-  assert.equal(plain.result.ok, true, `plain parent must stay reachable: ${plain.result.error}`);
-  assert.equal(plain.delivered, true);
-  const orch = await runWrapper({
-    db, targetRunId: 'run-on', targetExists: true, emergency: false, gated: true, plainParent: false,
-  });
-  assert.equal(orch.result.ok, false, 'the same run on an ORCHESTRATOR target is still refused');
-  assert.equal(orch.delivered, false);
-});
-
 // ── #221 review round 2 (F1 blocking, F2, F3): drive the REAL wrapper over a REAL topology ────────
 const node = (id: string, over: Partial<TopoNode> = {}): TopoNode => ({
   id, branch: `${id}-branch`, archived: false, ...over,
@@ -348,7 +333,7 @@ function leadTopo(from: string | undefined): { nodes: Record<string, TopoNode>; 
     from,
     nodes: {
       'ws-target': node('ws-target'),
-      'ws-ops': node('ws-ops', { parentId: 'ws-target', canOrchestrate: true }),
+      'ws-ops': node('ws-ops', { parentId: 'ws-target', ownsRun: true }),
       'ws-member': node('ws-member', { parentId: 'ws-ops' }),
       'ws-worker': node('ws-worker', { parentId: 'ws-target' }),
     },
@@ -375,44 +360,23 @@ function armSweep(db: BusDb, readers: { reader: string; runId: string }[]): { re
   return wakes;
 }
 
-test('#221 F1 — an EXEMPTED `message` to the plain parent is delivered ONCE: the mirrored row wakes nobody', async (t) => {
-  const db = tmpBus(t);
-  t.after(() => __resetBusWakeForTests());
-  seedLeadRuns(db);
-  const r = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
-  });
-  assert.equal(r.result.ok, true, `non-member child → plain parent is delivered: ${r.result.error}`);
-  assert.equal(r.delivered, true);
-  const wakes = armSweep(db, [{ reader: 'ws-target', runId: 'ws-target' }]);
-  await sweepBusWake();
-  assert.equal(wakes.length, 0, `no second delivery via a wake: ${JSON.stringify(wakes)}`);
-  assert.equal(busWakeCounters().fired, 0);
-  // POSITIVE CONTROL (the instrument can see a wake): the same mirrored row filed in the parent's OWN run
-  // — what the un-fixed wrapper did — wakes it.
-  realMirrorDispatch({
-    sender: 'ws-worker', recipient: 'ws-target', body: 'control', result: { ok: true, delivery: 'live' },
-    runId: 'ws-target', db,
-  });
-  await sweepBusWake();
-  assert.equal(wakes.filter((w) => w.reader === 'ws-target').length, 1, 'control: a row in the parent run DOES wake it');
-});
-
-test('#221 F2 — the exemption is for NON-member senders only: the OPS coordinator and its member are refused', async (t) => {
+test('#434 — a plain parent that OWNS a run is no longer exempt: `message` from its child is REFUSED naming `orchestra send` (ungated: delivered); a dangling-parent plain target keeps the exemption (#441 removes it)', async (t) => {
   const db = tmpBus(t);
   seedLeadRuns(db);
-  const send = (from: string | undefined) =>
-    runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo(from) });
-  const ops = await send('ws-ops');
-  assert.equal(ops.result.ok, false, 'the OPS has a bus route (`send` works) → refused');
-  assert.match(ops.result.error ?? '', /orchestra send/);
-  assert.equal(ops.delivered, false);
-  const member = await send('ws-member');
-  assert.equal(member.result.ok, false, 'a member of the OPS run (related to the LEAD run) → refused');
-  assert.equal(member.delivered, false);
-  // Controls: a non-member child and an external (no `from`) sender stay delivered.
-  assert.equal((await send('ws-worker')).result.ok, true, 'non-member child: delivered');
-  assert.equal((await send(undefined)).result.ok, true, 'external sender (no workspace): delivered');
+  const toLead = (gated: boolean, from: string | undefined) =>
+    runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: false, gated, topo: leadTopo(from) });
+  const refused = await toLead(true, 'ws-worker');
+  assert.equal(refused.result.ok, false, 'the child of an owning parent has `send`: the old channel is refused');
+  assert.match(refused.result.error ?? '', /orchestra send/);
+  assert.equal(refused.delivered, false);
+  assert.equal((await toLead(false, 'ws-worker')).delivered, true, 'mutant arm: with the guard removed the same message is delivered');
+  const emergency = await runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: true, gated: true, topo: leadTopo('ws-worker') });
+  assert.equal(emergency.result.ok, true, '--emergency still delivers');
+  const dangling = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
+    topo: { from: undefined, nodes: { 'ws-target': node('ws-target', { parentId: 'gone' }) } },
+  });
+  assert.equal(dangling.result.ok, true, 'a plain own-anchor target (dangling parent) stays exempt for a sender with no bus route');
 });
 
 test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is REFUSED by P4, never mistaken for a plain anchor', async (t) => {
@@ -427,7 +391,7 @@ test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is R
       from: 'ws-someone',
       nodes: {
         'ws-target': node('ws-target', { parentId: 'ws-orch' }), // the MEMBER, target of the message
-        'ws-orch': node('ws-orch', { canOrchestrate: true }),
+        'ws-orch': node('ws-orch', { ownsRun: true }),
         'ws-someone': node('ws-someone'),
       },
     },
@@ -437,50 +401,6 @@ test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is R
   assert.equal(r.delivered, false);
 });
 
-test('#221 R1 — a ROW-LESS / wake-OFF plain target keeps OWN-RUN placement of the mirrored row (master behaviour); only a wake-ON own run skips it', async (t) => {
-  const own = (db: BusDb) =>
-    db.prepare("SELECT run_id FROM messages WHERE recipient = 'ws-target' ORDER BY sequence").all() as { run_id: string }[];
-  // (a) row-less target (no run row at all): the row lands in ITS run, where its own `check` finds it.
-  const dbA = tmpBus(t);
-  const a = await runWrapper({
-    db: dbA, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
-  });
-  assert.equal(a.result.ok, true);
-  assert.deepEqual(own(dbA).map((r) => r.run_id), ['ws-target'], 'row-less target: own-run placement kept');
-  // (b) own run exists but wake is OFF (delivery OFF too): nothing to double-wake → placement kept.
-  const dbB = tmpBus(t);
-  startRun(dbB, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, { ...DEFAULT_BUS_SWITCHES });
-  await runWrapper({
-    db: dbB, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
-  });
-  assert.deepEqual(own(dbB).map((r) => r.run_id), ['ws-target'], 'wake-OFF own run: placement kept');
-  // (c) wake-ON own run: the row would wake the parent a SECOND time → NOT filed there (host-id fallback).
-  const dbC = tmpBus(t);
-  seedLeadRuns(dbC);
-  await runWrapper({
-    db: dbC, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-worker'),
-  });
-  assert.equal(own(dbC).filter((r) => r.run_id === 'ws-target').length, 0, 'wake-ON own run: skipped');
-});
-
-test('#221 R4b — a ROUTE sender under delivery OFF / wake ON is delivered by `message` and the mirrored row still wakes nobody', async (t) => {
-  // MUTANT: skip the mirror only for NON-route senders (`!(plainAnchor && !senderHasBusRoute)`) → the OPS's
-  // row lands in the wake-ON parent run → 1 wake → reddens.
-  const db = tmpBus(t);
-  t.after(() => __resetBusWakeForTests());
-  const flags = { ...DEFAULT_BUS_SWITCHES, delivery: false, wake: true };
-  startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, flags);
-  startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops', parentRunId: 'ws-target' }, flags);
-  const r = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true, topo: leadTopo('ws-ops'),
-  });
-  assert.equal(r.result.ok, true, 'delivery OFF: the old channel is not gated for the OPS');
-  assert.equal(r.delivered, true);
-  const wakes = armSweep(db, [{ reader: 'ws-target', runId: 'ws-target' }]);
-  await sweepBusWake();
-  assert.equal(wakes.length, 0, `no double delivery: ${JSON.stringify(wakes)}`);
-});
-
 test('#221 R4a — /resolveHandle carries each workspace wave run: member → its orchestrator, plain child → itself, archived excluded', () => {
   // The REAL handler body from workspaces.ts. MUTANT `runId: w.id` → the member reads as its own anchor.
   const body = extract('export function dispatchResolveHandleRequest')
@@ -488,7 +408,7 @@ test('#221 R4a — /resolveHandle carries each workspace wave run: member → it
     .replace(/function dispatchResolveHandleRequest\(\): \{[\s\S]*?\n\} \{/, 'function dispatchResolveHandleRequest() {');
   assert.ok(!/:\s*\{\s*ok:/.test(body), 'return annotation stripped');
   const nodes: Record<string, TopoNode & { name: string }> = {
-    o: { ...node('o', { canOrchestrate: true }), name: 'orch' },
+    o: { ...node('o', { ownsRun: true }), name: 'orch' },
     m: { ...node('m', { parentId: 'o' }), name: 'member' },
     c: { ...node('c'), name: 'child' },
     a: { ...node('a', { archived: true }), name: 'gone' },

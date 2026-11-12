@@ -101,6 +101,7 @@ import { pauseRefusal } from './pause-gate.ts';
 import { killKeeper } from './keeper-client';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
+import { coordinatorOf } from '../shared/run-position.ts';
 
 // ─── Boot-heal escalation seam (issue #197) ─────────────────────────────────
 //
@@ -241,7 +242,7 @@ async function escalateBootWedge(
   // bus is down), then escalate to the coordinator.
   await patchWorkspace(ws.id, { bootWedgedSince: now });
 
-  const coordinator = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
+  const coordinator = coordinatorOf(ws, (id) => store.getWorkspace(id));
   const coordinatorId = coordinator && !coordinator.archived ? coordinator.id : null;
   const transcriptBytes = sdkTranscriptBytes(ws.id);
 

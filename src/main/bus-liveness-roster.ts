@@ -7,6 +7,7 @@ import type { Workspace } from '../shared/types.ts';
 import type { LivenessMember } from './bus-liveness.ts';
 import { getInFlightTools } from './hibernation-activity.ts';
 import { idleClockOf } from './idle-clock.ts';
+import { coordinatorOf } from '../shared/run-position.ts';
 
 /** The slice of the store the roster reads (`store` satisfies it; tests pass a fake). */
 export interface LivenessRosterStore {
@@ -24,7 +25,7 @@ export function buildLivenessRoster(
     store.workspaces.map((ws) => {
       // Coordinator = the parent resolved to a LIVE workspace; a dangling/archived
       // parent → null → never escalated (nobody to escalate to).
-      const parent = ws.parentId ? store.getWorkspace(ws.parentId) : undefined;
+      const parent = coordinatorOf(ws, (id) => store.getWorkspace(id));
       return {
         reader: ws.id,
         coordinator: parent && !parent.archived ? parent.id : null,

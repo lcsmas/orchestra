@@ -92,7 +92,7 @@ test('overview, nothing paused: no run, no badge; a control per ORCHESTRATOR row
   assert.equal(o.available, true);
   assert.deepEqual(o.runs, []);
   assert.deepEqual(o.byWorkspace, {});
-  assert.deepEqual(Object.keys(o.controls).sort(), ['L', 'O', 'S', 'Z'], 'orchestrators only; `gone` is archived, workers have no control entry');
+  assert.deepEqual(Object.keys(o.controls).sort(), ['L', 'O', 'S', 'Z', 'plain'], 'run owners only (a top-level workspace owns its mission, #433/#434 — `plain` here has no row YET); `gone` is archived, workers have no control entry');
   assert.equal(o.controls.L.anchored, true);
   assert.equal(o.controls.L.runId, 'L');
   assert.equal(o.controls.L.switchOn, true);
@@ -534,7 +534,7 @@ test('a PLAIN run-anchoring parent (#221: a non-orchestrator whose run the host 
     assert.equal(o.controls.P.anchored, true);
     assert.deepEqual(o.controls.P.can.pauseSoft, { ok: true });
     assert.equal(o.controls.pc, undefined, 'its child is a worker: no control');
-    assert.equal(o.controls.plain, undefined, 'a plain workspace with NO run is still a worker row (no-run at click time)');
+    assert.equal(o.controls.plain.anchored, false, 'a top-level workspace whose mission row is missing has a control that explains no-run at click time');
     const r = uiPause(db, deps, { wsId: 'P', mode: 'soft' });
     assert.equal(r.outcome, 'paused');
     assert.equal(r.runId, 'P');

@@ -84,7 +84,7 @@ class Tree {
   promote(id: string): WaveNode {
     const n = this.nodes.get(id);
     assert.ok(n, `unknown node ${id}`);
-    const p = Object.freeze({ ...n, canOrchestrate: true });
+    const p = Object.freeze({ ...n, ownsRun: true });
     this.nodes.set(id, p);
     return p;
   }
@@ -209,27 +209,18 @@ test('#221 promote under a run-less parent → parent MISSION run + child VAGUE 
   ]);
 });
 
-test('#221 CONTROL (old topology, master primitives) — the same promote leaves the child a ROOT mission and the LEAD outside the bus', (t) => {
-  const w = world(t, 'old');
-  fieldTree(w);
-  w.promote(OPS);
-  // Positive control of the instrument: the rig CAN observe the broken topology.
-  assert.deepEqual(w.runs(), [{ id: OPS, kind: 'mission', coordinator: OPS, parent: null }]);
-});
-
 // ── 2. The parent does NOT become an orchestrator ───────────────────────────────
-test('#221 the parent stays a plain workspace: no orchestrator capability, own anchor, no anchor start of its own', (t) => {
+test('#434 the parent is not rewritten by its child\'s promote: a top-level parent owns its mission, its own anchor, no second row of its own', (t) => {
   const w = world(t, 'new');
   fieldTree(w);
   const before = JSON.stringify(w.tree.nodes.get(LEAD));
   w.promote(OPS);
   const lead = w.tree.nodes.get(LEAD)!;
   assert.equal(JSON.stringify(lead), before, 'the LEAD record is byte-identical (frozen: any write would throw)');
-  assert.equal(nodeOrchestrates(lead), false, 'the LEAD did not gain the orchestrator capability');
-  assert.equal(w.tree.runOf(LEAD), LEAD, "the LEAD's wave run is still its own id (no member-of-OPS drift)");
+  assert.equal(nodeOrchestrates(lead), true, 'a top-level workspace owns its mission (#433/#434)');
+  assert.equal(w.tree.runOf(LEAD), LEAD, "the LEAD's run is its own id");
   const rows = w.runs().length;
-  const a = w.launch(LEAD);
-  assert.equal(a.anchorIsOrchestrator, false, "the LEAD's own launch is a non-orchestrator anchor");
+  w.launch(LEAD);
   assert.equal(w.runs().length, rows, "the LEAD's own launch adds no row");
 });
 
@@ -249,7 +240,7 @@ test('#221 an ancestor that already ANCHORS a run (not an orchestrator) is accep
   assert.equal(lead.created_at, seededAt, 'the pre-existing parent row was NOT re-created');
 });
 
-test('#221 a run-anchoring ancestor ABOVE a plain, run-less intermediate wins — the intermediate gets NO row', (t) => {
+test('#434 a plain intermediate parent gets its own VAGUE row, nested under the run above it (no dangling pointer)', (t) => {
   const w = world(t, 'new');
   w.tree.add({ id: GRAND, kind: 'worktree' });
   w.tree.add({ id: LEAD, kind: 'worktree', parentId: GRAND });
@@ -258,7 +249,8 @@ test('#221 a run-anchoring ancestor ABOVE a plain, run-less intermediate wins �
   w.promote(OPS);
   assert.deepEqual(w.runs(), [
     { id: GRAND, kind: 'mission', coordinator: GRAND, parent: null },
-    { id: OPS, kind: 'vague', coordinator: OPS, parent: GRAND },
+    { id: LEAD, kind: 'vague', coordinator: LEAD, parent: GRAND },
+    { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
   ]);
 });
 
@@ -291,15 +283,18 @@ test('#221 UNCHANGED — a parent that is an orchestrator (row present) keeps ex
   ]);
 });
 
-test('#221 UNCHANGED — an orchestrator parent whose row is MISSING is NOT given a row by the child (only the child row lands, as on master)', (t) => {
+test('#434 an owner parent whose row is MISSING gets it from the child (the pointer never dangles; before: only the child row landed)', (t) => {
   const w = world(t, 'new');
   w.tree.add({ id: LEAD, kind: 'orchestrator' });
   w.tree.add({ id: OPS, kind: 'worktree', parentId: LEAD });
   w.promote(OPS);
-  assert.deepEqual(w.runs(), [{ id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD }]);
+  assert.deepEqual(w.runs(), [
+    { id: LEAD, kind: 'mission', coordinator: LEAD, parent: null },
+    { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
+  ]);
 });
 
-test('#221 UNCHANGED — a plain member of an OPS promoting a child nests under the OPS run, never a row for the member', (t) => {
+test('#434 a plain member promoting a child: the child nests under the MEMBER (its direct parent), the member under the run above it', (t) => {
   const w = world(t, 'new');
   w.tree.add({ id: GRAND, kind: 'orchestrator' });
   w.tree.add({ id: MEMBER, kind: 'worktree', parentId: GRAND });
@@ -308,7 +303,8 @@ test('#221 UNCHANGED — a plain member of an OPS promoting a child nests under 
   w.promote(OPS);
   assert.deepEqual(w.runs(), [
     { id: GRAND, kind: 'mission', coordinator: GRAND, parent: null },
-    { id: OPS, kind: 'vague', coordinator: OPS, parent: GRAND },
+    { id: MEMBER, kind: 'vague', coordinator: MEMBER, parent: GRAND },
+    { id: OPS, kind: 'vague', coordinator: OPS, parent: MEMBER },
   ]);
 });
 
@@ -390,15 +386,15 @@ test('#221 D1 — a THROWING run-row read never throws out of the anchor computa
   assert.deepEqual(w.runs(), [], 'nothing started, launch proceeds');
 });
 
-test('#221 a plain workspace anchor (no orchestrator anywhere) carries NO parent info, even under a plain parent', (t) => {
+test('#434 a member of a plain top-level parent is anchored on the PARENT: its mission row is started, nothing for the member itself', (t) => {
   const w = world(t, 'new');
   w.tree.add({ id: LEAD, kind: 'worktree' });
   w.tree.add({ id: MEMBER, kind: 'worktree', parentId: LEAD });
   const a = w.launch(MEMBER);
-  assert.equal(a.anchorIsOrchestrator, false);
+  assert.equal(a.anchorId, LEAD);
+  assert.equal(a.anchorIsOrchestrator, true);
   assert.equal(a.parentRunId, null);
-  assert.equal(a.parentRunImplicit, undefined);
-  assert.deepEqual(w.runs(), []);
+  assert.deepEqual(w.runs(), [{ id: LEAD, kind: 'mission', coordinator: LEAD, parent: null }]);
 });
 
 // ── 7. LEAD↔OPS mail and wake, END TO END, both directions ──────────────────────
@@ -531,78 +527,7 @@ test('#221 E2E new topology — OPS→LEAD: delivered, the LEAD is WOKEN naming 
   assert.match(x.read, /mail-ops-to-lead/, 'obeying the wake order, the LEAD reads the OPS mail');
 });
 
-test('#221 E2E OLD topology (failing control) — LEAD→OPS is REFUSED: the LEAD run has no row, nothing written, nobody woken', async (t) => {
-  const w = await fieldWorld(t, 'old');
-  const x = await exchange(w, LEAD, OPS, 'mail-lead-to-ops');
-  assert.equal(x.send.code, 1, 'the send is refused');
-  assert.match(x.send.stderr, /has no row in the bus 'runs' table/);
-  assert.equal(x.rows, 0, 'no row written');
-  assert.equal(x.woken, false);
-  assert.equal(x.read, '', 'and nothing is read');
-});
-
-test('#221 E2E OLD topology (failing control) — OPS→LEAD is refused loudly (unreachable): nothing written, LEAD never woken', async (t) => {
-  const w = await fieldWorld(t, 'old');
-  const x = await exchange(w, OPS, LEAD, 'mail-ops-to-lead');
-  // Pre-F1(b) this send was ACCEPTED into a run the LEAD is never woken for (silent loss).
-  assert.equal(x.send.code, 1, 'refused by the store-aware reachability guard');
-  assert.match(x.send.stderr, /plain workspace outside run/);
-  assert.equal(x.rows, 0);
-  assert.equal(x.woken, false, 'the LEAD is never woken');
-  assert.equal(x.read, '', 'and reads nothing');
-  assert.equal(busWakeCounters().fired, 0);
-});
-
 // ── 7b. F1 (OPS ruling): the plain parent LOSES NOTHING ─────────────────────────
-test('#221 F1(b) the LEAD → a plain NON-member child `send` fails LOUDLY (never rc 0 + a row nobody can read)', async (t) => {
-  const w = world(t, 'new');
-  fieldTree(w);
-  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
-  w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
-  w.promote(OPS);
-  seedStore(w);
-  const wakes = armWake(w, [LEAD, OPS, WORKER, MEMBER]);
-  const rows0 = messageCount(w);
-  const lost = cli(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'mail-lead-to-worker']);
-  assert.equal(lost.code, 1, `refused, not silently accepted: rc ${lost.code} ${lost.stdout}`);
-  assert.match(lost.stderr, /outside this run|anchors no run/, 'names the cause');
-  assert.match(lost.stderr, /orchestra message/, 'names the channel that DOES reach a plain workspace');
-  assert.equal(messageCount(w) - rows0, 0, 'nothing written');
-  await sweepBusWake();
-  assert.equal(wakes.length, 0, 'and nobody woken');
-  // Controls: a MEMBER of the OPS run (row-less, but related) and the OPS itself stay deliverable.
-  const toMember = cli(w, LEAD, ['send', '--type', 'status', '--to', MEMBER, 'mail-lead-to-member']);
-  assert.equal(toMember.code, 0, `member of a related run is unchanged: ${toMember.stderr}`);
-  const toOps = cli(w, LEAD, ['send', '--type', 'status', '--to', OPS, 'mail-lead-to-ops']);
-  assert.equal(toOps.code, 0, `the promoted child is unchanged: ${toOps.stderr}`);
-  assert.equal(messageCount(w) - rows0, 2, 'exactly the two deliverable sends landed');
-});
-
-test('#221 F1(a) the plain child → LEAD `send` is refused loudly exactly as on master (its own run has no row)', (t) => {
-  const w = world(t, 'new');
-  fieldTree(w);
-  w.tree.add({ id: WORKER, kind: 'worktree', parentId: LEAD });
-  w.promote(OPS);
-  seedStore(w);
-  const rows0 = messageCount(w);
-  const r = cli(w, WORKER, ['send', '--type', 'status', '--to', LEAD, 'mail-worker-to-lead']);
-  assert.equal(r.code, 1);
-  assert.match(r.stderr, /has no row in the bus 'runs' table/);
-  assert.equal(messageCount(w) - rows0, 0);
-});
-
-test('#221 isPlainOwnAnchor — a run-less parent is one; an orchestrator, a member and a promoted child are not', (t) => {
-  const w = world(t, 'new');
-  fieldTree(w);
-  w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
-  w.promote(OPS);
-  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(LEAD)!, w.tree.lookup), true, 'the LEAD (plain, own anchor)');
-  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(OPS)!, w.tree.lookup), false, 'the promoted OPS orchestrates');
-  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(MEMBER)!, w.tree.lookup), false, 'a member anchors on its OPS');
-  w.tree.add({ id: GRAND, kind: 'orchestrator' });
-  assert.equal(isPlainOwnAnchor(w.tree.nodes.get(GRAND)!, w.tree.lookup), false, 'an orchestrator-kind node');
-});
-
 // ── 7b'. Round 2: the PRODUCTION (socket) branch + the sibling verbs `ask` / `gate open` ─────────────
 function sibWorld(t: After, topology: Topology): World {
   const w = world(t, topology);
@@ -674,20 +599,6 @@ async function withApp(
   }
 }
 
-test('#221 F4 SOCKET branch (production): LEAD → plain non-member child `send` is refused loudly, 0 rows', async (t) => {
-  const w = sibWorld(t, 'new');
-  await withApp(w, true, async (sock) => {
-    const rows0 = messageCount(w);
-    const r = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'x'], sock);
-    assert.equal(r.code, 1, `rc ${r.code} ${r.stdout}`);
-    assert.match(r.stderr, /plain workspace outside run/);
-    assert.equal(messageCount(w) - rows0, 0);
-    // Positive control: the same socket path still delivers a reachable recipient (the app was really used).
-    const ok = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', OPS, 'y'], sock);
-    assert.equal(ok.code, 0, ok.stderr);
-  });
-});
-
 test('#221 F4 SOCKET branch, OLDER app (no runId): not judged — documented skew, rc 0', async (t) => {
   // MUTANT: `runId: w.runId ?? w.id` (older-app default = self) would refuse here → this arm reddens.
   const w = sibWorld(t, 'new');
@@ -695,18 +606,6 @@ test('#221 F4 SOCKET branch, OLDER app (no runId): not judged — documented ske
     const r = await cliAsync(w, LEAD, ['send', '--type', 'status', '--to', WORKER, 'x'], sock);
     assert.equal(r.code, 0, `older app is permissive: ${r.stderr}`);
   });
-});
-
-test('#221 F5 sibling verbs — `ask --to` and `gate open --to` a plain non-member child are refused loudly, 0 rows', async (t) => {
-  const w = sibWorld(t, 'new');
-  const rows0 = messageCount(w);
-  const ask = await cliAsync(w, LEAD, ['ask', '--to', WORKER, 'q?']);
-  assert.equal(ask.code, 1, `ask rc ${ask.code} ${ask.stdout}`);
-  assert.match(ask.stderr, /plain workspace outside run/);
-  const gate = await cliAsync(w, LEAD, ['gate', 'open', '--to', WORKER, 'gq?']);
-  assert.equal(gate.code, 1, `gate open rc ${gate.code} ${gate.stdout}`);
-  assert.match(gate.stderr, /plain workspace outside run/);
-  assert.equal(messageCount(w) - rows0, 0, 'no question row, no gate row');
 });
 
 test('#221 F5 sibling verbs — controls: a related OPS / MEMBER, `--to human` and a SHORT handle still work (canonicalized)', async (t) => {
@@ -729,17 +628,6 @@ test('#221 F5 sibling verbs — controls: a related OPS / MEMBER, `--to human` a
   assert.equal(short.code, 0, short.stderr);
   const row = w.db.prepare("SELECT recipient FROM messages WHERE body = 'q-short?'").get() as { recipient: string };
   assert.equal(row.recipient, LEAD, 'the short handle was canonicalized to the FULL id before the row was written');
-});
-
-test('#221 F5 FIELD topology (root OPS, row-less LEAD): OPS `ask` / `gate open` --to LEAD are refused loudly like `send`', async (t) => {
-  const w = sibWorld(t, 'old');
-  const rows0 = messageCount(w);
-  assert.equal((await cliAsync(w, OPS, ['send', '--type', 'status', '--to', LEAD, 'x'])).code, 1, 'send (control, already loud)');
-  const ask = await cliAsync(w, OPS, ['ask', '--to', LEAD, 'q?']);
-  assert.equal(ask.code, 1, `ask rc ${ask.code} ${ask.stdout}`);
-  const gate = await cliAsync(w, OPS, ['gate', 'open', '--to', LEAD, 'gq?']);
-  assert.equal(gate.code, 1, `gate open rc ${gate.code} ${gate.stdout}`);
-  assert.equal(messageCount(w) - rows0, 0);
 });
 
 test('#221 R3 — each verb names ITSELF in its unknown-handle refusal (ask printed "orchestra send:")', async (t) => {
@@ -787,14 +675,15 @@ test('#221 S — SANDBOX shape (hook socket answers unforwarded routes `{}`, no 
 });
 
 // ── 7c. F2 / F3 (review): pin the direct-parent choice and the probe fail-direction ─
-test('#221 F2 GRAND(plain) → LEAD(plain) → OPS: the DIRECT parent gets the row, the topmost ancestor none', (t) => {
+test('#434 GRAND(plain) → LEAD(plain) → OPS: every run above the OPS gets its row, top-down, each pointing at the one above', (t) => {
   const w = world(t, 'new');
   w.tree.add({ id: GRAND, kind: 'worktree' });
   w.tree.add({ id: LEAD, kind: 'worktree', parentId: GRAND });
   w.tree.add({ id: OPS, kind: 'worktree', parentId: LEAD });
   w.promote(OPS);
   assert.deepEqual(w.runs(), [
-    { id: LEAD, kind: 'mission', coordinator: LEAD, parent: null },
+    { id: GRAND, kind: 'mission', coordinator: GRAND, parent: null },
+    { id: LEAD, kind: 'vague', coordinator: LEAD, parent: GRAND },
     { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
   ]);
 });

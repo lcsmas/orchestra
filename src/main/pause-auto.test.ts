@@ -65,8 +65,8 @@ function rig(sw: { L?: BusSwitches; O?: BusSwitches; X?: BusSwitches } = {}, o: 
   busRuns.startRun(db, { id: 'X', kind: 'vague', coordinator: 'X', parentRunId: 'L' }, sw.X ?? ON);
   const ws = new Map<string, AutoWorkspace>([
     ['L', { id: 'L', kind: 'orchestrator' }],
-    ['O', { id: 'O', parentId: 'L', canOrchestrate: true }],
-    ['X', { id: 'X', parentId: 'L', canOrchestrate: true }],
+    ['O', { id: 'O', parentId: 'L', ownsRun: true }],
+    ['X', { id: 'X', parentId: 'L', ownsRun: true }],
     ['w1', { id: 'w1', parentId: 'O' }],
     ['w2', { id: 'w2', parentId: 'O' }],
     ['x1', { id: 'x1', parentId: 'X' }],
@@ -905,7 +905,7 @@ const wakeOffRun = (r: Rig, id: string, parentRun: string | null = null): void =
 test('PAUSE wake guard (R3-1): an OPS created top-level (bus parent_run_id NULL, wake OFF) and ATTACHED under the carrier in the LIVE tree is an addressee — no auto Pause; wake ON ⇒ paused', () => {
   const r = rig();
   wakeOffRun(r, 'Z'); // bus run with NO parent: the bus subtree of L does not contain it
-  r.ws.set('Z', { id: 'Z', parentId: 'L', canOrchestrate: true }); // …but the live tree attached it under L
+  r.ws.set('Z', { id: 'Z', parentId: 'L', ownsRun: true }); // …but the live tree attached it under L
   r.ws.set('wz', { id: 'wz', parentId: 'Z' });
   assert.deepEqual(busSubtree(r), ['L', 'O', 'X'], 'the bus subtree misses Z (write-once parent_run_id)');
   const before = allRuns(r.db);
@@ -915,7 +915,7 @@ test('PAUSE wake guard (R3-1): an OPS created top-level (bus parent_run_id NULL,
   // control: the same re-attached OPS with wake ON ⇒ the auto Pause lands
   const ok = rig();
   busRuns.startRun(ok.db, { id: 'Z', kind: 'vague', coordinator: 'Z' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true });
-  ok.ws.set('Z', { id: 'Z', parentId: 'L', canOrchestrate: true });
+  ok.ws.set('Z', { id: 'Z', parentId: 'L', ownsRun: true });
   ok.ws.set('wz', { id: 'wz', parentId: 'Z' });
   assert.equal(limitStop(ok, 'wz', { account: 'A' }), 'paused');
 });
@@ -930,18 +930,18 @@ test('PAUSE wake guard (R3-2): historical / deleted / archived runs are not addr
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'paused', 'nobody to wake there');
   const arch = rig();
   wakeOffRun(arch, 'Y', 'O'); // an ARCHIVED OPS under the carrier
-  arch.ws.set('Y', { id: 'Y', parentId: 'O', canOrchestrate: true, archived: true });
+  arch.ws.set('Y', { id: 'Y', parentId: 'O', ownsRun: true, archived: true });
   assert.equal(limitStop(arch, 'w1', { account: 'A' }), 'paused');
   const live = rig();
   wakeOffRun(live, 'Y', 'O'); // control: the same OPS, alive ⇒ addressed ⇒ blocks
-  live.ws.set('Y', { id: 'Y', parentId: 'O', canOrchestrate: true });
+  live.ws.set('Y', { id: 'Y', parentId: 'O', ownsRun: true });
   assert.equal(limitStop(live, 'w1', { account: 'A' }), 'no-wake');
 });
 
 test('PAUSE wake guard: `no-wake` is WARNED once per carrier naming the addressee and its run — repeated limit stops do not repeat the line', () => {
   const r = rig();
   wakeOffRun(r, 'Zc', 'O');
-  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', ownsRun: true });
   assert.equal(limitStop(r, 'w1', { account: 'A' }), 'no-wake');
   assert.equal(limitStop(r, 'w2', { account: 'A' }), 'no-wake');
   const warns = r.calls.logs.filter((l) => l.startsWith('WARN pause-auto:') && l.includes('NOT auto-paused'));
@@ -952,7 +952,7 @@ test('PAUSE wake guard: `no-wake` is WARNED once per carrier naming the addresse
 test('INTEGRATION addressees: `repriseAddressees` = exactly the recipients (and runs) of the `reprise` rows beginReprise sends the coordinators — one enumeration', async () => {
   const r = rig();
   busRuns.startRun(r.db, { id: 'Zc', kind: 'vague', coordinator: 'Zc', parentRunId: 'O' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: true });
-  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', ownsRun: true });
   r.ws.set('wc', { id: 'wc', parentId: 'Zc' });
   pausedByLimit(r, { account: 'A' });
   r.ws.get('w1')!.accountId = 'A';
@@ -973,7 +973,7 @@ function heldFixture(sw: { L?: BusSwitches } = {}): Rig {
   pausedByLimit(r, { account: 'A' });
   r.ws.get('w1')!.accountId = 'A';
   wakeOffRun(r, 'Zc', 'O');
-  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', ownsRun: true });
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
   return r;
@@ -1004,7 +1004,7 @@ test('REPRISE no-wake addressee: no unpaused ancestor coordinator that can read 
   assert.equal(runRow(top.db, 'L').paused_at, T0);
   top.db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(T0 + 1_000, 'L');
   wakeOffRun(top, 'Zt', 'L');
-  top.ws.set('Zt', { id: 'Zt', parentId: 'L', canOrchestrate: true });
+  top.ws.set('Zt', { id: 'Zt', parentId: 'L', ownsRun: true });
   top.clock.now = T0 + 60_000;
   fresh(top, 'A', usable);
   assert.equal((await evaluateAutoPaused(top.deps))[0].why, 'no-wake-addressee');
@@ -1049,7 +1049,7 @@ test('REPRISE no-wake addressee: a DIFFERENT addressee set escalates again; the 
   const r = heldFixture();
   await evaluateAutoPaused(r.deps);
   wakeOffRun(r, 'Zd', 'O');
-  r.ws.set('Zd', { id: 'Zd', parentId: 'O', canOrchestrate: true });
+  r.ws.set('Zd', { id: 'Zd', parentId: 'O', ownsRun: true });
   await evaluateAutoPaused(r.deps);
   assert.equal(escRows(r).length, 2, 'a changed set is news');
   assert.deepEqual(parseAutoHeld(runRow(r.db, 'O').pause_auto as string, T0)?.addressees, ['Zc@Zc', 'Zd@Zd']);
@@ -1072,7 +1072,7 @@ test('INTEGRATION addressees (R4-3): a PLAIN run-anchoring carrier\'s `reprise` 
   // D: an orchestrator (run D, wake OFF) above a plain workspace X that anchors a mission run X (wake ON, pause ON) — #221
   busRuns.startRun(r.db, { id: 'D', kind: 'vague', coordinator: 'D' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: false });
   busRuns.startRun(r.db, { id: 'X2', kind: 'mission', coordinator: 'X2' }, ON);
-  r.ws.set('D', { id: 'D', canOrchestrate: true });
+  r.ws.set('D', { id: 'D', ownsRun: true });
   r.ws.set('X2', { id: 'X2', parentId: 'D' }); // plain: not an orchestrator
   r.ws.set('wx', { id: 'wx', parentId: 'X2' });
   assert.deepEqual(repriseAddressees(r.db, 'X2', ['X2']), [{ wsId: 'X2', runId: 'D' }], 'the row lands in run D — where the sweep reads the coordinator\'s mail');
@@ -1086,7 +1086,7 @@ test('PAUSE wake guard (bus fallback): an OPS whose live chain DANGLES (its pare
     const r = rig();
     r.ws.delete('O'); // the OPS workspace between L and Q was deleted (its run row stays)
     busRuns.startRun(r.db, { id: 'Q', kind: 'vague', coordinator: 'Q', parentRunId: 'O' }, { ...DEFAULT_BUS_SWITCHES, pause: false, wake: q === 'on' }); // the archived variant is wake OFF too: only the archived filter can save it
-    r.ws.set('Q', { id: 'Q', parentId: 'O', canOrchestrate: true, ...(q === 'archived' ? { archived: true } : {}) }); // chain Q → O (gone) dangles
+    r.ws.set('Q', { id: 'Q', parentId: 'O', ownsRun: true, ...(q === 'archived' ? { archived: true } : {}) }); // chain Q → O (gone) dangles
     r.ws.set('wl', { id: 'wl', parentId: 'L' });
     return r;
   };
@@ -1113,7 +1113,7 @@ test('REPRISE no-wake addressee (target): an ancestor coordinator that is itself
   r.ws.get('w1')!.lastStopReason = 'usage_limit';
   r.ws.get('w1')!.lastStopReasonAt = T0;
   wakeOffRun(r, 'Zc', 'O');
-  r.ws.set('Zc', { id: 'Zc', parentId: 'O', canOrchestrate: true });
+  r.ws.set('Zc', { id: 'Zc', parentId: 'O', ownsRun: true });
   r.clock.now = T0 + 60_000;
   fresh(r, 'A', usable);
   assert.equal((await evaluateAutoPaused(r.deps))[0].why, 'no-wake-addressee');

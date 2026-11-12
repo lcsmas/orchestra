@@ -210,9 +210,10 @@ test('isCoordinatorWorkspace: both routes to the coordinator role count', () => 
   // Missing the promoted case would leave a real coordinator in the staggered
   // group, resuming late — the exact ordering failure #74 is about.
   assert.equal(isCoordinatorWorkspace({ kind: 'orchestrator' }), true);
-  assert.equal(isCoordinatorWorkspace({ kind: 'worktree', canOrchestrate: true }), true);
-  assert.equal(isCoordinatorWorkspace({ kind: 'worktree' }), false);
-  assert.equal(isCoordinatorWorkspace({ kind: 'scratch' }), false);
+  assert.equal(isCoordinatorWorkspace({ kind: 'worktree', parentId: 'p', ownsRun: true }), true);
+  assert.equal(isCoordinatorWorkspace({ kind: 'worktree', parentId: 'p' }), false);
+  assert.equal(isCoordinatorWorkspace({ kind: 'scratch', parentId: 'p' }), false);
+  assert.equal(isCoordinatorWorkspace({ kind: 'worktree' }), true); // top-level: owns its mission (#433)
 });
 
 // ─── the surfaces ────────────────────────────────────────────────────────────

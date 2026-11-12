@@ -3,6 +3,7 @@
 
 import type { Workspace } from '../shared/types.ts';
 import type { RelanceMember } from '../shared/relance.ts';
+import { coordinatorOf } from '../shared/run-position.ts';
 
 export interface RelanceRosterDeps {
   workspaces(): readonly Workspace[];
@@ -19,7 +20,7 @@ export interface RelanceRosterDeps {
 
 /** A coordinator = the parent resolved to a LIVE workspace; a dangling / archived parent is nobody (same rule as the liveness roster). */
 function hasCoordinator(d: RelanceRosterDeps, ws: Workspace): boolean {
-  const parent = ws.parentId ? d.getWorkspace(ws.parentId) : undefined;
+  const parent = coordinatorOf(ws, d.getWorkspace);
   return !!parent && !parent.archived;
 }
 

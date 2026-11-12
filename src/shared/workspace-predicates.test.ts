@@ -8,16 +8,16 @@ import { coordinates as canOrchestrate } from './run-position.ts';
  * `canOrchestrate` answers "may children nest under me?" — they are orthogonal,
  * and every bug this file guards against came from conflating them. */
 const shapes = {
-  scratch: { kind: 'scratch', repoPath: '' },
+  scratch: { kind: 'scratch', repoPath: '', parentId: 'p' }, // parentId: a TOP-level workspace owns its mission (#433/#434), so the plain shapes have a parent
   orchestratorRepoLess: { kind: 'orchestrator', repoPath: '' },
   orchestratorRepoOwning: { kind: 'orchestrator', repoPath: '/r' },
-  worktree: { kind: 'worktree', repoPath: '/r' },
-  promotedWorktree: { kind: 'worktree', repoPath: '/r', canOrchestrate: true },
+  worktree: { kind: 'worktree', repoPath: '/r', parentId: 'p' },
+  promotedWorktree: { kind: 'worktree', repoPath: '/r', parentId: 'p', ownsRun: true },
   /** Pre-`kind` records: absent kind means git worktree. */
-  legacy: { repoPath: '/r' },
+  legacy: { repoPath: '/r', parentId: 'p' },
   /** Defensive: a scratch record that somehow carries a repoPath. */
-  scratchStrayRepo: { kind: 'scratch', repoPath: '/r' },
-} satisfies Record<string, Pick<Workspace, 'kind' | 'repoPath' | 'canOrchestrate'>>;
+  scratchStrayRepo: { kind: 'scratch', repoPath: '/r', parentId: 'p' },
+} satisfies Record<string, Pick<Workspace, 'kind' | 'repoPath' | 'ownsRun' | 'parentId'>>;
 
 describe('isScratchLike', () => {
   it('is true for the repo-less kinds', () => {

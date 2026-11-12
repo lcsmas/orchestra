@@ -90,6 +90,8 @@ import {
   computeAnchorInfo,
   maybeStartRunAtAnchor,
   startRunsForParentless,
+  startRunsForOwners,
+  ownerToMark,
   runAnchorProbe,
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
@@ -142,7 +144,7 @@ import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
-import { coordinates, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
+import { coordinates, coordinatorRoleOf, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -472,6 +474,8 @@ export async function createWorkspace(
   // host member reads. Passing `remote` to the helper only suppressed the NOTICE,
   // not the run-start.
   const remote = input.host?.kind === 'sandbox';
+  // #434: the FIRST spawn of an agent makes its parent the owner of a run — BEFORE the child's anchor resolves (the child is a member of it).
+  if (!remote) await ensureParentOwnsRun(ws);
   if (!remote) await startBusRunAndWriteNotice(ws, remote);
 
   // No agent is started here: the SDK session starts lazily (first send / wake / spawn),
@@ -548,7 +552,7 @@ export function orchestratorBrief(
  * flavour: `'scratch'` is a blank throwaway; `'orchestrator'` is the same shell
  * but its agent is seeded with {@link ORCHESTRATOR_BRIEF} so it delegates. */
 async function createScratchLikeWorkspace(
-  kind: 'scratch' | 'orchestrator',
+  kind: 'scratch' | 'orchestrator', // run-position: non-run — creation flavour type
 ): Promise<Workspace> {
   if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
   const id = randomUUID();
@@ -612,7 +616,7 @@ export function createScratchWorkspace(): Promise<Workspace> {
 }
 
 export function createOrchestratorWorkspace(): Promise<Workspace> {
-  return createScratchLikeWorkspace('orchestrator');
+  return createScratchLikeWorkspace('orchestrator'); // run-position: non-run — creation flavour
 }
 
 /** Collect `id` plus every workspace transitively parented under it (children,
@@ -1862,7 +1866,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
   if (ws.kind !== 'scratch') {
     // A git worktree keeps its kind and gains the capability instead.
     try {
-      const updated: Workspace = { ...ws, canOrchestrate: true };
+      const updated: Workspace = { ...ws, canOrchestrate: true, ownsRun: true };
       await store.upsertWorkspace(updated);
       // Same sentinel as the scratch path: it flips the SessionStart standing
       // reminder on without a pty restart. The reminder script itself picks the
@@ -1893,7 +1897,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     const name = ws.name.startsWith('scratch · ')
       ? `orchestrator · ${ws.name.slice('scratch · '.length)}`
       : ws.name;
-    const updated: Workspace = { ...ws, kind: 'orchestrator', name };
+    const updated: Workspace = { ...ws, kind: 'orchestrator', ownsRun: true, name }; // run-position: non-run — promote of a scratch: the kind write
     await store.upsertWorkspace(updated);
     // The promoting agent's session was started with ORCHESTRA_KIND=scratch, so the
     // sentinel is what makes the standing delegation reminder kick in on its
@@ -1905,7 +1909,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
     log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
     // #171 — refresh the live session's run env (see the pre-mutation snapshot).
     const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
-    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale, hostResolved };
+    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale, hostResolved }; // run-position: non-run — promote reply
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
   }
@@ -2491,7 +2495,7 @@ export interface WhoamiResult {
   name?: string;
   branch?: string;
   /** Effective kind — records predating the field are worktrees. */
-  kind?: 'worktree' | 'scratch' | 'orchestrator';
+  kind?: 'worktree' | 'scratch' | 'orchestrator'; // run-position: non-run — result type
   /** Whether children can nest under this workspace (kind OR capability route
    * — the {@link canOrchestrate} helper, not the raw field). */
   orchestrator?: boolean;
@@ -4641,6 +4645,39 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
   if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
 }
 
+/** #434 — the first spawn of an agent makes its PARENT the owner of a run: `ownsRun` is recorded (persisted) and the standing-role
+ *  sentinel written (the hook gate reads it before any restart), so the child's anchor — its parent — owns a row at once (vague,
+ *  `parent_run_id` = the run the parent is itself a member of). Idempotent; a top-level parent or an owner already marked is a no-op. */
+export async function ensureParentOwnsRun(child: Pick<Workspace, 'id' | 'parentId'>): Promise<void> {
+  const parent = ownerToMark(child, (id) => store.getWorkspace(id));
+  if (!parent) return;
+  try {
+    const updated: Workspace = { ...store.getWorkspace(parent.id)!, ownsRun: true };
+    await store.upsertWorkspace(updated);
+    platform.broadcast('workspace:update', updated);
+    if (updated.host?.kind !== 'sandbox' && existsSync(updated.worktreePath)) await markOrchestratorWorktree(updated.worktreePath, coordinatorRoleOf(updated) === 'dual');
+    log.info(`run-position: ${updated.branch} (${updated.id}) owns a run — its first agent was spawned`);
+  } catch (e) {
+    log.warn(`run-position: could not record that ${parent.id} owns a run`, e);
+  }
+}
+
+/** #434 — a session START of a member whose parent owns no run row yet (attached later, pre-#434 data): the parent becomes the owner, its
+ *  row is started and the member's notice written. Idempotent, best-effort, never throws; a top-level / sandbox workspace is a no-op. */
+export async function ensureMemberRun(ws: Workspace): Promise<void> {
+  if (!ws.parentId || ws.host?.kind === 'sandbox') return;
+  try {
+    await ensureParentOwnsRun(ws);
+    const fresh = store.getWorkspace(ws.id) ?? ws;
+    const anchor = resolveAnchorInfo(fresh);
+    const had = runAnchorProbe(busRunAnchorDeps)(anchor.anchorId);
+    maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
+    if (!had && existsSync(fresh.worktreePath)) await writeBusSwitchState(fresh.worktreePath, anchor.anchorId);
+  } catch (e) {
+    log.warn(`bus-run-anchor: launch-time member run start failed for ${ws.id}`, e);
+  }
+}
+
 /** #433 — at app start, give every live top-level workspace without a run its mission, and rewrite every live
  *  worktree's notice (a stale "anchors no run" file from an older build is wiped). No session is restarted or woken;
  *  archived and sandbox workspaces are skipped. */
@@ -4649,6 +4686,20 @@ export async function startRunsForParentlessWorkspaces(): Promise<string[]> {
   const started = startRunsForParentless(busRunAnchorDeps, live, (id) => store.getWorkspace(id));
   for (const ws of live) if (existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, resolveWaveRunId(ws));
   if (started.length) log.info(`bus-run-anchor: started a mission run for ${started.length} top-level workspace(s) without one`);
+  return started;
+}
+
+/** #434 — at app start, give every live owner that has a parent and no run row its vague (promoted OPS, a plain parent of pre-#434 children),
+ *  parents first; refreshes each started owner's members' notices is unnecessary (their notice is written at each launch). Best-effort. */
+export async function startRunsForOwnerWorkspaces(): Promise<string[]> {
+  const live = store.workspaces.filter((w) => !w.archived && w.host?.kind !== 'sandbox');
+  const started = startRunsForOwners(busRunAnchorDeps, live, (id) => store.getWorkspace(id));
+  for (const id of started) {
+    const ws = store.getWorkspace(id);
+    if (ws && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, id);
+  }
+  for (const w of live) if (w.parentId && existsSync(w.worktreePath)) await writeBusSwitchState(w.worktreePath, resolveWaveRunId(w));
+  if (started.length) log.info(`bus-run-anchor: started a vague run for ${started.length} owner(s) with a parent and no run`);
   return started;
 }
 

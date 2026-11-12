@@ -1449,7 +1449,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   const repoPaths = repos.map((r) => r.path);
   const renderSpawnTreeRows = (
     trees: { root: Workspace; rows: TreeRow[] }[],
-    variant: 'orchestrator' | 'scratch',
+    variant: 'orchestrator' | 'scratch', // run-position: non-run — section variant
   ) =>
     // Each tree gets its OWN wrapper rather than flat-mapping every row into
     // one undifferentiated list, so consecutive trees can be separated (see
@@ -1457,7 +1457,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     // boundary to hang a gap on, and one orchestrator's last child runs
     // straight into the next orchestrator's root row.
     trees.map(({ root, rows }) => {
-      const rootNoun = variant === 'orchestrator' ? 'orchestrator' : 'scratch session';
+      const rootNoun = variant === 'orchestrator' ? 'orchestrator' : 'scratch session'; // run-position: non-run — section variant label
       // Rows are depth-first, so a collapsed node hides every deeper
       // row that follows it until the walk climbs back to its depth.
       const visibleRows: TreeRow[] = [];
@@ -1607,7 +1607,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                     title={withStatusNote(
                       withExLabel(
                         depth === 0
-                          ? variant === 'orchestrator'
+                          ? variant === 'orchestrator' // run-position: non-run — section variant
                             ? `${w.branch} — orchestrator · double-click to rename`
                             : `${w.branch} — scratch session (not tracked by git) · double-click to rename`
                           : `${w.branch} — spawned by this ${rootNoun} · double-click to rename`,
@@ -1919,7 +1919,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 </button>
               </span>
             </div>
-            {renderSpawnTreeRows(orchestratorTrees, 'orchestrator')}
+            {renderSpawnTreeRows(orchestratorTrees, 'orchestrator')}{/* run-position: non-run — section variant */}
           </div>
         )}
         {/* Asks — fleet decision gates addressed to the HUMAN (#161, surface B),

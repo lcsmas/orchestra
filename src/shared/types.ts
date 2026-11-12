@@ -113,7 +113,7 @@ export interface Workspace {
    * {@link Workspace.repoAssociation} — a DISPLAY-ONLY pointer that files it
    * under a repo section in the sidebar without giving it a repo. Once it adopts
    * a real repo, `repoPath` supersedes that association for grouping. */
-  kind?: 'worktree' | 'scratch' | 'orchestrator';
+  kind?: 'worktree' | 'scratch' | 'orchestrator'; // run-position: non-run — kind type
   /** Orchestrator CAPABILITY on a workspace that is not the `'orchestrator'`
    * KIND — i.e. a real git worktree that also coordinates children. Set by
    * `/promote` on a worktree and cleared by `/demote`.
@@ -133,6 +133,10 @@ export interface Workspace {
    * Never read this directly to answer "can children nest under this?" — use
    * {@link canOrchestrate}, which also covers the `'orchestrator'` kind. */
   canOrchestrate?: boolean;
+  /** #434 — this workspace OWNS a run (coordinates it): set at its first spawn, at a promote and by the app-start
+   *  migration of a pre-#434 flag. A top-level workspace and the `'orchestrator'` kind own one without it — read
+   *  {@link coordinates} (`shared/run-position.ts`), never this field, to ask "does it coordinate?". */
+  ownsRun?: boolean;
   /** Workspace id of the orchestrator this workspace nests under. Set at creation
    * by `/spawn` (the spawning orchestrator's `ORCHESTRA_WS_ID`), and afterwards
    * mutable via the `/attach` socket route, which re-parents an existing

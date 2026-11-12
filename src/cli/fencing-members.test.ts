@@ -59,9 +59,9 @@ function freshHome(t: { after: (fn: () => void) => void }): string {
     JSON.stringify({
       workspaces: [
         // Real topology links (#221: `send --to` derives the recipient's wave run from them).
-        { id: COORD, name: 'ops', canOrchestrate: true },
+        { id: COORD, name: 'ops', ownsRun: true },
         { id: MEMBER, name: 'member', parentId: COORD },
-        { id: LEAD, name: 'lead', canOrchestrate: true },
+        { id: LEAD, name: 'lead', ownsRun: true },
       ],
     }),
   );

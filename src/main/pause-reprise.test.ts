@@ -1069,13 +1069,13 @@ test('M3 NESTED on the live tree: each coordinator\'s row lists the coordinators
 
 // ── review (delta 2): no topology may leave a RESUMING run un-closable ────────
 
-test('PLAIN-ANCHOR carrier (#221: a plain workspace anchors the run, no orchestrator): the host releases its coordinator, the members are workers OF THE CARRIER run, and the carrier\'s coordinator releases them with --all', () => {
+test('PLAIN-ANCHOR carrier (#221/#434: a plain workspace owns the run): the host releases its coordinator, the members are workers OF THE CARRIER run, and the carrier\'s coordinator releases them with --all', () => {
   const { db } = freshDb();
   busRuns.startRun(db, { id: 'P', kind: 'mission', coordinator: 'P' }, ON);
   assert.equal(setRunPause(db, 'P', true, 'P'), 'paused');
   const pausedAt = getRunPause(db, 'P')!.pausedAt;
-  // the trap's own `memberRun` for a member of a plain anchor is ITS OWN id (nearestOrchestratorId: "no orchestrator above ⇒ its own standalone run")
-  for (const [ws, run] of [['P', 'P'], ['w1', 'w1'], ['w2', 'w2']] as const) insertBilanRow(db, 'P', ws, pausedAt, run);
+  // #434: a member's run is its DIRECT parent's — the carrier P (before, a member of a plain anchor was a standalone run of its own)
+  for (const [ws, run] of [['P', 'P'], ['w1', 'P'], ['w2', 'P']] as const) insertBilanRow(db, 'P', ws, pausedAt, run);
   db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'P');
   const nodes: WaveNode[] = [{ id: 'P', kind: 'scratch' }, { id: 'w1', parentId: 'P' }, { id: 'w2', parentId: 'P' }];
   withLiveTree(nodes, () => {
@@ -1089,31 +1089,31 @@ test('PLAIN-ANCHOR carrier (#221: a plain workspace anchors the run, no orchestr
     assert.equal(all.finished, true);
   });
   assert.equal(readCarrierColumns(db, 'P')!.pausedAt, null, 'ACTIVE');
-  // DELIVERY: a member reads its mail in `$ORCHESTRA_RUN_ID` = nearestOrchestratorId = its OWN id under a plain anchor — the row must be THERE (the wave grouping run P is not where it looks)
-  assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'w1').map((r) => r.run_id), ['w1'], 'the Consigne rides the member\'s own env run, not the grouping run');
-  assert.equal(bus.check(db, 'w1', 'w1').messages.filter((m) => m.kind === 'reprise').length, 1, 'w1 `orchestra check` (its own run) READS its Consigne');
-  assert.equal(bus.check(db, 'P', 'w1').messages.length, 0, 'nothing waits for it in the carrier run');
+  // DELIVERY: a member reads its mail in `$ORCHESTRA_RUN_ID` = runIdOf = its direct parent's run P — the Consigne rides THAT run
+  assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'w1').map((r) => r.run_id), ['P'], 'the Consigne rides the member\'s env run = the carrier run');
+  assert.equal(bus.check(db, 'P', 'w1').messages.filter((m) => m.kind === 'reprise').length, 1, 'w1 `orchestra check` READS its Consigne');
+  assert.equal(bus.check(db, 'w1', 'w1').messages.length, 0, 'nothing waits in a run w1 does not read');
   db.close();
 });
 
-test('DELIVERY run = the member\'s env run over the WHOLE live chain: a plain carrier P UNDER an orchestrator L reads its mail in L — the host row to P and the Consigne to w1 both land in L, never in P', () => {
+test('DELIVERY run (#434): a plain carrier P that OWNS a run under L reads its mail in its OWN run P (it coordinates it), and so does its member w1 — the host row to P and the Consigne to w1 both land in P, never in L', () => {
   const { db } = freshDb();
   busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
   busRuns.startRun(db, { id: 'P', kind: 'vague', coordinator: 'P', parentRunId: 'L' }, ON); // a plain workspace that also anchors a run row
   assert.equal(setRunPause(db, 'P', true, 'P'), 'paused');
   const pausedAt = getRunPause(db, 'P')!.pausedAt;
-  for (const [ws, run] of [['P', 'L'], ['w1', 'L']] as const) insertBilanRow(db, 'P', ws, pausedAt, run);
+  for (const [ws, run] of [['P', 'P'], ['w1', 'P']] as const) insertBilanRow(db, 'P', ws, pausedAt, run);
   db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'P');
-  const nodes: WaveNode[] = [{ id: 'L', kind: 'orchestrator' }, { id: 'P', kind: 'scratch', parentId: 'L' }, { id: 'w1', parentId: 'P' }];
+  const nodes: WaveNode[] = [{ id: 'L', kind: 'orchestrator' }, { id: 'P', kind: 'scratch', parentId: 'L', ownsRun: true }, { id: 'w1', parentId: 'P' }];
   withLiveTree(nodes, () => {
     assert.equal(beginReprise(db, 'P', 'P'), 'resuming');
-    assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'P').map((r) => r.run_id), ['L'], 'P reads its mail in L: the host\'s coordinator row goes THERE');
+    assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'P').map((r) => r.run_id), ['P'], 'P reads its mail in its own run: the host\'s coordinator row goes THERE');
     const r = releaseMembers(db, 'P', 'P', 'all');
     assert.deepEqual([r.released, r.below, r.finished], [['w1'], [], true], 'P --all: w1 belongs to P\'s wave');
   });
-  assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'w1').map((r) => r.run_id), ['L'], 'w1 reads its mail in L');
-  assert.equal(bus.check(db, 'L', 'w1').messages.filter((m) => m.kind === 'reprise').length, 1);
-  assert.equal(bus.check(db, 'P', 'w1').messages.length, 0);
+  assert.deepEqual(reprRows(db).filter((r) => r.recipient === 'w1').map((r) => r.run_id), ['P'], 'w1 reads its mail in P');
+  assert.equal(bus.check(db, 'P', 'w1').messages.filter((m) => m.kind === 'reprise').length, 1);
+  assert.equal(bus.check(db, 'L', 'w1').messages.length, 0);
   db.close();
 });
 
@@ -1374,5 +1374,30 @@ test('R2r2-m2b `repriseStatusView` trusts the LIVE chain over a STALE bus parent
     assert.equal(repriseStatusView(db, 'O')?.carrier, 'L1', 'the live chain O → L1 decides');
   });
   assert.equal(repriseStatusView(db, 'O')?.carrier, 'B1', 'without a live tree only the (stale) bus parent is known — the control that proves the order matters');
+  db.close();
+});
+
+// #434 / spec NOT-VERIFIED #2 — MEASURED: how the Pause classes a PLAIN parent that owns a vague (`ownsRun`, no orchestrator kind or flag).
+test('#434 a plain parent that owns a run is classed COORDINATOR of its own run AND a member of its parent\'s run: the host releases it, it releases ITS worker, the LEAD\'s --all leaves that worker to it', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
+  busRuns.startRun(db, { id: 'P', kind: 'vague', coordinator: 'P', parentRunId: 'L' }, ON); // born at P's first spawn
+  assert.equal(setRunPause(db, 'L', true, 'L'), 'paused');
+  const pausedAt = getRunPause(db, 'L')!.pausedAt;
+  for (const [ws, run] of [['L', 'L'], ['P', 'P'], ['c1', 'P']] as const) insertBilanRow(db, 'L', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'L');
+  const nodes: WaveNode[] = [{ id: 'L', kind: 'orchestrator' }, { id: 'P', kind: 'worktree', parentId: 'L', ownsRun: true }, { id: 'c1', kind: 'worktree', parentId: 'P' }];
+  withLiveTree(nodes, () => {
+    assert.equal(beginReprise(db, 'L', 'L'), 'resuming');
+    const roster = new Map(readRoster(db, 'L', pausedAt).map((r) => [r.wsId, r]));
+    assert.deepEqual([roster.get('P')!.role, roster.get('P')!.memberRun, roster.get('P')!.releasedBy], ['coordinator', 'P', 'host'], 'coordinator of ITS OWN run P, released by the host with the others');
+    assert.deepEqual([roster.get('c1')!.role, roster.get('c1')!.memberRun, roster.get('c1')!.releasedAt], ['worker', 'P', null], 'its child is a worker OF P, still blocked');
+    assert.equal(reprRows(db).find((r) => r.recipient === 'P')?.run_id, 'P', 'P\'s Consigne rides its own run');
+    const lead = releaseMembers(db, 'L', 'L', 'all');
+    assert.deepEqual([lead.released, lead.below], [[], ['c1']], 'the LEAD\'s --all does not take a worker of the run BELOW it: P is a member of L\'s run, c1 a member of P\'s');
+    const p = releaseMembers(db, 'L', 'P', 'all');
+    assert.deepEqual([p.released, p.refused, p.finished], [['c1'], [], true], 'P releases its own worker and the Reprise closes');
+  });
+  assert.equal(readCarrierColumns(db, 'L')!.pausedAt, null);
   db.close();
 });

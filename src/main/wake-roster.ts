@@ -4,11 +4,12 @@
 import type { Workspace } from '../shared/types';
 import type { WakeableReader } from './bus-wake.ts';
 import { sdkSessionLive } from './sdk-delivery';
-import { coordinates } from '../shared/run-position';
+import { coordinates, coordinatorOf } from '../shared/run-position';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { startKeepsFailing } from '../shared/opening-task.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { resolveWaveRunId } from './workspaces';
+import { store } from './store';
 
 export function wakeRosterEntry(ws: Workspace): WakeableReader {
   return {
@@ -33,7 +34,7 @@ export function wakeRosterEntry(ws: Workspace): WakeableReader {
     // itself; a member resolves to its anchor (walkToRootId).
     runId: resolveWaveRunId(ws),
     // #287 Admission: what the sweep needs to decide whether a due réveil is an automatic START of a SLEEPING FLEET member (held under low memory).
-    fleetMember: !!ws.parentId,
+    fleetMember: !!coordinatorOf(ws, (id) => store.getWorkspace(id)),
     sleeping: !sdkSessionLive(ws.id),
     coordinator: coordinates(ws),
   };

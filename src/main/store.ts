@@ -153,7 +153,14 @@ class Store {
     // Previously-running agents are NOT relaunched at startup: the SDK session
     // starts (resuming `sdkSessionId`) when the user first opens the workspace.
     let mutated = false;
+    // #434: a workspace OWNS a run when it was promoted (the flag) or already has a child — recorded as `ownsRun`, the field
+    // `coordinates()` reads, so a pre-#434 store keeps its coordinators without the flag deciding anything.
+    const parentsOfSomeone = new Set(this.data.workspaces.map((w) => w.parentId).filter((p): p is string => !!p));
     for (const ws of this.data.workspaces) {
+      if (!ws.ownsRun && (ws.canOrchestrate === true || parentsOfSomeone.has(ws.id))) { // run-position: non-run — one-time migration of the persisted flag into ownsRun
+        ws.ownsRun = true; // run-position: non-run — the migration write
+        mutated = true;
+      }
       // Migrate the obsolete 'stalled' status from older orchestra versions
       // (the PTY-quiescence watchdog has been removed) — treat as idle.
       if (ws.status === 'running' || (ws.status as string) === 'stalled') {

@@ -7,48 +7,67 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs script, no types
-import { verdict, selfTest } from '../../scripts/check-run-position-single-reader.mjs';
-import { coordinates, isCoordinatorKind, runIdOf, parentRunOf, isPlainOwnAnchor, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
+import { verdict, selfTest, PARENT_PICK_FILES } from '../../scripts/check-run-position-single-reader.mjs';
+import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, isPlainOwnAnchor, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
-// ─── the contract (today's semantics behind the frozen names) ───
+// ─── the contract (#434: a plain parent OWNS a run; membership = the DIRECT parent) ───
 const tree = (nodes: RunNode[]) => {
   const m = new Map(nodes.map((n) => [n.id, n]));
   return (id: string) => m.get(id);
 };
 const lead: RunNode = { id: 'lead', kind: 'orchestrator' };
-const ops: RunNode = { id: 'ops', parentId: 'lead', kind: 'worktree', canOrchestrate: true };
+const ops: RunNode = { id: 'ops', parentId: 'lead', kind: 'worktree', ownsRun: true };
 const worker: RunNode = { id: 'w', parentId: 'ops', kind: 'worktree' };
-const loner: RunNode = { id: 'solo', kind: 'worktree' };
+const loner: RunNode = { id: 'solo', kind: 'worktree' }; // top-level plain: owns its mission
 const kid: RunNode = { id: 'kid', parentId: 'solo', kind: 'worktree' };
 const lk = tree([lead, ops, worker, loner, kid]);
 
-test('coordinates: the orchestrator kind OR the capability flag, never a plain worktree/scratch', () => {
+test('coordinates: owns a run = the orchestrator kind, ownsRun, or top-level; a plain member never', () => {
   assert.equal(coordinates(lead), true);
-  assert.equal(coordinates(ops), true);
+  assert.equal(coordinates(ops), true, 'ownsRun');
+  assert.equal(coordinates(loner), true, 'a top-level workspace owns its mission from birth');
   assert.equal(coordinates(worker), false);
-  assert.equal(coordinates({ id: 's', kind: 'scratch' }), false);
+  assert.equal(coordinates({ id: 's', kind: 'scratch', parentId: 'p' }), false);
+  assert.equal(coordinates({ id: 'f', kind: 'worktree', parentId: 'p', canOrchestrate: true } as RunNode), false, 'the capability flag no longer decides');
   assert.equal(isCoordinatorKind(lead), true);
-  assert.equal(isCoordinatorKind(ops), false, 'the KIND route only: a promoted worktree carries the flag, not the kind');
+  assert.equal(isCoordinatorKind(ops), false, 'the KIND route only');
+  assert.equal(coordinatorRoleOf(lead), 'pure');
+  assert.equal(coordinatorRoleOf(ops), 'dual');
 });
 
-test('runIdOf: self if coordinating, else the nearest coordinating ancestor, else own id', () => {
+test('runIdOf: its own run when it owns one, else its DIRECT parent\'s (never the first orchestrator ancestor)', () => {
   assert.equal(runIdOf(lead, lk), 'lead');
   assert.equal(runIdOf(ops, lk), 'ops');
   assert.equal(runIdOf(worker, lk), 'ops');
-  assert.equal(runIdOf(kid, lk), 'kid', 'no coordinator above → its own run');
+  assert.equal(runIdOf(kid, lk), 'solo', 'a child of a plain parent is a member of the parent\'s run');
+  const grand: RunNode = { id: 'g', parentId: 'w', kind: 'worktree' };
+  assert.equal(runIdOf(grand, tree([lead, ops, worker, grand])), 'w', 'direct parent, not the OPS two levels up');
   assert.equal(runIdOf({ id: 'x', parentId: 'gone', kind: 'worktree' }, lk), 'x', 'a broken link never throws');
   const cyc = tree([{ id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' }]);
-  assert.equal(runIdOf({ id: 'a', parentId: 'b' }, cyc), 'a', 'a cycle is bounded');
+  assert.equal(runIdOf({ id: 'a', parentId: 'b' }, cyc), 'b', 'a cycle is one step, never a loop');
 });
 
-test('parentRunOf: first coordinating/anchoring ancestor, else the implicit direct parent, else null', () => {
+test('coordinatorOf / memberRunOf: who coordinates ws = its resolved direct parent; none for top-level or a dangling link', () => {
+  assert.equal(coordinatorOf(worker, lk)?.id, 'ops');
+  assert.equal(coordinatorOf(ops, lk)?.id, 'lead', 'an OPS is a MEMBER of its parent\'s run');
+  assert.equal(coordinatorOf(kid, lk)?.id, 'solo');
+  assert.equal(coordinatorOf(lead, lk), undefined);
+  assert.equal(coordinatorOf({ id: 'x', parentId: 'gone' }, lk), undefined);
+  assert.equal(coordinatorOf({ id: 'me', parentId: 'me' }, tree([{ id: 'me', parentId: 'me' }])), undefined, 'never its own coordinator');
+  assert.equal(memberRunOf(ops, lk), 'lead');
+  assert.equal(memberRunOf(lead, lk), null);
+});
+
+test('parentRunOf: the run ws is a member of = its direct parent; implicit only when that parent owns no row yet', () => {
   assert.deepEqual(parentRunOf(ops, lk), { id: 'lead', implicit: false });
   assert.deepEqual(parentRunOf(lead, lk), { id: null, implicit: false });
-  assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'solo', kind: 'worktree', canOrchestrate: true }, lk), { id: 'solo', implicit: true });
-  assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'solo', kind: 'worktree' }, lk, (id) => id === 'solo'), { id: 'solo', implicit: false });
-  assert.equal(isPlainOwnAnchor(loner, lk), true);
+  assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'solo', kind: 'worktree', ownsRun: true }, lk), { id: 'solo', implicit: false }, 'a top-level parent owns a mission');
+  assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree', ownsRun: true }, lk), { id: 'kid', implicit: true }, 'a legacy plain parent with no row');
+  assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree' }, lk, (id) => id === 'kid'), { id: 'kid', implicit: false });
+  assert.equal(isPlainOwnAnchor({ id: 'x', parentId: 'gone', kind: 'worktree' }, lk), true, 'only a dangling-parent plain workspace');
+  assert.equal(isPlainOwnAnchor(loner, lk), false);
   assert.equal(isPlainOwnAnchor(lead, lk), false);
 });
 
@@ -110,6 +129,22 @@ test('MUTANT: reversed / switch / destructured / bracket shapes are DIRTY', () =
   ]) assert.equal(withTree(append('main/activity.ts', `\n${code}\n`)).clean, false, code);
 });
 
+test('MUTANT (#434): an `ownsRun` read outside the module is DIRTY', () => {
+  assert.equal(withTree(append('main/activity.ts', '\nconst o = (w: any) => w.ownsRun === true;\n')).clean, false);
+});
+
+test('MUTANT (#434, the #432 review blind spots): a multi-line destructure and an alias of `.kind` are DIRTY', () => {
+  assert.equal(withTree(append('main/activity.ts', '\nconst p = (w: any) => {\n  const {\n    kind,\n    ownsRun,\n  } = w;\n  return ownsRun || kind;\n};\n')).clean, false, 'multi-line destructure');
+  assert.equal(withTree(append('main/activity.ts', "\nconst q = (w: any) => { const kk = w.kind; return kk === 'orchestrator'; };\n")).clean, false, 'alias of .kind');
+  assert.equal(withTree(append('main/activity.ts', "\nconst r = (w: any) => ['orchestrator'].includes(w.kind);\n")).clean, false, 'array literal');
+});
+
+test('MUTANT (#434): a coordinator pick from `.parentId` in a routed file (liveness roster, watchdog, vague roster, admission-wake, naming-migration…) is DIRTY', () => {
+  for (const f of PARENT_PICK_FILES as string[]) {
+    assert.equal(withTree(append(f.replace(/^src\//, ''), '\nconst pp = (w: any) => w.parentId;\n')).clean, false, f);
+  }
+});
+
 test('a marker exempts ITS line only, never the next one', () => {
   const v = withTree(append('main/activity.ts', "\nconst k = (w: any) => w.kind === 'orchestrator'; // run-position: non-run — t\nconst l = (w: any) => w.kind === 'orchestrator';\n"));
   assert.equal(v.clean, false);
@@ -123,7 +158,7 @@ test('a non-run read carrying the marker is allowed; a comment naming the flag i
 test('positive control bites: a module that stopped reading the flag (blind pattern) is DIRTY, not vacuously clean', () => {
   const v = withTree((dir) => {
     const f = path.join(dir, 'src/shared/run-position.ts');
-    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('ws.canOrchestrate === true', 'ws.flagX === true'));
+    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('ws.ownsRun === true', 'ws.flagX === true'));
   });
   assert.equal(v.clean, false);
   assert.match(v.problems.join(), /positive control/);

@@ -7,6 +7,7 @@
 import type { Workspace } from '../shared/types.ts';
 import { isSoftRecord, memBusBody, type MemKillRecord, type MemNoticeRecord, type MemSoftRecord } from '../shared/memory-scope.ts';
 import { addMemNotice, memNoticeEntryOf, type MemNoticeEntry } from '../shared/mem-notice.ts';
+import { coordinatorOf as coordinatorNodeOf } from '../shared/run-position.ts';
 
 export interface BusSendInput {
   runId: string;
@@ -47,7 +48,7 @@ function noticeRow(deps: MemNoticeDeps, wsId: string, rec: MemNoticeRecord): voi
 
 /** The workspace's coordinator = its live parent (the same rule as the liveness roster and the boot-wedge escalation). */
 function coordinatorOf(deps: MemNoticeDeps, ws: Workspace): string | null {
-  const parent = ws.parentId ? deps.getWorkspace(ws.parentId) : undefined;
+  const parent = coordinatorNodeOf(ws, deps.getWorkspace);
   return parent && !parent.archived ? parent.id : null;
 }
 

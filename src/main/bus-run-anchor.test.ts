@@ -67,7 +67,7 @@ function anchorInfoOf(ws: WaveNode, lookup: (id: string) => WaveNode | undefined
   const anchorId = nearestOrchestratorId(ws, lookup);
   const anchorWs = anchorId === ws.id ? ws : lookup(anchorId);
   const isOrch = anchorWs
-    ? anchorWs.kind === 'orchestrator' || anchorWs.canOrchestrate === true
+    ? anchorWs.kind === 'orchestrator' || anchorWs.ownsRun === true
     : false;
   return {
     wsId: ws.id,
@@ -94,7 +94,7 @@ function deps(db: BusDb | null, live: { v: BusSwitches }): BusRunAnchorDeps & { 
 
 // The topology: LEAD (orchestrator) → OPS (promoted worktree) → IMPL (member).
 const LEAD: WaveNode = { id: 'lead', kind: 'orchestrator' };
-const OPS: WaveNode = { id: 'ops', parentId: 'lead', kind: 'worktree', canOrchestrate: true };
+const OPS: WaveNode = { id: 'ops', parentId: 'lead', kind: 'worktree', ownsRun: true };
 const IMPL: WaveNode = { id: 'impl', parentId: 'ops', kind: 'worktree' };
 const WAVE = lookupOf([LEAD, OPS, IMPL]);
 

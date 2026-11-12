@@ -26,7 +26,7 @@
 import type { BusDb } from './bus.ts';
 import type { BusRunRow } from './bus-runs.ts';
 import { WAVE_REFREEZE_KEEPS_FROZEN, type BusMechanism, type BusSwitches } from '../shared/bus-switches.ts';
-import { coordinates, isTopLevel, parentRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
+import { coordinates, coordinatorOf, isCoordinatorKind, isTopLevel, parentRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
 
 /** The collaborators the anchor-start needs, injected so a rig drives the real
  *  function without the Electron/store chain `workspaces.ts` drags in. */
@@ -70,6 +70,8 @@ export interface AnchorInfo {
   /** #221 — `parentRunId` names a run-less PLAIN workspace (not an orchestrator): start its
    *  mission row before the anchor's own. It never becomes an orchestrator. */
   parentRunImplicit?: boolean;
+  /** #434 — the runs above the anchor whose row is missing, TOP-DOWN, each with its own parent pointer (a vague when it has one). */
+  missingParentRuns?: Array<{ id: string; parentRunId: string | null }>;
 }
 
 /** "Does this workspace id anchor a run (a row exists)?" — best-effort like every bus
@@ -99,8 +101,9 @@ export function isParentless(ws: WaveNode, lookup: (id: string) => WaveNode | un
 export function computeAnchorInfo(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
-  anchorsRun: (id: string) => boolean = () => false,
+  anchorsRunProbe?: (id: string) => boolean,
 ): AnchorInfo {
+  const anchorsRun = anchorsRunProbe ?? (() => false);
   const anchorId = runIdOf(ws, lookup);
   const anchorNode = anchorId === ws.id ? ws : lookup(anchorId);
   const anchorIsOrchestrator = anchorNode ? coordinates(anchorNode) : false;
@@ -109,13 +112,27 @@ export function computeAnchorInfo(
     anchorNode && anchorIsOrchestrator
       ? parentRunOf(anchorNode, lookup, anchorsRun)
       : { id: null, implicit: false };
+  // #434 — every run ABOVE the anchor (the runs it is a member of, up the direct-parent chain) must have a row, or `parent_run_id` dangles:
+  // with the probe, each ancestor whose row is missing is started too (top-down, each with ITS OWN parent pointer: a vague when it has a
+  // parent, a mission at the top). Without a probe only a non-owning direct parent counts (the #221 implicit parent).
+  const missingParentRuns: Array<{ id: string; parentRunId: string | null }> = [];
+  if (anchorNode && anchorIsOrchestrator) {
+    const seen = new Set<string>([anchorNode.id]);
+    for (let cur = coordinatorOf(anchorNode, lookup); cur && !seen.has(cur.id); cur = coordinatorOf(cur, lookup)) {
+      seen.add(cur.id);
+      const missing = anchorsRunProbe ? !anchorsRunProbe(cur.id) : !coordinates(cur);
+      if (missing) missingParentRuns.unshift({ id: cur.id, parentRunId: coordinatorOf(cur, lookup)?.id ?? null });
+    }
+  }
+  const implicit = parent.implicit || (!!parent.id && missingParentRuns.some((m) => m.id === parent.id));
   return {
     wsId: ws.id,
     anchorId,
     anchorIsOrchestrator,
     anchorOwnsRun: anchorIsOrchestrator || (anchorId === ws.id && isParentless(ws, lookup)),
     parentRunId: parent.id,
-    ...(parent.implicit ? { parentRunImplicit: true } : {}),
+    ...(implicit ? { parentRunImplicit: true } : {}),
+    ...(missingParentRuns.length > 0 ? { missingParentRuns } : {}),
   };
 }
 
@@ -171,14 +188,10 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
     // a correctness gate.
     const existing = deps.getRun(db, anchor.anchorId);
     if (existing) return existing;
-    // #221 — a run-less plain parent gets its MISSION row FIRST (coordinator = the parent, no
-    // orchestrator role); a failure aborts before the child row, never a dangling parent_run_id.
-    if (anchor.parentRunImplicit && anchor.parentRunId) {
-      deps.startRun(
-        db,
-        { id: anchor.parentRunId, kind: 'mission', coordinator: anchor.parentRunId, parentRunId: null },
-        deps.getLiveSwitches(),
-      );
+    // #221/#434 — a missing parent run (a run-less plain parent, or an owner whose row the bus lost) gets its row FIRST, top-down, so a failure
+    // aborts before the child row — never a dangling parent_run_id.
+    for (const m of anchor.missingParentRuns ?? (anchor.parentRunImplicit && anchor.parentRunId ? [{ id: anchor.parentRunId, parentRunId: null }] : [])) {
+      deps.startRun(db, { id: m.id, kind: m.parentRunId ? 'vague' : 'mission', coordinator: m.id, parentRunId: m.parentRunId }, deps.getLiveSwitches());
     }
     // A top-level orchestrator (no parent orchestrator) is a MISSION; a nested
     // one (an OPS under a LEAD) is a VAGUE. The kind is what `refreezeRun` gates
@@ -247,4 +260,47 @@ export function startRunsForParentless(
     if (maybeStartRunAtAnchor(deps, anchor)) started.push(ws.id);
   }
   return started;
+}
+
+/**
+ * #434 — the app-start migration of the owners that HAVE a parent (a promoted OPS, a plain parent that already has children):
+ * each live workspace that coordinates and whose run has no row gets its vague (parent_run_id = the run it is a member of),
+ * PARENTS FIRST so the pointer never dangles. Returns the ids started. Never re-freezes a mission (same rule as the top-level pass).
+ */
+export function startRunsForOwners(
+  deps: BusRunAnchorDeps,
+  nodes: readonly WaveNode[],
+  lookup: (id: string) => WaveNode | undefined,
+): string[] {
+  const depth = (ws: WaveNode): number => {
+    let d = 0;
+    const seen = new Set<string>([ws.id]);
+    for (let cur: WaveNode | undefined = ws; cur?.parentId; ) {
+      const p = lookup(cur.parentId);
+      if (!p || seen.has(p.id)) break;
+      seen.add(p.id);
+      cur = p;
+      d += 1;
+    }
+    return d;
+  };
+  const started: string[] = [];
+  const probe = runAnchorProbe(deps);
+  const owners = nodes.filter((ws) => !isParentless(ws, lookup) && coordinates(ws) && !probe(ws.id)).sort((a, b) => depth(a) - depth(b));
+  for (const ws of owners) {
+    const anchor = computeAnchorInfo(ws, lookup, probe);
+    if (anchor.anchorId !== ws.id || !anchor.anchorOwnsRun) continue;
+    if (maybeStartRunAtAnchor(deps, { ...anchor, wsId: ws.id })) started.push(ws.id);
+  }
+  return started;
+}
+
+/**
+ * #434 — the parent that must START OWNING a run because `child` was just created under it (its first spawn): the resolved direct
+ * parent when it is not marked as an owner yet, else null. PURE — `ensureParentOwnsRun` (workspaces.ts) persists `ownsRun` on what
+ * this returns, and a rig drives this same decision to compose "spawn" without Electron.
+ */
+export function ownerToMark(child: WaveNode, lookup: (id: string) => WaveNode | undefined): WaveNode | null {
+  const parent = coordinatorOf(child, lookup);
+  return parent && parent.ownsRun !== true && !isCoordinatorKind(parent) ? parent : null; // run-position: non-run — the first-spawn ownership WRITE guard (is `ownsRun` recorded yet?)
 }

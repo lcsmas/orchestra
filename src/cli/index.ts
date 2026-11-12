@@ -757,6 +757,7 @@ interface OfflineRecord {
   parentId?: unknown;
   kind?: unknown;
   canOrchestrate?: unknown;
+  ownsRun?: unknown;
 }
 
 /** The persisted workspace records off the app's store file — `[]` on any read/parse failure. The ONE reader both offline consumers share. */
@@ -777,13 +778,13 @@ function toWaveNodes(ws: readonly OfflineRecord[]): Map<string, WaveNode> {
       id: w.id,
       parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
       kind: typeof w.kind === 'string' ? w.kind : undefined,
-      canOrchestrate: w.canOrchestrate === true, // run-position: non-run — marshals the persisted field into the RunNode the module reads
+      ownsRun: w.ownsRun === true || w.canOrchestrate === true, // run-position: non-run — marshals the persisted fields into the RunNode the module reads (a pre-#434 store records ownership in the flag)
     });
   }
   return nodes;
 }
 
-/** The persisted workspace tree (`id → {parentId, kind, canOrchestrate}`) — empty on any read/parse failure. Used by `run resume` to ask the
+/** The persisted workspace tree (`id → {parentId, kind, ownsRun}`) — empty on any read/parse failure. Used by `run resume` to ask the
  *  LIVE tree which ancestor still pauses a run (store-less verb: the app may be down). */
 export function offlineWaveNodes(file: string = appStoreFile()): Map<string, WaveNode> {
   try {
@@ -1897,7 +1898,7 @@ async function main(argv: string[]): Promise<void> {
         ['branch', (res.branch as string | undefined) ?? ''],
         ['kind', kind],
         [
-          'orchestrator',
+          'orchestrator', // run-position: non-run — verb argument list
           orchestrator ? (kind === 'worktree' ? 'yes (dual role)' : 'yes') : 'no',
         ],
         ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],

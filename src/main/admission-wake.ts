@@ -7,7 +7,7 @@
 // the release just granted this member's one-shot permit and this call consumed it).
 
 import type { Workspace } from '../shared/types';
-import { coordinates } from '../shared/run-position';
+import { coordinates, coordinatorOf } from '../shared/run-position';
 import { sdkAwaitFirstTurn, sdkSessionLive } from './sdk-delivery';
 import { probeKeeper } from './keeper-client';
 import { store } from './store';
@@ -40,11 +40,12 @@ export async function wakeHeldForMemory(
   },
 ): Promise<boolean> {
   const id = ws.id;
-  if (!ws.parentId || !isSleeping(id)) return false; // a running member / non-fleet workspace: never a held start (same answer as holdWake, without the probe)
+  const fleetMember = !!coordinatorOf(ws, (x) => store.getWorkspace(x));
+  if (!fleetMember || !isSleeping(id)) return false; // a running member / non-fleet workspace: never a held start (same answer as holdWake, without the probe)
   if (wakeWouldBeHeld() && (await keeperResident(id))) return false;
   return holdWake({
     wsId: id,
-    fleetMember: !!ws.parentId,
+    fleetMember,
     sleeping: isSleeping(id),
     coordinator: coordinates(ws),
     site: opts.site,

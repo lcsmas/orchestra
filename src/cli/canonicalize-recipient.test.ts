@@ -61,13 +61,13 @@ test('#144 offline: a missing/unreadable store yields [] (send then refuses, nev
   assert.equal(resolveHandle('0a5c25bb', offlineHandleCandidates()).ok, false);
 });
 
-test('#221 offline: each candidate carries its wave run (nearest orchestrator, else itself)', (t) => {
+test('#221 offline: each candidate carries its wave run (its own run if it owns one, else its direct parent\'s)', (t) => {
   const ORCH = 'aaaaaaaa-0000-4000-8000-000000000001';
   const MEMBER = 'bbbbbbbb-0000-4000-8000-000000000002';
   const PLAIN_PARENT = 'cccccccc-0000-4000-8000-000000000003';
   const PLAIN_CHILD = 'dddddddd-0000-4000-8000-000000000004';
   withStore(t, [
-    { id: ORCH, name: 'o', kind: 'worktree', canOrchestrate: true },
+    { id: ORCH, name: 'o', kind: 'worktree', ownsRun: true },
     { id: MEMBER, name: 'm', kind: 'worktree', parentId: ORCH },
     { id: PLAIN_PARENT, name: 'p', kind: 'worktree' },
     { id: PLAIN_CHILD, name: 'c', kind: 'worktree', parentId: PLAIN_PARENT },
@@ -77,7 +77,7 @@ test('#221 offline: each candidate carries its wave run (nearest orchestrator, e
     [ORCH]: ORCH,
     [MEMBER]: ORCH, // a member anchors on its orchestrator
     [PLAIN_PARENT]: PLAIN_PARENT,
-    [PLAIN_CHILD]: PLAIN_CHILD, // a plain parent is NOT an anchor for its child
+    [PLAIN_CHILD]: PLAIN_PARENT, // #434: a plain parent IS the run of its child (the direct parent's run)
   });
 });
 

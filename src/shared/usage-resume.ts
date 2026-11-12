@@ -178,7 +178,7 @@ export function decideResume(input: ResumeDecisionInput): ResumeAction {
 /** Convenience: read the coordinator flag off a real workspace record. Kept
  *  next to {@link decideResume} so callers do not re-derive it (and so the
  *  "promoted worktree counts as a coordinator" rule is applied once). */
-export function isCoordinatorWorkspace(ws: Pick<Workspace, 'kind' | 'canOrchestrate'>): boolean {
+export function isCoordinatorWorkspace(ws: Pick<Workspace, 'kind' | 'parentId' | 'ownsRun'>): boolean {
   return coordinates(ws);
 }
 

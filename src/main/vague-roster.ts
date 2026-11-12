@@ -3,6 +3,7 @@
 
 import type { Workspace } from '../shared/types.ts';
 import type { VagueFacts, VagueMember, VagueParticipant } from '../shared/vague-endormie.ts';
+import { coordinatorOf } from '../shared/run-position.ts';
 
 export interface VagueRosterDeps {
   workspaces(): readonly Workspace[];
@@ -78,7 +79,7 @@ function factsOf(d: VagueRosterDeps, rid: string, g: { coordinator: Workspace; m
     runId: rid,
     coordinator: participantOf(d, g.coordinator, waiting),
     // a coordinator with no LIVE parent is the human's conversation (same rule as the liveness / Relance rosters: a dangling or archived parent is nobody)
-    coordinatorHasParent: !!g.coordinator.parentId && !!d.getWorkspace(g.coordinator.parentId) && !d.getWorkspace(g.coordinator.parentId)?.archived,
+    coordinatorHasParent: ((up) => !!up && !up.archived)(coordinatorOf(g.coordinator, d.getWorkspace)),
     coordinatorWakeable: d.wakeable(g.coordinator),
     members,
     paused: [g.coordinator, ...g.members].some((w) => d.paused(w)),

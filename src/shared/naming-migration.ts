@@ -2,7 +2,7 @@
 // Decides, per workspace, what the one-shot migration does; scripts/migrate-parent-names.mjs gathers the inputs
 // (store, git, running vagues) and applies each `rename` step through the installed app's CLI — never by editing store.json.
 import type { Workspace } from './types.ts';
-import { coordinates } from './run-position.ts';
+import { coordinates, isTopLevel } from './run-position.ts';
 import { checkSpawnName, decideRename } from './naming-policy.ts';
 
 /** The Workspace fields the planner reads. */
@@ -134,7 +134,7 @@ export function vagueHolders(
   // A workspace hangs below its PARENT and below its NAMER: a `--detached` verifier has no parentId, only the namer that spawned it, and a sibling gating it by name is the very case the hold is for.
   const above = (id: string): string[] => {
     const w = byId.get(id);
-    return [w?.parentId, w?.namedByParent].filter((p): p is string => !!p && byId.has(p));
+    return [w?.parentId, w?.namedByParent].filter((p): p is string => !!p && byId.has(p)); // run-position: non-run — namer ancestry, not the coordinator pick
   };
   const ancestors = (id: string): Set<string> => {
     const out = new Set<string>();
@@ -148,7 +148,7 @@ export function vagueHolders(
   const hold = (member: string, anchor: string): void => void holders.set(member, [...(holders.get(member) ?? []), anchor]);
   for (const a of workspaces) {
     if (!coordinates(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
-    if (!a.parentId) continue; // a top-level orchestrator runs a mission, not a vague (an OPS whose parent left the store stays a vague: held is the safe side)
+    if (isTopLevel(a, (id) => byId.get(id))) continue; // a top-level coordinator runs a mission, not a vague (a dangling parent link is top-level too, #433)
     hold(a.id, a.id);
     for (const w of workspaces) if (ancestors(w.id).has(a.id)) hold(w.id, a.id);
   }
@@ -178,7 +178,7 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
   // D2: the rename is applied AS the parent (self-asserted ORCHESTRA_WS_ID): `parentId`, else the namer. The app compares ids only (decideRename), so a parent that has since
   // left the store still names its child — an id that exists is preferred; with neither recorded there is nobody to name it.
   const parentOf = (w: MigrationWorkspace): string | undefined => {
-    const ids = [w.parentId, w.namedByParent].filter((p): p is string => !!p);
+    const ids = [w.parentId, w.namedByParent].filter((p): p is string => !!p); // run-position: non-run — namer ancestry
     return ids.find((p) => byId.has(p)) ?? ids[0];
   };
   // Names a rename cannot land on: a branch of the repos, or the current branch of another LIVE workspace.
@@ -235,7 +235,7 @@ export function planMigration(input: MigrationInputs): MigrationPlan {
     const row = valid.get(ws.id);
     if (!row) {
       if (rejectedIds.has(ws.id)) rows.push({ ...base, action: 'row-rejected', reason: 'its table row is rejected' });
-      else if (!ws.parentId && !ws.namedByParent) rows.push({ ...base, action: 'untouched-human', reason: 'no recorded spawner' });
+      else if (!ws.parentId && !ws.namedByParent) rows.push({ ...base, action: 'untouched-human', reason: 'no recorded spawner' }); // run-position: non-run — no recorded spawner
       else rows.push({ ...base, action: 'untouched-not-in-table', reason: 'no table row' });
       continue;
     }

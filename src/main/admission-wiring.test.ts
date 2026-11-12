@@ -179,16 +179,17 @@ test('#287 bus-wake: the hold branch follows decideWake\'s skip handling, preced
 });
 
 test('#287 roster: fleetMember / sleeping / coordinator come from the real probes', () => {
-  assert.match(roster, /fleetMember: !!ws\.parentId,/);
+  assert.match(roster, /fleetMember: !!coordinatorOf\(ws, \(id\) => store\.getWorkspace\(id\)\),/);
   assert.match(roster, /sleeping: !sdkSessionLive\(ws\.id\),/);
   assert.match(roster, /coordinator: coordinates\(ws\),/);
   assert.match(index, /setWakeRosterEntry\(\(id\) => \{\s*\n\s*const w = store\.getWorkspace\(id\);\s*\n\s*return w \? wakeRosterEntry\(w\) : null;/, 'the per-reader roster seam is wired (Admission re-checks one reader, not the whole roster)');
 });
 
-test('#287 admission-wake: "sleeping" = no live SDK session; a fleet member = has a parent; the default stillOwed re-checks both at release time', () => {
+test('#287 admission-wake: "sleeping" = no live SDK session; a fleet member = has a coordinator (coordinatorOf); the default stillOwed re-checks both at release time', () => {
   const aw = read('src/main/admission-wake.ts');
   assert.match(aw, /return !sdkSessionLive\(id\);/);
-  assert.match(aw, /fleetMember: !!ws\.parentId,/);
+  assert.match(aw, /const fleetMember = !!coordinatorOf\(ws, \(x\) => store\.getWorkspace\(x\)\);/);
+  assert.match(aw, /fleetMember,\n/);
   assert.match(aw, /sleeping: isSleeping\(id\),/);
   assert.match(aw, /coordinator: coordinates\(ws\),/, 'coordinators first holds for EVERY wake site (flush / resume / message / recovery all go through this wrapper), not only the sweep');
   assert.match(aw, /setAdmissionWakeSettle\(\(id\) => sdkAwaitFirstTurn\(id, ADMISSION_WAKE_SETTLE_MS\)\);/, 'a wake release waits for the started member\'s first turn (the next reading includes its memory)');

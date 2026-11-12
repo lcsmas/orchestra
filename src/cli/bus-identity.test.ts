@@ -41,7 +41,7 @@ function freshRig(t: { after: (fn: () => void) => void }): Rig {
   mkdirSync(storeDir, { recursive: true });
   writeFileSync(
     path.join(storeDir, 'store.json'),
-    JSON.stringify({ workspaces: [{ id: OPS, name: 'ops', canOrchestrate: true, parentId: LEAD }, { id: LEAD, name: 'lead', canOrchestrate: true }] }),
+    JSON.stringify({ workspaces: [{ id: OPS, name: 'ops', ownsRun: true, parentId: LEAD }, { id: LEAD, name: 'lead', ownsRun: true }] }),
   );
   const worktree = path.join(home, 'wt');
   mkdirSync(path.join(worktree, '.orchestra'), { recursive: true });

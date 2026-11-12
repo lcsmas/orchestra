@@ -216,6 +216,7 @@ import {
   resolveWaveRunId,
   listStaleRunWorkspaces,
   startRunsForParentlessWorkspaces,
+  startRunsForOwnerWorkspaces,
 } from './workspaces';
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
@@ -484,6 +485,8 @@ async function createMainWindow() {
     // #433: a top-level workspace without a run (created before this build) gets its mission BEFORE any
     // session starts; sessions are never restarted — each resolves its run per call (ADR 0008).
     if (store.loadedFromDisk) await startRunsForParentlessWorkspaces().catch((e) => log.warn('bus: top-level run migration failed', e));
+    // #434: owners that have a parent (promoted OPS, a plain parent of pre-#434 children) get their vague, parents first.
+    if (store.loadedFromDisk) await startRunsForOwnerWorkspaces().catch((e) => log.warn('bus: owner run migration failed', e));
   } catch (e) {
     log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
     // Best-effort surface for the renderer; never let the notification itself

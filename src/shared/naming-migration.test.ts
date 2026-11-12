@@ -25,10 +25,10 @@ const ws = (n: string, extra: Partial<MigrationWorkspace> = {}): MigrationWorksp
 function fixtureStore(): MigrationWorkspace[] {
   return [
     ws('1ead', { id: LEAD, branch: 'lead-main', kind: 'orchestrator' }),
-    ws('0b5a', { id: OPS_RUNNING, branch: 'wave-g-ops', parentId: LEAD, canOrchestrate: true }),
+    ws('0b5a', { id: OPS_RUNNING, branch: 'wave-g-ops', parentId: LEAD, ownsRun: true }),
     ws('w1', { parentId: OPS_RUNNING }), // member of the RUNNING vague
     ws('w2', { parentId: OPS_RUNNING }),
-    ws('0b5c', { id: OPS_CLOSED, branch: 'wave-c-ops', parentId: LEAD, canOrchestrate: true, archived: true }),
+    ws('0b5c', { id: OPS_CLOSED, branch: 'wave-c-ops', parentId: LEAD, ownsRun: true, archived: true }),
     ws('w3', { parentId: OPS_CLOSED }), // member of the CLOSED vague
     ws('w4', { parentId: LEAD }), // a worker spawned straight under the LEAD: a mission member, not a vague one
     ws('w5', { parentId: LEAD }), // branch pushed to origin
@@ -145,7 +145,7 @@ test('a --detached member (no parentId, only the NAMER) of a running vague is he
   assert.ok(held.has(id('md')), 'the namer edge counts as membership');
   assert.equal(actionOf(planMigration(inputs({ workspaces: store, table: [{ id: id('md'), new: 'verif-detache-1' }] })).rows, 'md'), 'skip-vague');
   // the vague is running BECAUSE of the detached member alone
-  const onlyDetached = [ws('1ead', { id: LEAD, kind: 'orchestrator' }), ws('0b5a', { id: OPS_RUNNING, parentId: LEAD, canOrchestrate: true }), ws('md', { namedByParent: OPS_RUNNING })];
+  const onlyDetached = [ws('1ead', { id: LEAD, kind: 'orchestrator' }), ws('0b5a', { id: OPS_RUNNING, parentId: LEAD, ownsRun: true }), ws('md', { namedByParent: OPS_RUNNING })];
   assert.deepEqual([...activeVagueMemberIds(onlyDetached)].sort(), [OPS_RUNNING, id('md')].sort());
   assert.equal(activeVagueMemberIds(onlyDetached, new Set([OPS_RUNNING])).size, 0, '--closed releases it');
 });
@@ -192,7 +192,7 @@ test('skip (active vague) names the anchors holding the member, so `--closed` ca
   const plan = planMigration(inputs({ workspaces: store, vagueHolders: holders }));
   assert.match(plan.rows.find((r) => r.id === id('w1'))!.reason, /held by 0b5a0000-0000-4000-8000-000000000000 — each must be closed/);
   // a member below TWO vagues (its parent's and its namer's) lists both
-  const two = [...store, ws('a2', { parentId: LEAD, canOrchestrate: true }), ws('wk', { parentId: OPS_RUNNING, namedByParent: id('a2') }), ws('wz', { parentId: id('a2') })];
+  const two = [...store, ws('a2', { parentId: LEAD, ownsRun: true }), ws('wk', { parentId: OPS_RUNNING, namedByParent: id('a2') }), ws('wz', { parentId: id('a2') })];
   assert.deepEqual([...(vagueHolders(two).get(id('wk')) ?? [])].sort(), [OPS_RUNNING, id('a2')].sort());
   assert.equal(vagueHolders(two, new Set([OPS_RUNNING])).get(id('wk'))?.length, 1, '--closed one of them: the other still holds');
 });
@@ -468,10 +468,10 @@ test('activeVagueMemberIds: a vague is a LIVE orchestrator with a parent and a l
   ];
   assert.deepEqual([...activeVagueMemberIds(plain)].sort(), [...activeVagueMemberIds(base)].sort());
   // a dangling parent / a cycle must not hang or throw
-  // an OPS whose parent has left the store is still a vague (the app keeps the run a vague): held is the safe side
-  const orphanOps = [ws('o1', { parentId: id('gone'), canOrchestrate: true }), ws('o2', { parentId: id('o1') })];
-  assert.deepEqual([...activeVagueMemberIds(orphanOps)].sort(), [id('o1'), id('o2')].sort());
-  const cyc = [ws('c1', { parentId: id('c2'), canOrchestrate: true }), ws('c2', { parentId: id('c1'), canOrchestrate: true })];
+  // an OPS whose parent has left the store is top-level now (#433: a dangling link owns a mission): no vague, nothing held
+  const orphanOps = [ws('o1', { parentId: id('gone'), ownsRun: true }), ws('o2', { parentId: id('o1') })];
+  assert.equal(activeVagueMemberIds(orphanOps).size, 0);
+  const cyc = [ws('c1', { parentId: id('c2'), ownsRun: true }), ws('c2', { parentId: id('c1'), ownsRun: true })];
   assert.doesNotThrow(() => activeVagueMemberIds(cyc));
 });
 
