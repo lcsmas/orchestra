@@ -240,8 +240,8 @@ const offOut = await seedRunAndWrite('run-B-off', {
 });
 check('the notice names fencing=OFF', offOut.includes('bus switch fencing=OFF'));
 check(
-  'and says the OLD channel stays authoritative',
-  /fencing=OFF — the OLD channel stays authoritative/.test(offOut),
+  'and says the mechanism is not active in this run',
+  /fencing=OFF — this mechanism is not active in this run/.test(offOut),
 );
 check(
   'and says the mechanism is COUNTED, not fired',
@@ -297,7 +297,7 @@ check(
 check('the OFF grep does NOT match the decoy', !decoy.includes('bus switch fencing=OFF'));
 check(
   'the authoritative-sentence grep does NOT match the decoy',
-  !/fencing=OFF — the OLD channel stays authoritative/.test(decoy),
+  !/fencing=OFF — this mechanism is not active in this run/.test(decoy),
 );
 // And prove the greps are LIVE by running them on the real output in the same
 // breath — a control that only ever reports "no match" is indistinguishable

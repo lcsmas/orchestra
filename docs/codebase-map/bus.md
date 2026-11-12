@@ -247,8 +247,8 @@ Agents change nothing. Promotion bar: 2 complete waves at 0/0/0 divergence.
 delivery**: it runs AFTER the old channel produced its result, returns an outcome
 (never a `MessageResult`), and never throws. A bus failure LOGS and CONTINUES.
 
-Wired as a **wrapper** — `dispatchMessageRequest` (`src/main/workspaces.ts:2826`)
-calls an untouched `dispatchMessageRequestUnmirrored` and returns `res` verbatim.
+**RETIRED wiring (#441-fu):** the wrapper — `dispatchMessageRequest` — no longer calls `mirrorDispatch`: with the old channel closed there is no shadow to compare and an `--emergency` poke files nothing on the bus (the module and its counters stay, driven directly by `bus-mirror.test.ts`). It historically was a **wrapper**: `dispatchMessageRequest` (`src/main/workspaces.ts`)
+called an untouched `dispatchMessageRequestUnmirrored` and returned `res` verbatim.
 Deliberately not N calls inside the body: that body has twelve `return`s, and a
 per-return mirror is one that silently misses the path added next — which would
 surface as a permanently non-zero `missed` nobody could attribute.
@@ -633,8 +633,8 @@ CLI `send` refuses from it until restart. See `docs/codebase-map/workspaces.md`
 Every mechanism prints in **both** states (`busSwitchNoticeLines`,
 `src/shared/bus-switches.ts:204`), and in the **WIRE name** (`ask_gate` via
 `mechanismToWire`, not the internal `askGate` — F4): `wake=ON — the bus is
-AUTHORITATIVE…` or `wake=OFF — the OLD channel stays authoritative; the bus
-only COUNTS this mechanism…` (no `delivery` line since #441). OFF is never encoded as silence, because an agent
+AUTHORITATIVE…` or `wake=OFF — this mechanism is not active in this run; the bus
+only COUNTS this mechanism…` (no `delivery` line and no "OLD channel" wording since #441). OFF is never encoded as silence, because an agent
 cannot distinguish an OFF switch from a build without switches from a truncated
 notice. A missing state file makes the script a **silent no-op** rather than a
 false "all off".
@@ -2441,9 +2441,11 @@ was not filed in the parent's own run (`mirrorWouldWake`). Since every agent has
 old channel is closed (#441, `shared/message-channel-gate.ts`: `message` WITHOUT `--emergency`
 is refused for EVERY target and prints the equivalent `orchestra send --type status --to <id>
 '<text>'`), `isPlainOwnAnchor`, `senderHasBusRoute` and `mirrorWouldWake` no longer exist; an
-`--emergency` poke is mirrored into the RECIPIENT's run like any other (`bus-mirror.ts`: no
-`host-<ts>` fallback run — a recipient that resolves no run files no row and the send counts
-`missed`). Mutants `pnpm run test:old-channel-closed-mutants`, rig `pnpm run test:old-channel-closed`.
+`--emergency` poke stays the PRE-#441 poke — text into the reader's session and NOTHING on the bus
+(#441-fu: `dispatchMessageRequest` no longer calls `mirrorDispatch`; a stranger's emergency must not
+become a `dispatch` row in the target's run, #436). `bus-mirror.ts` and its counters remain for a
+caller that hands it a row, with no `host-<ts>` fallback run (no run → no row, counted `missed`).
+The refusal echoes the FULL trimmed text and quotes the id (`equivalentSendCommand`). Mutants `pnpm run test:old-channel-closed-mutants`, rig `pnpm run test:old-channel-closed`.
 (b) The reverse, parent→plain-child `send`, would have been accepted into a run the child
 never reads; `/resolveHandle` now carries each workspace's wave `runId` (the CLI computes
 it from `store.json` when the app is down) and `send` / `ask --to` / `gate open --to` all

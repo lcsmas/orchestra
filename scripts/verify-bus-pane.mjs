@@ -147,7 +147,7 @@ const finish = (code) => {
     const db = m.getBus();
     check('getBus() is non-null after initBus()', !!db);
 
-    m.startRun(db, { id: 'seeded-run-9931', kind: 'vague', coordinator: 'ops-probe-771', title: 'Seeded 9931' }, { delivery: true, wake: false, askGate: false, liveness: false });
+    m.startRun(db, { id: 'seeded-run-9931', kind: 'vague', coordinator: 'ops-probe-771', title: 'Seeded 9931' }, { fencing: true, wake: false, askGate: false, liveness: false });
     m.send(db, { runId: 'seeded-run-9931', sender: 'probe-sender-4417', kind: 'status', body: 'probe-body-6653' });
     m.openGate(db, 'seeded-run-9931', 'ops-probe-771', 'probe-gate-question-2208');
 
@@ -156,7 +156,7 @@ const finish = (code) => {
     check('the SEEDED run is present', up.runs.some((r) => r.id === 'seeded-run-9931'));
     check('the SEEDED message body is present', up.messages.some((x) => x.body === 'probe-body-6653'));
     check('the SEEDED gate is present', up.gates.some((g) => g.question === 'probe-gate-question-2208'));
-    check('the run carries its FROZEN flags', up.runs.find((r) => r.id === 'seeded-run-9931').flags.delivery === true);
+    check('the run carries its FROZEN flags', up.runs.find((r) => r.id === 'seeded-run-9931').flags.fencing === true);
     check(
       'the two arms DIFFER (arm 1 was not a false unavailable)',
       down.available !== up.available,

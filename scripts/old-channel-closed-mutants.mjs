@@ -18,7 +18,7 @@ const GATE = 'src/shared/message-channel-gate.ts', WS = 'src/main/workspaces.ts'
 const ALERT = 'src/main/memory-alert.ts', MIRROR = 'src/main/bus-mirror.ts', WAKE = 'src/main/bus-wake.ts', LIVE = 'src/main/bus-liveness.ts', DOG = 'src/main/session-watchdog.ts';
 const T = {
   gate: 'src/main/message-channel-gate.test.ts', peer: 'src/shared/peer-messages.test.ts', sw: 'src/shared/bus-switches.test.ts', runs: 'src/main/bus-runs.test.ts',
-  alert: 'src/main/memory-alert.test.ts', skills: 'src/main/old-channel-closed-skills.test.ts', wiring: 'src/main/old-channel-closed-wiring.test.ts',
+  alert: 'src/main/memory-alert.test.ts', mirror: 'src/main/bus-mirror.test.ts', skills: 'src/main/old-channel-closed-skills.test.ts', wiring: 'src/main/old-channel-closed-wiring.test.ts',
 };
 const RIG = 'rig';
 
@@ -45,6 +45,10 @@ const MUTANTS = [
   { id: 'MC19', name: "the liveness boot line reads the row-less 'default' run again", edits: [[LIVE, "if (db) census = openRunSwitchCount(db, 'liveness');", "if (db) census = { on: busSwitch(db, 'default', 'liveness') ? 1 : 0, total: 1 };"]], tests: [T.wiring] },
   { id: 'MC20', name: "the session-watchdog resolver defaults to the 'default' sentinel again", edits: [[DOG, 'let resolveRunId: (ws: Workspace) => string = realRunOf;', "let resolveRunId: (ws: Workspace) => string = () => 'default';"]], tests: [T.wiring] },
   { id: 'MC21', name: 'a plain-target exemption is back in the host wrapper (`message` to a top-level plain agent allowed)', cli: true, edits: [[WS, "  if (!gate.allow) {\n    return { ok: false, error: gate.error };\n  }\n", "  if (!gate.allow && (store.getWorkspace(input.to)?.parentId ?? '') !== '') {\n    return { ok: false, error: gate.error };\n  }\n"]], tests: [T.gate], rig: true },
+  { id: 'MC22', name: 'the wrapper mirrors an --emergency poke onto the bus again (a stranger\'s poke becomes a row in the target\'s run)', cli: true, edits: [[WS, '  return dispatchMessageRequestUnmirrored(input);\n}', "  const res = await dispatchMessageRequestUnmirrored(input);\n  mirrorDispatch({ sender: input.from ?? 'external', recipient: input.to, body: input.text, result: res });\n  return res;\n}"]], tests: [T.gate, T.mirror], rig: true },
+  { id: 'MC23', name: 'the refusal echo is capped again (a long text is silently cut inside the printed command)', cli: true, edits: [[WS, '    text: input.text.trim(),\n  });\n  if (!gate.allow) {', '    text: input.text.trim().slice(0, 8000),\n  });\n  if (!gate.allow) {']], tests: [T.gate], rig: true },
+  { id: 'MC24', name: 'the target id is no longer quoted in the printed command', cli: true, edits: [[GATE, '${/^[\\w.:@/-]+$/.test(to) ? to : shellQuote(to)}', '${to}']], tests: [T.gate], rig: true },
+  { id: 'MC25', name: 'the startup-notice OFF line names an old channel again', edits: [[SW, '=OFF — this mechanism is not active in this run; the bus only COUNTS', '=OFF — the OLD channel stays authoritative; the bus only COUNTS']], tests: [T.sw, T.runs] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

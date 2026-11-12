@@ -238,16 +238,16 @@ function ws(id, over) {
     ...over,
   };
 }
-// A LEAD (top-level orchestrator, its own run frozen delivery=ON) so a member
+// A LEAD (top-level orchestrator, its own run frozen fencing=ON) so a member
 // under it resolves to the LEAD run pre-promote (the ticket's spawn-under-LEAD).
 const LEAD_ID = 'lead-171';
 await mod.store.upsertWorkspace(ws(LEAD_ID, { canOrchestrate: true, ownsRun: true }));
 mod.startRun(busDb, { id: LEAD_ID, kind: 'mission', coordinator: LEAD_ID }, {
-  delivery: true, wake: true, askGate: true, liveness: true,
+  fencing: true, wake: true, askGate: true, liveness: true,
 });
-// Live switches OFF so a node's OWN freshly-frozen run names delivery=OFF — an
-// authoritative flag transition vs the LEAD run's delivery=ON (not a cosmetic change).
-await mod.store.setBusSwitches({ delivery: false, wake: false, askGate: false, liveness: false });
+// Live switches OFF so a node's OWN freshly-frozen run names fencing=OFF — an
+// authoritative flag transition vs the LEAD run's fencing=ON (not a cosmetic change).
+await mod.store.setBusSwitches({ fencing: false, wake: false, askGate: false, liveness: false });
 
 // ════════════════════════════════════════════════════════════════════════════
 // R1 — arm 1 (THE ticket promise): a LIVE, IDLE promoted node is RESTARTED so its
@@ -341,7 +341,7 @@ await mod.store.upsertWorkspace(ws(RD_CHILD, { parentId: RD_PARENT }));
 liveSet.add(RD_PARENT);
 liveSet.add(RD_CHILD);
 mod.startRun(busDb, { id: RD_LEAD, kind: 'mission', coordinator: RD_LEAD }, {
-  delivery: true, wake: true, askGate: true, liveness: true,
+  fencing: true, wake: true, askGate: true, liveness: true,
 });
 const rdChildPre = mod.resolveWaveRunId(mod.store.getWorkspace(RD_CHILD));
 check('RD-pre: the live child resolves to the grandparent RD_LEAD run', rdChildPre === RD_LEAD, `got ${rdChildPre}`);
@@ -474,7 +474,7 @@ console.log('\n#379 H8 — the coordinator bump revokes the replaced session key
   const sock = mod.getHookSocketPath();
   const OPS = 'ops-379-h8';
   await mod.store.upsertWorkspace(ws(OPS, { canOrchestrate: true, ownsRun: true, parentId: LEAD_ID }));
-  mod.startRun(busDb, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD_ID }, { delivery: false, wake: false, askGate: false, liveness: false, fencing: true });
+  mod.startRun(busDb, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD_ID }, { wake: false, askGate: false, liveness: false, fencing: true });
   const cli = (args, env) => new Promise((resolve) => {
     const p = spawnProc(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmp, ORCHESTRA_HOME: tmp, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: OPS, ORCHESTRA_RUN_ID: OPS, ORCHESTRA_WORKTREE: path.join(tmp, OPS), ...env }, cwd: tmp, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
@@ -537,7 +537,7 @@ check(
 // (no implicit parent / no run-anchoring walk) leaves the child a ROOT mission → P1/P2.
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n#221 P — promote under a run-less plain workspace nests the child under a new mission run:');
-await mod.store.setBusSwitches({ delivery: true, wake: true, askGate: false, liveness: false });
+await mod.store.setBusSwitches({ fencing: true, wake: true, askGate: false, liveness: false });
 const runRow = (id) => {
   const r = mod.getRun(busDb, id);
   return r ? `${r.kind}|${r.coordinator}|${r.parent_run_id ?? 'null'}` : 'absent';
@@ -582,7 +582,7 @@ const KIDG = 'kidg-221';
 await mod.store.upsertWorkspace(ws(GRANDP));
 await mod.store.upsertWorkspace(ws(MID, { parentId: GRANDP }));
 await mod.store.upsertWorkspace(ws(KIDG, { parentId: MID }));
-mod.startRun(busDb, { id: GRANDP, kind: 'mission', coordinator: GRANDP }, { delivery: true, wake: true, askGate: false, liveness: false });
+mod.startRun(busDb, { id: GRANDP, kind: 'mission', coordinator: GRANDP }, { fencing: true, wake: true, askGate: false, liveness: false });
 const p4 = await mod.dispatchPromoteRequest({ id: KIDG });
 check('P4: promote nests the child under the run-ANCHORING grandparent', p4.ok === true && runRow(KIDG) === `vague|${KIDG}|${GRANDP}`, runRow(KIDG));
 check('P4: the run-less plain intermediate gets NO row', runRow(MID) === 'absent', runRow(MID));
@@ -590,7 +590,7 @@ check('P4: the run-less plain intermediate gets NO row', runRow(MID) === 'absent
 
 // F1(a) — the plain parent LOSES NOTHING: its NON-member children keep the old `message`
 // channel exactly as on master (the P4 gate refuses only coordinators/members, not a plain
-// own-anchor), and P4 still refuses an orchestrator and a MEMBER of a delivery-ON run.
+// own-anchor), and P4 still refuses an orchestrator and a MEMBER of a fencing-ON run.
 console.log('\n#221 M — `orchestra message` to the plain parent stays open; P4 unchanged elsewhere:');
 const WORKER = 'worker-221';
 const KIDMEM = 'kid-member-221';
@@ -598,10 +598,10 @@ await mod.store.upsertWorkspace(ws(WORKER, { parentId: PLAIN }));
 await mod.store.upsertWorkspace(ws(KIDMEM, { parentId: KID }));
 liveSet.add(PLAIN);
 liveSet.add(KIDMEM);
-// A FRESH orchestrator with a delivery-ON row (LEAD_ID's row was re-frozen OFF by the earlier promotes' D1b refreeze).
+// A FRESH orchestrator with a fencing-ON row (LEAD_ID's row was re-frozen OFF by the earlier promotes' D1b refreeze).
 const ORCH = 'orch-221';
 await mod.store.upsertWorkspace(ws(ORCH, { canOrchestrate: true, ownsRun: true }));
-mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { delivery: true, wake: true, askGate: false, liveness: false });
+mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { fencing: true, wake: true, askGate: false, liveness: false });
 liveSet.add(ORCH);
 const m1 = await mod.dispatchMessageRequest({ from: WORKER, to: PLAIN, text: 'worker → plain parent' });
 check('M1 (#441): a non-member child can NO LONGER `message` the plain parent — refused toward `orchestra send`', m1.ok === false && /orchestra send/.test(m1.error ?? ''), JSON.stringify(m1));
@@ -614,9 +614,9 @@ check('M1c: the OPS (has a bus route: `send` works) is still gated', m1c.ok === 
 const m1d = await mod.dispatchMessageRequest({ from: KIDMEM, to: PLAIN, text: 'member → plain parent' });
 check('M1d: a MEMBER of the OPS run is still gated too', m1d.ok === false && /orchestra send/.test(m1d.error ?? ''), JSON.stringify(m1d));
 const m2 = await mod.dispatchMessageRequest({ from: WORKER, to: KIDMEM, text: 'coordination to a member' });
-check('M2 (unchanged): `message` to a MEMBER of a delivery-ON run is still refused by P4', m2.ok === false && /orchestra send/.test(m2.error ?? ''), JSON.stringify(m2));
+check('M2 (unchanged): `message` to a MEMBER of a fencing-ON run is still refused by P4', m2.ok === false && /orchestra send/.test(m2.error ?? ''), JSON.stringify(m2));
 const m3 = await mod.dispatchMessageRequest({ from: WORKER, to: ORCH, text: 'to an orchestrator' });
-check('M3 (unchanged): `message` to an ORCHESTRATOR with delivery ON is still refused', m3.ok === false && /orchestra send/.test(m3.error ?? ''), JSON.stringify(m3));
+check('M3 (unchanged): `message` to an ORCHESTRATOR with fencing ON is still refused', m3.ok === false && /orchestra send/.test(m3.error ?? ''), JSON.stringify(m3));
 const handles = Object.fromEntries(mod.dispatchResolveHandleRequest().workspaces.map((w) => [w.id, w.runId]));
 check(
   'M4: /resolveHandle carries each workspace wave run (plain parent → itself, member → its OPS, plain child → itself)',

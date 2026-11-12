@@ -22,7 +22,6 @@ import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { startRun } from './bus-runs.ts';
 import { nearestOrchestratorId } from './wave-run-id.ts';
-import { mirrorDispatch as realMirrorDispatch } from './bus-mirror.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { deliverToTargets, normalizeExplicitTargets } from '../shared/broadcast-targets.ts';
 import {
@@ -112,13 +111,15 @@ test('#441 SOURCE BINDING — the wrapper gates before delivery and reads NO del
   const wrapper = extract('export async function dispatchMessageRequest');
   assert.match(wrapper, /decideMessageChannel\(/, 'the wrapper must call the pure gate');
   const iGate = wrapper.indexOf('decideMessageChannel(');
-  const iDispatch = wrapper.indexOf('await dispatchMessageRequestUnmirrored');
+  const iDispatch = wrapper.indexOf('dispatchMessageRequestUnmirrored(');
   assert.ok(iGate !== -1 && iGate < iDispatch, 'the gate must run BEFORE the old channel delivers');
   assert.ok(!/busSwitch\(/.test(wrapper), "no frozen switch is read to decide (the 'delivery' switch is gone)");
   assert.ok(!/isPlainOwnAnchor|plainAnchor|senderHasBusRoute|mirrorWouldWake/.test(wrapper), 'no plain-target exemption survives (#221/#434 retired)');
   assert.ok(!/getRelatedRunIds\(/.test(wrapper), 'no sender-route probe');
+  assert.ok(!/mirrorDispatch/.test(wrapper), '#441-fu: no mirror — an --emergency poke files nothing on the bus');
+  assert.ok(!/MESSAGE_MAX_CHARS|\.slice\(/.test(wrapper), '#441-fu: the refusal echo is never capped (the delivery body caps for the session)');
   // falsifier of the binding regexes: a body that merely names the gate does not satisfy the ordering check
-  assert.throws(() => assert.match('/* decideMessageChannel */', /await dispatchMessageRequestUnmirrored/));
+  assert.throws(() => assert.match('/* decideMessageChannel */', /dispatchMessageRequestUnmirrored\(/));
 });
 
 interface TopoNode {
@@ -149,22 +150,19 @@ async function runWrapper(opts: {
   nodes: Record<string, TopoNode>;
   from?: string;
   to?: string;
+  text?: string;
   emergency: boolean;
   gated: boolean;
 }): Promise<WrapperResult> {
   const body = extract('export async function dispatchMessageRequest');
   let delivered = false;
   const scope = {
-    MESSAGE_MAX_CHARS: 8000,
-    resolveWaveRunId: (ws: TopoNode) => nearestOrchestratorId(ws, (id: string) => opts.nodes[id]),
-    store: { getWorkspace: (id: string) => opts.nodes[id] },
     decideMessageChannel: opts.gated ? decideMessageChannel : (_i: unknown) => ({ allow: true as const }),
     // Delivery: record that the OLD channel actually ran, and return a success.
     dispatchMessageRequestUnmirrored: async (_i: unknown) => {
       delivered = true;
       return { ok: true, delivery: 'live', branch: 'target-branch' };
     },
-    mirrorDispatch: (i: Parameters<typeof realMirrorDispatch>[0]) => realMirrorDispatch({ ...i, db: opts.db }),
   };
   const fn = new Function(
     ...Object.keys(scope),
@@ -173,7 +171,7 @@ async function runWrapper(opts: {
   const result = await fn({
     from: opts.from,
     to: opts.to ?? 'ws-target',
-    text: TEXT,
+    text: opts.text ?? TEXT,
     ...(opts.emergency ? { emergency: true } : {}),
   });
   return { result, delivered };
@@ -251,27 +249,24 @@ for (const [label, pair] of Object.entries(PAIRS)) {
   });
 }
 
-test('#441 `message --emergency` is UNCHANGED for every pair: delivered, and the mirror files it in the RECIPIENT\'s run', async (t) => {
+test('#441 `message --emergency` is UNCHANGED for every pair: delivered into the session, and NOTHING is filed on the bus (no dispatch row in anyone\'s run)', async (t) => {
   for (const [label, pair] of Object.entries(PAIRS)) {
     const db = tmpBus(t);
     startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, DEFAULT_BUS_SWITCHES);
     const r = await runWrapper({ db, nodes: pair.nodes, from: pair.from, emergency: true, gated: true });
     assert.equal(r.result.ok, true, `${label}: --emergency delivers`);
     assert.equal(r.delivered, true, `${label}: it reaches the session`);
-    const rows = messageRows(db);
-    assert.equal(rows.length, 1, `${label}: one mirrored row`);
-    assert.equal(rows[0].recipient, 'ws-target');
-    assert.notEqual(rows[0].run_id.startsWith('host-'), true, 'never the per-boot host-… run');
+    assert.deepEqual(messageRows(db), [], `${label}: the poke is not mirrored as a bus row (a stranger's emergency must not become a dispatch, #436)`);
   }
 });
 
-test('#441 the mirror has NO host-<ts> fallback run: a recipient that resolves no run files no row (the send is counted missed)', async (t) => {
+test('#441-fu the refusal echo never truncates: a 9000-char text is printed whole in the equivalent command', async (t) => {
   const db = tmpBus(t);
-  // the target id is not in the store → the wrapper resolves no run for it
-  const r = await runWrapper({ db, nodes: { 'ws-sender': node('ws-sender') }, from: 'ws-sender', emergency: true, gated: true });
-  assert.equal(r.delivered, true);
-  assert.deepEqual(messageRows(db), [], 'no row, and in particular none in a host-… run');
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE run_id LIKE 'host-%'").get()!.n, 0);
+  const long = `${'x'.repeat(4500)} ${'y'.repeat(4499)}`;
+  const r = await runWrapper({ db, nodes: PAIRS['to a SIBLING'].nodes, from: 'ws-sender', emergency: false, gated: true, text: `  ${long}  ` });
+  assert.equal(r.result.ok, false);
+  assert.ok((r.result.error ?? '').includes(`orchestra send --type status --to ws-target '${long}'`), 'the full text, trimmed, inside the command');
+  assert.ok(long.length > 8000);
 });
 
 test('#221 R4a — /resolveHandle carries each workspace wave run: member → its orchestrator, plain child → itself, archived excluded', () => {

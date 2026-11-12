@@ -360,7 +360,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     lines.push(
       on
         ? `- bus switch ${wire}=ON — the bus is AUTHORITATIVE for this mechanism in this run; use it.`
-        : `- bus switch ${wire}=OFF — the OLD channel stays authoritative; the bus only COUNTS this mechanism, it does not fire it.`,
+        : `- bus switch ${wire}=OFF — this mechanism is not active in this run; the bus only COUNTS this mechanism, it does not fire it.`,
     );
   }
   return lines;
