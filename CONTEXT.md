@@ -8,26 +8,33 @@ workers) over the fleet bus. Terms settled with the user on issue #108
 
 ### Runs
 
+**Run**:
+The unit the bus groups agents by: one coordinator and its members. Every agent
+belongs to exactly one run and coordinates at most one. Roles follow position
+in the tree, never a flag (settled 2026-11-11).
+
 **Mission**:
-The enclosing run coordinated by the LEAD; its sole worker is an OPS.
-_Avoid_: parent run, outer run
+The run of a top-level agent, born with it. Its members are workers, OPS, or
+both; it may have none.
+_Avoid_: parent run, outer run, standalone workspace (every agent has a run)
 
 **Vague** (wave):
-A run coordinated by an OPS: the set of workers and verifier delivering one
-batch of tickets.
+The run of an OPS: the agents it spawned. A multi-ticket batch (workers plus a
+verifier) is always a vague, never run directly by a LEAD.
 _Avoid_: run, sprint, batch
 
 **LEAD**:
-The agent that answers to the human and coordinates missions.
+A top-level agent: it answers to the human and coordinates its mission.
 _Avoid_: coordinator, orchestrator (both ambiguous: an OPS also coordinates)
 
 **OPS**:
-The agent that coordinates one vague; the only member that talks to the LEAD.
-_Avoid_: ops-agent, wave lead, supervisor
+An agent that has a parent and has spawned agents of its own: member of its
+parent's run, coordinator of its vague.
+_Avoid_: ops-agent, wave lead, supervisor, promoted workspace
 
 **Worker**:
-An agent doing one ticket of a vague in its own worktree (implementer,
-verifier, reviewer, explorer).
+An agent with a parent and no agents of its own, doing one task in its own
+worktree (implementer, verifier, reviewer, explorer).
 _Avoid_: child, sub-agent, impl
 
 ### Bus
