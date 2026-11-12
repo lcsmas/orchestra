@@ -129,7 +129,7 @@ function postHooks(route, body) {
     r.on('error', reject); r.end(payload);
   });
 }
-const wsList = () => cdp.eval(`window.orchestra.listWorkspaces().then((l) => l.map((w) => ({ id: w.id, name: w.name, branch: w.branch, parentId: w.parentId ?? null, namedByParent: w.namedByParent ?? null, branchManuallySet: w.branchManuallySet ?? null, autoRenameCount: w.autoRenameCount ?? null, canOrchestrate: !!w.canOrchestrate, archived: !!w.archived })))`);
+const wsList = () => cdp.eval(`window.orchestra.listWorkspaces().then((l) => l.map((w) => ({ id: w.id, name: w.name, branch: w.branch, parentId: w.parentId ?? null, namedByParent: w.namedByParent ?? null, branchManuallySet: w.branchManuallySet ?? null, autoRenameCount: w.autoRenameCount ?? null, ownsRun: !!w.ownsRun, archived: !!w.archived })))`);
 const branches = () => gitIn(world.repo, ['branch', '--format=%(refname:short)'], world.fakeHome).trim().split('\n').sort();
 const rowTexts = () => cdp.eval(`[...document.querySelectorAll('.ws-name')].map((e) => e.textContent)`);
 /** pids (not zombies) whose environ names this workspace AND whose argv is the claude CLI. */
