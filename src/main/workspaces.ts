@@ -144,7 +144,7 @@ import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
-import { coordinates, coordinatorRoleOf, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
+import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -817,7 +817,7 @@ function expireBusAsksForDeleted(id: string): void {
  *  start it was told was "accepted, held" did not start when released. No coordinator / no bus / switch OFF → a log line only (counted, not fired). */
 export function reportAdmissionFailure(wsId: string, text: string): void {
   const ws = store.getWorkspace(wsId);
-  const parent = ws?.parentId ? store.getWorkspace(ws.parentId) : undefined;
+  const parent = ws ? coordinatorOf(ws, (id) => store.getWorkspace(id)) : undefined;
   const db = getBus();
   const runId = ws ? resolveWaveRunId(ws) : '';
   let on = false;
@@ -1853,7 +1853,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   // Already an orchestrator by either route — succeed idempotently so a
   // double-invoke (or the skill re-firing) doesn't error.
-  if (coordinates(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };
+  if (ws.ownsRun === true || isCoordinatorKind(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind }; // run-position: non-run — promote bookkeeping: a top-level workspace owns a mission but is not YET promoted (sentinel, flag, kind swap), #440 removes promote
   // #171 — snapshot the promoted node's OWN run anchor (and its members') BEFORE
   // the mutation, exactly as attach/demote do. Promote is a re-anchoring op: the
   // promoted ws stops resolving to its nearest-orchestrator ANCESTOR (its parent
@@ -1970,7 +1970,7 @@ export async function dispatchDemoteRequest(input: {
     };
   }
   // Not an orchestrator at all — idempotent success, mirroring promote.
-  if (!coordinates(ws))
+  if (ws.ownsRun !== true && !isCoordinatorKind(ws)) // run-position: non-run — demote bookkeeping: only a recorded owner has anything to shed, #440 removes demote
     return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
   try {
     const children = store.workspaces.filter((w) => w.parentId === id);
@@ -1996,8 +1996,8 @@ export async function dispatchDemoteRequest(input: {
     // The repo-less kind never reaches here — refused above.
     const demoted: Workspace =
       isCoordinatorKind(ws)
-        ? { ...ws, kind: 'worktree', canOrchestrate: undefined }
-        : { ...ws, canOrchestrate: undefined };
+        ? { ...ws, kind: 'worktree', canOrchestrate: undefined, ownsRun: undefined }
+        : { ...ws, canOrchestrate: undefined, ownsRun: undefined };
     const updated: Workspace = {
       ...demoted,
       name: workspaceDisplayName(demoted, demoted.branch),
@@ -2123,6 +2123,7 @@ export async function dispatchAttachRequest(input: {
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
+  await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child's next session start
   const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
   return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale, hostResolved };
 }

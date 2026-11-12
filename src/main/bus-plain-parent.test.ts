@@ -202,6 +202,27 @@ test('#434 an IDLE plain parent is WOKEN by that mail, once, and reads it on the
   assert.equal(busWakeCounters().fired, 1, 'acknowledged mail never wakes again');
 });
 
+test('#434 mail a worker holds in its parent\'s run BEFORE its first spawn stays reachable after the flip: the wake order names that run, `check --run` reads it, the ack clears it (a plain `check` now reads only the new own run)', needsBuild, async (t) => {
+  const w = world(t, [
+    { id: L, kind: 'orchestrator' },
+    { id: W, kind: 'worktree', parentId: L },
+    { id: G, kind: 'worktree', parentId: W },
+  ]);
+  birth(w);
+  assert.equal(cli(w, L, ['send', '--type', 'status', '--to', W, 'task for w']).code, 0);
+  spawnFirstChild(w, G); // W flips from member of L's run to owner of its own
+  assert.equal(check(w, W).count, 0, 'a plain check reads the new own run only');
+  armWake(w, [L, W]);
+  await sweepBusWake();
+  const mine = w.wakes.filter((x) => x.reader === W);
+  assert.equal(mine.length, 1, 'the sweep still wakes W for the mail pending in the old run');
+  assert.deepEqual(wakeOrderRuns(mine[0].text), [L], 'and the order names THAT run');
+  const read = check(w, W, ['--run', L]);
+  assert.equal(read.messages.map((m) => m.body).join(), 'task for w');
+  assert.equal(cli(w, W, ['ack', String(read.lot), '--run', L]).code, 0);
+  assert.equal(check(w, W, ['--run', L]).count, 0);
+});
+
 test('#434 a worker that spawns its FIRST agent owns a vague whose parent run is the run it is a member of, frozen at birth', needsBuild, (t) => {
   const w = world(t, [
     { id: L, kind: 'orchestrator' },
@@ -258,6 +279,9 @@ test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s an
   assert.equal((ws.match(/markOrchestratorWorktree\([^)]*, true\)/g) ?? []).length, 0, 'no sentinel writer hard-codes the dual wording: it comes from coordinatorRoleOf');
   assert.match(ws, /\{ \.\.\.ws, kind: 'orchestrator', ownsRun: true, name \}/, 'promote (scratch) records ownership');
   assert.match(ws, /await markOrchestratorWorktree\(updated\.worktreePath, coordinatorRoleOf\(updated\) === 'dual'\);/, 'the first-spawn owner gets the standing-role sentinel, wording from run-position');
+  assert.match(ws, /if \(ws\.ownsRun === true \|\| isCoordinatorKind\(ws\)\) return \{ ok: true, id, branch: ws\.branch, kind: ws\.kind \};/, 'promote is idempotent only for a RECORDED owner (a top-level workspace is promotable)');
+  assert.match(ws, /\{ \.\.\.ws, canOrchestrate: undefined, ownsRun: undefined \}/, 'demote sheds ownership');
+  assert.match(ws, /await ensureParentOwnsRun\(updated\); \/\/ #434: the new parent owns a run now/, 'attach marks the new parent as an owner');
   const sdk = src('src/main/agent-sdk.ts');
   assert.ok(sdk.indexOf('await ensureMemberRun(ws);') > 0 && sdk.indexOf('await ensureMemberRun(ws);') < sdk.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'a session start gives its parent a run BEFORE the env names it');
   const idx = src('src/main/index.ts');

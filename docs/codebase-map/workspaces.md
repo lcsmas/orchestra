@@ -154,7 +154,7 @@ coordinator (`PARENT_PICK_FILES`). Tests: `bus-plain-parent.test.ts` (built CLI 
 sweep), mutants `scripts/plain-parent-mutants.mjs` (`pnpm run test:plain-parent-mutants`). Behaviour that follows from the
 single function: a top-level plain workspace is a valid attach/drop target and a Pause control row; a plain owner is a
 vague holder for the rename hold; `orchestra message` to a plain owner from its member is refused toward `orchestra send`
-(the #221 plain-own-anchor exemption now covers only a dangling-parent target; #441 removes the rest).
+(the #221 plain-own-anchor exemption now covers only a dangling-parent target; #441 removes the rest). Promote is idempotent only for a RECORDED owner (`ownsRun`/kind), demote clears `ownsRun`, attach calls `ensureParentOwnsRun` for the new parent; a plain `check` reads only the caller's NEW own run after the flip — mail left in the parent run is still reachable by the wake order (`check --run <parent run>`, measured in `bus-plain-parent.test.ts`).
 
 They diverge exactly on a promoted worktree, and that divergence *is* the
 feature. Flipping such a worktree's `kind` instead would make `isScratchLike`
