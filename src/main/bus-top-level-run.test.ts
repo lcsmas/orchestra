@@ -61,7 +61,7 @@ function world(t: { after: (fn: () => void) => void }): World {
     JSON.stringify({
       workspaces: [
         rec(LEAD, { kind: 'orchestrator' }),
-        rec(OPS, { parentId: LEAD, canOrchestrate: true }),
+        rec(OPS, { parentId: LEAD, ownsRun: true }),
         rec(WORKER, { parentId: OPS }),
         rec(T1),
         rec(T2, { kind: 'scratch' }),

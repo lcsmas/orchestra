@@ -76,7 +76,7 @@ const repoDir = path.join(tmpHome, 'repo'); fs.mkdirSync(repoDir, { recursive: t
 git(repoDir, ['init', '-q', '-b', 'main']); fs.writeFileSync(path.join(repoDir, 'README.md'), '# e2e\n'); git(repoDir, ['add', '.']); git(repoDir, ['commit', '-q', '-m', 'seed']);
 await store.addRepo({ path: repoDir, name: 'repo', defaultBranch: 'main' });
 const opsWt = path.join(tmpHome, 'wt-ops'); git(repoDir, ['worktree', 'add', '-q', '-b', 'ops-parent', opsWt]);
-await store.upsertWorkspace({ id: 'ws-ops', name: 'repo · ops-parent', repoPath: repoDir, worktreePath: opsWt, branch: 'ops-parent', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', canOrchestrate: true, ownsRun: true, branchManuallySet: true, setupStatus: 'ok' });
+await store.upsertWorkspace({ id: 'ws-ops', name: 'repo · ops-parent', repoPath: repoDir, worktreePath: opsWt, branch: 'ops-parent', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', ownsRun: true, branchManuallySet: true, setupStatus: 'ok' });
 
 const branches = () => git(repoDir, ['branch', '--format=%(refname:short)']).trim().split('\n').filter(Boolean).sort();
 const worktreeDirs = () => fs.readdirSync(path.join(os.homedir(), '.orchestra', 'worktrees')).length; // ORCHESTRA_ROOT under the scratch HOME

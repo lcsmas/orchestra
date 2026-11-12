@@ -47,9 +47,9 @@ const MUTANTS = [
   // ── planner: which vagues are running ──
   M('M25_mission_counts_as_vague', PL, "    if (!a.parentId) continue; // a top-level orchestrator runs a mission, not a vague (an OPS whose parent left the store stays a vague: held is the safe side)\n", ''),
   M('M26_empty_vague_still_active', PL, '|| !hasLiveBelow.has(a.id) ||', '||'),
-  M('M27_archived_ops_still_active', PL, 'if (!canOrchestrate(a) || !live(a) ||', 'if (!canOrchestrate(a) ||'),
+  M('M27_archived_ops_still_active', PL, 'if (!coordinates(a) || !live(a) ||', 'if (!coordinates(a) ||'),
   M('M28_sandbox_counts_live', PL, "w.host?.kind !== 'sandbox'", 'true'),
-  M('M29_non_orchestrator_anchors', PL, 'if (!canOrchestrate(a) ||', 'if ('),
+  M('M29_non_orchestrator_anchors', PL, 'if (!coordinates(a) ||', 'if ('),
   M('M30_vague_members_only_anchor', PL, '    for (const w of workspaces) if (ancestors(w.id).has(a.id)) hold(w.id, a.id);\n', ''),
   // ── planner: reviewed additions ──
   M('M31_closed_declaration_ignored', PL, '|| closed.has(a.id)) continue;', ') continue;'),

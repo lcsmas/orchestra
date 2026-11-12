@@ -106,7 +106,7 @@ const MUTANTS = [
   { id: 'C01_spawn_gate_off', file: WS, find: '  if (!admitted) {\n    const gate = admissionGate({', to: '  if (false) {\n    const gate = admissionGate({', expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C02_spawn_gate_human_origin', file: WS, find: "      origin: origin ?? 'auto',\n      kind: 'spawn',", to: "      origin: 'human',\n      kind: 'spawn',", expect: ['spawn gate', 'rig:spawn_held'], arms: ['spawn_held'] },
   { id: 'C03_release_re_held', file: WS, find: "run: () => startWorkspaceAgentHeadless(id, 'auto', true),", to: "run: () => startWorkspaceAgentHeadless(id, 'auto'),", expect: ['spawn gate', 'rig:release_order'], arms: ['release_order', 'dip_stops'] },
-  { id: 'C04_restart_coordinator_flag', file: RS, find: '      coordinator: canOrchestrate(ws),\n      run: () => dispatchRestartRequest(', to: '      coordinator: false,\n      run: () => dispatchRestartRequest(', expect: ['rig:release_order'], arms: ['release_order'] },
+  { id: 'C04_restart_coordinator_flag', file: RS, find: '      coordinator: coordinates(ws),\n      run: () => dispatchRestartRequest(', to: '      coordinator: false,\n      run: () => dispatchRestartRequest(', expect: ['rig:release_order'], arms: ['release_order'] },
   { id: 'C05_restart_gate_off', file: RS, find: '  if (!input.admitted && id && ws) {', to: '  if (false) {', expect: ['restart gate', 'rig:restart_waits'], arms: ['restart_waits'] },
   { id: 'C06_owed_route_re_held', file: RS, find: 'const started = await startWorkspaceAgentHeadless(id, origin, admitted);', to: 'const started = await startWorkspaceAgentHeadless(id, origin);', expect: ['restart gate', 'rig:release_order'], arms: ['release_order'] },
   { id: 'C07_toolbar_not_human', file: RS, find: "const restartOrigin: PauseOrigin = trigger === 'toolbar' ? 'human' : 'auto';", to: "const restartOrigin: PauseOrigin = 'auto';", expect: ['restart gate', 'rig:human_passes'], arms: ['human_passes'] },
@@ -138,7 +138,7 @@ const MUTANTS = [
   { id: 'W19_roster_not_fleet', file: WR, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: false,', expect: ['#287 roster', 'rig:wake_held'], arms: ['wake_held'], rig: 'wake' },
   { id: 'W19b_roster_all_fleet', file: WR, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: true,', expect: ['#287 roster', 'rig:wake_non_fleet_passes'], arms: ['wake_non_fleet_passes'], rig: 'wake' },
   { id: 'W20_roster_ignores_sdk_session', file: WR, find: 'sleeping: !sdkSessionLive(ws.id),', to: 'sleeping: true,', expect: ['#287 roster', 'rig:wake_live_passes'], arms: ['wake_live_passes'], rig: 'wake' },
-  { id: 'W21_roster_coordinator_dropped', file: WR, find: 'coordinator: canOrchestrate(ws),', to: 'coordinator: false,', expect: ['#287 roster', 'rig:wake_order'], arms: ['wake_order'], rig: 'wake' },
+  { id: 'W21_roster_coordinator_dropped', file: WR, find: 'coordinator: coordinates(ws),', to: 'coordinator: false,', expect: ['#287 roster', 'rig:wake_order'], arms: ['wake_order'], rig: 'wake' },
   { id: 'W22_sleeping_ignores_sdk_session', file: AW, find: 'return !sdkSessionLive(id);', to: 'return true;', expect: ['#287 admission-wake'], arms: [] },
   { id: 'W23_wake_wrapper_all_fleet', file: AW, find: 'fleetMember: !!ws.parentId,', to: 'fleetMember: true,', expect: ['#287 admission-wake'], arms: [] },
   { id: 'W24_flush_hold_removed', file: PQ, find: '    !opts.force &&\n    (await wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', to: '    false &&\n    (await wakeHeldForMemory(ws, () => flushQueuedPrompts(id), {', expect: ['#287 prompt-queue', 'rig:flush_held'], arms: ['flush_held'], rig: 'wake' },
@@ -186,7 +186,7 @@ const MUTANTS = [
   { id: 'W67_permit_not_single_use', file: AD, find: 'if (permits.delete(a.wsId)) return { held: false };', to: 'if (permits.has(a.wsId)) return { held: false };', expect: ['W25 the permit is consumed by the FIRST'], arms: [] },
   { id: 'W68_flush_still_owed_ignores_parked_prompts', file: PQ, find: '!w.archived && (w.queuedPrompts ?? []).length > 0 && isSleeping(id);', to: '!w.archived && isSleeping(id);', expect: ['#287 prompt-queue'], arms: [] },
   { id: 'W69_resume_still_owed_ignores_marker', file: PQ, find: "!w.archived && w.lastStopReason === 'usage_limit' && isSleeping(ws.id);", to: '!w.archived && isSleeping(ws.id);', expect: ['#287 prompt-queue'], arms: [] },
-  { id: 'W70_wake_wrapper_coordinator_dropped', file: AW, find: 'coordinator: canOrchestrate(ws),', to: 'coordinator: false,', expect: ['#287 admission-wake'], arms: [] },
+  { id: 'W70_wake_wrapper_coordinator_dropped', file: AW, find: 'coordinator: coordinates(ws),', to: 'coordinator: false,', expect: ['#287 admission-wake'], arms: [] },
   { id: 'W53_roster_entry_seam_not_wired', file: IX, find: 'return w ? wakeRosterEntry(w) : null;', to: 'return null;', expect: ['#287 roster'], arms: [] },
 ];
 

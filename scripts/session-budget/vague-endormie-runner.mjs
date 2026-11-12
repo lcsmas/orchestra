@@ -224,9 +224,9 @@ try {
   // d: its task is finished (worker_done on the REAL bus, not re-tasked).   e: a hand-made workspace under the coordinator, no dispatched task.
   // f: the member ends its turn on a `run_in_background` command — a task its CLI session tracks (no detached process the census could see).
   // g: a coordinator with NO parent (the human's conversation) — the vague is declared, its coordinator is never told. The others are OPS under a LEAD.
-  await makeWs('ws-lead', { name: 'lead', status: 'idle', canOrchestrate: true, ownsRun: true });
+  await makeWs('ws-lead', { name: 'lead', status: 'idle', ownsRun: true });
   for (const v of VS) {
-    await makeWs(`ws-ops-${v}`, { name: `ops-${v}`, status: 'idle', canOrchestrate: true, ownsRun: true, ...(v === 'g' ? {} : { parentId: 'ws-lead' }) });
+    await makeWs(`ws-ops-${v}`, { name: `ops-${v}`, status: 'idle', ownsRun: true, ...(v === 'g' ? {} : { parentId: 'ws-lead' }) });
     await makeWs(`ws-impl-${v}`, { name: `impl-${v}`, parentId: `ws-ops-${v}`, ...(v === 'e' ? {} : { lastTask: `TASK-${v}: finish the ${v} fix and push` }) });
   }
   await launch('a', 0);

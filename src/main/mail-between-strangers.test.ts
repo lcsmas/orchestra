@@ -54,8 +54,8 @@ function world(t: { after: (fn: () => void) => void }): World {
     workspaces: [
       rec(A), rec(B), rec(X), rec(C),
       rec(LEAD, { kind: 'orchestrator' }),
-      rec(OPS, { parentId: LEAD, canOrchestrate: true }), rec(M, { parentId: OPS }),
-      rec(OPS2, { parentId: LEAD, canOrchestrate: true }), rec(M2, { parentId: OPS2 }),
+      rec(OPS, { parentId: LEAD, ownsRun: true }), rec(M, { parentId: OPS }),
+      rec(OPS2, { parentId: LEAD, ownsRun: true }), rec(M2, { parentId: OPS2 }),
     ],
   }));
   for (const m of [A, B, X, LEAD]) startRun(db, { id: m, kind: 'mission', coordinator: m }, LIVE);

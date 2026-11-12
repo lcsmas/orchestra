@@ -127,7 +127,7 @@ function seedWorld(home) {
   const mk = (key, extra) => ({ ...base, id: ID[key], name: `sor-repo · ${BR[key]}`, repoPath: repoDir, worktreePath: wt(key, BR[key]), branch: BR[key], lastTurnStartAt: now - 30000, ...extra });
   const c1 = mk('c1', { parentId: ID.ops, autoUnread: true, linkedPrs: [PR(1)], linkedLinearKey: 'NMC-2541' });
   const c2 = mk('c2', { parentId: ID.ops }); // a seeded non-idle status is reset at boot: states are driven through the spool
-  const p = mk('p', { canOrchestrate: true, ownsRun: true });
+  const p = mk('p', { ownsRun: true });
   const k1 = mk('k1', { parentId: ID.p, lastTurnStartAt: undefined });
   const k2 = mk('k2', { parentId: ID.p, lastTurnStartAt: undefined });
   const r = mk('r', { autoUnread: true });

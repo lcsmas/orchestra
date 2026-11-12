@@ -93,7 +93,7 @@ const world = (() => {
   gitIn(repo, ['worktree', 'add', '-q', '-b', 'ops-rig-bare', wtBare], fakeHome);
   const fakeEnv = { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' };
   const accounts = [{ id: 'acc-rig', label: 'rig', configDir: cfg, env: fakeEnv }];
-  const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude', status: 'idle', accountId: 'acc-rig', canOrchestrate: true, ownsRun: true, branchManuallySet: true, repoPath: repo };
+  const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude', status: 'idle', accountId: 'acc-rig', ownsRun: true, branchManuallySet: true, repoPath: repo };
   const workspaces = [
     { ...base, id: 'ws-ops', name: `${path.basename(repo)} · ops-rig-parent`, worktreePath: wtOps, branch: 'ops-rig-parent', browserProfileId: P.id },
     { ...base, id: 'ws-bare', name: `${path.basename(repo)} · ops-rig-bare`, worktreePath: wtBare, branch: 'ops-rig-bare' },

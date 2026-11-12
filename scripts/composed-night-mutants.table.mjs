@@ -103,7 +103,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/restart-workspace.ts",
-    "find": "      coordinator: canOrchestrate(ws),\n      run: () => dispatchRestartRequest(",
+    "find": "      coordinator: coordinates(ws),\n      run: () => dispatchRestartRequest(",
     "to": "      coordinator: false,\n      run: () => dispatchRestartRequest("
    }
   ]
@@ -868,7 +868,7 @@ export const MUTANTS = [
   "edits": [
    {
     "file": "src/main/wake-roster.ts",
-    "find": "coordinator: canOrchestrate(ws),",
+    "find": "coordinator: coordinates(ws),",
     "to": "coordinator: false,"
    }
   ]

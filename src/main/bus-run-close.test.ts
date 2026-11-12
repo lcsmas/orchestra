@@ -47,7 +47,7 @@ function writeStore(w: World, patch: Record<string, Rec> = {}, drop: string[] = 
   const rec = (id: string, extra: Rec = {}): Rec => ({ id, name: `ws-${id.slice(-2)}`, kind: 'worktree', ...extra, ...(patch[id] ?? {}) });
   const all = [
     rec(LEAD, { kind: 'orchestrator' }),
-    rec(OPS, { parentId: LEAD, canOrchestrate: true }),
+    rec(OPS, { parentId: LEAD, ownsRun: true }),
     rec(W, { parentId: OPS }),
     rec(W2, { parentId: OPS }),
     rec(T1),

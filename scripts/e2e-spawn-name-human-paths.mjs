@@ -49,7 +49,7 @@ const repoDir = path.join(tmpHome, 'repo'); fs.mkdirSync(repoDir, { recursive: t
 git(repoDir, ['init', '-q', '-b', 'main']); fs.writeFileSync(path.join(repoDir, 'README.md'), '# e2e\n'); git(repoDir, ['add', '.']); git(repoDir, ['commit', '-q', '-m', 'seed']);
 await store.addRepo({ path: repoDir, name: 'repo', defaultBranch: 'main' });
 const opsWt = path.join(tmpHome, 'wt-ops'); git(repoDir, ['worktree', 'add', '-q', '-b', 'ops-parent', opsWt]);
-await store.upsertWorkspace({ id: 'ws-ops', name: 'repo · ops-parent', repoPath: repoDir, worktreePath: opsWt, branch: 'ops-parent', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', canOrchestrate: true, ownsRun: true, branchManuallySet: true, setupStatus: 'ok' });
+await store.upsertWorkspace({ id: 'ws-ops', name: 'repo · ops-parent', repoPath: repoDir, worktreePath: opsWt, branch: 'ops-parent', baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', ownsRun: true, branchManuallySet: true, setupStatus: 'ok' });
 for (const [identifier, title] of [['NMC-382', 'Rig ticket for the agent variant'], ['NMC-383', 'Rig ticket for the click variant']])
   await store.upsertTicket({ identifier, title, url: `https://linear.app/x/issue/${identifier}/rig`, pinnedAt: 1 });
 

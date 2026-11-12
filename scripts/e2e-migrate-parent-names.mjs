@@ -87,13 +87,13 @@ function seedWorld(armDir) {
   const wsRec = (id, branch, extra = {}) => ({ id, name: `repo · ${branch}`, repoPath: repoDir, worktreePath: path.join(wtDir, branch), branch, baseBranch: 'main', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: account.id, setupStatus: 'ok', hasInput: false, ...extra });
   for (const b of ['old-child-one', 'old-child-two', 'old-human', 'impl-deja-nomme-1', 'old-pinned', 'old-ops-vague', 'old-vague-member']) git(repoDir, ['worktree', 'add', '-q', '-b', b, path.join(wtDir, b), 'main'], fakeHome);
   git(repoDir, ['push', '-q', 'origin', 'old-child-two'], fakeHome); // C2's branch is ON origin → the script must skip it
-  const parent = { id: ids.parent, name: 'orchestrator · ops-parent', kind: 'orchestrator', canOrchestrate: true, ownsRun: true, repoPath: '', worktreePath: scratchDir, branch: 'ops-parent', baseBranch: '', createdAt: Date.now() - 1000, status: 'idle', agent: 'claude', accountId: account.id, hasInput: false };
+  const parent = { id: ids.parent, name: 'orchestrator · ops-parent', kind: 'orchestrator', ownsRun: true, repoPath: '', worktreePath: scratchDir, branch: 'ops-parent', baseBranch: '', createdAt: Date.now() - 1000, status: 'idle', agent: 'claude', accountId: account.id, hasInput: false };
   const workspaces = [parent,
     wsRec(ids.c1, 'old-child-one', { parentId: ids.parent }),
     wsRec(ids.c2, 'old-child-two', { parentId: ids.parent }),
     wsRec(ids.c3, 'impl-deja-nomme-1', { parentId: ids.parent, namedByParent: ids.parent }), // born through `spawn --name`: already parent-named
     wsRec(ids.c4, 'old-pinned', { parentId: ids.parent, branchManuallySet: true }), // a human typed this name
-    wsRec(ids.ops, 'old-ops-vague', { parentId: ids.parent, canOrchestrate: true, ownsRun: true }), // a promoted worktree = an OPS = a running vague…
+    wsRec(ids.ops, 'old-ops-vague', { parentId: ids.parent, ownsRun: true }), // a promoted worktree = an OPS = a running vague…
     wsRec(ids.w, 'old-vague-member', { parentId: ids.ops }), // …with one member
     wsRec(ids.human, 'old-human')];
   const dir = path.join(ohome, 'userData', 'orchestra'); fs.mkdirSync(dir, { recursive: true });
