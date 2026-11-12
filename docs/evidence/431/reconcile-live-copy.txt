@@ -1,0 +1,204 @@
+# #431 NOT VERIFIED #1 — app-start reconcile of tip 7cbc1189 on COPIES of the live bus + store (2026-11-12)
+# ids = first 8 chars; ids / kinds / states / counts only (public repo: no workspace names). Harness: reconcile-live-copy.mjs.
+
+store: 53 workspaces, 31 archived
+A (full store, reconcile only): open before 42/42, after 5, closed 37, reopened 0, skipped false
+
+run      kind     coord    reason     result
+0524718f mission  0524718f archived   CLOSED
+0a5c25bb vague    0a5c25bb absent     CLOSED
+b3f55639 vague    b3f55639 absent     CLOSED
+1d9ae9f1 vague    1d9ae9f1 absent     CLOSED
+36773f53 mission  36773f53 live       OPEN (kept)
+5da215a4 vague    5da215a4 absent     CLOSED
+8334720c vague    8334720c absent     CLOSED
+32fa5e7b vague    32fa5e7b absent     CLOSED
+0c8d6d36 vague    0c8d6d36 absent     CLOSED
+5c0ad722 vague    5c0ad722 absent     CLOSED
+493580d2 vague    493580d2 absent     CLOSED
+0c092cd5 vague    0c092cd5 absent     CLOSED
+bddbca9a vague    bddbca9a absent     CLOSED
+cf517f45 vague    cf517f45 absent     CLOSED
+ff209451 vague    ff209451 absent     CLOSED
+d7c9bf92 vague    d7c9bf92 absent     CLOSED
+ef9f84d0 vague    ef9f84d0 absent     CLOSED
+0d4e3866 vague    0d4e3866 absent     CLOSED
+15ba067d mission  15ba067d absent     CLOSED
+109c8b56 vague    109c8b56 absent     CLOSED
+07f665b1 vague    07f665b1 absent     CLOSED
+90819ba2 vague    90819ba2 absent     CLOSED
+89d57d31 vague    89d57d31 absent     CLOSED
+807466d8 vague    807466d8 absent     CLOSED
+5ffa67ff vague    5ffa67ff absent     CLOSED
+866b89aa vague    866b89aa absent     CLOSED
+3ef3c17a vague    3ef3c17a absent     CLOSED
+b7c8905d vague    b7c8905d absent     CLOSED
+4281eae1 mission  4281eae1 absent     CLOSED
+bfc2598d vague    bfc2598d absent     CLOSED
+02e1b4d2 vague    02e1b4d2 live       OPEN (kept)
+22d82676 vague    22d82676 absent     CLOSED
+e74e3d90 mission  e74e3d90 absent     CLOSED
+1c25e911 vague    1c25e911 absent     CLOSED
+2cbe04ab mission  2cbe04ab archived   CLOSED
+7b4690d8 vague    7b4690d8 absent     CLOSED
+7ff45c16 vague    7ff45c16 absent     CLOSED
+0fc2128b vague    0fc2128b live       OPEN (kept)
+54718d67 mission  54718d67 archived   CLOSED
+93425bad vague    93425bad absent     CLOSED
+c76c3fc2 mission  c76c3fc2 live       OPEN (kept)
+577f3bb3 vague    577f3bb3 live       OPEN (kept)
+
+D (real start order: #433 sweep -> #434 owner sweep -> reconcile): {
+ "sweepTopLevelStarted": [
+  "6be948ae",
+  "11446105",
+  "3874f212",
+  "211d3ca8",
+  "512e2556",
+  "39766abf",
+  "a32df528",
+  "db9e847a",
+  "6a7da120",
+  "b2de19d5"
+ ],
+ "sweepOwnersStarted": [],
+ "reconcile": {
+  "closed": 37,
+  "reopened": 0,
+  "skipped": false
+ },
+ "runsBefore": 42,
+ "runsAfter": 52,
+ "openBefore": 42,
+ "openAfter": 15,
+ "newRowsOpen": true,
+ "violations": [],
+ "parentlessPeersWithNoRowAfter": [],
+ "mustBeOpen": [
+  {
+   "id": "c76c3fc2",
+   "open": true
+  },
+  {
+   "id": "577f3bb3",
+   "open": true
+  }
+ ]
+}
+
+C (partial store, copy of copy):
+[
+ {
+  "label": "k=0 (floor)",
+  "skipped": true,
+  "closedTotal": 0,
+  "closedOfLiveCoordinators": 0,
+  "liveRunsOpenBefore": 5,
+  "closedLiveRuns": [],
+  "recovery": {
+   "reopened": 0,
+   "closed": 37,
+   "openAfterRecovery": 5,
+   "equalsFullStoreResult": true
+  }
+ },
+ {
+  "label": "k=1 first-in-file",
+  "skipped": false,
+  "closedTotal": 41,
+  "closedOfLiveCoordinators": 4,
+  "liveRunsOpenBefore": 5,
+  "closedLiveRuns": [
+   "02e1b4d2",
+   "0fc2128b",
+   "c76c3fc2",
+   "577f3bb3"
+  ],
+  "recovery": {
+   "reopened": 4,
+   "closed": 0,
+   "openAfterRecovery": 5,
+   "equalsFullStoreResult": true
+  }
+ },
+ {
+  "label": "k=3 first-in-file",
+  "skipped": false,
+  "closedTotal": 40,
+  "closedOfLiveCoordinators": 3,
+  "liveRunsOpenBefore": 5,
+  "closedLiveRuns": [
+   "0fc2128b",
+   "c76c3fc2",
+   "577f3bb3"
+  ],
+  "recovery": {
+   "reopened": 3,
+   "closed": 0,
+   "openAfterRecovery": 5,
+   "equalsFullStoreResult": true
+  }
+ },
+ {
+  "label": "k=3 LEAD+OPS+1",
+  "skipped": false,
+  "closedTotal": 39,
+  "closedOfLiveCoordinators": 2,
+  "liveRunsOpenBefore": 5,
+  "closedLiveRuns": [
+   "02e1b4d2",
+   "0fc2128b"
+  ],
+  "recovery": {
+   "reopened": 2,
+   "closed": 0,
+   "openAfterRecovery": 5,
+   "equalsFullStoreResult": true
+  }
+ },
+ {
+  "label": "k=3 last-in-file",
+  "skipped": false,
+  "closedTotal": 42,
+  "closedOfLiveCoordinators": 5,
+  "liveRunsOpenBefore": 5,
+  "closedLiveRuns": [
+   "36773f53",
+   "02e1b4d2",
+   "0fc2128b",
+   "c76c3fc2",
+   "577f3bb3"
+  ],
+  "recovery": {
+   "reopened": 5,
+   "closed": 0,
+   "openAfterRecovery": 5,
+   "equalsFullStoreResult": true
+  }
+ }
+]
+
+B (peers cross-check, reconcile only):
+{"id":"36773f53","ownsRunRows":1,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"6be948ae","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"02e1b4d2","ownsRunRows":1,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"id":"e9a45b87","ownsRunRows":0,"ownOpen":true,"parent":"02e1b4d2","parentRunOpen":true,"violations":[]}
+{"id":"11446105","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"3874f212","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"211d3ca8","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"512e2556","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"39766abf","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"8b395a57","ownsRunRows":0,"ownOpen":true,"parent":"02e1b4d2","parentRunOpen":true,"violations":[]}
+{"id":"a32df528","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"db9e847a","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"0fc2128b","ownsRunRows":1,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"id":"07a0db87","ownsRunRows":0,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"id":"beac7466","ownsRunRows":0,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"id":"c76c3fc2","ownsRunRows":1,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"577f3bb3","ownsRunRows":1,"ownOpen":true,"parent":"c76c3fc2","parentRunOpen":true,"violations":[]}
+{"id":"6a7da120","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"b2de19d5","ownsRunRows":0,"ownOpen":true,"parent":null,"parentRunOpen":null,"violations":[]}
+{"id":"dc378418","ownsRunRows":0,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"id":"08a5619f","ownsRunRows":0,"ownOpen":true,"parent":"36773f53","parentRunOpen":true,"violations":[]}
+{"mustBeOpen":"c76c3fc2","present":true,"open":true}
+{"mustBeOpen":"577f3bb3","present":true,"open":true}
