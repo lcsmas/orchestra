@@ -27,6 +27,7 @@ const UNIT_PREFIX = 'orchestra-rig-wh-h3-';
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const flag = (k) => args.includes(`--${k}`);
+const PLAIN = opt('shape', 'fleet') === 'plain';   // #438: ONE plain parent that owns its mission run + `--members` children (default 1) — no LEAD, no OPS; memhog only (the Q9 chain is the fleet's)
 const say = (s = '') => console.log(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TOKEN_RUN = randomBytes(2).toString('hex');
@@ -81,7 +82,7 @@ async function drive({ exercise, members, cycles, off = false, sabotage = null, 
   const prefix = randomPrefix();
   const logFile = path.join(OUT, `${label}.log`);
   const driveArgs = ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', path.join(REPO, 'scripts', '.r2-register.mjs'), path.join(HERE, 'memhog.mjs'),
-    '--base', base, '--prefix', prefix, '--exercise', exercise, '--members', String(members), '--cycles', String(cycles), '--switch', off ? 'off' : 'on', '--min-avail-gb', String(MIN_AVAIL_GB), ...(sabotage ? ['--sabotage', sabotage] : [])];
+    '--base', base, '--prefix', prefix, '--exercise', exercise, '--members', String(members), '--cycles', String(cycles), '--switch', off ? 'off' : 'on', '--min-avail-gb', String(MIN_AVAIL_GB), ...(PLAIN ? ['--shape', 'plain'] : []), ...(sabotage ? ['--sabotage', sabotage] : [])];
   const env = { PATH: process.env.PATH, HOME: REAL_HOME, MC_REAL_HOME: REAL_HOME, LANG: 'C.UTF-8', SHELL: process.env.SHELL ?? '/bin/bash', XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS };   // systemd-run --user needs the user manager
   for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
   const unitsBefore = new Set(unitsNow(`${UNIT_PREFIX}${prefix}*`));
@@ -124,8 +125,9 @@ const live0 = liveSnapshot(REAL_HOME);   // D6: nothing under ~/.claude* (or the
 fs.mkdirSync(RUN_DIR, { recursive: true });
 
 if (!flag('proof')) {
-  const exercises = opt('exercise', 'memhog,chain').split(',').filter(Boolean);
-  const cycles = Number(opt('cycles', '3')), members = Number(opt('members', '6'));
+  const exercises = opt('exercise', PLAIN ? 'memhog' : 'memhog,chain').split(',').filter(Boolean);
+  const cycles = Number(opt('cycles', '3')), members = Number(opt('members', PLAIN ? '1' : '6'));
+  if (PLAIN && exercises.some((e) => e !== 'memhog')) { say('usage: --shape plain runs --exercise memhog only'); process.exit(2); }
   if (exercises.length === 0 || exercises.some((e) => !['memhog', 'chain'].includes(e)) || !Number.isInteger(cycles) || cycles < 1 || !Number.isInteger(members) || members < 1 || members > 10) { say('usage: --exercise ⊂ memhog,chain · --cycles ≥ 1 · --members 1..10'); process.exit(2); }
   say(`memhog canary: ${exercises.join(',')} × ${cycles} cycles · ${members} workers + OPS + LEAD (256 MiB scopes, stand-in CLI) · token ${HEAVY} · MemAvailable ${h0.availGB.toFixed(2)} GB load ${h0.load1.toFixed(1)}`);
   const parts = [];
@@ -160,8 +162,8 @@ if (!flag('proof')) {
   const reds = mhChecks.filter((c) => !c.ok);
   const bsTotal = mh ? mh.cycles.reduce((a, c) => a + (c.summary?.backstopKills ?? 0), 0) : 0;
   const bsChain = ch ? ch.chains.reduce((a, r) => a + (r.backstop?.beyondWorkKills ?? 0), 0) : 0;
-  const full = exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && chV === 'PASS';
-  const md = [`# Pause canary 1b — memory-hog exercise (${members} workers + OPS + LEAD, ${cycles} cycles)`, '',
+  const full = PLAIN ? exercises.includes('memhog') && cycles >= 3 && mhVerdict === 'PASS' : exercises.includes('memhog') && exercises.includes('chain') && members >= 6 && cycles >= 3 && chV === 'PASS';   // plain: the small run's own contract shape = memhog × ≥ 3 cycles on a parent + child
+  const md = [`# Pause canary 1b — memory-hog exercise (${PLAIN ? `PLAIN PAIR: a plain parent + ${members} child(ren)` : `${members} workers + OPS + LEAD`}, ${cycles} cycles)`, '',
     `tree ${gitHead} (${gitBranch}) · stand-in CLI (a real claude does not fit D2's ≤ 300 MB scopes: NOT run) · cap ${0.25} GB (256 MiB), warning 0.2 GB · heavy token ${HEAVY}`,
     `host: bar ${MIN_AVAIL_GB} GB / load 20 · min MemAvailable ${mh?.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · \`memory_cap\` live default ON for new runs (flipped after the Q11 PASS; this harness never flips it)`, '', table, '',
     `verdict memhog: **${mhVerdict ?? 'not run'}**${mhVerdict === 'PASS' && !full ? ` (PARTIAL: not ${exercises.includes('chain') ? '' : 'memhog+chain × '}≥ 6 workers × ≥ 3 cycles)` : ''}`,
@@ -176,7 +178,7 @@ if (!flag('proof')) {
   fs.rmSync(RUN_DIR, { recursive: true, force: true });
   // the verdict word: memhog's (PARTIAL when green but not the contract shape), else — chain alone — the chain's own state. A chain that was ASKED FOR and never measured is no PASS; a leak or a changed live config fails whatever ran.
   const word = canaryWord({ hasMh: !!mh, hasCh: !!ch, mhVerdict, full, chV, chainSurvBad, liveOk: liveCheck.ok });
-  say(`MEMHOG-CANARY: ${word}${members < 6 && mh ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''} · backstop kills ${bsTotal + bsChain}${bsTotal + bsChain > 0 ? ' — BLOCKS the default activation (#343)' : ''}`);
+  say(`MEMHOG-CANARY: ${word}${PLAIN ? ' (PLAIN PAIR: one plain parent that owns its mission run + its child(ren) — the small run of #438, not the 6-worker fleet)' : members < 6 && mh ? ` (${members} workers — labelled, not the 6 of the ticket)` : ''}${ch ? ` · Q9 chain ${chV}` : ''} · backstop kills ${bsTotal + bsChain}${bsTotal + bsChain > 0 ? ' — BLOCKS the default activation (#343)' : ''}`);
   process.exit(canaryExit(word));
 }
 

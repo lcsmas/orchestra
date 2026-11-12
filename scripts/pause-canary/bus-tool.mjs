@@ -28,8 +28,9 @@ if (cmd === 'seed') {
     if (mode === 'cap-off') all.memoryCap = false;   // #324 memhog-app: the must-FAIL control — the same drill with the frozen `memory_cap` switch OFF
     const sw = { ...DEFAULT_BUS_SWITCHES, ...all };
     startRun(db, { id: LEAD, kind: 'mission', coordinator: LEAD }, sw);
-    startRun(db, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD }, sw);
-    console.log(JSON.stringify({ seeded: [LEAD, OPS], schema: db.pragma('user_version', { simple: true }), switches: BUS_MECHANISMS.map((m) => `${m}=${all[m]}`).join(',') }));
+    // #438 plain pair: LEAD === OPS = the ONE plain parent, which owns its mission from birth (#433) — the children are members of THAT run, no second row
+    if (OPS !== LEAD) startRun(db, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD }, sw);
+    console.log(JSON.stringify({ seeded: [...new Set([LEAD, OPS])], schema: db.pragma('user_version', { simple: true }), switches: BUS_MECHANISMS.map((m) => `${m}=${all[m]}`).join(',') }));
   } finally { db.close(); }
 } else if (cmd === 'serve') {
   let db = null;

@@ -26,6 +26,7 @@ const REAL_HOME = os.userInfo().homedir;
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const flag = (k) => args.includes(`--${k}`);
+const PLAIN = opt('shape', 'fleet') === 'plain';   // #438: the SMALL run — ONE plain parent that owns its mission run + ONE child (douce / dure / reprise; `--members 1`, the contract shape is the three exercises × ≥ 3 cycles)
 // #324: the MEMORY-HOG exercise (real keepers in real 256 MiB scopes + the H1 stand-in CLI: no packaged app, no sway) has its own runner — `canary:pause -- --exercise memhog[,chain]` hands over to it (it exits by itself)
 if (/^(memhog|chain)(,(memhog|chain))*$/.test(opt('exercise', ''))) await import('./memhog-run.mjs');
 const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pause-canary')));
@@ -48,6 +49,9 @@ const PROOF_ARMS = [
   { name: 'control:clean-douce', exercise: 'douce', expect: 'PASS', slow: true },
   // skip-kill needs the `bg` member (4+ workers): a plain interrupt already aborts a FOREGROUND command, so only a background task proves the trap's kill (measured: with 3 workers the mutant ran `killed: []` and tools_dead stayed green)
   ...Object.entries(MUTANTS).map(([m, d]) => ({ name: `mutant:${m}`, mutant: m, exercise: d.exercise, redden: d.redden, slow: d.exercise === 'douce', ...(m === 'skip-kill' ? { members: 4 } : {}) })),
+  // #438 — the PLAIN-PAIR drive (a plain parent + 1 child) goes red for the same product breaks: clean control + 4 build-level mutants (`--shape plain`; the douce one runs 2 cycles so the straggler cycle is met)
+  { name: 'plain:control:clean-dure', exercise: 'dure', plain: true, expect: 'PASS' },
+  ...['skip-snapshot', 'skip-kill', 'no-confirm-reprise', 'gate-ignores-pause', 'no-deadline-escalation'].map((m) => ({ name: `plain:mutant:${m}`, mutant: m, exercise: MUTANTS[m].exercise, redden: MUTANTS[m].redden, plain: true, slow: MUTANTS[m].exercise === 'douce', ...(MUTANTS[m].exercise === 'douce' ? { cycles: 2 } : {}) })),
   // harness-level instrument controls: the drive sabotages its own evidence after the pause — the lost-work instrument must read RED for a rewound branch and for a deleted pause ref, the session-identity instrument for a killed CLI
   { name: 'control:sabotage-branch', exercise: 'dure', sabotage: 'branch', redden: ['bar:lost_work_is_zero'] },
   { name: 'control:sabotage-ref', exercise: 'dure', sabotage: 'ref', redden: ['bar:lost_work_is_zero'] },
@@ -207,9 +211,9 @@ const claudeVersion = sh(claudeBin, ['--version']).stdout.trim();
 if (!flag('proof')) {
   // ── the canary itself ──
   const appBin = ensureApp();
-  const exercise = opt('exercise', 'douce,dure,reprise,auto');
-  const cycles = Number(opt('cycles', '3')), members = Number(opt('members', MH_ON ? '6' : '10'));
-  const KNOWN = ['douce', 'dure', 'reprise', 'auto'];
+  const exercise = opt('exercise', PLAIN ? 'douce,dure,reprise' : 'douce,dure,reprise,auto');
+  const cycles = Number(opt('cycles', '3')), members = Number(opt('members', PLAIN ? '1' : MH_ON ? '6' : '10'));
+  const KNOWN = PLAIN ? ['douce', 'dure', 'reprise'] : ['douce', 'dure', 'reprise', 'auto'];
   const OPTIONAL = ['memhog-app'];   // #324: only on request (it needs a waiver with the cap ON), never part of the 4-exercise contract shape
   const wantedEx = exercise.split(',').filter(Boolean);
   if (wantedEx.length === 0 || wantedEx.some((e) => !KNOWN.includes(e) && !OPTIONAL.includes(e)) || !Number.isInteger(cycles) || cycles < 1 || !Number.isInteger(members) || members < 1 || members > 10) { say(`usage: --exercise ⊂ ${[...KNOWN, ...OPTIONAL]} (got ${JSON.stringify(exercise)}), --cycles ≥ 1, --members 1..10`); process.exit(2); }
@@ -220,13 +224,13 @@ if (!flag('proof')) {
   for (const ex of exercise.split(',').filter(Boolean)) {
     const w0 = await waitForHost(members);
     if (!w0.ok) { parts.push({ rc: 3, label: label0, logFile: '', exercises: [{ exercise: ex, result: 'VOID', cycles: 0, wanted: cycles, reason: 'host below the bar' }], cycles: [], checks: [], host: null, verdict: 'VOID' }); continue; }
-    let p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : [] });
+    let p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : PLAIN ? ['--shape', 'plain'] : [] });
     for (let n = 1; p.verdict === 'VOID' && n <= (ex === 'memhog-app' ? 0 : Number(opt('void-retries', '2'))); n++) {   // Q11: the memhog-app run is ONE run — a host-VOID is reported, never re-driven
       voidLogs.push(p.logFile);
       const w = await waitForHost(members);
       say(`   ${ex}: VOID (host guard) — retry ${n} after waiting ${w.waitedS} s (MemAvailable ${w.availGB.toFixed(2)} GB)`);
       if (!w.ok) break;
-      p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}-r${n}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : [] });
+      p = await drive({ appBin, exercise: ex, cycles, members, label: `${label0}-${ex}-r${n}`, pause: opt('pause', null), dwell: opt('dwell-s', null), extra: ex === 'memhog-app' ? memhogExtra() : PLAIN ? ['--shape', 'plain'] : [] });
     }
     parts.push(p);
   }
@@ -236,13 +240,13 @@ if (!flag('proof')) {
   const full = MH_REPORT ? cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === 1 : KNOWN.every((e) => wantedEx.includes(e)) && cycles >= 3 && r.exercises.filter((e) => e.result === 'PASS' && e.cycles >= cycles).length === wantedEx.length;   // memhog-app is its own shape: ≥ 3 cycles, PASS
   const gi = gitInfo();
   const reds = r.checks.filter((c) => !c.ok);
-  const md = [`# ${MH_REPORT ? `Pause canary 1b — memory-hog on the PACKAGED app${REHEARSAL ? ' — DRY REHEARSAL (1 member, plumbing; NOT the Q11 run)' : ''}` : 'Pause canary 1 — dummy fleet'} (${members} workers + OPS + LEAD, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${members} workers + OPS + LEAD · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, MH_REPORT ? '`bars (never lowered): the overflowing process killed · keeper + CLI survive · the member AND only its coordinator told (#322, read by its own relève) · cap scope applied and still active · memory guard NEUTRALISED (Admission OFF, levels 0.6 / 0.5 GB) so only the cap is under test`' : `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !full ? (MH_REPORT ? ' (PARTIAL: fewer than 3 cycles)' : ' (PARTIAL: not 4 exercises × ≥ 3 cycles)') : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
+  const md = [`# ${MH_REPORT ? `Pause canary 1b — memory-hog on the PACKAGED app${REHEARSAL ? ' — DRY REHEARSAL (1 member, plumbing; NOT the Q11 run)' : ''}` : PLAIN ? 'Pause canary 1 — PLAIN PAIR (#438)' : 'Pause canary 1 — dummy fleet'} (${PLAIN ? 'a plain parent + 1 child' : `${members} workers + OPS + LEAD`}, ${cycles} cycles/exercise)`, '', `tree ${gi.head.slice(0, 8)} (${gi.branch}) · origin/master ${gi.originMaster.slice(0, 8)} · claude ${claudeVersion} · app ${appBin}`, `host: ${HOST_NOTE} · min MemAvailable ${r.host?.minAvailGB?.toFixed(2) ?? 'n/a'} GB · max load ${r.host?.maxLoad?.toFixed(1) ?? 'n/a'} · ${r.host?.samples ?? 0} samples`, `run: ${PLAIN ? `a plain parent + ${members} child` : `${members} workers + OPS + LEAD`} · ${cycles} cycles · dwell ${opt('dwell-s', '40')} s · exercises ${exercise}${voidLogs.length ? ` · ${voidLogs.length} VOID attempt(s) re-run (logs: ${voidLogs.join(', ')})` : ''}`, MH_REPORT ? '`bars (never lowered): the overflowing process killed · keeper + CLI survive · the member AND only its coordinator told (#322, read by its own relève) · cap scope applied and still active · memory guard NEUTRALISED (Admission OFF, levels 0.6 / 0.5 GB) so only the cap is under test`' : `bars (never lowered): dure all-paused < ${BARS.hardAllPausedS} s · douce escalation ≤ ${BARS.softDeadlineS}+${BARS.softEscalationSlackS} s then trap < ${BARS.softTrapAfterEscalationS} s · lost work ${BARS.lostWork} · self-restarts ${BARS.selfRestarts} · every member reprise-accused`, '', table, '', `verdict: **${r.verdict}**${r.verdict === 'PASS' && !full ? (MH_REPORT ? ' (PARTIAL: fewer than 3 cycles)' : ' (PARTIAL: not 4 exercises × ≥ 3 cycles)') : ''} (${r.exercises.map((e) => `${e.exercise}:${e.result}`).join(' ')})`, `raw evidence: drive log ${r.logFile} · rig dirs (api-requests.json, app.log, bus.sqlite, repo/) ${BASE}/h-${r.label}-*/`, '', reds.length ? `RED checks (raw evidence in ${r.logFile}):\n${reds.map((c) => `- ${c.exercise} c${c.cycle} \`${c.id}\` — ${c.detail}`).join('\n')}` : 'no RED check.', ''].join('\n');
   writeReport('report', md);
   fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ git: gi, claude: claudeVersion, app: appBin, drive: r }, null, 1));
   say(`\n${table}\n`);
   // the contract shape is 4 exercises × ≥ 3 cycles: a green run of less is PARTIAL, never PASS (`--exercise dures` / `--cycles 0` can no longer print a PASS over an empty table)
   const word = r.verdict === 'PASS' && !full ? 'PARTIAL' : r.verdict;
-  say(`PAUSE-CANARY${REHEARSAL ? ' DRY-REHEARSAL (plumbing, not the Q11 run)' : ''}: ${word}${members < (MH_REPORT ? 6 : 10) ? ` (${members} workers — labelled, not the ${MH_REPORT ? 6 : 10} of the ticket)` : ''}`);
+  say(`PAUSE-CANARY${REHEARSAL ? ' DRY-REHEARSAL (plumbing, not the Q11 run)' : ''}: ${word}${PLAIN ? ' (PLAIN PAIR: one plain parent that owns its mission run + 1 child — the small run of #438, not the 10-worker contract)' : members < (MH_REPORT ? 6 : 10) ? ` (${members} workers — labelled, not the ${MH_REPORT ? 6 : 10} of the ticket)` : ''}`);
   process.exit(word === 'PASS' ? 0 : word === 'PARTIAL' ? 4 : r.verdict === 'VOID' ? 3 : 1);   // 4 = green but not the contract shape (4 exercises × ≥ 3 cycles): never an exit-0 PASS
 }
 
@@ -292,7 +296,7 @@ for (const arm of sel) {
     if (arm.unfixed) { const u = ensureUnfixed(typeof arm.unfixed === 'string' ? arm.unfixed : null); appBin = u.app; appTree = u.tree; }
   } catch (e) { rows.push({ arm: arm.name, verdict: 'VOID', why: String(e.message).slice(0, 200) }); continue; }
   say(`\n=== ${arm.name} (${arm.redden ? `must-FAIL: ${arm.redden.join(' | ')} RED` : 'must-PASS'}) ===`);
-  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : []), ...(arm.exercise === 'memhog-app' ? memhogExtra(arm) : [])] });
+  const runArm = () => drive({ appBin, appTree, exercise: arm.exercise, cycles: arm.cycles ?? Number(opt('cycles', '1')), members: arm.plain ? 1 : arm.members ?? members, label: `proof-${arm.name.replace(/[^a-z0-9]+/gi, '_')}`, pause: arm.pause ?? null, dwell: opt('dwell-s', null), extra: [...(arm.plain ? ['--shape', 'plain'] : []), ...(arm.sabotage ? ['--sabotage', arm.sabotage] : []), ...(arm.inject ? ['--inject', arm.inject] : []), ...(arm.toolprocs ? ['--toolprocs', arm.toolprocs] : []), ...(arm.window ? ['--window', arm.window] : []), ...(arm.exercise === 'memhog-app' ? memhogExtra(arm) : [])] });
   const hitsOf = (rr) => (arm.redden ?? []).filter((id) => rr.checks.some((c) => !c.ok && c.id === id && !/NOT MEASURED/.test(c.detail) && (!arm.expectDetail || arm.expectDetail.test(c.detail))));
   // a cycle CUT SHORT by the host guard before the named check could be evaluated proves nothing either way: it is a VOID, re-run it (a RED already measured by the named check is kept)
   const cutShortWithoutEvidence = (rr) => !!arm.redden && rr.checks.some((c) => c.id === 'cycle_incomplete' && /cut short by a VOID/.test(c.detail)) && hitsOf(rr).length === 0;

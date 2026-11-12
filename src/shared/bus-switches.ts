@@ -358,7 +358,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     if (m === 'memoryCap') {
       lines.push(
         on
-          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a workspace WITH a coordinator (a worker, or an OPS under the LEAD) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. Only the top-level LEAD (a workspace with no coordinator), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
+          ? `- bus switch ${wire}=ON — each session start (spawn, restart, wake) of a workspace WITH a coordinator (a worker — a child of a plain parent too — or an OPS under the LEAD) on a host that can scope it runs in its own memory scope with a hard limit: a tool command that overflows it is killed by the kernel and the session survives. Only a top-level workspace (the LEAD, or a plain agent with no parent: no coordinator), a human's session, a sandbox or an unsupported host runs in no scope, and a session that started before this was ON is not capped. Keep tests and rigs light.`
           : `- bus switch ${wire}=OFF — your session runs in no memory scope of its own; no per-member memory limit applies.`,
       );
       continue;
