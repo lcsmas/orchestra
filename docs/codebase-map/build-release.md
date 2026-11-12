@@ -269,8 +269,8 @@ ship with the repo:
 - **ship** — drives `release.sh` (rebase → evidence check → notes → `release
   patch --to-master --install`). It checks that `verify` evidence (UI drive,
   idle CPU) exists for the diff rather than producing it.
-- **orchestra-spawn / -comms / -repos / -promote / -attach / -rename** — the
-  agent capability skills also installed per-worktree (see
+- **orchestra-spawn / -comms / -rename / -status / -workspace-admin / -browser** — the
+  agent capability skills (`orchestra-promote` and the other split-era skills are in `RETIRED_SKILLS`, evicted at install; no promote since #440) also installed per-worktree (see
   [hooks-cli-socket.md](hooks-cli-socket.md)).
 - **codebase-map** — this index.
 

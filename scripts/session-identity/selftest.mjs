@@ -15,14 +15,14 @@ const ok = (o = {}) => ({ isError: false, rc: '0', text: 'ok', ...o });
 const GOOD = {
   same_turn: () => ({
     ...base(), env: envOk(), memberRun: { id: 'M' }, rows: [{ run_id: 'M' }],
-    toolResults: { toolu_si_promote: ok(), toolu_si_send: ok() },
+    toolResults: { toolu_si_attach: ok(), toolu_si_send: ok() },
     noRestart: { keeperSame: true, cliSame: true, cliCountStart: 1, cliCountEnd: 1, sessionIdStart: 's', sessionIdMid: 's', sessionIdEnd: 's' },
   }),
   app_closed: () => ({
     ...base(), env: envOk(), memberRun: { id: 'M' }, rows: [],
     hostDown: { sockFileExists: false, connectable: false }, marker: { newRun: 'M' },
     noRestart: { keeperSame: true, cliSame: true, cliCountStart: 1, cliCountEnd: 1 },
-    toolResults: { toolu_ac_promote: ok(), toolu_ac_send: { isError: true, rc: '1', text: 'refused: stale run: ...' }, toolu_ac_check: ok() },
+    toolResults: { toolu_ac_attach: ok(), toolu_ac_send: { isError: true, rc: '1', text: 'refused: stale run: ...' }, toolu_ac_check: ok() },
   }),
   superseded: () => ({
     ...base(), distinctKeys: true, oldCliGone: true, registryHoldsNewHash: true, registryHoldsOldHash: false, leakExtra: { oldKeyInRegistry: false },
@@ -54,8 +54,8 @@ const GOOD = {
 const MUT = {
   same_turn: {
     a1_key_in_cli_env: (f) => { f.env.keyLen = 0; f.env.keyHex = false; },
-    a2_env_stale_after_promote: (f) => { f.env.envRunId = 'M'; },
-    b1_promote_rc0: (f) => { f.toolResults.toolu_si_promote.rc = '1'; },
+    a2_env_stale_after_attach: (f) => { f.env.envRunId = 'M'; },
+    b1_attach_rc0: (f) => { f.toolResults.toolu_si_attach.rc = '1'; },
     b2_send_rc0: (f) => { f.toolResults.toolu_si_send = { isError: true, rc: '1', text: 'refused: stale run' }; },
     c_row_in_new_run: (f) => { f.rows = [{ run_id: 'L' }]; },
     d1_no_restart_processes: (f) => { f.noRestart.cliSame = false; },
@@ -68,8 +68,8 @@ const MUT = {
   },
   app_closed: {
     a1_key_in_cli_env: (f) => { f.env.keyLen = 0; f.env.keyHex = false; },
-    a2_env_stale_after_promote: (f) => { f.memberRun = null; },
-    b1_promote_rc0: (f) => { f.toolResults.toolu_ac_promote.isError = true; },
+    a2_env_stale_after_attach: (f) => { f.memberRun = null; },
+    b1_attach_rc0: (f) => { f.toolResults.toolu_ac_attach.isError = true; },
     p1_host_is_down: (f) => { f.hostDown.connectable = true; },
     p2_marker_names_new_run: (f) => { f.marker.newRun = null; },
     p3_session_survived_app_close: (f) => { f.noRestart.keeperSame = false; },

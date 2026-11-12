@@ -33,6 +33,7 @@ const emitResult = (obj) => console.log(JSON.stringify({ identity: obj }));
 
 const LEAD = 'ws-si-lead';
 const MEMBER = 'ws-si-member';
+const KID = 'ws-si-kid'; // #442: the agent the member ADOPTS (`orchestra attach`) — the post-#440 way a plain member comes to own a run (promote is gone)
 const KEY_ENV = 'ORCHESTRA_SESSION_KEY';
 
 // ═════════════ phase "supervise": the attach arm needs TWO app processes sharing one ORCHESTRA_HOME (the keeper survives the first) ═════════════
@@ -88,12 +89,12 @@ const bash = (id, command, before) => ({ id, before, command: `${command}; rc=$?
 const hooksRef = { mod: null };
 const PLANS = {
   same_turn: [{ marker: 'PROMPT-SI-1', final: 'REPLY-SI-DONE', steps: [
-    bash('toolu_si_promote', 'orchestra promote "$ORCHESTRA_WS_ID"'),
+    bash('toolu_si_attach', `orchestra attach ${KID} "$ORCHESTRA_WS_ID"`),
     bash('toolu_si_send', `orchestra send --type status --to ${LEAD} "same-turn-379"`),
   ] }],
   app_closed: [{ marker: 'PROMPT-AC-1', final: 'REPLY-AC-DONE', steps: [
-    bash('toolu_ac_promote', 'orchestra promote "$ORCHESTRA_WS_ID"'),
-    // The app goes away BETWEEN the promote and the next tool call (the model's next request is answered after promote's reply).
+    bash('toolu_ac_attach', `orchestra attach ${KID} "$ORCHESTRA_WS_ID"`),
+    // The app goes away BETWEEN the attach and the next tool call (the model's next request is answered after attach's reply).
     bash('toolu_ac_send', `orchestra send --type status --to ${LEAD} "app-closed-379"`, () => { facts.hookSock = hooksRef.mod.getHookSocketPath(); hooksRef.mod.stopHooksServer(); }),
     bash('toolu_ac_check', 'orchestra check'),
   ] }],
@@ -332,7 +333,7 @@ const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.t
 busRef.initBus();
 if (!busRef.getBus()) throw new Error('bus failed to open');
 if (!String(busRef.busPath()).startsWith(root)) throw new Error(`SAFETY: bus resolved outside the scratch root: ${busRef.busPath()}`);
-const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);       // registers the REAL delivery seam (promote's `sdkSessionLive`)
+const sdk = await import(`${REPO}/src/main/agent-sdk.ts`);       // registers the REAL delivery seam (the reconcile's `sdkSessionLive`)
 const keeper = await import(`${REPO}/src/main/keeper-client.ts`);
 const hooks = await import(`${REPO}/src/main/hooks-server.ts`);
 hooksRef.mod = hooks;
@@ -351,6 +352,10 @@ if (!resuming) {
   // so a session spawned now bakes generation 1 — what a 2nd replacement's zombie carries (master only fences from the 2nd replacement on).
   const coordinator = arm === 'restart_window';
   await store.upsertWorkspace({ id: MEMBER, name: coordinator ? 'orchestrator · si member' : 'scratch · si member', branch: 'si-member', kind: coordinator ? 'orchestrator' : 'scratch', repoPath: '', worktreePath: repoDir, parentId: LEAD, status: 'idle', createdAt: now, hasInput: true });
+  if (arm === 'same_turn' || arm === 'app_closed') {
+    const kidDir = path.join(root, 'kid'); fs.mkdirSync(kidDir, { recursive: true });
+    await store.upsertWorkspace({ id: KID, name: 'scratch · si kid', branch: 'si-kid', kind: 'scratch', repoPath: '', worktreePath: kidDir, status: 'idle', createdAt: now });
+  }
   if (coordinator) {
     busRuns.startRun(busRef.getBus(), { id: MEMBER, kind: 'vague', coordinator: MEMBER, parentRunId: LEAD }, { ...DEFAULT_BUS_SWITCHES, fencing: true });
     busRef.bumpCoordinatorGeneration(busRef.getBus(), MEMBER);
@@ -377,7 +382,7 @@ function snapshotAt(stepId) {
 const snapNow = () => ({ procs: sessionProcs(MEMBER, keeper), sdkSessionId: store.getWorkspace(MEMBER)?.sdkSessionId ?? null });
 const firstCli = (s) => s?.procs?.cli?.[0] ?? null;
 
-/** Shared close-out of the promote-shaped arms: bus rows, tool results, identity of the processes, key + registry facts. */
+/** Shared close-out of the attach-shaped arms: bus rows, tool results, identity of the processes, key + registry facts. */
 function collectCommon(needle) {
   facts.toolResults = toolResults(api);
   facts.rows = needle ? rowsLike(needle) : [];
@@ -385,7 +390,7 @@ function collectCommon(needle) {
   facts.leadRun = runRow(LEAD);
   const end = snapNow();
   facts.end = end;
-  facts.promoteMarker = (() => { try { return fs.readFileSync(path.join(repoDir, '.orchestra', 'bus-run-stale'), 'utf8'); } catch { return null; } })();
+  facts.staleMarker = (() => { try { return fs.readFileSync(path.join(repoDir, '.orchestra', 'bus-run-stale'), 'utf8'); } catch { return null; } })();
   const cli = firstCli(end);
   const kf = keyFacts(MEMBER, cli?.pid);
   facts.env = kf.facts;
@@ -420,9 +425,9 @@ try {
   const guardHome = (f) => { for (const k of secrets) if (JSON.stringify(f).includes(k)) throw new Error('SAFETY: a fact carried the session key — refusing to print it'); };
   if (arm === 'same_turn' || arm === 'app_closed') {
     const tag = arm === 'same_turn' ? 'SI' : 'AC';
-    await turn(`PROMPT-${tag}-1 promote yourself, then send to your lead.`);
+    await turn(`PROMPT-${tag}-1 adopt a child, then send to your lead.`);
     collectCommon(arm === 'same_turn' ? 'same-turn-379' : 'app-closed-379');
-    const first = facts.steps[arm === 'same_turn' ? 'toolu_si_promote' : 'toolu_ac_promote'];
+    const first = facts.steps[arm === 'same_turn' ? 'toolu_si_attach' : 'toolu_ac_attach'];
     const second = facts.steps[arm === 'same_turn' ? 'toolu_si_send' : 'toolu_ac_send'];
     facts.noRestart = {
       keeperSame: sameIdent(first?.procs?.keeper, facts.end.procs.keeper), cliSame: sameIdent(first?.procs?.cli?.[0], facts.end.procs.cli[0]),
@@ -432,7 +437,7 @@ try {
     };
     if (arm === 'app_closed') {
       facts.hostDown = { sockFileExists: facts.hookSock ? fs.existsSync(facts.hookSock) : null, connectable: facts.hookSock ? await canConnect(facts.hookSock) : null, pointerFile: fs.existsSync(path.join(orchHome, 'sock')) };
-      facts.marker = { body: facts.promoteMarker ? facts.promoteMarker.split('\n').slice(0, 3).join(' | ').slice(0, 240) : null, newRun: /^new run:[ \t]*(\S+)/m.exec(facts.promoteMarker ?? '')?.[1] ?? null };
+      facts.marker = { body: facts.staleMarker ? facts.staleMarker.split('\n').slice(0, 3).join(' | ').slice(0, 240) : null, newRun: /^new run:[ \t]*(\S+)/m.exec(facts.staleMarker ?? '')?.[1] ?? null };
     }
   } else if (arm === 'superseded') {
     await turn('PROMPT-SUP-1 first session.');
@@ -563,7 +568,7 @@ facts.leak.runnerOutput = facts.leak.runnerOutput || finalLeak.runnerOutput;
 if (td.teardownError && !error) error = `teardown: ${td.teardownError}`;
 if (scriptErrors.length) facts.scriptErrors = scriptErrors;
 delete facts.keyHolder;
-delete facts.promoteMarker;
+delete facts.staleMarker;
 try {
   for (const k of secrets) if (JSON.stringify(facts).includes(k)) throw new Error('SAFETY: a fact carried the session key — refusing to print it');
 } catch (e) { error = String(e.message); delete facts.env; }

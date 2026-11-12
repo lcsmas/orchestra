@@ -25,7 +25,7 @@ const T = {
   cli: 'src/cli/bus-identity.test.ts', dec: 'src/shared/reparent-run.test.ts', runs: 'src/main/bus-runs.test.ts', sbx: 'src/main/sandbox-pause-wiring.test.ts',
   rrb: 'src/main/reparent-run-binding.test.ts',
 };
-// #440: the promote rig (scripts/verify-promote-run-refresh.mjs) drove the removed promote verb and is retired; the mutants it also killed keep their unit killers (a port of its arms to `attach` is tracked in the #442 stale-rig sweep).
+// #440: the promote rig (scripts/verify-promote-run-refresh.mjs) drove the removed promote verb and is retired; the mutants it also killed keep their unit killers, and its real-reconcile + `/identity` arms live on as `scripts/session-identity` `same_turn` / `app_closed` (ported to `attach` in #442; run `pnpm run test:session-identity`, mutants via `--proof`).
 const KEY = (arm) => ({ script: 'scripts/e2e-keeper-session-key.mjs', kind: 'key', arm });
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` = unit files that must go red; `rig` = {script,kind[,arm]}; `cli` = rebuild the CLI bundle first. */

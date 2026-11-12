@@ -28,15 +28,15 @@ function common(f) {
 const tr = (f, id) => f.toolResults?.[id];
 const rcOk = (r) => !!r && r.rc === '0' && r.isError === false;
 
-function promoteArm(f, tag) {
+function adoptArm(f, tag) {
   const e = f.env ?? {};
   const nr = f.noRestart ?? {};
   const sendId = `toolu_${tag}_send`;
   const out = [
     clause('a1_key_in_cli_env', e.keyLen === 64 && e.keyHex === true && e.envWsId === f.memberId, `the live CLI's env (workspace ${e.envWsId}) carries a session key of length ${e.keyLen} (want 64 hex) — ORCHESTRA_SESSION_KEY absent`),
-    clause('a2_env_stale_after_promote', e.envRunId === f.leadId && !!f.memberRun,
-      `CLI env ORCHESTRA_RUN_ID=${e.envRunId} (want the LEAD's ${f.leadId}) · member's own run row ${f.memberRun ? 'exists' : 'MISSING — the promote did not happen'}`),
-    clause('b1_promote_rc0', rcOk(tr(f, `toolu_${tag}_promote`)), `promote tool_result: ${JSON.stringify(tr(f, `toolu_${tag}_promote`))}`),
+    clause('a2_env_stale_after_attach', e.envRunId === f.leadId && !!f.memberRun,
+      `CLI env ORCHESTRA_RUN_ID=${e.envRunId} (want the LEAD's ${f.leadId}) · member's own run row ${f.memberRun ? 'exists' : 'MISSING — the attach did not happen'}`),
+    clause('b1_attach_rc0', rcOk(tr(f, `toolu_${tag}_attach`)), `attach tool_result: ${JSON.stringify(tr(f, `toolu_${tag}_attach`))}`),
   ];
   if (tag === 'si') {
     out.push(
@@ -127,8 +127,8 @@ function attachArm(f) {
 
 export function judge(arm, f) {
   const arms = {
-    same_turn: () => promoteArm(f, 'si'),
-    app_closed: () => promoteArm(f, 'ac'),
+    same_turn: () => adoptArm(f, 'si'),
+    app_closed: () => adoptArm(f, 'ac'),
     superseded: () => supersededArm(f),
     attach_keeps_key: () => attachArm(f),
     restart_window: () => restartWindowArm(f),

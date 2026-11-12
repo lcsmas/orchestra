@@ -4,8 +4,8 @@
 // EXPECT names the arm each mutant is run on and the EXACT clause set it must red (judge.mjs ids) — more or fewer is a finding.
 
 export const MUTANTS = {
-  // The host answers the PARENT's run instead of the workspace's nearest orchestrator: a promotion never reaches the session's next call (the #379 symptom, host side).
-  'host-answers-parent-run': { file: '/src/main/session-identity-host.ts', find: /      return ws \? nearestOrchestratorId\(ws, \(x\) => store\.getWorkspace\(x\)\) : null;\n/g, replace: '      return ws ? (ws.parentId ?? ws.id) : null;\n' },
+  // The host answers the PARENT's run instead of the workspace's own run (runIdOf): a run it came to own (an attach/first spawn) never reaches the session's next call (the #379 symptom, host side).
+  'host-answers-parent-run': { file: '/src/main/session-identity-host.ts', find: /      return ws \? runIdOf\(ws, \(x\) => store\.getWorkspace\(x\)\) : null;\n/g, replace: '      return ws ? (ws.parentId ?? ws.id) : null;\n' },
   // The session key is minted and registered but never handed to the CLI's env: the CLI is keyless and falls back to its baked run.
   'key-not-in-cli-env': { file: '/src/main/agent-sdk.ts', find: /    if \(opts\.sessionKey\) env\[SESSION_KEY_ENV\] = opts\.sessionKey;\n/g, replace: '' },
   // The host vouches for ANY key of a workspace that has one: a replaced session is no longer fenced (#128 lost).
