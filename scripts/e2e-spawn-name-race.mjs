@@ -61,6 +61,8 @@ initPlatform({
 const { store } = await import(`${REPO}/src/main/store.ts`);
 await (await import('./neutral-memory-guard.mjs')).neutralizeMemoryGuard(REPO);
 await store.load?.();
+// #435: a spawn with a spawner writes its task as that spawner's dispatch on the bus and is REFUSED when the bus is not open — the rig opens a real (scratch) bus.
+(await import(`${REPO}/src/main/bus.ts`)).initBus();
 const workspaces = await import(`${REPO}/src/main/workspaces.ts`);
 await import(`${REPO}/src/main/restart-workspace.ts`);
 const delivery = await import(`${REPO}/src/main/sdk-delivery.ts`);
