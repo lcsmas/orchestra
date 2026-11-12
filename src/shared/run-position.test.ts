@@ -101,6 +101,20 @@ test('MUTANT: a hook gate on ORCHESTRA_KIND re-inlined in a shell script is DIRT
   assert.equal(withTree(append('main/activity.ts', '\nconst e = `[ "\\${ORCHESTRA_KIND:-}" = "orchestrator" ] || exit 0`;\n')).clean, false);
 });
 
+test('MUTANT: reversed / switch / destructured / bracket shapes are DIRTY', () => {
+  for (const code of [
+    "const g = (w: any) => 'orchestrator' === w.kind;",
+    "const h = (w: any) => { switch (w.kind) { case 'orchestrator': return 1; } };",
+    'const i = (w: any) => { const { canOrchestrate } = w; return canOrchestrate; };',
+    "const j = (w: any) => w['canOrchestrate'];",
+  ]) assert.equal(withTree(append('main/activity.ts', `\n${code}\n`)).clean, false, code);
+});
+
+test('a marker exempts ITS line only, never the next one', () => {
+  const v = withTree(append('main/activity.ts', "\nconst k = (w: any) => w.kind === 'orchestrator'; // run-position: non-run — t\nconst l = (w: any) => w.kind === 'orchestrator';\n"));
+  assert.equal(v.clean, false);
+});
+
 test('a non-run read carrying the marker is allowed; a comment naming the flag is not a read', () => {
   const v = withTree(append('main/activity.ts', "\nconst f = (w: any) => w.kind === 'orchestrator'; // run-position: non-run — test\n// w.canOrchestrate\n"));
   assert.equal(v.clean, true);

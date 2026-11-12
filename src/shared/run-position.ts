@@ -3,6 +3,8 @@
 // read `canOrchestrate` / `kind === 'orchestrator'` to decide run membership or coordination — the
 // grep gate `scripts/check-run-position-single-reader.mjs` enforces it. #433/#434 change the BODIES
 // below, never the four frozen signatures (ledger #443 §Frozen interface).
+// OUT OF SCOPE here (behaviour-neutral, owned by #433/#434): sites that pick a coordinator from `parentId` alone —
+// bus-liveness-roster.ts, session-watchdog.ts, vague-roster.ts, admission-wake.ts `fleetMember`, naming-migration.ts `!parentId`.
 
 /** The minimal workspace shape the walks need: id, optional parent, and the two coordination fields. */
 export interface RunNode {

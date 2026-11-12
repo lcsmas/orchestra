@@ -141,7 +141,7 @@ import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
-import { coordinates, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE } from '../shared/run-position';
+import { coordinates, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -1231,7 +1231,7 @@ async function markOrchestratorWorktree(worktreePath: string, dualRole = false):
     // repo-less coordinator. Historic sentinels contain `1`, which reads as
     // not-dual — correct, since only scratch sessions could be promoted then.
     await writeFile(
-      path.join(worktreePath, '.orchestra', '.orchestrator'),
+      path.join(worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE),
       dualRole ? 'dual' : '1',
     );
   } catch {
@@ -1245,7 +1245,7 @@ async function markOrchestratorWorktree(worktreePath: string, dualRole = false):
  * fails the hooks keep firing until the next pty restart clears ORCHESTRA_KIND. */
 async function unmarkOrchestratorWorktree(worktreePath: string): Promise<void> {
   try {
-    await rm(path.join(worktreePath, '.orchestra', '.orchestrator'), { force: true });
+    await rm(path.join(worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE), { force: true });
   } catch {
     /* best-effort */
   }

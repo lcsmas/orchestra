@@ -3,7 +3,7 @@
 // (`.canOrchestrate`, `canOrchestrate(`) or the orchestrator KIND (`kind === 'orchestrator'`) to decide run
 // membership or coordination. A remaining read that is NOT such a decision (scratch-likeness, UI chip, repo
 // grouping, env/sentinel plumbing, the flag's own writes) must carry `run-position: non-run <why>` on its line
-// or the line above — so every exception is visible and reviewable.
+// — so every exception is visible and reviewable.
 //   node scripts/check-run-position-single-reader.mjs [--root <repo>] [--list]  → CLEAN (RC 0) | DIRTY (RC 1)
 //   node scripts/check-run-position-single-reader.mjs --self-test               → positive + negative control
 import fs from 'node:fs';
@@ -17,7 +17,10 @@ const PATTERNS = [
   ['.canOrchestrate', /\.canOrchestrate\b/],
   ['canOrchestrate(', /\bcanOrchestrate\(/],
   ["kind === 'orchestrator'", /\bkind\s*[!=]==?\s*['"]orchestrator['"]/],
-  ['hook ORCHESTRA_KIND gate', /ORCHESTRA_KIND:-\}"\s*=\s*"orchestrator"/],
+  ["'orchestrator' === kind", /['"]orchestrator['"]\s*[!=]==?\s*[\w.?]*\bkind\b/],
+  ["case 'orchestrator'", /\bcase\s+['"]orchestrator['"]\s*:/],
+  ['destructured/bracket canOrchestrate', /\{[^}]*\bcanOrchestrate\b[^}]*\}\s*=|\[\s*['"]canOrchestrate['"]\s*\]/],
+  ['hook ORCHESTRA_KIND gate', /ORCHESTRA_KIND:-\}"\s*=\s*"orchestrator"|ORCHESTRA_KIND[^\n]{0,20}==?\s*"?orchestrator/],
 ];
 
 function walk(dir) {
@@ -47,7 +50,7 @@ export function scan(root) {
       if (!code) return;
       for (const [kind, re] of PATTERNS) {
         if (!re.test(code)) continue;
-        const marked = line.includes(MARKER) || (i > 0 && lines[i - 1].includes(MARKER));
+        const marked = line.includes(MARKER); // same line only: a marker never exempts its neighbour
         hits.push({ file: rel, line: i + 1, kind, text: line.trim(), marked });
       }
     });
