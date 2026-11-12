@@ -96,7 +96,7 @@ import {
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
-import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure } from './bus-run-close.ts';
+import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reopenRunsById, reconcileRunClosureFromStore } from './bus-run-close.ts';
 import { isPlainOwnAnchor } from '../shared/run-position.ts';
 import {
   decideReparentAction,
@@ -623,14 +623,27 @@ export function createOrchestratorWorkspace(): Promise<Workspace> {
 /** #437 — a run closes with its coordinator: archive / delete / orphan-prune close the runs `ids` coordinate; unarchive (and a
  *  session start of a live workspace) reopens them. Best-effort (D1): no bus or a throwing write is a log line, never a failure of
  *  the archive/delete — the app-start `reconcileRunClosureAtStart` repairs a dropped write. */
-function closeRunsOf(ids: readonly string[]): void {
+function closeRunsOf(ids: readonly string[]): string[] {
   const db = getBus();
-  if (!db) return;
+  if (!db) return [];
   try {
     const closed = closeRunsCoordinatedBy(db, ids);
     if (closed.length) log.info(`bus: closed run(s) ${closed.join(', ')} (coordinator archived or deleted)`);
+    return closed;
   } catch (e) {
     log.warn(`bus: failed to close the run(s) of ${ids.join(', ')}`, e);
+    return [];
+  }
+}
+
+/** #437: a failed delete's rollback — reopen only the run ids THIS call closed (an archived coordinator's run stays closed). */
+function reopenRunIds(runIds: readonly string[]): void {
+  const db = getBus();
+  if (!db || runIds.length === 0) return;
+  try {
+    reopenRunsById(db, runIds);
+  } catch (e) {
+    log.warn(`bus: failed to reopen run(s) ${runIds.join(', ')}`, e);
   }
 }
 
@@ -650,10 +663,8 @@ function reopenRunsOf(ids: readonly string[]): void {
 export function reconcileRunClosureAtStart(): { closed: string[]; reopened: string[] } {
   const db = getBus();
   if (!db) return { closed: [], reopened: [] };
-  const r = reconcileRunClosure(db, (id) => {
-    const w = store.getWorkspace(id);
-    return !w ? 'gone' : w.archived ? 'archived' : 'live';
-  });
+  const r = reconcileRunClosureFromStore(db, (id) => store.getWorkspace(id), store.workspaces.length);
+  if (r.skipped) log.warn('bus: run closure reconcile skipped — the store holds 0 workspaces but the bus has open runs');
   if (r.closed.length || r.reopened.length) log.info(`bus: run closure reconciled — closed ${r.closed.length}, reopened ${r.reopened.length}`);
   return r;
 }
@@ -889,11 +900,11 @@ export function reportAdmissionFailure(wsId: string, text: string): void {
 export async function deleteWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
-  closeRunsOf([id]); // #437: first — mail to a coordinator being deleted is refused for the whole (slow) teardown
+  const closedRuns = closeRunsOf([id]); // #437: first — mail to a coordinator being deleted is refused for the whole (slow) teardown
   try {
     await teardownWorkspace(ws);
   } catch (e) {
-    reopenRunsOf([id]); // #437: the delete failed — the workspace stays, so does its run
+    reopenRunIds(closedRuns); // #437: the delete failed — the workspace stays, so do the runs THIS call closed
     throw e;
   }
   await store.removeWorkspace(id);
@@ -918,7 +929,8 @@ export async function deleteWorkspaces(
   let done = 0;
   // Tombstone EVERY id before the first (slow) teardown: a wake on B must not start a keeper while A tears down.
   for (const ws of targets) forbidKeeperLaunch(ws.id);
-  closeRunsOf(targets.map((w) => w.id)); // #437: every run these coordinate closes before the first (slow) teardown
+  const closedByCall = new Map<string, string[]>(); // coordinator id → the runs THIS call closed
+  for (const w of targets) closedByCall.set(w.id, closeRunsOf([w.id])); // #437: every run these coordinate closes before the first (slow) teardown
   try {
     for (const ws of targets) {
       await teardownWorkspace(ws);
@@ -926,7 +938,7 @@ export async function deleteWorkspaces(
       onProgress?.(++done, targets.length);
     }
   } catch (e) {
-    reopenRunsOf(targets.filter((w) => !removed.includes(w.id)).map((w) => w.id)); // #437: the ones not torn down keep their runs
+    reopenRunIds(targets.filter((w) => !removed.includes(w.id)).flatMap((w) => closedByCall.get(w.id) ?? [])); // #437: the ones not torn down keep the runs THIS call closed
     throw e;
   }
   if (removed.length === 0) return;

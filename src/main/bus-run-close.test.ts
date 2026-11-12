@@ -12,7 +12,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openBus, send, openGate, getGate, openGatesForRecipientAllRuns, type BusDb } from './bus.ts';
 import { startRun, getRun, runFlags, busStatusRunView } from './bus-runs.ts';
-import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure, closedRunIds, isGateRunClosed, type CoordinatorState } from './bus-run-close.ts';
+import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure, closedRunIds, isGateRunClosed, reopenRunsById, coordinatorStateOf, reconcileRunClosureFromStore, type CoordinatorState } from './bus-run-close.ts';
 import { startRunsForParentless, type BusRunAnchorDeps } from './bus-run-anchor.ts';
 import { readPendingReaders } from './bus-wake.ts';
 import { liveFleetRuns, memoryPausedRuns } from './pause-memory.ts';
@@ -333,6 +333,48 @@ test('#437 the Pause carrier reads (re-arm, soft escalation, usage-limit and mem
   assert.deepEqual(reads(), { active: [], soft: [], auto: [], memory: [] }, 'a closed run is in none of them');
 });
 
+// ─── the app-start reconcile fed by a store (mapping + floor) and the failed-delete rollback ──────────────────────────────────
+
+test('#437 reconcile from the STORE: live coordinators stay open, archived / absent ones close — never the reverse', (t) => {
+  const w = world(t);
+  const GONE = 'bbbbbbbb-0000-4000-8000-0000000000fe';
+  startRun(w.db, { id: GONE, kind: 'mission', coordinator: GONE }, LIVE);
+  const recs = JSON.parse(fs.readFileSync(w.storeFile, 'utf8')).workspaces as Array<{ id: string; archived?: boolean }>;
+  recs.find((r) => r.id === OPS)!.archived = true;
+  const byId = new Map(recs.map((r) => [r.id, r]));
+  assert.equal(coordinatorStateOf(undefined), 'gone');
+  assert.equal(coordinatorStateOf({ archived: true }), 'archived');
+  assert.equal(coordinatorStateOf({}), 'live');
+  const r = reconcileRunClosureFromStore(w.db, (id) => byId.get(id), recs.length);
+  assert.equal(r.skipped, false);
+  assert.deepEqual(r.closed.sort(), [GONE, OPS].sort());
+  assert.equal(closedAt(w, LEAD), null, 'a LIVE coordinator\'s run is never closed');
+  assert.equal(closedAt(w, T1), null);
+  assert.notEqual(closedAt(w, OPS), null);
+  byId.get(OPS)!.archived = false; // unarchived in the store, reopen dropped
+  assert.deepEqual(reconcileRunClosureFromStore(w.db, (id) => byId.get(id), recs.length).reopened, [OPS]);
+});
+
+test('#437 reconcile floor: a store that parsed with 0 workspaces never closes the bus\'s open runs (restored / empty store.json)', (t) => {
+  const w = world(t);
+  const before = [...closedRunIds(w.db)];
+  const r = reconcileRunClosureFromStore(w.db, () => undefined, 0);
+  assert.deepEqual({ closed: r.closed, reopened: r.reopened, skipped: r.skipped }, { closed: [], reopened: [], skipped: true });
+  assert.deepEqual([...closedRunIds(w.db)], before, 'no run closed');
+  // control: the same lookup with a NON-empty store does close (the floor, not the lookup, protected them)
+  assert.ok(reconcileRunClosureFromStore(w.db, () => undefined, 1).closed.length > 0);
+});
+
+test('#437 failed-delete rollback reopens ONLY the runs this call closed (an archived coordinator\'s run stays closed)', (t) => {
+  const w = world(t);
+  closeRunsCoordinatedBy(w.db, [OPS]); // archived earlier: OPS's run is already closed
+  const thisCall = closeRunsCoordinatedBy(w.db, [OPS, T1]); // the delete's own close: OPS is a no-op, T1 closes
+  assert.deepEqual(thisCall, [T1]);
+  reopenRunsById(w.db, thisCall); // the rollback (workspaces.ts `reopenRunIds`)
+  assert.equal(closedAt(w, T1), null, 'the run THIS call closed is back');
+  assert.notEqual(closedAt(w, OPS), null, 'the archived coordinator\'s run stays closed');
+});
+
 // ─── wiring of the Electron-only paths (source-level: workspaces.ts cannot load under node --test) ─────────────────────────────
 
 const read = (p: string): string => fs.readFileSync(path.join(repoRoot, p), 'utf8');
@@ -350,17 +392,17 @@ test('#437 wiring: every archive / delete path closes, unarchive and a session s
   assert.match(fnBody(WS, 'export async function archiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+closeRunsOf\(\[ws\.id\]\);/, 'archive (UI, mobile, subtree) closes the run each archived workspace coordinates, after its store write');
   assert.match(fnBody(WS, 'export async function unarchiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+reopenRunsOf\(\[ws\.id\]\);/, 'unarchive reopens');
   const del = fnBody(WS, 'export async function deleteWorkspace(');
-  assert.match(del, /closeRunsOf\(\[id\]\);[^\n]*\n\s+try \{\n\s+await teardownWorkspace\(ws\);\n\s+\} catch \(e\) \{\n\s+reopenRunsOf\(\[id\]\);/, 'delete (UI + CLI /deleteWorkspace route through it) closes BEFORE the teardown and reopens if it fails');
+  assert.match(del, /const closedRuns = closeRunsOf\(\[id\]\);[^\n]*\n\s+try \{\n\s+await teardownWorkspace\(ws\);\n\s+\} catch \(e\) \{\n\s+reopenRunIds\(closedRuns\);/, 'delete (UI + CLI /deleteWorkspace route through it) closes BEFORE the teardown and reopens if it fails');
   const bulk = fnBody(WS, 'export async function deleteWorkspaces(');
-  assert.match(bulk, /closeRunsOf\(targets\.map\(\(w\) => w\.id\)\);[^\n]*\n\s+try \{/, 'bulk delete closes every target before the first teardown');
-  assert.match(bulk, /\} catch \(e\) \{\n\s+reopenRunsOf\(targets\.filter/, 'and reopens those not torn down when one fails');
+  assert.match(bulk, /for \(const w of targets\) closedByCall\.set\(w\.id, closeRunsOf\(\[w\.id\]\)\);[^\n]*\n\s+try \{/, 'bulk delete closes every target before the first teardown');
+  assert.match(bulk, /\} catch \(e\) \{\n\s+reopenRunIds\(targets\.filter\(\(w\) => !removed\.includes\(w\.id\)\)\.flatMap\(\(w\) => closedByCall\.get\(w\.id\) \?\? \[\]\)\);/, 'and reopens only the runs THIS call closed, for those not torn down, when one fails');
   assert.match(fnBody(WS, 'export async function pruneOrphanedWorkspaces('), /closeRunsOf\(\[ws\.id\]\);[^\n]*\n\s+await store\.removeWorkspace\(ws\.id\);/, 'an out-of-band removal is a delete');
   assert.match(fnBody(WS, 'export function ensureRunOpen('), /if \(!\(store\.getWorkspace\(ws\.id\) \?\? ws\)\.archived\) reopenRunsOf\(\[ws\.id\]\);/, 'a session start reopens only for a workspace the STORE says is not archived');
   const hg = fnBody(read('src/main/human-gates.ts'), 'export function resolveHumanGate(');
   assert.ok(hg.indexOf('isGateRunClosed(db, gateBefore)') > 0 && hg.indexOf('isGateRunClosed(db, gateBefore)') < hg.indexOf('resolveGate(db, gateId'), 'the human resolve refuses a closed run\'s gate BEFORE it resolves');
   assert.match(fnBody(WS, 'function closeRunsOf('), /closeRunsCoordinatedBy\(db, ids\)/);
   assert.match(fnBody(WS, 'function reopenRunsOf('), /reopenRunsCoordinatedBy\(db, ids\)/);
-  assert.match(fnBody(WS, 'export function reconcileRunClosureAtStart('), /reconcileRunClosure\(db,/);
+  assert.match(fnBody(WS, 'export function reconcileRunClosureAtStart('), /reconcileRunClosureFromStore\(db, \(id\) => store\.getWorkspace\(id\), store\.workspaces\.length\)/, 'app start feeds the pure reconcile the store + its workspace count');
   assert.match(read('src/main/agent-sdk.ts'), /ensureRunOpen\(ws\);/, 'every session start repairs a dropped reopen');
   assert.match(read('src/main/index.ts'), /if \(store\.loadedFromDisk\) try \{ reconcileRunClosureAtStart\(\);/, 'app start reconciles, gated on a store that loaded');
   // negative controls: the instrument can say NO

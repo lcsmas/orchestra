@@ -77,3 +77,31 @@ export function reconcileRunClosure(
   }).immediate();
   return { closed, reopened };
 }
+
+/** Reopen exactly these run ids (a failed delete's rollback: only the runs THIS call closed — an archived coordinator's run, closed earlier, stays closed). */
+export function reopenRunsById(db: BusDb, runIds: readonly string[]): string[] {
+  const out: string[] = [];
+  const upd = db.prepare('UPDATE runs SET closed_at = NULL WHERE id = ? AND closed_at IS NOT NULL');
+  db.transaction(() => {
+    for (const id of runIds) if (upd.run(id).changes === 1) out.push(id);
+  }).immediate();
+  return out;
+}
+
+/** The store's word on a coordinator workspace: absent → `gone`, archived → `archived`, else `live`. The ONE mapping the app-start reconcile uses. */
+export function coordinatorStateOf(w: { archived?: boolean } | undefined): CoordinatorState {
+  return !w ? 'gone' : w.archived ? 'archived' : 'live';
+}
+
+/** App-start reconcile from the workspace store. FLOOR: a store that parsed but holds 0 workspaces while the bus has open runs (an empty or
+ *  restored store.json) is not evidence that every coordinator is gone — nothing is closed (`skipped`). */
+export function reconcileRunClosureFromStore(
+  db: BusDb,
+  getWorkspace: (id: string) => { archived?: boolean } | undefined,
+  workspaceCount: number,
+): { closed: string[]; reopened: string[]; skipped: boolean } {
+  if (workspaceCount === 0 && (db.prepare('SELECT COUNT(*) AS c FROM runs WHERE closed_at IS NULL').get() as { c: number }).c > 0) {
+    return { closed: [], reopened: [], skipped: true };
+  }
+  return { ...reconcileRunClosure(db, (id) => coordinatorStateOf(getWorkspace(id))), skipped: false };
+}
