@@ -1,7 +1,7 @@
 // One session-identity arm (#379 / ADR 0008), INSIDE the session-budget containment (harness.mjs): the REAL `sdkSend` → real keeper →
 // real `claude` CLI against the local fake Anthropic API (zero tokens), the REAL hooks server on a real `$ORCHESTRA_SOCK`, the BUILT
 // `orchestra` CLI as the Bash tool's `orchestra`, a REAL bus.sqlite. The fake model is scripted to run Bash tool calls (`orchestra
-// promote`, `orchestra send`, `orchestra check`); every fact is read from ground truth (/proc, the bus db, session-keys.json, files).
+// attach` — a member adopts a child, so it owns a run —, `orchestra send`, `orchestra check`); every fact is read from ground truth (/proc, the bus db, session-keys.json, files).
 // MEASURES only — the verdict is judge.mjs. The session KEY is never printed, logged or put in a fact: only its length / sha256.
 // Last stdout line: `{"identity": {arm, facts | error}}`.
 import fs from 'node:fs';
