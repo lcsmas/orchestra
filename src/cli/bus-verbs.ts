@@ -422,7 +422,7 @@ function runMutation<T>(
 export interface SendArgs {
   kind?: string;
   to?: string | null;
-  /** #221 — the recipient's wave run id (store-derived, see `assertRecipientReachable`). */
+  /** #221 — the recipient's wave run id (store-derived, see `routeMail`). */
   toRunId?: string | null;
   thread?: string | null;
   body: string;
@@ -465,57 +465,51 @@ export const CAPABILITY_COMPLETION_KINDS: readonly string[] = ['worker_done'];
  *    branch and passes untokened even under capability=ON.
  */
 /**
- * #175 — cross-run reachability guard, shared by send/ask/gate-open.
+ * #436 — where does a message to `--to` go, and may it go there? Shared by send / ask / gate-open.
  *
- * A `--to` recipient that ANCHORS ITS OWN run (a coordinator/LEAD: `runs` row
- * with id == recipient) reads mail ONLY in runs related to that anchor
- * (own ∪ ancestors ∪ descendants — the same `getRelatedRunIds` set the check
- * verb and the wake sweep use). A message written into a run OUTSIDE that set
- * is accepted and then delivered to NOBODY: no wake ever considers the reader
- * for that run, and no `check` the recipient can run surfaces it (live
- * incident 2026-09-21: an escalation between two unrelated root missions,
- * seq 1355/1356, found only by reading the DB).
- *
- * The refusal predicate deliberately MIRRORS the read predicate — same
- * function, same set — so it refuses exactly what is provably invisible and
- * nothing else: a recipient anchoring a RELATED run (OPS↔LEAD, parent/child
- * waves) still passes. A recipient with NO run row of its own (plain member,
- * possibly freshly spawned with no cursor yet) is NOT judged — the bus alone
- * cannot prove membership either way, so that case stays permissive.
- * `human` is a #161 surface, not a workspace: skipped.
- *
- * #221 — `toRunId` (the recipient's wave run, from the store via `/resolveHandle`) proves the
- * case the bus cannot: `toRunId === to` means the recipient is its OWN anchor (no orchestrator
- * above it), so with no row it is a standalone plain workspace — same reachability rule.
- * Absent (older app) or ≠ `to` (a member of another run) → not judged, as before.
+ * A recipient reads mail only in the runs related to ITS run (own ∪ ancestors ∪ descendants — the set `check` and the wake
+ * sweep use; live incident 2026-09-21, #175: a send between two unrelated missions, filed in the sender's run, was delivered
+ * to nobody). The recipient's run is `toRunId` (host-resolved), else `--to` itself when it anchors a run row.
+ *  - the SENDER's run is related to the recipient's (or the recipient's run is unknown): unchanged — filed in the sender's run.
+ *  - UNRELATED runs: `status` and `ask` (`question`) are filed in the RECIPIENT's run, which wakes it. A `dispatch`, a decision
+ *    gate and every other kind are REFUSED: only a coordinator gives or withdraws the right to act. A recipient run with no
+ *    row is refused too (nothing would ever wake it — #155/#221).
+ * Returns the ctx the WRITE must use: the sender's own for a related recipient, else the recipient's run (not fenced — the
+ * sender coordinates nothing there). `human` (#161 all-runs surface) and no `--to` are not judged.
  */
-function assertRecipientReachable(
+export const CROSS_RUN_KINDS: readonly string[] = ['status', 'question'];
+
+function routeMail(
   ctx: BusVerbCtx,
   verb: string,
+  kind: string,
   to: string,
   toRunId?: string | null,
-): void {
-  if (to === 'human') return;
-  const anchored = !!ctx.bus.getRun(ctx.db, to);
-  if (!anchored && toRunId !== to) return; // plain member — not provable, allow
-  const related = ctx.bus.getRelatedRunIds(ctx.db, to).ids;
-  if (!related.includes(ctx.id.runId)) {
-    if (!anchored) {
-      ctx.fail(
-        `orchestra ${verb}: --to ${to} is a plain workspace outside run ${ctx.id.runId} — ` +
-          `it anchors no run and is nobody's member, so nothing would ever wake it or ` +
-          `surface this message (#221). Nothing was written. Reach it with ` +
-          `orchestra message ${to} "<text>"`,
-      );
-    }
+): BusVerbCtx {
+  if (to === 'human') return ctx;
+  const recipientRun = toRunId || (ctx.bus.getRun(ctx.db, to) ? to : null);
+  if (!recipientRun) return ctx; // the host could not place the recipient (older app) — not judgeable, as before
+  if (ctx.bus.getRelatedRunIds(ctx.db, recipientRun).ids.includes(ctx.id.runId)) return ctx;
+  const where =
+    `${to} is outside your related runs (it is in run ${recipientRun}; your run ${ctx.id.runId} is neither that run ` +
+    `nor an ancestor or descendant of it)`;
+  const label = kind === 'decision_gate' ? 'a decision gate' : kind === 'question' ? 'an ask' : `a ${kind}`;
+  if (!CROSS_RUN_KINDS.includes(kind)) {
     ctx.fail(
-      `orchestra ${verb}: --to ${to} is unreachable in run ${ctx.id.runId} — ` +
-        `that recipient anchors its own run and only reads runs related to it, ` +
-        `so nothing would ever wake it or surface this message (#175). ` +
-        `Nothing was written. Address the recipient's own run instead: ` +
-        `orchestra ${verb} --run ${to} --to ${to} ...`,
+      `orchestra ${verb}: ${label} to ${where} — refused. ` +
+        (kind === 'dispatch' || kind === 'decision_gate'
+          ? 'Only a coordinator gives or withdraws the right to act, so it never crosses unrelated runs. '
+          : 'Only a status or an ask reaches an agent outside your related runs. ') +
+        `Nothing was written. Reach it with: orchestra send --type status --to ${to} "<text>" or orchestra ask --to ${to} "<text>"`,
     );
   }
+  if (!ctx.bus.getRun(ctx.db, recipientRun)) {
+    ctx.fail(
+      `orchestra ${verb}: ${where}, and run ${recipientRun} has no row on the bus yet — nothing would wake ${to} or surface ` +
+        `this message (#155/#221). Nothing was written. The run is created when its agent's session starts or the app starts; retry then.`,
+    );
+  }
+  return { ...ctx, id: { ...ctx.id, runId: recipientRun }, generation: null, fencingOn: false };
 }
 
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
@@ -526,8 +520,8 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
     ctx.fail(`orchestra send: unknown --type ${JSON.stringify(a.kind)} (one of: ${BUS_KINDS.join(', ')})`);
   }
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
-  // #175 — refuse a provably-undeliverable cross-run --to BEFORE any write.
-  if (a.to) assertRecipientReachable(ctx, 'send', a.to, a.toRunId);
+  // #436 — route by the recipient's run (cross-run status/ask → ITS run; dispatch/gate/other refused) BEFORE any write.
+  const wctx = a.to ? routeMail(ctx, 'send', a.kind!, a.to, a.toRunId) : ctx;
 
   // #129 — capability verification BEFORE the write, so a rejected (fired)
   // completion never lands at all. Independent of #128's fence: fencing gates on
@@ -573,11 +567,11 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // write when no generation presented) and its sequence is what the receipt
   // stores. So a retried send is a no-op AND still respects the fence on its
   // first landing.
-  const sent = runMutationOutcome(ctx, a.requestId, 'send', () =>
-    fenced(ctx, 'send', () =>
-      ctx.bus.send(ctx.db, {
-        runId: ctx.id.runId,
-        sender: ctx.id.handle,
+  const sent = runMutationOutcome(wctx, a.requestId, 'send', () =>
+    fenced(wctx, 'send', () =>
+      wctx.bus.send(wctx.db, {
+        runId: wctx.id.runId,
+        sender: wctx.id.handle,
         kind: a.kind as BusMessageKind,
         body: a.body,
         recipient: a.to ?? null,
@@ -598,7 +592,7 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // which is correct: the dispatcher already received it on the first, non-replay
   // call; a retry that reprinted it would leak a token the caller already holds.
   if (a.kind === 'dispatch' && !sent.replayed) {
-    const minted = ctx.bus.mintCapability(ctx.db, ctx.id.runId, seq, a.to ?? null);
+    const minted = ctx.bus.mintCapability(ctx.db, wctx.id.runId, seq, a.to ?? null);
     ctx.out(`${seq}\n${minted.token}\n`);
     return;
   }
@@ -809,11 +803,10 @@ export function verbAsk(
 ): void {
   if (!to?.trim()) ctx.fail('usage: orchestra ask --to <handle> <question...>');
   if (!question.trim()) ctx.fail('orchestra ask: the question is empty');
-  // #175 — an ask to an unreachable recipient parks a question nobody is ever
-  // woken for (same void as send; the re-wake-until-answered loop never arms).
-  assertRecipientReachable(ctx, 'ask', to!, toRunId);
+  // #436 — an ask to a recipient in an UNRELATED run is filed in ITS run (the wake + re-wake-until-answered arm there).
+  const wctx = routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);
   const seq = ctx.bus.send(ctx.db, {
-    runId: ctx.id.runId,
+    runId: wctx.id.runId,
     sender: ctx.id.handle,
     kind: 'question',
     body: question,
@@ -905,10 +898,9 @@ export function verbGate(
     }
     const question = to.rest.join(' ');
     if (!question.trim()) ctx.fail('usage: orchestra gate open [--to <recipient>] <question...>');
-    // #175 — same reachability rule as send/ask. #158 widened gate READS to
-    // related runs only, so an unrelated-run recipient still never sees it.
-    // A gate with no --to wakes nobody by design and is not judged.
-    if (to.value?.trim()) assertRecipientReachable(ctx, 'gate open', to.value.trim(), toRunId);
+    // #436 — a gate (a ruling = the right to act) never crosses unrelated runs: refused with the reason. #158 widened gate
+    // READS to related runs only. A gate with no --to wakes nobody by design and is not judged.
+    if (to.value?.trim()) routeMail(ctx, 'gate open', 'decision_gate', to.value.trim(), toRunId);
     const gateId = ctx.bus.openGate(
       ctx.db,
       ctx.id.runId,

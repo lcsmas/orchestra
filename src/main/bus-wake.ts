@@ -293,6 +293,11 @@ function logWakeableTransition(reader: string, next: 'active' | SkipReason): voi
 
 // ─── Reading pending state from the bus ────────────────────────────────────
 
+/** #436 — where an ANSWER to a question may sit: the question's own run, or a run OUTSIDE the reader's related set (one `?` = the related-id
+ *  JSON). An ask to an unrelated agent is filed in ITS run, and the reply is filed in the ASKER's run (the only one the asker reads) — without
+ *  this arm the answered question would keep waking its recipient forever (#185 storm shape). In-fleet replies sit in a related run: unchanged. */
+export const ANSWER_RUN_SQL = '(r.run_id = q.run_id OR r.run_id NOT IN (SELECT value FROM json_each(?)))';
+
 /**
  * Compute, for every reader we could wake, whether it has PENDING state.
  *
@@ -372,7 +377,7 @@ export function readPendingReaders(
        AND q.kind = 'question' AND q.recipient = ?
        AND NOT EXISTS (
          SELECT 1 FROM messages r
-          WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+          WHERE ${ANSWER_RUN_SQL} AND r.thread_id = CAST(q.sequence AS TEXT)
             AND r.sender = q.recipient AND r.recipient = q.sender
        )
      ORDER BY q.sequence DESC
@@ -404,7 +409,7 @@ export function readPendingReaders(
          AND q.kind = 'question' AND q.recipient = ?
          AND NOT EXISTS (
            SELECT 1 FROM messages r
-            WHERE r.run_id = q.run_id AND r.thread_id = CAST(q.sequence AS TEXT)
+            WHERE ${ANSWER_RUN_SQL} AND r.thread_id = CAST(q.sequence AS TEXT)
               AND r.sender = q.recipient AND r.recipient = q.sender
          )
     )
@@ -424,7 +429,7 @@ export function readPendingReaders(
     const lot = lotRows.get(runSetJson, runId, reader, reader, runId, reader, reader) as
       | { run_id: string; seq: number }
       | undefined;
-    const q = questionRows.get(runSetJson, reader) as
+    const q = questionRows.get(runSetJson, reader, runSetJson) as
       | { run_id: string; seq: number }
       | undefined;
     const hi = Number(lot?.seq ?? 0);
@@ -452,7 +457,7 @@ export function readPendingReaders(
     // The FULL set of runs with pending mail — the wake order names them all (D2).
     const pendingRunIds =
       pendingThroughSeq > 0
-        ? (pendingRunSet.all(runSetJson, runId, reader, reader, runId, reader, reader, runSetJson, reader) as {
+        ? (pendingRunSet.all(runSetJson, runId, reader, reader, runId, reader, reader, runSetJson, reader, runSetJson) as {
             run_id: string;
           }[]).map((r) => r.run_id)
         : [];
