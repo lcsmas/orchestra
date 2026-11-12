@@ -13,12 +13,12 @@
 // then re-derive → write the notice for the NEW run.
 //
 // ARMS (each with its must-FAIL):
-//   G5.1 baseline — notice for the OLD run (delivery=OFF) names delivery=OFF.
-//   G5.2 re-parent — notice re-written for the NEW run (delivery=ON) now names
-//        delivery=ON and NOT =OFF. must-FAIL (G5.mf): writing the notice for the
-//        OLD run again still names delivery=OFF — proving the arm can tell the
+//   G5.1 baseline — notice for the OLD run (wake=OFF) names wake=OFF.
+//   G5.2 re-parent — notice re-written for the NEW run (wake=ON) now names
+//        wake=ON and NOT =OFF. must-FAIL (G5.mf): writing the notice for the
+//        OLD run again still names wake=OFF — proving the arm can tell the
 //        two runs apart (a rig that always read one run would pass G5.2 vacuously).
-//   G5.3 the two notices DIFFER on delivery — the re-derive actually changed the
+//   G5.3 the two notices DIFFER on wake — the re-derive actually changed the
 //        frozen flag the agent reads (carry-forward 2/3: assert the transition,
 //        with the OLD run as the same-command positive control).
 //
@@ -161,60 +161,58 @@ async function writeNoticeForRun(runId) {
 const OLD_RUN = 'ops-old-run';
 const NEW_RUN = 'ops-new-run';
 
-// Seed BOTH runs, frozen at OPPOSITE delivery flags. The member starts under the
-// OLD OPS (delivery OFF); a re-parent moves it under the NEW OPS (delivery ON).
-console.log('\n#142 G5.1 — baseline: member under the OLD run (delivery OFF):');
+// Seed BOTH runs, frozen at OPPOSITE wake flags. The member starts under the
+// OLD OPS (wake OFF); a re-parent moves it under the NEW OPS (wake ON).
+console.log('\n#142 G5.1 — baseline: member under the OLD run (wake OFF):');
 const oldNotice = await seedRunAndWriteNotice(OLD_RUN, {
-  delivery: false,
   wake: false,
   askGate: false,
   liveness: false,
 });
-check('OLD notice names delivery=OFF', oldNotice.includes('bus switch delivery=OFF'));
-check('OLD notice does NOT name delivery=ON', !oldNotice.includes('bus switch delivery=ON'));
+check('OLD notice names wake=OFF', oldNotice.includes('bus switch wake=OFF'));
+check('OLD notice does NOT name wake=ON', !oldNotice.includes('bus switch wake=ON'));
 
-// Freeze the NEW run at delivery ON (a genuinely different frozen flag).
-await mod.store.setBusSwitches({ delivery: true, wake: false, askGate: false, liveness: false });
+// Freeze the NEW run at wake ON (a genuinely different frozen flag).
+await mod.store.setBusSwitches({ wake: true, askGate: false, liveness: false });
 mod.startRun(busDb, { id: NEW_RUN, kind: 'vague', coordinator: 'ops-new' }, {
-  delivery: true,
-  wake: false,
+  wake: true,
   askGate: false,
   liveness: false,
 });
 
-console.log('\n#142 G5.2 — re-parent: notice re-written for the NEW run (delivery ON):');
+console.log('\n#142 G5.2 — re-parent: notice re-written for the NEW run (wake ON):');
 const newNotice = await writeNoticeForRun(NEW_RUN);
-check('NEW notice names delivery=ON', newNotice.includes('bus switch delivery=ON'));
-check('NEW notice does NOT name delivery=OFF', !newNotice.includes('bus switch delivery=OFF'));
+check('NEW notice names wake=ON', newNotice.includes('bus switch wake=ON'));
+check('NEW notice does NOT name wake=OFF', !newNotice.includes('bus switch wake=OFF'));
 check(
-  'NEW notice says the bus is AUTHORITATIVE for delivery',
-  /delivery=ON — the bus is AUTHORITATIVE/.test(newNotice),
+  'NEW notice says the bus is AUTHORITATIVE for wake',
+  /wake=ON — the bus is AUTHORITATIVE/.test(newNotice),
 );
 
-console.log('\n#142 G5.3 — the transition: the two notices DIFFER on delivery:');
+console.log('\n#142 G5.3 — the transition: the two notices DIFFER on wake:');
 check(
-  'the re-parent changed the frozen delivery flag the agent reads',
-  oldNotice.includes('bus switch delivery=OFF') && newNotice.includes('bus switch delivery=ON'),
+  'the re-parent changed the frozen wake flag the agent reads',
+  oldNotice.includes('bus switch wake=OFF') && newNotice.includes('bus switch wake=ON'),
   'a re-parent that left the notice on the OLD run would show the same flag both times',
 );
 
 // ── THE MUST-FAIL CONTROL (G5.mf) ────────────────────────────────────────────
-// Re-derive back to the OLD run: the notice must return to delivery=OFF. This is
+// Re-derive back to the OLD run: the notice must return to wake=OFF. This is
 // the same-command positive control that proves G5.2 is a real MEASUREMENT — the
-// rig can tell the two runs apart, so "names delivery=ON" was not a constant.
+// rig can tell the two runs apart, so "names wake=ON" was not a constant.
 console.log('\n#142 G5.mf — MUST-FAIL control: writing for the OLD run again names OFF:');
 const backToOld = await writeNoticeForRun(OLD_RUN);
 check(
-  'writing the notice for the OLD run again names delivery=OFF (not ON)',
-  backToOld.includes('bus switch delivery=OFF') && !backToOld.includes('bus switch delivery=ON'),
+  'writing the notice for the OLD run again names wake=OFF (not ON)',
+  backToOld.includes('bus switch wake=OFF') && !backToOld.includes('bus switch wake=ON'),
   'if this still said ON, the rig would be reading one fixed run and G5.2 would be vacuous',
 );
 
 // The greps are LIVE (carry-forward 4): they matched OFF on the OLD run and ON on
 // the NEW run in this same run of the rig.
 check(
-  'the same delivery greps discriminate ON vs OFF in one execution',
-  newNotice.includes('bus switch delivery=ON') && backToOld.includes('bus switch delivery=OFF'),
+  'the same wake greps discriminate ON vs OFF in one execution',
+  newNotice.includes('bus switch wake=ON') && backToOld.includes('bus switch wake=OFF'),
 );
 
 mod.closeBus();

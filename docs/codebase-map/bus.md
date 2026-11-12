@@ -482,8 +482,11 @@ Wave A's sections above are untouched.
 
 A **read-only** pane rendering the bus (runs → waves nested, messages in total
 order, pending lots per reader, open asks/gates, liveness+phase, shadow
-divergence counters), and **four per-mechanism switches** — `delivery`, `wake`,
-`askGate`, `liveness` — read **at wave start** and **frozen onto the run row**.
+divergence counters), and **per-mechanism switches** — `wake`, `askGate`, `liveness`
+(+ the bus-v2 / Pause / relay / cap ones) — read **at wave start** and **frozen onto the run
+row**. (#441: the `delivery` switch is REMOVED — bus mail cannot be turned off; a run row
+frozen with a `delivery` key keeps it in the JSON but every reader ignores it, so pre-update
+`delivery=OFF` rows are ordinary runs with no data migration.)
 
 | File | What it is |
 |---|---|
@@ -492,7 +495,7 @@ divergence counters), and **four per-mechanism switches** — `delivery`, `wake`
 | `src/main/bus-runs.ts` | Run rows + their frozen flags; `busSwitch()` |
 | `src/main/bus-settings.ts` | The LIVE switches (store-backed) — deliberately a different module from the frozen read |
 | `src/shared/run-position.ts` | #432/#434 — the ONE module deciding run membership + coordination: `coordinates` (owns a run) / `runIdOf` (own run, else the DIRECT parent's) / `parentRunOf` (+ `coordinatorOf`, `memberRunOf`, `coordinatorRoleOf`, `isCoordinatorKind`, `isPlainOwnAnchor`, `COORDINATOR_HOOK_GATE`); guarded by `scripts/check-run-position-single-reader.mjs` |
-| `src/main/wave-run-id.ts` | thin delegates of run-position under their old names (`nearestOrchestratorId`, `nodeOrchestrates`, `parentOrchestratorId`, `parentRunTarget`, `isPlainOwnAnchor`) + `walkToRootId` (retained, not the run anchor) |
+| `src/main/wave-run-id.ts` | thin delegates of run-position under their old names (`nearestOrchestratorId`, `nodeOrchestrates`, `parentOrchestratorId`, `parentRunTarget`) + `walkToRootId` (retained, not the run anchor) |
 | `src/main/bus-pane.ts` | The read-only IPC and the snapshot assembly |
 | `src/renderer/components/BusPane.tsx` | The pane, incl. the bus-unavailable state |
 | `src/renderer/components/BusSwitchSettings.tsx` | Flipping the live switches (a WRITE, deliberately not a pane channel) |
@@ -538,7 +541,7 @@ behaved as unadopted.
 ### The contract with #117
 
 ```
-busSwitch(db, runId, 'delivery' | 'wake' | 'ask_gate' | 'liveness') -> boolean
+busSwitch(db, runId, 'wake' | 'ask_gate' | 'liveness' | …) -> boolean   // 'delivery' is an unknown name since #441: always false
 ```
 
 Note `ask_gate` (snake) on the **wire** vs `askGate` (camel) as the internal TS
@@ -629,9 +632,9 @@ CLI `send` refuses from it until restart. See `docs/codebase-map/workspaces.md`
 
 Every mechanism prints in **both** states (`busSwitchNoticeLines`,
 `src/shared/bus-switches.ts:204`), and in the **WIRE name** (`ask_gate` via
-`mechanismToWire`, not the internal `askGate` — F4): `delivery=ON — the bus is
-AUTHORITATIVE…` or `delivery=OFF — the OLD channel stays authoritative; the bus
-only COUNTS this mechanism…`. OFF is never encoded as silence, because an agent
+`mechanismToWire`, not the internal `askGate` — F4): `wake=ON — the bus is
+AUTHORITATIVE…` or `wake=OFF — the OLD channel stays authoritative; the bus
+only COUNTS this mechanism…` (no `delivery` line since #441). OFF is never encoded as silence, because an agent
 cannot distinguish an OFF switch from a build without switches from a truncated
 notice. A missing state file makes the script a **silent no-op** rather than a
 false "all off".
@@ -652,7 +655,7 @@ CONDITIONED on the switch state this notice announces, so a spawned agent obeys
 
 | Wire name (`busSwitchNoticeLines`) | `=OFF` → old channel authoritative | `=ON` → bus authoritative |
 |---|---|---|
-| `delivery` | ledger/`orchestra message` (unordered, pull-first) | `send` / `check` / `ack` (**#169 P4**: `orchestra message` is now REFUSED for coordination on a delivery-ON run — points at `orchestra send`; escapes: delivery-OFF runs + `--emergency`) |
+| ~~`delivery`~~ (#441: removed) | — | `send` / `check` / `ack` are the ONLY channel between agents; `orchestra message` is refused for every target (prints the equivalent `orchestra send`), only `--emergency` survives |
 | `wake` | self-wakeup rule (`ScheduleWakeup`) + lead ~15-min cron | host wake (Réveil); self-wakeup retired |
 | `ask_gate` | ledger §Open-questions + one-line ping | `ask` / decision gates (`gate open`/`resolve`) |
 | `liveness` | lead 15-min heartbeat cron | host-derived escalation |
@@ -2432,17 +2435,15 @@ INSERT-OR-IGNORE; a 2nd child reaches the row via the run-anchoring walk); an or
 parent, a run-anchoring parent, a plain member of an OPS, a top-level or dangling-parent
 promote are unchanged. No schema change. Existing root-mission OPS rows are NOT migrated.
 
-**#221 F1 — the plain parent LOSES NOTHING.** Giving the parent a delivery-ON run would
-have cut off its NON-member children (plain, no row, resolve to themselves). (a) The P4
-gate in `dispatchMessageRequest` skips a **plain own-anchor** (`isPlainOwnAnchor`,
-`run-position.ts`: not a coordinator AND `runIdOf === self`) **only for a
-sender WITHOUT a bus route** — the sender's run ∉ `getRelatedRunIds(parent run)`, i.e. a
-non-member child or an external caller; the OPS and its members (whose `send` reaches the
-parent) are still refused, as are an orchestrator and any member of a delivery-ON run. The
-mirrored dispatch row of an exempted `message` is NOT filed in the parent's own run when
-that run has wake=ON (`partiesRunId` undefined → host-id fallback): the row would wake the
-parent a SECOND time for a message the old channel already delivered. A row-less or
-wake-OFF plain target keeps own-run placement (its `check` still sees it, as on master).
+**#221 F1 (RETIRED by #441) — the plain-own-anchor exemption is gone.** The P4 gate used to skip a
+**plain own-anchor** (`isPlainOwnAnchor`) for a sender without a bus route, and its mirrored row
+was not filed in the parent's own run (`mirrorWouldWake`). Since every agent has a run and the
+old channel is closed (#441, `shared/message-channel-gate.ts`: `message` WITHOUT `--emergency`
+is refused for EVERY target and prints the equivalent `orchestra send --type status --to <id>
+'<text>'`), `isPlainOwnAnchor`, `senderHasBusRoute` and `mirrorWouldWake` no longer exist; an
+`--emergency` poke is mirrored into the RECIPIENT's run like any other (`bus-mirror.ts`: no
+`host-<ts>` fallback run — a recipient that resolves no run files no row and the send counts
+`missed`). Mutants `pnpm run test:old-channel-closed-mutants`, rig `pnpm run test:old-channel-closed`.
 (b) The reverse, parent→plain-child `send`, would have been accepted into a run the child
 never reads; `/resolveHandle` now carries each workspace's wave `runId` (the CLI computes
 it from `store.json` when the app is down) and `send` / `ask --to` / `gate open --to` all
@@ -2825,8 +2826,9 @@ no run (no `--run`, no `$ORCHESTRA_RUN_ID`) is refused before any bus opens with
 hits this gate. The admin verbs (`run hold|resume|pause|release|refreeze|status`, `bus-status`) resolve their target
 through `runOrFail` with the same refusal; `resolveBusIdentity` returns null when either the run or the handle is
 missing, `resolveBusHandle` gives the handle alone (the `confirm` verbs key on the caller's roster, not a run id).
-Two boot log lines (`bus-wake: started`, `bus-liveness: started`) still read a `'default'` run for their "switch ON/OFF" text —
-log-only signals, not verbs (always OFF: no such row).
+The two boot log lines (`bus-wake: started`, `bus-liveness: started`) no longer read a `'default'` run (#441):
+they print `switch ON|OFF in N of M open run(s)` from `countOpenRuns` / `openRunSwitchCount` (`bus-runs.ts`),
+each run read by its own frozen flag; the session-watchdog's default run resolver is `runIdOf` (the real run).
 
 ## Two INDEPENDENT pre-send gates, no clobber
 

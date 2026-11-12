@@ -101,7 +101,7 @@ import { pauseRefusal } from './pause-gate.ts';
 import { killKeeper } from './keeper-client';
 import { readInbox, releaseInboxBlock } from './inbox-tray';
 import { normalizePendingPrompts } from '../shared/pending-prompts.ts';
-import { coordinatorOf } from '../shared/run-position.ts';
+import { coordinatorOf, runIdOf } from '../shared/run-position.ts';
 
 // ─── Boot-heal escalation seam (issue #197) ─────────────────────────────────
 //
@@ -111,9 +111,9 @@ import { coordinatorOf } from '../shared/run-position.ts';
 // store seam — reaches the platform directory-import the strip-types test runner
 // cannot resolve, so importing it here would make this module untestable under
 // `pnpm run test`. It is INJECTED at boot (index.ts) with the real resolver; the
-// default falls back to the CLI's own `'default'` run, the coexistence-safe value
-// (a `busSwitch` for an unknown run reads OFF → counted, never a wrong-run fire).
-let resolveRunId: (ws: Workspace) => string = () => 'default';
+// default is the REAL run of the workspace (`runIdOf`, #441: the row-less `'default'` run is gone — every agent has a run).
+const realRunOf = (ws: Workspace): string => runIdOf(ws, (id) => store.getWorkspace(id));
+let resolveRunId: (ws: Workspace) => string = realRunOf;
 
 /** Wire the wave-run resolver (index.ts) or a rig's. */
 export function setBootWedgeRunResolver(fn: (ws: Workspace) => string): void {
@@ -850,5 +850,5 @@ export function __resetSessionWatchdogForTests(since: number = Date.now()): void
   stoodDown.clear();
   bootRestartLedger.clear();
   bootEscalated.clear();
-  resolveRunId = () => 'default';
+  resolveRunId = realRunOf;
 }

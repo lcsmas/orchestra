@@ -66,14 +66,6 @@ export function isTopLevel(ws: Pick<RunNode, 'parentId'>, lookup: RunLookup): bo
   return !ws.parentId || !lookup(ws.parentId);
 }
 
-/** #221 — `ws` is a plain TOP-LEVEL workspace: no parent to coordinate it (none set, or a dangling link) and not the orchestrator KIND. It owns a
- *  mission (#433) but stays reachable by `orchestra message` for a sender with NO bus route until #441/#436 close the old channel; whether it
- *  has already spawned (`ownsRun`) does not matter — the same answer as before #434. */
-export function isPlainOwnAnchor(ws: RunNode & { canOrchestrate?: boolean }, lookup: RunLookup): boolean {
-  // a PROMOTED top-level worktree (the capability flag, still recorded until #440) is a LEAD like the orchestrator kind: never exempt
-  return !isCoordinatorKind(ws) && ws.canOrchestrate !== true && isTopLevel(ws, lookup);
-}
-
 /** The nearest coordinating (or run-anchoring) ancestor id strictly above `ws`, or null — `parentRunOf` WITHOUT the implicit
  *  fallback: since #434 only the DIRECT parent counts. */
 export function ancestorCoordinatorId(ws: RunNode, lookup: RunLookup, anchorsRun?: (id: string) => boolean): string | null {

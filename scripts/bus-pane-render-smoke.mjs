@@ -134,7 +134,7 @@ const READER = 'reader-handle-6620';
 bus.startRun(
   db,
   { id: RUN_MISSION, kind: 'mission', coordinator: COORD, title: 'Seeded mission 7731' },
-  { delivery: true, wake: false, askGate: true, liveness: false },
+  { fencing: true, wake: false, askGate: true, liveness: false },
 );
 bus.startRun(
   db,
@@ -145,7 +145,7 @@ bus.startRun(
     parentRunId: RUN_MISSION,
     title: 'Seeded wave 4412',
   },
-  { delivery: false, wake: true, askGate: false, liveness: true },
+  { fencing: false, wake: true, askGate: false, liveness: true },
 );
 
 const s1 = bus.send(db, {
@@ -235,7 +235,7 @@ const members = [
   },
 ];
 const counters = [
-  { mechanism: 'delivery', missed: 41, duplicate: 7, lostWake: 0 },
+  { mechanism: 'peer-message', missed: 41, duplicate: 7, lostWake: 0 },
   { mechanism: 'wake', missed: 0, duplicate: 0, lostWake: 13 },
 ];
 
@@ -243,7 +243,7 @@ const SEEDED = {
   available: true,
   error: null,
   path: dbFile,
-  liveSwitches: { delivery: true, wake: false, askGate: false, liveness: true },
+  liveSwitches: { fencing: true, wake: false, askGate: false, liveness: true },
   runs,
   selectedRunId: RUN_WAVE,
   messages,
@@ -260,7 +260,7 @@ const EMPTY = {
   available: true,
   error: null,
   path: dbFile,
-  liveSwitches: { delivery: false, wake: false, askGate: false, liveness: false },
+  liveSwitches: { fencing: false, wake: false, askGate: false, liveness: false },
   runs: [],
   selectedRunId: null,
   messages: [],
@@ -319,21 +319,21 @@ mustDiscriminate('member phase', (h) => h.includes('escalation'));
 mustDiscriminate('pending lot rendered', (h) => /lot \d+ · 2 pending/.test(h));
 mustDiscriminate('divergence counter missed=41', (h) => h.includes('>41<'));
 mustDiscriminate('divergence counter lostWake=13', (h) => h.includes('>13<'));
-// SCOPED TO THE COUNTER ROW. The unscoped form — `data-mechanism="delivery"`
+// SCOPED TO THE COUNTER ROW. The unscoped form — `data-mechanism="peer-message"`
 // alone — was VACUOUS and the detector above caught it: the live-switch summary
 // emits the same attribute on every render, so it was true on an empty bus too.
 // Key on the counter row's own class instead.
 mustDiscriminate('counter mechanism attr', (h) =>
-  /class="bus-counter"[^>]*data-mechanism="delivery"/.test(h),
+  /class="bus-counter"[^>]*data-mechanism="peer-message"/.test(h),
 );
 
 // The FROZEN flags, rendered per run. This is the visible half of T118.2: the
 // two seeded runs disagree, and both disagreements must be on screen.
 console.log('\nT118.2 (visible half) — each run shows its OWN frozen flags:');
 check(
-  'mission shows delivery=ON',
-  seededHtml.includes('delivery=ON'),
-  'the mission was frozen with delivery ON',
+  'mission shows fencing=ON',
+  seededHtml.includes('fencing=ON'),
+  'the mission was frozen with fencing ON',
 );
 check(
   'wave shows wake=ON',
@@ -341,13 +341,13 @@ check(
   'the wave was frozen with wake ON',
 );
 check(
-  'wave shows delivery=OFF (the OPPOSITE string, not silence)',
-  seededHtml.includes('delivery=OFF'),
+  'wave shows fencing=OFF (the OPPOSITE string, not silence)',
+  seededHtml.includes('fencing=OFF'),
   'an OFF flag must print its own state',
 );
 check(
   'a frozen-state attribute is emitted for every mechanism',
-  ['delivery', 'wake', 'askGate', 'liveness'].every((m) =>
+  ['fencing', 'wake', 'askGate', 'liveness'].every((m) =>
     seededHtml.includes(`data-mechanism="${m}"`),
   ),
 );

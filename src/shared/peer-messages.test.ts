@@ -7,14 +7,17 @@ import {
   describePeerRun,
   peerOriginLabel,
   recognizeFormattedPeerMessage,
+  formatPeerMessage,
 } from './peer-messages.ts';
 
 // The EXACT envelope src/shared/peer-messages.ts `formatPeerMessage` emits. Kept
 // byte-identical here on purpose: if the formatter's wording ever changes, this
 // fixture stops matching and the backfill test below fails loudly — which is the
 // only warning the scoped textual recognizer can get.
-// #169 P4 — the CURRENT footer is bus-first (`orchestra send … — or … message …`).
-const formatted = (branch: string, id: string, body: string) =>
+// #441 — the CURRENT footer names ONE reply command (`orchestra send`); the #169 two-alternative footer and the pre-#169 one are still
+// recognised for the transcripts already on disk (backfill).
+const formatted = (branch: string, id: string, body: string) => formatPeerMessage(branch, id, body);
+const twoAlternativeFormatted = (branch: string, id: string, body: string) =>
   `[message from agent '${branch}' (${id})]\n${body}\n\n` +
   `Reply with: orchestra send --type status --to ${id} "<reply>" ` +
   `(bus run) — or orchestra message ${id} "<reply>" on a legacy delivery-OFF run`;
@@ -130,4 +133,21 @@ test('end-to-end: a formatted delivery becomes a collapsible row, a human turn d
   // CONTROL, same assertions, on a human turn.
   const human = { role: 'user', text: 'ping' };
   assert.equal(isPeerMessage(human), false);
+});
+
+test('#441 the reply footer of an incoming message names ONE reply command — the bus; no `orchestra message`, no legacy / delivery wording', () => {
+  const out = formatPeerMessage('fix-login-race', 'ws-abc', 'STATUS: gates green');
+  const footer = out.slice(out.indexOf('Reply with:'));
+  assert.equal(footer, 'Reply with: orchestra send --type status --to ws-abc "<reply>"');
+  assert.equal((out.match(/Reply with:/g) ?? []).length, 1, 'one footer');
+  assert.ok(!/orchestra message|legacy|delivery|— or /i.test(out), `no second alternative: ${out}`);
+});
+
+test('#441 backfill: the CURRENT one-command footer, the #169 two-alternative footer and the pre-#169 footer all strip to the same body', () => {
+  for (const make of [formatted, twoAlternativeFormatted, legacyFormatted]) {
+    const got = recognizeFormattedPeerMessage(make('fix-login-race', 'ws-abc', 'STATUS: gates green'));
+    assert.ok(got);
+    assert.equal(got.body, 'STATUS: gates green');
+    assert.equal(got.origin.from, 'ws-abc');
+  }
 });

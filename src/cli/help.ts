@@ -14,7 +14,7 @@ export interface CommandHelp {
 const GROUPS = [
   'Workspaces',
   'Fleet bus',
-  'Legacy messaging',
+  'Emergency messaging',
   'Structure',
   'Tickets',
   'Browser',
@@ -347,18 +347,19 @@ effect. Read-only.`,
 Default run: $ORCHESTRA_RUN_ID (none otherwise: pass --run). hold/pause/resume/release refuse a run with no row.`,
   },
 
-  // ── Legacy messaging ──────────────────────────────────────────────────
+  // ── Emergency messaging ──────────────────────────────────────────────────
   {
     name: 'message',
-    group: 'Legacy messaging',
-    summary: "Send a prompt to a workspace (legacy; prefer 'send' on a bus run)",
+    group: 'Emergency messaging',
+    summary: "Push text into a workspace's session — refused; only --emergency works ('send' is the channel)",
     detail: `usage: orchestra message [--emergency] <id> <text...>
        orchestra message [--emergency] --children <text...>
        orchestra message [--emergency] --to <id,id,...> <text...>
 
-Send a prompt straight into a workspace's session. LEGACY channel: for fleet
-coordination on a bus run use 'orchestra send'. Refused toward a delivery-ON
-target unless --emergency is the leading token.
+Push a prompt straight into a workspace's session. The bus is the only channel
+between agents: without --emergency this is REFUSED for every target and prints
+the equivalent 'orchestra send --type status --to <id> <text>'. --emergency (the
+leading token) is for a reader that no longer reads its mail.
   --children   broadcast to your DIRECT children (not the whole subtree)
   --to <ids>   broadcast to an explicit list
 Broadcast forms print one delivery line PER TARGET and exit non-zero if ANY

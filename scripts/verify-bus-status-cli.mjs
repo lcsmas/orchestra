@@ -126,8 +126,8 @@ try {
     runId: 'host-should-not-print',
     echoDisplayRunId: true,
     busAvailable: true,
-    frozenFlags: JSON.stringify({ delivery: true, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false }),
-    liveFlags: JSON.stringify({ delivery: true, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false }),
+    frozenFlags: JSON.stringify({ wake: false, askGate: false, liveness: true, fencing: false, capability: false, receipts: false }),
+    liveFlags: JSON.stringify({ wake: true, askGate: false, liveness: true, fencing: false, capability: false, receipts: false }),
     counters: [
       { mechanism: 'peer-message', missed: 7, duplicate: 3, lostWake: 11 },
       { mechanism: 'inbox-file', missed: 0, duplicate: 0, lostWake: 0 },
@@ -137,10 +137,10 @@ try {
   // G8 — the CLI prints the WAVE run id it resolved, never the host mirror id.
   check('prints the WAVE run id', /run:\s*wave-alpha/.test(out), out);
   check('does NOT print the host mirror id', !out.includes('host-should-not-print'), out);
-  // #134 — frozen vs live flag table: delivery frozen ON, wake frozen OFF but
+  // #134 — frozen vs live flag table: liveness frozen ON, wake frozen OFF but
   // live ON (the freeze holds against a mid-wave flip).
-  const drow = out.split('\n').find((l) => /(^|\s)delivery(\s|$)/.test(l)) ?? '';
-  check('delivery row shows frozen ON + live ON', /ON/.test(drow) && !/OFF/.test(drow), drow);
+  const drow = out.split('\n').find((l) => /(^|\s)liveness(\s|$)/.test(l)) ?? '';
+  check('liveness row shows frozen ON + live ON', /ON/.test(drow) && !/OFF/.test(drow), drow);
   const wrow = out.split('\n').find((l) => /(^|\s)wake(\s|$)/.test(l)) ?? '';
   check('wake row shows frozen OFF, live ON (freeze visible)', /OFF/.test(wrow) && /ON/.test(wrow), wrow);
   check('ask_gate printed as the WIRE name', /ask_gate/.test(out), out);

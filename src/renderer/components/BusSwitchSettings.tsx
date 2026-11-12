@@ -14,8 +14,6 @@ interface Props {
 
 /** What each mechanism means when its switch is ON, in the settings row. */
 const MECHANISM_DESC: Record<BusMechanism, string> = {
-  delivery:
-    'Messages are handed out as lots from the bus and acked by the reader, instead of through the inbox files. While OFF the bus records what would have been delivered.',
   wake: 'An insert on the bus wakes an idle reader with a “run orchestra check” turn. While OFF no turn is started and the missed wake is counted.',
   askGate:
     'Asks and decision gates are parked on the bus and resolved there. While OFF the ledger stays the place a ruling is recorded.',
@@ -99,8 +97,8 @@ export function BusSwitchSettings({ onClose }: Props) {
           One switch per mechanism. <strong>Switches are read at wave start and
           frozen for the run</strong> — flipping one here never changes a run
           already in flight; the next run picks it up. While a switch is OFF the
-          old channel stays authoritative and the bus only <em>counts</em> the
-          mechanism.
+          mechanism is not fired and the bus only <em>counts</em> it. Bus mail
+          itself has no switch: it cannot be turned off.
         </div>
         <div className="sound-list">
           {BUS_MECHANISMS.map((m) => (

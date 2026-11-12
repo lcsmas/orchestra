@@ -73,6 +73,8 @@
     "test:admission-wake": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-wake.mjs",
     "test:top-level-run-mutants": "node scripts/top-level-run-mutants.mjs",
     "test:mail-strangers-mutants": "node scripts/mail-strangers-mutants.mjs",
+    "test:old-channel-closed": "pnpm run build:cli && node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-old-channel-closed.mjs",
+    "test:old-channel-closed-mutants": "node scripts/old-channel-closed-mutants.mjs",
     "test:run-close-mutants": "node scripts/run-close-mutants.mjs",
     "test:admission-mutants": "node scripts/admission-mutants.mjs",
     "test:reliquats-shot": "bash scripts/e2e-contained-rig.sh node scripts/reliquats-screenshot.mjs",

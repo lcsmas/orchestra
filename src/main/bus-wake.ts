@@ -41,7 +41,7 @@ import {
   coordinatorGeneration,
   type BusDb,
 } from './bus.ts';
-import { getRelatedRunIds } from './bus-runs.ts';
+import { countOpenRuns, getRelatedRunIds } from './bus-runs.ts';
 import { closedRunIds } from './bus-run-close.ts';
 import { log } from './logger.ts';
 import { createWatcher } from './watchers.ts';
@@ -1041,21 +1041,21 @@ export function armBusWalWatcher(): void {
 }
 
 /** Start the wake subsystem (idempotent). Does NOT bind the switch value: the
- *  one `readWakeSwitch('default')` below is a shipped-state SIGNAL for the boot
- *  gate only — every sweep reads the flag per-run, per-sweep (ledger #123 Q1). */
+ *  open-run census below is a shipped-state SIGNAL for the boot gate only —
+ *  every sweep reads the flag per-run, per-sweep (ledger #123 Q1; #441: no row-less `'default'` run is read). */
 export function startBusWake(): void {
   if (timer) return;
   started = true;
-  // The line the packaged boot gate asserts. It reports the DEFAULT run's flag
-  // purely as a shipped-state signal for that gate; it is NOT the value any
-  // sweep uses, because each reader's flag is read from its own run row.
-  let defaultOn = false;
+  // The line the packaged boot gate asserts: how many OPEN runs freeze `wake` ON — a shipped-state signal only; it is NOT
+  // the value any sweep uses, because each reader's flag is read from its own run row.
+  let census = { on: 0, total: 0 };
   try {
-    defaultOn = readWakeSwitch('default');
+    const db = readBusDb();
+    if (db) census = countOpenRuns(db, (id) => readWakeSwitch(id));
   } catch {
     /* an unreadable switch is OFF — the sweep logs its own warning */
   }
-  log.info(`bus-wake: started (switch ${defaultOn ? 'ON — firing' : 'OFF — counting only'})`);
+  log.info(`bus-wake: started (switch ${census.on > 0 ? 'ON — firing' : 'OFF — counting only'} in ${census.on} of ${census.total} open run(s); each run reads its own frozen flag)`);
 
   // The startup sweep is half of what makes this level-triggered: it is what
   // fires a wake for an insert that landed while the app was closed (#117

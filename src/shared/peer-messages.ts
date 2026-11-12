@@ -81,14 +81,11 @@ export function peerSender(m: { origin?: string }): string {
 
 /** The text a peer receives (#420: a bloc HTML reaches it as its title). */
 export function formatPeerMessage(fromBranch: string, fromId: string, text: string): string {
-  // #169 P4 — on a bus (delivery-ON) run, replies go through `orchestra send`;
-  // `orchestra message` is the legacy fallback (this footer is only ever attached
-  // to a legacy/emergency delivery in the first place). Name the bus path first
-  // so a recipient on a delivery-ON run does not hit the coordination refusal.
+  // #441 — ONE reply command: the bus is the only channel between agents, so the footer names `orchestra send` and nothing else
+  // (a footer offering `orchestra message` too would hand the recipient a refused verb; PEER_REPLY_FOOTER still strips the old forms).
   return (
     `[message from agent '${fromBranch}' (${fromId})]\n${summarizeReply(text)}\n\n` + // #420: a bloc reaches the peer as its title
-    `Reply with: orchestra send --type status --to ${fromId} "<reply>" ` +
-    `(bus run) — or orchestra message ${fromId} "<reply>" on a legacy delivery-OFF run`
+    `Reply with: orchestra send --type status --to ${fromId} "<reply>"`
   );
 }
 
@@ -100,9 +97,10 @@ const PEER_HEADER = /^\[message from agent '(.+?)' \(([^)]+)\)\]\n/;
 /** Trailing instruction the formatter appends. Stripped from the displayed body:
  *  it is boilerplate the human does not need in a preview or an expansion.
  *
- *  TWO forms, both matched (#169 P4): the LEGACY `orchestra message <id> "<reply>"`
- *  footer that the ~1141 already-on-disk fleet transcripts carry, and the current
- *  `orchestra send … — or orchestra message …` bus-first footer. Anchored at the
+ *  THREE forms, all matched: the LEGACY `orchestra message <id> "<reply>"`
+ *  footer that the ~1141 already-on-disk fleet transcripts carry, the #169 P4
+ *  `orchestra send … — or orchestra message …` two-alternative footer, and the current
+ *  single-command `orchestra send …` one (#441). Anchored at the
  *  end; `[\s\S]*?` is bounded by the trailing anchor so it cannot eat message body
  *  above a legitimate footer (the footer always starts on its own `\n\nReply with:`
  *  line). */

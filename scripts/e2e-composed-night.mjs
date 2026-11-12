@@ -202,13 +202,13 @@ const startsFor = (id) => calls.start.filter((c) => c.wsId === id);
 const orderStarts = () => calls.start.filter((c) => isWakeOrder(String(c.text ?? '')));
 
 // ── the fleet ──
-//   RUN ws-ops (pause ON, delivery ON, wake ON):  ws-ops ⊃ ws-sub (a SUB-OPS coordinator, asleep, with its own run + worker ws-s1) · ws-m1 ws-m2 (running, idle) · ws-m3 (asleep) · ws-m4 (a turn is RUNNING) · ws-m5 (a prompt is PENDING)
-//   RUN ws-off (pause OFF, delivery OFF, wake ON): ws-off ⊃ ws-off1 (running, idle)
-//   RUN ws-man (pause ON, delivery OFF): ws-man ⊃ ws-man1 — paused BY HAND before the critical crossing: the guard must leave it exactly as it is
+//   RUN ws-ops (pause ON, wake ON):  ws-ops ⊃ ws-sub (a SUB-OPS coordinator, asleep, with its own run + worker ws-s1) · ws-m1 ws-m2 (running, idle) · ws-m3 (asleep) · ws-m4 (a turn is RUNNING) · ws-m5 (a prompt is PENDING)
+//   RUN ws-off (pause OFF, wake ON): ws-off ⊃ ws-off1 (running, idle)
+//   RUN ws-man (pause ON, wake ON): ws-man ⊃ ws-man1 — paused BY HAND before the critical crossing: the guard must leave it exactly as it is
 //   ws-xm: a top-level session with NO coordinator
 const now0 = Date.now();
 const mk = (id, extra = {}) => ({ id, name: id, branch: id, kind: 'scratch', repoPath: '', worktreePath: tmpHome, status: 'idle', createdAt: now0 - 40 * 60_000, hasInput: true, sdkSessionId: `sess-${id}`, ...extra });
-const LEAD_SW = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: true, liveness: true };
+const LEAD_SW = { ...DEFAULT_BUS_SWITCHES, wake: true, pause: true, liveness: true };
 const OFF_SW = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true };
 busRuns.startRun(db, { id: 'ws-ops', kind: 'mission', coordinator: 'ws-ops' }, LEAD_SW);   // a run's id is its ANCHOR workspace id (the wave run id every member resolves to)
 busRuns.startRun(db, { id: 'ws-sub', kind: 'vague', coordinator: 'ws-sub', parentRunId: 'ws-ops' }, LEAD_SW);   // the sub-OPS anchors its OWN run (a Reprise addressee needs its frozen `wake` ON)
@@ -330,7 +330,9 @@ trapMod.startPauseTrap(trapDeps);
   for (const h of made) clearInterval(h);
 }
 alertHost?.startMemoryAlert();                                      // the real alert host: settle window = the real 20 s timer
-const escalationRows = () => db.prepare("SELECT run_id, sender, recipient, body, created_at FROM messages WHERE kind = 'escalation' ORDER BY sequence").all();
+const allEscalationRows = () => db.prepare("SELECT run_id, sender, recipient, body, created_at FROM messages WHERE kind = 'escalation' ORDER BY sequence").all();
+// #441: the `delivery` switch is gone, so EVERY root with a live fleet and a live coordinator is a LEAD of the alert (ws-off and ws-man used to read as deaf roots). The arms below follow the row(s) addressed to the REAL LEAD ws-ops: ONE per episode.
+const escalationRows = () => allEscalationRows().filter((x) => x.recipient === 'ws-ops');
 const runRow = (id) => db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
 // the OPS' view: the REAL hooks-server + the BUILT CLI (`peers`, `bus-status`)
 const hooks = await import(`${REPO}/src/main/hooks-server.ts`);
@@ -476,7 +478,7 @@ await arm('n4_alert_one_row', async () => {
   check('now_line_is_the_effective_state', /Admission HELD · memory Pause none\./.test(b), true);
   check('the_row_counts_the_unattributed_containers_the_last_tick_measured', /· 2 unattributed container\(s\)\./.test(b), true);
   check('says_what_a_later_critical_crossing_will_do', /the host puts the eligible runs under the memory Pause WITHOUT another row for this episode/.test(b), true);
-  check('no_alert_for_the_pause_off_run_nor_its_coordinator', rows.filter((x) => x.recipient === 'ws-off').length, 0);
+  check('the_pause_off_root_and_the_hand_paused_root_are_told_like_any_lead_one_row_each_never_two', ['ws-off', 'ws-man'].map((c) => allEscalationRows().filter((x) => x.recipient === c).length), [1, 1]);
 });
 
 await arm('n5_memory_pause', async () => {

@@ -585,7 +585,7 @@ try {
   clause('conv/live-turn', L.noReload && pre === 0 && L.lines.some((l) => l === 'user:Bonjour depuis le rig') && modelAfter > modelBefore, `${pre} -> ${L.lines.length} lines without reload: ${JSON.stringify(L.lines)}; fake API model requests ${modelBefore} -> ${modelAfter}; refused egress ${fakeApi.egress.length}`);
   saveShot('phone-conversation-live.png', await phone.shot());
 
-  // #338 must-FAIL control: the AGENT path (`/message` on the hooks socket) refuses am-idle — its run has bus delivery ON …
+  // #338 must-FAIL control: the AGENT path (`/message` on the hooks socket) refuses am-idle — the old channel is closed for every target (#441) …
   // The hooks socket every local agent can reach (its path from the app's pointer file — the phone server is NOT told it).
   const mainSock = fs.readFileSync(path.join(world.ohome, 'sock'), 'utf8').trim();
   const viaAgentPath = await new Promise((resolve, reject) => {
@@ -602,7 +602,7 @@ try {
   await sleep(4000);
   const forgedLines = await phone.eval(`[...document.querySelectorAll('#conv .conv-lines [data-kind="user"]')].filter((e) => e.textContent.includes('forged human message')).length`);
   clause('send/hooks-socket-has-no-mobile-route', forged === '{}' && forgedLines === 0 && fakeApi.requests.filter((r) => r.type === 'model').length === modelsBeforeForge, `hooks /mobile/send answered ${forged}; no line, no model request in 4 s`);
-  clause('send/agent-path-refused', viaAgentPath.ok === false && /delivery switch ON/.test(viaAgentPath.error ?? ''), `hooks /message to the fleet member: ${JSON.stringify(viaAgentPath).slice(0, 160)}`);
+  clause('send/agent-path-refused', viaAgentPath.ok === false && /orchestra send --type status --to ws-am-idle/.test(viaAgentPath.error ?? ''), `hooks /message to the fleet member: ${JSON.stringify(viaAgentPath).slice(0, 160)}`);
   // … while the SAME member takes the human's message from the phone composer (trusted typing + click), and the turn runs.
   const beforeSend = fakeApi.requests.filter((r) => r.type === 'model').length;
   await phone.eval(`document.querySelector('.conv-input').focus(); true`);

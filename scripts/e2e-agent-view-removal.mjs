@@ -2005,7 +2005,7 @@ const ARMS = [
       await runControl(ctx);
       const before = await app.ptys();
       const paused = (ps) => ps.filter((p) => p.kind === 'agent' && p.workspaceId === sbx.live.id);
-      const wk = await runCli(app, ['message', sbx.live.id, 'AVR-WAKE-PROBE']);
+      const wk = await runCli(app, ['message', '--emergency', sbx.live.id, 'AVR-WAKE-PROBE']);
       await sleep(ABSENCE_MS);
       const afterPs = await app.ptys();
       console.log(`OBSERVED  cli message ${sbx.live.id}: rc=${wk.rc} stdout=${JSON.stringify(oneLine(wk.stdout))} stderr=${JSON.stringify(oneLine(wk.stderr))} agent PTYs for it: before=${paused(before).length} after=${paused(afterPs).length} (${fmtP(afterPs)})`);

@@ -49,12 +49,12 @@ const ALL_OFF: BusSwitches = { ...DEFAULT_BUS_SWITCHES };
 // ─── The shape ──────────────────────────────────────────────────────────────
 
 test('BUS_MECHANISMS lists the wave B set plus the wave-D additions, and DEFAULT is every one OFF', () => {
-  // Wave B: delivery/wake/askGate/liveness. Wave D appends one switch per bus-v2
+  // Wave B: wake/askGate/liveness (+ the removed `delivery`, #441). Wave D appends one switch per bus-v2
   // mechanism (ledger #131 RULING D1): #128 `fencing`, #129 `capability`, #130
-  // `receipts`. Assert the wave-B four are present and in order, and that each
+  // `receipts`. Assert the wave-B three are present and in order, and that each
   // wave-D mechanism is present — not an exact whole-list match, so a future
   // sibling appending its own mechanism does not redden this.
-  assert.deepEqual([...BUS_MECHANISMS].slice(0, 4), ['delivery', 'wake', 'askGate', 'liveness']);
+  assert.deepEqual([...BUS_MECHANISMS].slice(0, 3), ['wake', 'askGate', 'liveness']);
   assert.ok(BUS_MECHANISMS.includes('fencing'), '#128 adds the fencing mechanism');
   assert.ok(BUS_MECHANISMS.includes('capability'), '#129 adds the capability mechanism');
   assert.ok(BUS_MECHANISMS.includes('receipts'), '#130 adds the receipts mechanism');
@@ -74,22 +74,22 @@ test('DEFAULT_BUS_SWITCHES is frozen — a caller cannot mutate the shared defau
 test('normalizeSwitches coerces with === true, never truthiness', () => {
   // The hostile inputs that must NOT read as ON — a switch turning itself on from
   // a hand-edited store is exactly what the freeze exists to prevent.
-  assert.deepEqual(normalizeSwitches({ delivery: 'true' }), ALL_OFF, 'the string "true" is NOT on');
-  assert.deepEqual(normalizeSwitches({ delivery: 1 }), ALL_OFF, 'the number 1 is NOT on');
-  assert.deepEqual(normalizeSwitches({ delivery: {} }), ALL_OFF, 'a truthy object is NOT on');
-  assert.deepEqual(normalizeSwitches({ delivery: 'on' }), ALL_OFF);
+  assert.deepEqual(normalizeSwitches({ wake: 'true' }), ALL_OFF, 'the string "true" is NOT on');
+  assert.deepEqual(normalizeSwitches({ wake: 1 }), ALL_OFF, 'the number 1 is NOT on');
+  assert.deepEqual(normalizeSwitches({ wake: {} }), ALL_OFF, 'a truthy object is NOT on');
+  assert.deepEqual(normalizeSwitches({ wake: 'on' }), ALL_OFF);
   // The must-PASS half: an actual boolean true DOES read as on.
-  assert.equal(normalizeSwitches({ delivery: true }).delivery, true);
+  assert.equal(normalizeSwitches({ wake: true }).wake, true);
 });
 
 test('normalizeSwitches defaults each field independently and ignores unknowns', () => {
   // A store written by a build that knew THREE mechanisms upgrades cleanly,
   // keeping the three it set; an unknown key from a NEWER build is dropped.
-  const partial = normalizeSwitches({ delivery: true, wake: true });
-  assert.deepEqual(partial, { ...ALL_OFF, delivery: true, wake: true });
-  const withUnknown = normalizeSwitches({ delivery: true, quantum: true });
+  const partial = normalizeSwitches({ wake: true, askGate: true });
+  assert.deepEqual(partial, { ...ALL_OFF, wake: true, askGate: true });
+  const withUnknown = normalizeSwitches({ wake: true, quantum: true });
   assert.equal('quantum' in withUnknown, false, 'an unknown mechanism is not carried');
-  assert.equal(withUnknown.delivery, true);
+  assert.equal(withUnknown.wake, true);
 });
 
 test('normalizeSwitches tolerates null/undefined/non-object → all-OFF', () => {
@@ -108,18 +108,18 @@ test('a __proto__ payload does not pollute or turn a switch on', () => {
 // ─── serialize / parse round-trip ────────────────────────────────────────────
 
 test('serializeSwitches is stable, explicit, and key-ordered', () => {
-  const s = serializeSwitches({ ...ALL_OFF, liveness: true, delivery: true });
+  const s = serializeSwitches({ ...ALL_OFF, liveness: true, wake: true });
   // Keys in BUS_MECHANISMS order regardless of input order — never a bitmask,
   // because a later build with more mechanisms must read this unambiguously.
   // Built from the mechanism list so a new mechanism extends the expected string
   // rather than reddening it (all the added ones serialize false here).
   const expected =
     '{' +
-    BUS_MECHANISMS.map((m) => `"${m}":${m === 'delivery' || m === 'liveness'}`).join(',') +
+    BUS_MECHANISMS.map((m) => `"${m}":${m === 'wake' || m === 'liveness'}`).join(',') +
     '}';
   assert.equal(s, expected);
   // And the wave-B prefix is still exactly as frozen (positive control).
-  assert.ok(s.startsWith('{"delivery":true,"wake":false,"askGate":false,"liveness":true'));
+  assert.ok(s.startsWith('{"wake":true,"askGate":false,"liveness":true'));
 });
 
 test('parseSwitches round-trips serializeSwitches for every combination', () => {
@@ -138,7 +138,7 @@ test('parseSwitches on null/garbage/malformed JSON → all-OFF, never throws', (
   assert.deepEqual(parseSwitches(null), ALL_OFF);
   assert.deepEqual(parseSwitches(undefined), ALL_OFF);
   assert.deepEqual(parseSwitches(''), ALL_OFF);
-  assert.deepEqual(parseSwitches('{delivery:true'), ALL_OFF, 'malformed JSON is all-OFF, not a throw');
+  assert.deepEqual(parseSwitches('{wake:true'), ALL_OFF, 'malformed JSON is all-OFF, not a throw');
   assert.deepEqual(parseSwitches('[true,true,true,true]'), ALL_OFF, 'a JSON array is all-OFF');
   assert.deepEqual(parseSwitches('null'), ALL_OFF);
 });
@@ -148,9 +148,9 @@ test('parseSwitches on null/garbage/malformed JSON → all-OFF, never throws', (
 test('freezeSwitches returns a COPY — mutating the caller cannot reach the snapshot', () => {
   const live: BusSwitches = { ...ALL_ON };
   const frozen = freezeSwitches(live);
-  live.delivery = false;
+  live.askGate = false;
   live.wake = false;
-  assert.equal(frozen.delivery, true, 'the snapshot must not track a later caller mutation');
+  assert.equal(frozen.askGate, true, 'the snapshot must not track a later caller mutation');
   assert.equal(frozen.wake, true);
 });
 
@@ -174,7 +174,7 @@ test('mechanismEnabled reads === true off the frozen set', () => {
 // ─── the wire mapping — the one place snake_case meets camelCase ─────────────
 
 test('mechanismFromWire maps every wire name and refuses everything else', () => {
-  assert.equal(mechanismFromWire('delivery'), 'delivery');
+  assert.equal(mechanismFromWire('delivery'), null, '#441: the delivery switch is gone — its old wire name maps to nothing');
   assert.equal(mechanismFromWire('wake'), 'wake');
   assert.equal(mechanismFromWire('ask_gate'), 'askGate', 'snake ask_gate → camel askGate');
   assert.equal(mechanismFromWire('liveness'), 'liveness');
@@ -189,7 +189,6 @@ test('mechanismFromWire maps every wire name and refuses everything else', () =>
 
 test('mechanismToWire is the inverse, and ask_gate is the only remapped name', () => {
   assert.equal(mechanismToWire('askGate'), 'ask_gate');
-  assert.equal(mechanismToWire('delivery'), 'delivery');
   assert.equal(mechanismToWire('wake'), 'wake');
   assert.equal(mechanismToWire('liveness'), 'liveness');
   assert.equal(mechanismToWire('capability'), 'capability', '#129 capability is not remapped');
@@ -316,12 +315,12 @@ test('#258 live defaults: a human choice wins, and a present non-true value is O
   assert.equal(normalizeLiveSwitches({ dockerRelay: false }).dockerRelay, false);
   assert.equal(normalizeLiveSwitches({ pause: 'true' }).pause, false);
   assert.equal(normalizeLiveSwitches({ pause: null }).pause, false);
-  assert.equal(normalizeLiveSwitches({ delivery: true }).delivery, true);
-  assert.equal(normalizeLiveSwitches({ delivery: true }).pause, true); // a store older than #252 never chose
+  assert.equal(normalizeLiveSwitches({ askGate: true }).askGate, true);
+  assert.equal(normalizeLiveSwitches({ askGate: true }).pause, true); // a store older than #252 never chose
 });
 
 test('#258 run rows keep the frozen semantics: a key missing on a row reads OFF, never the live default', () => {
-  const row = normalizeSwitches({ delivery: true });
+  const row = normalizeSwitches({ askGate: true });
   assert.equal(row.pause, false);
   assert.equal(row.dockerRelay, false);
 });
@@ -348,7 +347,7 @@ test('#320 memoryCap: default OFF, wire name memory_cap round-trips, notice name
 });
 
 test('#320 memoryCap is stored/normalized like every mechanism: an old run row without it reads OFF; "true" (a string) never reads ON', () => {
-  assert.equal(parseSwitches(JSON.stringify({ delivery: true })).memoryCap, false);
+  assert.equal(parseSwitches(JSON.stringify({ askGate: true })).memoryCap, false);
   assert.equal(normalizeSwitches({ memoryCap: 'true' }).memoryCap, false);
   assert.equal(normalizeSwitches({ memoryCap: true }).memoryCap, true);
   assert.equal(JSON.parse(serializeSwitches({ ...DEFAULT_BUS_SWITCHES, memoryCap: true })).memoryCap, true);
@@ -358,12 +357,12 @@ test('#320 memoryCap is stored/normalized like every mechanism: an old run row w
 test('#324 memoryCap live default ON: an unset key reads ON, a human OFF wins, a typo is OFF, a run ROW and the safe fallback stay OFF', () => {
   assert.equal(LIVE_SWITCH_DEFAULTS.memoryCap, true);
   assert.equal(normalizeLiveSwitches(undefined).memoryCap, true);
-  assert.equal(normalizeLiveSwitches({ delivery: true }).memoryCap, true, 'a store older than #320 never chose');
+  assert.equal(normalizeLiveSwitches({ askGate: true }).memoryCap, true, 'a store older than #320 never chose');
   assert.equal(normalizeLiveSwitches({ memoryCap: false }).memoryCap, false, 'the human turned it OFF: that choice wins');
   assert.equal(normalizeLiveSwitches({ memoryCap: 'true' }).memoryCap, false, 'a present non-true value is OFF');
   assert.equal(normalizeLiveSwitches({ memoryCap: null }).memoryCap, false);
   assert.equal(DEFAULT_BUS_SWITCHES.memoryCap, false, 'the safe fallback (unreadable store, no run row, bus down) stays OFF');
-  assert.equal(normalizeSwitches({ delivery: true }).memoryCap, false, 'a row frozen without the key was frozen OFF');
+  assert.equal(normalizeSwitches({ askGate: true }).memoryCap, false, 'a row frozen without the key was frozen OFF');
   assert.equal(parseSwitches(undefined).memoryCap, false);
   assert.equal(freezeSwitches(normalizeLiveSwitches(undefined)).memoryCap, true, 'what the NEXT run freezes');
 });
@@ -371,7 +370,7 @@ test('#324 memoryCap live default ON: an unset key reads ON, a human OFF wins, a
 // ── #324 follow-up: m3 (a Settings save no longer freezes every default) and m6 (an unreadable store is all-OFF, pinned) ─────────────────────────
 test('#324 m6 liveSwitchesFromStore: a stored object is read with the live defaults; an UNREADABLE store is all-OFF — never the live defaults, never anything ON', () => {
   assert.deepEqual(liveSwitchesFromStore(() => undefined), { ...LIVE_SWITCH_DEFAULTS });
-  assert.equal(liveSwitchesFromStore(() => ({ delivery: true })).delivery, true);
+  assert.equal(liveSwitchesFromStore(() => ({ askGate: true })).askGate, true);
   assert.equal(liveSwitchesFromStore(() => ({ memoryCap: false })).memoryCap, false, 'a human OFF wins');
   const broken = liveSwitchesFromStore(() => { throw new Error('store unreadable'); });
   for (const m of BUS_MECHANISMS) assert.equal(broken[m], false, `${m} must be OFF when the store cannot be read`);
@@ -380,26 +379,26 @@ test('#324 m6 liveSwitchesFromStore: a stored object is read with the live defau
 
 test('#324 m3 mergeExplicitSwitches / saveLiveSwitches: only the keys the human has EVER set are persisted — an unset key keeps following its live default', async () => {
   // the first save: ONE key changed, nothing else is written
-  assert.deepEqual(mergeExplicitSwitches({}, { delivery: true }), { delivery: true });
+  assert.deepEqual(mergeExplicitSwitches({}, { askGate: true }), { askGate: true });
   assert.deepEqual(mergeExplicitSwitches(undefined, { wake: false }), { wake: false });
   // earlier choices (including an explicit OFF) survive a later save; unknown stored keys are dropped; a typo is OFF; undefined means « not changed »
-  assert.deepEqual(mergeExplicitSwitches({ pause: false, delivery: true, bogus: true }, { wake: true }), { delivery: true, wake: true, pause: false });
-  assert.deepEqual(mergeExplicitSwitches({ delivery: true }, { delivery: 'true', wake: undefined }), { delivery: false });
+  assert.deepEqual(mergeExplicitSwitches({ pause: false, askGate: true, bogus: true }, { wake: true }), { askGate: true, wake: true, pause: false });
+  assert.deepEqual(mergeExplicitSwitches({ askGate: true }, { askGate: 'true', wake: undefined }), { askGate: false });
   let stored: Record<string, boolean> = {};
   const written: Array<Record<string, boolean>> = [];
-  const live = await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; written.push({ ...e }); }, { delivery: true });
-  assert.deepEqual(written, [{ delivery: true }], 'ONE key written, not ten (the old behaviour froze memoryCap:true / pause:true / dockerRelay:true at the value of the day)');
-  assert.equal(live.delivery, true);
+  const live = await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; written.push({ ...e }); }, { askGate: true });
+  assert.deepEqual(written, [{ askGate: true }], 'ONE key written, not ten (the old behaviour froze memoryCap:true / pause:true / dockerRelay:true at the value of the day)');
+  assert.equal(live.askGate, true);
   assert.equal(live.memoryCap, true, 'the returned live set still carries the defaults');
   assert.equal(liveSwitchesFromStore(() => stored).memoryCap, true, 'and so does a re-read');
   // a human OFF is persisted as an explicit key and survives the next save
   await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; }, { memoryCap: false });
-  assert.deepEqual(stored, { delivery: true, memoryCap: false });
+  assert.deepEqual(stored, { askGate: true, memoryCap: false });
   await saveLiveSwitches(() => stored, async (e) => { stored = e as Record<string, boolean>; }, { wake: true });
   assert.equal(stored.memoryCap, false, 'an earlier explicit OFF survives a later save of another key');
   // a read error writes NOTHING
   let wrote = false;
-  await assert.rejects(saveLiveSwitches(() => { throw new Error('boom'); }, async () => { wrote = true; }, { delivery: true }), /boom/);
+  await assert.rejects(saveLiveSwitches(() => { throw new Error('boom'); }, async () => { wrote = true; }, { askGate: true }), /boom/);
   assert.equal(wrote, false);
 });
 
@@ -417,4 +416,20 @@ test('#324-fu m-c: a reader that THROWS is all-OFF, but a store that loaded EMPT
   const throwing = liveSwitchesFromStore(() => { throw new Error('x'); });
   assert.equal(throwing.memoryCap, false);
   assert.notDeepEqual(empty, throwing);
+});
+
+// ── #441: the `delivery` switch is REMOVED — bus mail cannot be turned off ───────────────────────────────────────────
+test('#441 delivery is gone everywhere: not a mechanism, not a wire name, not a frozen key, not a notice line', () => {
+  assert.equal((BUS_MECHANISMS as readonly string[]).includes('delivery'), false);
+  assert.equal('delivery' in DEFAULT_BUS_SWITCHES, false);
+  assert.equal(mechanismFromWire('delivery'), null);
+  assert.equal(Object.keys(BUS_MECHANISM_LABEL).includes('delivery'), false);
+  const notice = busSwitchNotice({ ...ALL_ON }) ?? '';
+  assert.ok(!/delivery/i.test(notice), `the startup notice must not name a delivery switch: ${notice}`);
+  // a pre-update run ROW frozen with delivery OFF (or ON): the key is ignored on read, every other flag reads exactly as frozen — no data migration
+  const oldOff = parseSwitches(JSON.stringify({ delivery: false, wake: true, askGate: false, liveness: true }));
+  assert.equal('delivery' in oldOff, false);
+  assert.equal(oldOff.wake, true);
+  assert.equal(oldOff.liveness, true);
+  assert.equal(serializeSwitches(oldOff).includes('delivery'), false, 're-serializing never writes the key back');
 });

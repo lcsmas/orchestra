@@ -1687,7 +1687,7 @@ export function rotateCapabilityForRecipient(
  *
  * PURE PREDICATE — it does NOT mutate. `true` only when a row exists for this
  * (run, token) AND its state is 'active'. A missing token, a superseded one, or
- * a failed one all return `false`. The COUNTED-not-FIRED seam (delivery=OFF)
+ * a failed one all return `false`. The COUNTED-not-FIRED seam (capability=OFF)
  * lives in the CLI: it calls this to COUNT a would-be rejection but does not act
  * on it while the switch is off (see verbSend / T129.3).
  */
@@ -1732,7 +1732,7 @@ export function supersedeCapabilities(
 /**
  * Record ONE observed capability rejection for a run (the shadow counter, C5).
  *
- * Incremented whether the delivery switch is ON or OFF — the count is the
+ * Incremented whether the capability switch is ON or OFF — the count is the
  * "COUNTED" half of COUNTED-not-FIRED, and it must move in shadow mode. Only the
  * actual refusal (the CLI's fail()) is switch-gated. Returns the new total.
  */

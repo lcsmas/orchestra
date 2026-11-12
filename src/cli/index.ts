@@ -1152,8 +1152,8 @@ async function main(argv: string[]): Promise<void> {
         // the LEADING token above, before this split) threads into the request
         // body below: a broadcast is gated like the single-target path (F3 /
         // D-W8-1), so ONLY `orchestra message --emergency --to …`/`--children …`
-        // bypasses the #169 refusal — a bare `--to <peer>` of coordination text
-        // is refused on a delivery-ON fleet.
+        // bypasses the #441 refusal — a bare `--to <peer>` of text is refused
+        // per target, each with its own equivalent `orchestra send`.
         const { present: children, rest: m1 } = takeBoolFlag(bodyArgs, '--children');
         const { value: toList, rest: m2 } = takeFlag(m1, '--to');
         if (children && toList !== undefined) {
@@ -1205,7 +1205,7 @@ async function main(argv: string[]): Promise<void> {
           text,
           // #169 P4 (F3 / D-W8-1): a broadcast is gated like the single-target
           // path — only an EXPLICIT leading `--emergency` (the #86 group-stop)
-          // bypasses the refusal on a delivery-ON fleet.
+          // bypasses the refusal.
           ...(emergency ? { emergency: true } : {}),
         });
         const results = res.results as BroadcastTargetResult[] | undefined;
