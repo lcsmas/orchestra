@@ -15,7 +15,9 @@ import {
 import type { DivergenceCounters } from '../shared/bus-mirror.ts';
 import {
   resolveBusIdentity,
-  DEFAULT_RUN_ID,
+  NO_RUN_MESSAGE,
+  resolveBusHandle,
+  resolveRunId,
   describeBusOpenFailure,
   verbSend,
   verbCheck,
@@ -1000,11 +1002,19 @@ function busyTimeoutOverride(): number | undefined {
   return n;
 }
 
+/** The run an admin verb acts on (--run > $ORCHESTRA_RUN_ID); no fallback id exists (#433). */
+function runOrFail(flag?: string): string {
+  const r = resolveRunId(flag, liveEnv());
+  if (!r) fail(NO_RUN_MESSAGE);
+  return r;
+}
+
 /** `{ runId, handle }` for a bus verb, or a refusal naming both ways to set it. */
 function busIdentityOrFail(flags: { run?: string; as?: string }): {
   runId: string;
   handle: string;
 } {
+  if (!resolveRunId(flags.run, liveEnv())) fail(NO_RUN_MESSAGE);
   const id = resolveBusIdentity(flags, liveEnv());
   if (!id) {
     fail(
@@ -1659,7 +1669,7 @@ async function main(argv: string[]): Promise<void> {
         // for a run id that looks anchored (a uuid) but has no row — the F-C4-2b
         // shape (a typo'd/stale $ORCHESTRA_RUN_ID). Done AFTER openBusForVerb (it
         // needs the db) but BEFORE verbSend, so no row is ever written.
-        if (id.runId !== DEFAULT_RUN_ID && !runExists(db, id.runId)) {
+        if (!runExists(db, id.runId)) {
           fail(unknownRunRefusalMessage(id.runId));
         }
         const fencing = await resolveFencing(db, id.runId, gen.value); // #128 hunk
@@ -1934,7 +1944,7 @@ async function main(argv: string[]): Promise<void> {
         // what did it record per member (snapshot ref, dirty tree, commands killed). STORE-LESS.
         const stJson = takeBoolFlag(args.slice(1), '--json');
         const stRun = takeFlag(stJson.rest, '--run');
-        const stTarget = stRun.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+        const stTarget = runOrFail(stRun.value);
         const { db: stDb } = await openBusForVerb();
         try {
           const busPause = await import('../main/bus-pause.ts');
@@ -1967,10 +1977,10 @@ async function main(argv: string[]): Promise<void> {
           // #255 — the member's reprise accusé. STORE-LESS; keyed on the caller's workspace id (works after the run went active). Never fenced: a member is not a coordinator.
           const cfAs = takeFlag(args.slice(2), '--as');
           if (cfAs.rest.length > 0) fail(`orchestra run confirm reprise: unexpected argument ${JSON.stringify(cfAs.rest[0])} — usage: orchestra run confirm reprise [--as <handle>]`);
-          const cfActor = resolveBusIdentity({ as: cfAs.value }, liveEnv())?.handle ?? '';
+          const cfActor = resolveBusHandle(cfAs.value, liveEnv());
           const cf = await openBusForVerb();
           try {
-            const cfRun = liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+            const cfRun = resolveRunId(undefined, liveEnv()) ?? ''; // the verb keys on the CALLER's roster, never on a run id
             verbRunConfirmReprise(busCtx(cf.db, cf.bus, { runId: cfRun, handle: cfActor }, { generation: null, fencingOn: false }), cf.runPause);
           } finally {
             cf.db.close();
@@ -1981,14 +1991,14 @@ async function main(argv: string[]): Promise<void> {
         if (args[1] !== 'pause') fail('usage: orchestra run confirm pause [--run <id>] [--as <handle>] | orchestra run confirm reprise [--as <handle>]');
         const cfRun = takeFlag(args.slice(2), '--run');
         const cfAs = takeFlag(cfRun.rest, '--as');
-        const cfActor = resolveBusIdentity({ as: cfAs.value }, liveEnv())?.handle ?? '';
+        const cfActor = resolveBusHandle(cfAs.value, liveEnv());
         const cfEnvRun = cfRun.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || '';
         const { db: cfDb, bus: cfBus } = await openBusForVerb();
         try {
           const busPause = await import('../main/bus-pause.ts');
           const douce = await import('../main/pause-douce.ts');
           const nodes = offlineWaveNodes();
-          const cfCtx = busCtx(cfDb, cfBus, { runId: cfEnvRun || DEFAULT_RUN_ID, handle: cfActor }, { generation: null, fencingOn: false });
+          const cfCtx = busCtx(cfDb, cfBus, { runId: cfEnvRun, handle: cfActor }, { generation: null, fencingOn: false });
           verbRunConfirmPause(cfCtx, {
             confirmPause: (d, who) => {
               // The carrier by the SAME live-tree walk the gates use, from the CALLER's own workspace (fallback: the run id the env names).
@@ -2018,9 +2028,8 @@ async function main(argv: string[]): Promise<void> {
         const holdGen = takeFlag(args.slice(1), '--generation');
         const holdRunArg = takeFlag(holdGen.rest, '--run');
         const holdAsArg = takeFlag(holdRunArg.rest, '--as');
-        const holdTarget =
-          holdRunArg.value?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
-        const holdActor = resolveBusIdentity({ as: holdAsArg.value }, liveEnv())?.handle ?? '';
+        const holdTarget = runOrFail(holdRunArg.value);
+        const holdActor = resolveBusHandle(holdAsArg.value, liveEnv());
         // #252/#254 — `pause` takes the SAME flags as hold/resume plus `--hard` (Pause dure); without it the pause is DOUCE.
         const hardFlag = takeBoolFlag(holdAsArg.rest, '--hard');
         // #255 — `release <ws>… | --all`: the positionals are workspace ids.
@@ -2080,9 +2089,9 @@ async function main(argv: string[]): Promise<void> {
       }
       const { value: runFlag, rest: afterRun } = takeFlag(args.slice(1), '--run');
       const { value: onlyFlag } = takeFlag(afterRun, '--only');
-      // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID > 'default'. An
-      // admin re-freezing a specific mission from outside its wave passes --run.
-      const targetRun = runFlag?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+      // Same resolution as bus-status: --run > $ORCHESTRA_RUN_ID. An admin re-freezing a specific
+      // mission from outside its wave passes --run.
+      const targetRun = runOrFail(runFlag);
       const res = await request('/runRefreeze', { runId: targetRun, ...(onlyFlag ? { only: onlyFlag } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to refreeze run');
       const outcome = res.outcome as string | undefined;
@@ -2159,8 +2168,7 @@ async function main(argv: string[]): Promise<void> {
       // id, a per-boot `host-…` (D1), which is exactly the value #134 replaces on
       // this surface. We pass it to the app so it can read THAT run's frozen row.
       const { value: runFlag, rest: bsRest } = takeFlag(args, '--run');
-      const displayRunId =
-        runFlag?.trim() || liveEnv().ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
+      const displayRunId = runOrFail(runFlag);
       void bsRest;
       const res = await request('/busStatus', { runId: displayRunId });
       if (!res.ok) fail(res.error ?? 'failed to read bus status');
@@ -2173,7 +2181,7 @@ async function main(argv: string[]): Promise<void> {
       const noRun = res.runExists === false;
       process.stdout.write(
         noRun
-          ? `run: ${shownRunId} — no such run (standalone: switches freeze from the live settings when this workspace is promoted or dispatched)\n`
+          ? `run: ${shownRunId} — no such run (no row in the bus 'runs' table)\n`
           : `run: ${shownRunId}\n`,
       );
       // #204 F3: a HELD run says so (a forgotten hold must be visible). No line when

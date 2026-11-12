@@ -160,23 +160,22 @@ test('send to a valid anchored run is unchanged (accepted, row written)', needsB
   assert.equal(messageCount(home), 1, 'an accepted send must land exactly one row');
 });
 
-// ── The `default` sentinel is EXEMPT (env unset, and explicit --run default) ──
-// `default` never gets a runs row (rows are created only at orchestrator anchors,
-// #134); it is the documented fallback for a manual / standalone send. Refusing
-// it would break every unanchored send — so the gate exempts it by id, not by
-// runs-row existence.
-test('the default run (env unset) is exempt from the gate', needsBuild, (t) => {
+// ── #433: there is NO `default` run. Env unset → refused (no run to act on); an explicit `--run default`
+// → refused like any run with no row. Neither writes a row.
+test('#433 no run named (env unset, no --run) is REFUSED, nothing written', needsBuild, (t) => {
   const home = freshHome(t);
   const r = send(home, null);
-  assert.equal(r.code, 0, `default send must succeed, got ${r.code}: ${r.stderr}`);
-  assert.equal(messageCount(home), 1, 'default send must land its row');
+  assert.equal(r.code, 1, `a send naming no run must be refused, got ${r.code}: ${r.stdout}`);
+  assert.match(r.stderr, /no run to act on/);
+  assert.equal(messageCount(home), 0, 'no row may land under a made-up run');
 });
 
-test('an explicit --run default is exempt too', needsBuild, (t) => {
+test("#433 an explicit --run default is refused as a run with no row, nothing written", needsBuild, (t) => {
   const home = freshHome(t);
   const r = send(home, 'ignored-env', ['--run', 'default']);
-  assert.equal(r.code, 0, `--run default must succeed, got ${r.code}: ${r.stderr}`);
-  assert.equal(messageCount(home), 1);
+  assert.equal(r.code, 1, `--run default must be refused, got ${r.code}: ${r.stdout}`);
+  assert.match(r.stderr, /has no row in the bus 'runs' table/);
+  assert.equal(messageCount(home), 0);
 });
 
 // ── ARM 3: the #142 stale-marker refusal STILL fires on its own arm ───────────

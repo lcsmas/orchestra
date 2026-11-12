@@ -215,6 +215,7 @@ import {
   pruneOrphanedWorkspaces,
   resolveWaveRunId,
   listStaleRunWorkspaces,
+  startRunsForParentlessWorkspaces,
 } from './workspaces';
 import { stopAll } from './pty';
 import { startHooksServer, stopHooksServer } from './hooks-server';
@@ -480,6 +481,9 @@ async function createMainWindow() {
     } catch (e) {
       log.warn('bus: orphaned-ask backfill failed', e);
     }
+    // #433: a top-level workspace without a run (created before this build) gets its mission BEFORE any
+    // session starts; sessions are never restarted — each resolves its run per call (ADR 0008).
+    if (store.loadedFromDisk) await startRunsForParentlessWorkspaces().catch((e) => log.warn('bus: top-level run migration failed', e));
   } catch (e) {
     log.error(`bus: FAILED to open ${busPath()} — the fleet bus is unavailable`, e);
     // Best-effort surface for the renderer; never let the notification itself

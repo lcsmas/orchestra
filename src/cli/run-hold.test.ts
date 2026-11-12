@@ -171,7 +171,7 @@ test('hold via the REAL CLI → the sweep skips the held run; a non-held run sti
 });
 
 test('hold defaults to $ORCHESTRA_RUN_ID (an OPS holds its OWN run with no flag)', needsBuild, (t) => {
-  // MUTANT: ignore the env and fall through to 'default' → refused (no such run) → RED.
+  // MUTANT: ignore the env → refused (no run to act on) → RED.
   const home = tmpHome(t);
   seedRuns(home, ['run-held', 'run-open']);
   const r = cli(home, ['run', 'hold'], 'run-held');
@@ -195,10 +195,11 @@ test('hold on an UNKNOWN run is REFUSED, names the run, and writes nothing', nee
   } finally {
     db.close();
   }
-  // No --run and no env → the `default` sentinel, which never has a row: refused too.
+  // #433: no --run and no env → NO fallback run id at all: refused with the no-run message, nothing held.
   const d = cli(home, ['run', 'hold']);
   assert.notEqual(d.code, 0);
-  assert.match(d.stderr, /default/);
+  assert.match(d.stderr, /no run to act on/);
+  assert.deepEqual(held(home), [], 'nothing held');
 });
 
 test('hold and resume are idempotent (rc 0, state unchanged, the message says so)', needsBuild, (t) => {

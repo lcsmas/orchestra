@@ -145,12 +145,11 @@ test('run refreeze (no --run): resolves $ORCHESTRA_RUN_ID', needsBuild, () => {
   assert.equal(r.seen[0].runId, 'my-mission', 'defaults to $ORCHESTRA_RUN_ID');
 });
 
-test('run refreeze (no --run, no env): resolves the DEFAULT_RUN_ID, not empty', needsBuild, () => {
+test('run refreeze (no --run, no env): REFUSED with the no-run message, the app is never asked (#433)', needsBuild, () => {
   const r = driveCli(['run', 'refreeze'], REFROZEN, { runIdEnv: null });
-  assert.equal(r.code, 0, r.stderr);
-  // Whatever the default is, the CLI must send a NON-empty run id — a blank runId
-  // would refuse server-side ('missing runId'), so pin that it is populated.
-  assert.ok(r.seen[0].runId && r.seen[0].runId.length > 0, 'a non-empty default run id is sent');
+  assert.notEqual(r.code, 0, 'no fallback run id exists');
+  assert.match(r.stderr, /no run to act on/);
+  assert.equal(r.seen.length, 0, 'nothing was sent to the app');
 });
 
 test('outcome not-mission → non-zero exit, diagnosable, NO stack trace', needsBuild, () => {

@@ -61,6 +61,10 @@ export interface AnchorInfo {
    *  plain standalone workspace resolves anchorId === wsId WITHOUT being an
    *  orchestrator — those get NO run row here (they are shadow until adopted). */
   anchorIsOrchestrator: boolean;
+  /** #433 — the anchor OWNS a run row: a real orchestrator, OR a top-level workspace (no resolvable
+   *  parent) — its mission is born with it. A plain workspace that HAS a parent keeps no row here
+   *  (it gets its run at its first spawn, #434). */
+  anchorOwnsRun: boolean;
   /** The anchor's own parent run id (nested-run pointer), or null. */
   parentRunId: string | null;
   /** #221 — `parentRunId` names a run-less PLAIN workspace (not an orchestrator): start its
@@ -79,6 +83,11 @@ export function runAnchorProbe(deps: BusRunAnchorDeps): (id: string) => boolean 
       return false;
     }
   };
+}
+
+/** #433 — a workspace with no resolvable parent (none set, or a dangling link after a delete) is top-level: it owns a mission from birth. */
+export function isParentless(ws: WaveNode, lookup: (id: string) => WaveNode | undefined): boolean {
+  return !ws.parentId || !lookup(ws.parentId);
 }
 
 /**
@@ -104,6 +113,7 @@ export function computeAnchorInfo(
     wsId: ws.id,
     anchorId,
     anchorIsOrchestrator,
+    anchorOwnsRun: anchorIsOrchestrator || (anchorId === ws.id && isParentless(ws, lookup)),
     parentRunId: parent.id,
     ...(parent.implicit ? { parentRunImplicit: true } : {}),
   };
@@ -151,7 +161,7 @@ export function shouldBumpCoordinatorGeneration(
  * calling this on every launch is idempotent and never re-freezes a running run.
  */
 export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo): BusRunRow | null {
-  if (!anchor.anchorIsOrchestrator) return null; // no wave to freeze
+  if (!anchor.anchorOwnsRun) return null; // a plain workspace WITH a parent: no run of its own yet (#434)
   try {
     const db = deps.getBus();
     if (!db) return null; // D1: no bus → the run reads all-OFF, spawn proceeds
@@ -214,4 +224,27 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
     );
     return null;
   }
+}
+
+/**
+ * #433 — the app-start migration: every top-level workspace in `nodes` that has no run row gets its
+ * mission (frozen from the live switches), nothing else. Returns the ids started. Touches no session
+ * and never re-freezes a mission: only a PARENTLESS anchor is considered, so `parentRunId` is null
+ * (the wave-boundary re-freeze fires on a nested anchor only). The caller filters archived / sandbox
+ * workspaces out of `nodes`.
+ */
+export function startRunsForParentless(
+  deps: BusRunAnchorDeps,
+  nodes: readonly WaveNode[],
+  lookup: (id: string) => WaveNode | undefined,
+): string[] {
+  const started: string[] = [];
+  const probe = runAnchorProbe(deps);
+  for (const ws of nodes) {
+    if (!isParentless(ws, lookup) || probe(ws.id)) continue;
+    const anchor = computeAnchorInfo(ws, lookup, probe);
+    if (anchor.anchorId !== ws.id || !anchor.anchorOwnsRun) continue;
+    if (maybeStartRunAtAnchor(deps, anchor)) started.push(ws.id);
+  }
+  return started;
 }

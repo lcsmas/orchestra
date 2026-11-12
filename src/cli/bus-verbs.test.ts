@@ -7,7 +7,7 @@ import * as bus from '../main/bus.ts';
 import { withReceipt } from '../main/bus-receipts.ts';
 import {
   BUS_KINDS,
-  DEFAULT_RUN_ID,
+  resolveRunId,
   describeBusOpenFailure,
   lotToOutput,
   renderLotMarkdown,
@@ -164,17 +164,23 @@ test('resolveBusIdentity: flag beats env, env beats default', () => {
     runId: 'r2',
     handle: 'h2',
   });
-  assert.deepEqual(resolveBusIdentity({}, { ORCHESTRA_WS_ID: 'h2' }), {
-    runId: DEFAULT_RUN_ID,
-    handle: 'h2',
-  });
+  // #433: no run named anywhere → no identity (there is no fallback run id).
+  assert.equal(resolveBusIdentity({}, { ORCHESTRA_WS_ID: 'h2' }), null);
+  assert.deepEqual(resolveBusIdentity({ run: 'r9' }, { ORCHESTRA_WS_ID: 'h2' }), { runId: 'r9', handle: 'h2' });
   // The fallback for a keeper born before #233: ORCHESTRA_WS_ID could be withheld there while
   // ORCHESTRA_WS_ID_IDENTITY was always set (see resolveSelfWorkspaceId in index.ts).
   // Without it the bus verbs would be unusable from such a surviving session.
-  assert.deepEqual(resolveBusIdentity({}, { ORCHESTRA_WS_ID_IDENTITY: 'h3' }), {
-    runId: DEFAULT_RUN_ID,
+  assert.deepEqual(resolveBusIdentity({}, { ORCHESTRA_WS_ID_IDENTITY: 'h3', ORCHESTRA_RUN_ID: 'r3' }), {
+    runId: 'r3',
     handle: 'h3',
   });
+});
+
+test('resolveRunId: flag > env, and NO fallback id (#433)', () => {
+  assert.equal(resolveRunId('r1', { ORCHESTRA_RUN_ID: 'r2' }), 'r1');
+  assert.equal(resolveRunId(undefined, { ORCHESTRA_RUN_ID: ' r2 ' }), 'r2');
+  assert.equal(resolveRunId('  ', {}), null, 'a blank flag and no env name no run');
+  assert.equal(resolveRunId(undefined, {}), null);
 });
 
 test('resolveBusIdentity: no handle anywhere returns null, and whitespace is not a handle', () => {

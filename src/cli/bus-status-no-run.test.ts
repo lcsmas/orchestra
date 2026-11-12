@@ -119,7 +119,8 @@ test('bus-status on a run with no run row: says so, frozen column is "—", neve
   const r = driveCli(['bus-status'], reply('runExists: false,'), { runIdEnv: 'standalone-ws' });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.seen[0].runId, 'standalone-ws');
-  assert.match(r.stdout, /run: standalone-ws — no such run \(standalone/);
+  assert.match(r.stdout, /run: standalone-ws — no such run \(no row in the bus 'runs' table\)/);
+  assert.doesNotMatch(r.stdout, /standalone:|promoted or dispatched/, 'the standalone wording is gone (#433)');
   assert.match(r.stdout, /delivery\s+—\s+ON/);
   assert.doesNotMatch(r.stdout, /delivery\s+OFF/, 'a missing run must not read as frozen OFF');
 });

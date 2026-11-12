@@ -25,6 +25,8 @@ import { openBus, type BusDb } from './bus.ts';
 import { startRun, getRun, runFlags, refreezeRun, refreezeMissionRun } from './bus-runs.ts';
 import {
   maybeStartRunAtAnchor,
+  isParentless,
+  startRunsForParentless,
   type BusRunAnchorDeps,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
@@ -71,6 +73,7 @@ function anchorInfoOf(ws: WaveNode, lookup: (id: string) => WaveNode | undefined
     wsId: ws.id,
     anchorId,
     anchorIsOrchestrator: isOrch,
+    anchorOwnsRun: isOrch || (anchorId === ws.id && isParentless(ws, lookup)),
     parentRunId: anchorWs ? parentOrchestratorId(anchorWs, lookup) : null,
   };
 }
@@ -369,18 +372,78 @@ test('G4 — flipping the live switch AFTER a run started does NOT change that r
   }
 });
 
-// ─── A plain standalone workspace gets NO run row ────────────────────────────
+// ─── #433 — a top-level workspace owns a mission from birth; a plain child owns none yet ───
 
-test('#134 D1 — a plain standalone workspace (no orchestrator) starts NO run', () => {
+test('#433 — a parentless plain workspace starts its MISSION row, frozen from the live switches', () => {
   const { db, dir } = tmpDb();
   try {
     const solo: WaveNode = { id: 'solo', kind: 'worktree' };
-    const d = deps(db, { v: switches({ delivery: true }) });
+    const d = deps(db, { v: switches({ wake: true, memoryCap: true }) });
     const info = anchorInfoOf(solo, lookupOf([solo]));
-    assert.equal(info.anchorIsOrchestrator, false, 'a plain solo is not an orchestrator anchor');
+    assert.equal(info.anchorIsOrchestrator, false, 'a plain solo is not an orchestrator');
+    assert.equal(info.anchorOwnsRun, true, 'but it is top-level: it owns a run');
     const row = maybeStartRunAtAnchor(d, info);
-    assert.equal(row, null, 'no run row for a plain standalone workspace');
-    assert.equal(getRun(db, 'solo'), null);
+    assert.equal(row?.kind, 'mission');
+    assert.equal(row?.coordinator, 'solo');
+    assert.equal(getRun(db, 'solo')?.parent_run_id ?? null, null);
+    assert.equal(runFlags(db, 'solo').wake, true, 'the switches froze at birth');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('#433 — a plain workspace WITH a parent starts no row (its run is #434)', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const P: WaveNode = { id: 'p', kind: 'worktree' };
+    const C: WaveNode = { id: 'c', parentId: 'p', kind: 'worktree' };
+    const info = anchorInfoOf(C, lookupOf([P, C]));
+    assert.equal(info.anchorOwnsRun, false);
+    assert.equal(maybeStartRunAtAnchor(deps(db, { v: switches({ delivery: true }) }), info), null);
+    assert.equal(getRun(db, 'c'), null);
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('#433 — a workspace whose parent link dangles (parent deleted) is top-level too', () => {
+  const orphan: WaveNode = { id: 'orphan', parentId: 'gone', kind: 'worktree' };
+  assert.equal(isParentless(orphan, lookupOf([orphan])), true);
+  assert.equal(isParentless({ id: 'k', parentId: 'orphan', kind: 'worktree' }, lookupOf([orphan])), false);
+});
+
+test('#433 sweep — only run-less parentless workspaces get a mission; existing rows and plain children are untouched', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const A: WaveNode = { id: 'a', kind: 'worktree' };
+    const B: WaveNode = { id: 'b', kind: 'orchestrator' };
+    const HAS: WaveNode = { id: 'has', kind: 'worktree' };
+    const KID: WaveNode = { id: 'kid', parentId: 'a', kind: 'worktree' };
+    const live = { v: switches({ wake: false }) };
+    const d = deps(db, live);
+    startRun(db, { id: 'has', kind: 'mission', coordinator: 'has' }, switches({ wake: true }));
+    live.v = switches({ wake: true });
+    const nodes = [A, B, HAS, KID];
+    assert.deepEqual(startRunsForParentless(d, nodes, lookupOf(nodes)).sort(), ['a', 'b']);
+    assert.equal(getRun(db, 'kid'), null, 'a plain child gets no run from the sweep');
+    assert.equal(runFlags(db, 'a').wake, true, 'frozen from the live switches at the sweep');
+    assert.deepEqual(startRunsForParentless(d, nodes, lookupOf(nodes)), [], 'idempotent');
+  } finally {
+    cleanup(db, dir);
+  }
+});
+
+test('#433 sweep — never re-freezes an existing mission and survives a down bus', () => {
+  const { db, dir } = tmpDb();
+  try {
+    const LEAD: WaveNode = { id: 'lead', kind: 'orchestrator' };
+    const S: WaveNode = { id: 's', kind: 'worktree' };
+    const live = { v: switches({ wake: false }) };
+    startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, switches({ wake: false }));
+    live.v = switches({ wake: true });
+    startRunsForParentless(deps(db, live), [LEAD, S], lookupOf([LEAD, S]));
+    assert.equal(runFlags(db, 'lead').wake, false, 'an existing mission keeps what it froze');
+    assert.deepEqual(startRunsForParentless(deps(null, live), [S], lookupOf([S])), [], 'bus down → nothing, no throw');
   } finally {
     cleanup(db, dir);
   }

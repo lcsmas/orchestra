@@ -114,12 +114,11 @@ test('G9 FIX — createScratchLikeWorkspace (orchestrator/scratch spawn) starts 
 test('G9 FIX — startBusRunAndWriteNotice does BOTH the run-start and the notice write', () => {
   const body = fnBody(workspacesSrc, 'async function startBusRunAndWriteNotice(');
   assert.match(body, /maybeStartRunAtAnchor\(busRunAnchorDeps, anchor\)/, 'starts the run at the anchor');
-  // #182: the notice write now also carries anchorIsOrchestrator so a genuine
-  // fleet member is never stamped "standalone" over a momentarily-unstarted row.
+  // #433: the row is started BEFORE the notice (which reads it); no standalone signal rides along.
   assert.match(
     body,
-    /await writeBusSwitchState\(\s*ws\.worktreePath,\s*anchor\.anchorId,\s*anchor\.anchorIsOrchestrator,?\s*\)/,
-    'writes the frozen notice with the anchor-orchestrator signal (#182)',
+    /maybeStartRunAtAnchor\(busRunAnchorDeps, anchor\);[\s\S]*await writeBusSwitchState\(ws\.worktreePath, anchor\.anchorId\)/,
+    'starts the row, then writes the frozen notice (#433)',
   );
 });
 
@@ -271,4 +270,20 @@ test('#166/#232 — no agent-PTY restart route survives: the only coordinator-re
   assert.doesNotMatch(restartSrc, /startAgentPty|coordinatorReplacement/, 'restart-workspace launches no agent PTY');
   // control: the SDK restart still bumps the generation (agent-sdk.ts sdkRestart -> maybeBumpCoordinatorOnReplacement).
   assert.match(agentSdkSrc, /if \(restartingWs\) maybeBumpCoordinatorOnReplacement\(restartingWs\);/, 'the SDK restart bumps the coordinator generation');
+});
+
+// ── #433 — the app-start migration is wired: before any session starts, live top-level workspaces only ──
+test('#433 — app start runs the top-level migration AFTER the bus opens and BEFORE any session can start, gated on a store loaded from disk', () => {
+  const call = indexSrc.indexOf('startRunsForParentlessWorkspaces()');
+  assert.ok(call > 0, 'index.ts must call startRunsForParentlessWorkspaces()');
+  assert.ok(call > indexSrc.indexOf('const version = initBus();'), 'after the bus is open');
+  assert.ok(call < indexSrc.indexOf('await startHooksServer();'), 'before the hook server (= before any agent session can start)');
+  assert.match(indexSrc.slice(call - 80, call), /store\.loadedFromDisk\)\s*await /, 'gated on a store that really loaded (an empty fallback would start nothing, but never guess)');
+});
+
+test('#433 — the migration skips archived and sandbox workspaces and starts nothing but runs + a notice (no session call)', () => {
+  const body = fnBody(workspacesSrc, 'export async function startRunsForParentlessWorkspaces(');
+  assert.match(body, /!w\.archived && w\.host\?\.kind !== 'sandbox'/, 'archived + sandbox workspaces are out');
+  assert.match(body, /startRunsForParentless\(busRunAnchorDeps,/, 'the real run-start function');
+  assert.doesNotMatch(body.split('\n/**')[0], /\b(sdkRestart|dispatchRestartRequest|sdkStart\w*|ensureSession\w*|startWorkspaceAgent\w*|wake\w*)\(/, 'no session is restarted, started or woken');
 });

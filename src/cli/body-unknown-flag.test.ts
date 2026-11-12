@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as bus from '../main/bus.ts';
+import { startRun } from '../main/bus-runs.ts';
+import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 
 // 2026-10-04 incident: `orchestra send … --file /tmp/x` delivered the text
 // "--file /tmp/x" with rc 0 (send has no --file; unknown options were glued into
@@ -18,7 +20,7 @@ const needsBuild = { skip: existsSync(CLI) ? false : 'dist-electron/cli.js not b
 
 function cli(home: string, args: string[], input?: string): { code: number; stdout: string; stderr: string } {
   const env: Record<string, string> = { ...process.env, ORCHESTRA_HOME: home, HOME: home, ORCHESTRA_WS_ID: 'tester-body' };
-  delete env.ORCHESTRA_RUN_ID; // the `default` run: no runs row needed
+  env.ORCHESTRA_RUN_ID = 'run-body'; // a real run with a row (freshHome seeds it): there is no `default` run (#433)
   // The runner inherits the LIVE app's socket; a dead path keeps every arm off it.
   env.ORCHESTRA_SOCK = path.join(home, 'dead.sock');
   try {
@@ -57,6 +59,12 @@ function rows(home: string, sql: string): Array<Record<string, unknown>> {
 function freshHome(t: { after: (fn: () => void) => void }): string {
   const home = mkdtempSync(path.join(os.tmpdir(), 'orch-body-'));
   t.after(() => rmSync(home, { recursive: true, force: true }));
+  const db = bus.openBus(path.join(home, 'bus.sqlite'), {});
+  try {
+    startRun(db, { id: 'run-body', kind: 'mission', coordinator: 'tester-body' }, DEFAULT_BUS_SWITCHES);
+  } finally {
+    db.close();
+  }
   return home;
 }
 

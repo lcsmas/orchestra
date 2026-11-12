@@ -103,6 +103,7 @@ function masterAnchor(ws: WaveNode, lookup: (id: string) => WaveNode | undefined
     wsId: ws.id,
     anchorId,
     anchorIsOrchestrator: !!a && nodeOrchestrates(a),
+    anchorOwnsRun: !!a && nodeOrchestrates(a), // master: only an orchestrator anchor owns a run
     parentRunId: a ? parentOrchestratorId(a, lookup) : null,
   };
 }

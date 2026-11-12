@@ -71,6 +71,7 @@
     "test:pause-reprise": "node scripts/pause-trap/reprise-run.mjs",
     "test:admission-hold": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-hold.mjs",
     "test:admission-wake": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-wake.mjs",
+    "test:top-level-run-mutants": "node scripts/top-level-run-mutants.mjs",
     "test:admission-mutants": "node scripts/admission-mutants.mjs",
     "test:reliquats-shot": "bash scripts/e2e-contained-rig.sh node scripts/reliquats-screenshot.mjs",
     "test:reliquats-memory": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-reliquats-memory.mjs",

@@ -35,7 +35,7 @@ import {
   StaleGenerationError,
 } from './bus.ts';
 import { startRun, getRun } from './bus-runs.ts';
-import { shouldBumpCoordinatorGeneration, type AnchorInfo } from './bus-run-anchor.ts';
+import { shouldBumpCoordinatorGeneration, isParentless, type AnchorInfo } from './bus-run-anchor.ts';
 import { nearestOrchestratorId, parentOrchestratorId, type WaveNode } from './wave-run-id.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
 
@@ -71,6 +71,7 @@ function anchorInfoOf(ws: WaveNode, lookup: (id: string) => WaveNode | undefined
     wsId: ws.id,
     anchorId,
     anchorIsOrchestrator,
+    anchorOwnsRun: anchorIsOrchestrator || (anchorId === ws.id && isParentless(ws, lookup)),
     parentRunId: anchorWs ? parentOrchestratorId(anchorWs, lookup) : null,
   };
 }

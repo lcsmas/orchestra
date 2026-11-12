@@ -24,7 +24,7 @@ const GROUPS = [
 
 const BUS_IDENTITY = `
 Identity flags (every bus verb):
-  --run <id>      run to act on (default: $ORCHESTRA_RUN_ID, else 'default')
+  --run <id>      run to act on (default: $ORCHESTRA_RUN_ID; no fallback)
   --as <handle>   who you are on the bus (default: $ORCHESTRA_WS_ID)`;
 
 export const COMMANDS: CommandHelp[] = [
@@ -344,7 +344,7 @@ effect. Read-only.`,
             what it was doing, its snapshot ref (refs/orchestra/pause/…, holds the
             uncommitted + untracked NON-IGNORED work), dirty tree, the tool processes the host
             killed (never the session or keeper), errors. Read-only; --json for tools.
-Default run: $ORCHESTRA_RUN_ID or 'default'. hold/pause/resume/release refuse a run with no row.`,
+Default run: $ORCHESTRA_RUN_ID (none otherwise: pass --run). hold/pause/resume/release refuse a run with no row.`,
   },
 
   // ── Legacy messaging ──────────────────────────────────────────────────

@@ -57,15 +57,15 @@ export const BUS_KINDS: readonly string[] = [
   'heartbeat',
 ];
 
-/** The run id used when nothing names one.
- *
- *  The run LIFECYCLE (creating rows in `runs`) is a later ticket; v1's `run_id`
- *  is an unconstrained scoping string (bus.ts's migration comment says so
- *  explicitly). A default is deliberate rather than a required flag: an agent
- *  that forgets `--run` should land its message where every other defaulting
- *  agent is reading, not in a private universe nobody checks — which is the
- *  exact failure mode that comment warns about. */
-export const DEFAULT_RUN_ID = 'default';
+/** #433 — the refusal when nothing names a run: there is NO fallback run id (the old `default` sentinel never had a row). */
+export const NO_RUN_MESSAGE =
+  'orchestra: no run to act on — $ORCHESTRA_RUN_ID is unset (it is set automatically inside an Orchestra ' +
+  'agent) and no --run <id> was given';
+
+/** The run a verb acts on: --run > $ORCHESTRA_RUN_ID, else null (the caller fails with NO_RUN_MESSAGE). */
+export function resolveRunId(flag: string | undefined, env: { ORCHESTRA_RUN_ID?: string }): string | null {
+  return flag?.trim() || env.ORCHESTRA_RUN_ID?.trim() || null;
+}
 
 /**
  * #155 — the refusal a `send` prints when its `run_id` names a run with NO row
@@ -80,10 +80,8 @@ export const DEFAULT_RUN_ID = 'default';
  * #142's stale-marker pre-send gate and #144's refuse-ambiguous-recipient) keeps
  * a mistyped env from writing mail no wake path can reach.
  *
- * The `default` sentinel is EXEMPTED by the caller (never passed here): it never
- * gets a `runs` row (rows are created only at orchestrator anchors, #134) and is
- * the documented fallback for a manual / standalone send. This message is for a
- * run id that LOOKS anchored (a uuid) but has no row — the F-C4-2b shape.
+ * There is no `default` run any more (#433): every run id the verbs act on is a real one.
+ * This message is for a run id that has no row — the F-C4-2b shape (a typo'd/stale env).
  *
  * The message NAMES the remedy (issue #155): restart so the anchor is re-derived,
  * or correct/unset the env. Keyed here (not inlined at the call site) so the gate
@@ -106,31 +104,23 @@ export interface BusIdentity {
   handle: string;
 }
 
+type BusEnv = { ORCHESTRA_RUN_ID?: string; ORCHESTRA_WS_ID?: string; ORCHESTRA_WS_ID_IDENTITY?: string };
+
+/** Who the caller is: --as > $ORCHESTRA_WS_ID > $ORCHESTRA_WS_ID_IDENTITY, else ''. No default — an anonymous
+ *  sender would make `check` unable to say whose lot it is, and a reader identified as `''` would collide with
+ *  every other unidentified one on the `(run_id, reader)` unique index. */
+export function resolveBusHandle(flagAs: string | undefined, env: BusEnv): string {
+  return flagAs?.trim() || env.ORCHESTRA_WS_ID?.trim() || env.ORCHESTRA_WS_ID_IDENTITY?.trim() || '';
+}
+
 /**
- * Resolve `{ runId, handle }` from flags + env (pure; the unit tests drive it).
- *
- * Precedence, both axes: explicit flag > env > default. `handle` has NO default
- * — an anonymous sender would make `check` unable to say whose lot it is, and a
- * reader identified as `''` would collide with every other unidentified one on
- * the `(run_id, reader)` unique index. So it returns null and the caller fails
- * with a message naming both ways to supply it.
+ * Resolve `{ runId, handle }` from flags + env (pure; the unit tests drive it): explicit flag > env on both
+ * axes, NO default on either (#433). Null when either is missing — the caller fails naming how to supply it.
  */
-export function resolveBusIdentity(
-  flags: { run?: string; as?: string },
-  env: {
-    ORCHESTRA_RUN_ID?: string;
-    ORCHESTRA_WS_ID?: string;
-    ORCHESTRA_WS_ID_IDENTITY?: string;
-  },
-): BusIdentity | null {
-  const runId =
-    flags.run?.trim() || env.ORCHESTRA_RUN_ID?.trim() || DEFAULT_RUN_ID;
-  const handle =
-    flags.as?.trim() ||
-    env.ORCHESTRA_WS_ID?.trim() ||
-    env.ORCHESTRA_WS_ID_IDENTITY?.trim() ||
-    '';
-  if (!handle) return null;
+export function resolveBusIdentity(flags: { run?: string; as?: string }, env: BusEnv): BusIdentity | null {
+  const runId = resolveRunId(flags.run, env);
+  const handle = resolveBusHandle(flags.as, env);
+  if (!handle || !runId) return null;
   return { runId, handle };
 }
 
@@ -1094,7 +1084,7 @@ export function verbRunHold(
     case 'no-run':
       ctx.fail(
         `orchestra run ${verb}: run ${JSON.stringify(runId)} has no row in the bus 'runs' table — ` +
-          `nothing to ${verb} (pass --run <id>; \$ORCHESTRA_RUN_ID is your wave anchor, 'default' never has a row)`,
+          `nothing to ${verb} (pass --run <id>; \$ORCHESTRA_RUN_ID is your run)`,
       );
     // eslint-disable-next-line no-fallthrough
     case 'refused': {
@@ -1188,7 +1178,7 @@ export function verbRunPause(
     case 'no-run':
       ctx.fail(
         `orchestra run pause: run ${JSON.stringify(runId)} has no row in the bus 'runs' table — ` +
-          `nothing to pause (pass --run <id>; \$ORCHESTRA_RUN_ID is your wave anchor, 'default' never has a row)`,
+          `nothing to pause (pass --run <id>; \$ORCHESTRA_RUN_ID is your run)`,
       );
     // eslint-disable-next-line no-fallthrough
     case 'refused': {
