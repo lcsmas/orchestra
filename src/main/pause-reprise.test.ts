@@ -28,6 +28,7 @@ import {
   repriseStatusView,
   resumingCarrierFor,
   revertResumeToPaused,
+  planRoster,
   seedRoster,
   setLiveTreeSource,
   sweepReprise,
@@ -1374,6 +1375,26 @@ test('R2r2-m2b `repriseStatusView` trusts the LIVE chain over a STALE bus parent
     assert.equal(repriseStatusView(db, 'O')?.carrier, 'L1', 'the live chain O → L1 decides');
   });
   assert.equal(repriseStatusView(db, 'O')?.carrier, 'B1', 'without a live tree only the (stale) bus parent is known — the control that proves the order matters');
+  db.close();
+});
+
+test('#434 an ORPHAN re-attached under Q (its link-only ownership cleared) is a WORKER of Q: runIdOf = Q, a worker in Q\'s Pause roster, not a coordinator of its own mission', () => {
+  const { db } = freshDb();
+  busRuns.startRun(db, { id: 'Q', kind: 'mission', coordinator: 'Q' }, ON);
+  assert.equal(setRunPause(db, 'Q', true, 'Q'), 'paused');
+  const pausedAt = getRunPause(db, 'Q')!.pausedAt;
+  for (const [ws, run] of [['Q', 'Q'], ['D', 'Q']] as const) insertBilanRow(db, 'Q', ws, pausedAt, run);
+  db.prepare('UPDATE runs SET pause_trap_at = ? WHERE id = ?').run(pausedAt + 1, 'Q');
+  const reattached: WaveNode[] = [{ id: 'Q', kind: 'orchestrator' }, { id: 'D', kind: 'worktree', parentId: 'Q' }];
+  withLiveTree(reattached, () => {
+    assert.equal(beginReprise(db, 'Q', 'Q'), 'resuming');
+    const d = readRoster(db, 'Q', pausedAt).find((r) => r.wsId === 'D')!;
+    assert.deepEqual([d.role, d.memberRun], ['worker', 'Q']);
+  });
+  // the regression arm: the SAME orphan still carrying the persisted dangling-link ownership is its own mission, a coordinator Q cannot reach as a member
+  const stale: WaveNode[] = [{ id: 'Q', kind: 'orchestrator' }, { id: 'D', kind: 'worktree', parentId: 'Q', ownsRun: true }];
+  const planned = withLiveTree(stale, () => planRoster(db, 'Q', pausedAt, ['Q']));
+  assert.equal(planned.find((i) => i.wsId === 'D')?.role, 'coordinator', 'control: ownership left set → coordinator of its own run (what attach must clear)');
   db.close();
 });
 

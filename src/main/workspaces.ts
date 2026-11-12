@@ -2119,7 +2119,10 @@ export async function dispatchAttachRequest(input: {
 
   // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
   const oldAnchors = snapshotRunAnchors(id);
-  const updated: Workspace = { ...ws, parentId: rawParent };
+  // #434: an ownership that rested on having NO parent (a top-level / dangling-link mission) ends when the workspace is attached under one — it is a MEMBER of the new parent's run
+  // again. An owner by a promote (flag / kind) or by having children keeps it.
+  const ownedByLinkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !store.workspaces.some((w) => w.parentId === id); // run-position: non-run — the ownership WRITE on attach
+  const updated: Workspace = { ...ws, parentId: rawParent, ...(ownedByLinkOnly ? { ownsRun: undefined } : {}) };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
   log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);

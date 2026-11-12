@@ -386,6 +386,12 @@ test('#434 — a plain parent that OWNS a run is no longer exempt: `message` fro
   });
   assert.equal(unrelated.result.ok, true, `an unrelated top-level sender is not refused: ${unrelated.result.error}`);
   assert.equal(unrelated.delivered, true);
+  // a PROMOTED top-level worktree (flag + ownsRun) is a LEAD like the orchestrator kind: an unrelated sender is refused toward `send`
+  const promotedTop = await runWrapper({
+    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
+    topo: { from: 'ws-x', nodes: { 'ws-target': { ...node('ws-target'), canOrchestrate: true, ownsRun: true }, 'ws-x': node('ws-x') } },
+  });
+  assert.equal(promotedTop.result.ok, false, 'a promoted top-level worktree is not exempt (the same LEAD as kind orchestrator)');
   // …but a top-level target that has spawned (ownsRun) still refuses ITS OWN member, who has `send`
   assert.equal((await toLead(true, 'ws-worker')).result.ok, false, 'its member is still pointed at send');
 });

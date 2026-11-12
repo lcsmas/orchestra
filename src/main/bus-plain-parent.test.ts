@@ -282,6 +282,7 @@ test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s an
   assert.match(ws, /if \(ws\.ownsRun === true \|\| isCoordinatorKind\(ws\)\) return \{ ok: true, id, branch: ws\.branch, kind: ws\.kind \};/, 'promote is idempotent only for a RECORDED owner (a top-level workspace is promotable)');
   assert.match(ws, /\{ \.\.\.ws, canOrchestrate: undefined, ownsRun: undefined \}/, 'demote sheds ownership');
   assert.match(ws, /await ensureParentOwnsRun\(updated\); \/\/ #434: the new parent owns a run now/, 'attach marks the new parent as an owner');
+  assert.match(ws, /\.\.\.\(ownedByLinkOnly \? \{ ownsRun: undefined \} : \{\}\)/, 'attach clears an ownership that rested on having no parent');
   const sdk = src('src/main/agent-sdk.ts');
   assert.ok(sdk.indexOf('await ensureMemberRun(ws);') > 0 && sdk.indexOf('await ensureMemberRun(ws);') < sdk.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'a session start gives its parent a run BEFORE the env names it');
   const idx = src('src/main/index.ts');

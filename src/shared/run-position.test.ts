@@ -70,6 +70,7 @@ test('parentRunOf: the run ws is a member of = its direct parent; implicit only 
   assert.equal(isPlainOwnAnchor(loner, lk), true, 'a plain top-level workspace, with or without children');
   assert.equal(isPlainOwnAnchor({ ...loner, ownsRun: true }, lk), true, 'having spawned does not change it');
   assert.equal(isPlainOwnAnchor(lead, lk), false, 'the orchestrator kind is never exempt');
+  assert.equal(isPlainOwnAnchor({ ...loner, ownsRun: true, canOrchestrate: true } as RunNode, lk), false, 'a promoted top-level worktree is a LEAD too: never exempt');
   assert.equal(isPlainOwnAnchor(worker, lk), false, 'a member is not');
 });
 
