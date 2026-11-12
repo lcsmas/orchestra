@@ -203,3 +203,23 @@ test('#436 inside a fleet "answered" is unchanged: only a reply in the question\
   seqOf(cli(w, OPS, ['send', '--type', 'status', '--run', LEAD, '--to', LEAD, '--thread', String(q), 'main']));
   assert.equal(pending(), false, 'a reply in the question\'s own run clears it — as before #436');
 });
+
+test('#436 `--run` / `--as` cannot move the judgement: a stranger claiming the recipient\'s (or an ancestor) run still cannot dispatch or open a gate (review M1)', needsBuild, (t) => {
+  const w = world(t);
+  const d = cli(w, LEAD, ['send', '--type', 'dispatch', '--to', OPS, 'real brief']);
+  assert.equal(d.code, 0, d.stderr);
+  const base = rows(w).length;
+  const caps = () => w.db.prepare("SELECT state FROM dispatch_capabilities ORDER BY dispatch_seq").all() as { state: string }[];
+  assert.deepEqual(caps().map((c) => c.state), ['active'], 'control: LEAD\'s capability is active');
+  const refused = (o: Out) => { assert.equal(o.code, 1, `expected a refusal, got rc ${o.code}: ${o.stdout}`); assert.match(o.stderr, /outside your related runs/); };
+  refused(cli(w, X, ['send', '--run', LEAD, '--type', 'dispatch', '--to', OPS, 'hijack']));   // an ancestor run of the recipient
+  refused(cli(w, X, ['send', '--run', OPS, '--type', 'dispatch', '--to', OPS, 'hijack']));    // the recipient's own run
+  refused(cli(w, X, ['send', '--as', LEAD, '--type', 'dispatch', '--to', OPS, 'hijack']));    // a spoofed sender handle
+  refused(cli(w, X, ['gate', 'open', '--run', OPS, '--to', M, 'hijack?']));
+  assert.equal(rows(w).length, base, 'nothing written');
+  assert.deepEqual(caps().map((c) => c.state), ['active'], 'LEAD\'s capability was not superseded');
+  assert.equal(count(w, 'decision_gates'), 0);
+  // Controls: a related sender keeps using --run as before (OPS answering into the LEAD run), and a stranger's `--run` status still lands in the recipient\'s run.
+  assert.equal(cli(w, OPS, ['send', '--run', LEAD, '--type', 'status', '--to', LEAD, 'ok']).code, 0);
+  assert.equal(cli(w, X, ['send', '--run', OPS, '--type', 'status', '--to', M, 'fyi']).code, 0);
+});

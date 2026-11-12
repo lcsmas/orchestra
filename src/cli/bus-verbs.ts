@@ -165,6 +165,8 @@ export type OutFn = (text: string) => void;
 export interface BusVerbCtx {
   db: BusDb;
   id: BusIdentity;
+  /** #436 — the run the CALLER is really in (host-resolved / baked env), never the overridable `--run`: dispatch and gate are judged against it. */
+  ownRunId?: string;
   out: OutFn;
   fail: FailFn;
   bus: BusModule;
@@ -489,9 +491,11 @@ function routeMail(
   if (to === 'human') return ctx;
   const recipientRun = toRunId || (ctx.bus.getRun(ctx.db, to) ? to : null);
   if (!recipientRun) return ctx; // the host could not place the recipient (older app) — not judgeable, as before
-  if (ctx.bus.getRelatedRunIds(ctx.db, recipientRun).ids.includes(ctx.id.runId)) return ctx;
+  // Judged against the sender's OWN run, not `--run` (which names where to file, and would let a stranger claim the recipient's run — review #436 M1).
+  const own = ctx.ownRunId ?? ctx.id.runId;
+  if (ctx.bus.getRelatedRunIds(ctx.db, recipientRun).ids.includes(own)) return ctx;
   const where =
-    `${to} is outside your related runs (it is in run ${recipientRun}; your run ${ctx.id.runId} is neither that run ` +
+    `${to} is outside your related runs (it is in run ${recipientRun}; your run ${own} is neither that run ` +
     `nor an ancestor or descendant of it)`;
   const label = kind === 'decision_gate' ? 'a decision gate' : kind === 'question' ? 'an ask' : `a ${kind}`;
   if (!CROSS_RUN_KINDS.includes(kind)) {

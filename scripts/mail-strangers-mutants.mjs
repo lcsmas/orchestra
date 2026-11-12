@@ -14,7 +14,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 
-const VERBS = 'src/cli/bus-verbs.ts', WAKE = 'src/main/bus-wake.ts';
+const VERBS = 'src/cli/bus-verbs.ts', CLIX = 'src/cli/index.ts', WAKE = 'src/main/bus-wake.ts';
 const T = { asks: 'src/main/bus-asks-gates.test.ts', strangers: 'src/main/mail-between-strangers.test.ts', verbs: 'src/cli/bus-verbs.test.ts' };
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red; `cli` = rebuild the CLI bundle first. */
@@ -24,11 +24,13 @@ const MUTANTS = [
   { id: 'M03', name: 'a decision gate to an unrelated agent is no longer judged', cli: true, edits: [[VERBS, "if (to.value?.trim()) routeMail(ctx, 'gate open', 'decision_gate', to.value.trim(), toRunId);", '']], tests: [T.strangers, T.verbs] },
   { id: 'M04', name: 'any other kind (escalation) crosses unrelated runs', cli: true, edits: [[VERBS, "export const CROSS_RUN_KINDS: readonly string[] = ['status', 'question'];", "export const CROSS_RUN_KINDS: readonly string[] = ['status', 'question', 'escalation'];"]], tests: [T.strangers, T.verbs] },
   { id: 'M05', name: 'a recipient whose run has no row is no longer refused (a row nobody reads)', cli: true, edits: [[VERBS, 'if (!ctx.bus.getRun(ctx.db, recipientRun)) {', 'if (false as boolean) {']], tests: [T.strangers, T.verbs] },
-  { id: 'M06', name: 'a recipient in a RELATED run is treated as unrelated (in-fleet mail changes run, in-fleet dispatch refused)', cli: true, edits: [[VERBS, 'if (ctx.bus.getRelatedRunIds(ctx.db, recipientRun).ids.includes(ctx.id.runId)) return ctx;', '']], tests: [T.strangers, T.verbs] },
+  { id: 'M06', name: 'a recipient in a RELATED run is treated as unrelated (in-fleet mail changes run, in-fleet dispatch refused)', cli: true, edits: [[VERBS, 'if (ctx.bus.getRelatedRunIds(ctx.db, recipientRun).ids.includes(own)) return ctx;', '']], tests: [T.strangers, T.verbs] },
   { id: 'M07', name: 'an ask is filed in the sender\'s run (verbAsk ignores the route)', cli: true, edits: [[VERBS, "const wctx = routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);", "routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);\n  const wctx = ctx;"]], tests: [T.strangers, T.verbs] },
   { id: 'M08', name: 'a cross-run answer no longer clears the ask (the recipient is re-woken forever)', edits: [[WAKE, "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id OR r.run_id NOT IN (SELECT value FROM json_each(?)))';", "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id AND (SELECT COUNT(*) FROM json_each(?)) >= 0)';"]], tests: [T.strangers] },
   { id: 'M09', name: 'the cross-run answer arm admits EVERY run (an in-fleet answer filed in the wrong related run would clear too)', edits: [[WAKE, "export const ANSWER_RUN_SQL = '(r.run_id = q.run_id OR r.run_id NOT IN (SELECT value FROM json_each(?)))';", "export const ANSWER_RUN_SQL = '(1 = 1 OR (SELECT COUNT(*) FROM json_each(?)) >= 0)';"]], tests: [T.strangers] },
   { id: 'M10', name: 'a cross-run asker is not "waiting" (the asker-side answered arm is gone: liveness / Vague endormie misjudge it)', edits: [[WAKE, "WHERE (q.run_id = ? OR q.run_id NOT IN (SELECT value FROM json_each(?)))", "WHERE (q.run_id = ? AND (SELECT COUNT(*) FROM json_each(?)) >= 0)"]], tests: [T.asks] },
+  { id: 'M11', name: 'routeMail judges the overridable --run instead of the sender\'s own run (a stranger claims the recipient\'s run and dispatches)', cli: true, edits: [[VERBS, 'const own = ctx.ownRunId ?? ctx.id.runId;', 'const own = ctx.id.runId;']], tests: [T.strangers] },
+  { id: 'M12', name: 'the CLI never hands the sender\'s own run to the verbs', cli: true, edits: [[CLIX, "ownRunId: resolveRunId(undefined, liveEnv()) ?? undefined,", 'ownRunId: undefined,']], tests: [T.strangers] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

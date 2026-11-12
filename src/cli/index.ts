@@ -910,6 +910,7 @@ function busCtx(
     db,
     bus,
     id,
+    ownRunId: resolveRunId(undefined, liveEnv()) ?? undefined, // #436: where dispatch/gate are judged — `--run` cannot move it
     out: (text: string) => {
       process.stdout.write(text);
     },
