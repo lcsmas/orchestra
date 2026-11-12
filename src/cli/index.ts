@@ -1362,6 +1362,10 @@ async function main(argv: string[]): Promise<void> {
         );
       }
       process.stdout.write(`Spawned ${res.id} on branch ${res.branch}\n`);
+      // #435: the task was recorded as YOUR dispatch to the child (bus sequence + run) — its end-of-work report (`worker_done --cap "$(orchestra token)"`) is accepted.
+      const dispatched = res.dispatch as { runId?: unknown; seq?: unknown } | undefined;
+      if (dispatched && typeof dispatched.seq === 'number' && typeof dispatched.runId === 'string')
+        process.stdout.write(`Task recorded as your dispatch #${dispatched.seq} to ${res.id} (run ${dispatched.runId}).\n`);
       if (typeof res.note === 'string') process.stdout.write(`${res.note}\n`);
       reportProfile();
       return;

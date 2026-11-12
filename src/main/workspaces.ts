@@ -135,6 +135,7 @@ import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
 import { mirrorDispatch } from './bus-mirror.ts';
+import { recordSpawnDispatch, startAfterDispatch } from './spawn-dispatch.ts';
 import { formatPeerMessage, type PeerOrigin } from '../shared/peer-messages.ts';
 import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
 import { appendInboxBlock } from './inbox-write.ts';
@@ -1423,6 +1424,8 @@ export interface SpawnResult {
   /** #401: present only when the caller passed `--profile`: `applied` = the child's record carries the profile; otherwise the child is in
    *  navigation éphémère and `message` says why. */
   profile?: { applied: boolean; message: string };
+  /** #435: present when the spawn task was recorded as the spawner's dispatch to the child (run + bus sequence). Absent: no spawner / `--detached` / sandbox. */
+  dispatch?: { runId: string; seq: number };
 }
 
 /** The brief's model sentence, from the user's spawned-agent default model
@@ -1564,9 +1567,17 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
     }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
-    const started = await startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images);
-    if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
-    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...profileReport() };
+    // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
+    const after = await startAfterDispatch({
+      record: () => recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { from: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task }),
+      start: () => startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images),
+      teardown: () => deleteWorkspace(ws.id),
+    });
+    if (!after.ran) return { ok: false, error: `refusing to spawn: ${after.error}`, ...(after.kept ? { id: ws.id, branch: ws.branch } : {}) };
+    const started = after.result;
+    const dispatch = after.dispatch.kind === 'recorded' ? { dispatch: { runId: after.dispatch.runId, seq: after.dispatch.seq } } : {};
+    if (!started.ok) return { ...keptFailure(ws.id, ws.branch, started.error), ...dispatch };
+    return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...dispatch, ...profileReport() };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'spawn failed';
     // A throw AFTER the workspace was persisted (the start threw instead of answering ok:false) leaves the same KEPT child: say so (#375 pre-review).
