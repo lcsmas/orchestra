@@ -1,0 +1,14 @@
+  latencies (ms) sorted: 236, 238, 243, 253, 254, 254, 254, 254, 255, 257, 260, 261, 263, 265, 271, 271, 272, 274, 283, 509
+  p50=260ms  p95=283ms  max=509ms  over 20 lone sends
+  ARM A verdict: p95 283ms < 2000ms → PASS
+
+── ARM B (must-FAIL): ORCHESTRA_BUS_WATCHER=off → no sub-2s trigger ──
+  disabled: 2026-11-12T14:44:20.882Z [INFO] bus-wake: WAL accelerator DISABLED (ORCHESTRA_BUS_WATCHER=off) — sweep-only
+  WAL-event lines with watcher OFF: 0 (expected 0)
+  ARM B verdict: PASS — reverts to the 60s sweep, no sub-2s trigger
+
+══ #149 packaged wake-latency gate ══
+  ARM A must-PASS (watcher ON, p95<2s):   PASS  (p95=283ms)
+  ARM B must-FAIL (watcher OFF, 0 events): PASS
+#149 packaged wake-latency: PASS
+RC=0

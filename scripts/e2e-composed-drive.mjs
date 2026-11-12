@@ -190,7 +190,7 @@ try {
     check('A3_the_red_banner_shows_the_memory_pause', !!red && red.tone === 'crit', JSON.stringify(red));
     await shot('a3-pause-red');
     const bs2 = await busStatus();
-    check('A3_bus_status_says_the_memory_pause_is_in_effect', /memory: .*memory Pause IN EFFECT since /.test(bs2), bs2.split('\n').find((l) => /^memory:/.test(l)) ?? '');
+    check('A3_bus_status_says_the_memory_pause_is_in_effect', /memory: .*memory Pause IN EFFECT (on \d+ run\(s\) \([^)]*\) )?since /.test(bs2), bs2.split('\n').find((l) => /^memory:/.test(l)) ?? '');
     const st = await runStatus();
     const bilan = (st?.bilan ?? []).flatMap((r) => (r.activity?.containers?.stopped ?? []).map((c) => ({ ws: r.wsId, name: c.name, outcome: c.outcome, atMs: c.atMs })));
     touched = bilan.map((b) => b.name);
