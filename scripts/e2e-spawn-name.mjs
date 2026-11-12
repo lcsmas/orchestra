@@ -95,7 +95,7 @@ const world = (() => {
   const fakeEnv = { ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY}', ANTHROPIC_BASE_URL: '${ANTHROPIC_BASE_URL}' }; // a pinned account drops the inherited ANTHROPIC_* unless its env names them
   const accounts = [{ id: 'acc-rig', label: 'rig', configDir: cfg, env: fakeEnv }];
   const base = { baseBranch: 'main', createdAt: Date.now(), agent: 'claude' };
-  const workspaces = [{ ...base, id: 'ws-ops', name: `${path.basename(repo)} · ops-rig-parent`, repoPath: repo, worktreePath: wt, branch: 'ops-rig-parent', status: 'idle', accountId: 'acc-rig', canOrchestrate: true, branchManuallySet: true }];
+  const workspaces = [{ ...base, id: 'ws-ops', name: `${path.basename(repo)} · ops-rig-parent`, repoPath: repo, worktreePath: wt, branch: 'ops-rig-parent', status: 'idle', accountId: 'acc-rig', canOrchestrate: true, ownsRun: true, branchManuallySet: true }];
   return { d, fakeHome, ohome, cfg, repo, wt, accounts, workspaces, repos: [{ path: repo, name: 'rig-repo', defaultBranch: 'main', accountId: 'acc-rig' }] };
 })();
 const storeDir = path.join(world.ohome, 'userData', 'orchestra'); fs.mkdirSync(storeDir, { recursive: true });

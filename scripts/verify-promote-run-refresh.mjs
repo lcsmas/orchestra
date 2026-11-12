@@ -241,7 +241,7 @@ function ws(id, over) {
 // A LEAD (top-level orchestrator, its own run frozen delivery=ON) so a member
 // under it resolves to the LEAD run pre-promote (the ticket's spawn-under-LEAD).
 const LEAD_ID = 'lead-171';
-await mod.store.upsertWorkspace(ws(LEAD_ID, { canOrchestrate: true }));
+await mod.store.upsertWorkspace(ws(LEAD_ID, { canOrchestrate: true, ownsRun: true }));
 mod.startRun(busDb, { id: LEAD_ID, kind: 'mission', coordinator: LEAD_ID }, {
   delivery: true, wake: true, askGate: true, liveness: true,
 });
@@ -335,7 +335,7 @@ console.log('\n#171 RD — a promoted node\'s LIVE CHILD is ALSO reconciled (res
 const RD_LEAD = 'rd-lead-171';
 const RD_PARENT = 'rd-parent-171';
 const RD_CHILD = 'rd-child-171';
-await mod.store.upsertWorkspace(ws(RD_LEAD, { canOrchestrate: true }));
+await mod.store.upsertWorkspace(ws(RD_LEAD, { canOrchestrate: true, ownsRun: true }));
 await mod.store.upsertWorkspace(ws(RD_PARENT, { parentId: RD_LEAD })); // NOT yet orch
 await mod.store.upsertWorkspace(ws(RD_CHILD, { parentId: RD_PARENT }));
 liveSet.add(RD_PARENT);
@@ -473,7 +473,7 @@ console.log('\n#379 H8 — the coordinator bump revokes the replaced session key
   await mod.startHooksServer();
   const sock = mod.getHookSocketPath();
   const OPS = 'ops-379-h8';
-  await mod.store.upsertWorkspace(ws(OPS, { canOrchestrate: true, parentId: LEAD_ID }));
+  await mod.store.upsertWorkspace(ws(OPS, { canOrchestrate: true, ownsRun: true, parentId: LEAD_ID }));
   mod.startRun(busDb, { id: OPS, kind: 'vague', coordinator: OPS, parentRunId: LEAD_ID }, { delivery: false, wake: false, askGate: false, liveness: false, fencing: true });
   const cli = (args, env) => new Promise((resolve) => {
     const p = spawnProc(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, HOME: tmp, ORCHESTRA_HOME: tmp, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: OPS, ORCHESTRA_RUN_ID: OPS, ORCHESTRA_WORKTREE: path.join(tmp, OPS), ...env }, cwd: tmp, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -600,7 +600,7 @@ liveSet.add(PLAIN);
 liveSet.add(KIDMEM);
 // A FRESH orchestrator with a delivery-ON row (LEAD_ID's row was re-frozen OFF by the earlier promotes' D1b refreeze).
 const ORCH = 'orch-221';
-await mod.store.upsertWorkspace(ws(ORCH, { canOrchestrate: true }));
+await mod.store.upsertWorkspace(ws(ORCH, { canOrchestrate: true, ownsRun: true }));
 mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { delivery: true, wake: true, askGate: false, liveness: false });
 liveSet.add(ORCH);
 const m1 = await mod.dispatchMessageRequest({ from: WORKER, to: PLAIN, text: 'worker → plain parent' });

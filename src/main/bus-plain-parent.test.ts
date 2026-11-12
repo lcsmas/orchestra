@@ -256,6 +256,7 @@ test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s an
   assert.ok(create.indexOf('await ensureParentOwnsRun(ws)') >= 0 && create.indexOf('await ensureParentOwnsRun(ws)') < create.indexOf('await startBusRunAndWriteNotice(ws, remote)'), 'createWorkspace: ownership first, then the anchor row');
   assert.match(ws, /const updated: Workspace = \{ \.\.\.ws, canOrchestrate: true, ownsRun: true \};/, 'promote (worktree) records ownership beside the flag');
   assert.match(ws, /\{ \.\.\.ws, kind: 'orchestrator', ownsRun: true, name \}/, 'promote (scratch) records ownership');
+  assert.match(ws, /await markOrchestratorWorktree\(updated\.worktreePath, coordinatorRoleOf\(updated\) === 'dual'\);/, 'the first-spawn owner gets the standing-role sentinel, wording from run-position');
   const sdk = src('src/main/agent-sdk.ts');
   assert.ok(sdk.indexOf('await ensureMemberRun(ws);') > 0 && sdk.indexOf('await ensureMemberRun(ws);') < sdk.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'a session start gives its parent a run BEFORE the env names it');
   const idx = src('src/main/index.ts');

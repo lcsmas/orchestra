@@ -218,8 +218,8 @@ export async function makeRig({ label, spec, apiUrl, appBin, claudeBin, storeExt
     return { id, name: `pc-${k}`, repoPath: repo, worktreePath: wt(k), branch: branchOf(k), baseBranch: 'master', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: acct.id, sdkSessionId: '', ...extra };
   };
   const wsList = [
-    mk('lead', spec.lead, { canOrchestrate: true, kind: 'orchestrator' }),
-    mk('ops', spec.ops, { canOrchestrate: true, kind: 'orchestrator', parentId: spec.lead }),
+    mk('lead', spec.lead, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator' }),
+    mk('ops', spec.ops, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator', parentId: spec.lead }),
     ...spec.workers.map((w) => mk(w.k, w.id, { parentId: spec.ops, lastTask: `pc task ${w.k}` })),
   ];
   fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [], ...storeExtra }, null, 2));

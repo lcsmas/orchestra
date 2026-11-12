@@ -61,7 +61,7 @@ function buildWorld(armDir) {
     if (orch) fs.mkdirSync(wt, { recursive: true });
     else git(repo, 'worktree', 'add', '-q', '-b', name, wt);
     const task = FLEET[i][4];
-    return { id: ID[k], name, repoPath: orch ? '' : repo, worktreePath: wt, branch: name, baseBranch: orch ? '' : 'master', createdAt: Date.now() - (FLEET.length - i) * 3_600_000, status: 'idle', agent: 'claude', accountId: account.id, sdkSessionId: '', ...(orch ? { kind: 'orchestrator', canOrchestrate: true } : {}), ...(parent ? { parentId: ID[parent] } : {}), ...(task ? { lastTask: task } : {}) };
+    return { id: ID[k], name, repoPath: orch ? '' : repo, worktreePath: wt, branch: name, baseBranch: orch ? '' : 'master', createdAt: Date.now() - (FLEET.length - i) * 3_600_000, status: 'idle', agent: 'claude', accountId: account.id, sdkSessionId: '', ...(orch ? { kind: 'orchestrator', canOrchestrate: true, ownsRun: true } : {}), ...(parent ? { parentId: ID[parent] } : {}), ...(task ? { lastTask: task } : {}) };
   });
   fs.writeFileSync(path.join(ohome, 'userData', 'orchestra', 'store.json'), JSON.stringify({ repos: [{ path: repo, name: 'vh-repo', defaultBranch: 'master', accountId: account.id }], workspaces, accounts: [account], selfTuneRuns: [] }, null, 2));
   return { home, ohome, cfg, repo, bin, stubLog, workspaces, storeFile: path.join(ohome, 'userData', 'orchestra', 'store.json'), vagueFile: path.join(ohome, 'vague-endormie.json'), appLog: path.join(ohome, 'logs', 'orchestra.log') };

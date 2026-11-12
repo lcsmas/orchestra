@@ -146,7 +146,7 @@ export function buildWorld(armDir, guard) {
       fs.writeFileSync(path.join(wt, 'a.txt'), `base\nWIP-${name}\n`); // tracked edit
       fs.writeFileSync(path.join(wt, `wip-${name}.txt`), `UNCOMMITTED-${name}\n`); // untracked work
     }
-    return { id: IDS[k], name, repoPath: orch ? '' : repo, worktreePath: wt, branch: name, baseBranch: orch ? '' : 'master', createdAt: Date.now() - (FLEET.length - i) * 600000, status: 'idle', agent: 'claude', sdkSessionId: '', ...(orch ? { kind: 'orchestrator', canOrchestrate: true } : {}), ...(parent ? { parentId: IDS[parent] } : {}), ...(note ? { statusText: note } : {}) };
+    return { id: IDS[k], name, repoPath: orch ? '' : repo, worktreePath: wt, branch: name, baseBranch: orch ? '' : 'master', createdAt: Date.now() - (FLEET.length - i) * 600000, status: 'idle', agent: 'claude', sdkSessionId: '', ...(orch ? { kind: 'orchestrator', canOrchestrate: true, ownsRun: true } : {}), ...(parent ? { parentId: IDS[parent] } : {}), ...(note ? { statusText: note } : {}) };
   });
   fs.writeFileSync(path.join(ohome, 'userData', 'orchestra', 'store.json'), JSON.stringify({ repos: [], workspaces, accounts: [], selfTuneRuns: [] }, null, 2));
   const seeder = (cmd, ...a) => { const out = sh(process.execPath, ['--no-warnings', '--experimental-strip-types', path.join(REPO, 'scripts/pause-ui/seed-bus.mjs'), ohome, cmd, ...a], { env: { PATH: '/usr/bin:/bin', HOME: home } }); return JSON.parse(out.split('\n').filter((l) => l.startsWith('{') || l.startsWith('[')).pop()); };

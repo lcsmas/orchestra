@@ -60,7 +60,7 @@ const P = { id: 'bp-0123456789ab', name: 'Staging admin', createdAt: 1 }, Q = { 
 await store.setBrowserProfiles([P, Q]);
 const wsRec = (id, over = {}) => {
   const wt = path.join(tmpHome, `wt-${id}`); git(repoDir, ['worktree', 'add', '-q', '-b', `b-${id}`, wt]);
-  return { id, name: `repo · b-${id}`, repoPath: repoDir, worktreePath: wt, branch: `b-${id}`, baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', canOrchestrate: true, branchManuallySet: true, ...over };
+  return { id, name: `repo · b-${id}`, repoPath: repoDir, worktreePath: wt, branch: `b-${id}`, baseBranch: 'main', createdAt: 1, status: 'idle', agent: 'claude', canOrchestrate: true, ownsRun: true, branchManuallySet: true, ...over };
 };
 // the REAL profile service (#400) over the real store: its serial chain + deleting() are what the spawn's decision reads (spawn-profile-gate.ts)
 const gates = { settle: null, setProfiles: null, record: null }; // a held promise per effect: the harness decides when each resolves

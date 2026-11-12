@@ -97,7 +97,7 @@ function seedWorld(armDir) {
     git(repoDir, ['worktree', 'add', '-q', '-b', START[k], wt], fakeHome);
     fs.mkdirSync(path.join(wt, '.orchestra'), { recursive: true }); // a real workspace has it from creation (hooks/sentinels live there); writes into it are best-effort
     const base = { id: IDS[k], name: `repo · ${START[k]}`, repoPath: repoDir, worktreePath: wt, branch: START[k], baseBranch: 'main', createdAt: t++, status: 'idle', agent: 'claude', accountId: account.id, branchManuallySet: false };
-    if (k === 'par') wss.push({ ...base, canOrchestrate: true });
+    if (k === 'par') wss.push({ ...base, canOrchestrate: true, ownsRun: true });
     else if (k === 'kid') wss.push({ ...base, parentId: IDS.par, namedByParent: IDS.par });
     else if (k === 'legacy' || k === 'legacy2') wss.push({ ...base, parentId: IDS.par, autoRenameCount: 2 });
     else if (k === 'orphan') wss.push({ ...base, namedByParent: 'ws-rd-gone-parent' }); // a DANGLING namer: the workspace that named it was deleted (no parentId either)
