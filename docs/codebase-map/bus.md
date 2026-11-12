@@ -602,29 +602,13 @@ cycle). `walkToRootId` is retained there for any tree-root caller but is NOT the
 run anchor. `parentOrchestratorId` gives the nested `parent_run_id`. **#134 now
 CREATES the run row here-adjacent** (see the #134 section).
 
-**#182 — genuine standalone workspaces print "anchors no run", not all-OFF.** A
-standalone workspace anchors no run, so it has NO run row; `runFlags` collapses
-that to all-OFF, which the notice used to render as seven `=OFF` "frozen at wave
-start" lines — impersonating a frozen-OFF wave (a human read "my switches got
-un-ticked", an agent invented a "shadow rollout"). **The signal is
-`!anchorIsOrchestrator && no run row`, NOT the missing row alone.** A missing row
-also matches a GENUINE fleet member/orchestrator whose row is not started yet: at
-the reparent (`:1941`) and adopt (`:2471`) sites `writeBusSwitchState` runs
-BEFORE `maybeStartRunAtAnchor`, so `getRun(anchorId)` is transiently null for a
-real member — gating on the row alone would falsely stamp "standalone" on it (and
-persist it to disk on a notice-only reparent). The honest standalone signal is
-that the anchor CANNOT orchestrate (a member's anchor is its OPS = an
-orchestrator; a genuine top-level standalone is its own non-orchestrator anchor).
-`writeBusSwitchState(worktreePath, runId, anchorIsOrchestrator=true)` threads
-`resolveAnchorInfo(ws).anchorIsOrchestrator` from all three call sites and calls
-the pure `busSwitchNoticeDecision({runExists, anchorCanOrchestrate, frozen,
-live})` (`src/shared/bus-switches.ts`): `!anchorCanOrchestrate && !runExists` →
-one "anchors no run (standalone — not part of a fleet)… currently N/8 ON" line
-(live count via `countSwitchesOn`, never hardcoded — N/7 before #252 added the eighth switch, `pause`), ZERO `=OFF` lines; otherwise
-→ the unchanged frozen notice (legacy frozen-OFF stays OFF; frozen-ON and an
-orchestrator-anchored member with an unstarted row never print the no-run line).
-A **down bus** (D1) can't tell run-less from run-exists, so it falls back to the
-coexistence-safe all-OFF frozen notice.
+**#433 — a row-less workspace prints no notice; the "anchors no run (standalone)" line is gone** (it was #182's). Every
+top-level workspace now has a run row from birth, so the only workspace without one is a plain CHILD (its run is its parent's, #434).
+`writeBusSwitchState(worktreePath, runId)` calls the pure `busSwitchNoticeDecision({runExists, frozen})`
+(`src/shared/bus-switches.ts`): a run that exists → the frozen notice; no row → `null` → the notice file is removed (an
+old standalone line is wiped at the next write). All three call sites (creation, reparent, adopt) start the row BEFORE the
+notice write, so a transient row-less notice cannot happen (pinned by `reparent-run-binding.test.ts`). A **down bus** (D1) still falls back
+to the coexistence-safe all-OFF frozen notice. `countSwitchesOn` is kept (unit-pinned) but no longer used by the notice.
 
 The state lives in a **file, not a script constant**, for a specific reason:
 `installOrchestraHooks` short-circuits on a **hash of the script bodies**, so a
@@ -1222,7 +1206,7 @@ only renders the frozen shape.
 
 **Run-id surface disagreement — CLOSED by #134 (was the N2 tail, ledger #123).**
 The notice keys on `resolveWaveRunId` (now the nearest-orchestrator anchor, D1),
-the CLI verbs on `env.ORCHESTRA_RUN_ID || 'default'`, and #116's mirror on
+the CLI verbs on `env.ORCHESTRA_RUN_ID` (`|| 'default'` until #433), and #116's mirror on
 `ORCHESTRA_RUN_ID || host-<ts>`. #134 sets `ORCHESTRA_RUN_ID = anchor.anchorId`
 into the agent env (`workspaces.ts` `extraEnv`), so all three surfaces now agree
 on the wave run. The store-less CLI still writes mail with the SENDER's run
@@ -2470,9 +2454,19 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 
 - **Fires when a workspace BECOMES an orchestrator** (spawn-as-orchestrator: the
   anchor is itself) AND **lazily** when a MEMBER launches under a pre-existing
-  orchestrator whose row is missing (a LEAD/OPS promoted before this shipped). A
-  plain standalone workspace (`anchorId===ws.id` but NOT `canOrchestrate`) gets NO
-  row.
+  orchestrator whose row is missing (a LEAD/OPS promoted before this shipped). **#433:** a
+  TOP-LEVEL workspace (no resolvable parent — `isParentless`: none set, or a dangling link) also owns a run from
+  birth: `AnchorInfo.anchorOwnsRun = anchorIsOrchestrator || (anchorId===ws.id && isParentless)` is the gate
+  `maybeStartRunAtAnchor` checks (a MISSION row, coordinator = itself, switches frozen from the live set). A plain
+  workspace WITH a parent still gets NO row (its run is #434). `shouldBumpCoordinatorGeneration` is unchanged
+  (keys on `anchorIsOrchestrator`).
+- **App-start migration (#433).** `startRunsForParentless(deps, nodes, lookup)` (`bus-run-anchor.ts`, pure) starts the
+  mission of every parentless node without a row — it never touches a session or the store, and never re-freezes
+  (a parentless anchor has `parentRunId` null). `startRunsForParentlessWorkspaces()` (`workspaces.ts`) feeds it the live
+  store minus archived and sandbox workspaces and refreshes each started workspace's worktree notice (only when the
+  directory exists); `index.ts` calls it right after the bus opens (gated on `store.loadedFromDisk`) and BEFORE the hook
+  server, i.e. before any session starts. A running session keeps its baked `ORCHESTRA_RUN_ID` (= its own id) and reaches
+  the new row with no restart.
 - **`/promote`** (`dispatchPromoteRequest`) also calls it via `startRunForPromoted`
   in BOTH success branches — a promote does not relaunch the pty, so the OPS's own
   row is created at that wave boundary.
@@ -2550,11 +2544,11 @@ explicit operator path:
 
 `/busStatus` accepts the CLI's resolved `runId` and returns `displayRunId` +
 `frozenFlags` (`runFlags(db, runId)`) + `liveFlags` (`getLiveSwitches()`),
-serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_ID`
-> `default`), **never** the main process's `host-…` mirror id, plus a
+serialized JSON. The CLI prints the run it resolved (`--run` > `$ORCHESTRA_RUN_ID`;
+**no fallback — #433 removed the `default` sentinel**, a call naming no run is refused with `NO_RUN_MESSAGE`), **never** the main process's `host-…` mirror id, plus a
 frozen-vs-live flag table (WIRE names). No write path. `runExists` (#206) tells a
 missing run row apart from a run frozen OFF (`runFlags` reads both as all-OFF): the
-CLI then prints "no such run (standalone …)" and `—` in the frozen column. `runStatusView` (`bus-runs.ts`) also returns `heldAt`/`heldBy` (#204): a HELD run prints `hold: HELD since <iso> by <holder>`; not held prints nothing.
+CLI then prints "no such run (no row in the bus 'runs' table)" and `—` in the frozen column (#433: no "standalone" wording; a lone top-level workspace has a row, so it prints its run with the frozen switches). `runStatusView` (`bus-runs.ts`) also returns `heldAt`/`heldBy` (#204): a HELD run prints `hold: HELD since <iso> by <holder>`; not held prints nothing.
 
 **`memory:` line (#285).** `/busStatus` also returns `memoryGuard` (the host-wide `MemoryGuardSnapshot`, `src/main/memory-guard.ts`) and the
 CLI prints one line from it after `bus:` — `memory: 12.3 GB available · admission open (holds below 6.0 GB) · memory Pause none (due below
@@ -2605,7 +2599,14 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   `startRun` → ABSENT), G5 member anchors on OPS + lazy-creates it (+ nearest≠tree-root
   control), G4-D1 member anchored on OPS not LEAD, **G4b** mission re-freeze at wave
   boundary (+ no-refreeze control ⇒ stale) and OPS-row byte-identity across a member
-  spawn (F1), standalone → no row, D1 null/throwing bus, idempotence.
+  spawn (F1), D1 null/throwing bus, idempotence; **#433:** a parentless plain workspace starts a MISSION row
+  (a plain child none, a dangling-parent workspace is top-level) + the `startRunsForParentless` sweep arms.
+- `src/main/bus-top-level-run.test.ts` (**#433**) — the real run-start + sweep over a real bus and a real `store.json`
+  (read by the CLI's own `offlineWaveNodes`), plus the BUILT CLI: a run-less top-level `send` is refused → after the sweep
+  the SAME baked env sends; the sweep touches no store bytes and re-freezes nothing; no env + no `--run` is refused on
+  `send`/`run hold`/`bus-status`, `--run default` is an unknown run; `bus-status` against a stub app socket whose reply is
+  the real `busStatusRunView` prints the lone workspace's run + frozen switches. Guard-removed mutants:
+  `scripts/top-level-run-mutants.mjs` (`pnpm run test:top-level-run-mutants`, 12 mutants, byte-exact restore).
 - `src/main/bus-wake-run-switch.test.ts` — G7 the REAL accessor fires a frozen-ON
   run, COUNTS a frozen-OFF run, unwired-accessor arm reproduces the master defect.
 - `src/main/bus-parent-run.test.ts` (**#221**) — the REAL `computeAnchorInfo` +
@@ -2773,12 +2774,14 @@ returning null for an unknown run) and fails with `unknownRunRefusalMessage`
 (`src/cli/bus-verbs.ts`), which **names the remedy**: `orchestra restart` to
 re-derive the anchor, or correct/unset `$ORCHESTRA_RUN_ID` / pass `--run`.
 
-**The `default` sentinel is EXEMPTED** (`id.runId !== DEFAULT_RUN_ID` guards the
-check). `default` never gets a `runs` row — rows are created only at orchestrator
-anchors (#134 `maybeStartRunAtAnchor`), and a plain standalone workspace
-deliberately gets none either. `default` is the documented fallback for a manual /
-standalone send, so refusing it would break every unanchored send. The gate is
-only for a run id that LOOKS anchored (a uuid) but has no row — the F-C4-2b shape.
+**#433: there is no `default` sentinel any more** (it was exempted here, `id.runId !== DEFAULT_RUN_ID`). A send naming
+no run (no `--run`, no `$ORCHESTRA_RUN_ID`) is refused before any bus opens with `NO_RUN_MESSAGE`
+(`resolveRunId` / `busIdentityOrFail`, `src/cli/bus-verbs.ts` / `index.ts`); `--run default` is just a run with no row and
+hits this gate. The admin verbs (`run hold|resume|pause|release|refreeze|status`, `bus-status`) resolve their target
+through `runOrFail` with the same refusal; `resolveBusIdentity` returns null when either the run or the handle is
+missing, `resolveBusHandle` gives the handle alone (the `confirm` verbs key on the caller's roster, not a run id).
+Two boot log lines (`bus-wake: started`, `bus-liveness: started`) still read a `'default'` run for their "switch ON/OFF" text —
+log-only signals, not verbs (always OFF: no such row).
 
 ## Two INDEPENDENT pre-send gates, no clobber
 
@@ -2788,7 +2791,7 @@ and neither clobbers the other:
 | Gate | Fires from | When | Message |
 |---|---|---|---|
 | #142 `refuseIfStaleRun()` | the `.orchestra/bus-run-stale` marker FILE, **before any bus opens** | this workspace was re-parented with `--no-restart` | `staleRunRefusalMessage` |
-| #155 run-existence | the opened bus (`runExists`), after openBusForVerb | `run_id` (≠ `default`) has no `runs` row | `unknownRunRefusalMessage` |
+| #155 run-existence | the opened bus (`runExists`), after openBusForVerb | `run_id` has no `runs` row (#433: `default` is no longer exempt) | `unknownRunRefusalMessage` |
 | #175 recipient-reachability | `assertRecipientReachable()` in `bus-verbs.ts`, inside send/ask/gate-open, before any write | `--to` names a workspace that ANCHORS its own run (`getRun(to)` non-null) and the send run ∉ `getRelatedRunIds(to).ids` | inline, names the fix (`--run <to> --to <to>`) |
 
 The #142 marker gate short-circuits first, so a stale + unanchored workspace sees
