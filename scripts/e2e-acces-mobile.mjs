@@ -271,7 +271,7 @@ const world = (() => {
   const workspaces = [
     { ...base, id: 'ws-am-waiting', name: 'repo-orchestra · am-waiting', repoPath: repoA, worktreePath: wts[0], branch: 'e2e/am-waiting', status: 'waiting', accountId: 'acc-mc' },
     { ...base, id: 'ws-am-idle', name: 'repo-orchestra · am-idle', repoPath: repoA, worktreePath: wts[1], branch: 'e2e/am-idle', status: 'idle', accountId: 'acc-mc', parentId: 'ws-am-coord' },
-    // #338: am-idle is a FLEET MEMBER of this coordinator's run, whose bus `delivery` switch is ON — the agent `/message` path refuses it.
+    // #338: am-idle is a FLEET MEMBER of this coordinator's run — the agent `/message` path refuses it (#441: for every run; the `delivery` switch is gone).
     { ...base, id: 'ws-am-coord', name: 'orchestrator · am-coord', kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: coordDir, branch: 'am-coord', status: 'idle' },
     // #373: the whole tree — am-coord › am-sub › am-deep › am-deeper; am-kid under am-idle (a waiting ancestor later); am-hung under an ARCHIVED middle parent
     ...[['sub', 'ws-am-coord'], ['deep', 'ws-am-sub'], ['deeper', 'ws-am-deep'], ['kid', 'ws-am-idle'], ['hung', 'ws-am-arch2']].map(([n, parentId]) => ({ ...base, id: `ws-am-${n}`, name: `orchestrator · am-${n}`, kind: 'orchestrator', repoPath: '', baseBranch: '', worktreePath: plainDir(n), branch: `am-${n}`, status: 'idle', parentId })),
@@ -292,7 +292,7 @@ const REAL_CLAUDE = fs.realpathSync(path.join(LIVE_HOME, '.local/bin/claude'));
 fs.symlinkSync(REAL_CLAUDE, path.join(stubDir, 'claude'));
 const TOKEN_FILE = path.join(world.ohome, 'acces-mobile', 'token');
 
-// #338: the coordinator's run with the bus `delivery` switch ON, written by the REAL bus module (bundled, run under Electron-as-node
+// #338: the coordinator's run (#441: no `delivery` switch to turn ON — bus mail is always on), written by the REAL bus module (bundled, run under Electron-as-node
 // for the better-sqlite3 ABI), exactly as the bus-page rig does.
 {
   const require_ = createRequire(import.meta.url);
@@ -303,7 +303,7 @@ const TOKEN_FILE = path.join(world.ohome, 'acces-mobile', 'token');
   const bundle = path.join(world.d, 'bus-seed.cjs');
   await build({ entryPoints: [entry], outfile: bundle, bundle: true, format: 'cjs', platform: 'node', external: ['electron', 'better-sqlite3', 'node-pty'], logLevel: 'silent', nodePaths: [path.join(repoRoot, 'node_modules')] });
   const runner = path.join(world.d, 'bus-seed-run.cjs');
-  fs.writeFileSync(runner, `const m = require(${JSON.stringify(bundle)}); const db = m.openBus(m.busPath()); m.startRun(db, { id: 'ws-am-coord', kind: 'mission', coordinator: 'ws-am-coord', title: 'am rig fleet' }, { ...m.DEFAULT_BUS_SWITCHES, delivery: true }); db.close(); console.log('SEEDED ' + m.busPath());`);
+  fs.writeFileSync(runner, `const m = require(${JSON.stringify(bundle)}); const db = m.openBus(m.busPath()); m.startRun(db, { id: 'ws-am-coord', kind: 'mission', coordinator: 'ws-am-coord', title: 'am rig fleet' }, { ...m.DEFAULT_BUS_SWITCHES }); db.close(); console.log('SEEDED ' + m.busPath());`);
   const out = sh(path.join(APP_DIR, 'node_modules/electron/dist/electron'), [runner], { env: { PATH: process.env.PATH, HOME: world.fakeHome, ORCHESTRA_HOME: world.ohome, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: path.join(repoRoot, 'node_modules') } });
   if (!out.includes(`SEEDED ${path.join(world.ohome, 'bus.sqlite')}`)) throw new Error(`bus seeding did not report the scratch path: ${out}`);
 }

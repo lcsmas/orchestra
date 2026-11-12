@@ -158,7 +158,22 @@ async function waitForLogLine(applog, re, timeoutMs) {
 
 // A lone cross-process send via the built CLI under real Electron (abi130), with
 // ORCHESTRA_HOME pinned to the app's home so it writes the SAME bus.
+// #442 stale-rig sweep: since #441 there is no row-less `default` run — a broadcast needs a run that EXISTS and $ORCHESTRA_RUN_ID naming it.
+// The run row is started once per app home (bus.ts openBus + startRun, system node, WAL-concurrent with the app); the watcher still fires on
+// the raw WAL write of the CLI's send, which is what is timed.
+const RUN_ID = 'rig-149-run';
+const seeded = new Set();
+function seedRunOnce(busHome) {
+  if (seeded.has(busHome)) return;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const b = await import(${JSON.stringify(path.join(ROOT, 'src/main/bus.ts'))}); const m = await import(${JSON.stringify(path.join(ROOT, 'src/main/bus-runs.ts'))});
+     const db = b.openBus(${JSON.stringify(path.join(busHome, 'bus.sqlite'))}); m.startRun(db, { id: ${JSON.stringify(RUN_ID)}, kind: 'mission', coordinator: ${JSON.stringify(RUN_ID)} }, {}); db.close();`],
+    { env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME, ORCHESTRA_HOME: busHome }, encoding: 'utf8' });
+  if (r.status !== 0) fail(`could not seed the run in ${busHome}: ${r.stderr}`);
+  seeded.add(busHome);
+}
 function cliSend(busHome, i) {
+  seedRunOnce(busHome);
   const mainJs = path.join(WORK, `cli-main-${i}.cjs`);
   // A BROADCAST (no --to) is a lone WAL write with NO workspace-store dependency:
   // the #144 recipient canonicalizer only runs when --to is present, so an empty
@@ -182,6 +197,7 @@ function cliSend(busHome, i) {
       WAYLAND_DISPLAY: myDisplay,
       ELECTRON_OZONE_PLATFORM_HINT: 'wayland',
       ORCHESTRA_HOME: busHome,
+      ORCHESTRA_RUN_ID: RUN_ID,
       ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
     },
     encoding: 'utf8',

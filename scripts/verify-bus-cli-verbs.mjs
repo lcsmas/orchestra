@@ -69,6 +69,28 @@ function record(name, pass, detail) {
   console.log(`${pass ? '✔' : '✘'} ${name}\n    ${detail}`);
 }
 
+// #442 stale-rig sweep: since #441 there is no row-less `default` run, so every `--as <h>` verb needs a run that EXISTS. The scratch home's
+// run is started the way the app does (bus.ts openBus + startRun, system node) and named to the CLI by $ORCHESTRA_RUN_ID. The arms keep
+// their meaning: the rows under test are still written by the CLI under real Electron; only the run row is seeded.
+// #144: `--to`/`--as` handles resolve to FULL workspace ids against the store (offline: <home>/userData/orchestra/store.json), so the rig's
+// named readers are real store rows: WS.w1 etc. are the ids the bus holds as recipient/reader.
+const WS = Object.fromEntries(['w1', 'r4', 'crashy', 'ops', 'reader'].map((n, i) => [n, `0000000${i + 1}-b115-4115-8115-00000000000${i + 1}`]));
+const RUN_ID = WS.ops; // a run id IS its coordinator's workspace id; w1/r4/crashy/reader are its members, so `dispatch --to <member>` is inside the sender's run
+function seedStore(home) {
+  const dir = path.join(home, 'userData', 'orchestra');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'store.json'), JSON.stringify({ repos: [], accounts: [], workspaces: Object.entries(WS).map(([name, id]) => ({ id, name, kind: 'scratch', ...(id === RUN_ID ? { ownsRun: true } : { parentId: RUN_ID }) })) }));
+}
+function seedRun(home) {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const b = await import(${JSON.stringify(path.join(ROOT, 'src/main/bus.ts'))}); const m = await import(${JSON.stringify(path.join(ROOT, 'src/main/bus-runs.ts'))});
+     const db = b.openBus(${JSON.stringify(path.join(home, 'bus.sqlite'))}); m.startRun(db, { id: ${JSON.stringify(RUN_ID)}, kind: 'mission', coordinator: ${JSON.stringify(RUN_ID)} }, {}); db.close();`],
+    { env: { ...process.env, ORCHESTRA_HOME: home }, encoding: 'utf8' });
+  seedStore(home);
+  if (r.status !== 0) { console.error(`[rig] could not seed the run in ${home}: ${r.stderr}`); process.exit(2); }
+}
+seedRun(HOME);
+
 // ─── driving the CLI ────────────────────────────────────────────────────────
 
 /**
@@ -97,6 +119,7 @@ function runElectronCli(args, extraEnv = {}) {
       env: {
         ...process.env,
         ORCHESTRA_HOME: HOME,
+        ORCHESTRA_RUN_ID: RUN_ID,
         ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
         ...extraEnv,
       },
@@ -145,6 +168,7 @@ function cliStderr(r) {
 function freshHome(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `orchestra-bus-${tag}-`));
   homes.push(dir);
+  seedRun(dir);
   return dir;
 }
 const homes = [];
@@ -195,8 +219,8 @@ for (const verb of ['send', 'check', 'ack', 'ask', 'gate']) {
 }
 record(
   'ARTIFACT the bundle under test carries all five verbs and its --help runs under Electron',
-  abiProbe.code === 0 && /orchestra send --type/.test(abiProbe.stdout),
-  `RC=${abiProbe.code}, usage lists the bus verbs: ${/orchestra send --type/.test(abiProbe.stdout)}`,
+  abiProbe.code === 0 && /^\s+send\s+Append a message to the fleet bus/m.test(abiProbe.stdout),
+  `RC=${abiProbe.code}, usage lists the bus verbs: ${/^\s+send\s+Append a message to the fleet bus/m.test(abiProbe.stdout)}`,
 );
 
 // ─── T115.5 — runtime: construct a DB under real Electron, read the row back ─
@@ -204,14 +228,14 @@ record(
 {
   const home = freshHome('runtime');
   const send = await runElectronCli(
-    ['send', '--type', 'dispatch', '--to', 'w1', '--as', 'ops', 'RUNTIME-PROBE'],
+    ['send', '--type', 'dispatch', '--to', WS.w1, '--as', WS.ops, 'RUNTIME-PROBE'],
     { ORCHESTRA_HOME: home },
   );
-  const seq = Number(send.stdout.trim());
+  const seq = Number(send.stdout.trim().split('\n')[0]); // a `dispatch` prints its sequence, then the capability token it minted (#129)
   // READ THE ROW BACK, and read it back through a SEPARATE process — a send
   // that printed an id while writing nothing would satisfy any check that only
   // looked at stdout.
-  const check = await runElectronCli(['check', '--as', 'w1'], { ORCHESTRA_HOME: home });
+  const check = await runElectronCli(['check', '--as', WS.w1], { ORCHESTRA_HOME: home });
   let lot = null;
   try {
     lot = JSON.parse(check.stdout.trim());
@@ -244,7 +268,7 @@ record(
   let r;
   try {
     r = spawnSync(process.execPath, [CLI, 'send', '--type', 'status', '--as', 'nobody', 'x'], {
-      env: { ...process.env, ORCHESTRA_HOME: abiHome },
+      env: { ...process.env, ORCHESTRA_HOME: abiHome, ORCHESTRA_RUN_ID: RUN_ID },
       encoding: 'utf8',
     });
   } finally {
@@ -269,7 +293,7 @@ record(
   // Without this, "RC=1 under node" could just mean the CLI is broken for
   // everyone, and the arm would prove nothing about the ABI.
   const ctl = spawnSync(process.execPath, [CLI, 'send', '--type', 'status', '--as', 'nodectl', 'ABI-CONTROL'], {
-    env: { ...process.env, ORCHESTRA_HOME: abiHome },
+    env: { ...process.env, ORCHESTRA_HOME: abiHome, ORCHESTRA_RUN_ID: RUN_ID },
     encoding: 'utf8',
   });
   record(
@@ -289,7 +313,7 @@ record(
 
 {
   const home = freshHome('ask');
-  const r = await runElectronCli(['ask', '--to', 'ops', '--as', 'w1', 'may I proceed?'], {
+  const r = await runElectronCli(['ask', '--to', WS.ops, '--as', WS.w1, 'may I proceed?'], {
     ORCHESTRA_HOME: home,
   });
   const seq = Number(r.stdout.trim());
@@ -301,12 +325,12 @@ record(
     r.code === 0 && Number.isInteger(seq) && seq > 0 && r.ms < 30_000,
     `RC=${r.code}, printed id=${seq}, wall clock ${r.ms}ms (Bash cap is 600000ms)`,
   );
-  const back = await runElectronCli(['check', '--as', 'ops'], { ORCHESTRA_HOME: home });
+  const back = await runElectronCli(['check', '--as', WS.ops], { ORCHESTRA_HOME: home });
   const lot = JSON.parse(back.stdout.trim());
   const q = lot.messages.find((m) => m.sequence === seq);
   record(
     'T115.6b the ask actually LANDED as a question row addressed to the target',
-    !!q && q.kind === 'question' && q.recipient === 'ops' && q.body === 'may I proceed?',
+    !!q && q.kind === 'question' && q.recipient === WS.ops && q.body === 'may I proceed?',
     `kind=${q?.kind}, recipient=${q?.recipient}, body=${JSON.stringify(q?.body)}`,
   );
 }
@@ -317,10 +341,10 @@ record(
   const home = freshHome('noack');
   const E = { ORCHESTRA_HOME: home };
   // TWO messages, a number written down BEFORE the run — not read off the lot.
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-1'], E);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'r4', '--as', 'ops', 'NOACK-2'], E);
-  const a = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
-  const b = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
+  await runElectronCli(['send', '--type', 'dispatch', '--to', WS.r4, '--as', WS.ops, 'NOACK-1'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', WS.r4, '--as', WS.ops, 'NOACK-2'], E);
+  const a = JSON.parse((await runElectronCli(['check', '--as', WS.r4], E)).stdout.trim());
+  const b = JSON.parse((await runElectronCli(['check', '--as', WS.r4], E)).stdout.trim());
   record(
     'T115.4 a plain check does NOT ack: the second check replays the same lot, same ids',
     a.count === 2 && a.replay === false && b.replay === true &&
@@ -328,8 +352,8 @@ record(
     `first: lot=${a.lot} count=${a.count} replay=${a.replay}; second: lot=${b.lot} count=${b.count} replay=${b.replay}, ` +
       `messages byte-identical=${JSON.stringify(b.messages) === JSON.stringify(a.messages)}`,
   );
-  const acked = await runElectronCli(['ack', String(a.lot), '--as', 'r4'], E);
-  const c = JSON.parse((await runElectronCli(['check', '--as', 'r4'], E)).stdout.trim());
+  const acked = await runElectronCli(['ack', String(a.lot), '--as', WS.r4], E);
+  const c = JSON.parse((await runElectronCli(['check', '--as', WS.r4], E)).stdout.trim());
   record(
     'T115.4b after the reader acks, the lot is gone (so the replay above was not just "check is broken")',
     acked.code === 0 && c.count === 0 && c.lot === null,
@@ -363,8 +387,8 @@ record(
 {
   const home = freshHome('crash');
   const E = { ORCHESTRA_HOME: home };
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-1'], E);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-2'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', WS.crashy, '--as', WS.ops, 'CRASH-1'], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', WS.crashy, '--as', WS.ops, 'CRASH-2'], E);
 
   const mainJs = path.join(home, 'consumer.cjs');
   fs.writeFileSync(
@@ -373,11 +397,11 @@ record(
      app.disableHardwareAcceleration();
      app.whenReady().then(async () => {
        const { runCli } = require(${JSON.stringify(CLI)});
-       await runCli(['check', '--as', 'crashy']);
+       await runCli(['check', '--as', ${JSON.stringify(WS.crashy)}]);
      });`,
   );
   const consumer = spawn(ELECTRON, [mainJs, '--no-sandbox'], {
-    env: { ...process.env, ORCHESTRA_HOME: home, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+    env: { ...process.env, ORCHESTRA_HOME: home, ORCHESTRA_RUN_ID: RUN_ID, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -425,7 +449,7 @@ record(
   // proven by aliveAtKill and the never-acked half is proven by the outstanding
   // lot replaying below — asserting the exact reaping signal only adds flake.
 
-  const after = JSON.parse((await runElectronCli(['check', '--as', 'crashy'], E)).stdout.trim());
+  const after = JSON.parse((await runElectronCli(['check', '--as', WS.crashy], E)).stdout.trim());
   record(
     'T115.2 consumer SIGKILLed after check, before ack → the next check returns the BYTE-IDENTICAL lot',
     !!killedLot && killedLot.count === 2 && aliveAtKill &&
@@ -440,9 +464,9 @@ record(
   );
   // …and after the ack, ONLY NEWER rows. Without this half, "the same lot
   // forever" — a check that could never advance — would also pass the arm above.
-  await runElectronCli(['ack', String(after.lot), '--as', 'crashy'], E);
-  await runElectronCli(['send', '--type', 'dispatch', '--to', 'crashy', '--as', 'ops', 'CRASH-3'], E);
-  const fresh = JSON.parse((await runElectronCli(['check', '--as', 'crashy'], E)).stdout.trim());
+  await runElectronCli(['ack', String(after.lot), '--as', WS.crashy], E);
+  await runElectronCli(['send', '--type', 'dispatch', '--to', WS.crashy, '--as', WS.ops, 'CRASH-3'], E);
+  const fresh = JSON.parse((await runElectronCli(['check', '--as', WS.crashy], E)).stdout.trim());
   record(
     'T115.2b after the ack, check returns ONLY newer rows',
     fresh.count === 1 && fresh.messages[0]?.body === 'CRASH-3' && fresh.lot !== after.lot,
@@ -460,6 +484,7 @@ record(
 
 {
   const downHome = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-bus-down-'));
+  seedRun(downHome);
   try {
     const send = await runElectronCli(
       ['send', '--type', 'escalation', '--as', 'lonely', 'APP-WAS-DOWN'],
@@ -467,7 +492,7 @@ record(
     );
     const dbExisted = fs.existsSync(path.join(downHome, 'bus.sqlite'));
     // A SEPARATE process opened after the fact = the app coming back up.
-    const back = await runElectronCli(['check', '--as', 'reader'], {
+    const back = await runElectronCli(['check', '--as', WS.reader], {
       ORCHESTRA_HOME: downHome,
       ORCHESTRA_SOCK: path.join(downHome, 'no-such.sock'),
     });
