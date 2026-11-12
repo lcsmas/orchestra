@@ -2103,7 +2103,7 @@ const ARMS = [
       const stopAndWait = async () => { await app.cdp.eval(`window.orchestra.stopAgent?.(${JSON.stringify(child.id)})`);   // optional call: #233 deleted the wrapper (a build with no agent PTY has nothing to stop)
          await waitFor('child agent PTY gone', async () => !(await app.ptys()).some((p) => p.ptyId === child.id), 15000, 250); };
       await stopAndWait(); // baseline: kill the spawn-fallback PTY so the wake path is what runs; after: nothing to stop
-      const msg = await runCli(app, ['message', child.id, MSG_TEXT]);
+      const msg = await runCli(app, ['message', '--emergency', child.id, MSG_TEXT]);
       const want = pick(EXPECT.messageDelivery);
       ctx.clause('wake/message-delivery', msg.rc === 0 && msg.stdout.includes(`Delivered (${want})`), `expected(${MODE})=Delivered (${want}); rc=${msg.rc} stdout=${JSON.stringify(msg.stdout)} stderr=${JSON.stringify(msg.stderr.slice(0, 200))}`);
       const inboxFile = path.join(app.world.fakeHome, '.orchestra', 'inbox', `${child.id}.txt`);
@@ -2322,7 +2322,7 @@ const ARMS = [
       await runControl(ctx);
       const idx = (t) => stubLogText(again).indexOf(t);
       // child A: the FIRST start is a peer-message wake (not Restart)
-      const msg = await runCli(again, ['message', a.child.id, MSG]);
+      const msg = await runCli(again, ['message', '--emergency', a.child.id, MSG]);
       ctx.clause('brief/wake-starts-the-child', msg.rc === 0 && /Delivered \((started|live)\)/.test(msg.stdout), `orchestra message -> rc=${msg.rc} ${JSON.stringify(msg.stdout)}`);
       await waitFor('wake text reaches the CLI', () => (idx(MSG) >= 0 ? true : null), 30000, 300).catch(() => null);
       await sleep(1500);
@@ -2798,11 +2798,11 @@ const ARMS = [
       const landed = async (needle, ms = 25000) => { await waitFor(`'${needle}' reached the CLI`, () => countIn(stubLogText(app), needle) >= 1, ms, 250).catch(() => null); await sleep(400); return countIn(stubLogText(app), needle); };
       // ── message: a STOPPED workspace is woken (started), a LIVE one is delivered to (live) ──
       ctx.clause('pre/no-session-yet', sdkLaunches(app) === 0, `SDK session launches before the first message=${sdkLaunches(app)}`);
-      const m1 = await runCli(app, ['message', wsId, MSG_TEXT]);
+      const m1 = await runCli(app, ['message', '--emergency', wsId, MSG_TEXT]);
       ctx.clause('message/stopped-workspace-is-woken', m1.rc === 0 && m1.stdout.includes('Delivered (started)'), `Delivered (started) wanted; rc=${m1.rc} stdout=${J(m1.stdout)} stderr=${J(m1.stderr.slice(0, 160))}`);
       ctx.clause('message/text-reached-the-session', (await landed(MSG_TEXT)) === 1, `the message text is in the session CLI's stdin ${countIn(stubLogText(app), MSG_TEXT)}x (want 1)`);
       const MSG2 = `${MSG_TEXT} again`;
-      const m2 = await runCli(app, ['message', wsId, MSG2]);
+      const m2 = await runCli(app, ['message', '--emergency', wsId, MSG2]);
       ctx.clause('message/live-session-is-delivered-to', m2.rc === 0 && m2.stdout.includes('Delivered (live)') && (await landed(MSG2)) === 1, `Delivered (live) wanted; rc=${m2.rc} stdout=${J(m2.stdout)}; text in stdin ${countIn(stubLogText(app), MSG2)}x`);
       // ── /peers: no PTY-derived `running` flag ──
       const peers = await socketPost(app, '/peers', {});
@@ -2842,7 +2842,7 @@ const ARMS = [
       const stopped = await waitFor('the session CLI stopped by the switch', () => (live.length > 0 && live.every((p) => !pidAlive(p)) ? true : null), 15000, 250).catch(() => false);
       ctx.clause('branch-switch/the-live-session-is-stopped', !!stopped, `session CLI pid(s) before the switch ${J(live)} alive after=${J(live.map(pidAlive))}`);
       // ── account migration WITH a live session (the switch above stopped the last one: wake it first): the session is stopped before the transcript moves, re-pinned, no `(resumed)`, no main-side relaunch ──
-      const m3 = await runCli(app, ['message', wsId, `${MSG_TEXT} before the migration`]);
+      const m3 = await runCli(app, ['message', '--emergency', wsId, `${MSG_TEXT} before the migration`]);
       const liveMg = await waitFor('a live session before the migration', () => { const p = cliProcs(app); return p.length ? p : null; }, 25000, 250).catch(() => []);
       ctx.clause('migrate/pre-a-session-is-live', m3.rc === 0 && liveMg.length > 0, `message after the switch -> rc=${m3.rc} stdout=${J(m3.stdout)}; live session CLI pid(s) ${J(liveMg)} (control: the migration below acts on a live session)`);
       await sleep(1500);

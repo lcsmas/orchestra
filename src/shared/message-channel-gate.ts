@@ -31,7 +31,7 @@ export function shellQuote(s: string): string {
 
 /** The `orchestra send` that says what the refused `message` meant — the one verb a sender is pointed at. */
 export function equivalentSendCommand(to: string, text: string): string {
-  return `orchestra send --type status --to ${to} ${shellQuote(text)}`;
+  return `orchestra send --type status --to ${/^[\w.:@/-]+$/.test(to) ? to : shellQuote(to)} ${shellQuote(text)}`;
 }
 
 /** The error a refused `message` prints: the channel is closed, the equivalent command, the one escape. */

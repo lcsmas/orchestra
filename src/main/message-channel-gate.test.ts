@@ -62,6 +62,7 @@ test('#441 the equivalent command is paste-safe: single quotes escaped, the full
   assert.equal(cmd, `orchestra send --type status --to ws-1 ${shellQuote(text)}`);
   assert.equal(cmd.includes('\n'), false);
   assert.equal(messageChannelRefusal('ws-1', text).split('\n')[0].includes(cmd), true, 'the command is on the first line of the refusal');
+  assert.equal(equivalentSendCommand('my agent', 'hi'), "orchestra send --type status --to 'my agent' 'hi'", 'an id with a space is quoted too');
   // round trip through a real shell: the quoted text comes back byte-exact
   assert.equal(execFileSync('sh', ['-c', `printf %s ${shellQuote(text)}`], { encoding: 'utf8' }), text);
 });

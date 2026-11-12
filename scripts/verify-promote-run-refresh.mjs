@@ -604,9 +604,9 @@ await mod.store.upsertWorkspace(ws(ORCH, { canOrchestrate: true, ownsRun: true }
 mod.startRun(busDb, { id: ORCH, kind: 'mission', coordinator: ORCH }, { delivery: true, wake: true, askGate: false, liveness: false });
 liveSet.add(ORCH);
 const m1 = await mod.dispatchMessageRequest({ from: WORKER, to: PLAIN, text: 'worker → plain parent' });
-check('M1: a non-member child can `message` the plain parent (master: ok)', m1.ok === true, JSON.stringify(m1));
+check('M1 (#441): a non-member child can NO LONGER `message` the plain parent — refused toward `orchestra send`', m1.ok === false && /orchestra send/.test(m1.error ?? ''), JSON.stringify(m1));
 check(
-  "M1b: the exempted message is delivered ONCE — its mirrored row is NOT filed in the parent's own (wake-ON) run",
+  'M1b (#441): the refused message files nothing in the parent\'s run',
   busDb.prepare('SELECT COUNT(*) AS c FROM messages WHERE run_id = ? AND recipient = ?').get(PLAIN, PLAIN).c === 0,
 );
 const m1c = await mod.dispatchMessageRequest({ from: KID, to: PLAIN, text: 'ops → plain parent' });
