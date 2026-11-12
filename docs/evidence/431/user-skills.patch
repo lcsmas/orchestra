@@ -31,13 +31,30 @@ index c929859..fb870de 100644
  lets them overrule you cheaply. "Not a swarm — all four fixes are in one file
  and already diagnosed" beats silently not spawning. When the question was "is a
 diff --git a/verified-fanout/SKILL.md b/verified-fanout/SKILL.md
-index 61604e9..3ff90bd 100644
+index 61604e9..e841ca8 100644
 --- a/verified-fanout/SKILL.md
 +++ b/verified-fanout/SKILL.md
-@@ -31,13 +31,14 @@ An OPS is therefore both a worker (of its mission) and a coordinator (of its
+@@ -20,24 +20,26 @@ enforce the gate — implementation belongs to the fleet.
+ **Nested runs — the two shapes.** A coordinated run comes in two nested forms
+ (vocabulary settled with the user, Orchestra `CONTEXT.md`):
+ 
+-- A **mission** is the enclosing run coordinated by the **LEAD**; its sole worker
+-  is an **OPS**. The LEAD answers to the human.
+-- A **vague** (wave) is a run coordinated by an **OPS**: the set of workers and
+-  the verifier delivering one batch of tickets. This is our extension — orca
+-  (the reference model) documents the single-coordinator run but not the nested
+-  mission/vague split.
++- A **mission** is the run of a top-level agent, born with it; the **LEAD**
++  coordinates it and answers to the human. Its members are workers, OPS, or both.
++- A **vague** (wave) is the run of an **OPS** — an agent that has a parent and has
++  spawned agents of its own: the set of workers and the verifier delivering one
++  batch of tickets. This is our extension — orca (the reference model) documents
++  the single-coordinator run but not the nested mission/vague split.
+ 
+ An OPS is therefore both a worker (of its mission) and a coordinator (of its
  vague); a mission can run several vagues in sequence, each dying with its OPS.
  **Which tier coordinates (the rules live HERE; `delegate-or-do` only points
- at this section).** Run `orchestra whoami` first — it names your tier:
+-at this section).** Run `orchestra whoami` first — it names your tier:
 -- **LEAD** (no parent, talks to the human): ANY wave → spawn +
 -  `orchestra promote <id>` an OPS, which coordinates the vague per this skill.
 -  **There is NO middle form (operator ruling, Lucas 2026-09-21): either the
@@ -45,14 +62,49 @@ index 61604e9..3ff90bd 100644
 -  LEAD-coordinated "micro-wave" is forbidden.**
 -- **OPS** (has a parent): fan out directly under yourself; never promote a
 -  third level — at most one promote level exists (LEAD → OPS → workers).
++at this section).** Run `orchestra whoami` first — it names your role and run:
 +- **LEAD** (no parent, talks to the human): a multi-ticket vague goes through
-+  an OPS — `orchestra spawn` one with the vague as its task; the OPS owns the
-+  vague's run and coordinates it per this skill. **A vague is never coordinated
-+  by a LEAD directly (operator ruling, Lucas 2026-09-21, narrowed by ADR 0012):
-+  through an OPS, or inline/plain-spawn.** There is no promote step: roles
-+  follow position, whoever owns a run coordinates it.
++  an OPS — `orchestra spawn` one with the vague as its task; it becomes the OPS
++  by spawning its first agent and coordinates the vague per this skill.
++  **A vague is never coordinated by a LEAD directly (operator ruling, Lucas
++  2026-09-21, narrowed by ADR 0012): through an OPS, or inline/plain-spawn.**
++  There is no promote step: roles follow position, whoever owns a run
++  coordinates it.
 +- **OPS** (has a parent): fan out directly under yourself; do not add a third
 +  level. Tree depth and the OPS rule are conduct, the host enforces neither.
  - Either tier, ONE self-contained task → plain `orchestra spawn`, no fan-out
    machinery.
  The bus records the nesting on the run row (`parent_run_id`), so a vague's run
+@@ -283,24 +285,25 @@ the report format.
+ ## 0c. The fleet bus (every live run is all-ON)
+ 
+ Orchestra coordinates the fleet on a **bus** (one SQLite database, total
+-order; `docs/codebase-map/bus.md`). Seven switches — `delivery`, `wake`,
++order; `docs/codebase-map/bus.md`). Six switches — `wake`,
+ `ask_gate`, `liveness`, `fencing`, `capability`, `receipts` — are frozen on each
+-run at wave start and printed in your SessionStart notice. **Every run active
++run at start (mail is not a switch: since ADR 0012 bus mail cannot be turned off) and printed in your SessionStart notice. **Every run active
+ since 2026-09-28 is all-ON (bus audit 2026-09-30), so this section is ON-only.**
+ A notice line `=OFF` means a legacy run: its OFF channel is in
+ `git -C ~/.claude show e07d1e4:skills/verified-fanout/SKILL.md` §0c — read it
+ there, and never run both channels for one mechanism.
+ 
+-- **delivery** — `orchestra send --type <kind> [--to <handle>] [--thread <id>]
++- **mail** (always on) — `orchestra send --type <kind> [--to <handle>] [--thread <id>]
+   <body>` (a long body: `--body-file <path>`; since v0.5.304 an unknown
+   `--option` is refused, never sent as text); pull with `orchestra check`, confirm with `orchestra ack <lot-id>`
+   (only the reader acks; an unacked lot replays) — or, once the lot is
+   handled, `orchestra check --ack-previous` closes it and takes the next in
+   ONE call (measured, orchestra#423: 166 checks + 160 acks, flag used 0
+-  times). `orchestra message` to a
+-  delivery-ON peer is refused, except `orchestra message --emergency <id>
+-  <text>` for a wedged reader. A `--to` that anchors its own run (another
+-  LEAD/OPS) needs `--run <to>` from an unrelated run (#175). **Only a real task
++  times). `orchestra message` is refused for
++  every target, except `orchestra message --emergency <id> <text>` for a reader
++  that no longer reads its mail. Agents with no common ancestry may send each
++  other `status` and `ask` only; a `dispatch` or a gate across unrelated runs is
++  refused. **Only a real task
+   assignment is `--type dispatch`: it mints a capability and SUPERSEDES the
+   recipient's previous one in that run** (an order sent as dispatch voided an
+   OPS's token, 2026-09-30) — orders, pings and FYIs are `status`.
