@@ -337,8 +337,8 @@ test('#320 memoryCap: default OFF, wire name memory_cap round-trips, notice name
   const off = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES }).find((l) => l.includes('memory_cap='));
   assert.match(on ?? '', /memory_cap=ON .*memory scope.*killed by the kernel/);
   // #324 review m4 + F1: the ON line must not promise a scope to sessions that never get one — it names WHO gets it (every workspace WITH a coordinator, an OPS under the LEAD included) and who does not (only the top-level LEAD)
-  assert.match(on ?? '', /a workspace WITH a coordinator \(a worker, or an OPS under the LEAD\)/);
-  assert.match(on ?? '', /Only the top-level LEAD \(a workspace with no coordinator\), a human's session, a sandbox or an unsupported host runs in no scope/);
+  assert.match(on ?? '', /a workspace WITH a coordinator \(a worker — a child of a plain parent too — or an OPS under the LEAD\)/);
+  assert.match(on ?? '', /Only a top-level workspace \(the LEAD, or a plain agent with no parent: no coordinator\), a human's session, a sandbox or an unsupported host runs in no scope/);
   assert.ok(!/coordinator \(LEAD \/ OPS\)/.test(on ?? ''), 'F1: an OPS is NOT scope-less — it has a coordinator (the LEAD)');
   assert.ok(!/FLEET MEMBER|ONLY if you are such a member|each of your session starts/.test(on ?? ''), 'the earlier wordings are gone');
   assert.match(on ?? '', /started before this was ON is not capped/);

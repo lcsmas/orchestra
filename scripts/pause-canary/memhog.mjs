@@ -36,6 +36,9 @@ const HOG_HOLD_S = Number(opt('hog-hold-s', '5'));
 const CHAIN_N = Number(opt('chain-n', String(MEMHOG_BARS.chainPlanned)));
 const CHAIN_GAP_MS = Number(opt('chain-gap-ms', String(MEMHOG_BARS.chainGapMs)));
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '6'));
+// #438 `--shape plain`: the SMALL run — ONE plain parent P (top-level, owns its mission run from birth, #433/#434) + `--members` children that are members of P's run. No LEAD, no OPS: P is the coordinator the children's kills are escalated to.
+const SHAPE = opt('shape', 'fleet');
+const PLAIN = SHAPE === 'plain';
 const SABOTAGES = ['session', 'member-sink', 'coord-sink', 'stray-lead', 'hog-small', 'leak', 'leak-unit', 'no-worker', 'backstop'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const emit = (tag, o) => console.log(`${tag} ${JSON.stringify(o)}`);
@@ -46,6 +49,8 @@ if (opt('cli', 'stand-in') !== 'stand-in') die(3, 'MEMHOG-DRIVE VOID — `--cli 
 if (!['memhog', 'chain'].includes(EXERCISE)) die(2, `usage: --exercise memhog|chain (got ${EXERCISE})`);
 if (CAP_GB > 0.3) die(3, `MEMHOG-DRIVE VOID — a test scope above 300 MB (--cap-gb ${CAP_GB}) needs the LEAD's waiver of ledger D2: not run`);
 if (SABOTAGE && !SABOTAGES.includes(SABOTAGE)) die(2, `usage: --sabotage ⊂ ${SABOTAGES} (got ${SABOTAGE})`);
+if (!['fleet', 'plain'].includes(SHAPE)) die(2, 'usage: --shape fleet|plain');
+if (PLAIN && (EXERCISE !== 'memhog' || SABOTAGE === 'stray-lead')) die(2, 'usage: --shape plain runs `--exercise memhog` only (the Q9 chain and the LEAD-copy sabotage are about the 10-worker fleet)');
 if (!Number.isInteger(MEMBERS) || MEMBERS < 1 || MEMBERS > 10 || !Number.isInteger(CYCLES) || CYCLES < 1 || (EXERCISE === 'chain' && CYCLES > 10)) die(2, 'usage: --members 1..10, --cycles ≥ 1 (chain: ≤ 10, one fresh worker per cycle)');
 const PREFIX = opt('prefix', null);
 if (!/^[0-9a-f]{8}$/.test(PREFIX ?? '')) die(2, 'usage: --prefix <8 hex> (the per-rig id prefix: workspace ids — hence keeper sockets and scope names — must be unique per rig)');
@@ -99,8 +104,8 @@ const { makeMemNotice } = await import(`${REPO}/src/shared/mem-notice.ts`);
 const memNoticeMod = await import(`${REPO}/src/main/memory-notice.ts`);
 const { sendGated } = await import(`${REPO}/src/main/memory-notice-bus.ts`);
 
-const spec = fleetSpec(EXERCISE === 'chain' ? Math.max(1, CYCLES) : MEMBERS, PREFIX);
-const NAMES = Object.fromEntries([[spec.lead, 'pc-lead'], [spec.ops, 'pc-ops'], ...spec.workers.map((w) => [w.id, `pc-${w.k}`])]);
+const spec = fleetSpec(EXERCISE === 'chain' ? Math.max(1, CYCLES) : MEMBERS, PREFIX, { shape: SHAPE });
+const NAMES = Object.fromEntries([...(PLAIN ? [] : [[spec.lead, 'pc-lead']]), [spec.ops, 'pc-ops'], ...spec.workers.map((w) => [w.id, `pc-${w.k}`])]);
 
 // A REAL scratch bus: LEAD's mission run and OPS's vague run (parent LEAD) — the worker's `memory_cap` switch is FROZEN on the vague run, as at a wave start.
 let settings = { capSoftGb: SOFT_GB, capHardGb: CAP_GB };
@@ -113,8 +118,11 @@ try {
   bus.initBus();
   busDb = bus.getBus();
   const sw = { ...DEFAULT_BUS_SWITCHES, liveness: true };   // liveness ON: the mechanism the shipped sink's gate follows (#322 review round 2 F6)
-  startRun(busDb, { id: spec.lead, kind: 'mission', coordinator: spec.lead }, sw);
-  startRun(busDb, { id: spec.ops, kind: 'vague', coordinator: spec.ops, parentRunId: spec.lead }, { ...sw, memoryCap: SWITCH_ON });
+  if (PLAIN) startRun(busDb, { id: spec.ops, kind: 'mission', coordinator: spec.ops }, { ...sw, memoryCap: SWITCH_ON });   // the plain parent's own mission (#433): its child's `$ORCHESTRA_RUN_ID` is THIS run, the switch is frozen on it
+  else {
+    startRun(busDb, { id: spec.lead, kind: 'mission', coordinator: spec.lead }, sw);
+    startRun(busDb, { id: spec.ops, kind: 'vague', coordinator: spec.ops, parentRunId: spec.lead }, { ...sw, memoryCap: SWITCH_ON });
+  }
   const { store } = await import(`${REPO}/src/main/store.ts`);
   await store.load?.();
   await store.setMemoryGuardSettings({ ...store.getMemoryGuardSettings(), capSoftGb: SOFT_GB, capHardGb: CAP_GB });
@@ -152,12 +160,14 @@ const initOf = (st) => st.lines.find((l) => l.type === 'system' && l.subtype ===
 const resultOf = (st, id) => st.lines.find((l) => l.type === 'user' && l.tool_result?.id === id)?.tool_result;
 async function runTool(st, cmd, id, ms = 60_000) { st.send({ tool: cmd, id }); await waitFor(() => resultOf(st, id) || st.exited, ms, 100); return resultOf(st, id) ?? null; }
 /** The decision exactly as agent-sdk.ts makes it (same function, same inputs): the worker's wave run is OPS's vague run, its coordinator is OPS. */
-const decide = (ws) => capSwitch.memoryCapSpecFor({ wsId: ws, runId: spec.ops, ws: { parentId: spec.ops }, remote: false, settings });
+// #438: the run id is the PRODUCTION `runIdOf` over the fleet's workspace records (a child of a plain parent → its parent's run) and `ws` is the record itself (`isFleetMember` reads its `parentId`), as agent-sdk.ts passes the store's.
+const { runIdOf } = await import(`${REPO}/src/shared/run-position.ts`);
+const decide = (ws) => capSwitch.memoryCapSpecFor({ wsId: ws, runId: runIdOf(fakeWs.get(ws), (id) => fakeWs.get(id)), ws: fakeWs.get(ws), remote: false, settings });
 
 // ── the PRODUCTION #322 sink, wired the way index.ts wires it (real bus, real gate, real builder; the workspace map is the fleet's) ─────────────────────
 const fakeWs = new Map();
-fakeWs.set(spec.lead, { id: spec.lead, name: NAMES[spec.lead], branch: NAMES[spec.lead], runId: spec.lead });
-fakeWs.set(spec.ops, { id: spec.ops, name: NAMES[spec.ops], branch: NAMES[spec.ops], parentId: spec.lead, runId: spec.ops });
+if (!PLAIN) fakeWs.set(spec.lead, { id: spec.lead, name: NAMES[spec.lead], branch: NAMES[spec.lead], runId: spec.lead });
+fakeWs.set(spec.ops, { id: spec.ops, name: NAMES[spec.ops], branch: NAMES[spec.ops], ownsRun: true, ...(PLAIN ? {} : { parentId: spec.lead }), runId: spec.ops });   // plain: P has NO parent — it answers to the human
 for (const w of spec.workers) fakeWs.set(w.id, { id: w.id, name: NAMES[w.id], branch: NAMES[w.id], parentId: spec.ops, runId: spec.ops });
 const sinkLogs = [];
 const coordSent = [];   // { at, wsId, kind } — when the coordinator's message was written
@@ -220,6 +230,10 @@ async function injectBackstopKill(keeperPid, cliPid) {
   await waitFor(() => { const b = backstopCountersFromDir(sd); if (b) seen = b; return (b && b.k > 0) || !alive(keeperPid) || !alive(cliPid); }, 20_000, 250);
   return { counters: seen };   // the counters AS THEY WERE when the kill showed: the scope may be gone a moment later
 }
+/** what the LEAD saw (fleet) — or, with no LEAD (plain), what a worker sent to anyone BUT its coordinator P: either way « told somebody the coordinator is not » */
+const strayCount = (seq0) => (PLAIN
+  ? busDb.prepare(`SELECT COUNT(*) AS n FROM messages WHERE sequence > ? AND sender IN (${spec.workers.map(() => '?').join(',')}) AND recipient <> ?`).get(seq0, ...spec.workers.map((w) => w.id), spec.ops).n
+  : busDb.prepare('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?').get(spec.lead, seq0).n);
 const report = (exercise, cycle, checks) => { for (const c of checks) { allChecks.push({ exercise, cycle, ...c }); emit('PC-CHECK', { exercise, cycle, id: c.id, ok: c.ok, detail: c.detail }); say(`${c.ok ? 'ok ' : 'RED'} ${exercise} c${cycle} ${c.id} — ${c.detail}`); } };
 
 try {
@@ -232,7 +246,7 @@ try {
     for (const w of spec.workers) memNoticeMod.handleMemRecord(sinkDeps, w.id, { kind: 'kill', source: 'kernel', seq: 1, at: Date.now(), level: 'hard', command: `python3 swarm.py 1 ${HOG_MB} ${HOG_HOLD_S} memhog-${w.k}-c1`, pid: 4242, rssBytes: null, candidates: [], unit: `${UNIT_PREFIX}${w.id}-dry.scope`, hardBytes: Math.round(CAP_GB * 1024 ** 3) });
     for (const w of spec.workers) await notified(w.id);
     const lot = bus.check(busDb, spec.ops, spec.ops, 500);
-    const lead = busDb.prepare('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?').get(spec.lead, seq0).n;
+    const lead = strayCount(seq0);
     let bad = 0;
     for (const w of spec.workers) {
       const wk = { id: w.id, oomKillDelta: 1, memberKillRows: agentEvents.filter((e) => e.wsId === w.id && !isSoftText(e.ev.text)).map((e) => e.ev.text), coordMsgs: busDb.prepare('SELECT kind, recipient, body FROM messages WHERE sender = ? AND sequence > ?').all(w.id, seq0), coordRead: lot.messages.filter((x) => x.sender === w.id && x.kind === 'escalation').length };
@@ -245,6 +259,13 @@ try {
   } else if (EXERCISE === 'memhog') {
     // ── open the fleet: every worker's keeper in its own scope (or NOT, with the switch OFF) ───────────────────────────
     const decisions = spec.workers.map((w) => decide(w.id));
+    if (PLAIN) {
+      // STATED, not decided (#438 routed item b): the production decision for the plain PARENT itself — top-level, no coordinator — and for its child, on the run's frozen switch
+      const dP = capSwitch.memoryCapDecisionFor({ wsId: spec.ops, runId: runIdOf(fakeWs.get(spec.ops), (id) => fakeWs.get(id)), ws: fakeWs.get(spec.ops), remote: false, settings });
+      const dC = capSwitch.memoryCapDecisionFor({ wsId: spec.workers[0].id, runId: runIdOf(fakeWs.get(spec.workers[0].id), (id) => fakeWs.get(id)), ws: fakeWs.get(spec.workers[0].id), remote: false, settings });
+      report('memhog', 0, [{ id: 'stated:parentless_plain_parent_is_uncapped', ok: SWITCH_ON ? dP.createScope === false : true, detail: `plain parent (no coordinator): createScope=${dP.createScope} reason=${dP.reason} — the cap applies to a workspace WITH a coordinator (isFleetMember = has a parentId); a parentless agent runs in no scope (spec #431 stories 3/20 read « whoever started me » — ledger QUESTION)` },
+        { id: 'stated:plain_child_is_capped', ok: SWITCH_ON ? dC.createScope === true : dC.createScope === false, detail: `plain child of a plain parent, run ${runIdOf(fakeWs.get(spec.workers[0].id), (id) => fakeWs.get(id)) === spec.ops ? "= its parent's mission" : 'NOT its parent\'s'}: createScope=${dC.createScope} reason=${dC.reason} (switch ${SWITCH_ON ? 'ON' : 'OFF'})` }]);
+    }
     const never = SABOTAGE === 'no-worker' ? spec.workers[0].id : null;   // control: the first worker's session is never started — the « fleet is up » instrument must say so
     for (const w of spec.workers) sessions.set(w.id, w.id === never ? { ws: w.id, lines: [], attached: false, exited: true, errors: ['sabotage no-worker: never started'], send: () => {}, h: null } : open(w.id, decisions[spec.workers.indexOf(w)]));
     const up = await Promise.all(spec.workers.map((w) => (w.id === never ? Promise.resolve([w.id, false]) : waitFor(() => initOf(sessions.get(w.id)), 45_000).then((ok) => [w.id, ok]))));
@@ -304,7 +325,7 @@ try {
       // read the world: the coordinator reads its OWN relève (the real `check`), then acks it as the coordinator would
       const lot = bus.check(busDb, spec.ops, spec.ops, 500);
       if (lot.delivery) bus.ack(busDb, spec.ops, spec.ops, lot.delivery.id);
-      const leadSeen = busDb.prepare('SELECT COUNT(*) AS n FROM messages WHERE recipient = ? AND sequence > ?').get(spec.lead, seq0).n;
+      const leadSeen = strayCount(seq0);
       const workers = [];
       for (const w of spec.workers) {
         const st = sessions.get(w.id); const pre = idsOf.get(w.id); const marker = hogMarker(w.k, cycle);

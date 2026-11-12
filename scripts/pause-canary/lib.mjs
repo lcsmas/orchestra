@@ -181,7 +181,7 @@ export function keeperSocketOf(H, wsId) {
 }
 /** Pre-flight: no keeper socket may ALREADY exist at a path this rig will use (another rig on the host with the same ws id would be cross-connected). Throws when one does. */
 export function assertNoForeignKeeperSockets(H, spec) {
-  const ids = [spec.lead, spec.ops, ...spec.workers.map((w) => w.id)];
+  const ids = [...new Set([spec.lead, spec.ops]), ...spec.workers.map((w) => w.id)];
   const socks = ids.map((id) => keeperSocketOf(H, id));
   const clash = socks.filter((s) => fs.existsSync(s.path));
   if (clash.length) throw new Error(`ABORT: keeper socket(s) already exist at ${clash.map((s) => s.path).join(', ')} — another rig on this host uses the same workspace ids (ids are random per rig: a stale socket of a crashed rig, or a collision) — refusing to cross-connect`);
@@ -217,9 +217,11 @@ export async function makeRig({ label, spec, apiUrl, appBin, claudeBin, storeExt
     git(wt(k), 'config', 'user.email', 'pc@x'); git(wt(k), 'config', 'user.name', 'pc');
     return { id, name: `pc-${k}`, repoPath: repo, worktreePath: wt(k), branch: branchOf(k), baseBranch: 'master', createdAt: Date.now(), status: 'idle', agent: 'claude', accountId: acct.id, sdkSessionId: '', ...extra };
   };
+  // plain (#438): ONE plain parent — top-level, NO orchestrator kind, NO capability flag; `ownsRun` is what its first spawn records (#434) — and its children (parentId = P, a task each)
   const wsList = [
-    mk('lead', spec.lead, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator' }),
-    mk('ops', spec.ops, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator', parentId: spec.lead }),
+    ...(spec.shape === 'plain'
+      ? [mk('ops', spec.ops, { ownsRun: true })]
+      : [mk('lead', spec.lead, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator' }), mk('ops', spec.ops, { canOrchestrate: true, ownsRun: true, kind: 'orchestrator', parentId: spec.lead })]),
     ...spec.workers.map((w) => mk(w.k, w.id, { parentId: spec.ops, lastTask: `pc task ${w.k}` })),
   ];
   fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [], ...storeExtra }, null, 2));

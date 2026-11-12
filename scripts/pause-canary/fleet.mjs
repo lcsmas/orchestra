@@ -90,7 +90,8 @@ export function makeModel({ kindOfRole, plan, limited, resetS }) {
     if (count(mine, /run confirm reprise/) > 0) return { text: 'resumed' };   // released + accused: the turn is over (nothing re-runs what the pause killed)
     if (mine.length === 0) return bash(setupCmd(role, n), 'setup: commit + tracked edit + staged + untracked');
     if (kind === 'idle' || kind === 'quota') return { text: 'ready' };
-    if (kind === 'blocked') return mine.length === 1 ? bash('sleep 7400', 'one long foreground command', { timeout: 600000 }) : { text: 'done' };
+    if (kind === 'blocked') // `true; sleep 7400`, never a bare `sleep 7400`: Claude Code ≥ 2.1.3xx REFUSES a command whose first part is a standalone `sleep N` ("Blocked: standalone sleep 7400" — measured on 2.1.322, #438), so the straggler never blocked
+    return mine.length === 1 ? bash('true; sleep 7400', 'one long foreground command', { timeout: 600000 }) : { text: 'done' };
     // obey / bg: command-by-command, a tool-result boundary every ~1 s; the Pause douce order is obeyed at the first boundary that carries it
     const saved = count(mine, /douce-save/) > 0;
     if (!saved && order) return bash(`git add -A; git commit -q -m douce-save-${role}-c${n}; git push -q origin HEAD:refs/heads/${branchOf(role)}; echo SAVED_RC=$?; # douce-save`, 'Pause douce: commit + push my work');

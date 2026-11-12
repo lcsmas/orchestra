@@ -14,16 +14,24 @@ export const randomPrefix = () => Array.from({ length: 8 }, () => Math.floor(Mat
 export const uid = (n, prefix) => `${prefix}-0000-4000-8000-${String(n).padStart(12, '0')}`;
 export const MAX_WORKERS = 10;
 
-export function fleetSpec(nWorkers, prefix = randomPrefix()) {
+/** `shape: 'plain'` (#438) = the SMALL run: ONE plain parent P (top-level, no orchestrator kind, owns the mission run from birth — #433/#434) with `nWorkers` children that are members of P's run, no LEAD, no OPS.
+ *  P is both `lead` and `ops` (the same id, worktree role key `ops`, branch `pc-ops`): every « coordinator » call of the drills lands on P. `childKind` fixes the children's kind (default `bg`). */
+export function fleetSpec(nWorkers, prefix = randomPrefix(), { shape = 'fleet', childKind = 'bg' } = {}) {
   if (!Number.isInteger(nWorkers) || nWorkers < 1 || nWorkers > MAX_WORKERS) throw new Error(`members must be 1..${MAX_WORKERS}, got ${nWorkers}`);
+  if (!['fleet', 'plain'].includes(shape)) throw new Error(`shape must be fleet|plain, got ${shape}`);
+  if (shape === 'plain') {
+    const P = uid(2, prefix);
+    const workers = Array.from({ length: nWorkers }, (_, i) => ({ k: `w${i + 1}`, kind: childKind, id: uid(10 + i + 1, prefix) }));
+    return { prefix, shape, lead: P, ops: P, coordRoles: ['ops'], workers };
+  }
   const workers = Array.from({ length: nWorkers }, (_, i) => ({ k: `w${i + 1}`, kind: KIND_ORDER[i % KIND_ORDER.length], id: uid(10 + i + 1, prefix) }));
-  return { prefix, lead: uid(1, prefix), ops: uid(2, prefix), workers };
+  return { prefix, shape, lead: uid(1, prefix), ops: uid(2, prefix), coordRoles: ['lead', 'ops'], workers };
 }
 
 export const branchOf = (k) => `pc-${k}`;
 /** every workspace id → short name (`pc-w3`), for logs */
 export function namesOf(spec) {
-  const o = { [spec.lead]: 'pc-lead', [spec.ops]: 'pc-ops' };
+  const o = spec.shape === 'plain' ? { [spec.ops]: 'pc-ops' } : { [spec.lead]: 'pc-lead', [spec.ops]: 'pc-ops' };
   for (const w of spec.workers) o[w.id] = `pc-${w.k}`;
   return o;
 }

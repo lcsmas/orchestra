@@ -38,7 +38,13 @@ const MIN_AVAIL_GB = Math.max(Number(opt('min-avail-gb', '6')), MH_ON_APP && !RE
 const FLOOR_TEST = REHEARSAL ? Number(opt('floor-gb', NaN)) : NaN;
 const RUN_FLOOR_GB = Number.isFinite(FLOOR_TEST) ? FLOOR_TEST : MH_APP ? 2 : MIN_AVAIL_GB;
 const MAX_LOAD = Number(opt('max-load', '20'));
-const DOUCE_LIMIT = opt('douce-limit', '1') === '1';
+// #438 `--shape plain`: ONE plain parent P that owns its mission run + ONE child (no LEAD, no OPS) — the SMALL run. Exercises douce/dure/reprise only (a usage-limit member is not in a run of two); the child's kind changes per cycle
+// (`childKindFor`) so a one-child run still meets the obeying member, the straggler (deadline → trap) and the background-task member.
+const SHAPE = opt('shape', 'fleet');
+const PLAIN = SHAPE === 'plain';
+const DOUCE_LIMIT = !PLAIN && opt('douce-limit', '1') === '1';
+const CHILD_KINDS = { douce: ['obey', 'blocked', 'bg'], dure: ['bg', 'blocked', 'obey'], reprise: ['bg', 'obey', 'blocked'] };
+const childKindFor = (ex, c) => (CHILD_KINDS[ex] ?? CHILD_KINDS.dure)[(c - 1) % 3];
 const CYCLE_RESULTS_FILE = opt('out', null);
 // #324 `memhog-app` — the memory-hog exercise on the PACKAGED app (real keepers + real `claude` + the app's own #322 sink). With the cap ON a real `claude` (~330 MB) does not fit a test scope ≤ 300 MB (ledger D2): that arm needs the LEAD's waiver (`--waiver <ref>`, `--cap-gb` ≥ 0.6).
 const MH_SWITCH = opt('memhog-switch', 'on');   // 'off' = the must-FAIL control: the frozen `memory_cap` switch OFF
@@ -56,6 +62,8 @@ const WINDOW = opt('window', 'member');   // 'member' = per-member, opened at th
 const TOOLPROCS = opt('toolprocs', 'fixed');   // 'legacy' = the pre-fix definition (any non-keeper/CLI/app process in a member worktree): the proof's must-FAIL arm for the app-git injection
 if (!BASE || !REPO || !APP || !CLAUDE) { console.error('usage: drive.mjs --base --repo --app --claude …'); process.exit(2); }
 const KNOWN = ['douce', 'dure', 'reprise', 'auto', 'memhog-app'];
+if (!['fleet', 'plain'].includes(SHAPE)) { console.error('--shape fleet|plain'); process.exit(2); }
+if (PLAIN && (EXERCISES.some((e) => !['douce', 'dure', 'reprise'].includes(e)) || INJECT || SABOTAGE || MEMBERS !== 1)) { console.error('--shape plain: --exercise ⊂ douce,dure,reprise, --members 1, no --inject / --sabotage (the proof arms drive the 10-worker fleet)'); process.exit(2); }
 if (EXERCISES.length === 0 || EXERCISES.some((e) => !KNOWN.includes(e))) { console.error(`unknown/empty --exercise ${JSON.stringify(opt('exercise', ''))} (have ${KNOWN})`); process.exit(2); }
 if (EXERCISES.includes('memhog-app')) { console.error('PAUSE-CANARY-DRIVE REFUSED — memhog-app needs the human\'s systemd user manager (real memory scopes); the contained rig runs in a PRIVATE runtime dir with none (incident Q2, ledger #405). Nothing was run.'); process.exit(3); }
 if (EXERCISES.includes('memhog-app') && EXERCISES.length > 1) { console.error('--exercise memhog-app runs ALONE (it seeds its own store settings and runs)'); process.exit(2); }
@@ -82,7 +90,7 @@ const host = { minAvailGB: Infinity, maxLoad: 0, maxRigRssMB: 0, lowStreak: 0, s
 const emit = (tag, obj) => say(`${tag} ${JSON.stringify(obj)}`);
 
 async function runExercise(name) {
-  const spec = fleetSpec(MEMBERS);
+  const spec = fleetSpec(MEMBERS, undefined, { shape: SHAPE });
   if (name === 'memhog-app') for (const w of spec.workers) w.kind = 'hog';   // every worker overflows its scope on request
   const kindOfRole = Object.fromEntries(spec.workers.map((w) => [w.k, w.kind]));
   const quotaWorkers = spec.workers.filter((w) => w.kind === 'quota');
@@ -165,7 +173,7 @@ async function runExercise(name) {
 
     for (let c = 1; c <= CYCLES; c++) {
       stopIfVoid();
-      const cyc = { exercise: name, cycle: c, workers: spec.workers.length, mode: name === 'douce' ? 'soft' : 'hard', rosterMin: spec.workers.length + (name === 'auto' ? 1 : 2), checks: [] };
+      const cyc = { exercise: name, cycle: c, workers: spec.workers.length, mode: name === 'douce' ? 'soft' : 'hard', rosterMin: spec.workers.length + (name === 'auto' || PLAIN ? 1 : 2), checks: [] };
       curCyc = cyc;
       say(`── [${name}] cycle ${c}/${CYCLES} ──`);
       if (name === 'memhog-app') { await doMemhogApp(cyc, c); cycles.push(cyc); emit('PC-CYCLE', cyc); await sleep(2000); continue; }
@@ -174,6 +182,8 @@ async function runExercise(name) {
       const r0 = await runRow(carrier);
       check(cyc, 'run_active_before_work', !!r0 && r0.paused_at === null && r0.resume_started_at === null, `${name === 'auto' ? 'ops' : 'lead'} run paused_at=${r0?.paused_at} resume_started=${r0?.resume_started_at}`);
       const seq0 = await maxSeq();   // this cycle's bus rows are those after it
+      cyc.seq0 = seq0;
+      if (PLAIN) for (const w of spec.workers) { w.kind = childKindFor(name, c); kindOfRole[w.k] = w.kind; }   // the one child takes this cycle's kind (the scripted model reads `kindOfRole` at every request)
       // 1. every worker starts real work (real keeper + real CLI + real tool processes)
       const workStart = Date.now();
       const loopLines = (kk) => (readWt(kk, `loop-${kk}.txt`) ?? '').split('\n').filter(Boolean).length;
@@ -197,7 +207,7 @@ async function runExercise(name) {
       const idPre = identities();
       // positive control of the session-identity instrument: a member whose keeper/CLI could not be read would pass every "same pid+start" comparison vacuously
       check(cyc, 'identity_instrument_armed', spec.workers.every((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper), `keeper+CLI identity read for ${spec.workers.filter((w) => idPre[w.k]?.claude && idPre[w.k]?.keeper).length}/${spec.workers.length} workers`);
-      const heads = Object.fromEntries(['lead', 'ops'].map((kk) => [kk, git(wtOf(kk), 'rev-parse', 'HEAD')]));
+      const heads = Object.fromEntries(spec.coordRoles.map((kk) => [kk, git(wtOf(kk), 'rev-parse', 'HEAD')]));
       const pre = Object.fromEntries(spec.workers.map((w) => [w.k, { head: git(wtOf(w.k), 'rev-parse', 'HEAD'), porcelain: gitSafe(wtOf(w.k), 'status', '--porcelain').split('\n').filter((l) => l && !/loop-/.test(l)).sort().join('\n') }]));
       pre.__coord = heads;
       say(`   pre: sessions with identity ${Object.keys(idPre).length}/${spec.workers.length}; tool procs ${toolProcs().length}`);
@@ -287,7 +297,7 @@ async function runExercise(name) {
         const markers = markersOf(w.k, c).map((mk) => ({ name: mk.name, needle: mk.needle, shape: mk.shape, found: { branch: gitShow(rig.repo, `refs/heads/pc-${w.k}:${mk.file}`), pushed: gitShow(rig.remote, `refs/heads/pc-${w.k}:${mk.file}`), ref: ref ? gitShow(rig.repo, `${ref}:${mk.file}`) : null } }));
         facts.push({ id: `${nm[w.id]}(${w.kind})`, ref, refCount: refs.length, branchIntact: isAnc(pre[w.k].head, tip), branchDetail: `pre ${pre[w.k].head.slice(0, 8)} tip ${tip.slice(0, 8)} ref ${ref ? ref.split('/').slice(-3).join('/') : 'NONE'}`, markers });
       }
-      for (const kk of ['lead', 'ops']) { const tip = gitSafe(rig.repo, 'rev-parse', `refs/heads/pc-${kk}`); facts.push({ id: `pc-${kk}(coordinator)`, refCount: 0, branchIntact: isAnc(pre.__coord[kk], tip), branchDetail: `pre ${pre.__coord[kk].slice(0, 8)} tip ${tip.slice(0, 8)}`, markers: [] }); }
+      for (const kk of spec.coordRoles) { const tip = gitSafe(rig.repo, 'rev-parse', `refs/heads/pc-${kk}`); facts.push({ id: `pc-${kk}(coordinator)`, refCount: 0, branchIntact: isAnc(pre.__coord[kk], tip), branchDetail: `pre ${pre.__coord[kk].slice(0, 8)} tip ${tip.slice(0, 8)}`, markers: [] }); }
       cyc.lostWork = lostWorkOf(facts);
       cyc.lostWork.refsPerWorker = facts.filter((f) => f.markers.length).map((f) => f.refCount).join('/');
       cyc.lostWork.shapes = Object.fromEntries(['committed', 'tracked-edit', 'staged', 'untracked'].map((s) => [s, facts.flatMap((f) => f.markers).filter((m) => m.shape === s && ['branch', 'pushed', 'ref'].some((l) => typeof m.found[l] === 'string' && m.found[l].includes(m.needle))).length]));
@@ -341,22 +351,24 @@ async function runExercise(name) {
         const rs = await app.cli(spec.lead, ['run', 'resume', '--run', carrierRun], { run: spec.lead });
         check(cyc, 'resume_accepted', rs.code === 0 && /REPRISE STARTED|resum|Reprise/i.test(rs.out + rs.err), `rc=${rs.code} ${(rs.out + rs.err).slice(0, 140).replace(/\n/g, ' | ')}`);
       }
-      const coordRoles = carrierRun === spec.lead ? ['lead', 'ops'] : ['ops'];
+      const coordRoles = PLAIN ? spec.coordRoles : carrierRun === spec.lead ? ['lead', 'ops'] : ['ops'];
       const woke = await waitFor(() => coordRoles.every((r) => reqsOf(r, tR) > 0), 90000);
       const tWoke = woke ? Date.now() - tR : null;
       check(cyc, 'coordinators_woken', !!woke, `coordinators ${coordRoles.join('+')} woken ${tWoke === null ? 'never' : `+${(tWoke / 1000).toFixed(1)} s`} after the resume`);
-      const reprRows = ((await Q("SELECT sequence, recipient, sender FROM messages WHERE kind='reprise' AND sequence > ? ORDER BY sequence", seq0)) ?? []);   // THIS cycle's rows only
+      const reprRows = ((await Q("SELECT sequence, recipient, sender, run_id FROM messages WHERE kind='reprise' AND sequence > ? ORDER BY sequence", seq0)) ?? []);   // THIS cycle's rows only
       const toLead = reprRows.find((m) => m.recipient === spec.lead), toOps = reprRows.find((m) => m.recipient === spec.ops);
-      if (carrierRun === spec.lead) check(cyc, 'coordinators_get_bilan_top_down', !!toLead && !!toOps && toLead.sequence < toOps.sequence, `reprise rows lead #${toLead?.sequence} ops #${toOps?.sequence} (this cycle's, after #${seq0})`);
+      if (carrierRun === spec.lead && !PLAIN) check(cyc, 'coordinators_get_bilan_top_down', !!toLead && !!toOps && toLead.sequence < toOps.sequence, `reprise rows lead #${toLead?.sequence} ops #${toOps?.sequence} (this cycle's, after #${seq0})`);
       if (manual) {
         // two batches: the OPS releases the first half only; the second half must stay silent (0 request) until released
         const half = spec.workers.slice(0, Math.ceil(spec.workers.length / 2)).map((w) => w.id);
         plan.first = half;
         await sleep(3000); harnessWaitMs += 3000;
-        const leadAll = await app.cli(spec.lead, ['run', 'release', '--all', '--run', spec.lead], { run: spec.lead });   // M1 probe: an ANCESTOR's --all must not dispatch the OPS's workers
-        await sleep(4000); harnessWaitMs += 4000;
-        const w0 = Object.fromEntries(spec.workers.map((w) => [w.k, reqsOf(w.k, tR)]));
-        check(cyc, 'lead_release_all_wakes_no_worker', spec.workers.every((w) => w0[w.k] === 0), `lead \`release --all\` rc=${leadAll.code}; worker requests since the resume: ${Object.entries(w0).map(([kk, v]) => `${kk}:${v}`).join(' ')}`);
+        if (!PLAIN) {   // a plain parent has no ancestor: there is no « ancestor's --all » to probe
+          const leadAll = await app.cli(spec.lead, ['run', 'release', '--all', '--run', spec.lead], { run: spec.lead });   // M1 probe: an ANCESTOR's --all must not dispatch the OPS's workers
+          await sleep(4000); harnessWaitMs += 4000;
+          const w0 = Object.fromEntries(spec.workers.map((w) => [w.k, reqsOf(w.k, tR)]));
+          check(cyc, 'lead_release_all_wakes_no_worker', spec.workers.every((w) => w0[w.k] === 0), `lead \`release --all\` rc=${leadAll.code}; worker requests since the resume: ${Object.entries(w0).map(([kk, v]) => `${kk}:${v}`).join(' ')}`);
+        }
         await sendTo(spec.ops, 'SCN:release-first go');
         const firstWoke = await waitFor(() => spec.workers.filter((w) => half.includes(w.id)).every((w) => reqsOf(w.k, tR) > 0), 120000);
         const restSilent = spec.workers.filter((w) => !half.includes(w.id)).every((w) => reqsOf(w.k, tR) === 0);
@@ -376,10 +388,18 @@ async function runExercise(name) {
       cyc.tAllResumedRawS = tActive && lastAccuse && accused.length === rows.length ? (Math.max(tActive, lastAccuse) - tR) / 1000 : null;
       cyc.harnessWaitS = harnessWaitMs / 1000;
       cyc.tAllResumedS = cyc.tAllResumedRawS === null ? null : Math.max(0, cyc.tAllResumedRawS - cyc.harnessWaitS);
+      if (PLAIN) {
+        // #438 (spec #431 NOT-VERIFIED 2): how the Pause classes a plain parent that owns a run — DRIVEN on the packaged app, read from the pause_members rows the host wrote and the reprise rows it sent
+        const P = spec.ops, C = spec.workers[0];
+        const rP = rows.find((x) => x.ws_id === P), rC = rows.find((x) => x.ws_id === C.id);
+        check(cyc, 'plain_roster_classes', rows.length === 2 && rP?.role === 'coordinator' && rP?.member_run === P && rC?.role === 'worker' && rC?.member_run === P, `pause_members of the epoch: ${rows.length} row(s) — parent role=${rP?.role} member_run=${rP?.member_run === P ? 'P (its own run)' : rP?.member_run} · child role=${rC?.role} member_run=${rC?.member_run === P ? 'P (its parent\'s run)' : rC?.member_run}`);
+        const toP = reprRows.filter((m) => m.recipient === P);
+        check(cyc, 'plain_parent_addressed_by_reprise', toP.length === 1 && toP[0].run_id === P, `reprise row(s) to the plain parent this cycle: ${toP.length}${toP[0] ? ` (run ${toP[0].run_id === P ? 'P' : toP[0].run_id}, from ${toP[0].sender === P ? 'P' : toP[0].sender === 'host' ? 'host' : toP[0].sender})` : ''}; to the child: ${reprRows.filter((m) => m.recipient === C.id).length} (the parent dispatches it by \`run release\`)`);
+      }
       check(cyc, 'run_active_after_reprise', !!active, `carrier run ${active ? 'ACTIVE' : 'still resuming/paused'} +${tActive ? ((tActive - tR) / 1000).toFixed(1) : 'never'} s`);
       // self-restarts: (a) any turn during the hold window; (b) a worker's turn BEFORE its own release; (c) tool processes back / session replaced during the hold.
       // The ONE exemption: the limited member's own request that answers the harness's human `SCN:limit` prompt (a human turn is allowed in a Pause) — a 15 s window, that member only.
-      const holdMembers = [{ role: carrierRun === spec.lead ? 'lead' : 'ops', wsId: carrierRun, optional: true }, ...(carrierRun === spec.lead ? [{ role: 'ops', wsId: spec.ops, optional: true }] : []), ...spec.workers.map((w) => ({ role: w.k, wsId: w.id }))];
+      const holdMembers = [...(PLAIN ? [{ role: 'ops', wsId: spec.ops, optional: true }] : [{ role: carrierRun === spec.lead ? 'lead' : 'ops', wsId: carrierRun, optional: true }, ...(carrierRun === spec.lead ? [{ role: 'ops', wsId: spec.ops, optional: true }] : [])]), ...spec.workers.map((w) => ({ role: w.k, wsId: w.id }))];
       const gaps = holdWindowGaps({ rows, members: holdMembers, bilans, mode: WINDOW });
       check(cyc, 'hold_windows_per_member', gaps.length === 0, gaps.length ? `NO per-member hold window for ${gaps.join(' | ')} — the verdict would fall back to the run-level window (H-1 blind spot)` : `${holdMembers.length} member(s): a per-member (or by-design run-level) hold window exists for every roster row`);
       const forb = [...holdWindows({ rows, bilans, tTrapDone: hold.tTrapDone, tR, mode: WINDOW, members: holdMembers }), ...spec.workers.map((w) => ({ role: w.k, from: tR, until: rows.find((x) => x.ws_id === w.id)?.released_at ?? null, label: 'before-release' }))];
@@ -457,7 +477,7 @@ async function runExercise(name) {
       await snapshotFacts(cyc, c, pre, tP);
       const unchanged = spec.workers.filter((w) => gitSafe(wtOf(w.k), 'status', '--porcelain').split('\n').filter((l) => l && !/loop-/.test(l)).sort().join('\n') !== pre[w.k].porcelain);
       check(cyc, 'worktrees_untouched_by_pause', unchanged.length === 0 && spec.workers.every((w) => !!readWt(w.k, `mark-${w.k}-c${c}.txt`)), `worktree status identical before/after for ${spec.workers.length - unchanged.length}/${spec.workers.length} members (D4: the host never touches a worktree)${unchanged.length ? ` — changed: ${unchanged.map((w) => w.k).join(',')}` : ''}`);
-      const lim = await limitDuringPause(cyc, c, spec.lead, trapRow?.paused_at, 'hard');
+      const lim = PLAIN ? null : await limitDuringPause(cyc, c, spec.lead, trapRow?.paused_at, 'hard');
       const hold = await holdWindow(cyc, c, tTrap ?? Date.now(), idPre, spec.lead);
       hold.tTrapDone = tTrap ?? Date.now();
       if (INJECT === 'late-request') {
@@ -494,7 +514,7 @@ async function runExercise(name) {
       const tEsc = escalated?.pause_escalated_at ?? null;
       cyc.escalatedAtS = tEsc && row0?.paused_at ? (tEsc - row0.paused_at) / 1000 : null;   // from the pause the HOST wrote: the deadline is relative to it (tP also carries the CLI's ~0.3 s spawn)
       const hasBlocked = spec.workers.some((w) => w.kind === 'blocked');
-      check(cyc, 'straggler_not_cut_short', !hasBlocked || (cyc.escalatedAtS !== null && cyc.escalatedAtS >= BARS.softDeadlineS - 5), `escalated at ${cyc.escalatedAtS?.toFixed(1) ?? 'never'} s with a blocked member present (deadline ${BARS.softDeadlineS} s): a straggler must not be cut short`);
+      check(cyc, 'straggler_not_cut_short', !hasBlocked || (cyc.escalatedAtS !== null && cyc.escalatedAtS >= BARS.softDeadlineS - 5), `escalated at ${cyc.escalatedAtS?.toFixed(1) ?? 'never'} s ${hasBlocked ? `with a blocked member present (deadline ${BARS.softDeadlineS} s): a straggler must not be cut short` : '(no blocked member this cycle: every member confirmed, the all-confirmed escalation)'}`);
       const { trapRow, toolsDeadAt, tTrap, loopAtTrap } = await waitTrap(spec.lead);
       cyc.loopAtTrap = loopAtTrap;
       cyc.tAllPausedS = tTrap && toolsDeadAt ? (Math.max(tTrap, toolsDeadAt) - tP) / 1000 : null;
@@ -563,6 +583,11 @@ async function runExercise(name) {
       await endOfCycleChecks(cyc, c, pre);
     }
     async function endOfCycleChecks(cyc, c, pre) {
+      if (PLAIN) {
+        // #438 (spec #431 NOT-VERIFIED 1, #199 history): a child that is idle between turns / killed by a Pause raises NO escalation to its parent over the whole cycle (liveness switch ON on the run)
+        const esc = (await Q("SELECT sequence, sender, recipient, substr(body, 1, 120) AS body FROM messages WHERE kind = 'escalation' AND sequence > ?", cyc.seq0 ?? 0)) ?? null;
+        check(cyc, 'no_false_liveness_escalation', Array.isArray(esc) && esc.length === 0, Array.isArray(esc) ? `${esc.length} escalation row(s) on the bus this cycle${esc.length ? `: ${esc.map((e) => `#${e.sequence} ${e.sender?.slice(0, 8)}→${e.recipient?.slice(0, 8)} ${e.body}`).join(' | ')}` : ''}` : 'NOT MEASURED (the bus reader failed)');
+      }
       const bad = spec.workers.filter((w) => { const tip = gitSafe(rig.repo, 'rev-parse', `refs/heads/pc-${w.k}`); try { git(rig.repo, 'merge-base', '--is-ancestor', pre[w.k].head, tip); return !readWt(w.k, `mark-${w.k}-c${c}.txt`); } catch { return true; } });
       check(cyc, 'branches_and_worktrees_intact_after_reprise', bad.length === 0, `${spec.workers.length - bad.length}/${spec.workers.length} branches contain their pre-pause head and the untracked marker is still on disk after the Reprise${bad.length ? ` — ${bad.map((w) => w.k).join(',')}` : ''}`);
       check(cyc, 'killed_commands_not_rerun', !toolProcs().some((p) => /sleep 740[02]/.test(p.cmd)), 'no killed `sleep 7400/7402` is running again');

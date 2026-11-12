@@ -135,7 +135,7 @@ test('#324-fu F1: the memory_cap ON notice agrees with the REAL decision per wor
   assert.equal(lead.createScope, false);
   const line = busSwitchNoticeLines({ ...DEFAULT_BUS_SWITCHES, memoryCap: true }).find((l) => l.includes('memory_cap='))!;
   // what the notice promises matches the decision: workers and OPS are in the « gets a scope » set, only the top-level LEAD in the « no scope » set
-  assert.match(line, /WITH a coordinator \(a worker, or an OPS under the LEAD\)/);
-  assert.match(line, /Only the top-level LEAD \(a workspace with no coordinator\)/);
-  assert.ok(!/OPS[^.]*runs in no scope/.test(line.split('Only the top-level LEAD')[1] ?? ''), 'OPS is not listed among the scope-less');
+  assert.match(line, /WITH a coordinator \(a worker — a child of a plain parent too — or an OPS under the LEAD\)/);
+  assert.match(line, /Only a top-level workspace \(the LEAD, or a plain agent with no parent: no coordinator\)/);
+  assert.ok(!/OPS[^.]*runs in no scope/.test(line.split('Only a top-level workspace')[1] ?? ''), 'OPS is not listed among the scope-less');
 });
