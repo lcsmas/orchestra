@@ -183,7 +183,9 @@ const post = (route, body) => new Promise((resolve) => {
 });
 const pr = await post('/promote', { id: PLAIN });
 const parsed = (() => { try { return JSON.parse(pr.body); } catch { return {}; } })();
+const unk = await post('/no-such-route-440', { id: PLAIN });
 check('POST /promote is not an ok:true answer', parsed.ok !== true, `${pr.status} ${pr.body.slice(0, 120)}`);
+check('POST /promote answers exactly what an unknown route answers (no handler left)', pr.body === unk.body && pr.body === '{}', `${pr.body} vs ${unk.body}`);
 check('control: POST /whoami on the same socket IS ok:true (the instrument can say yes)', JSON.parse((await post('/whoami', { id: PLAIN })).body).ok === true);
 check('store.json still byte-identical, PLAIN still owns nothing recorded', sha(storeFile) === storeBefore && mod.store.getWorkspace(PLAIN)?.ownsRun !== true);
 

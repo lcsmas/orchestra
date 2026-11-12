@@ -239,11 +239,11 @@ try {
   const ctl2 = await cdp.eval(`window.orchestra.agentSdkSend(${JSON.stringify(ctl.id)}, 'control second prompt')`).then(() => true).catch(() => false);
   void ctl2;
 
-  // ── promote keeps the name (story 14), and a restarted session is still not nudged ──
+  // ── #440: promote is gone (refused, nothing changes: the name stays), and a restarted session is still not nudged ──
   const pr = orch(['promote', childId]);
   await sleep(1500);
   const afterPromote = (await wsList()).find((w) => w.id === childId);
-  clause('promote/keeps-the-name', pr.code === 0 && afterPromote.branch === 'impl-x-1' && afterPromote.canOrchestrate === true && afterPromote.namedByParent === 'ws-ops' && (await rowTexts()).includes('impl-x-1'), `promote rc ${pr.code} «${pr.stdout.trim().slice(0, 100)}»; record ${JSON.stringify(afterPromote)}`);
+  clause('promote/keeps-the-name', pr.code !== 0 && afterPromote.branch === 'impl-x-1' && afterPromote.namedByParent === 'ws-ops' && (await rowTexts()).includes('impl-x-1'), `promote rc ${pr.code} «${pr.stdout.trim().slice(0, 100)}»; record ${JSON.stringify(afterPromote)}`);
   const oldPids = cliPids(childId);
   const rs = orch(['restart', childId]);
   const newPids = await waitFor(() => { const p = cliPids(childId); return p.length && !p.some((x) => oldPids.includes(x)) ? p : null; }, 60000, 'a new child CLI process after restart').catch(() => null);

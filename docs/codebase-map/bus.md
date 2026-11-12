@@ -2661,7 +2661,7 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   parent → mission+vague; run-anchoring ancestor above a plain intermediate; unchanged
   arms (orchestrator/run-anchoring/member/top-level/dangling); idempotence; D1 (down bus,
   throwing start/read); LEAD↔OPS mail+wake in BOTH directions with the OLD topology
-  (master primitives) as the failing control. (`scripts/verify-promote-run-refresh.mjs` §#221 drove the removed promote verb; retired by #440.)
+  (master primitives) as the failing control. (the #171/#221 promote-refresh rig drove the removed promote verb; retired by #440.)
 - `src/main/wave-run-anchor-wiring.test.ts` — source guards for the un-importable
   seams; `resolveWaveRunId` uses `runIdOf` not `walkToRootId`; no promote dispatcher / `startRunForPromoted` left (#440); roster mutant `'default'` reddens.
 - `scripts/verify-bus-status-cli.mjs` — REAL built CLI over a fake socket: G8 wave
@@ -2892,7 +2892,7 @@ promoted member — `refreeze --only memory_cap` (paused vague) is the explicit 
 
 **Gates.** `src/main/session-identity.test.ts` (registry + service: superseding, hash at rest, 0600, atomic, failed write changes nothing, cross-workspace) · `src/shared/session-identity.test.ts`
 (CLI resolution + marker guard) · `src/cli/bus-identity.test.ts` (the BUILT CLI vs a fake host on a real unix socket; `ORCHESTRA_TEST_CLI=<master cli.js>` is the must-FAIL run: 8/14 red on master)
-· `src/main/session-identity-binding.test.ts` (source pins) · `scripts/verify-promote-run-refresh.mjs` arms H1–H8 (RETIRED by #440 — it drove the removed promote verb; a port to `attach` is tracked in the #442 stale-rig sweep; the 9 mutants it also killed keep their unit killers) ·
+· `src/main/session-identity-binding.test.ts` (source pins) · the promote-refresh rig arms H1–H8 (RETIRED by #440 — it drove the removed promote verb; a port to `attach` is tracked in the #442 stale-rig sweep; the 9 mutants it also killed keep their unit killers) ·
 `scripts/e2e-keeper-session-key.mjs` (real keeper daemon: register-before-CLI, attach keeps, fresh replaces, failing registration blocks the spawn; `pnpm run test:session-key-keeper`) ·
 `scripts/session-identity-mutants.mjs` (39 in-place mutants, `pnpm run test:session-identity-mutants`) · **the real-session rig `scripts/session-identity/`** (`pnpm run test:session-identity`, ~13 s, bwrap net+pid
 containment, zero tokens: real `sdkSend` → keeper → real `claude` vs the fake API, the real hooks server, the built CLI as the agent's `orchestra`): arms `same_turn` (spawn → promote [verb removed by #440: this arm and `app_closed` still call `orchestra promote` and are STALE until the #442 sweep ports them] → send in ONE turn lands in the new run, no restart, key hash = registry,

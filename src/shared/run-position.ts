@@ -88,7 +88,7 @@ export function coordinatorRoleOf(ws: { repoPath?: string }): 'pure' | 'dual' {
 }
 
 /** The standing-role hook gate (shell): SessionStart reminder + PreToolUse edit guard run only for a
- *  coordinator — the kind (env, set per session) or the sentinel file (a promote before a restart). */
+ *  coordinator — the kind (env, set per session) or the sentinel file (written at an agent's first spawn, before any restart). */
 export const COORDINATOR_SENTINEL_FILE = '.orchestrator';
 export const COORDINATOR_HOOK_GATE =
   `sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/${COORDINATOR_SENTINEL_FILE}"\n` +

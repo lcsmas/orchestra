@@ -91,7 +91,7 @@ const SECTIONS: HelpSection[] = [
     items: [
       { name: 'Linear', desc: 'Branches named like TEAM-123-… get a live Linear issue badge (title, state) in the sidebar.' },
       { name: 'Insights & Improvements', desc: 'A monthly self-tune pass: regenerates each login’s Claude Code insights report and distills new lessons into ~/.claude/LESSONS.md — so your agents get a little better every month.' },
-      { name: 'CLI', desc: 'The `orchestra` command drives everything over the app’s local socket — spawn, peers, read, message, rename, promote, attach, add-repo, accounts, migrate-account, delete. Run `orchestra --help`.' },
+      { name: 'CLI', desc: 'The `orchestra` command drives everything over the app’s local socket — spawn, peers, read, message, rename, attach, add-repo, accounts, migrate-account, delete. Run `orchestra --help`.' },
     ],
   },
   {
