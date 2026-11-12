@@ -8,7 +8,7 @@ import net from 'node:net';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { censusHome } from './pre-update-fixture-census.mjs';
+import { censusHome, loadSqlite } from './pre-update-fixture-census.mjs';
 import { privateRuntimeDir, handedEnvProblems } from './lib/rig-runtime.mjs';
 import { descendantsOf, procStat, signalIfSame } from './lib/rig-procs.mjs';
 
@@ -16,8 +16,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const COMMON = ['env-isolated', 'fixture-built', 'survivor-instrument-flips'];
-const CLAUSES = { before: [...COMMON, 'census-flips', 'ui-sees-fixture', 'gap-visible-after-boot', 'survivors-none', 'live-dirs-untouched'],
-  after: [...COMMON, 'census-flips', 'ui-sees-fixture', 'every-workspace-has-a-run', 'mail-flows (TODO final run)', 'survivors-none', 'live-dirs-untouched'],
+const CLAUSES = { before: [...COMMON, 'census-flips', 'ui-sees-fixture', 'archived-run-still-open-on-master', 'gap-visible-after-boot', 'survivors-none', 'live-dirs-untouched'],
+  after: [...COMMON, 'census-flips', 'ui-sees-fixture', 'every-workspace-has-a-run', 'archived-coordinator-run-closed', 'no-session-started-by-the-migration', 'mail-parent-to-child', 'mail-child-to-parent', 'delivery-off-run-mail-delivered-once', 'survivors-none', 'live-dirs-untouched'],
   fleet: [...COMMON, 'fleet-rows-flags-mail-unchanged', 'survivors-none', 'live-dirs-untouched'] };
 if (process.argv.includes('--list')) { for (const [a, c] of Object.entries(CLAUSES)) console.log(`${a}: ${c.join(', ')}`); process.exit(0); }
 
@@ -73,7 +73,7 @@ const ohome = path.join(FX, 'home');
 const manifest = built.status === 0 ? JSON.parse(fs.readFileSync(path.join(FX, 'MANIFEST.json'), 'utf8')) : null;
 clause('fixture-built', built.status === 0 && /FIXTURE_OK/.test(built.stdout), built.status === 0 ? `base ${manifest.baseSha.slice(0, 8)}, ${manifest.census.workspaces} workspaces, ${manifest.census.runs} runs` : (built.stderr || built.stdout).split('\n').slice(-3).join(' | '));
 if (!manifest) process.exit(1);
-const Database = require('better-sqlite3');
+const Database = loadSqlite();
 const census = () => censusHome(ohome, { betterSqlite: Database });
 const preCensus = census();
 { // positive control: add a run for P in a COPY of the bus — P must leave the run-less list, or the census cannot see a run at all
@@ -111,8 +111,32 @@ if (problems.length || !ohome.startsWith(RIG_DIR + path.sep) || protectedDirs().
 const logFd = fs.openSync(path.join(RIG_DIR, 'app.log'), 'w');
 const child = spawn(EXE, ['--ozone-platform=wayland', '--no-sandbox'], { env, stdio: ['ignore', logFd, logFd], cwd: RIG_DIR });
 const start = procStat(child.pid)?.start; let exited = false; child.on('exit', () => { exited = true; });
-let peakKb = 0; const sample = setInterval(() => { let sum = 0; for (const p of descendantsOf(child.pid)) { try { sum += Number(/VmRSS:\s+(\d+)/.exec(fs.readFileSync(`/proc/${p}/status`, 'utf8'))?.[1] ?? 0); } catch { /* gone */ } } peakKb = Math.max(peakKb, sum); }, 1000);
-let bodyText = '', shot = null;
+const sessionProcs = new Set(); // any keeper / claude CLI the app starts in this tree: a migration must not start or restart a session
+let peakKb = 0; const sample = setInterval(() => { let sum = 0; for (const p of descendantsOf(child.pid)) { try { const c = fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').replace(/\0/g, ' '); if (/keeper\.js|\/claude(\s|$)|claude-code/.test(c)) sessionProcs.add(`${p}:${c.slice(0, 60)}`); } catch { /* gone */ } try { sum += Number(/VmRSS:\s+(\d+)/.exec(fs.readFileSync(`/proc/${p}/status`, 'utf8'))?.[1] ?? 0); } catch { /* gone */ } } peakKb = Math.max(peakKb, sum); }, 1000);
+let bodyText = '', shot = null, mail = null;
+// Mail through the BUILT CLI of the package under test (`<unpacked binary> cli …`), as each agent (identity env: its workspace + its run), against the app that is up on the fixture.
+const CLI_EXE = arg('cli', EXE.endsWith('.AppImage') ? null : EXE);
+function cliAs(wsId, runId, args) {
+  const r = spawnSync(CLI_EXE, ['cli', ...args], { env: { ...env, ELECTRON_DISABLE_SANDBOX: '1', ORCHESTRA_WS_ID: wsId, ORCHESTRA_RUN_ID: runId }, encoding: 'utf8', timeout: 60_000, cwd: RIG_DIR });
+  return { code: r.status, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').split('\n').filter((l) => !/^\[\d+:|dbus|ERROR:/.test(l)).join(' ').trim().slice(0, 220) };
+}
+async function driveMail() {
+  if (!CLI_EXE) return { skipped: 'the exe is an AppImage — pass --cli <unpacked binary> (an AppImage re-extracts 550 MB per call)' };
+  const I = manifest.ids, out = {};
+  const lot = (r) => { try { return JSON.parse(r.out.split('\n').filter((l) => l.startsWith('{')).pop()); } catch { return null; } };
+  const take = (who, run) => { const c = lot(cliAs(I[who], run, ['check', '--run', run])); return c; };
+  // parent -> child, then child -> parent, in the plain tree P ⊃ P1 (P owns a vague since the migration)
+  out.pToC = cliAs(I.P, I.P, ['send', '--type', 'status', '--to', I.P1, 'ppr-parent-to-child']);
+  out.c1 = take('P1', I.P); out.c1body = out.c1?.messages?.map((m) => m.body) ?? null;
+  if (out.c1?.lot) out.c1ack = cliAs(I.P1, I.P, ['ack', '--run', I.P, String(out.c1.lot)]);
+  out.cToP = cliAs(I.P1, I.P, ['send', '--type', 'status', '--to', I.P, 'ppr-child-to-parent']);
+  out.p1 = take('P', I.P); out.p1body = out.p1?.messages?.map((m) => m.body) ?? null;
+  // the delivery-OFF run Z: its unread mail is delivered ONCE by the bus (check → ack → empty)
+  out.z1 = take('Z1', I.Z); out.z1body = out.z1?.messages?.map((m) => m.body) ?? null;
+  if (out.z1?.lot) out.z1ack = cliAs(I.Z1, I.Z, ['ack', '--run', I.Z, String(out.z1.lot)]);
+  out.z1again = take('Z1', I.Z);
+  return out;
+}
 try {
   const targets = await (async () => { for (let i = 0; i < 150; i++) { if (exited) throw new Error(`app exited early (see ${RIG_DIR}/app.log)`); try { const j = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); const t = j.filter((x) => x.type === 'page' && x.url.includes('index.html')); if (t.length) return t; } catch { /* not yet */ } await sleep(300); } throw new Error('no renderer page on the CDP port in 45 s'); })();
   console.log(`[ppr] app up (pid ${child.pid}); settling ${SETTLE_S}s so the boot-time work (migration, run backfill) can finish`);
@@ -124,6 +148,7 @@ try {
   const png = (await cdp('Page.captureScreenshot', { format: 'png' })).result?.data;
   if (png) { shot = path.join(RIG_DIR, `ui-${ARM}.png`); fs.writeFileSync(shot, Buffer.from(png, 'base64')); }
   ws.close();
+  if (ARM === 'after') mail = await driveMail();
 } catch (e) { console.error(`[ppr] boot/observe failed: ${e.message}`); }
 clearInterval(sample);
 const post = (() => { try { return census(); } catch (e) { return { error: e.message }; } })();
@@ -149,10 +174,21 @@ const lowered = bodyText.toLowerCase();
 const booted = bodyText.length > 0; // the app rendered: a disk census alone could be the fixture's own, unread by any app
 clause('ui-sees-fixture', rows.every((n) => new RegExp(`(^|[^a-z0-9-])${n}(?![a-z0-9-])`).test(lowered)), shot ? `sidebar rows ${rows.filter((n) => new RegExp(`(^|[^a-z0-9-])${n}(?![a-z0-9-])`).test(lowered)).join(', ') || 'none'} of ${rows.length}; screenshot ${shot}` : 'no UI read (CDP never answered)');
 if (post.error) clause('census-after-boot', false, post.error);
-else if (ARM === 'before') clause('gap-visible-after-boot', booted && names.every((n) => post.runlessOwn.includes(n)), `run-less after boot: ${post.runlessOwn.length}/${post.workspaces} (${post.runlessOwn.join(', ')}) — on master this must stay >0`);
-else if (ARM === 'after') { clause('every-workspace-has-a-run', booted && post.runlessOwn.length === 0, `run-less after boot (own-run criterion; #433/#434 may narrow it): ${post.runlessOwn.join(', ') || 'none'} | in-run criterion: ${post.runlessIn.join(', ') || 'none'}`); skip('mail-flows', 'TODO final #442 run: drive parent→child `orchestra send` + `check` on the fixture workspaces (they are hibernated: needs a wake)'); }
+else if (ARM === 'before') { const ar = post.runRows.find((r) => r.id === manifest.ids.Ar); clause('archived-run-still-open-on-master', booted && !!ar && !ar.closedAt, `Ar run closed_at ${ar?.closedAt ?? 'NULL'} — master leaves it open`); clause('gap-visible-after-boot', booted && names.every((n) => post.runlessOwn.includes(n)), `run-less after boot: ${post.runlessOwn.length}/${post.workspaces} (${post.runlessOwn.join(', ')}) — on master this must stay >0`); }
+else if (ARM === 'after') { clause('every-workspace-has-a-run', booted && post.runlessIn.length === 0, `run-less after boot (in-run = own run or an ancestor's, #433/#434): ${post.runlessIn.join(', ') || 'none'} | without an OWN run row (members of a parent's run, fine): ${post.runlessOwn.join(', ') || 'none'} | runs ${preCensus.runs} → ${post.runs}`);
+  const ar = post.runRows.find((r) => r.id === manifest.ids.Ar);
+  clause('archived-coordinator-run-closed', booted && !!ar?.closedAt, `Ar (archived LEAD) run closed_at ${ar?.closedAt ?? 'NULL'} (open before the boot)`);
+  clause('no-session-started-by-the-migration', sessionProcs.size === 0, `${sessionProcs.size} keeper/claude process(es) in the app tree: ${[...sessionProcs].join(' | ') || 'none'}`);
+  if (!mail || mail.skipped) skip('mail-flows', mail?.skipped ?? 'mail not driven');
+  else {
+    clause('mail-parent-to-child', mail.pToC.code === 0 && mail.c1body?.includes('ppr-parent-to-child'), `send rc ${mail.pToC.code} ${mail.pToC.err}; child lot ${JSON.stringify(mail.c1body)}`);
+    clause('mail-child-to-parent', mail.cToP.code === 0 && mail.p1body?.includes('ppr-child-to-parent'), `send rc ${mail.cToP.code} ${mail.cToP.err}; parent lot ${JSON.stringify(mail.p1body)}`);
+    clause('delivery-off-run-mail-delivered-once', !!mail.z1?.lot && mail.z1body?.length >= 1 && mail.z1ack?.code === 0 && mail.z1again?.count === 0, `Z1 lot ${JSON.stringify(mail.z1body)}; ack rc ${mail.z1ack?.code}; second check count ${mail.z1again?.count}`);
+  }
+}
 else {
-  const flagsOf = (c) => c.runRows.filter((r) => [manifest.ids.L, manifest.ids.O].includes(r.id)).map((r) => [r.id, r.flags]).sort();
+  const noDelivery = (f) => { try { const j = JSON.parse(f); delete j.delivery; return JSON.stringify(Object.entries(j).sort()); } catch { return f; } }; // #441: `delivery` is gone; compare the rest
+  const flagsOf = (c) => c.runRows.filter((r) => [manifest.ids.L, manifest.ids.O].includes(r.id)).map((r) => [r.id, noDelivery(r.flags)]).sort();
   const fleet = post.runRows.filter((r) => [manifest.ids.L, manifest.ids.O].includes(r.id));
   const q = (run) => { const d = new Database(path.join(ohome, 'bus.sqlite'), { readonly: true }); try { return d.prepare('SELECT COUNT(*) n FROM messages WHERE run_id=?').get(run).n; } finally { d.close(); } };
   const same = booted && fleet.length === 2 && JSON.stringify(flagsOf(post)) === JSON.stringify(flagsOf(preCensus)) && q(manifest.ids.L) >= 1 && q(manifest.ids.O) >= 2 && JSON.stringify(fleet.map((r) => r.parent)) === JSON.stringify(preCensus.runRows.filter((r) => [manifest.ids.L, manifest.ids.O].includes(r.id)).map((r) => r.parent));

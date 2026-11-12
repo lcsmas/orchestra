@@ -1,0 +1,17 @@
+PASS  after/env-isolated — WAYLAND_DISPLAY=wayland-rig, private XDG /var/tmp/ppr-1000/e2e64c-2403755/xdg
+[ppr] resources: MemAvailable 19.3 GB (floor 8), disk free under rig 269G
+PASS  after/fixture-built — base ed510e09, 12 workspaces, 4 runs
+PASS  after/census-flips — P run-less true → with a run row gone from the list
+PASS  after/survivor-instrument-flips — sleep 2404136: alive-by-identity true → after SIGKILL false
+[ppr] app up (pid 2404137); settling 30s so the boot-time work (migration, run backfill) can finish
+[ppr] peak app-tree RSS 0.73 GB; survivors after teardown: 0
+PASS  after/ui-sees-fixture — sidebar rows fixture-s, fixture-p, fixture-p1, fixture-p2, fixture-l of 5; screenshot /var/tmp/ppr-1000/e2e64c-2403755/ui-after.png
+FAIL  after/every-workspace-has-a-run — run-less after boot (in-run = own run or an ancestor's, #433/#434): fixture · P, fixture · P1, fixture · P2, fixture · S | without an OWN run row (members of a parent's run, fine): fixture · P, fixture · P1, fixture · P2, fixture · S, fixture · W1, fixture · W2, fixture · Z1, fixture · Z2 | runs 4 → 4
+FAIL  after/archived-coordinator-run-closed — Ar (archived LEAD) run closed_at NULL (open before the boot)
+PASS  after/no-session-started-by-the-migration — 0 keeper/claude process(es) in the app tree: none
+FAIL  after/mail-parent-to-child — send rc 1 refused: run "00000001-f1f1-4e57-8a00-000000000001" has no row in the bus 'runs' table, so a message sent to it would be ORPHANED — never woken (the wake switch safe-defaults OFF for an unknown run) and invisible to ever; child lot []
+FAIL  after/mail-child-to-parent — send rc 1 refused: run "00000001-f1f1-4e57-8a00-000000000001" has no row in the bus 'runs' table, so a message sent to it would be ORPHANED — never woken (the wake switch safe-defaults OFF for an unknown run) and invisible to ever; parent lot []
+PASS  after/delivery-off-run-mail-delivered-once — Z1 lot ["fixture: unread for Z1"]; ack rc 0; second check count 0
+PASS  after/survivors-none — 0 left
+PASS  after/live-dirs-untouched — 7 dir(s) snapshotted identical before/after
+[ppr] 13 clauses, 4 FAIL, 0 SKIP — results /var/tmp/ppr-1000/e2e64c-2403755/results.json

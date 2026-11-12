@@ -12,6 +12,7 @@
 // Shape (see MANIFEST.json written next to home/):
 //   run-less  P (top-level plain) + P1,P2 (plain children) + S (top-level scratch)      — no runs row at all
 //   fleet     L (LEAD, mission run, delivery ON) → O (OPS, vague run ON) → W1,W2        — the unchanged-fleet arm
+//   archived  Ar (archived LEAD, its mission run still open — closed by #437's app-start reconcile)
 //   off       L → Z (OPS, vague run with ALL switches OFF) → Z1,Z2 + unread mail         — the delivery-OFF shape
 //             (live: 2 of 42 runs, both `vague` rows with parent_run_id = a mission, every flag false, no
 //              deliveries rows, senders = member ids + 'host' + 'humain'; plus 4 rows in the `default` run
@@ -24,7 +25,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire, register } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { censusHome } from './pre-update-fixture-census.mjs';
+import { censusHome, loadSqlite } from './pre-update-fixture-census.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
@@ -61,6 +62,7 @@ if (fs.readdirSync(path.join(src, 'docs', 'adr')).some((f) => f.startsWith('0012
   throw new Error(`base ${baseSha} already carries ADR 0012 / run-position.ts — a pre-update fixture needs master BEFORE this vague`);
 }
 fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(src, 'node_modules'));
+if (fs.existsSync(path.join(REPO, 'build', 'bus-abi'))) { fs.mkdirSync(path.join(src, 'build'), { recursive: true }); fs.symlinkSync(path.join(REPO, 'build', 'bus-abi'), path.join(src, 'build', 'bus-abi')); } // per-ABI better-sqlite3 (node_modules may hold the Electron one after a package build)
 
 // ── load master's modules under plain node: extensionless relative imports → .ts ──
 const hook = path.join(out, '_resolve-hook.mjs');
@@ -91,6 +93,7 @@ const SPEC = [ // name, n, parent name, kind, canOrchestrate
   ['P', 1], ['P1', 2, 'P'], ['P2', 3, 'P'], ['S', 4, null, 'scratch'],
   ['L', 5, null, 'orchestrator'], ['O', 6, 'L', undefined, true], ['W1', 7, 'O'], ['W2', 8, 'O'],
   ['Z', 9, 'L', undefined, true], ['Z1', 10, 'Z'], ['Z2', 11, 'Z'],
+  ['Ar', 12, null, 'orchestrator'], // an ARCHIVED top-level coordinator whose run is still open: #437's app-start reconcile must close it
 ];
 const ids = Object.fromEntries(SPEC.map(([name, n]) => [name, id(n)]));
 await store.load();
@@ -105,7 +108,7 @@ for (const [name, n, parent, kind, canOrch] of SPEC) {
     id: wid, name: `fixture · ${name}`, repoPath: repo, worktreePath, branch, baseBranch: 'main',
     createdAt: t0 + n * 1000, status: 'idle', agent: 'claude', branchManuallySet: false,
     port: store.allocatePort(), setupStatus: 'ok', model: 'sonnet', sdkEffort: 'high',
-    lastTurnStartAt: t0 + n * 1000, hibernatedAt: Date.now(), archived: false,
+    lastTurnStartAt: t0 + n * 1000, hibernatedAt: Date.now(), archived: name === 'Ar', ...(name === 'Ar' ? { archivedAt: Date.now() } : {}),
     ...(kind ? { kind } : {}), ...(parent ? { parentId: ids[parent] } : {}), ...(canOrch ? { canOrchestrate: true } : {}),
   });
 }
@@ -120,6 +123,7 @@ const lookup = (i) => { const w = store.getWorkspace(i); return w && { id: w.id,
 const runOf = (name) => nearestOrchestratorId(lookup(ids[name]), lookup);
 runs.startRun(db, { id: ids.L, kind: 'mission', coordinator: ids.L }, ON);
 runs.startRun(db, { id: ids.O, kind: 'vague', coordinator: ids.O, parentRunId: ids.L }, ON);
+runs.startRun(db, { id: ids.Ar, kind: 'mission', coordinator: ids.Ar }, ON);
 runs.startRun(db, { id: ids.Z, kind: 'vague', coordinator: ids.Z, parentRunId: ids.L }, DEFAULT_BUS_SWITCHES); // delivery OFF: every flag false, as live
 const say = (run, sender, recipient, kind, body) => bus.send(db, { runId: run, sender, recipient, kind, body });
 // fleet arm (delivery ON): mail the unchanged-fleet arm must keep delivering
@@ -136,13 +140,13 @@ say('default', ids.Z1, ids.L.slice(0, 8), 'status', 'fixture: default-run row 1'
 say('default', ids.Z1, ids.L.slice(0, 8), 'status', 'fixture: default-run row 2');
 db.close();
 
-const census = censusHome(home, { betterSqlite: createRequire(import.meta.url)('better-sqlite3') });
+const census = censusHome(home, { betterSqlite: loadSqlite() });
 const manifest = {
   baseRef: base, baseSha, out, home, ids,
   expectBefore: { // what the PRE-update shape must show; the rig's "before" arm asserts it
     runlessOwn: ['fixture · P', 'fixture · P1', 'fixture · P2', 'fixture · S', 'fixture · W1', 'fixture · W2', 'fixture · Z1', 'fixture · Z2'],
     runlessIn: ['fixture · P', 'fixture · P1', 'fixture · P2', 'fixture · S'],
-    deliveryOffRuns: [ids.Z], runs: 3,
+    deliveryOffRuns: [ids.Z], runs: 4,
   },
   runMembership: Object.fromEntries(SPEC.map(([name]) => [name, runOf(name)])),
   census,
@@ -150,7 +154,7 @@ const manifest = {
 fs.writeFileSync(path.join(out, 'MANIFEST.json'), JSON.stringify(manifest, null, 2));
 const sortEq = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 const ok = sortEq(census.runlessOwn, manifest.expectBefore.runlessOwn) && sortEq(census.runlessIn, manifest.expectBefore.runlessIn)
-  && sortEq(census.deliveryOffRuns, [ids.Z]) && census.runs === 3;
+  && sortEq(census.deliveryOffRuns, [ids.Z]) && census.runs === 4;
 console.log(JSON.stringify({ out, home, baseSha, workspaces: census.workspaces, runs: census.runs, runlessOwn: census.runlessOwn.length, runlessIn: census.runlessIn.length, deliveryOffRuns: census.deliveryOffRuns.length, unread: census.unreadByRun }));
 console.log(ok ? 'FIXTURE_OK (shape matches expectBefore)' : 'FIXTURE_MISMATCH');
 process.exit(ok ? 0 : 1);

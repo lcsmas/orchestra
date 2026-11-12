@@ -10,13 +10,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
+/** better-sqlite3 bound to THIS runtime's ABI: node_modules may hold the Electron build (after a package build), so prefer build/bus-abi/…-abi<N>.node (build:bus-abi). */
+export function loadSqlite() {
+  const require = createRequire(import.meta.url);
+  const Base = require('better-sqlite3');
+  const f = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'build', 'bus-abi', `better_sqlite3-abi${process.versions.modules}.node`);
+  if (!fs.existsSync(f)) return Base;
+  return class Db extends Base { constructor(file, opts = {}) { super(file, { ...opts, nativeBinding: f }); } };
+}
+
 export function censusHome(home, { betterSqlite }) {
   const store = JSON.parse(fs.readFileSync(path.join(home, 'userData', 'orchestra', 'store.json'), 'utf8'));
   const Database = betterSqlite;
   const db = new Database(path.join(home, 'bus.sqlite'), { readonly: true, fileMustExist: true });
   db.pragma('query_only = 1');
   try {
-    const runs = db.prepare('SELECT r.id, r.kind, r.coordinator, r.parent_run_id AS parent, f.flags FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id').all();
+    const runs = db.prepare('SELECT r.id, r.kind, r.coordinator, r.parent_run_id AS parent, r.closed_at AS closedAt, f.flags FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id').all();
     const runById = new Map(runs.map((r) => [r.id, r]));
     const byId = new Map(store.workspaces.map((w) => [w.id, w]));
     const own = (id) => runById.has(id);
@@ -38,7 +47,7 @@ export function censusHome(home, { betterSqlite }) {
       runlessIn: rows.filter((r) => !r.inRun).map((r) => r.name),
       deliveryOffRuns: deliveryOff,
       unreadByRun: unread,
-      runRows: runs.map((r) => ({ id: r.id, kind: r.kind, parent: r.parent, flags: r.flags })),
+      runRows: runs.map((r) => ({ id: r.id, kind: r.kind, parent: r.parent, closedAt: r.closedAt, flags: r.flags })),
     };
   } finally {
     db.close();
@@ -49,5 +58,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const home = process.argv[2];
   if (!home) { console.error('usage: pre-update-fixture-census.mjs <ORCHESTRA_HOME>'); process.exit(2); }
   const require = createRequire(import.meta.url);
-  console.log(JSON.stringify(censusHome(home, { betterSqlite: require('better-sqlite3') }), null, 2));
+  console.log(JSON.stringify(censusHome(home, { betterSqlite: loadSqlite() }), null, 2));
 }
