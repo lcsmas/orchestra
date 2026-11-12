@@ -26,7 +26,7 @@
 import type { BusDb } from './bus.ts';
 import type { BusRunRow } from './bus-runs.ts';
 import { WAVE_REFREEZE_KEEPS_FROZEN, type BusMechanism, type BusSwitches } from '../shared/bus-switches.ts';
-import { coordinates, parentRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
+import { coordinates, isTopLevel, parentRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
 
 /** The collaborators the anchor-start needs, injected so a rig drives the real
  *  function without the Electron/store chain `workspaces.ts` drags in. */
@@ -87,7 +87,7 @@ export function runAnchorProbe(deps: BusRunAnchorDeps): (id: string) => boolean 
 
 /** #433 — a workspace with no resolvable parent (none set, or a dangling link after a delete) is top-level: it owns a mission from birth. */
 export function isParentless(ws: WaveNode, lookup: (id: string) => WaveNode | undefined): boolean {
-  return !ws.parentId || !lookup(ws.parentId);
+  return isTopLevel(ws, lookup);
 }
 
 /**

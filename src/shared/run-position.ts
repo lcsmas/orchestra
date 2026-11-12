@@ -74,6 +74,11 @@ export function parentRunOf(
   return parent ? { id: parent.id, implicit: true } : { id: null, implicit: false };
 }
 
+/** #433 — top-level = no resolvable parent (none set, or a dangling link after a delete): it owns a mission from birth. */
+export function isTopLevel(ws: Pick<RunNode, 'parentId'>, lookup: RunLookup): boolean {
+  return !ws.parentId || !lookup(ws.parentId);
+}
+
 /** #221 — `ws` is its OWN run anchor without coordinating (a run-less parent that gained a mission run). */
 export function isPlainOwnAnchor(ws: RunNode, lookup: RunLookup): boolean {
   return !coordinates(ws) && runIdOf(ws, lookup) === ws.id;
