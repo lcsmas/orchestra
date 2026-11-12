@@ -96,7 +96,7 @@ export function memoryPausedRunViews(db: BusDb | null, label?: (runId: string) =
 
 /** Every run that carries a live LOCAL FLEET, with its frozen switches: its anchor workspace is live (exists, not archived, not sandbox-hosted) AND at least one live local workspace sits BELOW it. */
 export function liveFleetRuns(db: BusDb, deps: Pick<MemoryPauseDeps, 'getWorkspace' | 'listWorkspaces'>): Array<{ id: string; flags: BusSwitches }> {
-  const rows = db.prepare('SELECT r.id AS id, f.flags AS flags_json FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id ORDER BY r.created_at, r.id').all() as Array<{ id: string; flags_json: string | null }>;
+  const rows = db.prepare('SELECT r.id AS id, f.flags AS flags_json FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id WHERE r.closed_at IS NULL ORDER BY r.created_at, r.id').all() as Array<{ id: string; flags_json: string | null }>;
   const local = (w: { archived?: boolean; host?: { kind: string } } | undefined): boolean => !!w && !w.archived && w.host?.kind !== 'sandbox';
   // every id that has at least one live local workspace below it (the live parent chain of each live local workspace, minus itself)
   const hasMembers = new Set<string>();
@@ -227,7 +227,7 @@ export function memoryPausedRuns(db: BusDb): MemoryPausedRun[] {
     .prepare(
       `SELECT r.id, r.paused_at, r.pause_trap_at, r.pause_auto, f.flags AS flags_json
          FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id
-        WHERE r.paused_at IS NOT NULL AND r.pause_auto IS NOT NULL AND r.resume_started_at IS NULL`,
+        WHERE r.paused_at IS NOT NULL AND r.pause_auto IS NOT NULL AND r.resume_started_at IS NULL AND r.closed_at IS NULL`,
     )
     .all() as Array<Record<string, unknown>>;
   if (rows.length === 0) return [];

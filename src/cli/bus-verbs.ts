@@ -99,6 +99,20 @@ export function unknownRunRefusalMessage(runId: string): string {
   );
 }
 
+/**
+ * #437 — the refusal when a send / ask / gate names a run that is CLOSED (its coordinator was archived or deleted).
+ * Names the run, says nothing was written (refused, not parked), and what the sender can do. Keyed here so the verbs
+ * and their tests read one string.
+ */
+export function closedRunRefusalMessage(verb: string, runId: string, closedAt: number): string {
+  return (
+    `orchestra ${verb}: refused — run ${JSON.stringify(runId)} is CLOSED (since ${new Date(closedAt).toISOString()}): its coordinator was archived or deleted, ` +
+    `so nobody reads it any more. Nothing was written.\n` +
+    `  A run reopens only when its coordinator is unarchived. If you are a member of that run you have no live coordinator: ` +
+    `tell the human; to reach a live agent, address the run it belongs to.`
+  );
+}
+
 export interface BusIdentity {
   runId: string;
   handle: string;
@@ -258,7 +272,7 @@ export interface BusModule {
   /** One run row, or null when the id anchors no run (#175 — the reachability
    *  guard uses this to tell "recipient is a coordinator with its own read
    *  scope" from "plain member, no run of its own"). */
-  getRun(db: BusDb, runId: string): { id: string } | null;
+  getRun(db: BusDb, runId: string): { id: string; closed_at?: number | null } | null;
   /** FENCING (#128): run `write` behind the coordinator-generation fence, as ONE
    *  IMMEDIATE transaction (closes the TOCTOU window, review F1). Throws
    *  StaleGenerationError when the switch is ON and the write is stale (the write
@@ -516,6 +530,17 @@ function routeMail(
   return { ...ctx, id: { ...ctx.id, runId: recipientRun }, generation: null, fencingOn: false };
 }
 
+/** #437 — refuse BEFORE any write when the run this verb writes into, or the recipient's run, is closed. Order = the run the
+ *  sender acts in first, then the recipient's own run, then the recipient as a run (it coordinates its own). check/ack are never
+ *  refused (reading old mail is never blocked). */
+function assertRunsOpen(ctx: BusVerbCtx, verb: string, ...runIds: Array<string | null | undefined>): void {
+  for (const id of runIds) {
+    if (!id) continue;
+    const row = ctx.bus.getRun(ctx.db, id);
+    if (row && row.closed_at !== null && row.closed_at !== undefined) ctx.fail(closedRunRefusalMessage(verb, id, row.closed_at));
+  }
+}
+
 export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   if (!a.kind) ctx.fail('usage: orchestra send --type <kind> [--to <handle>] [--thread <id>] [--cap <token>] [--request-id <id>] <body...>');
   // Validated HERE as well as in bus.send(), because the CLI can say what the
@@ -524,6 +549,7 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
     ctx.fail(`orchestra send: unknown --type ${JSON.stringify(a.kind)} (one of: ${BUS_KINDS.join(', ')})`);
   }
   if (!a.body.trim()) ctx.fail('orchestra send: the message body is empty');
+  assertRunsOpen(ctx, 'send', ctx.id.runId, a.toRunId, a.to); // #437: a closed run is refused, not parked
   // #436 — route by the recipient's run (cross-run status/ask → ITS run; dispatch/gate/other refused) BEFORE any write.
   const wctx = a.to ? routeMail(ctx, 'send', a.kind!, a.to, a.toRunId) : ctx;
 
@@ -807,6 +833,7 @@ export function verbAsk(
 ): void {
   if (!to?.trim()) ctx.fail('usage: orchestra ask --to <handle> <question...>');
   if (!question.trim()) ctx.fail('orchestra ask: the question is empty');
+  assertRunsOpen(ctx, 'ask', ctx.id.runId, toRunId, to); // #437
   // #436 — an ask to a recipient in an UNRELATED run is filed in ITS run (the wake + re-wake-until-answered arm there).
   const wctx = routeMail(ctx, 'ask', 'question', to!.trim(), toRunId);
   const seq = ctx.bus.send(ctx.db, {
@@ -902,6 +929,7 @@ export function verbGate(
     }
     const question = to.rest.join(' ');
     if (!question.trim()) ctx.fail('usage: orchestra gate open [--to <recipient>] <question...>');
+    assertRunsOpen(ctx, 'gate open', ctx.id.runId, toRunId, to.value?.trim()); // #437
     // #436 — a gate (a ruling = the right to act) never crosses unrelated runs: refused with the reason. #158 widened gate
     // READS to related runs only. A gate with no --to wakes nobody by design and is not judged.
     if (to.value?.trim()) routeMail(ctx, 'gate open', 'decision_gate', to.value.trim(), toRunId);
@@ -944,6 +972,7 @@ export function verbGate(
     // the resolution reply (#158 arm 4). Reading after would race an idempotent
     // replay path; the gate row's asked_by/run_id are immutable once opened.
     const gateBefore = ctx.bus.getGate(ctx.db, gateId);
+    if (gateBefore) assertRunsOpen(ctx, 'gate resolve', gateBefore.run_id); // #437: a ruling re-wakes the asker IN the gate's run — a closed run takes none
     const ok = runMutation(ctx, req.value, 'gate_resolve', () =>
       fenced(ctx, 'gate-resolve', () =>
         ctx.bus.resolveGate(ctx.db, gateId, ctx.id.handle, ruling),

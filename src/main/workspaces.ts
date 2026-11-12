@@ -96,6 +96,7 @@ import {
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
+import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reconcileRunClosure } from './bus-run-close.ts';
 import { isPlainOwnAnchor } from '../shared/run-position.ts';
 import {
   decideReparentAction,
@@ -619,6 +620,50 @@ export function createOrchestratorWorkspace(): Promise<Workspace> {
   return createScratchLikeWorkspace('orchestrator'); // run-position: non-run — creation flavour
 }
 
+/** #437 — a run closes with its coordinator: archive / delete / orphan-prune close the runs `ids` coordinate; unarchive (and a
+ *  session start of a live workspace) reopens them. Best-effort (D1): no bus or a throwing write is a log line, never a failure of
+ *  the archive/delete — the app-start `reconcileRunClosureAtStart` repairs a dropped write. */
+function closeRunsOf(ids: readonly string[]): void {
+  const db = getBus();
+  if (!db) return;
+  try {
+    const closed = closeRunsCoordinatedBy(db, ids);
+    if (closed.length) log.info(`bus: closed run(s) ${closed.join(', ')} (coordinator archived or deleted)`);
+  } catch (e) {
+    log.warn(`bus: failed to close the run(s) of ${ids.join(', ')}`, e);
+  }
+}
+
+function reopenRunsOf(ids: readonly string[]): void {
+  const db = getBus();
+  if (!db) return;
+  try {
+    const reopened = reopenRunsCoordinatedBy(db, ids);
+    if (reopened.length) log.info(`bus: reopened run(s) ${reopened.join(', ')} (coordinator unarchived)`);
+  } catch (e) {
+    log.warn(`bus: failed to reopen the run(s) of ${ids.join(', ')}`, e);
+  }
+}
+
+/** #437 — app start: a run is closed iff its coordinator is archived or gone from the store (closes the runs of every already
+ *  archived / deleted coordinator, reopens a closed run of a live one). Gated like the #433 sweep by the caller (`loadedFromDisk`). */
+export function reconcileRunClosureAtStart(): { closed: string[]; reopened: string[] } {
+  const db = getBus();
+  if (!db) return { closed: [], reopened: [] };
+  const r = reconcileRunClosure(db, (id) => {
+    const w = store.getWorkspace(id);
+    return !w ? 'gone' : w.archived ? 'archived' : 'live';
+  });
+  if (r.closed.length || r.reopened.length) log.info(`bus: run closure reconciled — closed ${r.closed.length}, reopened ${r.reopened.length}`);
+  return r;
+}
+
+/** #437 — a session START of a live workspace reopens a run of its own that an earlier archive closed (the unarchive reopen is
+ *  best-effort), so a live coordinator never sits on a closed run. Best-effort, never throws. */
+export function ensureRunOpen(ws: Workspace): void {
+  if (!ws.archived) reopenRunsOf([ws.id]);
+}
+
 /** Collect `id` plus every workspace transitively parented under it (children,
  *  grandchildren, …) so an orchestrator archives/unarchives as a whole tree. The
  *  root is always first; descendants follow in breadth-first order. Guards
@@ -680,6 +725,7 @@ export async function archiveWorkspace(id: string): Promise<void> {
       status: 'stopped',
     };
     await store.upsertWorkspace(updated);
+    closeRunsOf([ws.id]); // #437: the run this agent coordinates closes with it (every archived descendant's too — the loop covers the subtree)
     platform.broadcast('workspace:update', updated);
   }
 }
@@ -698,6 +744,7 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
       status: 'idle',
     };
     await store.upsertWorkspace(updated);
+    reopenRunsOf([ws.id]); // #437: unarchive REOPENS the same run (its id is the coordinator's workspace id); history, unread mail and switches kept
     platform.broadcast('workspace:update', updated);
   }
 }
@@ -842,6 +889,7 @@ export function reportAdmissionFailure(wsId: string, text: string): void {
 export async function deleteWorkspace(id: string): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
+  closeRunsOf([id]); // #437: first — mail to a coordinator being deleted is refused for the whole (slow) teardown
   await teardownWorkspace(ws);
   await store.removeWorkspace(id);
   expireBusAsksForDeleted(id);
@@ -865,6 +913,7 @@ export async function deleteWorkspaces(
   let done = 0;
   // Tombstone EVERY id before the first (slow) teardown: a wake on B must not start a keeper while A tears down.
   for (const ws of targets) forbidKeeperLaunch(ws.id);
+  closeRunsOf(targets.map((w) => w.id)); // #437: every run these coordinate closes before the first (slow) teardown
   for (const ws of targets) {
     await teardownWorkspace(ws);
     removed.push(ws.id);
@@ -960,6 +1009,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
         }
       }
 
+      closeRunsOf([ws.id]); // #437: an out-of-band removal (worktree gone) is a delete too
       await store.removeWorkspace(ws.id);
       expireBusAsksForDeleted(ws.id);
       forgetSessionKey(ws.id); // #379

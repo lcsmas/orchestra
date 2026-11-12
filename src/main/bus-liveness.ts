@@ -26,6 +26,7 @@
 
 import { getBus, send, type BusDb } from './bus.ts';
 import { busSwitch, heldRunIds } from './bus-runs.ts';
+import { closedRunIds } from './bus-run-close.ts';
 import { log } from './logger.ts';
 import {
   decideEscalation,
@@ -313,7 +314,14 @@ export function sweepBusLiveness(): void {
   if (!started) return; // startBusLiveness() has not run
   sweeping = true;
   try {
-    const members = readMembers();
+    // #437: a member of a CLOSED run (its coordinator was archived / deleted) has nobody to escalate to — skipped, never counted
+    let closedRuns: ReadonlySet<string> = new Set<string>();
+    try {
+      closedRuns = closedRunIds(db);
+    } catch (e) {
+      log.warn('bus-liveness: closed-run read failed — treating as none closed', e);
+    }
+    const members = readMembers().filter((m) => !closedRuns.has(m.runId));
     const now = nowFn();
     const readerKeys = members.map((m) => ({ reader: m.reader, runId: m.runId }));
     // #119's bus-`waiting` set, ORed with each member's app-level `waiting`.

@@ -2186,6 +2186,10 @@ async function main(argv: string[]): Promise<void> {
           ? `run: ${shownRunId} — no such run (no row in the bus 'runs' table)\n`
           : `run: ${shownRunId}\n`,
       );
+      // #437: a CLOSED run says so (its coordinator was archived or deleted; mail to it is refused). No line when open.
+      if (typeof res.closedAt === 'number') {
+        process.stdout.write(`closed: CLOSED since ${new Date(res.closedAt).toISOString()} — its coordinator was archived or deleted; send / ask / gate to it are refused\n`);
+      }
       // #204 F3: a HELD run says so (a forgotten hold must be visible). No line when
       // not held, so existing output is unchanged.
       if (typeof res.heldAt === 'number') {

@@ -385,10 +385,12 @@ export function getRunHold(
 export function runStatusView(
   db: BusDb,
   runId: string,
-): { runExists: boolean; heldAt: number | null; heldBy: string | null } {
+): { runExists: boolean; closedAt: number | null; heldAt: number | null; heldBy: string | null } {
   const hold = getRunHold(db, runId);
+  const row = getRun(db, runId);
   return {
-    runExists: getRun(db, runId) !== null,
+    runExists: row !== null,
+    closedAt: row?.closed_at ?? null, // #437: a closed run says so (bus-status prints it)
     heldAt: hold?.heldAt ?? null,
     heldBy: hold?.heldBy ?? null,
   };

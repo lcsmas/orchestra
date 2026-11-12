@@ -153,13 +153,13 @@ test('#204 F3: runStatusView is the /busStatus wire shape — runExists + heldAt
   // MUTANT: drop heldBy / report held for a not-held run / unknown run reads runExists true → RED.
   const db = tmp2(t);
   seed(db, 'run-a');
-  assert.deepEqual(busRuns.runStatusView(db, 'run-a'), { runExists: true, heldAt: null, heldBy: null });
+  assert.deepEqual(busRuns.runStatusView(db, 'run-a'), { runExists: true, closedAt: null, heldAt: null, heldBy: null });
   setRunHold(db, 'run-a', true, op('run-a'));
   const v = busRuns.runStatusView(db, 'run-a');
   assert.equal(v.runExists, true);
   assert.equal(v.heldBy, op('run-a'));
   assert.equal(typeof v.heldAt, 'number');
-  assert.deepEqual(busRuns.runStatusView(db, 'ghost'), { runExists: false, heldAt: null, heldBy: null });
+  assert.deepEqual(busRuns.runStatusView(db, 'ghost'), { runExists: false, closedAt: null, heldAt: null, heldBy: null });
 });
 
 test('#204 F4: resume is scoped to ITS run — resume(a) leaves b held', (t) => {
@@ -261,6 +261,7 @@ test('#204 H1: the /busStatus run view carries the hold — heldAt/heldBy shapin
   assert.deepEqual(notHeld, {
     displayRunId: 'run-ops',
     runExists: true,
+    closedAt: null,
     heldAt: null,
     heldBy: null,
     frozenFlags: serializeSwitches(runFlags(db, 'run-ops')),

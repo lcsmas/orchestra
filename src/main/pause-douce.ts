@@ -253,7 +253,7 @@ export function softPausingCarriers(db: BusDb): RunPauseInfo[] {
       `SELECT r.id, r.paused_at, r.paused_by, r.pause_deadline_at, f.flags AS flags_json
          FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id
         WHERE r.paused_at IS NOT NULL AND r.pause_mode = 'soft' AND r.pause_escalated_at IS NULL
-          AND r.pause_trap_at IS NULL AND r.resume_started_at IS NULL`,
+          AND r.pause_trap_at IS NULL AND r.resume_started_at IS NULL AND r.closed_at IS NULL`,
     )
     .all() as Array<Record<string, unknown>>;
   return rows

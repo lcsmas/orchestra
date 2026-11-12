@@ -49,6 +49,7 @@ import {
   resolveWaveRunId,
   ensureTopLevelRun,
   ensureMemberRun,
+  ensureRunOpen,
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
@@ -860,6 +861,7 @@ async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): P
   // one env var over. Set unconditionally (independent of the spool gate below).
   await ensureMemberRun(ws); // #434: a member launched under a parent that owns no run yet (attach, pre-#434 data) gives it one before this env names it
   await ensureTopLevelRun(ws); // #433: a workspace that became top-level after creation gets its mission before this env names it
+  ensureRunOpen(ws); // #437: a live coordinator never sits on a closed run (an unarchive whose reopen was dropped is repaired at its next start)
   env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);
   // #166 — FENCING: present the wave run's current
   // coordinator generation so this session's CLI bus verbs (`resolveFencing`

@@ -42,6 +42,7 @@ import {
   type BusDb,
 } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
+import { closedRunIds } from './bus-run-close.ts';
 import { log } from './logger.ts';
 import { createWatcher } from './watchers.ts';
 import type { ResilientWatcher } from '../shared/resilient-watch.ts';
@@ -416,12 +417,15 @@ export function readPendingReaders(
   `);
 
   const out: ReaderPendingState[] = [];
+  const closedRuns = closedRunIds(db); // #437
   for (const { reader, runId } of readers) {
     // The reader's run + every ancestor + every descendant, with a depth map.
     // json_each turns the id array into a table so ONE prepared statement covers
     // a variable-size run set.
     const related = getRelatedRunIds(db, runId);
-    const runSetJson = JSON.stringify(related.ids);
+    // #437: mail / gates sitting in a CLOSED run (its coordinator was archived or deleted) wake nobody — nobody can answer there
+    const openIds = related.ids.filter((id) => !closedRuns.has(id));
+    const runSetJson = JSON.stringify(openIds);
     // Param order tracks the SQL: json_each, own m.run_id=?, ownRunRecipientSql
     // (TWO params post-#168: recipient=?, sender!=?), related m.run_id!=?,
     // relatedRunRecipientSql (?), cursor c.reader=?. The reader is bound 4× — the
@@ -484,7 +488,7 @@ export function readPendingReaders(
     // same `related.ids` computed above. `gateThroughSeq` stays a global gate-id
     // high-water (one `decision_gates` table), so the D-H1 gate-axis re-arm is
     // unchanged across runs.
-    const gates = openGatesForRecipientInRuns(db, related.ids, reader);
+    const gates = openGatesForRecipientInRuns(db, openIds, reader); // #437: open runs only
     const gateThroughSeq = gates.reduce((mx, g) => Math.max(mx, g.id), 0);
     // The DISTINCT runs those open gates sit in — the wake order names them so the
     // recipient's `orchestra check --run <gateRun>` surfaces the gate (D2 shape).

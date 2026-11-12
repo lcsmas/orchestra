@@ -73,6 +73,7 @@
     "test:admission-wake": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-admission-wake.mjs",
     "test:top-level-run-mutants": "node scripts/top-level-run-mutants.mjs",
     "test:mail-strangers-mutants": "node scripts/mail-strangers-mutants.mjs",
+    "test:run-close-mutants": "node scripts/run-close-mutants.mjs",
     "test:admission-mutants": "node scripts/admission-mutants.mjs",
     "test:reliquats-shot": "bash scripts/e2e-contained-rig.sh node scripts/reliquats-screenshot.mjs",
     "test:reliquats-memory": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-reliquats-memory.mjs",

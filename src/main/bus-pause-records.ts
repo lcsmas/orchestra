@@ -276,7 +276,7 @@ export function activePauseCarriers(db: BusDb): RunPauseInfo[] {
     .prepare(
       `SELECT r.id, r.paused_at, r.paused_by, r.pause_mode, r.pause_trap_at, f.flags AS flags_json
          FROM runs r LEFT JOIN run_flags f ON f.run_id = r.id
-        WHERE r.paused_at IS NOT NULL`,
+        WHERE r.paused_at IS NOT NULL AND r.closed_at IS NULL`, // #437: a closed run (coordinator archived / deleted) is not re-armed
     )
     .all() as Array<Record<string, unknown>>;
   return rows
