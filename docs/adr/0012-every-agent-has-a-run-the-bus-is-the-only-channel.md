@@ -20,6 +20,7 @@ We decide: a top-level agent's run (a mission) is born with it; an agent that ha
 - The rule "full LEAD → OPS → workers architecture, or nothing" narrows to: a multi-ticket vague goes through an OPS, never coordinated by a LEAD directly. It is a `verified-fanout` conduct rule, as is tree depth — the host enforces neither.
 - A child's liveness escalations land on its parent, often the human's pane.
 - A run closes when its coordinator is archived or deleted; mail to a closed run is refused.
+- Unarchiving the coordinator reopens its run.
 - Attach and detach change an agent's run; its unread mail follows it. Any agent can receive an attach.
 - At app start, every existing workspace without a run gets one; delivery-OFF runs become ordinary runs. There is no setting to fall back to the old channel.
 - The `default` run sentinel and the "anchors no run (standalone)" notice go.
