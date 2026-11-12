@@ -7,9 +7,9 @@
 //
 // So this rig runs FOUR arms against the REAL generated artifacts:
 //
-//   A. switch ON  → the generated notice prints `delivery=ON` and the
+//   A. switch ON  → the generated notice prints `fencing=ON` and the
 //                   authoritative sentence.
-//   B. switch OFF → it prints `delivery=OFF` and the OPPOSITE sentence.
+//   B. switch OFF → it prints `fencing=OFF` and the OPPOSITE sentence.
 //                   NOT merely the absence of A — absence would also be
 //                   produced by a notice that never mentions switches at all,
 //                   which is exactly the disproof named above.
@@ -215,39 +215,39 @@ async function flipLiveAndWrite(runId, sw) {
 }
 
 // ── Arm A: switch ON ────────────────────────────────────────────────────────
-console.log('\nT118.3 arm A — POSITIVE control (delivery ON):');
+console.log('\nT118.3 arm A — POSITIVE control (fencing ON):');
 const onOut = await seedRunAndWrite('run-A-on', {
-  delivery: true,
+  fencing: true,
   wake: false,
   askGate: false,
   liveness: false,
 });
-check('the notice names delivery=ON', onOut.includes('bus switch delivery=ON'));
+check('the notice names fencing=ON', onOut.includes('bus switch fencing=ON'));
 check(
   'and says the bus is AUTHORITATIVE for it',
-  /delivery=ON — the bus is AUTHORITATIVE/.test(onOut),
+  /fencing=ON — the bus is AUTHORITATIVE/.test(onOut),
 );
 check('the notice is emitted by the real hook script', onOut.includes('[orchestra] Fleet-bus switches'));
 check('it states the freeze', /frozen at wave start/.test(onOut));
 
 // ── Arm B: switch OFF — the OPPOSITE string, not silence ────────────────────
-console.log('\nT118.3 arm B — NEGATIVE control (delivery OFF → the OPPOSITE string):');
+console.log('\nT118.3 arm B — NEGATIVE control (fencing OFF → the OPPOSITE string):');
 const offOut = await seedRunAndWrite('run-B-off', {
-  delivery: false,
+  fencing: false,
   wake: false,
   askGate: false,
   liveness: false,
 });
-check('the notice names delivery=OFF', offOut.includes('bus switch delivery=OFF'));
+check('the notice names fencing=OFF', offOut.includes('bus switch fencing=OFF'));
 check(
   'and says the OLD channel stays authoritative',
-  /delivery=OFF — the OLD channel stays authoritative/.test(offOut),
+  /fencing=OFF — the OLD channel stays authoritative/.test(offOut),
 );
 check(
   'and says the mechanism is COUNTED, not fired',
   /COUNTS this mechanism, it does not fire it/.test(offOut),
 );
-check('the ON string is GONE', !offOut.includes('bus switch delivery=ON'));
+check('the ON string is GONE', !offOut.includes('bus switch fencing=ON'));
 // The assertion that separates "OFF prints its own line" from "OFF prints
 // nothing" — the disproof the ticket names.
 check(
@@ -256,16 +256,16 @@ check(
   'an OFF switch must still produce a notice, or the agent cannot tell OFF from absent',
 );
 
-// Every mechanism, both directions — not just `delivery`.
+// Every mechanism, both directions — not just `fencing`.
 console.log('\nT118.3 — every mechanism, in both states:');
 const allOn = await seedRunAndWrite('run-allon', {
-  delivery: true,
+  fencing: true,
   wake: true,
   askGate: true,
   liveness: true,
 });
 const allOff = await seedRunAndWrite('run-alloff', {
-  delivery: false,
+  fencing: false,
   wake: false,
   askGate: false,
   liveness: false,
@@ -273,7 +273,7 @@ const allOff = await seedRunAndWrite('run-alloff', {
 // The notice emits the WIRE names (F4, ledger #123): `ask_gate`, not `askGate`.
 // Assert the wire spelling — a fleet skill greps the notice for the contract
 // name it was frozen on, and the internal camel key would read as absence.
-for (const wire of ['delivery', 'wake', 'ask_gate', 'liveness']) {
+for (const wire of ['fencing', 'wake', 'ask_gate', 'liveness']) {
   check(`${wire}: ON string present when ON`, allOn.includes(`bus switch ${wire}=ON`));
   check(`${wire}: OFF string present when OFF`, allOff.includes(`bus switch ${wire}=OFF`));
   check(`${wire}: no ON string when OFF`, !allOff.includes(`bus switch ${wire}=ON`));
@@ -288,21 +288,21 @@ check('the wire name ask_gate DOES appear when ON', allOn.includes('bus switch a
 // claim about the grep, not about the notice (carry-forward 2 and 3).
 console.log('\nT118.3 arm C — MUST-FAIL control (a notice without the switch block):');
 const decoy =
-  '[orchestra] Fleet bus notice: the bus is open and mechanisms exist. delivery, wake, askGate and liveness are all words that appear here.\n';
+  '[orchestra] Fleet bus notice: the bus is open and mechanisms exist. fencing, wake, askGate and liveness are all words that appear here.\n';
 check(
   'the ON grep does NOT match the decoy',
-  !decoy.includes('bus switch delivery=ON'),
+  !decoy.includes('bus switch fencing=ON'),
   'the positive grep would have passed on a notice that never states a switch state',
 );
-check('the OFF grep does NOT match the decoy', !decoy.includes('bus switch delivery=OFF'));
+check('the OFF grep does NOT match the decoy', !decoy.includes('bus switch fencing=OFF'));
 check(
   'the authoritative-sentence grep does NOT match the decoy',
-  !/delivery=OFF — the OLD channel stays authoritative/.test(decoy),
+  !/fencing=OFF — the OLD channel stays authoritative/.test(decoy),
 );
 // And prove the greps are LIVE by running them on the real output in the same
 // breath — a control that only ever reports "no match" is indistinguishable
 // from a broken matcher (carry-forward 4).
-check('the same greps DO match the real notice', allOff.includes('bus switch delivery=OFF'));
+check('the same greps DO match the real notice', allOff.includes('bus switch fencing=OFF'));
 
 // ── Arm D: the absent-state-file case ───────────────────────────────────────
 // A workspace spawned by an older build has no state file. The script must be a
@@ -323,17 +323,17 @@ check('does NOT claim any switch state', !/bus switch \w+=(ON|OFF)/.test(absent)
 // ruling: the notice sources from the run row, the "frozen" wording stays true,
 // and this gate must FAIL when two notices IN ONE RUN differ.
 //
-// So: freeze a run at delivery=ON, then FLIP the live switches and re-spawn the
+// So: freeze a run at fencing=ON, then FLIP the live switches and re-spawn the
 // SAME run. The run row is frozen, so the two notices must be BYTE-IDENTICAL.
 console.log('\nThe notice is FROZEN per run — a mid-wave flip does NOT change a running run:');
 const frozenRun = 'run-freeze-1';
-const beforeFlip = await seedRunAndWrite(frozenRun, { delivery: true, wake: false, askGate: false, liveness: false });
-// A human flips delivery OFF and wake ON while the run is live; re-spawn the run.
-const afterFlip = await flipLiveAndWrite(frozenRun, { delivery: false, wake: true, askGate: false, liveness: false });
-check('the run froze delivery=ON', beforeFlip.includes('bus switch delivery=ON'));
+const beforeFlip = await seedRunAndWrite(frozenRun, { fencing: true, wake: false, askGate: false, liveness: false });
+// A human flips fencing OFF and wake ON while the run is live; re-spawn the run.
+const afterFlip = await flipLiveAndWrite(frozenRun, { fencing: false, wake: true, askGate: false, liveness: false });
+check('the run froze fencing=ON', beforeFlip.includes('bus switch fencing=ON'));
 check(
-  'after a mid-wave flip, the SAME run still sees delivery=ON (frozen)',
-  afterFlip.includes('bus switch delivery=ON'),
+  'after a mid-wave flip, the SAME run still sees fencing=ON (frozen)',
+  afterFlip.includes('bus switch fencing=ON'),
   'a running run must not adopt a flipped switch',
 );
 check(
@@ -351,9 +351,9 @@ check(
 // ── A NEW run DOES pick up the flipped value (the freeze is per-run, not global)
 // The must-differ control, so "always identical" is not how the gate above passes.
 console.log('\nA NEW run picks up the flipped value (freeze is per-run):');
-const newRun = await seedRunAndWrite('run-freeze-2', { delivery: false, wake: true, askGate: false, liveness: false });
+const newRun = await seedRunAndWrite('run-freeze-2', { fencing: false, wake: true, askGate: false, liveness: false });
 check('a new run sees the flipped wake=ON', newRun.includes('bus switch wake=ON'));
-check('and the new run sees delivery=OFF', newRun.includes('bus switch delivery=OFF'));
+check('and the new run sees fencing=OFF', newRun.includes('bus switch fencing=OFF'));
 check('the new run DIFFERS from the frozen run (freeze is per-run, not global)', newRun !== beforeFlip);
 
 // ── The notice never reads the LIVE switches (F2 mutant surface) ─────────────

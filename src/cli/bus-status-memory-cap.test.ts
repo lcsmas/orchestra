@@ -105,7 +105,7 @@ function driveCli(
 }
 
 const GIB = 1024 ** 3;
-const MECH = ['delivery', 'wake', 'askGate', 'liveness', 'fencing', 'capability', 'receipts', 'pause', 'dockerRelay', 'memoryCap'];
+const MECH = ['wake', 'askGate', 'liveness', 'fencing', 'capability', 'receipts', 'pause', 'dockerRelay', 'memoryCap'];
 const flags = (on: string[]) => JSON.stringify(Object.fromEntries(MECH.map((m) => [m, on.includes(m)])));
 const snap = (over: Record<string, unknown> = {}) => ({
   sampled: true, measured: true, availBytes: 4.2 * GIB, readAt: 1, admission: 'held', admissionEnabled: true, pause: 'none', episode: 1, pauseCycle: 1, mayReleaseOneStart: false,

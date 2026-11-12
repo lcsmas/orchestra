@@ -31,7 +31,7 @@ const repoRoot = path.resolve(here, '..', '..');
 const CLI = path.join(repoRoot, 'dist-electron', 'cli.js');
 const needsBuild = { skip: fs.existsSync(CLI) ? false : 'dist-electron/cli.js not built — run `pnpm run build:cli`' };
 
-const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, askGate: true, liveness: true, pause: true };
+const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, wake: true, askGate: true, liveness: true, pause: true };
 const FROZEN_WAKE_OFF: BusSwitches = { ...LIVE, wake: false };
 
 const LEAD = 'bbbbbbbb-0000-4000-8000-000000000001';

@@ -107,8 +107,8 @@ function driveCli(
   return JSON.parse(out.slice(marker + '__ENVELOPE__'.length)) as StubOutcome;
 }
 
-const ALL_OFF = JSON.stringify({ delivery: false, wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false });
-const ALL_ON = JSON.stringify({ delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true });
+const ALL_OFF = JSON.stringify({ wake: false, askGate: false, liveness: false, fencing: false, capability: false, receipts: false });
+const ALL_ON = JSON.stringify({ wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true });
 const reply = (runExists: string) => `return {
   ok: true, busAvailable: true, counters: [], displayRunId: body.runId,
   ${runExists}
@@ -121,8 +121,8 @@ test('bus-status on a run with no run row: says so, frozen column is "—", neve
   assert.equal(r.seen[0].runId, 'standalone-ws');
   assert.match(r.stdout, /run: standalone-ws — no such run \(no row in the bus 'runs' table\)/);
   assert.doesNotMatch(r.stdout, /standalone:|promoted or dispatched/, 'the standalone wording is gone (#433)');
-  assert.match(r.stdout, /delivery\s+—\s+ON/);
-  assert.doesNotMatch(r.stdout, /delivery\s+OFF/, 'a missing run must not read as frozen OFF');
+  assert.match(r.stdout, /wake\s+—\s+ON/);
+  assert.doesNotMatch(r.stdout, /wake\s+OFF/, 'a missing run must not read as frozen OFF');
 });
 
 test('bus-status on an existing run frozen OFF still prints OFF', needsBuild, () => {
@@ -130,14 +130,14 @@ test('bus-status on an existing run frozen OFF still prints OFF', needsBuild, ()
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^run: real-run\n/m);
   assert.doesNotMatch(r.stdout, /no such run/);
-  assert.match(r.stdout, /delivery\s+OFF\s+ON/);
+  assert.match(r.stdout, /wake\s+OFF\s+ON/);
 });
 
 test('bus-status against an older app (no runExists field) keeps the previous rendering', needsBuild, () => {
   const r = driveCli(['bus-status'], reply(''), { runIdEnv: 'old-app-run' });
   assert.equal(r.code, 0, r.stderr);
   assert.doesNotMatch(r.stdout, /no such run/);
-  assert.match(r.stdout, /delivery\s+OFF\s+ON/);
+  assert.match(r.stdout, /wake\s+OFF\s+ON/);
 });
 
 // ── review-A4 F3: the hold is visible in `bus-status` ───────────────────────

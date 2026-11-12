@@ -25,7 +25,7 @@
 // host path. Nothing is lost that matters: a bus that comes back is swept again.
 
 import { getBus, send, type BusDb } from './bus.ts';
-import { busSwitch, heldRunIds } from './bus-runs.ts';
+import { busSwitch, heldRunIds, openRunSwitchCount } from './bus-runs.ts';
 import { closedRunIds } from './bus-run-close.ts';
 import { log } from './logger.ts';
 import {
@@ -566,15 +566,15 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function startBusLiveness(): void {
   if (timer) return;
   started = true;
-  let defaultOn = false;
+  let census = { on: 0, total: 0 };
   try {
     const db = readBusDb();
-    defaultOn = db ? busSwitch(db, 'default', 'liveness') : false;
+    if (db) census = openRunSwitchCount(db, 'liveness');
   } catch {
     /* an unreadable switch is OFF — the sweep logs its own warning */
   }
   log.info(
-    `bus-liveness: started (switch ${defaultOn ? 'ON — escalating' : 'OFF — counting only'})`,
+    `bus-liveness: started (switch ${census.on > 0 ? 'ON — escalating' : 'OFF — counting only'} in ${census.on} of ${census.total} open run(s); each run reads its own frozen flag)`,
   );
   // Run once immediately so a restart reconciles who is already stale, then on
   // the interval. Unref'd so it never holds the process open.

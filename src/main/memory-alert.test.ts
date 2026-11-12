@@ -18,8 +18,7 @@ import { MEMORY_PAUSE_BY, encodeMemoryPause } from '../shared/pause-memory.ts';
 // MemAvailable source and a hand-fired scheduler. Named arms are what scripts/memory-alert/mutate-unit.mjs reddens.
 
 const ROOT = path.join(os.homedir(), '.cache', `memory-alert-bus-${process.pid}`);
-const ON: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: true };
-const NO_DELIVERY: BusSwitches = { ...DEFAULT_BUS_SWITCHES, pause: true };
+const ON: BusSwitches = { ...DEFAULT_BUS_SWITCHES, wake: true, pause: true };
 let n = 0;
 test.after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
 
@@ -43,22 +42,20 @@ interface World {
   busOverride: { db: bus.BusDb | null; fail: number };
 }
 
-/** L (mission, delivery ON, coordinator L) ⊃ O (vague) ⊃ w1 ; L ⊃ X ⊃ x1 ; R (an unrelated root, delivery OFF) ⊃ r1 ; Q (a second root, delivery ON) ⊃ q1. Workspace id == run id for orchestrators. */
+/** L (mission, coordinator L) ⊃ O (vague) ⊃ w1 ; L ⊃ X ⊃ x1 ; R (an unrelated root whose coordinator workspace is GONE — #441: no run is "deaf" any more, a `delivery` switch no longer exists) ; Q (a second root) ⊃ q1. Workspace id == run id for orchestrators. */
 function world(sw: { R?: BusSwitches; late?: boolean } = {}): World {
   fs.mkdirSync(ROOT, { recursive: true });
   const db = bus.openBus(path.join(ROOT, `b${n++}.sqlite`));
   busRuns.startRun(db, { id: 'L', kind: 'mission', coordinator: 'L' }, ON);
   busRuns.startRun(db, { id: 'O', kind: 'vague', coordinator: 'O', parentRunId: 'L' }, ON);
   busRuns.startRun(db, { id: 'X', kind: 'vague', coordinator: 'X', parentRunId: 'L' }, ON);
-  busRuns.startRun(db, { id: 'R', kind: 'mission', coordinator: 'R' }, sw.R ?? NO_DELIVERY);
+  busRuns.startRun(db, { id: 'R', kind: 'mission', coordinator: 'R' }, sw.R ?? ON);
   const ws = new Map<string, AutoWorkspace & { host?: { kind: string } }>([
     ['L', { id: 'L', kind: 'orchestrator' }],
     ['O', { id: 'O', parentId: 'L', ownsRun: true }],
     ['X', { id: 'X', parentId: 'L', ownsRun: true }],
     ['w1', { id: 'w1', parentId: 'O' }],
     ['x1', { id: 'x1', parentId: 'X' }],
-    ['R', { id: 'R', kind: 'orchestrator' }],
-    ['r1', { id: 'r1', parentId: 'R' }],
   ]);
   const liveTree = { get: (id: string) => ws.get(id), ids: () => [...ws.values()].map((w) => w.id) };
   setLiveTreeSource(() => liveTree);
@@ -272,7 +269,7 @@ test('ROW now-line + closing are the EFFECTIVE state, not the guard flags (G6 re
   assert.doesNotMatch(be, /WITHOUT another row|NO run is eligible/);
   // eligibility is read from the real bus + live tree: with every `pause` switch OFF a later critical crossing would pause nothing, and the row says so
   const n = world();
-  n.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id IN ('L','O','X','R')").run(JSON.stringify({ delivery: true, pause: false }));
+  n.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id IN ('L','O','X','R')").run(JSON.stringify({ wake: true, pause: false }));
   n.at(12);
   n.at(5);
   n.advance(ALERT_SETTLE_MS + 1);
@@ -348,14 +345,14 @@ test('EPISODE toggle OFF: with the Admission toggle OFF the guard still measures
 
 // ─── who is the LEAD ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-test('LEAD rule: the coordinator of every ROOT run carrying a live local fleet whose frozen `delivery` switch is ON — one row each; non-root coordinators, delivery-OFF runs, runs without a live fleet and a gone coordinator are not told', () => {
+test('LEAD rule: the coordinator of every ROOT run carrying a live local fleet whose coordinator is live — one row each; non-root coordinators, runs without a live fleet and a gone coordinator are not told (#441: a pre-update run frozen with delivery OFF is read like any other)', () => {
   const w = world();
   busRuns.startRun(w.db, { id: 'Q', kind: 'mission', coordinator: 'Q' }, ON);
   w.ws.set('Q', { id: 'Q', kind: 'orchestrator' });
   w.ws.set('q1', { id: 'q1', parentId: 'Q' });
   busRuns.startRun(w.db, { id: 'E', kind: 'mission', coordinator: 'E' }, ON); // a root with NO workspace below it
   w.ws.set('E', { id: 'E', kind: 'orchestrator' });
-  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'L', coordinator: 'L' }, { runId: 'Q', coordinator: 'Q' }], 'R (delivery OFF), E (no fleet), O and X (not roots) are not told');
+  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'L', coordinator: 'L' }, { runId: 'Q', coordinator: 'Q' }], 'R (coordinator gone), E (no fleet), O and X (not roots) are not told');
   w.at(12);
   w.at(5);
   w.advance(ALERT_SETTLE_MS + 1);
@@ -379,10 +376,11 @@ test('LEAD rule: a coordinator that is gone is not told even when the run\'s anc
   assert.ok(alertRecipients(w.db, w.deps).some((r) => r.runId === 'Z' && r.coordinator === 'zc'), 'control: a live coordinator is told');
 });
 
-test('LEAD rule: readers are filtered BEFORE the topmost — a root that cannot read (delivery OFF / coordinator gone) does not silence the delivery-ON run below it; two readers on one chain tell only the topmost', () => {
+test('LEAD rule: readers are filtered BEFORE the topmost — a root that cannot read (coordinator gone) does not silence the run below it; two readers on one chain tell only the topmost', () => {
   const w = world();
-  w.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'L'").run(JSON.stringify({ delivery: false, pause: true }));
-  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'O', coordinator: 'O' }, { runId: 'X', coordinator: 'X' }], 'L cannot read: O and X (delivery ON, each with a fleet) are the LEADs the memory Pause actually pauses');
+  w.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'L'").run(JSON.stringify({ pause: true }));
+  w.ws.get('L')!.archived = true;
+  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'O', coordinator: 'O' }, { runId: 'X', coordinator: 'X' }], 'L cannot read (archived): O and X (each with a fleet) are the LEADs the memory Pause actually pauses');
   w.at(12);
   w.at(5);
   w.advance(ALERT_SETTLE_MS + 1);
@@ -635,4 +633,15 @@ test('STOP: a stopped alert fires no timer and writes nothing', () => {
   w.alert.stop();
   w.advance(5 * 60_000);
   assert.equal(w.rows().length, 0);
+});
+
+// ─── #441: a pre-update run frozen with `delivery` OFF is an ordinary run ───────────────────────────────────────────────────────────────
+test('#441 a run row frozen with delivery OFF (pre-update) is told like any other: the old key is ignored, there is no deaf root', () => {
+  const w = world();
+  w.db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'L'").run(JSON.stringify({ delivery: false, wake: true, pause: true }));
+  assert.deepEqual(alertRecipients(w.db, w.deps), [{ runId: 'L', coordinator: 'L' }], 'L (frozen delivery=false) is still the LEAD of its fleet — before #441 it was filtered out as a root that cannot read');
+  w.at(12);
+  w.at(5);
+  w.advance(ALERT_SETTLE_MS + 1);
+  assert.deepEqual(w.rows().map((r) => [r.run_id, r.recipient]), [['L', 'L']]);
 });

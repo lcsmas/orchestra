@@ -121,10 +121,10 @@ function driveCli(
 }
 
 // The refrozen reply echoes the runId and returns a serialized all-mechanisms-OFF
-// set with delivery+wake ON, so the printed table is deterministic.
+// set with liveness+wake ON, so the printed table is deterministic.
 const REFROZEN = `return {
   ok: true, outcome: 'refrozen', runId: body.runId,
-  frozenFlags: JSON.stringify({ delivery: true, wake: true, askGate: false, liveness: false, fencing: false, capability: false, receipts: false }),
+  frozenFlags: JSON.stringify({ wake: true, askGate: false, liveness: true, fencing: false, capability: false, receipts: false }),
 };`;
 
 test('run refreeze --run <id>: POSTs that run id, prints the frozen table, exits 0', needsBuild, () => {
@@ -134,7 +134,7 @@ test('run refreeze --run <id>: POSTs that run id, prints the frozen table, exits
   assert.equal(r.seen[0].runId, 'mission-x', 'the --run value is what the verb POSTs');
   assert.match(r.stdout, /Re-froze mission run mission-x/);
   // The printed table pins the flip the operator just made.
-  assert.match(r.stdout, /delivery\s+ON/);
+  assert.match(r.stdout, /liveness\s+ON/);
   assert.match(r.stdout, /wake\s+ON/);
   assert.match(r.stdout, /ask_gate\s+OFF/);
 });
@@ -209,7 +209,7 @@ test('bad subcommand: `orchestra run bogus` fails with usage, no socket call', n
 
 // One-switch re-freeze of a PAUSED run (--only): the flag rides the request, the
 // outcome prints the single switch, refusals name the reason.
-const REFROZEN_ONE = `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ delivery: true, dockerRelay: true }) };`;
+const REFROZEN_ONE = `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ wake: true, dockerRelay: true }) };`;
 
 test('run refreeze --only docker_relay: POSTs only, prints the one switch ON, exits 0', needsBuild, () => {
   const r = driveCli(['run', 'refreeze', '--run', 'wave6', '--only', 'docker_relay'], REFROZEN_ONE);
@@ -220,14 +220,14 @@ test('run refreeze --only docker_relay: POSTs only, prints the one switch ON, ex
 });
 
 test('#379 run refreeze --only memory_cap: forwarded, prints the one switch, exits 0', needsBuild, () => {
-  const r = driveCli(['run', 'refreeze', '--run', 'wave7', '--only', 'memory_cap'], `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ delivery: true, memoryCap: true }) };`);
+  const r = driveCli(['run', 'refreeze', '--run', 'wave7', '--only', 'memory_cap'], `return { ok: true, outcome: 'refrozen-one', runId: body.runId, frozenFlags: JSON.stringify({ wake: true, memoryCap: true }) };`);
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.seen[0].only, 'memory_cap', '--only is forwarded to the route');
   assert.match(r.stdout, /Re-froze memory_cap on paused run wave7: ON/);
 });
 
 test('#379 the not-refreezable refusal names both session-start switches', needsBuild, () => {
-  const r = driveCli(['run', 'refreeze', '--run', 'w', '--only', 'delivery'], `return { ok: true, outcome: 'not-refreezable', runId: body.runId };`);
+  const r = driveCli(['run', 'refreeze', '--run', 'w', '--only', 'wake'], `return { ok: true, outcome: 'not-refreezable', runId: body.runId };`);
   assert.notEqual(r.code, 0);
   assert.match(r.stderr, /docker_relay, memory_cap/);
 });

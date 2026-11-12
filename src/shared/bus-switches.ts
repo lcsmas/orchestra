@@ -1,6 +1,6 @@
 // Per-mechanism flip switches for the fleet bus (#118, ledger #123; #108 Q5a/Q17a).
 //
-// FOUR booleans, one per adoption mechanism, stored in the app store and READ
+// One boolean per adoption mechanism, stored in the app store and READ
 // AT WAVE START — then FROZEN on the run row for the life of that run. Flipping
 // a switch mid-wave must NOT change what a running run does; the next run picks
 // the new value up. That freeze is the whole point of the ticket, and the logic
@@ -29,7 +29,7 @@
 
 /** The mechanisms adopted behind independent switches.
  *
- *  Wave B shipped four (delivery/wake/askGate/liveness). Wave D adds the bus-v2
+ *  Wave B shipped four (delivery/wake/askGate/liveness; #441: `delivery` is GONE — bus mail cannot be turned off, and a run row that still carries a `delivery` key has it ignored on read). Wave D adds the bus-v2
  *  mechanisms, ONE SWITCH PER MECHANISM (ledger #131 RULING D1 — no shared
  *  bundle, so each promotes and rolls back on its own #108 Q4/Q5 bar): `fencing`
  *  (#128 coordinator generation), `capability` (#129 dispatch capability tokens),
@@ -38,7 +38,6 @@
  *  more mechanisms than the writer did (bus.ts MIGRATIONS[3] comment), and
  *  "frozen" is frozen-PER-RUN-at-wave-start, not enum-frozen. */
 export type BusMechanism =
-  | 'delivery'
   | 'wake'
   | 'askGate'
   | 'liveness'
@@ -51,7 +50,6 @@ export type BusMechanism =
 
 /** Every mechanism, in the order the pane renders them. */
 export const BUS_MECHANISMS: readonly BusMechanism[] = [
-  'delivery',
   'wake',
   'askGate',
   'liveness',
@@ -75,7 +73,6 @@ export type BusSwitches = Record<BusMechanism, boolean>;
  * deliberately, per mechanism; nothing flips itself on by shipping.
  */
 export const DEFAULT_BUS_SWITCHES: BusSwitches = Object.freeze({
-  delivery: false,
   wake: false,
   askGate: false,
   liveness: false,
@@ -154,7 +151,6 @@ export async function saveLiveSwitches(
 
 /** Human-facing label per mechanism (French in prose/UI per #108 ruling Q13). */
 export const BUS_MECHANISM_LABEL: Record<BusMechanism, string> = {
-  delivery: 'Delivery (Lot / Relève)',
   wake: 'Wake-as-turn (Réveil)',
   askGate: 'Ask / Decision gate (Ruling)',
   liveness: 'Liveness + phase',
@@ -253,8 +249,8 @@ export function mechanismEnabled(frozen: BusSwitches, mechanism: BusMechanism): 
 /**
  * THE WIRE NAMES, frozen with #117 on ledger #123 (OPS-B, wave B).
  *
- * `busSwitch(runId, mechanism)` takes `'delivery' | 'wake' | 'ask_gate' |
- * 'liveness'` — snake_case for `ask_gate`, because that is the string #117 is
+ * `busSwitch(runId, mechanism)` takes `'wake' | 'ask_gate' |
+ * 'liveness'` (+ the later ones) — snake_case for `ask_gate`, because that is the string #117 is
  * coding against and a contract is worth more than a naming preference. The
  * INTERNAL key stays `askGate` (it is a TS object key), so this is the one place
  * the two vocabularies meet. Everything else reads through here.
@@ -264,7 +260,6 @@ export function mechanismEnabled(frozen: BusSwitches, mechanism: BusMechanism): 
  * a mapping is how the wire and the enum drift apart.
  */
 export type BusMechanismWire =
-  | 'delivery'
   | 'wake'
   | 'ask_gate'
   | 'liveness'
@@ -279,7 +274,6 @@ export type BusMechanismWire =
   | 'memory_cap'; // #320 (snake wire, camel key)
 
 const WIRE_TO_MECHANISM: Record<BusMechanismWire, BusMechanism> = {
-  delivery: 'delivery',
   wake: 'wake',
   ask_gate: 'askGate',
   liveness: 'liveness',
@@ -317,8 +311,8 @@ export function switchStateWord(on: boolean): 'ON' | 'OFF' {
  * The lines injected into a spawned worktree's startup notice so the fleet
  * skill can BRANCH on the switch states (#118 acceptance 3).
  *
- * Every mechanism emits a line in BOTH states — `delivery=ON (bus is
- * authoritative…)` or `delivery=OFF (…counted, not fired)`. Never "print the
+ * Every mechanism emits a line in BOTH states — `wake=ON (bus is
+ * authoritative…)` or `wake=OFF (…counted, not fired)`. Never "print the
  * ON ones and stay silent otherwise": absence is unreadable to an agent, which
  * cannot distinguish "the switch is off" from "this build has no switches" from
  * "the notice was truncated". T118.3 asserts exactly that asymmetry — positive
@@ -331,7 +325,7 @@ export function busSwitchNoticeLines(s: BusSwitches): string[] {
     const on = s[m] === true;
     // Emit the WIRE name (`ask_gate`), never the internal camel key (`askGate`).
     // The fleet skill greps this notice for the contract names it was frozen on
-    // (Q1, ledger #123: 'delivery'|'wake'|'ask_gate'|'liveness'); an internal
+    // (Q1, ledger #123: 'wake'|'ask_gate'|'liveness'|…); an internal
     // `askGate` line reads to it as "no such switch in this build" — absence,
     // which is the failure carry-forward 2 warns about. `mechanismToWire` is the
     // one mapping; writing `ask_gate` here by hand is what the file header forbids.

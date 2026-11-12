@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 // @ts-expect-error — plain .mjs script, no types
 import { verdict, selfTest, PARENT_PICK_FILES } from '../../scripts/check-run-position-single-reader.mjs';
-import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, isPlainOwnAnchor, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
+import * as runPosition from './run-position.ts';
+import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -66,12 +67,8 @@ test('parentRunOf: the run ws is a member of = its direct parent; implicit only 
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'solo', kind: 'worktree', ownsRun: true }, lk), { id: 'solo', implicit: false }, 'a top-level parent owns a mission');
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree', ownsRun: true }, lk), { id: 'kid', implicit: true }, 'a legacy plain parent with no row');
   assert.deepEqual(parentRunOf({ id: 'k2', parentId: 'kid', kind: 'worktree' }, lk, (id) => id === 'kid'), { id: 'kid', implicit: false });
-  assert.equal(isPlainOwnAnchor({ id: 'x', parentId: 'gone', kind: 'worktree' }, lk), true, 'a dangling-parent plain workspace');
-  assert.equal(isPlainOwnAnchor(loner, lk), true, 'a plain top-level workspace, with or without children');
-  assert.equal(isPlainOwnAnchor({ ...loner, ownsRun: true }, lk), true, 'having spawned does not change it');
-  assert.equal(isPlainOwnAnchor(lead, lk), false, 'the orchestrator kind is never exempt');
-  assert.equal(isPlainOwnAnchor({ ...loner, ownsRun: true, canOrchestrate: true } as RunNode, lk), false, 'a promoted top-level worktree is a LEAD too: never exempt');
-  assert.equal(isPlainOwnAnchor(worker, lk), false, 'a member is not');
+  // #441: the #221 plain-own-anchor exemption from the `message` refusal is gone with the old channel — `isPlainOwnAnchor` no longer exists.
+  assert.equal((runPosition as Record<string, unknown>).isPlainOwnAnchor, undefined, 'no plain-anchor discriminator survives');
 });
 
 test('the hook gate text is the exact shell the standing reminder and the edit guard run', () => {

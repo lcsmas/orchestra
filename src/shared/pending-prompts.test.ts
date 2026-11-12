@@ -13,8 +13,11 @@ import {
   pendingPromptKey,
 } from './pending-prompts.ts';
 
-// #169 P4 — the CURRENT (bus-first) reply footer formatPeerMessage emits.
+// #441 — the CURRENT one-command reply footer formatPeerMessage emits; the #169 two-alternative footer and the pre-#169 one still strip.
 const envelope = (from: string, id: string, body: string) =>
+  `[message from agent '${from}' (${id})]\n${body}\n\n` +
+  `Reply with: orchestra send --type status --to ${id} "<reply>"`;
+const twoAlternativeEnvelope = (from: string, id: string, body: string) =>
   `[message from agent '${from}' (${id})]\n${body}\n\n` +
   `Reply with: orchestra send --type status --to ${id} "<reply>" ` +
   `(bus run) — or orchestra message ${id} "<reply>" on a legacy delivery-OFF run`;
@@ -40,6 +43,10 @@ test('#169 the LEGACY peer-message footer strips to the same identity (backfill)
   // And the current footer strips to the SAME thing as the legacy one.
   assert.equal(
     pendingPromptKey({ text: envelope('triage', 'ws-1', body) }),
+    pendingPromptKey({ text: legacyEnvelope('triage', 'ws-1', body) }),
+  );
+  assert.equal(
+    pendingPromptKey({ text: twoAlternativeEnvelope('triage', 'ws-1', body) }),
     pendingPromptKey({ text: legacyEnvelope('triage', 'ws-1', body) }),
   );
 });

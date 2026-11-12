@@ -1,87 +1,73 @@
-// P4 (#169) — the OLD channel refuses fleet coordination on a bus (delivery-ON)
-// run, keeps delivery-OFF + `--emergency` escapes.
+// #441 — the OLD channel is CLOSED: `orchestra message` WITHOUT `--emergency` is refused for EVERY target (a parent, a
+// child, a sibling, an unrelated agent, a plain parent, a dangling-parent agent) and prints the equivalent `orchestra send`;
+// `--emergency` is unchanged. (Rewrites the P4 #169 / #221 / #434 pins: the delivery-ON gate and its plain-target exemptions are gone.)
 //
-// TWO LAYERS, on purpose:
-//  1. PURE decision (`decideMessageChannel`, src/shared) — the four-cell truth
-//     table, driven directly.
-//  2. The REAL WRAPPER BODY (`dispatchMessageRequest` in workspaces.ts) extracted
-//     and evaluated against a REAL SQLite bus + the REAL `busSwitch`/`startRun`,
-//     so the arms prove the SHIPPED wiring resolves the switch and gates on it —
-//     not a hand-model of it (the #116 rig header's lesson: a model fails in the
-//     passing direction). `workspaces.ts` cannot import under `node --test`
-//     (Electron seam), so this is the same extract-and-eval technique
-//     bus-mirror.test.ts uses, with the same source-binding guard.
+// THREE layers, on purpose:
+//  1. PURE decision (`decideMessageChannel`, src/shared) — the truth table, driven directly.
+//  2. The REAL WRAPPER BODY (`dispatchMessageRequest` in workspaces.ts) extracted and evaluated over a REAL topology and a REAL
+//     SQLite bus + the REAL mirror (workspaces.ts cannot import under `node --test`: the same extract-and-eval technique
+//     bus-mirror.test.ts uses, with the source-binding guard). The built-CLI + real-hooks-server drive is scripts/e2e-old-channel-closed.mjs.
+//  3. The BROADCAST body (`--to` / `--children`) with the REAL gate per target.
 //
-// MUTATION PROOF: `runWrapper` can DISABLE the gate (`gated: false`) to stand in
-// for the pre-#169 build. Every gating arm asserts the outcome FLIPS between
-// gated/ungated — the refusal arm DELIVERS when ungated (the pre-fix behaviour
-// the ticket names), so a green arm on the unfixed wrapper is impossible.
+// MUTATION PROOF: `runWrapper` can DISABLE the gate (`gated: false`) to stand in for the pre-#441 build — every refusal arm asserts the
+// outcome FLIPS (refused → delivered). scripts/old-channel-closed-mutants.mjs removes each guard IN PLACE and requires a named red.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
-import { startRun, busSwitch, getRelatedRunIds } from './bus-runs.ts';
-import { isPlainOwnAnchor, nearestOrchestratorId } from './wave-run-id.ts';
+import { startRun } from './bus-runs.ts';
+import { nearestOrchestratorId } from './wave-run-id.ts';
 import { mirrorDispatch as realMirrorDispatch } from './bus-mirror.ts';
-import {
-  sweepBusWake,
-  busWakeCounters,
-  setWakeRoster,
-  setWakeDeliver,
-  setWakeSwitchReader,
-  setAskGateSwitchReader,
-  __setBusReaderForTests,
-  __resetBusWakeForTests,
-  __armStartedForTests,
-} from './bus-wake.ts';
 import { DEFAULT_BUS_SWITCHES } from '../shared/bus-switches.ts';
 import { deliverToTargets, normalizeExplicitTargets } from '../shared/broadcast-targets.ts';
 import {
   decideMessageChannel,
-  MESSAGE_CHANNEL_REFUSAL,
+  equivalentSendCommand,
+  messageChannelRefusal,
+  shellQuote,
 } from '../shared/message-channel-gate.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACES = path.join(HERE, 'workspaces.ts');
 
-// ─── 1. PURE decision — the four-cell truth table ──────────────────────────
+// ─── 1. PURE decision ────────────────────────────────────────────────────────
 
-test('#169 decideMessageChannel — delivery ON + not emergency = REFUSE naming send', () => {
-  const d = decideMessageChannel({ targetDeliveryOn: true, emergency: false });
-  assert.equal(d.allow, false);
-  if (d.allow === false) {
-    // The literal the ticket promises: the refusal must NAME the bus verb.
-    assert.match(d.error, /orchestra send/);
-    assert.equal(d.error, MESSAGE_CHANNEL_REFUSAL);
+test('#441 decideMessageChannel — WITHOUT --emergency: REFUSE for any target, naming the equivalent `orchestra send`', () => {
+  for (const to of ['ws-parent', 'ws-child', 'ws-sibling', 'ws-stranger', 'no-such-id']) {
+    const d = decideMessageChannel({ emergency: false, to, text: 'hello there' });
+    assert.equal(d.allow, false, `${to} must be refused`);
+    if (d.allow === false) {
+      assert.ok(d.error.includes(`orchestra send --type status --to ${to} 'hello there'`), d.error);
+      assert.match(d.error, /--emergency/, 'the one escape is named');
+      assert.ok(!/delivery|legacy/i.test(d.error), 'no switch / legacy wording in the refusal');
+    }
   }
 });
 
-test('#169 decideMessageChannel — delivery ON + emergency = ALLOW (the escape survives)', () => {
-  assert.deepEqual(decideMessageChannel({ targetDeliveryOn: true, emergency: true }), {
-    allow: true,
-  });
+test('#441 decideMessageChannel — --emergency = ALLOW (the escape is unchanged), whatever the target', () => {
+  for (const to of ['ws-parent', 'ws-child', 'ws-stranger']) {
+    assert.deepEqual(decideMessageChannel({ emergency: true, to, text: 'wake up' }), { allow: true });
+  }
 });
 
-test('#169 decideMessageChannel — delivery OFF = ALLOW regardless of emergency (legacy/bloc2)', () => {
-  assert.deepEqual(decideMessageChannel({ targetDeliveryOn: false, emergency: false }), {
-    allow: true,
-  });
-  assert.deepEqual(decideMessageChannel({ targetDeliveryOn: false, emergency: true }), {
-    allow: true,
-  });
+test('#441 the equivalent command is paste-safe: single quotes escaped, the full text kept, on the first line of the refusal', () => {
+  assert.equal(shellQuote("it's"), "'it'\\''s'");
+  const text = "don't $(rm -rf /) `x` \"q\" ; & | done";
+  const cmd = equivalentSendCommand('ws-1', text);
+  assert.equal(cmd, `orchestra send --type status --to ws-1 ${shellQuote(text)}`);
+  assert.equal(cmd.includes('\n'), false);
+  assert.equal(messageChannelRefusal('ws-1', text).split('\n')[0].includes(cmd), true, 'the command is on the first line of the refusal');
+  assert.equal(equivalentSendCommand('my agent', 'hi'), "orchestra send --type status --to 'my agent' 'hi'", 'an id with a space is quoted too');
+  // round trip through a real shell: the quoted text comes back byte-exact
+  assert.equal(execFileSync('sh', ['-c', `printf %s ${shellQuote(text)}`], { encoding: 'utf8' }), text);
 });
 
-test('#169 decideMessageChannel — the refusal error names the emergency escape too', () => {
-  const d = decideMessageChannel({ targetDeliveryOn: true, emergency: false });
-  assert.equal(d.allow, false);
-  if (d.allow === false) assert.match(d.error, /--emergency/);
-});
-
-// ─── 2. The REAL wrapper body against a REAL bus ───────────────────────────
+// ─── 2. The REAL wrapper body ────────────────────────────────────────────────
 
 /** Extract one top-level function body from workspaces.ts, anchored to a line
  *  start with a selector-drift guard (same contract as bus-mirror.test.ts). */
@@ -107,14 +93,13 @@ function stripWrapperTypes(body: string): string {
   const out = body
     // `new Function` compiles a bare declaration, never a module export.
     .replace(/^export\s+/, '')
-    // the destructured parameter annotation (now includes `emergency?: boolean`)
+    // the destructured parameter annotation (includes `emergency?: boolean`)
     .replace(/input:\s*\{[\s\S]*?\},?\s*\)/, 'input)')
     .replace(/\):\s*Promise<[^>]*>\s*\{/, ') {')
     .replace(/\b(const|let)\s+(\w+):\s*[A-Za-z_$][\w$<>.|'\s[\]]*=/g, '$1 $2 =')
     // a bare declaration with no initializer: `let targets: string[];`
     .replace(/\b(let|const)\s+(\w+):\s*[A-Za-z_$][\w$<>.|'\s[\]]*;/g, '$1 $2;');
   assert.ok(!/:\s*Promise</.test(out), 'stripWrapperTypes left a return annotation — stale');
-  // No leftover `let x: T` / `const x: T` type annotations survived the strip.
   assert.ok(
     !/\b(let|const)\s+\w+\s*:/.test(out),
     'stripWrapperTypes left a declaration annotation — stale',
@@ -122,20 +107,18 @@ function stripWrapperTypes(body: string): string {
   return out;
 }
 
-// SOURCE BINDING: the gate this rig asserts on must actually be in the wrapper.
-test('#169 SOURCE BINDING — the wrapper resolves the switch and gates before delivery', () => {
+// SOURCE BINDING: the gate this rig asserts on must actually be in the wrapper, ahead of the delivery.
+test('#441 SOURCE BINDING — the wrapper gates before delivery and reads NO delivery switch / plain-anchor exemption', () => {
   const wrapper = extract('export async function dispatchMessageRequest');
   assert.match(wrapper, /decideMessageChannel\(/, 'the wrapper must call the pure gate');
-  assert.match(wrapper, /busSwitch\(db, resolveWaveRunId\(targetForGate\), 'delivery'\)/);
-  // The gate must run BEFORE the delivery call, or a refused send would deliver.
   const iGate = wrapper.indexOf('decideMessageChannel(');
   const iDispatch = wrapper.indexOf('await dispatchMessageRequestUnmirrored');
-  assert.ok(iGate < iDispatch, 'the gate must run BEFORE the old channel delivers');
-  // And its falsifier: a body that merely names the gate without the guard must
-  // NOT satisfy the switch-resolution assertion.
-  assert.throws(() =>
-    assert.match('/* decideMessageChannel */', /busSwitch\(db, resolveWaveRunId/),
-  );
+  assert.ok(iGate !== -1 && iGate < iDispatch, 'the gate must run BEFORE the old channel delivers');
+  assert.ok(!/busSwitch\(/.test(wrapper), "no frozen switch is read to decide (the 'delivery' switch is gone)");
+  assert.ok(!/isPlainOwnAnchor|plainAnchor|senderHasBusRoute|mirrorWouldWake/.test(wrapper), 'no plain-target exemption survives (#221/#434 retired)');
+  assert.ok(!/getRelatedRunIds\(/.test(wrapper), 'no sender-route probe');
+  // falsifier of the binding regexes: a body that merely names the gate does not satisfy the ordering check
+  assert.throws(() => assert.match('/* decideMessageChannel */', /await dispatchMessageRequestUnmirrored/));
 });
 
 interface TopoNode {
@@ -143,88 +126,61 @@ interface TopoNode {
   branch: string;
   archived: boolean;
   parentId?: string;
-  canOrchestrate?: boolean;
   ownsRun?: boolean;
   kind?: string;
 }
+const node = (id: string, over: Partial<TopoNode> = {}): TopoNode => ({
+  id, branch: `${id}-branch`, archived: false, ...over,
+});
 
 interface WrapperResult {
   result: { ok: boolean; error?: string; delivery?: string; branch?: string };
   delivered: boolean;
 }
 
+const TEXT = 'coordinate the wave';
+
 /**
- * Run the REAL `dispatchMessageRequest` wrapper body against a real bus.
- *
- * `gated` selects the shipped guard (true) or a pre-#169 stand-in (false): when
- * false the pure gate is replaced by an always-allow stub, so the SAME rig
- * measures both the fixed and the unfixed wrapper — the mutation proof.
+ * Run the REAL `dispatchMessageRequest` wrapper body over a REAL topology and a real bus (the REAL mirror files the row).
+ * `gated: false` swaps the pure gate for an always-allow stub (the pre-#441 build): the SAME rig measures the fixed and the unfixed wrapper.
  */
 async function runWrapper(opts: {
   db: BusDb;
-  targetRunId: string;
-  targetExists: boolean;
+  nodes: Record<string, TopoNode>;
+  from?: string;
+  to?: string;
   emergency: boolean;
   gated: boolean;
-  /** #221 — the target is a plain own-anchor (a run-less parent that gained a mission run),
-   *  not a coordinator. Default: an ORCHESTRATOR target, the case P4 was written for. */
-  plainParent?: boolean;
-  /** #221 review — a REAL topology (id → node): the wrapper then resolves runs through the REAL
-   *  `nearestOrchestratorId` over it, `from` names the sender node, and the mirror is the REAL one
-   *  writing into `db` (so a following `sweepBusWake` sees what the wrapper filed). */
-  topo?: { nodes: Record<string, TopoNode>; from?: string };
 }): Promise<WrapperResult> {
   const body = extract('export async function dispatchMessageRequest');
   let delivered = false;
-
-  const target = opts.targetExists
-    ? { id: 'ws-target', branch: 'target-branch', archived: false, ...(opts.plainParent ? {} : { kind: 'orchestrator' }) }
-    : undefined;
-
   const scope = {
     MESSAGE_MAX_CHARS: 8000,
-    getBus: () => opts.db,
-    busSwitch, // the REAL frozen-flag read
-    resolveWaveRunId: (ws: TopoNode) =>
-      opts.topo ? nearestOrchestratorId(ws, (id: string) => opts.topo!.nodes[id]) : opts.targetRunId,
-    isPlainOwnAnchor, // the REAL #221 discriminator (wave-run-id.ts)
-    store: {
-      getWorkspace: (id: string) => (opts.topo ? opts.topo.nodes[id] : id === 'ws-target' ? target : undefined),
-    },
-    getRelatedRunIds, // the REAL related-run set (F2: does the SENDER have a bus route?)
-    decideMessageChannel: opts.gated
-      ? decideMessageChannel
-      : (_i: unknown) => ({ allow: true as const }), // pre-#169: no gate
+    resolveWaveRunId: (ws: TopoNode) => nearestOrchestratorId(ws, (id: string) => opts.nodes[id]),
+    store: { getWorkspace: (id: string) => opts.nodes[id] },
+    decideMessageChannel: opts.gated ? decideMessageChannel : (_i: unknown) => ({ allow: true as const }),
     // Delivery: record that the OLD channel actually ran, and return a success.
     dispatchMessageRequestUnmirrored: async (_i: unknown) => {
       delivered = true;
       return { ok: true, delivery: 'live', branch: 'target-branch' };
     },
-    // The mirror is read-only w.r.t. delivery and irrelevant to the gate — except in a `topo` arm,
-    // where the REAL mirror files the row so the wake sweep can be asked whether it wakes anyone.
-    mirrorDispatch: opts.topo
-      ? (i: Parameters<typeof realMirrorDispatch>[0]) => realMirrorDispatch({ ...i, db: opts.db })
-      : () => {},
-    // Present only so the wrapper's `resolveWaveRunId(recipientWs)` mirror line
-    // (post-delivery) type-checks; harmless.
+    mirrorDispatch: (i: Parameters<typeof realMirrorDispatch>[0]) => realMirrorDispatch({ ...i, db: opts.db }),
   };
-
   const fn = new Function(
     ...Object.keys(scope),
     `${stripWrapperTypes(body)}\nreturn dispatchMessageRequest;`,
   )(...Object.values(scope));
-
   const result = await fn({
-    from: opts.topo ? opts.topo.from : 'ws-sender',
-    to: 'ws-target',
-    text: 'coordinate the wave',
+    from: opts.from,
+    to: opts.to ?? 'ws-target',
+    text: TEXT,
     ...(opts.emergency ? { emergency: true } : {}),
   });
   return { result, delivered };
 }
 
 function tmpBus(t: { after: (fn: () => void) => void }): BusDb {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msg-gate-169-'));
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'msg-gate-441-'));
   const db = openBus(path.join(dir, 'bus.sqlite'));
   t.after(() => {
     try {
@@ -237,185 +193,85 @@ function tmpBus(t: { after: (fn: () => void) => void }): BusDb {
   return db;
 }
 
-function seedRun(db: BusDb, id: string, deliveryOn: boolean): void {
-  startRun(db, { id, kind: 'mission', coordinator: id }, {
-    ...DEFAULT_BUS_SWITCHES,
-    delivery: deliveryOn,
-  });
-  // Prove the fixture: the frozen flag reads back the way the arm assumes.
-  assert.equal(busSwitch(db, id, 'delivery'), deliveryOn, 'seedRun fixture wrong');
-}
+const messageRows = (db: BusDb) =>
+  db.prepare("SELECT run_id, sender, recipient, kind FROM messages ORDER BY sequence").all() as Array<{ run_id: string; sender: string; recipient: string | null; kind: string }>;
 
-// ARM 1 — fleet message to an anchored delivery-ON recipient is REFUSED naming
-// `orchestra send`, and (mutation) the SAME message DELIVERS on the unfixed wrapper.
-test('#169 ARM 1 — delivery-ON target: REFUSED (gated), DELIVERED (ungated)', async (t) => {
-  const db = tmpBus(t);
-  seedRun(db, 'run-on', true);
-
-  const gated = await runWrapper({
-    db,
-    targetRunId: 'run-on',
-    targetExists: true,
-    emergency: false,
-    gated: true,
-  });
-  assert.equal(gated.result.ok, false, 'shipped wrapper must refuse');
-  assert.equal(gated.delivered, false, 'refused send must NOT reach the old channel');
-  assert.match(gated.result.error ?? '', /orchestra send/, 'refusal must name the bus verb');
-
-  // MUTATION: the pre-#169 wrapper (no gate) delivers the same message.
-  const ungated = await runWrapper({
-    db,
-    targetRunId: 'run-on',
-    targetExists: true,
-    emergency: false,
-    gated: false,
-  });
-  assert.equal(ungated.result.ok, true, 'pre-fix wrapper delivered (dual-channel)');
-  assert.equal(ungated.delivered, true, 'pre-fix wrapper reached the old channel');
-});
-
-// ARM 2a — the --emergency escape STILL delivers even on a delivery-ON run.
-test('#169 ARM 2a — --emergency on a delivery-ON target STILL delivers', async (t) => {
-  const db = tmpBus(t);
-  seedRun(db, 'run-on', true);
-  const r = await runWrapper({
-    db,
-    targetRunId: 'run-on',
-    targetExists: true,
-    emergency: true,
-    gated: true,
-  });
-  assert.equal(r.result.ok, true, 'the emergency escape must survive');
-  assert.equal(r.delivered, true, 'emergency send must reach the old channel');
-});
-
-// ARM 2b — the delivery-OFF (bloc2 legacy) path STILL delivers, no emergency needed.
-test('#169 ARM 2b — delivery-OFF target STILL delivers (legacy mission)', async (t) => {
-  const db = tmpBus(t);
-  seedRun(db, 'run-off', false);
-  const r = await runWrapper({
-    db,
-    targetRunId: 'run-off',
-    targetExists: true,
-    emergency: false,
-    gated: true,
-  });
-  assert.equal(r.result.ok, true, 'a delivery-OFF run must not be refused');
-  assert.equal(r.delivered, true);
-});
-
-// ARM 2c — a target with NO run row at all reads delivery OFF (busSwitch contract)
-// and is NEVER refused (plain standalone workspace).
-test('#169 ARM 2c — target with no run row is NEVER refused', async (t) => {
-  const db = tmpBus(t);
-  // deliberately do NOT seedRun — the run id is unknown to the bus.
-  const r = await runWrapper({
-    db,
-    targetRunId: 'run-absent',
-    targetExists: true,
-    emergency: false,
-    gated: true,
-  });
-  assert.equal(busSwitch(db, 'run-absent', 'delivery'), false, 'unknown run reads OFF');
-  assert.equal(r.result.ok, true, 'no run row → not refused');
-  assert.equal(r.delivered, true);
-});
-
-// ARM 3 (#221 F1a) — a PLAIN own-anchor target (a run-less parent that gained a mission run
-// with delivery ON) is NOT refused: its non-member children have no bus route to it, so
-// `message` stays open exactly as on master. MUTANT: drop the isPlainOwnAnchor exemption → refused.
-// ── #221 review round 2 (F1 blocking, F2, F3): drive the REAL wrapper over a REAL topology ────────
-const node = (id: string, over: Partial<TopoNode> = {}): TopoNode => ({
-  id, branch: `${id}-branch`, archived: false, ...over,
-});
-/** LEAD (plain, own anchor = the target 'ws-target'), OPS (promoted child), MEMBER (of OPS), WORKER (plain child). */
-function leadTopo(from: string | undefined): { nodes: Record<string, TopoNode>; from?: string } {
-  return {
-    from,
+/** Every pair a sender can be in with the target — the refusal must hold for ALL of them (a parent, a child, a sibling, an unrelated agent …). */
+const PAIRS: Record<string, { nodes: Record<string, TopoNode>; from: string | undefined }> = {
+  'to its PARENT (an orchestrator)': {
+    from: 'ws-sender',
+    nodes: { 'ws-target': node('ws-target', { kind: 'orchestrator', ownsRun: true }), 'ws-sender': node('ws-sender', { parentId: 'ws-target' }) },
+  },
+  'to its CHILD': {
+    from: 'ws-sender',
+    nodes: { 'ws-sender': node('ws-sender', { kind: 'orchestrator', ownsRun: true }), 'ws-target': node('ws-target', { parentId: 'ws-sender' }) },
+  },
+  'to a SIBLING': {
+    from: 'ws-sender',
     nodes: {
-      'ws-target': node('ws-target'),
-      'ws-ops': node('ws-ops', { parentId: 'ws-target', ownsRun: true }),
-      'ws-member': node('ws-member', { parentId: 'ws-ops' }),
-      'ws-worker': node('ws-worker', { parentId: 'ws-target' }),
+      'ws-parent': node('ws-parent', { kind: 'orchestrator', ownsRun: true }),
+      'ws-target': node('ws-target', { parentId: 'ws-parent' }),
+      'ws-sender': node('ws-sender', { parentId: 'ws-parent' }),
     },
-  };
-}
-/** LEAD mission run (delivery+wake ON) with the OPS vague nested under it — the post-#221 bus. */
-function seedLeadRuns(db: BusDb): void {
-  const on = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
-  startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, on);
-  startRun(db, { id: 'ws-ops', kind: 'vague', coordinator: 'ws-ops', parentRunId: 'ws-target' }, on);
-}
-function armSweep(db: BusDb, readers: { reader: string; runId: string }[]): { reader: string; text: string }[] {
-  const wakes: { reader: string; text: string }[] = [];
-  __resetBusWakeForTests();
-  __setBusReaderForTests(() => db);
-  setWakeRoster(() => readers.map((r) => ({ ...r, wakeable: true })));
-  setWakeDeliver(async (reader, text) => {
-    wakes.push({ reader, text });
-    return true;
+  },
+  'to an UNRELATED agent (two top-level plain workspaces)': {
+    from: 'ws-sender',
+    nodes: { 'ws-target': node('ws-target'), 'ws-sender': node('ws-sender') },
+  },
+  'to a PLAIN parent that owns a run (the #221/#434 exemption)': {
+    from: 'ws-sender',
+    nodes: { 'ws-target': node('ws-target', { ownsRun: true }), 'ws-sender': node('ws-sender', { parentId: 'ws-target' }) },
+  },
+  'to a plain agent whose parent was DELETED (dangling parent)': {
+    from: undefined,
+    nodes: { 'ws-target': node('ws-target', { parentId: 'gone' }) },
+  },
+  'from a caller with NO workspace id (a plain shell)': {
+    from: undefined,
+    nodes: { 'ws-target': node('ws-target') },
+  },
+};
+
+for (const [label, pair] of Object.entries(PAIRS)) {
+  test(`#441 \`message\` ${label}: REFUSED with the equivalent send (never delivered, never mirrored); the guard-removed twin DELIVERS`, async (t) => {
+    const db = tmpBus(t);
+    startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, DEFAULT_BUS_SWITCHES);
+    const refused = await runWrapper({ db, nodes: pair.nodes, from: pair.from, emergency: false, gated: true });
+    assert.equal(refused.result.ok, false, 'the old channel is closed for this pair');
+    assert.equal(refused.delivered, false, 'a refused send must NOT reach the old channel');
+    assert.ok(
+      (refused.result.error ?? '').includes(`orchestra send --type status --to ws-target '${TEXT}'`),
+      `the refusal prints the equivalent command: ${refused.result.error}`,
+    );
+    assert.deepEqual(messageRows(db), [], 'a refused send is not mirrored onto the bus');
+    // MUTANT arm: with the guard removed the SAME send is delivered (the pre-#441 behaviour)
+    const open = await runWrapper({ db, nodes: pair.nodes, from: pair.from, emergency: false, gated: false });
+    assert.equal(open.result.ok, true);
+    assert.equal(open.delivered, true, 'pre-#441 build: the message went through the old channel');
   });
-  setWakeSwitchReader((runId) => busSwitch(db, runId, 'wake'));
-  setAskGateSwitchReader((runId) => busSwitch(db, runId, 'ask_gate'));
-  __armStartedForTests();
-  return wakes;
 }
 
-test('#434 — a plain parent that OWNS a run is no longer exempt: `message` from its child is REFUSED naming `orchestra send` (ungated: delivered); a dangling-parent plain target keeps the exemption (#441 removes it)', async (t) => {
-  const db = tmpBus(t);
-  seedLeadRuns(db);
-  const toLead = (gated: boolean, from: string | undefined) =>
-    runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: false, gated, topo: leadTopo(from) });
-  const refused = await toLead(true, 'ws-worker');
-  assert.equal(refused.result.ok, false, 'the child of an owning parent has `send`: the old channel is refused');
-  assert.match(refused.result.error ?? '', /orchestra send/);
-  assert.equal(refused.delivered, false);
-  assert.equal((await toLead(false, 'ws-worker')).delivered, true, 'mutant arm: with the guard removed the same message is delivered');
-  const emergency = await runWrapper({ db, targetRunId: 'unused', targetExists: true, emergency: true, gated: true, topo: leadTopo('ws-worker') });
-  assert.equal(emergency.result.ok, true, '--emergency still delivers');
-  const dangling = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
-    topo: { from: undefined, nodes: { 'ws-target': node('ws-target', { parentId: 'gone' }) } },
-  });
-  assert.equal(dangling.result.ok, true, 'a plain own-anchor target (dangling parent) stays exempt for a sender with no bus route');
-  // M1 (review): two UNRELATED top-level agents have no `send` route before #436 — `message` to a top-level plain target stays open for the sender with no route
-  const unrelated = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
-    topo: { from: 'ws-x', nodes: { 'ws-target': node('ws-target'), 'ws-x': node('ws-x') } },
-  });
-  assert.equal(unrelated.result.ok, true, `an unrelated top-level sender is not refused: ${unrelated.result.error}`);
-  assert.equal(unrelated.delivered, true);
-  // a PROMOTED top-level worktree (flag + ownsRun) is a LEAD like the orchestrator kind: an unrelated sender is refused toward `send`
-  const promotedTop = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
-    topo: { from: 'ws-x', nodes: { 'ws-target': { ...node('ws-target'), canOrchestrate: true, ownsRun: true }, 'ws-x': node('ws-x') } },
-  });
-  assert.equal(promotedTop.result.ok, false, 'a promoted top-level worktree is not exempt (the same LEAD as kind orchestrator)');
-  // …but a top-level target that has spawned (ownsRun) still refuses ITS OWN member, who has `send`
-  assert.equal((await toLead(true, 'ws-worker')).result.ok, false, 'its member is still pointed at send');
+test('#441 `message --emergency` is UNCHANGED for every pair: delivered, and the mirror files it in the RECIPIENT\'s run', async (t) => {
+  for (const [label, pair] of Object.entries(PAIRS)) {
+    const db = tmpBus(t);
+    startRun(db, { id: 'ws-target', kind: 'mission', coordinator: 'ws-target' }, DEFAULT_BUS_SWITCHES);
+    const r = await runWrapper({ db, nodes: pair.nodes, from: pair.from, emergency: true, gated: true });
+    assert.equal(r.result.ok, true, `${label}: --emergency delivers`);
+    assert.equal(r.delivered, true, `${label}: it reaches the session`);
+    const rows = messageRows(db);
+    assert.equal(rows.length, 1, `${label}: one mirrored row`);
+    assert.equal(rows[0].recipient, 'ws-target');
+    assert.notEqual(rows[0].run_id.startsWith('host-'), true, 'never the per-boot host-… run');
+  }
 });
 
-test('#221 F3 — a MEMBER (has a parent orchestrator) of a delivery-ON run is REFUSED by P4, never mistaken for a plain anchor', async (t) => {
-  // MUTANT: isPlainOwnAnchor(targetForGate, () => undefined) → the member "has no parent", looks like an
-  // own-anchor and is exempted (a P4 bypass for every member of a delivery-ON run) → this arm reddens.
+test('#441 the mirror has NO host-<ts> fallback run: a recipient that resolves no run files no row (the send is counted missed)', async (t) => {
   const db = tmpBus(t);
-  const on = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
-  startRun(db, { id: 'ws-orch', kind: 'mission', coordinator: 'ws-orch' }, on);
-  const r = await runWrapper({
-    db, targetRunId: 'unused', targetExists: true, emergency: false, gated: true,
-    topo: {
-      from: 'ws-someone',
-      nodes: {
-        'ws-target': node('ws-target', { parentId: 'ws-orch' }), // the MEMBER, target of the message
-        'ws-orch': node('ws-orch', { ownsRun: true }),
-        'ws-someone': node('ws-someone'),
-      },
-    },
-  });
-  assert.equal(r.result.ok, false, 'member of a delivery-ON run: refused');
-  assert.match(r.result.error ?? '', /orchestra send/);
-  assert.equal(r.delivered, false);
+  // the target id is not in the store → the wrapper resolves no run for it
+  const r = await runWrapper({ db, nodes: { 'ws-sender': node('ws-sender') }, from: 'ws-sender', emergency: true, gated: true });
+  assert.equal(r.delivered, true);
+  assert.deepEqual(messageRows(db), [], 'no row, and in particular none in a host-… run');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE run_id LIKE 'host-%'").get()!.n, 0);
 });
 
 test('#221 R4a — /resolveHandle carries each workspace wave run: member → its orchestrator, plain child → itself, archived excluded', () => {
@@ -447,22 +303,13 @@ test('#221 R4a — /resolveHandle carries each workspace wave run: member → it
   );
 });
 
-// ─── 3. F3 (LEAD D-W8-1) — the BROADCAST is gated too; only --emergency bypasses ──
+// ─── 3. The BROADCAST is gated too; only --emergency bypasses ──────────────────────
 //
-// A broadcast is NOT a bypass by virtue of its shape: `dispatchBroadcast
-// MessageRequest` threads the caller's EXPLICIT emergency flag per target, so an
-// ordinary `--to <peer>` of coordination text is refused on a delivery-ON fleet
-// just like a positional send, while ONLY `--emergency --to`/`--children` (the
-// #86 group-stop) bypasses and lands.
-//
-// This drives the REAL broadcast body with a stub `dispatchMessageRequest` that
-// applies the REAL `decideMessageChannel` against a fixed per-fleet delivery
-// state + the per-target emergency it received — so refusal/delivery is genuine
-// end-to-end, not asserted on a recorded flag. The pre-F3 build hard-coded
-// `emergency: true`, so arm (a) DELIVERED where it must now REFUSE.
+// A broadcast is NOT a bypass by virtue of its shape: `dispatchBroadcastMessageRequest` threads the caller's EXPLICIT emergency flag per
+// target. This drives the REAL broadcast body with a stub `dispatchMessageRequest` that applies the REAL `decideMessageChannel` with the
+// per-target emergency it received, so refusal/delivery is genuine end-to-end, not asserted on a recorded flag.
 async function runBroadcast(opts: {
   targets: string[];
-  fleetDeliveryOn: boolean;
   emergency: boolean;
 }): Promise<{
   results: Array<{ id: string; ok: boolean; error?: string }>;
@@ -476,14 +323,9 @@ async function runBroadcast(opts: {
     resolveDirectChildTargets: () => [] as string[],
     store: { workspaces: [] as unknown[] },
     log: { info: () => {}, warn: () => {}, error: () => {} },
-    // The REAL gate, applied per target with the emergency flag the broadcast
-    // threaded — so a refused target is a genuine gate refusal, not a stub.
-    dispatchMessageRequest: async (i: { to: string; emergency?: boolean }) => {
+    dispatchMessageRequest: async (i: { to: string; text: string; emergency?: boolean }) => {
       emergencySeen.push(i.emergency);
-      const gate = decideMessageChannel({
-        targetDeliveryOn: opts.fleetDeliveryOn,
-        emergency: i.emergency === true,
-      });
+      const gate = decideMessageChannel({ emergency: i.emergency === true, to: i.to, text: i.text });
       if (!gate.allow) return { ok: false, error: gate.error };
       return { ok: true, delivery: 'live', branch: 'br' };
     },
@@ -501,37 +343,18 @@ async function runBroadcast(opts: {
   return { results: result.results ?? [], emergencySeen };
 }
 
-// ARM (a) — a plain --to broadcast of coordination text is REFUSED per target on
-// a delivery-ON fleet (pre-F3: delivered, the P4 hole). The DISCRIMINATING arm.
-test('#169 F3 ARM(a) — --to delivery-ON WITHOUT --emergency: REFUSED per target', async () => {
-  const { results, emergencySeen } = await runBroadcast({
-    targets: ['a', 'b', 'c'],
-    fleetDeliveryOn: true,
-    emergency: false,
-  });
+test('#441 broadcast ARM(a) — --to WITHOUT --emergency: REFUSED per target, each naming ITS OWN equivalent send', async () => {
+  const { results, emergencySeen } = await runBroadcast({ targets: ['a', 'b', 'c'], emergency: false });
   assert.deepEqual(emergencySeen, [false, false, false], 'no --emergency threaded');
   assert.equal(results.length, 3, 'every target attempted');
-  assert.ok(results.every((r) => !r.ok), 'every target refused on a delivery-ON fleet');
-  assert.ok(results.every((r) => /orchestra send/.test(r.error ?? '')), 'refusal names the bus verb');
+  assert.ok(results.every((r) => !r.ok), 'every target refused');
+  for (const r of results) {
+    assert.ok((r.error ?? '').includes(`orchestra send --type status --to ${r.id} 'coordination text'`), `${r.id}: ${r.error}`);
+  }
 });
 
-// ARM (b) — --emergency --to on a delivery-ON fleet DELIVERS to all (the #86 halt).
-test('#169 F3 ARM(b) — --emergency --to delivery-ON: DELIVERS to all', async () => {
-  const { results, emergencySeen } = await runBroadcast({
-    targets: ['a', 'b', 'c'],
-    fleetDeliveryOn: true,
-    emergency: true,
-  });
+test('#441 broadcast ARM(b) — --emergency --to: DELIVERS to all (the #86 group-stop is unchanged)', async () => {
+  const { results, emergencySeen } = await runBroadcast({ targets: ['a', 'b', 'c'], emergency: true });
   assert.deepEqual(emergencySeen, [true, true, true], '--emergency threaded per target');
   assert.ok(results.every((r) => r.ok), 'the group-stop lands on every target');
-});
-
-// ARM (d) — the delivery-OFF path stays OPEN without --emergency (look-alike).
-test('#169 F3 ARM(d) — delivery-OFF --to WITHOUT --emergency: DELIVERS (look-alike)', async () => {
-  const { results } = await runBroadcast({
-    targets: ['a', 'b'],
-    fleetDeliveryOn: false,
-    emergency: false,
-  });
-  assert.ok(results.every((r) => r.ok), 'a legacy delivery-OFF fleet is never refused');
 });

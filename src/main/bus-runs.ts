@@ -449,7 +449,7 @@ export function runFlags(db: BusDb, runId: string): BusSwitches {
 /**
  * THE FUNCTION #117 CALLS — frozen on ledger #123 with OPS-B.
  *
- *   busSwitch(runId, 'delivery' | 'wake' | 'ask_gate' | 'liveness') -> boolean
+ *   busSwitch(runId, 'wake' | 'ask_gate' | 'liveness' | …) -> boolean
  *
  * Reads the flags RECORDED ON THE RUN ROW. Never the live store — that is the
  * whole contract, and the substitution C10 mutates.
@@ -464,6 +464,23 @@ export function busSwitch(db: BusDb, runId: string, mechanism: string): boolean 
   const key = mechanismFromWire(mechanism);
   if (!key) return false;
   return mechanismEnabled(runFlags(db, runId), key);
+}
+
+/** #441 — how many OPEN runs freeze `mechanism` ON, out of how many are open: what a boot line says about a switch now that
+ *  no row-less `'default'` run exists to read (a switch is per run, frozen on the row). Unreadable → 0 of 0. */
+export function openRunSwitchCount(db: BusDb, mechanism: string): { on: number; total: number } {
+  return countOpenRuns(db, (id) => busSwitch(db, id, mechanism));
+}
+
+/** The same census with a caller-supplied reader (a seam a rig injects, e.g. the wake sweep's `readWakeSwitch`). */
+export function countOpenRuns(db: BusDb, isOn: (runId: string) => boolean): { on: number; total: number } {
+  let on = 0;
+  let total = 0;
+  for (const r of db.prepare('SELECT id FROM runs WHERE closed_at IS NULL').all() as Array<{ id: string }>) {
+    total += 1;
+    if (isOn(r.id)) on += 1;
+  }
+  return { on, total };
 }
 
 /**

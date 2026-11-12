@@ -36,14 +36,9 @@ import type {
   MirrorOutcome,
 } from '../shared/bus-mirror.ts';
 
-/** The run (wave) the mirror attributes its rows to.
- *
- *  #115 owns the run LIFECYCLE (`runs` rows, `orchestra run …`). Until that
- *  lands the mirror still has to name a run, so it takes one from the
- *  environment and otherwise falls back to a stable per-boot id. It never
- *  INSERTS into `runs` — migration v1 documents that `messages.run_id` carries
- *  no FK on purpose, so shadowing a run #115 has not declared is legal and
- *  becomes a real row the moment #115 declares it. */
+/** The SCOPE LABEL of the divergence counters (the frozen #123 contract) — NOT where a mirrored row lands (that is the
+ *  recipient's resolved run, `MirrorInput.runId`; #441 removed the `host-…` fallback run). The environment's run id when
+ *  the process has one, else a stable per-boot label. It never INSERTS into `runs`. */
 let currentRunId: string | null = null;
 
 export function mirrorRunId(): string {
@@ -92,10 +87,8 @@ export interface MirrorInput {
    * The PARTIES' resolved run (#144). The old channel names sender/recipient
    * workspace ids; their wave run (the recipient's anchor) is where the mirrored
    * row belongs so a `check --run <that>` finds it and the wake predicate scoped
-   * to it matches. Absent (the caller could not resolve it) → the row lands in
-   * the per-boot `host-…` id as before, the coexistence-safe fallback. Before
-   * #144 EVERY mirrored row went to `host-…` (canary row 451), invisible to any
-   * party's `check`.
+   * to it matches. Absent (the caller could not resolve it) → NO row is written
+   * (#441: the `host-…` fallback run is gone; the send is counted `missed`).
    */
   runId?: string | null;
 }
@@ -117,13 +110,10 @@ export function mirrorDispatch(input: MirrorInput): MirrorOutcome {
   let rows = 0;
   try {
     outcome = outcomeFor(input.result);
-    // #144 — the row lands in the PARTIES' resolved run when the caller supplied
-    // one; else the per-boot `host-…` fallback (mirrorRunId). This is the run
-    // stamped on the `messages`/`mirror_records` rows, NOT the counter scope: the
-    // divergence ledger stays keyed on `mirrorRunId()` (its frozen #123 contract)
-    // — this ticket redirects the ROW so a party's `check` can see it, not the
-    // aggregate.
-    const runId = input.runId?.trim() || mirrorRunId();
+    // #144 — the row lands in the PARTIES' resolved run. #441: there is NO `host-…` fallback run any more — a caller that
+    // resolved no run (an unknown recipient) writes no row. This is the run stamped on the `messages`/`mirror_records`
+    // rows, NOT the counter scope: the divergence ledger stays keyed on `mirrorRunId()` (its frozen #123 contract).
+    const runId = input.runId?.trim() ?? '';
     const sendId = randomUUID();
     // ── F1 (BLOCKING, review 2026-09-08) ────────────────────────────────────
     // A REFUSED send must NOT become a bus row.
@@ -152,6 +142,9 @@ export function mirrorDispatch(input: MirrorInput): MirrorOutcome {
       log.info(
         `bus mirror: ${mechanism} send to ${input.recipient ?? '?'} was REFUSED by the old channel — not mirrored`,
       );
+    } else if (!runId) {
+      // #441: a delivered send whose recipient resolved no run is NOT filed in an invented run — it is a real divergence, counted.
+      log.warn(`bus mirror: ${mechanism} send to ${input.recipient ?? '?'} (${outcome}) has no run to be filed in — not mirrored`);
     } else if (!db) {
       // D1: the bus is down. This is a real divergence for a delivered
       // message — record it and say so out loud. It is NOT an error for the

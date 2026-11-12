@@ -774,7 +774,7 @@ test('T127.3: a hung call with liveness=OFF is COUNTED, never emitted to the coo
 // The OPS is keyed on the run it anchors, but its task was dispatched (and closed)
 // in the LEAD's mission run. Field 2026-09-28: worker_done in the parent run was
 // never seen → the paused OPS was escalated to the LEAD forever.
-const ALL_ON = { delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
+const ALL_ON = { wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
 function opsUnderLead(db: BusDb): void {
   startRun(db, { id: 'run-lead', kind: 'mission', coordinator: 'ws-lead' }, ALL_ON);
   startRun(db, { id: 'ws-ops2', kind: 'vague', coordinator: 'ws-ops2', parentRunId: 'run-lead' }, ALL_ON);
@@ -899,7 +899,7 @@ test('#204 i: the shield does not mask a coordinator that is ITSELF hung mid-cal
 
 // ── #204 remainder (LEAD ruling D4 ii): HOLD — a held run's members are skipped ──
 
-const HOLD_ON = { delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
+const HOLD_ON = { wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
 function escalationsIn(db: BusDb, runId: string, coordinator: string, reader: string): number {
   const row = db
     .prepare(

@@ -20,7 +20,6 @@
 
 import {
   coordinates,
-  isPlainOwnAnchor as isPlainOwnAnchorOf,
   parentRunOf,
   ancestorCoordinatorId,
   runIdOf,
@@ -50,14 +49,6 @@ export function parentOrchestratorId(
   anchorsRun?: (id: string) => boolean,
 ): string | null {
   return ancestorCoordinatorId(ws, lookup, anchorsRun);
-}
-
-/** #221 — a plain workspace that is its own run anchor. Delegates to run-position. */
-export function isPlainOwnAnchor(
-  ws: WaveNode,
-  lookup: (id: string) => WaveNode | undefined,
-): boolean {
-  return isPlainOwnAnchorOf(ws, lookup);
 }
 
 /** #221 — the parent run for a NEW orchestrator. Delegates to `parentRunOf`. */

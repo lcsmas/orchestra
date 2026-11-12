@@ -34,7 +34,7 @@ const needsBuild = {
 };
 
 const NOW = 1_700_000_000_000;
-const ALL_ON = { delivery: true, wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
+const ALL_ON = { wake: true, askGate: true, liveness: true, fencing: true, capability: true, receipts: true };
 
 interface Cli {
   code: number;

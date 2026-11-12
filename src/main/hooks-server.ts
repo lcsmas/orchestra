@@ -313,7 +313,7 @@ export async function startHooksServer(): Promise<void> {
             // `dispatchBroadcastMessageRequest` threads this same flag per target,
             // so the #86 group-stop bypasses the refusal ONLY when the caller
             // passed --emergency, while a plain `--to <peer>` of coordination text
-            // is refused on a delivery-ON fleet exactly like the positional send.
+            // is refused (#441: every target) exactly like the positional send.
             const emergency = msg.emergency === true;
             const shape = classifyMessageRoute(msg);
             if (shape.kind === 'single') {

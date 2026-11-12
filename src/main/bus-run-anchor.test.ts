@@ -103,7 +103,7 @@ const WAVE = lookupOf([LEAD, OPS, IMPL]);
 test('G3 — an orchestrator launch creates its run row frozen from live switches', () => {
   const { db, dir } = tmpDb();
   try {
-    const live = { v: switches({ delivery: true }) };
+    const live = { v: switches({ liveness: true }) };
     const d = deps(db, live);
     assert.equal(getRun(db, 'ops'), null, 'no OPS run row before it launches');
 
@@ -112,8 +112,8 @@ test('G3 — an orchestrator launch creates its run row frozen from live switche
     assert.equal(row.id, 'ops');
     assert.equal(row.coordinator, 'ops');
     assert.equal(row.parent_run_id, 'lead', 'D1: nested under the LEAD');
-    assert.equal(row.flags.delivery, true, 'frozen delivery=ON from live');
-    assert.equal(runFlags(db, 'ops').delivery, true);
+    assert.equal(row.flags.liveness, true, 'frozen liveness=ON from live');
+    assert.equal(runFlags(db, 'ops').liveness, true);
 
     // must-FAIL TWIN: no real startRun (the reproduced defect) → no row.
     const { db: db2, dir: dir2 } = tmpDb();
@@ -291,21 +291,21 @@ test('G4b × #324 — the D1b call hands refreezeRun the wave keep list (the dep
 test('G4b F1 — an OPS (vague) row is NEVER re-frozen: byte-identical across a member spawn', () => {
   const { db, dir } = tmpDb();
   try {
-    const live = { v: switches({ delivery: true }) };
+    const live = { v: switches({ liveness: true }) };
     const d = deps(db, live);
-    // The OPS wave starts frozen delivery=ON.
+    // The OPS wave starts frozen liveness=ON.
     maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
     const before = JSON.stringify(runFlags(db, 'ops'));
 
     // Flip mid-wave, then spawn a MEMBER under the OPS — this must NOT re-freeze
     // the OPS row (F1); a member spawn reads the existing row, never re-freezes.
-    live.v = switches({ delivery: false, wake: true });
+    live.v = switches({ liveness: false, wake: true });
     maybeStartRunAtAnchor(d, anchorInfoOf(IMPL, WAVE));
     const after = JSON.stringify(runFlags(db, 'ops'));
     assert.equal(after, before, 'the OPS (vague) row is byte-identical across a member spawn (F1)');
 
     // Directly assert refreezeRun REFUSES a vague row even if called explicitly.
-    const changed = refreezeRun(db, 'ops', switches({ delivery: false, wake: true }));
+    const changed = refreezeRun(db, 'ops', switches({ liveness: false, wake: true }));
     assert.equal(changed, false, 'refreezeRun is a NO-OP on a vague (OPS) row — mission rows only');
     assert.equal(JSON.stringify(runFlags(db, 'ops')), before, 'and the OPS flags are untouched');
   } finally {
@@ -399,7 +399,7 @@ test('#433 — a plain workspace WITH a parent starts no row (its run is #434)',
     const C: WaveNode = { id: 'c', parentId: 'p', kind: 'worktree' };
     const info = anchorInfoOf(C, lookupOf([P, C]));
     assert.equal(info.anchorOwnsRun, false);
-    assert.equal(maybeStartRunAtAnchor(deps(db, { v: switches({ delivery: true }) }), info), null);
+    assert.equal(maybeStartRunAtAnchor(deps(db, { v: switches({ liveness: true }) }), info), null);
     assert.equal(getRun(db, 'c'), null);
   } finally {
     cleanup(db, dir);
@@ -462,27 +462,27 @@ test('#156 — a FLAT mission (plain children only, no sub-OPS) NEVER re-freezes
     const MEMBER: WaveNode = { id: 'plain-child', parentId: 'flat-mission', kind: 'worktree' };
     const FLAT_WAVE = lookupOf([FLAT, MEMBER]);
 
-    const live = { v: switches({ delivery: false, wake: false }) };
+    const live = { v: switches({ liveness: false, wake: false }) };
     const d = deps(db, live);
 
     // The mission launches, freezing all-OFF.
     maybeStartRunAtAnchor(d, anchorInfoOf(FLAT, FLAT_WAVE));
-    assert.equal(runFlags(db, 'flat-mission').delivery, false, 'mission froze delivery OFF');
+    assert.equal(runFlags(db, 'flat-mission').liveness, false, 'mission froze liveness OFF');
 
-    // Human flips delivery + wake ON. Then a PLAIN member spawns — the only launch
+    // Human flips liveness + wake ON. Then a PLAIN member spawns — the only launch
     // a flat mission ever sees. Its anchor is the mission itself (nearest
     // orchestrator), and it is a MEMBER launch (wsId !== anchorId), so D1b does NOT
     // fire (it fires only when `anchor.parentRunId && wsId === anchorId`).
-    live.v = switches({ delivery: true, wake: true });
+    live.v = switches({ liveness: true, wake: true });
     const memberAnchor = anchorInfoOf(MEMBER, FLAT_WAVE);
     assert.equal(memberAnchor.anchorId, 'flat-mission', 'the member anchors on the flat mission');
     assert.equal(memberAnchor.parentRunId, null, 'the mission is top-level — no parent run');
     maybeStartRunAtAnchor(d, memberAnchor);
 
     // THE GAP: the mission is STILL frozen all-OFF. No shipped anchor path flipped
-    // it — a flat mission can never pick up the delivery+wake flip.
+    // it — a flat mission can never pick up the liveness+wake flip.
     assert.equal(
-      runFlags(db, 'flat-mission').delivery,
+      runFlags(db, 'flat-mission').liveness,
       false,
       '#156: the flat mission stays STALE OFF — D1b never fires for a flat orchestrator',
     );
@@ -492,7 +492,7 @@ test('#156 — a FLAT mission (plain children only, no sub-OPS) NEVER re-freezes
     // switches, flip the mission row (driving the REAL refreezeMissionRun).
     const outcome = refreezeMissionRun(db, 'flat-mission', live.v, { hasLiveChild: false });
     assert.equal(outcome, 'refrozen', 'the admin refreeze re-froze the flat mission');
-    assert.equal(runFlags(db, 'flat-mission').delivery, true, 'now it picks up delivery');
+    assert.equal(runFlags(db, 'flat-mission').liveness, true, 'now it picks up liveness');
     assert.equal(runFlags(db, 'flat-mission').wake, true, 'and wake');
   } finally {
     cleanup(db, dir);
@@ -502,7 +502,7 @@ test('#156 — a FLAT mission (plain children only, no sub-OPS) NEVER re-freezes
 // ─── D1 (bus never blocks a spawn) ───────────────────────────────────────────
 
 test('D1 — a null bus returns null and never throws', () => {
-  const d = deps(null, { v: switches({ delivery: true }) });
+  const d = deps(null, { v: switches({ liveness: true }) });
   let row: unknown;
   assert.doesNotThrow(() => {
     row = maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
@@ -537,17 +537,17 @@ test('D1 — a THROWING startRun is caught, logged, and returns null', () => {
 test('#134 — the anchor start is idempotent (INSERT OR IGNORE) across launches', () => {
   const { db, dir } = tmpDb();
   try {
-    const live = { v: switches({ delivery: true, wake: true }) };
+    const live = { v: switches({ liveness: true, wake: true }) };
     const d = deps(db, live);
     for (let i = 0; i < 5; i++) {
-      live.v = i % 2 === 0 ? switches({ delivery: true, wake: true }) : ALL_OFF;
+      live.v = i % 2 === 0 ? switches({ liveness: true, wake: true }) : ALL_OFF;
       maybeStartRunAtAnchor(d, anchorInfoOf(OPS, WAVE));
     }
     const frozen = runFlags(db, 'ops');
-    assert.equal(frozen.delivery, true, 'the FIRST launch snapshot survived every later call');
+    assert.equal(frozen.liveness, true, 'the FIRST launch snapshot survived every later call');
     assert.equal(frozen.wake, true);
     for (const m of BUS_MECHANISMS) {
-      if (m !== 'delivery' && m !== 'wake') assert.equal(frozen[m], false);
+      if (m !== 'liveness' && m !== 'wake') assert.equal(frozen[m], false);
     }
   } finally {
     cleanup(db, dir);

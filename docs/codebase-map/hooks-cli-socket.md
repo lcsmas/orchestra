@@ -201,15 +201,19 @@ frozen env withheld `$ORCHESTRA_WS_ID` while an agent PTY owned the spool. Exit 
 (error to stderr).
 Subcommands: `peers [--stats]` (`--stats` adds per-peer committed diff vs base; an `ex` column — `ex-<previous name>`, blank for a never-renamed peer — sits beside `branch` ONLY when some peer was renamed, #384; `peersExColumn` in `shared/former-branch.ts`),
 `message [--emergency] <id> <text…>`
-(**#169 P4 — `message` is the LEGACY channel**: `dispatchMessageRequest` refuses
-a single-target send when the target's anchored run has the `delivery` switch ON,
-returning an error that names `orchestra send`; the pure decision is
-`decideMessageChannel` in `src/shared/message-channel-gate.ts`, the switch is read
-via `busSwitch(db, resolveWaveRunId(target), 'delivery')` — a missing run row reads
-OFF and is never refused. Two escapes survive: a delivery-OFF run (legacy/bloc2),
-and the leading `--emergency` token — the out-of-band liveness poke. `--emergency`
-is recognised ONLY as `args[0]`, same body-hijack reasoning as the routing below.
-The refusal is server-side so the socket enforces it even without this CLI),
+(**#441 — the old channel is CLOSED**: `dispatchMessageRequest` refuses a send WITHOUT
+`--emergency` for EVERY target (a parent, a child, a sibling, an unrelated agent — no
+exemption: no delivery switch, no plain-target / dangling-parent escape), returning an error
+whose first line is the equivalent `orchestra send --type status --to <id> '<text>'` (POSIX-quoted,
+text kept whole); the pure decision is `decideMessageChannel` in
+`src/shared/message-channel-gate.ts`. The ONE survivor is the leading `--emergency` token —
+the out-of-band poke at a reader that no longer reads its mail, unchanged. `--emergency`
+is recognised ONLY as `args[0]`, same body-hijack reasoning as the routing below. The
+refusal is server-side so the socket enforces it even without this CLI; a broadcast
+(`--to` / `--children`) is refused PER TARGET, each with its own command. The reply footer
+of an incoming message names ONE command (`formatPeerMessage`, `orchestra send --type status
+--to <sender> "<reply>"`). Drive: `scripts/e2e-old-channel-closed.mjs` — the BUILT CLI against
+the real hooks-server + bus + store),
 `message --children <text…>` / `message --to <id,id,…> <text…>` (issue #86 broadcast:
 one delivery line PER TARGET as a table, `--children` = your DIRECT children only,
 `--to` collapses duplicates and drops blanks so a trailing comma is a typo not a

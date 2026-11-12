@@ -200,7 +200,7 @@ export interface BusVerbCtx {
   fencingOn: boolean;
   /**
    * #129 — is the `capability` switch ON for this run? (ledger #131 RULING D1:
-   * one switch PER bus-v2 mechanism, not the `delivery` switch.) Reads the FROZEN
+   * one switch PER bus-v2 mechanism.) Reads the FROZEN
    * run-row flag (bus-runs.ts `busSwitch`), never the live store. Injected rather
    * than imported so the unit tests can drive both ON and OFF without a run row,
    * and so bus-verbs.ts stays free of a main-process import. Defaults to OFF (the
@@ -323,7 +323,7 @@ export interface BusModule {
   ): ReceiptOutcome<T>;
   /** The run's FROZEN gating flag for a mechanism (#118/#130). Reads the run
    *  row, never the live store. #130 gates receipts on the `receipts` switch
-   *  (ledger #131 ruling D1 — a per-feature switch, not `delivery`). */
+   *  (ledger #131 ruling D1 — a per-feature switch). */
   busSwitch(db: BusDb, runId: string, mechanism: string): boolean;
 }
 
@@ -373,8 +373,8 @@ function fenced<T>(ctx: BusVerbCtx, verb: string, write: () => T): T {
 /**
  * The receipt-gating mechanism for #130 (ledger #131 §Decisions, ruling D1): a
  * NEW per-feature `receipts` switch, one per write-path v2 mechanism (#128
- * `fencing`, #129 `capability`, #130 `receipts`) — NOT the `delivery` switch, so
- * receipts flip independently of message delivery. #118 contract: frozen on the
+ * `fencing`, #129 `capability`, #130 `receipts`), so
+ * receipts flip independently of every other mechanism. #118 contract: frozen on the
  * run row at wave start, COUNTED-not-FIRED while OFF. While `receipts=OFF` a
  * retry is COUNTED but the mutation re-executes (v1); while ON, a retry short-
  * circuits to the original receipt. One constant names the mechanism.

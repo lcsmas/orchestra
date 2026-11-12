@@ -8,10 +8,10 @@
 //   oscillation  jitter inside ONE Admission episode (5.5/6.5/5.9/6.9/5.2 GB — never above the 7 GB reopen) writes EXACTLY ONE escalation; recovery above 7 GB then a NEW fall writes a SECOND; the LEAD reads each
 //                through the real CLI and the row names the threshold, MemAvailable and the actions (held starts, Veille, runs paused, unattributed containers)
 //   critical     one sample straight below the CRITICAL threshold names BOTH thresholds in the ONE row
-//   lead_rule    only the coordinator of a ROOT run with a live fleet and delivery ON is told (a delivery-OFF root, a child run and a root without a fleet are not)
+//   lead_rule    only the coordinator of a ROOT run with a live fleet and a live coordinator is told (a child run, a root without a fleet and a root whose coordinator is gone are not; #441: there is no delivery switch, so no run is deaf)
 //   boot_held    the alert starts while the guard is ALREADY held: the episode is told once (subscribe first, then reconcile)
 //   actions      NON-ZERO actions through the real host bindings: 2 starts held by the real Admission queue, 1 member hibernated AFTER the crossing (one hibernated BEFORE is not counted), a run under the memory Pause
-//   reader_below_deaf_root  a delivery-OFF root does not silence the delivery-ON run below it (the readers are filtered BEFORE the topmost)
+//   reader_below_deaf_root  a root whose coordinator is gone does not silence the run below it (the readers are filtered BEFORE the topmost)
 //
 // Run all: node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-memory-alert.mjs
 //   (RIG_REPO=<other tree> points the modules AND the built CLI at that tree — the must-FAIL run on master: no alert module ⇒ zero rows)
@@ -95,18 +95,16 @@ const db = busMod.getBus();
 if (!db || !String(busMod.busPath()).startsWith(tmpHome)) { console.error(`SAFETY: bus resolved outside scratch: ${busMod.busPath()}`); process.exit(2); }
 const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.ts`);
 
-// ── the fleet: lead ⊃ ops ⊃ w1 (delivery ON) · other (a root with delivery OFF) ⊃ o1 · empty (a root with NO live workspace below it, delivery ON) ──
+// ── the fleet: lead ⊃ ops ⊃ w1 · other (a root run with NO live workspace at all) · empty (a root with NO live workspace below it) ──
 const mk = (id, extra = {}) => store.upsertWorkspace({ id, name: id, kind: 'scratch', repoPath: '', baseBranch: '', branch: id, worktreePath: path.join(tmpHome, `wt-${id}`), status: 'idle', createdAt: Date.now(), hasInput: true, ...extra });
 await mk('lead', { kind: 'orchestrator' });
 await mk('ops', { kind: 'orchestrator', parentId: 'lead' });
 await mk('w1', { parentId: 'ops' });
-await mk('other', { kind: 'orchestrator' });
-await mk('o1', { parentId: 'other' });
 await mk('empty', { kind: 'orchestrator' });
-const ON = { ...DEFAULT_BUS_SWITCHES, delivery: true };
+const ON = { ...DEFAULT_BUS_SWITCHES, wake: true };
 runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, ON);
 runsMod.startRun(db, { id: 'ops', kind: 'vague', coordinator: 'ops', parentRunId: 'lead' }, ON);
-runsMod.startRun(db, { id: 'other', kind: 'mission', coordinator: 'other' }, { ...DEFAULT_BUS_SWITCHES }); // delivery OFF
+runsMod.startRun(db, { id: 'other', kind: 'mission', coordinator: 'other' }, { ...DEFAULT_BUS_SWITCHES }); // a run row whose coordinator workspace is gone
 runsMod.startRun(db, { id: 'empty', kind: 'mission', coordinator: 'empty' }, ON);
 
 // ── the memory guard under test: the REAL sampler on a fake source + a hand-fired timer ──
@@ -195,7 +193,7 @@ try {
     step(5);
     await sleep(SETTLE_WAIT_MS);
     const who = rows().map((r) => `${r.recipient}@${r.run_id}`);
-    check('only_the_root_coordinator_with_a_fleet_and_delivery_is_told', who.length === 1 && who[0] === 'lead@lead', JSON.stringify(who));
+    check('only_the_root_coordinator_with_a_fleet_and_a_live_coordinator_is_told', who.length === 1 && who[0] === 'lead@lead', JSON.stringify(who));
   } else if (ARM === 'actions') {
     // the real Admission queue (the guard is the rig's, so the gate sees the same held state), the real store's `hibernatedAt`, a run under the memory Pause written the way the host writes it
     const adm = await import(`${REPO}/src/main/admission.ts`);
@@ -210,7 +208,7 @@ try {
     const gate = (id, kind) => adm.admissionGate({ wsId: id, ws: { parentId: 'ops' }, origin: 'auto', kind, run: async () => ({ ok: true }), stillOwed: () => true, coordinator: false });
     const g1 = gate('wq1', 'spawn'), g2 = gate('wq2', 'restart');
     check('held_control', g1.held === true && g2.held === true && adm.listHeldStarts().length === 2, JSON.stringify({ g1, g2, queued: adm.listHeldStarts().length }));
-    db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'ops'").run(JSON.stringify({ delivery: true, pause: true })); // a run is only a memory-Pause run with its frozen `pause` switch ON
+    db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'ops'").run(JSON.stringify({ wake: true, pause: true })); // a run is only a memory-Pause run with its frozen `pause` switch ON
     const at = Date.now();
     db.prepare("UPDATE runs SET paused_at = ?, paused_by = ?, pause_mode = 'hard', pause_auto = ? WHERE id = 'ops'").run(at, MEMORY_PAUSE_BY, encodeMemoryPause({ reason: 'memory', pauseCycle: 1, episode: 1, availBytes: 2 * GIB, thresholdBytes: 3 * GIB }, at));
     await sleep(SETTLE_WAIT_MS);
@@ -221,14 +219,14 @@ try {
     check('the_paused_run_is_named', /memory Pause on run\(s\) ops/.test(b), b.split('\n')[1] ?? '');
     check('a_paused_run_is_in_effect_and_need_not_act_is_true', /memory Pause IN EFFECT\./.test(b) && /You need not act: the host releases the held starts and lifts its own memory Pause by itself once memory recovers\./.test(b) && !/ACT YOURSELF/.test(b), b.split('\n').slice(2).join(' | ')); // G6 review F1
   } else if (ARM === 'reader_below_deaf_root') {
-    // `lead` cannot read (delivery OFF): `ops` below it (delivery ON, with a fleet) is the LEAD the memory Pause actually pauses
-    db.prepare("UPDATE run_flags SET flags = ? WHERE run_id = 'lead'").run(JSON.stringify({ delivery: false }));
+    // `lead` cannot read (its coordinator workspace is archived): `ops` below it (with a fleet) is the LEAD the memory Pause actually pauses
+    await mk('lead', { kind: 'orchestrator', archived: true });
     await startAlert();
     step(12);
     step(5);
     await sleep(SETTLE_WAIT_MS);
     const who = rows().map((r) => `${r.recipient}@${r.run_id}`);
-    check('the_reader_below_a_deaf_root_is_told', who.length === 1 && who[0] === 'ops@ops', JSON.stringify(who));
+    check('the_reader_below_a_root_whose_coordinator_is_gone_is_told', who.length === 1 && who[0] === 'ops@ops', JSON.stringify(who));
   } else if (ARM === 'boot_held') {
     step(12);
     step(5); // the guard is ALREADY held when the alert starts

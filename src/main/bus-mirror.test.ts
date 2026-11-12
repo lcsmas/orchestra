@@ -263,6 +263,7 @@ async function runDispatch(fate: Fate, db: BusDb | null): Promise<RunResult> {
     body: 'hello peer',
     result,
     db,
+    runId: RUN,
   });
   return { result, inboxWrites };
 }
@@ -821,6 +822,7 @@ test('F1 — each of the four refusal shapes writes ZERO messages rows (delivere
       body: 'a refused message',
       result,
       db,
+      runId: RUN,
     });
     const after = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
     assert.equal(outcome, 'withdrawn', `${label} is a withdrawal`);
@@ -841,6 +843,7 @@ test('F1 — each of the four refusal shapes writes ZERO messages rows (delivere
     body: 'a real message',
     result: { ok: true, delivery: 'live' },
     db,
+    runId: RUN,
   });
   assert.equal(outcome, 'live');
   assert.equal(
@@ -869,6 +872,7 @@ test('F1 — a refused send is invisible to a READER, which is the actual harm',
     body: 'REFUSED-SENTINEL',
     result: { ok: false, error: 'unknown target workspace' },
     db,
+    runId: RUN,
   });
   const lot = busCheck(db, RUN, 'ws-target');
   assert.equal(lot.messages.length, 0, 'the reader is handed NOTHING for a refused send');
@@ -885,6 +889,7 @@ test('F1 — a refused send is invisible to a READER, which is the actual harm',
     body: 'DELIVERED-SENTINEL',
     result: { ok: true, delivery: 'live' },
     db,
+    runId: RUN,
   });
   const lot2 = busCheck(db, RUN, 'ws-target');
   assert.equal(lot2.messages.length, 1, 'CONTROL: check() DOES deliver a real message');
@@ -917,6 +922,7 @@ test('F2 — the REAL mirrorDispatch RETURNS (does not throw) with the DB destro
       body: 'delivery already happened',
       result: { ok: true, delivery: 'live' },
       db,
+      runId: RUN,
     });
   }, 'the SHIPPED mirrorDispatch must not throw into its caller');
   assert.equal(returned, 'live', 'and it returns the outcome the old channel reported');
@@ -987,6 +993,7 @@ test('F4 — a partial write cannot leave a messages row the mirror cannot see',
     body: 'partial write',
     result: { ok: true, delivery: 'live' },
     db,
+    runId: RUN,
   });
   const after = (db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
 
@@ -1063,6 +1070,7 @@ test('F5 — an over-cap send mirrors the TRUNCATED body, and the row proves it'
     body: truncated,
     result: { ok: true, delivery: 'live' },
     db,
+    runId: RUN,
   });
   const row = db.prepare('SELECT body FROM messages ORDER BY sequence DESC LIMIT 1').get() as {
     body: string;
@@ -1139,7 +1147,7 @@ test('#144 G5 — a supplied runId puts the mirrored row in that run, NOT the ho
   assert.equal(mirrorRecords(db, PARTIES_RUN).length, 1);
 });
 
-test('#144 G5 — with NO runId supplied the row falls back to the host id (unchanged behavior)', (t) => {
+test('#441 G5 — with NO runId supplied NO row is written (there is no host-<ts> fallback run); the send is counted missed', (t) => {
   const { db } = tmpBus(t);
   setMirrorRunId('host-fallback');
   mirrorDispatch({
@@ -1150,9 +1158,6 @@ test('#144 G5 — with NO runId supplied the row falls back to the host id (unch
     db,
     // no runId
   });
-  assert.equal(
-    db.prepare('SELECT COUNT(*) AS n FROM messages WHERE run_id = ?').get('host-fallback').n,
-    1,
-    'absent runId → host fallback, the coexistence-safe default',
-  );
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n, 0, 'no row anywhere — in particular none in a host-… run');
+  assert.equal(divergenceCounters()[0].missed, 1, 'a delivered send the bus holds no row for IS a divergence: counted, not invented away');
 });

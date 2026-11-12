@@ -2,6 +2,7 @@
 // #434 self-gate — IN-PLACE mutation sweep of "a plain parent and its child talk over the bus". Each mutant removes ONE clause in the real source and must
 // turn its NAMED unit file(s) red. Byte-exact backup + `cmp` restore after every mutant; run it on a COMMITTED tree. CONTROL first: every named unit file must
 // be GREEN unmutated. CLI-bundle mutants rebuild dist-electron/cli.js (the CLI tests drive the BUILT bundle); rebuilt again after.
+// M19 / M23 (the plain-own-anchor exemption from the `message` refusal) are RETIRED with the exemption itself (#441: `message` is refused for every target; its mutants are scripts/old-channel-closed-mutants.mjs).
 // Run: node scripts/plain-parent-mutants.mjs [--only M01,M07] [--check-anchors]   (pnpm run test:plain-parent-mutants)
 
 import fs from 'node:fs';
@@ -39,11 +40,9 @@ const MUTANTS = [
   { id: 'M16', name: 'promote of a top-level workspace is a silent no-op again (idempotence keyed on coordinates)', edits: [[WS, 'if (ws.ownsRun === true || isCoordinatorKind(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };', 'if (coordinates(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };']], tests: [T.plain] },
   { id: 'M17', name: 'demote leaves ownsRun set (the demoted OPS keeps its own run)', edits: [[WS, ': { ...ws, canOrchestrate: undefined, ownsRun: undefined };', ': { ...ws, canOrchestrate: undefined };']], tests: [T.plain] },
   { id: 'M18', name: 'attach does not mark the new parent as an owner', edits: [[WS, '  await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child\'s next session start\n', '']], tests: [T.plain] },
-  { id: 'M19', name: 'a plain top-level target is no longer exempt for an unrelated sender (isPlainOwnAnchor back to "not a coordinator")', cli: true, edits: [[RP, 'return !isCoordinatorKind(ws) && ws.canOrchestrate !== true && isTopLevel(ws, lookup);', 'return !coordinates(ws) && runIdOf(ws, lookup) === ws.id;']], tests: [T.gate] },
   { id: 'M20', name: 'a top-level workspace no longer owns its mission in coordinates (`!parentId` dropped)', cli: true, edits: [[RP, 'return isCoordinatorKind(ws) || ws.ownsRun === true || !ws.parentId;', 'return isCoordinatorKind(ws) || ws.ownsRun === true;']], tests: [T.rp, T.plain] },
   { id: 'M21', name: 'a dangling-parent workspace is not recorded as an owner at app start / launch', edits: [[WS, '  await recordDanglingOwners(started);\n  for (const ws of live)', '  for (const ws of live)']], tests: [T.plain] },
   { id: 'M22', name: 'attach leaves a link-only ownership set (a re-attached orphan stays its own mission)', edits: [[WS, '...(ownedByLinkOnly ? { ownsRun: undefined } : {})', '...{}']], tests: [T.plain] },
-  { id: 'M23', name: 'a promoted top-level worktree is exempt from the message refusal again (isPlainOwnAnchor drops the flag clause)', edits: [[RP, 'return !isCoordinatorKind(ws) && ws.canOrchestrate !== true && isTopLevel(ws, lookup);', 'return !isCoordinatorKind(ws) && isTopLevel(ws, lookup);']], tests: [T.gate, T.rp] },
   { id: 'M15', name: 'a sentinel writer hard-codes the dual wording again (a second reader of the role)', edits: [[WS, "await markOrchestratorWorktree(newWorktreePath, coordinatorRoleOf({ repoPath }) === 'dual');", 'await markOrchestratorWorktree(newWorktreePath, true);']], tests: [T.plain] },
   { id: 'M14', name: 'the first-spawn owner gets no standing-role sentinel', edits: [[WS, "await markOrchestratorWorktree(updated.worktreePath, coordinatorRoleOf(updated) === 'dual');", '']], tests: [T.plain] },
 ];

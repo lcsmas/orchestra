@@ -31,7 +31,6 @@ import {
   type BusRunAnchorDeps,
 } from './bus-run-anchor.ts';
 import {
-  isPlainOwnAnchor,
   nearestOrchestratorId,
   nodeOrchestrates,
   parentOrchestratorId,
@@ -63,7 +62,6 @@ const MEMBER = '55555555-2221-4000-8000-00000000a505'; // a plain member under O
 const WORKER = '66666666-2221-4000-8000-00000000a506'; // a plain direct child of the LEAD, NOT promoted
 
 const ALL_ON: BusSwitches = {
-  delivery: true,
   wake: true,
   askGate: true,
   liveness: true,
@@ -259,14 +257,14 @@ test('#221 a LAZY child row (member launch under an OPS with no row yet) also ge
   fieldTree(w);
   w.tree.add({ id: MEMBER, kind: 'worktree', parentId: OPS });
   w.tree.promote(OPS); // promoted with no run start (pre-#134 legacy): no row yet
-  w.live.current = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+  w.live.current = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true };
   w.launch(MEMBER);
   assert.deepEqual(w.runs(), [
     { id: LEAD, kind: 'mission', coordinator: LEAD, parent: null },
     { id: OPS, kind: 'vague', coordinator: OPS, parent: LEAD },
   ]);
   // A member spawn is NOT a wave boundary (no D1b refreeze), so this is the parent's INITIAL freeze.
-  assert.equal(busSwitch(w.db, LEAD, 'delivery'), true);
+  assert.equal(busSwitch(w.db, LEAD, 'liveness'), true);
   assert.equal(busSwitch(w.db, LEAD, 'fencing'), false);
 });
 
@@ -350,9 +348,9 @@ test('#221 IDEMPOTENT — re-promote, restart/relaunch, a member launch and a SE
 test('#221 the auto-created parent freezes the LIVE switches at promote time (same as every other run start)', (t) => {
   const w = world(t, 'new');
   fieldTree(w);
-  w.live.current = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true };
+  w.live.current = { ...DEFAULT_BUS_SWITCHES, wake: true, liveness: true };
   w.promote(OPS);
-  assert.equal(busSwitch(w.db, LEAD, 'delivery'), true);
+  assert.equal(busSwitch(w.db, LEAD, 'liveness'), true);
   assert.equal(busSwitch(w.db, LEAD, 'wake'), true);
   assert.equal(busSwitch(w.db, LEAD, 'fencing'), false, 'a switch that was OFF live is frozen OFF');
 });

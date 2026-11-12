@@ -26,7 +26,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(here, '..', '..', 'dist-electron', 'cli.js');
 const needsBuild = { skip: fs.existsSync(CLI) ? false : 'dist-electron/cli.js not built — run `pnpm run build:cli`' };
 
-const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, askGate: true, liveness: true, pause: true };
+const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, wake: true, askGate: true, liveness: true, pause: true };
 
 const LEAD = 'aaaaaaaa-0000-4000-8000-000000000001';
 const OPS = 'aaaaaaaa-0000-4000-8000-000000000002';
@@ -218,7 +218,7 @@ test('#433 `orchestra bus-status` on a lone workspace shows its run with the fro
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, new RegExp(`^run: ${T1}\\n`, 'm'));
   assert.doesNotMatch(r.stdout, /no such run|standalone/);
-  assert.match(r.stdout, /delivery\s+ON\s+ON/, 'frozen ON beside live ON');
+  assert.match(r.stdout, /wake\s+ON\s+ON/, 'frozen ON beside live ON');
   // Control: the same lone workspace BEFORE the sweep prints no such run, with no frozen column.
   const w2 = world(t);
   const r2 = await busStatus(w2, T1, T1);

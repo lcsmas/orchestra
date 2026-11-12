@@ -58,7 +58,7 @@ test('WIRING memory-alert.ts is Electron-free (importable under node --test like
   }
   assert.match(core, /for \(const r of to\) \{\s*try \{\s*send\(db, \{ runId: r\.runId, sender: ALERT_SENDER, recipient: r\.coordinator, kind: 'escalation', body \}\);/);
   assert.ok(core.indexOf('t.sent = true;') > 0 && core.indexOf('t.sent = true;') < core.indexOf('send(db, {'), 'marked told BEFORE the writes: a throw half-way never writes the episode twice');
-  assert.match(core, /if \(r\.flags\.delivery !== true\) continue;/, 'a run without the delivery mechanism has nobody who can read a bus row');
-  assert.ok(core.indexOf('r.flags.delivery !== true') < core.indexOf('topmostRunIds(db, deps, [...readers.keys()])'), 'readers are filtered BEFORE the topmost is taken');
+  assert.doesNotMatch(core, /flags\.delivery/, '#441: no run is deaf any more — the delivery switch is gone, a run row frozen with it is read like any other');
+  assert.ok(core.indexOf('if (!run || !w || w.archived) continue;') > 0 && core.indexOf('if (!run || !w || w.archived) continue;') < core.indexOf('topmostRunIds(db, deps, [...readers.keys()])'), 'readers (a live coordinator) are filtered BEFORE the topmost is taken');
   assert.equal((core.match(/\bsend\(/g) ?? []).length, 1, 'the ONE send site');
 });

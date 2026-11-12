@@ -79,7 +79,7 @@ const SEEDED = {
   available: true,
   error: null,
   path: '/home/agent/.orchestra/bus.sqlite',
-  liveSwitches: { delivery: true, wake: false, askGate: false, liveness: true },
+  liveSwitches: { fencing: true, wake: false, askGate: false, liveness: true },
   runs: [
     { id: 'mission-zeta-7731', kind: 'mission', coordinator: 'lead-0524718f', parentRunId: null, title: 'Fleet-bus adoption', createdAt: now - 90000, closedAt: null, flags: { delivery: true, wake: false, askGate: true, liveness: false } },
     { id: 'vague-b-4412', kind: 'vague', coordinator: 'ops-18a2d373', parentRunId: 'mission-zeta-7731', title: 'Wave B — CLI / mirror / wake / pane', createdAt: now - 60000, closedAt: null, flags: { delivery: false, wake: true, askGate: false, liveness: true } },
@@ -100,7 +100,7 @@ const SEEDED = {
     { handle: 'ops-18a2d373', phase: 'dispatch', lastSeenAt: now - 50000, pendingLotId: null, pendingCount: 0 },
   ],
   counters: [
-    { mechanism: 'delivery', missed: 41, duplicate: 7, lostWake: 0 },
+    { mechanism: 'peer-message', missed: 41, duplicate: 7, lostWake: 0 },
     { mechanism: 'wake', missed: 0, duplicate: 0, lostWake: 13 },
   ],
 };
@@ -277,7 +277,7 @@ check('seeded: a seeded message body is on screen', seeded.text.includes('seeded
 check('seeded: the open gate is on screen', seeded.text.includes('seeded-gate-question-8890'));
 check('seeded: the resolved ruling is on screen', seeded.text.includes('seeded-ruling-2277'));
 check('seeded: divergence counters are on screen', /\b41\b/.test(seeded.text) && /\b13\b/.test(seeded.text));
-check('seeded: a frozen flag reads ON and another reads OFF', seeded.text.includes('wake=ON') && seeded.text.includes('delivery=OFF'));
+check('seeded: a frozen flag reads ON and another reads OFF', seeded.text.includes('wake=ON') && seeded.text.includes('fencing=OFF'));
 check('seeded: the pending lot is on screen', /lot 4 · 2 pending/.test(seeded.text));
 
 check('unavailable: the loud state is on screen', /Fleet bus unavailable/.test(down.text));

@@ -27,7 +27,7 @@ import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.t
 const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(here, '..', '..', 'dist-electron', 'cli.js');
 const needsBuild = { skip: fs.existsSync(CLI) ? false : 'dist-electron/cli.js not built — run `pnpm run build:cli`' };
-const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, askGate: true, liveness: true, pause: true };
+const LIVE: BusSwitches = { ...DEFAULT_BUS_SWITCHES, wake: true, askGate: true, liveness: true, pause: true };
 
 const id = (n: number) => `bbbbbbbb-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const A = id(1); // top-level agent, mission A
