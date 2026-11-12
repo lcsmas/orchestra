@@ -27,6 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BASE = path.resolve(opt('base', path.join(REAL_HOME, '.cache', 'pc-438')));
 const OUT = path.resolve(opt('out', path.join(BASE, 'reports', `soak-${new Date().toISOString().replace(/[:.]/g, '-')}`)));
 const RUNS = Number(opt('runs', '10'));
+const FIRST = Number(opt('first', '1'));   // numbering offset: a re-run of the runs a VOID batch did not measure continues the count
 const WINDOW_S = Number(opt('window-s', '780'));
 const APP = opt('app', null);
 const MIN_AVAIL_GB = Number(opt('min-avail-gb', '4'));
@@ -50,7 +51,7 @@ const ALL_ARMS = [
     { name: 'must-fail:hung-liveness-off', arm: 'hung', switch: 'off', want: 'DIRTY', app: APP },
     { name: 'must-fail:mutant-released-blind', arm: 'done-idle', want: 'DIRTY', app: mutApp.bin },
   ]),
-  ...Array.from({ length: RUNS }, (_, i) => ({ name: `done-idle-${i + 1}`, arm: 'done-idle', want: 'CLEAN', app: APP })),
+  ...Array.from({ length: RUNS }, (_, i) => ({ name: `done-idle-${i + FIRST}`, arm: 'done-idle', want: 'CLEAN', app: APP })),
 ];
 const ARMS = ONLY.length ? ALL_ARMS.filter((x) => ONLY.includes(x.name)) : ALL_ARMS;   // `--only control:hung,…` = a PARTIAL soak (labelled)
 const BATCH = Number(opt('batch', '4'));   // rigs at once: the soak runs in the MEMBER's capped scope (6 GB hard) — every rig counts against it; a batch that touched the cap is VOID, never a verdict (OPS, lot 10913)
@@ -69,7 +70,10 @@ const batches = [];   // { arms, peakMB, oomKillDelta, voided }
 const ownCg = (() => { try { return `/sys/fs/cgroup${fs.readFileSync('/proc/self/cgroup', 'utf8').trim().split('\n').pop().split(':').pop()}`; } catch { return null; } })();
 const cgNum = (f) => { try { return Number(fs.readFileSync(path.join(ownCg, f), 'utf8').trim()); } catch { return null; } };
 const cgOom = () => { try { return Number(/^oom_kill (\d+)/m.exec(fs.readFileSync(path.join(ownCg, 'memory.events'), 'utf8'))?.[1]); } catch { return null; } };
-const SCOPE_BAR_MB = Number(opt('scope-bar-mb', '4500'));   // above it the batch is stopped and VOID (the hard cap is 6144)
+// the WORKING SET (anon + shmem + kernel: what the kernel cannot drop) is what the cap kills on and what OPS bounds (~4 GB); page cache is reclaimable and reported apart. VOID above the working-set bar, or when `memory.current` nears the 6144 MB hard cap.
+const SCOPE_BAR_MB = Number(opt('scope-bar-mb', '4000'));
+const CURRENT_BAR_MB = Number(opt('current-bar-mb', '5600'));
+const workingSetMB = () => { try { const st = fs.readFileSync(path.join(ownCg, 'memory.stat'), 'utf8'); const g = (k) => Number(new RegExp(`^${k} (\\d+)`, 'm').exec(st)?.[1] ?? 0); return Math.round((g('anon') + g('shmem') + g('kernel') + g('sock')) / 1048576); } catch { return 0; } };
 const runArm = (a, i) => new Promise((resolve) => {
   const label = `lv${i}-${a.name.replace(/[^a-z0-9]+/gi, '_').slice(0, 24)}`;
   const pin = path.join(BASE, `pin-cfg-${label}`); fs.mkdirSync(pin, { recursive: true });
@@ -97,7 +101,7 @@ for (let b = 0; b * BATCH < ARMS.length; b++) {
   const oom0 = cgOom();
   say(`── batch ${b + 1}/${Math.ceil(ARMS.length / BATCH)}: ${slice.map((x) => x.name).join(', ')} · own scope ${w.startMB} MB at start (oom_kill ${oom0}) · MemAvailable ${hostNow().availGB.toFixed(1)} GB load ${hostNow().load1.toFixed(1)}`);
   procs.length = 0;
-  const sampler = setInterval(() => { const mb = Math.round((cgNum('memory.current') ?? 0) / 1048576); w.peakMB = Math.max(w.peakMB, mb); if (mb > SCOPE_BAR_MB && !w.voided) { w.voided = `own scope ${mb} MB > ${SCOPE_BAR_MB} MB`; say(`!! batch ${b + 1} VOID — ${w.voided}: stopping its rigs`); for (const p of procs) { try { process.kill(p.pid, 'SIGTERM'); } catch { /* gone */ } } } }, 3000);
+  const sampler = setInterval(() => { const cur = Math.round((cgNum('memory.current') ?? 0) / 1048576); const mb = workingSetMB(); w.peakMB = Math.max(w.peakMB, cur); w.peakWorkingSetMB = Math.max(w.peakWorkingSetMB ?? 0, mb); if ((mb > SCOPE_BAR_MB || cur > CURRENT_BAR_MB) && !w.voided) { w.voided = `own scope working set ${mb} MB (> ${SCOPE_BAR_MB}) / current ${cur} MB (> ${CURRENT_BAR_MB})`; say(`!! batch ${b + 1} VOID — ${w.voided}: stopping its rigs`); for (const p of procs) { try { process.kill(p.pid, 'SIGTERM'); } catch { /* gone */ } } } }, 3000);
   const runs = [];
   for (let i = 0; i < slice.length; i++) { runs.push(runArm(slice[i], b * BATCH + i + 1)); await sleep(STAGGER_MS); }
   const res = await Promise.all(runs);
@@ -106,7 +110,7 @@ for (let b = 0; b * BATCH < ARMS.length; b++) {
   if (w.oomKillDelta > 0 && !w.voided) w.voided = `the member's scope oom_kill rose by ${w.oomKillDelta}`;
   for (const r of res) done.push({ ...r, batchVoid: w.voided });
   batches.push(w);
-  say(`── batch ${b + 1} done: peak own scope ${w.peakMB} MB · oom_kill +${w.oomKillDelta}${w.voided ? ` · VOID (${w.voided})` : ''}`);
+  say(`── batch ${b + 1} done: peak own scope ${w.peakMB} MB (working set ${w.peakWorkingSetMB} MB) · oom_kill +${w.oomKillDelta}${w.voided ? ` · VOID (${w.voided})` : ''}`);
   if (voided) break;
 }
 clearInterval(guard);
@@ -121,5 +125,5 @@ if (batchVoids.length && !voided) voided = `${batchVoids.length} batch(es) VOID:
 const clean = !voided && rows.every((r) => r.ok);
 fs.writeFileSync(path.join(OUT, 'soak.json'), JSON.stringify({ tree: REPO, windowS: WINDOW_S, batchSize: BATCH, batches, runs: rows, voided, hostEnd: host, wallS: Math.round((Date.now() - t0) / 1000) }, null, 1));
 fs.writeFileSync(path.join(OUT, 'soak.md'), `# Liveness soak — real clock, plain parent + 1 child (#438-fu)\n\n${table}\n\nunmutated runs: ${unm.length}, escalation rows in them: ${zeroRows}; wall ${Math.round((Date.now() - t0) / 1000)} s\n`);
-say(`LIVSOAK-SOAK ${voided ? `VOID (${voided})` : clean ? 'CLEAN' : 'DIRTY'} · batch ${BATCH} · peak own scope ${Math.max(0, ...batches.map((b) => b.peakMB))} MB — ${unm.length} unmutated runs, ${zeroRows} escalation row(s) in them; controls: ${rows.filter((r) => !r.name.startsWith('done-idle-')).map((r) => `${r.name} ${r.ok ? 'as expected' : 'UNEXPECTED'}`).join(' · ')}; wall ${Math.round((Date.now() - t0) / 1000)} s; report ${OUT}`);
+say(`LIVSOAK-SOAK ${voided ? `VOID (${voided})` : clean ? 'CLEAN' : 'DIRTY'} · batch ${BATCH} · peak own scope ${Math.max(0, ...batches.map((b) => b.peakMB))} MB (working set ${Math.max(0, ...batches.map((b) => b.peakWorkingSetMB ?? 0))} MB) — ${unm.length} unmutated runs, ${zeroRows} escalation row(s) in them; controls: ${rows.filter((r) => !r.name.startsWith('done-idle-')).map((r) => `${r.name} ${r.ok ? 'as expected' : 'UNEXPECTED'}`).join(' · ')}; wall ${Math.round((Date.now() - t0) / 1000)} s; report ${OUT}`);
 process.exit(voided ? 3 : clean ? 0 : 1);
