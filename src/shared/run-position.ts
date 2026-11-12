@@ -11,7 +11,7 @@ export interface RunNode {
   id: string;
   parentId?: string;
   kind?: string;
-  /** #434 — this workspace OWNS a run (persisted: set at its first spawn, at a promote, at the app-start migration). */
+  /** #434 — this workspace OWNS a run (persisted: set at its first spawn and by the app-start migration of an older store). */
   ownsRun?: boolean;
 }
 export type RunLookup = (id: string) => RunNode | undefined;
@@ -23,8 +23,8 @@ export function isCoordinatorKind(ws: Pick<RunNode, 'kind'>): boolean {
 }
 
 /** #434 — does `ws` OWN a run, i.e. coordinate it? A top-level workspace owns its mission from birth (#433); a workspace
- *  with a parent owns a vague from its first spawn (`ownsRun`, persisted); the orchestrator KIND always. The capability flag
- *  (`canOrchestrate`) no longer decides: promote writes `ownsRun` beside it, and a pre-#434 store is migrated at app start. */
+ *  with a parent owns a vague from its first spawn (`ownsRun`, persisted); the orchestrator KIND always. The old capability flag
+ *  and its promote/demote verbs are gone (#440): roles follow position, and an older store is migrated into `ownsRun` at app start. */
 export function coordinates(ws: Pick<RunNode, 'kind' | 'parentId' | 'ownsRun'>): boolean {
   return isCoordinatorKind(ws) || ws.ownsRun === true || !ws.parentId;
 }
@@ -64,6 +64,14 @@ export function parentRunOf(
 /** #433 — top-level = no resolvable parent (none set, or a dangling link after a delete): it owns a mission from birth. */
 export function isTopLevel(ws: Pick<RunNode, 'parentId'>, lookup: RunLookup): boolean {
   return !ws.parentId || !lookup(ws.parentId);
+}
+
+/** #440 — the ROLE of `ws` by POSITION in the tree (never by a flag): LEAD = no (resolvable) parent; OPS = has a parent and owns a run;
+ *  worker = has a parent and owns none. The ONE answer `orchestra whoami` prints. */
+export type RolePosition = 'LEAD' | 'OPS' | 'worker';
+export function roleOf(ws: RunNode, lookup: RunLookup): RolePosition {
+  if (isTopLevel(ws, lookup)) return 'LEAD';
+  return coordinates(ws) ? 'OPS' : 'worker';
 }
 
 /** The nearest coordinating (or run-anchoring) ancestor id strictly above `ws`, or null — `parentRunOf` WITHOUT the implicit

@@ -9,7 +9,7 @@
 // own run; a member obeys the OPS's). The run row is created:
 //   - when an orchestrator launches (anchor === itself), and
 //   - LAZILY, when a MEMBER launches under a pre-existing orchestrator whose row
-//     does not exist yet (a LEAD promoted before this ticket shipped, or an OPS
+//     does not exist yet (a LEAD of an older build, or an OPS
 //     promoted with no relaunch). The row is only a parent pointer + frozen
 //     flags for its own members, so a late mission row is not a late freeze of
 //     anything that governs those members.
@@ -57,7 +57,7 @@ export interface AnchorInfo {
   wsId: string;
   /** The nearest-orchestrator run id the workspace belongs to (resolveWaveRunId). */
   anchorId: string;
-  /** True iff the ANCHOR workspace is a real orchestrator (canOrchestrate). A
+  /** True iff the ANCHOR workspace is a real orchestrator (it coordinates). A
    *  plain standalone workspace resolves anchorId === wsId WITHOUT being an
    *  orchestrator — those get NO run row here (they are shadow until adopted). */
   anchorIsOrchestrator: boolean;
@@ -213,7 +213,7 @@ export function maybeStartRunAtAnchor(deps: BusRunAnchorDeps, anchor: AnchorInfo
     // (the OPS/member rows are never re-frozen — F1).
     //
     // FIRED ONLY WHEN THE ANCHOR LAUNCHES ITSELF (`anchor.wsId === anchor.anchorId`)
-    // — the true wave boundary (an OPS spawns-as / is promoted). A MEMBER spawn
+    // — the true wave boundary (an OPS spawns-as / spawns its first agent). A MEMBER spawn
     // that LAZILY creates a missing OPS row (`wsId !== anchorId`) must NOT
     // re-freeze the mission: D1b says "re-freeze only at wave boundaries, never on
     // member spawn" (review-F1 F1 — the lazy path was re-freezing the mission on a

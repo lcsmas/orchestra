@@ -4,7 +4,8 @@
 // string literal — a comparison, an alias, an array) to decide run membership or coordination; and the files that pick
 // "who coordinates ws" (PARENT_PICK_FILES) read it through `coordinatorOf`, never from `.parentId`. A remaining read that is NOT such a decision (scratch-likeness, UI chip, repo
 // grouping, env/sentinel plumbing, the flag's own writes) must carry `run-position: non-run <why>` on its line
-// — so every exception is visible and reviewable.
+// — so every exception is visible and reviewable. #440: the capability flag is RETIRED — the word `canOrchestrate` may appear in
+// code ONLY in RETIRED_FLAG_ALLOWED (the store's load-time migration), marked or not.
 //   node scripts/check-run-position-single-reader.mjs [--root <repo>] [--list]  → CLEAN (RC 0) | DIRTY (RC 1)
 //   node scripts/check-run-position-single-reader.mjs --self-test               → positive + negative control
 import fs from 'node:fs';
@@ -14,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 export const MODULE = 'src/shared/run-position.ts';
 export const MARKER = 'run-position: non-run';
+/** #440 — the only non-test source file that may still name the retired `canOrchestrate` flag (it migrates an older store at load). */
+export const RETIRED_FLAG_ALLOWED = ['src/main/store.ts'];
 const PATTERNS = [
+  ['retired canOrchestrate flag', /\bcanOrchestrate\b/],
   ['.canOrchestrate', /\.canOrchestrate\b/],
   ['.ownsRun', /\.ownsRun\b/],
   ["'orchestrator' literal", /['"]orchestrator['"]/],
@@ -88,6 +92,8 @@ export function verdict(root) {
   const inModule = hits.filter((h) => h.file === MODULE);
   const outside = hits.filter((h) => h.file !== MODULE && !h.marked);
   const problems = [];
+  const retired = hits.filter((h) => h.kind === 'retired canOrchestrate flag' && !RETIRED_FLAG_ALLOWED.includes(h.file));
+  if (retired.length) problems.push(`${retired.length} read(s) of the RETIRED canOrchestrate flag outside ${RETIRED_FLAG_ALLOWED.join(', ')} (a marker does not exempt it)`);
   if (outside.length) problems.push(`${outside.length} unmarked read(s) of the coordinator flag/kind outside ${MODULE}`);
   // positive control: the scan must see the module's own two reads, else the patterns are blind
   for (const k of ['.ownsRun', "kind === 'orchestrator'"]) {
@@ -106,6 +112,13 @@ export function selfTest(root) {
     const bad = verdict(tmp);
     if (bad.clean || !bad.outside.some((h) => h.file === 'src/main/activity.ts')) {
       return { ok: false, why: 'negative control: an injected flag read was NOT flagged' };
+    }
+    // #440: a MARKED read of the retired flag outside the store migration is still a violation
+    fs.appendFileSync(path.join(tmp, 'src/main/activity.ts'), `\nconst leak2 = (w: any) => w.canOrchestrate === true; // ${MARKER} sneaky\n`);
+    fs.writeFileSync(path.join(tmp, 'src/main/activity.ts'), fs.readFileSync(path.join(tmp, 'src/main/activity.ts'), 'utf8').replace(/\nconst leak = [^\n]*\n/, '\n'));
+    const bad2 = verdict(tmp);
+    if (bad2.clean || !bad2.problems.some((p) => /RETIRED canOrchestrate flag/.test(p))) {
+      return { ok: false, why: 'negative control: a MARKED retired-flag read outside the store was NOT flagged' };
     }
     return { ok: true, why: `real tree CLEAN (${real.hits.length} reads: ${real.inModule.length} in the module, ${real.hits.length - real.inModule.length} marked non-run); injected read → DIRTY` };
   } finally {

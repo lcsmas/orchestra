@@ -153,14 +153,20 @@ class Store {
     // Previously-running agents are NOT relaunched at startup: the SDK session
     // starts (resuming `sdkSessionId`) when the user first opens the workspace.
     let mutated = false;
-    // #434: a workspace OWNS a run when it was promoted (the flag) or already has a child — recorded as `ownsRun`, the field
-    // `coordinates()` reads, so a pre-#434 store keeps its coordinators without the flag deciding anything.
+    // #434/#440: a workspace OWNS a run when it already has a child (or a dangling parent link) — recorded as `ownsRun`, the field
+    // `coordinates()` reads. A record written by an older build carries the retired `canOrchestrate` flag: it becomes `ownsRun` and the key is dropped.
     const parentsOfSomeone = new Set(this.data.workspaces.map((w) => w.parentId).filter((p): p is string => !!p));
     const knownIds = new Set(this.data.workspaces.map((w) => w.id));
     for (const ws of this.data.workspaces) {
+      const legacy = ws as { canOrchestrate?: unknown }; // run-position: non-run — the ONE read of the retired flag (migration only)
+      const hadFlag = 'canOrchestrate' in legacy; // run-position: non-run — load-time migration of the retired flag
       // a DANGLING parent link (the parent left the store) is top-level: it owns its mission (#433), recorded so `coordinates` agrees with `isTopLevel`
-      if (!ws.ownsRun && (ws.canOrchestrate === true || parentsOfSomeone.has(ws.id) || (!!ws.parentId && !knownIds.has(ws.parentId)))) { // run-position: non-run — one-time migration of the persisted flag into ownsRun
+      if (!ws.ownsRun && (legacy.canOrchestrate === true || parentsOfSomeone.has(ws.id) || (!!ws.parentId && !knownIds.has(ws.parentId)))) { // run-position: non-run — load-time migration of the retired flag
         ws.ownsRun = true; // run-position: non-run — the migration write
+        mutated = true;
+      }
+      if (hadFlag) {
+        delete legacy.canOrchestrate; // run-position: non-run — the retired flag is dropped from the record
         mutated = true;
       }
       // Migrate the obsolete 'stalled' status from older orchestra versions

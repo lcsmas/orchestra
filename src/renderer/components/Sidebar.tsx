@@ -969,7 +969,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   };
 
   /** Whether `target` may accept a re-parent drop of the in-flight drag. #439 (ADR 0012): ANY workspace is a valid
-   * target — it need not be promoted or have spawned. Only structure refuses: the dragged row itself, its current
+   * target — it need not have spawned. Only structure refuses: the dragged row itself, its current
    * parent (a no-op), one of its own descendants (a cycle) and an archived row. */
   const canAttachTo = (target: Workspace): boolean =>
     !!dragWs &&
@@ -1384,12 +1384,12 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
   // it surfaces inside that orchestrator's tree instead (spawn beats repo). Its
   // subtree, flattened by groupRootsByRepo, still nests any further children.
   //
-  // A PROMOTED WORKTREE (kind 'worktree' + canOrchestrate) stays right here, in
+  // An OPS WORKTREE (kind 'worktree' that owns a run) stays right here, in
   // its own repo section: `isScratchLike` is false for it, so it lands in
   // `repoRoots` as an ordinary root and keeps its repo grouping, branch, diff
   // pills and reorder handle. Only `kind === 'orchestrator'` moves to the
   // pinned Orchestrators section — which is why section assignment must ask
-  // `isScratchLike` (a GIT question) and never `canOrchestrate` (a TREE
+  // `isScratchLike` (a GIT question) and never `coordinates` (a TREE
   // question). An orchestrator with a `repoAssociation` is the one exception:
   // it is filed back into a repo section by explicit user request, but purely
   // for DISPLAY — it stays repo-less (`repoPath` empty, no diff/merge/PR), so
@@ -2321,7 +2321,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 >
                   {/* Same treatment as the pinned spawn-tree rows: no left
                       caret, no `╰─`. The chevron moves to the row's right edge
-                      (below). A promoted worktree renders through THIS path,
+                      (below). An OPS worktree renders through THIS path,
                       never the pinned one, so both paths must change together
                       or the two kinds of orchestrator drift apart visually. */}
                   <PauseAwareGlyph wsId={w.id}>
@@ -2437,7 +2437,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               <VagueRowNote wsId={w.id} />
                   </div>
                   {/* Right-edge collapse control — mirrors the pinned-tree
-                      rows. A promoted worktree gets its chevron here. */}
+                      rows. An OPS worktree gets its chevron here. */}
                   {collapsible && (
                     <button
                       className="ws-chevron"
@@ -2462,7 +2462,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 }; // end renderWs
 
                 // Apply the same depth-first collapse fold the pinned spawn-tree
-                // sections use, so folding a promoted worktree hides its
+                // sections use, so folding an OPS worktree hides its
                 // subtree here too. Rows are depth-first, so a collapsed node
                 // hides every deeper row that follows it until the walk climbs
                 // back to its depth.

@@ -64,6 +64,7 @@ import {
   commandHelp,
   isHelpFlag,
   overview,
+  roleFollowsPositionMessage,
   unknownCommandMessage,
   wantsCommandHelp,
 } from './help.ts';
@@ -756,7 +757,6 @@ interface OfflineRecord {
   archived?: unknown;
   parentId?: unknown;
   kind?: unknown;
-  canOrchestrate?: unknown;
   ownsRun?: unknown;
 }
 
@@ -778,7 +778,7 @@ function toWaveNodes(ws: readonly OfflineRecord[]): Map<string, WaveNode> {
       id: w.id,
       parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
       kind: typeof w.kind === 'string' ? w.kind : undefined,
-      ownsRun: w.ownsRun === true || w.canOrchestrate === true, // run-position: non-run — marshals the persisted fields into the RunNode the module reads (a pre-#434 store records ownership in the flag)
+      ownsRun: w.ownsRun === true, // run-position: non-run — marshals the persisted field into the RunNode the module reads (the app's store load migrated any older flag into it, #440)
     });
   }
   return nodes;
@@ -1499,19 +1499,10 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
-    case 'promote': {
-      const id = args[0];
-      if (!id) fail('usage: orchestra promote <id>');
-      const res = await request('/promote', { id });
-      if (!res.ok) fail(res.error ?? 'failed to promote workspace');
-      // #171 — promote now refreshes the live session's run env (restart it, or
-      // — when working — mark it 'stale run' so it activates on the next
-      // idle restart). reparentSuffix reports both, the same as attach/detach.
-      process.stdout.write(
-        `Promoted ${res.id as string}${res.branch ? ` (${res.branch as string})` : ''} to orchestrator` +
-          reparentSuffix(res),
-      );
-      return;
+    case 'promote':
+    case 'demote': {
+      // #440 — both verbs are gone: a role follows POSITION in the tree. Answered BEFORE any socket call (store-less, nothing is touched).
+      fail(roleFollowsPositionMessage(command));
     }
 
     case 'attach': {
@@ -1897,27 +1888,27 @@ async function main(argv: string[]): Promise<void> {
 
     case 'whoami': {
       // A workspace's view of its own record. Notably `parent`: an agent has
-      // no other in-band way to learn it (peers excludes the caller, and a
-      // child promoted BY its parent never sees the promotion) — this is what
+      // no other in-band way to learn it (peers excludes the caller) — this is what
       // makes tree-shape rules like "at most one sub-orchestrator level"
-      // checkable by the agent they address.
+      // checkable by the agent they address. #440: `role` is by POSITION.
       const id = selfWorkspaceId();
       if (!id) fail('not inside an Orchestra workspace ($ORCHESTRA_WS_ID is not set)');
       // #401: the session key lets the host vouch for us — it shows the held profile row only to a vouched self.
       const whoamiKey = process.env[SESSION_KEY_ENV]?.trim();
       const res = await request('/whoami', { id, ...(whoamiKey ? { key: whoamiKey } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to look up this workspace');
-      const orchestrator = res.orchestrator === true;
       const kind = (res.kind as string | undefined) ?? 'worktree';
+      const role = res.role as string | undefined;
+      const runId = res.runId as string | undefined;
+      const memberOf = res.memberOfRunId as string | undefined;
       const lines = [
         ['id', res.id as string],
         ['name', (res.name as string | undefined) ?? ''],
         ['branch', (res.branch as string | undefined) ?? ''],
         ['kind', kind],
-        [
-          'orchestrator', // run-position: non-run — verb argument list
-          orchestrator ? (kind === 'worktree' ? 'yes (owns a run; dual role)' : 'yes (owns a run)') : 'no',
-        ],
+        ['role', role ?? '(not reported)'],
+        ['run', runId ? `${runId}${role === 'worker' ? ' (member: owned by its parent)' : ' (owns it)'}` : '(not reported)'],
+        ...(memberOf ? [['member of', memberOf]] : []),
         ['parent', (res.parentId as string | null | undefined) ?? 'none (top-level)'],
         ['repo', (res.repoPath as string | undefined) || '(none)'],
         ['base', (res.baseBranch as string | undefined) || '(none)'],

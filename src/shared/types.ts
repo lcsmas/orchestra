@@ -103,7 +103,7 @@ export interface Workspace {
    *   `baseBranch` and branch — so its agent can read the repo's files (docs,
    *   scripts, and its git-tracked `.claude/skills` project skills). Every
    *   git/diff/merge/delete/rename path treats it as a worktree, exactly like a
-   *   promoted worktree, while it keeps the coordinator identity (pinned chip,
+   *   plain worktree, while it keeps the coordinator identity (pinned chip,
    *   brief, `orchestrator · ` name prefix) that `kind` carries.
    *
    * So do NOT treat `'orchestrator'` as equivalent to `'scratch'` for git
@@ -114,28 +114,9 @@ export interface Workspace {
    * under a repo section in the sidebar without giving it a repo. Once it adopts
    * a real repo, `repoPath` supersedes that association for grouping. */
   kind?: 'worktree' | 'scratch' | 'orchestrator'; // run-position: non-run — kind type
-  /** Orchestrator CAPABILITY on a workspace that is not the `'orchestrator'`
-   * KIND — i.e. a real git worktree that also coordinates children. Set by
-   * `/promote` on a worktree and cleared by `/demote`.
-   *
-   * This exists because "orchestrator" is two separable things: a *tree role*
-   * (children may nest under me) and a *non-git nature* (no repo/branch/diff).
-   * The `'orchestrator'` kind fuses both, which is right for a repo-less
-   * coordinator but wrong for an integration branch that coordinates agents
-   * while carrying real commits. Flipping such a worktree's `kind` would strip
-   * its git identity everywhere — `isScratchLike` gates delete (the git
-   * worktree would leak, `workspaces.ts` `teardownWorkspace`), rename (`git
-   * branch -m` skipped, so the real branch desyncs from the label), and the
-   * whole diff/run/PR/merge/branch-picker UI on both frontends. So the
-   * capability is additive and orthogonal: `kind` stays `'worktree'` and every
-   * git path keeps working.
-   *
-   * Never read this directly to answer "can children nest under this?" — use
-   * {@link canOrchestrate}, which also covers the `'orchestrator'` kind. */
-  canOrchestrate?: boolean;
-  /** #434 — this workspace OWNS a run (coordinates it): set at its first spawn, at a promote and by the app-start
-   *  migration of a pre-#434 flag. A top-level workspace and the `'orchestrator'` kind own one without it — read
-   *  {@link coordinates} (`shared/run-position.ts`), never this field, to ask "does it coordinate?". */
+  /** #434 — this workspace OWNS a run (coordinates it): set at its first spawn and by the app-start migration of an older
+   *  store (the retired `canOrchestrate` flag, #440). A top-level workspace and the `'orchestrator'` kind own one without
+   *  it — read {@link coordinates} (`shared/run-position.ts`), never this field, to ask "does it coordinate?". */
   ownsRun?: boolean;
   /** Workspace id of the orchestrator this workspace nests under. Set at creation
    * by `/spawn` (the spawning orchestrator's `ORCHESTRA_WS_ID`), and afterwards
@@ -440,7 +421,7 @@ export interface Workspace {
    * the app was closed is still unseen). Stored ABSENT rather than `false`, so
    * store.json doesn't accumulate a dead key on every workspace ever opened. */
   autoUnread?: boolean;
-  /** #142 — the workspace was re-parented (attach/detach/adopt/demote) with
+  /** #142 — the workspace was re-parented (attach/detach/adopt) with
    * `--no-restart`, so its LIVE session still holds the OLD run's
    * `$ORCHESTRA_RUN_ID` + the OLD frozen switch notice in memory: its bus sends
    * would land in the STALE run. The `.orchestra/bus-switches` notice file has
@@ -751,7 +732,7 @@ export interface LinearIssueState {
  *
  *  Deliberately NOT a {@link Workspace}. `Workspace.kind` selects an execution
  *  environment (a worktree / a scratch dir / a coordinator session), and every
- *  consumer branches on it via `isScratchLike`/`canOrchestrate`. Modelling a
+ *  consumer branches on it via `isScratchLike`/`coordinates`. Modelling a
  *  ticket as a fourth kind would silently enrol it in `pruneOrphanedWorkspaces`
  *  (reconciled against `git worktree list`), the agent session start, `allocatePort`,
  *  and the delete/archive/rename paths — none of which mean anything for a

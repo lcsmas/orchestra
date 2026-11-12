@@ -6,7 +6,7 @@
  *
  * The rule: an orchestrator normally renders in the pinned "Orchestrators"
  * section (Sidebar's section assignment asks `kind`, deliberately — see the
- * `isScratchLike` vs `canOrchestrate` split in shared/types.ts). Giving it a
+ * `isScratchLike` vs `coordinates` split in shared/types.ts). Giving it a
  * `repoAssociation` files it under that repo's section instead, carrying its
  * whole spawn subtree with it, so a coordinator sits with the children it
  * coordinates.

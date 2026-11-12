@@ -51,7 +51,7 @@ export const HOST_SENDER = 'host';
 // ─── the LIVE workspace tree ─────────────────────────────────────────────────
 
 /**
- * The LIVE workspace tree — exactly what the gate and the trap walk (`parentId`, `kind`, `canOrchestrate`). `runs.parent_run_id` is write-once and a `runs` row
+ * The LIVE workspace tree — exactly what the gate and the trap walk (`parentId`, `kind`, `ownsRun`). `runs.parent_run_id` is write-once and a `runs` row
  * outlives a demotion, so the bus run tree misses a re-parented OPS and keeps an ex-orchestrator (review M3): coordinators, runs and release authority come from THIS
  * tree whenever it knows the workspace; the bus run tree is only the fallback for a workspace it does not know (or when no tree is registered). Registered by the host
  * (pause-trap-host.ts: the store) and by the store-less CLI (the app's store.json off disk).

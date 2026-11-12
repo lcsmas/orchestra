@@ -13,7 +13,6 @@ import {
   dispatchBroadcastMessageRequest,
   dispatchAddRepoRequest,
   dispatchDeleteWorkspaceRequest,
-  dispatchPromoteRequest,
   dispatchAttachRequest,
   dispatchSetRepoAssociationRequest,
   dispatchAdoptRepoRequest,
@@ -347,12 +346,6 @@ export async function startHooksServer(): Promise<void> {
           } else if (route === '/deleteWorkspace') {
             if (typeof msg.id === 'string') {
               send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }));
-            } else {
-              send(200, { ok: false, error: 'missing id' });
-            }
-          } else if (route === '/promote') {
-            if (typeof msg.id === 'string') {
-              send(200, await dispatchPromoteRequest({ id: msg.id }));
             } else {
               send(200, { ok: false, error: 'missing id' });
             }

@@ -27,6 +27,16 @@ Identity flags (every bus verb):
   --run <id>      run to act on (default: $ORCHESTRA_RUN_ID; no fallback)
   --as <handle>   who you are on the bus (default: $ORCHESTRA_WS_ID)`;
 
+/** #440 — the answer to `orchestra promote` / `orchestra demote`: both verbs are gone, a role follows POSITION in the tree. */
+export function roleFollowsPositionMessage(verb: string): string {
+  return (
+    `orchestra ${verb} is gone: an agent's role follows its position in the tree, so there is nothing to ${verb}. ` +
+    'No parent = LEAD; a parent and it owns a run (its first spawn made it one) = OPS; a parent and no run = worker. ' +
+    "Run `orchestra whoami` to see your role and run; `orchestra spawn` to give an agent children of its own (spawning is what makes it an OPS), " +
+    '`orchestra attach` / `detach` to move one in the tree.'
+  );
+}
+
 export const COMMANDS: CommandHelp[] = [
   // ── Workspaces ────────────────────────────────────────────────────────
   {
@@ -76,8 +86,9 @@ work from a background workspace.`,
     summary: "Print THIS workspace's own record",
     detail: `usage: orchestra whoami
 
-Print THIS workspace's own record: id, branch, kind, orchestrator role,
-parent, repo, base.`,
+Print THIS workspace's own record: id, branch, kind, role by position (LEAD =
+no parent; OPS = a parent and it owns a run; worker = a parent, no run), the
+run it is in (and the run it is a member of), parent, repo, base.`,
   },
   {
     name: 'status',
@@ -370,10 +381,18 @@ target failed.`,
   {
     name: 'promote',
     group: 'Structure',
-    summary: 'Promote a scratch session into an orchestrator',
-    detail: `usage: orchestra promote <id>
+    summary: 'Removed — a role follows position in the tree (see whoami)',
+    detail: `usage: orchestra promote   (removed)
 
-Promote a scratch session into an orchestrator.`,
+${roleFollowsPositionMessage('promote')}`,
+  },
+  {
+    name: 'demote',
+    group: 'Structure',
+    summary: 'Removed — a role follows position in the tree (see whoami)',
+    detail: `usage: orchestra demote   (removed)
+
+${roleFollowsPositionMessage('demote')}`,
   },
   {
     name: 'attach',
@@ -381,7 +400,7 @@ Promote a scratch session into an orchestrator.`,
     summary: 'Nest an existing workspace under any other agent',
     detail: `usage: orchestra attach <id> <parentId> [--no-restart]
 
-Nest an existing workspace under any other agent (it need not be promoted).
+Nest an existing workspace under any other agent (it need not have spawned anything).
 The moved agent and its subtree re-derive their run and its unread mail
 follows it. A live session the host answers per call picks its new run up at
 its next CLI call; any other is restarted (conversation kept) to re-derive it.

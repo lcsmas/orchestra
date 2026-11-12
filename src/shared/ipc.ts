@@ -345,16 +345,6 @@ export interface OrchestraAPI {
    *  workspace wears a persistent "come back to this later" indicator in the
    *  sidebar until the user selects it again or clears the tag by hand. */
   setUnread: (id: string, unread: boolean) => Promise<void>;
-  /** Make a workspace a coordinator that children can nest under. A scratch
-   *  session swaps `kind` to `'orchestrator'`; a git worktree keeps its kind and
-   *  gains `canOrchestrate` instead, so it keeps diff/merge/PR/branch handling
-   *  while also parenting children. Idempotent; rejects on an unknown id. */
-  promoteWorkspace: (id: string) => Promise<Workspace>;
-  /** The inverse of `promoteWorkspace`: clear the orchestrate capability and
-   *  detach any children (a `parentId` pointing at a non-orchestrator renders
-   *  nowhere). Only the capability is reversible — an `'orchestrator'`-KIND
-   *  scratch session is repo-less by nature and rejects. Idempotent. */
-  demoteWorkspace: (id: string) => Promise<Workspace>;
   /** Re-parent an existing workspace: pass an orchestrator id to nest it under
    *  that coordinator, or `null` to detach it back to its own repo section. The
    *  parent must exist and be able to orchestrate, and the edge must not create

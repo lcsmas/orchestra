@@ -213,7 +213,7 @@ export function forwardMailToOthers(
  * holds an OPEN gate / UNANSWERED ask whose counterparty would lie outside its related runs after the move. The post-move tree is SIMULATED from `all`
  * (no write): the mover's parent changes, a link-only ownership ends, the target becomes an owner. A dispatch never refuses (every spawned child has one).
  */
-export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { canOrchestrate?: boolean; branch?: string }>, id: string, newParentId: string | null): string | null {
+export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { branch?: string }>, id: string, newParentId: string | null): string | null {
   const ws = all.find((w) => w.id === id);
   if (!ws) return null;
   const members: string[] = [id];
@@ -233,7 +233,7 @@ export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { canOrch
     return runClosedAt(db, runIdOf(other, (y) => all.find((w) => w.id === y))) == null;
   });
   if (exchanges.length === 0) return null;
-  const linkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !all.some((w) => w.parentId === id); // run-position: non-run — simulating the ownership WRITE of an attach
+  const linkOnly = ws.ownsRun === true && !isCoordinatorKind(ws) && !all.some((w) => w.parentId === id); // run-position: non-run — simulating the ownership WRITE of an attach
   const after = all.map((w) =>
     w.id === id ? { ...w, parentId: newParentId ?? undefined, ...(newParentId && linkOnly ? { ownsRun: undefined } : {}) }
       : newParentId && w.id === newParentId ? { ...w, ownsRun: true } : w);

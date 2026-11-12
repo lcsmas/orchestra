@@ -48,9 +48,7 @@ import {
   deleteWorkspace,
   deleteWorkspaces,
   dispatchAttachRequest,
-  dispatchDemoteRequest,
   dispatchMigrateAccountRequest,
-  dispatchPromoteRequest,
   ensureWorkspacePort,
   wakeAgentWithPrompt,
   getWorktreeSizes,
@@ -324,8 +322,6 @@ export const METHOD_IPC_CHANNELS: Record<keyof ApiHandlerTable, string> = {
   markSeen: 'workspaces:markSeen',
   setActiveWorkspace: 'workspaces:setActive',
   setUnread: 'workspaces:setUnread',
-  promoteWorkspace: 'workspaces:promote',
-  demoteWorkspace: 'workspaces:demote',
   setWorkspaceParent: 'workspaces:setParent',
   renameBranch: 'workspaces:renameBranch',
   reorderWorkspaces: 'workspaces:reorder',
@@ -821,18 +817,6 @@ export const apiHandlers: ApiHandlerTable = {
   // already carries `{ ok: false, error }` — so unwrap here: reject on failure
   // (the rejection becomes the frame-level error) and hand back the fresh
   // record so the caller can assert the transition it just asked for.
-  promoteWorkspace: async (id) => {
-    const res = await dispatchPromoteRequest({ id });
-    if (!res.ok) throw new Error(res.error || 'promote failed');
-    return requireWorkspace(id);
-  },
-
-  demoteWorkspace: async (id) => {
-    const res = await dispatchDemoteRequest({ id });
-    if (!res.ok) throw new Error(res.error || 'demote failed');
-    return requireWorkspace(id);
-  },
-
   setWorkspaceParent: async (id, parentId) => {
     const res = await dispatchAttachRequest({ id, parentId });
     if (!res.ok) throw new Error(res.error || 'set parent failed');

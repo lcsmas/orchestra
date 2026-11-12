@@ -146,7 +146,7 @@ import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
-import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
+import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, roleOf, runIdOf, type RolePosition, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -542,7 +542,7 @@ export function orchestratorBrief(
   'Child reporting is PULL-BASED: nothing auto-notifies you when a child makes progress or finishes — the harness Task/Agent auto-re-invoke applies only to harness subagents, never to `orchestra spawn` peers, and the idle/waiting status in `orchestra peers` is a between-tool-calls snapshot rather than a progress signal. So in EACH spawn prompt, instruct the child to report to you (`orchestra send --type status --to <your-id>`) on completion AND when it hits a blocking question; between those, poll it yourself with `orchestra peers`. ' +
   'To stop or pause a wave or a fleet: `orchestra run pause` (soft) or `orchestra run pause --hard` — never a message asking it to stop. ' +
   "Follow-up work in an area a child agent already owns goes back to THAT child (`orchestra send`) — route it to the owner however small it looks. " +
-  'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it, then run `orchestra promote <child-id>` — its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
+  'For a milestone-sized piece that itself needs several agents, you may create a SUB-orchestrator: spawn it with a brief that tells it to delegate — the first agent it spawns makes it one (a role follows position in the tree, nothing to switch on), its branch becomes that milestone\'s integration branch and the agents IT spawns nest beneath it. Keep the tree shallow: at most one sub-orchestrator level. ' +
   spawnedModelBriefLine(store.getModelDefaults().spawned) +
   ' Do NOT downgrade implementation workers to save tokens — that trade is the user\'s call to make, not yours. Maintain a swarm FIELD GUIDE (see the orchestra-spawn skill) — a line-budgeted notes file injected into every child at session start — so conventions and pitfalls reach all siblings without per-child messages. ' +
   'Close the loop before reporting anything as done: a child\'s "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child must end in one of two EXPLICIT states: LANDED — run `orchestra verify-landed <child-id> --into <branch-it-merged-into>` and require 0 unmerged commits — or INTENTIONALLY UNMERGED, for work whose brief said not to merge (a spike, an experiment, evidence-gathering); state that disposition when you close it. The only forbidden outcome is the silent third state: a child believed merged that isn\'t. ' +
@@ -1295,35 +1295,23 @@ async function writeRenameProgress(worktreePath: string, count: number): Promise
 
 /** Mark a worktree as belonging to an orchestrator, in a sentinel the
  * orchestrator-instruction hook reads. Same fresher-than-env pattern as
- * `.branch-renamed`: written at creation AND the instant a scratch session is
- * promoted mid-session, so the standing delegation reminder starts firing on
+ * `.branch-renamed`: written at creation AND at an agent's first spawn (it becomes
+ * an owner mid-session), so the standing delegation reminder starts firing on
  * the very next prompt — before any pty restart refreshes ORCHESTRA_KIND in
  * the env. Best-effort: on write failure the hook falls back to the env var,
  * which catches up on the next pty start. */
 async function markOrchestratorWorktree(worktreePath: string, dualRole = false): Promise<void> {
   try {
     await mkdir(path.join(worktreePath, '.orchestra'), { recursive: true });
-    // Content distinguishes the two promotion routes for the reminder hook:
+    // Content distinguishes the two coordinator shapes for the reminder hook:
     // `dual` = a git worktree that orchestrates AND does its own work (so the
     // reminder must not tell it to stop editing code), anything else = a
     // repo-less coordinator. Historic sentinels contain `1`, which reads as
-    // not-dual — correct, since only scratch sessions could be promoted then.
+    // not-dual.
     await writeFile(
       path.join(worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE),
       dualRole ? 'dual' : '1',
     );
-  } catch {
-    /* best-effort */
-  }
-}
-
-/** Remove the orchestrator sentinel so the standing reminder and the PreToolUse
- * guard stop firing on the next prompt (the `/demote` counterpart to
- * `markOrchestratorWorktree`). Best-effort, like its inverse: if the unlink
- * fails the hooks keep firing until the next pty restart clears ORCHESTRA_KIND. */
-async function unmarkOrchestratorWorktree(worktreePath: string): Promise<void> {
-  try {
-    await rm(path.join(worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE), { force: true });
   } catch {
     /* best-effort */
   }
@@ -1509,7 +1497,7 @@ export async function dispatchSpawnRequest(
   } else if (input.from) {
     // Inherit the caller's repo. A scratch session and a repo-LESS orchestrator
     // own none (repoPath is ''), so they must name the target repo explicitly;
-    // an orchestrator that has ADOPTED one inherits it exactly like a promoted
+    // an orchestrator that has ADOPTED one inherits it exactly like a plain
     // worktree does, which is correct — it genuinely owns that checkout.
     //
     // DELIBERATELY reads `repoPath` and NOT `repoAssociation`: an association is
@@ -1703,43 +1691,6 @@ export async function dispatchDeleteWorkspaceRequest(input: {
   }
 }
 
-// ---------- Promote scratch → orchestrator ----------
-
-export interface PromoteResult {
-  ok: boolean;
-  id?: string;
-  branch?: string;
-  kind?: Workspace['kind'];
-  /** #171 — ids whose live session was restarted (conversation-preserving) to
-   *  pick up the promoted node's NEW run id + coordinator generation. */
-  restarted?: string[];
-  /** #171 — ids marked 'stale run' because the live session was working: the env refresh is DEFERRED to the
-   *  next idle `orchestra restart`, and bus sends are refused meanwhile. */
-  markedStale?: string[];
-  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
-  hostResolved?: string[];
-  error?: string;
-}
-
-/** Socket entry point for `/promote`. Makes a workspace a coordinator that
- * children can nest under — every workspace it subsequently spawns (and
- * anything `/attach`ed to it) carries its id as `parentId` and renders beneath
- * it in the sidebar. Idempotent. Never throws; answers `{ ok }`.
- *
- * Two routes, because "orchestrator" is a tree role fused onto a non-git nature
- * only for scratch sessions (see `Workspace.canOrchestrate` in types.ts):
- *
- * - **scratch → `kind: 'orchestrator'`.** The record keeps its id, worktree,
- *   branch label and running agent; only `kind` and the display-name prefix
- *   change. It has no git identity to preserve, so the kind swap is free.
- * - **worktree → `canOrchestrate: true`.** `kind` stays `'worktree'` and the
- *   capability rides alongside it, so the branch keeps its repo, diff, merge,
- *   PR tracking, branch picker and archive/delete paths while also parenting
- *   children. This is the integration-branch case: a branch that coordinates
- *   agents *and* carries real commits. Swapping its kind instead would make
- *   `isScratchLike` true and silently strip all of the above — the delete path
- *   would skip `removeWorktree` and leak the git worktree, and rename would
- *   stop running `git branch -m`. */
 // ---------- Re-parent run reconcile (#142) ----------
 
 /** The path of the stale-run marker the store-less CLI reads to refuse a send
@@ -1783,13 +1734,13 @@ function snapshotRunAnchors(rootId: string, ...extraIds: string[]): Map<string, 
   return snap;
 }
 
-/** #439 — the pre-move related-run set per agent, keyed by the snapshot Map that `reconcileRunAfterReparent` receives (its signature is shared by promote/demote/adopt/attach). */
+/** #439 — the pre-move related-run set per agent, keyed by the snapshot Map that `reconcileRunAfterReparent` receives (its signature is shared by adopt/attach/detach). */
 const relatedRunSnapshots = new WeakMap<Map<string, string>, Map<string, string[]>>();
 /** #439 — the MOVED subtree ids of a snapshot (the attach target is in the snapshot too, but it is not moved). */
 const movedSubtreeSnapshots = new WeakMap<Map<string, string>, string[]>();
 
 /**
- * #439 — attach / detach (and demote / adopt) RE-DERIVE the moved agent's run on the bus, whether or not its anchor id changed (#433 M1: the
+ * #439 — attach / detach (and adopt) RE-DERIVE the moved agent's run on the bus, whether or not its anchor id changed (#433 M1: the
  * noop branch used to skip this, so a live agent that left its parent could not send until its next start):
  *   1. the run row it now belongs to exists (an owner / top-level agent: its own mission or vague; a member: its new parent's run),
  *   2. the run it OWNS is re-pointed at the run it is now a member of (`parent_run_id` + kind; #434 m1) — never at a closed run,
@@ -1832,7 +1783,7 @@ async function markWorkspaceStaleRun(ws: Workspace, newRunId: string): Promise<v
 }
 
 /**
- * #142 — after a re-parent (attach/detach/adopt/demote) moved the tree, re-derive
+ * #142 — after a re-parent (attach/detach/adopt) moved the tree, re-derive
  * each affected workspace's bus run id and reconcile the RUNNING session:
  *   - anchor unchanged → nothing (the run is the same);
  *   - anchor changed, no live session → rewrite the `.orchestra/bus-switches`
@@ -1929,12 +1880,12 @@ async function reconcileRunAfterReparent(
         // #171 — the restart was REFUSED (a working structured session's
         // mid-turn guard throws → dispatchRestartRequest returns {ok:false}) or
         // otherwise failed. Never a mid-turn kill: instead of silently leaving
-        // the live session on the OLD run (the #171 promote symptom — a stale
+        // the live session on the OLD run (the #171 stale-run symptom — a stale
         // run with no operator signal), DOWNGRADE to mark-stale so the pane says
         // 'stale', the CLI refuses sends into the wrong run, and the marker names
         // the run it will adopt at the next `orchestra restart` (idle). This is
         // the "refused-or-deferred explicitly" arm-2 contract, and it is a strict
-        // improvement for attach/demote too (they previously only warned).
+        // improvement for attach too (they previously only warned).
         log.warn(
           `reparent-run: restart refused/failed for ${ws.id} (${res.error ?? 'unknown'}) — ` +
             `marking stale so the new run activates on the next idle restart`,
@@ -2012,188 +1963,6 @@ export async function clearBusRunStale(id: string): Promise<void> {
   }
 }
 
-export async function dispatchPromoteRequest(input: { id?: string }): Promise<PromoteResult> {
-  const id = input.id?.trim();
-  if (!id) return { ok: false, error: 'missing id' };
-  const ws = store.getWorkspace(id);
-  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
-  // Already an orchestrator by either route — succeed idempotently so a
-  // double-invoke (or the skill re-firing) doesn't error.
-  if (ws.ownsRun === true || isCoordinatorKind(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind }; // run-position: non-run — promote bookkeeping: a top-level workspace owns a mission but is not YET promoted (sentinel, flag, kind swap), #440 removes promote
-  // #171 — snapshot the promoted node's OWN run anchor (and its members') BEFORE
-  // the mutation, exactly as attach/demote do. Promote is a re-anchoring op: the
-  // promoted ws stops resolving to its nearest-orchestrator ANCESTOR (its parent
-  // OPS/LEAD, if any) and becomes its OWN run; any children re-anchor from the
-  // grandparent to it. `resolveWaveRunId` reads the store, so this must run
-  // pre-mutation. `reconcileRunAfterReparent` (post-mutation) restarts the live
-  // idle session so its rebuilt env re-reads ORCHESTRA_RUN_ID + generation — the
-  // manual `orchestra restart` the ticket documents as needed 4× is now automatic.
-  const oldAnchors = snapshotRunAnchors(id);
-  if (ws.kind !== 'scratch') {
-    // A git worktree keeps its kind and gains the capability instead.
-    try {
-      const updated: Workspace = { ...ws, canOrchestrate: true, ownsRun: true };
-      await store.upsertWorkspace(updated);
-      // Same sentinel as the scratch path: it flips the SessionStart standing
-      // reminder on without a pty restart. The reminder script itself picks the
-      // dual-role wording for a worktree (it has a repo), and the PreToolUse
-      // guard already permits writes inside the workspace's OWN worktree — it
-      // only blocks edits to OTHER workspaces' files — so a promoted worktree
-      // stays free to do its own work.
-      await markOrchestratorWorktree(ws.worktreePath, coordinatorRoleOf(ws) === 'dual');
-      platform.broadcast('workspace:update', updated);
-      // #134 (D1): a promote is a wave boundary — start the OPS's own run row now
-      // (the session is not relaunched, so nothing else would do it until a member starts).
-      startRunForPromoted(updated);
-      log.info(`promoted worktree ${ws.branch} (${id}) to orchestrator (capability)`);
-      // #171 — refresh the live session's run env now (see the pre-mutation
-      // snapshot above). A working session's restart is refused (mid-turn guard →
-      // stale fallback) — never a mid-turn kill (arm 2).
-      const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
-      return { ok: true, id, branch: updated.branch, kind: updated.kind, restarted, markedStale, hostResolved };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
-    }
-  }
-  try {
-    // Swap the display-name prefix `scratch · ` → `orchestrator · ` to match how
-    // createScratchLikeWorkspace builds the name. The worktree directory keeps
-    // its `scratch-` prefix — a live agent runs there, so renaming the path
-    // mid-session is needless risk; only the record's kind/name move.
-    const name = ws.name.startsWith('scratch · ')
-      ? `orchestrator · ${ws.name.slice('scratch · '.length)}`
-      : ws.name;
-    const updated: Workspace = { ...ws, kind: 'orchestrator', ownsRun: true, name }; // run-position: non-run — promote of a scratch: the kind write
-    await store.upsertWorkspace(updated);
-    // The promoting agent's session was started with ORCHESTRA_KIND=scratch, so the
-    // sentinel is what makes the standing delegation reminder kick in on its
-    // very next prompt — no session restart required.
-    await markOrchestratorWorktree(ws.worktreePath);
-    platform.broadcast('workspace:update', updated);
-    // #134 (D1): wave boundary — start the run row now (session not restarted).
-    startRunForPromoted(updated);
-    log.info(`promoted scratch ${ws.branch} (${id}) to orchestrator`);
-    // #171 — refresh the live session's run env (see the pre-mutation snapshot).
-    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart: false });
-    return { ok: true, id, branch: updated.branch, kind: 'orchestrator', restarted, markedStale, hostResolved }; // run-position: non-run — promote reply
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'promote failed' };
-  }
-}
-
-// ---------- Demote orchestrator → plain workspace ----------
-
-export interface DemoteResult {
-  ok: boolean;
-  id?: string;
-  branch?: string;
-  kind?: Workspace['kind'];
-  /** Ids that were detached because they lost their parent. */
-  detachedChildren?: string[];
-  /** #142 — ids whose live session was restarted to pick up the new run. */
-  restarted?: string[];
-  /** #142 — ids marked 'stale run' because `--no-restart` suppressed the restart. */
-  markedStale?: string[];
-  /** #379 — ids the HOST answers per CLI call (ADR 0008): new run in effect at their next call; no restart, not stale. */
-  hostResolved?: string[];
-  error?: string;
-}
-
-/** Socket entry point for `/demote`. The inverse of `/promote`: the workspace
- * stops being a coordinator and any children are re-parented to none.
- *
- * Only the CAPABILITY is reversible. A `'orchestrator'`-KIND scratch session is
- * refused: its kind is also its nature (repo-less, label-only branch, scratch
- * dir), so "demoting" it would have to invent a repo to make it a worktree, or
- * silently turn it into a plain scratch — neither is what a caller asking to
- * undo a promotion means. Demoting a promoted worktree just clears the flag;
- * the branch, repo, diff and agent are untouched.
- *
- * Children are DETACHED rather than left dangling: a `parentId` pointing at a
- * non-orchestrator would render nowhere (the sidebar only walks trees from
- * orchestrator roots), so the rows would silently vanish from the UI. Clearing
- * the edge floats each child back to its own repo section. Never throws. */
-export async function dispatchDemoteRequest(input: {
-  id?: string;
-  /** #142 — suppress the conversation-preserving restart of detached children;
-   *  mark them 'stale run' instead. */
-  noRestart?: boolean;
-}): Promise<DemoteResult> {
-  const id = input.id?.trim();
-  if (!id) return { ok: false, error: 'missing id' };
-  const ws = store.getWorkspace(id);
-  if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
-  const noRestart = input.noRestart === true;
-  // A REPO-LESS orchestrator still cannot be demoted: demoting means "become a
-  // plain workspace", and there is no repo to become a worktree of. That reason
-  // evaporates once it has adopted one — then demotion is exactly the inverse of
-  // promotion, so route it to the kind swap below rather than refusing.
-  if (isCoordinatorKind(ws) && !ws.repoPath) {
-    return {
-      ok: false,
-      error:
-        'an orchestrator session cannot be demoted (it is repo-less by nature); delete it instead',
-    };
-  }
-  // Not an orchestrator at all — idempotent success, mirroring promote.
-  if (ws.ownsRun !== true && !isCoordinatorKind(ws)) // run-position: non-run — demote bookkeeping: only a recorded owner has anything to shed, #440 removes demote
-    return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
-  try {
-    const children = store.workspaces.filter((w) => w.parentId === id);
-    // #142 (REVIEW-142 F1) — snapshot the demoted node ITSELF plus its whole
-    // subtree BEFORE the demote moves the tree. `snapshotRunAnchors(id)` walks
-    // `collectWorkspaceTree(id)` = `id` + its children, and at PRE-mutation time
-    // `id` still `canOrchestrate`, so its children still resolve to it. This must
-    // include `id`: a promoted worktree (or a repo-owning orchestrator) is its
-    // OWN run anchor while it coordinates; the demote strips `canOrchestrate`, so
-    // `id`'s own anchor moves too (to its nearest-orchestrator ancestor, or itself
-    // as a plain standalone). Snapshotting only the CHILD subtrees left the
-    // demoted node's LIVE session on a defunct self-run — the exact #142 bug for
-    // the demoted node (F1: `collectWorkspaceTree(child.id)` never reaches `id`).
-    const oldAnchors = snapshotRunAnchors(id);
-    for (const child of children) {
-      const detached: Workspace = { ...child, parentId: undefined };
-      await store.upsertWorkspace(detached);
-      platform.broadcast('workspace:update', detached);
-    }
-    // Two routes, inverse to promote's. A repo-OWNING orchestrator sheds the
-    // KIND (it already owns a real checkout, so `'worktree'` is accurate and
-    // every git path keeps working); a promoted worktree sheds the CAPABILITY.
-    // The repo-less kind never reaches here — refused above.
-    const demoted: Workspace =
-      isCoordinatorKind(ws)
-        ? { ...ws, kind: 'worktree', canOrchestrate: undefined, ownsRun: undefined }
-        : { ...ws, canOrchestrate: undefined, ownsRun: undefined };
-    const updated: Workspace = {
-      ...demoted,
-      name: workspaceDisplayName(demoted, demoted.branch),
-    };
-    await store.upsertWorkspace(updated);
-    // Drop the sentinel so the standing delegation reminder and the PreToolUse
-    // guard stop firing on the next prompt — same no-pty-restart path as promote.
-    await unmarkOrchestratorWorktree(ws.worktreePath);
-    platform.broadcast('workspace:update', updated);
-    log.info(
-      `demoted worktree ${ws.branch} (${id}); detached ${children.length} child(ren)`,
-    );
-    // #142 — the coordinator is gone from the tree; reconcile every detached
-    // child's run (re-derive → notice → restart / mark-stale).
-    const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
-    return {
-      ok: true,
-      id,
-      branch: updated.branch,
-      kind: updated.kind,
-      detachedChildren: children.map((c) => c.id),
-      restarted,
-      markedStale,
-      hostResolved,
-    };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'demote failed' };
-  }
-}
-
 // ---------- Re-parent (attach / detach) ----------
 
 export interface AttachResult {
@@ -2217,15 +1986,13 @@ export interface AttachResult {
  * `parentId` only at creation: an `id` WITH a `parentId` attaches; an `id` with
  * no/empty `parentId` detaches.
  *
- * Attach guards: the child must exist; the parent must exist AND be able to
- * orchestrate (`canOrchestrate` — the `'orchestrator'` kind or a promoted
- * worktree; parenting under anything else would bury the child in a subtree the
- * sidebar never renders); and the edge must not create a cycle.
+ * Attach guards (#439): the child must exist; the parent must exist (ANY agent is
+ * a valid parent — `decideAttachTarget`); and the edge must not create a cycle.
  *
  * The cycle check walks the full parent chain. It used to be a bare
  * `parent === id` self-check, justified by "orchestrators are always tree
  * roots" — true when the only orchestrators were repo-less scratch sessions,
- * which nothing ever attaches under. Promoted worktrees break that premise: one
+ * which nothing ever attaches under. An OPS worktree breaks that premise: one
  * CAN have a `parentId` (an integration branch nested under a higher
  * coordinator), so A→B→A is now reachable and a self-check alone would let it
  * through, hanging every consumer that walks the tree. Idempotent. Never
@@ -2286,8 +2053,8 @@ export async function dispatchAttachRequest(input: {
   // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
   const oldAnchors = snapshotRunAnchors(id, rawParent); // the TARGET too: becoming an owner flips ITS own run (#439)
   // #434: an ownership that rested on having NO parent (a top-level / dangling-link mission) ends when the workspace is attached under one — it is a MEMBER of the new parent's run
-  // again. An owner by a promote (flag / kind) or by having children keeps it.
-  const ownedByLinkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !store.workspaces.some((w) => w.parentId === id); // run-position: non-run — the ownership WRITE on attach
+  // again. An owner by kind or by having children keeps it.
+  const ownedByLinkOnly = ws.ownsRun === true && !isCoordinatorKind(ws) && !store.workspaces.some((w) => w.parentId === id); // run-position: non-run — the ownership WRITE on attach
   const updated: Workspace = { ...ws, parentId: rawParent, ...(ownedByLinkOnly ? { ownsRun: undefined } : {}) };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
@@ -2517,8 +2284,8 @@ async function carryTranscriptDir(
  * fail to find its scratch dir in `git worktree list`, and DELETE the record on
  * the next launch. See `Workspace.repoAssociation` in shared/types.ts.
  *
- * Restricted to the `'orchestrator'` KIND on purpose. A git worktree (promoted
- * or not) already groups by its own `repoPath`, so an association there would be
+ * Restricted to the `'orchestrator'` KIND on purpose. A git worktree
+ * already groups by its own `repoPath`, so an association there would be
  * a second, competing grouping key; a plain scratch session parents no subtree,
  * so filing it under a repo would drop a lone non-git row into a section of git
  * branches. Both are refused rather than silently ignored, so a caller learns
@@ -2614,7 +2381,7 @@ export interface VerifyLandedResult {
  *
  * Target resolution: an explicit `into` ref name (what a repo-less coordinator
  * passes — it has no branch of its own to check against) wins; otherwise the
- * calling workspace's own branch (`from`), the promoted-worktree /
+ * calling workspace's own branch (`from`), the OPS-worktree /
  * integration-branch case, which must live in the same repo as the child.
  * Read-only — never mutates git state. Never throws; answers `{ ok }`. */
 export async function dispatchVerifyLandedRequest(input: {
@@ -2666,14 +2433,16 @@ export interface WhoamiResult {
   branch?: string;
   /** Effective kind — records predating the field are worktrees. */
   kind?: 'worktree' | 'scratch' | 'orchestrator'; // run-position: non-run — result type
-  /** Whether children can nest under this workspace (kind OR capability route
-   * — the {@link canOrchestrate} helper, not the raw field). */
-  orchestrator?: boolean;
-  /** Parent orchestrator id, or null when top-level. Agents have no other
-   * in-band way to learn this: /peers excludes the caller and omits parentId,
-   * and a child promoted BY its parent never sees the promotion happen — so
-   * this is what makes tree-shape rules ("if you have a parent, you are the
-   * sub-orchestrator level") checkable by the agent they address. */
+  /** #440 — the ROLE by POSITION (`roleOf`): LEAD = no parent, OPS = a parent and owns a run, worker = a parent and owns none. */
+  role?: RolePosition;
+  /** #440 — the run this workspace's bus address belongs to: the run it OWNS (LEAD / OPS), else its direct parent's (worker). */
+  runId?: string;
+  /** #440 — the run it is a MEMBER of (its direct parent's run) when that differs from `runId` — an OPS under its LEAD; absent for a LEAD and a worker. */
+  memberOfRunId?: string;
+  /** Parent id, or null when top-level. Agents have no other in-band way to
+   * learn this: /peers excludes the caller and omits parentId — so this is what
+   * makes tree-shape rules ("if you have a parent, you are the sub-orchestrator
+   * level") checkable by the agent they address. */
   parentId?: string | null;
   repoPath?: string;
   baseBranch?: string;
@@ -2695,6 +2464,7 @@ export function dispatchWhoamiRequest(input: { id?: string; key?: string }): Who
   const vouched = !!input.key && sessionKeys().verify(id, input.key) === 'ok';
   const profiles = vouched ? store.getBrowserProfiles() : [];
   const heldId = effectiveProfileId(ws.browserProfileId, profiles);
+  const lookup = (x: string) => store.getWorkspace(x);
   const held = heldId === undefined ? undefined : profiles.find((p) => p.id === heldId);
   return {
     ok: true,
@@ -2702,7 +2472,9 @@ export function dispatchWhoamiRequest(input: { id?: string; key?: string }): Who
     name: ws.name,
     branch: ws.branch,
     kind: ws.kind ?? 'worktree',
-    orchestrator: coordinates(ws),
+    role: roleOf(ws, lookup),
+    runId: runIdOf(ws, lookup),
+    ...(coordinates(ws) && memberRunOf(ws, lookup) ? { memberOfRunId: memberRunOf(ws, lookup)! } : {}),
     parentId: ws.parentId ?? null,
     repoPath: ws.repoPath,
     baseBranch: ws.baseBranch,
@@ -3638,8 +3410,8 @@ const HOOK_INBOX_DELIVER_CMD =
 // Standing delegation reminder for orchestrator sessions, fired on
 // SessionStart ONLY (the script self-silences on non-orchestrator workspaces).
 // SessionStart covers startup, resume, clear AND post-compaction — exactly the
-// moments where the one-time --append-system-prompt brief (or the promote
-// skill's role text) gets summarized away and an orchestrator starts doing
+// moments where the one-time --append-system-prompt brief (or the skill's
+// role text) gets summarized away and an orchestrator starts doing
 // child-sized work itself. Deliberately NOT wired to UserPromptSubmit: a
 // per-turn injection accumulates one copy per turn in the transcript and is
 // re-billed as input on every later turn — the same compounding tax that
@@ -3877,12 +3649,13 @@ Optional flags:
 
 ## Delegating a milestone to a sub-orchestrator
 
-For a piece that is itself several agents' worth of work, spawn it and then
-promote the NEW workspace so it can coordinate children of its own:
+For a piece that is itself several agents' worth of work, spawn it and say in
+its brief that it delegates. Nothing else to run: a role follows position in the
+tree, and the first agent the NEW workspace spawns makes it an OPS (it owns a
+run of its own):
 
 \`\`\`bash
-orchestra spawn --name "ops-<milestone-in-human-words>" --task "<milestone brief>"   # prints the new <workspace-id>
-orchestra promote <workspace-id>               # keeps the name you gave it
+orchestra spawn --name "ops-<milestone-in-human-words>" --task "<milestone brief: spawn your own agents for the pieces, report back to me>"   # prints the new <workspace-id>
 \`\`\`
 
 Its branch becomes the milestone's integration branch, the agents IT spawns
@@ -4093,45 +3866,35 @@ which unblocks it and sends it its Consigne de reprise.
 
 const WORKSPACE_ADMIN_SKILL = `---
 name: orchestra-workspace-admin
-description: Restructure Orchestra's workspaces and repos — promote a workspace into an orchestrator, nest or detach one under another, file an orchestrator under a repo section, register a repo, migrate a workspace to another Claude account, or delete a workspace. Use when the user asks for any of these by name.
+description: Restructure Orchestra's workspaces and repos — nest or detach one workspace under another, read your role by position, file an orchestrator under a repo section, register a repo, migrate a workspace to another Claude account, or delete a workspace. Use when the user asks for any of these by name.
 ---
 
 # Workspace and repo administration
 
-Six \`orchestra\` CLI operations that change how Orchestra is structured. Each
+Five \`orchestra\` CLI operations that change how Orchestra is structured. Each
 reads \$ORCHESTRA_SOCK from your env; run \`orchestra --help\` for exact
 signatures. This file carries what \`--help\` cannot: when to reach for each, and
 the constraint behind it.
 
 Discover ids with \`orchestra peers\` (the \`orchestra-comms\` skill).
 
-## Promote a workspace into an orchestrator
+## Roles follow position
 
-An orchestrator is a coordinator that children nest under: every workspace it
-later spawns (or that you attach to it) renders beneath it in the sidebar, so a
-whole fleet is visible at a glance. Both flavours qualify:
+An agent's role is its place in the tree, never a switch you flip: **no parent =
+LEAD**, **a parent and it owns a run = OPS**, **a parent and no run = worker**
+(\`orchestra whoami\` prints your role, your run and the run you are a member
+of). The first agent an agent spawns makes it the owner of a run — that is what
+makes it an OPS — there is no command to run and none to undo it.
 
-- A **scratch session** (no repo) becomes a pure coordinator that delegates
-  everything.
-- A **git worktree** keeps its repo, branch and full diff/merge/PR flows and
-  gains the coordinator role alongside them — the integration-branch pattern: a
-  branch that coordinates children AND carries its own commits.
-
-\`\`\`bash
-orchestra promote "\$ORCHESTRA_WS_ID"   # this session
-orchestra promote <workspace-id>       # another workspace — e.g. a child of
-                                       # yours, making it a sub-orchestrator
-\`\`\`
-
-Once promoted, adopt the orchestrator role for the rest of this session:
+A coordinator's job, wherever it sits:
 
 ${orchestratorBrief({ repoPath: '', branch: '', baseBranch: '' })}
 
-If this session is a promoted GIT WORKTREE, two of those rules bend: you DO have
-a repo (spawns inherit it, so \`--repo\` is only for targeting a DIFFERENT repo),
-and you keep the integration/implementation work that belongs to your own branch
-while delegating the rest — \`orchestra verify-landed <child-id>\` then checks
-children against THIS branch with no \`--into\` needed.
+If this session owns a GIT WORKTREE, two of those rules bend: you DO have a repo
+(spawns inherit it, so \`--repo\` is only for targeting a DIFFERENT repo), and you
+keep the integration/implementation work that belongs to your own branch while
+delegating the rest — \`orchestra verify-landed <child-id>\` then checks children
+against THIS branch with no \`--into\` needed.
 
 Use the \`orchestra-spawn\` skill for each spawn, and \`orchestra-comms\` to
 track, follow up with, and verify the agents you spawn.
@@ -4140,7 +3903,7 @@ track, follow up with, and verify the agents you spawn.
 
 A parent groups the worktrees it spawns. Attach pulls in a workspace it did NOT
 spawn — one created earlier by you or another agent. ANY agent is a valid
-parent: it does not have to be promoted or to have spawned anything yet.
+parent: it does not have to have spawned anything yet.
 
 \`\`\`bash
 orchestra attach <workspace-id> <parent-id>
@@ -4313,7 +4076,7 @@ exit 0
 `;
 
 // Standing role reminder for orchestrator sessions. The orchestrator brief is
-// injected once as an appended system prompt (and, on mid-session promotion,
+// injected once as an appended system prompt (and, for an agent that became an OPS mid-session,
 // only ever existed as skill text inside the transcript) — both get summarized
 // away by context compaction, after which the orchestrator starts editing code
 // and "just handling" follow-ups itself instead of driving its children. This
@@ -4324,28 +4087,28 @@ exit 0
 // Gated two ways, mirroring the rename nudge's env+sentinel design: the
 // ORCHESTRA_KIND env var (set per-pty at spawn — covers every orchestrator,
 // including ones created before the sentinel existed) OR the .orchestrator
-// worktree sentinel (written at creation and the instant /promote lands, so a
-// just-promoted session picks the reminder up mid-session, before any pty
+// worktree sentinel (written at creation and at an agent's first spawn — `ensureParentOwnsRun` — so a
+// session that just became an OPS picks the reminder up mid-session, before any pty
 // restart refreshes its env).
 const ORCHESTRATOR_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Re-asserts the orchestrator delegation contract
 # on SessionStart (startup / resume / clear / post-compaction) so it survives
 # context compaction. Self-silences unless this workspace is an orchestrator
 # (env var from pty spawn, or the sentinel written when the session was
-# created as / promoted to an orchestrator).
+# created as an orchestrator, or when it first spawned an agent).
 ${COORDINATOR_HOOK_GATE}
 # Two kinds of orchestrator need two different contracts. A repo-less
-# coordinator must never implement. A PROMOTED WORKTREE (sentinel content
-# "dual") is an integration branch that coordinates children AND carries its own
+# coordinator must never implement. An OPS/LEAD that owns a git worktree (sentinel
+# content "dual", set by its repoPath) is an integration branch that coordinates children AND carries its own
 # commits — telling it "do not edit code" would be false and would suppress the
 # work it exists to do. Only the pure-coordinator text is absolute.
 if [ "\$(cat "\$sentinel" 2>/dev/null)" = "dual" ]; then
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` — the bus is the only channel; \`orchestra message\` is refused, only \`--emergency\` survives) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`) alongside your own work. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR *and* a working branch. Child agents nest under this workspace, and this branch also carries your own commits, so both halves of the role are real: keep doing the integration/implementation work that belongs to THIS branch, and delegate work that belongs to a child. Route changes in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` — the bus is the only channel; \`orchestra message\` is refused, only \`--emergency\` survives) rather than editing their worktree — you cannot edit another workspace's files anyway. Spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it with a brief that tells it to delegate — the first agent it spawns makes it a sub-orchestrator (a role follows position in the tree, nothing to switch on; at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Keep tracking children (\`orchestra peers\`) alongside your own work. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before declaring anything done: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id>\` (checks the child's branch tip against THIS branch), 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 else
 cat <<'EOF'
-[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` — the bus is the only channel; \`orchestra message\` is refused, only \`--emergency\` survives); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it and \`orchestra promote <child-id>\` to make it a sub-orchestrator (at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`), reviewing their results, and reporting to the user. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
+[orchestra] Standing role reminder — you are an ORCHESTRATOR. You coordinate child agents; you do not implement. Do NOT edit code, fix bugs, or take over follow-up work yourself — not even a "quick" fix, and regardless of what earlier (possibly compacted-away) context said: delegate it. Route work in an area a child agent already owns back to THAT child (orchestra-comms skill: \`orchestra send --type status --to <id> "<task>"\` — the bus is the only channel; \`orchestra message\` is refused, only \`--emergency\` survives); spawn a NEW agent for independent work (orchestra-spawn skill); for a milestone-sized piece that itself needs several agents, spawn it with a brief that tells it to delegate — the first agent it spawns makes it a sub-orchestrator (a role follows position in the tree, nothing to switch on; at most one such level — run \`orchestra whoami\`: if YOU have a parent, you are that level; don't create another). Reserve your own turns for planning, delegating, tracking children (\`orchestra peers\`), reviewing their results, and reporting to the user. To stop or pause a wave or a fleet: \`orchestra run pause\` (soft) or \`orchestra run pause --hard\` — never a message asking it to stop. And close the loop before relaying "done" upward: a child's "done"/"merged" report is a claim, not a state — agents keep committing after they report. Every child ends in one of two EXPLICIT states: LANDED — \`orchestra verify-landed <child-id> --into <branch-it-merged-into>\`, 0 unmerged commits — or INTENTIONALLY UNMERGED (its brief said not to merge: a spike, an experiment; record that disposition when closing it). Never the silent third state: a child believed merged that isn't.
 EOF
 fi
 exit 0
@@ -4750,7 +4513,7 @@ const HOOKS_VERSION = createHash('sha256')
  * The bus RUN id a workspace belongs to = its NEAREST ORCHESTRATOR at or above
  * it (LEAD ruling D1, ledger #135 §Decisions — this REPLACED the earlier
  * tree-root walk of #118 N2). Itself if it is an orchestrator (an OPS/LEAD is
- * its own run); else the first `canOrchestrate` ancestor; else itself (a plain
+ * its own run); else the first coordinating ancestor; else itself (a plain
  * spawn with no coordinator is its own run). Using the tree root instead would
  * put every wave on the LEAD's lifetime run, freezing the switches once and
  * defeating the per-wave "flip → next wave" the canary needs.
@@ -4791,7 +4554,7 @@ const busRunAnchorDeps = {
 /**
  * #134 — start (and freeze) the bus run at `ws`'s anchor AND write the frozen
  * switch notice into its worktree. THE ONE place both effects happen, called
- * from every workspace-creation + promote + launch chokepoint so the run row and
+ * from every workspace-creation + launch chokepoint so the run row and
  * the `.orchestra/bus-switches` notice exist REGARDLESS of the launch path.
  *
  * WHY AT CREATION (review-F1/VERIFY-F G9): the DEFAULT spawn is
@@ -4868,7 +4631,7 @@ export async function startRunsForParentlessWorkspaces(): Promise<string[]> {
   return started;
 }
 
-/** #434 — at app start, give every live owner that has a parent and no run row its vague (promoted OPS, a plain parent of pre-#434 children),
+/** #434 — at app start, give every live owner that has a parent and no run row its vague (an OPS of an older store, a plain parent of pre-#434 children),
  *  parents first; refreshes each started owner's members' notices is unnecessary (their notice is written at each launch). Best-effort. */
 export async function startRunsForOwnerWorkspaces(): Promise<string[]> {
   const live = store.workspaces.filter((w) => w.archived !== true && w.host?.kind !== 'sandbox');
@@ -4893,16 +4656,6 @@ export async function ensureTopLevelRun(ws: Workspace): Promise<void> {
   } catch (e) {
     log.warn(`bus-run-anchor: launch-time run start failed for ${ws.id}`, e);
   }
-}
-
-/** #134 — start the run row when a workspace BECOMES an orchestrator via
- * `/promote` (D1, wave boundary). A promote does NOT restart the session, so this
- * creates the OPS's own run row immediately, freezing the live switches then, and
- * refreshes the notice. Best-effort. */
-function startRunForPromoted(newlyOrchestrator: Workspace): void {
-  void startBusRunAndWriteNotice(newlyOrchestrator).catch((e) =>
-    log.warn(`bus-run-anchor: promote run-start/notice failed for ${newlyOrchestrator.id}`, e),
-  );
 }
 
 /**
