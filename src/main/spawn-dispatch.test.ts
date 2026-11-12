@@ -315,7 +315,7 @@ test('#435 the spawn dispatch is PRE-ACKED (same transaction): a fresh child is 
   assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.body}`), ['dispatch:second scope']);
 });
 
-test('#435 a spawned child that SPAWNS in turn (owns its own run) still fetches its token and reports to its parent: token + worker_done + status resolve to the coordinator\'s run', needsBuild, async (t) => {
+test('#435 a spawned child that SPAWNS in turn (owns its own run) still fetches its token and reports to its parent: token + worker_done resolve to the coordinator\'s run', needsBuild, async (t) => {
   const w = world(t, [...plainPair(), { id: C2, kind: 'worktree', parentId: C }]);
   birth(w);
   await spawn(w, C, { from: P });
@@ -325,12 +325,12 @@ test('#435 a spawned child that SPAWNS in turn (owns its own run) still fetches 
   assert.match(tok, /^dcap_/, `the capability sits in P's run: token must find it: ${tok}`);
   const st = cli(w, C, ['send', '--type', 'status', '--to', P, 'halfway']);
   assert.equal(st.code, 0, st.stderr);
-  assert.equal(msgs(w).find((m) => m.body === 'halfway')?.run_id, P, 'a status to the coordinator is filed in the coordinator\'s run');
+  assert.equal(msgs(w).find((m) => m.body === 'halfway')?.run_id, C, 'a status keeps its place: filed in the sender\'s own run, as an OPS → LEAD status does today (the coordinator is woken naming that run)');
   assert.equal(cli(w, C, ['send', '--type', 'worker_done', '--to', P, '--cap', 'dcap_forged', 'done']).code, 1, 'still gated: a forged token is rejected');
   const done = cli(w, C, ['send', '--type', 'worker_done', '--to', P, '--cap', tok, 'all done']);
   assert.equal(done.code, 0, done.stderr + done.stdout);
   const lot = JSON.parse(cli(w, P, ['check']).stdout) as { messages: Array<{ kind: string; sender: string }> };
-  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.sender}`), [`status:${C}`, `worker_done:${C}`], 'P reads both in its own run');
+  assert.deepEqual(lot.messages.map((m) => `${m.kind}:${m.sender}`), [`worker_done:${C}`], 'P reads the completion in its own run');
   // its own helper: C → C2 stays in C's run (not the coordinator's)
   assert.equal(cli(w, C, ['send', '--type', 'status', '--to', C2, 'to my helper']).code, 0);
   assert.equal(msgs(w).find((m) => m.body === 'to my helper')?.run_id, C, 'mail to a member of MY run is filed in my run');

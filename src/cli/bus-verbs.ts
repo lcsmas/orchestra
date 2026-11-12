@@ -543,10 +543,11 @@ function assertRunsOpen(ctx: BusVerbCtx, verb: string, ...runIds: Array<string |
   }
 }
 
-/** #435 — the kinds a member files in its direct coordinator's run even when it owns a run of its own. */
-export const COORDINATOR_REPORT_KINDS: readonly string[] = ['worker_done', 'status'];
+/** #435 — the kinds a member files in its direct coordinator's run even when it owns a run of its own: ONLY the completion (its capability lives there). A `status` keeps landing in the
+ *  sender's own run, the coordinator woken naming it — what an OPS → LEAD status does today (pinned by #221 E2E / bus-identity tests, the unchanged-fleet arm). */
+export const COORDINATOR_REPORT_KINDS: readonly string[] = ['worker_done'];
 
-/** A report/status from a member to its DIRECT COORDINATOR is filed in the coordinator's run (where the capability of its dispatch lives and where the
+/** A completion from a member to its DIRECT COORDINATOR is filed in the coordinator's run (where the capability of its dispatch lives and where the
  *  coordinator reads), also when the sender owns a run too. An explicit `--run` (id.runId ≠ the caller's own run) is honoured as named. Not fenced: the sender coordinates nothing there. */
 function filedWithCoordinator(ctx: BusVerbCtx, a: SendArgs): BusVerbCtx {
   const m = ctx.memberRunId;
