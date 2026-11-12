@@ -4149,7 +4149,8 @@ Both re-derive the run of the moved agent and its whole subtree: an attached
 agent joins its new parent's run, a detached one starts a mission of its own,
 and the mail it had not read yet follows it — delivered once, in its new run.
 Attach is refused when the edge would create a parent cycle, or when the target
-is archived or its run is closed. A move (attach or detach) is also refused while
+is archived or its run is closed. Any move is refused while the moved agent (or a
+sub-agent) belongs to a paused run — lift the pause first. A move (attach or detach) is also refused while
 the moved agent or one of its sub-agents has an open decision gate or an unanswered
 ask with an agent that would end up outside its runs — answer or resolve it first.
 A task the old coordinator dispatched cannot be completed to it after a move: the

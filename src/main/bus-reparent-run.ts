@@ -7,6 +7,7 @@ import { getRelatedRunIds } from './bus-runs.ts';
 import { computeAnchorInfo, maybeStartRunAtAnchor, runAnchorProbe, type BusRunAnchorDeps } from './bus-run-anchor.ts';
 import { coordinates, coordinatorOf, isCoordinatorKind, memberRunOf, runIdOf, type RunNode } from '../shared/run-position.ts';
 import { moveRefusal, strandedExchanges, type OpenExchange } from '../shared/move-exchanges.ts';
+import { pausedCarrierForWorkspace } from './bus-pause.ts';
 
 /** `runs.closed_at` of `runId`: null = open, undefined = no such row. */
 export function runClosedAt(db: BusDb, runId: string): number | null | undefined {
@@ -217,6 +218,13 @@ export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { canOrch
   if (!ws) return null;
   const members: string[] = [id];
   for (let i = 0; i < members.length; i++) for (const w of all) if (w.parentId === members[i] && !members.includes(w.id)) members.push(w.id);
+  // OPS ruling R3: a move must not be an escape hatch from a Pause (spec story 2) — refused while the mover or a subtree member is a member of a PAUSED run
+  // (hard or douce; the gate's own live-tree walk, a member already released by a Reprise may move). A move INTO a paused run stays allowed: its next start is gated.
+  for (const id2 of members) {
+    const node = all.find((w) => w.id === id2)!;
+    const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x));
+    if (carrier) return `run ${carrier.runId} en pause — lift it with orchestra run resume first`;
+  }
   const exchanges = openExchangesOf(db, members);
   if (exchanges.length === 0) return null;
   const linkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !all.some((w) => w.parentId === id); // run-position: non-run — simulating the ownership WRITE of an attach

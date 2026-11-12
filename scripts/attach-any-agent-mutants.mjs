@@ -64,6 +64,8 @@ const MUTANTS = [
   { id: 'M39', name: 'the reconcile no longer forwards mail to the agents left behind — source pin', edits: [[WS, '  forwardMailToOthersAfterReparent(oldAnchors); // #439 (review M1): the recipients LEFT BEHIND get what the moved subtree had filed for them\n', '']], tests: [T.main] },
   { id: 'M40', name: 'an ask answered in ANOTHER run (a stranger\'s reply in the asker\'s run) is not recognised as an answer', edits: [[BR, 'NOT EXISTS (SELECT 1 FROM messages r WHERE r.thread_id', 'NOT EXISTS (SELECT 1 FROM messages r WHERE r.run_id = q.run_id AND r.thread_id']], tests: [T.main] },
   { id: 'M41', name: 'an unanswered ask TO the mover that the move would copy is not refused (the reply would thread to the copy)', edits: [[ME, "if (x.kind === 'ask' && x.toMember) {", "if (false as boolean) {"]], tests: [T.main] },
+  { id: 'M42', name: 'a move out of a PAUSED run is allowed again (the move is an escape hatch from a Pause, R3)', edits: [[BR, "    if (carrier) return `run ${carrier.runId} en pause — lift it with orchestra run resume first`;\n", '']], tests: [T.main] },
+  { id: 'M43', name: 'a move INTO a paused run is refused (the refusal reads the post-move tree)', edits: [[BR, 'const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x));', 'const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x)) ?? (newParentId ? pausedCarrierForWorkspace(db, all.find((w) => w.id === newParentId)!, (x) => all.find((w) => w.id === x)) : null);']], tests: [T.main] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

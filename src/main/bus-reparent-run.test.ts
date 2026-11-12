@@ -406,19 +406,31 @@ test('#439 (R2 extension) an unanswered ask TO the mover that the move would COP
   assert.equal(move(w, M, P).verdict.ok, true, 'answered: allowed');
 });
 
-// ── MEASURED (OPS ask): a moved agent inside a PAUSED run ─────────────────────────────────────────────────────────────
-test('#439 MEASURED: the Pause gate follows the LIVE tree — an agent detached / moved out of a paused run is no longer paused; one attached INTO a paused run is paused at once', needsBuild, (t) => {
-  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }, { id: X, kind: 'worktree' }]);
+// ── OPS ruling R3: a move is not an escape hatch from a Pause ─────────────────────────────────────────────────────────
+test('#439 (R3) attach AND detach are REFUSED while the mover or a subtree member is a member of a PAUSED run (hard or douce); a move INTO a paused run stays allowed; lifted, it moves', needsBuild, (t) => {
+  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }, { id: X, kind: 'worktree' }, { id: C, kind: 'worktree', parentId: M }]);
   birth(w);
   spawn(w, M);
+  spawn(w, C);
   assert.equal(setRunPause(w.db, P, true, P, 'hard'), 'paused');
   const carrier = (id: string) => pausedCarrierForWorkspace(w.db, nodes(w).get(id)!, (x) => nodes(w).get(x))?.runId ?? null;
   assert.equal(carrier(M), P, 'control: the member is paused by its carrier');
-  assert.equal(carrier(X), null, 'control: an unrelated agent is not');
-  move(w, M, Q); // out of the paused run, under a free one
-  assert.equal(carrier(M), null, 'MEASURED: the mover ESCAPES the pause (the gate reads the live tree) — its roster row in the epoch, if the host wrote one, stays but nothing gates it');
-  move(w, X, P); // into the paused run
-  assert.equal(carrier(X), P, 'MEASURED: an agent attached INTO a paused run is gated by it at its next start (it was not trapped: the trap ran once, at pause time)');
+  const out = move(w, M, Q, [C]);
+  assert.equal(out.verdict.ok, false, 'attach out of a paused run is refused');
+  assert.match(out.verdict.error!, new RegExp(`^run ${P} en pause — lift it with orchestra run resume first$`));
+  assert.equal(move(w, M, null, [C]).verdict.ok, false, 'detach too');
+  assert.equal(move(w, C, Q).verdict.ok, false, 'a SUBTREE member that is paused (C below the paused P) is refused as a mover itself');
+  assert.equal(nodes(w).get(M)!.parentId, P, 'nothing moved');
+  assert.equal(move(w, X, P).verdict.ok, true, 'a move INTO a paused run is allowed');
+  assert.equal(carrier(X), P, 'and it is gated by that pause at its next start (it was not trapped: the trap ran at pause time)');
+  assert.equal(setRunPause(w.db, P, false, P, 'hard'), 'lifted');
+  assert.equal(move(w, M, Q, [C]).verdict.ok, true, 'lifted: the move goes through');
+  // a douce pause refuses as well
+  const d = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }]);
+  birth(d);
+  spawn(d, M);
+  assert.equal(setRunPause(d.db, P, true, P, 'soft'), 'paused');
+  assert.equal(move(d, M, Q).verdict.ok, false, 'Pause douce: refused too');
 });
 
 // ── 4. the subtree ────────────────────────────────────────────────────────────────────────────────────────────────────
