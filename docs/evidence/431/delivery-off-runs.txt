@@ -1,0 +1,42 @@
+# #442 prep (B): do the delivery-OFF runs in the LIVE bus have live agents? — measured 2026-11-12T09:25:10Z, READ-ONLY (better-sqlite3 readonly + query_only; bus.sqlite/-wal/-shm mtimes unchanged)
+## bus (runs ⨝ run_flags where delivery=false)
+journal wal query_only 1
+runs total 42
+runs without run_flags row 0
+delivery OFF 2
+{"id":"b3f55639-1d61-4d21-b6bf-0d701445dc12","kind":"vague","coord":"b3f55639-1d61-4d21-b6bf-0d701445dc12","parent":"0524718f-ac2a-4367-b746-51e57309f371","title":null,"created":"2026-09-15T17:29:35.951Z","closed":null,"flags":"{\"delivery\":false,\"wake\":false,\"askGate\":false,\"liveness\":false,\"fencing\":false,\"capability\":false,\"receipts\":false}"}
+  senders [{"sender":"host","n":4,"last":1791825732173},{"sender":"humain","n":1,"last":1791740313007}]
+  deliveries []
+{"id":"5da215a4-9b24-4014-af61-3a8087651d3f","kind":"vague","coord":"5da215a4-9b24-4014-af61-3a8087651d3f","parent":"0524718f-ac2a-4367-b746-51e57309f371","title":null,"created":"2026-09-16T10:29:02.556Z","closed":null,"flags":"{\"delivery\":false,\"wake\":false,\"askGate\":false,\"liveness\":false,\"fencing\":false,\"capability\":false,\"receipts\":false}"}
+  senders [{"sender":"0524718f-ac2a-4367-b746-51e57309f371","n":8,"last":1789562641355},{"sender":"096d7c5a-c42b-45c2-9709-2250b3a0cf59","n":2,"last":1789561559595},{"sender":"108ffa37-36e3-4894-8820-41957a13896d","n":1,"last":1789557156548},{"sender":"2f0a1ea5-c384-46ec-ada3-99aaab02d63d","n":4,"last":1789562296340},{"sender":"2f7592b2-d3e8-40ea-8f67-1741a3a1108c","n":3,"last":1789562476400},{"sender":"3b867401-2964-4ba3-bc11-705a9b1a1d89","n":6,"last":1789561480197},{"sender":"4024cb59-52a6-46a1-a1ee-a709f95c2a82","n":2,"last":1789555700552},{"sender":"5da215a4-9b24-4014-af61-3a8087651d3f","n":28,"last":1789562495857},{"sender":"f3ca2b06-9236-4256-9ece-a1b7abf7fb28","n":8,"last":1789561574930},{"sender":"host","n":4,"last":1791825732174},{"sender":"humain","n":1,"last":1791740313008}]
+  deliveries []
+
+## store (~/.config/orchestra/orchestra/store.json, read-only) — coordinator, member senders, store descendants
+store workspaces 53 keys repos,workspaces,accounts,selfTuneRuns,tickets,linkBackfillVersion,busSwitches,modelDefaults,effortDefaults,accesMobile,browserProfiles
+RUN b3f55639-1d61-4d21-b6bf-0d701445dc12 coordinator in store: false
+  b3f55639 NOT IN STORE (deleted)
+RUN 5da215a4-9b24-4014-af61-3a8087651d3f coordinator in store: false
+  5da215a4 NOT IN STORE (deleted)
+  0524718f {"branch":"orchestra-improvement-lead","canOrch":true,"archived":true,"status":"stopped"}
+  096d7c5a NOT IN STORE (deleted)
+  108ffa37 NOT IN STORE (deleted)
+  2f0a1ea5 NOT IN STORE (deleted)
+  2f7592b2 NOT IN STORE (deleted)
+  3b867401 NOT IN STORE (deleted)
+  4024cb59 NOT IN STORE (deleted)
+  f3ca2b06 NOT IN STORE (deleted)
+
+## live processes: keeper identities running now (keepers/*.pid) vs the 10 ids
+0524718f-ac2a-4367-b746-51e57309f371.log
+096d7c5a-c42b-45c2-9709-2250b3a0cf59.log
+108ffa37-36e3-4894-8820-41957a13896d.log
+2f0a1ea5-c384-46ec-ada3-99aaab02d63d.log
+2f7592b2-d3e8-40ea-8f67-1741a3a1108c.log
+3b867401-2964-4ba3-bc11-705a9b1a1d89.log
+4024cb59-52a6-46a1-a1ee-a709f95c2a82.log
+5da215a4-9b24-4014-af61-3a8087651d3f.log
+b3f55639-1d61-4d21-b6bf-0d701445dc12.log
+f3ca2b06-9236-4256-9ece-a1b7abf7fb28.log
+(only .log files remain; no .pid/.sock; live keepers: 10 pids)
+## orchestra peers (25 rows) contains none of the ids:
+0
