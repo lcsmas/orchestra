@@ -66,6 +66,12 @@ const MUTANTS = [
   { id: 'M41', name: 'an unanswered ask TO the mover that the move would copy is not refused (the reply would thread to the copy)', edits: [[ME, "if (x.kind === 'ask' && x.toMember) {", "if (false as boolean) {"]], tests: [T.main] },
   { id: 'M42', name: 'a move out of a PAUSED run is allowed again (the move is an escape hatch from a Pause, R3)', edits: [[BR, "    if (carrier) return `run ${carrier.runId} en pause — lift it with orchestra run resume first`;\n", '']], tests: [T.main] },
   { id: 'M43', name: 'a move INTO a paused run is refused (the refusal reads the post-move tree)', edits: [[BR, 'const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x));', 'const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x)) ?? (newParentId ? pausedCarrierForWorkspace(db, all.find((w) => w.id === newParentId)!, (x) => all.find((w) => w.id === x)) : null);']], tests: [T.main] },
+  { id: 'M44', name: 'an ARCHIVED counterparty still strands an exchange (follow-up)', edits: [[BR, '    if (other.archived === true) return false;\n', '']], tests: [T.main] },
+  { id: 'M45', name: 'a counterparty in a CLOSED run still strands an exchange (follow-up)', edits: [[BR, '    return runClosedAt(db, runIdOf(other, (y) => all.find((w) => w.id === y))) == null;', '    return true;']], tests: [T.main] },
+  { id: 'M46', name: 'the ask refusal no longer names the threaded answer (follow-up)', edits: [[ME, 'the agent asked must answer with', 'the agent asked must reply with']], tests: [T.main, T.exch] },
+  { id: 'M47', name: 'the gate refusal no longer names its resolve verb (follow-up)', edits: [[ME, '`resolve it with \\`orchestra gate resolve ${x.ref} --resolution <ruling>\\``', '`resolve it`']], tests: [T.main, T.exch] },
+  { id: 'M48', name: 'the printed ask command loses the asker (--to) — it no longer runs / clears the ask', edits: [[ME, "--to ${x.asker ?? '<asker>'} --thread", '--thread']], tests: [T.main, T.exch] },
+  { id: 'M49', name: 'the printed ask command is not threaded (--thread dropped) — it would not clear the ask', edits: [[ME, ' --thread ${x.ref} <reply>', ' <reply>']], tests: [T.main, T.exch] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

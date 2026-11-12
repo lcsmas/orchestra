@@ -31,5 +31,9 @@ test('#439 moveRefusal names the item, its two sides and how many more', () => {
   const msg = moveRefusal([ask('C', 'S'), { kind: 'gate', ref: 3, run: 'L', member: 'X', counterparty: 'S' }], (id) => `ws-${id}`);
   assert.match(msg, /unanswered ask #7 between ws-C and ws-S would be stranded/);
   assert.match(msg, /\(\+1 more\)/);
-  assert.match(moveRefusal([{ kind: 'gate', ref: 3, run: 'L', member: 'X', counterparty: 'S' }]), /open decision gate #3/);
+  assert.match(msg, /orchestra send --type status --to <asker> --thread 7 <reply>/, 'an ask names the threaded answer that clears it (the asker id is filled in when known)');
+  assert.match(moveRefusal([{ ...ask('C', 'S'), asker: 'S-id' }]), /orchestra send --type status --to S-id --thread 7 <reply>/);
+  const g = moveRefusal([{ kind: 'gate', ref: 3, run: 'L', member: 'X', counterparty: 'S' }]);
+  assert.match(g, /open decision gate #3/);
+  assert.match(g, /orchestra gate resolve 3 --resolution/, 'a gate names its resolve verb');
 });

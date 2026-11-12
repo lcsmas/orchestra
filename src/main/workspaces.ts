@@ -4203,7 +4203,8 @@ Attach is refused when the edge would create a parent cycle, or when the target
 is archived or its run is closed. Any move is refused while the moved agent (or a
 sub-agent) belongs to a paused run — lift the pause first. A move (attach or detach) is also refused while
 the moved agent or one of its sub-agents has an open decision gate or an unanswered
-ask with an agent that would end up outside its runs — answer or resolve it first.
+ask with an agent that would end up outside its runs — the message names the
+reply (\`orchestra send --thread <seq>\`) or the resolve verb that clears it.
 A task the old coordinator dispatched cannot be completed to it after a move: the
 new coordinator dispatches again, and a status always works.
 

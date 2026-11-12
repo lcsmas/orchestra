@@ -17,6 +17,8 @@ export interface OpenExchange {
   counterparty: string;
   /** An ask whose RECIPIENT is the member: a mail copy of it (the move forwards unread mail) would carry a NEW sequence, and the reply threads to the copy — the asker would wait forever. */
   toMember?: boolean;
+  /** An ask: the workspace id that ASKED (the reply goes `--to` it). */
+  asker?: string;
 }
 
 /** The run ids `ws` can see mail / gates in: its home run, every run above it (coordinator chain) and every run below it — the tree form of `getRelatedRunIds`. */
@@ -64,5 +66,5 @@ export function moveRefusal(stranded: readonly OpenExchange[], nameOf: (id: stri
   const x = stranded[0];
   const what = x.kind === 'gate' ? `open decision gate #${x.ref}` : `unanswered ask #${x.ref}`;
   const more = stranded.length > 1 ? ` (+${stranded.length - 1} more)` : '';
-  return `cannot move: ${what} between ${nameOf(x.member)} and ${nameOf(x.counterparty)} would be stranded outside the run${more} — answer or resolve it first`;
+  return `cannot move: ${what} between ${nameOf(x.member)} and ${nameOf(x.counterparty)} would be stranded outside the run${more} — ${x.kind === 'gate' ? `resolve it with \`orchestra gate resolve ${x.ref} --resolution <ruling>\`` : `the agent asked must answer with \`orchestra send --type status --to ${x.asker ?? '<asker>'} --thread ${x.ref} <reply>\` (a reply without --thread does not answer it)`} first`;
 }

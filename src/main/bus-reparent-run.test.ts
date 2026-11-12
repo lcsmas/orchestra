@@ -406,6 +406,50 @@ test('#439 (R2 extension) an unanswered ask TO the mover that the move would COP
   assert.equal(move(w, M, P).verdict.ok, true, 'answered: allowed');
 });
 
+test('#439-fu the R2 predicate skips a counterparty that is ARCHIVED or in a CLOSED run (nothing to strand); the refusal text names the fix', needsBuild, (t) => {
+  const mk = () => {
+    const w = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: S, kind: 'worktree' }, { id: Q, kind: 'worktree' }]);
+    birth(w);
+    spawn(w, X);
+    assert.equal(cli(w, X, ['send', '--type', 'question', '--to', S, 'still there?']).code, 0, 'a stranger ask (#436)');
+    return w;
+  };
+  const live = mk();
+  const refused = move(live, X, Q);
+  assert.equal(refused.verdict.ok, false, 'control: a live counterparty refuses');
+  assert.match(refused.verdict.error!, /the agent asked must answer with `orchestra send --type status --to \S+ --thread \d+ <reply>`/, 'and the text names the threaded answer');
+  // EXECUTE the printed command through the built CLI (as the agent asked): it must clear the ask
+  const printed = /`(orchestra send --type status --to (\S+) --thread (\d+) <reply>)`/.exec(refused.verdict.error!)!;
+  assert.equal(printed[2], X, 'the printed --to is the ASKER (X asked S)');
+  const run = cli(live, S, ['send', '--type', 'status', '--to', printed[2], '--thread', printed[3], 'yes, it is main']);
+  assert.equal(run.code, 0, `the printed command runs: ${run.stderr}${run.stdout}`);
+  assert.equal(move(live, X, Q).verdict.ok, true, 'and it CLEARS the ask: the move now goes through');
+  const live2 = mk();
+  assert.notEqual(cli(live2, S, ['send', '--thread', printed[3], 'no type, no to']).code, 0, 'control: the OLD text (no --type/--to) is a usage error');
+  const archived = mk();
+  edit(archived, (recs) => { recs.find((r) => r.id === S)!.archived = true; }); // archived AFTER the ask was filed
+  assert.equal(move(archived, X, Q).verdict.ok, true, 'an ARCHIVED counterparty can never answer: nothing to strand');
+  const closed = mk();
+  closeRunOf(closed, S); // S's run is closed (its coordinator was archived / deleted)
+  assert.equal(move(closed, X, Q).verdict.ok, true, 'a counterparty in a CLOSED run: nothing to strand');
+  // gates too: the printed command RUNS and clears the gate; an archived counterparty is skipped
+  const openGate = () => {
+    const g = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: S, kind: 'worktree', parentId: L }, { id: Q, kind: 'worktree' }]);
+    birth(g);
+    spawn(g, X);
+    assert.equal(cli(g, X, ['gate', 'open', '--to', S, 'may I?']).code, 0);
+    return g;
+  };
+  const g = openGate();
+  const gcmd = /`orchestra gate resolve (\d+) --resolution <ruling>`/.exec(move(g, X, Q).verdict.error ?? '');
+  assert.ok(gcmd, 'a gate names its resolve verb');
+  assert.equal(cli(g, S, ['gate', 'resolve', gcmd![1], '--resolution', 'approved']).code, 0, 'the printed gate command runs');
+  assert.equal(move(g, X, Q).verdict.ok, true, 'and it clears the gate');
+  const g2 = openGate();
+  edit(g2, (recs) => { recs.find((r) => r.id === S)!.archived = true; });
+  assert.equal(move(g2, X, Q).verdict.ok, true, 'archived gate counterparty: allowed');
+});
+
 // ── OPS ruling R3: a move is not an escape hatch from a Pause ─────────────────────────────────────────────────────────
 test('#439 (R3) attach AND detach are REFUSED while the mover or a subtree member is a member of a PAUSED run (hard or douce); a move INTO a paused run stays allowed; lifted, it moves', needsBuild, (t) => {
   const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }, { id: X, kind: 'worktree' }, { id: C, kind: 'worktree', parentId: M }]);

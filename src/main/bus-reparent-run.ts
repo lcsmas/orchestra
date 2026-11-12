@@ -176,7 +176,7 @@ export function openExchangesOf(db: BusDb, memberIds: readonly string[]): OpenEx
   for (const q of asks) {
     const inside = ids.has(q.sender) ? q.sender : q.recipient;
     const other = ids.has(q.sender) ? q.recipient : q.sender;
-    if (!ids.has(other)) out.push({ kind: 'ask', ref: q.sequence, run: q.run_id, member: inside, counterparty: other, toMember: ids.has(q.recipient) });
+    if (!ids.has(other)) out.push({ kind: 'ask', ref: q.sequence, run: q.run_id, member: inside, counterparty: other, toMember: ids.has(q.recipient), asker: q.sender });
   }
   return out;
 }
@@ -225,7 +225,13 @@ export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { canOrch
     const carrier = pausedCarrierForWorkspace(db, node, (x) => all.find((w) => w.id === x));
     if (carrier) return `run ${carrier.runId} en pause — lift it with orchestra run resume first`;
   }
-  const exchanges = openExchangesOf(db, members);
+  // nothing to strand when the counterparty is ARCHIVED (it can never answer) or sits in a CLOSED run: such an exchange is dead either way
+  const exchanges = openExchangesOf(db, members).filter((x) => {
+    const other = all.find((w) => w.id === x.counterparty) as (RunNode & { archived?: boolean }) | undefined;
+    if (!other) return true;
+    if (other.archived === true) return false;
+    return runClosedAt(db, runIdOf(other, (y) => all.find((w) => w.id === y))) == null;
+  });
   if (exchanges.length === 0) return null;
   const linkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !all.some((w) => w.parentId === id); // run-position: non-run — simulating the ownership WRITE of an attach
   const after = all.map((w) =>
