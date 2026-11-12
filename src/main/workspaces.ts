@@ -3813,6 +3813,12 @@ orchestra send --type status --to <peer-id> <your message...>
 The bus is durable, ack'd and re-driven — a message survives the peer being
 stopped, mid-turn, or restarted, which the old channel could not guarantee.
 
+An agent you share no ancestry with (another top-level agent, a member of someone
+else's vague) takes a plain \`orchestra send --type status --to <id>\` or
+\`orchestra ask --to <id>\` — no \`--run\`: it is filed in ITS run and wakes it. A
+\`dispatch\` or a decision gate to it is refused (only a coordinator gives or
+withdraws the right to act).
+
 \`orchestra message\` is the PRE-BUS channel (it hands the text to the peer's live
 session / wakes it, with #57-class duplicate/drop faults). On a delivery-ON run it is
 REFUSED for coordination and points you back here:

@@ -2798,20 +2798,14 @@ and neither clobbers the other:
 |---|---|---|---|
 | #142 `refuseIfStaleRun()` | the `.orchestra/bus-run-stale` marker FILE, **before any bus opens** | this workspace was re-parented with `--no-restart` | `staleRunRefusalMessage` |
 | #155 run-existence | the opened bus (`runExists`), after openBusForVerb | `run_id` has no `runs` row (#433: `default` is no longer exempt) | `unknownRunRefusalMessage` |
-| #175 recipient-reachability | `assertRecipientReachable()` in `bus-verbs.ts`, inside send/ask/gate-open, before any write | `--to` names a workspace that ANCHORS its own run (`getRun(to)` non-null) and the send run ∉ `getRelatedRunIds(to).ids` | inline, names the fix (`--run <to> --to <to>`) |
+| #175 → **#436** recipient routing | `routeMail()` in `bus-verbs.ts`, inside send/ask/gate-open, before any write | the recipient's run (`toRunId`, else `--to` when it anchors a row) is NOT related to the send run (`getRelatedRunIds(recipientRun)` ∌ send run): `status`/`question` are FILED IN THE RECIPIENT'S RUN; `dispatch`, a gate and every other kind are refused; a recipient run with no row is refused | inline, names the reason + the `status`/`ask` way through |
 
 The #142 marker gate short-circuits first, so a stale + unanchored workspace sees
 #142's message, never #155's.
 
-The #175 guard is the WRITE-side mirror of the READ predicate: a recipient
-anchoring its own run reads mail only in `getRelatedRunIds(anchor)` (the same
-set `check`'s widening and the wake sweep use), so a `--to` into any other run
-is accepted-and-delivered-to-nobody (live incident 2026-09-21, seq 1355/1356:
-an escalation between two unrelated root missions, found only by reading the
-DB). Refuses exactly what is provably invisible: a recipient with NO run row
-(plain member, maybe freshly spawned with no cursor yet) is not judged, and
-`--to human` (#161 all-runs surface) is exempt. Mutation-proven in
-`bus-verbs.test.ts` (`#175 must-FAIL` reddens with the send-site call deleted).
+The #175 guard was the WRITE-side mirror of the READ predicate; **#436 turns its refusal into routing** (see "Mail between agents
+with no common ancestry (#436)" below). What survives from #175: the related-run test itself (`getRelatedRunIds` — the same set `check`'s
+widening and the wake sweep use), `--to human` exempt (#161 all-runs surface), and the refusal of a recipient run that has no row.
 
 ## Gates (#155)
 
@@ -2920,3 +2914,27 @@ Not covered: a real systemd scope (fake cgroup tree), the packaged app, Pause / 
 
 **Gates.** `src/shared/vague-human.test.ts` (12: due per clause incl. the parentless / owed / sticky arms, the settings normaliser + validator, dim / mark-of-coordinator, `rev`, words in a non-UTC zone) · `src/main/vague-endormie.test.ts` (human step over fakes: 15 min after the Relance not before, one notification in 17 h, ends on a member's resume, a click does not end it, parentless at the declaration, owed / unwakeable, both delays live, restart ×2, persisted before the toast, hung delivery, Relancer ×5) · `src/main/vague-endormie-wiring.test.ts` (host / IPC / preload / store / Sidebar / no send path) · `scripts/vague-mutants.mjs` (+45 `hs-*` one-clause mutants) · **the built-app rig `scripts/e2e-vague-human.sh`** (`pnpm run test:vague-human`; L1 organic with the real Settings dialog + sweep, L2 restart + real resumes, L3m must-FAIL copy; screenshots + a yellow-pixel probe).
 Not covered: the OS toast itself (the rig's private bus has no notification daemon: the log line written just before `platform.notify` and `humanAt` on disk are the evidence), the phone (out of scope), a coordinator-less vague ("workspaces the human drives directly").
+
+# Mail between agents with no common ancestry (#436, spec #431 stories 24-26, ADR 0012)
+
+**Rule.** A `status` or an `ask` (`question`) from ANY agent to ANY other is accepted, **filed in the RECIPIENT's run** and wakes it — plain
+`orchestra send --to <handle>` / `orchestra ask --to <handle>`, no `--run`. A `dispatch`, a decision gate (`gate open --to`) and every other
+kind (`worker_done`, `escalation`, `handoff`, …) to an agent OUTSIDE the sender's related runs is REFUSED with a message naming the reason
+("outside your related runs … only a coordinator gives or withdraws the right to act", or "only a status or an ask reaches …") and the way through.
+
+| Piece | Where |
+|---|---|
+| Routing + refusals (ONE function for send / ask / gate open) | `src/cli/bus-verbs.ts` `routeMail(ctx, verb, kind, to, toRunId)` → returns the ctx the WRITE uses: the sender's own when the recipient's run is related (or unknown), else `{…ctx, id.runId = recipientRun, generation null, fencingOn false}` (the sender coordinates nothing there). `CROSS_RUN_KINDS = ['status','question']`. |
+| "Related runs" | `getRelatedRunIds(recipientRun).ids ∋ ctx.id.runId` = the tree line through the sender's run (own ∪ ancestors ∪ descendants — what ADR 0012 calls own/member/coordinated runs, plus the in-fleet reach that already existed). Sibling vagues are NOT related. |
+| Recipient's run | `toRunId` from `/resolveHandle` (host) or the offline store (`runIdOf`, `src/cli/index.ts`); absent (older app) → `--to` itself when it anchors a `runs` row; neither → not judged, filed in the sender's run as before. |
+| No-row refusal | an UNRELATED recipient whose run has no row is refused (`has no row on the bus yet`): the wake sweep reads a switch off the run row, nothing would wake it (#155/#221). A top-level agent has its row from birth (#433), so this is a not-yet-started run. |
+| Cross-run ANSWER | the ask sits in the recipient's run, the reply (`send --thread <ask-seq> --to <asker>`) in the ASKER's — the only run it reads. `ANSWER_RUN_SQL` (`src/main/bus-wake.ts`) lets such a reply clear the ask: reply in the question's run OR in a run OUTSIDE the reader's related set. Without it the recipient is re-woken forever (#185). In-fleet "answered" is byte-identical (only a reply in the question's own run clears). Not extended to `readWaitingReaders` (the asker's waiting-exclusion looks in its own run only) nor to `bus.ts` `expireOrphanedAsks` (a deleted asker's cross-run answered ask still gets one harmless synthetic reply). |
+| Unchanged | inside an existing fleet run (related runs) mail is filed in the SENDER's run exactly as before (OPS→LEAD digest in the OPS run, LEAD→OPS dispatch in the LEAD run, capability minted). |
+
+**Tests.** `src/main/mail-between-strangers.test.ts` — the BUILT CLI against a real bus + a real `store.json` (no app), then the real wake sweep
+(`sweepBusWake` + the roster derived with `runIdOf`, per-run frozen switches) counting turns delivered at the wake seam: two parentless agents
+(status + ask + cross-run answer, both directions), outsider / sibling-vague member → member of a vague, dispatch / gate / other kinds refused
+with the reason (0 rows, 0 gates, 0 capabilities), no-row recipient refused, in-fleet unchanged (rows in the sender's run, dispatch still mints,
+"answered" semantics pinned). `src/cli/bus-verbs.test.ts` carries the unit-level `#436` arms (replacing the #175/#221 must-FAIL arms).
+Mutants: `pnpm run test:mail-strangers-mutants` (`scripts/mail-strangers-mutants.mjs`, 9 guards, byte-exact restore).
+
