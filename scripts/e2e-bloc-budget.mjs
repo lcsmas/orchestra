@@ -10,7 +10,7 @@
 //   bare-focus-pin    a COPY that takes a ROW pin on a bare focus (the chrome-rig flake's cause) → B12 must go RED
 //   no-row-pin        a COPY whose open overlay does not pin its transcript row (the windowed list unmounts it) → B10 must go RED
 //   no-box            a COPY whose placeholder is not the rendered (clipped) box of a TALL bloc → B11 must go RED
-//   box-old           a COPY without the unmount-time box capture AND the mount-time guard (what db0506bd had: a remounted EXPANDED bloc recorded its 28 px button as its box → a 904 px jump on the next unload) → B11 must go RED
+//   box-old           a COPY without the mount-time `.av-bloc-frame` guard (a remount of an EXPANDED bloc recorded its 28 px « Réduire » button as its box → a 904 px jump on the next unload) → B11 must go RED
 //   no-expanded       a COPY that forgets « Afficher tout » on remount (the box changes under the reader) → B11 must go RED
 //   failed-height     a COPY that does not remember the CODE FALLBACK's height (its unloaded slot falls back to the 80 px initial height) → B8 must go RED
 //   watchdog-mount    a COPY whose watchdog fails a frame 6 s after MOUNT, `load` ignored, the report's clear one task late (the #415 behaviour, review M3) → W1 must go RED
@@ -45,10 +45,10 @@ const MUTANTS = {
   'no-slot-pin': { clause: 'B9', dir: 'dist/assets', re: /const (\w+)=(\w+)\|\|\w+>0\|\|(\w+);(return \w+\.jsx\("div",\{ref:\w+,className:"av-bloc-slot")/, to: (m) => `const ${m[1]}=${m[2]}||${m[3]};${m[4]}`, allowed: [] },
   'no-focus-keep': { clause: 'B9', dir: 'dist/assets', re: /const (\w+)=(\w+)\|\|(\w+)>0\|\|\w+;(return \w+\.jsx\("div",\{ref:\w+,className:"av-bloc-slot")/, to: (m) => `const ${m[1]}=${m[2]}||${m[3]}>0;${m[4]}`, allowed: ['B10'] },
   'no-row-pin': { clause: 'B10', dir: 'dist/assets', re: /(const \w+=)\w+==null\?void 0:\w+\(\);(return\(\)=>\{\w+\(\w+=>\w+-1\),)/, to: (m) => `${m[1]}void 0;${m[2]}`, allowed: ['B12'] },
-  'box-old': { clause: 'B11', dir: 'dist/assets', re: /useLayoutEffect\(\(\)=>\(\)=>\{const\{failed:[\s\S]{0,420}?querySelector\("\.av-bloc-frame"\)\)return;/, to: (m) => m[0].replace(/(\w+)>0&&(\w+\(\w+,\1\)\},\[\w+\]\),)/, '!1&&$2').replace(/\|\|!(\w+)\.querySelector\("\.av-bloc-frame"\)/, ''), allowed: [] },
+  'box-old': { clause: 'B11', dir: 'dist/assets', re: /\|\|!([\w$]+)\.querySelector\("\.av-bloc-frame"\)\)return;/, to: () => ')return;', allowed: [] },
   'no-box': { clause: 'B11', dir: 'dist/assets', re: /(const (\w+)=Math\.ceil\((\w+)\.getBoundingClientRect\(\)\.height\);)(\2>0&&\w+\(\w+,)\2\)/, to: (m) => `${m[1]}${m[4]}80)`, allowed: [] },
   'no-expanded': { clause: 'B11', dir: 'dist/assets', re: /useState\(\(\)=>\w+\(\w+\)\),(\[\w+,\w+\]=\w+\.useState\(!1\),\w+=\w+\.useMemo\(\(\)=>\w+\("inline",\w+\),\[\w+\]\))/, to: (m) => `useState(!1),${m[1]}`, allowed: [] },
-  'failed-height': { clause: 'B8', dir: 'dist/assets', re: /(\w+)&&(\w+)\.current&&(\w+)\((\w+),Math\.ceil\(\2\.current\.getBoundingClientRect\(\)\.height\)\)/, to: (m) => `${m[1]}&&${m[2]}.current&&${m[3]}(${m[4]},80)`, also: [{ re: /const ([\w$]+)=([\w$]+)\?([\w$]+)\.current:([\w$]+)\.current;if\(!\1\)return;/, to: (m) => `const ${m[1]}=${m[2]}?null:${m[4]}.current;if(!${m[1]})return;` }], allowed: [] },
+  'failed-height': { clause: 'B8', dir: 'dist/assets', re: /(\w+)&&(\w+)\.current&&(\w+)\((\w+),Math\.ceil\(\2\.current\.getBoundingClientRect\(\)\.height\)\)/, to: (m) => `${m[1]}&&${m[2]}.current&&${m[3]}(${m[4]},80)`, allowed: [] },
   'no-placeholder': { clause: 'B2', dir: 'dist/assets', re: /(av-bloc-idle",role:"img","aria-label":[\w$]+,children:[\w$]+\.jsx\("div",\{style:\{height:)[\w$]+\([\w$]+\)\}/, to: (m) => `${m[1]}0}`, allowed: ['B1'] },
   'watchdog-mount': { clause: 'W1', dir: 'dist/assets', re: /start:\(\)=>\{(\w+)\|\|(\w+)\([\w$]+\)\},loaded:\(\)=>\{\1\|\|\2\([\w$]+\)\},reported:\(\)=>\{\1=!0,(\w+)\(\)\}/, to: (m) => `start:()=>{${m[1]}||${m[2]}(6e3)},loaded:()=>{},reported:()=>{setTimeout(()=>{${m[1]}=!0,${m[3]}()},50)}`, allowed: [] },
 };

@@ -107,11 +107,12 @@ test('#419 review: focus inside a slot keeps it mounted (overlay close hands foc
   assert.ok(/className="av-bloc av-bloc-idle" role="img" aria-label=\{title\}/.test(s) && !/av-bloc-idle[^>]*aria-hidden/.test(s), 'the placeholder is an img named by the title, not aria-hidden');
 });
 
-test('#419 follow-ups: the handoff acquires a row pin only while the slot is alive; every row exposes its pin count; a frame records its rendered box at UNMOUNT', () => {
+test('#419 follow-ups: the handoff acquires a row pin only while the slot is alive; every row exposes its pin count; the mount-time box writer waits for the frame (no unmount-time capture)', () => {
   const sl = code(`${DIR}/agent/BlocSlot.tsx`);
   assert.ok(/alive\.current && focusRef\.current && !focusRowPin\.current/.test(sl) && /alive\.current = false;/.test(sl), 'no row pin is taken after the slot unmounted (it was never released)');
   const v = code(`${DIR}/StructuredView.tsx`);
   assert.ok(/data-row-pins=\{rowPinCount\(item\.id\)\}/.test(v), 'data-row-pins on .av-row: a rig can assert a bare focus holds no row');
   const f = code(`${DIR}/agent/BlocFrame.tsx`);
-  assert.ok(/useLayoutEffect\(\(\) => \(\) => \{\s*const \{ failed: f, showSource: ss, enlarged: en \} = latest\.current;[\s\S]*?rememberBlocHeight\(boxKey, h\);\s*\}, \[boxKey\]\);/.test(f), 'the placeholder that replaces a frame is the box it had when it unmounted');
+  assert.ok(/if \(!r\.querySelector\('\.av-bloc-frame'\)\) return;/.test(f), 'a box is recorded only once the iframe exists (before it the root is the 28 px « Réduire » button: a remounted EXPANDED bloc stored that — a 904 px jump)');
+  assert.ok(!/useLayoutEffect\(\(\) => \(\) => \{/.test(f) && !/latest\.current/.test(f), 'no layout-effect CLEANUP measures the DOM: refs are detached before it in production (it measured nothing) and StrictMode fires it right after the first commit (it re-created the jump)');
 });

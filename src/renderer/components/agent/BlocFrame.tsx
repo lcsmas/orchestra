@@ -211,18 +211,8 @@ export function BlocFrame({ title, source }: Props) {
   useLayoutEffect(() => { if (failed && codeRef.current) rememberBlocHeight(boxKey, Math.ceil(codeRef.current.getBoundingClientRect().height)); }, [failed, boxKey]);
   // BlocSlot's placeholder must equal this box in its DEFAULT state (clipped when tall; expanded is restored above): record what is actually rendered, not the frame's raw height.
   useLayoutEffect(() => { rememberBlocExpanded(boxKey, expanded); }, [boxKey, expanded]);
-  // …and ONCE MORE at unmount (the layout cleanup runs before the DOM node is removed): the placeholder that replaces this frame is exactly the box it had, whatever the
-  // order in which reports and effects landed (#419: an unload under load could release a stale/default box).
-  const latest = useRef({ failed, showSource, enlarged });
-  latest.current = { failed, showSource, enlarged };
-  useLayoutEffect(() => () => {
-    const { failed: f, showSource: ss, enlarged: en } = latest.current;
-    if (ss || en) return; // those states are pinned: the last default-state box stays
-    const el = f ? codeRef.current : rootRef.current;
-    if (!el) return;
-    const h = Math.ceil(el.getBoundingClientRect().height);
-    if (h > 0) rememberBlocHeight(boxKey, h);
-  }, [boxKey]);
+  // No unmount-time capture here: in production React detaches the refs BEFORE a layout cleanup runs (it measured nothing), and under StrictMode (dev) the simulated
+  // unmount fires right after the first commit — when the root is just the « Afficher tout » button — and re-created the 904 px jump. The guard below is the fix (#419 follow-up).
   useLayoutEffect(() => {
     const r = rootRef.current;
     if (failed || showSource || enlarged || !r) return; // those states are pinned (or have their own box): keep the last default-state box
