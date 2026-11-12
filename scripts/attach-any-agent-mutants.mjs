@@ -38,7 +38,7 @@ const MUTANTS = [
   { id: 'M14', name: 'a run is re-pointed under its own descendant (run-tree cycle)', edits: [[BR, "      if (cur === runId) return 'refused-cycle';\n", '']], tests: [T.main] },
   { id: 'M15', name: 'the moved agent\'s own run row is not started (the noop-branch gap: a live agent that cannot send)', edits: [[BR, '  maybeStartRunAtAnchor(deps, anchor);\n', '']], tests: [T.main] },
   { id: 'M16', name: 'the run the agent now belongs to has no row started first (a pointer to a missing run)', edits: [[BR, '  if (parent) maybeStartRunAtAnchor(deps, computeAnchorInfo(parent, lookup, probe));\n', '']], tests: [T.main] },
-  { id: 'M17', name: 'unread mail never follows the agent', edits: [[BR, '    report.mail = forwardUnreadMail(db, ws.id, relatedBefore.filter((r) => !after.has(r)), report.home);\n', '']], tests: [T.main] },
+  { id: 'M17', name: 'unread mail never follows the agent', edits: [[BR, '    report.mail = forwardUnreadMail(db, ws.id, [...relatedBefore.filter((r) => !after.has(r)), ...(oldHome ? [oldHome] : [])], report.home);\n', '']], tests: [T.main] },
   { id: 'M18', name: 'mail is forwarded out of runs that are STILL related (the filter on the new related set is gone)', edits: [[BR, 'relatedBefore.filter((r) => !after.has(r))', 'relatedBefore']], tests: [T.main] },
   { id: 'M19', name: 'the reconcile never re-derives the bus run of a moved agent', edits: [[WS, CALL_LINE, '']], tests: [T.main] },
   { id: 'M20', name: 'the re-derivation moves AFTER the noop decision (#433 M1 reintroduced) — source pin', edits: [[WS, CALL_LINE, ''], [WS, NOOP_LINE, NOOP_LINE + '\n' + CALL_LINE.replace(/\n$/, '')]], tests: [T.main] },
