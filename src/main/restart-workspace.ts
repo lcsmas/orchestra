@@ -35,7 +35,7 @@ import { pauseRefusal } from './pause-gate.ts';
 import { admissionGate } from './admission.ts';
 import { reportAdmissionFailure } from './workspaces';
 import { heldPhrase } from '../shared/admission.ts';
-import { canOrchestrate } from '../shared/types';
+import { coordinates } from '../shared/run-position';
 import type { PauseOrigin } from '../shared/bus-pause.ts';
 import { restartOwesOpeningTask } from '../shared/opening-task.ts';
 import type { RestartTrigger } from '../shared/types';
@@ -81,7 +81,7 @@ export async function dispatchRestartRequest(input: {
       ws,
       origin: restartOrigin,
       kind: 'restart',
-      coordinator: canOrchestrate(ws),
+      coordinator: coordinates(ws),
       run: () => dispatchRestartRequest({ id, fresh, trigger, admitted: true }),
       retryLater: () => pauseRefusal(store.getWorkspace(id) ?? null, restartOrigin) !== null,   // a fleet Pause refused the release: keep the slot
       report: (text) => reportAdmissionFailure(id, text),

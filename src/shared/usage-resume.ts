@@ -27,7 +27,7 @@
 // point, and it is unit-tested at the boundary in usage-resume.test.ts.
 
 import type { Workspace, AgentStopReason } from './types.ts';
-import { canOrchestrate } from './types.ts';
+import { coordinates } from './run-position.ts';
 
 /** Epoch-seconds → epoch-ms for a rate-limit notice's `resetsAt`.
  *
@@ -117,7 +117,7 @@ export interface ResumeDecisionInput {
    *  converted — see {@link resetsAtMsFromNotice}. */
   resetsAtMs: number | null;
   /** True when this workspace coordinates others (`kind: 'orchestrator'` or a
-   *  promoted worktree) — see {@link canOrchestrate}. Coordinators resume AT
+   *  promoted worktree) — see {@link coordinates}. Coordinators resume AT
    *  the reset; everyone else additionally waits for fresh usage evidence, so
    *  the fleet does not stampede the API the same second. */
   isCoordinator: boolean;
@@ -179,7 +179,7 @@ export function decideResume(input: ResumeDecisionInput): ResumeAction {
  *  next to {@link decideResume} so callers do not re-derive it (and so the
  *  "promoted worktree counts as a coordinator" rule is applied once). */
 export function isCoordinatorWorkspace(ws: Pick<Workspace, 'kind' | 'canOrchestrate'>): boolean {
-  return canOrchestrate(ws);
+  return coordinates(ws);
 }
 
 /** The GENERIC resume nudge.

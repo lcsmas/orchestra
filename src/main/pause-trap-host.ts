@@ -4,7 +4,7 @@
 
 import path from 'node:path';
 import { store } from './store';
-import { nearestOrchestratorId } from './wave-run-id';
+import { runIdOf } from '../shared/run-position';
 import { getBus } from './bus';
 import { pausedCarrierForWorkspace } from './bus-pause';
 import { setLiveTreeSource } from './pause-reprise';
@@ -47,7 +47,7 @@ function toMember(ws: Workspace): TrapMember {
   return {
     chain: liveChain(ws),
     wsId: ws.id,
-    runId: nearestOrchestratorId(ws, (id) => store.getWorkspace(id)),
+    runId: runIdOf(ws, (id) => store.getWorkspace(id)),
     worktreePath: ws.worktreePath || null,
     remote: ws.host?.kind === 'sandbox',
     status: ws.status ?? null,

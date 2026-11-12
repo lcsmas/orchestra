@@ -79,7 +79,7 @@ test('seam (a): the ONLY query({resume}) resumes the RESOLVED id, never raw ws.s
   // The orchestrator brief (fresh-only) must also key on the resolved id, so a
   // phantom fresh-start gets the brief a fresh session is due.
   assert.ok(
-    callsUncommented(body, '!resumeId && ws.kind'),
+    callsUncommented(body, '!resumeId && isCoordinatorKind(ws)'),
     'the orchestrator-brief fresh gate must key on !resumeId, not !ws.sdkSessionId',
   );
 });

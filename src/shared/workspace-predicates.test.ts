@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isScratchLike, canOrchestrate, type Workspace } from './types.ts';
+import { isScratchLike, type Workspace } from './types.ts';
+import { coordinates as canOrchestrate } from './run-position.ts';
 
 /** The five workspace shapes the kind/capability split has to keep apart, plus
  * two defensive ones. `isScratchLike` answers "owns no git checkout?" and

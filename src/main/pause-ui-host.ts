@@ -41,7 +41,7 @@ export function realPauseUiDeps(): PauseUiDeps {
 function treeKey(deps: PauseUiDeps): string {
   return deps
     .listWorkspaces()
-    .map((w) => `${w.id}|${w.parentId ?? ''}|${w.kind ?? ''}|${w.canOrchestrate ? 1 : 0}|${deps.labelOf(w.id) ?? ''}`)
+    .map((w) => `${w.id}|${w.parentId ?? ''}|${w.kind ?? ''}|${w.canOrchestrate ? 1 : 0}|${deps.labelOf(w.id) ?? ''}`) // run-position: non-run — cache key of the tree shape, not a decision
     .sort()
     .join('\n');
 }

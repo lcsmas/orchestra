@@ -457,7 +457,7 @@ export function App() {
   // (agent-sdk.ts even appends the ORCHESTRATOR_BRIEF for orchestrators), so
   // scratch and orchestrator sessions get the Agent tab, only lacking Run/Diff.
   const isScratch = !!active && isScratchLike(active);
-  const isOrchestrator = active?.kind === 'orchestrator';
+  const isOrchestrator = active?.kind === 'orchestrator'; // run-position: non-run — header chip of the repo-less session kind
 
   // A scratch-like session is non-git and has no repo, so the git-only `run`
   // view is unavailable. If the user had it selected and then switches to such a

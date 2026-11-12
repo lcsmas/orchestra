@@ -33,7 +33,7 @@ import type { Workspace } from '../shared/types';
 export function repoSectionKeyOf(
   ws: Pick<Workspace, 'kind' | 'repoPath' | 'repoAssociation'>,
 ): string | null {
-  if (ws.kind === 'orchestrator') {
+  if (ws.kind === 'orchestrator') { // run-position: non-run — repo grouping (display) of the repo-less kind
     // REAL ownership beats the display-only preference: once a coordinator has
     // adopted a repo it belongs in that repo's section on the same grounds as
     // any worktree, and a stale `repoAssociation` naming a different repo must
@@ -72,7 +72,7 @@ export function isRepoAssociatedOrchestrator(
   // display-only association. Both must be covered here or the row renders
   // TWICE — once from the pinned list, once from the repo section — since the
   // two sides of the split consult this one predicate to stay complementary.
-  return ws.kind === 'orchestrator' && (!!ws.repoPath || !!ws.repoAssociation?.trim());
+  return ws.kind === 'orchestrator' && (!!ws.repoPath || !!ws.repoAssociation?.trim()); // run-position: non-run — repo grouping
 }
 
 /** Partition orchestrator spawn-tree roots into the ones that stay pinned and

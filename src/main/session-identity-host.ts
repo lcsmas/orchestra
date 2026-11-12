@@ -4,7 +4,7 @@ import path from 'node:path';
 import { busGenerationReader, createSessionKeyRegistry, resolveSessionIdentity, type SessionKeyRegistry } from './session-identity.ts';
 import { orchestraHome } from './platform/index.ts';
 import { getBus, coordinatorGeneration } from './bus.ts';
-import { nearestOrchestratorId } from './wave-run-id.ts';
+import { runIdOf } from '../shared/run-position.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import type { IdentityReply } from '../shared/session-identity.ts';
@@ -40,7 +40,7 @@ export function dispatchIdentityRequest(msg: Record<string, unknown>): IdentityR
     registry: sessionKeys(),
     runIdFor: (id) => {
       const ws = store.getWorkspace(id);
-      return ws ? nearestOrchestratorId(ws, (x) => store.getWorkspace(x)) : null;
+      return ws ? runIdOf(ws, (x) => store.getWorkspace(x)) : null;
     },
     generationOf: busGenerationReader(getBus, coordinatorGeneration), // no bus → throws → unregistered (never an unfenced call)
   });

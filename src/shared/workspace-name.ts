@@ -18,7 +18,7 @@ export function workspaceDisplayName(
   ws: Pick<Workspace, 'kind' | 'repoPath'>,
   branch: string,
 ): string {
-  if (ws.kind === 'orchestrator') return `orchestrator · ${branch}`;
+  if (ws.kind === 'orchestrator') return `orchestrator · ${branch}`; // run-position: non-run — display name
   if (ws.kind === 'scratch') return `scratch · ${branch}`;
   // A git worktree (promoted or not) is filed under its repo, so it reads best
   // named after it. `isScratchLike` guards the degenerate case of a worktree

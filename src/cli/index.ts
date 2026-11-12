@@ -45,7 +45,7 @@ import {
   switchStateWord,
 } from '../shared/bus-switches.ts';
 import { resolveHandle, type HandleCandidate } from './resolve-handle.ts';
-import { nearestOrchestratorId, type WaveNode } from '../main/wave-run-id.ts';
+import { runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
 import { renderPauseStatusLine, type PauseStatusView } from '../shared/pause-douce.ts';
 import { formatMemoryGuardLine, type MemoryGuardSnapshot, type MemoryPausedRunView } from '../shared/memory-guard.ts';
 import { formatMemoryCapLine, type MemoryCapStatusView } from '../shared/memory-scope.ts';
@@ -775,7 +775,7 @@ function toWaveNodes(ws: readonly OfflineRecord[]): Map<string, WaveNode> {
       id: w.id,
       parentId: typeof w.parentId === 'string' ? w.parentId : undefined,
       kind: typeof w.kind === 'string' ? w.kind : undefined,
-      canOrchestrate: w.canOrchestrate === true,
+      canOrchestrate: w.canOrchestrate === true, // run-position: non-run — marshals the persisted field into the RunNode the module reads
     });
   }
   return nodes;
@@ -846,7 +846,7 @@ function handleCandidatesOf(ws: readonly OfflineRecord[]): HandleCandidate[] {
     .map((w) => ({
       id: w.id as string,
       name: typeof w.name === 'string' ? (w.name as string) : '',
-      runId: nearestOrchestratorId(nodes.get(w.id as string)!, (id) => nodes.get(id)),
+      runId: runIdOf(nodes.get(w.id as string)!, (id) => nodes.get(id)),
     }));
 }
 
@@ -1997,7 +1997,7 @@ async function main(argv: string[]): Promise<void> {
               const carrier = node
                 ? busPause.pausedCarrierForWorkspace(d, node, (id) => nodes.get(id))
                 : (cfEnvRun ? coverFor(d, cfEnvRun, busPause, nodes) : null) ?? douce.carrierFromRoster(d, who);
-              const memberRun = node ? nearestOrchestratorId(node, (id) => nodes.get(id)) : null; // never guess: a wrong run would overwrite what the host enrolled
+              const memberRun = node ? runIdOf(node, (id) => nodes.get(id)) : null; // never guess: a wrong run would overwrite what the host enrolled
               return { ...douce.confirmPauseFor(d, carrier, { wsId: who, memberRun }, Date.now(), { proven: !!node }), carrierRunId: carrier?.runId ?? null };
             },
             // an order the member's hook has not injected yet would now be stale (the sibling dir of $ORCHESTRA_EVENTS_DIR, as the hook derives it)

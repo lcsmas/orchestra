@@ -7,7 +7,7 @@
 // the release just granted this member's one-shot permit and this call consumed it).
 
 import type { Workspace } from '../shared/types';
-import { canOrchestrate } from '../shared/types';
+import { coordinates } from '../shared/run-position';
 import { sdkAwaitFirstTurn, sdkSessionLive } from './sdk-delivery';
 import { probeKeeper } from './keeper-client';
 import { store } from './store';
@@ -46,7 +46,7 @@ export async function wakeHeldForMemory(
     wsId: id,
     fleetMember: !!ws.parentId,
     sleeping: isSleeping(id),
-    coordinator: canOrchestrate(ws),
+    coordinator: coordinates(ws),
     site: opts.site,
     retry,
     reenters: opts.reenters,

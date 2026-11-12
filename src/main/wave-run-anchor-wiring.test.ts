@@ -123,11 +123,11 @@ test('G9 FIX — startBusRunAndWriteNotice does BOTH the run-start and the notic
   );
 });
 
-test('P1 D1 — resolveWaveRunId uses nearestOrchestratorId, NOT walkToRootId (the tree-root defect)', () => {
+test('P1 D1 — resolveWaveRunId uses runIdOf (run-position), NOT walkToRootId (the tree-root defect)', () => {
   const start = workspacesSrc.indexOf('export function resolveWaveRunId(');
   assert.ok(start > 0, 'resolveWaveRunId not found');
   const body = workspacesSrc.slice(start, start + 400);
-  assert.match(body, /nearestOrchestratorId\(ws,/, 'the run anchor must be the nearest orchestrator (D1)');
+  assert.match(body, /runIdOf\(ws,/, 'the run anchor must be the nearest orchestrator (D1)');
   // The exact overturned model: walkToRootId as the run anchor.
   assert.doesNotMatch(body, /return walkToRootId\(ws,/, 'resolveWaveRunId must NOT use the tree root (D1 overturned it)');
 });

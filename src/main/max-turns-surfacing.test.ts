@@ -208,7 +208,7 @@ test('#85 GUARD: the per-turn runaway backstop survives (no role-based raise)', 
   //     nothing here, since the budget the raise would target does not exist.
   const optionsAt = code.indexOf('maxTurns:');
   const window = code.slice(Math.max(0, optionsAt - 400), optionsAt);
-  for (const pred of ['canOrchestrate', 'isCoordinatorWorkspace']) {
+  for (const pred of ['canOrchestrate', 'coordinates', 'isCoordinatorWorkspace']) {
     assert.doesNotMatch(
       window,
       new RegExp(`\\b${pred}\\b`),

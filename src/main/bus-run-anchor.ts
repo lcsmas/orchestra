@@ -26,12 +26,7 @@
 import type { BusDb } from './bus.ts';
 import type { BusRunRow } from './bus-runs.ts';
 import { WAVE_REFREEZE_KEEPS_FROZEN, type BusMechanism, type BusSwitches } from '../shared/bus-switches.ts';
-import {
-  nearestOrchestratorId,
-  nodeOrchestrates,
-  parentRunTarget,
-  type WaveNode,
-} from './wave-run-id.ts';
+import { coordinates, parentRunOf, runIdOf, type RunNode as WaveNode } from '../shared/run-position.ts';
 
 /** The collaborators the anchor-start needs, injected so a rig drives the real
  *  function without the Electron/store chain `workspaces.ts` drags in. */
@@ -97,13 +92,13 @@ export function computeAnchorInfo(
   lookup: (id: string) => WaveNode | undefined,
   anchorsRun: (id: string) => boolean = () => false,
 ): AnchorInfo {
-  const anchorId = nearestOrchestratorId(ws, lookup);
+  const anchorId = runIdOf(ws, lookup);
   const anchorNode = anchorId === ws.id ? ws : lookup(anchorId);
-  const anchorIsOrchestrator = anchorNode ? nodeOrchestrates(anchorNode) : false;
+  const anchorIsOrchestrator = anchorNode ? coordinates(anchorNode) : false;
   // #221 — only a REAL orchestrator anchor nests; a plain standalone starts no row anyway.
   const parent =
     anchorNode && anchorIsOrchestrator
-      ? parentRunTarget(anchorNode, lookup, anchorsRun)
+      ? parentRunOf(anchorNode, lookup, anchorsRun)
       : { id: null, implicit: false };
   return {
     wsId: ws.id,

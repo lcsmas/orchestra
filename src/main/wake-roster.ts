@@ -4,7 +4,7 @@
 import type { Workspace } from '../shared/types';
 import type { WakeableReader } from './bus-wake.ts';
 import { sdkSessionLive } from './sdk-delivery';
-import { canOrchestrate } from '../shared/types';
+import { coordinates } from '../shared/run-position';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { startKeepsFailing } from '../shared/opening-task.ts';
 import { pauseRefusal } from './pause-gate.ts';
@@ -35,6 +35,6 @@ export function wakeRosterEntry(ws: Workspace): WakeableReader {
     // #287 Admission: what the sweep needs to decide whether a due réveil is an automatic START of a SLEEPING FLEET member (held under low memory).
     fleetMember: !!ws.parentId,
     sleeping: !sdkSessionLive(ws.id),
-    coordinator: canOrchestrate(ws),
+    coordinator: coordinates(ws),
   };
 }

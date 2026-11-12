@@ -2,7 +2,7 @@
 // Decides, per workspace, what the one-shot migration does; scripts/migrate-parent-names.mjs gathers the inputs
 // (store, git, running vagues) and applies each `rename` step through the installed app's CLI — never by editing store.json.
 import type { Workspace } from './types.ts';
-import { canOrchestrate } from './types.ts';
+import { coordinates } from './run-position.ts';
 import { checkSpawnName, decideRename } from './naming-policy.ts';
 
 /** The Workspace fields the planner reads. */
@@ -147,7 +147,7 @@ export function vagueHolders(
   const holders = new Map<string, string[]>();
   const hold = (member: string, anchor: string): void => void holders.set(member, [...(holders.get(member) ?? []), anchor]);
   for (const a of workspaces) {
-    if (!canOrchestrate(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
+    if (!coordinates(a) || !live(a) || !hasLiveBelow.has(a.id) || closed.has(a.id)) continue;
     if (!a.parentId) continue; // a top-level orchestrator runs a mission, not a vague (an OPS whose parent left the store stays a vague: held is the safe side)
     hold(a.id, a.id);
     for (const w of workspaces) if (ancestors(w.id).has(a.id)) hold(w.id, a.id);

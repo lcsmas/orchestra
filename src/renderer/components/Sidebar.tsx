@@ -13,7 +13,8 @@ import type {
   WorkspaceStatus,
 } from '../../shared/types';
 import { isActionableStopReason } from '../../shared/usage-resume';
-import { isScratchLike, canOrchestrate } from '../../shared/types';
+import { isScratchLike } from '../../shared/types';
+import { coordinates } from '../../shared/run-position';
 import { repoSectionKeyOf, partitionOrchestratorRoots } from '../orchestrator-repo-grouping';
 import {
   type DropTarget,
@@ -973,7 +974,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
    * matter what is being dragged. */
   const canAttachTo = (target: Workspace): boolean =>
     !!dragWs &&
-    canOrchestrate(target) &&
+    coordinates(target) &&
     dragWs.id !== target.id &&
     dragWs.parentId !== target.id &&
     !isDescendantOfDrag(target.id);
@@ -1139,7 +1140,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     // lists, which is what guarantees each root renders in exactly one section
     // — no double-render, no vanishing row.
     const { pinned: pinnedOrchestratorRoots, inRepoSections: associatedOrchestratorRoots } =
-      partitionOrchestratorRoots(forest.roots.filter((w) => w.kind === 'orchestrator'));
+      partitionOrchestratorRoots(forest.roots.filter((w) => w.kind === 'orchestrator')); // run-position: non-run — sidebar section placement of the repo-less kind
     const orchestratorTrees = pinnedOrchestratorRoots.map((root) => ({
       root,
       rows: flattenSubtree(root, forest.childrenOf, new Set<string>()),
@@ -1401,7 +1402,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     // and the row renders twice. Keeping all orchestrator routing on one side of
     // the split is what makes the two lists provably complementary.
     const repoRoots = [
-      ...forest.roots.filter((w) => !isScratchLike(w) && w.kind !== 'orchestrator'),
+      ...forest.roots.filter((w) => !isScratchLike(w) && w.kind !== 'orchestrator'), // run-position: non-run — sidebar section placement
       ...associatedOrchestratorRoots,
     ];
     const activeGroups = groupRootsByRepo(repoRoots, forest);

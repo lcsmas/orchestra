@@ -13,7 +13,7 @@ import type { BusDb } from './bus.ts';
 import { send } from './bus.ts';
 import { getRun, runHoldAuthority } from './bus-runs.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
-import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
+import { runIdOf, coordinates, type RunNode as WaveNode } from '../shared/run-position.ts';
 import {
   memberMayStart,
   PAUSE_HUMAN_BY,
@@ -119,25 +119,25 @@ function classifyLive(tree: LiveTree, carrier: string, wsId: string): LiveClass 
   const node = tree.get(wsId);
   if (!node || liveStatus(tree, carrier, wsId) !== 'under') return null;
   return {
-    coordinator: nodeOrchestrates(node),
+    coordinator: coordinates(node),
     run: runWithin(tree, carrier, wsId),
     releaserRun: sameId(wsId, carrier) || !node.parentId ? carrier : runWithin(tree, carrier, node.parentId),
   };
 }
-/** The run a workspace READS its mail in (`$ORCHESTRA_RUN_ID` = `nearestOrchestratorId` over the WHOLE live chain — NOT bounded at the carrier, and a member of a plain anchor is
+/** The run a workspace READS its mail in (`$ORCHESTRA_RUN_ID` = `runIdOf` over the WHOLE live chain — NOT bounded at the carrier, and a member of a plain anchor is
  *  its own standalone run): where a `reprise` row must be sent for `orchestra check` / the wake sweep to see it. Distinct from {@link runWithin}, which only GROUPS a wave for authority
  *  and `--all`. Unknown to the live tree: the run the trap recorded for it, else `fallback`. */
 function envRunOf(tree: LiveTree | null, wsId: string, bilanRun: string | null, fallback: string): string {
   const n = tree?.get(wsId);
-  if (tree && n) return nearestOrchestratorId(n, (id) => tree.get(id));
+  if (tree && n) return runIdOf(n, (id) => tree.get(id));
   return bilanRun ?? fallback;
 }
 /** The run `startId` belongs to INSIDE the carrier's wave: the nearest orchestrator at or above it, never above the carrier — and the CARRIER itself when none is found
- *  (a plain run-anchoring carrier, #221, is no orchestrator on the live tree: `nearestOrchestratorId` would call each member its own standalone run). */
+ *  (a plain run-anchoring carrier, #221, is no orchestrator on the live tree: `runIdOf` would call each member its own standalone run). */
 function runWithin(tree: LiveTree, carrier: string, startId: string): string {
   for (const id of liveChain(tree, startId)) {
     const n = tree.get(id);
-    if (n && nodeOrchestrates(n)) return n.id;
+    if (n && coordinates(n)) return n.id;
     if (sameId(id, carrier)) break;
   }
   return carrier;
@@ -660,7 +660,7 @@ function parkedCoordinators(db: BusDb, carrierRunId: string, pausedAt: number): 
 /** The run a coordinator coordinates: live ⇒ its own workspace id (run id == anchor id); else the bus run whose coordinator it is. */
 function coordinatedRun(tree: LiveTree | null, nodes: readonly RunNode[], wsId: string): string {
   const n = tree?.get(wsId);
-  if (n && nodeOrchestrates(n)) return n.id;
+  if (n && coordinates(n)) return n.id;
   return nodes.find((x) => sameId(x.coordinator, wsId))?.id ?? wsId;
 }
 
@@ -819,7 +819,7 @@ function releasers(db: BusDb, tree: LiveTree | null, row: PauseMemberRow, carrie
   if (chain && tree) {
     for (const id of chain.ids.slice(1)) {
       const n = tree.get(id);
-      if (n && nodeOrchestrates(n)) add(id);
+      if (n && coordinates(n)) add(id);
     }
   }
   if (!chain || chain.dangling) {
@@ -851,7 +851,7 @@ function releaserRunOf(db: BusDb, tree: LiveTree | null, row: PauseMemberRow, ca
 function ownRuns(db: BusDb, tree: LiveTree | null, actor: string): string[] {
   const out: string[] = [];
   const n = tree?.get(actor);
-  if (n && nodeOrchestrates(n)) out.push(n.id);
+  if (n && coordinates(n)) out.push(n.id);
   for (const r of db.prepare('SELECT id FROM runs WHERE lower(coordinator) = lower(?)').all(actor) as Array<{ id: string }>) out.push(r.id);
   return out;
 }

@@ -12,7 +12,7 @@ import { beginReprise, getRunPause, pausedCarrierForWorkspace, setRunPause, type
 import { listBilan, readPauseOrigin, recordPauseOrigin, replacePauseOrigin, type BilanRow } from './bus-pause-records.ts';
 import { pauseStatusView } from './pause-douce.ts';
 import { presentMembers, readCarrierColumns, readRoster, releaseMembers, repriseStatusView, resumingCarrierFor, type ReleaseResult } from './pause-reprise.ts';
-import { nearestOrchestratorId, nodeOrchestrates, type WaveNode } from './wave-run-id.ts';
+import { runIdOf, coordinates, type RunNode as WaveNode } from '../shared/run-position.ts';
 import { isCoordinatorHandle } from '../shared/bus-fencing.ts';
 import { PAUSE_AUTO_BY } from '../shared/pause-auto.ts';
 import { MEMORY_PAUSE_BY } from '../shared/pause-memory.ts';
@@ -266,8 +266,8 @@ export function readPauseOverview(db: BusDb | null, deps: PauseUiDeps): PauseUiO
       // a row gets a control when it ANCHORS a run: an orchestrator, or a plain workspace the host gave a mission run (#221: a parent that spawned children). A worker row's control is explained by
       // the UI's own `refused` at click time (Q5: it has an orchestrator above and no run of its own) with a link to that orchestrator.
       const ownsRun = anchoredRuns.has(ws.id);
-      if (!nodeOrchestrates(ws) && !ownsRun) continue;
-      const runId = ownsRun ? ws.id : nearestOrchestratorId(ws, deps.getWorkspace);
+      if (!coordinates(ws) && !ownsRun) continue;
+      const runId = ownsRun ? ws.id : runIdOf(ws, deps.getWorkspace);
       const run = getRun(db, runId);
       const cols = db.prepare('SELECT paused_at, pause_mode, pause_deadline_at, pause_escalated_at, pause_trap_at, resume_started_at FROM runs WHERE id = ?').get(runId) as
         | { paused_at: number | null; pause_mode: string | null; pause_deadline_at: number | null; pause_escalated_at: number | null; pause_trap_at: number | null; resume_started_at: number | null }
@@ -357,7 +357,7 @@ function nearestRunOf(db: BusDb | null, ws: WaveNode, deps: PauseUiDeps): string
   const seen = new Set<string>([cur.id]);
   for (;;) {
     // the CLICKED row owns its run whatever its archive state (the Bus card of an archived carrier must still Reprendre / Libérer it); the archive skip is for the LINK's target — an ANCESTOR
-    if ((cur.id === ws.id || usable(cur.id)) && (nodeOrchestrates(cur) || anchors(cur.id))) return cur.id;
+    if ((cur.id === ws.id || usable(cur.id)) && (coordinates(cur) || anchors(cur.id))) return cur.id;
     if (!cur.parentId) break;
     const parent = deps.getWorkspace(cur.parentId);
     if (!parent || seen.has(parent.id)) break;

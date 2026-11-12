@@ -93,7 +93,7 @@ import {
   shouldBumpCoordinatorGeneration,
   type AnchorInfo,
 } from './bus-run-anchor.ts';
-import { isPlainOwnAnchor, nearestOrchestratorId } from './wave-run-id.ts';
+import { isPlainOwnAnchor } from '../shared/run-position.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -140,7 +140,8 @@ import { clearHibernated } from './hibernation.ts';
 import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
-import { canOrchestrate, isScratchLike } from '../shared/types';
+import { isScratchLike } from '../shared/types';
+import { coordinates, isCoordinatorKind, runIdOf, COORDINATOR_HOOK_GATE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -551,7 +552,7 @@ async function createScratchLikeWorkspace(
   if (!existsSync(SCRATCH_ROOT)) await mkdir(SCRATCH_ROOT, { recursive: true });
   const id = randomUUID();
   const label = randomBranchName();
-  const prefix = kind === 'orchestrator' ? 'orchestrator' : 'scratch';
+  const prefix = kind === 'orchestrator' ? 'orchestrator' : 'scratch'; // run-position: non-run — creation flavour of the repo-less session
   const worktreePath = path.join(SCRATCH_ROOT, `${prefix}-${label}-${id.slice(0, 8)}`);
 
   log.info(`creating ${kind} session ${label} (${id})`);
@@ -559,7 +560,7 @@ async function createScratchLikeWorkspace(
   await installOrchestraHooks(worktreePath);
   // Sentinel for the orchestrator-instruction hook, so the standing delegation
   // reminder fires from the very first prompt (the env var lands at pty start).
-  if (kind === 'orchestrator') await markOrchestratorWorktree(worktreePath);
+  if (kind === 'orchestrator') await markOrchestratorWorktree(worktreePath); // run-position: non-run — creation flavour (sentinel write)
 
   const port = store.allocatePort();
   const ws: Workspace = {
@@ -1289,7 +1290,7 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
       ws,
       origin: origin ?? 'auto',
       kind: 'spawn',
-      coordinator: canOrchestrate(ws),
+      coordinator: coordinates(ws),
       run: () => startWorkspaceAgentHeadless(id, 'auto', true),
       retryLater: () => pauseRefusal(store.getWorkspace(id), 'auto') !== null,   // refused because a fleet Pause is in force: keep the slot
       report: (text) => reportAdmissionFailure(id, text),
@@ -1854,7 +1855,7 @@ export async function dispatchPromoteRequest(input: { id?: string }): Promise<Pr
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   // Already an orchestrator by either route — succeed idempotently so a
   // double-invoke (or the skill re-firing) doesn't error.
-  if (canOrchestrate(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };
+  if (coordinates(ws)) return { ok: true, id, branch: ws.branch, kind: ws.kind };
   // #171 — snapshot the promoted node's OWN run anchor (and its members') BEFORE
   // the mutation, exactly as attach/demote do. Promote is a re-anchoring op: the
   // promoted ws stops resolving to its nearest-orchestrator ANCESTOR (its parent
@@ -1963,7 +1964,7 @@ export async function dispatchDemoteRequest(input: {
   // plain workspace", and there is no repo to become a worktree of. That reason
   // evaporates once it has adopted one — then demotion is exactly the inverse of
   // promotion, so route it to the kind swap below rather than refusing.
-  if (ws.kind === 'orchestrator' && !ws.repoPath) {
+  if (isCoordinatorKind(ws) && !ws.repoPath) {
     return {
       ok: false,
       error:
@@ -1971,7 +1972,7 @@ export async function dispatchDemoteRequest(input: {
     };
   }
   // Not an orchestrator at all — idempotent success, mirroring promote.
-  if (ws.kind !== 'orchestrator' && !ws.canOrchestrate)
+  if (!coordinates(ws))
     return { ok: true, id, branch: ws.branch, kind: ws.kind, detachedChildren: [] };
   try {
     const children = store.workspaces.filter((w) => w.parentId === id);
@@ -1996,7 +1997,7 @@ export async function dispatchDemoteRequest(input: {
     // every git path keeps working); a promoted worktree sheds the CAPABILITY.
     // The repo-less kind never reaches here — refused above.
     const demoted: Workspace =
-      ws.kind === 'orchestrator'
+      isCoordinatorKind(ws)
         ? { ...ws, kind: 'worktree', canOrchestrate: undefined }
         : { ...ws, canOrchestrate: undefined };
     const updated: Workspace = {
@@ -2098,7 +2099,7 @@ export async function dispatchAttachRequest(input: {
   if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
   const parent = store.getWorkspace(rawParent);
   if (!parent) return { ok: false, error: `unknown parent workspace: ${rawParent}` };
-  if (!canOrchestrate(parent)) {
+  if (!coordinates(parent)) {
     return {
       ok: false,
       error: 'parent must be an orchestrator (promote it first)',
@@ -2197,7 +2198,7 @@ export async function dispatchAdoptRepoRequest(input: {
   const ws = store.getWorkspace(id);
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   const noRestart = input.noRestart === true;
-  if (ws.kind !== 'orchestrator') {
+  if (ws.kind !== 'orchestrator') { // run-position: non-run — repo adoption is a property of the repo-less kind
     return {
       ok: false,
       error:
@@ -2385,7 +2386,7 @@ export async function dispatchSetRepoAssociationRequest(input: {
     return { ok: true, id, branch: ws.branch, repoAssociation: null };
   }
 
-  if (ws.kind !== 'orchestrator') {
+  if (ws.kind !== 'orchestrator') { // run-position: non-run — repo association (display) is a property of the repo-less kind
     return {
       ok: false,
       error:
@@ -2536,7 +2537,7 @@ export function dispatchWhoamiRequest(input: { id?: string; key?: string }): Who
     name: ws.name,
     branch: ws.branch,
     kind: ws.kind ?? 'worktree',
-    orchestrator: canOrchestrate(ws),
+    orchestrator: coordinates(ws),
     parentId: ws.parentId ?? null,
     repoPath: ws.repoPath,
     baseBranch: ws.baseBranch,
@@ -4167,8 +4168,7 @@ const ORCHESTRATOR_INSTRUCTION_SCRIPT = `#!/usr/bin/env bash
 # context compaction. Self-silences unless this workspace is an orchestrator
 # (env var from pty spawn, or the sentinel written when the session was
 # created as / promoted to an orchestrator).
-sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
-[ "\${ORCHESTRA_KIND:-}" = "orchestrator" ] || [ -f "\$sentinel" ] || exit 0
+${COORDINATOR_HOOK_GATE}
 # Two kinds of orchestrator need two different contracts. A repo-less
 # coordinator must never implement. A PROMOTED WORKTREE (sentinel content
 # "dual") is an integration branch that coordinates children AND carries its own
@@ -4291,8 +4291,7 @@ const ORCHESTRATOR_GUARD_SCRIPT = `#!/usr/bin/env bash
 # Auto-installed by orchestra. Blocks an orchestrator from editing another
 # workspace's files (it must delegate instead). No-op on non-orchestrator
 # workspaces and outside orchestra.
-sentinel="\${ORCHESTRA_WORKTREE:-.}/.orchestra/.orchestrator"
-[ "\${ORCHESTRA_KIND:-}" = "orchestrator" ] || [ -f "\$sentinel" ] || exit 0
+${COORDINATOR_HOOK_GATE}
 
 # Claude Code delivers the tool call as JSON on stdin; pull tool_input's
 # file_path out with pure bash parameter expansion (no jq), same technique as
@@ -4598,7 +4597,7 @@ const HOOKS_VERSION = createHash('sha256')
 export function resolveWaveRunId(ws: Workspace): string {
   // The pure walk lives in wave-run-id.ts so it is unit-testable without the
   // store/Electron chain this module drags in; here we inject store.getWorkspace.
-  return nearestOrchestratorId(ws, (id) => store.getWorkspace(id));
+  return runIdOf(ws, (id) => store.getWorkspace(id));
 }
 
 /**

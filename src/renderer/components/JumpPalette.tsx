@@ -8,7 +8,7 @@ import type { Workspace } from '../../shared/types';
 /** Repo label for a palette row. Mirrors the Sidebar's basename labeling for
  * git workspaces; non-git rows say what they are instead of a path. */
 function jumpRepoLabel(w: Workspace): string {
-  if (w.kind === 'orchestrator') return 'orchestrator';
+  if (w.kind === 'orchestrator') return 'orchestrator'; // run-position: non-run — display label
   if (!w.repoPath) return 'scratch';
   const parts = w.repoPath.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? w.repoPath;

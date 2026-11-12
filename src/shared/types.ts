@@ -609,24 +609,9 @@ export function isScratchLike(ws: Pick<Workspace, 'kind' | 'repoPath'>): boolean
   if (ws.kind === 'scratch') return true;
   // An orchestrator is the only kind that spans both states: repo-less at birth,
   // git-backed once it adopts a repo (worktree created BEFORE `repoPath` is set).
-  if (ws.kind === 'orchestrator') return !ws.repoPath;
+  if (ws.kind === 'orchestrator') return !ws.repoPath; // run-position: non-run — git question (scratch-likeness)
   // `'worktree'`, and `undefined` for pre-`kind` legacy records.
   return false;
-}
-
-/** True when children may nest under this workspace — the single answer to
- * "is this a tree root / a valid `/attach` parent?".
- *
- * Two disjoint routes reach it: the `'orchestrator'` KIND (a repo-less scratch
- * coordinator) and the {@link Workspace.canOrchestrate} CAPABILITY (a git
- * worktree that coordinates while doing its own work). Deliberately NOT the
- * same question as `isScratchLike` — that one asks "is this non-git?", and the
- * two answers diverge exactly on a promoted worktree, which orchestrates AND
- * keeps its repo/branch/diff. Use this for tree/parent decisions and
- * `isScratchLike` for git decisions; conflating them is what makes a promoted
- * worktree lose its diff tab or leak its worktree on delete. */
-export function canOrchestrate(ws: Pick<Workspace, 'kind' | 'canOrchestrate'>): boolean {
-  return ws.kind === 'orchestrator' || ws.canOrchestrate === true;
 }
 
 export interface DiffFile {

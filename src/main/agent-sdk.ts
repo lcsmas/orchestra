@@ -156,6 +156,7 @@ import type {
 } from '../shared/types';
 import { makeRestartNotice, classifyConsumeTermination } from '../shared/restart-notice.ts';
 import { childEnv } from '../shared/child-env.ts';
+import { isCoordinatorKind } from '../shared/run-position.ts';
 import {
   enabledPluginInstalls,
   firstSentenceOfDescription,
@@ -1951,7 +1952,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
       // across compaction is still the orchestrator-instruction SessionStart hook
       // (now loaded via the 'local' source above); this is the richer one-time
       // onboarding.
-      ...(!resumeId && ws.kind === 'orchestrator'
+      ...(!resumeId && isCoordinatorKind(ws)
         ? {
             systemPrompt: {
               type: 'preset' as const,

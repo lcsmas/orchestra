@@ -10,118 +10,63 @@
 // impossible. So the anchor is the NEAREST orchestrator: the OPS gets its own
 // run, nested under the LEAD's via `parent_run_id`.
 //
-// PURE and dependency-free ON PURPOSE (only `import type` + the pure
-// `canOrchestrate` from types.ts): `workspaces.ts` imports the Electron platform
+// #432 — the walks now live in `src/shared/run-position.ts` (the ONE module that decides run
+// membership / coordination); the exports below are thin delegates kept for their callers and tests.
+//
+// PURE and dependency-free ON PURPOSE: `workspaces.ts` imports the Electron platform
 // seam and cannot load under `node --test`, so the walk lives here with the
 // store injected as a lookup, and its arms (the promoted-worktree capability, a
 // scratch orchestrator kind, the broken link, the cycle) run as plain unit tests.
 
-import { canOrchestrate } from '../shared/types.ts';
+import {
+  coordinates,
+  isPlainOwnAnchor as isPlainOwnAnchorOf,
+  parentRunOf,
+  ancestorCoordinatorId,
+  runIdOf,
+  type RunNode,
+} from '../shared/run-position.ts';
 
-/** The minimal workspace shape the walks need: id, optional parent, and the two
- *  fields `canOrchestrate()` reads (kind + the capability flag). */
-export interface WaveNode {
-  id: string;
-  parentId?: string;
-  kind?: string;
-  canOrchestrate?: boolean;
-}
+/** The minimal workspace shape the walks need (= {@link RunNode}). */
+export type WaveNode = RunNode;
 
-/** `canOrchestrate` over the minimal node shape — an orchestrator is the KIND
- *  `'orchestrator'` OR the capability flag (a PROMOTED worktree), never the kind
- *  alone (D1: an OPS is a promoted worktree carrying the flag). */
+/** Does the node coordinate? Delegates to `coordinates`. */
 export function nodeOrchestrates(n: WaveNode): boolean {
-  return canOrchestrate({ kind: n.kind as never, canOrchestrate: n.canOrchestrate });
+  return coordinates(n);
 }
 
-/**
- * The run id a workspace belongs to = the NEAREST orchestrator at or above it.
- *
- * Itself if it is an orchestrator (an OPS/LEAD is its own run); else walk
- * `parentId` up to the first ancestor that `canOrchestrate`. A plain workspace
- * with NO orchestrator anywhere above it is its own run (a bare `orchestra spawn
- * --detached` with no coordinator) — the coexistence-safe fallback, matching the
- * design guardrail "a workspace with no anchor above it is its own run".
- *
- * @param lookup resolves a parent id to its node, or undefined for a broken/
- *   absent link (a dangling `parentId` after a delete) — the walk then stops at
- *   the deepest resolvable node and returns the nearest orchestrator found so
- *   far, else that node's own id. Never throws; a cycle is bounded by `seen`.
- */
+/** The run id a workspace belongs to = its nearest coordinator at or above it. Delegates to `runIdOf`. */
 export function nearestOrchestratorId(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
 ): string {
-  let cur: WaveNode = ws;
-  const seen = new Set<string>([cur.id]);
-  // The workspace itself, then each resolvable ancestor: the FIRST orchestrator
-  // is the run. Checking `cur` first is what makes "self if it orchestrates" hold.
-  for (;;) {
-    if (nodeOrchestrates(cur)) return cur.id;
-    if (!cur.parentId) break;
-    const parent = lookup(cur.parentId);
-    if (!parent || seen.has(parent.id)) break;
-    seen.add(parent.id);
-    cur = parent;
-  }
-  // No orchestrator at or above `ws` (or a broken link before one was found):
-  // `ws` is its own run. NOT the deepest ancestor — a plain member whose whole
-  // chain is non-orchestrators is a standalone run, and using an arbitrary
-  // ancestor would put unrelated members in one run.
-  return ws.id;
+  return runIdOf(ws, lookup);
 }
 
-/**
- * For a workspace that BECOMES an orchestrator, the run id of its PARENT
- * orchestrator (the nested-run pointer, `parent_run_id`) — or null if it is a
- * top-level orchestrator (a LEAD with no orchestrator above it).
- *
- * Walk STARTS at `ws.parentId` (never `ws` itself — `ws` is the new orchestrator
- * whose own row we are creating), and returns the first ancestor that
- * `canOrchestrate`, or (#221, when `anchorsRun` is given) the first that already
- * ANCHORS a run row. This is what makes LEAD→OPS two rows with the OPS's
- * `parent_run_id` = the LEAD's run id.
- */
+/** The run id of a new orchestrator's PARENT coordinator (or, with `anchorsRun`, run anchor), or null. */
 export function parentOrchestratorId(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
   anchorsRun?: (id: string) => boolean,
 ): string | null {
-  if (!ws.parentId) return null;
-  const seen = new Set<string>([ws.id]);
-  let cur = lookup(ws.parentId);
-  while (cur && !seen.has(cur.id)) {
-    if (nodeOrchestrates(cur) || anchorsRun?.(cur.id)) return cur.id;
-    seen.add(cur.id);
-    if (!cur.parentId) break;
-    cur = lookup(cur.parentId);
-  }
-  return null;
+  return ancestorCoordinatorId(ws, lookup, anchorsRun);
 }
 
-/** #221 — a workspace that is its OWN run anchor without orchestrating (a run-less parent that
- *  gained a mission run): a plain workspace, not a coordinator. */
+/** #221 — a plain workspace that is its own run anchor. Delegates to run-position. */
 export function isPlainOwnAnchor(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
 ): boolean {
-  return !nodeOrchestrates(ws) && nearestOrchestratorId(ws, lookup) === ws.id;
+  return isPlainOwnAnchorOf(ws, lookup);
 }
 
-/**
- * #221 — the parent run for a NEW orchestrator: `parentOrchestratorId`, else the DIRECT
- * parent when it resolves but anchors no run and has no orchestrator above it
- * (`implicit`: the caller must give it a mission row; it stays a plain workspace).
- */
+/** #221 — the parent run for a NEW orchestrator. Delegates to `parentRunOf`. */
 export function parentRunTarget(
   ws: WaveNode,
   lookup: (id: string) => WaveNode | undefined,
   anchorsRun: (id: string) => boolean,
 ): { id: string | null; implicit: boolean } {
-  const found = parentOrchestratorId(ws, lookup, anchorsRun);
-  if (found) return { id: found, implicit: false };
-  const parent = ws.parentId ? lookup(ws.parentId) : undefined;
-  return parent ? { id: parent.id, implicit: true } : { id: null, implicit: false };
+  return parentRunOf(ws, lookup, anchorsRun);
 }
 
 /**

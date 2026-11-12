@@ -7,7 +7,7 @@ import { isActionableStopReason } from '../../shared/usage-resume';
 import type { Workspace } from '../../shared/types';
 
 function rowRepoLabel(w: Workspace): string {
-  if (w.kind === 'orchestrator') return 'orchestrator';
+  if (w.kind === 'orchestrator') return 'orchestrator'; // run-position: non-run — display label
   if (!w.repoPath) return 'scratch';
   const parts = w.repoPath.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? w.repoPath;

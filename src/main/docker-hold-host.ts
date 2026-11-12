@@ -8,7 +8,7 @@ import { getMemoryGuardSnapshot, subscribeMemoryGuardSamples } from './memory-gu
 import { keeperSocketPath } from './keeper-client.ts';
 import { orchestraHome } from './platform/index.ts';
 import { getBus, send as busSend } from './bus.ts';
-import { nearestOrchestratorId } from './wave-run-id.ts';
+import { runIdOf } from '../shared/run-position.ts';
 import { store } from './store.ts';
 import { scoped } from './logger.ts';
 import { admissionStateFile } from '../shared/docker-hold.ts';
@@ -45,7 +45,7 @@ function productionHold(): DockerHold {
       const db = getBus();
       const ws = store.getWorkspace(wsId);
       if (!db || !ws) return false;
-      busSend(db, { runId: nearestOrchestratorId(ws, (id) => store.getWorkspace(id)), sender: 'host', kind: 'status', recipient: wsId, body: text });
+      busSend(db, { runId: runIdOf(ws, (id) => store.getWorkspace(id)), sender: 'host', kind: 'status', recipient: wsId, body: text });
       return true;
     },
     noticeAfterMs: NOTICE_AFTER_MS,

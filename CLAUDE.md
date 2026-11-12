@@ -15,7 +15,7 @@ design decisions, so you get accurate context without grepping the tree first.
 
 | Task touches… | Reference doc |
 |---|---|
-| Workspace lifecycle, worktrees, spawn/promote/attach, store, setup scripts, secrets | `docs/codebase-map/workspaces.md` |
+| Workspace lifecycle, worktrees, spawn/promote/attach, store, setup scripts, secrets; the ONE module deciding which run an agent is in and who coordinates (`src/shared/run-position.ts`, #432: `coordinates` / `runIdOf` / `parentRunOf`, grep gate `scripts/check-run-position-single-reader.mjs`) | `docs/codebase-map/workspaces.md` |
 | Diffs, merge-state, CI checks, branch ops, base sync | `docs/codebase-map/git.md` |
 | Local socket (routes incl. `/identity`), per-worktree hook scripts, the `orchestra` CLI (incl. its host-resolved bus identity) | `docs/codebase-map/hooks-cli-socket.md` |
 | Status dot, events spool, Terminals (Run script / nvim / account login PTYs — no agent PTY since ADR 0007), xterm, logging, the removal-assertion E2E rig (`pnpm run test:agent-view-removal`); session hibernation (Veille) incl. the Reliquat wait — a member with live Reliquats waits, then the Veille stops + lists them (#326) | `docs/codebase-map/activity-pty-terminal.md` |

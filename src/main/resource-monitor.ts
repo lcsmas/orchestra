@@ -16,7 +16,7 @@ import { store } from './store';
 import { keeperPidFilePath, keeperSocketPath, listKeeperRoots, readTrackedKeeperPid } from './keeper-client';
 import { createDockerApi, readRelayUpstream, type DockerApi } from './docker-api';
 import { getBus, send as busSend } from './bus';
-import { nearestOrchestratorId } from './wave-run-id';
+import { runIdOf } from '../shared/run-position';
 import { realKillDeps } from './pause-kill';
 import { BrowserTracker, browserOrphansOf, browserPass, browserStatusText, realClientState, type BrowserPassDeps, type BrowserPassOpts } from './browser-reliquats';
 import { AGENT_TMP_REL } from '../shared/home-root-guard';
@@ -500,7 +500,7 @@ export function productionBrowserBridge(): NonNullable<ResourceMonitorDeps['brow
       const db = getBus();
       const ws = store.getWorkspace(wsId);
       if (!db || !ws) return;
-      busSend(db, { runId: nearestOrchestratorId(ws, (id) => store.getWorkspace(id)), sender: 'host', kind: 'status', recipient: wsId, body: text });
+      busSend(db, { runId: runIdOf(ws, (id) => store.getWorkspace(id)), sender: 'host', kind: 'status', recipient: wsId, body: text });
     },
   };
   return bridge;

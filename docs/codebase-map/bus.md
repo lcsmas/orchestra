@@ -491,7 +491,8 @@ divergence counters), and **four per-mechanism switches** — `delivery`, `wake`
 | `src/shared/bus-view.ts` | The `BusSnapshot` wire shape the pane renders |
 | `src/main/bus-runs.ts` | Run rows + their frozen flags; `busSwitch()` |
 | `src/main/bus-settings.ts` | The LIVE switches (store-backed) — deliberately a different module from the frozen read |
-| `src/main/wave-run-id.ts` | `walkToRootId` — the pure walk-to-root that gives a workspace its wave anchor (N2), store-injected so it unit-tests |
+| `src/shared/run-position.ts` | #432 — the ONE module deciding run membership + coordination: `coordinates` / `runIdOf` / `parentRunOf` (+ `isCoordinatorKind`, `isPlainOwnAnchor`, `COORDINATOR_HOOK_GATE`); guarded by `scripts/check-run-position-single-reader.mjs` |
+| `src/main/wave-run-id.ts` | thin delegates of run-position under their old names (`nearestOrchestratorId`, `nodeOrchestrates`, `parentOrchestratorId`, `parentRunTarget`, `isPlainOwnAnchor`) + `walkToRootId` (retained, not the run anchor) |
 | `src/main/bus-pane.ts` | The read-only IPC and the snapshot assembly |
 | `src/renderer/components/BusPane.tsx` | The pane, incl. the bus-unavailable state |
 | `src/renderer/components/BusSwitchSettings.tsx` | Flipping the live switches (a WRITE, deliberately not a pane channel) |
@@ -591,8 +592,8 @@ notices, each asserting the opposite — the "half a fleet reads wake=on, the ot
 half wake=off" split the freeze exists to prevent. `runId` is the workspace's
 run ANCHOR = its NEAREST ORCHESTRATOR (LEAD ruling D1, ledger #135 — this
 OVERTURNED the earlier tree-root model of #118 N2): `resolveWaveRunId(ws)` calls
-`nearestOrchestratorId(ws, store.getWorkspace)`, which returns `ws` if it
-`canOrchestrate` else the first `canOrchestrate` ancestor (an OPS is a promoted
+`runIdOf(ws, store.getWorkspace)` (`src/shared/run-position.ts`, #432; the old `nearestOrchestratorId` delegates to it), which returns `ws` if it
+`coordinates` else the first coordinating ancestor (an OPS is a promoted
 worktree carrying the flag — NOT `kind==='orchestrator'` alone), else `ws` (a
 plain standalone spawn is its own run). The pure walk lives in
 `src/main/wave-run-id.ts` (store-free, unit-tested: member→OPS not LEAD, a
@@ -2408,10 +2409,10 @@ the freeze was vacuous.
 The topology is LEAD (long-lived orchestrator) → OPS (promoted worktree, one per
 wave) → members. If the anchor were the tree root, every wave would freeze on the
 LEAD's lifetime run — no per-wave flip. So `resolveWaveRunId(ws)` =
-`nearestOrchestratorId(ws, store.getWorkspace)` (`src/main/wave-run-id.ts`, pure):
-`ws` if it `canOrchestrate` (kind `'orchestrator'` OR the capability flag — an OPS
+`runIdOf(ws, store.getWorkspace)` (`src/shared/run-position.ts`, pure, #432; `wave-run-id.ts` delegates):
+`ws` if it `coordinates` (kind `'orchestrator'` OR the capability flag — an OPS
 is a *promoted worktree*, so NEVER key on kind alone), else the first
-`canOrchestrate` ancestor, else `ws` (a plain standalone spawn is its own run).
+coordinating ancestor, else `ws` (a plain standalone spawn is its own run).
 `parentOrchestratorId` gives the OPS's `parent_run_id` = the LEAD's run → **nested
 LEAD→OPS = two run rows.** `walkToRootId` is retained for tree-root callers but is
 NOT the run anchor.
@@ -2419,8 +2420,8 @@ NOT the run anchor.
 **#221 — a run-less PLAIN parent gets a mission run when it promotes a child.** A
 hand-made LEAD that was never promoted has no orchestrator and no run, so its promoted
 OPS used to become a ROOT mission (LEAD→OPS mail refused by #155 — the LEAD's run has no
-row; OPS→LEAD landed in a run the LEAD is never woken for). `parentRunTarget`
-(`wave-run-id.ts`) now resolves the child's `parent_run_id` as: first ancestor that is an
+row; OPS→LEAD landed in a run the LEAD is never woken for). `parentRunOf`
+(`run-position.ts`; `parentRunTarget` in `wave-run-id.ts` delegates) now resolves the child's `parent_run_id` as: first ancestor that is an
 orchestrator **or already anchors a run row** (`parentOrchestratorId(ws, lookup,
 anchorsRun)`), else the DIRECT parent when it resolves (`implicit`). `computeAnchorInfo`
 (`bus-run-anchor.ts`, pure — `resolveAnchorInfo` in `workspaces.ts` delegates with the
@@ -2436,7 +2437,7 @@ promote are unchanged. No schema change. Existing root-mission OPS rows are NOT 
 **#221 F1 — the plain parent LOSES NOTHING.** Giving the parent a delivery-ON run would
 have cut off its NON-member children (plain, no row, resolve to themselves). (a) The P4
 gate in `dispatchMessageRequest` skips a **plain own-anchor** (`isPlainOwnAnchor`,
-`wave-run-id.ts`: not an orchestrator AND `nearestOrchestratorId === self`) **only for a
+`run-position.ts`: not a coordinator AND `runIdOf === self`) **only for a
 sender WITHOUT a bus route** — the sender's run ∉ `getRelatedRunIds(parent run)`, i.e. a
 non-member child or an external caller; the OPS and its members (whose `send` reaches the
 parent) are still refused, as are an orchestrator and any member of a delivery-ON run. The
@@ -2616,7 +2617,7 @@ an own-run-retrieval must-FAIL that shows the permanent loop as RED.
   (master primitives) as the failing control. `scripts/verify-promote-run-refresh.mjs`
   §#221 drives the SHIPPED `dispatchPromoteRequest` over the real `workspaces.ts`.
 - `src/main/wave-run-anchor-wiring.test.ts` — source guards for the un-importable
-  seams; `resolveWaveRunId` uses `nearestOrchestratorId` not `walkToRootId`; both
+  seams; `resolveWaveRunId` uses `runIdOf` not `walkToRootId`; both
   promote branches call `startRunForPromoted`; roster mutant `'default'` reddens.
 - `scripts/verify-bus-status-cli.mjs` — REAL built CLI over a fake socket: G8 wave
   run id not `host-…` (+ must-FAIL) + frozen-vs-live table.
