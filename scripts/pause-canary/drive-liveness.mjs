@@ -17,6 +17,7 @@ const BASE = opt('base'), REPO = opt('repo'), APP = opt('app'), CLAUDE = opt('cl
 const ARM = opt('arm', 'done-idle');
 const SWITCH = opt('switch', 'on');
 const WINDOW_S = Number(opt('window-s', '780'));   // 10 min staleness bound + 3 sweeps of 60 s
+const SABOTAGE = opt('sabotage', null);   // 'collector' = the must-FAIL arm of the end-of-window guard: the bus reader is killed before the last read — the verdict MUST be VOID, never CLEAN
 const LABEL = opt('label', `liv${Date.now().toString(36).slice(-4)}`);
 const STALE_S = 600;
 if (!BASE || !REPO || !APP || !CLAUDE || !['done-idle', 'silent-idle', 'hung'].includes(ARM) || !['on', 'off'].includes(SWITCH)) { console.error('usage: drive-liveness.mjs --base --repo --app --claude --arm done-idle|silent-idle|hung [--switch on|off] [--window-s 780]'); process.exit(2); }
@@ -32,7 +33,9 @@ const rig = await makeRig({ label: LABEL, spec, apiUrl: api.url, appBin: APP, cl
 say(`[${LABEL}] arm=${ARM} switch=${SWITCH} window=${WINDOW_S}s RIG H=${rig.H} parent=${P.slice(0, 8)} child=${C.id.slice(0, 8)}`);
 say(`[${LABEL}] SEED ${JSON.stringify(seedRuns(rig, REPO, SWITCH === 'off' ? 'liveness-off' : 'none'))}`);
 const busr = startBusReader(rig, REPO);
-const Q = (sql, ...a) => busr.q(sql, ...a);
+// the collector: a failed/hung read is `null`, NEVER an empty list (a dead collector reads as « 0 rows » — the very zero this soak asserts). Every read has a timeout; the reads are counted.
+const reads = { ok: 0, failed: 0, lastOkAt: null };
+const Q = async (sql, ...a) => { const r = await Promise.race([busr.q(sql, ...a), sleep(8000).then(() => null)]); if (r === null || r === undefined) reads.failed++; else { reads.ok++; reads.lastOkAt = Date.now(); } return r ?? null; };
 const result = { arm: ARM, switch: SWITCH, label: LABEL, windowS: WINDOW_S, verdict: 'ERROR' };
 let app, frozen = null;
 const wtC = rig.wt(C.k);
@@ -86,11 +89,19 @@ try {
   const deadline = tActivity + WINDOW_S * 1000;
   let polls = 0;
   while (Date.now() < deadline) {
-    const r = (await Q("SELECT sequence, sender, recipient, run_id, created_at, body FROM messages WHERE kind = 'escalation' ORDER BY sequence")) ?? [];
+    const r = (await Q("SELECT sequence, sender, recipient, run_id, created_at, body FROM messages WHERE kind = 'escalation' ORDER BY sequence")) ?? [];   // a null poll only costs one sample: the END-OF-WINDOW read below is the guarded one
     for (const x of r) if (!seen.has(x.sequence)) { seen.add(x.sequence); rows.push({ ...x, atS: Math.round((Date.now() - tActivity) / 1000) }); say(`[${LABEL}] ESCALATION #${x.sequence} +${rows[rows.length - 1].atS}s ${x.sender === C.id ? 'child' : x.sender === P ? 'PARENT' : x.sender}→${x.recipient === P ? 'P' : x.recipient} ${String(x.body).slice(0, 110)}`); }
     polls++;
     await sleep(5000);
   }
+  // END-OF-WINDOW GUARD: one last read of the escalation rows AND of the bus' total message count (the dispatch + the child's own mail make it ≥ 2) — either unreadable, or an empty bus = the collector is dead: VOID, never CLEAN/DIRTY
+  if (SABOTAGE === 'collector') { try { busr.close(); } catch { /* */ } }
+  const finalEsc = await Q("SELECT sequence, sender, recipient, run_id, created_at, body FROM messages WHERE kind = 'escalation' ORDER BY sequence");
+  const finalCount = await Q('SELECT COUNT(*) AS n FROM messages');
+  const finalN = finalCount?.[0]?.n ?? null;
+  const collectorOk = finalEsc !== null && finalN !== null && finalN >= 2;
+  result.collector = { okReads: reads.ok, failedReads: reads.failed, finalReadAt: new Date().toISOString(), finalEscalationRows: finalEsc?.length ?? null, finalMessageCount: finalN, ok: collectorOk, sabotage: SABOTAGE };
+  if (collectorOk) for (const x of finalEsc) if (!seen.has(x.sequence)) { seen.add(x.sequence); rows.push({ ...x, atS: Math.round((Date.now() - tActivity) / 1000) }); }
   const cliNow = ARM === 'hung' ? (frozen && fs.existsSync(`/proc/${frozen.pid}`) ? 'frozen CLI still there' : 'frozen CLI GONE (the app replaced/killed it)') : (childCli() ? 'CLI alive' : 'CLI gone');
   const logs = (() => { try { return fs.readdirSync(`${rig.H}/logs`).flatMap((f) => fs.readFileSync(`${rig.H}/logs/${f}`, 'utf8').split('\n').filter((l) => /bus-liveness:/.test(l))); } catch { return []; } })();
   const bodies = rows.map((x) => String(x.body));
@@ -100,7 +111,8 @@ try {
   if (ARM === 'done-idle') { clean = rows.length === 0; why = `${rows.length} escalation row(s) over ${WINDOW_S}s of real clock after the child went idle (expected 0)`; }
   else if (ARM === 'silent-idle') { clean = rows.length === 1 && /no session activity for \d+m/.test(bodies[0]) && toP && !subjectIsParent && rows[0].atS >= STALE_S - 30; why = `${rows.length} row(s); first at +${rows[0]?.atS ?? 'never'}s (expected exactly 1 staleness row to P at ≥ ${STALE_S} s)`; }
   else { clean = rows.length >= 1 && /hung mid-call/.test(bodies[0]) && toP && !subjectIsParent && rows[0].atS >= STALE_S - 30; why = `${rows.length} row(s); first at +${rows[0]?.atS ?? 'never'}s (expected a « hung mid-call » row to P at ≥ ${STALE_S} s)`; }
-  Object.assign(result, { verdict: clean ? 'CLEAN' : 'DIRTY', why, rows: rows.map((x) => ({ seq: x.sequence, atS: x.atS, sender: x.sender === C.id ? 'child' : x.sender === P ? 'parent' : x.sender, to: x.recipient === P ? 'P' : x.recipient, run: x.run_id === P ? 'P' : x.run_id, body: String(x.body).slice(0, 140) })), polls, cliNow, livenessLog: logs.slice(-6).map((l) => l.slice(-170)), childRequests: api.requests.filter((r) => r.role === C.k).length, minAvailGB: hostNow().availGB });
+  if (!collectorOk) { clean = false; why = `COLLECTOR DEAD at the end of the window (final escalation read ${finalEsc === null ? 'FAILED' : 'ok'}, message count ${finalN ?? 'FAILED'}, failed reads ${reads.failed}) — a zero would be unproven: VOID`; }
+  Object.assign(result, { verdict: !collectorOk ? 'VOID' : clean ? 'CLEAN' : 'DIRTY', why, rows: rows.map((x) => ({ seq: x.sequence, atS: x.atS, sender: x.sender === C.id ? 'child' : x.sender === P ? 'parent' : x.sender, to: x.recipient === P ? 'P' : x.recipient, run: x.run_id === P ? 'P' : x.run_id, body: String(x.body).slice(0, 140) })), polls, cliNow, livenessLog: logs.slice(-6).map((l) => l.slice(-170)), childRequests: api.requests.filter((r) => r.role === C.k).length, minAvailGB: hostNow().availGB });
 } catch (e) {
   result.verdict = 'ERROR';
   result.error = String(e?.message ?? e).slice(0, 300);

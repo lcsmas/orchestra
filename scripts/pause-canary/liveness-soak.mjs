@@ -50,6 +50,7 @@ const ALL_ARMS = [
     { name: 'control:silent-idle', arm: 'silent-idle', want: 'CLEAN', app: APP },
     { name: 'must-fail:hung-liveness-off', arm: 'hung', switch: 'off', want: 'DIRTY', app: APP },
     { name: 'must-fail:mutant-released-blind', arm: 'done-idle', want: 'DIRTY', app: mutApp.bin },
+    { name: 'must-fail:dead-collector', arm: 'done-idle', sabotage: 'collector', windowS: 20, want: 'VOID', app: APP },   // the end-of-window collector guard (#438-fu): a killed bus reader must read VOID, never CLEAN
   ]),
   ...Array.from({ length: RUNS }, (_, i) => ({ name: `done-idle-${i + FIRST}`, arm: 'done-idle', want: 'CLEAN', app: APP })),
 ];
@@ -78,7 +79,7 @@ const runArm = (a, i) => new Promise((resolve) => {
   const label = `lv${i}-${a.name.replace(/[^a-z0-9]+/gi, '_').slice(0, 24)}`;
   const pin = path.join(BASE, `pin-cfg-${label}`); fs.mkdirSync(pin, { recursive: true });
   const rigs = path.join(BASE, 'rigs', label); fs.mkdirSync(rigs, { recursive: true });
-  const driveArgs = ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'drive-liveness.mjs'), '--base', BASE, '--repo', REPO, '--app', a.app, '--claude', claudeBin, '--arm', a.arm, '--switch', a.switch ?? 'on', '--window-s', String(WINDOW_S), '--label', label];
+  const driveArgs = ['--no-warnings', '--experimental-strip-types', path.join(HERE, 'drive-liveness.mjs'), '--base', BASE, '--repo', REPO, '--app', a.app, '--claude', claudeBin, '--arm', a.arm, '--switch', a.switch ?? 'on', '--window-s', String(a.windowS ?? WINDOW_S), ...(a.sabotage ? ['--sabotage', a.sabotage] : []), '--label', label];
   const env = { PATH: process.env.PATH, HOME: REAL_HOME, E2E_RIG_BASE: rigs, CLAUDE_CONFIG_DIR_PIN: pin };
   const log = fs.createWriteStream(path.join(OUT, `${label}.log`));
   const child = spawn('bash', [path.join(REPO, 'scripts', 'e2e-contained-rig.sh'), process.execPath, ...driveArgs], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] });
