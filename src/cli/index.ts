@@ -1526,7 +1526,7 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/attach', { id, parentId, noRestart });
       if (!res.ok) fail(res.error ?? 'failed to attach workspace');
       process.stdout.write(
-        `Attached ${res.id as string} under orchestrator ${res.parentId as string}` +
+        `Attached ${res.id as string} under ${res.parentId as string}` +
           reparentSuffix(res),
       );
       return;

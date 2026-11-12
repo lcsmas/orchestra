@@ -1687,7 +1687,7 @@ module that consumes the seams below.
   `pauseRefusalWith` `src/main/bus-pause.ts`, pure half `src/shared/bus-pause.ts`). Resolves the pause **at gate time through the LIVE
   workspace tree** (`pausedCarrierForWorkspace`): the workspace and every ancestor along the store's `parentId` chain are each checked as a
   possible carrier (run id == its orchestrator's — or a run-anchoring plain parent's — workspace id), never `$ORCHESTRA_RUN_ID`. `runs.parent_run_id`
-  is **write-once** (`startRun` is `INSERT OR IGNORE`; attach/detach/demote never re-point it), so it is consulted ONLY as a fallback when the chain
+  is written by `startRun` (`INSERT OR IGNORE`) and, since #439, RE-POINTED by `repointRun` on an attach/detach of the run's coordinator (`kind` follows: mission/vague), so it is consulted ONLY as a fallback when the chain
   reaches a workspace that is gone from the store (review D1a F2). Returns `run en pause — orchestra run resume --run <carrier>` or null.
   `origin: 'human'` is **never refused and never even reads the bus**. Unknown ⇒ not paused (no row, unreadable read — logged). **Fail-open when the
   boot bus is unavailable** (review D1a F6, accepted gap): a pause the CLI wrote is then NOT enforced and the CLI still says "now PAUSED" — one WARN line
@@ -1720,7 +1720,7 @@ module that consumes the seams below.
   EVERY pause column via `clearPauseColumns`) remains for a stale pause column on a run whose frozen `pause` switch is OFF and for verb deps without `beginReprise`.
 - **Human-turn seam for D1b**: `setPauseHumanTurnObserver` / `notePauseHumanTurn` (`src/main/pause-gate.ts`) — `sdkSend` notes every HUMAN-origin send once, so the trap's turn-start observer can tell a fresh human turn from an automatic one.
 - **Seams for D1b** (`src/main/bus-pause.ts`): `runsOwingPauseTrap(db)` (carriers with `pause_trap_at` NULL), `runSubtreeIds(db, carrier)`
-  (the pause's member runs by `parent_run_id` — **stale for a run re-parented after creation; resolve members through the live tree / `pausedCarrierForWorkspace`**), `activePauseFor` (run-row walk), `pausedCarrierForWorkspace` (live tree), `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
+  (the pause's member runs by `parent_run_id` — re-pointed on attach/detach since #439, but still resolve members through the live tree / `pausedCarrierForWorkspace`), `activePauseFor` (run-row walk), `pausedCarrierForWorkspace` (live tree), `getRunPause`. A lift clears `pause_trap_at` so the next pause owes a fresh trap.
 - **Slot trap**: tests that build an old-version DB by hand-DROPping (`bus-fencing.test.ts` T128.4, `bus-mirror.test.ts` C11) must also
   drop the four pause columns + `pause_records` for `from < 9`, or the replay throws "duplicate column name".
 - **Not done here** (by design): usage-limit auto (#256), canary (#258) — the UI (#257) is in `docs/codebase-map/pause-trap.md` §UI. `orchestra bus-status` prints a `pause:` line (phase + "N/M en pause — manquent : …") only while a pause governs the run (#254; the older reply shape is unchanged when not paused). The Pause douce (#254) and the structured Reprise (#255) are in `docs/codebase-map/pause-trap.md`; while a Reprise is open `/busStatus` also carries `reprise` ("N/M repris — manquent : …" + who is still BLOCKED, #255).
@@ -2977,3 +2977,15 @@ with the reason (0 rows, 0 gates, 0 capabilities), no-row recipient refused, in-
 "answered" semantics pinned). `src/cli/bus-verbs.test.ts` carries the unit-level `#436` arms (replacing the #175/#221 must-FAIL arms).
 Mutants: `pnpm run test:mail-strangers-mutants` (`scripts/mail-strangers-mutants.mjs`, 12 guards, byte-exact restore).
 
+
+### #439 — attach / detach: re-pointed runs and mail that follows the agent
+
+`src/main/bus-reparent-run.ts` (platform-free, BusDb only; called by `reconcileRunAfterReparent` for every moved agent, noop branch included).
+`repointRun(db, runId, newParent|null)` — `parent_run_id` + `kind` follow the coordinator's position; refused (`refused-closed` / `refused-no-parent-row` /
+`refused-cycle`) rather than ever pointing at a closed run (#437), a missing row or a descendant. `forwardUnreadMail(db, reader, fromRuns, toRun)` — in ONE
+immediate transaction: the reader's UNREAD directed mail (`recipient = reader`, past its cursor in that run; an unacked outstanding lot counts as unread)
+is COPIED into the run it checks now (fresh `sequence`s so no old cursor in `toRun` hides them; sender / kind / body / thread / time kept; a `dispatch`
+copy also copies its `dispatch_capabilities` row), the cursor in each source run advances past the copied rows and its outstanding delivery is closed —
+a second call, or the agent coming back, finds nothing (**delivered once**). Run-wide broadcasts (recipient NULL) stay in the run left; a CLOSED
+destination copies nothing. `rederiveRunOnBus` composes row start → re-point → forward from the pre-move `relatedRunsOf` snapshot (`getRelatedRunIds`: own ∪
+ancestors ∪ descendants via `parent_run_id`) minus the post-move set. The mover's open gates / unanswered asks are NOT re-filed (re-filing strands the asker's rewake / the reply threads to the copy's sequence): a move is REFUSED while one would be stranded (`openExchangesOf` + `moveRefusalFor`, see workspaces.md §#439); `forwardMailToOthers` forwards the mail the moved subtree filed for recipients left behind; a lot already shown replays (at-least-once). Tests: `bus-reparent-run.test.ts`; mutants `pnpm run test:attach-any-agent-mutants`.

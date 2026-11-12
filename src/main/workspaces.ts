@@ -98,6 +98,8 @@ import {
 } from './bus-run-anchor.ts';
 import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reopenRunsById, reconcileRunClosureFromStore } from './bus-run-close.ts';
 import { isPlainOwnAnchor } from '../shared/run-position.ts';
+import { decideAttachTarget } from '../shared/attach-target.ts';
+import { forwardMailToOthers, moveRefusalFor, relatedRunsOf, rederiveRunOnBus, runClosedAt } from './bus-reparent-run.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -1761,12 +1763,53 @@ function staleRunMarkerPath(worktreePath: string): string {
  * their OWN anchor and unaffected, but they are cheap to include: their old and
  * new anchors are equal, so the decision is a no-op for them.
  */
-function snapshotRunAnchors(rootId: string): Map<string, string> {
+function snapshotRunAnchors(rootId: string, ...extraIds: string[]): Map<string, string> {
   const snap = new Map<string, string>();
-  for (const ws of collectWorkspaceTree(rootId)) {
-    snap.set(ws.id, resolveWaveRunId(ws));
+  const related = new Map<string, string[]>();
+  const db = getBus();
+  // `extraIds`: workspaces OUTSIDE the moved subtree whose own run flips with the move (#439: an attach target that becomes an owner).
+  const tree = collectWorkspaceTree(rootId);
+  const nodes = [...tree, ...extraIds.map((x) => store.getWorkspace(x)).filter((x): x is Workspace => !!x)];
+  movedSubtreeSnapshots.set(snap, tree.map((x) => x.id));
+  for (const ws of nodes) {
+    const anchor = resolveWaveRunId(ws);
+    snap.set(ws.id, anchor);
+    // #439: the runs each agent could see mail in BEFORE the move (own ∪ ancestors ∪ descendants) — what its unread mail follows out of.
+    try {
+      if (db) related.set(ws.id, relatedRunsOf(db, anchor));
+    } catch (e) {
+      log.warn(`reparent-run: could not snapshot the related runs of ${ws.id}`, e);
+    }
   }
+  relatedRunSnapshots.set(snap, related);
   return snap;
+}
+
+/** #439 — the pre-move related-run set per agent, keyed by the snapshot Map that `reconcileRunAfterReparent` receives (its signature is shared by promote/demote/adopt/attach). */
+const relatedRunSnapshots = new WeakMap<Map<string, string>, Map<string, string[]>>();
+/** #439 — the MOVED subtree ids of a snapshot (the attach target is in the snapshot too, but it is not moved). */
+const movedSubtreeSnapshots = new WeakMap<Map<string, string>, string[]>();
+
+/**
+ * #439 — attach / detach (and demote / adopt) RE-DERIVE the moved agent's run on the bus, whether or not its anchor id changed (#433 M1: the
+ * noop branch used to skip this, so a live agent that left its parent could not send until its next start):
+ *   1. the run row it now belongs to exists (an owner / top-level agent: its own mission or vague; a member: its new parent's run),
+ *   2. the run it OWNS is re-pointed at the run it is now a member of (`parent_run_id` + kind; #434 m1) — never at a closed run,
+ *   3. its UNREAD mail in runs it can no longer see follows it into the run it checks now, exactly once.
+ * Best-effort (D1): a bus failure is a log line, never a failure of the admin op.
+ */
+async function rederiveBusRunAfterReparent(ws: Workspace, relatedBefore: readonly string[] | undefined, oldHome: string | undefined): Promise<void> {
+  const db = getBus();
+  if (!db) return;
+  try {
+    const rep = rederiveRunOnBus(busRunAnchorDeps, db, ws, (id) => store.getWorkspace(id), relatedBefore, oldHome);
+    if (rep.startedRow && ws.host?.kind !== 'sandbox' && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, rep.home);
+    if (rep.repoint && rep.repoint !== 'unchanged') log.info(`reparent-run: run ${ws.id} ${rep.repoint}`);
+    if (rep.mail?.forwarded) log.info(`reparent-run: ${rep.mail.forwarded} unread message(s) of ${ws.id} followed it from ${rep.mail.fromRuns.join(', ')} into run ${rep.home}`);
+    if (rep.mail?.refusedClosed) log.warn(`reparent-run: run ${rep.home} is closed — unread mail of ${ws.id} stays where it is`);
+  } catch (e) {
+    log.warn(`reparent-run: bus re-derivation failed for ${ws.id}`, e);
+  }
 }
 
 /** The marker FILE alone (no store flag, no pane state). #379: a host-resolved session gets only this — the guard the CLI's
@@ -1825,6 +1868,7 @@ async function reconcileRunAfterReparent(
     // re-derives the run.
     if (ws.host?.kind === 'sandbox') continue;
     try {
+      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId), oldAnchorId); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail
       const newAnchorId = resolveWaveRunId(ws);
       const sdkLive = sdkSessionLive(ws.id);
       const hostKey = hasSessionKey(ws.id);
@@ -1904,7 +1948,40 @@ async function reconcileRunAfterReparent(
       log.warn(`reparent-run: reconcile failed for ${wsId}`, e);
     }
   }
+  forwardMailToOthersAfterReparent(oldAnchors); // #439 (review M1): the recipients LEFT BEHIND get what the moved subtree had filed for them
   return { restarted, markedStale, hostResolved };
+}
+
+/**
+ * #439 (OPS ruling R2) — null when the move is allowed, else the refusal text: the mover or a subtree member holds an OPEN gate / UNANSWERED ask
+ * whose counterparty would lie outside its related runs after the move (the exchange could never complete; the waiting side would be excluded from
+ * liveness forever). The post-move tree is simulated from the store (no write). A dispatch never refuses (every spawned child has one).
+ */
+function stalledExchangeRefusal(id: string, newParentId: string | null): string | null {
+  try {
+    const db = getBus();
+    return db ? moveRefusalFor(db, store.workspaces, id, newParentId) : null;
+  } catch (e) {
+    log.warn(`reparent-run: could not check the open exchanges of ${id}`, e);
+    return null;
+  }
+}
+
+/** #439 (review M1) — after every moved agent is re-derived: unread mail TO agents left outside the subtree, filed in the subtree's runs, follows them once. */
+function forwardMailToOthersAfterReparent(oldAnchors: Map<string, string>): void {
+  const db = getBus();
+  const moved = movedSubtreeSnapshots.get(oldAnchors);
+  if (!db || !moved) return;
+  try {
+    const skip = new Set(oldAnchors.keys()); // every snapshotted agent (the target too) was handled as a mover of its own mail
+    const homeOf = (rid: string): string | undefined => { const w = store.getWorkspace(rid); return w ? resolveWaveRunId(w) : undefined; };
+    for (const { reader, res } of forwardMailToOthers(db, moved, homeOf, skip)) {
+      if (res.forwarded > 0) log.info(`reparent-run: ${res.forwarded} unread message(s) for ${reader} followed it from ${res.fromRuns.join(', ')}`);
+      if (res.refusedClosed) log.warn(`reparent-run: the run of ${reader} is closed — its unread mail from the moved subtree stays where it is`);
+    }
+  } catch (e) {
+    log.warn('reparent-run: forwarding mail to the agents left behind failed', e);
+  }
 }
 
 /** #142 — the workspaces currently in the 'stale run' state (re-parented with
@@ -2124,7 +2201,7 @@ export async function dispatchDemoteRequest(input: {
 export interface AttachResult {
   ok: boolean;
   id?: string;
-  /** The new parent after the call: an orchestrator id on attach, `null` on detach. */
+  /** The new parent after the call: a workspace id on attach, `null` on detach. */
   parentId?: string | null;
   branch?: string;
   /** #142 — ids whose live session was restarted to pick up the new run. */
@@ -2175,6 +2252,8 @@ export async function dispatchAttachRequest(input: {
   // pure no-op success.
   if (!rawParent) {
     if (ws.parentId === undefined) return { ok: true, id, parentId: null, branch: ws.branch };
+    const stalled = stalledExchangeRefusal(id, null);
+    if (stalled) return { ok: false, error: stalled };
     // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
     const oldAnchors = snapshotRunAnchors(id);
     const updated: Workspace = { ...ws, parentId: undefined };
@@ -2185,38 +2264,36 @@ export async function dispatchAttachRequest(input: {
     return { ok: true, id, parentId: null, branch: ws.branch, restarted, markedStale, hostResolved };
   }
 
-  if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
-  const parent = store.getWorkspace(rawParent);
-  if (!parent) return { ok: false, error: `unknown parent workspace: ${rawParent}` };
-  if (!coordinates(parent)) {
-    return {
-      ok: false,
-      error: 'parent must be an orchestrator (promote it first)',
-    };
-  }
-  // Walk the proposed parent's ancestry: if `id` appears anywhere up the chain,
-  // this edge closes a cycle. `seen` also terminates on a pre-existing cycle in
-  // the store rather than spinning forever.
-  const seen = new Set<string>([id]);
-  for (let cur = parent; ; ) {
-    if (seen.has(cur.id)) return { ok: false, error: 'that would create a parent cycle' };
-    seen.add(cur.id);
-    const next = cur.parentId ? store.getWorkspace(cur.parentId) : undefined;
-    if (!next) break;
-    cur = next;
-  }
+  // #439: ANY workspace is a valid target (ADR 0012) — only structure refuses: self, unknown / archived target, a CLOSED run, a parent cycle.
+  const verdict = decideAttachTarget({
+    id,
+    parentId: rawParent,
+    lookup: (wid) => store.getWorkspace(wid),
+    targetRunClosed: (() => {
+      try {
+        const db = getBus();
+        return !!db && runClosedAt(db, rawParent) != null;
+      } catch {
+        return false;
+      }
+    })(),
+  });
+  if (!verdict.ok) return { ok: false, error: verdict.error };
+  const parent = store.getWorkspace(rawParent)!;
   // Idempotent re-attach to the same parent.
   if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
+  const stalled = stalledExchangeRefusal(id, rawParent);
+  if (stalled) return { ok: false, error: stalled };
 
   // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
-  const oldAnchors = snapshotRunAnchors(id);
+  const oldAnchors = snapshotRunAnchors(id, rawParent); // the TARGET too: becoming an owner flips ITS own run (#439)
   // #434: an ownership that rested on having NO parent (a top-level / dangling-link mission) ends when the workspace is attached under one — it is a MEMBER of the new parent's run
   // again. An owner by a promote (flag / kind) or by having children keeps it.
   const ownedByLinkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !store.workspaces.some((w) => w.parentId === id); // run-position: non-run — the ownership WRITE on attach
   const updated: Workspace = { ...ws, parentId: rawParent, ...(ownedByLinkOnly ? { ownsRun: undefined } : {}) };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
-  log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
+  log.info(`attached ${ws.branch} (${id}) under ${parent.branch} (${rawParent})`);
   await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child's next session start
   const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
   return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale, hostResolved };
@@ -4108,19 +4185,27 @@ children against THIS branch with no \`--into\` needed.
 Use the \`orchestra-spawn\` skill for each spawn, and \`orchestra-comms\` to
 track, follow up with, and verify the agents you spawn.
 
-## Nest an existing workspace under an orchestrator (or detach it)
+## Nest an existing workspace under another agent (or detach it)
 
-An orchestrator already groups the worktrees it spawns. Attach pulls in a
-workspace it did NOT spawn — one created earlier by you or another agent.
+A parent groups the worktrees it spawns. Attach pulls in a workspace it did NOT
+spawn — one created earlier by you or another agent. ANY agent is a valid
+parent: it does not have to be promoted or to have spawned anything yet.
 
 \`\`\`bash
-orchestra attach <workspace-id> <orchestrator-id>
-orchestra detach <workspace-id>          # back to its own repo section
+orchestra attach <workspace-id> <parent-id>
+orchestra detach <workspace-id>          # back to its own repo section, as the lead of a mission of its own
 \`\`\`
 
-The parent must already be an orchestrator (promote it first, above). Attach is
-refused when the edge would create a parent cycle — a workspace under itself,
-directly or through a chain of orchestrators.
+Both re-derive the run of the moved agent and its whole subtree: an attached
+agent joins its new parent's run, a detached one starts a mission of its own,
+and the mail it had not read yet follows it — delivered once, in its new run.
+Attach is refused when the edge would create a parent cycle, or when the target
+is archived or its run is closed. Any move is refused while the moved agent (or a
+sub-agent) belongs to a paused run — lift the pause first. A move (attach or detach) is also refused while
+the moved agent or one of its sub-agents has an open decision gate or an unanswered
+ask with an agent that would end up outside its runs — answer or resolve it first.
+A task the old coordinator dispatched cannot be completed to it after a move: the
+new coordinator dispatches again, and a status always works.
 
 ## File an orchestrator under a repo section
 
