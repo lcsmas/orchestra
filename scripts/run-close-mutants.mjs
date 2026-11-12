@@ -112,10 +112,11 @@ for (const m of MUTANTS) {
     if (m.cli) { buildCli(); cliDirty = true; }
     const u = unit(m.tests);
     const red = failedNames(u.stdout);
-    if (u.status !== 0 || red.length) killedBy.push(`unit: ${red.length ? red.slice(0, 2).join(' | ') : `rc=${u.status}`}`);
+    if (u.status !== 0 || red.length) killedBy.push(`unit: ${red.length ? red.map((n) => n.replace(/^\\?#437 /, '').slice(0, 60)).join(' | ') : `rc=${u.status}`}`);
   } finally {
     files.forEach((f, i) => fs.copyFileSync(path.join(BACKUP, `${m.id}-${i}.bak`), path.join(REPO, f)));
     restored = files.every((f, i) => sha(f) === before[f] && spawnSync('cmp', ['-s', path.join(BACKUP, `${m.id}-${i}.bak`), path.join(REPO, f)]).status === 0);
+    if (m.cli) buildCli(); // the bundle must never stay built from a mutant: a later (non-CLI) mutant would be "killed" by the stale binary
   }
   results.push({ id: m.id, name: m.name, killed: killedBy.length > 0, killedBy, restored });
   console.log(`${killedBy.length ? 'KILLED ' : 'SURVIVED'} ${m.id} ${m.name}${killedBy.length ? `\n         ← ${killedBy.join('\n         ← ')}` : ''}${restored ? '' : '\n         !! RESTORE FAILED'}`);
