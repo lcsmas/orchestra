@@ -9,7 +9,7 @@ import path from 'node:path';
 // @ts-expect-error — plain .mjs script, no types
 import { verdict, selfTest, PARENT_PICK_FILES } from '../../scripts/check-run-position-single-reader.mjs';
 import * as runPosition from './run-position.ts';
-import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, roleOf, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
+import { coordinatorSentinelWanted, coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, roleOf, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -71,6 +71,14 @@ test('#440 roleOf: the role is POSITION — LEAD = no resolvable parent, OPS = a
   assert.equal(roleOf({ id: 'f', parentId: 'lead', kind: 'worktree', canOrchestrate: true } as RunNode, lk), 'worker', 'the retired flag decides nothing');
   assert.equal(runIdOf(worker, lk), 'ops', 'a worker\'s run is its parent\'s');
   assert.equal(memberRunOf(ops, lk), 'lead', 'an OPS is a member of its parent\'s run while it owns its own');
+});
+
+test('#440-fu coordinatorSentinelWanted: the orchestrator kind always; otherwise an owner WITH children — not a childless owner, not a non-owner', () => {
+  assert.equal(coordinatorSentinelWanted({ kind: 'orchestrator' }, false), true);
+  assert.equal(coordinatorSentinelWanted({ kind: 'worktree', ownsRun: true }, true), true, 'an owner with children (an older store\'s plain parent)');
+  assert.equal(coordinatorSentinelWanted({ kind: 'worktree', ownsRun: true }, false), false, 'a childless owner: the attach path clears, the app-start sync does not write');
+  assert.equal(coordinatorSentinelWanted({ kind: 'worktree' }, true), false, 'children without ownership (not migrated yet) is not enough');
+  assert.equal(coordinatorSentinelWanted({ kind: 'worktree' }, false), false);
 });
 
 test('parentRunOf: the run ws is a member of = its direct parent; implicit only when that parent owns no row yet', () => {
@@ -170,7 +178,7 @@ test('a non-run read carrying the marker is allowed; a comment naming the flag i
 test('positive control bites: a module that stopped reading the flag (blind pattern) is DIRTY, not vacuously clean', () => {
   const v = withTree((dir) => {
     const f = path.join(dir, 'src/shared/run-position.ts');
-    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('ws.ownsRun === true', 'ws.flagX === true'));
+    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replaceAll('ws.ownsRun === true', 'ws.flagX === true'));
   });
   assert.equal(v.clean, false);
   assert.match(v.problems.join(), /positive control/);

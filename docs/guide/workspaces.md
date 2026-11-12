@@ -20,7 +20,7 @@ New branches get an auto-generated placeholder name (e.g. `crimson-meadow`). The
 
 ## Scratch sessions
 
-**⚡ Scratch** starts an agent in a throwaway directory — no repo, no git, no setup. Use it for quick questions, one-off scripts, or anything that doesn't belong in a project. A scratch session can later be [promoted to an orchestrator](multi-agent.md#orchestrators).
+**⚡ Scratch** starts an agent in a throwaway directory — no repo, no git, no setup. Use it for quick questions, one-off scripts, or anything that doesn't belong in a project. An agent that spawns agents of its own becomes an [orchestrator](multi-agent.md#orchestrators) by position — there is no promote.
 
 ## Orchestrators
 

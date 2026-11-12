@@ -113,7 +113,7 @@ const codeLines = (text: string): string[] => text.split('\n').filter((l) => !/^
 
 test('#440 — no promote/demote dispatcher, socket route, IPC channel or preload bridge is left', () => {
   const ws = src('src/main/workspaces.ts');
-  assert.doesNotMatch(ws, /export async function dispatch(Promote|Demote)Request|startRunForPromoted|unmarkOrchestratorWorktree/, 'workspaces.ts: the dispatchers and their helpers are gone');
+  assert.doesNotMatch(ws, /export async function dispatch(Promote|Demote)Request|startRunForPromoted/, 'workspaces.ts: the dispatchers and their helpers are gone');
   assert.doesNotMatch(src('src/main/hooks-server.ts'), /route === '\/(promote|demote)'/, 'hooks-server: no /promote or /demote route');
   for (const f of ['src/main/api-handlers.ts', 'src/shared/ipc.ts', 'src/preload/index.ts']) assert.doesNotMatch(src(f), /(promote|demote)Workspace|workspaces:(promote|demote)/, `${f}: no promote/demote IPC`);
 });

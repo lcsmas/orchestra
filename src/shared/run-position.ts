@@ -87,6 +87,13 @@ export function coordinatorRoleOf(ws: { repoPath?: string }): 'pure' | 'dual' {
   return ws.repoPath ? 'dual' : 'pure';
 }
 
+/** #440-fu — does the standing-role sentinel (`.orchestra/.orchestrator`, the shell hook gate's cache of "owns a run") belong in `ws`'s worktree?
+ *  The orchestrator kind always; otherwise an owner that has children. An owner whose ownership was just dropped (attach of a childless link-only
+ *  owner) answers false → the file is CLEARED; an older store's plain parent (children, no file) answers true → the app start WRITES it. */
+export function coordinatorSentinelWanted(ws: Pick<RunNode, 'kind' | 'ownsRun'>, hasChildren: boolean): boolean {
+  return isCoordinatorKind(ws) || (ws.ownsRun === true && hasChildren);
+}
+
 /** The standing-role hook gate (shell): SessionStart reminder + PreToolUse edit guard run only for a
  *  coordinator — the kind (env, set per session) or the sentinel file (written at an agent's first spawn, before any restart). */
 export const COORDINATOR_SENTINEL_FILE = '.orchestrator';

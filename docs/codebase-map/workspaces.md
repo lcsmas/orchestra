@@ -30,8 +30,10 @@ A workspace is an isolated execution environment for one Claude Code agent.
   [hooks-cli-socket.md](hooks-cli-socket.md)), both gated on `ORCHESTRA_KIND`
   env or the `.orchestra/.orchestrator` sentinel (`markOrchestratorWorktree`,
   written at creation, at adopt, and at an agent's FIRST SPAWN (`ensureParentOwnsRun`) so a
-  mid-session owner picks it up without a session restart; since #440 nothing removes it —
-  there is no demote). The sentinel's **contents** select the reminder wording: `dual`
+  mid-session owner picks it up without a session restart; #440-fu: it is the hook gate's CACHE of
+  "owns a run" and follows ownership both ways — `startRunsForOwnerWorkspaces` writes it for an older
+  store's plain parent (children, no file; `coordinatorSentinelWanted`), `dispatchAttachRequest` CLEARS it when a childless
+  link-only owner loses `ownsRun`; there is no promote/demote). The sentinel's **contents** select the reminder wording: `dual`
   (`coordinatorRoleOf`: the owner has a `repoPath`) yields a dual-role reminder — coordinate children
   *and* keep doing this branch's own work — while anything else (`1`, and every
   historic sentinel) yields the absolute "you do not implement" text. The

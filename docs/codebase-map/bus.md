@@ -1204,7 +1204,7 @@ to X11 and would reach the human's screen even with a correct `WAYLAND_DISPLAY`.
 ## Not covered here
 
 Gate resolution from the UI (v2). Who calls `startRun` for a real wave — **#134
-now does** (`maybeStartRunAtAnchor` at the nearest-orchestrator anchor + `/promote`);
+now does** (`maybeStartRunAtAnchor` at the nearest-orchestrator anchor + the agent's first spawn, `ensureParentOwnsRun` — #440: `/promote` is gone);
 before it, no production caller created runs. Counter *production* is #116's; #118
 only renders the frozen shape.
 
@@ -2420,7 +2420,7 @@ coordinating ancestor, else `ws` (a plain standalone spawn is its own run).
 LEAD→OPS = two run rows.** `walkToRootId` is retained for tree-root callers but is
 NOT the run anchor.
 
-**#221 — a run-less PLAIN parent gets a mission run when it promotes a child.** A
+**#221 — a run-less PLAIN parent gets a mission run when it spawns a child** (written "promotes" before #440 — historic wording; a promote is now a first spawn / an attach). A
 hand-made LEAD that was never promoted has no orchestrator and no run, so its promoted
 OPS used to become a ROOT mission (LEAD→OPS mail refused by #155 — the LEAD's run has no
 row; OPS→LEAD landed in a run the LEAD is never woken for). `parentRunOf`
@@ -2883,7 +2883,7 @@ agent's next CLI call, in the same turn, with no restart (before: #171 — promo
 (app quit while detached keepers live; hung host → 3 s), or `unregistered` (also an app older than #379, which answers `{}` on an unknown route) → the CLI uses
 its baked env, and `send` is refused when the `bus-run-stale` marker names a run other than the env's (the marker is looked up in the env root(s) `$ORCHESTRA_WORKSPACE_PATH` / `$ORCHESTRA_WORKTREE` when set — from any cwd, never the cwd then: a session sitting in a SIBLING worktree must not read that worktree's marker — and only WITHOUT an env root (an old keeper) in the cwd and EVERY ancestor: `staleMarkerPaths`; a keyed session whose host is down is told to reopen Orchestra / retry, not to `orchestra restart`) (`staleMarkerBlocksSend`: a marker naming the run the
 env ALREADY carries — a bash-mode `!cmd` with a freshly built env — does not block; an unreadable marker blocks). `check`/`ack` are always allowed there. While the host
-answers, the marker is ignored. This is why the marker file is still written on a host-resolved promote: the session's baked env IS the old run if the app goes away.
+answers, the marker is ignored. This is why the marker file is still written on a host-resolved move (attach / detach / adopt): the session's baked env IS the old run if the app goes away.
 
 **Not covered / accepted.** (0) Identity stays caller-asserted: `--as <coordinator>` from a member with a key gets the host's CURRENT generation (it passes the fence where master's stale env generation was rejected) — a member was never fenced without an env generation, `--generation`/`--as` flags already bypassed it, and the CLI writes `bus.sqlite` directly: the key is a fence against honest zombies, not an auth boundary. (1) Session-start-only effects still follow the OLD run until a restart: the Docker relay's `orchestra.run` label and the memory-cap decision of a
 promoted member — `refreeze --only memory_cap` (paused vague) is the explicit lever. (2) A pre-#379 keeper-surviving CLI has no key (env fallback until its next fresh spawn).

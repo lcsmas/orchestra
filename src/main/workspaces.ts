@@ -146,7 +146,7 @@ import { forgetHibernationActivity } from './hibernation-activity.ts';
 import { destroyPanel as destroyBrowserPanel } from './browser-panel';
 import type { Account, AgentImage, BrowserProfileId, CreateWorkspaceInput, RepoEntry, Workspace, WorkspaceStatus } from '../shared/types';
 import { isScratchLike } from '../shared/types';
-import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, roleOf, runIdOf, type RolePosition, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
+import { coordinates, coordinatorOf, coordinatorRoleOf, coordinatorSentinelWanted, isCoordinatorKind, memberRunOf, roleOf, runIdOf, type RolePosition, COORDINATOR_HOOK_GATE, COORDINATOR_SENTINEL_FILE } from '../shared/run-position';
 import { parseBtrfsDuSizes, parseDuSizes, type WorktreeSizes } from '../shared/worktree-sizes';
 
 const ORCHESTRA_ROOT = path.join(os.homedir(), '.orchestra', 'worktrees');
@@ -1317,6 +1317,16 @@ async function markOrchestratorWorktree(worktreePath: string, dualRole = false):
   }
 }
 
+/** #440-fu — remove the standing-role sentinel where an agent LOST its ownership (attach of a childless link-only owner), so the SessionStart
+ *  reminder stops calling it an orchestrator. Best-effort, like {@link markOrchestratorWorktree}. */
+async function unmarkOrchestratorWorktree(worktreePath: string): Promise<void> {
+  try {
+    await rm(path.join(worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE), { force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** How long spawn / Restart wait for the child's first-turn outcome (#227 D6/D7); the env override is for tests. */
 const INIT_WAIT_MS = 20_000;
 function initWaitMs(): number {
@@ -2058,6 +2068,7 @@ export async function dispatchAttachRequest(input: {
   const updated: Workspace = { ...ws, parentId: rawParent, ...(ownedByLinkOnly ? { ownsRun: undefined } : {}) };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
+  if (ownedByLinkOnly && !coordinatorSentinelWanted(updated, false) && ws.host?.kind !== 'sandbox') await unmarkOrchestratorWorktree(ws.worktreePath); // #440-fu: ownership lost → the hook gate's cache goes with it
   log.info(`attached ${ws.branch} (${id}) under ${parent.branch} (${rawParent})`);
   await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child's next session start
   const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
@@ -4641,6 +4652,11 @@ export async function startRunsForOwnerWorkspaces(): Promise<string[]> {
     if (ws && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, id);
   }
   for (const w of live) if (w.parentId && existsSync(w.worktreePath)) await writeBusSwitchState(w.worktreePath, resolveWaveRunId(w));
+  // #440-fu: an older store's plain parent (children, never spawned under this build) has no standing-role file — write it (never clears: a childless owner may be legit)
+  for (const w of live) {
+    if (!existsSync(w.worktreePath) || existsSync(path.join(w.worktreePath, '.orchestra', COORDINATOR_SENTINEL_FILE))) continue;
+    if (coordinatorSentinelWanted(w, live.some((c) => c.parentId === w.id))) await markOrchestratorWorktree(w.worktreePath, coordinatorRoleOf(w) === 'dual');
+  }
   if (started.length) log.info(`bus-run-anchor: started a vague run for ${started.length} owner(s) with a parent and no run`);
   return started;
 }

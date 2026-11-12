@@ -7,6 +7,7 @@
 //   S2  `orchestra whoami` by position — LEAD (no parent) / OPS (parent + owns a run) / worker (parent, no run): role, run, member-of
 //   S3  `orchestra promote <id>` and `orchestra demote <id>`: rc≠0, text names whoami + spawn, store.json + bus UNTOUCHED
 //   S4  the socket route `/promote` is gone (not `ok:true`) and changes nothing
+//   S6  (#440-fu) the standing-role sentinel follows ownership: an older store's plain parent gets the file at app start; attach of a childless link-only owner CLEARS it (an owner with children keeps it)
 //   S5  the generated skills + hook scripts (the REAL installOrchestraHooks output) carry NO promote / demote step
 import fs from 'node:fs';
 import os from 'node:os';
@@ -51,7 +52,7 @@ const electronStub = path.join(cacheDir, 'roles-position-440-electron-stub.mjs')
 const entry = path.join(tmp, 'entry.ts');
 const rel = (p) => JSON.stringify(path.join(repoRoot, p));
 fs.writeFileSync(entry, `
-export { installOrchestraHooks } from ${rel('src/main/workspaces.ts')};
+export { installOrchestraHooks, startRunsForOwnerWorkspaces } from ${rel('src/main/workspaces.ts')};
 export { store } from ${rel('src/main/store.ts')};
 export { initPlatform } from ${rel('src/main/platform/index.ts')};
 export { initBus, getBus } from ${rel('src/main/bus.ts')};
@@ -98,6 +99,12 @@ const OPS = 'a4400000-0000-4000-8000-000000000002';
 const WORKER = 'a4400000-0000-4000-8000-000000000003';
 const PLAIN = 'a4400000-0000-4000-8000-000000000004'; // top-level plain workspace that never spawned
 const FLAGGED = 'a4400000-0000-4000-8000-000000000005'; // childless OPS written with the retired flag: ONLY the flag can make it own a run
+const OLDPARENT = 'a4400000-0000-4000-8000-000000000006'; // pre-#434 plain parent: has a child, no ownsRun, no sentinel file
+const OLDKID = 'a4400000-0000-4000-8000-000000000007';
+const LINKONLY = 'a4400000-0000-4000-8000-000000000008'; // top-level owner, childless, sentinel present (it once spawned)
+const KEEPER = 'a4400000-0000-4000-8000-000000000009'; // top-level owner WITH a child, sentinel present
+const KEEPKID = 'a4400000-0000-4000-8000-00000000000a';
+const LONELY = 'a4400000-0000-4000-8000-00000000000b'; // top-level, ownsRun, childless, NO file: the sync must not write one (an owner with no child yet)
 const wt = (id) => { const d = path.join(tmp, id); fs.mkdirSync(path.join(d, '.orchestra'), { recursive: true }); return d; };
 const rec = (id, over = {}) => ({ id, name: `ws-${id.slice(-1)}`, branch: `b-${id.slice(-1)}`, kind: 'worktree', worktreePath: wt(id), repoPath: path.join(tmp, 'repo'), baseBranch: 'main', status: 'idle', createdAt: 1, agent: 'claude', ...over });
 fs.writeFileSync(storeFile, JSON.stringify({
@@ -107,6 +114,9 @@ fs.writeFileSync(storeFile, JSON.stringify({
     rec(WORKER, { parentId: OPS }),
     rec(PLAIN),
     rec(FLAGGED, { parentId: LEAD, canOrchestrate: true }),
+    rec(OLDPARENT), rec(OLDKID, { parentId: OLDPARENT }),
+    rec(LINKONLY, { ownsRun: true }),
+    rec(KEEPER, { ownsRun: true }), rec(KEEPKID, { parentId: KEEPER }), rec(LONELY, { ownsRun: true }),
   ],
 }));
 
@@ -201,6 +211,20 @@ check('control: the generator wrote the skills (comms, spawn, workspace-admin) a
 const offenders = files.filter((f) => /promot|demot/i.test(fs.readFileSync(f, 'utf8')));
 check('no generated file mentions promote / demote', offenders.length === 0, offenders.map((f) => path.relative(genWt, f)).join(', '));
 check('the standing-role reminder script is present and has no promote step', files.some((f) => /orchestrator-instruction|orchestrator.*\.sh$/.test(f)) && offenders.length === 0);
+
+console.log('\nS6 — the standing-role sentinel follows ownership (#440-fu):');
+const sentinel = (id) => path.join(tmp, id, '.orchestra', '.orchestrator');
+for (const id of [LINKONLY, KEEPER]) fs.writeFileSync(sentinel(id), '1'); // what the first spawn wrote
+check('control: OLDPARENT has children, owns a run after the load migration, and has NO sentinel file yet', mod.store.getWorkspace(OLDPARENT)?.ownsRun === true && !fs.existsSync(sentinel(OLDPARENT)));
+check('control: a worker and a childless non-owner have no sentinel (the sync must not spray the file)', !fs.existsSync(sentinel(WORKER)) && !fs.existsSync(sentinel(PLAIN)));
+await mod.startRunsForOwnerWorkspaces();
+check('the app-start sync WRITES the file for the older store\'s plain parent (dual wording: it has a repo)', fs.existsSync(sentinel(OLDPARENT)) && fs.readFileSync(sentinel(OLDPARENT), 'utf8') === 'dual');
+check('…and only for it: no file appeared for a worker, a top-level non-owner or a childless owner', !fs.existsSync(sentinel(WORKER)) && !fs.existsSync(sentinel(PLAIN)) && !fs.existsSync(sentinel(OLDKID)) && !fs.existsSync(sentinel(LONELY)));
+const at1 = await cli(LINKONLY, ['attach', LINKONLY, LEAD]);
+check('attach of the childless link-only owner under the LEAD succeeds', at1.code === 0, JSON.stringify(at1).slice(0, 240));
+check('…it is a worker by whoami and its sentinel is CLEARED (no stale "you are an ORCHESTRATOR" reminder)', row((await cli(LINKONLY, ['whoami'])).out, 'role') === 'worker' && !fs.existsSync(sentinel(LINKONLY)), `exists=${fs.existsSync(sentinel(LINKONLY))}`);
+const at2 = await cli(KEEPER, ['attach', KEEPER, LEAD]);
+check('attach of an owner WITH a child keeps its ownership and its sentinel (control: the clear is not unconditional)', at2.code === 0 && row((await cli(KEEPER, ['whoami'])).out, 'role') === 'OPS' && fs.existsSync(sentinel(KEEPER)), JSON.stringify(at2).slice(0, 200));
 
 await mod.stopHooksServer();
 fs.rmSync(tmp, { recursive: true, force: true });
