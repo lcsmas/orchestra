@@ -1571,13 +1571,16 @@ export async function dispatchSpawnRequest(
     created = { id: ws.id, branch: ws.branch };
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({
-      record: () => recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { spawner: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task }),
+      record: () => {
+        const outcome = recordSpawnDispatch({ getBus, lookup: (id) => store.getWorkspace(id) }, { spawner: input.from, detached: input.detached, remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox', child: ws, task });
+        if (outcome.kind === 'recorded') recorded = { dispatch: { runId: outcome.runId, seq: outcome.seq } }; // set BEFORE the start so a start that throws still reports it
+        return outcome;
+      },
       start: () => startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images),
       teardown: () => deleteWorkspace(ws.id),
     });
     if (!after.ran) return { ok: false, error: `refusing to spawn: ${after.error}`, ...(after.kept ? { id: ws.id, branch: ws.branch } : {}) };
     const started = after.result;
-    if (after.dispatch.kind === 'recorded') recorded = { dispatch: { runId: after.dispatch.runId, seq: after.dispatch.seq } };
     if (!started.ok) return keptFailure(ws.id, ws.branch, started.error);
     return { ok: true, id: ws.id, branch: ws.branch, ...(started.note ? { note: started.note } : {}), ...(started.held ? { held: started.held } : {}), ...recorded, ...profileReport() };
   } catch (e) {

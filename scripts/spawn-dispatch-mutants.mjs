@@ -24,7 +24,7 @@ const MUTANTS = [
   { id: 'M02', name: 'no capability is minted (every worker_done is rejected)', edits: [[SD, '      mintCapability(db, runId, s, a.child.id);\n', '']], tests: [T] },
   { id: 'M03', name: 'send + mint are not one transaction (a failed mint leaves an orphan dispatch)', edits: [[SD, 'const seq = db.transaction((): number => {', 'const seq = ((f: () => number) => f)((): number => {']], tests: [T] },
   { id: 'M04', name: 'a failed dispatch write no longer stops the spawn (the agent starts without its dispatch)', edits: [[SD, "if (dispatch.kind === 'failed') {", 'if (false as boolean) {']], tests: [T] },
-  { id: 'M05', name: 'the agent starts BEFORE the dispatch is written', edits: [[SD, 'const dispatch = a.record();', "const dispatch: SpawnDispatchOutcome = { kind: 'none', reason: 'detached' };"], [SD, 'return { ran: true, result: await a.start(), dispatch };', 'const result = await a.start(); return { ran: true, result, dispatch: a.record() };']], tests: [T] },
+  { id: 'M05', name: 'the agent starts BEFORE the dispatch is written', edits: [[SD, '    dispatch = a.record();\n  } catch (e) {', "    dispatch = { kind: 'none', reason: 'detached' };\n  } catch (e) {"], [SD, 'return { ran: true, result: await a.start(), dispatch };', 'const result = await a.start(); return { ran: true, result, dispatch: a.record() };']], tests: [T] },
   { id: 'M06', name: 'a refused spawn leaves its workspace behind (teardown never called)', edits: [[SD, '      await a.teardown();\n', '']], tests: [T] },
   { id: 'M07', name: 'a --detached / non-child spawn is dispatched across runs (guard removed)', edits: [[SD, 'if (a.detached || a.child.parentId !== a.spawner) return', 'if (false as boolean) return']], tests: [T] },
   { id: 'M08', name: 'a spawner that does not own the child\'s run is dispatched from anyway (run-mismatch guard removed)', edits: [[SD, 'if (runIdOf(spawner, deps.lookup) !== runId) {', 'if (false as boolean) {']], tests: [T] },
@@ -39,6 +39,10 @@ const MUTANTS = [
   { id: 'M17', name: 'dispatchSpawnRequest tears nothing down on a failed write (wiring)', edits: [[WS, 'teardown: () => deleteWorkspace(ws.id),', 'teardown: async () => {},']], tests: [T] },
   { id: 'M18', name: 'dispatchSpawnRequest goes on with the spawn after a refused dispatch (wiring)', edits: [[WS, 'if (!after.ran) return { ok: false, error:', 'if (false as boolean) return { ok: false, error:']], tests: [T] },
   { id: 'M19', name: 'dispatchSpawnRequest starts the agent outside the dispatch seam (wiring)', edits: [[WS, 'start: () => startWorkspaceAgentHeadless(ws.id, input.origin, false, input.images),', 'start: async () => ({ ok: true } as never),']], tests: [T] },
+  { id: 'M21', name: 'a throw while gathering the dispatch inputs escapes (the spawn falls through to the catch with a kept child, no teardown)', edits: [[SD, "dispatch = { kind: 'failed', error: e instanceof Error ? e.message : String(e) }; // a throw while GATHERING", 'throw e; // a throw while GATHERING']], tests: [T] },
+  { id: 'M22', name: 'the sandbox test of the spawner is always true (every spawn silently gets no dispatch)', edits: [[WS, "remote: !!input.from && store.getWorkspace(input.from)?.host?.kind === 'sandbox'", 'remote: true']], tests: [T] },
+  { id: 'M23', name: 'the reply never carries the recorded dispatch (a start that throws loses it)', edits: [[WS, "if (outcome.kind === 'recorded') recorded =", 'if (false as boolean) recorded =']], tests: [T] },
+  { id: 'M24', name: 'a kept child with no dispatch is no longer told not to be restarted', edits: [[SD, ' The workspace was kept STOPPED with no dispatch: do NOT restart it', ' The workspace was kept STOPPED']], tests: [T] },
   { id: 'M20', name: 'the CLI stops printing the recorded dispatch', edits: [[CLI, 'Task recorded as your dispatch #${dispatched.seq} to ${res.id}', 'Spawned ${res.id}']], tests: [T] },
 ];
 

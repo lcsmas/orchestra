@@ -75,14 +75,19 @@ export async function startAfterDispatch<R>(a: {
   start: () => Promise<R>;
   teardown: () => Promise<void>;
 }): Promise<StartAfterDispatch<R>> {
-  const dispatch = a.record();
+  let dispatch: SpawnDispatchOutcome;
+  try {
+    dispatch = a.record();
+  } catch (e) {
+    dispatch = { kind: 'failed', error: e instanceof Error ? e.message : String(e) }; // a throw while GATHERING the inputs is a failed write too: never fall through to the start
+  }
   if (dispatch.kind === 'failed') {
     try {
       await a.teardown();
       return { ran: false, error: `could not record the task as your dispatch (${dispatch.error}). The agent was NOT started and its workspace was removed — nothing is running.` };
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
-      return { ran: false, error: `could not record the task as your dispatch (${dispatch.error}), and removing the new workspace failed (${why}).`, kept: why };
+      return { ran: false, error: `could not record the task as your dispatch (${dispatch.error}), and removing the new workspace failed (${why}). The workspace was kept STOPPED with no dispatch: do NOT restart it — delete it (\`orchestra delete <id> --yes\`) and spawn again.`, kept: why };
     }
   }
   return { ran: true, result: await a.start(), dispatch };

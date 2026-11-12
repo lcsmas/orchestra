@@ -98,6 +98,8 @@ interface SpawnOpts {
   teardownFails?: boolean;
   /** Runs after createWorkspace's run part, before the dispatch write (a failure injected where the host would meet it). */
   afterCreate?: () => void;
+  /** The `record` seam itself throws (e.g. reading the store while gathering its inputs). */
+  recordThrows?: boolean;
 }
 /** `dispatchSpawnRequest`'s sequence with the SHIPPED record + ordering function; start/teardown are recorders. */
 async function spawn(w: World, child: string, o: SpawnOpts = {}) {
@@ -105,8 +107,10 @@ async function spawn(w: World, child: string, o: SpawnOpts = {}) {
   o.afterCreate?.();
   const n = nodes(w);
   return startAfterDispatch<string>({
-    record: () =>
-      recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { spawner: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK }),
+    record: () => {
+      if (o.recordThrows) throw new Error('store read failed');
+      return recordSpawnDispatch({ getBus: () => w.bus.current, lookup: (id) => nodes(w).get(id) }, { spawner: o.from, detached: o.detached, remote: o.remote, child: n.get(child)!, task: o.task ?? TASK });
+    },
     start: async () => {
       w.events.push(`start:${child}`);
       w.dispatchRowsAtStart.push(msgs(w).filter((m) => m.kind === 'dispatch').length);
@@ -201,6 +205,7 @@ test('#435 a failed write whose teardown ALSO fails still starts nothing and say
   assert.deepEqual(w.events, [`teardown:${C}`], 'never started');
   assert.equal(r.ran ? '' : r.kept, 'worktree busy');
   assert.match(r.ran ? '' : r.error, /removing the new workspace failed/);
+  assert.match(r.ran ? '' : r.error, /do NOT restart it/, 'the kept child has no dispatch: say it must not be restarted');
 });
 
 test('#435 a later dispatch by the parent SUPERSEDES the spawn\'s (the existing capability rule): the old token is rejected, a re-fetched one accepted, two dispatch rows, one active capability', needsBuild, async (t) => {
@@ -264,6 +269,15 @@ test('#435 a spawner that does NOT own the run its child joins (the first-spawn 
   assert.equal(msgs(w).length, 0);
 });
 
+test('#435 a THROW while gathering the dispatch inputs is a failed write too: nothing starts, the workspace is removed', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  const r = await spawn(w, C, { from: P, recordThrows: true });
+  assert.equal(r.ran, false);
+  assert.match(r.ran ? '' : r.error, /store read failed/);
+  assert.deepEqual(w.events, [`teardown:${C}`]);
+});
+
 test('#435 a spawner missing from the store is refused, nothing starts', needsBuild, async (t) => {
   const w = world(t, [{ id: C, kind: 'worktree', parentId: 'ghost-spawner' }]);
   const r = await spawn(w, C, { from: 'ghost-spawner' });
@@ -299,7 +313,8 @@ test('#435 wiring: dispatchSpawnRequest records the dispatch BEFORE the agent st
   const i = ws.indexOf('const after = await startAfterDispatch({');
   assert.ok(i > 0, 'dispatchSpawnRequest goes through startAfterDispatch');
   const block = ws.slice(i, ws.indexOf('if (!after.ran)', i));
-  assert.match(block, /record: \(\) => recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ spawner: input\.from, detached: input\.detached,/, 'real bus + live store lookup, the spawner, the detach flag');
+  assert.match(block, /recordSpawnDispatch\(\{ getBus, lookup: \(id\) => store\.getWorkspace\(id\) \}, \{ spawner: input\.from, detached: input\.detached, remote: !!input\.from && store\.getWorkspace\(input\.from\)\?\.host\?\.kind === 'sandbox', child: ws, task \}\)/, 'real bus + live store lookup, the spawner, the detach flag, the sandbox test, the child + the task');
+  assert.match(block, /if \(outcome\.kind === 'recorded'\) recorded = \{ dispatch: \{ runId: outcome\.runId, seq: outcome\.seq \} \};/, 'the reply carries the dispatch even when the start throws');
   assert.match(block, /start: \(\) => startWorkspaceAgentHeadless\(ws\.id,/, 'the agent starts only through the seam');
   assert.match(block, /teardown: \(\) => deleteWorkspace\(ws\.id\)/, 'a failed write removes the workspace');
   assert.equal((ws.match(/startWorkspaceAgentHeadless\(ws\.id, input\.origin/g) ?? []).length, 1, 'no second, unguarded start in the spawn path');
