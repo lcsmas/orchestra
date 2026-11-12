@@ -18,6 +18,12 @@ const run = (seed) => {
   const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(r.stdout)?.[1] ?? NaN);
   return { seed, pass: n('pass'), fail: n('fail'), skipped: n('skipped'), rc: r.status, out: r.stdout };
 };
+// the BEHAVIOURAL arm of the #199 clause (#438-fu): the real `applyAgentEvent` driven with a stranded call + a new turn (not a regex over the source)
+const behaviour = () => {
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '--import', './scripts/.r2-register.mjs', 'scripts/pause-canary/submit-clear-behaviour.mjs'], { cwd: REPO, encoding: 'utf8' });
+  const m = /^SUBMIT-CLEAR (CLEAN|DIRTY) — (.*)$/m.exec(r.stdout ?? '');
+  return { verdict: m?.[1] ?? 'NO-RESULT', detail: m?.[2] ?? (r.stderr ?? '').slice(-200) };
+};
 // every instrument must be able to say FAIL: each mutant edits ONE production clause and the suite must go red (restored byte-exact)
 const MUTANTS = [
   { name: 'stale-window-halved', file: 'src/shared/bus-liveness.ts', from: 'if (silentForMs <= STALE_AFTER_MS) {', to: 'if (silentForMs <= STALE_AFTER_MS / 2) {', why: 'a child idle 5 min is escalated (false escalation inside the window)' },
@@ -34,6 +40,11 @@ for (let seed = 1; seed <= RUNS; seed++) {
   rows.push(`unmutated seed ${seed}: pass ${r.pass} fail ${r.fail} skipped ${r.skipped} rc ${r.rc} → ${ok ? 'CLEAN (0 escalation in the window, 1 positive control, #199 must-FAIL arm seen)' : 'RED'}`);
   console.log(rows[rows.length - 1]);
 }
+{
+  const b = behaviour();
+  if (b.verdict !== 'CLEAN') bad++;
+  console.log(`unmutated behavioural arm (applyAgentEvent submit clears a stranded call): ${b.verdict} — ${b.detail}`);
+}
 if (!args.includes('--no-mutants')) {
   for (const m of MUTANTS) {
     const f = path.join(REPO, m.file);
@@ -44,6 +55,9 @@ if (!args.includes('--no-mutants')) {
     let r;
     try { fs.writeFileSync(f, text.replace(m.from, m.to)); r = run(1); } finally { fs.writeFileSync(f, orig); }
     const same = Buffer.compare(fs.readFileSync(f), orig) === 0;
+    if (m.name === 'submit-no-longer-clears') {   // the behavioural arm under the same mutant (run while it is applied)
+      try { fs.writeFileSync(f, text.replace(m.from, m.to)); const b = behaviour(); const killedB = b.verdict === 'DIRTY'; if (!killedB) bad++; console.log(`mutant ${m.name}: behavioural arm → ${b.verdict} (${killedB ? 'KILLED' : 'SURVIVED'}) ${b.detail.slice(0, 90)}`); } finally { fs.writeFileSync(f, orig); }
+    }
     const killed = r.fail > 0;
     if (!killed || !same) bad++;
     console.log(`mutant ${m.name}: fail ${r.fail} of ${r.pass + r.fail} → ${killed ? 'KILLED' : 'SURVIVED'}; restored byte-exact: ${same} (${m.why})`);

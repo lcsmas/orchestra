@@ -54,6 +54,8 @@ const ALL_ARMS = [
 ];
 const ARMS = ONLY.length ? ALL_ARMS.filter((x) => ONLY.includes(x.name)) : ALL_ARMS;   // `--only control:hung,…` = a PARTIAL soak (labelled)
 const need = MIN_AVAIL_GB + PER_RIG_GB * ARMS.length;
+// patience, never a lower bar: wait (up to --wait-host-min, default 30) for MemAvailable ≥ the bar + the rigs' footprint and load ≤ 20
+{ const tw = Date.now(); const maxMs = Number(opt('wait-host-min', '30')) * 60000; for (;;) { const h = hostNow(); if ((h.availGB >= need && h.load1 <= 20) || Date.now() - tw >= maxMs) break; await sleep(15000); } }
 const h0 = hostNow();
 say(`liveness soak: ${ARMS.length} concurrent rigs (${RUNS} unmutated done-idle + ${ARMS.length - RUNS} controls) · window ${WINDOW_S}s after the child goes idle · MemAvailable ${h0.availGB.toFixed(1)} GB (need ≥ ${need.toFixed(1)}) load ${h0.load1.toFixed(1)} · claude ${claudeBin}`);
 if (h0.availGB < need || h0.load1 > 20) { say(`LIVSOAK-SOAK VOID — host below the bar (MemAvailable ${h0.availGB.toFixed(1)} GB < ${need.toFixed(1)} or load ${h0.load1.toFixed(1)} > 20): nothing run`); process.exit(3); }
