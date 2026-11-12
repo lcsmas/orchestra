@@ -82,13 +82,13 @@ function spawn(w: World, child: string): void {
 }
 
 /** What `reconcileRunAfterReparent` snapshots BEFORE the move: every subtree agent's related runs. */
-function snapshot(w: World, ids: string[]): Map<string, string[]> {
-  return new Map(ids.map((id) => [id, relatedRunsOf(w.db, runOf(w, id))]));
+function snapshot(w: World, ids: string[]): Map<string, { related: string[]; home: string }> {
+  return new Map(ids.map((id) => [id, { related: relatedRunsOf(w.db, runOf(w, id)), home: runOf(w, id) }]));
 }
 interface Move { verdict: { ok: boolean; error?: string }; reports: Map<string, ReturnType<typeof rederiveRunOnBus>> }
 /** attach (`parentId` set) / detach (`null`) as `dispatchAttachRequest` + `reconcileRunAfterReparent` compose them, for the moved agent + `subtree`. */
 function move(w: World, id: string, parentId: string | null, subtree: string[] = []): Move {
-  const ids = [id, ...subtree];
+  const ids = [id, ...subtree, ...(parentId ? [parentId] : [])]; // the TARGET too: becoming an owner flips its own run
   const before = snapshot(w, ids);
   if (parentId) {
     const verdict = decideAttachTarget({ id, parentId, lookup: rawLookup(w), targetRunClosed: runClosedAt(w.db, parentId) != null });
@@ -105,7 +105,7 @@ function move(w: World, id: string, parentId: string | null, subtree: string[] =
   });
   if (parentId) edit(w, (recs) => { const o = ownerToMark(nodes(w).get(id)!, (x) => nodes(w).get(x)); if (o) recs.find((r) => r.id === o.id)!.ownsRun = true; }); // ensureParentOwnsRun
   const reports = new Map<string, ReturnType<typeof rederiveRunOnBus>>();
-  for (const aid of ids) reports.set(aid, rederiveRunOnBus(w.deps, w.db, nodes(w).get(aid)!, lookup(w), before.get(aid)));
+  for (const aid of ids) reports.set(aid, rederiveRunOnBus(w.deps, w.db, nodes(w).get(aid)!, lookup(w), before.get(aid)?.related, before.get(aid)?.home));
   return { verdict: { ok: true }, reports };
 }
 
@@ -267,6 +267,33 @@ test('#439 (#436) a STRANGER\'s status filed in an agent\'s own run follows that
   assert.equal(check(w, M).count, 0, 'once');
 });
 
+test('#439 (review) a SIBLING drop: the unread mail M holds in Q\'s run follows it even though Q is still an ancestor of its new home', needsBuild, (t) => {
+  const w = world(t, [{ id: Q, kind: 'worktree' }, { id: P, kind: 'worktree', parentId: Q }, { id: M, kind: 'worktree', parentId: Q }]);
+  birth(w);
+  spawn(w, P);
+  assert.equal(cli(w, Q, ['send', '--type', 'status', '--to', M, 'hello from Q']).code, 0);
+  assert.equal(runOf(w, M), Q);
+  move(w, M, P);
+  assert.equal(runOf(w, M), P, 'M is a member of P\'s run now');
+  assert.ok(relatedRunsOf(w.db, P).includes(Q), 'Q is STILL an ancestor of P\'s run (the case a "left the related set" filter misses)');
+  const got = check(w, M);
+  assert.equal(bodies(got), 'hello from Q', 'a plain check in M\'s new run reads it');
+  assert.equal(cli(w, M, ['ack', String(got.lot)]).code, 0);
+  assert.equal(check(w, M).count + check(w, M, ['--run', Q]).count, 0, 'once');
+});
+
+test('#439 (review) the TARGET\'s own run flips when an attach makes it an owner: its unread mail in the run it was a member of follows it', needsBuild, (t) => {
+  const w = world(t, [{ id: Q, kind: 'worktree' }, { id: P, kind: 'worktree', parentId: Q }, { id: X, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, P);
+  assert.equal(runOf(w, P), Q, 'P is a plain member of Q');
+  assert.equal(cli(w, Q, ['send', '--type', 'status', '--to', P, 'for P, unread']).code, 0);
+  move(w, X, P); // an agent is attached under P: P owns a run now
+  assert.equal(runOf(w, P), P, 'P\'s own run flipped Q -> P');
+  assert.equal(getRun(w.db, P)?.parent_run_id, Q, 'its new vague hangs under Q');
+  assert.equal(bodies(check(w, P)), 'for P, unread', 'P\'s plain check reads the mail Q sent it');
+});
+
 // ── 4. the subtree ────────────────────────────────────────────────────────────────────────────────────────────────────
 test('#439 the SUBTREE is re-derived: a moved owner takes its run with it (parent pointer re-pointed), its members\' runs and unread mail are untouched', needsBuild, (t) => {
   const w = world(t, [{ id: X, kind: 'worktree' }, { id: C, kind: 'worktree', parentId: X }, { id: G, kind: 'worktree', parentId: C }, { id: Q, kind: 'worktree' }]);
@@ -381,13 +408,14 @@ const src = (rel: string): string => fs.readFileSync(path.resolve(here, '..', '.
 test('#439 wiring: the reconcile re-derives EVERY moved agent BEFORE the noop decision; attach asks decideAttachTarget (no coordinator-only refusal); the snapshot keeps the pre-move related runs', () => {
   const ws = src('src/main/workspaces.ts');
   const rec = ws.slice(ws.indexOf('async function reconcileRunAfterReparent('), ws.indexOf('export function listStaleRunWorkspaces'));
-  assert.ok(rec.indexOf('await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId))') > 0, 'the reconcile calls the bus re-derivation');
+  assert.ok(rec.indexOf('await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId), oldAnchorId)') > 0, 'the reconcile calls the bus re-derivation');
   assert.ok(rec.indexOf('rederiveBusRunAfterReparent(') < rec.indexOf('decideReparentAction(candidate, opts.noRestart)'), 'BEFORE the noop decision (#433 M1)');
   const attach = ws.slice(ws.indexOf('export async function dispatchAttachRequest('), ws.indexOf('// ---------- Associate an orchestrator'));
   assert.match(attach, /decideAttachTarget\(\{/, 'attach asks the pure verdict');
   assert.doesNotMatch(attach, /coordinates\(parent\)/, 'no coordinator-only target');
   assert.doesNotMatch(attach, /must be an orchestrator/, 'the old refusal text is gone');
   assert.match(attach, /runClosedAt\(db, rawParent\)/, 'a closed run is read off the bus');
+  assert.match(attach, /snapshotRunAnchors\(id, rawParent\)/, 'the attach TARGET is snapshotted and re-derived with the moved subtree (becoming an owner flips its own run)');
   assert.match(ws, /if \(db\) related\.set\(ws\.id, relatedRunsOf\(db, anchor\)\)/, 'the snapshot records the related runs before the move');
   const sb = src('src/renderer/components/Sidebar.tsx');
   assert.doesNotMatch(sb.slice(sb.indexOf('const canAttachTo'), sb.indexOf('const commitReparent')), /coordinates\(/, 'the sidebar drop rule no longer asks for a coordinator');

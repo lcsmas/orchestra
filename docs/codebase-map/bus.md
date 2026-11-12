@@ -2975,5 +2975,5 @@ is COPIED into the run it checks now (fresh `sequence`s so no old cursor in `toR
 copy also copies its `dispatch_capabilities` row), the cursor in each source run advances past the copied rows and its outstanding delivery is closed —
 a second call, or the agent coming back, finds nothing (**delivered once**). Run-wide broadcasts (recipient NULL) stay in the run left; a CLOSED
 destination copies nothing. `rederiveRunOnBus` composes row start → re-point → forward from the pre-move `relatedRunsOf` snapshot (`getRelatedRunIds`: own ∪
-ancestors ∪ descendants via `parent_run_id`) minus the post-move set. Not covered: a forwarded `question` leaves the asker's original unanswered (its
+ancestors ∪ descendants via `parent_run_id`) minus the post-move set. Not covered: open `decision_gates` addressed to the mover in a run no longer related to it stay where they are (the asker's run; moving them would strand the asker's rewake) — OPS decision; a forwarded `question` leaves the asker's original unanswered (its
 reply threads to the copy's sequence in the NEW run) — rare, noted in the PR. Tests: `bus-reparent-run.test.ts`; mutants `pnpm run test:attach-any-agent-mutants`.

@@ -513,13 +513,13 @@ governed by the flags of the **innermost** run of its two parties).
 - **#439 — attach / detach under ANY agent: the bus half of the reconcile.** `dispatchAttachRequest` asks the pure `decideAttachTarget`
   (`src/shared/attach-target.ts`: self, unknown / archived target, a target whose run is CLOSED — read off `runs.closed_at` (#437) —, a parent
   cycle; **no coordinator-only refusal any more**: a never-promoted, never-spawned agent is a valid target, `ensureParentOwnsRun(updated)` makes
-  it the owner). `snapshotRunAnchors` also records each subtree agent's RELATED RUNS pre-move (`relatedRunSnapshots`, a WeakMap keyed by the
+  it the owner). `snapshotRunAnchors(id, targetId)` also snapshots the attach TARGET (becoming an owner flips ITS own run: Q→P, its mail follows too) and records each agent's RELATED RUNS pre-move (`relatedRunSnapshots`, a WeakMap keyed by the
   snapshot Map), and `reconcileRunAfterReparent` calls `rederiveBusRunAfterReparent` for EVERY moved agent **before** `decideReparentAction` — the
   noop branch included (#433 M1: a live agent leaving a dangling parent keeps its run id and used to get no row). It runs the platform-free
   `rederiveRunOnBus` (`main/bus-reparent-run.ts`): (1) the run row the agent now belongs to exists (its own mission / vague, or its new parent's,
   parent first); (2) the run it OWNS is re-pointed — `repointRun` rewrites `parent_run_id` + `kind` (mission = none, vague = has one; #434 m1;
   never at a closed / missing run or a descendant); (3) `forwardUnreadMail` — **mail follows**: the agent's UNREAD DIRECTED mail in runs that were
-  related before and are not now is copied (fresh sequences, past any cursor; a `dispatch` copy takes its capability row) into the run it checks
+  related before and are not now, plus the run its plain `check` read before (`oldHome`: a sibling drop keeps the old parent run as an ancestor but `check` reads only the home run), is copied (fresh sequences, past any cursor; a `dispatch` copy takes its capability row) into the run it checks
   (`runIdOf`), the old cursor advances and the old outstanding lot closes: delivered ONCE; run-wide broadcasts stay in the run left; nothing
   is copied into a closed run. A **childless ex-owner that attaches** (#434 "argued"): its mail follows, its old run row stays OPEN and empty (a
   run id is its coordinator's workspace id; #437 closes it only on archive/delete and an app-start reconcile would reopen it) and is reused if

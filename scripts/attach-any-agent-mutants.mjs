@@ -18,7 +18,7 @@ const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].
 const AT = 'src/shared/attach-target.ts', BR = 'src/main/bus-reparent-run.ts', WS = 'src/main/workspaces.ts', SB = 'src/renderer/components/Sidebar.tsx', DZ = 'src/shared/dnd-attach-zone.ts';
 const T = { main: 'src/main/bus-reparent-run.test.ts', target: 'src/shared/attach-target.test.ts', dnd: 'src/shared/dnd-attach-zone.test.ts' };
 const NOOP_LINE = "      if (action.kind === 'noop') continue;";
-const CALL_LINE = "      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId)); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail\n";
+const CALL_LINE = "      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId), oldAnchorId); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail\n";
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` must go red. */
 const MUTANTS = [
@@ -49,6 +49,8 @@ const MUTANTS = [
   { id: 'M25', name: 'the repo-section rows stop using dropIntent (attach vs reorder) — source pin', edits: [[SB, 'const intent = dropIntent({ canAttach: canAttachTo(w), canReorder: canReorderOnto(w, isChild), yFraction: yFractionOf(e) });', 'const intent = (dropIntent as unknown as (x: unknown) => never)(0);']], tests: [T.main] },
   { id: 'M26', name: 'a row that can only be attached to no longer attaches over its whole height', edits: [[DZ, "  if (canAttach && !canReorder) return 'attach';\n", '']], tests: [T.dnd] },
   { id: 'M27', name: 'no reorder edge on a row that is both (the middle swallows the whole row)', edits: [[DZ, 'export const REORDER_EDGE = 0.25;', 'export const REORDER_EDGE = 0;']], tests: [T.dnd] },
+  { id: 'M28', name: 'the pre-move plain-check run (oldHome) is not a mail source (the sibling drop strands mail in an ancestor run)', edits: [[BR, '...(oldHome ? [oldHome] : [])', '']], tests: [T.main] },
+  { id: 'M29', name: 'the attach TARGET is not re-derived (its own run flips and its mail is stranded) — source pin', edits: [[WS, 'snapshotRunAnchors(id, rawParent); // the TARGET too', 'snapshotRunAnchors(id); // the TARGET too']], tests: [T.main] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

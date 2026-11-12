@@ -120,8 +120,8 @@ export interface RederiveReport {
  *   1. the run row it now belongs to exists — its own mission / vague when it coordinates (top-level or an owner), else its new parent's
  *      (the parent's row first, so no pointer ever dangles);
  *   2. the run it OWNS is re-pointed at the run it is now a member of (`repointRun`; #434 m1);
- *   3. its unread mail in runs that were related to it before (`relatedBefore`, snapshotted pre-move) and are not now follows it into
- *      `runIdOf` (`forwardUnreadMail`).
+ *   3. its unread mail in runs that were related to it before (`relatedBefore`, snapshotted pre-move) and are not now — plus the run its plain
+ *      `check` read before (`oldHome`), still related or not — follows it into `runIdOf` (`forwardUnreadMail`).
  * Throws only on a bus failure; the caller (`reconcileRunAfterReparent`) logs it (D1).
  */
 export function rederiveRunOnBus(
@@ -130,6 +130,8 @@ export function rederiveRunOnBus(
   ws: RunNode,
   lookup: (id: string) => RunNode | undefined,
   relatedBefore?: readonly string[],
+  /** The run the agent's plain `check` read BEFORE the move (`runIdOf`): when it differs from `home` the agent can no longer reach mail left there — even if that run is still an ancestor. */
+  oldHome?: string,
 ): RederiveReport {
   const probe = runAnchorProbe(deps);
   const parent = coordinatorOf(ws, lookup);
@@ -141,7 +143,7 @@ export function rederiveRunOnBus(
   if (coordinates(ws) && probe(ws.id)) report.repoint = repointRun(db, ws.id, memberRunOf(ws, lookup));
   if (relatedBefore) {
     const after = new Set(relatedRunsOf(db, report.home));
-    report.mail = forwardUnreadMail(db, ws.id, relatedBefore.filter((r) => !after.has(r)), report.home);
+    report.mail = forwardUnreadMail(db, ws.id, [...relatedBefore.filter((r) => !after.has(r)), ...(oldHome ? [oldHome] : [])], report.home);
   }
   return report;
 }

@@ -1744,11 +1744,13 @@ function staleRunMarkerPath(worktreePath: string): string {
  * their OWN anchor and unaffected, but they are cheap to include: their old and
  * new anchors are equal, so the decision is a no-op for them.
  */
-function snapshotRunAnchors(rootId: string): Map<string, string> {
+function snapshotRunAnchors(rootId: string, ...extraIds: string[]): Map<string, string> {
   const snap = new Map<string, string>();
   const related = new Map<string, string[]>();
   const db = getBus();
-  for (const ws of collectWorkspaceTree(rootId)) {
+  // `extraIds`: workspaces OUTSIDE the moved subtree whose own run flips with the move (#439: an attach target that becomes an owner).
+  const nodes = [...collectWorkspaceTree(rootId), ...extraIds.map((x) => store.getWorkspace(x)).filter((x): x is Workspace => !!x)];
+  for (const ws of nodes) {
     const anchor = resolveWaveRunId(ws);
     snap.set(ws.id, anchor);
     // #439: the runs each agent could see mail in BEFORE the move (own ∪ ancestors ∪ descendants) — what its unread mail follows out of.
@@ -1773,11 +1775,11 @@ const relatedRunSnapshots = new WeakMap<Map<string, string>, Map<string, string[
  *   3. its UNREAD mail in runs it can no longer see follows it into the run it checks now, exactly once.
  * Best-effort (D1): a bus failure is a log line, never a failure of the admin op.
  */
-async function rederiveBusRunAfterReparent(ws: Workspace, relatedBefore: readonly string[] | undefined): Promise<void> {
+async function rederiveBusRunAfterReparent(ws: Workspace, relatedBefore: readonly string[] | undefined, oldHome: string | undefined): Promise<void> {
   const db = getBus();
   if (!db) return;
   try {
-    const rep = rederiveRunOnBus(busRunAnchorDeps, db, ws, (id) => store.getWorkspace(id), relatedBefore);
+    const rep = rederiveRunOnBus(busRunAnchorDeps, db, ws, (id) => store.getWorkspace(id), relatedBefore, oldHome);
     if (rep.startedRow && ws.host?.kind !== 'sandbox' && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, rep.home);
     if (rep.repoint && rep.repoint !== 'unchanged') log.info(`reparent-run: run ${ws.id} ${rep.repoint}`);
     if (rep.mail?.forwarded) log.info(`reparent-run: ${rep.mail.forwarded} unread message(s) of ${ws.id} followed it from ${rep.mail.fromRuns.join(', ')} into run ${rep.home}`);
@@ -1843,7 +1845,7 @@ async function reconcileRunAfterReparent(
     // re-derives the run.
     if (ws.host?.kind === 'sandbox') continue;
     try {
-      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId)); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail
+      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId), oldAnchorId); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail
       const newAnchorId = resolveWaveRunId(ws);
       const sdkLive = sdkSessionLive(ws.id);
       const hostKey = hasSessionKey(ws.id);
@@ -2224,7 +2226,7 @@ export async function dispatchAttachRequest(input: {
   if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
 
   // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
-  const oldAnchors = snapshotRunAnchors(id);
+  const oldAnchors = snapshotRunAnchors(id, rawParent); // the TARGET too: becoming an owner flips ITS own run (#439)
   // #434: an ownership that rested on having NO parent (a top-level / dangling-link mission) ends when the workspace is attached under one — it is a MEMBER of the new parent's run
   // again. An owner by a promote (flag / kind) or by having children keeps it.
   const ownedByLinkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !store.workspaces.some((w) => w.parentId === id); // run-position: non-run — the ownership WRITE on attach
