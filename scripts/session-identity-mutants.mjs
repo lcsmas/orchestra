@@ -2,8 +2,7 @@
 // #379 / ADR 0008 self-gate — IN-PLACE mutation sweep of the host-resolved bus identity. Each mutant reverts ONE clause in the real source and
 // must turn its NAMED unit file(s) and/or rig red. Byte-exact backup + `cmp` restore after every mutant; run it on a COMMITTED tree (the restore
 // proof is `git diff` empty). CONTROL first: every named unit file and rig must be GREEN unmutated, so a RED later is the mutant's doing.
-// Rigs: scripts/verify-promote-run-refresh.mjs (the real workspaces.ts reconcile + the real /identity dispatcher; killed when it exits non-zero
-// AND prints `FAIL <clause>`), scripts/e2e-keeper-session-key.mjs (real keeper daemon; killed when its arm prints "ok":false).
+// Rigs: scripts/e2e-keeper-session-key.mjs (real keeper daemon; killed when its arm prints "ok":false).
 // CLI mutants rebuild dist-electron/cli.js (src/cli/bus-identity.test.ts drives the BUILT bundle); the bundle is rebuilt again after the run.
 // Run: node scripts/session-identity-mutants.mjs [--only M01,M07] [--no-rig] [--check-anchors]
 
@@ -26,7 +25,7 @@ const T = {
   cli: 'src/cli/bus-identity.test.ts', dec: 'src/shared/reparent-run.test.ts', runs: 'src/main/bus-runs.test.ts', sbx: 'src/main/sandbox-pause-wiring.test.ts',
   rrb: 'src/main/reparent-run-binding.test.ts',
 };
-const PROMOTE = { script: 'scripts/verify-promote-run-refresh.mjs', kind: 'promote' };
+// #440: the promote rig (scripts/verify-promote-run-refresh.mjs) drove the removed promote verb and is retired; the mutants it also killed keep their unit killers (a port of its arms to `attach` is tracked in the #442 stale-rig sweep).
 const KEY = (arm) => ({ script: 'scripts/e2e-keeper-session-key.mjs', kind: 'key', arm });
 
 /** One mutant = exact-once edits [file, find, replacement]. `tests` = unit files that must go red; `rig` = {script,kind[,arm]}; `cli` = rebuild the CLI bundle first. */
@@ -43,10 +42,10 @@ const MUTANTS = [
   { id: 'M06', name: 'buildSdkEnv mints a key for every caller (probe / status / `!cmd` get one the host never registered)', edits: [[SDK, 'if (opts.sessionKey) env[SESSION_KEY_ENV] = opts.sessionKey;', 'env[SESSION_KEY_ENV] = opts.sessionKey ?? mintSessionKey();']], tests: [T.bind] },
   { id: 'M07', name: 'a SANDBOX session also gets a key (no host-resolved path exists for it)', edits: [[SDK, 'const sessionKey = remote ? undefined : mintSessionKey();', 'const sessionKey = mintSessionKey();']], tests: [T.bind] },
   // ── the host service ──
-  { id: 'M08', name: 'verify() vouches for ANY key once an entry exists (no superseding)', edits: [[SIM, "return presented.length === stored.length && crypto.timingSafeEqual(presented, stored) ? 'ok' : 'superseded';", "return 'ok';"]], tests: [T.host], rig: PROMOTE },
+  { id: 'M08', name: 'verify() vouches for ANY key once an entry exists (no superseding)', edits: [[SIM, "return presented.length === stored.length && crypto.timingSafeEqual(presented, stored) ? 'ok' : 'superseded';", "return 'ok';"]], tests: [T.host] },
   { id: 'M09', name: 'the registry persists the RAW key', edits: [[SIM, 'const next = { ...sessions, [wsId]: { hash: hashSessionKey(key), issuedAt: now() } };', 'const next = { ...sessions, [wsId]: { hash: hashSessionKey(key), issuedAt: now(), key } };']], tests: [T.host] },
-  { id: 'M10', name: 'a replaced session is answered "unregistered" (the CLI would fall back to its env instead of being refused)', edits: [[SIM, "      code: 'superseded',\n      error: `this session of workspace", "      code: 'unregistered',\n      error: `this session of workspace"]], tests: [T.host], rig: PROMOTE },
-  { id: 'M11', name: 'the service ignores the workspace (answers the first entry\'s run for anyone)', edits: [[SIM, "const verdict = deps.registry.verify(id, key);", "const verdict = deps.registry.verify(id, key) === 'unregistered' ? 'unregistered' : 'ok';"]], tests: [T.host], rig: PROMOTE },
+  { id: 'M10', name: 'a replaced session is answered "unregistered" (the CLI would fall back to its env instead of being refused)', edits: [[SIM, "      code: 'superseded',\n      error: `this session of workspace", "      code: 'unregistered',\n      error: `this session of workspace"]], tests: [T.host] },
+  { id: 'M11', name: 'the service ignores the workspace (answers the first entry\'s run for anyone)', edits: [[SIM, "const verdict = deps.registry.verify(id, key);", "const verdict = deps.registry.verify(id, key) === 'unregistered' ? 'unregistered' : 'ok';"]], tests: [T.host] },
   { id: 'M12', name: 'the registry file is world-readable', edits: [[SIM, 'fsx.writeFileSync(tmp, body, { mode: 0o600 });', 'fsx.writeFileSync(tmp, body, { mode: 0o644 });']], tests: [T.host] },
   { id: 'M13', name: 'the service answers the generation baked into nothing: always 0', edits: [[SIM, "return { ok: true, runId, generation: Number.isInteger(generation) && generation > 0 ? generation : null };", "return { ok: true, runId, generation: null };"]], tests: [T.host] },
   // ── the CLI ──
@@ -60,16 +59,16 @@ const MUTANTS = [
   { id: 'M21', name: 'the CLI never sends the key (identity call without it)', cli: true, edits: [[SIS, "reply = await call(IDENTITY_ROUTE, { id, key });", "reply = await call(IDENTITY_ROUTE, { id });"]], tests: [T.pure, T.cli] },
   { id: 'M22', name: 'a keyless session still asks the host', cli: true, edits: [[SIS, "  if (!key) return { source: 'env', why: 'no-key' };\n", ""]], tests: [T.pure, T.cli] },
   // ── the host side of promote ──
-  { id: 'M23', name: 'the reconcile never tells the decision the host holds a key', edits: [[WS, 'hostAnswers: hostKey,', 'hostAnswers: false,']], tests: [T.bind], rig: PROMOTE },
-  { id: 'M31', name: 'a keeper-DETACHED keyed CLI is treated as cold (no marker for the fallback)', edits: [[WS, 'live: sdkLive || detachedKeyed,', 'live: sdkLive,']], tests: [T.bind, T.rrb], rig: PROMOTE },
-  { id: 'M24', name: 'host-resolved also marks the workspace stale (the pane flag, the CLI "STALE RUN")', edits: [[WS, "        await writeStaleRunMarkerFile(ws, newAnchorId);\n        hostResolved.push(ws.id);", "        await markWorkspaceStaleRun(ws, newAnchorId);\n        hostResolved.push(ws.id);"]], tests: [T.bind], rig: PROMOTE },
-  { id: 'M25', name: 'host-resolved writes no marker file (the app-down fallback would send into the stale run)', edits: [[WS, "        await writeStaleRunMarkerFile(ws, newAnchorId);\n        hostResolved.push(ws.id);", "        hostResolved.push(ws.id);"]], tests: [T.bind], rig: PROMOTE },
-  { id: 'M26', name: 'the decision checks the host key BEFORE liveness (a cold workspace is "host-resolved")', edits: [[RR, "  if (!candidate.live) return { kind: 'notice-only' };\n  // #379: whatever `--no-restart` says, a session the host can answer needs neither the restart nor the stale state.\n  if (candidate.hostAnswers) return { kind: 'host-resolved' };", "  if (candidate.hostAnswers) return { kind: 'host-resolved' };\n  if (!candidate.live) return { kind: 'notice-only' };"]], tests: [T.dec], rig: PROMOTE },
+  { id: 'M23', name: 'the reconcile never tells the decision the host holds a key', edits: [[WS, 'hostAnswers: hostKey,', 'hostAnswers: false,']], tests: [T.bind] },
+  { id: 'M31', name: 'a keeper-DETACHED keyed CLI is treated as cold (no marker for the fallback)', edits: [[WS, 'live: sdkLive || detachedKeyed,', 'live: sdkLive,']], tests: [T.bind, T.rrb] },
+  { id: 'M24', name: 'host-resolved also marks the workspace stale (the pane flag, the CLI "STALE RUN")', edits: [[WS, "        await writeStaleRunMarkerFile(ws, newAnchorId);\n        hostResolved.push(ws.id);", "        await markWorkspaceStaleRun(ws, newAnchorId);\n        hostResolved.push(ws.id);"]], tests: [T.bind] },
+  { id: 'M25', name: 'host-resolved writes no marker file (the app-down fallback would send into the stale run)', edits: [[WS, "        await writeStaleRunMarkerFile(ws, newAnchorId);\n        hostResolved.push(ws.id);", "        hostResolved.push(ws.id);"]], tests: [T.bind] },
+  { id: 'M26', name: 'the decision checks the host key BEFORE liveness (a cold workspace is "host-resolved")', edits: [[RR, "  if (!candidate.live) return { kind: 'notice-only' };\n  // #379: whatever `--no-restart` says, a session the host can answer needs neither the restart nor the stale state.\n  if (candidate.hostAnswers) return { kind: 'host-resolved' };", "  if (candidate.hostAnswers) return { kind: 'host-resolved' };\n  if (!candidate.live) return { kind: 'notice-only' };"]], tests: [T.dec] },
   { id: 'M27', name: 'a deleted workspace keeps its session key', edits: [[WS, "  forgetSessionKey(id); // #379: a deleted workspace has no session to vouch for\n", '']], tests: [T.bind] },
   { id: 'M28', name: 'no /identity route on the host socket', edits: [[HS, "} else if (route === '/identity') {", "} else if (route === '/identity-off') {"]], tests: [T.bind] },
   { id: 'M29', name: 'the registration is logged WITH the key', edits: [[ 'src/main/session-identity-host.ts', 'slog.info(`session key registered for ${wsId}`);', 'slog.info(`session key registered for ${wsId}: ${key}`);' ]], tests: [T.bind] },
   // ── review round 1 (LEAD c/6214838301) ──
-  { id: 'M32', name: 'MAJOR-1: the coordinator bump does not revoke the replaced key (the zombie reads the NEW generation until the successor spawns)', edits: [[WS, "    forgetSessionKey(ws.id); // #379: the replaced coordinator's key stops vouching AT the bump (same tick), else /identity hands it the NEW generation until the successor spawns\n", '']], tests: [T.bind], rig: PROMOTE },
+  { id: 'M32', name: 'MAJOR-1: the coordinator bump does not revoke the replaced key (the zombie reads the NEW generation until the successor spawns)', edits: [[WS, "    forgetSessionKey(ws.id); // #379: the replaced coordinator's key stops vouching AT the bump (same tick), else /identity hands it the NEW generation until the successor spawns\n", '']], tests: [T.bind] },
   { id: 'M33', name: 'MAJOR-2: the marker is looked up by cwd only (a session that cd\'d into a subdirectory sends into the stale run)', cli: true, edits: [
       [SIS, "  for (const r of [env.ORCHESTRA_WORKSPACE_PATH, env.ORCHESTRA_WORKTREE]) if (r && r.trim()) roots.push(r.trim());\n", ''],
       [SIS, "    if (path.dirname(d) === d) break;", "    break;"]], tests: [T.pure, T.cli] },

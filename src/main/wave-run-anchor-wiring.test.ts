@@ -131,14 +131,8 @@ test('P1 D1 — resolveWaveRunId uses runIdOf (run-position), NOT walkToRootId (
   assert.doesNotMatch(body, /return walkToRootId\(ws,/, 'resolveWaveRunId must NOT use the tree root (D1 overturned it)');
 });
 
-test('P1 D1 — /promote starts the run row (a promote does not relaunch the pty)', () => {
-  const start = workspacesSrc.indexOf('export async function dispatchPromoteRequest(');
-  assert.ok(start > 0, 'dispatchPromoteRequest not found');
-  const end = workspacesSrc.indexOf('export interface DemoteResult', start);
-  const body = workspacesSrc.slice(start, end > start ? end : start + 3000);
-  // Both success branches (capability + kind swap) must start the run.
-  const hits = (body.match(/startRunForPromoted\(updated\)/g) ?? []).length;
-  assert.equal(hits, 2, 'both promote success branches must start the OPS run row');
+test('#440 — the promote path is gone: no dispatcher, no run-start-at-promote helper', () => {
+  assert.doesNotMatch(workspacesSrc, /dispatchPromoteRequest|dispatchDemoteRequest|startRunForPromoted/, 'a role follows position: nothing starts a run "at a promote" any more');
 });
 
 // ─── P2b — the wake roster maps the real run id, not the hardcoded default ────

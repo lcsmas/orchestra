@@ -54,55 +54,6 @@ test('dispatchAttachRequest wires reconcileRunAfterReparent on BOTH branches', (
   assert.ok(body.includes('{ noRestart }'), 'attach must pass noRestart into reconcile');
 });
 
-test('dispatchDemoteRequest reconciles the demoted node ITSELF + its subtree (F1)', () => {
-  const body = bodyOf(workspacesSrc, 'export async function dispatchDemoteRequest');
-  // REVIEW-142 F1: the demoted node is its OWN run anchor while it coordinates;
-  // the demote strips canOrchestrate, so its own run moves too. The snapshot MUST
-  // root at `id` (which collectWorkspaceTree(id) includes), not at each child —
-  // `snapshotRunAnchors(child.id)` never reaches the parent, leaving the demoted
-  // node's live session on a defunct self-run.
-  assert.ok(
-    callsUncommented(body, 'snapshotRunAnchors(id)'),
-    'demote must snapshot from `id` (includes the demoted node itself), not child-only',
-  );
-  assert.ok(
-    !body.includes('snapshotRunAnchors(child.id)'),
-    'demote must NOT snapshot child-only (F1: that omits the demoted node)',
-  );
-  assert.ok(
-    callsUncommented(body, 'reconcileRunAfterReparent('),
-    'demote must reconcile after detaching children',
-  );
-});
-
-test('#171 — dispatchPromoteRequest snapshots + reconciles on BOTH routes (env refresh)', () => {
-  const body = bodyOf(workspacesSrc, 'export async function dispatchPromoteRequest');
-  // #171: promote re-anchors the promoted node (member → its OWN run). Without a
-  // reconcile the LIVE session keeps the parent's ORCHESTRA_RUN_ID until a manual
-  // `orchestra restart` (the ticket's 4× symptom). The snapshot MUST be taken
-  // pre-mutation (resolveWaveRunId reads the store), and BOTH promote routes
-  // (worktree canOrchestrate + scratch kind-swap) must reconcile.
-  assert.ok(
-    callsUncommented(body, 'snapshotRunAnchors(id)'),
-    'promote must snapshot the promoted node + subtree BEFORE the mutation',
-  );
-  const recon = body.match(/reconcileRunAfterReparent\(/g) ?? [];
-  assert.ok(
-    recon.length >= 2,
-    `promote must reconcile on BOTH routes (worktree + scratch), found ${recon.length}`,
-  );
-  // must-FAIL arm: a promote-triggered reconcile must NOT --no-restart by default
-  // (that would leave EVERY idle promote stale, defeating the auto-refresh); a working
-  // session is never killed mid-turn — its restart is refused and downgrades to mark-stale
-  // (arm 2, pinned below).
-  assert.ok(
-    callsUncommented(body, 'noRestart: false'),
-    'promote must reconcile with noRestart:false (auto-restart an idle session)',
-  );
-  // #232: no live-PTY deferral any more — the option is gone from the call sites.
-  assert.ok(!/preferStaleForLivePty/.test(body), 'promote must not carry the removed live-PTY deferral option (#232)');
-});
-
 test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a stale run silently)', () => {
   const body = bodyOf(workspacesSrc, 'async function reconcileRunAfterReparent');
   // A working structured session throws the mid-turn guard → dispatchRestartRequest
@@ -125,19 +76,6 @@ test('#171 — a REFUSED/failed restart downgrades to mark-stale (never leaves a
   assert.ok(callsUncommented(body, 'const sdkLive = sdkSessionLive(ws.id);'), 'the reparent candidate is live iff its SDK session is …');
   assert.ok(callsUncommented(body, 'live: sdkLive || detachedKeyed,'), '… or (#379) a keeper-detached CLI the host holds a key for — never a PTY probe');
   assert.ok(!/isRunning\(/.test(body) && !/forceStale|ptyLive/.test(body), 'reconcileRunAfterReparent must not reason about a live agent PTY (#232)');
-});
-
-test('#171 — the CLI promote verb reports the reconcile side effects', () => {
-  const promoteCase = (() => {
-    const i = cliSrc.indexOf("case 'promote': {");
-    assert.notEqual(i, -1);
-    const j = cliSrc.indexOf("case 'attach': {", i);
-    return cliSrc.slice(i, j === -1 ? undefined : j);
-  })();
-  assert.ok(
-    callsUncommented(promoteCase, 'reparentSuffix(res)'),
-    'promote must render restarted/markedStale via reparentSuffix (same as attach/detach)',
-  );
 });
 
 test('dispatchAdoptRepoRequest re-derives + reconciles at the new worktree path', () => {

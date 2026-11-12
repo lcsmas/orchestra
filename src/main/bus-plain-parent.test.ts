@@ -271,23 +271,19 @@ test('#434 app start: a plain parent that already has children (pre-#434 data) g
 // ── wiring pins: the host seams the composed arms above stand in for (workspaces.ts cannot load under node --test) ──
 const src = (rel: string): string => fs.readFileSync(path.resolve(here, '..', '..', rel), 'utf8');
 
-test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s anchor resolves; a session start self-heals; the app start migrates owners; promote records ownership', () => {
+test('#434 wiring: a spawn records the parent as an owner BEFORE the child\'s anchor resolves; a session start self-heals; the app start migrates owners; the retired flag is migrated, never read', () => {
   const ws = src('src/main/workspaces.ts');
   const create = ws.slice(ws.indexOf('const remote = input.host?.kind'), ws.indexOf('return ws;', ws.indexOf('const remote = input.host?.kind')));
   assert.ok(create.indexOf('await ensureParentOwnsRun(ws)') >= 0 && create.indexOf('await ensureParentOwnsRun(ws)') < create.indexOf('await startBusRunAndWriteNotice(ws, remote)'), 'createWorkspace: ownership first, then the anchor row');
-  assert.match(ws, /const updated: Workspace = \{ \.\.\.ws, canOrchestrate: true, ownsRun: true \};/, 'promote (worktree) records ownership beside the flag');
   assert.equal((ws.match(/markOrchestratorWorktree\([^)]*, true\)/g) ?? []).length, 0, 'no sentinel writer hard-codes the dual wording: it comes from coordinatorRoleOf');
-  assert.match(ws, /\{ \.\.\.ws, kind: 'orchestrator', ownsRun: true, name \}/, 'promote (scratch) records ownership');
   assert.match(ws, /await markOrchestratorWorktree\(updated\.worktreePath, coordinatorRoleOf\(updated\) === 'dual'\);/, 'the first-spawn owner gets the standing-role sentinel, wording from run-position');
-  assert.match(ws, /if \(ws\.ownsRun === true \|\| isCoordinatorKind\(ws\)\) return \{ ok: true, id, branch: ws\.branch, kind: ws\.kind \};/, 'promote is idempotent only for a RECORDED owner (a top-level workspace is promotable)');
-  assert.match(ws, /\{ \.\.\.ws, canOrchestrate: undefined, ownsRun: undefined \}/, 'demote sheds ownership');
   assert.match(ws, /await ensureParentOwnsRun\(updated\); \/\/ #434: the new parent owns a run now/, 'attach marks the new parent as an owner');
   assert.match(ws, /\.\.\.\(ownedByLinkOnly \? \{ ownsRun: undefined \} : \{\}\)/, 'attach clears an ownership that rested on having no parent');
   const sdk = src('src/main/agent-sdk.ts');
   assert.ok(sdk.indexOf('await ensureMemberRun(ws);') > 0 && sdk.indexOf('await ensureMemberRun(ws);') < sdk.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'a session start gives its parent a run BEFORE the env names it');
   const idx = src('src/main/index.ts');
   assert.match(idx, /if \(store\.loadedFromDisk\) await startRunsForParentlessWorkspaces\(\)[^\n]*\n[^\n]*\n\s*if \(store\.loadedFromDisk\) await startRunsForOwnerWorkspaces\(\)/, 'app start: top-level missions, then owners with a parent (parents first), both guarded by a loaded store');
-  assert.match(src('src/main/store.ts'), /ws\.canOrchestrate === true \|\| parentsOfSomeone\.has\(ws\.id\)/, 'store load migrates the flag / existing parents into ownsRun');
+  assert.match(src('src/main/store.ts'), /legacy\.canOrchestrate === true \|\| parentsOfSomeone\.has\(ws\.id\)/, 'store load migrates the retired flag / existing parents into ownsRun');
   assert.match(src('src/main/store.ts'), /\(!!ws\.parentId && !knownIds\.has\(ws\.parentId\)\)/, 'store load records a dangling-parent workspace as an owner (one answer with isTopLevel)');
   assert.equal((ws.match(/await recordDanglingOwners\(started\);/g) ?? []).length, 2, 'the app-start sweep AND the launch-time start record a dangling-parent owner');
 });

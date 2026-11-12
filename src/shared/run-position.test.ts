@@ -9,7 +9,7 @@ import path from 'node:path';
 // @ts-expect-error — plain .mjs script, no types
 import { verdict, selfTest, PARENT_PICK_FILES } from '../../scripts/check-run-position-single-reader.mjs';
 import * as runPosition from './run-position.ts';
-import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
+import { coordinates, coordinatorOf, coordinatorRoleOf, isCoordinatorKind, memberRunOf, runIdOf, parentRunOf, roleOf, COORDINATOR_HOOK_GATE, type RunNode } from './run-position.ts';
 
 const root = path.resolve(import.meta.dirname, '../..');
 
@@ -59,6 +59,18 @@ test('coordinatorOf / memberRunOf: who coordinates ws = its resolved direct pare
   assert.equal(coordinatorOf({ id: 'me', parentId: 'me' }, tree([{ id: 'me', parentId: 'me' }])), undefined, 'never its own coordinator');
   assert.equal(memberRunOf(ops, lk), 'lead');
   assert.equal(memberRunOf(lead, lk), null);
+});
+
+test('#440 roleOf: the role is POSITION — LEAD = no resolvable parent, OPS = a parent + owns a run, worker = a parent + no run; no flag decides', () => {
+  assert.equal(roleOf(lead, lk), 'LEAD');
+  assert.equal(roleOf(loner, lk), 'LEAD', 'a top-level plain workspace is a LEAD too — position, not kind');
+  assert.equal(roleOf(ops, lk), 'OPS');
+  assert.equal(roleOf(worker, lk), 'worker');
+  assert.equal(roleOf({ id: 'd', parentId: 'gone', kind: 'worktree', ownsRun: true }, lk), 'LEAD', 'a dangling parent link = no parent');
+  assert.equal(roleOf({ id: 'k', parentId: 'lead', kind: 'orchestrator' }, lk), 'OPS', 'the orchestrator KIND under a parent owns a run → OPS');
+  assert.equal(roleOf({ id: 'f', parentId: 'lead', kind: 'worktree', canOrchestrate: true } as RunNode, lk), 'worker', 'the retired flag decides nothing');
+  assert.equal(runIdOf(worker, lk), 'ops', 'a worker\'s run is its parent\'s');
+  assert.equal(memberRunOf(ops, lk), 'lead', 'an OPS is a member of its parent\'s run while it owns its own');
 });
 
 test('parentRunOf: the run ws is a member of = its direct parent; implicit only when that parent owns no row yet', () => {
