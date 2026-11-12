@@ -406,6 +406,7 @@ await arm('n1_starts_held', async () => {
   check('human_top_level_spawn_passes_while_held', [top.ok === true, !top.held, startsFor(top.id).length], [true, true, 1]);
   const msg = await workspaces.dispatchMessageRequest({ from: 'ws-xm', to: 'ws-m4', text: 'N1-TURN', emergency: true });
   check('turn_to_a_running_member_passes_live', [msg.ok === true, msg.delivery, calls.awaiting.some((c) => c.wsId === 'ws-m4'), startsFor('ws-m4').length], [true, 'live', true, 0]);
+  sendBus('ws-m4', 'N1-TURN');                                                            // n3 needs a PENDING bus lot for the running member: the rig files it itself (#441-fu: an --emergency poke no longer leaves a mirrored bus row)
   world.humanStarted = [sp2.id, top.id];
   // the queue + the OPS' view of it
   check('queue_is_in_arrival_order', admMod ? admMod.listHeldStarts().map((h) => [h.wsId, h.kind]) : [], [[sp.id, 'spawn'], ['ws-m2', 'restart'], ['ws-sub', 'restart']]);
