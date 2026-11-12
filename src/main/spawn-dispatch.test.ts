@@ -15,6 +15,7 @@ import { computeAnchorInfo, maybeStartRunAtAnchor, ownerToMark, runAnchorProbe, 
 import { ensureOwedDispatch, recordSpawnDispatch, startAfterDispatch, type SpawnDispatchOutcome } from './spawn-dispatch.ts';
 import { sweepBusWake, setWakeRoster, setWakeDeliver, setWakeSwitchReader, setAskGateSwitchReader, __setBusReaderForTests, __resetBusWakeForTests, __armStartedForTests } from './bus-wake.ts';
 import { busSwitch } from './bus-runs.ts';
+import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy } from './bus-run-close.ts';
 import { offlineWaveNodes } from '../cli/index.ts';
 import { runIdOf } from '../shared/run-position.ts';
 import { DEFAULT_BUS_SWITCHES, type BusSwitches } from '../shared/bus-switches.ts';
@@ -180,7 +181,7 @@ test('#435 the child\'s end-of-work report (worker_done --cap) is ACCEPTED with 
 for (const [name, setup] of [
   ['the bus is not open', (w: World) => { w.bus.current = null; }],
   ['the spawner\'s run has no row', (w: World) => { w.db.prepare('DELETE FROM run_flags WHERE run_id = ?').run(P); w.db.prepare('DELETE FROM runs WHERE id = ?').run(P); }],
-  ['the spawner\'s run is closed', (w: World) => { w.db.prepare('UPDATE runs SET closed_at = ? WHERE id = ?').run(Date.now(), P); }],
+  ['the spawner\'s run is closed', (w: World) => { assert.deepEqual(closeRunsCoordinatedBy(w.db, [P]), [P], 'control: the merged #437 close function closed it'); }],
   ['the capability cannot be minted (injected failure inside the bus)', (w: World) => { w.db.exec("CREATE TRIGGER inject_mint_fail BEFORE INSERT ON dispatch_capabilities BEGIN SELECT RAISE(ABORT, 'injected mint failure'); END"); }],
 ] as Array<[string, (w: World) => void]>) {
   test(`#435 a bus write that FAILS (${name}) reports it, starts NO agent, removes the workspace and leaves no dispatch row`, needsBuild, async (t) => {
@@ -195,6 +196,16 @@ for (const [name, setup] of [
     assert.equal(caps(w).length, 0);
   });
 }
+
+test('#435 the spawner\'s run, closed (archived coordinator) and then REOPENED (unarchive), takes the dispatch again', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  createChild(w, C);
+  closeRunsCoordinatedBy(w.db, [P]);
+  assert.equal(recordSpawnDispatch({ getBus: () => w.db, lookup: (id) => nodes(w).get(id) }, { spawner: P, child: nodes(w).get(C)!, task: TASK }).kind, 'failed', 'closed: refused');
+  reopenRunsCoordinatedBy(w.db, [P]);
+  assert.equal(recordSpawnDispatch({ getBus: () => w.db, lookup: (id) => nodes(w).get(id) }, { spawner: P, child: nodes(w).get(C)!, task: TASK }).kind, 'recorded', 'reopened: accepted');
+});
 
 test('#435 a failed write whose teardown ALSO fails still starts nothing and says the workspace was kept', needsBuild, async (t) => {
   const w = world(t, plainPair());

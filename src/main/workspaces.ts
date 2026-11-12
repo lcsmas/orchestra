@@ -3953,6 +3953,11 @@ agents of your own. A report without a valid token is REJECTED and not recorded;
 a later dispatch from your parent supersedes the earlier token — run
 \`orchestra token\` again. Your own task is NOT in your inbox (already read).
 
+If YOU spawned children, you read their reports in your own run, but a \`status\` from a
+child that coordinates a run of its own is filed in THAT run: the wake order names it —
+read it with \`orchestra check --run <run-named-in-the-wake>\` (its \`worker_done\` to you
+always lands in your run).
+
 ## 3. Verify a delegated branch actually landed
 
 A peer's "done"/"merged" report is a claim, not a state — agents keep
