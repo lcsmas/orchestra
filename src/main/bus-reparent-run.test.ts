@@ -254,6 +254,19 @@ test('#439 a dispatch followed into the new run keeps its capability (the agent\
   assert.deepEqual(newCap.map((c) => [c.dispatch_seq, c.token_hash, c.state]), [[moved[0].sequence, oldCap[0].token_hash, oldCap[0].state]], 'the same capability, re-keyed to the copy');
 });
 
+test('#439 (#436) a STRANGER\'s status filed in an agent\'s own run follows that agent when it is attached under another', needsBuild, (t) => {
+  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree' }, { id: Q, kind: 'worktree' }]); // three unrelated top-level agents
+  birth(w);
+  const sent = cli(w, P, ['send', '--type', 'status', '--to', M, 'hello from a stranger']);
+  assert.equal(sent.code, 0, sent.stderr + sent.stdout);
+  assert.equal(mailRows(w, M, M).length, 1, 'filed in the recipient\'s own run');
+  move(w, M, Q);
+  const got = check(w, M);
+  assert.equal(bodies(got), 'hello from a stranger', 'M reads it in Q\'s run');
+  assert.equal(cli(w, M, ['ack', String(got.lot)]).code, 0);
+  assert.equal(check(w, M).count, 0, 'once');
+});
+
 // ── 4. the subtree ────────────────────────────────────────────────────────────────────────────────────────────────────
 test('#439 the SUBTREE is re-derived: a moved owner takes its run with it (parent pointer re-pointed), its members\' runs and unread mail are untouched', needsBuild, (t) => {
   const w = world(t, [{ id: X, kind: 'worktree' }, { id: C, kind: 'worktree', parentId: X }, { id: G, kind: 'worktree', parentId: C }, { id: Q, kind: 'worktree' }]);
