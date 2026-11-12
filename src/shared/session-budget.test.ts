@@ -10,6 +10,7 @@ import {
   egressUpTo,
   sessionBudgetTerminator,
   startupRetryAllowance,
+  slowStartupExercised,
   STARTUP_CUT_MARGIN_MS,
   STARTUP_RETRY_MS,
   STARTUP_SPAN_MAX_MS,
@@ -323,6 +324,13 @@ test('a SLOW-but-healthy startup PASSES: the known host gets a retry allowance s
   const absurd = at(9000, { [HOST]: 3 });
   assert.equal(absurd.void, true);
   assert.match(absurd.verdicts.find((v) => v.id === 'instrument.startupNotStalled')!.message, /INSTRUMENT VOID .*9000 ms \(> 8000\).*re-run/);
+});
+
+test('slow-startup positive control keys on the startup SPAN: must-PASS on the measured slow arms, must-FAIL on a fast startup', () => {
+  // measured slow-startup spans: 1444–1503 ms on CLI 2.1.310 (4 attempts) AND 2.1.322 (3 attempts) — both exercise the slow path
+  for (const span of [1434, 1444, 1503, 2705]) assert.equal(slowStartupExercised(span).ok, true, `span ${span}`);
+  // a fast startup (the 322 ms of a normal arm), no span at all, or just under the allowance threshold: the arm proves nothing
+  for (const span of [322, 999, 0, undefined]) { const r = slowStartupExercised(span); assert.equal(r.ok, false, `span ${span}`); assert.match(r.why, /did not delay the main request/); }
 });
 
 // ── #210: process count + tree memory of one session ─────────────────────────

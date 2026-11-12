@@ -148,6 +148,14 @@ export function startupRetryAllowance(spanMs: number | undefined): number {
   return spanMs == null || !(spanMs > 0) ? 0 : Math.floor(spanMs / STARTUP_RETRY_MS);
 }
 
+/** Positive control of the `slow-startup` arm: the slow MCP server must really have stretched startup to where the judge grants a retry
+ *  allowance (span >= STARTUP_RETRY_MS). Keyed on the SPAN, never on a 4th attempt: CLI 2.1.310 fires an early retry ~1.2 s after the
+ *  first burst, 2.1.322 fires it WITH the main request (inside the cut margin), so the count is CLI-dependent (measured 2026-11-12, release-gate refusal at 5321c184). Pure. */
+export function slowStartupExercised(spanMs: number | undefined): { ok: boolean; why: string } {
+  const ok = startupRetryAllowance(spanMs) >= 1;
+  return { ok, why: ok ? `startup stretched to ${spanMs} ms (allowance +${startupRetryAllowance(spanMs)})` : `startup span ${spanMs ?? '?'} ms < ${STARTUP_RETRY_MS} ms: the slow MCP server did not delay the main request` };
+}
+
 /** Env var that lets a run proceed with a weaker egress containment than net+pid namespaces (echoed in the verdict). */
 export const WEAK_CONTAINMENT_ENV = 'SESSION_BUDGET_ALLOW_WEAK_CONTAINMENT';
 

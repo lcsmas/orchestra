@@ -9,7 +9,7 @@
 //                      (mutants.mjs); MUST FAIL naming session.beforeFirstReply.countTokensRequests with a
 //                      large burst — the proof the suite can see the defect it exists for.
 // Self-test arms (host-dependent checks of the instruments themselves, kept out of `pnpm run test`):
-//   slow-startup         a slow MCP server delays the main request ~3 s (refused startup calls get retried): MUST PASS.
+//   slow-startup         a slow MCP server delays startup past 1 s (span proven via slowStartupExercised; the CLI may retry a refused call early): MUST PASS.
 //   traffic-knob-in-env  a buildSdkEnv edit hands the CLI DISABLE_TELEMETRY: MUST be VOID naming instrument.productionEnv
 //                        (judged from the CLI's /proc environ, not the runner's own env).
 //   app-egress-new-host  an ensureSession edit fetch()es a new host: MUST FAIL naming that host in startupEgressAttempts
@@ -25,7 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureBuilt, runSessionArm, runSelfTest, detectContainment } from './harness.mjs';
 import fs from 'node:fs';
-import { formatRequestSummary, sessionBudgetTerminator } from '../../src/shared/session-budget.ts';
+import { formatRequestSummary, sessionBudgetTerminator, slowStartupExercised } from '../../src/shared/session-budget.ts';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
@@ -38,7 +38,7 @@ const ARMS = {
   normal: { kind: 'session', mutant: null, expect: 'pass' },
   'boot-context-read': { kind: 'session', mutant: 'boot-context-read', expect: 'fail', mustBreak: 'session.beforeFirstReply.countTokensRequests', minBurst: 50 },
   // A slow-but-healthy startup (a slow MCP server, as npx-launched ones are): the main request waits ~3 s and the CLI retries a refused call once. MUST PASS.
-  'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 }, mustExercise: { host: 'api.anthropic.com:443', min: 4 } },
+  'slow-startup': { kind: 'session', mutant: null, expect: 'pass', profile: { mcpInitDelayMs: 1200 }, mustExercise: { host: 'api.anthropic.com:443' } },
   'traffic-knob-in-env': { kind: 'session', mutant: 'traffic-knob-in-sdk-env', expect: 'void', mustVoid: 'instrument.productionEnv', mustName: 'DISABLE_TELEMETRY' },
   'app-egress-new-host': { kind: 'session', mutant: 'app-fetch-new-host', expect: 'fail', mustBreak: 'session.beforeFirstReply.startupEgressAttempts.telemetry.example.invalid:443', minBurst: 1 },
   // #399: the removed in-process `browser` MCP server re-registered at the launch site: a REAL session lists it at session/init and in the model request.
@@ -101,9 +101,14 @@ for (const [name, spec] of Object.entries(ARMS)) {
   } else if (judgement.void) { asExpected = false; why = `VOID — ${judgement.verdicts.filter((v) => v.kind === 'instrument' && !v.ok).map((v) => v.message).join(' | ')}`; voided++; }
   else if (spec.expect === 'pass') {
     asExpected = judgement.ok; why = judgement.ok ? 'every budget held' : broke.map((v) => v.message).join(' | ');
-    // Positive control: a slow-but-healthy arm that never saw the retry proves nothing about the allowance it exists to protect.
-    const seen = report.startupEgress?.[spec.mustExercise?.host] ?? 0;
-    if (asExpected && spec.mustExercise && seen < spec.mustExercise.min) { asExpected = false; why = `held, but the arm did not exercise the retry path (saw ${seen} startup attempts at ${spec.mustExercise.host}, need ≥ ${spec.mustExercise.min}) — it proves nothing`; }
+    // Positive control: a slow-but-healthy arm whose startup was not actually slow proves nothing about the allowance it exists to protect.
+    // Keyed on the startup SPAN (the allowance's own input), not on a 4th attempt: that count is CLI-dependent (2.1.310 retries early, 2.1.322 with the main request).
+    if (asExpected && spec.mustExercise) {
+      const ex = slowStartupExercised(report.timing?.startupEgressSpanMs);
+      const seen = report.startupEgress?.[spec.mustExercise.host] ?? 0;
+      if (!ex.ok) { asExpected = false; why = `held, but the arm did not exercise the slow path (${ex.why}; ${seen} startup attempts at ${spec.mustExercise.host}) — it proves nothing`; }
+      else why += `; ${ex.why}; ${seen} startup attempts at ${spec.mustExercise.host} on claude ${report.cli.version}`;
+    }
   }
   else {
     const named = broke.find((v) => v.id === spec.mustBreak);
