@@ -38,7 +38,7 @@ export function censusHome(home, { betterSqlite }) {
       runlessIn: rows.filter((r) => !r.inRun).map((r) => r.name),
       deliveryOffRuns: deliveryOff,
       unreadByRun: unread,
-      runRows: runs.map((r) => ({ id: r.id, kind: r.kind, parent: r.parent })),
+      runRows: runs.map((r) => ({ id: r.id, kind: r.kind, parent: r.parent, flags: r.flags })),
     };
   } finally {
     db.close();

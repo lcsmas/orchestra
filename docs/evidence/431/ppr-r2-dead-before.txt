@@ -1,0 +1,13 @@
+PASS  before/env-isolated — WAYLAND_DISPLAY=wayland-rig, private XDG /var/tmp/ppr-1000/e2e64c-2225555/xdg
+[ppr] resources: MemAvailable 16.5 GB (floor 8), disk free under rig 271G
+PASS  before/fixture-built — base ed510e09, 11 workspaces, 3 runs
+PASS  before/census-flips — P run-less true → with a run row gone from the list
+PASS  before/survivor-instrument-flips — sleep 2225798: alive-by-identity true → after SIGKILL false
+[ppr] boot/observe failed: app exited early (see /var/tmp/ppr-1000/e2e64c-2225555/app.log)
+[ppr] peak app-tree RSS 0.00 GB; survivors after teardown: 0
+FAIL  before/ui-sees-fixture — no UI read (CDP never answered)
+FAIL  before/gap-visible-after-boot — run-less after boot: 8/11 (fixture · P, fixture · P1, fixture · P2, fixture · S, fixture · W1, fixture · W2, fixture · Z1, fixture · Z2) — on master this must stay >0
+PASS  before/survivors-none — 0 left
+PASS  before/live-dirs-untouched — 7 dir(s) snapshotted identical before/after
+[ppr] 8 clauses, 2 FAIL, 0 SKIP — results /var/tmp/ppr-1000/e2e64c-2225555/results.json
+RC=1

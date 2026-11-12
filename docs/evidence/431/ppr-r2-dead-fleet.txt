@@ -1,0 +1,13 @@
+PASS  fleet/env-isolated — WAYLAND_DISPLAY=wayland-rig, private XDG /var/tmp/ppr-1000/e2e64c-2226176/xdg
+[ppr] resources: MemAvailable 16.7 GB (floor 8), disk free under rig 271G
+PASS  fleet/fixture-built — base ed510e09, 11 workspaces, 3 runs
+PASS  fleet/census-flips — P run-less true → with a run row gone from the list
+PASS  fleet/survivor-instrument-flips — sleep 2226604: alive-by-identity true → after SIGKILL false
+[ppr] boot/observe failed: app exited early (see /var/tmp/ppr-1000/e2e64c-2226176/app.log)
+[ppr] peak app-tree RSS 0.00 GB; survivors after teardown: 0
+FAIL  fleet/ui-sees-fixture — no UI read (CDP never answered)
+FAIL  fleet/fleet-rows-flags-mail-unchanged — L/O rows 2/2, messages L=1 (≥1) O=2 (≥2), parent pointers + run_flags of L/O equal pre-boot, app rendered
+PASS  fleet/survivors-none — 0 left
+PASS  fleet/live-dirs-untouched — 7 dir(s) snapshotted identical before/after
+[ppr] 8 clauses, 2 FAIL, 0 SKIP — results /var/tmp/ppr-1000/e2e64c-2226176/results.json
+RC=1
