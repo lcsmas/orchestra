@@ -221,7 +221,7 @@ export async function makeRig({ label, spec, apiUrl, appBin, claudeBin, storeExt
   const wsList = [
     ...(spec.shape === 'plain'
       ? [mk('ops', spec.ops, { ownsRun: true })]
-      : [mk('lead', spec.lead, { ownsRun: true, kind: 'orchestrator' }), mk('ops', spec.ops, { ownsRun: true, kind: 'orchestrator', parentId: spec.lead })])
+      : [mk('lead', spec.lead, { ownsRun: true, kind: 'orchestrator' }), mk('ops', spec.ops, { ownsRun: true, kind: 'orchestrator', parentId: spec.lead })]),
     ...spec.workers.map((w) => mk(w.k, w.id, { parentId: spec.ops, lastTask: `pc task ${w.k}` })),
   ];
   fs.writeFileSync(path.join(H, 'userData/orchestra/store.json'), JSON.stringify({ repos: [], workspaces: wsList, accounts: [acct, acctB], selfTuneRuns: [], ...storeExtra }, null, 2));
