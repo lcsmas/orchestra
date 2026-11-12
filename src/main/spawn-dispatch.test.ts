@@ -362,6 +362,44 @@ test('#435 LEAD → worker → grandchild: the worker that spawned reports to it
   assert.equal(msgs(w).find((m) => m.kind === 'worker_done')?.run_id, L);
 });
 
+test('#435-fu spawn → HELD → the child becomes an owner (promoted / spawned a helper) → release: the start is NOT refused — the dispatch already sits in the parent\'s run', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  await spawn(w, C, { from: P }); // the spawn dispatch is written, then Admission HOLDS the start (the child is kept, its brief owed)
+  const raw = JSON.parse(fs.readFileSync(w.storeFile, 'utf8')) as { workspaces: Rec[] };
+  raw.workspaces.find((r) => r.id === C)!.ownsRun = true; // promoted before its brief was delivered
+  fs.writeFileSync(w.storeFile, JSON.stringify(raw));
+  assert.equal(runOf(w, C), C, 'control: C now owns a run of its own (its runIdOf is no longer the parent\'s)');
+  const deps = { getBus: () => w.bus.current, lookup: (id: string) => nodes(w).get(id) };
+  assert.deepEqual(ensureOwedDispatch(deps, nodes(w).get(C)!, TASK), { kind: 'present' }, 'found in the parent\'s run: the release starts');
+  assert.equal(msgs(w).filter((m) => m.kind === 'dispatch').length, 1, 'no second dispatch');
+  // the same owner-child with NO dispatch anywhere: written into the PARENT\'s run (where its coordinator and its capability live), the start goes on
+  const w2 = world(t, plainPair());
+  birth(w2);
+  createChild(w2, C);
+  const raw2 = JSON.parse(fs.readFileSync(w2.storeFile, 'utf8')) as { workspaces: Rec[] };
+  raw2.workspaces.find((r) => r.id === C)!.ownsRun = true;
+  fs.writeFileSync(w2.storeFile, JSON.stringify(raw2));
+  const out = ensureOwedDispatch({ getBus: () => w2.db, lookup: (id) => nodes(w2).get(id) }, nodes(w2).get(C)!, TASK);
+  assert.equal(out.kind, 'recorded');
+  assert.deepEqual(msgs(w2).map((m) => `${m.run_id}:${m.sender}>${m.recipient}`), [`${P}:${P}>${C}`]);
+});
+
+test('#435-fu the pre-ack is skipped when EARLIER unread mail is visible to the child (a run broadcast): the cursor would hide it, so the child is woken instead and reads both', needsBuild, async (t) => {
+  const w = world(t, plainPair());
+  birth(w);
+  assert.equal(cli(w, P, ['send', '--type', 'status', 'rule for the whole run: no force pushes']).code, 0); // NULL recipient = a run-wide broadcast, BEFORE the spawn
+  await spawn(w, C, { from: P });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS c FROM cursors WHERE reader = ?').get(C).c, 0, 'no pre-ack: the broadcast stays unread');
+  t.after(() => __resetBusWakeForTests());
+  const wakes: string[] = [];
+  armWake(w, wakes, [C, P]);
+  await sweepBusWake();
+  assert.deepEqual(wakes, [C], 'the child is woken');
+  const lot = JSON.parse(cli(w, C, ['check']).stdout) as { messages: Array<{ kind: string }> };
+  assert.deepEqual(lot.messages.map((m) => m.kind), ['status', 'dispatch'], 'it reads the broadcast AND its dispatch');
+});
+
 test('#435 a start of a child with a parent but NO dispatch row writes it first; one that has it is left alone; a failed write refuses the start', needsBuild, (t) => {
   const w = world(t, plainPair());
   birth(w);

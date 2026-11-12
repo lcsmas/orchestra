@@ -8,9 +8,9 @@
 // a `--detached` child (parentless, its own mission — a dispatch across unrelated runs is refused, #436) = NO dispatch.
 
 import type { BusDb } from './bus.ts';
-import { mintCapability, send } from './bus.ts';
+import { mintCapability, ownRunRecipientSql, send } from './bus.ts';
 import { getRun } from './bus-runs.ts';
-import { runIdOf, type RunLookup, type RunNode } from '../shared/run-position.ts';
+import { memberRunOf, runIdOf, type RunLookup, type RunNode } from '../shared/run-position.ts';
 
 export type SpawnDispatchOutcome =
   | { kind: 'none'; reason: 'no-spawner' | 'detached' | 'sandbox' | 'empty-task' }
@@ -47,10 +47,10 @@ export function recordSpawnDispatch(deps: SpawnDispatchDeps, a: SpawnDispatchInp
   try {
     const spawner = deps.lookup(a.spawner);
     if (!spawner) return { kind: 'failed', error: `the spawner ${a.spawner} is not in the store` };
-    // The dispatch lives in the run the child is a member of; it is the spawner's own run too (a first spawn made it the owner — #434).
-    const runId = runIdOf(a.child, deps.lookup);
-    if (runIdOf(spawner, deps.lookup) !== runId) {
-      return { kind: 'failed', error: `the spawner and its child are in different runs (${runIdOf(spawner, deps.lookup)} vs ${runId})` };
+    // The dispatch lives in the spawner's own run, which the child is a MEMBER of (a first spawn made the spawner its owner — #434); the child may own a run of its own by now (it spawned, or was promoted).
+    const runId = runIdOf(spawner, deps.lookup);
+    if (memberRunOf(a.child, deps.lookup) !== runId) {
+      return { kind: 'failed', error: `the spawner and its child are in different runs (${runId} vs ${memberRunOf(a.child, deps.lookup)})` };
     }
     const db = deps.getBus();
     if (!db) return { kind: 'failed', error: 'the bus is not open' };
@@ -59,10 +59,13 @@ export function recordSpawnDispatch(deps: SpawnDispatchDeps, a: SpawnDispatchInp
     if (run.closed_at !== null) return { kind: 'failed', error: `run ${runId} is closed` };
     // ONE transaction: the dispatch row and its capability land together or not at all (a dispatch with no capability would reject every worker_done).
     const seq = db.transaction((): number => {
+      const cursor = (db.prepare('SELECT acked_seq FROM cursors WHERE run_id = ? AND reader = ?').get(runId, a.child.id) as { acked_seq: number } | undefined)?.acked_seq ?? 0;
+      const earlierUnread = (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE run_id = ? AND sequence > ? AND ${ownRunRecipientSql()}`).get(runId, cursor, a.child.id, a.child.id) as { c: number }).c;
       const s = send(db, { runId, sender: spawner.id, kind: 'dispatch', body: a.task, recipient: a.child.id });
       mintCapability(db, runId, s, a.child.id);
       // The ack bump (`ack()` in bus.ts does exactly this): MAX so a cursor already past it never moves back. A LATER dispatch has a higher seq and wakes as usual.
-      if (a.preAck) db.prepare('INSERT INTO cursors (run_id, reader, acked_seq) VALUES (?,?,?) ON CONFLICT(run_id, reader) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq)').run(runId, a.child.id, s);
+      // Only when NO earlier unread mail is visible to the child: the cursor is one high-water mark per (run, reader), so a bump would hide it — then the child is woken instead.
+      if (a.preAck && earlierUnread === 0) db.prepare('INSERT INTO cursors (run_id, reader, acked_seq) VALUES (?,?,?) ON CONFLICT(run_id, reader) DO UPDATE SET acked_seq = MAX(acked_seq, excluded.acked_seq)').run(runId, a.child.id, s);
       return s;
     })();
     return { kind: 'recorded', runId, seq };
@@ -78,8 +81,9 @@ export function ensureOwedDispatch(deps: SpawnDispatchDeps, child: RunNode, task
   try {
     const db = deps.getBus();
     if (!db) return { kind: 'failed', error: 'the bus is not open (cannot check the owed dispatch)' };
-    const runId = runIdOf(child, deps.lookup);
-    const has = db.prepare("SELECT 1 FROM messages WHERE run_id = ? AND kind = 'dispatch' AND recipient = ? LIMIT 1").get(runId, child.id);
+    // The dispatch sits in the run the child is a MEMBER of (its parent's) — also looked up there when it owns a run of its own by now (spawned a helper / was promoted before its brief was delivered).
+    const runs = [runIdOf(child, deps.lookup), memberRunOf(child, deps.lookup)].filter((r): r is string => !!r);
+    const has = db.prepare(`SELECT 1 FROM messages WHERE kind = 'dispatch' AND recipient = ? AND run_id IN (${runs.map(() => '?').join(',')}) LIMIT 1`).get(child.id, ...runs);
     if (has) return { kind: 'present' };
     return recordSpawnDispatch(deps, { spawner: child.parentId, child, task });
   } catch (e) {
