@@ -4693,7 +4693,7 @@ export async function startRunsForParentlessWorkspaces(): Promise<string[]> {
 /** #434 — at app start, give every live owner that has a parent and no run row its vague (promoted OPS, a plain parent of pre-#434 children),
  *  parents first; refreshes each started owner's members' notices is unnecessary (their notice is written at each launch). Best-effort. */
 export async function startRunsForOwnerWorkspaces(): Promise<string[]> {
-  const live = store.workspaces.filter((w) => !w.archived && w.host?.kind !== 'sandbox');
+  const live = store.workspaces.filter((w) => w.archived !== true && w.host?.kind !== 'sandbox');
   const started = startRunsForOwners(busRunAnchorDeps, live, (id) => store.getWorkspace(id));
   for (const id of started) {
     const ws = store.getWorkspace(id);
