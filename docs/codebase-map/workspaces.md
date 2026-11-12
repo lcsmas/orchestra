@@ -415,6 +415,15 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   the target state, and broadcast a `workspace:update` per changed child so the
   renderer's tree updates live. A child archived on its own stays independent
   until its parent is unarchived.
+- **A run closes with its coordinator (#437, ADR 0012).** Every archive/delete path closes the run(s) the removed workspace
+  COORDINATES (`runs.coordinator = ws.id` → `closed_at`): `archiveWorkspace` (per workspace of the subtree, after its store
+  write — UI, mobile, cascade), `deleteWorkspace` / `deleteWorkspaces` (BEFORE the slow teardown, so mail to a dying coordinator is
+  refused throughout) and `pruneOrphanedWorkspaces`, all through `closeRunsOf` → `closeRunsCoordinatedBy`
+  (`src/main/bus-run-close.ts`, best-effort D1). `unarchiveWorkspace` REOPENS the same run (`reopenRunsOf`): a run's id IS its
+  coordinator's workspace id, so there is no "new run" to mint; history, unread mail and frozen switches are kept. A session start
+  (`ensureRunOpen`, `agent-sdk.ts` beside `ensureTopLevelRun`) and the app-start `reconcileRunClosureAtStart` (`index.ts`, after the #433
+  sweep, `loadedFromDisk`-gated) repair a dropped write: closed ⇔ coordinator archived or gone. Sandbox agents: out of scope (no special
+  case — they simply have no row). Detail + enumerators: `bus.md` § "Run close".
 - **`deleteWorkspaces(ids, window, onProgress?)`** — bulk hard-delete. Reaps
   every worktree sequentially (gentle disk I/O; archive scripts + `git worktree
   remove` per id), then **one** `store.removeWorkspaces(ids)` write + **one**

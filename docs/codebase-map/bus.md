@@ -2492,6 +2492,32 @@ parentRunId }` ONCE and calls `maybeStartRunAtAnchor(deps, anchor)`:
 - **D1 — never blocks a spawn:** `getBus()` null / `startRun` throw are caught,
   logged, return null; the spawn proceeds all-OFF.
 
+## Run close — a run closes with its coordinator (#437, ADR 0012)
+
+`runs.closed_at` (v1 column, never written before #437) is the one marker. **Close:** archiving or deleting the workspace that is
+a run's `coordinator` sets it (`closeRunsCoordinatedBy`, `src/main/bus-run-close.ts` — platform-free; wired in `workspaces.ts`
+`closeRunsOf` at `archiveWorkspace` / `deleteWorkspace` / `deleteWorkspaces` / `pruneOrphanedWorkspaces`; see `workspaces.md`). Idempotent,
+first closing time kept; the frozen switches and history are untouched.
+**Refusal (CLI, `src/cli/bus-verbs.ts` `assertRunsOpen`):** `send`, `ask`, `gate open` and `gate resolve` fail BEFORE any write when the run
+they act in (sender's `ORCHESTRA_RUN_ID`), the recipient's run (`toRunId` from `/resolveHandle`) or the recipient-as-run is closed:
+`closedRunRefusalMessage` names the run and says "Nothing was written" (refused, not parked — the bus row counts do not move). `check` /
+`ack` are never refused (reading old mail). Internal host producers (`sendBus` escalations, Relance, gate re-wake) are NOT guarded — they
+address live agents through the workspace's own run. A member whose coordinator was closed keeps its baked run id until it restarts, so ITS
+mail is refused naming the closed run; after a delete the restart gives it its own mission (the #433 sweep / `ensureTopLevelRun` see the
+closed row, `INSERT OR IGNORE` leaves exactly one).
+**Unarchive = REOPEN the same run** (`reopenRunsCoordinatedBy`; DECISION, ledger #443): the run's id is its coordinator's workspace id and
+members' baked `ORCHESTRA_RUN_ID`, unread mail, cursors and frozen switches all key on it — a fresh run would strand all of that and could not
+reuse the id. A DELETE is permanent (the id never returns). `reconcileRunClosure` (app start) + `ensureRunOpen` (session start) keep
+"closed ⇔ coordinator archived or gone" true after a dropped write; at the first start of this build it closes the ~40 runs of long-gone
+coordinators.
+**Enumerators that skip a closed run:** `liveFleetRuns` (memory Pause candidates, memory alert, container window), `readPendingReaders`
+(`bus-wake.ts`: no wake for mail or a gate sitting in a closed run), `sweepBusLiveness` (members of a closed run), the Pause carrier reads
+`activePauseCarriers` / `softPausingCarriers` / `autoPausedRuns` / `memoryPausedRuns`, `memory-cap-view` (already filtered `closedAt`).
+`orchestra bus-status` prints `closed: CLOSED since …` (`runStatusView.closedAt`); the pane already rendered `closed`. NOT filtered: the
+Pause CHAIN walks (`pauseChain`, `ancestorRunIds`) — a live child under a closed paused ancestor is a #438 question.
+Tests: `src/main/bus-run-close.test.ts` (built CLI vs real bus + store.json; real enumerators); mutants `pnpm run test:run-close-mutants`
+(33, each guard removed → red; the archive/delete/unarchive call sites are source-pinned only — `workspaces.ts` cannot load under `node --test`).
+
 ## The FLAT-mission gap and the admin refreeze (`orchestra run refreeze`, #156)
 
 D1b re-freezes a mission ONLY at a wave boundary — a NEW nested (OPS) run created
