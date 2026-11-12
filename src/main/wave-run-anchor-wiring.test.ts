@@ -287,3 +287,12 @@ test('#433 — the migration skips archived and sandbox workspaces and starts no
   assert.match(body, /startRunsForParentless\(busRunAnchorDeps,/, 'the real run-start function');
   assert.doesNotMatch(body.split('\n/**')[0], /\b(sdkRestart|dispatchRestartRequest|sdkStart\w*|ensureSession\w*|startWorkspaceAgent\w*|wake\w*)\(/, 'no session is restarted, started or woken');
 });
+
+test('#433 — every session start ensures a top-level run BEFORE the env names it (detach / unarchive / parent deleted / eject)', () => {
+  const i = agentSdkSrc.indexOf('await ensureTopLevelRun(ws);');
+  assert.ok(i > 0, 'buildSdkEnv must call ensureTopLevelRun');
+  assert.ok(i < agentSdkSrc.indexOf('env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);'), 'before ORCHESTRA_RUN_ID is set');
+  const body = fnBody(workspacesSrc, 'export async function ensureTopLevelRun(');
+  assert.match(body, /startRunsForParentless\(busRunAnchorDeps, \[ws\]/, 'the top-level-only starter (never maybeStartRunAtAnchor: it would refreeze a parent mission)');
+  assert.match(body, /host\?\.kind === 'sandbox'\) return/, 'sandbox workspaces are out');
+});

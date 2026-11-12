@@ -4641,17 +4641,27 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
   if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
 }
 
-/** #433 — at app start, give every live top-level workspace without a run its mission (rows + a refreshed
- *  worktree notice). No session is restarted or woken; archived and sandbox workspaces are skipped. */
+/** #433 — at app start, give every live top-level workspace without a run its mission, and rewrite every live
+ *  worktree's notice (a stale "anchors no run" file from an older build is wiped). No session is restarted or woken;
+ *  archived and sandbox workspaces are skipped. */
 export async function startRunsForParentlessWorkspaces(): Promise<string[]> {
   const live = store.workspaces.filter((w) => !w.archived && w.host?.kind !== 'sandbox');
   const started = startRunsForParentless(busRunAnchorDeps, live, (id) => store.getWorkspace(id));
-  for (const id of started) {
-    const ws = store.getWorkspace(id);
-    if (ws && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, id);
-  }
+  for (const ws of live) if (existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, resolveWaveRunId(ws));
   if (started.length) log.info(`bus-run-anchor: started a mission run for ${started.length} top-level workspace(s) without one`);
   return started;
+}
+
+/** #433 — a session START of a workspace that became top-level after creation (detach, unarchive, parent deleted, sandbox
+ *  eject) has no row yet: start its mission first. Top-level only (never refreezes a parent mission); best-effort, never throws. */
+export async function ensureTopLevelRun(ws: Workspace): Promise<void> {
+  if (ws.host?.kind === 'sandbox') return;
+  try {
+    const started = startRunsForParentless(busRunAnchorDeps, [ws], (id) => store.getWorkspace(id));
+    if (started.length && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, ws.id);
+  } catch (e) {
+    log.warn(`bus-run-anchor: launch-time run start failed for ${ws.id}`, e);
+  }
 }
 
 /** #134 — start the run row when a workspace BECOMES an orchestrator via

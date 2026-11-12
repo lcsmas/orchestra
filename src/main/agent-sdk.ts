@@ -47,6 +47,7 @@ import {
   orchestratorBrief,
   createWorkspace,
   resolveWaveRunId,
+  ensureTopLevelRun,
   maybeBumpCoordinatorOnReplacement,
 } from './workspaces';
 import { getBus, coordinatorGeneration } from './bus.ts';
@@ -856,6 +857,7 @@ async function buildSdkEnv(ws: Workspace, opts: { sessionKey?: string } = {}): P
   // verbs (send/check/ack/ask/gate) and the mirror resolve ORCHESTRA_RUN_ID →
   // 'default'/host- instead of the wave — the same G9-class miss as the run row,
   // one env var over. Set unconditionally (independent of the spool gate below).
+  await ensureTopLevelRun(ws); // #433: a workspace that became top-level after creation gets its mission before this env names it
   env.ORCHESTRA_RUN_ID = resolveWaveRunId(ws);
   // #166 — FENCING: present the wave run's current
   // coordinator generation so this session's CLI bus verbs (`resolveFencing`

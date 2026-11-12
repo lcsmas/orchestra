@@ -223,3 +223,17 @@ test('#433 `orchestra bus-status` on a lone workspace shows its run with the fro
   const r2 = await busStatus(w2, T1, T1);
   assert.match(r2.stdout, /no such run/);
 });
+
+test('#433 a workspace that becomes top-level later (detach) gets its mission at its next start; a nested one never refreezes its parent mission', needsBuild, (t) => {
+  const w = world(t);
+  const nodes = offlineWaveNodes(w.storeFile);
+  startRun(w.db, { id: LEAD, kind: 'mission', coordinator: LEAD }, { ...DEFAULT_BUS_SWITCHES, wake: false });
+  const lookup = (id: string): WaveNode | undefined => nodes.get(id);
+  // KID detached: same record without its parent → the single-node start the session launch uses.
+  const detached: WaveNode = { ...nodes.get(KID)!, parentId: undefined };
+  assert.deepEqual(startRunsForParentless(w.deps, [detached], lookup), [KID]);
+  assert.equal(getRun(w.db, KID)?.kind, 'mission');
+  // Row-less OPS under the LEAD at launch: not top-level → nothing started, the LEAD mission keeps what it froze.
+  assert.deepEqual(startRunsForParentless(w.deps, [nodes.get(OPS)!], lookup), []);
+  assert.equal(runFlags(w.db, LEAD).wake, false, 'no wave-boundary refreeze from a launch');
+});
