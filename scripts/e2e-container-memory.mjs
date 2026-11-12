@@ -386,7 +386,7 @@ if (ARM === 'escalation_counts_it') {
   const mkWs = (id, extra = {}) => store.upsertWorkspace({ id, name: id, kind: 'scratch', repoPath: '', baseBranch: '', branch: id, worktreePath: path.join(tmpHome, `wt-${id}`), status: 'idle', createdAt: Date.now(), hasInput: true, ...extra });
   await mkWs('lead', { kind: 'orchestrator' });
   await mkWs('w1', { parentId: 'lead' });
-  runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, { ...DEFAULT_BUS_SWITCHES, delivery: true });
+  runsMod.startRun(db, { id: 'lead', kind: 'mission', coordinator: 'lead' }, { ...DEFAULT_BUS_SWITCHES, wake: true });
   // the guard: the REAL sampler on a fake MemAvailable source + a hand-fired timer; the alert host: REAL (real store, real bus, real setTimeout settle)
   let mem = 12 * GIB;
   let clock = Date.parse('2026-10-07T14:00:00Z');

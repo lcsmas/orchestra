@@ -134,7 +134,6 @@ import { refreshAccountsNow } from './account-usage';
 import { pauseAutoOnMigrate } from './pause-auto-host';
 import { buildScriptEnv, runOneShot, setupLogPath, archiveLogPath } from './scripts';
 import { log } from './logger';
-import { mirrorDispatch } from './bus-mirror.ts';
 import { ensureOwedDispatch, recordSpawnDispatch, startAfterDispatch } from './spawn-dispatch.ts';
 import { formatPeerMessage, type PeerOrigin } from '../shared/peer-messages.ts';
 import { INBOX_DELIMITER, sanitizeInboxBody } from '../shared/inbox-blocks.ts';
@@ -2945,56 +2944,22 @@ export async function dispatchMessageRequest(
   },
 ): Promise<MessageResult> {
   // #441 — the OLD channel is CLOSED: a send without `--emergency` is refused for EVERY target (a parent, a child, a
-  // sibling, an unrelated agent) with the equivalent `orchestra send`. Checked BEFORE the mirror and the delivery body:
-  // a refused send neither delivers nor mirrors. The DECISION is the pure `decideMessageChannel` (src/shared), unit-tested
-  // without this module's Electron/store chain; here we only hand it the caller's flag, target and text.
-  const body = input.text.trim().slice(0, MESSAGE_MAX_CHARS); // the ONE normalization: the refusal echoes it, the mirror stores it, the delivery gets it
+  // sibling, an unrelated agent) with the equivalent `orchestra send`. Checked BEFORE the delivery body: a refused send
+  // delivers nothing. The DECISION is the pure `decideMessageChannel` (src/shared), unit-tested without this module's
+  // Electron/store chain. The echoed command carries the FULL text (trimmed, never capped): a silently shortened command
+  // would not be the equivalent one (the delivery body below caps for the session, not for the refusal).
   const gate = decideMessageChannel({
     emergency: input.emergency === true,
     to: input.to,
-    text: body,
+    text: input.text.trim(),
   });
   if (!gate.allow) {
     return { ok: false, error: gate.error };
   }
-  // SHADOW MIRROR (#116). The old channel runs FIRST and UNCHANGED; the mirror
-  // sees only its finished result and returns void. Written as a wrapper around
-  // the untouched body rather than as N calls inside it, deliberately:
-  // `dispatchMessageRequestUnmirrored` carries TWELVE `return`s, and a mirror
-  // bolted onto each is one that silently misses the path added next -- which
-  // would surface as a permanently non-zero `missed` nobody could attribute.
-  // One wrapper cannot miss a path. (Count measured, not estimated:
-  //   node -e "const s=require('fs').readFileSync('src/main/workspaces.ts','utf8');
-  //            const i=s.indexOf('async function dispatchMessageRequestUnmirrored');
-  //            const b=s.slice(i).split('\n}\n')[0];
-  //            console.log((b.match(/\breturn\b/g)||[]).length)"
-  // An earlier revision of this comment said SIX, and the wrong number was
-  // copied into docs/codebase-map/bus.md -- a near-true claim nobody re-derives.)
-  //
-  // The mirror is READ-ONLY with respect to delivery: `res` is returned
-  // untouched, `mirrorDispatch` never throws, and nothing here awaits it.
-  //
-  // ONE cap, shared (review F5): the body is trimmed and capped in exactly one
-  // place and handed to both paths. The mirror stores this PAYLOAD, not the
-  // delivered RENDERING — the delivery path re-wraps it via formatPeerMessage
-  // (attribution + CR-strip), by design, since the bus is the source of truth
-  // for the message, not the transcript (review F6). What F5 keeps aligned
-  // is the CAP: two copies of `trim().slice(0, MESSAGE_MAX_CHARS)` would drift
-  // the day either moves.
-  const res = await dispatchMessageRequestUnmirrored({ ...input, text: body });
-  // #144 — resolve the PARTIES' run so the mirrored row lands where the reader's `check` looks: the RECIPIENT's wave run
-  // (mail sits in the reader's run; the wake predicate scopes to it). An unknown recipient (a refused send) has no run → undefined,
-  // and the mirror writes NO row (there is no `host-…` fallback run any more, #441).
-  const recipientWs = store.getWorkspace(input.to);
-  const partiesRunId = recipientWs ? resolveWaveRunId(recipientWs) : undefined;
-  mirrorDispatch({
-    sender: input.from ?? 'external',
-    recipient: input.to,
-    body,
-    result: res,
-    runId: partiesRunId,
-  });
-  return res;
+  // #441-fu: `--emergency` stays the PRE-#441 poke — text into the reader's session and NOTHING on the bus. The #116 shadow mirror
+  // that used to file a `dispatch` row in the recipient's run here is retired: with the old channel closed there is no shadow to
+  // compare, and a stranger's emergency must not become a dispatch in the target's run (#436: only a coordinator dispatches).
+  return dispatchMessageRequestUnmirrored(input);
 }
 
 async function dispatchMessageRequestUnmirrored(

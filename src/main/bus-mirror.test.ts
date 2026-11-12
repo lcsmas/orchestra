@@ -153,20 +153,13 @@ test('SOURCE BINDING — the wiring this rig asserts on is actually in workspace
   const wrapper = extract('export async function dispatchMessageRequest');
   assert.match(
     wrapper,
-    /const res = await dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\);/,
-    'the wrapper must call the untouched body with the shared normalized text',
+    /return dispatchMessageRequestUnmirrored\(input\);/,
+    'the wrapper must call the untouched body',
   );
-  assert.match(wrapper, /mirrorDispatch\(\{/, 'the wrapper must call the mirror');
-  assert.match(wrapper, /\n  return res;\n/, 'the wrapper must return the OLD result untouched');
-
-  // THE ORDERING CLAIM, asserted positionally: the mirror runs AFTER delivery.
-  // If the mirror ran first it could not see the outcome at all, and if it sat
-  // between the call and the return it could still replace `res`.
-  const iDispatch = wrapper.indexOf('await dispatchMessageRequestUnmirrored');
-  const iMirror = wrapper.indexOf('mirrorDispatch(');
-  const iReturn = wrapper.lastIndexOf('return res;');
-  assert.ok(iDispatch < iMirror, 'the mirror must run AFTER the old channel');
-  assert.ok(iMirror < iReturn, 'the mirror must run BEFORE the untouched return');
+  // #441-fu: the wrapper NO LONGER mirrors — the old channel is closed (only `--emergency` is left) and an emergency poke must not
+  // become a bus `dispatch` row in the recipient's run (#436). The module + its counters stay for the rows a caller hands it.
+  assert.ok(!/mirrorDispatch/.test(wrapper), 'the wrapper must not call the mirror any more');
+  assert.match(wrapper, /return dispatchMessageRequestUnmirrored\(input\);/, 'it returns the delivery body\'s result untouched');
 
   // The old body must still exist and still be the thing that decides delivery.
   const body = extract('async function dispatchMessageRequestUnmirrored');
@@ -186,7 +179,7 @@ test('SOURCE BINDING — the source-binding guard can actually fail', () => {
     () => {
       assert.match(
         fake,
-        /const res = await dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\);/,
+        /return dispatchMessageRequestUnmirrored\(input\);/,
       );
     },
     /match/i,
@@ -1032,31 +1025,13 @@ test('F5 — MESSAGE_MAX_CHARS matches production, and the rig can reach the bou
   );
 });
 
-test('F5 — the body the mirror records is byte-identical to the body delivered', () => {
-  // The wrapper now normalizes ONCE and hands the same string to both. Asserted
-  // over a body that actually CROSSES the cap, so a second divergent
-  // `trim().slice()` reappearing anywhere would show up here.
-  // Comment lines stripped first: the wrapper's own comment DISCUSSES the
-  // duplication it removed, and counting that mention as a copy would make this
-  // assertion fail on correct code (and, worse, pass if someone deleted the
-  // comment and added a real second copy).
+test('F5 (#441-fu) — the wrapper has NO normalization copy left: the delivery body alone trims + caps, the refusal echo is never capped', () => {
   const wrapper = extract('export async function dispatchMessageRequest')
     .split('\n')
     .filter((l) => !l.trim().startsWith('//'))
     .join('\n');
-  const copies = (wrapper.match(/trim\(\)\.slice\(/g) ?? []).length;
-  assert.equal(copies, 1, 'exactly ONE trim().slice() in the wrapper CODE, not two');
-  assert.match(
-    wrapper,
-    /const body = input\.text\.trim\(\)\.slice\(0, MESSAGE_MAX_CHARS\);/,
-    'the shared normalization',
-  );
-  assert.match(
-    wrapper,
-    /dispatchMessageRequestUnmirrored\(\{ \.\.\.input, text: body \}\)/,
-    'delivery receives the normalized body',
-  );
-  assert.match(wrapper, /\n {4}body,\n/, 'and the mirror receives the SAME binding');
+  assert.equal((wrapper.match(/\.slice\(/g) ?? []).length, 0, 'no slice in the wrapper CODE (the refusal must echo the whole text)');
+  assert.equal((extract('async function dispatchMessageRequestUnmirrored').match(/trim\(\)\.slice\(0, MESSAGE_MAX_CHARS\)/g) ?? []).length, 1, 'the cap lives in the delivery body, once');
 });
 
 test('F5 — an over-cap send mirrors the TRUNCATED body, and the row proves it', (t) => {

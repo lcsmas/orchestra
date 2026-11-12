@@ -155,8 +155,9 @@ const TEXT = 'please run the wave now';
 
 await arm('c0_control', async () => {
   check('bundle_not_stale', bundleStale, false);
-  const before = turns.length;
+  const before = turns.length, rowsBefore0 = busRowCount();
   const r = await cli('LEAD', ['message', '--emergency', 'W1', 'EMG-ONE wake up reader']);
+  check('emergency_files_NOTHING_on_the_bus_(no_dispatch_row_in_the_targets_run)', busRowCount() - rowsBefore0, 0);
   check('emergency_rc0', r.code, 0);
   check('emergency_says_delivered', /Delivered \(/.test(r.out), true);
   const t = turns.slice(before).find((x) => x.wsId === 'W1');
@@ -186,6 +187,12 @@ await arm('c1_matrix', async () => {
     check(`${name}_no_inbox_file`, inboxExists(to), false);
     check(`${name}_no_switch_wording`, /delivery|legacy/i.test(r.out), false);
   }
+  // a 9000-char text is echoed WHOLE (never silently cut), and an id with a space is quoted
+  const long = `${'a'.repeat(4500)} ${'b'.repeat(4499)}`;
+  const rl = await cli('W1', ['message', 'W2', long]);
+  check('long_text_refused_and_echoed_whole', [rl.code !== 0, rl.out.includes(sendCmd('W2', long))], [true, true]);
+  const rq = await cli('W1', ['message', 'my agent', 'hi']);
+  check('an_id_with_a_space_is_quoted_in_the_printed_command', rq.out.includes("orchestra send --type status --to 'my agent' 'hi'"), true);
   // the printed command is the REAL verb: run it as the sender and the bus carries it (the equivalent actually works)
   const r2 = await cli('W1', ['send', '--type', 'status', '--to', 'OPS', TEXT]);
   check('the_equivalent_send_works_rc0', r2.code, 0);
@@ -201,8 +208,12 @@ await arm('c2_broadcast', async () => {
   check('broadcast_children_refused_rc', r2.code !== 0, true);
   check('children_each_has_its_own_command', r2.out.includes(sendCmd('W1', TEXT)) && r2.out.includes(sendCmd('W2', TEXT)), true);
   check('no_turn_no_row', [turns.length - turnsBefore, busRowCount() - rowsBefore], [0, 0]);
+  const rowsBeforeHalt = busRowCount();
   const r3 = await cli('OPS', ['message', '--emergency', '--to', 'W1,W2', 'HALT-NOW']);
   check('emergency_broadcast_rc0', r3.code, 0);
+  check('emergency_broadcast_files_nothing_on_the_bus', busRowCount() - rowsBeforeHalt, 0);
+  const stranger = await cli('STRANGER', ['message', '--emergency', 'W1', 'EMG-STRANGER']);
+  check('a_strangers_emergency_is_delivered_but_never_a_dispatch_in_the_targets_run', [stranger.code, db.prepare("SELECT COUNT(*) AS n FROM messages WHERE kind = 'dispatch' AND body LIKE '%EMG-STRANGER%'").get().n], [0, 0]);
   check('emergency_broadcast_reached_both', ['W1', 'W2'].every((id) => turns.some((t) => t.wsId === id && t.text.includes('HALT-NOW'))), true);
 });
 

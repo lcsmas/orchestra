@@ -165,10 +165,10 @@ for (const [what, p] of [['bus', busMod.busPath()], ['inbox', tray.inboxFilePath
 const BUS_DIR = path.dirname(busMod.busPath());
 const INBOX_DIR = path.dirname(tray.inboxFilePath('x'));
 
-// ── the fleet: one orchestrator (pause ON, wake ON, delivery ON) + one member ──
+// ── the fleet: one orchestrator (pause ON, wake ON) + one member ──
 const now0 = Date.now();
 const mk = (id, extra = {}) => ({ id, name: id, branch: id, kind: 'scratch', repoPath: '', worktreePath: SCRATCH, status: 'idle', createdAt: now0 - 40 * 60_000, hasInput: true, sdkSessionId: `sess-${id}`, ...extra });
-const SW = { ...DEFAULT_BUS_SWITCHES, delivery: true, wake: true, pause: true, liveness: true };
+const SW = { ...DEFAULT_BUS_SWITCHES, wake: true, pause: true, liveness: true };
 busRuns.startRun(db, { id: 'ws-ops', kind: 'mission', coordinator: 'ws-ops' }, SW);
 await store.upsertWorkspace(mk('ws-ops', { kind: 'orchestrator' }));
 await store.upsertWorkspace(mk('ws-m1', { parentId: 'ws-ops' }));

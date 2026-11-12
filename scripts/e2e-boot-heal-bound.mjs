@@ -104,7 +104,7 @@ const WS_ID = 'ws-wedged-197';
 busRuns.startRun(
   db,
   { id: RUN_ID, kind: 'wave', coordinator: COORD_ID },
-  { delivery: false, wake: false, askGate: false, liveness: true, fencing: false, capability: false, receipts: false },
+  { wake: false, askGate: false, liveness: true, fencing: false, capability: false, receipts: false },
 );
 
 await store.load?.();

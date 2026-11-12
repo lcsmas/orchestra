@@ -384,10 +384,11 @@ test('T118.3 (F4) — the notice emits the WIRE name ask_gate, never the interna
   assert.match(off, /bus switch ask_gate=OFF/);
 });
 
-test('T118.3 — the OFF line names the old channel as authoritative (counted, not fired)', () => {
+test('T118.3 — the OFF line says the mechanism is not active (counted, not fired) — and names no old channel (#441-fu)', () => {
   // The coexistence ruling has to be READABLE by the fleet skill, not implied.
   const off = busSwitchNoticeLines(ALL_OFF).join('\n');
-  assert.match(off, /OLD channel stays authoritative/);
+  assert.match(off, /this mechanism is not active in this run/);
+  assert.doesNotMatch(off, /OLD channel|legacy/i);
   assert.match(off, /COUNTS this mechanism, it does not fire it/);
   const on = busSwitchNoticeLines(ALL_ON).join('\n');
   assert.match(on, /AUTHORITATIVE for this mechanism/);
