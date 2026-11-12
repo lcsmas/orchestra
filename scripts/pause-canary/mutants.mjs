@@ -62,6 +62,12 @@ export const MUTANTS = {
   },
 };
 
+/** #438-fu — mutants for the REAL-CLOCK liveness soak (`drive-liveness.mjs`); NOT part of the pause proof (`MUTANTS` feeds its default arms). */
+export const LIVENESS_MUTANTS = {
+  // the « done + released » exclusion goes blind: a child that reported `worker_done` and idles is escalated like a stalled one at the staleness bound
+  'released-blind': { desc: "readReleasedReaders matches no `worker_done` row (a finished child escalates once silent past 10 min)", exercise: 'liveness', redden: ['zero_escalations'], edits: [lit("wd.kind = 'worker_done'", "wd.kind = 'worker_donX'")] },
+};
+
 /** Apply `edits` to one bundle text (latin1: 1 byte = 1 char, so offsets are byte offsets). Returns { out, hits }; throws when an edit is not same-length. */
 export function applyEdits(text, edits) {
   const hits = edits.map(() => 0);
@@ -105,8 +111,8 @@ export function liveBundles(buf) {
 
 /** Copy the unpacked app (reflink: instant on btrfs) and patch its app.asar. Returns { dir, bin, edits:[{label, hits, expect, where}], baseSha, copySha }. Throws PATTERN-GONE on a count mismatch. */
 export function makeMutantApp(baseDir, name, outDir) {
-  const m = MUTANTS[name];
-  if (!m) throw new Error(`unknown mutant ${name} (have: ${Object.keys(MUTANTS).join(', ')})`);
+  const m = MUTANTS[name] ?? LIVENESS_MUTANTS[name];
+  if (!m) throw new Error(`unknown mutant ${name} (have: ${[...Object.keys(MUTANTS), ...Object.keys(LIVENESS_MUTANTS)].join(', ')})`);
   const baseAsar = path.join(baseDir, 'resources', 'app.asar');
   const baseBefore = sha(fs.readFileSync(baseAsar));
   fs.rmSync(outDir, { recursive: true, force: true });

@@ -90,6 +90,14 @@ export function makeModel({ kindOfRole, plan, limited, resetS }) {
     if (count(mine, /run confirm reprise/) > 0) return { text: 'resumed' };   // released + accused: the turn is over (nothing re-runs what the pause killed)
     if (mine.length === 0) return bash(setupCmd(role, n), 'setup: commit + tracked edit + staged + untracked');
     if (kind === 'idle' || kind === 'quota') return { text: 'ready' };
+    // #438-fu (real-clock liveness soak): a child that works a few turns then goes IDLE between turns. `done-idle` reports `worker_done` to its parent first (a finished task: the policy never escalates it);
+    // `silent-idle` does not (policy: ONE staleness escalation once silent past the window — the soak's « the sweep can escalate this roster » control); `hung` starts a foreground command and the HARNESS freezes its CLI (a call that never returns).
+    if (kind === 'done-idle' || kind === 'silent-idle') {
+      if (count(mine, /echo L\d/) < 3) return bash(`echo L${mine.length} >> loop-${role}.txt; sleep 1`, 'work');
+      if (kind === 'done-idle' && count(mine, /worker_done/) === 0) return bash(`orchestra send --type worker_done --to ${plan.parent} --cap "$(orchestra token)" "task done"; echo DONE_RC=$?`, 'report done to my parent');
+      return { text: 'idle between turns' };
+    }
+    if (kind === 'hung') return mine.length === 1 ? bash('true; sleep 7400', 'a call that never returns (the harness freezes my CLI)', { timeout: 600000 }) : { text: 'done' };
     if (kind === 'blocked') // `true; sleep 7400`, never a bare `sleep 7400`: Claude Code ≥ 2.1.3xx REFUSES a command whose first part is a standalone `sleep N` ("Blocked: standalone sleep 7400" — measured on 2.1.322, #438), so the straggler never blocked
     return mine.length === 1 ? bash('true; sleep 7400', 'one long foreground command', { timeout: 600000 }) : { text: 'done' };
     // obey / bg: command-by-command, a tool-result boundary every ~1 s; the Pause douce order is obeyed at the first boundary that carries it

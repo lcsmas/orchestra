@@ -25,6 +25,7 @@ if (cmd === 'seed') {
     if (!LEAD || !OPS) throw new Error('seed needs <leadId> <opsId>');
     if (mode === 'pause-off') all.pause = false;   // the must-FAIL control arm: the same drive with the switch OFF
     if (mode === 'wake-off') all.wake = false;
+    if (mode === 'liveness-off') all.liveness = false;   // #438-fu: the liveness soak's must-FAIL control — the hung child is COUNTED, not fired
     if (mode === 'cap-off') all.memoryCap = false;   // #324 memhog-app: the must-FAIL control — the same drill with the frozen `memory_cap` switch OFF
     const sw = { ...DEFAULT_BUS_SWITCHES, ...all };
     startRun(db, { id: LEAD, kind: 'mission', coordinator: LEAD }, sw);
