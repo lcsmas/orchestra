@@ -377,11 +377,13 @@ Promote a scratch session into an orchestrator.`,
   {
     name: 'attach',
     group: 'Structure',
-    summary: 'Nest an existing workspace under an orchestrator',
+    summary: 'Nest an existing workspace under any other agent',
     detail: `usage: orchestra attach <id> <parentId> [--no-restart]
 
-Nest an existing workspace under an orchestrator. By default the session is
-restarted (conversation kept) so it re-derives its bus run.
+Nest an existing workspace under any other agent (it need not be promoted).
+The moved agent and its subtree re-derive their run and its unread mail
+follows it. A live session the host answers per call picks its new run up at
+its next CLI call; any other is restarted (conversation kept) to re-derive it.
   --no-restart   re-parent without restarting; the workspace is marked
                  'stale run' and its bus sends are refused until it restarts`,
   },

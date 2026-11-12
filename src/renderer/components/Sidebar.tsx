@@ -14,7 +14,7 @@ import type {
 } from '../../shared/types';
 import { isActionableStopReason } from '../../shared/usage-resume';
 import { isScratchLike } from '../../shared/types';
-import { coordinates } from '../../shared/run-position';
+import { dropIntent } from '../../shared/dnd-attach-zone';
 import { repoSectionKeyOf, partitionOrchestratorRoots } from '../orchestrator-repo-grouping';
 import {
   type DropTarget,
@@ -968,16 +968,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
     return collectDescendants(dragWs.id, forest.childrenOf).some((d) => d.id === candidateId);
   };
 
-  /** Whether `target` may accept a re-parent drop of the in-flight drag.
-   * Deliberately narrow — the user's rule is that ONLY orchestrator-capable
-   * rows are drop targets, so a plain worktree row never accepts a drop no
-   * matter what is being dragged. */
+  /** Whether `target` may accept a re-parent drop of the in-flight drag. #439 (ADR 0012): ANY workspace is a valid
+   * target — it need not be promoted or have spawned. Only structure refuses: the dragged row itself, its current
+   * parent (a no-op), one of its own descendants (a cycle) and an archived row. */
   const canAttachTo = (target: Workspace): boolean =>
     !!dragWs &&
-    coordinates(target) &&
+    target.archived !== true &&
     dragWs.id !== target.id &&
     dragWs.parentId !== target.id &&
     !isDescendantOfDrag(target.id);
+
+  /** Whether the in-flight drag may be REORDERED onto `target`'s row (top-level, same repo, neither side nested). */
+  const canReorderOnto = (target: Workspace, targetIsChild: boolean): boolean =>
+    !!dragWs && !targetIsChild && !dragWs.nested && dragWs.repoPath === target.repoPath && dragWs.id !== target.id;
+
+  const yFractionOf = (e: React.DragEvent): number => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+  };
 
   // Commit a re-parent: attach the dragged workspace under `parentId`, or
   // detach it to a root when `parentId` is null. `setWorkspaceParent` is owned
@@ -1533,9 +1541,8 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
               });
             }}
             onMouseLeave={rowActions.scheduleHide}
-            // Rows in the pinned sections are re-parent drag sources and, when
-            // orchestrator-capable, re-parent DROP TARGETS. They are never
-            // reorder targets — the spawn tree owns their order.
+            // Rows in the pinned sections are re-parent drag sources and (#439) re-parent DROP TARGETS
+            // whatever they are. They are never reorder targets — the spawn tree owns their order.
             draggable={renamingId !== w.id && !isDeleting}
             onDragStart={(e) => {
               if ((e.target as HTMLElement).closest('button, input')) {
@@ -2284,27 +2291,24 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                   }}
                   onDragOver={(e) => {
                     if (!dragWs) return;
-                    // Re-parent takes precedence: ONLY an orchestrator-capable
-                    // row accepts a drop. A plain worktree row never does, so
-                    // the user can't accidentally nest under a non-coordinator.
-                    if (canAttachTo(w)) {
-                      e.preventDefault();
+                    // #439: ANY row is an attach target; where a row can ALSO be reordered onto, the middle of the row
+                    // attaches and its top / bottom quarter reorders (`dropIntent`). A row that cannot be reordered onto
+                    // attaches over its whole height.
+                    const intent = dropIntent({ canAttach: canAttachTo(w), canReorder: canReorderOnto(w, isChild), yFraction: yFractionOf(e) });
+                    if (intent === null) return;
+                    e.preventDefault();
+                    if (intent === 'attach') {
                       e.stopPropagation();
                       e.dataTransfer.dropEffect = 'move';
                       setDropWs(null);
                       setAttachTo((prev) => (prev === w.id ? prev : w.id));
                       return;
                     }
-                    // Same-repo reordering only — cross-repo drops are a no-op,
-                    // and tree-nested rows are not reorder targets (neither as
-                    // the dragged row nor as the target).
-                    if (isChild || dragWs.nested) return;
-                    if (dragWs.repoPath !== w.repoPath || dragWs.id === w.id) return;
-                    e.preventDefault();
+                    // Same-repo reordering only — cross-repo drops are a no-op, and tree-nested rows are not reorder
+                    // targets (neither as the dragged row nor as the target).
                     e.dataTransfer.dropEffect = 'move';
                     setAttachTo(null);
-                    const pos = dropPosFromEvent(e);
-                    setDropWs((prev) => nextDropTarget(prev, w.id, pos));
+                    setDropWs((prev) => nextDropTarget(prev, w.id, intent));
                   }}
                   onDrop={(e) => {
                     if (!dragWs) return;

@@ -98,6 +98,8 @@ import {
 } from './bus-run-anchor.ts';
 import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reopenRunsById, reconcileRunClosureFromStore } from './bus-run-close.ts';
 import { isPlainOwnAnchor } from '../shared/run-position.ts';
+import { decideAttachTarget } from '../shared/attach-target.ts';
+import { relatedRunsOf, rederiveRunOnBus, runClosedAt } from './bus-reparent-run.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -1744,10 +1746,45 @@ function staleRunMarkerPath(worktreePath: string): string {
  */
 function snapshotRunAnchors(rootId: string): Map<string, string> {
   const snap = new Map<string, string>();
+  const related = new Map<string, string[]>();
+  const db = getBus();
   for (const ws of collectWorkspaceTree(rootId)) {
-    snap.set(ws.id, resolveWaveRunId(ws));
+    const anchor = resolveWaveRunId(ws);
+    snap.set(ws.id, anchor);
+    // #439: the runs each agent could see mail in BEFORE the move (own ∪ ancestors ∪ descendants) — what its unread mail follows out of.
+    try {
+      if (db) related.set(ws.id, relatedRunsOf(db, anchor));
+    } catch (e) {
+      log.warn(`reparent-run: could not snapshot the related runs of ${ws.id}`, e);
+    }
   }
+  relatedRunSnapshots.set(snap, related);
   return snap;
+}
+
+/** #439 — the pre-move related-run set per agent, keyed by the snapshot Map that `reconcileRunAfterReparent` receives (its signature is shared by promote/demote/adopt/attach). */
+const relatedRunSnapshots = new WeakMap<Map<string, string>, Map<string, string[]>>();
+
+/**
+ * #439 — attach / detach (and demote / adopt) RE-DERIVE the moved agent's run on the bus, whether or not its anchor id changed (#433 M1: the
+ * noop branch used to skip this, so a live agent that left its parent could not send until its next start):
+ *   1. the run row it now belongs to exists (an owner / top-level agent: its own mission or vague; a member: its new parent's run),
+ *   2. the run it OWNS is re-pointed at the run it is now a member of (`parent_run_id` + kind; #434 m1) — never at a closed run,
+ *   3. its UNREAD mail in runs it can no longer see follows it into the run it checks now, exactly once.
+ * Best-effort (D1): a bus failure is a log line, never a failure of the admin op.
+ */
+async function rederiveBusRunAfterReparent(ws: Workspace, relatedBefore: readonly string[] | undefined): Promise<void> {
+  const db = getBus();
+  if (!db) return;
+  try {
+    const rep = rederiveRunOnBus(busRunAnchorDeps, db, ws, (id) => store.getWorkspace(id), relatedBefore);
+    if (rep.startedRow && ws.host?.kind !== 'sandbox' && existsSync(ws.worktreePath)) await writeBusSwitchState(ws.worktreePath, rep.home);
+    if (rep.repoint && rep.repoint !== 'unchanged') log.info(`reparent-run: run ${ws.id} ${rep.repoint}`);
+    if (rep.mail?.forwarded) log.info(`reparent-run: ${rep.mail.forwarded} unread message(s) of ${ws.id} followed it from ${rep.mail.fromRuns.join(', ')} into run ${rep.home}`);
+    if (rep.mail?.refusedClosed) log.warn(`reparent-run: run ${rep.home} is closed — unread mail of ${ws.id} stays where it is`);
+  } catch (e) {
+    log.warn(`reparent-run: bus re-derivation failed for ${ws.id}`, e);
+  }
 }
 
 /** The marker FILE alone (no store flag, no pane state). #379: a host-resolved session gets only this — the guard the CLI's
@@ -1806,6 +1843,7 @@ async function reconcileRunAfterReparent(
     // re-derives the run.
     if (ws.host?.kind === 'sandbox') continue;
     try {
+      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId)); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail
       const newAnchorId = resolveWaveRunId(ws);
       const sdkLive = sdkSessionLive(ws.id);
       const hostKey = hasSessionKey(ws.id);
@@ -2105,7 +2143,7 @@ export async function dispatchDemoteRequest(input: {
 export interface AttachResult {
   ok: boolean;
   id?: string;
-  /** The new parent after the call: an orchestrator id on attach, `null` on detach. */
+  /** The new parent after the call: a workspace id on attach, `null` on detach. */
   parentId?: string | null;
   branch?: string;
   /** #142 — ids whose live session was restarted to pick up the new run. */
@@ -2166,26 +2204,22 @@ export async function dispatchAttachRequest(input: {
     return { ok: true, id, parentId: null, branch: ws.branch, restarted, markedStale, hostResolved };
   }
 
-  if (rawParent === id) return { ok: false, error: 'a workspace cannot be its own parent' };
-  const parent = store.getWorkspace(rawParent);
-  if (!parent) return { ok: false, error: `unknown parent workspace: ${rawParent}` };
-  if (!coordinates(parent)) {
-    return {
-      ok: false,
-      error: 'parent must be an orchestrator (promote it first)',
-    };
-  }
-  // Walk the proposed parent's ancestry: if `id` appears anywhere up the chain,
-  // this edge closes a cycle. `seen` also terminates on a pre-existing cycle in
-  // the store rather than spinning forever.
-  const seen = new Set<string>([id]);
-  for (let cur = parent; ; ) {
-    if (seen.has(cur.id)) return { ok: false, error: 'that would create a parent cycle' };
-    seen.add(cur.id);
-    const next = cur.parentId ? store.getWorkspace(cur.parentId) : undefined;
-    if (!next) break;
-    cur = next;
-  }
+  // #439: ANY workspace is a valid target (ADR 0012) — only structure refuses: self, unknown / archived target, a CLOSED run, a parent cycle.
+  const verdict = decideAttachTarget({
+    id,
+    parentId: rawParent,
+    lookup: (wid) => store.getWorkspace(wid),
+    targetRunClosed: (() => {
+      try {
+        const db = getBus();
+        return !!db && runClosedAt(db, rawParent) != null;
+      } catch {
+        return false;
+      }
+    })(),
+  });
+  if (!verdict.ok) return { ok: false, error: verdict.error };
+  const parent = store.getWorkspace(rawParent)!;
   // Idempotent re-attach to the same parent.
   if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
 
@@ -2197,7 +2231,7 @@ export async function dispatchAttachRequest(input: {
   const updated: Workspace = { ...ws, parentId: rawParent, ...(ownedByLinkOnly ? { ownsRun: undefined } : {}) };
   await store.upsertWorkspace(updated);
   platform.broadcast('workspace:update', updated);
-  log.info(`attached ${ws.branch} (${id}) under orchestrator ${parent.branch} (${rawParent})`);
+  log.info(`attached ${ws.branch} (${id}) under ${parent.branch} (${rawParent})`);
   await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child's next session start
   const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
   return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale, hostResolved };
@@ -4057,19 +4091,22 @@ children against THIS branch with no \`--into\` needed.
 Use the \`orchestra-spawn\` skill for each spawn, and \`orchestra-comms\` to
 track, follow up with, and verify the agents you spawn.
 
-## Nest an existing workspace under an orchestrator (or detach it)
+## Nest an existing workspace under another agent (or detach it)
 
-An orchestrator already groups the worktrees it spawns. Attach pulls in a
-workspace it did NOT spawn — one created earlier by you or another agent.
+A parent groups the worktrees it spawns. Attach pulls in a workspace it did NOT
+spawn — one created earlier by you or another agent. ANY agent is a valid
+parent: it does not have to be promoted or to have spawned anything yet.
 
 \`\`\`bash
-orchestra attach <workspace-id> <orchestrator-id>
-orchestra detach <workspace-id>          # back to its own repo section
+orchestra attach <workspace-id> <parent-id>
+orchestra detach <workspace-id>          # back to its own repo section, as the lead of a mission of its own
 \`\`\`
 
-The parent must already be an orchestrator (promote it first, above). Attach is
-refused when the edge would create a parent cycle — a workspace under itself,
-directly or through a chain of orchestrators.
+Both re-derive the run of the moved agent and its whole subtree: an attached
+agent joins its new parent's run, a detached one starts a mission of its own,
+and the mail it had not read yet follows it — delivered once, in its new run.
+Attach is refused when the edge would create a parent cycle, or when the target
+is archived or its run is closed.
 
 ## File an orchestrator under a repo section
 
