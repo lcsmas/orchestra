@@ -99,7 +99,7 @@ import {
 import { closeRunsCoordinatedBy, reopenRunsCoordinatedBy, reopenRunsById, reconcileRunClosureFromStore } from './bus-run-close.ts';
 import { isPlainOwnAnchor } from '../shared/run-position.ts';
 import { decideAttachTarget } from '../shared/attach-target.ts';
-import { relatedRunsOf, rederiveRunOnBus, runClosedAt } from './bus-reparent-run.ts';
+import { forwardMailToOthers, moveRefusalFor, relatedRunsOf, rederiveRunOnBus, runClosedAt } from './bus-reparent-run.ts';
 import {
   decideReparentAction,
   staleRunMarkerBody,
@@ -1749,7 +1749,9 @@ function snapshotRunAnchors(rootId: string, ...extraIds: string[]): Map<string, 
   const related = new Map<string, string[]>();
   const db = getBus();
   // `extraIds`: workspaces OUTSIDE the moved subtree whose own run flips with the move (#439: an attach target that becomes an owner).
-  const nodes = [...collectWorkspaceTree(rootId), ...extraIds.map((x) => store.getWorkspace(x)).filter((x): x is Workspace => !!x)];
+  const tree = collectWorkspaceTree(rootId);
+  const nodes = [...tree, ...extraIds.map((x) => store.getWorkspace(x)).filter((x): x is Workspace => !!x)];
+  movedSubtreeSnapshots.set(snap, tree.map((x) => x.id));
   for (const ws of nodes) {
     const anchor = resolveWaveRunId(ws);
     snap.set(ws.id, anchor);
@@ -1766,6 +1768,8 @@ function snapshotRunAnchors(rootId: string, ...extraIds: string[]): Map<string, 
 
 /** #439 — the pre-move related-run set per agent, keyed by the snapshot Map that `reconcileRunAfterReparent` receives (its signature is shared by promote/demote/adopt/attach). */
 const relatedRunSnapshots = new WeakMap<Map<string, string>, Map<string, string[]>>();
+/** #439 — the MOVED subtree ids of a snapshot (the attach target is in the snapshot too, but it is not moved). */
+const movedSubtreeSnapshots = new WeakMap<Map<string, string>, string[]>();
 
 /**
  * #439 — attach / detach (and demote / adopt) RE-DERIVE the moved agent's run on the bus, whether or not its anchor id changed (#433 M1: the
@@ -1925,7 +1929,40 @@ async function reconcileRunAfterReparent(
       log.warn(`reparent-run: reconcile failed for ${wsId}`, e);
     }
   }
+  forwardMailToOthersAfterReparent(oldAnchors); // #439 (review M1): the recipients LEFT BEHIND get what the moved subtree had filed for them
   return { restarted, markedStale, hostResolved };
+}
+
+/**
+ * #439 (OPS ruling R2) — null when the move is allowed, else the refusal text: the mover or a subtree member holds an OPEN gate / UNANSWERED ask
+ * whose counterparty would lie outside its related runs after the move (the exchange could never complete; the waiting side would be excluded from
+ * liveness forever). The post-move tree is simulated from the store (no write). A dispatch never refuses (every spawned child has one).
+ */
+function stalledExchangeRefusal(id: string, newParentId: string | null): string | null {
+  try {
+    const db = getBus();
+    return db ? moveRefusalFor(db, store.workspaces, id, newParentId) : null;
+  } catch (e) {
+    log.warn(`reparent-run: could not check the open exchanges of ${id}`, e);
+    return null;
+  }
+}
+
+/** #439 (review M1) — after every moved agent is re-derived: unread mail TO agents left outside the subtree, filed in the subtree's runs, follows them once. */
+function forwardMailToOthersAfterReparent(oldAnchors: Map<string, string>): void {
+  const db = getBus();
+  const moved = movedSubtreeSnapshots.get(oldAnchors);
+  if (!db || !moved) return;
+  try {
+    const skip = new Set(oldAnchors.keys()); // every snapshotted agent (the target too) was handled as a mover of its own mail
+    const homeOf = (rid: string): string | undefined => { const w = store.getWorkspace(rid); return w ? resolveWaveRunId(w) : undefined; };
+    for (const { reader, res } of forwardMailToOthers(db, moved, homeOf, skip)) {
+      if (res.forwarded > 0) log.info(`reparent-run: ${res.forwarded} unread message(s) for ${reader} followed it from ${res.fromRuns.join(', ')}`);
+      if (res.refusedClosed) log.warn(`reparent-run: the run of ${reader} is closed — its unread mail from the moved subtree stays where it is`);
+    }
+  } catch (e) {
+    log.warn('reparent-run: forwarding mail to the agents left behind failed', e);
+  }
 }
 
 /** #142 — the workspaces currently in the 'stale run' state (re-parented with
@@ -2196,6 +2233,8 @@ export async function dispatchAttachRequest(input: {
   // pure no-op success.
   if (!rawParent) {
     if (ws.parentId === undefined) return { ok: true, id, parentId: null, branch: ws.branch };
+    const stalled = stalledExchangeRefusal(id, null);
+    if (stalled) return { ok: false, error: stalled };
     // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
     const oldAnchors = snapshotRunAnchors(id);
     const updated: Workspace = { ...ws, parentId: undefined };
@@ -2224,6 +2263,8 @@ export async function dispatchAttachRequest(input: {
   const parent = store.getWorkspace(rawParent)!;
   // Idempotent re-attach to the same parent.
   if (ws.parentId === rawParent) return { ok: true, id, parentId: rawParent, branch: ws.branch };
+  const stalled = stalledExchangeRefusal(id, rawParent);
+  if (stalled) return { ok: false, error: stalled };
 
   // #142 — snapshot the OLD run anchors of this subtree BEFORE the tree moves.
   const oldAnchors = snapshotRunAnchors(id, rawParent); // the TARGET too: becoming an owner flips ITS own run (#439)
@@ -4108,7 +4149,11 @@ Both re-derive the run of the moved agent and its whole subtree: an attached
 agent joins its new parent's run, a detached one starts a mission of its own,
 and the mail it had not read yet follows it — delivered once, in its new run.
 Attach is refused when the edge would create a parent cycle, or when the target
-is archived or its run is closed.
+is archived or its run is closed. A move (attach or detach) is also refused while
+the moved agent or one of its sub-agents has an open decision gate or an unanswered
+ask with an agent that would end up outside its runs — answer or resolve it first.
+A task the old coordinator dispatched cannot be completed to it after a move: the
+new coordinator dispatches again, and a status always works.
 
 ## File an orchestrator under a repo section
 

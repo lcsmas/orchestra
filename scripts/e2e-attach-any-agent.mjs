@@ -186,12 +186,27 @@ check('arm3: it reads it back in its own run', JSON.parse(orch(ID.B, ID.B, ['che
 const att = orch(ID.B, ID.B, ['attach', ID.B, ID.D]);
 check('arm4: orchestra attach <B> <D> (D never promoted, nested) exits 0', att.code === 0, att.out.trim().slice(0, 200));
 await waitFor('B under D', async () => (await parentOf(ID.B)) === ID.D, 15000);
-check('arm4 post: B.parentId = D; D owns a run row, B\'s own run re-pointed', runRow(ID.D)?.kind === 'vague' || runRow(ID.D)?.kind === 'mission', `D=${JSON.stringify(runRow(ID.D))} B=${JSON.stringify(runRow(ID.B))}`);
+const rowD = runRow(ID.D);
+check('arm4 post: B.parentId = D, and D (the never-promoted target) now OWNS a vague of its own under C\'s run (parent_run_id = C, exact)', (await parentOf(ID.B)) === ID.D && rowD?.kind === 'vague' && rowD?.parent === ID.C && rowD?.closed === null, `D=${JSON.stringify(rowD)}`);
 // refusals through the real app: a cycle (C under its own descendant B) is refused with its reason
 const cyc = orch(ID.C, ID.C, ['attach', ID.C, ID.B]);
 check('arm4: a cycle is refused (rc != 0, reason named), nothing moved', cyc.code !== 0 && /cycle/.test(cyc.out) && (await parentOf(ID.C)) === null, cyc.out.trim().slice(0, 160));
 await sleep(600);
 await shot('05-final-tree-D-under-C-B-under-D');
+
+// ── ARM 4c (OPS ruling R2): an UNANSWERED ask to an agent that would be left outside refuses the move; answered, it moves ──
+const asked = orch(ID.B, ID.D, ['send', '--type', 'question', '--to', ID.A, 'rig: are you there?']);
+check('arm4c pre: B asked A (a stranger) a question', asked.code === 0, asked.out.trim());
+const qSeq = (() => { const db = bus(); try { return db.prepare("SELECT sequence FROM messages WHERE kind = 'question' ORDER BY sequence DESC LIMIT 1").get().sequence; } finally { db.close(); } })();
+const refusedDet = orch(ID.B, ID.D, ['detach', ID.B]);
+check('arm4c: detach is REFUSED naming the unanswered ask, nothing moved', refusedDet.code !== 0 && /unanswered ask #\d+/.test(refusedDet.out) && (await parentOf(ID.B)) === ID.D, refusedDet.out.trim().slice(0, 200));
+const answer = orch(ID.A, ID.A, ['send', '--type', 'status', '--to', ID.B, '--thread', String(qSeq), 'rig: yes']);
+check('arm4c: A answers (threaded)', answer.code === 0, answer.out.trim());
+const okDet = orch(ID.B, ID.D, ['detach', ID.B]);
+await waitFor('B detached after the answer', async () => (await parentOf(ID.B)) === null, 15000);
+check('arm4c: answered, the detach goes through', okDet.code === 0, okDet.out.trim());
+const gotAns = JSON.parse(orch(ID.B, ID.B, ['check']).out || '{"count":-1}');
+check('arm4c: the answer reaches B once, in its own run', gotAns.messages?.some((m) => m.body === 'rig: yes'), JSON.stringify(gotAns).slice(0, 140));
 
 // ── ARM 5: the edge of a top-level row still REORDERS (no parent change): A dropped on the bottom quarter of C ──
 const order = async () => cdp.eval(`[...document.querySelectorAll('.ws-item')].map((e) => e.innerText.split('\\n')[0].trim().replace('e2e/', ''))`);
@@ -201,6 +216,16 @@ await sleep(800);
 const ordAfter = await order();
 check('arm5: the bottom edge of a top-level row reorders (A moves after C), nothing is attached', ordBefore.indexOf('att-a') < ordBefore.indexOf('att-c') && ordAfter.indexOf('att-a') > ordAfter.indexOf('att-c') && (await parentOf(ID.A)) === null, `${JSON.stringify(ordBefore)} -> ${JSON.stringify(ordAfter)}`);
 await shot('06-after-edge-drop-reorder');
+
+// ── ARM 6: an OWNER moves with its run: C (owns D) attached under A — its mission becomes a vague under A's run (exact re-point) ──
+const rowCBefore = runRow(ID.C);
+const att6 = orch(ID.C, ID.C, ['attach', ID.C, ID.A]);
+check('arm6: orchestra attach <C> <A> exits 0', att6.code === 0, att6.out.trim().slice(0, 160));
+await waitFor('C under A', async () => (await parentOf(ID.C)) === ID.A, 15000);
+const rowCAfter = runRow(ID.C);
+check('arm6: C\'s run row re-pointed: mission/null -> vague/A (parent_run_id explicit)', rowCBefore?.kind === 'mission' && rowCBefore?.parent === null && rowCAfter?.kind === 'vague' && rowCAfter?.parent === ID.A, `${JSON.stringify(rowCBefore)} -> ${JSON.stringify(rowCAfter)}`);
+await sleep(600);
+await shot('07-C-under-A-owner-moved');
 console.log('sidebar rows at end:', JSON.stringify(await order()));
 check('screenshots are all distinct (no step no-opped)', new Set(shots.map((s) => s.md5)).size === shots.length);
 await finish();

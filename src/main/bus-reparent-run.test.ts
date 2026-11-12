@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { openBus, type BusDb } from './bus.ts';
 import { getRun, refreezeRun, startRun } from './bus-runs.ts';
 import { computeAnchorInfo, maybeStartRunAtAnchor, ownerToMark, runAnchorProbe, startRunsForParentless, type BusRunAnchorDeps } from './bus-run-anchor.ts';
-import { forwardUnreadMail, rederiveRunOnBus, relatedRunsOf, repointRun, runClosedAt } from './bus-reparent-run.ts';
+import { forwardMailToOthers, forwardUnreadMail, moveRefusalFor, rederiveRunOnBus, relatedRunsOf, repointRun, runClosedAt } from './bus-reparent-run.ts';
+import { closeRunsCoordinatedBy } from './bus-run-close.ts';
+import { pausedCarrierForWorkspace, setRunPause } from './bus-pause.ts';
 import { offlineWaveNodes } from '../cli/index.ts';
 import { coordinates, runIdOf } from '../shared/run-position.ts';
 import { decideAttachTarget } from '../shared/attach-target.ts';
@@ -62,8 +64,7 @@ const edit = (w: World, fn: (recs: Rec[]) => void): void => {
   fs.writeFileSync(w.storeFile, JSON.stringify(raw));
 };
 const runRows = (w: World) => w.db.prepare('SELECT id, kind, coordinator, parent_run_id AS parent, closed_at AS closed FROM runs ORDER BY rowid').all() as Array<{ id: string; kind: string; coordinator: string; parent: string | null; closed: number | null }>;
-/** What #437's `closeRunsCoordinatedBy` writes: `runs.closed_at` (kept as raw SQL so this file does not depend on that branch). */
-const closeRunOf = (w: World, coordinator: string): void => { w.db.prepare('UPDATE runs SET closed_at = ? WHERE coordinator = ? AND closed_at IS NULL').run(Date.now(), coordinator); };
+const closeRunOf = (w: World, coordinator: string): void => { closeRunsCoordinatedBy(w.db, [coordinator]); };
 const mailRows = (w: World, run: string, to: string) => w.db.prepare('SELECT sequence, sender, kind, body FROM messages WHERE run_id = ? AND recipient = ? ORDER BY sequence').all(run, to) as Array<{ sequence: number; sender: string; kind: string; body: string }>;
 
 /** The app-start / creation mission of every top-level workspace (#433). */
@@ -90,6 +91,10 @@ interface Move { verdict: { ok: boolean; error?: string }; reports: Map<string, 
 function move(w: World, id: string, parentId: string | null, subtree: string[] = []): Move {
   const ids = [id, ...subtree, ...(parentId ? [parentId] : [])]; // the TARGET too: becoming an owner flips its own run
   const before = snapshot(w, ids);
+  // OPS ruling R2: the shipped refusal, asked on the SAME store the CLI reads (a stalled gate / ask refuses; nothing is written)
+  const recs = (JSON.parse(fs.readFileSync(w.storeFile, 'utf8')) as { workspaces: Rec[] }).workspaces;
+  const stalled = moveRefusalFor(w.db, recs.map((r) => ({ ...r, branch: r.name })), id, parentId);
+  if (stalled) return { verdict: { ok: false, error: stalled }, reports: new Map() };
   if (parentId) {
     const verdict = decideAttachTarget({ id, parentId, lookup: rawLookup(w), targetRunClosed: runClosedAt(w.db, parentId) != null });
     if (!verdict.ok) return { verdict, reports: new Map() };
@@ -106,6 +111,8 @@ function move(w: World, id: string, parentId: string | null, subtree: string[] =
   if (parentId) edit(w, (recs) => { const o = ownerToMark(nodes(w).get(id)!, (x) => nodes(w).get(x)); if (o) recs.find((r) => r.id === o.id)!.ownsRun = true; }); // ensureParentOwnsRun
   const reports = new Map<string, ReturnType<typeof rederiveRunOnBus>>();
   for (const aid of ids) reports.set(aid, rederiveRunOnBus(w.deps, w.db, nodes(w).get(aid)!, lookup(w), before.get(aid)?.related, before.get(aid)?.home));
+  // review M1: mail TO the agents left behind, filed in the runs the moved subtree owns (what `forwardMailToOthersAfterReparent` does)
+  forwardMailToOthers(w.db, [id, ...subtree], (rid) => (nodes(w).get(rid) ? runOf(w, rid) : undefined), new Set(ids));
   return { verdict: { ok: true }, reports };
 }
 
@@ -294,6 +301,126 @@ test('#439 (review) the TARGET\'s own run flips when an attach makes it an owner
   assert.equal(bodies(check(w, P)), 'for P, unread', 'P\'s plain check reads the mail Q sent it');
 });
 
+// ── 3b. review round: mail TO the agents left behind, and the R2 refusal of a stalled exchange ─────────────────────────
+const L = 'dddddddd-0000-4000-8000-000000000007'; // a coordinator with two children
+const S = 'dddddddd-0000-4000-8000-000000000008'; // the sibling left behind
+
+test('#439 (review M1) unread mail the moved subtree filed FOR an agent left behind follows that agent, once (a digest sitting unread when its sender is dragged away)', needsBuild, (t) => {
+  const w = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: C, kind: 'worktree', parentId: X }, { id: S, kind: 'worktree', parentId: L }, { id: Q, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, X);
+  spawn(w, C);
+  assert.equal(cli(w, X, ['send', '--type', 'status', '--to', S, 'digest from X for S']).code, 0);
+  assert.equal(cli(w, C, ['send', '--type', 'status', '--to', L, 'report from C for L']).code, 0);
+  // control: BEFORE the move both recipients see those runs (run X is a descendant of their runs)
+  assert.ok(relatedRunsOf(w.db, runOf(w, S)).includes(X) && relatedRunsOf(w.db, runOf(w, L)).includes(X), 'control: X\'s run is related to S and L before the move');
+  const mv = move(w, X, Q, [C]);
+  assert.equal(mv.verdict.ok, true);
+  assert.equal(relatedRunsOf(w.db, runOf(w, S)).includes(X), false, 'after: S no longer relates to X\'s run (the strand)');
+  const gotS = check(w, S);
+  assert.equal(bodies(gotS), 'digest from X for S', 'S still gets it, in its own run, by a plain check');
+  assert.equal(cli(w, S, ['ack', String(gotS.lot)]).code, 0);
+  assert.equal(check(w, S).count, 0, 'once');
+  const gotL = check(w, L);
+  assert.equal(bodies(gotL), 'report from C for L', 'and so does L');
+  assert.equal(cli(w, L, ['ack', String(gotL.lot)]).code, 0);
+  assert.equal(check(w, L).count, 0);
+});
+
+test('#439 (R2) an UNANSWERED ask between the mover and an agent that would be left outside refuses the move (names the ask and its counterparty); answered, it moves', needsBuild, (t) => {
+  const w = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: S, kind: 'worktree', parentId: L }, { id: Q, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, X);
+  const asked = cli(w, X, ['send', '--type', 'question', '--to', S, 'which branch?']);
+  assert.equal(asked.code, 0, asked.stderr + asked.stdout);
+  const refused = move(w, X, Q);
+  assert.equal(refused.verdict.ok, false);
+  assert.match(refused.verdict.error!, /unanswered ask #\d+ between ws-.* and ws-.* would be stranded/);
+  assert.equal(runOf(w, X), L, 'nothing moved');
+  assert.equal(move(w, X, null).verdict.ok, false, 'a detach is refused the same way');
+  // an exchange whose counterparty stays RELATED after the move does not refuse (X under S: S owns a run X joins)
+  const kept = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: S, kind: 'worktree', parentId: L }]);
+  birth(kept);
+  spawn(kept, X);
+  assert.equal(cli(kept, X, ['send', '--type', 'question', '--to', S, 'which branch?']).code, 0);
+  assert.equal(move(kept, X, S).verdict.ok, true, 'S stays related to X (X is now a member of S\'s run)');
+  // answered: S replies threaded to the question; the move goes through
+  const q = (w.db.prepare("SELECT sequence FROM messages WHERE kind = 'question'").get() as { sequence: number }).sequence;
+  assert.equal(cli(w, S, ['send', '--type', 'status', '--to', X, '--thread', String(q), 'main']).code, 0);
+  assert.equal(move(w, X, Q).verdict.ok, true, 'once answered the move is allowed');
+});
+
+test('#439 (R2) a STRANGER\'s ask (#436: filed in the recipient\'s run) is answered by a reply filed in the ASKER\'s run — the answer counts, the move is then allowed', needsBuild, (t) => {
+  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree' }, { id: Q, kind: 'worktree' }]);
+  birth(w);
+  const asked = cli(w, P, ['send', '--type', 'question', '--to', M, 'are you there?']);
+  assert.equal(asked.code, 0, asked.stderr + asked.stdout);
+  const q = w.db.prepare("SELECT sequence, run_id FROM messages WHERE kind = 'question'").get() as { sequence: number; run_id: string };
+  assert.equal(q.run_id, M, 'filed in the RECIPIENT\'s run');
+  assert.equal(move(w, P, Q).verdict.ok, false, 'unanswered: refused');
+  const reply = cli(w, M, ['send', '--type', 'status', '--to', P, '--thread', String(q.sequence), 'yes']);
+  assert.equal(reply.code, 0, reply.stderr + reply.stdout);
+  assert.equal((w.db.prepare('SELECT run_id FROM messages WHERE thread_id = ?').get(String(q.sequence)) as { run_id: string }).run_id, P, 'the reply sits in the asker\'s run, not the question\'s');
+  assert.equal(move(w, P, Q).verdict.ok, true, 'answered across runs: allowed');
+});
+
+test('#439 (R2) an OPEN decision gate between the mover and an agent that would be left outside refuses the move; resolved, it moves', needsBuild, (t) => {
+  const w = world(t, [{ id: L, kind: 'worktree' }, { id: X, kind: 'worktree', parentId: L }, { id: S, kind: 'worktree', parentId: L }, { id: Q, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, X);
+  const opened = cli(w, X, ['gate', 'open', '--to', S, 'may I rebase?']);
+  assert.equal(opened.code, 0, opened.stderr + opened.stdout);
+  const refused = move(w, X, Q);
+  assert.equal(refused.verdict.ok, false);
+  assert.match(refused.verdict.error!, /open decision gate #\d+ between/);
+  const gate = (w.db.prepare('SELECT id FROM decision_gates').get() as { id: number }).id;
+  assert.equal(cli(w, S, ['gate', 'resolve', String(gate), '--resolution', 'yes']).code, 0);
+  assert.equal(move(w, X, Q).verdict.ok, true, 'resolved: allowed');
+});
+
+test('#439 (R2) an ACTIVE DISPATCH does not refuse: the mover under its new coordinator still reports (status, and a worker_done once the new coordinator dispatches)', needsBuild, (t) => {
+  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, M);
+  assert.equal(cli(w, P, ['send', '--type', 'dispatch', '--to', M, 'old task']).code, 0);
+  const mv = move(w, M, Q);
+  assert.equal(mv.verdict.ok, true, 'a live dispatch from the old coordinator never makes an agent immovable');
+  const st = cli(w, M, ['send', '--type', 'status', '--to', Q, 'moved, still reporting']);
+  assert.equal(st.code, 0, st.stderr + st.stdout);
+  assert.equal(bodies(check(w, Q)), 'moved, still reporting');
+  assert.equal(cli(w, Q, ['send', '--type', 'dispatch', '--to', M, 'new task from Q']).code, 0, 'the new coordinator can dispatch');
+  const done = cli(w, M, ['send', '--type', 'worker_done', '--to', Q, 'finished the new task']);
+  assert.equal(done.code, 0, done.stderr + done.stdout);
+});
+
+test('#439 (R2 extension) an unanswered ask TO the mover that the move would COPY (sibling drop: the asker stays related) is refused too — the reply would thread to the copy', needsBuild, (t) => {
+  const w = world(t, [{ id: Q, kind: 'worktree' }, { id: P, kind: 'worktree', parentId: Q }, { id: M, kind: 'worktree', parentId: Q }]);
+  birth(w);
+  spawn(w, P);
+  assert.equal(cli(w, Q, ['send', '--type', 'question', '--to', M, 'which branch?']).code, 0);
+  const refused = move(w, M, P);
+  assert.equal(refused.verdict.ok, false, 'Q stays related to M, but its question would be copied into P\'s run with a new sequence');
+  assert.match(refused.verdict.error!, /unanswered ask/);
+  const q = (w.db.prepare("SELECT sequence FROM messages WHERE kind = 'question'").get() as { sequence: number }).sequence;
+  assert.equal(cli(w, M, ['send', '--type', 'status', '--to', Q, '--thread', String(q), 'main']).code, 0);
+  assert.equal(move(w, M, P).verdict.ok, true, 'answered: allowed');
+});
+
+// ── MEASURED (OPS ask): a moved agent inside a PAUSED run ─────────────────────────────────────────────────────────────
+test('#439 MEASURED: the Pause gate follows the LIVE tree — an agent detached / moved out of a paused run is no longer paused; one attached INTO a paused run is paused at once', needsBuild, (t) => {
+  const w = world(t, [{ id: P, kind: 'worktree' }, { id: M, kind: 'worktree', parentId: P }, { id: Q, kind: 'worktree' }, { id: X, kind: 'worktree' }]);
+  birth(w);
+  spawn(w, M);
+  assert.equal(setRunPause(w.db, P, true, P, 'hard'), 'paused');
+  const carrier = (id: string) => pausedCarrierForWorkspace(w.db, nodes(w).get(id)!, (x) => nodes(w).get(x))?.runId ?? null;
+  assert.equal(carrier(M), P, 'control: the member is paused by its carrier');
+  assert.equal(carrier(X), null, 'control: an unrelated agent is not');
+  move(w, M, Q); // out of the paused run, under a free one
+  assert.equal(carrier(M), null, 'MEASURED: the mover ESCAPES the pause (the gate reads the live tree) — its roster row in the epoch, if the host wrote one, stays but nothing gates it');
+  move(w, X, P); // into the paused run
+  assert.equal(carrier(X), P, 'MEASURED: an agent attached INTO a paused run is gated by it at its next start (it was not trapped: the trap ran once, at pause time)');
+});
+
 // ── 4. the subtree ────────────────────────────────────────────────────────────────────────────────────────────────────
 test('#439 the SUBTREE is re-derived: a moved owner takes its run with it (parent pointer re-pointed), its members\' runs and unread mail are untouched', needsBuild, (t) => {
   const w = world(t, [{ id: X, kind: 'worktree' }, { id: C, kind: 'worktree', parentId: X }, { id: G, kind: 'worktree', parentId: C }, { id: Q, kind: 'worktree' }]);
@@ -417,6 +544,9 @@ test('#439 wiring: the reconcile re-derives EVERY moved agent BEFORE the noop de
   assert.match(attach, /runClosedAt\(db, rawParent\)/, 'a closed run is read off the bus');
   assert.match(attach, /snapshotRunAnchors\(id, rawParent\)/, 'the attach TARGET is snapshotted and re-derived with the moved subtree (becoming an owner flips its own run)');
   assert.match(ws, /if \(db\) related\.set\(ws\.id, relatedRunsOf\(db, anchor\)\)/, 'the snapshot records the related runs before the move');
+  assert.match(attach, /const stalled = stalledExchangeRefusal\(id, rawParent\);\n\s+if \(stalled\) return \{ ok: false, error: stalled \};/, 'attach asks the R2 refusal before any write');
+  assert.match(attach, /const stalled = stalledExchangeRefusal\(id, null\);\n\s+if \(stalled\) return \{ ok: false, error: stalled \};/, 'detach asks it too');
+  assert.match(rec, /forwardMailToOthersAfterReparent\(oldAnchors\);[^\n]*\n\s+return \{ restarted, markedStale, hostResolved \};/, 'the reconcile forwards mail TO the agents left behind after re-deriving every mover');
   const sb = src('src/renderer/components/Sidebar.tsx');
   assert.doesNotMatch(sb.slice(sb.indexOf('const canAttachTo'), sb.indexOf('const commitReparent')), /coordinates\(/, 'the sidebar drop rule no longer asks for a coordinator');
   assert.match(sb, /dropIntent\(\{ canAttach: canAttachTo\(w\), canReorder: canReorderOnto\(w, isChild\)/, 'the repo-section rows decide attach vs reorder with dropIntent');

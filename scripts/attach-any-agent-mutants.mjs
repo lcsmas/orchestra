@@ -16,7 +16,8 @@ const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 
 const AT = 'src/shared/attach-target.ts', BR = 'src/main/bus-reparent-run.ts', WS = 'src/main/workspaces.ts', SB = 'src/renderer/components/Sidebar.tsx', DZ = 'src/shared/dnd-attach-zone.ts';
-const T = { main: 'src/main/bus-reparent-run.test.ts', target: 'src/shared/attach-target.test.ts', dnd: 'src/shared/dnd-attach-zone.test.ts' };
+const ME = 'src/shared/move-exchanges.ts';
+const T = { exch: 'src/shared/move-exchanges.test.ts', main: 'src/main/bus-reparent-run.test.ts', target: 'src/shared/attach-target.test.ts', dnd: 'src/shared/dnd-attach-zone.test.ts' };
 const NOOP_LINE = "      if (action.kind === 'noop') continue;";
 const CALL_LINE = "      await rederiveBusRunAfterReparent(ws, relatedRunSnapshots.get(oldAnchors)?.get(wsId), oldAnchorId); // #439: BEFORE the noop decision — a live agent that stayed on the same run id still needs its row / pointer / mail\n";
 
@@ -51,6 +52,18 @@ const MUTANTS = [
   { id: 'M27', name: 'no reorder edge on a row that is both (the middle swallows the whole row)', edits: [[DZ, 'export const REORDER_EDGE = 0.25;', 'export const REORDER_EDGE = 0;']], tests: [T.dnd] },
   { id: 'M28', name: 'the pre-move plain-check run (oldHome) is not a mail source (the sibling drop strands mail in an ancestor run)', edits: [[BR, '...(oldHome ? [oldHome] : [])', '']], tests: [T.main] },
   { id: 'M29', name: 'the attach TARGET is not re-derived (its own run flips and its mail is stranded) — source pin', edits: [[WS, 'snapshotRunAnchors(id, rawParent); // the TARGET too', 'snapshotRunAnchors(id); // the TARGET too']], tests: [T.main] },
+  { id: 'M30', name: 'mail filed for an agent LEFT BEHIND is not forwarded (review M1)', edits: [[BR, 'const res = forwardUnreadMail(db, reader, runs.filter((r) => !after.has(r)), home);', 'const res: ForwardResult = { forwarded: 0, fromRuns: [] };']], tests: [T.main] },
+  { id: 'M31', name: 'an open decision gate never refuses a move (R2)', edits: [[BR, "if (other && !ids.has(other)) out.push({ kind: 'gate'", "if (false as boolean) out.push({ kind: 'gate'"]], tests: [T.main] },
+  { id: 'M32', name: 'an unanswered ask never refuses a move (R2)', edits: [[BR, "WHERE q.kind = 'question' AND q.recipient IS NOT NULL", "WHERE q.kind = 'no-such-kind' AND q.recipient IS NOT NULL"]], tests: [T.main] },
+  { id: 'M33', name: 'an ANSWERED ask still refuses the move (the reply is never recognised)', edits: [[BR, 'AND r.sender = q.recipient AND r.recipient = q.sender)', 'AND r.sender = q.recipient AND r.recipient = q.sender AND 0)']], tests: [T.main] },
+  { id: 'M34', name: 'every exchange with an outsider refuses (the related-after test is gone: refuses even a counterparty that stays related)', edits: [[ME, 'return !relatedHomes(member, lookupAfter, allAfter).has(runIdOf(other, lookupAfter));', 'return true;']], tests: [T.exch, T.main] },
+  { id: 'M35', name: 'no exchange ever strands (the refusal is dead)', edits: [[ME, 'return !relatedHomes(member, lookupAfter, allAfter).has(runIdOf(other, lookupAfter));', 'return false;']], tests: [T.exch, T.main] },
+  { id: 'M36', name: 'a counterparty that is not a workspace (the human) strands', edits: [[ME, 'if (!member || !other) return false;', 'if (!member) return false;']], tests: [T.exch] },
+  { id: 'M37', name: 'attach no longer asks the R2 refusal — source pin', edits: [[WS, '  const stalled = stalledExchangeRefusal(id, rawParent);\n  if (stalled) return { ok: false, error: stalled };\n', '']], tests: [T.main] },
+  { id: 'M38', name: 'detach no longer asks the R2 refusal — source pin', edits: [[WS, '    const stalled = stalledExchangeRefusal(id, null);\n    if (stalled) return { ok: false, error: stalled };\n', '']], tests: [T.main] },
+  { id: 'M39', name: 'the reconcile no longer forwards mail to the agents left behind — source pin', edits: [[WS, '  forwardMailToOthersAfterReparent(oldAnchors); // #439 (review M1): the recipients LEFT BEHIND get what the moved subtree had filed for them\n', '']], tests: [T.main] },
+  { id: 'M40', name: 'an ask answered in ANOTHER run (a stranger\'s reply in the asker\'s run) is not recognised as an answer', edits: [[BR, 'NOT EXISTS (SELECT 1 FROM messages r WHERE r.thread_id', 'NOT EXISTS (SELECT 1 FROM messages r WHERE r.run_id = q.run_id AND r.thread_id']], tests: [T.main] },
+  { id: 'M41', name: 'an unanswered ask TO the mover that the move would copy is not refused (the reply would thread to the copy)', edits: [[ME, "if (x.kind === 'ask' && x.toMember) {", "if (false as boolean) {"]], tests: [T.main] },
 ];
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');

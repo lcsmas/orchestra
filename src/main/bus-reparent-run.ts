@@ -5,7 +5,8 @@
 import type { BusDb } from './bus.ts';
 import { getRelatedRunIds } from './bus-runs.ts';
 import { computeAnchorInfo, maybeStartRunAtAnchor, runAnchorProbe, type BusRunAnchorDeps } from './bus-run-anchor.ts';
-import { coordinates, coordinatorOf, memberRunOf, runIdOf, type RunNode } from '../shared/run-position.ts';
+import { coordinates, coordinatorOf, isCoordinatorKind, memberRunOf, runIdOf, type RunNode } from '../shared/run-position.ts';
+import { moveRefusal, strandedExchanges, type OpenExchange } from '../shared/move-exchanges.ts';
 
 /** `runs.closed_at` of `runId`: null = open, undefined = no such row. */
 export function runClosedAt(db: BusDb, runId: string): number | null | undefined {
@@ -146,4 +147,83 @@ export function rederiveRunOnBus(
     report.mail = forwardUnreadMail(db, ws.id, [...relatedBefore.filter((r) => !after.has(r)), ...(oldHome ? [oldHome] : [])], report.home);
   }
   return report;
+}
+
+/** #439 — the open gates and unanswered asks that involve one of `memberIds` and a workspace OUTSIDE them (the input of the move refusal, R2).
+ *  An ask is answered by a reply from its recipient to its sender threaded to the question — in ANY run: a stranger's ask is filed in the recipient's run and its reply in the asker's (#436, `ANSWER_RUN_SQL`); a sequence is global, so the thread id is unambiguous. */
+export function openExchangesOf(db: BusDb, memberIds: readonly string[]): OpenExchange[] {
+  if (memberIds.length === 0) return [];
+  const ids = new Set(memberIds);
+  const json = JSON.stringify([...ids]);
+  const out: OpenExchange[] = [];
+  const gates = db.prepare(
+    `SELECT id, run_id, asked_by, recipient FROM decision_gates WHERE resolved_at IS NULL
+        AND (asked_by IN (SELECT value FROM json_each(?)) OR recipient IN (SELECT value FROM json_each(?)))`,
+  ).all(json, json) as Array<{ id: number; run_id: string; asked_by: string; recipient: string | null }>;
+  for (const g of gates) {
+    const inside = ids.has(g.asked_by) ? g.asked_by : g.recipient!;
+    const other = ids.has(g.asked_by) ? g.recipient : g.asked_by;
+    if (other && !ids.has(other)) out.push({ kind: 'gate', ref: g.id, run: g.run_id, member: inside, counterparty: other });
+  }
+  const asks = db.prepare(
+    `SELECT q.sequence, q.run_id, q.sender, q.recipient FROM messages q
+      WHERE q.kind = 'question' AND q.recipient IS NOT NULL
+        AND (q.sender IN (SELECT value FROM json_each(?)) OR q.recipient IN (SELECT value FROM json_each(?)))
+        AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = CAST(q.sequence AS TEXT)
+                          AND r.sender = q.recipient AND r.recipient = q.sender)`,
+  ).all(json, json) as Array<{ sequence: number; run_id: string; sender: string; recipient: string }>;
+  for (const q of asks) {
+    const inside = ids.has(q.sender) ? q.sender : q.recipient;
+    const other = ids.has(q.sender) ? q.recipient : q.sender;
+    if (!ids.has(other)) out.push({ kind: 'ask', ref: q.sequence, run: q.run_id, member: inside, counterparty: other, toMember: ids.has(q.recipient) });
+  }
+  return out;
+}
+
+/**
+ * #439 (review M1) — mail TO agents left behind: unread directed mail filed in a run the moved subtree OWNS (a worker_done / digest its member sent
+ * to a recipient that stays) whose run is no longer related to that recipient's home is copied into the recipient's home, exactly once
+ * (`forwardUnreadMail`). `homeOf` answers a recipient's post-move home run (undefined = not a workspace: skipped); `skip` = agents already handled
+ * as movers. Returns one result per (recipient) that had something to forward.
+ */
+export function forwardMailToOthers(
+  db: BusDb,
+  subtreeIds: readonly string[],
+  homeOf: (id: string) => string | undefined,
+  skip: ReadonlySet<string>,
+): Array<{ reader: string; res: ForwardResult }> {
+  const out: Array<{ reader: string; res: ForwardResult }> = [];
+  const runs = (db.prepare('SELECT id FROM runs WHERE coordinator IN (SELECT value FROM json_each(?))').all(JSON.stringify([...subtreeIds])) as Array<{ id: string }>).map((r) => r.id);
+  if (runs.length === 0) return out;
+  const recipients = (db.prepare('SELECT DISTINCT recipient AS r FROM messages WHERE recipient IS NOT NULL AND run_id IN (SELECT value FROM json_each(?))').all(JSON.stringify(runs)) as Array<{ r: string }>).map((x) => x.r);
+  for (const reader of recipients) {
+    if (skip.has(reader)) continue;
+    const home = homeOf(reader);
+    if (!home) continue;
+    const after = new Set(relatedRunsOf(db, home));
+    const res = forwardUnreadMail(db, reader, runs.filter((r) => !after.has(r)), home);
+    if (res.forwarded > 0 || res.refusedClosed) out.push({ reader, res });
+  }
+  return out;
+}
+
+/**
+ * #439 (OPS ruling R2) — null when moving `id` under `newParentId` (null = detach) is allowed, else the refusal text: the mover or a subtree member
+ * holds an OPEN gate / UNANSWERED ask whose counterparty would lie outside its related runs after the move. The post-move tree is SIMULATED from `all`
+ * (no write): the mover's parent changes, a link-only ownership ends, the target becomes an owner. A dispatch never refuses (every spawned child has one).
+ */
+export function moveRefusalFor(db: BusDb, all: ReadonlyArray<RunNode & { canOrchestrate?: boolean; branch?: string }>, id: string, newParentId: string | null): string | null {
+  const ws = all.find((w) => w.id === id);
+  if (!ws) return null;
+  const members: string[] = [id];
+  for (let i = 0; i < members.length; i++) for (const w of all) if (w.parentId === members[i] && !members.includes(w.id)) members.push(w.id);
+  const exchanges = openExchangesOf(db, members);
+  if (exchanges.length === 0) return null;
+  const linkOnly = ws.ownsRun === true && ws.canOrchestrate !== true && !isCoordinatorKind(ws) && !all.some((w) => w.parentId === id); // run-position: non-run — simulating the ownership WRITE of an attach
+  const after = all.map((w) =>
+    w.id === id ? { ...w, parentId: newParentId ?? undefined, ...(newParentId && linkOnly ? { ownsRun: undefined } : {}) }
+      : newParentId && w.id === newParentId ? { ...w, ownsRun: true } : w);
+  const byId = new Map(after.map((w) => [w.id, w]));
+  const stranded = strandedExchanges(exchanges, (x) => byId.get(x), after, (x) => all.find((w) => w.id === x));
+  return stranded.length ? moveRefusal(stranded, (x) => byId.get(x)?.branch ?? x) : null;
 }
