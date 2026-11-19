@@ -32,21 +32,30 @@ owns the fleet's only fully-installed environment; nothing merges until it
 reports green. You are the **coordinator**: you split, brief, relay, and
 enforce the gate — implementation belongs to the fleet.
 
-> **v2.** A rule code enforces is ONE line: the rule, its verb or guard, what to do on a refusal.
-> Situational explanation lives in ¤references/¤ — each pointer says WHEN to read it. Which copy: the last section.
+> **v2.** A rule code enforces is ONE line: rule, verb or guard, what to do on a refusal.
+> Situational detail lives in ¤references/¤, each pointer saying WHEN. Which copy: the last section.
 
 ## Roles are typed — the name is the role (v2)
 
 The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
 ¤impl-¤ implementer, ¤verif-¤ verifier, ¤review-¤ reviewer, ¤explo-¤ explorer,
 ¤scribe-¤ mechanical steps. The one table is ¤roleSpec()¤ in
-¤src/shared/fleet-roles.ts¤ — read it, never trust a summary of it (this one included).
+¤src/shared/fleet-roles.ts¤ — read it, never trust a summary of it.
 
 - **Model and effort per role** — ¤roleSpec()¤; strong roles pin nothing (the Settings
   default applies), ¤scribe-¤ pins the cheap model at low effort; ¤--model¤ / ¤--effort¤
   on ¤orchestra spawn¤ win; ¤<ORCHESTRA_HOME>/fleet-roles.json¤ overrides (¤orchestra help spawn¤;
-  an unknown key or role is refused). Give a ¤scribe-¤ only steps with no judgement in them
-  (a fixed command list, relaying a status, formatting a report); gating, review and design stay strong.
+  an unknown key or role is refused). A ¤scribe-¤ gets only judgement-free steps
+  (a fixed command list, a relay, a formatted report); gating, review and design stay strong.
+- **Scribe jobs — you MUST delegate these, never run them yourself** (#476: the OPS is the largest
+  cache-read seat, 35%; ≥21 of its 98 calls were these). One nested ¤orchestra spawn --name scribe-<object>
+  --task "<the fixed commands + ledger #N>"¤ per job; it ends with ¤worker_done --cap¤:
+  - ¤scribe-ledger¤ — ledger writes: ¤gh issue comment|edit --body-file¤, ¤scripts/ledger-set¤.
+  - ¤scribe-state¤ — ¤orchestra fanout state set¤ relays of a verdict you already read.
+  - ¤scribe-ci¤ — ¤gh pr checks --watch¤ / ¤gh run watch¤ to the final line; you run ¤deliver¤ after.
+  - ¤scribe-sweep¤ — the §5 range + porcelain + ¤orchestra peers¤ greps, output verbatim.
+
+  You keep decisions, dispositions, merges and fleet mail. Past ~100 turns on a heavy context, ¤orchestra handoff¤ (§0a).
 - **Tool limits — the PreToolUse role guard** (exit 2, ¤[orchestra] BLOCKED (role: …): <reason>¤)
   denies ¤AskUserQuestion¤ to every role, even as a probe; Edit/Write to the coordinator,
   reviewer, explorer and scribe (the verifier edits scratch only, an implementer its own
@@ -55,7 +64,7 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
   guarded). ¤orchestra fanout deliver¤ and ¤fanout state init|set¤ to every role but the
-  coordinator (¤state show¤ and ¤resume¤ stay open). A BLOCKED is the answer, never to be routed around: report the branch ref to the
+  coordinator (¤state show¤ and ¤resume¤ stay open); a ¤scribe-¤ may ¤state set¤. A BLOCKED is the answer, never to be routed around: report the branch ref to the
   coordinator (ledger comment + one ping), or hand the change to the role that may make it.
 
 
@@ -216,18 +225,13 @@ It reads the diff, the ledger spec and ¤references/traps.md¤, tries to BREAK t
 ledger comment with a per-finding measured/argued label, and dies. **It reports only BLOCKING, MAJOR, and MINOR
 that touch correctness or a ticket promise — never NITs.**
 
-**Severity scale (the §4 merge rule keys on it):**
-- **BLOCKING** — must not merge as is (red CI/build, data loss, security hole). **A red CI is the candidate's
-  only if the same check is green on the base head** — run it there first; red on the base too ⇒ route it to the base's owner.
-- **MAJOR** — wrong behaviour on a real input, or a ticket promise not kept.
-- **MINOR** — a real defect with limited reach (rare input, unlikely race, a test that lets a mutant survive).
-- **NIT** — cosmetic — not reported by the spawned reviewer.
+**Severity scale** (BLOCKING / MAJOR / MINOR / NIT — the §4 merge rule keys on it; a red CI is the candidate's only if the same check is green on the base head): ¤references/verifier-and-review.md¤, read when you grade a finding.
 
 (Why review must be fresh, not the verifier: ¤references/verifier-and-review.md¤ — read when you doubt who should review.)
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
 only): the implementer's pre-review + the verifier's delta gate suffice. Any production-code line → spawned
-review, follow-ups included. The coordinator NEVER reviews (it wrote the specs). What it does with the findings is the §4 merge rule.
+review, follow-ups included. The coordinator NEVER reviews (it wrote the specs); the findings go through the §4 merge rule.
 
 ## 4. Coordinate and gate
 
@@ -289,8 +293,7 @@ calls, never one: the role guard denies a check (¤verify-landed¤, ¤gh pr chec
 ¤worktree remove¤) in ONE command — run the check, read it, THEN act in a second call (the LEAD, role-less, is unguarded: its discipline).
 
 **Gate a delete on BOTH checks, not on ¤verify-landed¤ alone.** ¤orchestra verify-landed <ws> --into <integration>¤ (the default target is YOUR branch) exits ¤0¤ landed /
-¤2¤ not-landed / ¤1¤ could-not-check — gate on ¤$? == 0¤ (an older installed build exits 0 on NOT LANDED: if unsure, gate on the textual verdict); after a REBASE it reads a false not-landed (land by
-ancestry of the current tip). Porcelain is never literally empty in Orchestra worktrees: filter the generated
+¤2¤ not-landed / ¤1¤ could-not-check — gate on ¤$? == 0¤ (an older installed build exits 0 on NOT LANDED: if unsure, gate on the textual verdict). Porcelain is never literally empty in Orchestra worktrees: filter the generated
 noise (¤.claude/skills/orchestra-*¤, ¤.claude/skills/verified-fanout¤), judge every other line; rescue an orphan
 by committing it to the agent's own branch and verify **by content**.
 
@@ -307,7 +310,7 @@ not-landed, and before you write a gate** (the three delete-gate traps with thei
 
 ## 6. Report
 
-One consolidated status: per subtask — branch, verifier verdict, what remains — plus the fleet-level NOT VERIFIED list; every line actionable by someone who read none of the conversation.
+One consolidated status: per subtask branch, verdict, what remains, plus the fleet-level NOT VERIFIED list — each line actionable by a reader of none of the conversation.
 
 ## Specify gates that can fail
 
@@ -331,9 +334,8 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 
 ## Which copy is this? Install and precedence (v2)
 
-- **This is the bundled v2**, written into every worktree's ¤.claude/skills/verified-fanout/¤ on spawn (source
-  ¤src/shared/verified-fanout-skill.ts¤); an edit there lasts until the hook bundle changes. A repo's own
-  ¤verified-fanout/SKILL.md¤ without the generated marker line is never overwritten.
+- **This is the bundled v2**, rewritten into every worktree's ¤.claude/skills/verified-fanout/¤ on spawn (source
+  ¤src/shared/verified-fanout-skill.ts¤); a repo's own copy without the generated marker line is never overwritten.
 - **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only, ¤scripts/skill-precedence/measure-skill-precedence.mjs¤ — re-run after a CLI update).
 - **VPS install:** an Orchestra AppImage release that contains this skill; any spawn writes it. No personal copy there ⇒ nothing shadows it.
 `.replaceAll('¤', '`');

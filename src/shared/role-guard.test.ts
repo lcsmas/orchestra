@@ -236,11 +236,11 @@ for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']
     ['$( )', `x=$(${DELIVER})`], ['if/then', `if true; then ${DELIVER}; fi`], ['newline', `cd /r\n${DELIVER}`], ['extra spaces', 'orchestra   fanout   deliver --branch b'],
     ['bare deliver', 'orchestra fanout deliver'],
   ] as const) deny(role, `fanout deliver ${name}`, bash(cmd), /fanout deliver opens and MERGES/);
-  deny(role, 'fanout state set', bash('orchestra fanout state set 473 --status merged --pr 5'), /fanout state init\|set writes the coordinator's state file/);
+  // #476: a scribe relays the coordinator's `state set` lines; `init` stays denied to it
+  const SETS = [['fanout state set', 'orchestra fanout state set 473 --status merged --pr 5'], ['fanout state set via bash -c', 'bash -c "orchestra fanout state set 1 --status x"'], ['bare state set in sh -c', "sh -c 'orchestra fanout state set'"]] as const;
+  for (const [name, cmd] of SETS) { if (role === 'scribe') allow(role, `${name} (scribe relay)`, bash(cmd)); else deny(role, name, bash(cmd), /state file/); }
   deny(role, 'fanout state init (after &&)', bash('cd /r && orchestra fanout state init --run r1 --target master'), /state file/);
-  deny(role, 'fanout state set via bash -c', bash('bash -c "orchestra fanout state set 1 --status x"'), /state file/);
   deny(role, 'bare state init in bash -c', bash('bash -c "orchestra fanout state init"'), /state file/);
-  deny(role, 'bare state set in sh -c', bash("sh -c 'orchestra fanout state set'"), /state file/);
   allow(role, 'fanout state show', bash('orchestra fanout state show --json'));
   allow(role, 'fanout resume', bash('orchestra fanout resume --run r1 --no-write'));
   allow(role, 'fanout help', bash('orchestra fanout --help && orchestra help fanout'));
