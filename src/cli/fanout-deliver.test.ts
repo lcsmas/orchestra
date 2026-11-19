@@ -70,7 +70,7 @@ function fakeGh(o: FakeOpts) {
 }
 
 const opts = (o: Partial<DeliverOpts> = {}): DeliverOpts => ({
-  branch: 'impl-x', into: 'bench/x', ticket: 'T-1', verifiedHead: H, strategy: 'merge',
+  branch: 'impl-x', into: 'bench/x', ticket: 'T-1', verifiedHead: H, noReviewGate: true, strategy: 'merge',
   timeoutMs: 600_000, intervalMs: 10_000, noChecksGraceMs: 30_000, requireChecks: [], ...o,
 });
 function deps(gh: DeliverDeps['gh'], files: Record<string, string> = {}) {
@@ -90,7 +90,7 @@ const verdictFile = (o: Record<string, unknown> = {}) => JSON.stringify({ round:
 test('green: opens the PR, merges ONCE with --match-head-commit <verified head>, exit 0, prints the suite command', async () => {
   const f = fakeGh({ views: [{ checks: [green()] }] });
   const { d } = deps(f.gh, { v: verdictFile() });
-  const r = await deliver(opts({ reviewVerdict: 'v', verifiedHead: undefined }), d);
+  const r = await deliver(opts({ reviewVerdict: 'v', noReviewGate: false, verifiedHead: undefined }), d);
   assert.equal(r.exit, 0);
   assert.equal(r.result.verdict, 'merged');
   assert.equal(r.result.pr, 42);
@@ -308,8 +308,49 @@ test('runDeliver: usage errors are exit 1 with no stdout; deliver prints ONE JSO
   assert.equal((await runDeliver([])).exit, 1);
   assert.equal((await runDeliver(['--bogus', 'x'])).exit, 1);
   const f = fakeGh({ views: [{ checks: [green()] }] });
-  const r = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H], deps(f.gh).d);
+  const r = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H, '--no-review-gate'], deps(f.gh).d);
   assert.equal(r.exit, 0);
   assert.equal(r.stdout?.trim().split('\n').length, 1);
   assert.equal(JSON.parse(r.stdout as string).verdict, 'merged');
+});
+
+// #473 scope addition (review of #472, MAJOR): the review gate was optional — omitting --review-verdict merged with reviewGated:false.
+test('MUST-FAIL: deliver WITHOUT --review-verdict and without --no-review-gate is refused (exit 2, no-verdict), before ANY gh call', async () => {
+  const f = fakeGh({ views: [{ checks: [green()] }] });
+  const r = await deliver(opts({ noReviewGate: false }), deps(f.gh).d);
+  assert.equal(r.exit, 2);
+  assert.equal(r.result.verdict, 'refused');
+  assert.equal(r.result.reason, 'no-verdict');
+  assert.match(r.result.detail ?? '', /--review-verdict.*--no-review-gate/);
+  assert.equal(f.calls.length, 0, 'refused before touching gh');
+  assert.equal(f.merges().length, 0);
+  // the same refusal through the real argv path (what the installed command hits)
+  const viaArgv = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H], deps(fakeGh({ views: [{ checks: [green()] }] }).gh).d);
+  assert.equal(viaArgv.exit, 2);
+  assert.equal(JSON.parse(viaArgv.stdout as string).reason, 'no-verdict');
+});
+
+test('--no-review-gate is the explicit opt-out: merges, reviewGated:false stays visible in the JSON; a verdict file still gates', async () => {
+  const f = fakeGh({ views: [{ checks: [green()] }] });
+  const r = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H, '--no-review-gate'], deps(f.gh).d);
+  assert.equal(r.exit, 0);
+  assert.equal(JSON.parse(r.stdout as string).reviewGated, false);
+  assert.equal(f.merges().length, 1);
+  // a verdict file with a MAJOR still refuses when --review-verdict is given (the gate is not weakened by the flag's existence)
+  const g = fakeGh({ views: [{ checks: [green()] }] });
+  const x = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--review-verdict', 'v'], deps(g.gh, { v: verdictFile({ major: 1 }) }).d);
+  assert.equal(x.exit, 2);
+  assert.equal(JSON.parse(x.stdout as string).reason, 'review-blocking');
+  assert.equal(g.merges().length, 0);
+});
+
+test('argv: --no-review-gate is valueless, order-free, and contradicts --review-verdict (usage error)', () => {
+  const base = ['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1'];
+  for (const a of [[...base, '--no-review-gate'], ['--no-review-gate', ...base], ['--branch', 'impl-x', '--no-review-gate', '--into', 'bench/x', '--ticket', 'T-1']]) {
+    const p = parseDeliverArgs(a);
+    assert.ok(p.ok && p.opts.noReviewGate === true && p.opts.ticket === 'T-1' && p.opts.into === 'bench/x', JSON.stringify(a));
+  }
+  const noFlag = parseDeliverArgs(base);
+  assert.ok(noFlag.ok && noFlag.opts.noReviewGate === false);
+  assert.equal(parseDeliverArgs([...base, '--no-review-gate', '--review-verdict', 'v']).ok, false);
 });

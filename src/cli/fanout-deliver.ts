@@ -43,6 +43,8 @@ export interface DeliverOpts {
   into: string;
   ticket: string;
   reviewVerdict?: string;
+  /** `--no-review-gate`: the explicit opt-out of the review gate (#473). Without it, no `--review-verdict` is refused. */
+  noReviewGate?: boolean;
   verifiedHead?: string;
   strategy: 'merge' | 'squash' | 'rebase';
   timeoutMs: number;
@@ -54,7 +56,7 @@ export interface DeliverOpts {
 }
 
 export const DELIVER_USAGE =
-  'usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>]\n' +
+  'usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]\n' +
   '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]…';
 
 export type ParsedArgs = { ok: true; opts: DeliverOpts } | { ok: false; error: string };
@@ -64,14 +66,17 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
   const v: Record<string, string> = {};
   const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check']);
   const required: string[] = [];
+  let noReviewGate = false;
   for (let i = 0; i < args.length; i += 2) {
     const k = args[i];
+    if (k === '--no-review-gate') { noReviewGate = true; i -= 1; continue; } // the one valueless flag
     if (!known.has(k)) return { ok: false, error: `unknown argument: ${k}\n${DELIVER_USAGE}` };
     const val = args[i + 1];
     if (val === undefined) return { ok: false, error: `${k} needs a value\n${DELIVER_USAGE}` };
     if (k === '--require-check') required.push(val);
     else v[k] = val;
   }
+  if (noReviewGate && v['--review-verdict'] !== undefined) return { ok: false, error: '--no-review-gate contradicts --review-verdict: give one' };
   for (const k of ['--branch', '--into', '--ticket']) if (!v[k]) return { ok: false, error: `${k} is required\n${DELIVER_USAGE}` };
   if (!SAFE_REF.test(v['--branch'])) return { ok: false, error: `unsafe --branch: ${v['--branch']}` };
   if (!SAFE_REF.test(v['--into'])) return { ok: false, error: `unsafe --into: ${v['--into']}` };
@@ -95,6 +100,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
       into: v['--into'],
       ticket: v['--ticket'],
       reviewVerdict: v['--review-verdict'],
+      noReviewGate,
       verifiedHead: v['--verified-head'],
       strategy,
       timeoutMs: timeout * 1000,
@@ -109,7 +115,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args';
+  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args';
   detail?: string;
   ticket: string;
   branch: string;
@@ -119,7 +125,7 @@ export interface DeliverResult {
   /** The head the merge was bound to (verified head). */
   head?: string;
   mergeCommit?: string;
-  /** false ⇒ no `--review-verdict` was given: the merge was NOT gated by a review round. */
+  /** false ⇒ the merge was NOT gated by a review round (only possible with an explicit `--no-review-gate`). */
   reviewGated: boolean;
   /** Run this on the target after the merges (the verb never runs a repo suite). Present when the PR is on the target. */
   combinedSuite?: string;
@@ -168,7 +174,10 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
   if (!SAFE_REF.test(opts.into) || !SAFE_REF.test(opts.branch)) {
     return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-args', detail: 'unsafe --into/--branch', ...base, reviewGated: false } };
   }
-  // 1. The verified head and the (optional) review verdict.
+  // 1. The review verdict (required unless `--no-review-gate`, #473) and the verified head.
+  if (!opts.reviewVerdict && !opts.noReviewGate) {
+    return done({ verdict: 'refused', reason: 'no-verdict', detail: 'no review verdict: pass --review-verdict <file> (the round\'s counts + head), or --no-review-gate to merge without a review round (reviewGated:false stays in the result)' }, false);
+  }
   let verdict: ReviewVerdict | undefined;
   if (opts.reviewVerdict) {
     let raw: string;
@@ -287,13 +296,14 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
 }
 
 /** `orchestra help fanout` text for the deliver half (appended to #469's FANOUT_USAGE in help.ts). */
-export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>]
+export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]
                                 [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
                                 [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]…
 
 deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge with
 \`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
-Refuses on: 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
+Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
+merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
 the verdict file, a head that is not the verified head, a conflict, a --require-check
 that is missing or skipped (name external CI with it: statuses alone are not green).
 Prints ONE JSON line (verdict, reason, pr, head, combinedSuite = the command to run
