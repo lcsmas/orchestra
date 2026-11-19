@@ -1,6 +1,6 @@
 --- v1/verified-fanout/SKILL.md
 +++ v2/src/shared/verified-fanout-skill.ts (rendered)
-@@ -1,649 +1,339 @@
+@@ -1,649 +1,328 @@
  ---
  name: verified-fanout
  description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
@@ -19,9 +19,8 @@
  reports green. You are the **coordinator**: you split, brief, relay, and
  enforce the gate — implementation belongs to the fleet.
  
-+> **v2.** A rule that code enforces is ONE line here: the rule, its verb or guard,
-+> what to do on a refusal; prose only for judgement rules. Situational explanation
-+> lives in `references/` — each pointer below says WHEN to read it. Which copy: the last section.
++> **v2.** A rule code enforces is ONE line: the rule, its verb or guard, what to do on a refusal.
++> Situational explanation lives in `references/` — each pointer says WHEN to read it. Which copy: the last section.
 +
 +## Roles are typed — the name is the role (v2)
 +
@@ -51,15 +50,15 @@
  
 -**Nested runs — the two shapes.** A coordinated run comes in two nested forms
 -(vocabulary settled with the user, Orchestra `CONTEXT.md`):
-+Run `orchestra whoami` first — it names your role and run. A **mission** is the run of a top-level agent (the **LEAD**: no parent, talks to the human); a **vague** is
++Run `orchestra whoami` first (role and run). A **mission** is the run of a top-level agent (the **LEAD**: no parent, talks to the human); a **vague** is
 +the run of an **OPS** (has a parent, spawned its own: one batch of tickets). Roles follow position.
 +
 +- **A vague is never coordinated by a LEAD directly (operator ruling, 2026-09-21, ADR 0012):**
 +  a multi-ticket vague goes through an OPS (`orchestra spawn` one with the vague as its task),
 +  or inline/plain-spawn. An OPS fans out directly under itself — no third level. ONE
-+  self-contained task → plain `orchestra spawn`, no fan-out machinery.
++  self-contained task → plain `orchestra spawn`.
 +- **LEAD**: quiet, freezes specs with the human before the wave, gets only MILESTONE digests, answers by
-+  PULLING the ledger. **OPS**: opens the ledger, absorbs ALL fleet pings, merges on the §4 rule, runs the
++  PULLING the ledger; **its report to the human is a TEAM LEAD'S SYNTHESIS**: ~5 lines, a table when ≥2 items share a shape, clickable links not shas/rig names, what got done / what's next / what needs their call. **OPS**: opens the ledger, absorbs ALL fleet pings, merges on the §4 rule, runs the
 +  close-out, keeps the ledger's NEXT current. **Ops→lead digests are ≤5 headline lines**; the body is a ledger comment.
 +- **A decision you cannot make yourself**: take the REVERSIBLE default, apply it and write it in your ledger
 +  comment (`AskUserQuestion` is denied, see Roles). Only a spec-axis change, an irreversible act or anything
@@ -67,18 +66,16 @@
 +  ask ONCE, **poll §Decisions** before any re-ask, never address the human; meanwhile WORK ON WHAT DOESN'T DEPEND ON IT.
 +- **Ops dies mid-wave** → respawn ops pointed at the ledger number, its first act `orchestra fanout resume`
 +  (exit 0 = the state file matches git + gh; 2 = divergences reported, never auto-corrected: settle each with
-+  the implementer or the ledger; `--accept-merged <reason>` on `state set` is the one override).
-+- **Agents are event-driven: no incoming message = no next turn, EVER.** An OPS whose §NEXT waits on
-+  something that will NOT arrive as a bus row (a background rig, CI) arms a ScheduleWakeup before
-+  ending its turn — never for fleet traffic. **Every spawned agent's final report goes out in the SAME
-+  turn as the final act.**
++  the implementer or the ledger; `--accept-merged <reason>` on `state set` overrides).
++- **No incoming message = no next turn, EVER.** An OPS whose §NEXT waits on something that will NOT arrive as a
++  bus row (a background rig, CI) arms a ScheduleWakeup before ending its turn — never for fleet traffic.
++  **Every spawned agent's final report goes out in the SAME turn as the final act.**
 +- **A long-lived member re-reads its whole context every turn** → `orchestra handoff --summary-file <path>`
 +  (STATE, NEXT STEPS, REFS, NOT VERIFIED, each non-empty), then END YOUR TURN: the host starts a fresh
 +  session in the SAME workspace, worktree, branch and run. Refused, nothing ended: `handoff-summary-invalid`
 +  (fix the missing section), `handoff-outside-run` (not a member of an open run), `handoff-unvouched` (run it
 +  from the agent itself). Hand off a heavy long-lived member (verifier, coordinator), not a light one.
-+- **WALL-CLOCK IS A GOAL:** pipeline, never batch — gate/review each candidate the moment it exists, run
-+  independent gates concurrently; remove DEAD TIME, never thin the verification.
++- **WALL-CLOCK IS A GOAL:** pipeline, never batch — gate/review each candidate the moment it exists; remove DEAD TIME, never thin verification.
  
 -- A **mission** is the run of a top-level agent, born with it; the **LEAD**
 -  coordinates it and answers to the human. Its members are workers, OPS, or both.
@@ -259,8 +256,7 @@
 -  against a sentence; a version label drifts), version-stamp it, write it in
 -  the ledger. Rule on an axis only when you hold — or have verified in
 -  source — its evidence; otherwise route the question to the evidence-holder.
-+- **Freeze contested spec axes before dispatching.** A mid-flight ruling moves every tip; when one must change,
-+  state it as **behaviour-in-words**, version-stamp it, write it in the ledger. Rule on an axis only when you hold
++- **Freeze contested spec axes before dispatching** (a mid-flight ruling moves every tip); when one must change, state it as **behaviour-in-words**, version-stamp it, write it in the ledger. Rule on an axis only when you hold
 +  its evidence; otherwise route the question to the evidence-holder.
  - **Sent ≠ received.** Act on a counterparty's final state only after their
 -  explicit echo of it; their stale status line, not your outbox, tells you
@@ -279,8 +275,8 @@
 +  lands and `orchestra fanout state show` to read: one writer (you); an unknown field is
 +  refused — fix the spelling, never hand-edit the file. The ledger keeps spec decisions,
 +  reports and every destructive order, never a ticket's status/branch/PR/head.
-+- **Edit a ledger table row with `scripts/ledger-set`, never ad-hoc `str.replace`**: `ledger-set [--add-row] REPO ISSUE SECTION KEY ROW` — one row, refuses on absent/duplicate key, absent section, or a body changed since its read.
-+- **Gate the dependent branch of a stack LAST**; merge base follow-ups first.
++- **Edit a ledger table row with `scripts/ledger-set`, never ad-hoc `str.replace`**: `ledger-set [--add-row] REPO ISSUE SECTION KEY ROW` (refuses on absent/duplicate key or a body changed since its read).
++- **Gate the dependent branch of a stack LAST.**
  
  ## 0b. Budget: messages and gates
  
@@ -305,8 +301,7 @@
 +- **Every report, verdict and blocking question lands as a LEDGER COMMENT**; the message channel
 +  carries ONE thing: the ping "new comment on ledger". **The FINAL report's ping is
 +  `orchestra send --type worker_done --cap "$(orchestra token)"`, never `status`**, in the SAME turn as the
-+  final act: the host counts a dispatched task finished ONLY on its `worker_done` (#160); a status-only
-+  close leaves it unreleased and the vague is declared asleep.
++  final act: the host counts a dispatched task finished ONLY on its `worker_done` (#160); a status-only close leaves it unreleased.
  - **Fixed report format, ≤15 lines:** `STATE: <tip via ls-remote>` · each gate
 -  as `command → exact counts/RC` side by side · findings · NOT VERIFIED.
 -  Reports carry only the **delta since the last report** — the ledger holds
@@ -320,8 +315,8 @@
 -  decisions only. A fact relayed through the coordinator pays twice and can
 -  arrive stale.
 +  as `command → exact counts/RC` side by side · findings · NOT VERIFIED. Only the **delta since the last report**.
-+- **One ping per event** — checkpoint landed, gate verdict, blocking question; "Closed 👍" ends an exchange.
-+- **Peer-to-peer for facts** (ledger as authority); the coordinator handles decisions only.
++- **One ping per event** — checkpoint, gate verdict, blocking question.
++- **Peer-to-peer for facts**; the coordinator handles decisions only.
  
  Gate rhythm:
  
@@ -391,7 +386,8 @@
 +  **Rebase onto current master BEFORE nominating**; a nominated ref's NAME is frozen.
 +- **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's tree object byte-equals the
 +  gated merged tree); the carry is VOID across any conflict resolution, squash-with-edits, or cherry-pick.
-+- **Scope re-gates to the delta**: name the changed files; a docs/comment-only delta carries the verdict.
++- **Scope re-gates to the delta**; a docs/comment-only delta carries the verdict.
++- **A review that exposes a coverage gap**: do NOT add cases at the layer you already test — drive the module that can reach the defect.
 +- **Mutation runs: FULL set at the first nomination and at the final merge gate; intermediate rounds mutate only the clauses the delta changed.**
 +
 +**Done when:** the ledger holds the gate checklist, and every brief carries the two pull-first rules plus the report format.
@@ -443,8 +439,7 @@
 -  `--request-id` on a mutation you might retry.
 +Every run is all-ON (six switches; mail cannot be switched off). Mail: `orchestra send --type <kind> [--to <handle>] [--thread <id>] <body>` (a long body:
 +`--body-file <path>`; an unknown `--option` is refused, never sent as text); pull with `orchestra check`, confirm with
-+`orchestra ack <lot-id>` (only the reader acks) or `orchestra check --ack-previous`. `orchestra message` is refused for every target (only
-+`--emergency <id> <text>`, for a reader that no longer reads its mail); agents with no common ancestry may
++`orchestra ack <lot-id>` (only the reader acks) or `orchestra check --ack-previous`. `orchestra message` is refused for every target (except `--emergency <id> <text>`); agents with no common ancestry may
 +send each other `status` and `ask` only. **Only a real task assignment is `--type dispatch`: it mints a
 +capability and SUPERSEDES the recipient's previous one** — orders, pings and FYIs are `status`; the one final
 +report of a dispatched task is `worker_done --cap` (§0b). A worker sends gate failures, decision asks and ONE
@@ -473,16 +468,14 @@
 -interface posts one "what changed" line to its dependents (audit 2026-09-30:
 -B5/C3/C4 idled 208–236 min waiting on an upstream).
 +Break the feature into 2–4 self-contained subtasks, disjoint files where possible. Each brief is standalone:
-+goal, files/areas, definition of done, ledger pointer. The COMMON CONTRACT (the two pull-first rules, the §0b report format, the §0b self-gate + pre-review before
-+nominating, "reports are ledger comments + ping <your-ws-id>; the final one pings with
-+`worker_done --cap "$(orchestra token)"`", "outward actions — merge, master push, release, PR — stay with
-+the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
++goal, files/areas, definition of done, ledger pointer. The COMMON CONTRACT (the two pull-first rules, the §0b report format and self-gate + pre-review, "reports are ledger comments + ping <your-ws-id>; the final one
++pings with `worker_done --cap "$(orchestra token)"`", "outward actions — merge, master push, release, PR — stay with the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
 +the Briefing section of ledger #N — pull it first".
 +
 +**A dependent track starts at dispatch, not at its upstream's merge.** Freeze the shared interface in the ledger; the dependent builds against a stub. `orchestra fanout state set <ticket> --depends-on
 +<upstream> --frozen-interface <ref>` lets it go `--status started`; `nominated`, `gated`
 +or `merged` is REFUSED ("upstream … not merged yet") — keep building, rebase and nominate
-+after the upstream merges. An upstream that changes the frozen interface posts one "what changed" line to its dependents.
++after the upstream merges. An upstream changing the frozen interface posts one "what changed" line to its dependents.
  
  **The spawner names the child, at spawn** — `orchestra spawn --name <rôle>-<object>-<ticket>`
 -(required; shape, rôles and who-may-rename rules: the `orchestra-spawn` skill and
@@ -512,7 +505,18 @@
  
  ## 3. Spawn the verifier
  
- One more agent whose only job is verification. Its brief:
+-One more agent whose only job is verification. Its brief:
++One agent whose only job is verification. Its brief:
++
++- `pnpm install` (or the repo's equivalent) once — this worktree is the fleet's only fully-installed environment.
++- Per branch named by the coordinator: `git fetch origin <branch> && git checkout --detach FETCH_HEAD`.
++  **A detached HEAD never follows the ref** — after any rebase or new push, re-fetch and re-checkout, or you gate an orphan.
++- Run the real gate: typecheck, tests, an actual build — and for a user-facing surface, drive the changed flow end-to-end.
++- Run the FULL gate checklist from the ledger per candidate — one report per candidate, AS A LEDGER COMMENT
++  in the §0b format, PASS/FAIL **with the exact failing output or observed behaviour**, plus an explicit NOT
++  VERIFIED list; then ping. Failures route back to the implementer; the verifier's hands stay off the code (the role guard: scratch only).
++- **Prove the rig before trusting it**: one mutation per gate class, seen to FAIL.
++- **Audit the rig before filing any defect**; probes come from the repo's fixture library, never hand-written payloads.
  
 -- `pnpm install` (or the repo's equivalent) once — this worktree is the
 -  fleet's only fully-installed environment.
@@ -556,18 +560,7 @@
 -seat is a queue: wave C's single verifier ran 91–100 % busy for 2.5 h and a
 -candidate waited 2 h 47 from nomination to verdict; bloc2's 2nd seat cut
 -nomination→verdict from 79–265 min to 17–46 min.
-+- `pnpm install` (or the repo's equivalent) once — this worktree is the fleet's only fully-installed environment.
-+- Per branch named by the coordinator: `git fetch origin <branch> && git checkout --detach FETCH_HEAD`.
-+  **A detached HEAD never follows the ref** — after any rebase or new push, re-fetch and re-checkout, or you gate an orphan.
-+- Run the real gate: typecheck, test suite, an actual build — and for any user-facing surface, drive the
-+  changed flow end-to-end; build+tests alone pass a broken UI.
-+- Run the FULL gate checklist from the ledger per candidate — one report per candidate, AS A LEDGER COMMENT
-+  in the §0b format, PASS/FAIL **with the exact failing output or observed behaviour**, plus an explicit NOT
-+  VERIFIED list; then ping. Failures route back to the implementer; the verifier's hands stay off the code (the role guard: scratch only).
-+- **Prove the rig before trusting it**: one mutation per gate class, seen to FAIL, mutant-string verified live.
-+- **Audit the rig before filing any defect**; probes come from the repo's fixture library, never hand-written payloads.
-+
-+**A second verifier seat as soon as a 2nd candidate waits behind a gate in progress** (own worktree, own rig dirs).
++**A second verifier seat when a 2nd candidate waits behind a gate** (own worktree, own rig dirs).
  
  **Done when:** the verifier echoes "ready" after its install.
  
@@ -626,11 +619,13 @@
 +- **MINOR** — a real defect with limited reach (rare input, unlikely race, a test that lets a mutant survive).
 +- **NIT** — cosmetic — not reported by the spawned reviewer.
 +
++(Why review must be fresh, not the verifier: `references/verifier-and-review.md` — read when you doubt who should review.)
++
 +**No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
 +only): the implementer's pre-review + the verifier's delta gate suffice. Any production-code line → spawned
 +review, follow-ups included. The coordinator NEVER reviews (it wrote the specs). What it does with the findings is the §4 merge rule.
 +
-+**Done when:** the reviewer's comment is on the ledger — findings or an explicit "none found, here is what I attacked".
++**Done when:** the reviewer's ledger comment lists findings or "none found, here is what I attacked".
  
  ## 4. Coordinate and gate
  
@@ -650,7 +645,7 @@
 +- PASS → apply the **merge rule** below, through `orchestra fanout deliver` (one PR per
 +  ticket: it opens or reuses `<branch> → <target>` and merges it). Record the outcome with
 +  `orchestra fanout state set <ticket> --pr <n> --head <sha> --status merged` and the PR url
-+  beside the implementer's workspace id in the ledger roster (the implementers were told not to open PRs).
++  beside the implementer's workspace id in the ledger roster.
 +
 +**The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
  
@@ -722,8 +717,7 @@
 +each remaining agent rebasing onto the new tip. Re-verify each **merged tip**, not just each branch:
 +`deliver` prints `combinedSuite`, the command to run on the target after N merges.
 +
-+**Composed features need a composed gate.** When one user flow spans two branches, each half's E2E can pass
-+while the user path is broken: gate the *whole flow* on the merged tree, asserting mutual exclusion in both directions.
++**Composed features need a composed gate.** When one flow spans two branches each half's E2E can pass while the user path is broken: gate the *whole flow* on the merged tree.
 +
 +**Done when:** every branch has a PASS/FAIL in the ledger, every shared-seam merge a merged-tip re-gate, every two-branch flow one whole-flow drive.
  
@@ -799,7 +793,7 @@
 +`worktree remove`) in ONE command — run the check, read it, THEN act in a second call (the LEAD, role-less, is unguarded: its discipline).
 +
 +**Gate a delete on BOTH checks, not on `verify-landed` alone.** `orchestra verify-landed` exits `0` landed /
-+`2` not-landed / `1` could-not-check — gate on `$? == 0`; after a REBASE it reads a false not-landed (land by
++`2` not-landed / `1` could-not-check — gate on `$? == 0` (an older installed build exits 0 on NOT LANDED: if unsure, gate on the textual verdict); after a REBASE it reads a false not-landed (land by
 +ancestry of the current tip). Porcelain is never literally empty in Orchestra worktrees: filter the generated
 +noise (`.claude/skills/orchestra-*`, `.claude/skills/verified-fanout`), judge every other line; rescue an orphan
 +by committing it to the agent's own branch and verify **by content**.
@@ -808,7 +802,7 @@
 +rather than inheriting it from the agent's first report (`orchestra fanout resume` re-derives it for every
 +ticket of the state file). When your check contradicts a specific claim, run a second check with a different reference before speaking.
 +
-+**Done when:** both commands print nothing for every agent and every deliverable file resolves on the integration tip.
++**Done when:** both commands print nothing for every agent, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
 +
 +→ **Read `references/closeout-and-gates.md` before you delete a workspace whose `verify-landed` reads
 +not-landed, and before you write a gate** (the three delete-gate traps with their measurements; falsifiable gates and visual claims).
@@ -818,8 +812,7 @@
 -One consolidated status to the user: per subtask — branch, verifier verdict,
 -what remains — plus the fleet-level NOT VERIFIED list. **Done when:** every
 -line is actionable by someone who read none of the conversation.
-+One consolidated status to the user: per subtask — branch, verifier verdict, what remains — plus the
-+fleet-level NOT VERIFIED list. **Done when:** every line is actionable by someone who read none of the conversation.
++One consolidated status: per subtask — branch, verifier verdict, what remains — plus the fleet-level NOT VERIFIED list; every line actionable by someone who read none of the conversation.
  
  ## Specify gates that can fail
  
@@ -884,9 +877,8 @@
 +- **references/fleet-bus.md** — read when a message does not arrive, or before `ask` / `gate` / `token` (§0c in full).
 +- **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
 +- **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
-+- **references/traps.md** — the confident-wrong-answer catalogue (723 lines); pick the rung by evidence: *stale
-+  artifacts / off-target checks* (L23–117), *visual and capture rigs* (L118–394), *controls, empty results,
-+  instruments* (L395–559), *multi-party evidence and close-out claims* (L560–723).
++- **references/traps.md** — the confident-wrong-answer catalogue (723 lines, four rungs by evidence: stale artifacts, visual rigs, controls/empty results, multi-party close-out claims): read the rung matching your evidence.
++- **references/prose.md** — read before writing any durable artifact (PR body, ticket, ledger comment, doc): banned filler, numbers over adjectives.
 +- **references/working-with-agents.md** — read before briefing a fleet and before writing or accepting any close-out.
 +- **references/meta-rules.md** — read when adding rules to this skill ("does it resolve to someone being sharp that day?").
 +
@@ -895,7 +887,5 @@
 +- **This is the bundled v2**, written into every worktree's `.claude/skills/verified-fanout/` on spawn (source
 +  `src/shared/verified-fanout-skill.ts`); an edit there lasts until the hook bundle changes. A repo's own
 +  `verified-fanout/SKILL.md` without the generated marker line is never overwritten.
-+- **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only,
-+  `scripts/skill-precedence/measure-skill-precedence.mjs` — re-run it after a CLI update):
-+  with a personal `<config dir>/skills/verified-fanout` the personal one loads, this one does not.
++- **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only, `scripts/skill-precedence/measure-skill-precedence.mjs` — re-run after a CLI update).
 +- **VPS install:** an Orchestra AppImage release that contains this skill; any spawn writes it. No personal copy there ⇒ nothing shadows it.

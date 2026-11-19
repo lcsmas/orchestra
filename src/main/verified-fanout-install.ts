@@ -32,13 +32,14 @@ export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e
     try { existing = await readFile(skillFile, 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     if (existing !== null && !isGenerated(existing)) return 'skipped-foreign';
     await mkdir(dir, { recursive: true });
-    await writeAtomic(skillFile, VERIFIED_FANOUT_SKILL);
     for (const f of [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES]) {
       const dest = path.join(dir, f.path);
       await mkdir(path.dirname(dest), { recursive: true });
       await writeAtomic(dest, f.content, f.mode);
       await chmod(dest, f.mode); // the exact mode whatever the umask
     }
+    // SKILL.md LAST (#474 review): a failure part-way never leaves a NEW SKILL.md pointing at references that did not land.
+    await writeAtomic(skillFile, VERIFIED_FANOUT_SKILL);
     return 'written';
   } catch (e) {
     try { onError?.(e); } catch { /* the reporter must not throw either */ }

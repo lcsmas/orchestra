@@ -164,6 +164,8 @@ export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = 
   ['write the gate checklist first', /\*\*Write the full gate checklist into the ledger before the first gate\*\*/],
   ['self-gate + pre-review before nominating', /\*\*Self-gate BEFORE nominating[\s\S]*fresh-context PRE-REVIEW/],
   ['carry verdicts by tree identity', /\*\*Carry verdicts by TREE IDENTITY across clean rebases\*\*/],
+  ['LEAD reports to the human as a team lead\'s synthesis', /TEAM LEAD'S SYNTHESIS/],
+  ['coverage gap: drive the module, not more cases', /do NOT add cases at the layer you already test/],
   ['mutation runs: full at first nomination and final gate', /\*\*Mutation runs: FULL set at the first nomination and at the final merge/],
   ['serialize merges that touch a shared seam', /\*\*Serialize merges that touch a shared seam\.\*\*/],
   ['composed features need a composed gate', /\*\*Composed features need a composed gate\.\*\*/],
@@ -190,6 +192,7 @@ export const REFERENCE_PINS: ReadonlyArray<readonly [id: string, file: string, r
   ['review needs freshness (the verifier must not review)', 'verifier-and-review.md', /Review lives on freshness/],
   ['delete-gate trap 0: a rebase reads a false not-landed', 'closeout-and-gates.md', /after a REBASE, `verify-landed` reads a FALSE not-landed/],
   ['delete-gate trap 2: filter generated porcelain noise', 'closeout-and-gates.md', /porcelain is never literally empty — filter the known generated noise/],
+  ['delete-gate trap 1: an older build exits 0 on NOT LANDED', 'closeout-and-gates.md', /Older \*installed\*\s+builds exit 0 on NOT LANDED/],
   ['gate example: wrap-not-touch', 'closeout-and-gates.md', /\*wrap-not-touch\*/],
   ['visual claims need a triptych', 'closeout-and-gates.md', /before\/after\/reference triptych/],
 ];
@@ -239,7 +242,7 @@ test('#474: the SKILL.md-resident rules are listed, read from SKILL.md alone; th
   const [, , rePre] = RULE_PINS.find(([id]) => id === 'handoff')!;
   const cut = withoutRule(VERIFIED_FANOUT_SKILL, rePre);
   assert.ok(droppedRules(cut).includes('handoff'));
-  assert.ok(droppedRules(cut + ALL_V2_REFS).length === 0 || droppedRules(cut).includes('handoff'), 'droppedRules reads the text it is given: SKILL.md alone is what the resident test passes it');
+  assert.equal(droppedRules(VERIFIED_FANOUT_SKILL).length, 0);
   const [, reSelf] = JUDGEMENT_PINS.find(([id]) => id === 'self-gate + pre-review before nominating')!;
   assert.match(refText('budget-and-gates.md'), reSelf, 'the long form in the reference carries the sentence too…');
   assert.ok(droppedRules(withoutRule(VERIFIED_FANOUT_SKILL, reSelf)).includes('self-gate + pre-review before nominating'), '…and that does not keep it resident');
@@ -251,7 +254,7 @@ test('#474: the SKILL.md-resident rules are listed, read from SKILL.md alone; th
   }
   assert.ok(referencePinProblems(() => '').length === REFERENCE_PINS.length, 'an empty reference set fails every pin');
   // the moved sentences are NOT required in SKILL.md (they moved): the TEAM LEAD synthesis rules are not always-read
-  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /TEAM LEAD'S SYNTHESIS|live delivery timeout|patch-id\s+equality/);
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /live delivery timeout|patch-id\s+equality/);
 });
 
 // ---- #474: the always-read text is under 4,000 words -------------------------------------------------------------------------------
@@ -265,8 +268,10 @@ test('#474 word budget: the rendered SKILL.md has < 4,000 words (was 6,962) and 
   const w = wordCount(VERIFIED_FANOUT_SKILL);
   assert.ok(w < WORD_BUDGET, `${w} words >= ${WORD_BUDGET}`);
   assert.ok(w > 2500, `${w} words: suspiciously small — a section was dropped wholesale, not moved`);
-  assert.ok(wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET)) >= WORD_BUDGET, 'must-FAIL: a text over budget is seen');
-  assert.ok(wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET - w)) >= WORD_BUDGET, 'the boundary is exact: padded to the budget = over');
+  // must-FAIL: a moved section pasted back into SKILL.md puts the text over budget (the real regression this guards)
+  const back = wordCount(VERIFIED_FANOUT_SKILL + '\n' + refText('lead-ops-tiers.md'));
+  assert.ok(back >= WORD_BUDGET, `${back} words with lead-ops-tiers.md pasted back — the budget would not catch it`);
+  assert.ok(!(wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET - w - 1)) >= WORD_BUDGET) && wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET - w)) >= WORD_BUDGET, 'the boundary is exact: one word under passes, at 4,000 fails');
   assert.equal(wordCount('a  b\nc\t d '), 4, 'the counter splits on any whitespace, like wc -w');
 });
 
@@ -296,11 +301,16 @@ test('#474 pointers: every references/ / scripts/ pointer in SKILL.md and in the
   const v2 = VERIFIED_FANOUT_V2_REFERENCES.map((f) => f.path);
   assert.ok(v2.length >= 5, `${v2.length} v2 references`);
   assert.deepEqual(pointerProblems(VERIFIED_FANOUT_SKILL, SHIPPED_PATHS, v2), []);
+  // no shipped reference is orphaned from SKILL.md — v1's four included (#474 review: prose.md lost its only pointer)
+  const allRefs = SHIPPED_PATHS.filter((x) => x.startsWith('references/'));
+  assert.deepEqual(pointerProblems(VERIFIED_FANOUT_SKILL, SHIPPED_PATHS, allRefs), []);
+  assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL.replaceAll('references/prose.md', 'references/traps.md'), SHIPPED_PATHS, allRefs).some((p) => /prose\.md: no pointer/.test(p)), 'must-FAIL: an orphaned v1 reference is seen');
   for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.deepEqual(pointerProblems(f.content, SHIPPED_PATHS, []), [], f.path);
   // every section that MOVED left a pointer: its heading's pointer line names its reference
   for (const [heading, ref] of [['## 0a.', 'lead-ops-tiers.md'], ['## 0b.', 'budget-and-gates.md'], ['## 0c.', 'fleet-bus.md'], ['## 3. Spawn the verifier', 'verifier-and-review.md'], ['## 5. Close-out', 'closeout-and-gates.md']] as const) {
     const from = VERIFIED_FANOUT_SKILL.indexOf(heading); const to = VERIFIED_FANOUT_SKILL.indexOf('\n## ', from + 4);
-    assert.ok(VERIFIED_FANOUT_SKILL.slice(from, to).includes(`references/${ref}`), `${heading} points at ${ref}`);
+    const sec = VERIFIED_FANOUT_SKILL.slice(from, to);
+    assert.match(sec, new RegExp(`[Rr]ead[^\\n]*references/${ref.replace('.', '\\.')}|references/${ref.replace('.', '\\.')}[^\\n]*\\b(when|before)\\b`), `${heading} points at ${ref} with a trigger`);
   }
   // must-FAIL: a pointer to a file that does not ship, a pointer removed, a trigger removed
   assert.ok(pointerProblems(`${VERIFIED_FANOUT_SKILL}\nRead when x: \`references/no-such.md\``, SHIPPED_PATHS, v2).some((p) => /references\/no-such\.md: not in the shipped/.test(p)));
@@ -504,6 +514,10 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
     assert.equal(await installVerifiedFanoutSkill(quote), 'skipped-foreign');
     const empty = shape('empty', (d) => { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'SKILL.md'), ''); });
     assert.equal(await installVerifiedFanoutSkill(empty), 'written');
+    // #474: SKILL.md is written LAST — a failing reference write leaves NO new SKILL.md pointing at references that did not land
+    const partial = shape('partial', (d) => fs.mkdirSync(path.join(d, 'references', 'fleet-bus.md'), { recursive: true }));
+    assert.equal(await installVerifiedFanoutSkill(partial), 'skipped-error');
+    assert.ok(!fs.existsSync(path.join(partial, 'verified-fanout', 'SKILL.md')), 'no SKILL.md after a failed reference write');
     // a throwing reporter cannot make it throw
     assert.equal(await installVerifiedFanoutSkill(shape('throwing', (d) => fs.mkdirSync(path.join(d, 'SKILL.md'), { recursive: true })), () => { throw new Error('reporter'); }), 'skipped-error');
   } finally { fs.rmSync(errs, { recursive: true, force: true }); }
