@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  HANDOFF_SUMMARY_MAX_CHARS, HandoffTurnCounter, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError,
+  HANDOFF_SUMMARY_MAX_CHARS, HandoffTurnCounter, composeDroppedNotice, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError,
   parseHandoffBound, validateHandoffSummary,
 } from './handoff.ts';
 
@@ -147,4 +147,12 @@ test('run decision: waits behind a queue or a pause, expires, otherwise runs', (
   assert.equal(decideHandoffRun({ queueLen: 1, paused: false, ageMs: 1 }), 'wait');
   assert.equal(decideHandoffRun({ queueLen: 0, paused: true, ageMs: 1 }), 'wait');
   assert.equal(decideHandoffRun({ queueLen: 0, paused: false, ageMs: 11 * 60_000 }), 'expired');
+});
+
+test('m4: nudge and opening frame warn that background runs are stopped with the context; the dropped notice names why and what to do', () => {
+  assert.match(composeNudge(40, 40), /processes your context started in the background.*are stopped with it/);
+  assert.match(composeOpeningTurn({ summary: 'S', savedAt: 'now' }), /background run started by your previous context was STOPPED/);
+  const n = composeDroppedNotice('its context already ended another way');
+  assert.match(n, /did NOT run \(its context already ended another way\)/);
+  assert.match(n, /Run `orchestra handoff --summary-file <path>` again/);
 });

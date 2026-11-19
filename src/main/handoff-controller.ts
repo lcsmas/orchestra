@@ -2,7 +2,7 @@
 // nudge once at the bound. handoff-host.ts supplies the real deps; handoff-controller.test.ts drives it with fakes (incl. the must-FAIL arms).
 
 import {
-  HANDOFF_ERRORS, HANDOFF_PENDING_TTL_MS, HandoffTurnCounter, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError, validateHandoffSummary,
+  HANDOFF_ERRORS, HANDOFF_PENDING_TTL_MS, composeDroppedNotice, HandoffTurnCounter, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError, validateHandoffSummary,
 } from '../shared/handoff.ts';
 import type { TurnEndInfo } from './handoff-seam.ts';
 
@@ -24,8 +24,16 @@ export interface HandoffDeps {
   saveSummary(id: string, summary: string): string;
   /** The bound in turns (0 = off), read at each turn end. */
   bound(): number;
-  /** End the context (restart --fresh's path). Throws on failure ⇒ the old context is kept. */
+  /** Is a turn of the workspace running RIGHT NOW? false ⇒ nothing will end soon, so an accepted handoff runs at once (not at some unrelated later turn end). */
+  turnInFlight(id: string): boolean;
+  /** m1: write the owed-opening marker (BEFORE the context is ended). Throws ⇒ nothing is ended. */
+  owe(id: string, opening: string, file: string, at: number): void;
+  /** m1: drop the marker (the context was not ended after all). Delivered openings are cleared by the host's delivery itself. */
+  settle(id: string): void;
+  /** End the context (restart --fresh's path + the stale-run clear). Throws on failure ⇒ the old context is kept. */
   endContext(id: string): Promise<void>;
+  /** m4: tell the agent something about its own handoff (queued as a turn). */
+  sendNotice(id: string, text: string): Promise<void>;
   /** Deliver the opening turn to the fresh session (Admission-aware). */
   deliverOpening(id: string, text: string): Promise<'sent' | 'held' | 'failed'>;
   /** Queue the nudge as the member's next turn. */
@@ -61,7 +69,14 @@ export function createHandoffController(deps: HandoffDeps) {
     } catch (e) {
       return { ok: false, error: HANDOFF_ERRORS.unavailable(`the summary could not be saved: ${e instanceof Error ? e.message : String(e)}`) };
     }
-    pending.set(id, { summary, file, at: deps.now(), session: deps.sessionOf(id) });
+    const entry: Pending = { summary, file, at: deps.now(), session: deps.sessionOf(id) };
+    if (!deps.turnInFlight(id)) {
+      // No turn is running (a dispatch from a background script after the caller's turn ended): "the next turn end" would be some UNRELATED turn — run now.
+      deps.log.info(`handoff: ${id} is idle — running at once (summary ${summary.length} chars, saved ${file})`);
+      void run(id, entry).catch((e) => deps.log.error(`handoff: ${id} failed`, e));
+      return { ok: true, scheduled: true, file, note: 'handoff running now (no turn is in flight) — the fresh context opens with your summary in a moment.' };
+    }
+    pending.set(id, entry);
     deps.log.info(`handoff: scheduled for ${id} (summary ${summary.length} chars, saved ${file}) — runs at the turn end`);
     return {
       ok: true, scheduled: true, file,
@@ -73,8 +88,16 @@ export function createHandoffController(deps: HandoffDeps) {
     const turns = counter.turnsOf(id);
     const opening = composeOpeningTurn({ summary: p.summary, turns, savedAt: new Date(p.at).toISOString(), file: p.file });
     try {
+      deps.owe(id, opening, p.file, p.at); // durable BEFORE the clear: from here the summary survives an app quit / a failed or held start
+    } catch (e) {
+      deps.log.error(`handoff: the owed marker of ${id} could not be written — nothing was ended`, e);
+      deps.report(id, `handoff: not run — the owed-opening marker could not be written (${e instanceof Error ? e.message : String(e)}); context kept, summary saved at ${p.file}`);
+      return;
+    }
+    try {
       await deps.endContext(id);
     } catch (e) {
+      deps.settle(id);
       deps.log.error(`handoff: ending the context of ${id} failed — nothing was delivered`, e);
       deps.report(id, `handoff: ending the context failed (${e instanceof Error ? e.message : String(e)}) — still on the old context; summary saved at ${p.file}`);
       return;
@@ -82,7 +105,7 @@ export function createHandoffController(deps: HandoffDeps) {
     counter.forget(id);
     deps.log.info(`handoff: ${id} context ended after ${turns} turns — delivering the summary as the opening turn`);
     const r = await deps.deliverOpening(id, opening);
-    if (r === 'failed') deps.report(id, `handoff: the context was ended but the opening turn could not be delivered — the summary is saved at ${p.file}`);
+    if (r === 'failed') deps.report(id, `handoff: the context was ended but the opening turn could not be delivered — it stays owed and is retried; the summary is saved at ${p.file}`);
   }
 
   /** A turn of `info.wsId` just ended. Returns the handoff run it started (tests await it), if any. */
@@ -97,7 +120,9 @@ export function createHandoffController(deps: HandoffDeps) {
       const otherContext = !!p.session && !!info.sessionId && p.session !== info.sessionId; // /clear, restart --fresh, hibernate+resume under another id…
       if (verdict === 'expired' || !live || otherContext) {
         pending.delete(wsId);
-        deps.log.warn(`handoff: scheduled handoff of ${wsId} dropped (${!live ? 'workspace gone' : otherContext ? 'its context already ended another way' : 'never reached a free turn end'}) — context kept`);
+        const why = !live ? 'workspace gone' : otherContext ? 'its context already ended another way' : 'it did not reach a free turn end within 10 minutes';
+        deps.log.warn(`handoff: scheduled handoff of ${wsId} dropped (${why}) — context kept`);
+        if (live) void deps.sendNotice(wsId, composeDroppedNotice(why)).catch((e) => deps.log.warn(`handoff: drop notice to ${wsId} failed`, e));
         return undefined;
       }
       if (verdict === 'run') {

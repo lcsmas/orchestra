@@ -14,11 +14,12 @@ import { getBus } from './bus.ts';
 import { getRun } from './bus-runs.ts';
 import { orchestraHome } from './platform/index.ts';
 import { sessionKeys } from './session-identity-host.ts';
-import { reportAdmissionFailure, resolveWaveRunId } from './workspaces';
+import { clearBusRunStale, reportAdmissionFailure, resolveWaveRunId } from './workspaces';
 import { pauseRefusal } from './pause-gate';
-import { sdkRestart } from './agent-sdk';
+import { sdkPauseActivity, sdkRestart } from './agent-sdk';
 import { sdkDeliver } from './sdk-delivery';
 import { deliverRelance } from './relance-host.ts';
+import { clearOwed, listOwed, readOwed, writeOwed } from './handoff-owed.ts';
 import { setTurnEndListener } from './handoff-seam.ts';
 import { createHandoffController, type HandoffReply } from './handoff-controller.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
@@ -26,24 +27,55 @@ import { HANDOFF_ERRORS, parseHandoffBound } from '../shared/handoff.ts';
 
 export type { HandoffReply };
 
-/** Openings still owed (context ended, summary not yet delivered). A held start is kept while owed — NOT "while asleep" (admission's default): peer mail that starts the
- *  vierge session first must not make the release drop the summary; it then lands as the next turn of the live session. In memory: an app quit while held loses the owing
- *  (the summary stays under <ORCHESTRA_HOME>/handoff/<ws>/). */
-const owed = new Set<string>();
+const OWED_ROOT = (): string => path.join(orchestraHome(), 'handoff');
+const RETRY_MS = 60_000;
+const MAX_RETRIES = 5;
 
-/** The opening turn, behind Admission: a HELD start re-enters here when released — a failure THEN is reported from the retry (the first call's goes through the controller). */
-async function deliverOpening(id: string, text: string): Promise<'sent' | 'held' | 'failed'> {
-  owed.add(id);
+/** Workspaces whose opening is being delivered / held right now (a sweep must not start a second delivery). */
+const active = new Set<string>();
+const retries = new Map<string, number>();
+
+const stillOwed = (id: string): boolean => readOwed(OWED_ROOT(), id) !== null && !!store.getWorkspace(id) && !store.getWorkspace(id)?.archived;
+
+/** The opening turn, behind Admission. The OWED MARKER on disk (handoff-owed.ts) is the truth: a held start is kept while owed — NOT "while asleep" (admission's default:
+ *  peer mail that starts the vierge session first would make the release drop the summary; it then lands as the next turn of the live session) — and a failed one is retried
+ *  (bounded) and re-delivered at app start. Cleared only once delivered. */
+async function deliverOpening(id: string, text: string, fromRetry = false): Promise<'sent' | 'held' | 'failed'> {
+  if (!fromRetry && active.has(id)) return 'held';
+  active.add(id);
   const r = await deliverRelance(
     id, text, 'handoff',
     async () => {
-      const again = await deliverOpening(id, text);
-      if (again === 'failed') reportAdmissionFailure(id, 'handoff: the context was ended but the held opening turn could not be delivered — the summary is saved under <ORCHESTRA_HOME>/handoff/' + id + '/');
+      const again = await deliverOpening(id, text, true);
+      if (again === 'failed') reportAdmissionFailure(id, 'handoff: the held opening turn could not be delivered — it stays owed (summary under <ORCHESTRA_HOME>/handoff/' + id + '/)');
     },
-    { stillOwed: () => owed.has(id) && !!store.getWorkspace(id) && !store.getWorkspace(id)?.archived },
+    { stillOwed: () => stillOwed(id) },
   );
-  if (r !== 'held') owed.delete(id);
+  if (r === 'held') return r;
+  active.delete(id);
+  if (r === 'sent') {
+    clearOwed(OWED_ROOT(), id);
+    retries.delete(id);
+  } else {
+    const n = (retries.get(id) ?? 0) + 1;
+    retries.set(id, n);
+    if (n <= MAX_RETRIES) setTimeout(() => void resumeOwed(id), RETRY_MS).unref?.();
+    else log.warn(`handoff: opening of ${id} still undelivered after ${MAX_RETRIES} retries — left owed (app start retries)`);
+  }
   return r;
+}
+
+/** Re-deliver one workspace's owed opening (a retry timer, or the app-start sweep). */
+async function resumeOwed(id: string): Promise<void> {
+  const rec = readOwed(OWED_ROOT(), id);
+  if (!rec || !stillOwed(id) || active.has(id)) return;
+  log.info(`handoff: re-delivering the owed opening of ${id} (accepted ${new Date(rec.at).toISOString()})`);
+  await deliverOpening(id, rec.opening);
+}
+
+/** App start: every opening still owed (an app quit between the clear and the delivery, or a start that kept failing). */
+export function resumeOwedOpenings(): void {
+  for (const { wsId } of listOwed(OWED_ROOT())) void resumeOwed(wsId).catch((e) => log.warn(`handoff: owed opening of ${wsId} failed`, e));
 }
 
 const controller = createHandoffController({
@@ -68,6 +100,9 @@ const controller = createHandoffController({
     return ws ? (sandboxPausedMessage(ws) ?? pauseRefusal(ws, 'auto')) : null;
   },
   sessionOf: (id) => store.getWorkspace(id)?.sdkSessionId || undefined,
+  turnInFlight: (id) => sdkPauseActivity(id)?.turnRunning ?? false,
+  owe: (id, opening, file, at) => writeOwed(OWED_ROOT(), id, { opening, file, at }),
+  settle: (id) => clearOwed(OWED_ROOT(), id),
   saveSummary: (id, summary) => {
     const dir = path.join(orchestraHome(), 'handoff', id);
     fs.mkdirSync(dir, { recursive: true });
@@ -76,7 +111,13 @@ const controller = createHandoffController({
     return file;
   },
   bound: () => parseHandoffBound(process.env).bound,
-  endContext: (id) => sdkRestart(id, { fresh: true, trigger: 'cli' }),
+  endContext: async (id) => {
+    await sdkRestart(id, { fresh: true, trigger: 'cli' });
+    await clearBusRunStale(id); // like `orchestra restart`: the relaunch re-reads the run, so a stale-run block (#142) is resolved by it
+  },
+  sendNotice: async (id, text) => {
+    await sdkDeliver(id, text);
+  },
   deliverOpening,
   sendNudge: async (id, text) => {
     await sdkDeliver(id, text);
@@ -92,3 +133,4 @@ export function dispatchHandoffRequest(msg: Record<string, unknown>): HandoffRep
 const boot = parseHandoffBound(process.env);
 if (boot.invalid) log.warn(`handoff: ${boot.invalid}`);
 setTurnEndListener((info) => void controller.onTurnEnd(info));
+setTimeout(resumeOwedOpenings, 30_000).unref?.(); // after the store and the bus are up
