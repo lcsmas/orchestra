@@ -65,7 +65,7 @@ describe('resctl admit (CLI)', () => {
   });
 
   it('DEFAULT thresholds (6G / 10GiB): returns at once when this machine has that much free, waits (and says so) when it has not', () => {
-    const free = () => ({ mem: parseMemAvailable(fs.readFileSync('/proc/meminfo', 'utf8')), disk: Number(fs.statfsSync(rig.dir).bavail) * Number(fs.statfsSync(rig.dir).bsize) });
+    const free = () => ({ mem: parseMemAvailable(fs.readFileSync('/proc/meminfo', 'utf8')), disk: Number(fs.statfsSync(os.homedir()).bavail) * Number(fs.statfsSync(os.homedir()).bsize) });
     const before = free();
     const r = cli(['admit', '--timeout', '500ms'], { RESCTL_MIN_FREE_MEM: '', RESCTL_MIN_FREE_DISK: '' });
     const after = free();
@@ -76,11 +76,16 @@ describe('resctl admit (CLI)', () => {
     } else if (!hi(before, (a, b) => a >= b) && !hi(after, (a, b) => a >= b)) {
       assert.equal(r.status, 3, 'below a default: it waited');
       assert.match(r.stderr, /waiting for free (memory|disk): [\d.]+[MGT] < (6|10)G/);
-    } // within 5% of a default, or moving across it during the run: no honest expectation either way
+    } else {
+      // within 5% of a default, or crossing it during the run: either answer is honest, but it must be ONE coherent answer
+      assert.ok(r.status === 0 || r.status === 3, `exit ${r.status}: ${r.stderr}`);
+      if (r.status === 0) assert.match(r.stdout, /^admitted/);
+      else assert.match(r.stderr, /timed out after \d+s waiting for free (memory|disk): /);
+    }
   });
 
   it('the free disk it prints is statfs bavail x bsize of the measured path (units pinned)', () => {
-    const st = fs.statfsSync(rig.dir);
+    const st = fs.statfsSync(os.homedir());
     const expected = Number(st.bavail) * Number(st.bsize);
     const r = cli(['admit'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' });
     const m = /free disk ([\d.]+)([KMGT])/.exec(r.stdout);
@@ -89,13 +94,50 @@ describe('resctl admit (CLI)', () => {
     assert.ok(Math.abs(printed - expected) <= Math.max(expected * 0.02, 0.2 * 1024 ** ('KMGT'.indexOf(m[2]) + 1)), `printed ${printed} vs statfs ${expected}`);
   });
 
-  it('measures the filesystem of the state dir by default, or RESCTL_DISK_PATH when set', () => {
+  it('measures the filesystem of the home dir by default (NOT the state dir, which may be a tmpfs), or RESCTL_DISK_PATH when set', () => {
     const low = { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' };
-    assert.ok(cli(['admit'], low).stdout.endsWith(`(${rig.dir})\n`));
-    assert.ok(cli(['admit'], { ...low, RESCTL_STATE_DIR: path.join(rig.dir, 'not', 'there', 'yet') }).stdout.endsWith(`(${rig.dir})\n`), 'a missing state dir: nearest existing ancestor');
+    assert.ok(cli(['admit'], low).stdout.endsWith(`(${os.homedir()})\n`), 'the state dir is the rig dir, the measured path must not be');
     const other = os.tmpdir();
     assert.ok(cli(['admit'], { ...low, RESCTL_DISK_PATH: other }).stdout.endsWith(`(${other})\n`));
     assert.equal(cli(['admit'], { ...low, RESCTL_DISK_PATH: path.join(rig.dir, 'nope') }).status, 2, 'an explicit path that does not exist is a usage error');
+  });
+
+  it('a threshold that admit.conf set is NAMED in the waiting, timeout and admitted lines (a file never overrides the env silently)', () => {
+    try {
+      conf('RESCTL_MIN_FREE_MEM=100T\n');
+      const w = cli(['admit', '--timeout', '300ms'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' });
+      assert.equal(w.status, 3, 'the file overrode the env value');
+      assert.match(w.stderr, /waiting for free memory: [\d.]+[KMGT] < 100T \(admit\.conf\)/);
+      assert.match(w.stderr, /timed out after \d+s waiting for free memory: [\d.]+[KMGT] < 100T \(admit\.conf\)/);
+      conf('RESCTL_MIN_FREE_DISK=1M\n');
+      conf('RESCTL_MIN_FREE_DISK=100T\n');
+      const d = cli(['admit', '--timeout', '300ms'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' });
+      assert.equal(d.status, 3);
+      assert.match(d.stderr, /waiting for free disk: [\d.]+[KMGT] < 100T \(admit\.conf\)/);
+      assert.doesNotMatch(d.stderr, /free memory/);
+      conf('RESCTL_MIN_FREE_DISK=1M\n');
+      const ok = cli(['admit'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '100T' });
+      assert.equal(ok.status, 0);
+      assert.match(ok.stdout, /^admitted: free memory [\d.]+[KMGT] >= 1M, free disk [\d.]+[KMGT] >= 1M \(admit\.conf\) \(/, 'the disk bound came from the file, the memory bound from the env');
+      fs.rmSync(path.join(rig.dir, 'admit.conf'));
+      assert.doesNotMatch(cli(['admit'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' }).stdout, /admit\.conf/);
+    } finally {
+      fs.rmSync(path.join(rig.dir, 'admit.conf'), { force: true });
+    }
+  });
+
+  it('a torn admit.conf (no final newline) and an unreadable one do NOT lower anything: the env value stays and it warns', () => {
+    conf('RESCTL_MIN_FREE_MEM=1'); // what a reader sees mid-write of "…=10G"
+    const torn = cli(['admit', '--timeout', '300ms'], { RESCTL_MIN_FREE_MEM: HUGE });
+    assert.equal(torn.status, 3, 'a torn line must not admit');
+    assert.match(torn.stderr, /admit\.conf: last line has no newline, ignored/);
+    fs.rmSync(path.join(rig.dir, 'admit.conf'));
+    fs.mkdirSync(path.join(rig.dir, 'admit.conf')); // EISDIR: readable by nobody
+    const bad = cli(['admit', '--timeout', '300ms'], { RESCTL_MIN_FREE_MEM: HUGE });
+    assert.equal(bad.status, 3);
+    assert.match(bad.stderr, /admit\.conf: cannot read it \(EISDIR\)/);
+    fs.rmdirSync(path.join(rig.dir, 'admit.conf'));
+    assert.doesNotMatch(cli(['admit', '--timeout', '0'], { RESCTL_MIN_FREE_MEM: '1M', RESCTL_MIN_FREE_DISK: '1M' }).stderr, /admit\.conf/, 'a missing file is silent');
   });
 
   it('bad input: unusable thresholds / timeout / argument exit 2, an unusable admit.conf value is ignored with a warning (the env value stays)', () => {

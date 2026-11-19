@@ -2,15 +2,16 @@
 // the verb injects the readings, so every branch is testable without waiting for the machine to change.
 
 export type Reading = { memFree: number; diskFree: number };
-export type Thresholds = { minMem: number; minDisk: number };
-export type Shortage = { resource: 'memory' | 'disk'; free: number; min: number };
+/** `memSrc`/`diskSrc` name where a threshold came from when it is NOT the env/default (the admit.conf file), so a message can say so. */
+export type Thresholds = { minMem: number; minDisk: number; memSrc?: string; diskSrc?: string };
+export type Shortage = { resource: 'memory' | 'disk'; free: number; min: number; src?: string };
 export type Decision = { admit: boolean; short: Shortage[] };
 
 /** Admitted iff free ≥ threshold for BOTH resources (equal passes); `short` names each resource that is below its threshold. */
 export function decide(r: Reading, t: Thresholds): Decision {
   const short: Shortage[] = [];
-  if (!(r.memFree >= t.minMem)) short.push({ resource: 'memory', free: r.memFree, min: t.minMem });
-  if (!(r.diskFree >= t.minDisk)) short.push({ resource: 'disk', free: r.diskFree, min: t.minDisk });
+  if (!(r.memFree >= t.minMem)) short.push({ resource: 'memory', free: r.memFree, min: t.minMem, src: t.memSrc });
+  if (!(r.diskFree >= t.minDisk)) short.push({ resource: 'disk', free: r.diskFree, min: t.minDisk, src: t.diskSrc });
   return { admit: short.length === 0, short };
 }
 
@@ -39,7 +40,7 @@ export function formatElapsed(ms: number): string {
 
 /** `free memory: 3.2G < 6G; free disk: 4G < 10G` */
 export function shortPhrase(short: Shortage[]): string {
-  return short.map((s) => `free ${s.resource}: ${formatSize(s.free)} < ${formatSize(s.min)}`).join('; ');
+  return short.map((s) => `free ${s.resource}: ${formatSize(s.free)} < ${formatSize(s.min)}${s.src ? ` (${s.src})` : ''}`).join('; ');
 }
 
 export type WaitOptions = {
@@ -68,7 +69,7 @@ export async function waitForAdmission(o: WaitOptions): Promise<WaitResult> {
     const waitedMs = o.now() - t0;
     if (last.admit) return { admitted: true, waitedMs, last, reading, thresholds };
     if (o.timeoutMs !== undefined && waitedMs >= o.timeoutMs) return { admitted: false, waitedMs, last, reading, thresholds };
-    const key = last.short.map((s) => s.resource).join(',');
+    const key = last.short.map((s) => `${s.resource}<${s.min}${s.src ?? ''}`).join(','); // a changed threshold is said at once
     if (key !== lastKey || o.now() - lastSaid >= o.reportMs) {
       o.say(`waiting for ${shortPhrase(last.short)} (since ${new Date(t0).toISOString()}, ${formatElapsed(waitedMs)} elapsed)`);
       lastSaid = o.now();

@@ -284,19 +284,19 @@
   ]
  },
  {
-  "id": "M16_default_disk_is_home",
-  "why": "the default measured filesystem is the home dir, not the state dir",
+  "id": "M16_default_disk_is_state_dir",
+  "why": "the default measured filesystem is the state dir (a tmpfs there is measured), not the home dir",
   "tests": [
    "test/admit.test.ts"
   ],
   "expect": [
-   "measures the filesystem of the state dir by default"
+   "measures the filesystem of the home dir by default"
   ],
   "edits": [
    {
     "file": "src/env.ts",
-    "find": "env.RESCTL_DISK_PATH || stateDir(env)",
-    "to": "env.RESCTL_DISK_PATH || os.homedir()"
+    "find": "env.RESCTL_DISK_PATH || os.homedir()",
+    "to": "env.RESCTL_DISK_PATH || stateDir(env)"
    }
   ]
  },
@@ -382,6 +382,129 @@
     "file": "src/verbs/admit.ts",
     "find": "if (/RESCTL_MIN_FREE/.test(line) && !/^\\s*#/.test(line)) warn(",
     "to": "if (false) warn("
+   }
+  ]
+ },
+ {
+  "id": "M22_source_not_in_waiting_line",
+  "why": "a file-set threshold is not named in the reason",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "the waiting phrase names",
+   "is NAMED in the waiting"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "${s.src ? ` (${s.src})` : ''}",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M23_source_not_in_admitted_line",
+  "why": "the admitted line does not name the file",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "is NAMED in the waiting"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "const src = (s?: string) => (s ? ` (${s})` : '');",
+    "to": "const src = (_s?: string) => '';"
+   }
+  ]
+ },
+ {
+  "id": "M24_file_threshold_unmarked",
+  "why": "admit.conf values are not marked as file-set",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "is NAMED in the waiting"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "[t.minMem, t.memSrc] = [parseSize(m[2]), 'admit.conf'];",
+    "to": "[t.minMem, t.memSrc] = [parseSize(m[2]), undefined];"
+   }
+  ]
+ },
+ {
+  "id": "M25_torn_line_honoured",
+  "why": "a line without its newline is honoured",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "torn admit.conf"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "const torn = lines.pop() ?? '';",
+    "to": "const torn = '';"
+   }
+  ]
+ },
+ {
+  "id": "M26_unreadable_conf_silent",
+  "why": "a non-ENOENT read error is swallowed without a warning",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "torn admit.conf"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "if ((e as NodeJS.ErrnoException).code !== 'ENOENT') warn(",
+    "to": "if (false) warn("
+   }
+  ]
+ },
+ {
+  "id": "M27_disk_src_wrong_resource",
+  "why": "the disk shortage carries the memory's source marker",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "the waiting phrase names",
+   "is NAMED in the waiting"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "min: t.minDisk, src: t.diskSrc",
+    "to": "min: t.minDisk, src: t.memSrc"
+   }
+  ]
+ },
+ {
+  "id": "M28_threshold_change_not_said",
+  "why": "a lowered threshold is only reported at the next report interval",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "said at once, not at the next report"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "`${s.resource}<${s.min}${s.src ?? ''}`",
+    "to": "s.resource"
    }
   ]
  }

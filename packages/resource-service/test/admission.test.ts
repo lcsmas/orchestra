@@ -13,12 +13,12 @@ describe('decide', () => {
   it('memory short, disk fine: waits for memory only', () => {
     const d = decide({ memFree: 3.2 * G, diskFree: 50 * G }, T);
     assert.equal(d.admit, false);
-    assert.deepEqual(d.short, [{ resource: 'memory', free: 3.2 * G, min: 6 * G }]);
+    assert.deepEqual(d.short, [{ resource: 'memory', free: 3.2 * G, min: 6 * G, src: undefined }]);
   });
   it('disk short, memory fine: waits for disk only', () => {
     const d = decide({ memFree: 8 * G, diskFree: 4 * G }, T);
     assert.equal(d.admit, false);
-    assert.deepEqual(d.short, [{ resource: 'disk', free: 4 * G, min: 10 * G }]);
+    assert.deepEqual(d.short, [{ resource: 'disk', free: 4 * G, min: 10 * G, src: undefined }]);
   });
   it('both short: waits for both, memory first', () => {
     const d = decide({ memFree: 1 * G, diskFree: 1 * G }, T);
@@ -43,6 +43,9 @@ describe('measurements and phrasing', () => {
   it('the waiting phrase names the resource, the free value and the threshold', () => {
     assert.equal(shortPhrase(decide({ memFree: 3.2 * G, diskFree: 50 * G }, T).short), 'free memory: 3.2G < 6G');
     assert.equal(shortPhrase(decide({ memFree: 3.2 * G, diskFree: 4 * G }, T).short), 'free memory: 3.2G < 6G; free disk: 4G < 10G');
+    assert.equal(shortPhrase(decide({ memFree: 3 * G, diskFree: 50 * G }, { ...T, minMem: 100 * G, memSrc: 'admit.conf' }).short), 'free memory: 3G < 100G (admit.conf)');
+    assert.equal(shortPhrase(decide({ memFree: 8 * G, diskFree: 3 * G }, { ...T, minDisk: 100 * G, diskSrc: 'admit.conf' }).short), 'free disk: 3G < 100G (admit.conf)');
+    assert.equal(shortPhrase(decide({ memFree: 3 * G, diskFree: 3 * G }, { minMem: 100 * G, minDisk: 100 * G, diskSrc: 'admit.conf' }).short), 'free memory: 3G < 100G; free disk: 3G < 100G (admit.conf)', 'the marker belongs to the resource the file set');
     assert.equal(formatSize(512 * 1024 ** 2), '512M');
     assert.equal(formatSize(6 * G - 1), '5.9G', 'just under a threshold never prints as equal to it');
   });
@@ -115,6 +118,12 @@ describe('waitForAdmission', () => {
     assert.deepEqual(elapsed, ['0s', '30s', '50s'], 'first, +30 s, then at 50 s when disk stopped being short');
     assert.match(w.said[0], /memory.*disk/);
     assert.doesNotMatch(w.said[2], /disk/);
+  });
+
+  it('a threshold changed while waiting is said at once, not at the next report', async () => {
+    const w = world({ reading: () => ({ memFree: 1 * G, diskFree: 50 * G }), thresholds: (t) => (t - 1_000_000 >= 4000 ? { ...T, minMem: 3 * G } : T), timeoutMs: 8000 });
+    await waitForAdmission(w.opts);
+    assert.deepEqual(w.said.map((l) => /< (\d+G)/.exec(l)?.[1]), ['6G', '3G']);
   });
 
   it('a timeout of 0 looks once and never waits; a positive timeout gives up at that time and reports what was short', async () => {
