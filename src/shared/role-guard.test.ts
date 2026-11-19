@@ -196,6 +196,23 @@ for (const role of ['verifier', 'reviewer', 'explorer', 'scribe']) {
   deny(role, 'a here-string does not hide the next line', bash('cat <<<"x" > /dev/null\ngit commit -m x'), /fleet-roles table/);
 }
 
+// delta2 review m1: a write INSIDE a quote wrapper / a quoted tee target / a spaced quoted path / `foo=>f` / `>|` is still a write
+for (const role of ['coordinator', 'reviewer', 'verifier']) {
+  deny(role, 'bash -c "… > repo file"', bash('bash -c "echo x > src/a.ts"'), /shell write to 'src\/a\.ts'/);
+  deny(role, "bash -c '… > f'", bash("bash -c 'cat > f'"), /shell write/);
+  deny(role, 'eval "… > f"', bash('eval "echo x > f"'), /shell write/);
+  deny(role, 'ssh h "… > f"', bash('ssh h "cat > f"'), /shell write/);
+  deny(role, 'tee "quoted target"', bash('echo x | tee "src/a.ts"'), /shell write to 'src\/a\.ts'/);
+  deny(role, 'tee -a "f"', bash('echo x | tee -a "f"'), /shell write/);
+  deny(role, '> "path with a space"', bash('echo x > "src/my file.ts"'), /shell write to 'src\/my'/);
+  deny(role, 'echo foo=>src/a.ts (a real redirect, not an arrow)', bash('echo foo=>src/a.ts'), /shell write to 'src\/a\.ts'/);
+  deny(role, '>| clobber', bash('echo x >| f'), /shell write/);
+  allow(role, 'bash -c writing into scratch', bash('bash -c "echo x > /var/tmp/q/f"'));
+  allow(role, 'tee into scratch (quoted)', bash('echo x | tee "/var/tmp/q/f"'));
+  allow(role, 'bash -c read-only', bash('bash -c "git log --oneline | head"'));
+  allow(role, 'spaced arrow outside quotes', bash('echo a -> b'));
+}
+
 function runMatrix(script: string, tag: string, firstOnly = false): string[] {
   const bad: string[] = [];
   for (const c of CASES) {
@@ -265,6 +282,9 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['chain rule needs only the destructive half', "&& chk '", "|| chk '"],
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
+    ['quote wrappers are blanked (bash -c "… > f" invisible)', 's/(-c|eval|ssh[[:space:]]+[^[:space:]]+)[[:space:]]+\\\\"([^"]*)\\\\"/\\1 \\2/g;', ''],
+    ['tee targets are not unquoted', 's/(tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)\\\\"([^"\\\\]+)\\\\"/\\1\\3/g;', ''],
+    ['arrow blank eats foo=>f', 's/[[:space:]][-=]>/ /g;', 's/[-=]>/ /g;'],
     ['quoted > counts as a redirect', 'printf \'%s\' "$wcmd" | grep', 'printf \'%s\' "$cmd" | grep'],
     ['here-strings open a heredoc', 'gsub(/<<</, "", c);', ''],
     ['git branch --format reads as -f', 'branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))', 'branch[[:space:]]+[^;&|]*(-f|--force))'],

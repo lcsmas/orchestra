@@ -94,6 +94,9 @@ await arm({ name: 'coordinator-chain-denied', role: 'coordinator', toolUse: { na
 // m1 follow-up: a Bash redirect into the worktree is refused for a read-only role (heuristic, but it must reach the CLI).
 await arm({ name: 'reviewer-redirect-write-denied', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo x > leaked.txt', description: 'probe' } },
   expect: (c) => ({ ok: !exists(c.wt, 'leaked.txt') && /shell write to 'leaked\.txt'/.test(c.resultText), why: 'redirect target refused, file NOT created' }) });
+// delta2 review: a write INSIDE a quote wrapper (bash -c "… > f") is still refused and reaches the CLI.
+await arm({ name: 'reviewer-bash-c-write-denied', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'bash -c "echo x > leaked2.txt"', description: 'probe' } },
+  expect: (c) => ({ ok: !exists(c.wt, 'leaked2.txt') && /shell write to 'leaked2\.txt'/.test(c.resultText), why: 'bash -c redirect refused, file NOT created' }) });
 // delta review: a quoted arrow is NOT a redirect — the ledger post itself (`--body "a -> b"`) must reach the shell.
 await arm({ name: 'reviewer-quoted-arrow-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo "m1 -> fixed, count > 3"', description: 'probe' } },
   expect: (c) => ({ ok: /m1 -> fixed/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'echo with -> and > inside quotes ran, no BLOCKED' }) });
