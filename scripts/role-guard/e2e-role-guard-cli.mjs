@@ -97,6 +97,9 @@ await arm({ name: 'reviewer-redirect-write-denied', role: 'reviewer', toolUse: {
 // delta2 review: a write INSIDE a quote wrapper (bash -c "… > f") is still refused and reaches the CLI.
 await arm({ name: 'reviewer-bash-c-write-denied', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'bash -c "echo x > leaked2.txt"', description: 'probe' } },
   expect: (c) => ({ ok: !exists(c.wt, 'leaked2.txt') && /shell write to 'leaked2\.txt'/.test(c.resultText), why: 'bash -c redirect refused, file NOT created' }) });
+// follow-up review: `-c` of a NON-shell command is data — `grep -c ">"` must reach the shell (not read as a redirect).
+await arm({ name: 'reviewer-grep-c-gt-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'grep -c ">" .git/HEAD; echo grep-c-ran', description: 'probe' } },
+  expect: (c) => ({ ok: /grep-c-ran/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'grep -c ">" ran, no BLOCKED' }) });
 // delta review: a quoted arrow is NOT a redirect — the ledger post itself (`--body "a -> b"`) must reach the shell.
 await arm({ name: 'reviewer-quoted-arrow-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo "m1 -> fixed, count > 3"', description: 'probe' } },
   expect: (c) => ({ ok: /m1 -> fixed/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'echo with -> and > inside quotes ran, no BLOCKED' }) });

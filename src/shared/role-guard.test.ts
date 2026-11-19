@@ -213,6 +213,16 @@ for (const role of ['coordinator', 'reviewer', 'verifier']) {
   allow(role, 'spaced arrow outside quotes', bash('echo a -> b'));
 }
 
+// follow-up review M1: only wrappers that EXECUTE their argument are unquoted — `-c` of grep/rg/psql/python is data, not a shell
+for (const role of ['coordinator', 'reviewer', 'verifier']) {
+  for (const cmd of ['grep -c ">" file', 'grep -c "a > b" f', "rg -c '=>' src", 'psql -c "select 1 where n > 3"', "psql -c 'select 1 where a>1'",
+    'python3 -c "print(1>0)"', 'python -c "x=3; print(x>2)"', 'x | sort -c "x>y"', 'echo eval "a > b"', 'echo ssh h "a > b"', 'ssh host "echo $((3>2))"', 'echo $(( 5 > 3 ))'])
+    allow(role, `data -c / arithmetic: ${cmd}`, bash(cmd));
+  for (const cmd of ['bash -lc "echo x > f"', 'bash --login -c "echo x > f"', 'zsh -c "echo x > f"', 'sh -c "echo x > f"', '/bin/bash -c "echo x > f"', 'ssh -p 22 h "cat > f"', 'ssh -i k h "cat > f"',
+    'sudo ssh h "cat > f"', 'cd x && eval "echo x > f"', 'cat a | sudo tee "f"'])
+    deny(role, `executing wrapper: ${cmd}`, bash(cmd), /shell write/);
+}
+
 function runMatrix(script: string, tag: string, firstOnly = false): string[] {
   const bad: string[] = [];
   for (const c of CASES) {
@@ -282,7 +292,8 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['chain rule needs only the destructive half', "&& chk '", "|| chk '"],
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
-    ['quote wrappers are blanked (bash -c "… > f" invisible)', 's/(-c|eval|ssh[[:space:]]+[^[:space:]]+)[[:space:]]+\\\\"([^"]*)\\\\"/\\1 \\2/g;', ''],
+    ['unquote after ANY -c (grep -c ">" reads as a redirect)', '(bash|sh|zsh|dash|ksh)', '(bash|sh|zsh|dash|ksh|grep|psql|python3?|rg)'],
+    ['shell wrappers are never unquoted (bash -c "… > f" invisible)', '(bash|sh|zsh|dash|ksh)', '(nomatchwrapper)'],
     ['tee targets are not unquoted', 's/(tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)\\\\"([^"\\\\]+)\\\\"/\\1\\3/g;', ''],
     ['arrow blank eats foo=>f', 's/[[:space:]][-=]>/ /g;', 's/[-=]>/ /g;'],
     ['quoted > counts as a redirect', 'printf \'%s\' "$wcmd" | grep', 'printf \'%s\' "$cmd" | grep'],
