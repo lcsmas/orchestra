@@ -51,7 +51,9 @@ import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT } from '../s
 import { writeRoleSentinel } from './role-sentinel';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
-import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from '../shared/verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_SKILL } from '../shared/verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_FILES } from '../shared/verified-fanout-files.ts';
+import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
@@ -4475,6 +4477,7 @@ const HOOKS_VERSION = createHash('sha256')
       STATUS_SKILL,
       BROWSER_SKILL,
       VERIFIED_FANOUT_SKILL,
+      JSON.stringify(VERIFIED_FANOUT_FILES),
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -4872,8 +4875,8 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-status', STATUS_SKILL),
       // #399: how to drive the Browser pane with `orchestra browser` (the in-process mcp__browser__* tools are gone)
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
-      // #470: the bundled verified-fanout v2 (a personal-level copy of the same name shadows it — measured, docs/codebase-map/build-release.md)
-      writeSkill(VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_SKILL),
+      // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
+      installVerifiedFanoutSkill(skillsDir),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

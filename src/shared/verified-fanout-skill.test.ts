@@ -8,7 +8,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../cli/help.ts';
-import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from './verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from './verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_FILES } from './verified-fanout-files.ts';
+import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
+import { mkHomeScratch } from './home-scratch.ts';
 import { FLEET_ROLES, roleSpec, type FleetRole } from './fleet-roles.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -174,27 +177,93 @@ test('docs/evidence/470-v1-vs-v2.diff: its v2 side is this module\'s text and it
 
 // ---- the installer ----------------------------------------------------------------------------------------------------------------
 
-test('wiring: workspaces.ts imports the module, writes the skill with writeSkill, and hashes the text into HOOKS_VERSION', () => {
+test('wiring: workspaces.ts calls the guarded installer and hashes the text AND the bundled files into HOOKS_VERSION', () => {
   const check = (src: string): string[] => {
     const probs: string[] = [];
-    if (!/import \{ VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME \} from '\.\.\/shared\/verified-fanout-skill\.ts';/.test(src)) probs.push('import missing');
-    if (!/writeSkill\(VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_SKILL\)/.test(src)) probs.push('writeSkill line missing');
+    if (!/import \{ installVerifiedFanoutSkill \} from '\.\/verified-fanout-install\.ts';/.test(src)) probs.push('import missing');
+    if (!/\n\s+installVerifiedFanoutSkill\(skillsDir\),\n/.test(src)) probs.push('installVerifiedFanoutSkill(skillsDir) call missing');
     const v = src.slice(src.indexOf('const HOOKS_VERSION = createHash'), src.indexOf('.digest(', src.indexOf('const HOOKS_VERSION = createHash')));
     if (!/\n\s+VERIFIED_FANOUT_SKILL,\n/.test(v)) probs.push('VERIFIED_FANOUT_SKILL not hashed into HOOKS_VERSION (an edited text would never reinstall)');
+    if (!/\n\s+JSON\.stringify\(VERIFIED_FANOUT_FILES\),\n/.test(v)) probs.push('VERIFIED_FANOUT_FILES not hashed into HOOKS_VERSION');
     if (!/RETIRED_SKILLS = \[[^\]]*\]/.test(src) || /RETIRED_SKILLS = \[[^\]]*verified-fanout/.test(src)) probs.push('verified-fanout must not be in RETIRED_SKILLS');
     return probs;
   };
   assert.deepEqual(check(workspacesSrc), []);
   // must-FAIL: each deletion is seen
-  assert.ok(check(workspacesSrc.replace('writeSkill(VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_SKILL)', 'void 0')).includes('writeSkill line missing'));
-  assert.ok(check(workspacesSrc.replace('      VERIFIED_FANOUT_SKILL,\n', '')).some((p) => /not hashed/.test(p)));
+  assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
+  assert.ok(check(workspacesSrc.replace('      VERIFIED_FANOUT_SKILL,\n', '')).some((p) => /VERIFIED_FANOUT_SKILL not hashed/.test(p)));
+  assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_FILES),\n', '')).some((p) => /VERIFIED_FANOUT_FILES not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace("      'orchestra-link',\n", "      'orchestra-link',\n      'verified-fanout',\n")).some((p) => /RETIRED_SKILLS/.test(p)));
 });
 
-test('the REAL installOrchestraHooks lands the skill in a fresh worktree and rewrites it on a later spawn after an upgrade', () => {
+// ---- D8: v1's references/ + scripts/ledger-set ship byte-identical -----------------------------------------------------------------
+
+/** sha256 of the frozen v1 files (ground-zero-prep/skills-v1/SHA256SUMS). */
+const V1_FILE_SHA256: Record<string, string> = {
+  'references/meta-rules.md': 'a203d4a735e79e7339c7ed88617e4f403cc80d4fd547d8e943f7cd7956aa5bcd',
+  'references/prose.md': '68ce78da7a108a475c211afe24b8cdb661e7d6391b69f5134f34126b6499c3ed',
+  'references/traps.md': '2da64c32010533252c26e8ffe069a8a8c86d374e96cf20849963c49ac4187560',
+  'references/working-with-agents.md': '8fc47556e2ee1f7f4542660484cbb6fd3b99780b38fed8f4013a3f6d106bf1f7',
+  'scripts/ledger-set': 'c6e24d3a56a9d6498f2d191f11979fa6f0a5e5370187d23ba8a1ca89af9ad0f6',
+};
+const sha = (t: string) => createHash('sha256').update(Buffer.from(t, 'utf8')).digest('hex');
+const filesDrift = (files: ReadonlyArray<{ path: string; content: string }>): string[] =>
+  Object.entries(V1_FILE_SHA256).flatMap(([rel, want]) => { const f = files.find((x) => x.path === rel); return !f ? [`${rel}: not shipped`] : sha(f.content) !== want ? [`${rel}: sha256 differs from frozen v1`] : []; })
+    .concat(files.filter((f) => !(f.path in V1_FILE_SHA256)).map((f) => `${f.path}: not a v1 file`));
+
+test('D8: every shipped reference file is byte-identical to the frozen v1 (sha256), ledger-set is executable', () => {
+  assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES), []);
+  assert.equal(VERIFIED_FANOUT_FILES.find((f) => f.path === 'scripts/ledger-set')?.mode, 0o755);
+  // must-FAIL: one changed byte, a dropped file, a stray file
+  const bent = VERIFIED_FANOUT_FILES.map((f) => (f.path === 'references/traps.md' ? { ...f, content: f.content.replace('a', 'b') } : f));
+  assert.ok(filesDrift(bent).some((d) => /traps\.md: sha256 differs/.test(d)));
+  assert.ok(filesDrift(VERIFIED_FANOUT_FILES.slice(1)).some((d) => /meta-rules\.md: not shipped/.test(d)));
+  assert.ok(filesDrift([...VERIFIED_FANOUT_FILES, { path: 'references/extra.md', content: 'x' }]).some((d) => /extra\.md: not a v1 file/.test(d)));
+});
+
+test('the text no longer claims the references are absent or conditional', () => {
+  assert.match(VERIFIED_FANOUT_SKILL, /these files ship WITH this skill/);
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /present only where that copy is|carries every rule v2 needs|skip them/);
+  assert.ok(VERIFIED_FANOUT_SKILL.includes(VERIFIED_FANOUT_MARKER), 'the generated marker is in the text (the installer keys on it)');
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /instead of restating/);
+});
+
+// ---- the guarded installer (pure fs) -----------------------------------------------------------------------------------------------
+
+test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked older copy is rewritten; a repo\'s OWN unmarked SKILL.md is never touched', async () => {
+  const skills = mkHomeScratch('vf-install-');
+  try {
+    const dir = path.join(skills, 'verified-fanout');
+    assert.equal(await installVerifiedFanoutSkill(skills), 'written');
+    assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
+    assert.equal(fs.readFileSync(path.join(dir, 'references', 'traps.md'), 'utf8'), VERIFIED_FANOUT_FILES.find((f) => f.path === 'references/traps.md')!.content);
+    assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0);
+    // a previous generated copy + a corrupted reference + a lost exec bit → all restored
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), `<!-- ${VERIFIED_FANOUT_MARKER} -->\nold`);
+    fs.writeFileSync(path.join(dir, 'references', 'prose.md'), 'corrupt');
+    fs.chmodSync(path.join(dir, 'scripts', 'ledger-set'), 0o644);
+    assert.equal(await installVerifiedFanoutSkill(skills), 'written');
+    assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
+    assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES.map((f) => ({ path: f.path, content: fs.readFileSync(path.join(dir, f.path), 'utf8') }))), []);
+    assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0, 'exec bit restored on a rewrite');
+  } finally { fs.rmSync(skills, { recursive: true, force: true }); }
+  // a repo's own tracked skill: untouched, no file added, sibling kept
+  const own = mkHomeScratch('vf-install-own-');
+  try {
+    const dir = path.join(own, 'verified-fanout');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), 'THE REPO OWN SKILL\n');
+    fs.writeFileSync(path.join(dir, 'extra.md'), 'EXTRA\n');
+    assert.equal(await installVerifiedFanoutSkill(own), 'skipped-foreign');
+    assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), 'THE REPO OWN SKILL\n');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['SKILL.md', 'extra.md']);
+  } finally { fs.rmSync(own, { recursive: true, force: true }); }
+});
+
+test('the REAL installOrchestraHooks lands the skill + files in a fresh worktree, rewrites them on a later spawn after an upgrade, and leaves a repo\'s own skill alone', () => {
   const out = execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './scripts/.r2-register.mjs', 'scripts/e2e-verified-fanout-skill-install.mjs'], {
     cwd: root, encoding: 'utf8', timeout: 110_000, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '' },
   });
   const r = JSON.parse(out.trim().split('\n').pop() ?? '{}');
-  assert.deepEqual(r, { ok: true, nameIsVerifiedFanout: true, absentBefore: true, landed: true, siblingsKept: true, rewrittenOnUpgrade: true, stampedInstallIsNoop: true });
+  assert.deepEqual(r, { ok: true, nameIsVerifiedFanout: true, absentBefore: true, landed: true, filesLanded: true, ledgerSetExecutable: true, siblingsKept: true, rewrittenOnUpgrade: true, stampedInstallIsNoop: true, ownSkillKept: true });
 });

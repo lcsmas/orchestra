@@ -1,6 +1,6 @@
 /**
  * The bundled `verified-fanout` v2 skill (#470, verified-fanout v2 ledger #471): the v1 method with the rules that moved to code
- * (#465 roles, #466 handoff, #467 deliver, #468 role guard, #469 state/resume) replaced by a pointer to their verb or guard.
+ * (#465 roles, #466 handoff, #467 deliver, #468 role guard, #469 state/resume) gaining an `In code (v2)` pointer to their verb or guard (v1's prose stays).
  * Installed into every worktree as `.claude/skills/verified-fanout/SKILL.md` by `installOrchestraHooks` (src/main/workspaces.ts).
  * Pure text; `verified-fanout-skill.test.ts` holds every `orchestra <verb>` it names to the CLI's own help.
  *
@@ -9,10 +9,14 @@
  */
 export const VERIFIED_FANOUT_SKILL_NAME = 'verified-fanout';
 
+/** Substring of the generated-file marker line in the text: the installer overwrites a SKILL.md only if it carries it (a repo's own skill never does). */
+export const VERIFIED_FANOUT_MARKER = 'orchestra-generated: bundled verified-fanout v2';
+
 export const VERIFIED_FANOUT_SKILL = String.raw`---
 name: verified-fanout
 description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
 ---
+<!-- orchestra-generated: bundled verified-fanout v2 (#470) — Orchestra rewrites this file; never edit it in place -->
 
 # Verified fan-out
 
@@ -26,10 +30,10 @@ owns the fleet's only fully-installed environment; nothing merges until it
 reports green. You are the **coordinator**: you split, brief, relay, and
 enforce the gate — implementation belongs to the fleet.
 
-> **v2.** The rules v1 carried as prose now live in code. Each section below
-> points at its verb or guard instead of restating it; every rule that did not
-> move keeps v1's wording. Which copy you are reading, and where it applies: the
-> last section.
+> **v2.** Rules v1 carried as prose are now enforced in code. A rule that moved
+> keeps v1's prose and gains an *In code (v2)* paragraph naming its verb or guard;
+> a rule that did not move keeps v1's wording unchanged. Which copy you are
+> reading, and where it applies: the last section.
 
 ## Roles are typed — the name is the role (v2)
 
@@ -718,10 +722,8 @@ build?" that differs from what it prints on a green one.
 
 ## Deep references — pull on demand
 
-v2 ships SKILL.md only; these files are v1's, unchanged (the personal copy of
-this skill, frozen tag ¤verified-fanout-v1-prose¤) and present only where that copy is.
-Where that copy is absent (the VPS) they do not exist — skip them, and ¤scripts/ledger-set¤
-likewise (without it, change a ledger row only after a fresh read of the body: one row, key checked). Each pointer below states the branch
+these files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤),
+byte-identical to v1's (frozen tag ¤verified-fanout-v1-prose¤). Each pointer below states the branch
 that reaches it. ¤traps.md¤ is a 723-line catalogue, so reach for the rung that matches
 your evidence rather than the whole file:
 
@@ -750,12 +752,16 @@ your evidence rather than the whole file:
 
 - **This file is the bundled v2.** Orchestra's hook installer writes it into every
   worktree's ¤.claude/skills/verified-fanout/SKILL.md¤ on spawn (source:
-  ¤src/shared/verified-fanout-skill.ts¤); an edit there lasts only until the hook bundle changes (a release).
-- **A personal-level copy shadows it.** Measured (Claude Code 2.1.325, the real CLI
-  against a local fake API, ¤scripts/skill-precedence/measure-skill-precedence.mjs¤):
-  with a personal ¤<config dir>/skills/verified-fanout¤ AND this project-level one,
-  the personal one is listed and loaded, this one is not. So v2 applies on a machine
-  with no personal copy — the benchmark VPS — and never replaces a personal v1.
+  ¤src/shared/verified-fanout-skill.ts¤, with ¤references/¤ and ¤scripts/ledger-set¤ from
+  ¤src/shared/verified-fanout-files.ts¤); an edit there lasts only until the hook bundle
+  changes (a release). A repo's own ¤verified-fanout/SKILL.md¤ without the generated
+  marker line is never overwritten.
+- **A personal-level copy shadows it.** Measured on Claude Code 2.1.325 only (the real
+  CLI against a local fake API, ¤scripts/skill-precedence/measure-skill-precedence.mjs¤,
+  a manual rig — re-run it after a CLI update): with a personal
+  ¤<config dir>/skills/verified-fanout¤ AND this project-level one, the personal one is
+  listed and loaded, this one is not. So v2 applies on a machine with no personal copy —
+  the benchmark VPS — and, on that CLI, does not replace a personal v1.
 - **VPS install:** run an Orchestra AppImage release that contains this skill; any
   worktree install (a spawn) writes it. Nothing else to copy, and nothing to remove
   there as long as no personal ¤verified-fanout¤ exists.

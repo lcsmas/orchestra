@@ -27,7 +27,8 @@ try {
   });
   const { store } = await import(`${REPO}/src/main/store.ts`);
   const { installOrchestraHooks } = await import(`${REPO}/src/main/workspaces.ts`);
-  const { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
+  const { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_MARKER } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
+  const { VERIFIED_FANOUT_FILES } = await import(`${REPO}/src/shared/verified-fanout-files.ts`);
   await store.load?.();
   await store.upsertWorkspace({ id: 'ws-vf-skill', name: 'vf-skill', kind: 'scratch', repoPath: '', worktreePath: wt, status: 'idle', createdAt: Date.now(), hasInput: true });
 
@@ -39,10 +40,13 @@ try {
 
   await installOrchestraHooks(wt);
   out.landed = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === VERIFIED_FANOUT_SKILL;
+  const dir = path.join(skills, VERIFIED_FANOUT_SKILL_NAME);
+  out.filesLanded = VERIFIED_FANOUT_FILES.length === 5 && VERIFIED_FANOUT_FILES.every((f) => fs.readFileSync(path.join(dir, f.path), 'utf8') === f.content);
+  out.ledgerSetExecutable = (fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0;
   out.siblingsKept = ['orchestra-spawn', 'orchestra-comms', 'orchestra-workspace-admin', 'orchestra-rename', 'orchestra-status', 'orchestra-browser'].every((n) => fs.existsSync(path.join(skills, n, 'SKILL.md')));
 
   // A later spawn after an UPGRADE: the stamp of the previous bundle + a stale skill body → the install rewrites the skill.
-  fs.writeFileSync(file, 'STALE v1 body from before the upgrade\n');
+  fs.writeFileSync(file, `<!-- ${VERIFIED_FANOUT_MARKER} -->\nSTALE body from before the upgrade\n`); // a previous generated copy (carries the marker)
   fs.writeFileSync(stamp, 'previous-bundle-version\n');
   await installOrchestraHooks(wt);
   out.rewrittenOnUpgrade = fs.readFileSync(file, 'utf8') === VERIFIED_FANOUT_SKILL;
@@ -52,7 +56,17 @@ try {
   await installOrchestraHooks(wt);
   out.stampedInstallIsNoop = fs.readFileSync(file, 'utf8') === 'EDITED-IN-PLACE\n';
 
-  out.ok = out.nameIsVerifiedFanout && out.absentBefore && out.landed && out.siblingsKept && out.rewrittenOnUpgrade && out.stampedInstallIsNoop;
+  // A repo's OWN tracked project-level verified-fanout (no generated marker) is not overwritten, and no bundled file is added beside it.
+  const wt2 = path.join(base, 'worktree-own-skill');
+  const own = path.join(wt2, '.claude', 'skills', 'verified-fanout');
+  fs.mkdirSync(own, { recursive: true });
+  fs.writeFileSync(path.join(own, 'SKILL.md'), '---\nname: verified-fanout\ndescription: the repo\'s own\n---\nOWN\n');
+  fs.writeFileSync(path.join(own, 'extra.md'), 'EXTRA\n');
+  await store.upsertWorkspace({ id: 'ws-vf-skill-2', name: 'vf-skill-2', kind: 'scratch', repoPath: '', worktreePath: wt2, status: 'idle', createdAt: Date.now(), hasInput: true });
+  await installOrchestraHooks(wt2);
+  out.ownSkillKept = fs.readFileSync(path.join(own, 'SKILL.md'), 'utf8').endsWith('OWN\n') && fs.readFileSync(path.join(own, 'extra.md'), 'utf8') === 'EXTRA\n' && !fs.existsSync(path.join(own, 'references'));
+
+  out.ok = out.filesLanded && out.ledgerSetExecutable && out.ownSkillKept && out.nameIsVerifiedFanout && out.absentBefore && out.landed && out.siblingsKept && out.rewrittenOnUpgrade && out.stampedInstallIsNoop;
   done(out.ok ? 0 : 1);
 } catch (e) {
   out.error = String(e?.stack ?? e).slice(0, 600);
