@@ -52,8 +52,10 @@ if (base) {
   const h = reports.handoff;
   if (h) {
     const pct = (a, b) => `${(((b - a) / b) * 100).toFixed(1)}%`;
-    console.log(`\nprofile ${profileName}: N=${turns} user turns, bound K=${bound}: cache_read ${base.cacheReadTokens} → ${h.cacheReadTokens} (${pct(h.cacheReadTokens, base.cacheReadTokens)} lower); weighted base-input-token equivalents ${weighted(base)} → ${weighted(h)} (${pct(weighted(h), weighted(base))} lower); final context ${base.lastRequestTokens} → ${h.lastRequestTokens} tok`);
-    console.log(`SENSITIVITY (only the previous request reusable): cache_read ${base.prevOnly.cacheReadTokens} → ${h.prevOnly.cacheReadTokens} (${pct(h.prevOnly.cacheReadTokens, base.prevOnly.cacheReadTokens)} lower); creation ${base.prevOnly.cacheCreationTokens} → ${h.prevOnly.cacheCreationTokens}; weighted ${weighted(base, true)} → ${weighted(h, true)} (${pct(weighted(h, true), weighted(base, true))} lower)`);
+    console.log(`\nprofile ${profileName}: N=${turns} user turns (one turn = ONE API request here; a real agent turn is many), bound K=${bound}`);
+    console.log(`  WEIGHTED cost (write 1.25x, read 0.1x; base-input-token equivalents): ${weighted(base)} -> ${weighted(h)} (${pct(weighted(h), weighted(base))} lower${weighted(h) > weighted(base) ? ' = WORSE' : ''})`);
+    console.log(`  cache_read: ${base.cacheReadTokens} -> ${h.cacheReadTokens} (${pct(h.cacheReadTokens, base.cacheReadTokens)} lower) · cache_creation ${base.cacheCreationTokens} -> ${h.cacheCreationTokens} · final context ${base.lastRequestTokens} -> ${h.lastRequestTokens} tok`);
+    console.log(`  reuse variants agree (previous-request-only cache == any-earlier cache): ${base.prevOnly.cacheReadTokens === base.cacheReadTokens && h.prevOnly.cacheReadTokens === h.cacheReadTokens} — if false the totals above depend on the cache model`);
     console.log(`per-request cache_read, baseline: ${base.perRequest.map((p) => p.read).join(' ')}`);
     console.log(`per-request cache_read, handoff : ${h.perRequest.map((p) => p.read).join(' ')}`);
   }

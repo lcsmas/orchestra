@@ -14,8 +14,8 @@ export const MUTANTS = {
   // #466 (handoff-cache rig): the handoff is accepted and the summary delivered, but the context is never ended → the cache-read total must NOT drop.
   'handoff-noop-clear': {
     file: '/src/main/handoff-host.ts',
-    find: /endContext: \(id\) => sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\),/g,
-    replace: 'endContext: async (_id) => {},',
+    find: /    await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\);\n/g,
+    replace: '    /* mutant: the context is never ended */\n',
   },
   // #466: the nudge is never sent → the fake agent is never told, never hands off → the run equals the baseline.
   'handoff-no-nudge': {

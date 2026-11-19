@@ -20,7 +20,7 @@ test('the route is served by hooks-server and the CLI verb posts to it with the 
 
 test('the clear is restart --fresh\'s path (sdkRestart fresh: coordinator generation bumped), never a kill; the start goes through the Relance delivery behind Admission', () => {
   const host = read('handoff-host.ts');
-  assert.match(host, /endContext: \(id\) => sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\)/);
+  assert.match(host, /await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\)/);
   assert.match(host, /deliverRelance\(\s*id, text, 'handoff'/);
   assert.doesNotMatch(host, /killKeeper|sdkStop|removeWorkspace|git /, 'a handoff never kills a keeper, deletes, or touches git');
   assert.doesNotMatch(host, /origin:\s*'human'/);
@@ -57,6 +57,15 @@ test('the route body cap admits a full-size summary (the default 4096 B cap woul
 
 test('a held opening is kept while OWED, not while asleep: stillOwed reads the owed set, not admission\'s default', () => {
   const host = read('handoff-host.ts');
-  assert.match(host, /stillOwed: \(\) => owed\.has\(id\)/);
+  assert.match(host, /stillOwed: \(\) => stillOwed\(id\)/);
+  assert.match(host, /readOwed\(OWED_ROOT\(\), id\) !== null/);
   assert.match(read('relance-host.ts'), /wakeHeldForMemory\(ws, retry, \{ site, stillOwed: opts\.stillOwed \}\)/);
+});
+
+test('m1/m2: the owed marker is cleared ONLY on a delivered opening, an app-start sweep re-delivers it, and the handoff clears the stale-run flag like restart', () => {
+  const host = read('handoff-host.ts');
+  assert.match(host, /if \(r === 'sent'\) \{\n\s*clearOwed\(OWED_ROOT\(\), id\);/);
+  assert.match(host, /setTimeout\(resumeOwedOpenings, 30_000\)/);
+  assert.match(host, /await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\);\n\s*await clearBusRunStale\(id\);/);
+  assert.match(host, /turnInFlight: \(id\) => sdkPauseActivity\(id\)\?\.turnRunning \?\? false/);
 });
