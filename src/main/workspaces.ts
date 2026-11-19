@@ -47,6 +47,8 @@ import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
+import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT } from '../shared/role-guard.ts';
+import { writeRoleSentinel } from './role-sentinel';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
@@ -1148,6 +1150,7 @@ export async function renameWorkspaceBranch(
       ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
     };
     await store.upsertWorkspace(updated);
+    await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
     platform.broadcast('workspace:update', updated);
     return updated;
   }
@@ -1161,6 +1164,7 @@ export async function renameWorkspaceBranch(
     if (pinAdvancesGate(ws, opts)) {
       const updated = { ...ws, branch: liveBranch, ...gateFields, ...formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent) };
       await store.upsertWorkspace(updated);
+      await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
       platform.broadcast('workspace:update', updated);
       return updated;
     }
@@ -1178,6 +1182,7 @@ export async function renameWorkspaceBranch(
     ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
   };
   await store.upsertWorkspace(updated);
+  await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
   platform.broadcast('workspace:update', updated);
   return updated;
 }
@@ -3418,8 +3423,9 @@ const HOOK_FIELDGUIDE_CMD =
 // another workspace. Unlike an injected reminder this costs zero tokens until
 // the agent actually drifts, and the deny message re-teaches delegation at
 // the exact moment of the violation — the cheapest, most effective channel.
+// No `|| true` (#446): it turned the script's exit 2 into 0, so the deny never landed.
 const HOOK_ORCHESTRATOR_GUARD_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-guard.sh"; [ -f "$f" ] && bash "$f" || true';
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-guard.sh"; [ -f "$f" ] || exit 0; bash "$f"';
 
 // Tools the orchestrator guard intercepts: the file-mutation tools only
 // (MultiEdit is retired but kept for older Claude Code versions). Everything
@@ -4455,6 +4461,7 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_GUARD_SCRIPT,
       HOME_ROOT_GUARD_SCRIPT,
+      ROLE_GUARD_SCRIPT,
       TMP_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
       BUS_SWITCHES_INSTRUCTION_SCRIPT,
@@ -4488,6 +4495,8 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_GUARD_MATCHER,
       HOOK_HOME_ROOT_GUARD_CMD,
       HOME_ROOT_GUARD_MATCHER,
+      HOOK_ROLE_GUARD_CMD,
+      ROLE_GUARD_MATCHER,
       HOOK_TMP_GUARD_CMD,
       TMP_GUARD_MATCHER,
     ].join('\0'),
@@ -4561,6 +4570,7 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
   const anchor = resolveAnchorInfo(ws);
   maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
   if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
+  if (!remote) await writeRoleSentinel(ws.worktreePath, ws.branch); // #468 (branch = the checked spawn name; ws.name is "<repo> · <branch>")
 }
 
 /** #434 — the first spawn of an agent makes its PARENT the owner of a run: `ownsRun` is recorded (persisted) and the standing-role
@@ -4768,6 +4778,9 @@ export async function installOrchestraHooks(
     // the whole hook bundle) into .orchestra/ and skip the entire install when
     // it already matches — the common case for an existing workspace. Any edit
     // to the scripts or hook commands changes the hash and forces one rewrite.
+    // The role sentinel follows the workspace's CURRENT name, so it sits OUTSIDE the hash gate (every session start refreshes it).
+    const roleWs = store.workspaces.find((w) => w.worktreePath === worktreePath);
+    if (roleWs && roleWs.host?.kind !== 'sandbox') await writeRoleSentinel(worktreePath, roleWs.branch);
     const stamp = path.join(dir, '.hooks-version');
     if (existsSync(stamp)) {
       try {
@@ -4802,6 +4815,7 @@ export async function installOrchestraHooks(
       w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
       w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
       w('home-root-guard.sh', HOME_ROOT_GUARD_SCRIPT),
+      w('role-guard.sh', ROLE_GUARD_SCRIPT),
       w('tmp-guard.sh', TMP_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
       w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
@@ -4951,6 +4965,8 @@ export async function installOrchestraHooks(
     upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER, HOOK_ORCHESTRATOR_GUARD_CMD);
     // Every workspace: deny creating new entries at $HOME root.
     upsertMatcherHookCommand(preToolList, HOME_ROOT_GUARD_MATCHER, HOOK_HOME_ROOT_GUARD_CMD);
+    // Fleet roles (#468): deny what the workspace's role may not do. INERT without `.orchestra/role` (written by writeRoleSentinel).
+    upsertMatcherHookCommand(preToolList, ROLE_GUARD_MATCHER, HOOK_ROLE_GUARD_CMD);
     // Every workspace: deny creating new entries in /tmp when the session has a disk TMPDIR.
     upsertMatcherHookCommand(preToolList, TMP_GUARD_MATCHER, HOOK_TMP_GUARD_CMD);
     hooks.PreToolUse = preToolList;

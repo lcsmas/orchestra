@@ -117,9 +117,38 @@ Scripts and the Claude Code events they fire on:
   `orchestra message`, which #169 retired as a coordination path on a bus run.
   Own-worktree writes
   (notes, plans), relative paths, and parse misses fail open.
-  **Caveat:** its install command ends `&& bash "$f" || true`, and the
-  `|| true` turns the exit 2 into 0, so the deny never reaches the CLI
-  (measured 2026-10-01 with a real `claude -p` against the same wrapper).
+  Its install command is `[ -f "$f" ] || exit 0; bash "$f"` since #468 — it used to end
+  `&& bash "$f" || true`, which turned the exit 2 into 0 so the deny never reached the CLI
+  (#446; pinned by `src/main/role-guard-wiring.test.ts`, which runs the command read from
+  `workspaces.ts` and its `|| true` twin).
+- **`role-guard.sh`** (#468, verified-fanout v2 lever 4) — PreToolUse, matcher
+  `Bash|Edit|MultiEdit|Write|NotebookEdit|AskUserQuestion` (`ROLE_GUARD_MATCHER`). Script GENERATED in
+  `src/shared/role-guard.ts` (`buildRoleGuardScript()` from `roleSpec()` of `fleet-roles.ts` #465, so
+  the table and the script cannot drift). **INERT without `.orchestra/role`** (the role word,
+  `writeRoleSentinel` in `src/main/role-sentinel.ts` ← `roleOfName(ws.branch)` — the checked spawn name; `ws.name` is `<repo> · <branch>` and maps to no role; written at creation in
+  `startBusRunAndWriteNotice`, on the 3 `renameWorkspaceBranch` writes and on every real `installOrchestraHooks`,
+  OUTSIDE the hash gate so an app update refreshes it too; a name without a role prefix removes it). Command `HOOK_ROLE_GUARD_CMD`,
+  no `|| true`. **Denies (exit 2, stderr `[orchestra] BLOCKED (role: <r>): …`)**: `AskUserQuestion` for
+  EVERY role (D6); edit-class tools judged by target path — `edit:'none'`/`'scratch'` roles
+  (coordinator, verifier, reviewer, explorer, scribe) may only touch scratch
+  (`~/.orchestra{,-dev}/agent-tmp/`, `$ORCHESTRA_HOME/agent-tmp/`, `/tmp`, `/var/tmp`, `$TMPDIR`) or an
+  auto-memory dir (`~/.claude*/projects/*/memory/`), `..` never counts; an implementer (`own-worktree`) is
+  denied only another workspace's worktree/scratch; the table's `bashDeny` (regex sources → ERE by `toEre`: newlines flattened to `;`,
+  verb anchored at a command boundary, `merge` ≠ `merge-base`, `master|main` = the exact branch name, `git -C x` handled;
+  lifted for the table's rules only when the command `cd`/`-C`s into scratch and does NOT push — a verifier rebases/resets in a scratch clone); plus this module's own rules: every non-coordinator role may not
+  `gh pr merge` nor `orchestra delete|archive`; and, for EVERY role, the **chain rule** — a check
+  (`orchestra verify-landed`, `gh pr checks|view|status`, `gh run view|watch|list`, `git ls-remote|rev-list|cherry|merge-base --is-ancestor`)
+  AND a destructive act (`gh pr merge`, force/delete push, `git branch -D`, `git worktree remove`,
+  `orchestra delete|archive`) in ONE Bash command. Verbs are matched at a command boundary (`;&|({`,
+  newline, `$(`, then/do/else, `bash -c "`, after `command|exec|env|sudo`) so a quoted mention in a ticket comment passes; a heredoc line that STARTS with a verb
+  still trips it (split the call). GNU `grep -E` (`\b`). Fail-open on any parse miss.
+  Tests: `src/shared/role-guard.test.ts` (the INSTALLED string through bash: exit 2 + message per denied
+  class, exit 0 per allowed class, the `|| true` must-FAIL arm, 6 script mutants that must redden the
+  matrix; its worktree root is NOT under `/tmp` because `/tmp` is scratch), `src/main/role-guard-wiring.test.ts`;
+  real CLI: `pnpm run test:role-guard-cli` (`scripts/role-guard/e2e-role-guard-cli.mjs`: real `claude -p`
+  against the fake Anthropic API, scratch HOME/CLAUDE_CONFIG_DIR, 7 arms incl. an allowed control, a
+  no-sentinel control and the `|| true` must-FAIL; AskUserQuestion needs the SDK's stream-json +
+  `--permission-prompt-tool stdio` mode — plain `-p` disables the tool).
 - **`home-root-guard.sh`** — PreToolUse, matcher
   `Bash|Edit|MultiEdit|Write|NotebookEdit`, every workspace. Script lives in
   `src/shared/home-root-guard.ts` (its test runs that same string). **Denies
@@ -132,7 +161,7 @@ Scripts and the Claude Code events they fire on:
   so does a script that writes there by itself — so tests/rigs needing
   `$HOME`'s btrfs use `mkHomeScratch()` (`src/shared/home-scratch.ts`,
   `~/.cache/orchestra-test/`). The command has no `|| true`
-  (see the caveat above).
+  (#446, see `orchestrator-guard.sh` above).
 - **`tmp-guard.sh`** — PreToolUse, same matcher, every workspace; script in
   `src/shared/tmp-guard.ts` (its test runs that string). Inert unless the session has
   a disk TMPDIR (`ORCHESTRA_AGENT_TMPDIR`, set by `src/main/agent-tmpdir.ts`). **Denies

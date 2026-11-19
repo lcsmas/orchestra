@@ -49,6 +49,7 @@
     "test:session-debug-log": "bash scripts/e2e-session-debug-log.sh",
     "test:context-seed": "bash scripts/e2e-context-seed-176.sh",
     "test:session-budget": "bash scripts/e2e-session-budget.sh",
+    "test:role-guard-cli": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/role-guard/e2e-role-guard-cli.mjs",
     "test:session-identity": "node scripts/session-identity/run.mjs",
     "test:pause-ui-render": "node scripts/pause-ui-render-smoke.mjs",
     "test:memcap-render": "node scripts/memcap-settings-render-smoke.mjs",
