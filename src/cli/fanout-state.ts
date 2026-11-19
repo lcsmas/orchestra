@@ -186,13 +186,14 @@ export function gatherReality(state: FanoutState, runner: Runner, cwd: string, o
       else r.mergedIntoTarget = a;
     }
     if (t.pr) {
-      const g = runner('gh', ['pr', 'view', String(t.pr), ...(state.repo ? ['-R', state.repo] : []), '--json', 'state,headRefOid'], cwd);
+      const g = runner('gh', ['pr', 'view', String(t.pr), ...(state.repo ? ['-R', state.repo] : []), '--json', 'state,headRefOid,baseRefName'], cwd);
       if (g.code !== 0) errs.push(`gh pr view ${t.pr}: exit ${g.code}`);
       else {
         try {
-          const j = JSON.parse(g.stdout) as { state?: string; headRefOid?: string };
+          const j = JSON.parse(g.stdout) as { state?: string; headRefOid?: string; baseRefName?: string };
           if (j.state !== 'OPEN' && j.state !== 'MERGED' && j.state !== 'CLOSED') errs.push(`gh pr view ${t.pr}: unexpected state ${JSON.stringify(j.state)}`);
-          else r.pr = { state: j.state, headRefOid: j.headRefOid ?? null };
+          else if (typeof j.baseRefName !== 'string' || !j.baseRefName) errs.push(`gh pr view ${t.pr}: no baseRefName (cannot tell which branch it merged into)`);
+          else r.pr = { state: j.state, headRefOid: j.headRefOid ?? null, baseRefName: j.baseRefName };
         } catch { errs.push(`gh pr view ${t.pr}: unparseable output`); }
       }
     }

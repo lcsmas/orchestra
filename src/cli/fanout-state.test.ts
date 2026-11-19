@@ -138,7 +138,7 @@ test('resume: head moved after the verdict is reported; unreachable git is UNKNO
 
 test('gh is consulted for the PR (squash merge: branch gone + PR MERGED = merged)', (t) => {
   const { home, clone, git } = gitRepo(t);
-  const d = deps(home, hybrid((a) => (a[0] === 'pr' && a[1] === 'view' && a[2] === '9' ? { code: 0, stdout: JSON.stringify({ state: 'MERGED', headRefOid: 'f'.repeat(40) }) } : { code: 1, stdout: '' })), { cwd: clone });
+  const d = deps(home, hybrid((a) => (a[0] === 'pr' && a[1] === 'view' && a[2] === '9' ? { code: 0, stdout: JSON.stringify({ state: 'MERGED', headRefOid: 'f'.repeat(40), baseRefName: 'master' }) } : { code: 1, stdout: '' })), { cwd: clone });
   void git;
   runFanout(['state', 'init', '--run', 'r1', '--repo', 'o/r'], d);
   set(d, 'A', '--branch', 'gone-branch', '--head', 'f'.repeat(40), '--pr', '9', '--status', 'started');
@@ -167,4 +167,17 @@ test('pre-review MAJOR: merged, branch deleted, no head/PR recorded → UNKNOWN 
   assert.doesNotMatch(r.stdout, /state-merged-reality-not/);
   assert.match(set(d, 'C', '--pr', '0x10').stderr, /pr must be/);
   assert.match(set(d, 'C', '--head', '--help').stderr, /needs a value|head/);
+});
+
+test('review MAJOR 1 (CLI): gh without baseRefName is UNKNOWN; MERGED into another base is reported', (t) => {
+  const { home, clone } = gitRepo(t);
+  let reply = JSON.stringify({ state: 'MERGED', headRefOid: 'f'.repeat(40) });
+  const d = deps(home, hybrid(() => ({ code: 0, stdout: reply })), { cwd: clone });
+  runFanout(['state', 'init', '--run', 'r1'], d);
+  set(d, 'A', '--branch', 'gone-branch', '--head', 'f'.repeat(40), '--pr', '9', '--status', 'nominated');
+  assert.match(runFanout(['resume', '--run', 'r1', '--cwd', clone, '--no-write'], d).stdout, /! A reality-unreadable.*no baseRefName/);
+  reply = JSON.stringify({ state: 'MERGED', headRefOid: 'f'.repeat(40), baseRefName: 'feature-upstream' });
+  const r = runFanout(['resume', '--run', 'r1', '--cwd', clone], d);
+  assert.match(r.stdout, /! A pr-merged-other-base/);
+  assert.equal(JSON.parse(runFanout(['state', 'show', '--run', 'r1', '--json'], d).stdout).tickets.A.status, 'nominated');
 });

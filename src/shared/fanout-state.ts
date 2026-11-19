@@ -185,6 +185,9 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
       throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged yet — a dependent may START against a frozen interface but is not NOMINATED before its upstream is merged`);
     }
   }
+  if ((next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass' || next.verdict === 'approve') && !next.head) {
+    throw new FanoutStateError(`${id}: ${next.status === 'nominated' || next.status === 'gated' ? next.status : `verdict ${next.verdict}`} needs a recorded head sha (--head): the gate and the head-moved check speak about one exact head`);
+  }
   return out;
 }
 
@@ -261,7 +264,7 @@ export interface TicketReality {
   branchHead?: string | null;
   /** Is `branchHead` (or its PR's merge) an ancestor of origin/<target>? */
   mergedIntoTarget?: boolean;
-  pr?: { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefOid: string | null } | null;
+  pr?: { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefOid: string | null; baseRefName: string | null } | null;
   /** The reads that failed, e.g. `git ls-remote: exit 128`. Non-empty ⇒ nothing is concluded from the missing part. */
   error?: string;
 }
@@ -274,6 +277,8 @@ export type DivergenceKind =
   | 'pr-head-moved'
   | 'branch-gone'
   | 'pr-closed-unmerged'
+  | 'pr-merged-other-base'
+  | 'merged-at-ungated-head'
   | 'nominated-before-upstream-merged'
   | 'reality-unreadable';
 
@@ -295,9 +300,10 @@ export interface ReconcilePlan {
 
 /** Reality's word on "merged": a MERGED PR, or a branch tip contained in the target. undefined = unknown.
  *  Ancestry is evidence only once the work was nominated: a `started` branch cut from the target tip is trivially "contained". */
-function realityMerged(r: TicketReality | undefined, status: TicketStatus): boolean | undefined {
+function realityMerged(r: TicketReality | undefined, status: TicketStatus, target: string): boolean | undefined {
   if (!r) return undefined;
-  if (r.pr?.state === 'MERGED') return true;
+  // A PR merged into another base (a stacked PR's upstream branch) is NOT on the target.
+  if (r.pr?.state === 'MERGED' && r.pr.baseRefName === target) return true;
   if (r.mergedIntoTarget === true && status !== 'started') return true;
   if (r.error) return undefined;
   return false;
@@ -315,7 +321,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
   const effMerged = (id: string): boolean => {
     const t = state.tickets[id];
     if (!t) return false;
-    const rm = realityMerged(reality[id], t.status);
+    const rm = realityMerged(reality[id], t.status, state.target);
     return rm === undefined ? t.status === 'merged' : rm;
   };
 
@@ -323,7 +329,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     const r = reality[id];
     const claimsWork = t.status !== 'todo' && t.status !== 'dropped';
     if (r?.error) add({ ticket: id, kind: 'reality-unreadable', detail: `could not read git/gh (${r.error}); nothing concluded about this ticket` });
-    const rm = realityMerged(r, t.status);
+    const rm = realityMerged(r, t.status, state.target);
     if (t.status === 'merged' && rm === false) {
       add({ ticket: id, kind: 'state-merged-reality-not', detail: `state says merged but ${r?.pr ? `PR #${t.pr} is ${r.pr.state}` : 'its branch tip is not in origin/' + state.target}${r?.branchHead === null ? ' and the branch is gone' : ''}` });
     }
@@ -343,6 +349,15 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       }
     } else if (r?.pr && t.head && r.pr.headRefOid && !sameSha(r.pr.headRefOid, t.head) && t.status !== 'merged' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
+    }
+    if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped') {
+      add({ ticket: id, kind: 'pr-merged-other-base', detail: `PR #${t.pr} is MERGED into ${r.pr.baseRefName ?? '(unknown base)'}, not origin/${state.target}: not merged on the target` });
+    }
+    if (rm === true && t.status === 'gated' && (t.verdict === 'pass' || t.verdict === 'approve') && t.head) {
+      const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
+      if (mergedHead && !sameSha(mergedHead, t.head)) {
+        add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${mergedHead.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head.slice(0, 8)}` });
+      }
     }
     if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped') {
       add({ ticket: id, kind: 'pr-closed-unmerged', detail: `PR #${t.pr} is CLOSED without merging` });
@@ -364,9 +379,11 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
 
 function planTicket(id: string, t: TicketState, own: Divergence[], open: string[]): { class: TicketClass; next: NextAction } {
   const has = (k: DivergenceKind): boolean => own.some((d) => d.kind === k);
+  if (has('merged-at-ungated-head')) return { class: 'diverged', next: { action: 'investigate', detail: 'merged at a head the verdict did not cover: re-gate the merged tree on the target before releasing dependents' } };
   if (has('reality-merged-state-not')) return { class: 'diverged', next: { action: 'record-merged', detail: 'reality shows it merged: write it back (resume does), then release its dependents' } };
   if (has('state-merged-reality-not')) return { class: 'diverged', next: { action: 'investigate', detail: 'state claims merged, git/gh do not: dependents are NOT released; re-merge it or fix the state by hand' } };
   if (has('nominated-before-upstream-merged')) return { class: 'diverged', next: { action: 'investigate', detail: `upstream ${open.join(', ')} is not merged: do not gate or merge this one` } };
+  if (has('pr-merged-other-base')) return { class: 'diverged', next: { action: 'investigate', detail: 'its PR merged into another branch, not the target: dependents stay blocked until it reaches the target' } };
   if (has('branch-gone')) return { class: 'diverged', next: { action: 'recreate-branch', detail: `branch ${t.branch} is gone from the remote: restore it from the worktree or restart the ticket` } };
   if (has('pr-closed-unmerged')) return { class: 'diverged', next: { action: 'investigate', detail: `PR #${t.pr} was closed unmerged: reopen or re-nominate` } };
   if (has('head-moved') || has('pr-head-moved')) {

@@ -18,7 +18,7 @@ function base(): FanoutState {
   s = applyTicketPatch(s, 'B', { dependsOn: ['A'], frozenInterface: '#471 §Interfaces 1', status: 'started', branch: 'b' }, T);
   return s;
 }
-const mergedReality = { branchHead: null, mergedIntoTarget: true, pr: { state: 'MERGED' as const, headRefOid: SHA_A } };
+const mergedReality = { branchHead: null, mergedIntoTarget: true, pr: { state: 'MERGED' as const, headRefOid: SHA_A, baseRefName: 'master' } };
 
 test('a dependent may START against a frozen interface', () => {
   const s = base();
@@ -121,7 +121,7 @@ function withA(status: 'nominated' | 'gated' | 'merged', extra: Record<string, u
 test('MUST-FAIL: state says merged, git says not → divergence reported, and dependents are NOT released', () => {
   let s = withA('merged');
   s = applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'todo' }, T);
-  const reality: Reality = { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A } } };
+  const reality: Reality = { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A, baseRefName: 'master' } } };
   const plan = reconcile(s, reality);
   assert.deepEqual(plan.divergences.map((d) => d.kind), ['state-merged-reality-not']);
   assert.equal(plan.tickets.A.next.action, 'investigate');
@@ -138,7 +138,7 @@ test('state merged and reality merged → no divergence, dependent startable (po
 });
 
 test('squash merge: PR MERGED with the branch gone and not an ancestor is still merged', () => {
-  const plan = reconcile(withA('merged'), { A: { branchHead: null, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A } } });
+  const plan = reconcile(withA('merged'), { A: { branchHead: null, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'master' } } });
   assert.deepEqual(plan.divergences, []);
 });
 
@@ -154,7 +154,7 @@ test('reality merged, state not → divergence + write-back to merged', () => {
 
 test('head moved: reported, verdict reset on write-back, gated → nominated', () => {
   const s = withA('gated', { verdict: 'pass' });
-  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_B } } });
+  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_B, baseRefName: 'master' } } });
   assert.ok(plan.divergences.some((d) => d.kind === 'head-moved'));
   assert.equal(plan.tickets.A.next.action, 're-gate');
   const next = applyWriteBack(s, plan.writeBack, T);
@@ -164,7 +164,7 @@ test('head moved: reported, verdict reset on write-back, gated → nominated', (
 test('branch gone and PR closed are reported', () => {
   const gone = reconcile(withA('nominated'), { A: { branchHead: null, mergedIntoTarget: false } });
   assert.ok(gone.divergences.some((d) => d.kind === 'branch-gone'));
-  const closed = reconcile(withA('nominated'), { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'CLOSED', headRefOid: SHA_A } } });
+  const closed = reconcile(withA('nominated'), { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'CLOSED', headRefOid: SHA_A, baseRefName: 'master' } } });
   assert.ok(closed.divergences.some((d) => d.kind === 'pr-closed-unmerged'));
 });
 
@@ -178,7 +178,7 @@ test('a nominated ticket whose upstream reality contradicts is flagged', () => {
   s = applyTicketPatch(s, 'B', { dependsOn: ['A'], branch: 'b', head: SHA_B, status: 'started' }, T);
   // B was recorded nominated while A was merged; reality says A is NOT merged.
   s = applyTicketPatch(s, 'B', { status: 'nominated' }, T);
-  const plan = reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A } }, B: { branchHead: SHA_B, mergedIntoTarget: false } });
+  const plan = reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A, baseRefName: 'master' } }, B: { branchHead: SHA_B, mergedIntoTarget: false } });
   assert.ok(plan.divergences.some((d) => d.ticket === 'B' && d.kind === 'nominated-before-upstream-merged'));
 });
 
@@ -192,7 +192,7 @@ test('classification table: todo/started/nominated/gated verdicts', () => {
   assert.deepEqual(Object.fromEntries(Object.entries(plan.tickets).map(([k, v]) => [k, v.next.action])), {
     U: 'continue', W: 'wait-upstream', F: 'start-against-frozen-interface', S: 'start',
   });
-  const g = (v: 'pass' | 'fail') => reconcile(withA('gated', { verdict: v }), { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A } } }).tickets.A.next.action;
+  const g = (v: 'pass' | 'fail') => reconcile(withA('gated', { verdict: v }), { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: SHA_A, baseRefName: 'master' } } }).tickets.A.next.action;
   assert.equal(g('pass'), 'merge');
   assert.equal(g('fail'), 'fix-and-renominate');
 });
@@ -210,7 +210,7 @@ test('a STARTED branch cut from the target tip is not "merged" (ancestry counts 
 
 test('pre-review BLOCKING: a MERGED PR + a branch still on a different head is merged, never demoted by the head-moved write-back', () => {
   const s = withA('gated', { verdict: 'pass' });
-  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A } } });
+  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'master' } } });
   assert.deepEqual(plan.divergences.map((d) => d.kind), ['reality-merged-state-not']);
   assert.equal(applyWriteBack(s, plan.writeBack, T).tickets.A.status, 'merged');
 });
@@ -227,4 +227,34 @@ test('pre-review MAJOR: stale plan — a ticket changed after the read is not ov
   const plan = reconcile(s, { A: mergedReality });
   const changed = applyTicketPatch(s, 'A', { head: SHA_B }, '2026-11-19T10:00:05.000Z'); // coordinator wrote in between
   assert.equal(applyWriteBack(changed, plan.writeBack, T).tickets.A.status, 'nominated');
+});
+
+test('review MAJOR 1: a PR MERGED into a NON-target base is not merged on the target — no write-back, dependent stays blocked', () => {
+  let s = withA('nominated');
+  s = applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'todo' }, T);
+  const plan = reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'feature-upstream' } } });
+  assert.deepEqual(plan.divergences.map((d) => d.kind), ['pr-merged-other-base']);
+  assert.deepEqual(plan.writeBack, []);
+  assert.equal(plan.tickets.B.next.action, 'wait-upstream');
+  // positive control: same PR into the target IS merged
+  const ok = reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'master' } } });
+  assert.equal(ok.writeBack[0].patch.status, 'merged');
+  // and a state `merged` backed only by an other-base PR is a divergence
+  assert.ok(reconcile(withA('merged'), { A: { branchHead: null, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'feature-upstream' } } }).divergences.some((d) => d.kind === 'state-merged-reality-not'));
+});
+
+test('review MINOR 2: merged at a head the verdict did not cover is a divergence', () => {
+  const s = withA('gated', { verdict: 'pass' });
+  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: true, pr: { state: 'MERGED', headRefOid: SHA_B, baseRefName: 'master' } } });
+  assert.deepEqual(plan.divergences.map((d) => d.kind), ['reality-merged-state-not', 'merged-at-ungated-head']);
+  assert.equal(plan.tickets.A.next.action, 'investigate');
+  assert.deepEqual(reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: true, pr: { state: 'MERGED', headRefOid: SHA_A, baseRefName: 'master' } } }).divergences.map((d) => d.kind), ['reality-merged-state-not']);
+});
+
+test('review MINOR 3: nominated|gated or a pass/approve verdict without a recorded head is refused', () => {
+  const s = applyTicketPatch(newState('r', { now: T }), 'C', { branch: 'c', status: 'started' }, T);
+  assert.throws(() => applyTicketPatch(s, 'C', { status: 'gated' }, T), /needs a recorded head/);
+  assert.throws(() => applyTicketPatch(s, 'C', { status: 'nominated' }, T), /needs a recorded head/);
+  assert.throws(() => applyTicketPatch(s, 'C', { verdict: 'pass' }, T), /needs a recorded head/);
+  assert.equal(applyTicketPatch(s, 'C', { status: 'nominated', head: SHA_A }, T).tickets.C.status, 'nominated');
 });

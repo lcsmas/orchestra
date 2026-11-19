@@ -326,8 +326,10 @@ forwards it — #467's `deliver` joins the same switch in `runFanout`). Direct-s
 - **`resume` = 5 steps** (printed `1/5 … 5/5`): load → reconcile (`gatherReality`: `git fetch`, `git ls-remote`,
   `git merge-base --is-ancestor` vs `origin/<target>`, `gh pr view`) → classify → next action per ticket → write back.
   `reconcile` (pure) returns divergences (`state-merged-reality-not`, `reality-merged-state-not`, `head-moved`,
-  `pr-head-moved`, `branch-gone`, `pr-closed-unmerged`, `nominated-before-upstream-merged`, `reality-unreadable`).
-  Merged = a MERGED PR OR tip contained in the target (squash-safe). A failed git/gh read is `reality-unreadable`
+  `pr-head-moved`, `branch-gone`, `pr-closed-unmerged`, `pr-merged-other-base`, `merged-at-ungated-head`,
+  `nominated-before-upstream-merged`, `reality-unreadable`).
+  Merged = a PR MERGED **into the target** (`gh pr view --json state,headRefOid,baseRefName`; a stacked PR merged into its
+  upstream branch is not) OR a nominated tip contained in the target (squash-safe). `nominated|gated|pass` need a recorded head. A failed git/gh read is `reality-unreadable`
   (UNKNOWN), never "gone". Dependents are released by what REALITY confirms, so a false `merged` claim unblocks nobody.
   Write-back records only reality-AHEAD facts (merged; moved head + verdict reset); state-ahead claims stay reported.
   A write-back entry carries the ticket's `updatedAt` it was planned from and is skipped if the coordinator wrote since;
