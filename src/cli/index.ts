@@ -34,7 +34,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
-import { runFanout } from './fanout-deliver.ts';
+import { runDeliver } from './fanout-deliver.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
@@ -1581,15 +1581,6 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
-    case 'fanout': {
-      // #467/#469: the verified-fanout verbs; all logic in ./fanout-deliver.ts (runFanout dispatches the subcommand). Exit 0 merged · 2 refused · 1 could-not-check.
-      const r = await runFanout(args);
-      if (r.error !== undefined) fail(r.error);
-      if (r.stdout) process.stdout.write(r.stdout);
-      if (r.exit !== 0) exitWith(r.exit);
-      return;
-    }
-
     case 'verify-landed': {
       // The coordinator close-out check: a child's "done"/"merged" report is a
       // claim, not a state (agents keep committing after they report), so this
@@ -2426,6 +2417,14 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'fanout': {
+      // #467 — `fanout deliver` (src/cli/fanout-deliver.ts): store-less gh; exit 0 merged · 2 refused · 1 could-not-check.
+      if (args[0] === 'deliver') {
+        const d = await runDeliver(args.slice(1));
+        if (d.error !== undefined) fail(d.error);
+        if (d.stdout) process.stdout.write(d.stdout);
+        if (d.exit !== 0) exitWith(d.exit);
+        return;
+      }
       // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
       const r = runFanout(args, { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') });
       if (r.stdout) process.stdout.write(r.stdout);

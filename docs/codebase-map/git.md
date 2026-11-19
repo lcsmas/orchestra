@@ -128,7 +128,7 @@ The toolbar's `PR #N` link button was removed with PR tracking (2026-10-26).
 
 ## `orchestra fanout deliver` — one PR per ticket (#467, verified-fanout v2)
 The CLI side of merging, store-less (only `gh`, behind the injectable `GhRunner`; no socket). Pure decision
-`src/shared/fanout-deliver.ts` (`decideDelivery` → wait / refuse / merge / already-merged), I/O in `src/cli/fanout-deliver.ts` (`deliver`, `runFanout`).
+`src/shared/fanout-deliver.ts` (`decideDelivery` → wait / refuse / merge / already-merged), I/O in `src/cli/fanout-deliver.ts` (`deliver`, `runDeliver`).
 - Flow: `gh pr list --head B --base INTO` (reuse the OPEN PR, else `gh pr create`) → poll `gh pr view --json …statusCheckRollup` → for each passing Actions
   check `gh run view <run> --json jobs` counts the job's non-skipped steps (a lookup failure is could-not-check, never "no steps") → decide.
 - Steps = non-skipped, `success` steps of the job that are not runner bookkeeping (`isUserStep`: not "Set up job"/"Complete job"/"Post …", which every real job has). A merge also needs the check-name set unchanged across two polls (a fast status can register before the real workflow) and every `--require-check <name>` present (waits `--no-checks-grace`, then `no-checks`). A MERGED PR is reused only at the verified head. A `--require-check` that is skipped/neutral ⇒ `zero-steps`; without it green needs ≥1 check with counted steps (statuses alone are not green — name external CI with `--require-check`). `merged` is reported only after a read-back shows `state==='MERGED'` (merge queue ⇒ could-not-check); an already-merged PR with BLOCKING/MAJOR in the verdict is refused.

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deliver, parseDeliverArgs, runFanout, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
+import { deliver, parseDeliverArgs, runDeliver, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
 
 const H = 'a'.repeat(40);
 const H2 = 'b'.repeat(40);
@@ -258,12 +258,11 @@ test('argv: strict parse; shell/gh-option lookalike refs and unknown flags are u
   assert.deepEqual(rq.ok && rq.opts.requireChecks, ['a', 'b']);
 });
 
-test('runFanout: usage errors are exit 1 with no stdout; deliver prints ONE JSON line', async () => {
-  assert.equal((await runFanout([])).exit, 1);
-  assert.equal((await runFanout(['nope'])).exit, 1);
-  assert.equal((await runFanout(['deliver'])).exit, 1);
+test('runDeliver: usage errors are exit 1 with no stdout; deliver prints ONE JSON line', async () => {
+  assert.equal((await runDeliver([])).exit, 1);
+  assert.equal((await runDeliver(['--bogus', 'x'])).exit, 1);
   const f = fakeGh({ views: [{ checks: [green()] }] });
-  const r = await runFanout(['deliver', '--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H], deps(f.gh).d);
+  const r = await runDeliver(['--branch', 'impl-x', '--into', 'bench/x', '--ticket', 'T-1', '--verified-head', H], deps(f.gh).d);
   assert.equal(r.exit, 0);
   assert.equal(r.stdout?.trim().split('\n').length, 1);
   assert.equal(JSON.parse(r.stdout as string).verdict, 'merged');

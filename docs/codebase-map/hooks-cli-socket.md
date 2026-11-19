@@ -259,7 +259,7 @@ printing a whoami record under the verdict (issue #59; same class as the
 v0.5.209 `fail()` bug). Gate: `scripts/verify-verify-landed-exit.mjs`, which
 drives the built bundle under real Electron — a plain-Node unit test cannot
 observe this),
-`fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>] …` (#467 — store-less, runs `gh`, NO socket call: open/reuse the PR, wait for CI, merge with `--match-head-commit`. **Exit codes: `0` merged / already merged at the verified head · `2` refused (zero steps, no checks, red, BLOCKING/MAJOR, head moved…) · `1` could-not-check** (usage, gh failed, timeout, bad verdict) — same 0/2/1 split as `verify-landed`; ONE JSON line on stdout. `case 'fanout'` in `cli/index.ts` calls `runFanout` (`cli/fanout-deliver.ts`), which owns the subcommand switch; detail in `git.md`),
+`fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>] …` (#467 — store-less, runs `gh`, NO socket call: open/reuse the PR, wait for CI, merge with `--match-head-commit`. **Exit codes: `0` merged / already merged at the verified head · `2` refused (zero steps, no checks, red, BLOCKING/MAJOR, head moved…) · `1` could-not-check** (usage, gh failed, timeout, bad verdict) — same 0/2/1 split as `verify-landed`; ONE JSON line on stdout. `case 'fanout'` in `cli/index.ts` routes `deliver` to `runDeliver` (`cli/fanout-deliver.ts`), the rest to #469's `runFanout` (`fanout-state.ts`); detail in `git.md`),
 `browser <cmd>` (#395, ADR 0009 — drive THIS workspace's Browser panel through the bundled agent-browser: `prepareBrowserCommand` (split known `--flag=value`, make file arguments absolute, THEN allowlist the final argv; `--cdp/--session/--profile/…` and `connect/install/plugin/batch/…` refused BEFORE any socket I/O) → `POST /browser {id: $ORCHESTRA_WS_ID, key: $ORCHESTRA_SESSION_KEY}` (45 s) → spawns `agent-browser <args>` with a scrubbed env that carries `AGENT_BROWSER_CDP=<wsUrl>` from the host (never in argv: `/proc/<pid>/cmdline` is world-readable), buffers its output, maps a stale-ref failure to `browser_stale_ref`, exits with the client's code. Not in `HOST_IDENTITY_VERBS`: it never reads the run/generation. Pure half: `src/shared/browser-cli.ts`; rig `scripts/e2e-browser-cli.sh`),
 `whoami` (this workspace's own record: kind, orchestrator role, parent;
 `orchestra link` was removed 2026-10-26 with the PR / Linear badges),
@@ -316,7 +316,7 @@ no registry entry — adding a verb means adding its entry.
 One state file per vague: `<ORCHESTRA_HOME>/fanout/<run>/state.json` (D4; `--run` or `$ORCHESTRA_RUN_ID`, a
 traversal-safe id). Pure logic in `src/shared/fanout-state.ts`; argv + the injectable git/gh `Runner` in
 `src/cli/fanout-state.ts` (`runFanout` returns `{code,stdout,stderr}`; `index.ts` has ONE `case 'fanout'` line that
-forwards it — #467's `deliver` joins the same switch in `runFanout`). Direct-store verbs: no socket.
+forwards it — #467's `deliver` is intercepted in that case and goes to `runDeliver` (`fanout-deliver.ts`)). Direct-store verbs: no socket.
 - **Schema**: `FanoutState` (run, target, repo, tickets, updatedAt, reconciledAt) with per-ticket branch / pr /
   head / verdict / dependsOn / frozenInterface / status (`todo|started|nominated|gated|merged|dropped`).
   `parseState` REFUSES an unknown field (top level or ticket), a cycle, a bad enum. `applyTicketPatch` is the ONE

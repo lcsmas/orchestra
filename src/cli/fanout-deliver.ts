@@ -1,7 +1,7 @@
 // `orchestra fanout deliver` (#467) — one PR per ticket into the target branch, CI awaited (0 checks / 0 steps is NOT green),
 // merged at the verified head in ONE `gh pr merge --match-head-commit` call. Store-less (no socket): it only runs `gh`.
 // The decision is PURE (src/shared/fanout-deliver.ts); this file is the I/O around it, with `gh` behind an injectable runner.
-// Stays self-contained: #469 adds `state`/`resume` to the same `fanout` namespace through `runFanout`'s switch.
+// Shares the `fanout` namespace with #469 (state/resume, src/cli/fanout-state.ts): the `fanout` case in index.ts routes `deliver` here.
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -283,19 +283,25 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
   }
 }
 
-export const FANOUT_USAGE = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] …`;
+/** `orchestra help fanout` text for the deliver half (appended to #469's FANOUT_USAGE in help.ts). */
+export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>]
+                                [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
+                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]…
 
-/** What the `fanout` case in index.ts calls: `{exit, stdout}` or `{error}` (usage → exit 1 through the CLI's fail()). */
-export async function runFanout(args: string[], deps: DeliverDeps = realDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
-  const [sub, ...rest] = args;
-  switch (sub) {
-    case 'deliver': {
-      const p = parseDeliverArgs(rest);
-      if (!p.ok) return { exit: 1, error: p.error };
-      const { exit, result } = await deliver(p.opts, deps);
-      return { exit, stdout: `${JSON.stringify(result)}\n` };
-    }
-    default:
-      return { exit: 1, error: sub ? `unknown fanout subcommand: ${sub}\n${FANOUT_USAGE}` : FANOUT_USAGE };
-  }
+deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge with
+\`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
+Refuses on: 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
+the verdict file, a head that is not the verified head, a conflict, a --require-check
+that is missing or skipped (name external CI with it: statuses alone are not green).
+Prints ONE JSON line (verdict, reason, pr, head, combinedSuite = the command to run
+on <target> after N merges). Verdict file: {"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}.
+Exit codes: 0 = merged (or already merged at the verified head), 2 = refused,
+            1 = could not check (usage, gh failed, timeout, unreadable verdict)`;
+
+/** `orchestra fanout deliver <args>` — `args` is what follows `deliver`. The `fanout` case in index.ts routes here; #469's runFanout owns state/resume. */
+export async function runDeliver(args: string[], deps: DeliverDeps = realDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
+  const p = parseDeliverArgs(args);
+  if (!p.ok) return { exit: 1, error: p.error };
+  const { exit, result } = await deliver(p.opts, deps);
+  return { exit, stdout: `${JSON.stringify(result)}\n` };
 }
