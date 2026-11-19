@@ -258,3 +258,40 @@ test('review MINOR 3: nominated|gated or a pass/approve verdict without a record
   assert.throws(() => applyTicketPatch(s, 'C', { verdict: 'pass' }, T), /needs a recorded head/);
   assert.equal(applyTicketPatch(s, 'C', { status: 'nominated', head: SHA_A }, T).tickets.C.status, 'nominated');
 });
+
+const mergedAt = (sha: string) => ({ A: { branchHead: sha, mergedIntoTarget: true, pr: { state: 'MERGED' as const, headRefOid: sha, baseRefName: 'master' } } });
+
+test('follow-up MINOR 1: merged-at-ungated-head persists across resumes, withholds dependents, and clears only when the merged head is recorded', () => {
+  let s = withA('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'todo' }, T);
+  const p1 = reconcile(s, mergedAt(SHA_B));
+  assert.ok(p1.divergences.some((d) => d.kind === 'merged-at-ungated-head'));
+  assert.equal(p1.tickets.B.next.action, 'wait-upstream', 'dependents wait for the re-gate');
+  assert.deepEqual(p1.writeBack, [], 'the merge is NOT recorded, so the divergence cannot vanish');
+  const s2 = applyWriteBack(s, p1.writeBack, '2026-11-19T11:00:00.000Z');
+  assert.ok(reconcile(s2, mergedAt(SHA_B)).divergences.some((d) => d.kind === 'merged-at-ungated-head'), 'resume 2 still reports it');
+  // a `merged` ticket with the stale verdict/head is caught too
+  const asMerged = applyTicketPatch(s, 'A', { status: 'merged' }, T);
+  assert.ok(reconcile(asMerged, mergedAt(SHA_B)).divergences.some((d) => d.kind === 'merged-at-ungated-head'));
+  // clears once the coordinator records the merged head after re-gating
+  const fixed = applyTicketPatch(asMerged, 'A', { head: SHA_B }, T);
+  const p3 = reconcile(fixed, mergedAt(SHA_B));
+  assert.deepEqual(p3.divergences, []);
+  assert.equal(p3.tickets.B.next.action, 'start');
+});
+
+test('follow-up MINOR 2: mergedAccepted overrides a non-target-base merge that later squash-landed; only on a merged ticket', () => {
+  const other = { A: { branchHead: null, mergedIntoTarget: false, pr: { state: 'MERGED' as const, headRefOid: SHA_A, baseRefName: 'U' } } };
+  let s = withA('merged');
+  s = applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'todo' }, T);
+  const without = reconcile(s, other);
+  assert.ok(without.divergences.length > 0);
+  assert.equal(without.tickets.B.next.action, 'wait-upstream');
+  const accepted = applyTicketPatch(s, 'A', { mergedAccepted: 'landed via U squash in #123' }, T);
+  const plan = reconcile(accepted, other);
+  assert.deepEqual(plan.divergences, []);
+  assert.equal(plan.tickets.B.next.action, 'start');
+  assert.throws(() => applyTicketPatch(withA('nominated'), 'A', { mergedAccepted: 'x' }, T), /only applies to a merged ticket/);
+  assert.throws(() => applyTicketPatch(s, 'A', { mergedAccepted: '' }, T), /non-empty/);
+  assert.throws(() => parseState({ ...JSON.parse(JSON.stringify(s)), tickets: { A: { ...s.tickets.A, mergedAccepted: 5 } } }), /mergedAccepted/);
+});

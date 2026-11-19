@@ -181,3 +181,12 @@ test('review MAJOR 1 (CLI): gh without baseRefName is UNKNOWN; MERGED into anoth
   assert.match(r.stdout, /! A pr-merged-other-base/);
   assert.equal(JSON.parse(runFanout(['state', 'show', '--run', 'r1', '--json'], d).stdout).tickets.A.status, 'nominated');
 });
+
+test('follow-up MINOR 2 (CLI): --accept-merged is recorded, shown in --json, refused on a non-merged ticket', (t) => {
+  const d = deps(mkHome(t), noRunner);
+  runFanout(['state', 'init', '--run', 'r1'], d);
+  set(d, 'A', '--status', 'merged', '--branch', 'a');
+  assert.match(set(d, 'B', '--status', 'started', '--branch', 'b', '--accept-merged', 'why').stderr, /only applies to a merged ticket/);
+  assert.equal(set(d, 'A', '--accept-merged', 'landed via U squash').code, 0);
+  assert.equal(JSON.parse(runFanout(['state', 'show', '--run', 'r1', '--json'], d).stdout).tickets.A.mergedAccepted, 'landed via U squash');
+});
