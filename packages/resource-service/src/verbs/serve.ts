@@ -1,4 +1,5 @@
-// resctl serve: the reaper daemon, in the foreground. Holds daemon.lock; ticks every RESCTL_TICK.
+// resctl serve: the reaper daemon, in the foreground (systemd unit ExecStart, or a container's main command). Holds daemon.lock; ticks every RESCTL_TICK;
+// SIGTERM/SIGINT = finish the tick, release the lock, exit 0 — it reaps nothing on the way out.
 import path from 'node:path';
 import { daemonLockPath } from '../daemon.ts';
 import { graceMs, stateDir, tickMs } from '../env.ts';
@@ -11,7 +12,9 @@ export async function main(_argv: string[]): Promise<number> {
   const got = tryAcquire(daemonLockPath(dir));
   if (!got.ok) throw new CliError(EXIT.refused, `resctl serve: already running${got.heldBy ? ` (pid ${got.heldBy.pid})` : ''} for ${dir}`);
   const lock = got.lock;
-  const log = (m: string): void => void process.stderr.write(`${new Date().toISOString()} resctl serve: ${m}\n`);
+  // Logs go to STDOUT (a container's main command: `docker logs`); a closed pipe must not kill the reaper.
+  process.stdout.on('error', () => {});
+  const log = (m: string): void => void process.stdout.write(`${new Date().toISOString()} resctl serve: ${m}\n`);
   let stop: (() => void) | null = null;
   let stopping = false;
   for (const sig of ['SIGTERM', 'SIGINT'] as const) {

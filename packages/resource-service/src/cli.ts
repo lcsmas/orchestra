@@ -3,10 +3,12 @@ import { CliError, EXIT } from './errors.ts';
 import * as admit from './verbs/admit.ts';
 import * as dockerEnv from './verbs/docker-env.ts';
 import * as exec from './verbs/exec.ts';
+import * as installUnit from './verbs/install-unit.ts';
 import * as runEnd from './verbs/run-end.ts';
 import * as runStart from './verbs/run-start.ts';
 import * as serve from './verbs/serve.ts';
 import * as status from './verbs/status.ts';
+import * as uninstallUnit from './verbs/uninstall-unit.ts';
 
 type Verb = { main: (argv: string[]) => Promise<number> };
 
@@ -19,6 +21,8 @@ export const VERBS: Record<string, Verb> = {
   'docker-env': dockerEnv,
   'status': status,
   'serve': serve,
+  'install-unit': installUnit,
+  'uninstall-unit': uninstallUnit,
 };
 
 const USAGE = `usage: resctl <verb> [options]
@@ -27,9 +31,12 @@ const USAGE = `usage: resctl <verb> [options]
                                       "claude" ancestor; max-life cleans it even while its owner lives
   run end --id <id>                   clean the run now
   exec --run <id> -- <cmd> [args...]  start a lane of the run
-  serve                               the reaper daemon (foreground)
+  serve                               the reaper daemon (foreground; a container's main command)
+  status [--json]                     runs with owner, state, processes, containers, memory
+  install-unit [--no-start|--print]   write + enable + start the systemd user unit ($RESCTL_UNIT_NAME)
+  uninstall-unit                      stop, disable, remove it
   admit [--timeout <dur>]             wait until free memory and disk are above RESCTL_MIN_FREE_MEM / _DISK
-  docker-env | status                 not implemented yet
+  docker-env                          not implemented yet
 exit codes: 0 ok · 1 failure · 2 usage · 3 refused · 64 not implemented
 `;
 

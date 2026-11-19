@@ -1,0 +1,639 @@
+[
+ {
+  "id": "M01_unit_runs_status_not_serve",
+  "why": "the unit's ExecStart does not run `serve`",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "--print shows the unit",
+   "install writes, enables and starts"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "execStart: [process.execPath, bin, 'serve']",
+    "to": "execStart: [process.execPath, bin, 'status']"
+   }
+  ]
+ },
+ {
+  "id": "M02_unit_not_installable",
+  "why": "no [Install] section: the unit is never enabled",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "--print shows the unit",
+   "install writes, enables and starts"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "    'WantedBy=default.target',\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M03_unit_state_dir_elsewhere",
+  "why": "the unit's daemon watches another state dir than the installer's",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "--print shows the unit",
+   "install writes, enables and starts"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "{ RESCTL_STATE_DIR: stateDir(env) }",
+    "to": "{ RESCTL_STATE_DIR: path.join(stateDir(env), 'elsewhere') }"
+   }
+  ]
+ },
+ {
+  "id": "M04_install_validates_nothing",
+  "why": "a config value the service would reject is written into the unit",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "a config value the service would reject"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "      read(env);\n",
+    "to": "      void read;\n"
+   }
+  ]
+ },
+ {
+  "id": "M05_install_overwrites_foreign",
+  "why": "install replaces a unit file resctl did not write",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "a unit file resctl did not write"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "if (fs.existsSync(file) && !isManaged(file) && !values.force)",
+    "to": "if (false)"
+   }
+  ]
+ },
+ {
+  "id": "M06_uninstall_removes_foreign",
+  "why": "uninstall deletes a unit file resctl did not write",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "a unit file resctl did not write"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/uninstall-unit.ts",
+    "find": "if (present && !isManaged(file) && !values.force)",
+    "to": "if (false)"
+   }
+  ]
+ },
+ {
+  "id": "M07_install_no_manager_precheck",
+  "why": "install writes the file before it knows systemctl exists",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "no systemctl on the host"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "  requireUserManager(process.env);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M08_uninstall_keeps_file",
+  "why": "uninstall leaves the unit file",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "uninstall stops, disables and removes"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/uninstall-unit.ts",
+    "find": "  if (present) fs.rmSync(file, { force: true });\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M09_uninstall_no_disable",
+  "why": "uninstall stops but does not disable (the enable symlink stays)",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "uninstall stops, disables and removes"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/uninstall-unit.ts",
+    "find": "step(['disable', '--now', name], !present);",
+    "to": "step(['stop', name], !present);"
+   }
+  ]
+ },
+ {
+  "id": "M10_stop_reaps_every_run",
+  "why": "stopping the daemon ends every run on the way out",
+  "tests": [
+   "test/unit.test.ts",
+   "test/serve-foreground.test.ts"
+  ],
+  "expect": [
+   "stop is clean and reaps nothing",
+   "a clean stop changes no run"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "import { tick } from '../reaper.ts';",
+    "to": "import { tick } from '../reaper.ts';\nimport { endRun } from '../cleanup.ts';\nimport { readState } from '../state.ts';"
+   },
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "    log('stopped');\n    return EXIT.ok;",
+    "to": "    for (const r of Object.values(readState(dir).runs)) if (r.state !== 'cleaned') await endRun(dir, r);\n    log('stopped');\n    return EXIT.ok;"
+   }
+  ]
+ },
+ {
+  "id": "M11_sigterm_unhandled",
+  "why": "SIGTERM is not handled (killed by the signal; as PID 1 it is ignored)",
+  "tests": [
+   "test/unit.test.ts",
+   "test/serve-foreground.test.ts",
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "SIGTERM is a clean exit",
+   "stop is clean and reaps nothing",
+   "docker stop ends the main command"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "['SIGTERM', 'SIGINT'] as const",
+    "to": "['SIGINT'] as const"
+   }
+  ]
+ },
+ {
+  "id": "M12_sigint_unhandled",
+  "why": "SIGINT is not handled",
+  "tests": [
+   "test/serve-foreground.test.ts"
+  ],
+  "expect": [
+   "SIGINT is a clean exit"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "['SIGTERM', 'SIGINT'] as const",
+    "to": "['SIGTERM'] as const"
+   }
+  ]
+ },
+ {
+  "id": "M13_logs_on_stderr",
+  "why": "the daemon logs on stderr",
+  "tests": [
+   "test/serve-foreground.test.ts",
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "logs on stdout only",
+   "serve is PID 1 and logs on stdout"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "const log = (m: string): void => void process.stdout.write(",
+    "to": "const log = (m: string): void => void process.stderr.write("
+   }
+  ]
+ },
+ {
+  "id": "M14_lock_not_released",
+  "why": "the lock is left behind on a clean stop",
+  "tests": [
+   "test/unit.test.ts",
+   "test/serve-foreground.test.ts"
+  ],
+  "expect": [
+   "releases daemon.lock",
+   "stop is clean and reaps nothing"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "    release(lock);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M15_stop_exits_1",
+  "why": "a requested stop exits 1",
+  "tests": [
+   "test/unit.test.ts",
+   "test/serve-foreground.test.ts",
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "is a clean exit",
+   "stop is clean and reaps nothing",
+   "docker stop ends the main command"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/serve.ts",
+    "find": "    log('stopped');\n    return EXIT.ok;",
+    "to": "    log('stopped');\n    return EXIT.failure;"
+   }
+  ]
+ },
+ {
+  "id": "M20_status_state_flattened",
+  "why": "status prints every run as alive",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "once the reaper runs"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "      state: run.state,\n",
+    "to": "      state: 'alive',\n"
+   }
+  ]
+ },
+ {
+  "id": "M21_status_no_processes",
+  "why": "status lists no processes",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "lists the run with owner"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "const processes = run.state === 'cleaned' ? [] : processesOf(run);",
+    "to": "const processes: ProcessInfo[] = [];"
+   }
+  ]
+ },
+ {
+  "id": "M22_memory_first_process_only",
+  "why": "memory counts only the first process",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "the memory they sum to"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "memory: { rssKb: processes.reduce((sum, p) => sum + p.rssKb, 0) },",
+    "to": "memory: { rssKb: processes[0]?.rssKb ?? 0 },"
+   }
+  ]
+ },
+ {
+  "id": "M23_memory_reads_vmsize",
+  "why": "memory reads VmSize instead of VmRSS",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "the memory they sum to"
+  ],
+  "edits": [
+   {
+    "file": "src/status-sources.ts",
+    "find": "/^VmRSS:\\s+(\\d+) kB$/m",
+    "to": "/^VmSize:\\s+(\\d+) kB$/m"
+   }
+  ]
+ },
+ {
+  "id": "M24_owner_always_alive",
+  "why": "status says the owner is alive whatever /proc says",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "WITHOUT a daemon",
+   "once the reaper runs"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "alive: isAlive(run.owner) }",
+    "to": "alive: true }"
+   }
+  ]
+ },
+ {
+  "id": "M25_containers_not_grouped",
+  "why": "containers are not attached to their run",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "with docker reachable",
+   "registered source"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "containers: containers.filter((c) => c.run === run.id),",
+    "to": "containers: [],"
+   }
+  ]
+ },
+ {
+  "id": "M26_docker_down_reads_as_none",
+  "why": "an unreachable docker reports 'no containers' as if it had looked",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "docker unreachable or missing"
+  ],
+  "edits": [
+   {
+    "file": "src/status-sources.ts",
+    "find": "return resolve({ available: false, reason });",
+    "to": "return resolve({ available: true, containers: [] });"
+   }
+  ]
+ },
+ {
+  "id": "M27_throwing_source_kills_status",
+  "why": "a source that throws takes `status` down",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "a source that throws"
+  ],
+  "edits": [
+   {
+    "file": "src/status-sources.ts",
+    "find": "    return { available: false, reason: String((e as Error).message) };\n  } finally {",
+    "to": "    throw e;\n  } finally {"
+   }
+  ]
+ },
+ {
+  "id": "M28_containers_not_deduped",
+  "why": "a container reported by two sources is listed twice",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "merged by id"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "if (!seen.has(c.id)) (seen.add(c.id), containers.push(c));",
+    "to": "containers.push(c);"
+   }
+  ]
+ },
+ {
+  "id": "M29_orphans_hidden",
+  "why": "containers of an unknown run are not reported",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "with docker reachable"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "orphanContainers: containers.filter((c) => !known.has(c.run)),",
+    "to": "orphanContainers: [],"
+   }
+  ]
+ },
+ {
+  "id": "M30_daemon_always_running",
+  "why": "status claims a daemon whether or not one holds the lock",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "an empty state dir",
+   "WITHOUT a daemon"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "const running = daemonRunning(dir);",
+    "to": "const running = true;"
+   }
+  ]
+ },
+ {
+  "id": "M31_text_hides_grace",
+  "why": "the text view never says 'in grace'",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "once the reaper runs"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "r.state === 'grace' ? `in grace",
+    "to": "r.state === 'grace' && false ? `in grace"
+   }
+  ]
+ },
+ {
+  "id": "M32_grace_left_is_deadline",
+  "why": "graceLeftMs is the absolute deadline",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "once the reaper runs"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "graceLeftMs: Math.max(0, run.graceEndsAt - now)",
+    "to": "graceLeftMs: run.graceEndsAt"
+   }
+  ]
+ },
+ {
+  "id": "M33_dockerfile_copies_no_src",
+  "why": "the image has no sources: the container cannot start",
+  "tests": [
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "builds, runs `serve`"
+  ],
+  "edits": [
+   {
+    "file": "Dockerfile",
+    "find": "COPY src ./src\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M34_dockerfile_cmd_not_serve",
+  "why": "the image's CMD is not serve",
+  "tests": [
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "builds, runs `serve`"
+  ],
+  "edits": [
+   {
+    "file": "Dockerfile",
+    "find": "CMD [\"serve\"]",
+    "to": "CMD [\"status\"]"
+   }
+  ]
+ },
+ {
+  "id": "M35_install_trusts_restart",
+  "why": "install says 'started' for a unit that already died (lock held elsewhere)",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "install while ANOTHER daemon holds daemon.lock"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "const down = await settle(spec.name, process.env);",
+    "to": "const down = null as string | null;"
+   }
+  ]
+ },
+ {
+  "id": "M36_uninstall_stops_only_if_file",
+  "why": "uninstall leaves a running unit whose file was deleted by hand",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "uninstall still stops a unit whose FILE was deleted"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/uninstall-unit.ts",
+    "find": "step(['disable', '--now', name], !present);",
+    "to": "if (present) step(['disable', '--now', name]);"
+   }
+  ]
+ },
+ {
+  "id": "M37_uninstall_needs_systemd_always",
+  "why": "uninstall of an absent unit fails on a host without systemd",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "with no systemd an absent unit is exit 0"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/uninstall-unit.ts",
+    "find": "if (present) throw new CliError(EXIT.failure, `cannot uninstall",
+    "to": "if (true) throw new CliError(EXIT.failure, `cannot uninstall"
+   }
+  ]
+ },
+ {
+  "id": "M38_environment_percent_unescaped",
+  "why": "a % in the state dir is expanded by systemd as a specifier",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "a state dir with a space"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "JSON.stringify(`${k}=${v}`).replace(/%/g, '%%')",
+    "to": "JSON.stringify(`${k}=${v}`)"
+   }
+  ]
+ },
+ {
+  "id": "M39_execstart_dollar_unescaped",
+  "why": "a $ in an ExecStart word is expanded by systemd",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "execWord quotes what systemd would expand"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": ".replace(/\\$/g, '$$$$')",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M41_hung_source_hangs_status",
+  "why": "a source that never answers hangs status",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "throws SYNCHRONOUSLY"
+  ],
+  "edits": [
+   {
+    "file": "src/status-sources.ts",
+    "find": "new Promise<ContainersReport>((resolve) => (timer = setTimeout(() => resolve({ available: false, reason: `no answer within ${timeoutMs}ms` }), timeoutMs))),",
+    "to": "new Promise<ContainersReport>(() => {}),"
+   }
+  ]
+ }
+]

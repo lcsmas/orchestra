@@ -9,10 +9,10 @@ describe('cli dispatch', () => {
   after(async () => assert.deepEqual(await rig.dispose(), []));
 
   it('registers every verb of the freeze', () => {
-    assert.deepEqual(Object.keys(VERBS).sort(), ['admit', 'docker-env', 'exec', 'run end', 'run start', 'serve', 'status']);
+    assert.deepEqual(Object.keys(VERBS).sort(), ['admit', 'docker-env', 'exec', 'install-unit', 'run end', 'run start', 'serve', 'status', 'uninstall-unit']);
   });
 
-  for (const [verb, ticket] of [['docker-env', 'A2'], ['status', 'A5']] as const) {
+  for (const [verb, ticket] of [['docker-env', 'A2']] as const) {
     it(`${verb} is a stub: "not implemented (${ticket})", exit 64`, () => {
       const r = rig.cli([verb, '--run', 'x']);
       assert.equal(r.status, 64);
