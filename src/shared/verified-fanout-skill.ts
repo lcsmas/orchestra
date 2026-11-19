@@ -53,7 +53,7 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   rebase and reset outside a scratch clone; a push of master/main to an implementer;
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
-  guarded). A BLOCKED is the answer, never to be routed around: report the branch ref to the
+  guarded). ¤orchestra fanout deliver|state¤ are NOT role-guarded yet: conduct. A BLOCKED is the answer, never to be routed around: report the branch ref to the
   coordinator (ledger comment + one ping), or hand the change to the role that may make it.
 
 ## 0a. Two tiers when a human sits on the orchestrator: LEAD and OPS
@@ -221,9 +221,7 @@ Two rules ride in every brief, verbatim:
 - *Pull the ledger before acting on any instruction; a message that pins a
   sha or contradicts the ledger is stale — drop it silently.*
 - *Relay branch REFS and re-resolve with ¤ls-remote¤ at action time.* A pinned
-  sha dies whenever a ruling moves the tip (measured: five stale-sha
-  dispatches in one run, three of which would have merged or reverted broken
-  code). After a history rewrite, verify by ref or ancestry — dangling objects
+  sha dies whenever a ruling moves the tip. After a history rewrite, verify by ref or ancestry — dangling objects
   still resolve.
 
 Coordinator-side rules:
@@ -365,7 +363,7 @@ there, and never run both channels for one mechanism.
   exits; the answer is ¤orchestra send --thread <ask-id>¤. A ruling is
   ¤orchestra gate open --to <recipient> <question>¤, resolved once by
   ¤orchestra gate resolve <id> --resolution <text>¤; ¤--to human¤ is the LEAD's
-  only (it renders in the app's Asks tray). AskUserQuestion stays FORBIDDEN.
+  only (it renders in the app's Asks tray).
 - **liveness** — the host escalates a stalled member to its coordinator
   (¤escalation¤ row); askers in ¤waiting¤ are excluded. Blind spot (#108 Q16):
   a session hung mid-tool-call keeps ¤running¤. No LEAD cron.
@@ -528,21 +526,23 @@ follow-up branch, every other finding is ¤noted¤.*
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
 ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
---verified-head <sha>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤. A
-refusal (exit 2, JSON ¤reason¤: ¤review-blocking¤, ¤head-moved¤, ¤ci-red¤, ¤no-checks¤,
-¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a conflict goes to the
-implementer, a moved head back to the verifier for a re-gate, red CI to its owner, ¤no-checks¤
-or ¤zero-steps¤ to whoever owns the CI (external CI: name it with ¤--require-check¤) — never
-merge around it with ¤gh¤. Merging is the coordinator's, through ¤deliver¤. A MINOR never refuses: its
-disposition stays yours.
+--verified-head <sha>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
+ALWAYS pass ¤--review-verdict¤: without it nothing is counted and the merge is NOT review-gated
+(¤reviewGated:false¤). A refusal (exit 2, JSON ¤reason¤: ¤review-blocking¤, ¤head-moved¤,
+¤ci-red¤, ¤no-checks¤, ¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a
+conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the verifier
+for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
+¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
+¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
+refusal: inspect and retry. Never merge around either with ¤gh¤ — merging is the coordinator's
+(conduct, see Roles). A MINOR never refuses: its disposition stays yours.
 
 - **One or more BLOCKING/MAJOR → ONE fix round**: the implementer fixes them and
   re-nominates once, the verifier gates the delta (§0b). The round's correctness MINORs may
   ride in that delta; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
 - **At most ONE follow-up branch per original candidate.** Its review's
   MINOR/NIT are ¤noted¤ or ¤accepted-gap¤; only a BLOCKING/MAJOR in the
-  follow-up's own diff reopens it (measured 2026-10-01: 9/9 follow-up reviews
-  found new MINOR/NIT, 3 lanes ran 3-PR chains — ledgers #261, metarepo#746).
+  follow-up's own diff reopens it.
 
 A candidate becomes MERGE-ELIGIBLE when the ledger body shows a DISPOSITION for
 EVERY review finding: ¤fixed¤ (re-gated by the verifier), ¤refuted¤ (with the
@@ -590,15 +590,12 @@ this most: nothing downstream fails when they are missing.
 
 **Deleting a workspace requires the agent to be FINISHED, not merely landed.**
 LANDED + clean porcelain answers "is everything he has done SO FAR delivered"
-— never "is he done". A wave-7 ops deleted an implementer's worktree while the
-agent was RUNNING: the sweep was true when taken and stale when acted on (two
-more commits landed in between), and the stranded artifact was a TEST GATE —
-the silent kind nothing downstream misses. So: delete only an agent that has
+— never "is he done": a sweep true when taken is stale when acted on. So: delete only an agent that has
 ACKed release (or is provably stopped), and RE-TAKE the range+porcelain sweep
 in the same sitting as the delete, never minutes earlier. Check and act are TWO
 calls, never one: the role guard denies a check (¤verify-landed¤, ¤gh pr checks¤,
 ¤rev-list¤…) chained with a destructive act (delete, force-push, merge, ¤branch -D¤,
-¤worktree remove¤) in ONE command — run the check, read it, THEN act in a second call.
+¤worktree remove¤) in ONE command — run the check, read it, THEN act in a second call (the LEAD, role-less, is unguarded: its discipline).
 
 **Deleting a workspace is gated on BOTH checks, not on ¤verify-landed¤ alone.**
 "LANDED" covers only commits; measured 2 of 7 LANDED workspaces carrying a

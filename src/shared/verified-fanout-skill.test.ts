@@ -129,6 +129,9 @@ export const RULE_PINS: ReadonlyArray<readonly [id: string, enforcedBy: string, 
   ['resume a dead ops', '#469 fanout resume', /first act `orchestra fanout resume`/],
   ['dependent track vs frozen interface', '#469 fanout state set --depends-on', /--depends-on\s+<upstream> --frozen-interface <ref>` lets it go `--status started`; `nominated`, `gated`\s+or `merged` is REFUSED/],
   ['merge on 0 BLOCKING/0 MAJOR, head-pinned, CI steps>0', '#467 fanout deliver', /`orchestra fanout deliver --branch <b>[\s\S]*`review-blocking`, `head-moved`[\s\S]*`zero-steps`/],
+  ['deliver: always pass --review-verdict (else not review-gated)', '#467 reviewGated', /ALWAYS pass `--review-verdict`: without it nothing is counted and the merge is NOT review-gated/],
+  ['deliver exit 1 = could not check, not a refusal', '#467 exit codes', /Exit 1 \(`timeout`,\s+`gh-failed`, `merge-failed`, `bad-verdict`, `no-verified-head`\) is "could not check"/],
+  ['deliver/state are not role-guarded (conduct)', 'none yet (#473)', /`orchestra fanout deliver\|state` are NOT role-guarded yet: conduct/],
   ['one PR per ticket', '#467 fanout deliver', /one PR per\s+ticket: it opens or reuses/],
   ['combined suite after N merges', '#467 deliver combinedSuite', /`deliver` prints `combinedSuite`/],
   ['final report = worker_done --cap', 'host capability (#160)', /ONLY on its `worker_done` \(#160\)/],
@@ -136,8 +139,25 @@ export const RULE_PINS: ReadonlyArray<readonly [id: string, enforcedBy: string, 
   ['reversible default instead of asking (judgement line)', 'none — ledger decision', /take the REVERSIBLE default, apply it and write it in your ledger\s+comment/],
 ];
 
+/** #472 review m2: the JUDGEMENT rules no code carries — one phrase each, so cutting one reds a test (the diff-rebuild test alone is silenced by regenerating the diff). */
+export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = [
+  ['pull the ledger first', /Pull the ledger before acting on any instruction; a message that pins a\s+sha or contradicts the ledger is stale/],
+  ['relay refs, re-resolve with ls-remote', /Relay branch REFS and re-resolve with `ls-remote` at action time/],
+  ['sent != received', /\*\*Sent ≠ received\.\*\*/],
+  ['state-only acks', /\*\*State-only acks\*\* from message one/],
+  ['write the gate checklist first', /\*\*Write the full gate checklist into the ledger before the first gate\*\*/],
+  ['self-gate + pre-review before nominating', /\*\*Self-gate BEFORE nominating[\s\S]*fresh-context PRE-REVIEW/],
+  ['carry verdicts by tree identity', /\*\*Carry verdicts by TREE IDENTITY across clean rebases\*\*/],
+  ['mutation runs: full at first nomination and final gate', /\*\*Mutation runs: FULL set at the first nomination and at the final merge/],
+  ['serialize merges that touch a shared seam', /\*\*Serialize merges that touch a shared seam\.\*\*/],
+  ['composed features need a composed gate', /\*\*Composed features need a composed gate\.\*\*/],
+  ['close-out: reported done != landed', /"Agent reported done" and "work \*\*landed\*\*" are two different events/],
+  ['delete only a FINISHED agent, re-take the sweep', /\*\*Deleting a workspace requires the agent to be FINISHED, not merely landed\.\*\*/],
+  ['deliverable file exists on the integration branch', /Then confirm each deliverable \*\*file\*\* exists on the integration branch/],
+];
+
 /** The ids of the rules whose pin no longer matches `text` (empty = every enforced rule is still named). */
-export const droppedRules = (text: string): string[] => RULE_PINS.filter(([, , re]) => !re.test(text)).map(([id]) => id);
+export const droppedRules = (text: string): string[] => [...RULE_PINS.map(([id, , re]) => [id, re] as const), ...JUDGEMENT_PINS].filter(([, re]) => !re.test(text)).map(([id]) => id);
 
 /** `text` with every line the pin's match touches deleted (a rule dropped from the skill). */
 function withoutRule(text: string, re: RegExp): string {
@@ -159,6 +179,11 @@ test('each rule a verb or guard enforces keeps ONE line naming it (#472); the pr
 
 test('must-FAIL: deleting the line of any one enforced rule reddens exactly that rule\'s pin', () => {
   for (const [id, , re] of RULE_PINS) {
+    const cut = withoutRule(VERIFIED_FANOUT_SKILL, re);
+    assert.notEqual(cut, VERIFIED_FANOUT_SKILL, `${id}: mutant anchor matches`);
+    assert.ok(droppedRules(cut).includes(id), `${id}: dropping its line is seen`);
+  }
+  for (const [id, re] of JUDGEMENT_PINS) {
     const cut = withoutRule(VERIFIED_FANOUT_SKILL, re);
     assert.notEqual(cut, VERIFIED_FANOUT_SKILL, `${id}: mutant anchor matches`);
     assert.ok(droppedRules(cut).includes(id), `${id}: dropping its line is seen`);
