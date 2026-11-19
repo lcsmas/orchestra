@@ -13,9 +13,9 @@ const { assertScratch, liveDirs } = await import(`${REPO}/scripts/session-budget
 const { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT } = await import(`${REPO}/src/shared/role-guard.ts`);
 
 const live = liveDirs();
-// NOT under /tmp, /var/tmp or $TMPDIR: those count as scratch for the guard, so a tmp root would make every deny arm vacuous. A tmpfs
-// outside them (Linux: /dev/shm, /run/user/<uid>) is scratch for us and a normal path for the guard; RG_ROOT_BASE overrides.
-const base = [process.env.RG_ROOT_BASE, '/dev/shm', `/run/user/${process.getuid?.()}`].find((d) => d && fs.existsSync(d));
+// NOT under /tmp, /var/tmp or $TMPDIR: those count as scratch for the guard, so a tmp root would make every deny arm vacuous.
+// /dev/shm (tmpfs, never the human's /run/user — see rig-runtime-world.test.ts) by default; RG_ROOT_BASE overrides.
+const base = [process.env.RG_ROOT_BASE, '/dev/shm'].find((d) => d && fs.existsSync(d));
 if (!base) { console.error('role-guard-cli: no non-/tmp scratch base (set RG_ROOT_BASE)'); process.exit(2); }
 const root = fs.mkdtempSync(path.join(base, 'role-guard-cli-'));
 assertScratch('root', root, root, live);
