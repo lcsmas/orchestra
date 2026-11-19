@@ -39,15 +39,21 @@ if (!argv.includes('--inner')) {
     }
     const r = spawnSync(cmd[0], cmd.slice(1), { stdio: 'inherit', timeout: 240_000 });
     const verdict = fs.existsSync(path.join(root, 'verdict')) ? fs.readFileSync(path.join(root, 'verdict'), 'utf8').trim() : 'VOID';
+    const failedFile = path.join(root, 'failed.json');
+    const failed = fs.existsSync(failedFile) ? JSON.parse(fs.readFileSync(failedFile, 'utf8')) : [];
     if (!argv.includes('--keep')) fs.rmSync(root, { recursive: true, force: true });
     else console.log(`kept ${root}`);
-    return { verdict, status: r.status };
+    return { verdict, status: r.status, failed };
   };
   if (argv.includes('--proof')) {
-    const arms = [{ id: null }, ...mutants().filter((m) => m.rig).map((m) => ({ id: m.id }))];
-    const rows = arms.map((a) => ({ arm: a.id ?? 'baseline', ...runOne(a.id) }));
-    for (const r of rows) console.log(`${r.arm.padEnd(44)} ${r.verdict}`);
-    const ok = rows[0].verdict === 'PASS' && rows.slice(1).every((r) => r.verdict === 'FAIL');
+    const arms = [{ id: null }, ...mutants().filter((m) => m.rig).map((m) => ({ id: m.id, expect: m.rigExpect }))];
+    const rows = arms.map((a) => ({ arm: a.id ?? 'baseline', expect: a.expect, ...runOne(a.id) }));
+    // a mutant counts as killed only by the clause it targets (`rigExpect`), never by any red (a crash would read as a kill)
+    for (const r of rows) {
+      r.tied = r.expect ? r.failed.some((n) => n.includes(r.expect)) : true;
+      console.log(`${r.arm.padEnd(40)} ${r.verdict}${r.expect ? `  tied clause "${r.expect}": ${r.tied ? 'FAILED as expected' : 'NOT failed'}` : ''}${r.verdict === 'FAIL' ? `  [${r.failed.join(' | ')}]` : ''}`);
+    }
+    const ok = rows[0].verdict === 'PASS' && rows.slice(1).every((r) => r.verdict === 'FAIL' && r.expect && r.tied);
     console.log(`PROOF: ${ok ? 'baseline PASS and every mutant FAIL' : 'NOT proven'}`);
     console.log(`E2E-CLAUDE-OWNER: ${ok ? 'PASS' : 'FAIL'}`);
     process.exit(ok ? 0 : 1);
@@ -132,6 +138,7 @@ const toolCommand = [
 ].join('; ');
 
 const api = http.createServer((req, res) => {
+  const ua = String(req.headers['user-agent'] ?? '');
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
@@ -144,7 +151,7 @@ const api = http.createServer((req, res) => {
     const hasToolResult = JSON.stringify(body.messages ?? []).includes('"tool_result"');
     const toolBearing = Array.isArray(body.tools) && body.tools.some((t) => t.name === 'Bash');
     const kind = hasToolResult ? 'followup' : toolBearing ? 'main' : 'side';
-    requests.push({ kind, model });
+    requests.push({ kind, model, ua });
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     res.end(kind === 'main' ? toolReply(model, 'Bash', { command: toolCommand, description: 'declare the run' }) : textReply(model, kind === 'followup' ? 'done' : 'ok'));
   });
@@ -156,6 +163,7 @@ const claudeBin = flag('--claude') ?? spawnSync('sh', ['-c', 'command -v claude'
 if (!claudeBin) { console.log('VOID: no claude on PATH'); fs.writeFileSync(P('verdict'), 'VOID'); process.exit(3); }
 const version = spawnSync(claudeBin, ['--version'], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: P('home'), CLAUDE_CONFIG_DIR: P('config') } }).stdout.trim();
 log(`claude ${claudeBin} (${version}); fake API ${base}; resctl ${BIN}`);
+const versionNumber = /^(\d+\.\d+\.\d+) \(Claude Code\)$/.exec(version)?.[1] ?? null;
 
 // env allowlist (nothing of the caller's environment but PATH/locale leaks in)
 const childEnv = {
@@ -229,6 +237,7 @@ try {
       check('after the grace the lane is gone and the run is cleaned', !!gone);
       check('it was not cleaned before the grace ended', Date.now() >= inGrace);
     }
+    check('instrument: the binary is a real Claude Code (`--version` is `<semver> (Claude Code)`) and the fake API saw its own `claude-cli/<version>` user-agent', !!versionNumber && requests.some((r) => r.ua.startsWith(`claude-cli/${versionNumber}`)), `version=${JSON.stringify(version)} user-agents=${[...new Set(requests.map((r) => r.ua))].join(' ; ')}`);
     const main = requests.filter((r) => r.kind === 'main').length;
     check('instrument: the fake API served the session (≥ 1 tool-bearing request: the Bash call was really issued by a model turn)', main >= 1, `requests=${requests.map((r) => r.kind ?? r.other).join(',')}`);
   }
@@ -243,5 +252,6 @@ const verdict = voided ? 'VOID' : failed.length ? 'FAIL' : 'PASS';
 if (voided) console.log(`VOID: ${voided}`);
 if (verdict !== 'PASS' && daemonLog) console.log(`serve log:\n${daemonLog.split('\n').slice(-12).join('\n')}`);
 console.log(`${checks.length - failed.length}/${checks.length} checks passed${failed.length ? `; FAILED: ${failed.map((c) => c.name).join(' | ')}` : ''}`);
+fs.writeFileSync(P('failed.json'), JSON.stringify(failed.map((c) => c.name)));
 fs.writeFileSync(P('verdict'), verdict);
 process.exit(verdict === 'PASS' ? 0 : verdict === 'VOID' ? 3 : 1);

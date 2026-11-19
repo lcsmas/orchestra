@@ -16,7 +16,8 @@
     "to": "if (hop >= 0) return { found"
    }
   ],
-  "rig": true
+  "rig": true,
+  "rigExpect": "the recorded owner is the session process"
  },
  {
   "id": "A6M02_outermost_claude",
@@ -96,7 +97,8 @@
     "to": "exe === 'claude'"
    }
   ],
-  "rig": true
+  "rig": true,
+  "rigExpect": "run start --owner auto"
  },
  {
   "id": "A6M06_owner_is_not_the_found_process",
@@ -114,14 +116,15 @@
     "to": "const id = identityOf(process.ppid);"
    }
   ],
-  "rig": true
+  "rig": true,
+  "rigExpect": "run start --owner auto"
  },
  {
   "id": "A6M07_max_life_not_recorded",
   "why": "the flag is accepted and parsed but maxLifeAt is never stored",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
    "a run past its max life is cleaned while its owner lives"
@@ -139,7 +142,7 @@
   "why": "the reaper honours maxLifeAt only once the owner is dead (a live owner keeps the run forever)",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
    "a run past its max life is cleaned while its owner lives"
@@ -157,7 +160,7 @@
   "why": "the duration is divided instead of added: the deadline is already past",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
    "a run past its max life is cleaned while its owner lives"
@@ -172,36 +175,36 @@
  },
  {
   "id": "A6M10_repeat_start_ignores_flag",
-  "why": "a repeated start with the same owner ignores --max-life",
+  "why": "a repeated start with the same owner ignores --max-life (no deadline set, none moved earlier)",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
-   "a repeated start with the flag moves the deadline"
+   "a repeated start NEVER extends the deadline"
   ],
   "edits": [
    {
     "file": "src/verbs/run-start.ts",
-    "find": "{\n          if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;\n          return { kind: 'unchanged' };\n        }",
+    "find": "const d = deadline(cur.maxLifeAt, now, lifeMs);\n          if (d !== undefined) cur.maxLifeAt = d;\n          return { kind: 'unchanged' };",
     "to": "return { kind: 'unchanged' };"
    }
   ]
  },
  {
   "id": "A6M11_adopt_ignores_flag",
-  "why": "a re-adopted run keeps its old deadline whatever --max-life says",
+  "why": "a re-adopted run ignores --max-life (a shorter life is never taken)",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
-   "a re-adopted run"
+   "a re-adopted run (inside its grace) keeps its deadline"
   ],
   "edits": [
    {
     "file": "src/verbs/run-start.ts",
-    "find": "        if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;\n        return { kind: 'adopted' };",
+    "find": "        const d = deadline(cur.maxLifeAt, now, lifeMs);\n        if (d !== undefined) cur.maxLifeAt = d;\n        return { kind: 'adopted' };",
     "to": "        return { kind: 'adopted' };"
    }
   ]
@@ -211,7 +214,7 @@
   "why": "--max-life 0 is accepted (a run that is cleaned at once)",
   "tests": [
    "test/max-life.test.ts",
-   "test/reaper-decision.test.ts"
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
    "a bad --max-life is a usage error"
@@ -219,25 +222,83 @@
   "edits": [
    {
     "file": "src/verbs/run-start.ts",
-    "find": "if (!(ms > 0) || !Number.isFinite(ms)) throw",
-    "to": "if (ms < 0 || !Number.isFinite(ms)) throw"
+    "find": "if (!(ms > 0) || !(ms <= MAX_LIFE_MS)) throw",
+    "to": "if (ms < 0 || !(ms <= MAX_LIFE_MS)) throw"
    }
   ]
  },
  {
-  "id": "A6M13_infinite_life_accepted",
-  "why": "an overflowing duration becomes maxLifeAt=Infinity, stored as null: the run is cleaned on the next tick",
+  "id": "A6M13_no_upper_bound",
+  "why": "no upper bound: an absurd duration becomes a deadline that cannot be formatted as a date (or Infinity, stored null, cleaned at once)",
   "tests": [
-   "test/max-life.test.ts"
+   "test/max-life.test.ts",
+   "test/max-life-expired.test.ts"
   ],
   "expect": [
-   "a bad --max-life is a usage error"
+   "a bad --max-life is a usage error",
+   "the longest life is 100 years"
   ],
   "edits": [
    {
     "file": "src/verbs/run-start.ts",
-    "find": "if (!(ms > 0) || !Number.isFinite(ms)) throw",
+    "find": "if (!(ms > 0) || !(ms <= MAX_LIFE_MS)) throw",
     "to": "if (!(ms > 0)) throw"
+   }
+  ]
+ },
+ {
+  "id": "A6M14_deadline_extends",
+  "why": "a repeated start moves the deadline LATER (a heartbeat re-declare defeats the cap)",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/max-life-expired.test.ts"
+  ],
+  "expect": [
+   "a repeated start NEVER extends the deadline",
+   "a re-adopted run (inside its grace) keeps its deadline"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "Math.min(old, now + lifeMs)",
+    "to": "now + lifeMs"
+   }
+  ]
+ },
+ {
+  "id": "A6M15_past_deadline_start_revives",
+  "why": "a start on a run already past its max life is not treated as expired (revived or re-adopted into its own cleanup)",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/max-life-expired.test.ts"
+  ],
+  "expect": [
+   "an alive run: a start with a new --max-life",
+   "a run in grace: a start WITHOUT the flag"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (cur && cur.state !== 'cleaned' && cur.maxLifeAt !== undefined && now >= cur.maxLifeAt) return { kind: 'expired', old: JSON.parse(JSON.stringify(cur)) };",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "A6M16_expiry_only_for_alive",
+  "why": "the past-deadline expiry skips runs in grace (re-adopted into their own cleanup)",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/max-life-expired.test.ts"
+  ],
+  "expect": [
+   "a run in grace: a start WITHOUT the flag"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (cur && cur.state !== 'cleaned' && cur.maxLifeAt !== undefined && now >= cur.maxLifeAt) return",
+    "to": "if (cur && cur.state === 'alive' && cur.maxLifeAt !== undefined && now >= cur.maxLifeAt) return"
    }
   ]
  }

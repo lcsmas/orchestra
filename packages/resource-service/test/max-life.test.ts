@@ -57,19 +57,24 @@ describe('--max-life', () => {
     assert.ok(rig.run('ml3')!.maxLifeAt! > Date.now() + 3_000_000);
   });
 
-  it('a repeated start with the flag moves the deadline; without it, the deadline stays', () => {
+  it('a repeated start NEVER extends the deadline (it is not a heartbeat); a shorter one moves it earlier; a run with none gets one', () => {
     const owner = rig.coordinator();
     const o = String(owner.pid);
+    assert.equal(rig.cli(['run', 'start', '--id', 'ml4', '--owner', o]).status, 0);
+    assert.equal(rig.run('ml4')!.maxLifeAt, undefined);
     assert.equal(rig.cli(['run', 'start', '--id', 'ml4', '--owner', o, '--max-life', '1h']).status, 0);
     const first = rig.run('ml4')!.maxLifeAt!;
+    assert.ok(first > Date.now() + 3_000_000, 'a run with no deadline gets one');
     assert.equal(rig.cli(['run', 'start', '--id', 'ml4', '--owner', o]).status, 0);
     assert.equal(rig.run('ml4')!.maxLifeAt, first, 'no flag: untouched');
     assert.equal(rig.cli(['run', 'start', '--id', 'ml4', '--owner', o, '--max-life', '2h']).status, 0);
-    const moved = rig.run('ml4')!.maxLifeAt!;
-    assert.ok(moved > first + 3_000_000, 'the flag moves it (same owner, run already alive)');
+    assert.equal(rig.run('ml4')!.maxLifeAt, first, 'a LONGER life does not extend it');
+    assert.equal(rig.cli(['run', 'start', '--id', 'ml4', '--owner', o, '--max-life', '30m']).status, 0);
+    const earlier = rig.run('ml4')!.maxLifeAt!;
+    assert.ok(earlier < first - 1_500_000 && earlier > Date.now() + 1_700_000, 'a SHORTER life moves it earlier');
   });
 
-  it('a re-adopted run (inside its grace) takes the new max life too', async () => {
+  it('a re-adopted run (inside its grace) keeps its deadline against a longer life and takes a shorter one', async () => {
     const o1 = rig.coordinator();
     assert.equal(rig.cli(['run', 'start', '--id', 'ml5', '--owner', String(o1.pid), '--max-life', '1h']).status, 0);
     const old = rig.run('ml5')!.maxLifeAt!;
@@ -79,10 +84,16 @@ describe('--max-life', () => {
       s.runs.ml5.graceEndsAt = Date.now() + 600_000;
     }, rig.dir);
     const o2 = rig.coordinator();
-    assert.equal(rig.cli(['run', 'start', '--id', 'ml5', '--owner', String(o2.pid), '--max-life', '2h']).status, 0);
+    const r1 = rig.cli(['run', 'start', '--id', 'ml5', '--owner', String(o2.pid), '--max-life', '10m']);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.match(r1.stderr, /re-adopted/, 'instrument: this start really took the re-adopt path');
     const r = rig.run('ml5')!;
     assert.equal(r.state, 'alive');
-    assert.ok(r.maxLifeAt! > old + 3_000_000);
+    assert.ok(r.maxLifeAt! < old - 2_000_000 && r.maxLifeAt! > Date.now() + 500_000, 'the re-adopt takes a SHORTER life');
+    // and a longer one never extends it, on the same adopted run
+    const shorter = r.maxLifeAt!;
+    assert.equal(rig.cli(['run', 'start', '--id', 'ml5', '--owner', String(o2.pid), '--max-life', '2h']).status, 0);
+    assert.equal(rig.run('ml5')!.maxLifeAt, shorter);
   });
 
   it('a bad --max-life is a usage error (exit 2) and records nothing', () => {
@@ -93,6 +104,18 @@ describe('--max-life', () => {
       assert.match(r.stderr, /--max-life/);
     }
     assert.equal(rig.run('mlbad'), undefined);
+  });
+
+  it('the longest life is 100 years: 36500d is accepted, 36600d refused (the deadline must stay a formattable date)', () => {
+    const owner = rig.coordinator();
+    const o = String(owner.pid);
+    assert.equal(rig.cli(['run', 'start', '--id', 'mlbig', '--owner', o, '--max-life', '36500d']).status, 0);
+    assert.doesNotThrow(() => new Date(rig.run('mlbig')!.maxLifeAt!).toISOString());
+    const r = rig.cli(['run', 'start', '--id', 'mlbig2', '--owner', o, '--max-life', '36600d']);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /100 years/);
+    assert.equal(rig.run('mlbig2'), undefined);
+    assert.equal(rig.cli(['run', 'start', '--id', 'mlbig3', '--owner', o, '--max-life', '9999999999999d']).status, 2);
   });
 
   it('after a max-life cleanup the id starts fresh: no stale deadline carried over', async () => {

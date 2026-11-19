@@ -14,7 +14,13 @@ type Plan = { kind: 'created' | 'adopted' | 'unchanged' } | { kind: 'expired'; o
 
 const same = (a: Identity, b: Identity): boolean => a.pid === b.pid && a.startTime === b.startTime;
 
-/** `--max-life <duration>` → ms; a positive duration, counted from this call (a repeated start with the flag moves the deadline; without it the old one stays). */
+const MAX_LIFE_MS = 100 * 365.25 * 86_400_000; // the deadline must stay a formattable date
+
+/** The new deadline: a run with none gets one; an existing one only ever moves EARLIER (a repeated start is not a heartbeat that defeats the cap). */
+const deadline = (old: number | undefined, now: number, lifeMs: number | undefined): number | undefined =>
+  lifeMs === undefined ? old : old === undefined ? now + lifeMs : Math.min(old, now + lifeMs);
+
+/** `--max-life <duration>` → ms; a positive duration up to 100 years, counted from this call. */
 function maxLife(text: string | undefined): number | undefined {
   if (text === undefined) return undefined;
   let ms: number;
@@ -23,7 +29,7 @@ function maxLife(text: string | undefined): number | undefined {
   } catch (e) {
     throw usageError(`--max-life: ${(e as Error).message}`);
   }
-  if (!(ms > 0) || !Number.isFinite(ms)) throw usageError(`--max-life ${JSON.stringify(text)}: must be a positive, finite duration`);
+  if (!(ms > 0) || !(ms <= MAX_LIFE_MS)) throw usageError(`--max-life ${JSON.stringify(text)}: must be a positive duration of at most 100 years`);
   return ms;
 }
 
@@ -40,9 +46,12 @@ export async function main(argv: string[]): Promise<number> {
     const plan = await withState((s): Plan => {
       const cur = s.runs[id];
       const now = Date.now();
+      // Past its max life the run is being cleaned for good (the reaper may just not have ticked yet): finish it, never revive or re-adopt it.
+      if (cur && cur.state !== 'cleaned' && cur.maxLifeAt !== undefined && now >= cur.maxLifeAt) return { kind: 'expired', old: JSON.parse(JSON.stringify(cur)) };
       if (cur && cur.state === 'alive') {
         if (same(cur.owner, owner)) {
-          if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;
+          const d = deadline(cur.maxLifeAt, now, lifeMs);
+          if (d !== undefined) cur.maxLifeAt = d;
           return { kind: 'unchanged' };
         }
         if (isAlive(cur.owner)) throw refused(`run ${id} is alive with another owner (pid ${cur.owner.pid})`);
@@ -54,14 +63,15 @@ export async function main(argv: string[]): Promise<number> {
         cur.owner = owner;
         cur.state = 'alive';
         delete cur.graceEndsAt;
-        if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;
+        const d = deadline(cur.maxLifeAt, now, lifeMs);
+        if (d !== undefined) cur.maxLifeAt = d;
         return { kind: 'adopted' };
       }
       s.runs[id] = { id, token: randomBytes(16).toString('hex'), owner, state: 'alive', startedAt: now, lanes: [], ...(lifeMs !== undefined ? { maxLifeAt: now + lifeMs } : {}) };
       return { kind: 'created' };
     }, dir);
     if (plan.kind === 'expired') {
-      // Past the grace the run is being cleaned for good: finish it here, then start the id fresh.
+      // Past the grace (or its max life) the run is being cleaned for good: finish it here, then start the id fresh.
       const failures = await endRun(dir, plan.old);
       if (failures.length) throw refused(`run ${id}: its previous instance could not be cleaned: ${failures.map((f) => f.error).join('; ')}`);
       continue;
