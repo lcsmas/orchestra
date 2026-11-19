@@ -20,8 +20,9 @@ const dk = (args: string[]) => {
 
 describe('status', () => {
   let rig: Rig;
-  const json = (): Status => {
-    const r = rig.cli(['status', '--json']);
+  // `RESCTL_DOCKER_TIMEOUT` is generous here: the real-docker test must not depend on how loaded the host is (the 5 s default is tested with a shim, below)
+  const json = (env: NodeJS.ProcessEnv = {}): Status => {
+    const r = rig.cli(['status', '--json'], { RESCTL_DOCKER_TIMEOUT: '120s', ...env });
     assert.equal(r.status, 0, r.stderr);
     return JSON.parse(r.stdout);
   };
@@ -126,7 +127,70 @@ describe('status', () => {
     await waitFor('s0 and s1 cleaned by the same daemon', () => ['s0', 's1'].every((id) => runOf(id)?.state === 'cleaned'), 20_000);
   });
 
+  it('a corrupt state.json: ONE error line naming the file, no stack, exit 1 — and the daemon / containers lines are still shown', () => {
+    const bad = new Rig();
+    try {
+      fs.writeFileSync(path.join(bad.dir, 'state.json'), '{corrupt');
+      const sh = fs.mkdtempSync(path.join(bad.dir, 'shim-'));
+      fs.writeFileSync(path.join(sh, 'docker'), "#!/bin/sh\nprintf 'abc\\trelay\\trunning\\timg\\tsome-run\\n'\n", { mode: 0o755 });
+      const t = bad.cli(['status'], { PATH: `${sh}:${process.env.PATH}` });
+      assert.equal(t.status, 1);
+      assert.equal(t.stderr, '', 'no stack on stderr');
+      assert.match(t.stdout, /ERROR: .*state\.json is unreadable/);
+      assert.match(t.stdout, /^daemon: /m);
+      assert.match(t.stdout, /^containers: /m);
+      assert.doesNotMatch(t.stdout, / at load /);
+      const j = JSON.parse(bad.cli(['status', '--json'], { PATH: `${sh}:${process.env.PATH}` }).stdout) as Status;
+      assert.match(j.stateError ?? '', /state\.json is unreadable/);
+      assert.deepEqual(j.runs, []);
+      assert.deepEqual(j.orphanContainers, [], 'with the state unreadable no container is called an orphan');
+    } finally {
+      fs.rmSync(bad.dir, { recursive: true, force: true });
+    }
+  });
+
   describe('containers', () => {
+    /** A `docker` on PATH that is a script: what `status` asks of docker is answered by the test, no daemon, no clock. */
+    const shim = (body: string): NodeJS.ProcessEnv => {
+      const d = fs.mkdtempSync(path.join(rig.dir, 'shim-'));
+      fs.writeFileSync(path.join(d, 'docker'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      return { PATH: `${d}:${process.env.PATH}` };
+    };
+
+    it('a docker that answers: its containers are grouped under their run, parsed from the exact `ps` format (shim, no real docker)', () => {
+      const c = rig.coordinator();
+      assert.equal(rig.cli(['run', 'start', '--id', 'sh1', '--owner', String(c.pid)]).status, 0);
+      // plus a FOREIGN container of another host-wide run (what a concurrent suite / another swarm leaves on the shared daemon): it must not change sh1's result
+      const j = json(shim(`printf 'abc123\\trelay-1\\trunning\\talpine:3\\tsh1\\nfff999\\tforeign\\trunning\\talpine:3\\tsomeone-elses\\n'`));
+      assert.equal(j.containers.available, true);
+      assert.deepEqual(j.runs.find((r) => r.id === 'sh1')!.containers, [{ id: 'abc123', name: 'relay-1', state: 'running', image: 'alpine:3', run: 'sh1' }]);
+      assert.deepEqual(j.orphanContainers.map((c) => c.name), ['foreign'], 'the foreign container is reported apart, not under sh1');
+    });
+
+    it('a docker that never answers: status gives up after RESCTL_DOCKER_TIMEOUT (not the 5 s default), says why, exit 0', () => {
+      const t0 = Date.now();
+      const r = rig.cli(['status', '--json'], { ...shim('exec sleep 30'), RESCTL_DOCKER_TIMEOUT: '300ms' });
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(Date.now() - t0 < 4500, `status took ${Date.now() - t0}ms`);
+      const j: Status = JSON.parse(r.stdout);
+      assert.equal(j.containers.available, false);
+      assert.match(j.containers.reasons[0], /did not answer within 0\.3s/);
+    });
+
+    it('a docker that answers slowly (11 s, past the old fixed 10 s cap) is waited for when RESCTL_DOCKER_TIMEOUT allows it', () => {
+      const c = rig.coordinator();
+      assert.equal(rig.cli(['run', 'start', '--id', 'slow1', '--owner', String(c.pid)]).status, 0);
+      const j = json({ ...shim(`sleep 11; printf 'abc\\tslow\\trunning\\timg\\tslow1\\n'`), RESCTL_DOCKER_TIMEOUT: '60s' });
+      assert.equal(j.containers.available, true, JSON.stringify(j.containers));
+      assert.deepEqual(j.runs.find((r) => r.id === 'slow1')!.containers.map((x) => x.name), ['slow']);
+    });
+
+    it('a docker that fails: the first line of its stderr is the reason (exit 0)', () => {
+      const j = json(shim('echo "Cannot connect to the Docker daemon" >&2; exit 1'));
+      assert.equal(j.containers.available, false);
+      assert.match(j.containers.reasons[0], /Cannot connect to the Docker daemon/);
+    });
+
     it('no docker binary on PATH: status lists the runs, containers read "unavailable" with the reason and "unknown" per run (exit 0)', () => {
       const missing = rig.cli(['status'], { PATH: fs.mkdtempSync(path.join(rig.dir, 'nopath-')) });
       assert.equal(missing.status, 0, missing.stderr);
@@ -135,16 +199,18 @@ describe('status', () => {
     });
 
     it('with docker reachable, a container labelled resctl.run=<id> is listed under that run; one labelled with an unknown run is reported apart', { skip: dockerGate.skip }, async () => {
+      // run ids are PER TOKEN: the docker daemon is shared by every concurrent copy of this suite (a plain `s3` collided with a sibling's container)
+      const runId = `s3-${TOKEN}`;
       const coord = rig.coordinator();
-      assert.equal(rig.cli(['run', 'start', '--id', 's3', '--owner', String(coord.pid)]).status, 0);
+      assert.equal(rig.cli(['run', 'start', '--id', runId, '--owner', String(coord.pid)]).status, 0);
       const mk = (name: string, run: string) => dk(['run', '-d', '--name', name, '--label', `resctl.run=${run}`, '--label', `resctl.test=${TOKEN}`, '--memory', '32m', 'alpine:3', 'sleep', '120']);
-      assert.equal(mk(`resctl-test-${TOKEN}`, 's3').status, 0);
-      assert.equal(mk(`resctl-test-${TOKEN}-orphan`, 'nobody').status, 0);
+      assert.equal(mk(`resctl-test-${TOKEN}`, runId).status, 0);
+      assert.equal(mk(`resctl-test-${TOKEN}-orphan`, `nobody-${TOKEN}`).status, 0);
       const j = json();
       assert.equal(j.containers.available, true, JSON.stringify(j.containers));
-      const r = j.runs.find((x) => x.id === 's3')!;
+      const r = j.runs.find((x) => x.id === runId)!;
       assert.deepEqual(r.containers.map((c) => [c.name, c.state, c.image]), [[`resctl-test-${TOKEN}`, 'running', 'alpine:3']]);
-      assert.deepEqual(j.orphanContainers.filter((c) => c.name.includes(TOKEN)).map((c) => c.run), ['nobody'], 'other containers of the host may be orphans too: only ours are asserted');
+      assert.deepEqual(j.orphanContainers.filter((c) => c.name.includes(TOKEN)).map((c) => c.run), [`nobody-${TOKEN}`], 'other containers of the host may be orphans too: only ours are asserted');
       assert.ok(rig.cli(['status']).stdout.includes(`resctl-test-${TOKEN} (running)`));
       dk(['rm', '-f', `resctl-test-${TOKEN}-orphan`]);
       await coord.kill();

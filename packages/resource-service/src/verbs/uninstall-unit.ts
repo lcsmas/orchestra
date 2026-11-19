@@ -1,19 +1,28 @@
 // resctl uninstall-unit [--force]: stop + disable the unit, delete its file (only one resctl wrote), reload. Idempotent: a unit that is not installed is exit 0.
 // Stopping the unit stops the reaper only; runs and their lanes are left exactly as they are.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parse } from '../args.ts';
 import { CliError, EXIT, refused, usageError } from '../errors.ts';
-import { isManaged, resolveUnitName, systemctl, unitDir, userManager } from '../systemd.ts';
+import { isManaged, resolveUnitName, resolveUnitDir, systemctl, unitDir, userManager } from '../systemd.ts';
 
 export async function main(argv: string[]): Promise<number> {
-  const { values, positionals } = parse(argv, { force: { type: 'boolean' } });
+  const { values, positionals } = parse(argv, { force: { type: 'boolean' }, print: { type: 'boolean' } });
   if (positionals.length) throw usageError(`unexpected argument: ${positionals[0]}`);
   const name = resolveUnitName(process.env);
-  const file = path.join(unitDir(process.env), name);
+  const mgr = userManager(process.env);
+  let dir = unitDir(process.env);
+  if (mgr.ok) try { dir = resolveUnitDir(process.env); } catch { /* the manager searches neither dir: look in the conventional one */ }
+  // the unit may have been installed under the other searched directory (the installer's XDG_CONFIG_HOME differed): take the one that has the file
+  const home = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const file = [dir, home].map((d) => path.join(d, name)).find((f) => fs.existsSync(f)) ?? path.join(dir, name);
+  if (values.print) {
+    process.stderr.write(`would uninstall ${name} at ${file}\n`); // dry run: names what it would act on (read-only `systemctl show` only)
+    return EXIT.ok;
+  }
   const present = fs.existsSync(file);
   if (present && !isManaged(file) && !values.force) throw refused(`${file} was not written by resctl install-unit (use --force to remove it)`);
-  const mgr = userManager(process.env);
   if (!mgr.ok) {
     if (present) throw new CliError(EXIT.failure, `cannot uninstall ${name}: ${mgr.detail} (its file ${file} is still there)`);
     process.stdout.write(`${name} was not installed (no systemd user manager here)\n`);

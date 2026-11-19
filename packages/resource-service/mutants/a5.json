@@ -443,7 +443,7 @@
   "edits": [
    {
     "file": "src/verbs/status.ts",
-    "find": "orphanContainers: containers.filter((c) => !known.has(c.run)),",
+    "find": "orphanContainers: stateError ? [] : containers.filter((c) => !known.has(c.run)),",
     "to": "orphanContainers: [],"
    }
   ]
@@ -507,7 +507,7 @@
    "test/container.test.ts"
   ],
   "expect": [
-   "builds, runs `serve`"
+   "builds; PID 1 is an init"
   ],
   "edits": [
    {
@@ -524,7 +524,7 @@
    "test/container.test.ts"
   ],
   "expect": [
-   "builds, runs `serve`"
+   "builds; PID 1 is an init"
   ],
   "edits": [
    {
@@ -541,12 +541,12 @@
    "test/unit.test.ts"
   ],
   "expect": [
-   "install while ANOTHER daemon holds daemon.lock"
+   "cannot start"
   ],
   "edits": [
    {
     "file": "src/verbs/install-unit.ts",
-    "find": "const down = await settle(spec.name, process.env);",
+    "find": "const down = await settle(spec.name, spec.environment.RESCTL_STATE_DIR, process.env);",
     "to": "const down = null as string | null;"
    }
   ]
@@ -606,7 +606,7 @@
   "id": "M39_execstart_dollar_unescaped",
   "why": "a $ in an ExecStart word is expanded by systemd",
   "tests": [
-   "test/unit.test.ts"
+   "test/unit-render.test.ts"
   ],
   "expect": [
    "execWord quotes what systemd would expand"

@@ -27,4 +27,6 @@ export const diskPath = (env: Env = process.env): string => env.RESCTL_DISK_PATH
 /** `admit` re-measures every poll (default 2 s) and repeats what it waits for every report interval (default 30 s). */
 export const admitPollMs = (env: Env = process.env): number => Math.max(50, duration(env, 'RESCTL_ADMIT_POLL', '2s'));
 export const admitReportMs = (env: Env = process.env): number => duration(env, 'RESCTL_ADMIT_REPORT', '30s');
+/** How long `status` waits for the docker CLI (default 5 s). */
+export const dockerTimeoutMs = (env: Env = process.env): number => duration(env, 'RESCTL_DOCKER_TIMEOUT', '5s');
 export const unitName = (env: Env = process.env): string => env.RESCTL_UNIT_NAME || 'resctl.service';

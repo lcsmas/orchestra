@@ -20,7 +20,8 @@ export function decide(run: Run, now: number, ownerAlive: boolean, o: { graceMs:
 }
 
 /** One reaper pass over the state dir. Cleanup runs OUTSIDE the state lock. */
-export async function tick(dir: string, env: Env, log: (msg: string) => void, now: number = Date.now()): Promise<void> {
+/** `shouldStop` is polled between the runs due at once: a stop request (SIGTERM) finishes the run in flight, not all of them. */
+export async function tick(dir: string, env: Env, log: (msg: string) => void, now: number = Date.now(), shouldStop: () => boolean = () => false): Promise<void> {
   const opts = { graceMs: graceMs(env), keepMs: keepMs(env) };
   const due: { run: Run; reason: string }[] = [];
   await withState((s) => {
@@ -41,6 +42,7 @@ export async function tick(dir: string, env: Env, log: (msg: string) => void, no
   }, dir);
   const ctx: CleanupCtx = { env, log };
   for (const { run, reason } of due) {
+    if (shouldStop()) break; // the rest stays due: the next daemon (or run end) cleans it
     log(`run ${run.id}: cleaning (${reason})`);
     const failures = await endRun(dir, run, ctx);
     if (failures.length) log(`run ${run.id}: cleanup failed, will retry: ${failures.map((f) => `${f.step}: ${f.error}`).join('; ')}`);

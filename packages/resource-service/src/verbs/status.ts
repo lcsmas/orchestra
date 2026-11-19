@@ -1,7 +1,8 @@
 // resctl status [--json]: every run of the state dir with its owner, state, processes, containers and memory.
+import path from 'node:path';
 import { parse } from '../args.ts';
 import { daemonRunning, daemonLockPath } from '../daemon.ts';
-import { stateDir, type Env } from '../env.ts';
+import { dockerTimeoutMs, stateDir, type Env } from '../env.ts';
 import { usageError } from '../errors.ts';
 import { readHolder } from '../lockfile.ts';
 import { isAlive, type Identity } from '../proc.ts';
@@ -29,12 +30,20 @@ export type Status = {
   containers: { available: boolean; reasons: string[] };
   orphanContainers: ContainerInfo[]; // labelled with a run this state dir does not know
   runs: RunStatus[];
+  /** state.json unreadable (corrupt / newer version): `runs` is empty, the other lines are still true. */
+  stateError?: string;
 };
 
 /** Everything `status` prints, as data. `sources` is the A2 seam (default: CONTAINER_SOURCES). */
-export async function collectStatus(env: Env = process.env, sources: ContainerSource[] = CONTAINER_SOURCES, now: number = Date.now(), sourceTimeoutMs: number = SOURCE_TIMEOUT_MS): Promise<Status> {
+export async function collectStatus(env: Env = process.env, sources: ContainerSource[] = CONTAINER_SOURCES, now: number = Date.now(), sourceTimeoutMs: number = Math.max(SOURCE_TIMEOUT_MS, dockerTimeoutMs(env) + 2000)): Promise<Status> {
   const dir = stateDir(env);
-  const state = readState(dir);
+  let state: ReturnType<typeof readState> = { version: 1, runs: {} };
+  let stateError: string | undefined;
+  try {
+    state = readState(dir);
+  } catch (e) {
+    stateError = `${path.join(dir, 'state.json')} is unreadable (${(e as Error).message.split('\n')[0]}): runs cannot be listed; nothing will be reaped from it either (fail closed)`;
+  }
   const holder = readHolder(daemonLockPath(dir));
   const running = daemonRunning(dir);
   const reports = await Promise.all(sources.map(async (s) => ({ s, r: await asked(s, env, sourceTimeoutMs) })));
@@ -67,8 +76,10 @@ export async function collectStatus(env: Env = process.env, sources: ContainerSo
     now,
     daemon: { running, ...(running && holder && holder !== 'unreadable' ? { pid: holder.pid } : {}) },
     containers: { available: reasons.length < sources.length, reasons },
-    orphanContainers: containers.filter((c) => !known.has(c.run)),
+    // with an unreadable state every run is unknown: calling all containers orphans would be false
+    orphanContainers: stateError ? [] : containers.filter((c) => !known.has(c.run)),
     runs,
+    ...(stateError ? { stateError } : {}),
   };
 }
 
@@ -80,7 +91,8 @@ export function render(s: Status): string {
   out.push(`state dir: ${s.stateDir}`);
   out.push(`daemon: ${s.daemon.running ? `running (pid ${s.daemon.pid ?? '?'})` : 'NOT RUNNING — nothing will reap a run whose owner dies (start `resctl serve` or the unit)'}`);
   out.push(`containers: ${s.containers.available ? 'visible' : 'unavailable'}${s.containers.reasons.length ? ` (${s.containers.reasons.join('; ')})` : ''}`);
-  if (s.runs.length === 0) out.push('no runs');
+  if (s.stateError) out.push(`ERROR: ${s.stateError}`);
+  else if (s.runs.length === 0) out.push('no runs');
   for (const r of s.runs) {
     const label = r.state === 'grace' ? `in grace (${secs(r.graceLeftMs ?? 0)} left)` : r.state === 'alive' && !r.owner.alive ? 'alive (owner gone, not yet noticed by the reaper)' : r.state;
     out.push('');
@@ -100,5 +112,5 @@ export async function main(argv: string[]): Promise<number> {
   if (positionals.length) throw usageError(`unexpected argument: ${positionals[0]}`);
   const s = await collectStatus();
   process.stdout.write(values.json ? JSON.stringify(s, null, 2) + '\n' : render(s));
-  return 0;
+  return s.stateError ? 1 : 0;
 }

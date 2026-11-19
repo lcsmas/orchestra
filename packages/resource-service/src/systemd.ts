@@ -7,7 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { diskPath, graceMs, keepMs, minFreeDisk, minFreeMem, stateDir, termWaitMs, tickMs, unitName, type Env } from './env.ts';
 import { CliError, EXIT, usageError } from './errors.ts';
-import { sleep } from './proc.ts';
+import { daemonLockPath } from './daemon.ts';
+import { readHolder } from './lockfile.ts';
+import { isAlive, sleep } from './proc.ts';
 
 /** First line of every unit we write: uninstall (and a re-install) only touch a file that carries it. */
 export const MARKER = '# managed by `resctl install-unit` — do not edit; re-run it instead';
@@ -22,6 +24,36 @@ export function resolveUnitName(env: Env): string {
 
 export function unitDir(env: Env): string {
   return path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user');
+}
+
+/**
+ * The directory to write the unit into: one the USER manager really searches (`UnitPath`). The installer's `$XDG_CONFIG_HOME` is used only when the manager
+ * searches it too; otherwise `~/.config/systemd/user`; neither → refuse BEFORE writing (a unit the manager cannot see is "does not exist" at `enable`).
+ */
+export function resolveUnitDir(env: Env): string {
+  const paths = systemctl(['show', '--property=UnitPath', '--value'], env).stdout.trim().split(/[\s:]+/).filter(Boolean);
+  const want = unitDir(env);
+  const home = path.join(os.homedir(), '.config', 'systemd', 'user');
+  for (const d of [want, home]) if (paths.includes(d)) return d;
+  throw new CliError(EXIT.failure, `the systemd user manager searches neither ${want} nor ${home} (UnitPath: ${paths.join(' ') || 'unknown'}): not writing a unit it cannot see`);
+}
+
+/** `--print` / `uninstall-unit --print` need no systemd: ask the manager when there is one, else the conventional dir. */
+export const unitDirFor = (env: Env): string => (userManager(env).ok ? resolveUnitDir(env) : unitDir(env));
+
+/** Inverse of `envLine` over a unit file we rendered: every `Environment="K=V"` line, unescaped (JSON string, `%%` → `%`). */
+export function parseUnitEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of text.matchAll(/^Environment=(".*")$/gm)) {
+    try {
+      const kv = JSON.parse(m[1].replace(/%%/g, '%')) as string;
+      const i = kv.indexOf('=');
+      if (i > 0) out[kv.slice(0, i)] = kv.slice(i + 1);
+    } catch {
+      /* not one of ours */
+    }
+  }
+  return out;
 }
 
 /** One ExecStart word: double-quoted, with the characters systemd would expand escaped. */
@@ -89,16 +121,24 @@ export function requireUserManager(env: Env): void {
   throw new CliError(EXIT.failure, `no systemd user manager reachable (${m.detail}): is XDG_RUNTIME_DIR set? Run \`resctl serve\` in the foreground instead.`);
 }
 
-/** `restart` of a Type=simple unit returns at fork: watch it ~0.6 s and say so when it did not stay up (e.g. exit 3 = another daemon holds daemon.lock). */
-export async function settle(name: string, env: Env, stayMs = 600): Promise<string | null> {
+/**
+ * `restart` of a Type=simple unit returns at fork. Success = the unit's main process HOLDS daemon.lock (no clock: a loaded host boots node slowly); failure = it
+ * left `active` / is waiting to auto-restart (it crashed, or exit 3 = another daemon holds the lock), or never took the lock within `waitMs`.
+ */
+export async function settle(name: string, stateDir: string, env: Env, waitMs = 20_000): Promise<string | null> {
   const t0 = Date.now();
+  const down = (why: string): string => `${why}; see \`journalctl --user -u ${name}\``;
   for (;;) {
-    const state = systemctl(['is-active', name], env).stdout.trim();
-    if (state !== 'active' && state !== 'activating') {
+    const q = Object.fromEntries(systemctl(['show', '--property=ActiveState,SubState,MainPID', name], env).stdout.trim().split('\n').map((l) => l.split('=')));
+    const state = `${q.ActiveState ?? ''}${q.SubState ? ` (${q.SubState})` : ''}`;
+    // `activating (auto-restart)` = it already died and systemd is waiting to retry: not up
+    if ((q.ActiveState !== 'active' && q.ActiveState !== 'activating') || q.SubState === 'auto-restart') {
       const status = systemctl(['show', '--property=ExecMainStatus', '--value', name], env).stdout.trim();
-      return `${name} is ${state || 'not running'} right after start (exit status ${status || '?'}${status === '3' ? ': another resctl serve already holds daemon.lock for this state dir' : ''}); see \`journalctl --user -u ${name}\``;
+      return down(`${name} is ${state || 'not running'} right after start (exit status ${status || '?'}${status === '3' ? ': another resctl serve already holds daemon.lock for this state dir' : ''})`);
     }
-    if (Date.now() - t0 >= stayMs) return null;
+    const h = readHolder(daemonLockPath(stateDir));
+    if (h && h !== 'unreadable' && h.pid === Number(q.MainPID) && isAlive(h)) return null;
+    if (Date.now() - t0 >= waitMs) return down(`${name} is ${state} but its main process holds no daemon.lock in ${stateDir} after ${waitMs / 1000}s`);
     await sleep(100);
   }
 }

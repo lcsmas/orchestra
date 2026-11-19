@@ -2,15 +2,16 @@
 // removed in `after`; its state dir is the rig's private dir, so the unit's reaper only ever sees this test's runs.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 import { identityOf, isAlive, Rig, waitFor, within } from './lib/rig.ts';
 import { systemd } from './lib/gates.ts';
 import { readHolder } from '../src/lockfile.ts';
-import { execWord } from '../src/systemd.ts';
+import { staleTestUnits, TEST_UNIT } from './lib/units.ts';
 
 const gate = systemd();
 const UNIT = `resctl-test-${randomBytes(4).toString('hex')}.service`;
@@ -21,16 +22,15 @@ const prop = (p: string): string => sysctl('show', '--property', p, '--value', U
 const isEnabled = (): string => sysctl('is-enabled', UNIT).stdout.trim();
 const listed = (): string => sysctl('list-units', '--all', '--plain', '--no-legend', UNIT).stdout.trim();
 
-/** A crashed earlier run (or a mutant that timed out) can leave a test unit behind: drop every `resctl-test-*` unit whose pinned state dir no longer exists. */
+/** A crashed earlier run (or a mutant that timed out) can leave a test unit behind: drop the `resctl-test-*` units whose pinned rig state dir no longer exists (never a live sibling's). */
 function sweepStale(): void {
-  for (const f of fs.existsSync(UNIT_DIR) ? fs.readdirSync(UNIT_DIR) : []) {
-    if (!/^resctl-test-[0-9a-f]{8}\.service$/.test(f) || f === UNIT) continue;
-    const text = fs.readFileSync(path.join(UNIT_DIR, f), 'utf8');
-    const dir = /RESCTL_STATE_DIR=([^"]+)"/.exec(text)?.[1];
-    if (!text.startsWith('# managed by `resctl install-unit`') || !dir || fs.existsSync(dir)) continue;
-    sysctl('disable', '--now', f);
+  const files = (fs.existsSync(UNIT_DIR) ? fs.readdirSync(UNIT_DIR) : []).filter((f) => TEST_UNIT.test(f) && f !== UNIT).map((name) => ({ name, text: fs.readFileSync(path.join(UNIT_DIR, name), 'utf8') }));
+  for (const f of staleTestUnits(files, fs.existsSync)) {
+    sysctl('stop', f);
+    sysctl('disable', f);
     fs.rmSync(path.join(UNIT_DIR, f), { force: true });
     sysctl('daemon-reload');
+    sysctl('reset-failed', f);
   }
 }
 
@@ -43,6 +43,8 @@ describe('systemd user unit', { skip: gate.skip }, () => {
     // never reach an install unless the CLI itself says it would write OUR unit, not the real resctl.service
     assert.match(UNIT, /^resctl-test-[0-9a-f]{8}\.service$/);
     assert.ok(rig.cli(['install-unit', '--print']).stderr.includes(`would install ${UNIT} at ${UNIT_FILE}`), 'RESCTL_UNIT_NAME did not select the test unit: refusing to install anything');
+    // uninstall resolves its own name and always runs `disable --now`: it must name OUR unit before any test calls it
+    assert.ok(rig.cli(['uninstall-unit', '--print']).stderr.includes(`would uninstall ${UNIT} at ${UNIT_FILE}`), 'uninstall-unit did not select the test unit: refusing to run anything');
   });
   after(async () => {
     // never leave a unit, a file or a symlink behind — even when a test failed half way
@@ -95,21 +97,86 @@ describe('systemd user unit', { skip: gate.skip }, () => {
     fs.rmSync(UNIT_FILE);
   });
 
-  it('execWord quotes what systemd would expand: backslash, quote, $ and %', () => {
-    assert.equal(execWord('/a b/node'), '"/a b/node"');
-    assert.equal(execWord('p$q%h"x\\y'), '"p$$q%%h\\"x\\\\y"');
+  it('install takes over from an AUTOSTARTED daemon: stopped by identity (it reaps nothing), the unit holds the lock and is not left failed', async () => {
+    const coord = rig.coordinator();
+    assert.equal(rig.cli(['run', 'start', '--id', 't1', '--owner', String(coord.pid)], { RESCTL_NO_AUTOSTART: '' }).status, 0); // `run start` autostarts a detached serve
+    const old = await waitFor('the autostarted daemon\'s lock', () => {
+      const h = readHolder(path.join(rig.dir, 'daemon.lock'));
+      return h && h !== 'unreadable' ? h : null;
+    });
+    const lane = identityOf(await rig.lane('t1', 'sleep').pid())!;
+    const r = rig.cli(['install-unit']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(r.stderr.includes(`stopped daemon pid ${old.pid}`), r.stderr);
+    assert.equal(isAlive(old), false, 'the autostarted daemon is gone');
+    await waitFor('the unit to hold the lock', () => {
+      const h = readHolder(path.join(rig.dir, 'daemon.lock'));
+      return h && h !== 'unreadable' && h.pid === Number(prop('MainPID')) && h.pid !== old.pid;
+    });
+    assert.equal(sysctl('is-active', UNIT).stdout.trim(), 'active');
+    assert.equal(rig.run('t1')?.state, 'alive', 'taking over reaped nothing');
+    assert.ok(isAlive(lane) && isAlive(identityOf(coord.pid)!));
+    assert.equal(rig.cli(['uninstall-unit']).status, 0);
   });
 
-  it('install while ANOTHER daemon holds daemon.lock: exit 1 saying so (the unit would sit failed), nothing killed', async () => {
-    const d = rig.startDaemon();
-    await waitFor('the foreign daemon\'s lock', () => readHolder(path.join(rig.dir, 'daemon.lock')) !== null);
-    const r = rig.cli(['install-unit']);
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stderr, /daemon\.lock/);
-    assert.equal(d.child.exitCode, null, 'the foreign daemon is untouched');
+  /** A process that takes daemon.lock and ignores SIGTERM. `detached` = its own process group (like an autostarted daemon); otherwise it shares the caller's group. */
+  async function stubbornHolder(detached: boolean) {
+    const lockjs = fileURLToPath(new URL('../src/lockfile.ts', import.meta.url));
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', `import { tryAcquire } from ${JSON.stringify(lockjs)}; process.on('SIGTERM', () => {}); tryAcquire(${JSON.stringify(path.join(rig.dir, 'daemon.lock'))}); setInterval(() => {}, 1e6);`], { stdio: 'ignore', env: rig.env, detached });
+    const h = await waitFor('the stubborn holder\'s lock', () => {
+      const x = readHolder(path.join(rig.dir, 'daemon.lock'));
+      return x && x !== 'unreadable' && x.pid === holder.pid ? x : null;
+    });
+    return { holder, h };
+  }
+  const killHolder = async (holder: ReturnType<typeof spawn>) => {
+    holder.kill('SIGKILL');
+    await waitFor('the holder to die', () => holder.exitCode !== null || holder.signalCode !== null);
+  };
+
+  it('a lock holder that will not exit on SIGTERM: install exits 1 naming its pid and the remedy; the unit is installed + enabled but not started', async () => {
+    const { holder, h } = await stubbornHolder(true);
+    try {
+      const r = rig.cli(['install-unit']);
+      assert.equal(r.status, 1, r.stdout + r.stderr);
+      assert.match(r.stderr, new RegExp(`daemon pid ${h.pid} .*did not exit on SIGTERM`));
+      assert.notEqual(sysctl('is-active', UNIT).stdout.trim(), 'active');
+      assert.equal(isEnabled(), 'enabled');
+    } finally {
+      await killHolder(holder);
+    }
     assert.equal(rig.cli(['uninstall-unit']).status, 0);
-    d.child.kill('SIGTERM');
-    await within('the foreign daemon exits', d.exited);
+  });
+
+  it('a lock holder in the installer\'s own process group cannot be signalled: install says so (not "did not exit"), exit 1', async () => {
+    const { holder, h } = await stubbornHolder(false);
+    try {
+      const r = rig.cli(['install-unit']);
+      assert.equal(r.status, 1, r.stdout + r.stderr);
+      assert.match(r.stderr, new RegExp(`daemon pid ${h.pid} .*may not signal it`));
+    } finally {
+      await killHolder(holder);
+    }
+    assert.equal(rig.cli(['uninstall-unit']).status, 0);
+  });
+
+  it('a unit whose daemon cannot start (state dir is a regular file): install exits 1 saying it is not running, instead of "started"', () => {
+    const notADir = path.join(rig.dir, 'a-file');
+    fs.writeFileSync(notADir, 'x');
+    const r = rig.cli(['install-unit'], { RESCTL_STATE_DIR: notADir });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /right after start/);
+    assert.equal(rig.cli(['uninstall-unit']).status, 0);
+  });
+
+  it('an XDG_CONFIG_HOME the manager does not search: the unit still lands where the manager looks (and uninstall finds it there)', () => {
+    const x = fs.mkdtempSync(path.join(rig.dir, 'xdg-'));
+    const r = rig.cli(['install-unit', '--no-start'], { XDG_CONFIG_HOME: x });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(fs.existsSync(UNIT_FILE), true, 'written in the manager\'s own directory');
+    assert.equal(fs.existsSync(path.join(x, 'systemd')), false, 'nothing under the unsearched XDG dir');
+    assert.equal(isEnabled(), 'enabled');
+    assert.equal(rig.cli(['uninstall-unit'], { XDG_CONFIG_HOME: x }).status, 0);
     assert.equal(fs.existsSync(UNIT_FILE), false);
   });
 

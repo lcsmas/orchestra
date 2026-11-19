@@ -79,10 +79,15 @@ describe('serve as a container main command', { skip: gate.skip }, () => {
   });
 });
 
-// The shipped Dockerfile itself: built from the package dir, run as the image's own ENTRYPOINT/CMD with `--init` as documented — no bind mount, no command override.
+// The shipped Dockerfile itself: built from the package dir (needs network once for tini's apt layer), run as the image's own ENTRYPOINT/CMD — NO `--init`,
+// no bind mount, no command override. The image carries its own init: tini is PID 1, so a killed escapee is reaped instead of staying <defunct>.
 describe('the Dockerfile', { skip: gate.skip }, () => {
   const IMG = `resctl-test-${TOKEN}-img`;
   const NAME2 = `${NAME}-img`;
+  const CTL2 = 'node /opt/resctl/bin/resctl.mjs';
+  const box = (cmd: string) => dk(['exec', NAME2, 'sh', '-c', cmd]);
+  const zombies = () => box('for f in /proc/[0-9]*/status; do grep -q "^State:.Z" $f 2>/dev/null && echo $f; done; true').stdout.trim();
+  const st = (): Status => JSON.parse(box(`${CTL2} status --json`).stdout);
   after(() => {
     dk(['rm', '-f', NAME2]);
     dk(['rmi', '-f', IMG]);
@@ -90,15 +95,25 @@ describe('the Dockerfile', { skip: gate.skip }, () => {
     assert.equal(dk(['images', '-q', IMG]).stdout.trim(), '', 'the test image was not removed');
   });
 
-  it('builds, runs `serve` as its CMD with --init, answers status, and stops with exit code 0', async () => {
-    const b = dk(['build', '-q', '--label', `resctl.test=${TOKEN}`, '-t', IMG, PKG]);
+  it('builds; PID 1 is an init (tini) that runs `serve` as CMD; a setsid-escaped lane process, once killed, leaves NO zombie; docker stop exits 0', async () => {
+    const b = dk(['build', '-q', '--label', `resctl.test=${TOKEN}`, '-t', IMG, PKG], 600_000);
     assert.equal(b.status, 0, b.stderr);
-    const r = dk(['run', '-d', '--init', '--name', NAME2, '--label', `resctl.test=${TOKEN}`, '--memory', '300m', '-e', 'RESCTL_GRACE=2s', '-e', 'RESCTL_TICK=200ms', IMG]);
+    const r = dk(['run', '-d', '--name', NAME2, '--label', `resctl.test=${TOKEN}`, '--memory', '300m', '-e', 'RESCTL_GRACE=2s', '-e', 'RESCTL_TICK=200ms', '-e', 'RESCTL_TERM_WAIT=400ms', IMG]);
     assert.equal(r.status, 0, r.stderr);
     await waitFor('the serving line in docker logs', () => /resctl serve: serving \/var\/lib\/resctl\/state\.json/.test(dk(['logs', NAME2]).stdout), 20_000, 200);
-    const st = JSON.parse(dk(['exec', NAME2, 'node', '/opt/resctl/bin/resctl.mjs', 'status', '--json']).stdout) as Status;
-    assert.equal(st.daemon.running, true);
-    assert.equal(st.stateDir, '/var/lib/resctl');
+    assert.match(box('tr "\\0" " " < /proc/1/cmdline').stdout, /tini .*resctl\.mjs serve/, 'PID 1 is the init, wrapping serve');
+    assert.equal(st().daemon.running, true);
+    assert.equal(st().stateDir, '/var/lib/resctl');
+
+    const owner = Number(box('sleep 300 >/dev/null 2>&1 & echo $!').stdout.trim());
+    assert.equal(box(`${CTL2} run start --id z1 --owner ${owner}`).status, 0);
+    // a lane that spawns a `setsid` child (own session: only the run's token finds it) and stays; both are orphaned to PID 1 once killed
+    assert.equal(dk(['exec', '-d', NAME2, 'sh', '-c', `exec ${CTL2} exec --run z1 -- sh -c 'setsid sleep 302 >/dev/null 2>&1 & exec sleep 301'`]).status, 0);
+    await waitFor('both lane processes listed', () => (st().runs.find((x) => x.id === 'z1')?.processes.length ?? 0) >= 2, 20_000, 300);
+    assert.equal(box(`kill ${owner}`).status, 0);
+    await waitFor('the run cleaned', () => st().runs.find((x) => x.id === 'z1')?.state === 'cleaned', 20_000, 300);
+    await waitFor('no zombie in the container', () => zombies() === '', 10_000, 300).catch(() => assert.equal(zombies(), '', 'defunct processes left: PID 1 does not reap'));
+
     assert.equal(dk(['stop', '-t', '8', NAME2]).status, 0);
     assert.equal(JSON.parse(dk(['inspect', '--format', '{{json .State}}', NAME2]).stdout).ExitCode, 0);
   });

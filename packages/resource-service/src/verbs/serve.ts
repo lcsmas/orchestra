@@ -31,7 +31,7 @@ export async function main(_argv: string[]): Promise<number> {
         return EXIT.failure;
       }
       try {
-        await tick(dir, process.env, log);
+        await tick(dir, process.env, log, Date.now(), () => stopping);
       } catch (e) {
         log(`tick failed: ${(e as Error).message}`);
       }

@@ -2,7 +2,7 @@
 // CONTAINER_SOURCES (or replace `dockerLabelSource`) and `status` merges its containers by id. A source must DEGRADE, never throw: it returns {available:false, reason}.
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import type { Env } from './env.ts';
+import { dockerTimeoutMs, type Env } from './env.ts';
 import { collectRunProcesses } from './cleanup.ts';
 import type { Run } from './state.ts';
 
@@ -10,7 +10,6 @@ export type ContainerInfo = { id: string; name: string; image: string; state: st
 export type ContainersReport = { available: true; containers: ContainerInfo[] } | { available: false; reason: string };
 export type ContainerSource = { name: string; collect: (env: Env) => Promise<ContainersReport> };
 
-export const DOCKER_TIMEOUT_MS = 5000;
 const SEP = '\t';
 
 /** Every container carrying the label `resctl.run` (A2's relay stamps it; the freeze names it), grouped later by its value. A missing/unreachable docker is a report, not an error. */
@@ -19,10 +18,10 @@ export const dockerLabelSource: ContainerSource = {
   collect: (env) =>
     new Promise((resolve) => {
       const fmt = ['{{.ID}}', '{{.Names}}', '{{.State}}', '{{.Image}}', '{{.Label "resctl.run"}}'].join(SEP);
-      execFile('docker', ['ps', '-a', '--filter', 'label=resctl.run', '--format', fmt], { env: env as NodeJS.ProcessEnv, timeout: DOCKER_TIMEOUT_MS, encoding: 'utf8' }, (err, stdout, stderr) => {
+      execFile('docker', ['ps', '-a', '--filter', 'label=resctl.run', '--format', fmt], { env: env as NodeJS.ProcessEnv, timeout: dockerTimeoutMs(env), encoding: 'utf8' }, (err, stdout, stderr) => {
         if (err) {
           const e = err as NodeJS.ErrnoException & { killed?: boolean };
-          const reason = e.code === 'ENOENT' ? 'docker not found' : e.killed ? `docker did not answer within ${DOCKER_TIMEOUT_MS / 1000}s` : (String(stderr).trim().split('\n')[0] || e.message);
+          const reason = e.code === 'ENOENT' ? 'docker not found' : e.killed ? `docker did not answer within ${dockerTimeoutMs(env) / 1000}s` : (String(stderr).trim().split('\n')[0] || e.message);
           return resolve({ available: false, reason });
         }
         const containers = String(stdout).split('\n').filter(Boolean).map((l): ContainerInfo => {

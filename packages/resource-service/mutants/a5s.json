@@ -1,0 +1,223 @@
+[
+ {
+  "id": "S01_install_keeps_other_daemon",
+  "why": "install restarts the unit without stopping the autostarted daemon that holds the lock",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "install takes over from an AUTOSTARTED daemon"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "    await stopOtherDaemon(spec.environment.RESCTL_STATE_DIR, spec.name, (m) => void process.stderr.write(`resctl: ${m}\\n`));\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "S02_install_ignores_stubborn_holder",
+  "why": "install goes on although the lock holder did not exit",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "a lock holder that will not exit on SIGTERM"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "  if (isAlive(h)) throw new CliError",
+    "to": "  if (false) throw new CliError"
+   }
+  ]
+ },
+ {
+  "id": "S03_tick_ignores_stop",
+  "why": "SIGTERM still works through every due run",
+  "tests": [
+   "test/stop-mid-tick.test.ts"
+  ],
+  "expect": [
+   "SIGTERM after the first of 5"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "    if (shouldStop()) break; // the rest stays due: the next daemon (or run end) cleans it\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "S04_dockerfile_no_init",
+  "why": "the image has no init: PID 1 is node, killed escapees stay zombies",
+  "tests": [
+   "test/container.test.ts"
+  ],
+  "expect": [
+   "builds; PID 1 is an init"
+  ],
+  "edits": [
+   {
+    "file": "Dockerfile",
+    "find": "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"node\", \"/opt/resctl/bin/resctl.mjs\"]",
+    "to": "ENTRYPOINT [\"node\", \"/opt/resctl/bin/resctl.mjs\"]"
+   }
+  ]
+ },
+ {
+  "id": "S05_unit_dir_not_from_manager",
+  "why": "the unit goes under the installer's XDG_CONFIG_HOME whatever the manager searches",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "an XDG_CONFIG_HOME the manager does not search"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "(userManager(env).ok ? resolveUnitDir(env) : unitDir(env))",
+    "to": "unitDir(env)"
+   }
+  ]
+ },
+ {
+  "id": "S06_status_throws_on_corrupt_state",
+  "why": "status prints a raw stack for a corrupt state.json",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "a corrupt state.json"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "  } catch (e) {\n    stateError =",
+    "to": "  } catch (e) {\n    throw e;\n    stateError ="
+   }
+  ]
+ },
+ {
+  "id": "S07_parse_unit_env_keeps_percent",
+  "why": "parseUnitEnv does not undo the %% escape",
+  "tests": [
+   "test/unit-render.test.ts"
+  ],
+  "expect": [
+   "round-trip"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "JSON.parse(m[1].replace(/%%/g, '%'))",
+    "to": "JSON.parse(m[1])"
+   }
+  ]
+ },
+ {
+  "id": "S08_sweep_old_regex",
+  "why": "the leftover sweep parses the state dir with the quote-blind regex",
+  "tests": [
+   "test/unit-render.test.ts"
+  ],
+  "expect": [
+   "selects only stale test units"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/units.ts",
+    "find": "const dir = parseUnitEnv(f.text).RESCTL_STATE_DIR;",
+    "to": "const dir = /RESCTL_STATE_DIR=([^\"]+)\"/.exec(f.text)?.[1];"
+   }
+  ]
+ },
+ {
+  "id": "S09_unit_name_constant",
+  "why": "every verb acts on the real resctl.service whatever RESCTL_UNIT_NAME says (the suite's guards must refuse before anything runs) — the `before` guard throws, so no test installs anything (verified: no resctl.service file/unit after the run)",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "--print shows the unit without touching"
+  ],
+  "edits": [
+   {
+    "file": "src/systemd.ts",
+    "find": "  const name = unitName(env);",
+    "to": "  const name = 'resctl.service';"
+   }
+  ]
+ },
+ {
+  "id": "S10_docker_timeout_fixed",
+  "why": "status ignores RESCTL_DOCKER_TIMEOUT",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "a docker that never answers"
+  ],
+  "edits": [
+   {
+    "file": "src/status-sources.ts",
+    "find": "timeout: dockerTimeoutMs(env), encoding",
+    "to": "timeout: 5000, encoding"
+   }
+  ]
+ },
+ {
+  "id": "S11_install_signal_refused_ignored",
+  "why": "a holder that may not be signalled is reported as 'did not exit'",
+  "tests": [
+   "test/unit.test.ts"
+  ],
+  "expect": [
+   "cannot be signalled"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/install-unit.ts",
+    "find": "if (signalIfSame(h, 'SIGTERM') === 'refused') throw",
+    "to": "if (false) throw"
+   }
+  ]
+ },
+ {
+  "id": "S12_docker_cap_ignores_env",
+  "why": "the outer source cap stays 10 s whatever RESCTL_DOCKER_TIMEOUT says",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "a docker that answers slowly"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "Math.max(SOURCE_TIMEOUT_MS, dockerTimeoutMs(env) + 2000)",
+    "to": "SOURCE_TIMEOUT_MS"
+   }
+  ]
+ },
+ {
+  "id": "S13_orphans_with_unreadable_state",
+  "why": "with a corrupt state every container is called an orphan",
+  "tests": [
+   "test/status.test.ts"
+  ],
+  "expect": [
+   "a corrupt state.json"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/status.ts",
+    "find": "orphanContainers: stateError ? [] : containers.filter",
+    "to": "orphanContainers: containers.filter"
+   }
+  ]
+ }
+]
