@@ -292,7 +292,7 @@ The text is the frozen v1 (tag `verified-fanout-v1-prose`, never modified) with 
 - Tests: `src/shared/verified-fanout-skill.test.ts` — every `orchestra <verb> [sub] [--flag]` span of the text must exist in `COMMANDS` (flags scoped to the sub-verb's usage; must-FAIL: fake verb, the deleted
   `orchestra link`, fake sub-verb, sibling/near-miss flag), the "Roles are typed" claims vs `roleSpec()` (`roleClaimDrift`, 4 must-FAIL), the diff artifact rebuilds BOTH sides (v2 == the module, v1 == sha256 of the
   frozen file), each shipped file's sha256 == the frozen v1's `SHA256SUMS` (must-FAIL: one byte, a dropped/stray file), the `workspaces.ts` wiring pin (import / call / both hashed / not in `RETIRED_SKILLS`, each with a
-  must-FAIL), `installVerifiedFanoutSkill` on scratch dirs (fresh, marked-old rewrite + exec bit restored, a repo's own unmarked skill untouched), and the REAL `installOrchestraHooks` through
+  must-FAIL), `installVerifiedFanoutSkill` on scratch dirs (fresh, marked-old rewrite + exec bit restored, a repo's own unmarked skill untouched); `src/shared/verified-fanout-skill-guard.test.ts` (the guard-SCRIPT claims of "Roles are typed" — 56 allow/deny probes through master's real `role-guard.sh` via `HOOK_ROLE_GUARD_CMD`, must-FAIL: chain rule / all Bash rules removed, always-allow script), and the REAL `installOrchestraHooks` through
   `scripts/e2e-verified-fanout-skill-install.mjs` (lands + files, rewritten on a spawn after an upgrade, `orchestra-*` untouched, a same-version install is a no-op, a repo's own skill kept).
 
 ## Storage / .gitignore
