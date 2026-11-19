@@ -120,6 +120,7 @@ Spawn a new worktree + agent, nested under the caller by default.
                     (scribe- = claude-haiku-5-5), else the user's spawned-agent default
   --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the name's
                     rôle effort (scribe- = low), else the spawned-agent default
+                    Each flag is resolved on its own: --model alone keeps the rôle's effort.
                     (rôle table + override file: <ORCHESTRA_HOME>/fleet-roles.json)
   --profile <id|name>
                     start the child's browser panel signed in with the profil navigateur YOU

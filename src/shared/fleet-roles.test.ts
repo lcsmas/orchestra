@@ -50,6 +50,13 @@ test('parseRoleConfig: valid override applies; unknown role / unknown key / bad 
   assert.throws(() => parseRoleConfig({ scribe: 'haiku' }), /must be an object/);
 });
 
+test('parseRoleConfig: a duplicate key (role or field) is refused, a repeated key in DIFFERENT objects is not', () => {
+  assert.throws(() => parseRoleConfig('{"scribe":{"model":"x"},"scribe":{"effort":"low"}}'), /duplicate key "scribe"/);
+  assert.throws(() => parseRoleConfig('{"scribe":{"effort":"low","effort":"high"}}'), /duplicate key "effort"/);
+  assert.doesNotThrow(() => parseRoleConfig('{"scribe":{"effort":"low"},"verifier":{"effort":"high"}}'));
+  assert.throws(() => parseRoleConfig('{"scribe":{"model":"a,\\"scribe\\":b"}}'), /invalid model/, 'a key-looking string inside a value is a value (invalid model), not a duplicate key');
+});
+
 test('spawn defaults: no flag → the role pin; explicit flag wins per field; role-less name untouched', () => {
   assert.deepEqual(resolveSpawnRoleDefaults('scribe-ledger', {}), { model: SCRIBE_MODEL, effort: 'low' });
   assert.deepEqual(resolveSpawnRoleDefaults('scribe-ledger', { model: 'claude-opus-4-8' }), { model: 'claude-opus-4-8', effort: 'low' }, 'explicit model wins, effort still the role\'s');
@@ -89,4 +96,10 @@ test('MUST-FAIL: an explicit flag that loses to the role pin is seen', async () 
   const m = await mutant((s) => s.replace('const model = explicit.model?.trim() ? explicit.model : spec?.model;', 'const model = spec?.model ?? explicit.model;'));
   assert.equal(m.resolveSpawnRoleDefaults('scribe-x', { model: 'claude-opus-4-8' }).model, SCRIBE_MODEL, 'the mutant lets the role override the flag');
   assert.equal(resolveSpawnRoleDefaults('scribe-x', { model: 'claude-opus-4-8' }).model, 'claude-opus-4-8');
+});
+
+test('MUST-FAIL: a duplicate-key check removed is seen', async () => {
+  const m = await mutant((s) => s.replace('const dup = findDuplicateKey(raw);', 'const dup = undefined as string | undefined;'));
+  assert.doesNotThrow(() => m.parseRoleConfig('{"scribe":{"effort":"low"},"scribe":{"effort":"high"}}'), 'the mutant lets the first copy vanish');
+  assert.throws(() => parseRoleConfig('{"scribe":{"effort":"low"},"scribe":{"effort":"high"}}'), /duplicate key/);
 });
