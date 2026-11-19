@@ -1,0 +1,547 @@
+[
+ {
+  "id": "A01_launch_without_memorymax",
+  "why": "the scope is created but carries no MemoryMax: the allocation completes",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an allocation past the cap is killed"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "...propArgs(capProps(a.bytes)), '--', a.cmd",
+    "to": "'--', a.cmd"
+   }
+  ]
+ },
+ {
+  "id": "A02_launch_without_swap_clause",
+  "why": "the scope holds the level but swap can absorb the overflow",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "the lane runs in a scope named"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "...propArgs(capProps(a.bytes)), '--', a.cmd",
+    "to": "...propArgs(capProps(a.bytes).filter((p) => !p.startsWith('MemorySwapMax'))), '--', a.cmd"
+   }
+  ]
+ },
+ {
+  "id": "A03_force_no_systemd_ignored",
+  "why": "the simulated no-systemd switch does nothing",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "RESCTL_FORCE_NO_SYSTEMD=1 (simulated)"
+  ],
+  "edits": [
+   {
+    "file": "src/env.ts",
+    "find": "env.RESCTL_FORCE_NO_SYSTEMD === '1'",
+    "to": "false"
+   }
+  ]
+ },
+ {
+  "id": "A04_warning_dropped",
+  "why": "--mem is ignored silently",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "RESCTL_FORCE_NO_SYSTEMD=1 (simulated)",
+   "a user manager that refuses the scope"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (!sup.ok) process.stderr.write(",
+    "to": "if (!sup.ok) void ("
+   }
+  ]
+ },
+ {
+  "id": "A05_probe_trusts_memorymax",
+  "why": "a scope that came up without the level is believed",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "WITHOUT the level"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "if (!applied) return no(",
+    "to": "if (false) return no("
+   }
+  ]
+ },
+ {
+  "id": "A06_probe_trusts_swap",
+  "why": "a scope without the no-swap clause is believed",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "NOT the no-swap clause"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "if (swap !== '0') return no(",
+    "to": "if (false) return no("
+   }
+  ]
+ },
+ {
+  "id": "A07_any_sigkill_is_the_cap",
+  "why": "every SIGKILL exit is reported as a cap kill",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "a SIGKILL that is not the cap"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "capKilled = evidence !== null;",
+    "to": "capKilled = evidence !== null || signal === 'SIGKILL';"
+   }
+  ]
+ },
+ {
+  "id": "A08_cap_kill_exit_code",
+  "why": "the cap kill exits with another code",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an allocation past the cap is killed"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "export const EXIT_MEM_CAP = 137;",
+    "to": "export const EXIT_MEM_CAP = 1;"
+   }
+  ]
+ },
+ {
+  "id": "A09_no_stop_scopes_step",
+  "why": "the cleanup pipeline has no stop-scopes step",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "`run end` stops the scope",
+   "the reaper stops the scope too"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  { name: 'stop-scopes', run: stopScopes },\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "A10_stop_without_ownership_check",
+  "why": "a scope with the right name but another run instance is stopped",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "stop-scopes never touches a scope"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "if (!before.description.includes(token)) return 'not-ours';",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "A11_scope_not_recorded_on_lane",
+  "why": "the lane has no scope field in state",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "recorded on the lane",
+   "`run end` stops the scope"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "...(unit ? { scope: unit } : {})",
+    "to": "...({})"
+   }
+  ]
+ },
+ {
+  "id": "A12_oom_policy_default",
+  "why": "one oom_kill only SIGTERMs the rest of the scope (systemd default)",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an OOM kill ends EVERYTHING"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "[`MemoryMax=${bytes}`, 'MemorySwapMax=0', 'OOMPolicy=kill']",
+    "to": "[`MemoryMax=${bytes}`, 'MemorySwapMax=0']"
+   }
+  ]
+ },
+ {
+  "id": "A13_busy_scope_record_dropped",
+  "why": "the lane record is dropped while its scope still has a member",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "keeps its record"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (groupMembers(lanePid!).length === 0 && !scopeBusy) {",
+    "to": "if (groupMembers(lanePid!).length === 0) {"
+   }
+  ]
+ },
+ {
+  "id": "A14_scope_counter_stuck",
+  "why": "every --mem lane of a run gets scope number 1",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "two --mem lanes of one run"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "run.scopeSeq = (run.scopeSeq ?? 0) + 1;",
+    "to": "run.scopeSeq = 1;"
+   }
+  ]
+ },
+ {
+  "id": "A15_failed_scope_left_loaded",
+  "why": "an OOM-failed scope is never reset",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an allocation past the cap is killed"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (info && info.load !== 'not-found' && !scopeBusy) await resetFailed(unit);",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "A16_zero_cap_accepted",
+  "why": "--mem 0 is accepted (and silently uncapped)",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "usage: a bad --mem"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (capBytes <= 0) throw usageError('--mem must be larger than 0');",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "A17_scope_name_guard_loose",
+  "why": "the name guard lets resctl.service through",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "usage: a bad --mem"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "/^resctl-[A-Za-z0-9][A-Za-z0-9._-]*-\\d+\\.scope$/",
+    "to": "/^resctl[A-Za-z0-9._-]*\\.(scope|service)$/"
+   }
+  ]
+ },
+ {
+  "id": "A18_cap_verdict_never",
+  "why": "the cap kill is never recognised",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an allocation past the cap is killed"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "capKilled = evidence !== null;",
+    "to": "capKilled = false;"
+   }
+  ]
+ },
+ {
+  "id": "A19_unreachable_systemd_means_empty",
+  "why": "a failed systemctl read at lane exit drops the lane record while the scope may still hold a child",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "unknown, not empty"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "scopeBusy = info === null || ((info.active === 'active' || info.active === 'deactivating') && scopePopulated(info));",
+    "to": "scopeBusy = info !== null && ((info.active === 'active' || info.active === 'deactivating') && scopePopulated(info));"
+   }
+  ]
+ },
+ {
+  "id": "A20_reaper_prunes_scoped_lane",
+  "why": "the reaper's stale-lane prune drops a lane whose group is empty although its scope still holds a child",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "keeps its record",
+   "stop-scopes never touches"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "filter((l) => l.scope !== undefined || l.pgid !== l.pid",
+    "to": "filter((l) => l.pgid !== l.pid"
+   }
+  ]
+ },
+ {
+  "id": "A21_old_busy_logic",
+  "why": "the pre-fix logic: an `active` scope is busy, and settle does not wait for systemd to catch up with an empty cgroup (14/15 lane records kept for `true`)",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "instantly-exiting capped commands",
+   "DETERMINISTIC: a unit that reads `active`"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "info === null || ((info.active === 'active' || info.active === 'deactivating') && scopePopulated(info))",
+    "to": "info === null || info.active === 'active'"
+   },
+   {
+    "file": "src/scope.ts",
+    "find": "|| (info.active === 'active' && !scopePopulated(info)));",
+    "to": ");"
+   }
+  ]
+ },
+ {
+  "id": "A22_populated_always_true",
+  "why": "scopePopulated never says empty",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "instantly-exiting capped commands",
+   "DETERMINISTIC: a unit that reads `active`"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "return fs.readFileSync(`/sys/fs/cgroup${info.cgroup}/cgroup.procs`, 'utf8').trim() !== '';",
+    "to": "return true;"
+   }
+  ]
+ },
+ {
+  "id": "A23_no_kill_reread",
+  "why": "a SIGKILL exit is not re-read when systemd has not recorded the OOM yet",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "not recorded yet is still reported"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "const lostKill = diedByKill && info.result !== 'oom-kill';",
+    "to": "const lostKill = false;"
+   }
+  ]
+ },
+ {
+  "id": "A24_overclaiming_wording",
+  "why": "the message stops saying WHICH evidence was seen",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "an allocation past the cap is killed"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "systemd recorded Result=oom-kill for scope ${unit}",
+    "to": "the command exceeded its memory cap for scope ${unit}"
+   }
+  ]
+ },
+ {
+  "id": "A25_tiny_cap_wrong_reason",
+  "why": "a too-small cap is reported as \u00ab the manager refused a scope \u00bb",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "too small to start any process"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "if (r.status === null && r.signal) return no(",
+    "to": "if (false) return no("
+   }
+  ]
+ },
+ {
+  "id": "A26_huge_cap_silent",
+  "why": "a cap larger than the host is accepted silently",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "can never fire"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (total !== null && capBytes > total) process.stderr.write(",
+    "to": "if (false) process.stderr.write("
+   }
+  ]
+ },
+ {
+  "id": "A27_kill_reread_bounded_by_time",
+  "why": "the post-kill re-read is bounded by elapsed time again: slow systemctl reads spend it and the cap message is lost",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "is slow (the re-read is bounded by reads",
+   "EVERY systemctl read is slow"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "(lostKill && reads < killReads)",
+    "to": "(lostKill && Date.now() - start < 600)"
+   }
+  ]
+ },
+ {
+  "id": "A28_no_kernel_counter",
+  "why": "only systemd's record decides the cap message (it can lose the OOM event): the REAL lost-event arm must go red",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "systemd lost the kill: the scope's OWN kernel counter"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "return v.own > 0 ? 'counter' : null;",
+    "to": "return null;"
+   }
+  ]
+ },
+ {
+  "id": "A29_counter_any_sigkill",
+  "why": "any SIGKILL exit is reported as the cap",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "a SIGKILL that is not the cap"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "capKilled = evidence !== null;",
+    "to": "capKilled = evidence !== null || signal === 'SIGKILL';"
+   }
+  ]
+ },
+ {
+  "id": "A30_scope_counter_unread",
+  "why": "the scope's own memory.events is never read (derived path broken) \u2014 the lost-event arm goes red",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "systemd lost the kill: the scope's OWN kernel counter"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "if (derived && fs.existsSync(`${derived}/memory.events`)) file = `${derived}/memory.events`;",
+    "to": "if (false) file = `${derived}/memory.events`;"
+   },
+   {
+    "file": "src/scope.ts",
+    "find": "if (!cg || !cg.endsWith(`/${unit}`)) return; // still systemd-run itself, not yet in the scope",
+    "to": "return;"
+   }
+  ]
+ },
+ {
+  "id": "A31_parent_counter_believed",
+  "why": "the counter read comes from the PARENT cgroup again (shared with siblings): a sibling's OOM is blamed on this lane",
+  "tests": [
+   "test/mem-scope.test.ts"
+  ],
+  "expect": [
+   "INPUT A",
+   "INPUT B"
+  ],
+  "edits": [
+   {
+    "file": "src/scope.ts",
+    "find": "const m = /^oom_kill (\\d+)$/m.exec(fs.readFileSync(file, 'utf8'));",
+    "to": "const m = /^oom_kill (\\d+)$/m.exec(fs.readFileSync(file.replace(/\\/[^/]+\\/memory\\.events$/, '/memory.events'), 'utf8'));"
+   }
+  ]
+ }
+]

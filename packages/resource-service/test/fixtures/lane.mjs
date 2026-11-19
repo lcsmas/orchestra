@@ -6,6 +6,8 @@
 //  end-self     run `resctl run end` for its OWN run from inside this lane (extra = path of bin/resctl.mjs); write {status,stderr} as JSON, then live on
 //  start-run    run `resctl run start --id inner --owner <this lane>` (extra = bin path) so a daemon is autostarted FROM INSIDE the lane; write the status, then live on
 //  env-i-leave  like env-i, but this process exits at once: the marker-less child outlives the group leader
+//  escape-clean  stay alive AND start a setsid-ed `sleep` with NO run marker (only the rig dir): neither the group nor the token sweep can reach it (A4: only the scope can)
+//  escape-clean-leave  same, but this process exits after 150 ms
 //  env-i        start `sleep` WITHOUT the run marker in the SAME process group; write its pid
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -48,6 +50,12 @@ if (mode === 'sleep') {
 } else if (mode === 'escape-l1') {
   spawn(process.execPath, [self, 'sleep', pidfile], { detached: true, stdio: 'ignore' }).unref();
   setTimeout(() => process.exit(0), 150);
+} else if (mode === 'escape-clean' || mode === 'escape-clean-leave') {
+  const c = spawn('sleep', ['300'], { detached: true, env: { RESCTL_STATE_DIR: process.env.RESCTL_STATE_DIR }, stdio: 'ignore' });
+  c.unref();
+  writePid(c.pid);
+  if (mode === 'escape-clean') hold();
+  else setTimeout(() => process.exit(0), 150); // the leader leaves: only the scope still holds the kid
 } else if (mode === 'env-i' || mode === 'env-i-leave') {
   const c = spawn('sleep', ['300'], { env: { RESCTL_STATE_DIR: process.env.RESCTL_STATE_DIR }, stdio: 'ignore' }); // same group, NO run marker (only the rig's own dir, so leaks stay findable)
   writePid(c.pid);

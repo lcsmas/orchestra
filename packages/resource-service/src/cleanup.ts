@@ -3,6 +3,7 @@
 import { removeContainers } from './containers.ts';
 import { termWaitMs, type Env } from './env.ts';
 import { findByEnv, groupMembers, readStat, signalGroupIfOurs, signalIfSame, sleep, touchable, groupIsOurs, type Identity } from './proc.ts';
+import { stopScope } from './scope.ts';
 import { withState, type Run } from './state.ts';
 
 export type CleanupCtx = { env?: Env; log?: (msg: string) => void };
@@ -63,9 +64,24 @@ export async function killProcesses(run: Run, ctx: CleanupCtx = {}): Promise<voi
   refuseIfBlocked(run);
 }
 
+/** A4: stop every systemd scope an `exec --mem` lane of this run left (the A1 marker sweep stays: it cannot reach a setsid-ed child that cleared its env, the scope's cgroup can). */
+export async function stopScopes(run: Run, ctx: CleanupCtx = {}): Promise<void> {
+  const failed: string[] = [];
+  for (const lane of run.lanes) {
+    if (!lane.scope) continue;
+    try {
+      if ((await stopScope(lane.scope, run.token, ctx.env)) === 'not-ours') ctx.log?.(`scope ${lane.scope} is not this run instance's: left alone`);
+    } catch (e) {
+      failed.push(`${lane.scope}: ${(e as Error).message}`);
+    }
+  }
+  if (failed.length) throw new Error(`run ${run.id}: could not stop ${failed.join('; ')}`);
+}
+
 export const CLEANUP_STEPS: CleanupStep[] = [
   { name: 'kill-processes', run: killProcesses },
   { name: 'remove-containers', run: removeContainers },
+  { name: 'stop-scopes', run: stopScopes },
 ];
 
 /** Run every step in order; a failing step does not skip the next ones. Returns the failures. */

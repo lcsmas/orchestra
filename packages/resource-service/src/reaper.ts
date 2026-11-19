@@ -28,7 +28,7 @@ export async function tick(dir: string, env: Env, log: (msg: string) => void, no
   await withState((s) => {
     for (const run of Object.values(s.runs)) {
       // a lane whose group is empty (or whose leader pid now belongs to a stranger) is a stale record: drop it, never signal it later
-      if (run.state !== 'cleaned') run.lanes = run.lanes.filter((l) => l.pgid !== l.pid || groupIsOurs({ pid: l.pid, startTime: l.startTime }) === 'ours');
+      if (run.state !== 'cleaned') run.lanes = run.lanes.filter((l) => l.scope !== undefined || l.pgid !== l.pid || groupIsOurs({ pid: l.pid, startTime: l.startTime }) === 'ours'); // A4: a lane with a scope stays until stop-scopes (its group may be empty while the scope still holds a child)
       const d = decide(run, now, isAlive(run.owner), opts);
       if (d.kind === 'enter-grace') {
         run.state = 'grace';

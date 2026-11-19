@@ -30,7 +30,7 @@ const USAGE = `usage: resctl <verb> [options]
                                       declare a run (or re-adopt it inside its grace); auto = the nearest
                                       "claude" ancestor; max-life cleans it even while its owner lives
   run end --id <id>                   clean the run now
-  exec --run <id> -- <cmd> [args...]  start a lane of the run
+  exec --run <id> [--mem <size>] -- <cmd> [args...]  start a lane (--mem: hard memory level, no swap)
   serve                               the reaper daemon (foreground; a container's main command)
   status [--json]                     runs with owner, state, processes, containers, memory
   install-unit [--no-start|--print]   write + enable + start the systemd user unit ($RESCTL_UNIT_NAME)

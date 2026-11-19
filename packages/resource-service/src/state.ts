@@ -18,6 +18,8 @@ export type Run = {
   graceEndsAt?: number;
   maxLifeAt?: number;
   lanes: Lane[];
+  /** A4: last `exec --mem` scope number handed out for this run instance (scope name `resctl-<id>-<n>.scope`). */
+  scopeSeq?: number;
   cleanedAt?: number;
   containers?: unknown;
   relay?: unknown;

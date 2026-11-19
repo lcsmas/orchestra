@@ -33,3 +33,10 @@ export const unitName = (env: Env = process.env): string => env.RESCTL_UNIT_NAME
 // A2 (docker-env): which real Docker daemon the relay forwards to. RESCTL_DOCKER_SOCKET wins; else DOCKER_HOST, the effective docker context, the default socket (src/relay-host.ts).
 export const dockerSocketOverride = (env: Env = process.env): string | undefined => env.RESCTL_DOCKER_SOCKET?.trim() || undefined;
 export const dockerHostEnv = (env: Env = process.env): string | undefined => env.DOCKER_HOST?.trim() || undefined;
+/** A4: simulate a host without systemd (the `--mem` scope is then ignored with a warning). */
+export const forceNoSystemd = (env: Env = process.env): boolean => env.RESCTL_FORCE_NO_SYSTEMD === '1';
+/** A4: the binaries the scope code runs (a test points them at a shim to simulate a systemd that refuses a scope / ignores a limit). */
+export const systemdRunBin = (env: Env = process.env): string => env.RESCTL_SYSTEMD_RUN || 'systemd-run';
+export const systemctlBin = (env: Env = process.env): string => env.RESCTL_SYSTEMCTL || 'systemctl';
+/** A4 (tests only): `1` turns the scope's cgroup `memory.events` watch off (an arm then sees only systemd's own record of the kill). */
+export const noOomWatch = (env: Env = process.env): boolean => env.RESCTL_NO_OOM_WATCH === '1';
