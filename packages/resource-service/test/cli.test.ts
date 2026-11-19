@@ -25,7 +25,7 @@ describe('cli dispatch', () => {
     assert.equal(rig.cli(['frobnicate']).status, 2);
     assert.equal(rig.cli(['run']).status, 2);
     assert.equal(rig.cli(['run', 'start']).status, 2, '--owner is required');
-    assert.equal(rig.cli(['run', 'start', '--owner', 'auto']).status, 2, 'auto is A6');
+    assert.equal(rig.cli(['run', 'start', '--owner', 'banana']).status, 2, 'neither a pid nor auto');
     assert.equal(rig.cli(['run', 'start', '--owner', '1']).status, 2, 'pid <= 1 is refused');
     assert.equal(rig.cli(['run', 'start', '--id', 'bad id', '--owner', String(process.pid)]).status, 2);
     assert.equal(rig.cli(['exec', '--run', 'x']).status, 2, 'a command is required');

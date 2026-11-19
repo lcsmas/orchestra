@@ -22,7 +22,9 @@ export const VERBS: Record<string, Verb> = {
 };
 
 const USAGE = `usage: resctl <verb> [options]
-  run start --id <id> --owner <pid>   declare a run (or re-adopt it inside its grace)
+  run start --id <id> --owner <pid|auto> [--max-life <dur>]
+                                      declare a run (or re-adopt it inside its grace); auto = the nearest
+                                      "claude" ancestor; max-life cleans it even while its owner lives
   run end --id <id>                   clean the run now
   exec --run <id> -- <cmd> [args...]  start a lane of the run
   serve                               the reaper daemon (foreground)

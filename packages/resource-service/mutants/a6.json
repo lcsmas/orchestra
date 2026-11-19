@@ -1,0 +1,227 @@
+[
+ {
+  "id": "A6M01_any_ancestor_accepted",
+  "why": "the nearest ancestor is taken whatever it is called (the owner becomes the calling shell)",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "returns the NEAREST claude",
+   "records THAT process"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "if (isClaude(comm, exe)) return { found",
+    "to": "if (hop >= 0) return { found"
+   }
+  ],
+  "rig": true
+ },
+ {
+  "id": "A6M02_outermost_claude",
+  "why": "the OUTERMOST claude ancestor wins instead of the nearest",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "NEAREST"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "  const seen = new Set<number>();",
+    "to": "  const seen = new Set<number>();\n  let outer: Identity | null = null;"
+   },
+   {
+    "file": "src/owner.ts",
+    "find": "if (isClaude(comm, exe)) return { found: { pid, startTime: st.startTime }, chain };",
+    "to": "if (isClaude(comm, exe)) outer = { pid, startTime: st.startTime };"
+   },
+   {
+    "file": "src/owner.ts",
+    "find": "  return { found: null, chain };",
+    "to": "  return { found: outer, chain };"
+   }
+  ]
+ },
+ {
+  "id": "A6M03_no_claude_falls_back_to_parent",
+  "why": "with no claude ancestor the command's parent becomes the owner instead of a refusal",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "no claude ancestor"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "const { found, chain } = findClaudeAncestor(readStat(process.pid)?.ppid ?? process.ppid);",
+    "to": "const w = findClaudeAncestor(readStat(process.pid)?.ppid ?? process.ppid);\n    const chain = w.chain;\n    const found = w.found ?? { pid: process.ppid, startTime: readStat(process.ppid)!.startTime };"
+   }
+  ]
+ },
+ {
+  "id": "A6M04_comm_only_matcher_drops_exe",
+  "why": "a process is claude only by its comm (an exe-named one is missed)",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "matches on comm OR on the exe"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "comm === 'claude' || exe === 'claude'",
+    "to": "comm === 'claude'"
+   }
+  ]
+ },
+ {
+  "id": "A6M05_exe_only_matcher_drops_comm",
+  "why": "a process is claude only by its exe basename \u2014 which on a native install is the VERSION, so the real session is never found",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "matches on comm OR on the exe",
+   "records THAT process"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "comm === 'claude' || exe === 'claude'",
+    "to": "exe === 'claude'"
+   }
+  ],
+  "rig": true
+ },
+ {
+  "id": "A6M06_owner_is_not_the_found_process",
+  "why": "the recorded owner is the CLI's parent instead of the claude found",
+  "tests": [
+   "test/owner-auto.test.ts"
+  ],
+  "expect": [
+   "records THAT process"
+  ],
+  "edits": [
+   {
+    "file": "src/owner.ts",
+    "find": "const id = identityOf(found.pid);",
+    "to": "const id = identityOf(process.ppid);"
+   }
+  ],
+  "rig": true
+ },
+ {
+  "id": "A6M07_max_life_not_recorded",
+  "why": "the flag is accepted and parsed but maxLifeAt is never stored",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a run past its max life is cleaned while its owner lives"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "...(lifeMs !== undefined ? { maxLifeAt: now + lifeMs } : {})",
+    "to": "...({})"
+   }
+  ]
+ },
+ {
+  "id": "A6M08_max_life_only_after_owner_death",
+  "why": "the reaper honours maxLifeAt only once the owner is dead (a live owner keeps the run forever)",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a run past its max life is cleaned while its owner lives"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "if (run.maxLifeAt !== undefined && now >= run.maxLifeAt) return",
+    "to": "if (!ownerAlive && run.maxLifeAt !== undefined && now >= run.maxLifeAt) return"
+   }
+  ]
+ },
+ {
+  "id": "A6M09_max_life_unit_slip",
+  "why": "the duration is divided instead of added: the deadline is already past",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a run past its max life is cleaned while its owner lives"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "{ maxLifeAt: now + lifeMs } : {})",
+    "to": "{ maxLifeAt: now + lifeMs / 1000 } : {})"
+   }
+  ]
+ },
+ {
+  "id": "A6M10_repeat_start_ignores_flag",
+  "why": "a repeated start with the same owner ignores --max-life",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a repeated start with the flag moves the deadline"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "{\n          if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;\n          return { kind: 'unchanged' };\n        }",
+    "to": "return { kind: 'unchanged' };"
+   }
+  ]
+ },
+ {
+  "id": "A6M11_adopt_ignores_flag",
+  "why": "a re-adopted run keeps its old deadline whatever --max-life says",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a re-adopted run"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "        if (lifeMs !== undefined) cur.maxLifeAt = now + lifeMs;\n        return { kind: 'adopted' };",
+    "to": "        return { kind: 'adopted' };"
+   }
+  ]
+ },
+ {
+  "id": "A6M12_zero_life_accepted",
+  "why": "--max-life 0 is accepted (a run that is cleaned at once)",
+  "tests": [
+   "test/max-life.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "a bad --max-life is a usage error"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (!(ms > 0)) throw",
+    "to": "if (ms < 0) throw"
+   }
+  ]
+ }
+]
