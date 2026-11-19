@@ -52,7 +52,7 @@ import { writeRoleSentinel } from './role-sentinel';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
 import { VERIFIED_FANOUT_SKILL } from '../shared/verified-fanout-skill.ts';
-import { VERIFIED_FANOUT_FILES } from '../shared/verified-fanout-files.ts';
+import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
@@ -4478,6 +4478,7 @@ const HOOKS_VERSION = createHash('sha256')
       BROWSER_SKILL,
       VERIFIED_FANOUT_SKILL,
       JSON.stringify(VERIFIED_FANOUT_FILES),
+      JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,

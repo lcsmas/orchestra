@@ -1,11 +1,11 @@
-// #470: write the bundled verified-fanout v2 (SKILL.md + v1's references/ and scripts/ledger-set, ledger D8) under <worktree>/.claude/skills/.
+// #470: write the bundled verified-fanout v2 (SKILL.md + v1's references/ and scripts/ledger-set, ledger D8, + the v2 situational references, #474) under <worktree>/.claude/skills/.
 // Pure fs (no Electron) so the installer test drives it directly. NEVER throws: a skill failure must not abort the hook install it sits in
 // (the settings.local.json merge + the HOOKS_VERSION stamp come after it). A repo's OWN verified-fanout (no generated marker line, or a symlink) is never touched.
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from '../shared/verified-fanout-skill.ts';
-import { VERIFIED_FANOUT_FILES } from '../shared/verified-fanout-files.ts';
+import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 
 /** 'written' = SKILL.md + files (re)written; 'skipped-foreign' = the repo's own skill (unmarked SKILL.md, or the dir is a symlink), nothing touched; 'skipped-error' = an fs error, reported to `onError`. */
 export type VerifiedFanoutInstall = 'written' | 'skipped-foreign' | 'skipped-error';
@@ -33,7 +33,7 @@ export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e
     if (existing !== null && !isGenerated(existing)) return 'skipped-foreign';
     await mkdir(dir, { recursive: true });
     await writeAtomic(skillFile, VERIFIED_FANOUT_SKILL);
-    for (const f of VERIFIED_FANOUT_FILES) {
+    for (const f of [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES]) {
       const dest = path.join(dir, f.path);
       await mkdir(path.dirname(dest), { recursive: true });
       await writeAtomic(dest, f.content, f.mode);

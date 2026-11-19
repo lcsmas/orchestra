@@ -28,7 +28,7 @@ try {
   const { store } = await import(`${REPO}/src/main/store.ts`);
   const { installOrchestraHooks } = await import(`${REPO}/src/main/workspaces.ts`);
   const { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_MARKER } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
-  const { VERIFIED_FANOUT_FILES } = await import(`${REPO}/src/shared/verified-fanout-files.ts`);
+  const { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } = await import(`${REPO}/src/shared/verified-fanout-files.ts`);
   await store.load?.();
   await store.upsertWorkspace({ id: 'ws-vf-skill', name: 'vf-skill', kind: 'scratch', repoPath: '', worktreePath: wt, status: 'idle', createdAt: Date.now(), hasInput: true });
 
@@ -41,7 +41,7 @@ try {
   await installOrchestraHooks(wt);
   out.landed = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === VERIFIED_FANOUT_SKILL;
   const dir = path.join(skills, VERIFIED_FANOUT_SKILL_NAME);
-  out.filesLanded = VERIFIED_FANOUT_FILES.length === 5 && VERIFIED_FANOUT_FILES.every((f) => fs.readFileSync(path.join(dir, f.path), 'utf8') === f.content);
+  out.filesLanded = VERIFIED_FANOUT_FILES.length === 5 && VERIFIED_FANOUT_V2_REFERENCES.length >= 5 && [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES].every((f) => fs.readFileSync(path.join(dir, f.path), 'utf8') === f.content);
   out.ledgerSetExecutable = (fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0;
   out.siblingsKept = ['orchestra-spawn', 'orchestra-comms', 'orchestra-workspace-admin', 'orchestra-rename', 'orchestra-status', 'orchestra-browser'].every((n) => fs.existsSync(path.join(skills, n, 'SKILL.md')));
 

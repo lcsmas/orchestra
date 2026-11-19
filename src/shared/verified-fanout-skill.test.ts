@@ -1,5 +1,6 @@
 // #470 — the bundled verified-fanout v2 skill: it installs (real installer, child process), it names only verbs and flags the CLI's own help has,
 // and docs/evidence/470-v1-vs-v2.diff is a true v1→v2 diff (both sides rebuilt from it). Every check has a must-FAIL arm.
+// #474 — the always-read SKILL.md stays under 4,000 words; its situational sections live in the v2 references (embedded from src/shared/verified-fanout-refs/).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -9,13 +10,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../cli/help.ts';
 import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from './verified-fanout-skill.ts';
-import { VERIFIED_FANOUT_FILES } from './verified-fanout-files.ts';
+import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
 import { mkHomeScratch } from './home-scratch.ts';
 import { FLEET_ROLES, roleSpec, type FleetRole } from './fleet-roles.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workspacesSrc = fs.readFileSync(path.join(root, 'src', 'main', 'workspaces.ts'), 'utf8');
+const REFS_SRC_DIR = path.join(root, 'src', 'shared', 'verified-fanout-refs');
+/** The v2-only references' text by shipped path (`references/<name>.md`). */
+const refText = (name: string): string => VERIFIED_FANOUT_V2_REFERENCES.find((f) => f.path === `references/${name}`)?.content ?? '';
+const ALL_V2_REFS = VERIFIED_FANOUT_V2_REFERENCES.map((f) => f.content).join('\n');
 
 /** sha256 of the frozen v1 SKILL.md (ground-zero-prep/skills-v1/SHA256SUMS, tag verified-fanout-v1-prose). */
 const V1_SHA256 = 'be6dfd360a1bb667c894bbd9fa53ad9248b96cd9e48b77b696ab1f326720513f';
@@ -72,13 +77,24 @@ const lint = (text: string): string[] => orchestraSpans(text).flatMap(lintSpan);
 
 test('every `orchestra <verb> [sub] [--flag]` the skill names exists in the CLI help', () => {
   const spans = orchestraSpans(VERIFIED_FANOUT_SKILL);
-  assert.ok(spans.length >= 30, `${spans.length} orchestra spans extracted — extractor broken?`);
+  assert.ok(spans.length >= 25, `${spans.length} orchestra spans extracted — extractor broken?`);
   assert.deepEqual(lint(VERIFIED_FANOUT_SKILL), []);
   // positive controls: the verbs this v2 exists to point at ARE in the text, and were checked
   for (const needle of ['orchestra handoff', 'orchestra fanout deliver', 'orchestra fanout state init', 'orchestra fanout state set', 'orchestra fanout state show', 'orchestra fanout resume', 'orchestra send --type worker_done']) {
     assert.ok(spans.some((s) => s.startsWith(needle)), `the skill names ${needle}`);
   }
   assert.ok(COMMANDS.some((c) => c.name === 'fanout') && COMMANDS.some((c) => c.name === 'handoff'), 'the help has the new verbs');
+});
+
+test('#474: every `orchestra <verb> [sub] [--flag]` the v2 references name exists in the CLI help too (all shipped text is linted)', () => {
+  for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.deepEqual(lint(f.content), [], f.path);
+  assert.ok(orchestraSpans(ALL_V2_REFS).length >= 15, 'the references name orchestra verbs — extractor broken?');
+  // must-FAIL: a fake verb / removed sub-verb / fake flag planted in ONE reference is seen
+  assert.ok(lint(`${refText('fleet-bus.md')}\n\`orchestra frobnicate --now\`\n`).some((p) => /unknown verb "orchestra frobnicate"/.test(p)));
+  assert.ok(lint(`${refText('lead-ops-tiers.md')}\n\`orchestra fanout resume --no-such-flag\`\n`).some((p) => /--no-such-flag/.test(p)));
+  const mutated = refText('fleet-bus.md').replace('orchestra gate resolve', 'orchestra gate resolv');
+  assert.notEqual(mutated, refText('fleet-bus.md'), 'mutant anchor matches');
+  assert.ok(lint(mutated).some((p) => /unknown sub-verb "orchestra gate resolv"/.test(p)));
 });
 
 test('must-FAIL: the lint reddens on a fake verb, a removed verb, a fake sub-verb and a fake flag', () => {
@@ -156,6 +172,29 @@ export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = 
   ['deliverable file exists on the integration branch', /Then confirm each deliverable \*\*file\*\* exists on the integration branch/],
 ];
 
+/** #474: the SKILL.md-RESIDENT rules = every RULE_PIN and JUDGEMENT_PIN above (the one-line enforced rules and the judgement rules needed on EVERY turn).
+ *  The pin test reads SKILL.md ALONE for these: moving one into a reference — even with its sentence intact there — reddens `droppedRules(skill)`. */
+export const SKILL_RESIDENT: readonly string[] = [...RULE_PINS.map(([id]) => id), ...JUDGEMENT_PINS.map(([id]) => id)];
+
+/** #474: sentences that MOVED to a reference with their section (situational — read only in one situation): [id, shipped file, pin]. Read from the embedded reference, NOT from SKILL.md. */
+export const REFERENCE_PINS: ReadonlyArray<readonly [id: string, file: string, re: RegExp]> = [
+  ['LEAD report = a team lead\'s synthesis', 'lead-ops-tiers.md', /TEAM LEAD'S SYNTHESIS/],
+  ['dead-ops detector (lead pulls peers + app log)', 'lead-ops-tiers.md', /live delivery timeout — parked in inbox/],
+  ['closed ledger ⇒ zero wave workspaces (positive terminator)', 'lead-ops-tiers.md', /plus one grep for a workspace\s+that must still exist/],
+  ['patch-id is unavailable across a resolution', 'budget-and-gates.md', /patch-id\s+equality is UNAVAILABLE across a resolution/],
+  ['coverage gap: drive the module, not more cases', 'budget-and-gates.md', /STRUCTURALLY CAPABLE/],
+  ['bus: legacy =OFF runs read the old channel', 'fleet-bus.md', /A notice line `=OFF` means a legacy run/],
+  ['bus: a hung session keeps running (liveness blind spot)', 'fleet-bus.md', /a session hung mid-tool-call keeps `running`/],
+  ['verifier pins an account derived from its own login', 'verifier-and-review.md', /The rig PINS AN ACCOUNT before any live drive/],
+  ['verifier: second seat numbers', 'verifier-and-review.md', /nomination→verdict from 79–265 min to 17–46 min/],
+  ['review needs freshness (the verifier must not review)', 'verifier-and-review.md', /Review lives on freshness/],
+  ['delete-gate trap 0: a rebase reads a false not-landed', 'closeout-and-gates.md', /after a REBASE, `verify-landed` reads a FALSE not-landed/],
+  ['delete-gate trap 2: filter generated porcelain noise', 'closeout-and-gates.md', /porcelain is never literally empty — filter the known generated noise/],
+  ['gate example: wrap-not-touch', 'closeout-and-gates.md', /\*wrap-not-touch\*/],
+  ['visual claims need a triptych', 'closeout-and-gates.md', /before\/after\/reference triptych/],
+];
+const referencePinProblems = (refs: (file: string) => string): string[] => REFERENCE_PINS.filter(([, file, re]) => !re.test(refs(file))).map(([id, file]) => `${id}: not in ${file}`);
+
 /** The ids of the rules whose pin no longer matches `text` (empty = every enforced rule is still named). */
 export const droppedRules = (text: string): string[] => [...RULE_PINS.map(([id, , re]) => [id, re] as const), ...JUDGEMENT_PINS].filter(([, re]) => !re.test(text)).map(([id]) => id);
 
@@ -174,7 +213,7 @@ test('each rule a verb or guard enforces keeps ONE line naming it (#472); the pr
   // the v1 prose of the AskUserQuestion bullet, the wave-C probe story and the simulated-cache numbers were replaced, not kept beside the line
   assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /placeholder question|SIMULATED cache|Why the count comes first/);
   // the judgement rules stay as prose
-  for (const re of [/A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\s+MINOR that touches correctness or a ticket promise goes to the candidate's ONE\s+follow-up branch, every other finding is `noted`\./, /A personal-level copy shadows it/, /VPS install:/, /Specify gates that can fail/, /TEAM LEAD'S SYNTHESIS/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  for (const re of [/A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\s+MINOR that touches correctness or a ticket promise goes to the candidate's ONE\s+follow-up branch, every other finding is `noted`\./, /A personal-level copy shadows it/, /VPS install:/, /Specify gates that can fail/]) assert.match(VERIFIED_FANOUT_SKILL, re);
 });
 
 test('must-FAIL: deleting the line of any one enforced rule reddens exactly that rule\'s pin', () => {
@@ -192,12 +231,84 @@ test('must-FAIL: deleting the line of any one enforced rule reddens exactly that
   assert.ok(droppedRules(VERIFIED_FANOUT_SKILL.replace('orchestra handoff --summary-file', 'orchestra hand-off --summary-file')).includes('handoff'));
 });
 
-/** #472: the trimmed text must not drift back to v1's prose + a second "In code" channel. v1's SKILL.md is 40,690 bytes; v2 carries new verbs, so the budget is 45,000 B (v1 + 10.6 %; #470's text was 48,213 B = +18.5 %). */
-const SIZE_BUDGET = 45_000;
-test('size budget: the rendered text stays within 45,000 B (v1 40,690 B), and a padded text breaks it', () => {
+test('#474: the SKILL.md-resident rules are listed, read from SKILL.md alone; the moved sentences are read from their reference', () => {
+  assert.ok(SKILL_RESIDENT.length >= 34 && new Set(SKILL_RESIDENT).size === SKILL_RESIDENT.length, `${SKILL_RESIDENT.length} resident rules, ids unique`);
+  for (const id of ['merge on 0 BLOCKING/0 MAJOR, head-pinned, CI steps>0', 'final report = worker_done --cap', 'pull the ledger first', 'self-gate + pre-review before nominating', 'close-out: reported done != landed', 'handoff', 'resume a dead ops']) assert.ok(SKILL_RESIDENT.includes(id), `${id} is SKILL.md-resident`);
+  assert.deepEqual(referencePinProblems(refText), []);
+  // must-FAIL (a): a resident rule MOVED into a reference — its sentence intact in the long form — is still dropped from SKILL.md
+  const [, , rePre] = RULE_PINS.find(([id]) => id === 'handoff')!;
+  const cut = withoutRule(VERIFIED_FANOUT_SKILL, rePre);
+  assert.ok(droppedRules(cut).includes('handoff'));
+  assert.ok(droppedRules(cut + ALL_V2_REFS).length === 0 || droppedRules(cut).includes('handoff'), 'droppedRules reads the text it is given: SKILL.md alone is what the resident test passes it');
+  const [, reSelf] = JUDGEMENT_PINS.find(([id]) => id === 'self-gate + pre-review before nominating')!;
+  assert.match(refText('budget-and-gates.md'), reSelf, 'the long form in the reference carries the sentence too…');
+  assert.ok(droppedRules(withoutRule(VERIFIED_FANOUT_SKILL, reSelf)).includes('self-gate + pre-review before nominating'), '…and that does not keep it resident');
+  // must-FAIL (b): a reference stripped of a moved sentence, or a pin aimed at the wrong file, is seen
+  for (const [id, file, re] of REFERENCE_PINS) {
+    const stripped = (f: string) => (f === file ? withoutRule(refText(f), re) : refText(f));
+    assert.notEqual(stripped(file), refText(file), `${id}: mutant anchor matches`);
+    assert.ok(referencePinProblems(stripped).some((p) => p.startsWith(id)), `${id}: stripping it from ${file} is seen`);
+  }
+  assert.ok(referencePinProblems(() => '').length === REFERENCE_PINS.length, 'an empty reference set fails every pin');
+  // the moved sentences are NOT required in SKILL.md (they moved): the TEAM LEAD synthesis rules are not always-read
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /TEAM LEAD'S SYNTHESIS|live delivery timeout|patch-id\s+equality/);
+});
+
+// ---- #474: the always-read text is under 4,000 words -------------------------------------------------------------------------------
+
+/** Words the way `wc -w` counts the rendered text (whitespace-separated tokens). */
+export const wordCount = (t: string): number => t.split(/\s+/).filter(Boolean).length;
+const WORD_BUDGET = 4000;
+/** v1's SKILL.md is 40,690 bytes / 6,358 words; #470's text was 6,943 words / 48,213 B; this budget keeps the always-read text well inside v1 on both axes. */
+const SIZE_BUDGET = 32_000;
+test('#474 word budget: the rendered SKILL.md has < 4,000 words (was 6,962) and a padded text breaks it', () => {
+  const w = wordCount(VERIFIED_FANOUT_SKILL);
+  assert.ok(w < WORD_BUDGET, `${w} words >= ${WORD_BUDGET}`);
+  assert.ok(w > 2500, `${w} words: suspiciously small — a section was dropped wholesale, not moved`);
+  assert.ok(wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET)) >= WORD_BUDGET, 'must-FAIL: a text over budget is seen');
+  assert.ok(wordCount(VERIFIED_FANOUT_SKILL + ' word'.repeat(WORD_BUDGET - w)) >= WORD_BUDGET, 'the boundary is exact: padded to the budget = over');
+  assert.equal(wordCount('a  b\nc\t d '), 4, 'the counter splits on any whitespace, like wc -w');
+});
+
+test('size budget (#472): the rendered text stays within 32,000 B (v1 40,690 B), and a padded text breaks it', () => {
   const bytes = (t: string) => Buffer.byteLength(t, 'utf8');
   assert.ok(bytes(VERIFIED_FANOUT_SKILL) <= SIZE_BUDGET, `${bytes(VERIFIED_FANOUT_SKILL)} B > ${SIZE_BUDGET} B`);
   assert.ok(bytes(VERIFIED_FANOUT_SKILL + 'x'.repeat(SIZE_BUDGET)) > SIZE_BUDGET);
+});
+
+// ---- #474: every pointer reaches a shipped file, with its trigger -------------------------------------------------------------------
+
+const SHIPPED_PATHS: readonly string[] = [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES].map((f) => f.path);
+/** Problems of the pointers in `skill`: a `references/x.md` / `scripts/ledger-set` mention with no shipped file behind it, a v2 reference nobody points at, or one pointed at with no "read when/before" trigger on a line naming it. */
+function pointerProblems(skill: string, shipped: readonly string[], v2: readonly string[]): string[] {
+  const probs: string[] = [];
+  for (const m of skill.matchAll(/(?<![\w/-])((?:references\/[a-z][a-z-]*\.md)|scripts\/ledger-set[\w-]*)/g)) if (!shipped.includes(m[1])) probs.push(`pointer to ${m[1]}: not in the shipped file set`);
+  const lines = skill.split('\n');
+  for (const f of v2) {
+    const at = lines.map((l, i) => (l.includes(f) ? i : -1)).filter((i) => i >= 0);
+    if (at.length === 0) probs.push(`${f}: no pointer to it in SKILL.md`);
+    // the trigger sits on the pointer line or the line before/after (a wrapped paragraph)
+    else if (!at.some((i) => /\bread\b[^\n]*?\b(when|before)\b/i.test(lines.slice(Math.max(0, i - 1), i + 2).join(' ')))) probs.push(`${f}: pointed at without a "read when/before" trigger`);
+  }
+  return probs;
+}
+test('#474 pointers: every references/ / scripts/ pointer in SKILL.md and in the references reaches a shipped file; every new reference has a "read when" trigger', () => {
+  const v2 = VERIFIED_FANOUT_V2_REFERENCES.map((f) => f.path);
+  assert.ok(v2.length >= 5, `${v2.length} v2 references`);
+  assert.deepEqual(pointerProblems(VERIFIED_FANOUT_SKILL, SHIPPED_PATHS, v2), []);
+  for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.deepEqual(pointerProblems(f.content, SHIPPED_PATHS, []), [], f.path);
+  // every section that MOVED left a pointer: its heading's pointer line names its reference
+  for (const [heading, ref] of [['## 0a.', 'lead-ops-tiers.md'], ['## 0b.', 'budget-and-gates.md'], ['## 0c.', 'fleet-bus.md'], ['## 3. Spawn the verifier', 'verifier-and-review.md'], ['## 5. Close-out', 'closeout-and-gates.md']] as const) {
+    const from = VERIFIED_FANOUT_SKILL.indexOf(heading); const to = VERIFIED_FANOUT_SKILL.indexOf('\n## ', from + 4);
+    assert.ok(VERIFIED_FANOUT_SKILL.slice(from, to).includes(`references/${ref}`), `${heading} points at ${ref}`);
+  }
+  // must-FAIL: a pointer to a file that does not ship, a pointer removed, a trigger removed
+  assert.ok(pointerProblems(`${VERIFIED_FANOUT_SKILL}\nRead when x: \`references/no-such.md\``, SHIPPED_PATHS, v2).some((p) => /references\/no-such\.md: not in the shipped/.test(p)));
+  assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL, SHIPPED_PATHS.filter((x) => x !== 'references/fleet-bus.md'), v2).some((p) => /fleet-bus\.md: not in the shipped/.test(p)), 'a reference dropped from the shipped set');
+  assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL.replaceAll('references/closeout-and-gates.md', 'references/traps.md'), SHIPPED_PATHS, v2).some((p) => /closeout-and-gates\.md: no pointer/.test(p)));
+  const noTrigger = VERIFIED_FANOUT_SKILL.replace(/\b(when|before)\b/gi, 'if');
+  assert.ok(pointerProblems(noTrigger, SHIPPED_PATHS, v2).some((p) => /without a "read when\/before" trigger/.test(p)));
+  assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL.replace('scripts/ledger-set', 'scripts/ledger-sett'), SHIPPED_PATHS, v2).some((p) => /ledger-sett/.test(p)));
 });
 
 // ---- the role-guard summary in the text is the role table ---------------------------------------------------------------------------
@@ -261,6 +372,7 @@ test('wiring: workspaces.ts calls the guarded installer and hashes the text AND 
     const v = src.slice(src.indexOf('const HOOKS_VERSION = createHash'), src.indexOf('.digest(', src.indexOf('const HOOKS_VERSION = createHash')));
     if (!/\n\s+VERIFIED_FANOUT_SKILL,\n/.test(v)) probs.push('VERIFIED_FANOUT_SKILL not hashed into HOOKS_VERSION (an edited text would never reinstall)');
     if (!/\n\s+JSON\.stringify\(VERIFIED_FANOUT_FILES\),\n/.test(v)) probs.push('VERIFIED_FANOUT_FILES not hashed into HOOKS_VERSION');
+    if (!/\n\s+JSON\.stringify\(VERIFIED_FANOUT_V2_REFERENCES\),\n/.test(v)) probs.push('VERIFIED_FANOUT_V2_REFERENCES not hashed into HOOKS_VERSION (an edited reference would never reinstall)');
     if (!/RETIRED_SKILLS = \[[^\]]*\]/.test(src) || /RETIRED_SKILLS = \[[^\]]*verified-fanout/.test(src)) probs.push('verified-fanout must not be in RETIRED_SKILLS');
     return probs;
   };
@@ -269,6 +381,7 @@ test('wiring: workspaces.ts calls the guarded installer and hashes the text AND 
   assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
   assert.ok(check(workspacesSrc.replace('      VERIFIED_FANOUT_SKILL,\n', '')).some((p) => /VERIFIED_FANOUT_SKILL not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_FILES),\n', '')).some((p) => /VERIFIED_FANOUT_FILES not hashed/.test(p)));
+  assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),\n', '')).some((p) => /VERIFIED_FANOUT_V2_REFERENCES not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace("      'orchestra-link',\n", "      'orchestra-link',\n      'verified-fanout',\n")).some((p) => /RETIRED_SKILLS/.test(p)));
 });
 
@@ -297,8 +410,53 @@ test('D8: every shipped reference file is byte-identical to the frozen v1 (sha25
   assert.ok(filesDrift([...VERIFIED_FANOUT_FILES, { path: 'references/extra.md', content: 'x' }]).some((d) => /extra\.md: not a v1 file/.test(d)));
 });
 
+// ---- #474: the v2 references ship, from ONE source (src/shared/verified-fanout-refs/*.md) -------------------------------------------
+
+/** Problems of the embedded v2 references against their source dir: a stale embedding (edit not regenerated), a missing/extra file, a v1 name, a wrong mode, an empty file. */
+function v2Drift(files: ReadonlyArray<{ path: string; mode: number; content: string }>, srcDir: string): string[] {
+  const disk = fs.readdirSync(srcDir).filter((n) => n.endsWith('.md')).sort();
+  const probs: string[] = [];
+  for (const n of disk) {
+    const f = files.find((x) => x.path === `references/${n}`);
+    if (!f) probs.push(`references/${n}: in the source dir, not embedded (run scripts/gen-verified-fanout-files.mjs)`);
+    else if (f.content !== fs.readFileSync(path.join(srcDir, n), 'utf8')) probs.push(`references/${n}: embedded text differs from its source (run scripts/gen-verified-fanout-files.mjs)`);
+    if (f && f.mode !== 0o644) probs.push(`references/${n}: mode ${f.mode.toString(8)}`);
+    if (f && f.content.trim() === '') probs.push(`references/${n}: empty`);
+  }
+  for (const f of files) {
+    if (!disk.includes(f.path.replace(/^references\//, ''))) probs.push(`${f.path}: embedded, no source file`);
+    if (f.path in V1_FILE_SHA256) probs.push(`${f.path}: collides with a v1 file`);
+  }
+  return probs;
+}
+test('#474: the v2 references are embedded byte-for-byte from their one source dir, none is a v1 file, and v1\'s five are untouched', () => {
+  assert.deepEqual(v2Drift(VERIFIED_FANOUT_V2_REFERENCES, REFS_SRC_DIR), []);
+  assert.ok(VERIFIED_FANOUT_V2_REFERENCES.length >= 5 && VERIFIED_FANOUT_V2_REFERENCES.every((f) => /^references\/[a-z-]+\.md$/.test(f.path)));
+  assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES), [], 'v1 files stay sha256-identical to the frozen v1');
+  // must-FAIL: one changed byte, a dropped file, a stray embedded file, a v1 collision, an unembedded source file
+  const bent = VERIFIED_FANOUT_V2_REFERENCES.map((f) => (f.path === 'references/fleet-bus.md' ? { ...f, content: f.content + ' ' } : f));
+  assert.ok(v2Drift(bent, REFS_SRC_DIR).some((d) => /fleet-bus\.md: embedded text differs/.test(d)));
+  assert.ok(v2Drift(VERIFIED_FANOUT_V2_REFERENCES.slice(1), REFS_SRC_DIR).some((d) => /in the source dir, not embedded/.test(d)));
+  assert.ok(v2Drift([...VERIFIED_FANOUT_V2_REFERENCES, { path: 'references/extra.md', mode: 0o644, content: 'x' }], REFS_SRC_DIR).some((d) => /extra\.md: embedded, no source file/.test(d)));
+  assert.ok(v2Drift([...VERIFIED_FANOUT_V2_REFERENCES, { path: 'references/traps.md', mode: 0o644, content: 'x' }], REFS_SRC_DIR).some((d) => /traps\.md: collides with a v1 file/.test(d)));
+  assert.ok(v2Drift(VERIFIED_FANOUT_V2_REFERENCES.map((f) => ({ ...f, mode: 0o755 })), REFS_SRC_DIR).some((d) => /mode 755/.test(d)));
+  // the generator is deterministic: its output for the current sources is the committed module
+  const gen = fs.readFileSync(path.join(root, 'src', 'shared', 'verified-fanout-files.ts'), 'utf8');
+  for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.ok(gen.includes(JSON.stringify(f.content)), `${f.path}: the committed module embeds the source literally`);
+});
+
+test('#474: roleClaimDrift covers every role-guard claim the references make (the verifier edits scratch only)', () => {
+  const claims = [...ALL_V2_REFS.matchAll(/[^.\n]*role guard[^.\n]*/gi)].map((m) => m[0].trim());
+  assert.ok(claims.length >= 1 && claims.every((c) => /scratch only/.test(c)), `unexpected role-guard claim(s) in the references: ${claims.join(' | ')}`);
+  assert.deepEqual(roleClaimDrift((r) => roleSpec(r)), []);
+  const verifierEdits = (r: FleetRole) => { const x = roleSpec(r); if (r === 'verifier') x.tools.edit = 'own-worktree'; return x; };
+  assert.ok(roleClaimDrift(verifierEdits).some((d) => /verifier: edit scope is not scratch/.test(d)), 'must-FAIL: the verifier gaining the worktree breaks the references\' claim');
+  // a NEW role-guard claim planted in a reference is not in the covered set
+  assert.ok([...`${ALL_V2_REFS}\nThe role guard lets a reviewer push.`.matchAll(/[^.\n]*role guard[^.\n]*/gi)].some((m) => !/scratch only/.test(m[0])));
+});
+
 test('the text no longer claims the references are absent or conditional', () => {
-  assert.match(VERIFIED_FANOUT_SKILL, /these files ship WITH this skill/);
+  assert.match(VERIFIED_FANOUT_SKILL, /[Tt]hese files ship WITH this skill/);
   assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /present only where that copy is|carries every rule v2 needs|skip them/);
   assert.ok(VERIFIED_FANOUT_SKILL.includes(VERIFIED_FANOUT_MARKER), 'the generated marker is in the text (the installer keys on it)');
   assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /instead of restating/);
@@ -313,15 +471,20 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
     assert.equal(await installVerifiedFanoutSkill(skills), 'written');
     assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
     assert.equal(fs.readFileSync(path.join(dir, 'references', 'traps.md'), 'utf8'), VERIFIED_FANOUT_FILES.find((f) => f.path === 'references/traps.md')!.content);
+    // #474: the v2 references land too (every pointer of SKILL.md resolves in the installed dir)
+    for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.equal(fs.readFileSync(path.join(dir, f.path), 'utf8'), f.content, f.path);
+    for (const m of VERIFIED_FANOUT_SKILL.matchAll(/(?<![\w/-])(references\/[a-z][a-z-]*\.md|scripts\/ledger-set)(?![\w-])/g)) assert.ok(fs.existsSync(path.join(dir, m[1])), `${m[1]} (pointed at by SKILL.md) exists on disk after the install`);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0);
     // a previous generated copy + a corrupted reference + a lost exec bit → all restored
     fs.writeFileSync(path.join(dir, 'SKILL.md'), `<!-- ${VERIFIED_FANOUT_MARKER} -->\nold`);
     fs.writeFileSync(path.join(dir, 'references', 'prose.md'), 'corrupt');
+    fs.writeFileSync(path.join(dir, 'references', 'fleet-bus.md'), 'corrupt');
     fs.chmodSync(path.join(dir, 'scripts', 'ledger-set'), 0o644);
     assert.equal(await installVerifiedFanoutSkill(skills), 'written');
     assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
     assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES.map((f) => ({ path: f.path, content: fs.readFileSync(path.join(dir, f.path), 'utf8') }))), []);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0, 'exec bit restored on a rewrite');
+    assert.equal(fs.readFileSync(path.join(dir, 'references', 'fleet-bus.md'), 'utf8'), refText('fleet-bus.md'), 'a corrupted v2 reference is restored');
   } finally { fs.rmSync(skills, { recursive: true, force: true }); }
   // never throws: each fs-error shape returns skipped-error (reported), never an exception; a symlinked dir is the repo's own and is not written through
   const errs = mkHomeScratch('vf-install-err-');
