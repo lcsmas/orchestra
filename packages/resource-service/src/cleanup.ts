@@ -1,0 +1,82 @@
+// The ORDERED cleanup pipeline of a run. A1 registers `kill-processes`; A2 appends `remove-containers`, A4 appends `stop-scopes`.
+// A step is idempotent (a run may be cleaned twice: `run end` racing the reaper) and must not hold the state lock.
+import { termWaitMs, type Env } from './env.ts';
+import { findByEnv, groupMembers, readStat, signalGroupIfOurs, signalIfSame, sleep, touchable, groupIsOurs, type Identity } from './proc.ts';
+import { withState, type Run } from './state.ts';
+
+export type CleanupCtx = { env?: Env; log?: (msg: string) => void };
+export type CleanupStep = { name: string; run: (run: Run, ctx: CleanupCtx) => Promise<void> };
+
+/** Env key the lanes carry (see exec.ts): one random value per run instance. */
+export const TOKEN_ENV = 'RESCTL_RUN_TOKEN';
+
+/** Every live process of the run: the recorded lane groups PLUS anything carrying the run's marker (double fork / setsid escapes the group, not the marker). */
+export function collectRunProcesses(run: Run): Identity[] {
+  const byPid = new Map<number, Identity>();
+  const ours = run.lanes.filter((l) => l.pgid === l.pid && groupIsOurs({ pid: l.pid, startTime: l.startTime }) === 'ours');
+  const born = new Map(ours.map((l) => [l.pgid, l.startTime]));
+  for (const m of groupMembers(...born.keys())) {
+    const pg = readStat(m.pid)?.pgrp;
+    if (pg !== undefined && m.startTime >= (born.get(pg) ?? Infinity)) byPid.set(m.pid, m);
+  }
+  for (const m of findByEnv(TOKEN_ENV, run.token)) byPid.set(m.pid, m);
+  return [...byPid.values()].filter(touchable);
+}
+
+function signalRun(run: Run, sig: NodeJS.Signals): void {
+  for (const lane of run.lanes) if (lane.pgid === lane.pid) signalGroupIfOurs({ pid: lane.pid, startTime: lane.startTime }, sig);
+  for (const m of collectRunProcesses(run)) signalIfSame(m, sig);
+}
+
+async function waitEmpty(run: Run, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (collectRunProcesses(run).length === 0) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(25);
+  }
+}
+
+/** TERM, wait RESCTL_TERM_WAIT, then KILL until nothing of the run is left. */
+export async function killProcesses(run: Run, ctx: CleanupCtx = {}): Promise<void> {
+  if (collectRunProcesses(run).length === 0) return;
+  signalRun(run, 'SIGTERM');
+  if (await waitEmpty(run, termWaitMs(ctx.env))) return;
+  for (let round = 0; round < 20; round++) {
+    signalRun(run, 'SIGKILL');
+    if (await waitEmpty(run, 250)) return;
+  }
+  throw new Error(`run ${run.id}: processes survived SIGKILL: ${collectRunProcesses(run).map((p) => p.pid).join(',')}`);
+}
+
+export const CLEANUP_STEPS: CleanupStep[] = [{ name: 'kill-processes', run: killProcesses }];
+
+/** Run every step in order; a failing step does not skip the next ones. Returns the failures. */
+export async function cleanupRun(run: Run, ctx: CleanupCtx = {}): Promise<{ step: string; error: string }[]> {
+  const failures: { step: string; error: string }[] = [];
+  for (const step of CLEANUP_STEPS) {
+    try {
+      await step.run(run, ctx);
+    } catch (e) {
+      failures.push({ step: step.name, error: (e as Error).message });
+    }
+  }
+  return failures;
+}
+
+/** Clean a run and, only if every step succeeded, mark THAT instance (token) `cleaned`. Returns the failures. */
+export async function endRun(dir: string, run: Run, ctx: CleanupCtx = {}): Promise<{ step: string; error: string }[]> {
+  const failures = await cleanupRun(run, ctx);
+  if (failures.length === 0) {
+    await withState((s) => {
+      const cur = s.runs[run.id];
+      if (cur && cur.token === run.token && cur.state !== 'cleaned') {
+        cur.state = 'cleaned';
+        cur.cleanedAt = Date.now();
+        cur.lanes = [];
+        delete cur.graceEndsAt;
+      }
+    }, dir);
+  }
+  return failures;
+}

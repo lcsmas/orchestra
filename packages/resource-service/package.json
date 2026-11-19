@@ -1,0 +1,14 @@
+{
+  "name": "resctl",
+  "version": "0.1.0",
+  "description": "Standalone resource service: declare a run, start lanes through it, get everything the run left behind cleaned when its coordinator dies.",
+  "private": true,
+  "type": "module",
+  "bin": { "resctl": "bin/resctl.mjs" },
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.ts'",
+    "typecheck": "tsc -p .",
+    "test:mutants": "node scripts/mutants.mjs"
+  }
+}

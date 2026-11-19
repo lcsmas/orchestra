@@ -1,0 +1,599 @@
+[
+ {
+  "id": "M01_grace_ignored",
+  "why": "the lane is killed the moment the owner is noticed dead",
+  "tests": [
+   "test/grace.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "alive before the grace ends",
+   "the grace ends exactly at graceEndsAt"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "  return now >= run.graceEndsAt ? { kind: 'cleanup', reason: 'grace-expired' } : { kind: 'none' };",
+    "to": "  return { kind: 'cleanup', reason: 'grace-expired' };"
+   }
+  ]
+ },
+ {
+  "id": "M02_grace_never_ends",
+  "why": "a run in grace is never cleaned",
+  "tests": [
+   "test/grace.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "gone after it",
+   "the grace ends exactly at graceEndsAt"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "  return now >= run.graceEndsAt ? { kind: 'cleanup', reason: 'grace-expired' } : { kind: 'none' };",
+    "to": "  return { kind: 'none' };"
+   }
+  ]
+ },
+ {
+  "id": "M03_grace_boundary_off_by_one",
+  "why": "the deadline is exclusive",
+  "tests": [
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "the grace ends exactly at graceEndsAt"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "now >= run.graceEndsAt ?",
+    "to": "now > run.graceEndsAt ?"
+   }
+  ]
+ },
+ {
+  "id": "M04_owner_death_not_noticed",
+  "why": "the reaper believes every owner is alive",
+  "tests": [
+   "test/grace.test.ts",
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "alive before the grace ends",
+   "alive \u2192 grace \u2192 cleaned"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "const d = decide(run, now, isAlive(run.owner), opts);",
+    "to": "const d = decide(run, now, true, opts);"
+   }
+  ]
+ },
+ {
+  "id": "M05_purge_boundary",
+  "why": "a cleaned run is purged one ms late",
+  "tests": [
+   "test/reaper-decision.test.ts"
+  ],
+  "expect": [
+   "kept for keepMs"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "now - (run.cleanedAt ?? 0) >= o.keepMs",
+    "to": "now - (run.cleanedAt ?? 0) > o.keepMs"
+   }
+  ]
+ },
+ {
+  "id": "M06_readopt_keeps_grace_state",
+  "why": "re-adoption leaves the run in state grace",
+  "tests": [
+   "test/grace.test.ts"
+  ],
+  "expect": [
+   "keeps the lane alive past the original deadline"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "        cur.state = 'alive';\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M07_readopt_keeps_deadline",
+  "why": "re-adoption leaves graceEndsAt set",
+  "tests": [
+   "test/grace.test.ts"
+  ],
+  "expect": [
+   "keeps the lane alive past the original deadline"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "        delete cur.graceEndsAt;\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M08_readopt_after_expiry",
+  "why": "a grace that is over is still re-adopted",
+  "tests": [
+   "test/grace.test.ts"
+  ],
+  "expect": [
+   "an EXPIRED grace is not re-adopted"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (cur.graceEndsAt === undefined || now >= cur.graceEndsAt) return",
+    "to": "if (false) return"
+   }
+  ]
+ },
+ {
+  "id": "M09_second_live_owner_accepted",
+  "why": "an alive run is taken over by a different live owner",
+  "tests": [
+   "test/grace.test.ts"
+  ],
+  "expect": [
+   "refuses a second, different live owner"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (isAlive(cur.owner)) throw refused(",
+    "to": "if (false) throw refused("
+   }
+  ]
+ },
+ {
+  "id": "M10_no_kill_step",
+  "why": "the cleanup pipeline is empty",
+  "tests": [
+   "test/run-end.test.ts"
+  ],
+  "expect": [
+   "kills the lane before it returns"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "export const CLEANUP_STEPS: CleanupStep[] = [{ name: 'kill-processes', run: killProcesses }];",
+    "to": "export const CLEANUP_STEPS: CleanupStep[] = [];"
+   }
+  ]
+ },
+ {
+  "id": "M11_end_does_not_mark_cleaned",
+  "why": "a finished cleanup is not recorded",
+  "tests": [
+   "test/run-end.test.ts"
+  ],
+  "expect": [
+   "marks the run cleaned"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  if (failures.length === 0) {",
+    "to": "  if (false) {"
+   }
+  ]
+ },
+ {
+  "id": "M12_marker_sweep_dropped",
+  "why": "pgid-only kill: the setsid descendant escapes",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "double-forked, setsid-ed descendant is killed by `run end`",
+   "killed by the reaper when the coordinator dies"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  for (const m of findByEnv(TOKEN_ENV, run.token)) byPid.set(m.pid, m);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M13_lane_has_no_marker",
+  "why": "lanes are started without the run token",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "double-forked, setsid-ed descendant is killed by `run end`"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "[TOKEN_ENV]: token, ",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M14_marker_matches_every_run",
+  "why": "the sweep matches any run token, not its own",
+  "tests": [
+   "test/run-end.test.ts"
+  ],
+  "expect": [
+   "touches nothing else"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "if (!env || !env.includes(needle)) continue;",
+    "to": "if (!env || !env.some((e) => e.startsWith(`${key}=`))) continue;"
+   }
+  ]
+ },
+ {
+  "id": "M15_group_kill_dropped",
+  "why": "no process-group handling at all",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "dropped the run marker (env -i)",
+   "outlives its lane leader"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "run.lanes.filter((l) => l.pgid === l.pid && groupIsOurs({ pid: l.pid, startTime: l.startTime }) === 'ours')",
+    "to": "run.lanes.filter(() => false)"
+   },
+   {
+    "file": "src/cleanup.ts",
+    "find": "  for (const lane of run.lanes) if (lane.pgid === lane.pid) signalGroupIfOurs({ pid: lane.pid, startTime: lane.startTime }, sig);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M16_lane_record_dropped_with_leader",
+  "why": "the lane leaves the state when its leader exits even if its group lives on",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "outlives its lane leader"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "if (groupMembers(lanePid!).length === 0) {",
+    "to": "if (true) {"
+   }
+  ]
+ },
+ {
+  "id": "M17_no_kill_escalation",
+  "why": "a SIGTERM-ignoring lane is never SIGKILLed",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "SIGKILLed after RESCTL_TERM_WAIT"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "    signalRun(run, 'SIGKILL');\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M18_no_term_wait",
+  "why": "SIGKILL at once, no SIGTERM grace",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "SIGKILLed after RESCTL_TERM_WAIT"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  if (await waitEmpty(run, termWaitMs(ctx.env))) return;\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M19_lane_not_own_group",
+  "why": "exec starts the lane in the caller's group",
+  "tests": [
+   "test/grace.test.ts"
+  ],
+  "expect": [
+   "alive before the grace ends"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "detached: true, // setsid",
+    "to": "detached: false, // setsid"
+   }
+  ]
+ },
+ {
+  "id": "M20_exit_code_dropped",
+  "why": "exec always exits 0",
+  "tests": [
+   "test/descendants.test.ts"
+  ],
+  "expect": [
+   "forwards the lane exit code"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/exec.ts",
+    "find": "return code ?? 128 + (signal ? os.constants.signals[signal] : 0);",
+    "to": "return 0;"
+   }
+  ]
+ },
+ {
+  "id": "M21_end_unknown_run_ok",
+  "why": "run end of an unknown id succeeds silently",
+  "tests": [
+   "test/run-end.test.ts"
+  ],
+  "expect": [
+   "unknown or cleaned run is told apart"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-end.ts",
+    "find": "  if (!run) throw refused(`no such run: ${values.id}`);",
+    "to": "  if (!run) return EXIT.ok;"
+   }
+  ]
+ },
+ {
+  "id": "M22_signal_ignores_identity",
+  "why": "signals go to whatever now holds the pid",
+  "tests": [
+   "test/proc.test.ts"
+  ],
+  "expect": [
+   "wrong starttime sends nothing"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "if (!s || s.startTime !== id.startTime || s.state === 'Z'",
+    "to": "if (!s || s.state === 'Z'"
+   }
+  ]
+ },
+ {
+  "id": "M23_pid1_not_refused",
+  "why": "pid <= 1 is signalable",
+  "tests": [
+   "test/proc.test.ts"
+  ],
+  "expect": [
+   "refuses pid 1"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "return s.pid > 1 && s.pgrp > 1 && s.pid !== process.pid && s.pgrp !== ownPgid();",
+    "to": "return s.pid !== process.pid && s.pgrp !== ownPgid();"
+   }
+  ]
+ },
+ {
+  "id": "M24_own_group_not_refused",
+  "why": "the caller's own group is signalable",
+  "tests": [
+   "test/proc.test.ts"
+  ],
+  "expect": [
+   "refuses pid 1, itself, and anything in its own process group"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "&& s.pid !== process.pid && s.pgrp !== ownPgid();",
+    "to": "&& s.pid !== process.pid;"
+   }
+  ]
+ },
+ {
+  "id": "M25_group_through_reused_pid",
+  "why": "a group is signalled through a leader pid that was reused",
+  "tests": [
+   "test/proc.test.ts"
+  ],
+  "expect": [
+   "a reused leader pid is foreign"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "if (s.startTime !== leader.startTime || s.pgrp !== leader.pid) return 'foreign';",
+    "to": "if (s.pgrp !== leader.pid) return 'foreign';"
+   }
+  ]
+ },
+ {
+  "id": "M26_alive_ignores_starttime",
+  "why": "identity is the pid alone",
+  "tests": [
+   "test/proc.test.ts",
+   "test/daemon-lock.test.ts"
+  ],
+  "expect": [
+   "same pid with another starttime",
+   "ANOTHER starttime"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "return !!s && s.startTime === id.startTime && s.state !== 'Z' && s.state !== 'X';",
+    "to": "return !!s && s.state !== 'Z' && s.state !== 'X';"
+   }
+  ]
+ },
+ {
+  "id": "M27_lock_stolen_without_probe",
+  "why": "a live holder's lock is stolen",
+  "tests": [
+   "test/daemon-lock.test.ts"
+  ],
+  "expect": [
+   "is not stolen"
+  ],
+  "edits": [
+   {
+    "file": "src/lockfile.ts",
+    "find": "      if (holder !== 'unreadable' && isAlive(holder)) return { ok: false, heldBy: holder };\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M28_lock_never_stolen",
+  "why": "a stale lock blocks the daemon forever",
+  "tests": [
+   "test/daemon-lock.test.ts",
+   "test/state.test.ts"
+  ],
+  "expect": [
+   "whose holder is dead is stolen",
+   "left by a dead process is stolen"
+  ],
+  "edits": [
+   {
+    "file": "src/lockfile.ts",
+    "find": "        fs.unlinkSync(file);\n      } catch {\n        /* a rival",
+    "to": "        void file;\n      } catch {\n        /* a rival"
+   }
+  ]
+ },
+ {
+  "id": "M29_state_unlocked",
+  "why": "withState does not take state.lock",
+  "tests": [
+   "test/state.test.ts"
+  ],
+  "expect": [
+   "loses no update"
+  ],
+  "edits": [
+   {
+    "file": "src/state.ts",
+    "find": "const lock = await acquire(path.join(dir, 'state.lock'), 10_000);",
+    "to": "const lock = { path: path.join(dir, 'state.lock'), identity: { pid: 0, startTime: 0 } };"
+   }
+  ]
+ },
+ {
+  "id": "M30_guard_ignores_outside_paths",
+  "why": "the import guard lets a path leave the package",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "relative import that leaves the package",
+   "absolute path"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "return rel.startsWith('..') || path.isAbsolute(rel) ? 'leaves the package directory' : null;",
+    "to": "return null;"
+   }
+  ]
+ },
+ {
+  "id": "M31_guard_ignores_orchestra_names",
+  "why": "the import guard does not look at names",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "package named for orchestra",
+   "relative import naming orchestra"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "if (/orchestra/i.test(spec)) return 'names an orchestra module';",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M32_guard_allows_dependencies",
+  "why": "the import guard lets third-party packages through",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "a third-party package"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "else return 'a package that is not a node builtin (the service has zero dependencies)';",
+    "to": "else return null;"
+   }
+  ]
+ },
+ {
+  "id": "M33_guard_blind_to_dynamic_import",
+  "why": "the import guard reads static imports only",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "a dynamic load that leaves the package"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "  /\\bimport\\s*\\(\\s*['\"]([^'\"]+)['\"]/g, // dynamic import with a literal\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M34_duration_minutes_wrong",
+  "why": "15m parses as 1.5m",
+  "tests": [
+   "test/units.test.ts"
+  ],
+  "expect": [
+   "parseDuration"
+  ],
+  "edits": [
+   {
+    "file": "src/units.ts",
+    "find": "m: 60_000,",
+    "to": "m: 6_000,"
+   }
+  ]
+ }
+]
