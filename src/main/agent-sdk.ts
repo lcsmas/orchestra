@@ -159,6 +159,7 @@ import type {
 } from '../shared/types';
 import { makeRestartNotice, classifyConsumeTermination } from '../shared/restart-notice.ts';
 import { childEnv } from '../shared/child-env.ts';
+import { notifyTurnEnd } from './handoff-seam.ts';
 import { isCoordinatorKind } from '../shared/run-position.ts';
 import {
   enabledPluginInstalls,
@@ -1361,6 +1362,8 @@ async function consume(session: Session): Promise<void> {
         releaseTurnGate(session);
         // #317: no getContextUsage() here — its count_tokens burst holds the NEXT prompt in the CLI
         // (rig: scripts/session-budget/turn-boundary.mjs). The gauge reads per-call usage; `/context` gives the breakdown.
+        // #466: tell the handoff host a turn ended (bound nudge; a scheduled handoff runs here, with nothing queued).
+        notifyTurnEnd({ wsId: session.wsId, sessionId: session.persistedSessionId, queueLen: session.queue.length });
         // #124 D4: re-drive parked inbox mail at the turn boundary. A peer
         // delivery that timed out waiting for a running turn to START was
         // withdrawn and parked in the durable inbox; nothing starts a new turn

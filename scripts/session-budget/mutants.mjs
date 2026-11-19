@@ -11,6 +11,18 @@ const FAKE_MCP_SERVER = fileURLToPath(new URL('./fake-mcp-server.mjs', import.me
 
 /** name -> { file suffix, regex (global), replace } */
 export const MUTANTS = {
+  // #466 (handoff-cache rig): the handoff is accepted and the summary delivered, but the context is never ended → the cache-read total must NOT drop.
+  'handoff-noop-clear': {
+    file: '/src/main/handoff-host.ts',
+    find: /endContext: \(id\) => sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\),/g,
+    replace: 'endContext: async (_id) => {},',
+  },
+  // #466: the nudge is never sent → the fake agent is never told, never hands off → the run equals the baseline.
+  'handoff-no-nudge': {
+    file: '/src/main/handoff-controller.ts',
+    find: /if \(!tally\.nudge \|\| !deps\.workspaceLive\(wsId\) \|\| deps\.blocked\(wsId\) !== null\) return undefined;/g,
+    replace: 'return undefined;',
+  },
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',

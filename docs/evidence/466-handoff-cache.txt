@@ -1,0 +1,44 @@
+# #466 handoff-cache evidence — 2026-11-19T18:11:54+01:00 — base 21290ff2 + worktree diff (pre-commit)
+# claude 2.1.325 (Claude Code). SIMULATED: fake API prefix cache (cacheModel) + model replies. REAL: session path, host, bus run row, key registry, restart.
+
+## pnpm run test:handoff-cache  (heavy ~4k tok/turn, N=24, K=6, --proof)
+baseline: PASS (expected) | main requests 24, cache_read 1404323, cache_creation 113544, weighted 282362, last request 109782 tok, max 109782 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 32, cache_read 658017, cache_creation 142727, weighted 244210, last request 25065 tok, max 38611 | nudges 4, handoffs 4, openings 4, fresh true
+handoff-noop-clear: FAIL [opened, drop] (expected) | main requests 32, cache_read 1978777, cache_creation 115522, weighted 342280, last request 111534 tok, max 111534 | nudges 4, handoffs 4, openings 4, fresh false
+handoff-no-nudge: FAIL [nudged, handedOff, opened, drop] (expected) | main requests 24, cache_read 1404367, cache_creation 113548, weighted 282372, last request 109784 tok, max 109784 | nudges 0, handoffs 0, openings 0, fresh false
+profile heavy: N=24 user turns, bound K=6: cache_read 1404323 → 658017 (53.1% lower); weighted base-input-token equivalents 282362 → 244210 (13.5% lower); final context 109782 → 25065 tok
+SENSITIVITY (only the previous request reusable): cache_read 1404323 → 658017 (53.1% lower); creation 113544 → 142727; weighted 282362 → 244210 (13.5% lower)
+per-request cache_read, baseline: 0 13566 20728 24775 28821 32867 36913 40960 45006 49052 53099 57145 61192 65239 69286 73332 77379 81426 85473 89519 93566 97613 101660 105706
+per-request cache_read, handoff : 0 13566 20728 24774 28821 32867 36913 8521 11274 16943 20989 25036 29082 33129 11084 11274 16943 20990 25037 29084 33130 11083 11274 16943 20990 25037 29084 33130 11084 11274 16943 20990
+handoff-cache: CLEAN
+
+## light ~0.75k tok/turn, N=24, K=6
+baseline: PASS (expected) | main requests 24, cache_read 534923, cache_creation 36744, weighted 99422, last request 32982 tok, max 32982 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 32, cache_read 461367, cache_creation 65926, weighted 128544, last request 16515 tok, max 19111 | nudges 4, handoffs 4, openings 4, fresh true
+
+profile light: N=24 user turns, bound K=6: cache_read 534923 → 461367 (13.8% lower); weighted base-input-token equivalents 99422 → 128544 (-29.3% lower); final context 32982 → 16515 tok
+SENSITIVITY (only the previous request reusable): cache_read 534923 → 461367 (13.8% lower); creation 36744 → 65926; weighted 99422 → 128544 (-29.3% lower)
+per-request cache_read, baseline: 0 11516 15428 16225 17021 17817 18613 19410 20206 21002 21799 22595 23392 24189 24986 25782 26579 27376 28173 28969 29766 30563 31360 32156
+per-request cache_read, handoff : 0 11516 15428 16224 17021 17817 18613 8521 11274 14893 15689 16486 17282 18079 11084 11274 14893 15690 16487 17284 18080 11083 11274 14893 15690 16487 17284 18080 11084 11274 14893 15690
+handoff-cache: CLEAN
+
+## heavy, K=8
+baseline: PASS (expected) | main requests 24, cache_read 1404323, cache_creation 113544, weighted 282362, last request 109782 tok, max 109782 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 30, cache_read 732255, cache_creation 136072, weighted 243316, last request 21019 tok, max 46704 | nudges 3, handoffs 3, openings 3, fresh true
+
+profile heavy: N=24 user turns, bound K=8: cache_read 1404323 → 732255 (47.9% lower); weighted base-input-token equivalents 282362 → 243316 (13.8% lower); final context 109782 → 21019 tok
+SENSITIVITY (only the previous request reusable): cache_read 1404323 → 732255 (47.9% lower); creation 113544 → 136072; weighted 282362 → 243316 (13.8% lower)
+per-request cache_read, baseline: 0 13566 20728 24775 28821 32867 36913 40960 45006 49052 53099 57145 61192 65239 69286 73332 77379 81426 85473 89519 93566 97613 101660 105706
+per-request cache_read, handoff : 0 13566 20728 24774 28821 32867 36913 40959 45006 8521 11274 16943 20990 25036 29083 33130 37177 41223 11084 11274 16943 20990 25037 29084 33130 37177 41224 11084 11274 16943
+handoff-cache: CLEAN
+
+## heavy, K=12
+baseline: PASS (expected) | main requests 24, cache_read 1404323, cache_creation 113544, weighted 282362, last request 109782 tok, max 109782 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 28, cache_read 915225, cache_creation 129418, weighted 253295, last request 16972 tok, max 62891 | nudges 2, handoffs 2, openings 2, fresh true
+
+profile heavy: N=24 user turns, bound K=12: cache_read 1404323 → 915225 (34.8% lower); weighted base-input-token equivalents 282362 → 253295 (10.3% lower); final context 109782 → 16972 tok
+SENSITIVITY (only the previous request reusable): cache_read 1404323 → 915225 (34.8% lower); creation 113544 → 129418; weighted 282362 → 253295 (10.3% lower)
+per-request cache_read, baseline: 0 13566 20728 24775 28821 32867 36913 40960 45006 49052 53099 57145 61192 65239 69286 73332 77379 81426 85473 89519 93566 97613 101660 105706
+per-request cache_read, handoff : 0 13566 20728 24774 28821 32867 36913 40959 45006 49052 53098 57145 61192 8521 11274 16944 20990 25037 29084 33131 37177 41224 45271 49318 53364 57411 11084 11274
+handoff-cache: CLEAN
+EVIDENCE-COMPLETE
