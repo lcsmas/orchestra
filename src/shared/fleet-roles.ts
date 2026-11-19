@@ -81,6 +81,35 @@ export type RoleConfig = Partial<Record<FleetRole, { model?: string; effort?: st
 
 const ROLE_KEYS = ['model', 'effort'] as const;
 
+/** First object key that appears twice in the same object of a JSON text (JSON.parse is last-wins and would hide the first copy), or undefined. */
+function findDuplicateKey(text: string): string | undefined {
+  const stack: Array<Set<string> | null> = []; // one entry per open container: key set for an object, null for an array
+  let i = 0;
+  let expectKey = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      const str = text.slice(i + 1, j);
+      const top = stack[stack.length - 1];
+      if (expectKey && top) {
+        if (top.has(str)) return str;
+        top.add(str);
+        expectKey = false;
+      }
+      i = j + 1;
+      continue;
+    }
+    if (c === '{') { stack.push(new Set()); expectKey = true; }
+    else if (c === '[') { stack.push(null); expectKey = false; }
+    else if (c === '}' || c === ']') { stack.pop(); expectKey = false; }
+    else if (c === ',') expectKey = stack[stack.length - 1] instanceof Set;
+    i++;
+  }
+  return undefined;
+}
+
 /** STRICT parse of the override file's JSON text (or an already-parsed object): `{ "<role>": { "model"?, "effort"? } }`.
  *  An unknown role, an unknown key, a wrong type or an invalid model / effort THROWS with a named error. A model of `"default"` or
  *  `null` pins nothing (clears the role's pin). */
@@ -88,6 +117,8 @@ export function parseRoleConfig(raw: unknown): RoleConfig {
   let value = raw;
   if (typeof raw === 'string') {
     try { value = JSON.parse(raw); } catch (e) { throw new Error(`fleet-roles config: not valid JSON (${(e as Error).message})`); }
+    const dup = findDuplicateKey(raw);
+    if (dup !== undefined) throw new Error(`fleet-roles config: duplicate key "${dup}" (the first copy would be silently ignored)`);
   }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('fleet-roles config: expected an object keyed by role');
   const out: RoleConfig = {};
