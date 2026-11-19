@@ -27,7 +27,7 @@ let armsStarted = 0; // pass needs EVERY started arm recorded and green (no hard
 function record(name, ok, detail) { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${detail}`); }
 
 /** One arm = one fresh worktree + one `claude -p` run whose model script is `toolUse`. */
-async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect, stream = false }) {
+async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect, stream = false, shim = false }) {
   armsStarted += 1;
   const home = path.join(root, `home-${name}`);
   const cfg = path.join(home, '.claude');
@@ -41,6 +41,13 @@ async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect,
   fs.writeFileSync(path.join(wt, '.orchestra', 'role-guard.sh'), ROLE_GUARD_SCRIPT, { mode: 0o755 });
   if (role) fs.writeFileSync(path.join(wt, '.orchestra', 'role'), `${role}\n`);
   fs.writeFileSync(path.join(wt, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: ROLE_GUARD_MATCHER, hooks: [{ type: 'command', command: hookCmd }] }] } }));
+  // `shim`: a fake `orchestra` first on PATH that only records it ran (`ran.txt` in the worktree) — the real one would call gh.
+  const binDir = path.join(home, 'bin');
+  if (shim) {
+    assertScratch('shim bin', binDir, root, live);
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'orchestra'), `#!/bin/sh\necho "shim-ran: $*" | tee "${path.join(wt, 'ran.txt')}"\n`, { mode: 0o755 });
+  }
   const tu = typeof toolUse === 'function' ? toolUse(wt) : toolUse;
   const api = await startFakeApi({
     keepMessages: true,
@@ -52,7 +59,7 @@ async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect,
     },
   });
   const env = {
-    PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: cfg, TERM: 'dumb',
+    PATH: shim ? `${binDir}:${process.env.PATH}` : process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: cfg, TERM: 'dumb',
     ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'sk-ant-fake-role-guard', HTTPS_PROXY: api.proxyUrl, HTTP_PROXY: api.proxyUrl, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
     ORCHESTRA_WORKTREE: wt, ORCHESTRA_WS_ID: `rg-${name}`, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
@@ -103,6 +110,13 @@ await arm({ name: 'reviewer-grep-c-gt-allowed', role: 'reviewer', toolUse: { nam
 // delta review: a quoted arrow is NOT a redirect — the ledger post itself (`--body "a -> b"`) must reach the shell.
 await arm({ name: 'reviewer-quoted-arrow-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo "m1 -> fixed, count > 3"', description: 'probe' } },
   expect: (c) => ({ ok: /m1 -> fixed/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'echo with -> and > inside quotes ran, no BLOCKED' }) });
+// #473: `orchestra fanout deliver` (merges a PR via gh internally) is denied to a non-coordinator, REACHES the CLI, and the CLI never runs it.
+const DELIVER = 'orchestra fanout deliver --branch impl-x --into master --ticket 473';
+const deliverArm = (name, role, ok, why) => arm({ name, role, shim: true, toolUse: { name: 'Bash', input: { command: DELIVER, description: 'probe' } }, expect: (c) => ({ ok: ok(c), why }) });
+await deliverArm('implementer-fanout-deliver-denied', 'implementer', (c) => !exists(c.wt, 'ran.txt') && /BLOCKED \(role: implementer\).*coordinator/.test(c.resultText), 'orchestra shim NOT run, BLOCKED + coordinator pointer relayed');
+await deliverArm('verifier-fanout-deliver-denied', 'verifier', (c) => !exists(c.wt, 'ran.txt') && /BLOCKED \(role: verifier\)/.test(c.resultText), 'orchestra shim NOT run, BLOCKED relayed');
+await deliverArm('coordinator-fanout-deliver-allowed', 'coordinator', (c) => exists(c.wt, 'ran.txt') && !/BLOCKED/.test(c.resultText), 'known-good: the shim RAN for the coordinator');
+await deliverArm('MUSTFAIL-no-sentinel-fanout-deliver-runs', null, (c) => exists(c.wt, 'ran.txt') && !/BLOCKED/.test(c.resultText), 'inert guard: the same deliver RAN (the deny arms above can fail)');
 // known-good control: an ALLOWED call under the same hook still runs (its output comes back as the tool_result).
 await arm({ name: 'verifier-allowed-Bash-runs', role: 'verifier', toolUse: { name: 'Bash', input: { command: 'git log --oneline -1', description: 'probe' } },
   expect: (c) => ({ ok: /\bbase\b/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'allowed command ran: git log printed the base commit, no BLOCKED' }) });

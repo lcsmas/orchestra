@@ -127,6 +127,7 @@ deny('implementer', 'gh pr merge inside if/then', bash('if true; then gh pr merg
 deny('implementer', 'gh pr merge via bash -c', bash('bash -c "gh pr merge 5"'), /merging a PR/);
 deny('implementer', 'command gh pr merge', bash('command gh pr merge 5'), /merging a PR/);
 deny('implementer', 'env-prefixed gh pr merge', bash('FOO=1 env gh pr merge 5'), /merging a PR/);
+deny('implementer', 'env FOO=1 gh pr merge (assignment after the wrapper, #473)', bash('env FOO=1 gh pr merge 5'), /merging a PR/);
 deny('implementer', 'Edit climbing out with ..', edit('Edit', `${wt}/../rg-other/a.ts`), /climbs out/);
 
 // follow-up (review #468 m1–m4)
@@ -223,6 +224,49 @@ for (const role of ['coordinator', 'reviewer', 'verifier']) {
     deny(role, `executing wrapper: ${cmd}`, bash(cmd), /shell write/);
 }
 
+// #473: `orchestra fanout deliver` merges a PR through gh internally; `fanout state init|set` writes the coordinator's state file.
+// Decision: deliver + state init/set denied to every non-coordinator role; state show / resume (read / reconcile) stay allowed to all.
+const DELIVER = 'orchestra fanout deliver --branch impl-x --into master --ticket 473 --review-verdict v.json --verified-head abc';
+for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+  deny(role, 'fanout deliver', bash(DELIVER), /fanout deliver opens and MERGES a PR.*coordinator/);
+  for (const [name, cmd] of [
+    ['after ;', `cd /r; ${DELIVER}`], ['after &&', `cd /r && ${DELIVER}`], ['after ||', `false || ${DELIVER}`], ['after a pipe', `echo x | ${DELIVER}`],
+    ['bash -c', `bash -c "${DELIVER}"`], ['eval', `eval "${DELIVER}"`], ['ssh wrapper', `ssh h "${DELIVER}"`], ['sudo', `sudo ${DELIVER}`],
+    ['env assignment', `FOO=1 ${DELIVER}`], ['env wrapper', `env FOO=1 ${DELIVER}`], ['env -i', `env -i PATH=$PATH ${DELIVER}`], ['bare + ;', 'orchestra fanout deliver; ls'], ['bare in bash -c', 'bash -c "orchestra fanout deliver"'], ['bare in eval single quotes', "eval 'orchestra fanout deliver'"], ['bare in subshell', '(orchestra fanout deliver)'], ['timeout', `timeout 60 ${DELIVER}`], ['subshell', `(${DELIVER})`],
+    ['$( )', `x=$(${DELIVER})`], ['if/then', `if true; then ${DELIVER}; fi`], ['newline', `cd /r\n${DELIVER}`], ['extra spaces', 'orchestra   fanout   deliver --branch b'],
+    ['bare deliver', 'orchestra fanout deliver'],
+  ] as const) deny(role, `fanout deliver ${name}`, bash(cmd), /fanout deliver opens and MERGES/);
+  deny(role, 'fanout state set', bash('orchestra fanout state set 473 --status merged --pr 5'), /fanout state init\|set writes the coordinator's state file/);
+  deny(role, 'fanout state init (after &&)', bash('cd /r && orchestra fanout state init --run r1 --target master'), /state file/);
+  deny(role, 'fanout state set via bash -c', bash('bash -c "orchestra fanout state set 1 --status x"'), /state file/);
+  deny(role, 'bare state init in bash -c', bash('bash -c "orchestra fanout state init"'), /state file/);
+  deny(role, 'bare state set in sh -c', bash("sh -c 'orchestra fanout state set'"), /state file/);
+  allow(role, 'fanout state show', bash('orchestra fanout state show --json'));
+  allow(role, 'fanout resume', bash('orchestra fanout resume --run r1 --no-write'));
+  allow(role, 'fanout help', bash('orchestra fanout --help && orchestra help fanout'));
+  allow(role, 'a comment MENTIONING fanout deliver', bash('gh issue comment 473 --body "the coordinator runs orchestra fanout deliver; state set is its too"'));
+  allow(role, 'echo mentioning fanout deliver', bash("echo 'orchestra fanout deliver' > /dev/null"));
+  allow(role, 'heredoc body with the verb', bash("gh issue comment 3 --body-file - <<'EOF'\norchestra fanout deliver --branch b\nEOF"));
+  allow(role, 'grep for the verb', bash('grep -rn "orchestra fanout deliver" src'));
+  allow(role, 'another orchestra fanout-ish word', bash('orchestra fanout-deliver-notes'));
+}
+allow('coordinator', 'fanout deliver', bash(DELIVER));
+allow('coordinator', 'fanout deliver in a chain', bash(`cd /r && ${DELIVER}`));
+allow('coordinator', 'fanout deliver via bash -c', bash(`bash -c "${DELIVER}"`));
+allow('coordinator', 'fanout state init/set/show + resume', bash('orchestra fanout state init --run r --target master && orchestra fanout state set 1 --status merged && orchestra fanout state show && orchestra fanout resume'));
+allow('(none)', 'fanout deliver (no sentinel: inert)', bash(DELIVER));
+allow('wizard', 'fanout deliver (unknown role: inert)', bash(DELIVER));
+
+test('#473 MUST-FAIL ARM: without the rule `fanout deliver` passes the installed command (and with it, every non-coordinator role is denied)', () => {
+  const noRule = ROLE_GUARD_SCRIPT.split('orchestra[[:space:]]+fanout[[:space:]]+deliver(').join('orchestra[[:space:]]+NOFANOUTVERB(');
+  assert.notEqual(noRule, ROLE_GUARD_SCRIPT);
+  for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+    assert.equal(run(install(noRule, role, `nd-${role}`), bash(DELIVER)).code, 0, `${role}: the rule-less guard must let deliver through`);
+    const r = run(install(ROLE_GUARD_SCRIPT, role, `d-${role}`), bash(DELIVER));
+    assert.equal(r.code, 2); assert.match(r.err, /coordinator/);
+  }
+});
+
 function runMatrix(script: string, tag: string, firstOnly = false): string[] {
   const bad: string[] = [];
   for (const c of CASES) {
@@ -291,6 +335,8 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['no sentinel / unknown role defaults to implementer', '*) exit 0 ;;\nesac', '*) role=coordinator; deny_tools=" AskUserQuestion "; edit_mode=none ;;\nesac'],
     ['chain rule needs only the destructive half', "&& chk '", "|| chk '"],
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
+    ['fanout deliver rule removed', 'orchestra[[:space:]]+fanout[[:space:]]+deliver(', 'orchestra[[:space:]]+NOFANOUTVERB('],
+    ['fanout state write rule removed', 'fanout[[:space:]]+state[[:space:]]+(init|set)', 'fanout[[:space:]]+state[[:space:]]+NOVERB'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
     ['unquote after ANY -c (grep -c ">" reads as a redirect)', '(bash|sh|zsh|dash|ksh)', '(bash|sh|zsh|dash|ksh|grep|psql|python3?|rg)'],
     ['shell wrappers are never unquoted (bash -c "… > f" invisible)', '(bash|sh|zsh|dash|ksh)', '(nomatchwrapper)'],

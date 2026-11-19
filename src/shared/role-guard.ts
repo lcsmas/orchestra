@@ -19,7 +19,7 @@ const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
 
 // ERE building blocks. A command boundary precedes a verb so a quoted MENTION mid-sentence (a ticket comment) is not a call.
 // A boundary is a command start: `; & | ( {` / `$(` / then|do|else|elif / `-c "` (bash -c "gh pr merge"), then env assignments and wrappers.
-const B = '(^|[;&|({]|\\$\\(|(^|[[:space:]])(then|do|else|elif)[[:space:]]|(-c|eval)[[:space:]]+\\\\?["\']|ssh[[:space:]]+[^[:space:]]+[[:space:]]+\\\\?["\'])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*((sudo|command|exec|time|nohup|env)[[:space:]]+|timeout[[:space:]]+(-[a-zA-Z-]+[[:space:]]+)*[0-9.]+[smhd]?[[:space:]]+)*';
+const B = '(^|[;&|({]|\\$\\(|(^|[[:space:]])(then|do|else|elif)[[:space:]]|(-c|eval)[[:space:]]+\\\\?["\']|ssh[[:space:]]+[^[:space:]]+[[:space:]]+\\\\?["\'])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*((sudo|command|exec|time|nohup|env)[[:space:]]+(-[a-zA-Z-]+[[:space:]]+)*|timeout[[:space:]]+(-[a-zA-Z-]+[[:space:]]+)*[0-9.]+[smhd]?[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*';
 // Absolute-path binaries, `git -c k=v`, `gh -R owner/repo` (pre-review m2).
 const GIT = '(/[^[:space:]]*/)?git';
 const GH = '(/[^[:space:]]*/)?gh';
@@ -28,6 +28,9 @@ const G = '((-C|-c)[[:space:]]+[^[:space:]]+[[:space:]]+)*';
 const PUSH = `${B}${GIT}[[:space:]]+${G}push([[:space:]]|$)`;
 const GH_MERGE = `${B}${GHR}pr[[:space:]]+merge([[:space:]]|$)|${B}${GH}[[:space:]]+api[[:space:]][^;&|]*pulls/[0-9]+/merge`;
 const ORCH_DELETE = `${B}orchestra[[:space:]]+(delete|archive)([[:space:]]|$)`;
+// #473: `fanout deliver` merges a PR through gh internally (invisible to GH_MERGE); `fanout state init|set` writes the coordinator's state file.
+const FANOUT_DELIVER = `${B}orchestra[[:space:]]+fanout[[:space:]]+deliver([[:space:];&|)"'\\]|$)`;
+const FANOUT_STATE_WRITE = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+(init|set)([[:space:];&|)"'\\]|$)`;
 const FORCE_PUSH = `${B}${GIT}[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
 const BRANCH_D = `${B}${GIT}[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
 const WT_REMOVE = `${B}${GIT}[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
@@ -68,13 +71,15 @@ const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|r
 interface Rule { re: string; why: string }
 
 const NO_MERGE: Rule = { re: GH_MERGE, why: 'merging a PR belongs to the coordinator — report the branch ref instead (ledger comment + one ping)' };
+const NO_DELIVER: Rule = { re: FANOUT_DELIVER, why: 'orchestra fanout deliver opens and MERGES a PR — that belongs to the coordinator; report the branch ref instead (ledger comment + one ping)' };
+const NO_STATE_WRITE: Rule = { re: FANOUT_STATE_WRITE, why: "orchestra fanout state init|set writes the coordinator's state file (one writer) — report the fact to the coordinator; state show / resume stay allowed" };
 const NO_PROTECT: Rule = { re: PROTECT_RE, why: "the role guard's own wiring (.orchestra/role, role-guard.sh, .claude/settings*.json) is never written by a fleet role" };
 const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace belongs to the coordinator that owns it' };
 
 /** Rules this module adds on top of the role table's `bashDeny` (the table is the frozen #465 interface; the ticket's classes are ours). */
 function extraRules(role: FleetRole): Rule[] {
   if (role === 'coordinator') return [NO_PROTECT];
-  return [NO_MERGE, NO_DELETE, NO_PROTECT];
+  return [NO_MERGE, NO_DELIVER, NO_STATE_WRITE, NO_DELETE, NO_PROTECT];
 }
 
 const WHY_TABLE = 'a command the fleet-roles table denies this role (push of the target branch / commit-class git act)';
