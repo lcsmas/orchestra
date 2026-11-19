@@ -14,7 +14,10 @@ const STATE_TS = fileURLToPath(new URL('../src/state.ts', import.meta.url));
 
 describe('state', () => {
   it('concurrent withState from 4 processes loses no update', async () => {
+    // all writers start together (a shared start time): staggered node start-up under load would serialise them and hide a missing lock
+    const t0 = Date.now() + 1500;
     const script = `import { withState } from ${JSON.stringify(STATE_TS)};
+while (Date.now() < ${t0}) { /* barrier */ }
 for (let i = 0; i < 40; i++) await withState((s) => { const r = s.runs.counter ??= { id: 'counter', token: 't', owner: { pid: 0, startTime: 0 }, state: 'alive', startedAt: 0, lanes: [] }; r.startedAt += 1; }, ${JSON.stringify(dir)});`;
     await Promise.all(
       Array.from({ length: 4 }, () =>

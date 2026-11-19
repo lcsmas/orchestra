@@ -92,6 +92,18 @@ describe('grace period', () => {
     assert.equal(r.status, 3, r.stderr);
     assert.equal(rig.run('g4')!.owner.pid, a.pid);
   });
+});
+
+// Own rig, NO daemon: a running reaper (the describe above starts one) would clean the crafted expired run before `run start` looks at it,
+// and the re-adopt-after-expiry mutant would survive whenever the reaper wins that race.
+describe('expired grace, no reaper', () => {
+  let rig: Rig;
+  before(() => {
+    rig = new Rig({ grace: '2s' });
+  });
+  after(async () => {
+    assert.deepEqual(await rig.dispose(), [], 'a process was left behind');
+  });
 
   it('an EXPIRED grace is not re-adopted: the old instance is cleaned, the id starts fresh', async () => {
     // No daemon involved: the state is crafted as "owner dead, grace over, reaper has not looked yet".

@@ -170,8 +170,8 @@
   "edits": [
    {
     "file": "src/cleanup.ts",
-    "find": "export const CLEANUP_STEPS: CleanupStep[] = [{ name: 'kill-processes', run: killProcesses }];",
-    "to": "export const CLEANUP_STEPS: CleanupStep[] = [];"
+    "find": "export const CLEANUP_STEPS: CleanupStep[] = [\n  { name: 'kill-processes', run: killProcesses },\n  { name: 'remove-containers', run: removeContainers },\n  { name: 'stop-scopes', run: stopScopes },\n];",
+    "to": "export const CLEANUP_STEPS: CleanupStep[] = [\n  { name: 'remove-containers', run: removeContainers },\n  { name: 'stop-scopes', run: stopScopes },\n];"
    }
   ]
  },
@@ -279,8 +279,8 @@
   "edits": [
    {
     "file": "src/verbs/exec.ts",
-    "find": "if (groupMembers(lanePid!).length === 0) {",
-    "to": "if (true) {"
+    "find": "if (groupMembers(lanePid!).length === 0 && !scopeBusy) {",
+    "to": "if (!scopeBusy) {"
    }
   ]
  },
