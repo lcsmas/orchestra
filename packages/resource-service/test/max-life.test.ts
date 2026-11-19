@@ -17,13 +17,23 @@ describe('--max-life', () => {
   it('a run past its max life is cleaned while its owner lives — never through the grace', async () => {
     rig.startDaemon();
     const owner = rig.coordinator();
+    // The deadline must not start ticking before the lane is running: `resctl exec` + the lane boot in ~0.2 s idle but > 2 s under heavy load, and a run
+    // cleaned meanwhile kills the lane before it writes its pidfile (the old flake). So: declare with a long life, wait for the lane (progress), THEN shorten
+    // (a repeat start only moves a deadline earlier). The lane boots 2.5 s late on purpose — longer than the 2 s life below — so this holds at any load.
+    const t00 = Date.now();
+    assert.equal(rig.cli(['run', 'start', '--id', 'ml1', '--owner', String(owner.pid), '--max-life', '1h']).status, 0);
+    const created = rig.run('ml1')!.maxLifeAt!;
+    assert.ok(created >= t00 + 3_600_000 && created <= Date.now() + 3_600_000, `maxLifeAt ${created} is not start + 1h`);
+    const lane = rig.lane('ml1', 'sleep', '2500');
+    const laneId = identityOf(await lane.pid())!;
+    await waitFor('the lane is registered in the run', () => rig.run('ml1')!.lanes.length === 1);
+    assert.equal(rig.run('ml1')!.state, 'alive');
+
     const t0 = Date.now();
     assert.equal(rig.cli(['run', 'start', '--id', 'ml1', '--owner', String(owner.pid), '--max-life', '2s']).status, 0);
     const t1 = Date.now();
     const rec = rig.run('ml1')!;
-    assert.ok(rec.maxLifeAt! >= t0 + 2000 && rec.maxLifeAt! <= t1 + 2000, `maxLifeAt ${rec.maxLifeAt} is not start + 2s`);
-    const lane = rig.lane('ml1', 'sleep');
-    const laneId = identityOf(await lane.pid())!;
+    assert.ok(rec.maxLifeAt! >= t0 + 2000 && rec.maxLifeAt! <= t1 + 2000, `maxLifeAt ${rec.maxLifeAt} is not shortened to start + 2s`);
 
     const seen = new Set<string>();
     const done = await waitFor('the run to be cleaned', () => {

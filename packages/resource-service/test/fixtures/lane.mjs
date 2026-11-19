@@ -1,5 +1,5 @@
 // Lane command used by the tests. Usage: lane.mjs <mode> <pidfile> [extra]
-//  sleep        write own pid, then live forever
+//  sleep        write own pid, then live forever; extra = a boot delay in ms before the pid is written (a slow-starting lane, for tests that must not depend on host load)
 //  ignore-term  same, but SIGTERM is ignored (only SIGKILL ends it)
 //  escape       DOUBLE FORK + setsid: spawn a detached child that spawns a detached `sleep` lane and exits; write the grandchild's pid; this process then exits
 //  escape-stay  same as `escape` but this process stays alive
@@ -19,8 +19,12 @@ const writePid = (pid) => {
 const hold = () => setInterval(() => {}, 1_000_000);
 
 if (mode === 'sleep') {
-  writePid(process.pid);
-  hold();
+  const go = () => {
+    writePid(process.pid);
+    hold();
+  };
+  if (extra) setTimeout(go, Number(extra));
+  else go();
 } else if (mode === 'ignore-term') {
   process.on('SIGTERM', () => {});
   writePid(process.pid);
