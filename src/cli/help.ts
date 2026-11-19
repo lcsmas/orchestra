@@ -116,10 +116,11 @@ Spawn a new worktree + agent, nested under the caller by default.
   --task <text>     the agent's brief (required; quote it — a stray extra word is refused)
   --repo <path>     repo to branch from (default: the caller's)
   --base <branch>   base branch
-  --model <model>   pin the agent's model (full wire id); omitted = the user's
-                    spawned-agent default from Settings
-  --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the
-                    spawned-agent default from Settings
+  --model <model>   pin the agent's model (full wire id); omitted = the name's rôle model
+                    (scribe- = claude-haiku-5-5), else the user's spawned-agent default
+  --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the name's
+                    rôle effort (scribe- = low), else the spawned-agent default
+                    (rôle table + override file: <ORCHESTRA_HOME>/fleet-roles.json)
   --profile <id|name>
                     start the child's browser panel signed in with the profil navigateur YOU
                     hold (the human attaches it from your panel's URL bar). Any other profile

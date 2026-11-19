@@ -126,6 +126,8 @@ import {
   sanitizeBranchName,
   type RenamePin,
 } from '../shared/naming-policy.ts';
+import { resolveSpawnRoleDefaults } from '../shared/fleet-roles.ts';
+import { loadRoleConfig } from './fleet-roles-config.ts';
 import { formerBranchPatch } from '../shared/former-branch.ts';
 import { syncAccountInheritance } from './account-inherit';
 import { sameDir } from './same-dir.ts';
@@ -1602,7 +1604,14 @@ export async function dispatchAgentSpawnRequest(
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
   const { name: _name, ...rest } = input;
-  return dispatchSpawnRequest({ ...rest, defaultKind: 'spawned', branch: checked.name, namedBy: input.from, exactName: true });
+  // #465: no --model/--effort → the role's pin (name prefix + optional <ORCHESTRA_HOME>/fleet-roles.json); an explicit flag wins; a bad override file refuses the spawn.
+  let roleDefaults: { model?: string; effort?: string };
+  try {
+    roleDefaults = resolveSpawnRoleDefaults(checked.name, { model: rest.model, effort: rest.effort }, loadRoleConfig());
+  } catch (e) {
+    return { ok: false, error: `refusing to spawn: ${e instanceof Error ? e.message : String(e)}. Nothing was created.` };
+  }
+  return dispatchSpawnRequest({ ...rest, ...roleDefaults, defaultKind: 'spawned', branch: checked.name, namedBy: input.from, exactName: true });
 }
 
 // ---------- Add repo ----------
@@ -3961,7 +3970,7 @@ description: Rename THIS workspace's auto-generated git branch to a meaningful n
 # Rename this workspace's branch
 
 If another agent spawned you, your branch was named by that agent (it starts with a
-rôle: \`ops-\`, \`impl-\`, \`verif-\`, \`review-\` or \`explo-\`): leave it, and ask your parent if
+rôle: \`ops-\`, \`impl-\`, \`verif-\`, \`review-\`, \`explo-\` or \`scribe-\`): leave it, and ask your parent if
 the scope changed. Otherwise: a fresh Orchestra workspace starts on an auto-generated branch name (e.g.
 \`radiant-fox\`). Rename it to a short kebab-case name (3-6 words) that reflects
 the actual work, the moment that work is clear. Orchestra renames the real git

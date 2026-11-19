@@ -102,7 +102,7 @@ export function parseRoleConfig(raw: unknown): RoleConfig {
         if (v === null || v === 'default') slot.model = undefined;
         else if (typeof v === 'string' && MODEL_RE.test(v)) slot.model = v;
         else throw new Error(`fleet-roles config: role "${roleKey}": invalid model ${JSON.stringify(v)}`);
-      } else {
+      } else if (k === 'effort') {
         if (v === null || v === 'default') slot.effort = undefined;
         else if (typeof v === 'string' && LEVELS.includes(v)) slot.effort = v;
         else throw new Error(`fleet-roles config: role "${roleKey}": invalid effort ${JSON.stringify(v)} (one of ${LEVELS.join(', ')})`);
@@ -112,3 +112,20 @@ export function parseRoleConfig(raw: unknown): RoleConfig {
   }
   return out;
 }
+
+/** What a spawn carries when `--model` / `--effort` are omitted: the role's pin (from the name prefix, then the override file), field by field.
+ *  An EXPLICIT flag always wins; a role-less name or a strong role with no override returns the caller's values untouched (Settings default). */
+export function resolveSpawnRoleDefaults(
+  name: string | undefined | null,
+  explicit: { model?: string; effort?: string },
+  overrides?: RoleConfig,
+): { model?: string; effort?: string } {
+  const role = roleOfName(name);
+  const spec = role ? roleSpec(role, overrides) : undefined;
+  const model = explicit.model?.trim() ? explicit.model : spec?.model;
+  const effort = explicit.effort?.trim() ? explicit.effort : spec?.effort;
+  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
+/** File name of the optional override, under `<ORCHESTRA_HOME>`. */
+export const ROLE_CONFIG_FILE = 'fleet-roles.json';
