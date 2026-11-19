@@ -57,6 +57,8 @@ export const SCRIBE_DENIED: ReadonlyArray<readonly [what: string, command: strin
   ['git commit', 'git commit -am x'],
   ['fanout deliver', 'orchestra fanout deliver --branch b --into main --ticket 1 --review-verdict f --verified-head abc'],
   ['fanout state init', 'orchestra fanout state init --run r --target main'],
+  ['state set --accept-merged (review MINOR 3)', 'orchestra fanout state set 476 --status merged --accept-merged "relay"'],
+  ['state set --accept-merged after &&', 'cd /r && orchestra fanout state set 476 --accept-merged x --status merged'],
   ['workspace delete', 'orchestra delete impl-foo-1'],
   ['sed -i in the worktree', "sed -i 's/a/b/' src/a.ts"],
   ['redirect into the worktree', 'echo x > src/a.ts'],

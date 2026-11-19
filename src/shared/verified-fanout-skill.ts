@@ -45,17 +45,17 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
 - **Model and effort per role** — ¤roleSpec()¤; strong roles pin nothing (the Settings
   default applies), ¤scribe-¤ pins the cheap model at low effort; ¤--model¤ / ¤--effort¤
   on ¤orchestra spawn¤ win; ¤<ORCHESTRA_HOME>/fleet-roles.json¤ overrides (¤orchestra help spawn¤;
-  an unknown key or role is refused). A ¤scribe-¤ gets only judgement-free steps
-  (a fixed command list, a relay, a formatted report); gating, review and design stay strong.
-- **Scribe jobs — you MUST delegate these, never run them yourself** (#476: the OPS is the largest
-  cache-read seat, 35%; ≥21 of its 98 calls were these). One nested ¤orchestra spawn --name scribe-<object>
-  --task "<the fixed commands + ledger #N>"¤ per job; it ends with ¤worker_done --cap¤:
+  an unknown key or role is refused). A ¤scribe-¤ gets only judgement-free steps; gating, review and design stay strong.
+- **Scribe jobs — a CLUSTER (≥2 calls) goes to a scribe; a lone call you run yourself** (#476: the OPS is the largest
+  cache-read seat, 35%, yet these are ~7% of the fleet's, and 52% of ALL cache-read is the static prefix: keep this file small,
+  ¤orchestra handoff¤ late, §0a). One nested ¤orchestra spawn --name scribe-<object> --task "<body text or absolute path,
+  run id, fixed commands, ledger #N>"¤ per cluster (a scribe's TMPDIR is not yours); it ends with ¤worker_done --cap¤, then you delete it:
   - ¤scribe-ledger¤ — ledger writes: ¤gh issue comment|edit --body-file¤, ¤scripts/ledger-set¤.
-  - ¤scribe-state¤ — ¤orchestra fanout state set¤ relays of a verdict you already read.
+  - ¤scribe-state¤ — ¤orchestra fanout state set --run <id>¤ relays of a verdict you already read (¤--accept-merged¤ is denied to it).
   - ¤scribe-ci¤ — ¤gh pr checks --watch¤ / ¤gh run watch¤ to the final line; you run ¤deliver¤ after.
   - ¤scribe-sweep¤ — the §5 range + porcelain + ¤orchestra peers¤ greps, output verbatim.
 
-  You keep decisions, dispositions, merges and fleet mail. Past ~100 turns on a heavy context, ¤orchestra handoff¤ (§0a).
+  You keep decisions, dispositions, merges and fleet mail.
 - **Tool limits — the PreToolUse role guard** (exit 2, ¤[orchestra] BLOCKED (role: …): <reason>¤)
   denies ¤AskUserQuestion¤ to every role, even as a probe; Edit/Write to the coordinator,
   reviewer, explorer and scribe (the verifier edits scratch only, an implementer its own
@@ -78,7 +78,7 @@ the run of an **OPS** (has a parent, spawned its own: one batch of tickets). Rol
   or inline/plain-spawn. An OPS fans out directly under itself — no third level. ONE
   self-contained task → plain ¤orchestra spawn¤.
 - **LEAD**: quiet, freezes specs with the human before the wave, gets only MILESTONE digests, answers by
-  PULLING the ledger; **its report to the human is a TEAM LEAD'S SYNTHESIS**: ~5 lines, a table when ≥2 items share a shape, clickable links not shas/rig names, what got done / what's next / what needs their call. **OPS**: opens the ledger, absorbs ALL fleet pings, merges on the §4 rule, runs the
+  PULLING the ledger; **its report to the human is a TEAM LEAD'S SYNTHESIS**: ~5 lines, links not shas, done / next / needs their call (format: the reference below). **OPS**: opens the ledger, absorbs ALL fleet pings, merges on the §4 rule, runs the
   close-out, keeps the ledger's NEXT current. **Ops→lead digests are ≤5 headline lines**; the body is a ledger comment.
 - **A decision you cannot make yourself**: take the REVERSIBLE default, apply it and write it in your ledger
   comment (¤AskUserQuestion¤ is denied, see Roles). Only a spec-axis change, an irreversible act or anything
@@ -139,7 +139,7 @@ Churn burns a fleet's tokens and wall-clock. Caps, carried in every brief:
 - **Fixed report format, ≤15 lines:** ¤STATE: <tip via ls-remote>¤ · each gate
   as ¤command → exact counts/RC¤ side by side · findings · NOT VERIFIED. Only the **delta since the last report**.
 - **One ping per event** — checkpoint, gate verdict, blocking question.
-- **Peer-to-peer for facts**; the coordinator handles decisions only.
+- **Peer-to-peer for facts**; the coordinator decides.
 
 Gate rhythm:
 
@@ -213,7 +213,7 @@ One agent whose only job is verification. Its brief:
 - **Prove the rig before trusting it**: one mutation per gate class, seen to FAIL.
 - **Audit the rig before filing any defect**; probes come from the repo's fixture library, never hand-written payloads.
 
-**A second verifier seat when a 2nd candidate waits behind a gate** (own worktree, own rig dirs).
+**A second verifier seat when a 2nd candidate waits behind a gate** (own worktree and rig dirs).
 
 → **Read ¤references/verifier-and-review.md¤ when you write the verifier's or a reviewer's brief** (rig audit, fixtures, the account pin).
 
@@ -337,5 +337,5 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 - **This is the bundled v2**, rewritten into every worktree's ¤.claude/skills/verified-fanout/¤ on spawn (source
   ¤src/shared/verified-fanout-skill.ts¤); a repo's own copy without the generated marker line is never overwritten.
 - **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only, ¤scripts/skill-precedence/measure-skill-precedence.mjs¤ — re-run after a CLI update).
-- **VPS install:** an Orchestra AppImage release that contains this skill; any spawn writes it. No personal copy there ⇒ nothing shadows it.
+- **VPS install:** an AppImage release containing this skill; no personal copy there ⇒ nothing shadows it.
 `.replaceAll('¤', '`');
