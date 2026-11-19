@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 export type Violation = { file: string; spec: string; reason: string };
 
-const SOURCE = /\.(ts|mjs|js|cjs)$/;
+const SOURCE = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;
 const PATTERNS: RegExp[] = [
   /\bfrom\s*['"]([^'"]+)['"]/g, // static import / export-from
   /\bimport\s*['"]([^'"]+)['"]/g, // side-effect import
@@ -15,12 +15,14 @@ const PATTERNS: RegExp[] = [
 ];
 const NON_LITERAL = /\b(?:import|require)\s*\(\s*(?!['"\s])/g; // a computed specifier the guard cannot read
 
-function* walk(dir: string): Generator<string> {
+/** Files under `dir`; a symlink is yielded as-is (never followed), so the scanner can refuse it. */
+function* walk(dir: string): Generator<{ file: string; link: boolean }> {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === 'node_modules' || e.name === '.git') continue;
     const p = path.join(dir, e.name);
-    if (e.isDirectory()) yield* walk(p);
-    else yield p;
+    if (e.isSymbolicLink()) yield { file: p, link: true };
+    else if (e.isDirectory()) yield* walk(p);
+    else yield { file: p, link: false };
   }
 }
 
@@ -41,8 +43,12 @@ export function scan(pkgDir: string): { violations: Violation[]; files: number; 
   const violations: Violation[] = [];
   let files = 0;
   let specs = 0;
-  for (const file of walk(pkgDir)) {
+  for (const { file, link } of walk(pkgDir)) {
     const rel = path.relative(pkgDir, file);
+    if (link) {
+      violations.push({ file: rel, spec: fs.readlinkSync(file), reason: 'a symlink can hide code outside the package' });
+      continue;
+    }
     if (path.basename(file) === 'package.json') {
       const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
       for (const k of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {

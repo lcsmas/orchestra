@@ -646,5 +646,107 @@
     "to": "  void refuseIfBlocked;\n}"
    }
   ]
+ },
+ {
+  "id": "M39_guard_ignores_mts_tsx",
+  "why": "the import guard reads .ts/.js/.mjs/.cjs only",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "fails on a violation in a .mts file"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "const SOURCE = /\\.(ts|mts|cts|tsx|js|mjs|cjs|jsx)$/;",
+    "to": "const SOURCE = /\\.(ts|mjs|js|cjs)$/;"
+   }
+  ]
+ },
+ {
+  "id": "M40_guard_follows_symlinks_blind",
+  "why": "a symlinked directory is neither refused nor scanned",
+  "tests": [
+   "test/no-orchestra-imports.test.ts"
+  ],
+  "expect": [
+   "fails on a symlink"
+  ],
+  "edits": [
+   {
+    "file": "test/lib/import-guard.ts",
+    "find": "    if (link) {\n",
+    "to": "    if (false) {\n"
+   }
+  ]
+ },
+ {
+  "id": "M41_runs_plain_object",
+  "why": "run ids named like prototype members resolve to inherited properties",
+  "tests": [
+   "test/cli.test.ts"
+  ],
+  "expect": [
+   "named like Object.prototype members"
+  ],
+  "edits": [
+   {
+    "file": "src/state.ts",
+    "find": "runs: Object.assign(Object.create(null), s.runs) };",
+    "to": "runs: s.runs };"
+   }
+  ]
+ },
+ {
+  "id": "M42_daemon_keeps_run_marker",
+  "why": "a daemon started inside a lane carries the lane's run marker",
+  "tests": [
+   "test/autostart-in-lane.test.ts"
+  ],
+  "expect": [
+   "does not kill the daemon that lane started"
+  ],
+  "edits": [
+   {
+    "file": "src/daemon.ts",
+    "find": "  delete childEnv.RESCTL_RUN;\n  delete childEnv.RESCTL_RUN_TOKEN;\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M43_other_boot_trusted",
+  "why": "records of another boot are kept and their lanes signalled",
+  "tests": [
+   "test/stale-records.test.ts"
+  ],
+  "expect": [
+   "another boot closes its runs"
+  ],
+  "edits": [
+   {
+    "file": "src/state.ts",
+    "find": "    if (state.bootId) {\n",
+    "to": "    if (false) {\n"
+   }
+  ]
+ },
+ {
+  "id": "M44_stale_lane_kept",
+  "why": "a lane with an empty group stays recorded",
+  "tests": [
+   "test/stale-records.test.ts"
+  ],
+  "expect": [
+   "a lane whose group is gone is dropped"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "      if (run.state !== 'cleaned') run.lanes = run.lanes.filter(",
+    "to": "      if (false) run.lanes = run.lanes.filter("
+   }
+  ]
  }
 ]

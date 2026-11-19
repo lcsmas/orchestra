@@ -34,6 +34,19 @@ export function isAlive(id: Identity): boolean {
   return !!s && s.startTime === id.startTime && s.state !== 'Z' && s.state !== 'X';
 }
 
+let boot: string | null | undefined;
+/** The kernel boot id (stable until reboot), or null when unreadable. */
+export function bootId(): string | null {
+  if (boot === undefined) {
+    try {
+      boot = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null;
+    } catch {
+      boot = null;
+    }
+  }
+  return boot;
+}
+
 export function ownPgid(): number {
   return readStat(process.pid)?.pgrp ?? -1;
 }

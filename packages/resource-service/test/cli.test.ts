@@ -33,6 +33,18 @@ describe('cli dispatch', () => {
     assert.equal(rig.cli(['--help']).status, 0);
   });
 
+  it('run ids named like Object.prototype members are ordinary ids (start, exec, end)', () => {
+    const c = rig.coordinator();
+    for (const id of ['constructor', 'toString', 'hasOwnProperty']) {
+      const r = rig.cli(['run', 'start', '--id', id, '--owner', String(c.pid)]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(Object.hasOwn(rig.state().runs, id), `${id}: the run must really be in state.json`);
+      assert.equal(rig.cli(['exec', '--run', id, '--', 'sh', '-c', 'exit 5']).status, 5, `${id}: exec`);
+      assert.equal(rig.cli(['run', 'end', '--id', id]).status, 0, `${id}: end`);
+      assert.equal(rig.run(id)!.state, 'cleaned');
+    }
+  });
+
   it('run start refuses an owner that is not running (exit 3) and prints a generated id when none is given', () => {
     assert.equal(rig.cli(['run', 'start', '--id', 'x', '--owner', '4194000']).status, 3);
     const c = rig.coordinator();

@@ -1,7 +1,7 @@
 // The reaper: one pure decision per run + one tick that applies it. `resctl serve` loops `tick`.
 import { graceMs, keepMs, type Env } from './env.ts';
 import { endRun, type CleanupCtx } from './cleanup.ts';
-import { isAlive } from './proc.ts';
+import { groupIsOurs, isAlive } from './proc.ts';
 import { withState, type Run } from './state.ts';
 
 export type Decision =
@@ -25,6 +25,8 @@ export async function tick(dir: string, env: Env, log: (msg: string) => void, no
   const due: { run: Run; reason: string }[] = [];
   await withState((s) => {
     for (const run of Object.values(s.runs)) {
+      // a lane whose group is empty (or whose leader pid now belongs to a stranger) is a stale record: drop it, never signal it later
+      if (run.state !== 'cleaned') run.lanes = run.lanes.filter((l) => l.pgid !== l.pid || groupIsOurs({ pid: l.pid, startTime: l.startTime }) === 'ours');
       const d = decide(run, now, isAlive(run.owner), opts);
       if (d.kind === 'enter-grace') {
         run.state = 'grace';

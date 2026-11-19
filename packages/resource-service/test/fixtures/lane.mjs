@@ -4,6 +4,7 @@
 //  escape       DOUBLE FORK + setsid: spawn a detached child that spawns a detached `sleep` lane and exits; write the grandchild's pid; this process then exits
 //  escape-stay  same as `escape` but this process stays alive
 //  end-self     run `resctl run end` for its OWN run from inside this lane (extra = path of bin/resctl.mjs); write {status,stderr} as JSON, then live on
+//  start-run    run `resctl run start --id inner --owner <this lane>` (extra = bin path) so a daemon is autostarted FROM INSIDE the lane; write the status, then live on
 //  env-i-leave  like env-i, but this process exits at once: the marker-less child outlives the group leader
 //  env-i        start `sleep` WITHOUT the run marker in the SAME process group; write its pid
 import { spawn, spawnSync } from 'node:child_process';
@@ -26,6 +27,10 @@ if (mode === 'sleep') {
   hold();
 } else if (mode === 'end-self') {
   const r = spawnSync(process.execPath, [extra, 'run', 'end', '--id', process.env.RESCTL_RUN], { encoding: 'utf8' });
+  writePid(JSON.stringify({ status: r.status, stderr: r.stderr }));
+  hold();
+} else if (mode === 'start-run') {
+  const r = spawnSync(process.execPath, [extra, 'run', 'start', '--id', 'inner', '--owner', String(process.pid)], { encoding: 'utf8' });
   writePid(JSON.stringify({ status: r.status, stderr: r.stderr }));
   hold();
 } else if (mode === 'escape' || mode === 'escape-stay') {

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { stateDir } from './env.ts';
 import { acquire, release } from './lockfile.ts';
-import type { Identity } from './proc.ts';
+import { bootId, type Identity } from './proc.ts';
 
 export type Lane = { pid: number; pgid: number; startTime: number; cmd: string[]; startedAt: number; scope?: string };
 export type RunState = 'alive' | 'grace' | 'cleaned';
@@ -22,37 +22,55 @@ export type Run = {
   containers?: unknown;
   relay?: unknown;
 };
-export type State = { version: 1; runs: Record<string, Run> };
+/** `bootId`: the kernel boot the records belong to; after a reboot no recorded process can be alive, so every open run is closed on load. */
+export type State = { version: 1; bootId?: string; runs: Record<string, Run> };
 
 export const stateFile = (dir: string): string => path.join(dir, 'state.json');
 
-function load(dir: string): State {
+function load(dir: string): { state: State; migrated: boolean } {
+  const boot = bootId();
   let raw: string;
   try {
     raw = fs.readFileSync(stateFile(dir), 'utf8');
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, runs: {} };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { state: { version: 1, bootId: boot ?? undefined, runs: Object.create(null) }, migrated: false };
     throw e;
   }
   const s = JSON.parse(raw); // a corrupt file fails closed: never pretend there are no runs to reap
   if (s?.version !== 1 || typeof s.runs !== 'object' || !s.runs) throw new Error(`${stateFile(dir)}: unsupported state (version ${s?.version})`);
-  return s as State;
+  // null-prototype: a run id like `constructor` or `toString` must be an ordinary key, never an inherited property
+  const state: State = { version: 1, bootId: s.bootId, runs: Object.assign(Object.create(null), s.runs) };
+  let migrated = false;
+  if (boot && state.bootId !== boot) {
+    if (state.bootId) {
+      for (const run of Object.values(state.runs)) {
+        if (run.state === 'cleaned') continue;
+        run.state = 'cleaned'; // another boot: every recorded pid/pgid/starttime is meaningless, signalling any of them could hit a stranger
+        run.cleanedAt = Date.now();
+        run.lanes = [];
+        delete run.graceEndsAt;
+      }
+    }
+    state.bootId = boot;
+    migrated = true;
+  }
+  return { state, migrated };
 }
 
 /** Read-only snapshot (no lock needed: writers rename atomically). */
 export function readState(dir: string = stateDir()): State {
-  return load(dir);
+  return load(dir).state;
 }
 
 export async function withState<T>(fn: (s: State) => T, dir: string = stateDir()): Promise<T> {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const lock = await acquire(path.join(dir, 'state.lock'), 10_000);
   try {
-    const s = load(dir);
+    const { state: s, migrated } = load(dir);
     const before = JSON.stringify(s);
     const out = fn(s);
     const after = JSON.stringify(s);
-    if (after !== before) {
+    if (migrated || after !== before) {
       const tmp = `${stateFile(dir)}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, after + '\n', { mode: 0o600 });
       fs.renameSync(tmp, stateFile(dir));

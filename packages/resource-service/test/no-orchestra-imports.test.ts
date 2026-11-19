@@ -59,6 +59,26 @@ describe('import guard', () => {
     });
   }
 
+  for (const ext of ['mts', 'cts', 'tsx', 'jsx']) {
+    it(`fails on a violation in a .${ext} file`, () => {
+      const dir = tempPackage({ [`src/planted.${ext}`]: imp('../../../src/shared/types.ts') });
+      const v = scan(dir).violations;
+      assert.equal(v.length, 1, JSON.stringify(v));
+      assert.match(v[0].reason, /leaves the package/);
+    });
+  }
+
+  it('fails on a symlink (a linked directory would hide its files from the scan)', () => {
+    const outside = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'resctl-guard-out-'));
+    made.push(outside);
+    fs.writeFileSync(path.join(outside, 'types.ts'), 'export default 1;\n');
+    const dir = tempPackage({});
+    fs.symlinkSync(outside, path.join(dir, 'src', 'lib'));
+    const v = scan(dir).violations;
+    assert.equal(v.length, 1, JSON.stringify(v));
+    assert.match(v[0].reason, /symlink/);
+  });
+
   it('fails on a dependency declared in package.json', () => {
     const dir = tempPackage({});
     fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x","dependencies":{"left-pad":"1.0.0"}}');
