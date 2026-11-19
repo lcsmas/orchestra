@@ -181,7 +181,7 @@ test('wiring: workspaces.ts calls the guarded installer and hashes the text AND 
   const check = (src: string): string[] => {
     const probs: string[] = [];
     if (!/import \{ installVerifiedFanoutSkill \} from '\.\/verified-fanout-install\.ts';/.test(src)) probs.push('import missing');
-    if (!/\n\s+installVerifiedFanoutSkill\(skillsDir\),\n/.test(src)) probs.push('installVerifiedFanoutSkill(skillsDir) call missing');
+    if (!/\n\s+installVerifiedFanoutSkill\(skillsDir, /.test(src)) probs.push('installVerifiedFanoutSkill(skillsDir) call missing');
     const v = src.slice(src.indexOf('const HOOKS_VERSION = createHash'), src.indexOf('.digest(', src.indexOf('const HOOKS_VERSION = createHash')));
     if (!/\n\s+VERIFIED_FANOUT_SKILL,\n/.test(v)) probs.push('VERIFIED_FANOUT_SKILL not hashed into HOOKS_VERSION (an edited text would never reinstall)');
     if (!/\n\s+JSON\.stringify\(VERIFIED_FANOUT_FILES\),\n/.test(v)) probs.push('VERIFIED_FANOUT_FILES not hashed into HOOKS_VERSION');
@@ -190,7 +190,7 @@ test('wiring: workspaces.ts calls the guarded installer and hashes the text AND 
   };
   assert.deepEqual(check(workspacesSrc), []);
   // must-FAIL: each deletion is seen
-  assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
+  assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
   assert.ok(check(workspacesSrc.replace('      VERIFIED_FANOUT_SKILL,\n', '')).some((p) => /VERIFIED_FANOUT_SKILL not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_FILES),\n', '')).some((p) => /VERIFIED_FANOUT_FILES not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace("      'orchestra-link',\n", "      'orchestra-link',\n      'verified-fanout',\n")).some((p) => /RETIRED_SKILLS/.test(p)));
@@ -247,6 +247,27 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
     assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES.map((f) => ({ path: f.path, content: fs.readFileSync(path.join(dir, f.path), 'utf8') }))), []);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0, 'exec bit restored on a rewrite');
   } finally { fs.rmSync(skills, { recursive: true, force: true }); }
+  // never throws: each fs-error shape returns skipped-error (reported), never an exception; a symlinked dir is the repo's own and is not written through
+  const errs = mkHomeScratch('vf-install-err-');
+  try {
+    const seen: unknown[] = [];
+    const shape = (name: string, make: (d: string) => void) => { const sk = path.join(errs, name); make(path.join(sk, 'verified-fanout')); return sk; };
+    assert.equal(await installVerifiedFanoutSkill(shape('dangling', (d) => { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.symlinkSync(path.join(errs, 'absent'), d); }), (e) => seen.push(e)), 'skipped-foreign');
+    assert.equal(await installVerifiedFanoutSkill(shape('md-dir', (d) => fs.mkdirSync(path.join(d, 'SKILL.md'), { recursive: true })), (e) => seen.push(e)), 'skipped-error');
+    assert.equal(await installVerifiedFanoutSkill(shape('file', (d) => { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.writeFileSync(d, 'x'); }), (e) => seen.push(e)), 'skipped-error');
+    assert.equal(seen.length, 2, 'both fs errors reached the reporter');
+    // a symlink to a real dir without SKILL.md: nothing written THROUGH it
+    const target = path.join(errs, 'personal'); fs.mkdirSync(target);
+    assert.equal(await installVerifiedFanoutSkill(shape('linked', (d) => { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.symlinkSync(target, d); })), 'skipped-foreign');
+    assert.deepEqual(fs.readdirSync(target), []);
+    // a foreign SKILL.md that merely QUOTES the marker is not ours; an empty (truncated) one is
+    const quote = shape('quote', (d) => { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'SKILL.md'), `own skill that mentions ${VERIFIED_FANOUT_MARKER} in prose\n`); });
+    assert.equal(await installVerifiedFanoutSkill(quote), 'skipped-foreign');
+    const empty = shape('empty', (d) => { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'SKILL.md'), ''); });
+    assert.equal(await installVerifiedFanoutSkill(empty), 'written');
+    // a throwing reporter cannot make it throw
+    assert.equal(await installVerifiedFanoutSkill(shape('throwing', (d) => fs.mkdirSync(path.join(d, 'SKILL.md'), { recursive: true })), () => { throw new Error('reporter'); }), 'skipped-error');
+  } finally { fs.rmSync(errs, { recursive: true, force: true }); }
   // a repo's own tracked skill: untouched, no file added, sibling kept
   const own = mkHomeScratch('vf-install-own-');
   try {
@@ -265,5 +286,5 @@ test('the REAL installOrchestraHooks lands the skill + files in a fresh worktree
     cwd: root, encoding: 'utf8', timeout: 110_000, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '' },
   });
   const r = JSON.parse(out.trim().split('\n').pop() ?? '{}');
-  assert.deepEqual(r, { ok: true, nameIsVerifiedFanout: true, absentBefore: true, landed: true, filesLanded: true, ledgerSetExecutable: true, siblingsKept: true, rewrittenOnUpgrade: true, stampedInstallIsNoop: true, ownSkillKept: true });
+  assert.deepEqual(r, { ok: true, nameIsVerifiedFanout: true, absentBefore: true, landed: true, filesLanded: true, ledgerSetExecutable: true, siblingsKept: true, rewrittenOnUpgrade: true, stampedInstallIsNoop: true, ownSkillKept: true, errorShapes: { dangling_symlink: true, skill_md_is_dir: true, file_at_skill_dir: true }, errorShapesKeepHooks: true });
 });

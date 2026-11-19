@@ -4876,7 +4876,7 @@ export async function installOrchestraHooks(
       // #399: how to drive the Browser pane with `orchestra browser` (the in-process mcp__browser__* tools are gone)
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
       // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
-      installVerifiedFanoutSkill(skillsDir),
+      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

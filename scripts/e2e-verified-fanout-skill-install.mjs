@@ -66,7 +66,24 @@ try {
   await installOrchestraHooks(wt2);
   out.ownSkillKept = fs.readFileSync(path.join(own, 'SKILL.md'), 'utf8').endsWith('OWN\n') && fs.readFileSync(path.join(own, 'extra.md'), 'utf8') === 'EXTRA\n' && !fs.existsSync(path.join(own, 'references'));
 
-  out.ok = out.filesLanded && out.ledgerSetExecutable && out.ownSkillKept && out.nameIsVerifiedFanout && out.absentBefore && out.landed && out.siblingsKept && out.rewrittenOnUpgrade && out.stampedInstallIsNoop;
+  // An fs error at the skill path must NEVER abort the hook install (settings.local.json + the stamp come after the skill): dangling symlink,
+  // SKILL.md that is a directory, a file where the skill dir should be.
+  const shapes = {
+    dangling_symlink: (d) => { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.symlinkSync(path.join(base, 'absent-personal-dir'), d); },
+    skill_md_is_dir: (d) => { fs.mkdirSync(path.join(d, 'SKILL.md'), { recursive: true }); },
+    file_at_skill_dir: (d) => { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.writeFileSync(d, 'not a dir\n'); },
+  };
+  out.errorShapes = {};
+  for (const [name, make] of Object.entries(shapes)) {
+    const w = path.join(base, `worktree-${name}`);
+    make(path.join(w, '.claude', 'skills', 'verified-fanout'));
+    await store.upsertWorkspace({ id: `ws-vf-${name}`, name: `vf-${name}`, kind: 'scratch', repoPath: '', worktreePath: w, status: 'idle', createdAt: Date.now(), hasInput: true });
+    await installOrchestraHooks(w);
+    out.errorShapes[name] = fs.existsSync(path.join(w, '.claude', 'settings.local.json')) && fs.existsSync(path.join(w, '.orchestra', '.hooks-version')) && fs.existsSync(path.join(w, '.claude', 'skills', 'orchestra-spawn', 'SKILL.md'));
+  }
+  out.errorShapesKeepHooks = Object.values(out.errorShapes).every(Boolean);
+
+  out.ok = out.errorShapesKeepHooks && out.filesLanded && out.ledgerSetExecutable && out.ownSkillKept && out.nameIsVerifiedFanout && out.absentBefore && out.landed && out.siblingsKept && out.rewrittenOnUpgrade && out.stampedInstallIsNoop;
   done(out.ok ? 0 : 1);
 } catch (e) {
   out.error = String(e?.stack ?? e).slice(0, 600);
