@@ -283,11 +283,12 @@ export interface ReconcilePlan {
   writeBack: Array<{ ticket: string; patch: TicketPatch; why: string }>;
 }
 
-/** Reality's word on "merged": a MERGED PR, or a branch tip contained in the target. undefined = unknown. */
-function realityMerged(r: TicketReality | undefined): boolean | undefined {
+/** Reality's word on "merged": a MERGED PR, or a branch tip contained in the target. undefined = unknown.
+ *  Ancestry is evidence only once the work was nominated: a `started` branch cut from the target tip is trivially "contained". */
+function realityMerged(r: TicketReality | undefined, status: TicketStatus): boolean | undefined {
   if (!r) return undefined;
   if (r.pr?.state === 'MERGED') return true;
-  if (r.mergedIntoTarget === true) return true;
+  if (r.mergedIntoTarget === true && status !== 'started') return true;
   if (r.error) return undefined;
   return false;
 }
@@ -302,7 +303,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
   const effMerged = (id: string): boolean => {
     const t = state.tickets[id];
     if (!t) return false;
-    const rm = realityMerged(reality[id]);
+    const rm = realityMerged(reality[id], t.status);
     return rm === undefined ? t.status === 'merged' : rm;
   };
 
@@ -310,7 +311,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     const r = reality[id];
     const claimsWork = t.status !== 'todo' && t.status !== 'dropped';
     if (r?.error) add({ ticket: id, kind: 'reality-unreadable', detail: `could not read git/gh (${r.error}); nothing concluded about this ticket` });
-    const rm = realityMerged(r);
+    const rm = realityMerged(r, t.status);
     if (t.status === 'merged' && rm === false) {
       add({ ticket: id, kind: 'state-merged-reality-not', detail: `state says merged but ${r?.pr ? `PR #${t.pr} is ${r.pr.state}` : 'its branch tip is not in origin/' + state.target}${r?.branchHead === null ? ' and the branch is gone' : ''}` });
     }
@@ -321,7 +322,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
     }
-    if (r && !r.error && t.head && r.branchHead && r.branchHead !== t.head && t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'todo') {
+    if (r && !r.error && t.head && r.branchHead && r.branchHead !== t.head && (t.status === 'nominated' || t.status === 'gated')) {
       add({ ticket: id, kind: 'head-moved', detail: `branch head ${r.branchHead.slice(0, 8)} != recorded ${t.head.slice(0, 8)} — verdict ${t.verdict} is stale` });
       if (t.verdict !== 'none' || t.status === 'gated') {
         writeBack.push({ ticket: id, patch: { head: r.branchHead, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });

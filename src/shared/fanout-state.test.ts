@@ -196,3 +196,14 @@ test('classification table: todo/started/nominated/gated verdicts', () => {
   assert.equal(g('pass'), 'merge');
   assert.equal(g('fail'), 'fix-and-renominate');
 });
+
+test('a STARTED branch cut from the target tip is not "merged" (ancestry counts only once nominated); a moving started head is not a divergence', () => {
+  let s = newState('r', { now: T });
+  s = applyTicketPatch(s, 'A', { branch: 'a', head: SHA_A, status: 'started' }, T);
+  const fresh = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: true } });
+  assert.deepEqual(fresh.divergences, []);
+  assert.equal(fresh.tickets.A.next.action, 'continue');
+  // same reality once nominated IS merged evidence
+  const nom = applyTicketPatch(s, 'A', { status: 'nominated' }, T);
+  assert.deepEqual(reconcile(nom, { A: { branchHead: SHA_A, mergedIntoTarget: true } }).divergences.map((d) => d.kind), ['reality-merged-state-not']);
+});
