@@ -1,6 +1,8 @@
 // CLI help registry: one entry per top-level verb dispatched in index.ts main().
 // help.test.ts fails if a `case` in main() has no entry here (or vice versa).
 import { NAME_CONVENTION } from '../shared/naming-policy.ts';
+import { DELIVER_HELP } from './fanout-deliver.ts';
+import { FANOUT_USAGE } from './fanout-state.ts';
 
 export interface CommandHelp {
   name: string;
@@ -116,10 +118,12 @@ Spawn a new worktree + agent, nested under the caller by default.
   --task <text>     the agent's brief (required; quote it — a stray extra word is refused)
   --repo <path>     repo to branch from (default: the caller's)
   --base <branch>   base branch
-  --model <model>   pin the agent's model (full wire id); omitted = the user's
-                    spawned-agent default from Settings
-  --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the
-                    spawned-agent default from Settings
+  --model <model>   pin the agent's model (full wire id); omitted = the name's rôle model
+                    (scribe- = claude-haiku-5-5), else the user's spawned-agent default
+  --effort <level>  reasoning effort: low|medium|high|xhigh|max; omitted = the name's
+                    rôle effort (scribe- = low), else the spawned-agent default
+                    Each flag is resolved on its own: --model alone keeps the rôle's effort.
+                    (rôle table + override file: <ORCHESTRA_HOME>/fleet-roles.json)
   --profile <id|name>
                     start the child's browser panel signed in with the profil navigateur YOU
                     hold (the human attaches it from your panel's URL bar). Any other profile
@@ -159,6 +163,22 @@ Retarget a workspace's base branch — the Diff/merge target.`,
 Relaunch a workspace's claude process so it re-reads CLAUDE.md/settings,
 WITHOUT touching worktree/branch/commits. Default: THIS workspace.
   --fresh   start a new conversation (default keeps the conversation)`,
+  },
+  {
+    name: 'handoff',
+    group: 'Workspaces',
+    summary: 'End THIS context and continue in a fresh one that opens with your written summary',
+    detail: `usage: orchestra handoff --summary-file <path> | --summary <text>
+
+Bounded agent lifetime (#466): a long context re-reads itself every turn. Write a summary with the
+sections STATE, NEXT STEPS, REFS (ledger / state file / branch), NOT VERIFIED — each non-empty — and
+hand off, then END YOUR TURN: at the turn end the host starts a fresh session in the SAME workspace,
+worktree, branch and run (nothing on disk is touched) whose first turn is your summary.
+Refused, nothing ended: a summary missing a section (handoff-summary-invalid), a workspace outside an
+open run (handoff-outside-run), a session the host cannot vouch for (handoff-unvouched).
+The host nudges once an agent past ORCHESTRA_HANDOFF_BOUND_TURNS turns; it never ends a context itself.
+  --summary-file <path>   the summary file (- for stdin)
+  --summary <text>        the summary inline`,
   },
   {
     name: 'reload-skills',
@@ -473,6 +493,13 @@ Exit codes: 0 = landed, 2 = unmerged commits remain,
   list   list pinned tickets; --mine: your open Linear issues
   rm     un-pin a ticket (never touches Linear)
   pin    attach a ticket to an existing workspace`,
+  },
+
+  {
+    name: 'fanout',
+    group: 'Fleet bus',
+    summary: "A fan-out vague's state file + resume (state, resume) and one PR per ticket merged at the verified head (deliver)",
+    detail: `${FANOUT_USAGE}\n\n${DELIVER_HELP}`,
   },
 
   // ── Accounts ──────────────────────────────────────────────────────────

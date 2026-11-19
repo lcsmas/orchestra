@@ -22,7 +22,7 @@ test('the coordinator\'s Relance goes through THE Relance delivery (Admission, t
   const host = read('vague-endormie-host.ts');
   assert.match(host, /deliver: \(coordinatorId, text, retry\) => deliverRelance\(coordinatorId, text, 'relance-vague', retry \?\? \(\(\) => sweepVaguesNow\(productionVagueDeps\)\)\)/);
   const rel = read('relance-host.ts');
-  assert.match(rel, /export async function deliverRelance\(wsId: string, text: string, site: string, retry: \(\) => Promise<unknown>\)/);
+  assert.match(rel, /export async function deliverRelance\(wsId: string, text: string, site: string, retry: \(\) => Promise<unknown>, opts: \{ stillOwed\?: \(\) => boolean \} = \{\}\)/); // #466: the optional 5th param (a handoff's owed opening)
   assert.match(rel, /wakeHeldForMemory\(ws, retry, \{ site \}\)\) return 'held'/);
   assert.match(rel, /deliverRelance\(wsId, text, 'relance', \(\) => sweepRelanceNow\(productionRelanceDeps\)\)/);
   assert.ok(rel.indexOf('wakeHeldForMemory(') < rel.indexOf('sdkStartAndDeliver(wsId'), 'gate before the start');

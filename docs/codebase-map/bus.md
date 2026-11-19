@@ -649,7 +649,8 @@ freeze gate (the pre-F2 rig asserted they DIFFER, which certified the defect).
 The one reader of these notice lines is the **`verified-fanout` fleet-protocol
 skill** (`~/.claude/skills/verified-fanout/SKILL.md`, canonical, git-tracked in
 the user's dotfiles repo — NOT restated here; that file is the source of truth
-for how a fleet coordinates). The skill has one section per mechanism, each
+for how a fleet coordinates). Since #470 a bundled v2 of the same name is also
+written per worktree, but a personal copy SHADOWS it (measured, build-release.md). The skill has one section per mechanism, each
 CONDITIONED on the switch state this notice announces, so a spawned agent obeys
 **exactly one channel** per mechanism:
 

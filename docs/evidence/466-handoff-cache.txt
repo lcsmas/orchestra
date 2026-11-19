@@ -1,0 +1,28 @@
+# #466 handoff-cache evidence (follow-up branch, re-run) — 2026-11-19T18:30:52+01:00 — base 88c090a0 + worktree diff (pre-commit)
+# claude 2.1.325 (Claude Code). SIMULATED: fake API prefix cache (cacheModel) + model replies; one rig 'turn' = ONE API request. REAL: session path, host, bus run row, key registry, restart. LEAD WITH THE WEIGHTED LINE.
+
+## pnpm run test:handoff-cache  (heavy ~4k tok/turn, N=24, K=6, --proof)
+baseline: PASS (expected) | main requests 24, cache_read 1404329, cache_creation 113545, weighted 282364, last request 109782 tok, max 109782 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 32, cache_read 658680, cache_creation 143045, weighted 244674, last request 25097 tok, max 38659 | nudges 4, handoffs 4, openings 4, fresh true
+handoff-noop-clear: FAIL [opened, drop] (expected) | main requests 32, cache_read 1983239, cache_creation 115842, weighted 343126, last request 111850 tok, max 111850 | nudges 4, handoffs 4, openings 4, fresh false
+handoff-no-nudge: FAIL [nudged, handedOff, opened, drop] (expected) | main requests 24, cache_read 1404373, cache_creation 113549, weighted 282374, last request 109784 tok, max 109784 | nudges 0, handoffs 0, openings 0, fresh false
+profile heavy: N=24 user turns (one turn = ONE API request here; a real agent turn is many), bound K=6
+  WEIGHTED cost (write 1.25x, read 0.1x; base-input-token equivalents): 282364 -> 244674 (13.3% lower)
+  cache_read: 1404329 -> 658680 (53.1% lower) · cache_creation 113545 -> 143045 · final context 109782 -> 25097 tok
+  reuse variants agree (previous-request-only cache == any-earlier cache): true — if false the totals above depend on the cache model
+per-request cache_read, baseline: 0 13566 20729 24775 28821 32867 36914 40960 45006 49052 53099 57146 61192 65239 69286 73333 77379 81426 85473 89520 93566 97613 101660 105707
+per-request cache_read, handoff : 0 13566 20728 24775 28821 32867 36913 8521 11305 16975 21021 25067 29114 33160 11084 11305 16975 21022 25068 29115 33162 11083 11305 16975 21022 25068 29115 33162 11084 11305 16975 21022
+handoff-cache: CLEAN
+
+## light ~0.75k tok/turn, N=24, K=6
+baseline: PASS (expected) | main requests 24, cache_read 534929, cache_creation 36745, weighted 99424, last request 32982 tok, max 32982 | nudges 0, handoffs 0, openings 0, fresh false
+handoff: PASS (expected) | main requests 32, cache_read 462030, cache_creation 66245, weighted 129009, last request 16547 tok, max 19159 | nudges 4, handoffs 4, openings 4, fresh true
+
+profile light: N=24 user turns (one turn = ONE API request here; a real agent turn is many), bound K=6
+  WEIGHTED cost (write 1.25x, read 0.1x; base-input-token equivalents): 99424 -> 129009 (-29.8% lower = WORSE)
+  cache_read: 534929 -> 462030 (13.6% lower) · cache_creation 36745 -> 66245 · final context 32982 -> 16547 tok
+  reuse variants agree (previous-request-only cache == any-earlier cache): true — if false the totals above depend on the cache model
+per-request cache_read, baseline: 0 11516 15429 16225 17021 17817 18614 19410 20206 21002 21799 22596 23392 24189 24986 25783 26579 27376 28173 28970 29766 30563 31360 32157
+per-request cache_read, handoff : 0 11516 15428 16225 17021 17817 18613 8521 11305 14925 15721 16517 17314 18110 11084 11305 14925 15722 16518 17315 18112 11084 11305 14925 15722 16518 17315 18112 11083 11305 14925 15722
+handoff-cache: CLEAN
+EVIDENCE-COMPLETE

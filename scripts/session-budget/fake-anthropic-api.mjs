@@ -33,13 +33,14 @@ function sseEvent(ev, data) {
 }
 
 /** A complete, wire-valid streamed assistant reply (text only, end_turn). */
-export function streamedTextReply({ model = 'claude-fake', text = CANNED_TEXT, id = 'msg_fake_1', inputTokens = 12 } = {}) {
+export function streamedTextReply({ model = 'claude-fake', text = CANNED_TEXT, id = 'msg_fake_1', inputTokens = 12, cache } = {}) {
+  const cr = cache?.cache_read_input_tokens ?? 0, cc = cache?.cache_creation_input_tokens ?? 0;
   return [
     sseEvent('message_start', {
       type: 'message_start',
       message: {
         id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null,
-        usage: { input_tokens: inputTokens, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        usage: { input_tokens: inputTokens, output_tokens: 1, cache_creation_input_tokens: cc, cache_read_input_tokens: cr },
       },
     }),
     sseEvent('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
@@ -48,7 +49,7 @@ export function streamedTextReply({ model = 'claude-fake', text = CANNED_TEXT, i
     sseEvent('content_block_stop', { type: 'content_block_stop', index: 0 }),
     sseEvent('message_delta', {
       type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { input_tokens: inputTokens, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      usage: { input_tokens: inputTokens, output_tokens: 2, cache_creation_input_tokens: cc, cache_read_input_tokens: cr },
     }),
     sseEvent('message_stop', { type: 'message_stop' }),
   ].join('');
@@ -84,6 +85,23 @@ export function jsonTextReply({ model = 'claude-fake', text = CANNED_TEXT, id = 
     stop_reason: 'end_turn', stop_sequence: null,
     usage: { input_tokens: inputTokens, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
   };
+}
+
+/** Canonical cache-prefix text of a /v1/messages body: tools, then system, then each message — the order the API caches in, independent of JSON key order. */
+export function cachePrefixKey(buf) {
+  try {
+    const b = JSON.parse(buf.toString('utf8'));
+    return [JSON.stringify(b.tools ?? []), JSON.stringify(b.system ?? ''), ...(Array.isArray(b.messages) ? b.messages : []).map((m) => JSON.stringify(m))].join('\u0001');
+  } catch {
+    return '';
+  }
+}
+
+export function commonPrefixLength(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+  return i;
 }
 
 function readBody(req) {
@@ -130,6 +148,7 @@ function summarizeModelBody(buf, markers = {}, keepAttachmentData = false, keepM
  * Start the fake API + the refusing egress proxy on 127.0.0.1.
  * @param {object} [opts]
  * @param {(req: object) => ({text?: string, delayMs?: number, inputTokens?: number, toolUse?: {name: string, input: object, id?: string}}|undefined)} [opts.reply]   per-model-request override (`toolUse`: a streamed tool call instead of text)
+ * @param {boolean} [opts.cacheModel]  report `usage.cache_read_input_tokens` / `cache_creation_input_tokens` from a SIMULATED prefix cache (see the handler) and record it on each main request as `rec.usage`
  * @param {boolean} [opts.keepMessages]  keep each model request's full `messages` array on its record (`messages` then replaces the count)
  * @param {boolean} [opts.keepAttachmentData]  keep the base64 of image/document blocks in each request record (default: sizes only)
  * @param {number} [opts.apiPort]    fixed port for the API listener (default: any free port); `opts.port` is the old name
@@ -149,6 +168,7 @@ export async function startFakeApi(opts = {}) {
   /** @type {any[]} */ const egress = [];
   let seq = 0;
   let modelSeq = 0;
+  const cacheState = { last: '', all: [] };
 
   const server = http.createServer(async (req, res) => {
     req.socket.on('error', () => {});
@@ -168,6 +188,24 @@ export async function startFakeApi(opts = {}) {
     try { opts.onRequest?.(rec); } catch { /* observer errors never break the fake */ }
 
     if (type === 'model') {
+      // #466 CACHE MODEL (opt-in, SIMULATED — the real API's cache is not observable here). A main (tool-carrying) request's cacheable prefix is
+      // tools → system → messages (4 chars ≈ 1 token; no TTL, no breakpoint quantisation). PRIMARY (`rec.usage`): an idealised content-addressed prefix
+      // cache — it reads the longest prefix shared with ANY earlier main request of the run and creates the rest (a fresh session re-reads the base an
+      // earlier session wrote, as the real cache does within its TTL). SENSITIVITY (`rec.usagePrev`): only the PREVIOUS request is reusable (pessimistic).
+      // Tool-less side calls keep zero cache usage.
+      let cache;
+      if (opts.cacheModel && rec.tools > 0) {
+        const key = cachePrefixKey(body);
+        const lcpPrev = commonPrefixLength(cacheState.last, key);
+        let lcpAny = 0;
+        for (const k of cacheState.all) lcpAny = Math.max(lcpAny, commonPrefixLength(k, key));
+        const usageOf = (lcp) => ({ cache_read_input_tokens: Math.floor(lcp / 4), cache_creation_input_tokens: Math.max(0, Math.floor((key.length - lcp) / 4)) });
+        cache = usageOf(lcpAny);
+        rec.usage = { ...cache, prefixChars: key.length };
+        rec.usagePrev = usageOf(lcpPrev);
+        cacheState.last = key;
+        cacheState.all.push(key);
+      }
       const override = opts.reply?.(rec);
       const text = override?.text ?? CANNED_TEXT;
       const id = `msg_fake_${++modelSeq}`;
@@ -178,7 +216,7 @@ export async function startFakeApi(opts = {}) {
         res.end(streamedToolUseReply({ model: rec.model ?? 'claude-fake', id, inputTokens: override?.inputTokens, toolUse: override.toolUse }));
       } else if (rec.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', 'request-id': `req_fake_${rec.seq}` });
-        res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens }));
+        res.end(streamedTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens, cache }));
       } else {
         res.writeHead(200, { 'content-type': 'application/json', 'request-id': `req_fake_${rec.seq}` });
         res.end(JSON.stringify(jsonTextReply({ model: rec.model ?? 'claude-fake', text, id, inputTokens: override?.inputTokens })));

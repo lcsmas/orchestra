@@ -29,11 +29,11 @@ const roster: RelanceRosterDeps = {
 };
 
 /** THE delivery of a Relance — both triggers (a member's Reliquats ended, #427; the asleep vague's coordinator, #428). `site` names the Admission hold, `retry` re-enters the sweep that owes it. */
-export async function deliverRelance(wsId: string, text: string, site: string, retry: () => Promise<unknown>): Promise<RelanceDelivery> {
+export async function deliverRelance(wsId: string, text: string, site: string, retry: () => Promise<unknown>, opts: { stillOwed?: () => boolean } = {}): Promise<RelanceDelivery> {
   const ws = store.getWorkspace(wsId);
   if (!ws) return 'failed';
   // Admission: a Relance of a SLEEPING fleet member is a start — held under low memory, released (coordinators first, one at a time) by re-entering the sweep.
-  if (await wakeHeldForMemory(ws, retry, { site })) return 'held';
+  if (opts.stillOwed ? await wakeHeldForMemory(ws, retry, { site, stillOwed: opts.stillOwed }) : await wakeHeldForMemory(ws, retry, { site })) return 'held';
   return (await sdkStartAndDeliver(wsId, text)) ? 'sent' : 'failed';
 }
 

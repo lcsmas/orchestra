@@ -47,8 +47,13 @@ import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
+import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT } from '../shared/role-guard.ts';
+import { writeRoleSentinel } from './role-sentinel';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
+import { VERIFIED_FANOUT_SKILL } from '../shared/verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_FILES } from '../shared/verified-fanout-files.ts';
+import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
@@ -126,6 +131,8 @@ import {
   sanitizeBranchName,
   type RenamePin,
 } from '../shared/naming-policy.ts';
+import { resolveSpawnRoleDefaults } from '../shared/fleet-roles.ts';
+import { loadRoleConfig } from './fleet-roles-config.ts';
 import { formerBranchPatch } from '../shared/former-branch.ts';
 import { syncAccountInheritance } from './account-inherit';
 import { sameDir } from './same-dir.ts';
@@ -1146,6 +1153,7 @@ export async function renameWorkspaceBranch(
       ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
     };
     await store.upsertWorkspace(updated);
+    await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
     platform.broadcast('workspace:update', updated);
     return updated;
   }
@@ -1159,6 +1167,7 @@ export async function renameWorkspaceBranch(
     if (pinAdvancesGate(ws, opts)) {
       const updated = { ...ws, branch: liveBranch, ...gateFields, ...formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent) };
       await store.upsertWorkspace(updated);
+      await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
       platform.broadcast('workspace:update', updated);
       return updated;
     }
@@ -1176,6 +1185,7 @@ export async function renameWorkspaceBranch(
     ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
   };
   await store.upsertWorkspace(updated);
+  await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
   platform.broadcast('workspace:update', updated);
   return updated;
 }
@@ -1434,7 +1444,7 @@ function spawnedModelBriefLine(spawned: string): string {
   const what =
     spawned === ACCOUNT_DEFAULT_MODEL ? "the account's default model" : `\`${spawned}\``;
   return (
-    `Children are spawned on ${what} — the user's spawned-agent default, applied when you pass no "model" param, so simply omit it. ` +
+    `Children are spawned on ${what} — the user's spawned-agent default, applied when you pass no "model" param (a "scribe-" name takes its role's Haiku instead), so simply omit it. ` +
     'To override, pass a full wire id (short versioned aliases like `opus-4-8` are rejected).'
   );
 }
@@ -1602,7 +1612,14 @@ export async function dispatchAgentSpawnRequest(
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
   const { name: _name, ...rest } = input;
-  return dispatchSpawnRequest({ ...rest, defaultKind: 'spawned', branch: checked.name, namedBy: input.from, exactName: true });
+  // #465: no --model/--effort → the role's pin (name prefix + optional <ORCHESTRA_HOME>/fleet-roles.json); an explicit flag wins; a bad override file refuses the spawn.
+  let roleDefaults: { model?: string; effort?: string };
+  try {
+    roleDefaults = resolveSpawnRoleDefaults(checked.name, { model: rest.model, effort: rest.effort }, loadRoleConfig());
+  } catch (e) {
+    return { ok: false, error: `refusing to spawn: ${e instanceof Error ? e.message : String(e)}. Nothing was created.` };
+  }
+  return dispatchSpawnRequest({ ...rest, ...roleDefaults, defaultKind: 'spawned', branch: checked.name, namedBy: input.from, exactName: true });
 }
 
 // ---------- Add repo ----------
@@ -3409,8 +3426,9 @@ const HOOK_FIELDGUIDE_CMD =
 // another workspace. Unlike an injected reminder this costs zero tokens until
 // the agent actually drifts, and the deny message re-teaches delegation at
 // the exact moment of the violation — the cheapest, most effective channel.
+// No `|| true` (#446): it turned the script's exit 2 into 0, so the deny never landed.
 const HOOK_ORCHESTRATOR_GUARD_CMD =
-  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-guard.sh"; [ -f "$f" ] && bash "$f" || true';
+  'f="${ORCHESTRA_WORKTREE:-.}/.orchestra/orchestrator-guard.sh"; [ -f "$f" ] || exit 0; bash "$f"';
 
 // Tools the orchestrator guard intercepts: the file-mutation tools only
 // (MultiEdit is retired but kept for older Claude Code versions). Everything
@@ -3608,7 +3626,7 @@ Optional flags:
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
   \`sonnet\`/\`opus\` or a full model id). **Omitting it pins the child to the
-  user's spawned-agent default model** (Orchestra's Default models settings).
+  user's spawned-agent default model** (Orchestra's Default models settings) — except a \`scribe-\` name, whose role pins \`claude-haiku-5-5\` + effort low.
   Short versioned forms like \`opus-4-8\` are rejected — override with a full
   wire id. Do NOT downgrade implementation workers on your own
   initiative to economize — that trade-off is the user's call, not yours.
@@ -3961,7 +3979,7 @@ description: Rename THIS workspace's auto-generated git branch to a meaningful n
 # Rename this workspace's branch
 
 If another agent spawned you, your branch was named by that agent (it starts with a
-rôle: \`ops-\`, \`impl-\`, \`verif-\`, \`review-\` or \`explo-\`): leave it, and ask your parent if
+rôle: \`ops-\`, \`impl-\`, \`verif-\`, \`review-\`, \`explo-\` or \`scribe-\`): leave it, and ask your parent if
 the scope changed. Otherwise: a fresh Orchestra workspace starts on an auto-generated branch name (e.g.
 \`radiant-fox\`). Rename it to a short kebab-case name (3-6 words) that reflects
 the actual work, the moment that work is clear. Orchestra renames the real git
@@ -4138,7 +4156,7 @@ grep -q '"name": *"orchestra"' "\$root/package.json" 2>/dev/null || exit 0
 cat <<'EOF'
 [orchestra] Self-modification notice: this repo is Orchestra ITSELF — the app currently running you. Keep in mind:
 - You are editing a git worktree; the app you run under is a separately installed build. Nothing you change takes effect until it is built, released, and installed (the repo's ship skill / scripts/release.sh drives that) — so editing is safe, and "my change does nothing" usually means "not shipped yet", not "broken".
-- The per-worktree files Orchestra auto-installs here (.orchestra/*.sh, the hooks in .claude/settings.local.json, .claude/skills/orchestra-*) are GENERATED by the running app and rewritten on spawn — to change them, edit their source in src/main/workspaces.ts (the orchestra-browser skill's text: src/shared/browser-skill.ts), never the generated files.
+- The per-worktree files Orchestra auto-installs here (.orchestra/*.sh, the hooks in .claude/settings.local.json, .claude/skills/orchestra-*, .claude/skills/verified-fanout) are GENERATED by the running app and rewritten on spawn — to change them, edit their source in src/main/workspaces.ts (the orchestra-browser skill's text: src/shared/browser-skill.ts; verified-fanout's: src/shared/verified-fanout-skill.ts), never the generated files.
 - Architecture reference: docs/codebase-map/ (routing table in CLAUDE.md). Everything is fair game to improve — the UI, the hooks and skills driving you, even this notice.
 EOF
 exit 0
@@ -4446,6 +4464,7 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_INSTRUCTION_SCRIPT,
       ORCHESTRATOR_GUARD_SCRIPT,
       HOME_ROOT_GUARD_SCRIPT,
+      ROLE_GUARD_SCRIPT,
       TMP_GUARD_SCRIPT,
       SELF_MODIFY_INSTRUCTION_SCRIPT,
       BUS_SWITCHES_INSTRUCTION_SCRIPT,
@@ -4457,6 +4476,8 @@ const HOOKS_VERSION = createHash('sha256')
       RENAME_SKILL,
       STATUS_SKILL,
       BROWSER_SKILL,
+      VERIFIED_FANOUT_SKILL,
+      JSON.stringify(VERIFIED_FANOUT_FILES),
       HOOK_ACTIVITY_SUBMIT_CMD,
       HOOK_ACTIVITY_STOP_CMD,
       HOOK_ACTIVITY_NOTIFY_CMD,
@@ -4479,6 +4500,8 @@ const HOOKS_VERSION = createHash('sha256')
       ORCHESTRATOR_GUARD_MATCHER,
       HOOK_HOME_ROOT_GUARD_CMD,
       HOME_ROOT_GUARD_MATCHER,
+      HOOK_ROLE_GUARD_CMD,
+      ROLE_GUARD_MATCHER,
       HOOK_TMP_GUARD_CMD,
       TMP_GUARD_MATCHER,
     ].join('\0'),
@@ -4552,6 +4575,7 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
   const anchor = resolveAnchorInfo(ws);
   maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
   if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
+  if (!remote) await writeRoleSentinel(ws.worktreePath, ws.branch); // #468 (branch = the checked spawn name; ws.name is "<repo> · <branch>")
 }
 
 /** #434 — the first spawn of an agent makes its PARENT the owner of a run: `ownsRun` is recorded (persisted) and the standing-role
@@ -4759,6 +4783,9 @@ export async function installOrchestraHooks(
     // the whole hook bundle) into .orchestra/ and skip the entire install when
     // it already matches — the common case for an existing workspace. Any edit
     // to the scripts or hook commands changes the hash and forces one rewrite.
+    // The role sentinel follows the workspace's CURRENT name, so it sits OUTSIDE the hash gate (every session start refreshes it).
+    const roleWs = store.workspaces.find((w) => w.worktreePath === worktreePath);
+    if (roleWs && roleWs.host?.kind !== 'sandbox') await writeRoleSentinel(worktreePath, roleWs.branch);
     const stamp = path.join(dir, '.hooks-version');
     if (existsSync(stamp)) {
       try {
@@ -4793,6 +4820,7 @@ export async function installOrchestraHooks(
       w('orchestrator-instruction.sh', ORCHESTRATOR_INSTRUCTION_SCRIPT),
       w('orchestrator-guard.sh', ORCHESTRATOR_GUARD_SCRIPT),
       w('home-root-guard.sh', HOME_ROOT_GUARD_SCRIPT),
+      w('role-guard.sh', ROLE_GUARD_SCRIPT),
       w('tmp-guard.sh', TMP_GUARD_SCRIPT),
       w('self-modify-instruction.sh', SELF_MODIFY_INSTRUCTION_SCRIPT),
       w('bus-switches-instruction.sh', BUS_SWITCHES_INSTRUCTION_SCRIPT),
@@ -4847,6 +4875,8 @@ export async function installOrchestraHooks(
       writeSkill('orchestra-status', STATUS_SKILL),
       // #399: how to drive the Browser pane with `orchestra browser` (the in-process mcp__browser__* tools are gone)
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
+      // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
+      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
@@ -4934,7 +4964,9 @@ export async function installOrchestraHooks(
     // Per-tool granularity: PreToolUse surfaces which tool the agent is about
     // to run (Bash, Edit, …) and PostToolUse clears it. Status stays `running`
     // throughout — these only drive the ephemeral active-tool label.
-    const preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+    let preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+    // #446 legacy: the pre-#468 orchestrator-guard command ended `|| true` (swallowed the deny); upsert never evicts it, so drop it.
+    preToolList = removeHookCommand(preToolList, (cmd) => cmd.includes('.orchestra/orchestrator-guard.sh') && /\|\|\s*true/.test(cmd));
     upsertHookCommand(preToolList, HOOK_ACTIVITY_PRETOOL_CMD);
     // Orchestrator hard-guard: deny file edits that reach into another
     // workspace (the script self-silences on non-orchestrator workspaces).
@@ -4942,6 +4974,8 @@ export async function installOrchestraHooks(
     upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER, HOOK_ORCHESTRATOR_GUARD_CMD);
     // Every workspace: deny creating new entries at $HOME root.
     upsertMatcherHookCommand(preToolList, HOME_ROOT_GUARD_MATCHER, HOOK_HOME_ROOT_GUARD_CMD);
+    // Fleet roles (#468): deny what the workspace's role may not do. INERT without `.orchestra/role` (written by writeRoleSentinel).
+    upsertMatcherHookCommand(preToolList, ROLE_GUARD_MATCHER, HOOK_ROLE_GUARD_CMD);
     // Every workspace: deny creating new entries in /tmp when the session has a disk TMPDIR.
     upsertMatcherHookCommand(preToolList, TMP_GUARD_MATCHER, HOOK_TMP_GUARD_CMD);
     hooks.PreToolUse = preToolList;

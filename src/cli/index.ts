@@ -3,6 +3,7 @@
 // transpile step errors on an in-source shebang once the banner is also added.
 import http from 'node:http';
 import fs from 'node:fs';
+import { resolveHandoffSummary } from './handoff.ts';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -34,6 +35,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { runDeliver } from './fanout-deliver.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
@@ -95,6 +97,7 @@ import {
   type AgentTabView,
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
+import { defaultRunner as fanoutRunner, runFanout } from './fanout-state.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -1406,6 +1409,18 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
+    case 'handoff': {
+      // #466: end THIS context and continue in a fresh one that opens with the written summary (code: ./handoff.ts, host: main/handoff-host.ts).
+      const resolved = resolveHandoffSummary({ args, readFile: (p) => fs.readFileSync(p === '-' ? 0 : p, 'utf8') });
+      if ('error' in resolved) fail(resolved.error);
+      const id = selfWorkspaceId();
+      if (!id) fail('handoff-unvouched: no ORCHESTRA_WS_ID — run `orchestra handoff` from the agent itself. Nothing was ended.');
+      const res = await request('/handoff', { id, key: process.env[SESSION_KEY_ENV]?.trim() ?? '', summary: resolved.summary });
+      if (!res.ok) fail(res.error ?? 'handoff failed');
+      process.stdout.write(`${res.note as string}\nsummary saved: ${res.file as string}\n`);
+      return;
+    }
+
     case 'restart': {
       // Relaunch a workspace's claude process so a fresh boot re-reads
       // CLAUDE.md/settings, WITHOUT touching worktree/branch/commits (issue
@@ -2412,6 +2427,23 @@ async function main(argv: string[]): Promise<void> {
               'usage: orchestra linear <add|list|rm|pin> …',
           );
       }
+    }
+
+    case 'fanout': {
+      // #467 — `fanout deliver` (src/cli/fanout-deliver.ts): store-less gh; exit 0 merged · 2 refused · 1 could-not-check.
+      if (args[0] === 'deliver') {
+        const d = await runDeliver(args.slice(1));
+        if (d.error !== undefined) fail(d.error);
+        if (d.stdout) process.stdout.write(d.stdout);
+        if (d.exit !== 0) exitWith(d.exit);
+        return;
+      }
+      // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
+      const r = runFanout(args, { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') });
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.code === 1) fail(r.stderr.trimEnd());
+      if (r.code !== 0) throw new CliExit(r.code);
+      return;
     }
 
     case 'add-repo': {
