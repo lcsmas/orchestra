@@ -91,10 +91,16 @@ export function composeOpeningTurn(input: { summary: string; turns?: number; sav
   const n = input.turns && input.turns > 0 ? ` after ${input.turns} turn${input.turns === 1 ? '' : 's'}` : '';
   return (
     `[Orchestra handoff] Your previous context ended${n} by your own \`orchestra handoff\` (${input.savedAt}). This is a FRESH session in the same workspace, worktree, branch and run: ` +
-    `nothing was lost on disk, but you remember nothing else — re-read what REFS names before you act, and treat NOT VERIFIED as work still owed.` +
+    `nothing was lost on disk, but you remember nothing else — re-read what REFS names before you act, and treat NOT VERIFIED as work still owed. ` +
+    `A background run started by your previous context was STOPPED with it: relaunch it if the summary says it was still needed.` +
     (input.file ? ` The summary is also saved at ${input.file}.` : '') +
     `\n\n--- summary from your previous context ---\n${input.summary.trim()}\n--- end of summary ---`
   );
+}
+
+/** m4: the agent was told "end your turn" but its handoff will not run — it keeps its context and must say so again if it still wants one. */
+export function composeDroppedNotice(why: string): string {
+  return `[Orchestra] Your scheduled \`orchestra handoff\` did NOT run (${why}) — this context is unchanged and nothing was ended. Run \`orchestra handoff --summary-file <path>\` again, and end your turn, if you still want to hand off.`;
 }
 
 /** The one nudge a host sends an agent past the bound. */
@@ -103,7 +109,7 @@ export function composeNudge(turns: number, bound: number): string {
     `[Orchestra] This context has run ${turns} turns (bound ${bound}); every further turn re-reads all of it. ` +
     `Finish the step in hand, then hand off: write a summary file with the sections STATE, NEXT STEPS, REFS (ledger / state file / branch), NOT VERIFIED, ` +
     `and run \`orchestra handoff --summary-file <path>\` — then end your turn. The host ends this context at the turn end and opens a fresh one with your summary; ` +
-    `worktree, branch and commits are untouched. This is said ONCE; nothing is ended unless you run the command.`
+    `worktree, branch and commits are untouched, BUT processes your context started in the background (a backgrounded test run, a dev server) are stopped with it — let them finish first or note in NOT VERIFIED that they must be relaunched. This is said ONCE; nothing is ended unless you run the command.`
   );
 }
 

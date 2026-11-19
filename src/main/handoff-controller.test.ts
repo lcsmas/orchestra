@@ -8,9 +8,9 @@ const GOOD = 'STATE: coded\nNEXT STEPS: nominate\nREFS: https://github.com/lcsma
 
 function rig(opts: Partial<Omit<HandoffDeps, 'bound'>> & { bound?: number } = {}) {
   const { bound, ...over } = opts;
-  const calls = { ended: [] as string[], opened: [] as { id: string; text: string }[], nudges: [] as { id: string; text: string }[], reports: [] as string[], saved: [] as string[] };
+  const calls = { owed: [] as string[], settled: [] as string[], notices: [] as { id: string; text: string }[], order: [] as string[], ended: [] as string[], opened: [] as { id: string; text: string }[], nudges: [] as { id: string; text: string }[], reports: [] as string[], saved: [] as string[] };
   let t = 1_000_000;
-  const cur = { session: 's1' as string | undefined };
+  const cur = { session: 's1' as string | undefined, inFlight: true };
   const deps: HandoffDeps = {
     now: () => t,
     vouched: (id, key) => key === `key-${id}`,
@@ -18,10 +18,14 @@ function rig(opts: Partial<Omit<HandoffDeps, 'bound'>> & { bound?: number } = {}
     runRefusal: () => null,
     blocked: () => null,
     sessionOf: () => cur.session,
+    turnInFlight: () => cur.inFlight,
+    owe: (id, opening) => { calls.owed.push(`${id}:${opening.length}`); calls.order.push('owe'); },
+    settle: (id) => { calls.settled.push(id); },
+    sendNotice: async (id, text) => { calls.notices.push({ id, text }); },
     saveSummary: (id, s) => { calls.saved.push(s); return `/h/handoff/${id}/x.md`; },
     bound: () => bound ?? 0,
-    endContext: async (id) => { calls.ended.push(id); },
-    deliverOpening: async (id, text) => { calls.opened.push({ id, text }); return 'sent'; },
+    endContext: async (id) => { calls.order.push('end'); calls.ended.push(id); },
+    deliverOpening: async (id, text) => { calls.order.push('deliver'); calls.opened.push({ id, text }); return 'sent'; },
     sendNudge: async (id, text) => { calls.nudges.push({ id, text }); },
     report: (_id, text) => calls.reports.push(text),
     log: { info() {}, warn() {}, error() {} },
@@ -247,4 +251,55 @@ test('a nudge skipped by a Pause is owed, not lost', async () => {
   paused = false;
   await turn(c);
   assert.equal(calls.nudges.length, 1);
+});
+
+test('m1: the owed marker is written BEFORE the context is ended, and the order is owe → end → deliver', async () => {
+  const { c, calls } = rig();
+  c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  await turn(c);
+  assert.deepEqual(calls.order, ['owe', 'end', 'deliver']);
+  assert.equal(calls.owed.length, 1);
+});
+
+test('m1 must-FAIL: a marker that cannot be written ends NOTHING; a failed clear settles the marker (the old context lives on)', async () => {
+  const noMarker = rig({ owe: () => { throw new Error('disk full'); } });
+  noMarker.c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  await turn(noMarker.c);
+  assert.deepEqual(noMarker.calls.ended, []);
+  assert.match(noMarker.calls.reports[0], /not run.*marker could not be written.*context kept/);
+  const failedClear = rig({ endContext: async () => { throw new Error('boom'); } });
+  failedClear.c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  await turn(failedClear.c);
+  assert.deepEqual(failedClear.calls.settled, ['w1'], 'nothing is owed when the context was not ended');
+});
+
+test('m4: a dispatch while NO turn is in flight runs at once (not at some unrelated later turn end)', async () => {
+  const { c, calls, cur } = rig();
+  cur.inFlight = false;
+  const r = c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.match(r.note, /running now/);
+  await new Promise((res) => setTimeout(res, 5));
+  assert.deepEqual(calls.ended, ['w1']);
+  assert.equal(c.pendingFor('w1'), false);
+  const busy = rig(); // control: a turn in flight ⇒ scheduled, nothing ended yet
+  busy.c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  assert.deepEqual(busy.calls.ended, []);
+});
+
+test('m4: a handoff dropped (TTL / other context) is TOLD to the agent; a dropped one of a vanished workspace is not', async () => {
+  const ttl = rig();
+  ttl.c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  ttl.tick(11 * 60_000);
+  await turn(ttl.c);
+  assert.equal(ttl.calls.notices.length, 1);
+  assert.match(ttl.calls.notices[0].text, /did NOT run.*10 minutes.*nothing was ended/);
+  const other = rig();
+  other.c.dispatch({ id: 'w1', key: 'key-w1', summary: GOOD });
+  other.cur.session = 's2';
+  await turn(other.c, 'w1', 0, 's2');
+  assert.match(other.calls.notices[0].text, /ended another way/);
+  const gone = rig({ workspaceLive: () => false });
+  await turn(gone.c);
+  assert.equal(gone.calls.notices.length, 0);
 });
