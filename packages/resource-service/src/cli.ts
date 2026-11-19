@@ -36,7 +36,7 @@ const USAGE = `usage: resctl <verb> [options]
   install-unit [--no-start|--print]   write + enable + start the systemd user unit ($RESCTL_UNIT_NAME)
   uninstall-unit                      stop, disable, remove it
   admit [--timeout <dur>]             wait until free memory and disk are above RESCTL_MIN_FREE_MEM / _DISK
-  docker-env                          not implemented yet
+  docker-env --run <id>               print the export DOCKER_HOST line of the run's Docker relay
 exit codes: 0 ok · 1 failure · 2 usage · 3 refused · 64 not implemented
 `;
 

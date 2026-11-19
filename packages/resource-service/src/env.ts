@@ -30,3 +30,6 @@ export const admitReportMs = (env: Env = process.env): number => duration(env, '
 /** How long `status` waits for the docker CLI (default 5 s). */
 export const dockerTimeoutMs = (env: Env = process.env): number => duration(env, 'RESCTL_DOCKER_TIMEOUT', '5s');
 export const unitName = (env: Env = process.env): string => env.RESCTL_UNIT_NAME || 'resctl.service';
+// A2 (docker-env): which real Docker daemon the relay forwards to. RESCTL_DOCKER_SOCKET wins; else DOCKER_HOST, the effective docker context, the default socket (src/relay-host.ts).
+export const dockerSocketOverride = (env: Env = process.env): string | undefined => env.RESCTL_DOCKER_SOCKET?.trim() || undefined;
+export const dockerHostEnv = (env: Env = process.env): string | undefined => env.DOCKER_HOST?.trim() || undefined;

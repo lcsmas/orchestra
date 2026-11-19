@@ -1,0 +1,941 @@
+[
+ {
+  "id": "M01_stamp_off",
+  "why": "the relay forwards the create body without the label (relay effectively off)",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "stamps resctl.run on a container create",
+   "a real container created through the endpoint"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "body = stampCreateBodyBytes(original, labels);",
+    "to": "body = original;"
+   }
+  ]
+ },
+ {
+  "id": "M02_label_key_renamed",
+  "why": "the stamped/filtered key is not resctl.run",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "stamps resctl.run on a container create",
+   "carries resctl.run"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "export const RUN_LABEL = 'resctl.run';",
+    "to": "export const RUN_LABEL = 'resctl.runs';"
+   }
+  ]
+ },
+ {
+  "id": "M03_step_not_registered",
+  "why": "the cleanup pipeline has no remove-containers step",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "the reaper does it"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  { name: 'remove-containers', run: removeContainers },\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M04_removes_every_run",
+  "why": "the cleanup removes the containers of every run (no per-run filter, no id check)",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "does not remove run"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "  const filters = encodeURIComponent(JSON.stringify({ label: [`${RUN_LABEL}=${runId}`, `${TOKEN_LABEL}=${token}`] }));",
+    "to": "  const filters = encodeURIComponent(JSON.stringify({ label: [RUN_LABEL] }));"
+   },
+   {
+    "file": "src/docker-api.ts",
+    "find": "rows.filter((c) => c.Labels?.[RUN_LABEL] === runId && c.Labels?.[TOKEN_LABEL] === token)",
+    "to": "rows.filter((c) => c.Labels?.[RUN_LABEL] !== undefined)"
+   }
+  ]
+ },
+ {
+  "id": "M05_prefix_match",
+  "why": "the id check is a prefix match: run ab removes run abc",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "does not remove run"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "  const filters = encodeURIComponent(JSON.stringify({ label: [`${RUN_LABEL}=${runId}`, `${TOKEN_LABEL}=${token}`] }));",
+    "to": "  const filters = encodeURIComponent(JSON.stringify({ label: [RUN_LABEL] }));"
+   },
+   {
+    "file": "src/docker-api.ts",
+    "find": "rows.filter((c) => c.Labels?.[RUN_LABEL] === runId && c.Labels?.[TOKEN_LABEL] === token)",
+    "to": "rows.filter((c) => c.Labels?.[RUN_LABEL]?.startsWith(runId))"
+   }
+  ]
+ },
+ {
+  "id": "M06_relay_left_running",
+  "why": "the cleanup never stops the relay process",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "the relay is closed BEFORE"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "    if (rec) await stopRelayProcess(rec);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M07_closed_not_flagged",
+  "why": "the cleanup does not flag the relay closed",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "the relay is closed BEFORE",
+   "closing is per run INSTANCE"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "      cur.relay = { ...before, closed: true };",
+    "to": "      cur.relay = { ...before };"
+   }
+  ]
+ },
+ {
+  "id": "M08_closed_ignored",
+  "why": "docker-env starts a relay for a run that is being cleaned",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "the relay is closed BEFORE"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "    if (rec?.closed) throw refused(`run ${id} is being cleaned: no new relay`);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M09_single_empty_listing",
+  "why": "removal stops at the first empty listing (a late create escapes)",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "lands between two listings"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "round < 12 && empty < 2; round++",
+    "to": "round < 12 && empty < 1; round++"
+   },
+   {
+    "file": "src/docker-api.ts",
+    "find": "if (empty < 2) throw",
+    "to": "if (empty < 1) throw"
+   }
+  ]
+ },
+ {
+  "id": "M10_relay_watch_off",
+  "why": "the relay never notices its run is over",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "whose run instance is cleaned stops by itself",
+   "whose state is gone stops by itself"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-proc.ts",
+    "find": "if (!run || run.token !== token || run.state === 'cleaned' || relayOf(run)?.closed) stop('its run instance is gone or closed');",
+    "to": "if (false) stop('its run instance is gone or closed');"
+   }
+  ]
+ },
+ {
+  "id": "M11_run_marker_inherited",
+  "why": "the relay inherits RESCTL_RUN_TOKEN from a lane that started it",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "does not carry the run marker"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "    delete childEnv.RESCTL_RUN_TOKEN;\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M12_pid_reuse_unchecked",
+  "why": "the relay is signalled by pid alone",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "never signalled"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "    if (isAlive(id)) {\n      signalIfSame(id, 'SIGTERM');",
+    "to": "    {\n      try { process.kill(id.pid, 'SIGTERM'); } catch { /* gone */ }"
+   }
+  ]
+ },
+ {
+  "id": "M13_dead_relay_reused",
+  "why": "docker-env hands out the recorded socket without checking the relay is alive",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "a relay that died is replaced"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "isAlive({ pid: rec.pid, startTime: rec.startTime })) {\n      if (await canConnect(sock)) return { sock, upstream: rec.upstream, reused: true };",
+    "to": "true) {\n      return { sock, upstream: rec.upstream, reused: true };"
+   }
+  ]
+ },
+ {
+  "id": "M14_client_label_wins",
+  "why": "our label is written before the client's, so a client resctl.run wins",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "merges into existing labels, ours LAST",
+   "a client cannot override the label"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "stamped = `{${inner}${inner.trim() === '' ? '' : ','}${entries}}`;",
+    "to": "stamped = `{${entries}${inner.trim() === '' ? '' : ','}${inner}}`;"
+   }
+  ]
+ },
+ {
+  "id": "M15_labels_case_sensitive",
+  "why": "only an exact `Labels` member is stamped",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "treats a lower-case `labels`",
+   "a client cannot override the label"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "const isLabelsKey = (k: string): boolean => k.toLowerCase().replace(/\\u017f/g, 's') === 'labels';",
+    "to": "const isLabelsKey = (k: string): boolean => k === 'Labels';"
+   }
+  ]
+ },
+ {
+  "id": "M16_first_labels_stamped",
+  "why": "the FIRST of several Labels members is stamped",
+  "tests": [
+   "test/relay-stamp.test.ts"
+  ],
+  "expect": [
+   "stamps the LAST Labels member"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "if (isLabelsKey(key)) labelsAt",
+    "to": "if (isLabelsKey(key) && !labelsAt) labelsAt"
+   }
+  ]
+ },
+ {
+  "id": "M17_fail_open",
+  "why": "an unlabellable create is forwarded unlabelled",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "refuses a create body it cannot label"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "        return refuse(res, 400, `cannot label this container create (${RUN_LABEL}=${opts.runId}); refused`);",
+    "to": "        body = original;"
+   }
+  ]
+ },
+ {
+  "id": "M18_json_round_trip",
+  "why": "the body is parsed and re-serialised",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "never rewrites a number",
+   "does not rewrite numbers"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "const stamped = stampContainerCreateBody(body.toString('latin1'), labels);",
+    "to": "const o = JSON.parse(body.toString('utf8')); o.Labels = { ...(o.Labels ?? {}), ...labels }; const stamped = JSON.stringify(o);"
+   }
+  ]
+ },
+ {
+  "id": "M19_unversioned_only",
+  "why": "a create under /v1.NN/ is not recognised",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "matches a create with or without",
+   "stamps a create made under an API version prefix",
+   "a real container created through the endpoint"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "return p === null || /^(?:\\/v[0-9.]+)?\\/containers\\/create$/.test(p);",
+    "to": "return p === null || /^\\/containers\\/create$/.test(p);"
+   }
+  ]
+ },
+ {
+  "id": "M20_content_length_stale",
+  "why": "the stamped body is sent with the old framing",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "stamps resctl.run on a container create",
+   "stamps a create streamed with chunked framing"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "      headers['content-length'] = String(body.length);\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M21_no_force",
+  "why": "containers are removed without force",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "a container that will not go"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "?force=1&v=1",
+    "to": "?force=0&v=1"
+   }
+  ]
+ },
+ {
+  "id": "M22_volumes_kept",
+  "why": "anonymous volumes are not removed with the container",
+  "tests": [
+   "test/docker-env.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "after the run's cleanup its containers are gone"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "?force=1&v=1",
+    "to": "?force=1"
+   }
+  ]
+ },
+ {
+  "id": "M23_errors_swallowed",
+  "why": "a failed removal does not fail the step",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "a container that will not go",
+   "a daemon that cannot be reached"
+  ],
+  "edits": [
+   {
+    "file": "src/containers.ts",
+    "find": "n += await removeRunContainers(up, run.id, run.token, ctx.log);",
+    "to": "n += await removeRunContainers(up, run.id, run.token, ctx.log).catch(() => 0);"
+   }
+  ]
+ },
+ {
+  "id": "M24_token_unchecked",
+  "why": "an older instance's cleanup closes the restarted run's relay",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "closing is per run INSTANCE"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "if (!cur || cur.token !== run.token) return null;",
+    "to": "if (!cur) return null;"
+   }
+  ]
+ },
+ {
+  "id": "M25_upgrade_dropped",
+  "why": "hijacked connections (attach, exec start) are not piped",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "an Upgrade call"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "srv.on('upgrade', onUpgrade);",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M26_docker_contacted_without_relay",
+  "why": "a run with no relay still gets Docker listed",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "never contacts Docker"
+  ],
+  "edits": [
+   {
+    "file": "src/containers.ts",
+    "find": "const ups = upstreamsOf(rec ?? undefined);",
+    "to": "const ups = [...upstreamsOf(rec ?? undefined), process.env.RESCTL_DOCKER_SOCKET!].filter(Boolean);"
+   }
+  ]
+ },
+ {
+  "id": "M27_bad_gateway_silent",
+  "why": "a daemon that is down gets no answer",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "answers 502"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "    up.on('error', (e) => refuse(res, 502, `cannot reach the Docker daemon (${e.message})`, req));",
+    "to": "    up.on('error', () => {});"
+   }
+  ]
+ },
+ {
+  "id": "M28_other_creates_stamped",
+  "why": "a network create is stamped too",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "matches a create with or without",
+   "everything else is forwarded untouched"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "return p === null || /^(?:\\/v[0-9.]+)?\\/containers\\/create$/.test(p);",
+    "to": "return p === null || /^(?:\\/v[0-9.]+)?\\/(?:containers|networks)\\/create$/.test(p);"
+   }
+  ]
+ },
+ {
+  "id": "M29_relay_not_started_before_record",
+  "why": "docker-env returns before the relay registered and listens",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "prints the export line"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "if (reg !== undefined && reg.pid === child.pid && reg.sock === sock && (await canConnect(sock))) break;",
+    "to": "break;"
+   }
+  ]
+ },
+ {
+  "id": "M30_raw_path_match",
+  "why": "a create is recognised on the raw request target only",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "sees through percent-encoding",
+   "however its target is spelled"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "  const p = routedPath(url);\n  return p === null ||",
+    "to": "  const p = (url ?? '').split('?')[0];\n  return false ||"
+   }
+  ]
+ },
+ {
+  "id": "M31_upgrade_create_piped",
+  "why": "a create sent as an Upgrade request is piped through unlabelled",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "arrives as an Upgrade request"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (isContainerCreate(req.method, req.url)) return refuse400('a container create cannot be an Upgrade request; refused');",
+    "to": "if (false) return refuse400('a container create cannot be an Upgrade request; refused');"
+   }
+  ]
+ },
+ {
+  "id": "M32_removal_gives_up_at_once",
+  "why": "one removal round only: a 409 (removal in progress) fails the step",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "a removal already in progress"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "round < 12 && empty < 2; round++",
+    "to": "round < 1 && empty < 2; round++"
+   }
+  ]
+ },
+ {
+  "id": "M33_fold_dropped",
+  "why": "member names are not folded the way the daemon's decoder does (long s)",
+  "tests": [
+   "test/relay-stamp.test.ts"
+  ],
+  "expect": [
+   "folds onto Labels"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": ".replace(/\\u017f/g, 's')",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M34_key_bytes_not_decoded",
+  "why": "a member name is read as latin1 text, not as the UTF-8 bytes it is",
+  "tests": [
+   "test/relay-stamp.test.ts"
+  ],
+  "expect": [
+   "folds onto Labels"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "JSON.parse(Buffer.from(text.slice(i, kEnd), 'latin1').toString('utf8')) as string",
+    "to": "JSON.parse(text.slice(i, kEnd)) as string"
+   }
+  ]
+ },
+ {
+  "id": "M35_closed_run_gets_a_relay",
+  "why": "a relay process starts (and listens) for a run whose cleanup began",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "never listens"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "!rel || rel.closed || rel.sock !== sock",
+    "to": "!rel || rel.sock !== sock"
+   }
+  ]
+ },
+ {
+  "id": "M36_sweep_not_called",
+  "why": "runs a reboot closed are never swept",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "the serve daemon sweeps"
+  ],
+  "edits": [
+   {
+    "file": "src/reaper.ts",
+    "find": "  await sweepUnremoved(dir, ctx); // runs a reboot closed without the pipeline (A2)\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M37_boot_id_ignored",
+  "why": "a relay record of another boot is signalled",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "ANOTHER boot never signals",
+   "the serve daemon sweeps"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "(!rec.bootId || rec.bootId === bootId())",
+    "to": "true"
+   }
+  ]
+ },
+ {
+  "id": "M38_older_upstreams_ignored",
+  "why": "only the current upstream is cleared",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "every daemon a relay of the run ever forwarded to"
+  ],
+  "edits": [
+   {
+    "file": "src/containers.ts",
+    "find": "const ups = upstreamsOf(rec ?? undefined);",
+    "to": "const ups = rec?.upstream ? [rec.upstream] : [];"
+   }
+  ]
+ },
+ {
+  "id": "M39_removed_not_marked",
+  "why": "a completed removal is not recorded",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "died before its relay existed",
+   "the serve daemon sweeps"
+  ],
+  "edits": [
+   {
+    "file": "src/containers.ts",
+    "find": "cur.relay = { ...(cur.relay as object), removed: true };",
+    "to": "cur.relay = { ...(cur.relay as object) };"
+   }
+  ]
+ },
+ {
+  "id": "M40_upstream_not_recorded_before_spawn",
+  "why": "the upstream is only known once the relay registered",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "cannot start fails docker-env"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-host.ts",
+    "find": "      cur.relay = pending;\n",
+    "to": "      cur.relay = { sock, startedAt: pending.startedAt, bootId: pending.bootId };\n"
+   }
+  ]
+ },
+ {
+  "id": "M41_removes_everything",
+  "why": "the cleanup lists and removes EVERY container of the daemon (no label filter, no id check). FAKE daemon only: never list a real-docker test file here, this mutant would delete every container of the host",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "run end removes the run's containers",
+   "does not remove run"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "  const filters = encodeURIComponent(JSON.stringify({ label: [`${RUN_LABEL}=${runId}`, `${TOKEN_LABEL}=${token}`] }));",
+    "to": "  const filters = encodeURIComponent('{}');"
+   },
+   {
+    "file": "src/docker-api.ts",
+    "find": "rows.filter((c) => c.Labels?.[RUN_LABEL] === runId && c.Labels?.[TOKEN_LABEL] === token)",
+    "to": "rows"
+   }
+  ]
+ },
+ {
+  "id": "M42_version_segment_narrow",
+  "why": "the version segment is `v<digits>(.digits)*` instead of the daemon's `v[0-9.]+` (review M1: `/v1.54./containers/create` skips stamping)",
+  "tests": [
+   "test/relay-stamp.test.ts",
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "the version segment is the daemon",
+   "stamps a create under a version segment with a trailing dot",
+   "review M1"
+  ],
+  "edits": [
+   {
+    "file": "src/relay-stamp.ts",
+    "find": "return p === null || /^(?:\\/v[0-9.]+)?\\/containers\\/create$/.test(p);",
+    "to": "return p === null || /^(?:\\/v\\d+(?:\\.\\d+)*)?\\/containers\\/create$/.test(p);"
+   }
+  ]
+ },
+ {
+  "id": "M43_upgrade_always_hijacks",
+  "why": "any Upgrade request becomes a raw pipe at once (review M2)",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "does NOT hijack",
+   "review M2"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (/^HTTP\\/1\\.[01] 101 /.test(headText)) {",
+    "to": "if (true) {"
+   }
+  ]
+ },
+ {
+  "id": "M44_upgrade_head_forwarded_early",
+  "why": "the bytes a client sends beyond an Upgrade request's own body are sent to the daemon before it decides (a create pipelined behind it)",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "does NOT hijack",
+   "review M2"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (rest.length) held = Buffer.concat([held, rest]);",
+    "to": "if (rest.length) up.write(rest);"
+   }
+  ]
+ },
+ {
+  "id": "M45_plain_answer_keeps_piping",
+  "why": "after the daemon's plain answer to an Upgrade request the connection stays a raw pipe",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "does NOT hijack",
+   "review M2"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "        client.write(buf);\n        if (plain.done(Buffer.alloc(0))) end2();\n        return;",
+    "to": "        client.write(buf);\n        up.off('data', onReply);\n        client.off('data', onBody);\n        client.pipe(up);\n        up.pipe(client);\n        client.resume();\n        return;"
+   }
+  ]
+ },
+ {
+  "id": "M46_token_not_stamped",
+  "why": "the relay stamps only resctl.run",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-env.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "keeps the client labels",
+   "two state dirs",
+   "review M3"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "const labels = { [RUN_LABEL]: opts.runId, [TOKEN_LABEL]: opts.token };",
+    "to": "const labels = { [RUN_LABEL]: opts.runId };"
+   }
+  ]
+ },
+ {
+  "id": "M47_token_not_required",
+  "why": "the cleanup lists and checks the id label only (review M3). FAKE daemon only",
+  "tests": [
+   "test/docker-env.test.ts"
+  ],
+  "expect": [
+   "two state dirs",
+   "another instance's token"
+  ],
+  "edits": [
+   {
+    "file": "src/docker-api.ts",
+    "find": "`${RUN_LABEL}=${runId}`, `${TOKEN_LABEL}=${token}`",
+    "to": "`${RUN_LABEL}=${runId}`"
+   },
+   {
+    "file": "src/docker-api.ts",
+    "find": "c.Labels?.[RUN_LABEL] === runId && c.Labels?.[TOKEN_LABEL] === token",
+    "to": "c.Labels?.[RUN_LABEL] === runId"
+   }
+  ]
+ },
+ {
+  "id": "M48_raw_stream_content_type_hijacks",
+  "why": "a 200 with a raw/multiplexed-stream content type (logs) is taken for a hijack (delta review item 2)",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "NON-hijack endpoint"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (/^HTTP\\/1\\.[01] 101 /.test(headText)) {",
+    "to": "if (/^HTTP\\/1\\.[01] 101 /.test(headText) || /^content-type:\\s*application\\/vnd\\.docker\\.(?:raw|multiplexed)-stream/im.test(headText)) {"
+   }
+  ]
+ },
+ {
+  "id": "M49_upgrade_body_withheld",
+  "why": "the request body of an Upgrade request (docker exec's JSON) is held back until the daemon answers (it never does)",
+  "tests": [
+   "test/relay.test.ts",
+   "test/docker-real.test.ts"
+  ],
+  "expect": [
+   "docker exec"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "const take = chunk.subarray(0, left);",
+    "to": "const take = chunk.subarray(0, 0);"
+   }
+  ]
+ },
+ {
+  "id": "M50_bodyless_answer_waits",
+  "why": "a 204 / 1xx / HEAD answer to an Upgrade request is not recognised as complete",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "without a Content-Length"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (method === 'HEAD' || status < 200 || status === 204 || status === 304) return { done: () => true };",
+    "to": "if (false) return { done: () => true };"
+   }
+  ]
+ },
+ {
+  "id": "M51_chunked_never_complete",
+  "why": "a chunked plain answer is never recognised as complete",
+  "tests": [
+   "test/relay.test.ts"
+  ],
+  "expect": [
+   "without a Content-Length"
+  ],
+  "edits": [
+   {
+    "file": "src/relay.ts",
+    "find": "if (size === 0) return pending.length >= eol + 4;",
+    "to": "if (size === 0) return false;"
+   }
+  ]
+ }
+]

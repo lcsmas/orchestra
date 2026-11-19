@@ -1,6 +1,7 @@
 // The reaper: one pure decision per run + one tick that applies it. `resctl serve` loops `tick`.
 import { graceMs, keepMs, type Env } from './env.ts';
 import { endRun, type CleanupCtx } from './cleanup.ts';
+import { sweepUnremoved } from './containers.ts';
 import { groupIsOurs, isAlive } from './proc.ts';
 import { withState, type Run } from './state.ts';
 
@@ -48,4 +49,5 @@ export async function tick(dir: string, env: Env, log: (msg: string) => void, no
     if (failures.length) log(`run ${run.id}: cleanup failed, will retry: ${failures.map((f) => `${f.step}: ${f.error}`).join('; ')}`);
     else log(`run ${run.id}: cleaned`);
   }
+  await sweepUnremoved(dir, ctx); // runs a reboot closed without the pipeline (A2)
 }

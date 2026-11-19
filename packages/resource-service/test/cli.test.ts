@@ -12,14 +12,6 @@ describe('cli dispatch', () => {
     assert.deepEqual(Object.keys(VERBS).sort(), ['admit', 'docker-env', 'exec', 'install-unit', 'run end', 'run start', 'serve', 'status', 'uninstall-unit']);
   });
 
-  for (const [verb, ticket] of [['docker-env', 'A2']] as const) {
-    it(`${verb} is a stub: "not implemented (${ticket})", exit 64`, () => {
-      const r = rig.cli([verb, '--run', 'x']);
-      assert.equal(r.status, 64);
-      assert.match(r.stderr, new RegExp(`not implemented \\(${ticket}\\)`));
-    });
-  }
-
   it('usage errors exit 2', () => {
     assert.equal(rig.cli([]).status, 2);
     assert.equal(rig.cli(['frobnicate']).status, 2);

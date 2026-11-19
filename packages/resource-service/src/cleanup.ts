@@ -1,5 +1,6 @@
 // The ORDERED cleanup pipeline of a run. A1 registers `kill-processes`; A2 appends `remove-containers`, A4 appends `stop-scopes`.
 // A step is idempotent (a run may be cleaned twice: `run end` racing the reaper) and must not hold the state lock.
+import { removeContainers } from './containers.ts';
 import { termWaitMs, type Env } from './env.ts';
 import { findByEnv, groupMembers, readStat, signalGroupIfOurs, signalIfSame, sleep, touchable, groupIsOurs, type Identity } from './proc.ts';
 import { withState, type Run } from './state.ts';
@@ -62,7 +63,10 @@ export async function killProcesses(run: Run, ctx: CleanupCtx = {}): Promise<voi
   refuseIfBlocked(run);
 }
 
-export const CLEANUP_STEPS: CleanupStep[] = [{ name: 'kill-processes', run: killProcesses }];
+export const CLEANUP_STEPS: CleanupStep[] = [
+  { name: 'kill-processes', run: killProcesses },
+  { name: 'remove-containers', run: removeContainers },
+];
 
 /** Run every step in order; a failing step does not skip the next ones. Returns the failures. */
 export async function cleanupRun(run: Run, ctx: CleanupCtx = {}): Promise<{ step: string; error: string }[]> {
