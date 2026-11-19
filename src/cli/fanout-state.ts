@@ -124,7 +124,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     for (const [flag, key] of Object.entries(flagToKey)) {
       const v = p.vals[flag];
       if (v === undefined) continue;
-      patch[key] = key === 'pr' ? Number(v) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v;
+      patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v;
     }
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
     const file = stateFile(homeOf(deps.env), runOf(p, deps.env));
@@ -179,6 +179,7 @@ export function gatherReality(state: FanoutState, runner: Runner, cwd: string, o
       else r.branchHead = l.stdout.trim() ? l.stdout.trim().split(/\s+/)[0] : null;
     }
     const probe = r.branchHead ?? t.head;
+    if (t.status === 'merged' && !probe && !t.pr && errs.length === 0) errs.push('merged with no head or PR recorded and the branch gone: nothing to verify');
     if (probe && errs.length === 0) {
       const a = ancestor(probe);
       if (typeof a === 'string') errs.push(a);

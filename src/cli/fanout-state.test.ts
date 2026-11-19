@@ -156,3 +156,15 @@ test('built CLI: `orchestra fanout` is dispatched, exits 2 on divergence and 1 o
   assert.match(bad.stderr, /not merged yet/);
   assert.equal(cli('state', 'show', '--run', 'r1').status, 0);
 });
+
+test('pre-review MAJOR: merged, branch deleted, no head/PR recorded → UNKNOWN (unverifiable), not "not merged"', (t) => {
+  const { home, clone } = gitRepo(t);
+  const d = deps(home, hybrid(() => ({ code: 1, stdout: '' })), { cwd: clone });
+  runFanout(['state', 'init', '--run', 'r1'], d);
+  set(d, 'C', '--branch', 'c-gone', '--status', 'merged');
+  const r = runFanout(['resume', '--run', 'r1', '--cwd', clone, '--no-write'], d);
+  assert.match(r.stdout, /! C reality-unreadable/);
+  assert.doesNotMatch(r.stdout, /state-merged-reality-not/);
+  assert.match(set(d, 'C', '--pr', '0x10').stderr, /pr must be/);
+  assert.match(set(d, 'C', '--head', '--help').stderr, /needs a value|head/);
+});

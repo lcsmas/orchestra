@@ -46,6 +46,8 @@ export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'f
 export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number]>>;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const HEX_SHA = /^[0-9a-f]{7,40}$/;
+const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
 export class FanoutStateError extends Error {}
@@ -73,6 +75,10 @@ const strOrNull = (v: unknown, name: string): string | null => {
   if (typeof v !== 'string' || !v.trim()) throw new FanoutStateError(`${name} must be a non-empty string or null`);
   return v;
 };
+function checked(v: string | null, re: RegExp, name: string): string | null {
+  if (v !== null && (!re.test(v) || v.includes('..') || v.endsWith('/') || v.endsWith('.lock'))) throw new FanoutStateError(`${name} is not an acceptable value: ${JSON.stringify(v)}`);
+  return v;
+}
 function prOrNull(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) throw new FanoutStateError('pr must be a positive integer or null');
@@ -103,9 +109,9 @@ export function parseState(raw: unknown): FanoutState {
     if (!isObj(t)) throw new FanoutStateError(`ticket ${id} is not an object`);
     refuseUnknown(t, TICKET_KEYS, `ticket ${id}`);
     tickets[id] = {
-      branch: strOrNull(t.branch, 'branch'),
+      branch: checked(strOrNull(t.branch, 'branch'), SAFE_BRANCH, 'branch'),
       pr: prOrNull(t.pr),
-      head: strOrNull(t.head, 'head'),
+      head: checked(strOrNull(t.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)'),
       verdict: enumOf(t.verdict ?? 'none', VERDICTS, 'verdict'),
       dependsOn: depsOf(t.dependsOn),
       frozenInterface: strOrNull(t.frozenInterface, 'frozenInterface'),
@@ -160,9 +166,9 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
     branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], frozenInterface: null, status: 'todo', updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
-  if ('branch' in patch) next.branch = strOrNull(patch.branch, 'branch');
+  if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
   if ('pr' in patch) next.pr = prOrNull(patch.pr);
-  if ('head' in patch) next.head = strOrNull(patch.head, 'head');
+  if ('head' in patch) next.head = checked(strOrNull(patch.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)');
   if ('verdict' in patch) next.verdict = enumOf(patch.verdict, VERDICTS, 'verdict');
   if ('dependsOn' in patch) next.dependsOn = depsOf(patch.dependsOn);
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
@@ -207,7 +213,8 @@ export function writeStateAtomic(file: string, state: FanoutState): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify(valid, null, 2)}\n`, { mode: 0o600 });
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try { fs.writeSync(fd, `${JSON.stringify(valid, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
   } catch (e) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
@@ -219,11 +226,13 @@ export function writeStateAtomic(file: string, state: FanoutState): void {
 export function updateState(file: string, mutate: (cur: FanoutState | null) => FanoutState, opts: { staleMs?: number; waitMs?: number } = {}): FanoutState {
   const lock = `${file}.lock`;
   const staleMs = opts.staleMs ?? 15_000;
-  const deadline = Date.now() + (opts.waitMs ?? 5_000);
+  const deadline = Date.now() + (opts.waitMs ?? staleMs + 5_000);
+  const token = `${process.pid}.${Date.now()}.${Math.random()}`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   for (;;) {
     try {
-      fs.closeSync(fs.openSync(lock, 'wx'));
+      const fd = fs.openSync(lock, 'wx');
+      try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
       break;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
@@ -239,7 +248,8 @@ export function updateState(file: string, mutate: (cur: FanoutState | null) => F
     writeStateAtomic(file, next);
     return next;
   } finally {
-    fs.rmSync(lock, { force: true });
+    // Remove the lock only if it is still OURS (a waiter may have judged it stale and taken over).
+    try { if (fs.readFileSync(lock, 'utf8') === token) fs.rmSync(lock, { force: true }); } catch { /* already gone */ }
   }
 }
 
@@ -280,7 +290,7 @@ export interface ReconcilePlan {
   tickets: Record<string, TicketPlan>;
   divergences: Divergence[];
   /** Step 5: reality-AHEAD facts safe to record. State-ahead claims (merged but not) are never auto-corrected. */
-  writeBack: Array<{ ticket: string; patch: TicketPatch; why: string }>;
+  writeBack: Array<{ ticket: string; patch: TicketPatch; why: string; seen: string }>;
 }
 
 /** Reality's word on "merged": a MERGED PR, or a branch tip contained in the target. undefined = unknown.
@@ -292,6 +302,8 @@ function realityMerged(r: TicketReality | undefined, status: TicketStatus): bool
   if (r.error) return undefined;
   return false;
 }
+
+const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
   const divergences: Divergence[] = [];
@@ -317,19 +329,19 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     }
     if (t.status !== 'merged' && t.status !== 'dropped' && rm === true) {
       add({ ticket: id, kind: 'reality-merged-state-not', detail: `reality says merged (${r?.pr?.state === 'MERGED' ? `PR #${t.pr ?? '?'} MERGED` : `tip in origin/${state.target}`}) but state says ${t.status}` });
-      writeBack.push({ ticket: id, patch: { status: 'merged' }, why: 'reality merged' });
+      writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged' }, why: 'reality merged' });
     }
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
     }
-    if (r && !r.error && t.head && r.branchHead && r.branchHead !== t.head && (t.status === 'nominated' || t.status === 'gated')) {
+    if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated')) {
       add({ ticket: id, kind: 'head-moved', detail: `branch head ${r.branchHead.slice(0, 8)} != recorded ${t.head.slice(0, 8)} — verdict ${t.verdict} is stale` });
       if (t.verdict !== 'none' || t.status === 'gated') {
-        writeBack.push({ ticket: id, patch: { head: r.branchHead, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
+        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
       } else {
-        writeBack.push({ ticket: id, patch: { head: r.branchHead }, why: 'head moved' });
+        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead }, why: 'head moved' });
       }
-    } else if (r?.pr && t.head && r.pr.headRefOid && r.pr.headRefOid !== t.head && t.status !== 'merged' && r.pr.state === 'OPEN') {
+    } else if (r?.pr && t.head && r.pr.headRefOid && !sameSha(r.pr.headRefOid, t.head) && t.status !== 'merged' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
     }
     if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped') {
@@ -380,10 +392,13 @@ function planTicket(id: string, t: TicketState, own: Divergence[], open: string[
 /** Step 5 of resume: record the reality-AHEAD facts. These bypass the transition rules on purpose (a fact is not a request), then re-validate. */
 export function applyWriteBack(state: FanoutState, writeBack: ReconcilePlan['writeBack'], now: string): FanoutState {
   const tickets = { ...state.tickets };
+  const mergedHere = new Set<string>();
   for (const w of writeBack) {
     const cur = tickets[w.ticket];
-    if (!cur) continue;
+    // Skip a ticket changed since the plan read it (`seen`), and never lower one this batch already recorded as merged.
+    if (!cur || state.tickets[w.ticket].updatedAt !== w.seen || mergedHere.has(w.ticket)) continue;
     tickets[w.ticket] = { ...cur, ...w.patch, updatedAt: now };
+    if (w.patch.status === 'merged') mergedHere.add(w.ticket);
   }
   return parseState({ ...state, tickets, updatedAt: now, reconciledAt: now });
 }

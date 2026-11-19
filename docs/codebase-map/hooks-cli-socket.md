@@ -330,6 +330,9 @@ forwards it — #467's `deliver` joins the same switch in `runFanout`). Direct-s
   Merged = a MERGED PR OR tip contained in the target (squash-safe). A failed git/gh read is `reality-unreadable`
   (UNKNOWN), never "gone". Dependents are released by what REALITY confirms, so a false `merged` claim unblocks nobody.
   Write-back records only reality-AHEAD facts (merged; moved head + verdict reset); state-ahead claims stay reported.
+  A write-back entry carries the ticket's `updatedAt` it was planned from and is skipped if the coordinator wrote since;
+  `head` is 7-40 hex (compared by prefix), `branch` a plain ref name (both reach git argv); ancestry counts as merged
+  evidence only once a ticket is nominated (a fresh `started` branch is trivially contained).
   Exit 0 clean, 2 divergences.
 - Tests: `src/shared/fanout-state.test.ts`, `src/cli/fanout-state.test.ts` (real git on a scratch bare origin + fake gh;
   built-CLI arm self-skips without `dist-electron/cli.js`).

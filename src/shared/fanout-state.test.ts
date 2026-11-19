@@ -207,3 +207,24 @@ test('a STARTED branch cut from the target tip is not "merged" (ancestry counts 
   const nom = applyTicketPatch(s, 'A', { status: 'nominated' }, T);
   assert.deepEqual(reconcile(nom, { A: { branchHead: SHA_A, mergedIntoTarget: true } }).divergences.map((d) => d.kind), ['reality-merged-state-not']);
 });
+
+test('pre-review BLOCKING: a MERGED PR + a branch still on a different head is merged, never demoted by the head-moved write-back', () => {
+  const s = withA('gated', { verdict: 'pass' });
+  const plan = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: false, pr: { state: 'MERGED', headRefOid: SHA_A } } });
+  assert.deepEqual(plan.divergences.map((d) => d.kind), ['reality-merged-state-not']);
+  assert.equal(applyWriteBack(s, plan.writeBack, T).tickets.A.status, 'merged');
+});
+
+test('pre-review MAJOR: a short recorded head is a prefix of the remote head, not a moved head; a bad head/branch is refused', () => {
+  const s = withA('gated', { verdict: 'pass', head: SHA_A.slice(0, 7) });
+  assert.deepEqual(reconcile(s, { A: { branchHead: SHA_A, mergedIntoTarget: false } }).divergences, []);
+  for (const head of ['--help', '-x', 'ZZZ', 'abc']) assert.throws(() => applyTicketPatch(s, 'A', { head }, T), /head/, head);
+  for (const branch of ['feat/*', '-x', 'a..b', 'a b']) assert.throws(() => applyTicketPatch(s, 'A', { branch }, T), /branch/, branch);
+});
+
+test('pre-review MAJOR: stale plan — a ticket changed after the read is not overwritten by the write-back', () => {
+  const s = withA('nominated');
+  const plan = reconcile(s, { A: mergedReality });
+  const changed = applyTicketPatch(s, 'A', { head: SHA_B }, '2026-11-19T10:00:05.000Z'); // coordinator wrote in between
+  assert.equal(applyWriteBack(changed, plan.writeBack, T).tickets.A.status, 'nominated');
+});
