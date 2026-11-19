@@ -38,7 +38,7 @@ export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string): {
 
 export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>]
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
-                                  [--depends-on a,b] [--frozen-interface ref] [--json <object|->]
+                                  [--depends-on a,b] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
        orchestra fanout state show [--run <id>] [--json]
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
 
@@ -47,6 +47,8 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
   A dependent may START against a frozen interface; 'nominated'/'gated'/'merged' is REFUSED while an upstream is not merged.
   resume   load → reconcile against git + gh → classify → next action per ticket → write back reality-ahead facts.
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
+  --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
+           squash-landed): the only override of a reality that contradicts the state.
   --run defaults to $ORCHESTRA_RUN_ID.`;
 
 interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
@@ -109,7 +111,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--frozen-interface', '--json'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--frozen-interface', '--accept-merged', '--json'], []);
     const [ticket, ...extra] = p.pos;
     if (!ticket || extra.length) throw new FanoutStateError('usage: orchestra fanout state set <ticket> [--status s] [--branch b] …');
     const patch: Record<string, unknown> = {};
@@ -120,7 +122,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--json must be an object');
       Object.assign(patch, obj);
     }
-    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--frozen-interface': 'frozenInterface' };
+    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted' };
     for (const [flag, key] of Object.entries(flagToKey)) {
       const v = p.vals[flag];
       if (v === undefined) continue;

@@ -23,6 +23,8 @@ export interface TicketState {
   dependsOn: string[];
   /** Ref of the frozen interface a dependent may START against (ledger section, sha…). */
   frozenInterface: string | null;
+  /** Why a `merged` ticket counts as merged although git/gh do not show it on the target (e.g. its PR landed in a stacked base that was later squash-merged). Explicit, human-written. */
+  mergedAccepted: string | null;
   status: TicketStatus;
   updatedAt: string;
 }
@@ -40,9 +42,9 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'status', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'mergedAccepted', 'status', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). */
-export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'status'] as const;
+export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
 export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number]>>;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -115,6 +117,7 @@ export function parseState(raw: unknown): FanoutState {
       verdict: enumOf(t.verdict ?? 'none', VERDICTS, 'verdict'),
       dependsOn: depsOf(t.dependsOn),
       frozenInterface: strOrNull(t.frozenInterface, 'frozenInterface'),
+      mergedAccepted: strOrNull(t.mergedAccepted, 'mergedAccepted'),
       status: enumOf(t.status ?? 'todo', TICKET_STATUSES, 'status'),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
@@ -163,7 +166,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], frozenInterface: null, status: 'todo', updatedAt: now,
+    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], frozenInterface: null, mergedAccepted: null, status: 'todo', updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
@@ -172,6 +175,8 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ('verdict' in patch) next.verdict = enumOf(patch.verdict, VERDICTS, 'verdict');
   if ('dependsOn' in patch) next.dependsOn = depsOf(patch.dependsOn);
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
+  if ('mergedAccepted' in patch) next.mergedAccepted = strOrNull(patch.mergedAccepted, 'mergedAccepted');
+  if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   if ('status' in patch) next.status = enumOf(patch.status, TICKET_STATUSES, 'status');
   if (next.dependsOn.includes(id)) throw new FanoutStateError(`ticket ${id} cannot depend on itself`);
   const out: FanoutState = { ...state, tickets: { ...state.tickets, [id]: next }, updatedAt: now };
@@ -309,6 +314,13 @@ function realityMerged(r: TicketReality | undefined, status: TicketStatus, targe
   return false;
 }
 
+/** The head a MERGED ticket landed at when it differs from the head its pass/approve verdict covered; null = no such mismatch. */
+function ungatedMergeHead(t: TicketState, r: TicketReality | undefined, rm: boolean | undefined): string | null {
+  if (rm !== true || (t.status !== 'gated' && t.status !== 'merged') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
+  const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
+  return mergedHead && !sameSha(mergedHead, t.head) ? mergedHead : null;
+}
+
 const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
@@ -322,6 +334,8 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     const t = state.tickets[id];
     if (!t) return false;
     const rm = realityMerged(reality[id], t.status, state.target);
+    if (ungatedMergeHead(t, reality[id], rm)) return false; // merged at a head no verdict covered: dependents wait for the re-gate
+    if (t.status === 'merged' && t.mergedAccepted) return true; // explicit human override
     return rm === undefined ? t.status === 'merged' : rm;
   };
 
@@ -330,12 +344,15 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     const claimsWork = t.status !== 'todo' && t.status !== 'dropped';
     if (r?.error) add({ ticket: id, kind: 'reality-unreadable', detail: `could not read git/gh (${r.error}); nothing concluded about this ticket` });
     const rm = realityMerged(r, t.status, state.target);
-    if (t.status === 'merged' && rm === false) {
+    const accepted = t.status === 'merged' && !!t.mergedAccepted;
+    const ungated = ungatedMergeHead(t, r, rm);
+    if (t.status === 'merged' && rm === false && !accepted) {
       add({ ticket: id, kind: 'state-merged-reality-not', detail: `state says merged but ${r?.pr ? `PR #${t.pr} is ${r.pr.state}` : 'its branch tip is not in origin/' + state.target}${r?.branchHead === null ? ' and the branch is gone' : ''}` });
     }
     if (t.status !== 'merged' && t.status !== 'dropped' && rm === true) {
       add({ ticket: id, kind: 'reality-merged-state-not', detail: `reality says merged (${r?.pr?.state === 'MERGED' ? `PR #${t.pr ?? '?'} MERGED` : `tip in origin/${state.target}`}) but state says ${t.status}` });
-      writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged' }, why: 'reality merged' });
+      // An ungated-head merge is NOT recorded: the divergence must persist across resumes until the merged tree is re-gated.
+      if (!ungated) writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged' }, why: 'reality merged' });
     }
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
@@ -350,14 +367,11 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     } else if (r?.pr && t.head && r.pr.headRefOid && !sameSha(r.pr.headRefOid, t.head) && t.status !== 'merged' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
     }
-    if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped') {
+    if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped' && !accepted) {
       add({ ticket: id, kind: 'pr-merged-other-base', detail: `PR #${t.pr} is MERGED into ${r.pr.baseRefName ?? '(unknown base)'}, not origin/${state.target}: not merged on the target` });
     }
-    if (rm === true && t.status === 'gated' && (t.verdict === 'pass' || t.verdict === 'approve') && t.head) {
-      const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
-      if (mergedHead && !sameSha(mergedHead, t.head)) {
-        add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${mergedHead.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head.slice(0, 8)}` });
-      }
+    if (ungated) {
+      add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${ungated.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head?.slice(0, 8)}: re-gate the merged tree, then \`state set ${id} --status merged --head ${ungated.slice(0, 12)}\`` });
     }
     if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped') {
       add({ ticket: id, kind: 'pr-closed-unmerged', detail: `PR #${t.pr} is CLOSED without merging` });

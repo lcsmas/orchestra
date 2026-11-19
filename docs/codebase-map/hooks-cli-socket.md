@@ -329,7 +329,11 @@ forwards it — #467's `deliver` joins the same switch in `runFanout`). Direct-s
   `pr-head-moved`, `branch-gone`, `pr-closed-unmerged`, `pr-merged-other-base`, `merged-at-ungated-head`,
   `nominated-before-upstream-merged`, `reality-unreadable`).
   Merged = a PR MERGED **into the target** (`gh pr view --json state,headRefOid,baseRefName`; a stacked PR merged into its
-  upstream branch is not) OR a nominated tip contained in the target (squash-safe). `nominated|gated|pass` need a recorded head. A failed git/gh read is `reality-unreadable`
+  upstream branch is not) OR a nominated tip contained in the target (squash-safe). `nominated|gated|pass` need a recorded head.
+  `merged-at-ungated-head` (a gated/merged ticket whose pass/approve verdict covered another head than the merge) is NOT
+  written back and withholds its dependents until the merged head is recorded after a re-gate. `mergedAccepted`
+  (`state set <t> --accept-merged <reason>`, merged tickets only) is the one explicit override of a reality that contradicts
+  a `merged` state (stacked base later squash-landed). A failed git/gh read is `reality-unreadable`
   (UNKNOWN), never "gone". Dependents are released by what REALITY confirms, so a false `merged` claim unblocks nobody.
   Write-back records only reality-AHEAD facts (merged; moved head + verdict reset); state-ahead claims stay reported.
   A write-back entry carries the ticket's `updatedAt` it was planned from and is skipped if the coordinator wrote since;
