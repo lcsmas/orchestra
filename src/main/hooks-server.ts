@@ -55,6 +55,7 @@ import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { dispatchIdentityRequest } from './session-identity-host.ts';
+import { dispatchHandoffRequest } from './handoff-host.ts';
 import { dispatchBrowserRequest } from './browser-cdp-host.ts';
 import { log } from './logger';
 import { orchestraHome } from './platform';
@@ -185,7 +186,7 @@ export async function startHooksServer(): Promise<void> {
     // caller saw an empty reply and had to guess that the payload was the
     // culprit — so /spawn gets a generous ceiling while other routes stay
     // locked down, and an over-cap request now answers with a clear 413.
-    const maxBytes = route === '/spawn' || route === '/message' ? 1_048_576 : 4096;
+    const maxBytes = route === '/spawn' || route === '/message' || route === '/handoff' ? 1_048_576 : 4096;
     let body = '';
     let tooLarge = false;
     req.setEncoding('utf8');
@@ -596,6 +597,9 @@ export async function startHooksServer(): Promise<void> {
             // #379 / ADR 0008: a session's CURRENT run + generation, resolved by the host on every bus CLI call
             // (`{id, key}` → `{ok, runId, generation}`; a replaced session's key → `superseded`). Never logs/echoes the key.
             send(200, dispatchIdentityRequest(msg));
+          } else if (route === '/handoff') {
+            // #466: `orchestra handoff` — `{id, key, summary}`; the summary shape + the open run are checked host-side, the context ends at the turn end.
+            send(200, dispatchHandoffRequest(msg));
           } else if (route === '/browser') {
             // #395 / ADR 0009: `orchestra browser` asks for ITS workspace's agent-browser endpoint — `{id, key}` is verified against
             // the session-key registry (no key / stale key / another workspace's id = refused); the reply carries a proxy URL, never a key.

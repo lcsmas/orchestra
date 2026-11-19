@@ -3,6 +3,7 @@
 // transpile step errors on an in-source shebang once the banner is also added.
 import http from 'node:http';
 import fs from 'node:fs';
+import { resolveHandoffSummary } from './handoff.ts';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -1405,6 +1406,18 @@ async function main(argv: string[]): Promise<void> {
       const res = await request('/setBase', { id, baseBranch });
       if (!res.ok) fail(res.error ?? 'failed to set base branch');
       process.stdout.write(`Base branch set to ${res.baseBranch as string}\n`);
+      return;
+    }
+
+    case 'handoff': {
+      // #466: end THIS context and continue in a fresh one that opens with the written summary (code: ./handoff.ts, host: main/handoff-host.ts).
+      const resolved = resolveHandoffSummary({ args, readFile: (p) => fs.readFileSync(p === '-' ? 0 : p, 'utf8') });
+      if ('error' in resolved) fail(resolved.error);
+      const id = selfWorkspaceId();
+      if (!id) fail('handoff-unvouched: no ORCHESTRA_WS_ID — run `orchestra handoff` from the agent itself. Nothing was ended.');
+      const res = await request('/handoff', { id, key: process.env[SESSION_KEY_ENV]?.trim() ?? '', summary: resolved.summary });
+      if (!res.ok) fail(res.error ?? 'handoff failed');
+      process.stdout.write(`${res.note as string}\nsummary saved: ${res.file as string}\n`);
       return;
     }
 
