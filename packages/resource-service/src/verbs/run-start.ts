@@ -23,7 +23,7 @@ function maxLife(text: string | undefined): number | undefined {
   } catch (e) {
     throw usageError(`--max-life: ${(e as Error).message}`);
   }
-  if (!(ms > 0)) throw usageError(`--max-life ${JSON.stringify(text)}: must be a positive duration`);
+  if (!(ms > 0) || !Number.isFinite(ms)) throw usageError(`--max-life ${JSON.stringify(text)}: must be a positive, finite duration`);
   return ms;
 }
 

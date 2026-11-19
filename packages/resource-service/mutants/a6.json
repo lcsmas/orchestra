@@ -219,8 +219,25 @@
   "edits": [
    {
     "file": "src/verbs/run-start.ts",
-    "find": "if (!(ms > 0)) throw",
-    "to": "if (ms < 0) throw"
+    "find": "if (!(ms > 0) || !Number.isFinite(ms)) throw",
+    "to": "if (ms < 0 || !Number.isFinite(ms)) throw"
+   }
+  ]
+ },
+ {
+  "id": "A6M13_infinite_life_accepted",
+  "why": "an overflowing duration becomes maxLifeAt=Infinity, stored as null: the run is cleaned on the next tick",
+  "tests": [
+   "test/max-life.test.ts"
+  ],
+  "expect": [
+   "a bad --max-life is a usage error"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "if (!(ms > 0) || !Number.isFinite(ms)) throw",
+    "to": "if (!(ms > 0)) throw"
    }
   ]
  }

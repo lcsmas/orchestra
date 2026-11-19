@@ -87,7 +87,7 @@ describe('--max-life', () => {
 
   it('a bad --max-life is a usage error (exit 2) and records nothing', () => {
     const owner = rig.coordinator();
-    for (const bad of ['0', '0s', 'abc', '-5s', '5x', '']) {
+    for (const bad of ['0', '0s', 'abc', '-5s', '5x', '', `${'9'.repeat(400)}ms`]) {
       const r = rig.cli(['run', 'start', '--id', 'mlbad', '--owner', String(owner.pid), '--max-life', bad]);
       assert.equal(r.status, 2, `--max-life ${JSON.stringify(bad)} → ${r.status} (${r.stderr})`);
       assert.match(r.stderr, /--max-life/);
