@@ -748,5 +748,22 @@
     "to": "      if (false) run.lanes = run.lanes.filter("
    }
   ]
+ },
+ {
+  "id": "M45_zombie_leader_leads",
+  "why": "a zombie leader with no members keeps its lane record \"ours\"",
+  "tests": [
+   "test/proc.test.ts"
+  ],
+  "expect": [
+   "a zombie group leader"
+  ],
+  "edits": [
+   {
+    "file": "src/proc.ts",
+    "find": "  if (s && s.state !== 'X' && s.state !== 'Z') {",
+    "to": "  if (s && s.state !== 'X') {"
+   }
+  ]
  }
 ]

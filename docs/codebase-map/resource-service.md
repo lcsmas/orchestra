@@ -23,6 +23,8 @@ Run it: `pnpm run test:resource-service` (package tests, `# skipped` must be 0),
 
 **Locks** (`src/lockfile.ts`): the lock file is created whole with `link(2)`, holds `{pid,startTime}`, and is stolen ONLY after the holder fails the identity probe (dead, or pid reused → other starttime), re-reading the file right before the unlink (`tryAcquire` `:34`). Two stealers racing can briefly both believe they hold `daemon.lock`; the daemon re-checks `holds(lock)` each tick and exits, and reaping is idempotent. `state.lock` (via `withState`, `src/state.ts:47`) is the single writer of `state.json` (tmp + rename, mode 0600); a corrupt or newer-version file **fails closed** instead of reading as "no runs".
 
+**State hygiene** (follow-up): `load` (`src/state.ts`) builds `runs` with a null prototype (ids like `constructor` are ordinary keys) and stamps the kernel `boot_id` (`bootId()`, `src/proc.ts`) into `state.json`; a file from ANOTHER boot closes every open run on load (recorded pid/pgid/starttime mean nothing after a reboot — never signalled). The reaper `tick` drops a lane whose group is gone or whose leader pid now belongs to a stranger. The import guard (`test/lib/import-guard.ts`) scans every JS/TS extension and refuses symlinks. Tests `stale-records.test.ts`, `autostart-in-lane.test.ts` (a daemon started inside a lane must not carry `RESCTL_RUN_TOKEN`).
+
 **Non-obvious decisions**
 - Re-adopt vs expiry use the same comparison on the same stored `graceEndsAt`, so a run is either re-adoptable or cleanable, never both.
 - `RESCTL_RUN_TOKEN` (not `RESCTL_RUN=<id>`) is the sweep key: ids collide across state dirs and across a re-started same id; a token is per run instance. `RESCTL_RUN=<id>` is still exported for the lane's own use.

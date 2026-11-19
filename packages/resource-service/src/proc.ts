@@ -96,7 +96,7 @@ export function signalIfSame(id: Identity, sig: NodeJS.Signals): SignalResult {
 /** A recorded lane leader's group is ours to signal: the leader is the same process and still leads its group, or it is gone while members remain. */
 export function groupIsOurs(leader: Identity): 'ours' | 'empty' | 'foreign' {
   const s = readStat(leader.pid);
-  if (s && s.state !== 'X') {
+  if (s && s.state !== 'X' && s.state !== 'Z') { // a zombie leader leads nothing: only its members count (below)
     if (s.startTime !== leader.startTime || s.pgrp !== leader.pid) return 'foreign'; // pid reused, or the leader left its group
     return 'ours';
   }

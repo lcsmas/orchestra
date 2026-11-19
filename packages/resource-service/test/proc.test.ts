@@ -57,6 +57,27 @@ describe('proc identity and signals', () => {
     assert.ok(isAlive(identityOf(sameGroup.pid!)!));
   });
 
+  it('a zombie group leader with no members leaves an EMPTY group (not "ours")', async () => {
+    // a parent that starts a session leader, kills it and never waits: the corpse stays a zombie while the parent lives (shells and node reap theirs)
+    const py = 'import os,subprocess,sys,time\np=subprocess.Popen(["sleep","300"],start_new_session=True)\nprint(p.pid,flush=True)\nos.kill(p.pid,9)\ntime.sleep(60)';
+    const sh = spawn('python3', ['-I', '-c', py], { stdio: ['ignore', 'pipe', 'ignore'] });
+    kids.push(sh);
+    let out = '';
+    sh.stdout!.on('data', (d) => (out += d));
+    let pid = 0;
+    for (let i = 0; i < 100 && !pid; i++) {
+      await sleep(20);
+      pid = Number(out.trim()) || 0;
+    }
+    let st = pid ? readStat(pid) : null;
+    for (let i = 0; i < 100 && st?.state !== 'Z'; i++) {
+      await sleep(20);
+      st = readStat(pid);
+    }
+    assert.equal(st?.state, 'Z', 'instrument check: the killed leader is an unreaped zombie');
+    assert.equal(groupIsOurs({ pid, startTime: st!.startTime }), 'empty');
+  });
+
   it('signalGroupIfOurs: a reused leader pid is foreign (refused), the real leader\'s group is signalled, own group and pid <= 1 are refused', async () => {
     const leader = child(true); // detached = own session and group
     const id = identityOf(leader.pid!)!;
