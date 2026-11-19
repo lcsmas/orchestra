@@ -1,6 +1,7 @@
 // CLI help registry: one entry per top-level verb dispatched in index.ts main().
 // help.test.ts fails if a `case` in main() has no entry here (or vice versa).
 import { NAME_CONVENTION } from '../shared/naming-policy.ts';
+import { FANOUT_USAGE } from './fanout-state.ts';
 
 export interface CommandHelp {
   name: string;
@@ -473,6 +474,13 @@ Exit codes: 0 = landed, 2 = unmerged commits remain,
   list   list pinned tickets; --mine: your open Linear issues
   rm     un-pin a ticket (never touches Linear)
   pin    attach a ticket to an existing workspace`,
+  },
+
+  {
+    name: 'fanout',
+    group: 'Fleet bus',
+    summary: "A fan-out vague's state file + resume with reconciliation (state init|set|show, resume)",
+    detail: FANOUT_USAGE,
   },
 
   // ── Accounts ──────────────────────────────────────────────────────────

@@ -311,6 +311,29 @@ verb); `overview()` renders the grouped `orchestra --help`. `main()` short-circu
 `suggest()` typo hints. `src/cli/help.test.ts` fails when a `case` in `main()` has
 no registry entry — adding a verb means adding its entry.
 
+### `orchestra fanout state|resume` — the vague state file (#469, verified-fanout v2 lever 5)
+One state file per vague: `<ORCHESTRA_HOME>/fanout/<run>/state.json` (D4; `--run` or `$ORCHESTRA_RUN_ID`, a
+traversal-safe id). Pure logic in `src/shared/fanout-state.ts`; argv + the injectable git/gh `Runner` in
+`src/cli/fanout-state.ts` (`runFanout` returns `{code,stdout,stderr}`; `index.ts` has ONE `case 'fanout'` line that
+forwards it — #467's `deliver` joins the same switch in `runFanout`). Direct-store verbs: no socket.
+- **Schema**: `FanoutState` (run, target, repo, tickets, updatedAt, reconciledAt) with per-ticket branch / pr /
+  head / verdict / dependsOn / frozenInterface / status (`todo|started|nominated|gated|merged|dropped`).
+  `parseState` REFUSES an unknown field (top level or ticket), a cycle, a bad enum. `applyTicketPatch` is the ONE
+  transition: a dependent may `started` only with a `frozenInterface`, and `nominated|gated|merged` is REFUSED while
+  any upstream is not merged (an unknown upstream counts as not merged).
+- **One writer**: `updateState` = O_EXCL lock (stale after 15 s) + `writeStateAtomic` (validate, tmp + rename in the
+  same dir: a reader sees the old or the new file, never a torn one).
+- **`resume` = 5 steps** (printed `1/5 … 5/5`): load → reconcile (`gatherReality`: `git fetch`, `git ls-remote`,
+  `git merge-base --is-ancestor` vs `origin/<target>`, `gh pr view`) → classify → next action per ticket → write back.
+  `reconcile` (pure) returns divergences (`state-merged-reality-not`, `reality-merged-state-not`, `head-moved`,
+  `pr-head-moved`, `branch-gone`, `pr-closed-unmerged`, `nominated-before-upstream-merged`, `reality-unreadable`).
+  Merged = a MERGED PR OR tip contained in the target (squash-safe). A failed git/gh read is `reality-unreadable`
+  (UNKNOWN), never "gone". Dependents are released by what REALITY confirms, so a false `merged` claim unblocks nobody.
+  Write-back records only reality-AHEAD facts (merged; moved head + verdict reset); state-ahead claims stay reported.
+  Exit 0 clean, 2 divergences.
+- Tests: `src/shared/fanout-state.test.ts`, `src/cli/fanout-state.test.ts` (real git on a scratch bare origin + fake gh;
+  built-CLI arm self-skips without `dist-electron/cli.js`).
+
 ### Exiting the CLI: flush before you terminate (issue #62)
 
 Every terminal exit funnels through **`exitAfterFlush(code)`** (`src/cli/index.ts`),

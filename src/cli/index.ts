@@ -95,6 +95,7 @@ import {
   type AgentTabView,
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
+import { defaultRunner as fanoutRunner, runFanout } from './fanout-state.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2412,6 +2413,15 @@ async function main(argv: string[]): Promise<void> {
               'usage: orchestra linear <add|list|rm|pin> …',
           );
       }
+    }
+
+    case 'fanout': {
+      // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
+      const r = runFanout(args, { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') });
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.code === 1) fail(r.stderr.trimEnd());
+      if (r.code !== 0) throw new CliExit(r.code);
+      return;
     }
 
     case 'add-repo': {
