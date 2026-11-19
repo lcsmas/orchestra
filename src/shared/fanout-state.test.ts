@@ -295,3 +295,12 @@ test('follow-up MINOR 2: mergedAccepted overrides a non-target-base merge that l
   assert.throws(() => applyTicketPatch(s, 'A', { mergedAccepted: '' }, T), /non-empty/);
   assert.throws(() => parseState({ ...JSON.parse(JSON.stringify(s)), tickets: { A: { ...s.tickets.A, mergedAccepted: 5 } } }), /mergedAccepted/);
 });
+
+test('mergedAccepted guard sees the NEW status: un-merging with the override still set is refused; setting both together on a non-merged ticket works', () => {
+  const s = applyTicketPatch(withA('merged'), 'A', { mergedAccepted: 'why' }, T);
+  assert.throws(() => applyTicketPatch(s, 'A', { status: 'started' }, T), /only applies to a merged ticket/);
+  const un = applyTicketPatch(s, 'A', { status: 'started', mergedAccepted: null }, T);
+  assert.deepEqual([un.tickets.A.status, un.tickets.A.mergedAccepted], ['started', null]);
+  const both = applyTicketPatch(withA('nominated'), 'A', { status: 'merged', mergedAccepted: 'why' }, T);
+  assert.equal(both.tickets.A.mergedAccepted, 'why');
+});
